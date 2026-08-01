@@ -27,6 +27,8 @@ import {
 } from "@/components/ui/select";
 import { type LodgeOption } from "@/components/lodge-select";
 import { sumDeferredGuestPortionCents } from "@/lib/deferred-guest-portion";
+import { localCalendarDayToDateOnly } from "@/lib/date-only";
+import { formatNZWeekdayDate } from "@/lib/nzst-date";
 import { PromoCodeInput, type PromoResult } from "@/components/promo-code-input";
 import { TimePicker } from "@/components/time-picker";
 import { CheckCircle2, CreditCard, Landmark } from "lucide-react";
@@ -228,13 +230,11 @@ export function ReviewStep({
     checkIn && holdDays > 0
       ? new Date(checkIn.getTime() - holdDays * 24 * 60 * 60 * 1000)
       : null;
+  // #2264: these are calendar days the picker encoded at the BROWSER's
+  // midnight, so re-encode before the club-pinned formatter reads them —
+  // otherwise a member abroad is shown a different night than they are booking.
   const holdDeadlineLabel = holdDeadline
-    ? holdDeadline.toLocaleDateString("en-NZ", {
-        weekday: "short",
-        day: "numeric",
-        month: "short",
-        year: "numeric",
-      })
+    ? formatNZWeekdayDate(localCalendarDayToDateOnly(holdDeadline))
     : null;
 
   useEffect(() => {
@@ -260,17 +260,13 @@ export function ReviewStep({
             <div>
               <span className="text-muted-foreground">Check-in:</span>{" "}
               <span className="font-medium">
-                {checkIn!.toLocaleDateString("en-NZ", {
-                  weekday: "short", day: "numeric", month: "short", year: "numeric",
-                })}
+                {formatNZWeekdayDate(localCalendarDayToDateOnly(checkIn!))}
               </span>
             </div>
             <div>
               <span className="text-muted-foreground">Check-out:</span>{" "}
               <span className="font-medium">
-                {checkOut!.toLocaleDateString("en-NZ", {
-                  weekday: "short", day: "numeric", month: "short", year: "numeric",
-                })}
+                {formatNZWeekdayDate(localCalendarDayToDateOnly(checkOut!))}
               </span>
             </div>
             <div>

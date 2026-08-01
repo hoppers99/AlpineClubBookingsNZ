@@ -346,6 +346,36 @@ Future reviews and issues should cite this file when proposing changes.
   (`setHours(0,0,0,0)`) instant: under the `TZ=Pacific/Auckland` server pin the
   latter resolves to `(D-1)T12:00Z` and shifts the boundary by a day for the
   first ~13h of each NZ day (F8/F32, #1888).
+- **Rendering** a date or a time is a separate invariant from storing or
+  comparing one, and has its own single seam: `src/lib/nzst-date.ts`. Its six
+  helpers — `formatNZDate` ("16 Apr 2026"), `formatNZDateTime`
+  ("16 Apr 2026, 11:30 am"), `formatNZLongDate` ("16 April 2026"),
+  `formatNZTime` ("11:30 am"), `formatNZMonthYear` ("April 2026") and
+  `formatNZWeekdayDate` ("Thu, 16 Apr 2026") — each pin BOTH `APP_LOCALE` and
+  `APP_TIME_ZONE`. A bare `toLocaleDateString()` / `toLocaleTimeString()` /
+  `toLocaleString()` renders in the VIEWER's zone and locale, so an
+  administrator abroad read a different lodge night than the one stored, and a
+  lobby-display television reported its own local time (#2256, #2264). An
+  `eslint` `no-restricted-syntax` rule over `src/**` now blocks all three calls;
+  the documented exclusions are written out in `eslint.config.mjs`. Three files
+  format NUMBERS with `Number.prototype.toLocaleString` (thousands separators)
+  and are listed there with a narrowed rule that lifts only `toLocaleString`,
+  keeping both date restrictions. The rule's selector is syntactic, so computed
+  access (`d["toLocaleDateString"]()`) and detached-method aliasing escape it —
+  an accepted limitation, not a gap anyone writes by accident. A screen whose
+  format is legitimately none of the six — weekday-bearing boards, compact
+  grids, the seconds-bearing audit log, an `en-CA` ISO extractor — declares a
+  module-level
+  `new Intl.DateTimeFormat(APP_LOCALE, { timeZone: APP_TIME_ZONE, … })` constant
+  instead. That, not an `eslint-disable`, is the escape hatch, and there are no
+  disables in the tree.
+- `formatNZLongDate` is reserved for the MEMBER-FACING surfaces the owner asked
+  to keep the long spelled-out month on (#2264): booking messages and the emails
+  built from them, the lodge and hut-leader instruction "last updated" stamps,
+  and the generated report cover. Admin and internal screens use the medium
+  `formatNZDate`. `src/lib/__tests__/member-facing-long-dates.test.ts` pins the
+  four call sites so a later "tidy every date onto formatNZDate" pass fails
+  loudly rather than silently shortening what a member reads.
 - Two check-out boundaries coexist by design (#2029). The completion cron flips
   PAID → COMPLETED only once `checkOut < todayNZ` — the entire NZ check-out day
   stays PAID and self-editable/extendable — whereas the admin "finished stay"
@@ -1379,6 +1409,32 @@ Future reviews and issues should cite this file when proposing changes.
   are built from ONE shared row builder (`appliedCreditSummaryRows`), the
   `{{promoSummary}}` precedent, so the two paths cannot tell different stories
   about the same booking. Money is integer cents throughout.
+- An UNPAID confirmation defers to the INVOICE, and promises nothing about it
+  (#2444). The `paymentDue` branch states the booking's own price as `Total Due`
+  and asks for an internet-banking transfer, but the document the member pays
+  against is the club's invoice, which an admin can adjust by hand — netting
+  account credit off it is the commonest reason. The paragraph therefore closes
+  with a CONDITIONAL sentence — "If the invoice asks for a different amount —
+  for example because the club has put account credit you hold towards it —
+  please transfer the amount the invoice shows" — which is honest for the great
+  majority of members, whose invoice matches the total exactly. It names NO
+  second figure and makes NO Xero read: a transactional confirmation must not
+  carry a provider round-trip, or a provider outage, in its send path. Stating
+  the real net figure is deferred work (owner decision, 1 Aug 2026), not an
+  omission.
+  **The sentence must not promise that credit WILL be applied.** The one send
+  site (member whole-lodge approval) mints a brand-new booking and writes no
+  `MemberCredit` row, so the `enqueueXeroAppliedCreditAllocationOperation` call
+  it makes always short-circuits — allocate-existing below fires only on credit
+  APPLIED app-side — and the Xero invoice is raised for, and stays at, the full
+  price. A first draft of this copy asserted the netting and was corrected
+  before merge; reinstating it requires making the allocation real first.
+  The sentence is composed by `bookingPaymentDueNote` and rendered from that ONE
+  composer by both the hand-built HTML and the `{{paymentDueNote}}` token
+  (carried whole inside `{{paymentOutcome}}`), on the same anti-drift principle
+  as the credit rows above; it rides on an EXISTING token, so an override a club
+  saved before #2444 keeps rendering it. Every other money outcome — paid,
+  partly paid, and fully credit-covered — is byte-for-byte unchanged.
 - Applied credit reduces the Internet-Banking invoice by ALLOCATING the member's
   EXISTING floating credit notes (#1620, "allocate-existing"; owner decision
   2026-07-08). A member's credit is already represented in Xero as floating
@@ -3628,10 +3684,16 @@ served only through the scoped `/api/members/[id]/photo` endpoint, never the
 public `/api/images/[id]` content path — that content route enforces the split
 in code by returning 404 for any non-`CONTENT` row, so the invariant holds even
 if a `MEMBER_PHOTO` id is learned. A photo is public **only** when the member
-is active and holds an active, published `CommitteeAssignment` — the same
-predicate `/api/committee` uses, so every publicly-rostered member is the set
-whose photo is servable; otherwise it is visible solely to the member or a
-`membership:view` admin. The photo rule is the predicate alone: the roster
+is active, holds an active, published `CommitteeAssignment`, **and** the club has
+`PublicContentSettings.committeePhotoDisplay != NONE` — the same two conditions
+`/api/committee` applies, so every publicly-rostered member is the set whose
+photo is servable; otherwise it is visible solely to the member or a
+`membership:view` admin, resolved through the same shared session guards the
+upload/remove methods use (`requireActiveSessionUser` / `requireAdmin`), so the
+serving path cannot skip the force-password-change or two-factor gates (#2242).
+Every refusal on that path is the same 404, whatever the reason, so an
+unauthorised caller cannot tell a real member id from one that does not exist.
+The photo rule is those two conditions alone: the roster
 endpoint additionally applies a pathological `take: 500` backstop
 (`src/app/api/committee/route.ts`) against a misconfigured or hostile admin
 publishing an absurd number of assignments on an unauthenticated public route.
@@ -3640,11 +3702,28 @@ a genuine roster, but it is a display bound, not a narrowing of the predicate �
 past 500 published assignments the roster would list fewer members than have
 servable photos, which is the safe direction (a photo is never made public by
 being trimmed off the roster). The committee-public ETag is
-an opaque digest, never the raw `MediaImage` id. Uploaded photos have their
-EXIF/XMP/comment metadata (camera GPS) stripped before storage. Whether the
-public committee roster renders those photos is a separate presentational opt-in
-(`PublicContentSettings.committeePhotoDisplay`, default `NONE`) and never widens
-the serving rule.
+an opaque digest, never the raw `MediaImage` id. `committeePhotoDisplay` governs
+both halves together — it decides whether the roster renders photos AND whether
+the bytes are anonymously servable — so switching it to `NONE` genuinely takes
+the images off the public internet. It only ever narrows: it never makes a photo
+public that the assignment predicate does not already allow, and it never hides a
+photo from the member themselves or a `membership:view` admin (those responses
+switch to `private, no-store` instead of the short public cache).
+Every stored image has its EXIF/XMP/comment metadata (camera GPS) stripped
+first, on every path that stores image bytes: the member-photo upload, the
+admin image library, the image manager's batch upload into `public/images`, the
+config-transfer bundle import, and the inline club logo held as a base64 data URI
+on `ClubTheme.logoDataUrl` (written by the site-style save and by the bundle
+import, and rendered inline on every public page). The member-photo path fails
+**closed** (an unconfirmable strip rejects the upload, because it is personal
+data on a narrow purpose-built path); the others fail **open** through
+`storableImageBytes` / `storableLogoDataUrl` — they store the original and log a
+warning — because blocking a legitimate admin content upload, a site-style save,
+or an operator's whole configuration restore is the worse outcome there. `gif`,
+`avif` and `svg+xml` have no stripper and are always reported as unconfirmed, so
+they log rather than claim a clean strip. `POST /api/admin/site-style/logo` needs
+no strip step: it re-encodes through sharp, which drops metadata unless asked to
+keep it.
 Committee contact routing is chosen per assignment via
 `CommitteeAssignment.contactEmailMode` (`ROLE`, `MEMBER`, or `CUSTOM`, default
 `ROLE`). `ROLE` uses the role email alias stored on `CommitteeRole`, `MEMBER`
@@ -3978,10 +4057,29 @@ correctly for pages beyond the first — this is a general list endpoint, and a
 ranking that reshuffled on page 2 would drop and duplicate rows — and the
 `total` the response carries is still the count of the WHOLE eligible set, which
 is what lets the dialog say the page was cut short ("Keep typing to narrow this
-down.", the #2308 member-guest finder's own sentence). The ranking is scoped to
-the `parentLinkEligibleFor` parameter, so every other caller of
-`GET /api/admin/members` — the members table, the exports, the other pickers —
-issues exactly the query it did before.
+down.", the #2308 member-guest finder's own sentence). Both surfaces DRAW that
+sentence under the list and ANNOUNCE it (#2460), each through a live region that
+is registered before there is anything to say and has only its content gated,
+since a polite region injected already populated is silently dropped by some
+screen-reader/browser pairings — the same house rule `PolicyFeedback` and the
+view-only banners follow. The booking panel announces it on the end of the result
+count its existing status line already reads out, rather than from a second
+region of its own, so it is announced ONCE: two polite regions mutating in the
+same commit are queued in no guaranteed order and one can be dropped outright.
+The dialog, which has no such line, keeps its own `sr-only` region ABOVE the
+results — above, because an invisible LAST child of a `space-y-*` stack still
+moves the visible content above it, Tailwind hanging the gap off
+`:not(:last-child)`. That region goes with the dialog when it closes, so what it
+guarantees is "registered empty before the first search answers", which is the
+case that matters. On both surfaces the sentence stays reachable twice in browse
+mode, once from the region and once as the visible hint under the list: only the
+ANNOUNCEMENT is deduplicated, because hiding the on-screen copy from assistive
+technology would take the sentence away from the place the list actually stops.
+The announced words are the drawn words, verbatim: the sentence must never grow
+a count of who was left out, so it does not grow one for a screen reader either.
+The ranking is scoped to the `parentLinkEligibleFor` parameter, so every other
+caller of `GET /api/admin/members` — the members table, the exports, the other
+pickers — issues exactly the query it did before.
 
 Three rules about that predicate are load-bearing. First, the parent columns are
 **nullable**, so every "not this parent" clause must be written as

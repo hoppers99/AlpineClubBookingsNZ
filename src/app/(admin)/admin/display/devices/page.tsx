@@ -4,10 +4,12 @@ import { useCallback, useEffect, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { FieldHint, useFieldHint } from "@/components/ui/field-hint";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { BackLink } from "@/components/admin/back-link";
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
+import { formatNZDateTime } from "@/lib/nzst-date";
 import {
   ADMIN_FORBIDDEN_SAVE_REASON,
   AdminViewOnlySectionBanner,
@@ -71,6 +73,7 @@ export default function AdminDisplayDevicesPage() {
   // lodge:edit — a lodge:view admin can read the device list but not change it
   // (#1940).
   const canEdit = useAdminAreaEditAccess("lodge");
+  const deviceNameHint = useFieldHint();
 
   useEffect(() => {
     setDisplayUrl(`${window.location.origin}/display`);
@@ -313,10 +316,11 @@ export default function AdminDisplayDevicesPage() {
             <Input
               id="device-name"
               value={newName}
-              placeholder="Lobby TV"
               disabled={!canEdit}
+              {...deviceNameHint.fieldProps}
               onChange={(event) => setNewName(event.target.value)}
             />
+            <FieldHint {...deviceNameHint.hintProps}>Example: Lobby TV</FieldHint>
           </div>
           {lodges.length > 1 && (
             <div className="space-y-1">
@@ -379,7 +383,7 @@ export default function AdminDisplayDevicesPage() {
                   )}
                   <span className="text-muted-foreground text-xs">
                     {device.lastSeenAt
-                      ? `Last seen ${new Date(device.lastSeenAt).toLocaleString("en-NZ")}`
+                      ? `Last seen ${formatNZDateTime(new Date(device.lastSeenAt))}`
                       : "Never seen"}
                   </span>
                 </div>
@@ -388,6 +392,15 @@ export default function AdminDisplayDevicesPage() {
                     <div className="flex items-center gap-2">
                       <Input
                         className="w-32 uppercase"
+                        // #2264: this box repeats once per device row and had
+                        // no label, no id and no aria-label — its placeholder
+                        // was doing the naming, so the only way to reach it was
+                        // `getByPlaceholder("TV code")`. A per-device
+                        // accessible name both names it for a screen reader
+                        // ("which device am I pairing?") and gives the e2e
+                        // specs a row-scoped selector that cannot go ambiguous
+                        // once a second device exists.
+                        aria-label={`Pairing code for ${device.name}`}
                         placeholder="TV code"
                         maxLength={6}
                         value={codeByDevice[device.id] ?? ""}

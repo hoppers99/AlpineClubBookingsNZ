@@ -3,12 +3,14 @@
 import { useState } from "react";
 import { AlertTriangle, CheckCircle2, ExternalLink } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { FieldHint, useFieldHint } from "@/components/ui/field-hint";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { CopyField } from "@/components/admin/integration-wizard";
 import type { WizardStepHelpers } from "@/components/admin/integration-wizard";
 import { ViewOnlyActionButton } from "@/components/admin/view-only-action";
 import { ADMIN_FULL_ADMIN_ONLY_ACTION_REASON } from "@/hooks/use-admin-area-edit-access";
+import { formatNZDate } from "@/lib/nzst-date";
 import type {
   StripeCredentialKey,
   StripeWizardContext,
@@ -19,13 +21,7 @@ const CREDENTIALS_ENDPOINT = "/api/admin/integrations/credentials";
 function formatSetAt(setAt: string | null): string {
   if (!setAt) return "";
   const date = new Date(setAt);
-  return Number.isNaN(date.getTime())
-    ? ""
-    : date.toLocaleDateString("en-NZ", {
-        year: "numeric",
-        month: "short",
-        day: "numeric",
-      });
+  return Number.isNaN(date.getTime()) ? "" : formatNZDate(date);
 }
 
 function LegacyEnvWarning({ vars }: { vars: string[] }) {
@@ -140,6 +136,14 @@ export function CredentialsStep({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+  /*
+    #2264 — the key SHAPE ("sk_test_…") is an example and now sits under the
+    field; the "Enter a new value to replace" branch stays a placeholder because
+    it is an instruction about this control's own behaviour once a credential is
+    already stored.
+  */
+  const secretKeyHint = useFieldHint();
+  const publishableKeyHint = useFieldHint();
 
   const canWrite = context.isFullAdmin;
   const bothSet =
@@ -223,12 +227,14 @@ export function CredentialsStep({
           placeholder={
             context.credentials.secret_key.set
               ? "Enter a new value to replace"
-              : "sk_test_…"
+              : undefined
           }
           value={secretKey}
           onChange={(e) => setSecretKey(e.target.value)}
           disabled={canWrite !== true || saving}
+          {...secretKeyHint.fieldProps}
         />
+        <FieldHint {...secretKeyHint.hintProps}>Example: sk_test_…</FieldHint>
       </div>
 
       <div className="space-y-1">
@@ -246,12 +252,16 @@ export function CredentialsStep({
           placeholder={
             context.credentials.publishable_key.set
               ? "Enter a new value to replace"
-              : "pk_test_…"
+              : undefined
           }
           value={publishableKey}
           onChange={(e) => setPublishableKey(e.target.value)}
           disabled={canWrite !== true || saving}
+          {...publishableKeyHint.fieldProps}
         />
+        <FieldHint {...publishableKeyHint.hintProps}>
+          Example: pk_test_…
+        </FieldHint>
       </div>
 
       {error ? (
@@ -370,6 +380,9 @@ export function WebhookStep({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+  // #2264 — same split as the key fields: the example shape becomes a hint, the
+  // "replace" instruction stays a placeholder.
+  const webhookSecretHint = useFieldHint();
 
   const canWrite = context.isFullAdmin;
 
@@ -453,12 +466,16 @@ export function WebhookStep({
           placeholder={
             context.credentials.webhook_secret.set
               ? "Enter a new value to replace"
-              : "whsec_…"
+              : undefined
           }
           value={webhookSecret}
           onChange={(e) => setWebhookSecret(e.target.value)}
           disabled={canWrite !== true || saving}
+          {...webhookSecretHint.fieldProps}
         />
+        <FieldHint {...webhookSecretHint.hintProps}>
+          Example: whsec_…
+        </FieldHint>
       </div>
 
       {error ? (

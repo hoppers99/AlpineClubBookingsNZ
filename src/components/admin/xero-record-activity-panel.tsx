@@ -28,6 +28,7 @@ import type {
   XeroRecordActivityData,
   XeroRecordActivityOperation,
 } from "@/lib/xero-record-types";
+import { formatNZDateTime } from "@/lib/nzst-date";
 
 interface XeroRecordActivityPanelProps {
   localModel: string
@@ -74,7 +75,9 @@ function formatTimestamp(value: string | null | undefined) {
     return "-"
   }
 
-  return new Date(value).toLocaleString("en-NZ")
+  // Club time and no seconds (#2264): a Xero sync stamp is read against the
+  // club's own day, and the bare locale string rendered in the operator's zone.
+  return formatNZDateTime(new Date(value))
 }
 
 function OperationItem({

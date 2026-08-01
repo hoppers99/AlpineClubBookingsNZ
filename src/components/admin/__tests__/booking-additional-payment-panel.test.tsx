@@ -74,7 +74,13 @@ describe("BookingAdditionalPaymentPanel", () => {
     });
 
     expect(html).not.toContain("Not yet");
-    expect(html).toContain("9/06/2026");
+    // Club-time medium date + short time (#2264): "9 Jun 2026, 12:00 pm". The
+    // date part is pinned exactly — it is what proves the newest stamp won —
+    // while the time is matched loosely, because some ICU builds emit a narrow
+    // no-break space (U+202F) before am/pm and others a plain space.
+    expect(html).toContain("9 Jun 2026");
+    expect(html).not.toContain("4 Jun 2026");
+    expect(html).toMatch(/12:00\s*[ap]m/i);
   });
 
   it("renders nothing at all once the extra has been collected", () => {

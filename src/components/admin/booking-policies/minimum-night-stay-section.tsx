@@ -19,7 +19,23 @@ import {
   AdminViewOnlySectionBanner,
   ViewOnlyActionButton,
 } from "@/components/admin/view-only-action"
+import { parseDateOnly } from "@/lib/date-only"
+import { formatNZDate } from "@/lib/nzst-date"
 import { DAY_LABELS, type MinStayPolicy } from "./types"
+
+/**
+ * A minimum-stay boundary is an NZ date-only lodge date (#2264). It reaches the
+ * browser as the JSON form of a Prisma `@db.Date`, i.e. a full ISO timestamp at
+ * UTC midnight, so the calendar day is taken from the string and handed over as
+ * UTC midnight rather than parsed in the viewer's own zone — a local parse
+ * slides the day for anyone at UTC+13/+14. The NaN guard keeps a malformed
+ * value from throwing out of `Intl` and taking the whole panel down.
+ * Deliberately the twin of `formatPeriodDate` in `booking-periods-section`.
+ */
+function formatPolicyDate(value: string): string {
+  const parsed = parseDateOnly(value.split("T")[0])
+  return Number.isNaN(parsed.getTime()) ? value : formatNZDate(parsed)
+}
 
 /**
  * One open minimum-stay editor's draft. Like the booking-periods section, the
@@ -757,8 +773,8 @@ export function MinimumNightStaySection() {
                               </Badge>
                             </div>
                             <p className="text-sm text-muted-foreground">
-                              {new Date(policy.startDate).toLocaleDateString("en-NZ")} &mdash;{" "}
-                              {new Date(policy.endDate).toLocaleDateString("en-NZ")}
+                              {formatPolicyDate(policy.startDate)} &mdash;{" "}
+                              {formatPolicyDate(policy.endDate)}
                             </p>
                           </div>
                           <div className="flex space-x-2">

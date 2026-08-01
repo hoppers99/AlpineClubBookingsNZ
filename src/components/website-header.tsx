@@ -40,8 +40,13 @@ export async function WebsiteHeader({
   ];
   // Configurable public Book Now (E3 #1929): hidden, custom page, or the default
   // booking flow (fail-open). The authenticated dashboard CTA is out of scope.
+  // #2430: the LABEL is resolved there too, from the SESSION rather than the
+  // target — a signed-out visitor cannot book from this button whichever target
+  // is configured, so it names its audience rather than promising a walk-in
+  // booking.
   const bookingsHref = bookNow.href;
   const showBookNow = bookNow.show;
+  const bookNowLabel = bookNow.label;
   const dashboardHref = isAuthenticated ? "/dashboard" : "/login";
 
   return (
@@ -82,7 +87,7 @@ export async function WebsiteHeader({
                   asChild
                   className="shadow-lg shadow-brand-gold/20"
                 >
-                  <Link href={bookingsHref}>Book Now</Link>
+                  <Link href={bookingsHref}>{bookNowLabel}</Link>
                 </Button>
               ) : null}
             </>
@@ -102,7 +107,7 @@ export async function WebsiteHeader({
                   asChild
                   className="shadow-lg shadow-brand-gold/20"
                 >
-                  <Link href={bookingsHref}>Book Now</Link>
+                  <Link href={bookingsHref}>{bookNowLabel}</Link>
                 </Button>
               ) : null}
             </>
@@ -116,6 +121,7 @@ export async function WebsiteHeader({
           logoDataUrl={logoDataUrl}
           navLinks={navLinks}
           showBookNow={showBookNow}
+          bookNowLabel={bookNowLabel}
           bookingsHref={bookingsHref}
           dashboardHref={dashboardHref}
         />

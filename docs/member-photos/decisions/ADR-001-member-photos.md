@@ -179,17 +179,33 @@ these clarifications where the implementation refined a forward-looking note:
   component, used self-service on the profile page and by admins (on behalf,
   gated on `membership:edit`, fail-closed on the loading tri-state) on the
   member-detail page. `ProfilePhotoSection` is a thin self-mode wrapper.
-- **Serving authz (MP2).** Public exposure requires the member be **active** and
-  hold an active, published `CommitteeAssignment` — kept in lockstep with
+- **Serving authz (MP2, tightened by #2242).** Anonymous exposure requires the
+  member be **active**, hold an active, published `CommitteeAssignment`, **and**
+  the club to have `committeePhotoDisplay != NONE` — kept in lockstep with
   `/api/committee` (a deactivated member with a stale published assignment is
-  **not** public). 404 is preferred over 403 so a private photo's existence is
-  never confirmed. Full matrix in `SECURITY-ATTACK-SURFACE.md`.
-- **Committee roster display (MP5).** A `PublicContentSettings.committeePhotoDisplay`
-  setting (`NONE` default / `CIRCLE` / `SQUARE`) governs whether the public
-  committee roster renders photos and their shape. This is **presentational**:
-  it gates the roster render and whether `/api/committee` emits per-member photo
-  metadata; it does **not** change the serving rule (a published committee
-  member's photo remains servable through the scoped endpoint). `NONE` is a
+  **not** public). Every other request goes through the **same shared session
+  guards** the upload/remove methods use — `requireActiveSessionUser` for the
+  owning member, `requireAdmin({ membership: view })` for an admin — so the GET
+  cannot skip the force-password-change or two-factor gates, which a hand-rolled
+  `auth()` check previously did. 404 is preferred over 403 so a private photo's
+  existence is never confirmed, and a guard refusal is deliberately mapped onto
+  that same 404 rather than surfaced as its own 401/403. Full matrix in
+  `SECURITY-ATTACK-SURFACE.md`.
+- **Committee roster display (MP5, tightened by #2242).** A
+  `PublicContentSettings.committeePhotoDisplay` setting (`NONE` default /
+  `CIRCLE` / `SQUARE`) governs whether the public committee roster renders photos
+  and their shape. It gates the roster render, whether `/api/committee` emits
+  per-member photo metadata, **and** whether the photo bytes are anonymously
+  servable at all. This supersedes the original "presentational only" reading:
+  the admin control reads "Don't show photos", so an operator handling a takedown
+  request has to be able to trust that the image stops being public — it used to
+  keep serving to anyone holding a member id, and the `version` field even
+  disclosed when the photo last changed. The setting only ever **narrows**: it
+  never makes a photo public that the assignment predicate does not already
+  allow, and it is deliberately **not** applied to the authenticated branch, so a
+  member still sees their own photo and a `membership:view` admin still manages
+  it from the admin UI while public display is off (those responses become
+  `private, no-store` rather than the short public cache). `NONE` is a
   privacy-safe opt-in; members without a photo show an initials placeholder.
 - **Migration.** Shipped as `20260721110000_add_member_photos` (re-timestamped
   during the upstream sync to append after the merged history), plus

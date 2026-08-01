@@ -204,6 +204,27 @@ build its own money lines from the per-piece tokens (`{{totalPaid}}`,
 `{{totalDue}}`, `{{paymentDueNote}}`, `{{paymentReference}}`); exactly one of
 `{{totalPaid}}`/`{{totalDue}}` carries a figure on any given send.
 
+On that unpaid send only, `{{paymentDueNote}}` closes with one further
+sentence: *"If the invoice asks for a different amount — for example because the
+club has put account credit you hold towards it — please transfer the amount the
+invoice shows."* The `Total Due:` line is the **booking's** price; the invoice
+the member pays against is a separate document an admin can adjust by hand, so
+the email defers to it rather than to itself. The sentence is deliberately
+conditional and names no second amount — for the great majority of members the
+invoice matches the total exactly — and it is part of the same
+`{{paymentDueNote}}` value, so no new token was added: an override that renders
+`{{paymentOutcome}}` or `{{paymentDueNote}}` picks the sentence up with no edit
+at all. An override that builds its own money lines from the per-piece tokens
+**without** either of those, as the paragraph above allows, has never carried the
+unpaid send's payment instructions and still does not — add `{{paymentDueNote}}`
+to such a body, or its members are told a `Total Due:` figure and never told how
+to pay it. The sentence renders on the unpaid send and nowhere else; on every
+other send `{{paymentDueNote}}` is empty, so it is declared emptyable and the
+editor warns if you type a label in front of it. Note that nothing nets account
+credit off such an invoice automatically: an admin who wants a member's credit
+applied does it in Xero, which is why the sentence describes a possibility
+rather than promising one.
+
 Account credit spent on the booking is explained by the pre-composed
 `{{creditNote}}` block, on the same convention again. When a member put account
 credit towards their stay it renders two reconciling lines — `Account credit
@@ -445,8 +466,11 @@ second accent setting. The occupancy meter follows the primary accent. Semantic
 success, warning, information, danger/error, and waitlist colours stay curated,
 contrast-locked light/dark pairs and are not editable brand fields. Fresh
 deployments show a neutral public-site holding page until an admin finishes that
-wizard. The logo is public-site only and is stored in the database as a validated
-image data URL; there is no runtime upload directory to preserve.
+wizard. The logo is public-site only and is stored in the database — an uploaded
+logo as a served image (`/api/images/<id>`), with a small validated inline data
+URL kept for legacy and hand-crafted logos; there is no runtime upload directory
+to preserve. Either way the stored bytes have their EXIF/XMP/comment metadata
+(camera GPS) removed first, like every other image this system stores (#2242).
 
 Saved palettes must meet the **WCAG AA 4.5:1** minimum text-contrast ratio on
 the key public/app pairs — body and muted text on the page background, app text
@@ -639,12 +663,34 @@ menu.
 The public website header's **Book Now** button is configured on the same
 Admin > Page Content panel (`PublicContentSettings`):
 
-- **Show the button** — off hides it entirely (desktop and mobile).
+- **Show the button** — off hides it entirely (desktop and mobile). **Off
+  everywhere since #2430.** A fresh install ships with it off (the column
+  default), and `20260802100000_public_book_now_default_off` also switched it
+  off for **every existing club**, whether or not the club had chosen to show
+  it — the owner's decision (1 Aug 2026), which deliberately overrode saved
+  choices rather than only changing what new installs get. A club that wants
+  the button turns it back on in one click: **Admin → Setup & Configuration →
+  Site Appearance & Content → Page Content** → tick **Show the Book Now
+  button** → **Save visibility**. From that save on, the stored value is what
+  governs and nothing in the product moves it again. (A database error while
+  reading the row still falls back to showing the button — see the fail-open
+  contract below.)
 - **Target** — *booking flow* (the default: a logged-in member goes to `/book`,
   a guest is sent through login) or a chosen **published content page**.
 - A page target that becomes unpublished or is deleted **fails open** to the
-  booking flow, so the button is never dead. The authenticated dashboard's own
-  Book Now action is unaffected — a signed-in member can always book.
+  booking flow, so the button is never dead. So does a database error reading
+  the settings row: `getBookNowConfig`'s catch shows the button (#1929's
+  contract, deliberately unchanged by #2430 — the no-row branch fails closed
+  because that is a club's absent choice, whereas an outage is not). The
+  authenticated dashboard's own Book Now action is unaffected — a signed-in
+  member can always book.
+- **The label follows the visitor, not the target** (#2430). A signed-out
+  visitor sees **Member booking**, because booking here is for members: with the
+  booking-flow target the button sends them to the member login, and with a page
+  target it sends them to a content page — neither is a booking they can make.
+  A signed-in member sees **Book Now**. Both surfaces (desktop header and mobile
+  drawer) take the label from `getBookNowConfig`, so they cannot disagree. The
+  label is not configurable, and it does not change when you change the target.
 
 ## Website Site Content
 
@@ -1302,8 +1348,9 @@ model matters for privacy.
   flag).
 - **Who can see it.** The photo is served through a scoped, member-keyed
   endpoint (`/api/members/[id]/photo`). It is **public only** when the member is
-  active and holds an active, **published** `CommitteeAssignment` — in lockstep
-  with `/api/committee`. Otherwise only the member themselves or a
+  active, holds an active, **published** `CommitteeAssignment`, and the club's
+  **Committee photo display** setting below is not "Don't show photos" — in
+  lockstep with `/api/committee`. Otherwise only the member themselves or a
   `membership:view` admin can see it; everyone else gets a 404 (the endpoint
   prefers 404 over 403 so a private photo's existence is never confirmed).
 - **Consent.** Implied by self-upload; the enforced boundary is control (who can
@@ -1318,11 +1365,16 @@ model matters for privacy.
   - `CIRCLE` / `SQUARE` — show each published member's photo in that shape, with
     an initials placeholder for members without one.
 
-  This setting is presentational: it controls the roster render and whether
-  `/api/committee` emits photo metadata, but it does not change the serving rule
-  above. See `docs/member-photos/decisions/ADR-001-member-photos.md` for the
-  full design and `docs/SECURITY-ATTACK-SURFACE.md` for the serving/upload
-  authorisation matrix.
+  Setting it to "Don't show photos" genuinely takes committee photos off the
+  public internet, not just off the roster page: the roster stops rendering
+  them, `/api/committee` stops emitting photo metadata, **and** the photo
+  endpoint stops serving the bytes to anonymous callers (#2242). That is what
+  makes it usable as a takedown control. It never hides a photo from the member
+  themselves or from a `membership:view` admin, who both keep seeing it in the
+  member and profile screens, and it never makes a photo public that the
+  published-assignment rule above does not already allow. See
+  `docs/member-photos/decisions/ADR-001-member-photos.md` for the full design and
+  `docs/SECURITY-ATTACK-SURFACE.md` for the serving/upload authorisation matrix.
 
 Booking and subscription enforcement is season-aware:
 

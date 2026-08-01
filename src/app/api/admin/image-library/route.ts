@@ -11,6 +11,7 @@ import {
   extractImageDimensions,
   mediaImageServingUrl,
   sanitiseMediaImageFilename,
+  storableImageBytes,
 } from "@/lib/media-image";
 import { readCappedMultipartFormData } from "@/lib/capped-multipart";
 
@@ -156,12 +157,33 @@ export async function POST(request: NextRequest) {
   const dimensions = extractImageDimensions(bytes, contentType);
   const filename = sanitiseMediaImageFilename(file.name || "upload");
 
+  // Strip EXIF/XMP/comment metadata (camera GPS coordinates live in JPEG APP1)
+  // before storing. Library images are served ANONYMOUSLY from
+  // /api/images/[id] with `public, max-age=31536000, immutable`, so anything
+  // stored unstripped is exposed effectively forever — a straight-from-phone
+  // photo dropped into a website page would publish its location.
+  //
+  // FAIL-OPEN via the shared helper (see `storableImageBytes`), deliberately,
+  // and this asymmetry with the member-photo route (which fails CLOSED and
+  // rejects the upload) is intentional: `stripJpegMetadata` is known to reject
+  // some spec-legal JPEG fill-byte sequences (T.81 §B.1.1.2), and the image
+  // library is the admin's general content-authoring tool. Blocking a legitimate
+  // upload there is a worse outcome than storing an image whose metadata we
+  // could not positively confirm was scrubbed, whereas a member photo is
+  // personal data on a narrow, purpose-built path where the reverse is true. An
+  // unconfirmed strip — including gif/avif/svg, which have no stripper at all —
+  // is logged so it is visible in operations.
+  const storedBytes = storableImageBytes(bytes, contentType, {
+    source: "image-library upload",
+    filename,
+  });
+
   const image = await prisma.mediaImage.create({
     data: {
       filename,
       contentType,
-      byteSize: bytes.length,
-      data: bytes,
+      byteSize: storedBytes.length,
+      data: new Uint8Array(storedBytes),
       altText,
       width: dimensions?.width ?? null,
       height: dimensions?.height ?? null,

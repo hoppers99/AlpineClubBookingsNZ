@@ -289,7 +289,19 @@ export function MemberGuestFindPanel({
       : state.kind === "LOADING" && state.previous
         ? state.previous.candidates
         : ([] as MemberGuestCandidate[]);
-  const truncated = state.kind === "RESULTS" && state.response.truncated === true;
+  // Carried across the in-flight window in exactly the way `candidates` is, and
+  // for the same reason (#2460 review). `runNameSearch` flips the panel to
+  // LOADING before the request resolves, so a flag read only from RESULTS would
+  // collapse to false while the truncated list it describes is still the list on
+  // screen: the hint blinked out from under a list that had not changed, and
+  // came back a moment later. Read from the same place the rows are read from
+  // and the sentence stays with the rows it is about.
+  const truncated =
+    state.kind === "RESULTS"
+      ? state.response.truncated === true
+      : state.kind === "LOADING" && state.previous
+        ? state.previous.truncated === true
+        : false;
   const alreadyAdded = new Set(existingMemberIds);
   const isLoading = state.kind === "LOADING";
   const listMode =
@@ -405,9 +417,61 @@ export function MemberGuestFindPanel({
         : null
     : null;
 
+  /**
+   * Whether the pick-list is on screen, and whether it carries the hint.
+   *
+   * `showCandidateList` is declared once and used BOTH as the gate on the
+   * pick-list block below and as the first half of the truncation gate (#2460
+   * review). The two used to state the same conditions separately, which left
+   * the announcement free to drift away from the list it describes: change what
+   * puts rows on screen and the status line would have gone on saying "Keep
+   * typing to narrow this down." about a list that was no longer being drawn.
+   *
+   * `showTruncationHint` then drives the sentence the booker reads under the
+   * list AND the sentence a screen reader hears on the end of the count, so the
+   * two can never come to disagree about whether the list was cut short — which
+   * is the whole failure the announcement exists to fix.
+   */
+  const showCandidateList = !selected && candidates.length > 1;
+  const showTruncationHint = showCandidateList && truncated;
+
   // Everything the panel says out loud. A result count that changes silently is
   // unusable under a screen reader, and so is a zero-result answer — which used
   // to announce the empty string (F4).
+  //
+  // THE TRUNCATION HINT IS ANNOUNCED FROM HERE (#2460), on the end of the count
+  // it qualifies, rather than from a live region of its own. It used to be a
+  // bare paragraph under the list: a booker who had just typed heard "10 members
+  // found" and then nothing, so the one fact that explains why the list stopped
+  // — and the one action that fixes it — never reached them.
+  //
+  // A SECOND region was the obvious way to add it and is the wrong one. This
+  // paragraph is already the panel's permanently-mounted `aria-live="polite"`
+  // region, which is exactly the shape the house rule asks for (`AGENTS.md`, and
+  // the #2244 export-truncation notice in `promo-redemptions-panel.tsx`: the
+  // wrapper is mounted before there is anything to say, because a polite region
+  // injected already-populated is silently dropped by some
+  // screen-reader/browser pairings). Adding another one beside it would make
+  // the panel say the sentence twice — and, worse, race: two polite regions
+  // mutating in the same commit are queued in no guaranteed order, and
+  // VoiceOver is known to drop one of them, which would have left the fix
+  // announcing the count and swallowing the caveat. The repo treats the double
+  // utterance as a defect in its own right, too
+  // (`hut-leaders/_components/assignment-form.tsx` grew a prop purely to stop
+  // two regions saying the same thing). One region, one utterance, in the order
+  // the booker met the facts.
+  //
+  // The sentence is still reachable TWICE in browse mode — here, ahead of the
+  // list, and again as the visible paragraph under it — and that is deliberate
+  // (#2460 review). `aria-hidden` on the visible hint would collapse it to one
+  // node; it was considered and rejected, because the visible hint is the copy
+  // anchored to the place the list stops, and hiding on-screen text from
+  // assistive technology to tidy a duplicate trades a real loss for a cosmetic
+  // gain. Two static nodes an entire pick-list apart is not the defect; two
+  // live regions would be.
+  //
+  // The sentence still never grows a count of who was LEFT OUT: the number here
+  // is the number of members being shown, which this line already announced.
   const announcement = isLoading
     ? MEMBER_GUEST_FIND_COPY.searching
     : selected
@@ -418,7 +482,9 @@ export function MemberGuestFindPanel({
         ? messageText
         : candidates.length === 0
           ? ""
-          : `${candidates.length} member${candidates.length === 1 ? "" : "s"} found`;
+          : `${candidates.length} member${candidates.length === 1 ? "" : "s"} found${
+              showTruncationHint ? `. ${MEMBER_GUEST_FIND_COPY.truncated}` : ""
+            }`;
 
   return (
     <div
@@ -498,8 +564,16 @@ export function MemberGuestFindPanel({
       )}
 
       {/* Result-count changes are announced, not only drawn: a type-ahead whose
-          list silently changes under a screen reader is unusable. */}
-      <p id={statusId} aria-live="polite" className="sr-only">
+          list silently changes under a screen reader is unusable. Mounted
+          unconditionally and empty until there is something to say — see the
+          `announcement` docblock for why this is the panel's ONLY live region,
+          truncation hint included (#2460). */}
+      <p
+        id={statusId}
+        aria-live="polite"
+        className="sr-only"
+        data-testid="member-guest-find-status"
+      >
         {announcement}
       </p>
 
@@ -535,7 +609,7 @@ export function MemberGuestFindPanel({
         </div>
       )}
 
-      {!selected && candidates.length > 1 && (
+      {showCandidateList && (
         <div>
           {listMode === "EMAIL" && (
             <p className="mb-2 text-xs text-muted-foreground">
@@ -586,7 +660,7 @@ export function MemberGuestFindPanel({
               );
             })}
           </ul>
-          {truncated && (
+          {showTruncationHint && (
             <p className="mt-1.5 text-xs text-muted-foreground">
               {MEMBER_GUEST_FIND_COPY.truncated}
             </p>

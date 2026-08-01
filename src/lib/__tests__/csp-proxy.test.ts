@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
+import { adapter } from "next/dist/server/web/adapter";
 import {
   unstable_doesMiddlewareMatch as unstable_doesProxyMatch,
 } from "next/experimental/testing/server";
@@ -267,7 +268,7 @@ describe("CSP policy", () => {
 });
 
 describe("CSP proxy", () => {
-  it("matches root page requests but skips API/static/prefetch requests", () => {
+  it("matches root page requests, and skips only the API and static shapes", () => {
     expect(
       unstable_doesProxyMatch({
         config,
@@ -296,14 +297,91 @@ describe("CSP proxy", () => {
         url: "/_next/static/chunks/app.js",
       })
     ).toBe(false);
+    // A real flight prefetch is matched like everything else since #2404
+    // removed the exemption; the matrix below covers the whole header space.
     expect(
       unstable_doesProxyMatch({
         config,
-        headers: { purpose: "prefetch" },
+        headers: { purpose: "prefetch", rsc: "1" },
         nextConfig: {},
         url: "/",
       })
-    ).toBe(false);
+    ).toBe(true);
+  });
+
+  /**
+   * The prefetch headers, exhaustively (#2404).
+   *
+   * **Every row is `true`, and that is the whole point.** The matcher used to
+   * carry a `missing:` clause exempting `next-router-prefetch`/`purpose:
+   * prefetch`, and those are headers ANYONE can set: a plain `GET /anything`
+   * carrying `Purpose: prefetch` skipped the proxy on EVERY URL and was answered
+   * with no nonce, no `Content-Security-Policy` and no #2420 setup gate.
+   *
+   * Narrowing the exemption to "a prefetch header AND `RSC`" was tried and
+   * rejected (owner decision, 1 Aug 2026), because the matcher cannot express
+   * Next's own definition of a flight request. `missing:` with no `value` counts
+   * ANY non-empty header as present (`prepare-destination.js`'s `matchHas`),
+   * while Next flags a flight request on `RSC: 1` exactly
+   * (`next/dist/server/lib/is-rsc-request.js`) — so `RSC: 2`, `RSC: 0` and the
+   * `1, 1` that Node produces from two `RSC` headers all skipped the proxy while
+   * Next still rendered the full HTML document. Those rows are listed below by
+   * name: they are the vectors the narrowed form left open, and they are why the
+   * exemption was deleted rather than tightened.
+   *
+   * A genuine flight prefetch now mints a nonce like any other request. That is
+   * a deliberate cost, taken because #2352 (static/ISR public pages) cannot
+   * tolerate the alternative: a prefetch that skipped the proxy would store a
+   * nonce-less copy of the page in the page cache for every later visitor.
+   */
+  const prefetchMatrix: ReadonlyArray<
+    readonly [string, Record<string, string>]
+  > = [
+    ["an ordinary request", {}],
+    ["a bare Purpose: prefetch probe", { purpose: "prefetch" }],
+    ["a bare Next-Router-Prefetch probe", { "next-router-prefetch": "1" }],
+    ["an RSC navigation", { rsc: "1" }],
+    // The requests that used to be exempt.
+    ["a true flight prefetch", { "next-router-prefetch": "1", rsc: "1" }],
+    ["a true flight prefetch (Purpose form)", { purpose: "prefetch", rsc: "1" }],
+    // The vectors the narrowed exemption left open: Next does NOT treat any of
+    // these as a flight request, so each returned a full HTML document.
+    ["prefetch + RSC: 2", { purpose: "prefetch", rsc: "2" }],
+    ["prefetch + two RSC headers joined", { purpose: "prefetch", rsc: "1, 1" }],
+    ["prefetch + a non-numeric RSC", { "next-router-prefetch": "1", rsc: "x" }],
+    ["prefetch + RSC: 0", { "next-router-prefetch": "0", rsc: "0" }],
+    // A value other than "prefetch" was never the exemption and still is not.
+    ["Purpose: preload", { purpose: "preload" }],
+  ];
+
+  it.each(prefetchMatrix)(
+    "%s runs the proxy: %o",
+    (_label, headers) => {
+      expect(
+        unstable_doesProxyMatch({ config, headers, nextConfig: {}, url: "/" }),
+        "no combination of request headers may take a URL outside the proxy",
+      ).toBe(true);
+    },
+  );
+
+  it("states the root rule once, with no header exemption to bypass", () => {
+    // Structural, because the matrix above can only probe the header space
+    // someone thought to list. A `missing:`/`has:` clause on the root entry is
+    // by construction a way to skip the proxy by setting a request header, and
+    // there is no header a caller can send that our nonce, our CSP and the
+    // #2420 setup gate should be conditional on.
+    const entries: readonly unknown[] = config.matcher;
+
+    expect(
+      entries.filter((entry) => typeof entry !== "string"),
+      "every entry must be a bare source string — only an object entry can carry `missing:`/`has:`",
+    ).toEqual([]);
+    expect(
+      entries.filter(
+        (entry) => typeof entry === "string" && !entry.startsWith("/api"),
+      ),
+      "the root rule is stated once; a second copy is where the two used to drift",
+    ).toHaveLength(1);
   });
 
   it("emits a single enforced CSP header with a per-request nonce and no report-only header", async () => {
@@ -580,6 +658,14 @@ describe("CSP proxy", () => {
 });
 
 describe("anonymous public-page cache headers (#2322)", () => {
+  /**
+   * The one directive the whole section is about. `private`, and no `s-maxage`:
+   * middleware cannot tell a flight request from a document request (see the
+   * adapter suite below), so no shared cache may be invited to store a response
+   * whose body Next may yet render as flight bytes under the HTML's URL.
+   */
+  const ANONYMOUS_CACHE_CONTROL = "private, max-age=60, stale-while-revalidate=300";
+
   function requestWithCookie(url: string, cookie?: string, method = "GET") {
     return new NextRequest(url, {
       method,
@@ -587,14 +673,12 @@ describe("anonymous public-page cache headers (#2322)", () => {
     });
   }
 
-  it("marks an anonymous GET of an allow-listed page cacheable by shared caches", async () => {
+  it("marks an anonymous GET of an allow-listed page cacheable by the BROWSER only", async () => {
     const response = await proxy(new NextRequest("https://example.org/"));
 
-    expect(response.headers.get("Cache-Control")).toBe(
-      "public, max-age=60, s-maxage=60, stale-while-revalidate=300",
-    );
-    // Without Vary: Cookie a shared cache would hand the stored anonymous
-    // render to a member who has a session.
+    expect(response.headers.get("Cache-Control")).toBe(ANONYMOUS_CACHE_CONTROL);
+    // Without Vary: Cookie the stored anonymous render — which paints the
+    // header logged-out — could be replayed to the same browser after sign-in.
     expect(response.headers.get("Vary")).toContain("Cookie");
   });
 
@@ -626,29 +710,28 @@ describe("anonymous public-page cache headers (#2322)", () => {
       getAnonymousPageCacheControl(
         requestWithCookie("https://example.org/", "theme=dark; locale=en-NZ"),
       ),
-    ).toBe("public, max-age=60, s-maxage=60, stale-while-revalidate=300");
+    ).toBe(ANONYMOUS_CACHE_CONTROL);
   });
 
-  it.each([
-    ["RSC", "RSC"],
-    ["Next-Router-State-Tree", "Next-Router-State-Tree"],
-    ["Next-Router-Prefetch", "Next-Router-Prefetch"],
-    ["Next-Router-Segment-Prefetch", "Next-Router-Segment-Prefetch"],
-  ])("never caches a flight request carrying %s (#2322)", (_label, header) => {
-    // A flight response is a different body under the SAME URL. On stable Next
-    // builds the RSC-header validation is off, so a crafted `RSC: 1` GET would
-    // otherwise be handed a cacheable flight body under the HTML's cache key.
-    const request = new NextRequest("https://example.org/", {
-      headers: { [header]: "1" },
-    });
+  it("never invites a SHARED cache to store the response", () => {
+    // The property, stated over the directive rather than over a request shape,
+    // because that is where it now lives. A flight response is different bytes
+    // under the SAME URL, and the proxy cannot tell one is coming — so the only
+    // safe answer is that no cache but the requesting browser may keep it.
+    const directive = getAnonymousPageCacheControl(
+      new NextRequest("https://example.org/"),
+    );
 
-    expect(getAnonymousPageCacheControl(request)).toBeNull();
+    expect(directive).toBe(ANONYMOUS_CACHE_CONTROL);
+    expect(directive).toContain("private");
+    expect(directive).not.toContain("public");
+    expect(directive).not.toContain("s-maxage");
   });
 
-  it("still caches a plain document request with no flight headers", () => {
+  it("still caches a plain document request", () => {
     expect(
       getAnonymousPageCacheControl(new NextRequest("https://example.org/")),
-    ).toBe("public, max-age=60, s-maxage=60, stale-while-revalidate=300");
+    ).toBe(ANONYMOUS_CACHE_CONTROL);
   });
 
   it("never caches a non-GET request", () => {
@@ -661,7 +744,7 @@ describe("anonymous public-page cache headers (#2322)", () => {
 
   it("caches the home page, the one allow-listed route", () => {
     expect(getAnonymousPageCacheControl(new NextRequest("https://example.org/"))).toBe(
-      "public, max-age=60, s-maxage=60, stale-while-revalidate=300",
+      ANONYMOUS_CACHE_CONTROL,
     );
   });
 
@@ -714,6 +797,112 @@ describe("anonymous public-page cache headers (#2322)", () => {
       ).toBeNull();
     }
   });
+
+  /**
+   * The same property, measured through the REAL middleware adapter rather than
+   * by handing `proxy()` a `NextRequest` this file built.
+   *
+   * The distinction is the whole point. Every case above constructs
+   * `new NextRequest(url, { headers })` directly, so whatever headers the test
+   * sets are the headers the proxy sees. In production nothing reaches the proxy
+   * that way: Next wraps it in `adapter()`
+   * (`next/dist/server/web/adapter.js`, entered from
+   * `build/templates/middleware.js` on the node runtime and from the edge
+   * sandbox), and that function DELETES every `FLIGHT_HEADERS` entry —
+   * `rsc`, `next-router-state-tree`, `next-router-prefetch`,
+   * `next-router-segment-prefetch`, `next-hmr-refresh` — before userland runs,
+   * re-attaching them for the render afterwards. A guard written over those
+   * header names therefore passes every direct-construction test and never once
+   * fires in production, which is how the `public, s-maxage` directive came to
+   * be shipped on a flight body.
+   *
+   * These cases go through `adapter()` and assert what the response ACTUALLY
+   * leaves with. They fail on the directive this section exists to keep out.
+   */
+  describe("through Next's real middleware adapter", () => {
+    async function throughAdapter(
+      headers: Record<string, string>,
+      url = "https://example.org/",
+    ) {
+      let seenByProxy: Headers | null = null;
+
+      const result = await adapter({
+        page: "/",
+        handler: async (request: NextRequest) => {
+          seenByProxy = new Headers(request.headers);
+          return proxy(request);
+        },
+        request: {
+          url,
+          method: "GET",
+          headers,
+          nextConfig: {},
+          body: undefined,
+        },
+      } as unknown as Parameters<typeof adapter>[0]);
+
+      return {
+        seenByProxy: seenByProxy as unknown as Headers,
+        cacheControl: result.response.headers.get("Cache-Control"),
+      };
+    }
+
+    const FLIGHT_REQUEST_HEADERS = [
+      "RSC",
+      "Next-Router-State-Tree",
+      "Next-Router-Prefetch",
+      "Next-Router-Segment-Prefetch",
+    ];
+
+    it("hides every flight header from the proxy, so no proxy-side check can see one", async () => {
+      const { seenByProxy } = await throughAdapter(
+        {
+          rsc: "1",
+          "next-router-prefetch": "1",
+          "next-router-state-tree": "%5B%22%22%5D",
+          purpose: "prefetch",
+        },
+        "https://example.org/?_rsc=abc12",
+      );
+
+      for (const header of FLIGHT_REQUEST_HEADERS) {
+        expect(
+          seenByProxy.get(header),
+          `${header} must be assumed INVISIBLE to the proxy — the adapter strips it`,
+        ).toBeNull();
+      }
+      // `?_rsc=` is stripped as well, so the query is no signal either.
+      expect(seenByProxy.get("Purpose")).toBe("prefetch");
+    });
+
+    it.each([
+      [
+        "a genuine flight prefetch",
+        {
+          rsc: "1",
+          "next-router-prefetch": "1",
+          "next-router-state-tree": "%5B%22%22%5D",
+          purpose: "prefetch",
+        },
+      ],
+      // The case that rules out every remaining signal: a plain RSC navigation
+      // carries no `Purpose`, no `Sec-Purpose` and no `Next-Url`, so after the
+      // strip it is byte-identical to a document request at the proxy.
+      ["a plain RSC navigation", { rsc: "1", "next-router-state-tree": "%5B%22%22%5D" }],
+      ["a crafted bare RSC:1 GET", { rsc: "1" }],
+      ["a browser speculation-rules prefetch", { "sec-purpose": "prefetch" }],
+      ["a plain document GET", {}],
+    ])(
+      "%s leaves with no shared-cache directive on it",
+      async (_label, headers) => {
+        const { cacheControl } = await throughAdapter(headers);
+
+        expect(cacheControl).toBe(ANONYMOUS_CACHE_CONTROL);
+        expect(cacheControl).not.toContain("public");
+        expect(cacheControl).not.toContain("s-maxage");
+      },
+    );
+  });
 });
 
 /**
@@ -730,11 +919,15 @@ describe("anonymous public-page cache headers (#2322)", () => {
  * 200: `/apiary`, `/api-docs` (the `api` alternative was a bare PREFIX, not a
  * path segment), `/favicon.icons`, `/logo.pngs` (same, and `favicon.ico`'s dot
  * was unescaped so `/faviconXico` skipped too), and `/gallery.svg` (an
- * image-extension suffix, which the matcher skips on purpose).
+ * image-extension suffix, which the matcher skipped on purpose).
  *
- * The two were reconciled in opposite directions on purpose — see
- * `isPublicWebsitePath`'s own comment for why the extension case is the
- * classifier's problem and the prefix cases are the matcher's.
+ * #2420 reconciled the two in opposite directions: the prefix bugs were the
+ * matcher's to fix, the extension case was left to the classifier. #2404's
+ * Option A then removed the extension exclusion from the matcher as well, so the
+ * subset invariant below is now satisfied with room to spare — the matcher runs
+ * on strictly more than the gate claims. `isPublicWebsitePath()`'s refusal of
+ * asset shapes survives on its own reasoning, not as a mirror of this string;
+ * see its comment, and the pair of assertions further down.
  */
 describe("the proxy matcher covers every path the setup gate would gate", () => {
   const matches = (url: string) =>
@@ -784,26 +977,91 @@ describe("the proxy matcher covers every path the setup gate would gate", () => 
     },
   );
 
-  it("still skips the /api, static and asset shapes #2405 depends on", () => {
-    // The reconciliation must not have widened the matcher onto the paths whose
-    // exclusion is load-bearing elsewhere: /api keeps its own JSON 404 route and
-    // its module-gate verb parity, and static assets must not pay a nonce mint.
+  it("still skips the /api and static shapes #2405 and the hot path depend on", () => {
+    // The three alternatives that remain, and the only three. `/api` keeps its
+    // own JSON 404 route and its module-gate verb parity; `_next/static` is the
+    // hot path (dozens of chunk requests per page load) and `_next/image` is a
+    // real handler that answers its own plain-text 400. A miss inside either
+    // `_next` namespace is covered one layer down, by the `afterFiles` rewrites.
     for (const url of [
       "/api",
       "/api/",
       "/api/definitely-missing",
-      "/favicon.ico",
-      "/logo.png",
-      "/branding/logo.png",
-      "/gallery.svg",
+      "/api/does-not-exist.png",
       "/_next/static/chunks/main.js",
+      "/_next/image",
     ]) {
       expect(matches(url), `${url} must stay outside the matcher`).toBe(false);
     }
   });
 
+  /**
+   * The asset shapes MOVED, and that is #2404's Option A (owner decision,
+   * 1 Aug 2026). They used to be asserted as skipped, alongside `/api` and
+   * `_next/static`, on the reasoning that a real image must not pay a nonce
+   * mint. The reasoning did not survive measurement: the shorter lookahead is
+   * marginally cheaper per request, the genuinely hot `_next/static` shape is
+   * still excluded by its own alternative, and the exclusion was the reason an
+   * asset-shaped URL could be answered with no policy of ours on it at all.
+   *
+   * `/favicon.ico` and `/logo.png` are here for a second reason: they were NAMED
+   * carve-outs for files that do not exist (`public/` holds `branding/` and
+   * `robots.txt`; the root layout points at `/branding/favicon.ico`), so they
+   * excluded nothing and left two URL shapes exposed. If either file is ever
+   * added, the filesystem serves it ahead of any rewrite.
+   */
+  it("now runs on the asset shapes it used to skip (#2404 Option A)", () => {
+    for (const url of [
+      "/favicon.ico",
+      "/logo.png",
+      "/branding/logo.png",
+      "/branding/favicon.ico",
+      "/gallery.svg",
+      "/foo.png",
+      "/foo.jpg",
+      "/foo.jpeg",
+      "/foo.gif",
+      "/foo.webp",
+      "/foo.ico",
+      "/wp-content/uploads/x.jpg",
+    ]) {
+      expect(
+        matches(url),
+        `${url} must run the proxy, so its response carries a CSP header`,
+      ).toBe(true);
+    }
+  });
+
+  /**
+   * The half of Option A that has to NOT change, and the reason
+   * `isPublicWebsitePath()` is now an independent rule rather than a mirror of
+   * the matcher string.
+   *
+   * The gate lives inside `proxy()`. Before Option A an asset shape never got
+   * there; now every one of them does, and if the classifier called them website
+   * paths a club mid-setup would answer a request for an image with the "Site
+   * setup in progress" screen — a 503 HTML DOCUMENT, from the exact URL class
+   * #2404 exists to answer without one. `setup-gate.ts` refuses them on its own
+   * terms, and this is where the two facts are asserted together.
+   */
+  it("brings asset shapes inside the gate's reach without letting the gate claim them", () => {
+    for (const url of [
+      "/favicon.ico",
+      "/logo.png",
+      "/branding/logo.png",
+      "/gallery.svg",
+      "/wp-content/uploads/x.jpg",
+    ]) {
+      expect(matches(url), `${url} must run the proxy`).toBe(true);
+      expect(
+        isPublicWebsitePath(url),
+        `${url} must not be gated: a 503 holding screen is a document`,
+      ).toBe(false);
+    }
+  });
+
   it("does run on the explicitly listed /api matcher entries", () => {
-    // The negative lookahead only governs the first matcher entry; the module
+    // The negative lookahead only governs the root matcher entry; the module
     // gate's own /api list must keep matching.
     expect(matches("/api/admin/waitlist")).toBe(true);
   });

@@ -49,6 +49,7 @@ import {
   type WhakapapaSourceConfig,
 } from "@/lib/whakapapa-report";
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
+import { formatNZDateTime } from "@/lib/nzst-date";
 import {
   AdminForbiddenSaveNotice,
   AdminViewOnlySectionBanner,
@@ -102,10 +103,7 @@ function formatDateTime(value: string | null | undefined) {
     return "Not set";
   }
 
-  return new Date(value).toLocaleString("en-NZ", {
-    dateStyle: "medium",
-    timeStyle: "short",
-  });
+  return formatNZDateTime(new Date(value));
 }
 
 function prettyJson(value: WhakapapaCurlData) {

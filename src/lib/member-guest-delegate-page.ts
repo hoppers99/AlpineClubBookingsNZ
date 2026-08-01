@@ -13,6 +13,15 @@ import {
 } from "@/lib/member-guest-consent-card";
 import { prisma } from "@/lib/prisma";
 
+// NOT display formatting: `en-CA` is the shortest way to get a `YYYY-MM-DD`
+// rendering of an instant in a named timezone, and the result is immediately
+// split on "-" to do calendar arithmetic. The locale is deliberately NOT
+// APP_LOCALE — swapping it for a club locale would change the field order and
+// break the parse — so this can never move to an `nzst-date` helper.
+const CLUB_ISO_DATE = new Intl.DateTimeFormat("en-CA", {
+  timeZone: APP_TIME_ZONE,
+});
+
 /**
  * The delegate consent page's whole decision, extracted from the route so it is
  * unit testable ("+ Add Member Guest", epic #2305, MG2 #2307, owner decisions
@@ -79,8 +88,7 @@ export type DelegateConsentPageState =
 /** Whole years between a date of birth and now, in club time. Null if unknown. */
 function ageInYears(dateOfBirth: Date | null, now: Date): number | null {
   if (!dateOfBirth) return null;
-  const format = (date: Date) =>
-    date.toLocaleDateString("en-CA", { timeZone: APP_TIME_ZONE });
+  const format = (date: Date) => CLUB_ISO_DATE.format(date);
   const [nowYear, nowMonth, nowDay] = format(now).split("-").map(Number);
   const [dobYear, dobMonth, dobDay] = format(dateOfBirth).split("-").map(Number);
   let age = nowYear - dobYear;

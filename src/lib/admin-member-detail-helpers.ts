@@ -2,7 +2,7 @@ import {
   shouldDefaultPostalSameAsPhysical,
   type MemberAddressValues,
 } from "@/lib/member-address"
-import { APP_LOCALE, APP_TIME_ZONE } from "@/config/operational"
+import { formatNZDate } from "@/lib/nzst-date"
 
 export interface AdminActor {
   id: string
@@ -224,13 +224,19 @@ export function memberUsesSamePostalAddress(member: NullableMemberAddress) {
   return shouldDefaultPostalSameAsPhysical(member)
 }
 
+/**
+ * A member-facing date, in club time.
+ *
+ * #2264: the `toLocaleDateString` call this replaced quietly rendered the
+ * string "Invalid Date" for a value it could not parse; `Intl.format` THROWS a
+ * RangeError instead. This helper is fed straight from API payloads and from
+ * fallbacks like `joinedDate || createdAt`, so an absent or malformed value has
+ * to degrade to something readable rather than take a whole member page down
+ * with it.
+ */
 export function formatMemberDateNz(value: string) {
-  return new Date(value).toLocaleDateString(APP_LOCALE, {
-    timeZone: APP_TIME_ZONE,
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-  })
+  const parsed = new Date(value)
+  return Number.isNaN(parsed.getTime()) ? "—" : formatNZDate(parsed)
 }
 
 export function formatMemberPhone(parts: {

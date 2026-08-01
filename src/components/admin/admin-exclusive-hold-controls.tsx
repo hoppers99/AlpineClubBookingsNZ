@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { useConfirm } from "@/components/confirm-dialog";
 import { ViewOnlyActionButton } from "@/components/admin/view-only-action";
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
+import { formatNZDate } from "@/lib/nzst-date";
 
 /** Admin-only summary of a booking that overlaps this hold (issue #119). */
 export interface ExclusiveHoldConflict {
@@ -214,7 +215,7 @@ export function AdminExclusiveHoldControls({
             The whole lodge is reserved for this group
             {heldByName ? ` by ${heldByName}` : ""}
             {wholeLodgeHoldAt
-              ? ` since ${new Date(wholeLodgeHoldAt).toLocaleDateString("en-NZ")}`
+              ? ` since ${formatNZDate(new Date(wholeLodgeHoldAt))}`
               : ""}
             . New admissions are blocked on these nights.
           </p>

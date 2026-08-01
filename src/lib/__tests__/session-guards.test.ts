@@ -1,9 +1,20 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NextResponse } from "next/server";
 
-const { mockFindUnique, mockAuth } = vi.hoisted(() => ({
+const { mockFindUnique, mockAuth, requestPath } = vi.hoisted(() => ({
   mockFindUnique: vi.fn(),
   mockAuth: vi.fn(),
+  /** What `src/proxy.ts` stamped on the request, or null for "no header". */
+  requestPath: { value: null as string | null },
+}));
+
+// The proxy writes the served path onto every request it runs on, and both
+// guards read it back through `headers()`. Mocked so the module-gated branch can
+// be driven; with `value: null` the header is absent, which is how the guards
+// behave for a route the proxy does not run on.
+vi.mock("next/headers", () => ({
+  headers: async () =>
+    new Headers(requestPath.value ? { "x-pathname": requestPath.value } : {}),
 }));
 
 vi.mock("@/lib/prisma", () => ({
@@ -278,6 +289,134 @@ describe("requireActiveSession", () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.session.user.id).toBe("member-1");
+    }
+  });
+});
+
+/**
+ * The auth-failure oracle, closed on module-gated paths (#2404 re-review, owner
+ * decision D1a, 1 Aug 2026).
+ *
+ * `src/proxy.ts` answers a gated path with a frozen `404 {"error":"Not found"}`
+ * when the module is off. If the same path answered an anonymous caller `401`
+ * when the module was ON, one unauthenticated request read the club's module
+ * list: `401` means on, `404` means off. Both guards therefore send the gate's
+ * own 404 for a MISSING SESSION on a gated path — and nothing else changes, so a
+ * signed-in admin still gets the honest 403 that tells them what to fix.
+ *
+ * Driven through `getRequiredFeaturesForPath()` by way of the real request
+ * header rather than through a list of paths copied into this file, so a module
+ * added to `FEATURE_ROUTE_RULES` later is covered the day its prefix lands.
+ */
+describe("the anonymous reply on a module-gated path (#2404)", () => {
+  beforeEach(() => {
+    mockFindUnique.mockReset();
+    mockAuth.mockReset();
+    mockAuth.mockResolvedValue(null);
+    requestPath.value = null;
+  });
+
+  const gatedPaths = [
+    "/api/admin/lockers/abc",
+    "/api/admin/xero/chart-of-accounts",
+    "/api/chores/token-1",
+    "/api/calendar/events",
+    // The query string the proxy appends is part of the header value, so the
+    // pathname has to be split back off before the rules are consulted.
+    "/api/admin/bed-allocation/rooms?lodgeId=lodge-1",
+  ];
+
+  const ungatedPaths = [
+    "/api/admin/members",
+    "/api/admin/page-content",
+    "/api/bookings",
+  ];
+
+  it.each(gatedPaths)(
+    "answers %s with the module gate's own 404, not a 401",
+    async (path) => {
+      requestPath.value = path;
+
+      for (const guard of [requireAdmin, requireActiveSession]) {
+        const result = await guard();
+
+        expect(result.ok).toBe(false);
+        if (!result.ok) {
+          expect(result.response.status).toBe(404);
+          await expect(result.response.json()).resolves.toEqual({
+            error: "Not found",
+          });
+        }
+      }
+    },
+  );
+
+  it.each(ungatedPaths)("leaves %s answering 401 exactly as before", async (path) => {
+    requestPath.value = path;
+
+    const admin = await requireAdmin();
+    const member = await requireActiveSession();
+
+    expect(admin.ok).toBe(false);
+    expect(member.ok).toBe(false);
+    if (!admin.ok) {
+      expect(admin.response.status).toBe(401);
+      await expect(admin.response.json()).resolves.toEqual({
+        error: "Unauthorized",
+      });
+    }
+    if (!member.ok) {
+      expect(member.response.status).toBe(401);
+      await expect(member.response.json()).resolves.toEqual({
+        error: "Unauthorised",
+      });
+    }
+  });
+
+  it("fails open to 401 when the proxy stamped no path at all", async () => {
+    // A wrong 404 on an ungated route would hide a real sign-in problem from a
+    // real member, so an unreadable header must not be treated as "gated".
+    requestPath.value = null;
+
+    const result = await requireActiveSession();
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.response.status).toBe(401);
+  });
+
+  it("still lets a route choose its own unauthenticated reply", async () => {
+    // A login redirect or a deliberate 403 is a contract someone chose; the
+    // gate must not silently overwrite it.
+    requestPath.value = "/api/admin/xero/callback";
+
+    const result = await requireAdmin({
+      unauthenticatedResponse: () =>
+        NextResponse.json({ error: "Forbidden" }, { status: 403 }),
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.response.status).toBe(403);
+  });
+
+  it("does not touch a SIGNED-IN caller's 403 on a gated path", async () => {
+    // The narrowness is the point: only the anonymous case is hidden. An admin
+    // who is signed in but lacks the permission must still be told so.
+    requestPath.value = "/api/admin/lockers/abc";
+    mockAuth.mockResolvedValue({ user: { id: "member-1", role: "MEMBER" } });
+    mockFindUnique.mockResolvedValue({
+      active: true,
+      forcePasswordChange: false,
+      accessRoles: [],
+    });
+
+    const result = await requireAdmin();
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.response.status).toBe(403);
+      await expect(result.response.json()).resolves.toEqual({
+        error: "Forbidden",
+      });
     }
   });
 });

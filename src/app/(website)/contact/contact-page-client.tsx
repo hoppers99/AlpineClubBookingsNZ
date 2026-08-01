@@ -5,6 +5,7 @@ import { useSearchParams } from "next/navigation";
 import { Mail, MapPin, Phone } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { ClubIdentity } from "@/config/club-identity-types";
+import { FieldHint, useFieldHint } from "@/components/ui/field-hint";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -55,6 +56,10 @@ export function ContactPageClient({
   const [errorMessage, setErrorMessage] = useState("");
   const [members, setMembers] = useState<CommitteeMember[]>([]);
   const [loadingMembers, setLoadingMembers] = useState(true);
+  // #2264 — the example address moves under the field: greyed inside the box it
+  // reads as an address the visitor has already given us, and it vanishes the
+  // moment they start typing, which is when the example is still wanted.
+  const emailHint = useFieldHint();
 
   useEffect(() => {
     fetch("/api/committee")
@@ -227,9 +232,12 @@ export function ContactPageClient({
                       onChange={(e) =>
                         setForm({ ...form, email: e.target.value })
                       }
-                      placeholder="you@example.com"
                       className="mt-1 border-brand-ridge/20 bg-card"
+                      {...emailHint.fieldProps}
                     />
+                    <FieldHint {...emailHint.hintProps} className="mt-1">
+                      Example: you@example.com
+                    </FieldHint>
                   </div>
                   <div>
                     <Label htmlFor="message">Message</Label>

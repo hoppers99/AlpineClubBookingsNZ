@@ -11,6 +11,7 @@ import {
   DialogDescription,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { FieldHint, useFieldHint } from "@/components/ui/field-hint";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -107,6 +108,19 @@ export function EventDialog({
   const [location, setLocation] = useState("");
   const [details, setDetails] = useState("");
   const [isMeeting, setIsMeeting] = useState(false);
+  /*
+    #2264: the title and location examples used to be placeholders — grey text
+    inside the box that reads as an event already named, and that disappears the
+    moment you type. They are helper text under each field now.
+
+    The title example is deliberately NOT "Committee meeting": converting turns
+    the example into real, queryable page text, and the calendar dialog's own
+    tests render a FIXTURE event titled "Committee meeting" and select it by
+    text. A hint carrying the same words would make that query ambiguous, so the
+    example names a different, equally ordinary club event.
+  */
+  const titleHint = useFieldHint();
+  const locationHint = useFieldHint();
 
   // Recurrence
   const [repeat, setRepeat] = useState<RepeatValue>("NONE");
@@ -564,9 +578,12 @@ export function EventDialog({
                 id="event-title"
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
-                placeholder="Committee meeting"
                 maxLength={200}
+                {...titleHint.fieldProps}
               />
+              <FieldHint {...titleHint.hintProps}>
+                Example: Winter working bee
+              </FieldHint>
             </div>
 
             <div className="flex items-center gap-2">
@@ -718,9 +735,12 @@ export function EventDialog({
                 id="event-location"
                 value={location}
                 onChange={(e) => setLocation(e.target.value)}
-                placeholder="Clubrooms / online"
                 maxLength={200}
+                {...locationHint.fieldProps}
               />
+              <FieldHint {...locationHint.hintProps}>
+                Example: Clubrooms / online
+              </FieldHint>
             </div>
 
             <div className="space-y-1.5">

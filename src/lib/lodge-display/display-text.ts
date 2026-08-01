@@ -1,4 +1,18 @@
+import { APP_LOCALE, APP_TIME_ZONE } from "@/config/operational";
 import type { DisplayState } from "../lodge-display-state";
+
+// The `{{display-date}}` line: a long weekday + day + month, no year — the wall
+// shows "today" to people standing in the lodge, so the year is noise. None of
+// the shared `nzst-date` helpers render that shape, so it keeps its own
+// formatter, pinned to the club zone (#2264) because a display browser (or a
+// signage box) sitting outside New Zealand was otherwise rendering the wall's
+// date in its own timezone.
+const DISPLAY_DATE_FORMAT = new Intl.DateTimeFormat(APP_LOCALE, {
+  timeZone: APP_TIME_ZONE,
+  weekday: "long",
+  day: "numeric",
+  month: "long",
+});
 
 // Token resolution for display-authored copy (fork issue #31; value-token
 // resolution inside authored HTML added in LTV-028, ADR-003 §4).
@@ -38,12 +52,10 @@ function resolveToken(
   const lower = token.toLowerCase();
   if (lower === "lodge-name") return state.lodge.name;
   if (lower === "display-date") {
-    const day = new Date(`${state.window.start}T00:00:00`);
-    return day.toLocaleDateString("en-NZ", {
-      weekday: "long",
-      day: "numeric",
-      month: "long",
-    });
+    // UTC midnight (not local): `window.start` is a date-only lodge night, and a
+    // local-midnight parse read back in club time would slip a day.
+    const day = new Date(`${state.window.start}T00:00:00Z`);
+    return DISPLAY_DATE_FORMAT.format(day);
   }
   // configKey is always set for the remaining `config:<key>` alternative.
   const value = state.config[configKey!.toLowerCase()];

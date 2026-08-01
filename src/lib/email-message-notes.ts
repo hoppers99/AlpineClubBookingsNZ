@@ -108,6 +108,74 @@ export function adminSplitSettlementCancelledLeadParagraph(
 }
 
 /**
+ * #2263 × #2444 — the whole confirmed-but-UNPAID paragraph of a booking
+ * confirmation, shared by the hand-built HTML confirmation
+ * (`bookingConfirmedTemplate`) and the flat `{{paymentDueNote}}` token the
+ * admin-editable body renders inside `{{paymentOutcome}}`.
+ *
+ * It was written out TWICE — once in `email-templates.ts` and once in
+ * `email/booking.ts` — with only a comment claiming the two copies were
+ * byte-identical. #2444 has to add a sentence to it, and adding a sentence to
+ * two hand-kept copies is exactly the drift `composeOptionalEmailLine` and
+ * `appliedCreditSummaryRows` exist to prevent, so the paragraph moved here.
+ *
+ * THE CLOSING SENTENCE, and why it promises nothing (#2444).
+ * The "Total Due" line above is the BOOKING's own price. The invoice the member
+ * actually pays against is a separate document, and the two can differ — a club
+ * admin can net a member's account credit off the invoice, or adjust it, by
+ * hand in Xero. So the sentence points the member at the invoice as the figure
+ * to transfer, and names the commonest reason the two would differ. It does NOT
+ * say that credit "will be applied", because on this path nothing applies it.
+ *
+ * WHAT THIS PATH ACTUALLY DOES WITH CREDIT (re-verified in review, 1 Aug 2026 —
+ * an earlier draft of this sentence asserted the opposite and was corrected
+ * before merge; do not reinstate it without making the allocation real).
+ * The one send site is the member whole-lodge approval in
+ * `school-booking-request.ts`. It MINTS A BRAND-NEW BOOKING and writes no
+ * `MemberCredit` row of any kind, so the
+ * `enqueueXeroAppliedCreditAllocationOperation` call it makes always
+ * short-circuits with "No unallocated applied credit; nothing to allocate."
+ * (`xero-operation-outbox.ts`). #1620 "allocate-existing" fires only when
+ * credit has been APPLIED to the booking app-side, up to the applied amount,
+ * and no code path applies credit here. The Xero invoice is therefore raised
+ * for the FULL amount and equals the "Total Due" line unless a human changes
+ * it.
+ *
+ * The sentence is deliberately CONDITIONAL and states no figure. Most members
+ * hold no credit at all and most invoices match the total exactly, so an
+ * unconditional claim would be false for them; and computing a real net figure
+ * needs a Xero read, which a transactional send must not make (it would put a
+ * provider round-trip, and a provider outage, in the path of a member's
+ * confirmation). The owner's decision (1 Aug 2026) is that a neutral sentence
+ * ships now and the computed figure is its own later piece of work.
+ *
+ * `amount` and `reference` arrive ALREADY FORMATTED and already escaped for
+ * the caller's medium — this module imports nothing (see the file docblock), so
+ * money formatting stays with the caller, and the HTML path escapes the
+ * club-entered reference at its own edge exactly as it did before.
+ */
+export function bookingPaymentDueNote({
+  amount,
+  reference,
+  invoiceEmailed,
+}: {
+  /** Amount owing, already formatted as money — "$300.00". */
+  amount: string;
+  /** Internet-banking reference the member must quote, already escaped. */
+  reference: string;
+  /** TRUE only when an invoice really was raised (the Xero module is on). */
+  invoiceEmailed: boolean;
+}): string {
+  return (
+    `This booking is confirmed, but payment of ${amount} is still owing. Please pay by internet banking quoting reference ${reference}.` +
+    (invoiceEmailed
+      ? " An invoice has been emailed to you separately."
+      : " The club will send you an invoice for it.") +
+    " If the invoice asks for a different amount — for example because the club has put account credit you hold towards it — please transfer the amount the invoice shows."
+  );
+}
+
+/**
  * #2268 — the one member-facing sentence about their OWN booking, shared by the
  * hand-built HTML below and the `{{ownBookingNote}}` token the admin-editable
  * body renders. The flat body used to promise "your own booking is unaffected
@@ -121,4 +189,48 @@ export function splitGuestPortionOwnBookingLine(
   return parentConfirmed
     ? "This only affects your guests' provisional place — your own booking is unaffected and remains confirmed."
     : "This only affects your guests' provisional place — your own linked booking has not been changed by this cancellation.";
+}
+
+/** A labelled link in an email: the button caption and the site-relative path. */
+export interface EmailLinkAction {
+  label: string;
+  path: string;
+}
+
+/**
+ * #2430 — where a BUMPED booking's owner is invited to go next.
+ *
+ * The bumped notice used to end in "Book Again: {BASE_URL}/book" for everyone,
+ * but `/book` is the MEMBER booking flow behind the login. Two of the three
+ * recipient classes that reach `sendBookingBumpedEmail` cannot use it:
+ *
+ *   - a club MEMBER whose pending booking (their own non-member guests, or a
+ *     split guest child) lost its beds — `/book` is exactly right;
+ *   - the non-login NON_MEMBER/SCHOOL contact who owns a booking converted from
+ *     a public booking request (#707), and any other non-login contact an admin
+ *     booked on behalf of — these have `canLogin = false` by construction
+ *     (`assertMappableOwnerContact` refuses a login-capable owner outright), so
+ *     `/book` bounces them to a login they can never complete.
+ *
+ * There is no tokenised respond link to offer them either: the bump path
+ * revokes the booking's payment links, and the request itself is CONVERTED, so
+ * the club's contact page is the only live way back in.
+ *
+ * Whichever way it goes, the notice also names the club's support address (the
+ * `{{SUPPORT_EMAIL}}` line both the HTML template and the default body carry),
+ * because a club-authored Contact page need not host a contact form — without
+ * that line a recipient who cannot sign in could be left with no way to reply
+ * at all. Both branches carry it, so the two readers get the same courtesy.
+ *
+ * Shared by the hand-built HTML template and the `{{rebookLabel}}` /
+ * `{{rebookPath}}` tokens the admin-editable body renders, so the two paths
+ * cannot drift. The caller owns the base URL — this module deliberately
+ * imports nothing.
+ */
+export function bookingBumpedRebookAction(
+  recipientCanBookOnline: boolean,
+): EmailLinkAction {
+  return recipientCanBookOnline
+    ? { label: "Book Again", path: "/book" }
+    : { label: "Contact the Club", path: "/contact" };
 }

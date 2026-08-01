@@ -109,6 +109,30 @@ export function formatLocalDateOnly(date: Date): string {
   return `${year}-${month}-${day}`;
 }
 
+/**
+ * Re-encode a `Date` that carries an ABSTRACT CALENDAR DAY at the browser's
+ * local midnight as the UTC-midnight instant the rest of the system uses for a
+ * date-only value.
+ *
+ * #2264. A date picker hands back `new Date(year, month, day)` — midnight where
+ * the BROWSER is — and the value it submits is read back out with local getters
+ * by `formatLocalDateOnly`, so that round trip is exact wherever the member
+ * sits. A club-pinned display formatter is not part of that round trip: given
+ * the raw instant it renders the day as Auckland sees it, and local midnight on
+ * 1 April is still 31 March in Auckland for anyone at UTC+13. The screen would
+ * then name a different night than the one being booked.
+ *
+ * Passing the picker's `Date` through here first removes that whole class of
+ * mismatch: New Zealand is UTC+12/+13, so a UTC-midnight instant always renders
+ * as midday the SAME calendar day in club time.
+ *
+ * Use this ONLY for a Date that encodes a calendar day. A real instant (a
+ * `createdAt`, a payment time) must be formatted as it is.
+ */
+export function localCalendarDayToDateOnly(date: Date): Date {
+  return parseDateOnly(formatLocalDateOnly(date));
+}
+
 // Intl.DateTimeFormat construction costs ~0.1ms; the capacity, pricing, and
 // finance loops call this once per (booking, night) pair, so a fresh formatter
 // per call dominated those paths. Instances are stateless for formatToParts,

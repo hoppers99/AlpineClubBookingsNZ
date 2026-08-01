@@ -25,7 +25,22 @@ import {
   AdminViewOnlySectionBanner,
   ViewOnlyActionButton,
 } from "@/components/admin/view-only-action"
+import { parseDateOnly } from "@/lib/date-only"
+import { formatNZDate } from "@/lib/nzst-date"
 import type { BookingPeriod, PolicyRule } from "./types"
+
+/**
+ * A period boundary is an NZ date-only lodge date (#2264). It reaches the
+ * browser as the JSON form of a Prisma `@db.Date`, i.e. a full ISO timestamp at
+ * UTC midnight, so the calendar day is taken from the string and handed over as
+ * UTC midnight rather than parsed in the viewer's own zone — a local parse
+ * slides the day for anyone at UTC+13/+14. The NaN guard keeps a malformed
+ * value from throwing out of `Intl` and taking the whole panel down.
+ */
+function formatPeriodDate(value: string): string {
+  const parsed = parseDateOnly(value.split("T")[0])
+  return Number.isNaN(parsed.getTime()) ? value : formatNZDate(parsed)
+}
 
 const NEW_PERIOD_RULES: PolicyRule[] = [
   { daysBeforeStay: 21, refundPercentage: 100, creditRefundPercentage: 100, fixedFeeCents: 0, creditFixedFeeCents: 0 },
@@ -626,8 +641,8 @@ export function BookingPeriodsSection() {
                               </Badge>
                             </div>
                             <p className="text-sm text-muted-foreground">
-                              {new Date(period.startDate).toLocaleDateString("en-NZ")} &mdash;{" "}
-                              {new Date(period.endDate).toLocaleDateString("en-NZ")}
+                              {formatPeriodDate(period.startDate)} &mdash;{" "}
+                              {formatPeriodDate(period.endDate)}
                               <span className="ml-3">
                                 Non-member hold:{" "}
                                 <strong>

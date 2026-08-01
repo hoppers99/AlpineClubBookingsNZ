@@ -160,8 +160,13 @@ test("the booker can remove themselves and continue with another guest", async (
 
   // Add someone else (a non-member guest) and price the booking.
   await page.getByRole("button", { name: "+ Add Non-Member Guest" }).click();
-  await page.getByPlaceholder("First name").fill("Casey");
-  await page.getByPlaceholder("Last name").fill("Visitor");
+  // #2264: the guest card is a named group and its fields are now
+  // label-associated, so select by role within the card rather than by
+  // placeholder. Scoping matters — the admin book page renders the
+  // non-member CONTACT form with near-identical field names on the same page.
+  const guestCard = page.getByRole("group", { name: "Guest 1" });
+  await guestCard.getByRole("textbox", { name: "First Name" }).fill("Casey");
+  await guestCard.getByRole("textbox", { name: "Last Name" }).fill("Visitor");
 
   await page.getByRole("button", { name: "Continue", exact: true }).click();
   await expect(page.getByText("Booking Summary")).toBeVisible();

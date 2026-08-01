@@ -295,8 +295,12 @@ export function SubscriptionBillingPanel({ seasonYear }: { seasonYear: number })
                     {entry.billingBasis === "PER_FAMILY" && entry.familyGroupId ? (
                       markingFamilyGroupId === entry.familyGroupId ? (
                         <div className="mt-2 space-y-2 rounded-md border border-dashed p-2">
-                          <Label htmlFor={`mark-note-${entry.familyGroupId}`}>Note (optional) — e.g. the covering invoice number</Label>
-                          <Input id={`mark-note-${entry.familyGroupId}`} value={markNote} onChange={(event) => setMarkNote(event.target.value)} placeholder="INV-…" maxLength={500} />
+                          {/* #2264 — the "INV-…" example left the placeholder,
+                              where it read as a note already typed, and folded
+                              into the label clause that was already naming what
+                              to write, so this row keeps ONE description. */}
+                          <Label htmlFor={`mark-note-${entry.familyGroupId}`}>Note (optional) — e.g. the covering invoice number, INV-…</Label>
+                          <Input id={`mark-note-${entry.familyGroupId}`} value={markNote} onChange={(event) => setMarkNote(event.target.value)} maxLength={500} />
                           <div className="flex flex-wrap gap-2">
                             <Button type="button" size="sm" disabled={working} onClick={() => void markFamily(entry.familyGroupId!)}>Confirm — mark as already invoiced</Button>
                             <Button type="button" size="sm" variant="outline" disabled={working} onClick={() => { setMarkingFamilyGroupId(null); setMarkNote(""); }}>Cancel</Button>

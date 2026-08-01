@@ -11,6 +11,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import { FieldHint, useFieldHint } from "@/components/ui/field-hint"
 import { Label } from "@/components/ui/label"
 import {
   Select,
@@ -172,6 +173,13 @@ export function MemberBulkMembershipDialog({
   const [reason, setReason] = useState("")
   const [saveResult, setSaveResult] = useState<SaveResponse | null>(null)
   const [loading, setLoading] = useState(false)
+  /*
+    #2264 — this audit Reason field carried a fully interpolated sentence as its
+    placeholder, so the box looked like it already held a written reason (and
+    the wording vanished the moment the admin started typing their own). The
+    same sentence is now an example under the field.
+  */
+  const reasonHint = useFieldHint()
 
   const ids = useMemo(() => [...selectedIds], [selectedIds])
   const overCap = ids.length > BULK_MEMBERSHIP_MAX
@@ -441,10 +449,13 @@ export function MemberBulkMembershipDialog({
               id="bulk-membership-reason"
               value={reason}
               onChange={(event) => setReason(event.target.value)}
-              placeholder={`Changing ${preview?.summary.changed ?? 0} member(s) to ${typeName}`}
               rows={3}
               maxLength={1000}
+              {...reasonHint.fieldProps}
             />
+            <FieldHint {...reasonHint.hintProps}>
+              {`Example: Changing ${preview?.summary.changed ?? 0} member(s) to ${typeName}`}
+            </FieldHint>
           </div>
         )}
 

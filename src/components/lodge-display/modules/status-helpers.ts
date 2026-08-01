@@ -6,6 +6,24 @@
 // EXCLUSIVE (the morning they leave — not a night). Dates are NZ date-only
 // "YYYY-MM-DD" strings, so a plain string compare is a calendar compare.
 
+import { APP_LOCALE, APP_TIME_ZONE } from "@/config/operational";
+
+/**
+ * Not one of the shared `nzst-date` helpers (#2264). A lobby-display column head
+ * is as terse as the wall allows — short weekday plus a bare day-of-month, no
+ * month and no year — because the window is only ever a few days wide and the
+ * screen is read from across the room. The zone is pinned to club time so a TV
+ * whose browser sits in the wrong zone can no longer name the wrong weekday.
+ *
+ * This is the CANONICAL copy of the pattern: the boards in this folder
+ * (welcome-panel, chores-board, arrivals-board, occupancy-grid, singles-board)
+ * all repeat it and must stay byte-identical to it.
+ */
+export const DISPLAY_SHORT_WEEKDAY = new Intl.DateTimeFormat(APP_LOCALE, {
+  timeZone: APP_TIME_ZONE,
+  weekday: "short",
+});
+
 export type StayStatus = "arriving" | "staying" | "departing";
 
 /**
@@ -41,6 +59,11 @@ export const STAY_STATUS_ORDER: Record<StayStatus, number> = {
  * boards' own private formatter; kept here so these modules never import from
  * arrivals-board (which a sibling change owns). */
 export function shortDay(date: string): string {
-  const day = new Date(`${date}T00:00:00`);
-  return `${day.toLocaleDateString("en-NZ", { weekday: "short" })} ${day.getDate()}`;
+  // Handed over at UTC midnight rather than parsed in the browser's own zone
+  // (#2264): a bare `T00:00:00` parse slides the whole label back a day for a
+  // viewer at UTC+13/+14. Read back in club time, UTC midnight is midday the
+  // SAME calendar day (NZ is UTC+12/+13), so the formatted weekday and
+  // `getUTCDate()` always name the same day.
+  const day = new Date(`${date}T00:00:00Z`);
+  return `${DISPLAY_SHORT_WEEKDAY.format(day)} ${day.getUTCDate()}`;
 }

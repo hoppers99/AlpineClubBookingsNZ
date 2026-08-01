@@ -3,8 +3,26 @@
 import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { useClubIdentity } from "@/components/club-identity-provider";
-import { APP_LOCALE } from "@/config/operational";
-import { formatLocalDateOnly } from "@/lib/date-only";
+import { APP_LOCALE, APP_TIME_ZONE } from "@/config/operational";
+import { formatLocalDateOnly, localCalendarDayToDateOnly } from "@/lib/date-only";
+import { formatNZMonthYear } from "@/lib/nzst-date";
+
+// Not one of the shared `nzst-date` helpers (#2264): a day button's accessible
+// name spells the date out in full — long weekday, long month — because a screen
+// reader user hears it with no grid around it to give the cell context. The
+// shared medium/weekday shapes abbreviate, which would make the announcement
+// harder to follow.
+const DAY_BUTTON_DATE_LABEL = new Intl.DateTimeFormat(APP_LOCALE, {
+  timeZone: APP_TIME_ZONE,
+  weekday: "long",
+  day: "numeric",
+  month: "long",
+  year: "numeric",
+});
+
+// #2264: the cells below are abstract calendar days encoded at the BROWSER's
+// midnight, so they are re-encoded before a club-pinned formatter sees them —
+// see `localCalendarDayToDateOnly` for why.
 
 interface SeasonInfo {
   name: string;
@@ -181,10 +199,9 @@ export function BookingCalendar({ onDateSelect, selectedCheckIn, selectedCheckOu
     });
   }
 
-  const monthName = new Date(currentMonth.year, currentMonth.month).toLocaleDateString(APP_LOCALE, {
-    month: "long",
-    year: "numeric",
-  });
+  const monthName = formatNZMonthYear(
+    new Date(Date.UTC(currentMonth.year, currentMonth.month, 1)),
+  );
 
   // Unique seasons visible in the current month for the legend
   const uniqueSeasons = [...new Map(Object.values(seasons).map((s) => [s.name, s])).values()];
@@ -227,12 +244,7 @@ export function BookingCalendar({ onDateSelect, selectedCheckIn, selectedCheckOu
           // still inside the retroactive window is clickable but muted (#1695).
           const isPast = date < minSelectable;
           const isRetroPast = allowPastDates && !isPast && date < today;
-          const dateLabel = date.toLocaleDateString(APP_LOCALE, {
-            weekday: "long",
-            day: "numeric",
-            month: "long",
-            year: "numeric",
-          });
+          const dateLabel = DAY_BUTTON_DATE_LABEL.format(localCalendarDayToDateOnly(date));
           const isCheckIn = Boolean(
             checkIn && date.getTime() === checkIn.getTime(),
           );

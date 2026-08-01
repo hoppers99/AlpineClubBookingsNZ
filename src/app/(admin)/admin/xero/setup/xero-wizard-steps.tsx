@@ -10,6 +10,7 @@ import { CopyField } from "@/components/admin/integration-wizard";
 import type { WizardStepHelpers } from "@/components/admin/integration-wizard";
 import { ViewOnlyActionButton } from "@/components/admin/view-only-action";
 import { ADMIN_FULL_ADMIN_ONLY_ACTION_REASON } from "@/hooks/use-admin-area-edit-access";
+import { formatNZDate, formatNZTime } from "@/lib/nzst-date";
 import { ConnectionStatusPanel } from "../_components/connection-status-panel";
 import { useXeroConnection } from "../_hooks/use-xero-connection";
 import type {
@@ -23,13 +24,7 @@ const CONNECT_RETURN = "/admin/xero/setup";
 function formatSetAt(setAt: string | null): string {
   if (!setAt) return "";
   const date = new Date(setAt);
-  return Number.isNaN(date.getTime())
-    ? ""
-    : date.toLocaleDateString("en-NZ", {
-        year: "numeric",
-        month: "short",
-        day: "numeric",
-      });
+  return Number.isNaN(date.getTime()) ? "" : formatNZDate(date);
 }
 
 function LegacyEnvWarning({ vars }: { vars: string[] }) {
@@ -327,10 +322,7 @@ function describeWait(seconds: number): string {
  */
 function describeChecks(attempts: number, at: number | null): string | null {
   if (at === null || attempts < 1) return null;
-  const time = new Date(at).toLocaleTimeString("en-NZ", {
-    hour: "numeric",
-    minute: "2-digit",
-  });
+  const time = formatNZTime(new Date(at));
   return attempts === 1
     ? `Checked once, at ${time}.`
     : `Checked ${attempts} times, most recently at ${time}.`;

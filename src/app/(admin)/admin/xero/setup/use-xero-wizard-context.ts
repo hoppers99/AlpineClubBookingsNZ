@@ -27,9 +27,10 @@ export interface XeroCredentialFieldMeta {
  *
  * - `forbidden` — this site refused (HTTP 403): the admin's role has no finance
  *   access. No amount of retrying or waiting will change it.
- * - `signed_out` — this site refused (HTTP 401): the SESSION is missing or
- *   expired, which is a different problem with a different fix (sign in again),
- *   and one a retry genuinely does clear (#2394 review, F8).
+ * - `signed_out` — this site refused (HTTP 401, or the 404 a module-gated route
+ *   answers an anonymous caller with): the SESSION is missing or expired, which
+ *   is a different problem with a different fix (sign in again), and one a retry
+ *   genuinely does clear (#2394 review, F8).
  * - `check_failed` — we never got an answer out of our OWN server, so we never
  *   even asked Xero: the status read failed, the browser is offline, or the
  *   response would not parse. Crucially this must NOT claim the Xero connection
@@ -392,10 +393,19 @@ export function useXeroWizardContext(serverConfig: XeroWizardServerConfig): {
             setOrgName(null);
             reportOrgFailure(plainFailure("unavailable"));
           }
-        } else if (orgRes.status === 401) {
+        } else if (orgRes.status === 401 || orgRes.status === 404) {
           // THIS SITE refused because the SESSION is gone, not because of the
           // role — a different problem with a different fix, and one a retry
           // really can clear once the operator signs in again (F8).
+          //
+          // 404 lands here too. `/api/admin/xero/*` is module-gated, so an
+          // anonymous caller is answered with the gate's own 404 rather than a
+          // 401 (`moduleGatedNotFoundResponse` in `src/lib/session-guards.ts`),
+          // which is what stops one anonymous request reading a club's module
+          // list. The only other cause of a 404 here is the Xero module being
+          // switched off — and this wizard lives at `/admin/xero/setup`, which
+          // is gated by that same flag, so the wizard could not have rendered
+          // in that state. Inside the wizard, a 404 means the sign-in went.
           reportOrgFailure(plainFailure("signed_out"));
         } else if (orgRes.status === 403) {
           // THIS SITE refused, not Xero: the signed-in admin has no finance

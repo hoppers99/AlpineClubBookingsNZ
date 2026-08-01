@@ -23,6 +23,7 @@ import {
   NoticeEditor,
   type AdminNoticeData,
 } from "@/components/admin/notice-editor";
+import { formatNZDateTime } from "@/lib/nzst-date";
 
 const READS_PAGE_SIZE = 25;
 
@@ -51,7 +52,7 @@ function formatDateTime(iso: string | null): string {
   if (!iso) return "—";
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleString("en-NZ", { dateStyle: "medium", timeStyle: "short" });
+  return formatNZDateTime(d);
 }
 
 function ReadStatusTable({ noticeId }: { noticeId: string }) {

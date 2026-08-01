@@ -2,6 +2,7 @@ import { revalidatePath } from "next/cache";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { buildStructuredAuditLogCreateArgs, getAuditRequestContext } from "@/lib/audit";
+import { DEFAULT_PUBLIC_CONTENT_SETTINGS } from "@/config/club-settings-defaults";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/session-guards";
 
@@ -34,17 +35,15 @@ type Settings = {
   committeePhotoDisplay: "NONE" | "CIRCLE" | "SQUARE";
 };
 
+// What this GET synthesises for a club that has never saved the singleton. The
+// portable policy fields come from the ONE shared constant the public read path
+// and the config-transfer exporter also read (#2200, #2430), so the admin panel
+// can never show a different "unsaved" state than the website renders; only the
+// two instance-local Book Now destination fields are declared here.
 const defaults: Settings = {
-  membershipTypes: false,
-  entranceFees: false,
-  hutFees: false,
-  bookingPolicySummary: false,
-  cancellationPolicy: false,
-  annualFees: false,
-  showBookNow: true,
+  ...DEFAULT_PUBLIC_CONTENT_SETTINGS,
   bookNowTarget: "BOOKING_FLOW",
   bookNowPageId: null,
-  committeePhotoDisplay: "NONE",
 };
 
 const settingsSelect = {

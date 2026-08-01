@@ -14,7 +14,6 @@ import {
 // EmailMessageSetting.emailFromName at send time. Must NOT come from the severed
 // club-identity export (now safe-default-derived) or the replacement would no-op.
 import { EMAIL_DEFAULT_FROM_NAME } from "@/lib/email-message-settings";
-import { APP_LOCALE, APP_TIME_ZONE } from "@/config/operational";
 import { formatCents as formatMoneyCents } from "@/lib/utils";
 import { FALLBACK_LODGE_CAPACITY } from "@/lib/lodge-capacity";
 import { SUPPORT_EMAIL } from "./email-sender";
@@ -32,6 +31,8 @@ import type { MemberGuestPartyList } from "@/lib/member-guest-email-notes";
 import {
   adminSplitSettlementCancelledLeadParagraph,
   adminSplitSettlementUnpaidLeadParagraph,
+  bookingBumpedRebookAction,
+  bookingPaymentDueNote,
   duplicateCaptureRefundOutcomeParagraph,
   splitGuestPortionOwnBookingLine,
 } from "./email-message-notes";
@@ -249,10 +250,6 @@ function arrivalInstructionsSection({
 
 function formatCents(cents: number): string {
   return formatMoneyCents(cents);
-}
-
-function formatOperationalDateTime(value: Date): string {
-  return value.toLocaleString(APP_LOCALE, { timeZone: APP_TIME_ZONE });
 }
 
 export function passwordResetTemplate(resetUrl: string): string {
@@ -503,14 +500,15 @@ export function appliedCreditSummaryRows(
  *    if that precondition ever stops holding, because the suppression would
  *    then be hiding a real figure from a member.
  *
- *    An EARLIER version of this comment justified the suppression by saying the
- *    amount owing is the figure the club's Xero invoice was raised for, so
- *    netting credit off it would disagree with the invoice. That reasoning is
- *    WRONG and is retracted: under #1620 "allocate-existing" the booking
- *    invoice is raised for the FULL amount and the member's floating credit
- *    notes are ALLOCATED against it (this very send site enqueues that
- *    allocation a few lines above the send), so the invoice total is not the
- *    net-of-credit figure the argument assumed;
+ *    A #2444 DRAFT claimed the invoice for this booking has the member's
+ *    floating credit notes ALLOCATED against it under #1620, because the send
+ *    site enqueues an allocation op a few lines above the send. That is WRONG
+ *    and is retracted (re-verified 1 Aug 2026):
+ *    `enqueueXeroAppliedCreditAllocationOperation` only queues anything when
+ *    the booking already carries `BOOKING_APPLIED` ledger rows, and this path
+ *    writes none, so it always returns `{ queueOperationId: null }` and the
+ *    invoice stands at the FULL amount. The suppression rests on the
+ *    no-applied-credit precondition above and on nothing else;
  *  - partly paid (`outstandingBalance`, #2397): the settled slice is the
  *    booking's price minus what is still owing, and the credit comes out of
  *    THAT, not out of the full price;
@@ -669,13 +667,18 @@ export function bookingConfirmedTemplate(
     rows.push({ label: "Total Paid", value: formatCents(totalCents) }, ...creditRows);
   }
 
-  // One composed sentence, shared with the {{paymentDueNote}} token in
-  // sendBookingConfirmedEmail so an operator override tells the same story.
+  // One composed paragraph, from the SHARED composer the {{paymentDueNote}}
+  // token in sendBookingConfirmedEmail is built from, so an operator override
+  // tells the same story — including the #2444 account-credit sentence, which
+  // must never appear on one renderer and not the other. The reference is
+  // club-entered data, so it is escaped at this HTML edge (the composer takes
+  // it already escaped, on the same principle as the shared money rows above).
   const paymentDueNote = paymentDue
-    ? `This booking is confirmed, but payment of ${formatCents(totalCents)} is still owing. Please pay by internet banking quoting reference ${escapeHtml(paymentDue.reference)}.` +
-      (paymentDue.invoiceEmailed
-        ? " An invoice has been emailed to you separately."
-        : " The club will send you an invoice for it.")
+    ? bookingPaymentDueNote({
+        amount: formatCents(totalCents),
+        reference: escapeHtml(paymentDue.reference),
+        invoiceEmailed: paymentDue.invoiceEmailed,
+      })
     : "";
   // #2397, same convention: one composed sentence shared with the token path.
   const outstandingBalanceNote = outstandingBalance
@@ -732,8 +735,16 @@ export function bookingBumpedTemplate(
   firstName: string,
   checkIn: Date,
   checkOut: Date,
-  guestCount: number
+  guestCount: number,
+  // #2430: whether this recipient can actually use the member booking flow.
+  // A non-login NON_MEMBER/SCHOOL contact (a converted public booking request,
+  // or an admin booking on their behalf) is pointed at the club contact page
+  // instead of a login they can never complete. REQUIRED, with no default: the
+  // leaky value is `true`, so a new send site that forgot this argument would
+  // silently mail a login-less contact a members-only link (#2430 review).
+  recipientCanBookOnline: boolean
 ): string {
+  const rebook = bookingBumpedRebookAction(recipientCanBookOnline);
   return layout(`
     ${heading("Booking Update")}
     ${paragraph("Hi " + escapeHtml(firstName) + ", unfortunately your pending lodge booking has been bumped due to member demand.")}
@@ -744,7 +755,8 @@ export function bookingBumpedTemplate(
     ])}
     ${alertBox("Your card has not been charged.", "info")}
     ${paragraph("As a non-member booking, priority is given to club members when the lodge reaches capacity. You're welcome to rebook for different dates where availability exists.")}
-    ${button("Book Again", BASE_URL + "/book")}
+    ${button(rebook.label, BASE_URL + rebook.path)}
+    ${supportContactSentence("If you have any questions, contact the club at ")}
     ${muted("We apologise for the inconvenience.")}
   `);
 }
@@ -1565,7 +1577,7 @@ export function adminXeroSyncErrorTemplate(data: {
       { label: "Error Type", value: escapeHtml(data.errorType) },
       { label: "Operation", value: escapeHtml(data.operation) },
       { label: "Error Message", value: escapeHtml(data.errorMessage) },
-      { label: "Timestamp", value: formatOperationalDateTime(data.timestamp) },
+      { label: "Timestamp", value: formatNZDateTime(data.timestamp) },
     ])}
     ${button("View Xero Status", BASE_URL + "/admin/xero")}
   `);
@@ -1606,7 +1618,7 @@ export function adminXeroRepeatedFailureTemplate(data: {
     },
     {
       label: "Timestamp",
-      value: formatOperationalDateTime(data.timestamp),
+      value: formatNZDateTime(data.timestamp),
     },
   ];
 
@@ -1846,7 +1858,7 @@ function formatEmailDateTime(value: Date | null): string {
     return "";
   }
 
-  return formatOperationalDateTime(value);
+  return formatNZDateTime(value);
 }
 
 function formatXeroObjectLabel(item: {
@@ -1948,7 +1960,7 @@ function renderIssueSection(section: XeroReconciliationIssueSectionEmail): strin
 export function adminXeroReconciliationReportTemplate(report: XeroReconciliationReportEmail): string {
   const p = emailPalette();
   const summaryRows = [
-    { label: "Generated", value: formatOperationalDateTime(report.generatedAt) },
+    { label: "Generated", value: formatNZDateTime(report.generatedAt) },
     { label: "Lookback Window", value: `${report.lookbackHours} hour${report.lookbackHours === 1 ? "" : "s"}` },
     { label: "Stale Pending Threshold", value: `${report.stalePendingMinutes} minute${report.stalePendingMinutes === 1 ? "" : "s"}` },
     { label: "Issue Categories", value: String(report.summary.issueCategoryCount) },

@@ -60,6 +60,16 @@ import {
   buildUnsettledAdditionalStaysHref,
   buildUnsettledAdditionalUpcomingStaysWhere,
 } from "@/lib/unpaid-finished-stays";
+import { APP_LOCALE, APP_TIME_ZONE } from "@/config/operational";
+
+// #2264: deliberately not one of the shared `nzst-date` helpers — the upcoming
+// check-ins list renders its date range in a fixed-width column, so it stays
+// compact (day + short month, no year).
+const COMPACT_DAY_MONTH = new Intl.DateTimeFormat(APP_LOCALE, {
+  timeZone: APP_TIME_ZONE,
+  day: "numeric",
+  month: "short",
+});
 
 async function getStats() {
   const today = getTodayDateOnly();
@@ -677,15 +687,9 @@ export default async function AdminDashboardPage() {
                         {booking.member.firstName} {booking.member.lastName}
                       </p>
                       <p className="text-xs text-muted-foreground">
-                        {new Date(booking.checkIn).toLocaleDateString("en-NZ", {
-                          day: "numeric",
-                          month: "short",
-                        })}
+                        {COMPACT_DAY_MONTH.format(new Date(booking.checkIn))}
                         {" — "}
-                        {new Date(booking.checkOut).toLocaleDateString("en-NZ", {
-                          day: "numeric",
-                          month: "short",
-                        })}
+                        {COMPACT_DAY_MONTH.format(new Date(booking.checkOut))}
                         {" · "}
                         {booking._count.guests} guest{booking._count.guests !== 1 ? "s" : ""}
                       </p>

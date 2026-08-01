@@ -18,12 +18,14 @@ export default async function MemberCalendarPage() {
   const session = await auth();
   if (!session?.user) redirect("/login");
 
-  // LOAD-BEARING, not belt-and-braces (#2241). The proxy's page matcher carries
-  // `missing: [next-router-prefetch]`, so a Next router PREFETCH of /calendar
-  // skips the proxy — and therefore the whole feature-route gate — entirely.
-  // These two guards are what stop a prefetched render from returning the
-  // calendar to an organisation account, or on a club that has the module off.
-  // Do not delete them as duplicated middleware.
+  // LOAD-BEARING, not belt-and-braces (#2241). The proxy's feature-route gate
+  // enforces the MODULE FLAG and nothing else — `FEATURE_ROUTE_RULES` in
+  // `src/config/feature-routes.ts` lists route prefixes and never reads the
+  // account type — so the ORG exclusion below exists in this file alone.
+  // Delete it as "duplicated middleware" and an organisation account can read
+  // the club's calendar. The module check beside it is the ordinary case of a
+  // page re-checking its own precondition: one call, and it keeps the rule true
+  // wherever this page is rendered from.
   const modules = await loadEffectiveModuleFlags();
   if (!modules.eventsCalendar) {
     notFound();

@@ -84,6 +84,11 @@ import {
 } from "@/lib/admin-bed-allocation";
 import { BED_ALLOCATABLE_BOOKING_STATUSES } from "@/lib/bed-allocation-lifecycle";
 import { formatDateOnly } from "@/lib/date-only";
+import {
+  formatNZDate,
+  formatNZDateTime,
+  formatNZLongDate,
+} from "@/lib/nzst-date";
 import { getBookingProviderMismatches } from "@/lib/booking-provider-mismatches";
 import { loadEmailMessageSettingsForLodge } from "@/lib/email-message-settings";
 import { loadPublicBookingMessages } from "@/lib/booking-message-settings";
@@ -1114,8 +1119,12 @@ export default async function BookingDetailPage({
   const bookingMessageData = {
     bookerFirstName: booking.member.firstName,
     bookerFullName: `${booking.member.firstName} ${booking.member.lastName}`,
-    checkIn: booking.checkIn.toLocaleDateString("en-NZ", { dateStyle: "long" }),
-    checkOut: booking.checkOut.toLocaleDateString("en-NZ", { dateStyle: "long" }),
+    // Member-facing: these two land in the booking messages and the emails
+    // built from them, so they keep the long "16 April 2026" form the club has
+    // always sent (owner decision, #2264). Admin-side dates on this page use
+    // the medium `formatNZDate`.
+    checkIn: formatNZLongDate(booking.checkIn),
+    checkOut: formatNZLongDate(booking.checkOut),
     guestCount: booking.guests.length,
     amountDue: formatCents(amountDueAfterCreditCents),
     amountPaid: booking.payment ? formatCents(booking.payment.amountCents) : "",
@@ -1135,10 +1144,7 @@ export default async function BookingDetailPage({
     paymentReference: internetBankingPayment?.reference ?? "",
     xeroInvoiceNumber: internetBankingPayment?.xeroInvoiceNumber ?? "",
     holdUntil: internetBankingPayment?.internetBankingHoldUntil
-      ? internetBankingPayment.internetBankingHoldUntil.toLocaleString("en-NZ", {
-          dateStyle: "medium",
-          timeStyle: "short",
-        })
+      ? formatNZDateTime(internetBankingPayment.internetBankingHoldUntil)
       : "",
     holdDays: "",
     minimumDaysBeforeCheckIn: "",
@@ -1435,7 +1441,7 @@ export default async function BookingDetailPage({
         <div className="rounded-md border border-danger-6 bg-danger-3 px-4 py-3 text-sm text-danger-11">
           <p className="font-medium">Deleted cancelled booking</p>
           <p>
-            Deleted {booking.deletedAt?.toLocaleString("en-NZ")}
+            Deleted {booking.deletedAt ? formatNZDateTime(booking.deletedAt) : ""}
             {booking.deletedBy
               ? ` by ${booking.deletedBy.firstName} ${booking.deletedBy.lastName}`
               : ""}
@@ -1742,11 +1748,7 @@ export default async function BookingDetailPage({
                   </div>
                   <p className="mt-1 text-muted-foreground">
                     Submitted{" "}
-                    {request.createdAt.toLocaleDateString("en-NZ", {
-                      day: "numeric",
-                      month: "short",
-                      year: "numeric",
-                    })}
+                    {formatNZDate(request.createdAt)}
                   </p>
                   {request.reason ? (
                     <p className="mt-2 text-muted-foreground">{request.reason}</p>
@@ -2359,13 +2361,7 @@ export default async function BookingDetailPage({
                       {item.title}
                     </span>
                     <span className="text-xs text-muted-foreground">
-                      {item.occurredAt.toLocaleDateString("en-NZ", {
-                        day: "numeric",
-                        month: "short",
-                        year: "numeric",
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      })}
+                      {formatNZDateTime(item.occurredAt)}
                     </span>
                   </div>
                   {item.detail ? (

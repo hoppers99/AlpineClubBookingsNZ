@@ -326,6 +326,17 @@ jobs:
           EMAIL_OVERRIDE_ANNOTATION_STRIP_TEST_DATABASE_URL: ${{ env.DATABASE_URL }}
         run: npx vitest run src/lib/__tests__/email-message-annotation-strip.test.ts
 
+      # #2430 (owner decision on PR #2466): the public Book Now default-off
+      # migration also REWRITES DATA — it switches the button off for every
+      # existing club, overriding saved choices — so the backfill is executed
+      # here rather than only string-matched. Same disposable-schema pattern as
+      # the steps above; the suite describe.skip's itself when the env var is
+      # absent, so this step MUST stay wired.
+      - name: Test the public Book Now default-off migration against PostgreSQL
+        env:
+          PUBLIC_BOOK_NOW_DEFAULT_OFF_TEST_DATABASE_URL: ${{ env.DATABASE_URL }}
+        run: npx vitest run src/lib/__tests__/public-book-now-default-off-migration.test.ts
+
       # F28 (#1888): wire the real-DB BookingGuest stay-range trigger suite so it
       # is no longer a silent no-op. It self-provisions a throwaway schema and
       # applies only the two trigger migrations, so it needs any reachable

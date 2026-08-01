@@ -1,7 +1,5 @@
-import { APP_LOCALE, APP_TIME_ZONE } from "@/config/operational";
+import { formatNZDate, formatNZDateTime } from "@/lib/nzst-date";
 import { formatCents } from "@/lib/utils";
-
-const FINANCE_TIMEZONE = APP_TIME_ZONE;
 
 /**
  * Parser for stored BANK_BALANCES finance snapshots. The dashboard's
@@ -78,7 +76,7 @@ export function parseCashSnapshot(
 
   return {
     snapshotId: snapshot.id,
-    snapshotLabel: formatDisplayDate(snapshot.asOfDate),
+    snapshotLabel: formatNZDate(snapshot.asOfDate),
     sourceWindow: formatSnapshotWindow(snapshot.periodStart, snapshot.periodEnd),
     totalBalanceCents,
     totalBalance: formatCents(totalBalanceCents),
@@ -292,31 +290,18 @@ function formatSnapshotWindow(periodStart: Date | null, periodEnd: Date | null) 
   }
 
   if (!periodStart) {
-    return `Through ${formatDisplayDate(periodEnd!)}`;
+    return `Through ${formatNZDate(periodEnd!)}`;
   }
 
   if (!periodEnd) {
-    return `From ${formatDisplayDate(periodStart)}`;
+    return `From ${formatNZDate(periodStart)}`;
   }
 
-  return `${formatDisplayDate(periodStart)} to ${formatDisplayDate(periodEnd)}`;
-}
-
-function formatDisplayDate(date: Date) {
-  return date.toLocaleDateString(APP_LOCALE, {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-    timeZone: FINANCE_TIMEZONE,
-  });
+  return `${formatNZDate(periodStart)} to ${formatNZDate(periodEnd)}`;
 }
 
 function formatDateTime(value: string) {
-  return new Date(value).toLocaleString(APP_LOCALE, {
-    dateStyle: "medium",
-    timeStyle: "short",
-    timeZone: FINANCE_TIMEZONE,
-  });
+  return formatNZDateTime(new Date(value));
 }
 
 function readOptionalString(value: unknown) {

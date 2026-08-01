@@ -12,6 +12,7 @@ import { Alert } from "@/components/ui/alert"
 import { AdminPageHeader } from "@/components/admin/admin-page-header"
 import { AdminViewOnlySectionBanner, ViewOnlyActionButton } from "@/components/admin/view-only-action"
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access"
+import { formatNZDate } from "@/lib/nzst-date"
 import {
   LodgeSelect,
   initialLodgeIdFromLocation,
@@ -286,8 +287,8 @@ export default function SeasonsPage() {
                   )}
                 </div>
                 <CardDescription>
-                  {new Date(season.startDate).toLocaleDateString("en-NZ")} &mdash;{" "}
-                  {new Date(season.endDate).toLocaleDateString("en-NZ")}
+                  {formatNZDate(new Date(season.startDate))} &mdash;{" "}
+                  {formatNZDate(new Date(season.endDate))}
                 </CardDescription>
               </CardHeader>
             </Card>

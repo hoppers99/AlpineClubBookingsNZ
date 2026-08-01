@@ -16,6 +16,11 @@ import {
   SITE_CONTENT_FIELDS,
   siteContentImporter,
 } from "@/lib/config-transfer/categories/site-content";
+import {
+  planBundleMedia,
+  planBundleMediaTarget,
+  recreateBundleMedia,
+} from "@/lib/config-transfer/media";
 import { SITE_CONTENT_KEYS } from "@/lib/page-content";
 import { SiteContentKey } from "@prisma/client";
 import type { ReadDb, TxDb } from "@/lib/config-transfer/import-types";
@@ -939,6 +944,170 @@ describe("media plan validation", () => {
     );
     const plan2 = await buildImportPlan(db, badMap, { mode: "merge" });
     expect(plan2.errors.join(" ")).toMatch(/media-map\.json is not valid JSON/i);
+  });
+});
+
+describe("bundled media metadata stripping (#2242)", () => {
+  // A bundle image is recreated as an anonymously-served MediaImage —
+  // /api/images/[id] serves it with `immutable` caching, the same footing as an
+  // image-library upload — so EXIF/GPS must not survive an import.
+  const GPS = Buffer.from("GPS:-41.29,174.78", "latin1");
+
+  function exifJpeg(withEoi: boolean): Buffer {
+    const soi = Buffer.from([0xff, 0xd8]);
+    const payload = Buffer.concat([Buffer.from("Exif\0\0", "latin1"), GPS]);
+    const len = Buffer.alloc(2);
+    len.writeUInt16BE(payload.length + 2, 0);
+    const app1 = Buffer.concat([Buffer.from([0xff, 0xe1]), len, payload]);
+    const sof0 = Buffer.alloc(11);
+    sof0.writeUInt8(0xff, 0);
+    sof0.writeUInt8(0xc0, 1);
+    sof0.writeUInt16BE(9, 2);
+    sof0.writeUInt8(8, 4);
+    sof0.writeUInt16BE(16, 5);
+    sof0.writeUInt16BE(16, 7);
+    sof0.writeUInt8(1, 9);
+    const sos = Buffer.from([0xff, 0xda, 0x00, 0x02, 0x01, 0x77]);
+    const parts = [soi, app1, sof0, sos];
+    if (withEoi) parts.push(Buffer.from([0xff, 0xd9]));
+    return Buffer.concat(parts);
+  }
+
+  function mediaFiles(bytes: Buffer, kind?: string): Map<string, Uint8Array> {
+    const files = new Map<string, Uint8Array>();
+    files.set("media/photo.jpg", new Uint8Array(bytes));
+    files.set(
+      "media/media-map.json",
+      strToU8(
+        JSON.stringify({
+          old1: {
+            path: "media/photo.jpg",
+            filename: "photo.jpg",
+            contentType: "image/jpeg",
+            ...(kind ? { kind } : {}),
+          },
+        }),
+      ),
+    );
+    return files;
+  }
+
+  /** The bytes apply actually stores for `bundled`, taken from the write itself. */
+  async function storedBytesFor(bundled: Buffer): Promise<Buffer> {
+    const create = vi.fn().mockResolvedValue({ id: "x" });
+    const tx = {
+      mediaImage: { findMany: vi.fn().mockResolvedValue([]), create },
+    } as unknown as TxDb;
+    await recreateBundleMedia(tx, mediaFiles(bundled), "actor-1");
+    return Buffer.from(create.mock.calls[0][0].data.data as Uint8Array);
+  }
+
+  it("stores a bundled JPEG with its EXIF/GPS removed", async () => {
+    const create = vi.fn().mockResolvedValue({ id: "new-1" });
+    const tx = {
+      mediaImage: { findMany: vi.fn().mockResolvedValue([]), create },
+    } as unknown as TxDb;
+    const bundled = exifJpeg(true);
+    expect(bundled.includes(GPS)).toBe(true);
+
+    const map = await recreateBundleMedia(tx, mediaFiles(bundled), "actor-1");
+
+    expect(map.get("old1")).toBe("new-1");
+    const data = create.mock.calls[0][0].data;
+    const stored = Buffer.from(data.data as Uint8Array);
+    expect(stored.includes(GPS)).toBe(false);
+    // byteSize describes the bytes actually stored, not the bundle entry.
+    expect(data.byteSize).toBe(stored.length);
+    expect(data.byteSize).toBeLessThan(bundled.length);
+  });
+
+  it("FAILS OPEN and still imports an image whose strip could not be confirmed", async () => {
+    // Matching the image-library upload path (and deliberately unlike the
+    // member-photo route): an operator restoring a configuration bundle must not
+    // have the import blocked by one unparseable decorative image.
+    const original = exifJpeg(false); // no primary EOI → strip unconfirmed
+    const create = vi.fn().mockResolvedValue({ id: "new-2" });
+    const tx = {
+      mediaImage: { findMany: vi.fn().mockResolvedValue([]), create },
+    } as unknown as TxDb;
+
+    const map = await recreateBundleMedia(tx, mediaFiles(original), "actor-1");
+
+    expect(map.get("old1")).toBe("new-2");
+    const stored = Buffer.from(create.mock.calls[0][0].data.data as Uint8Array);
+    expect(stored.equals(original)).toBe(true);
+  });
+
+  it("plans create-vs-reuse against the STORED (stripped) bytes", async () => {
+    // The dry-run must disclose what apply will really do: an existing row
+    // holding the already-stripped bytes is a reuse, not a create. Keying the
+    // lookup on the raw bundle length instead would say "create" and apply
+    // would then say "unchanged" (ADR-002 plan/apply parity).
+    const bundled = exifJpeg(true);
+    const stored = await storedBytesFor(bundled);
+
+    const findMany = vi
+      .fn()
+      .mockResolvedValue([{ id: "existing-1", data: new Uint8Array(stored) }]);
+    const db = { mediaImage: { findMany } } as unknown as ReadDb;
+
+    const plan = await planBundleMedia(db, mediaFiles(bundled));
+
+    expect(plan.errors).toEqual([]);
+    expect(plan.items).toEqual([
+      { entity: "media-image", key: "photo.jpg", action: "unchanged" },
+    ]);
+    // Looked up by the STRIPPED byte size and the bundle entry's kind (#2322).
+    expect(findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { filename: "photo.jpg", byteSize: stored.length, kind: "CONTENT" },
+      }),
+    );
+  });
+
+  it("predicts the same reused id from planBundleMediaTarget", async () => {
+    // The theme's logoUrl planner resolves a bundle id to the row apply will
+    // write. It runs the identical reuse rule, so it must strip identically too.
+    const bundled = exifJpeg(true);
+    const stored = await storedBytesFor(bundled);
+    const findMany = vi
+      .fn()
+      .mockResolvedValue([{ id: "existing-logo", data: new Uint8Array(stored) }]);
+    const db = { mediaImage: { findMany } } as unknown as ReadDb;
+
+    const target = await planBundleMediaTarget(
+      db,
+      mediaFiles(bundled, "LOGO"),
+      "old1",
+    );
+
+    expect(target).toEqual({ carried: true, existingId: "existing-logo" });
+    expect(findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { filename: "photo.jpg", byteSize: stored.length, kind: "LOGO" },
+      }),
+    );
+  });
+
+  it("reuses the existing row at apply time for the same stripped bytes", async () => {
+    // Closing the parity loop from the other end: with the stripped row already
+    // present, apply must reuse it rather than mint a second copy.
+    const bundled = exifJpeg(true);
+    const stored = await storedBytesFor(bundled);
+    const create = vi.fn();
+    const tx = {
+      mediaImage: {
+        findMany: vi
+          .fn()
+          .mockResolvedValue([{ id: "existing-1", data: new Uint8Array(stored) }]),
+        create,
+      },
+    } as unknown as TxDb;
+
+    const map = await recreateBundleMedia(tx, mediaFiles(bundled), "actor-1");
+
+    expect(map.get("old1")).toBe("existing-1");
+    expect(create).not.toHaveBeenCalled();
   });
 });
 

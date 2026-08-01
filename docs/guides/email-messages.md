@@ -72,6 +72,18 @@ it — or nothing whatsoever. Put one of those tokens on its own, with no label 
 your own in front of it, and the email reads correctly whether or not the value
 exists.
 
+A second, related pair works the other way round: **`{{rebookLabel}}` and
+`{{rebookPath}}`** in the **Booking Update** (bumped) message. That email goes to
+two very different people — a club member whose pending booking lost its beds,
+and the organisation or school contact whose booking came from a public booking
+request. The member can sign in and book again; the contact has no login at all,
+so sending them to the member booking page would land them on a sign-in screen
+they can never get past. The two tokens carry the caption and the destination, so
+the line `{{rebookLabel}}: {{BASE_URL}}{{rebookPath}}` reads
+`Book Again: …/book` for a member and `Contact the Club: …/contact` for a
+contact who cannot sign in. Keep them together on one line, and keep
+`{{BASE_URL}}` between them, or the link will not point anywhere useful.
+
 Two consequences worth knowing:
 
 - **Never write a label in front of a `…Note` / `…Line` token.** Writing
@@ -248,6 +260,28 @@ Two consequences worth knowing before you edit one:
   only need `{{creditNote}}` if you write your own money lines out of
   `{{totalPaid}}` and friends — and if you do, include it, or a member charged
   $180.00 will read `Total Paid: $300.00` with nothing to explain the difference.
+- **A confirmation that still owes money points at the invoice, not at its own
+  total.** When a booking is confirmed with payment still owing (a member
+  whole-lodge approval), `{{paymentDueNote}}` — carried inside
+  `{{paymentOutcome}}` — ends with *"If the invoice asks for a different amount
+  — for example because the club has put account credit you hold towards it —
+  please transfer the amount the invoice shows."* The `Total Due:` figure is the
+  booking's own price; the invoice is a separate document you can adjust in
+  Xero, so the email tells the member to follow the invoice rather than the
+  email. The sentence is conditional on purpose — for most members the two
+  agree — and it states no second amount. Nothing puts a member's account credit
+  towards such an invoice for you; if you want that, do it in Xero, and the
+  member has already been told to pay what the invoice asks. No new token was
+  added, so if your wording keeps `{{paymentOutcome}}` (or uses
+  `{{paymentDueNote}}` on its own) the sentence arrives with no edit at all — but
+  the same caveat as `{{creditNote}}` above applies: a body that writes its own
+  money lines out of `{{totalDue}}` and friends and carries neither of those two
+  tokens has never told an unpaid member how to pay, and still does not. Add
+  `{{paymentDueNote}}` to such a body. It renders only on the unpaid
+  confirmation and is empty everywhere else, so put it on a line of its own — a
+  label typed in front of it ("Payment: `{{paymentDueNote}}`") would leave a bare
+  `Payment:` on every confirmation that is already paid, and the editor now warns
+  you about exactly that.
 
 ### Consent emails ignore a member's notification preferences
 

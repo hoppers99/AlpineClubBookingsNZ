@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { FieldHint, useFieldHint } from "@/components/ui/field-hint";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
@@ -41,6 +42,9 @@ export function PartnerLinkSection({ canManage = false }: PartnerLinkSectionProp
   const [showRemoveConfirm, setShowRemoveConfirm] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
+  // #2264 — same treatment and same wording as the family-group email boxes:
+  // the example moves under the field and folds into the note already there.
+  const partnerEmailHint = useFieldHint();
 
   async function loadState() {
     try {
@@ -287,13 +291,13 @@ export function PartnerLinkSection({ canManage = false }: PartnerLinkSectionProp
                 setEmail(e.target.value);
                 if (e.target.value) setSelectedMemberId("");
               }}
-              placeholder="member@example.com"
               disabled={Boolean(selectedMemberId)}
+              {...partnerEmailHint.fieldProps}
             />
-            <p className="text-xs text-muted-foreground mt-1">
-              They must be a registered adult member with a login; they confirm the
-              relationship from their profile.
-            </p>
+            <FieldHint {...partnerEmailHint.hintProps} className="mt-1">
+              Example: member@example.com. They must be a registered adult member
+              with a login; they confirm the relationship from their profile.
+            </FieldHint>
           </div>
           {familyCandidates.length > 0 && (
             <div>

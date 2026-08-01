@@ -259,7 +259,29 @@ type ApiRouteMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 
 export type MixedMethodApiRouteMetadata = {
   methods: Partial<
-    Record<ApiRouteMethod, { boundary: ApiRouteBoundary; reason: string }>
+    Record<
+      ApiRouteMethod,
+      {
+        boundary: ApiRouteBoundary;
+        reason: string;
+        /**
+         * Only meaningful on a `public` method, and always an explicit
+         * declaration: the handler IS anonymously reachable for a documented
+         * subset of requests, and falls back to the shared session guards
+         * (`requireActiveSessionUser` / `requireAdmin`) for everything else —
+         * the boundary is mixed WITHIN the one method, which the per-method
+         * `boundary` vocabulary cannot express on its own.
+         *
+         * The boundary test enforces this BOTH ways: a public method that
+         * contains a shared guard without this field fails (a guard must never
+         * appear silently in something documented as public), and a method that
+         * declares this field without containing a shared guard fails too (so
+         * the declaration cannot rot once the guard is removed). It is NOT a
+         * blanket exemption — state exactly which requests are anonymous.
+         */
+        conditionalAuth?: string;
+      }
+    >
   >;
 };
 
@@ -306,7 +328,9 @@ export const mixedMethodApiRoutes = {
       GET: {
         boundary: "public",
         reason:
-          "Scoped member-photo serving (epic #171, MP2). Anonymous fetches succeed only when the target member has an active, published CommitteeAssignment (their photo is committee-public); otherwise the handler resolves the session and serves only to the owning member or a membership viewer/admin, returning 404 to everyone else. Committee-public responses carry a short public cache; private responses are no-store. Data-layer authorisation, never the public /api/images path.",
+          "Scoped member-photo serving (epic #171, MP2). Anonymous fetches succeed only when the target member has an active, published CommitteeAssignment (their photo is committee-public) AND the club's committeePhotoDisplay setting is not NONE; otherwise the handler resolves the session and serves only to the owning member or a membership viewer/admin, returning 404 to everyone else. Committee-public responses carry a short public cache; private responses are no-store. Data-layer authorisation, never the public /api/images path.",
+        conditionalAuth:
+          "Anonymous ONLY on the committee-public path (active member + published active CommitteeAssignment + committeePhotoDisplay != NONE). Every other request falls through to the shared guards this file's POST/DELETE use — requireActiveSessionUser for the owning member, requireAdmin({ membership: view }) for an admin — so the GET cannot skip the forcePasswordChange and two-factor gates. A guard refusal is deliberately mapped onto the route's 404 (never its own 401/403) so the endpoint never confirms whether a private photo exists (#2242).",
       },
       POST: {
         boundary: "member",

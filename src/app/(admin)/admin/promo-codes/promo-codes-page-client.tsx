@@ -22,6 +22,7 @@ import {
 } from "@/components/ui/select";
 import { APP_CURRENCY, APP_TIME_ZONE } from "@/config/operational";
 import { formatDateOnlyForTimeZone } from "@/lib/date-only";
+import { formatNZDate } from "@/lib/nzst-date";
 import { formatCents } from "@/lib/pricing";
 import { useLodgeOptions } from "@/components/lodge-select";
 import {
@@ -128,9 +129,7 @@ function formatPromoDateInput(value: string | null) {
 }
 
 function formatPromoDateDisplay(value: string | null) {
-  return value
-    ? new Date(value).toLocaleDateString("en-NZ", { timeZone: APP_TIME_ZONE })
-    : "";
+  return value ? formatNZDate(new Date(value)) : "";
 }
 
 export function PromoCodesPageClient({
@@ -165,6 +164,8 @@ export function PromoCodesPageClient({
   const codeHint = useFieldHint();
   const descriptionHint = useFieldHint();
   const percentOffHint = useFieldHint();
+  const valueDollarsHint = useFieldHint();
+  const fixedNightlyPriceHint = useFieldHint();
   const freeNightsPerIndividualHint = useFieldHint();
   const xeroItemCodeHint = useFieldHint();
   const xeroAccountCodeHint = useFieldHint();
@@ -264,15 +265,21 @@ export function PromoCodesPageClient({
       // Backstop for matrix↔enforcement drift or a mid-session revocation: a
       // 401/403 degrades quietly to the manual inputs (no banner), while a
       // genuine failure — Xero not connected returns 500 — keeps the amber note.
-      if (
-        accountsRes.status === 401 ||
-        accountsRes.status === 403 ||
-        itemsRes.status === 401 ||
-        itemsRes.status === 403
-      ) {
+      //
+      // 404 belongs in the same quiet branch. `/api/admin/xero/*` is
+      // module-gated, so it answers 404 both when the Xero module is off and
+      // when the sign-in behind this tab has expired — a gated route hides that
+      // difference on purpose (`moduleGatedNotFoundResponse` in
+      // `src/lib/session-guards.ts`). Neither cause is "Xero is not connected",
+      // and a promo code is perfectly usable with its account code typed by
+      // hand, so the amber banner would be both wrong and in the way.
+      const denied = (status: number) =>
+        status === 401 || status === 403 || status === 404;
+
+      if (denied(accountsRes.status) || denied(itemsRes.status)) {
         if (process.env.NODE_ENV !== "production") {
           console.warn(
-            "PromoCodesPage: Xero reference fetch denied; using manual entry (matrix/enforcement drift or revoked session?)",
+            "PromoCodesPage: Xero reference fetch denied or unavailable; using manual entry (module off, revoked session, or matrix/enforcement drift?)",
           );
         }
         return;
@@ -1004,13 +1011,14 @@ export function PromoCodesPageClient({
                         className="pl-7"
                         value={valueDollars}
                         onChange={(e) => setValueDollars(e.target.value)}
-                        placeholder="0.00"
                         required
+                        {...valueDollarsHint.fieldProps}
                       />
                     </div>
-                    <p className="text-xs text-muted-foreground">
+                    <FieldHint {...valueDollarsHint.hintProps}>
                       Each eligible guest receives this amount off, capped at their stay total.
-                    </p>
+                      Example: 25.00
+                    </FieldHint>
                   </div>
                 )}
 
@@ -1045,9 +1053,13 @@ export function PromoCodesPageClient({
                         onChange={(e) => setLifetimeFreeNightsCap(e.target.value)}
                         placeholder="Leave blank for no lifetime cap"
                       />
+                      {/* #2264 — the "Leave blank for no lifetime cap"
+                          instruction is stated once, in the placeholder (where
+                          it describes the empty control's own behaviour); the
+                          line below no longer repeats it. */}
                       <p className="text-xs text-muted-foreground">
                         Caps the total free nights any one member can claim from this code across all
-                        their bookings. Leave blank for no lifetime cap.
+                        their bookings.
                       </p>
                     </div>
                   </>
@@ -1071,15 +1083,15 @@ export function PromoCodesPageClient({
                           className="pl-7"
                           value={fixedNightlyPriceDollars}
                           onChange={(e) => setFixedNightlyPriceDollars(e.target.value)}
-                          placeholder="0.00"
                           required
+                          {...fixedNightlyPriceHint.fieldProps}
                         />
                       </div>
-                      <p className="text-xs text-muted-foreground">
+                      <FieldHint {...fixedNightlyPriceHint.hintProps}>
                         Applied to each eligible guest-night. When assigned to members, the &quot;how
                         the code applies&quot; choice below decides whether it prices the whole group
-                        or only the assigned members&apos; own nights.
-                      </p>
+                        or only the assigned members&apos; own nights. Example: 30.00
+                      </FieldHint>
                     </div>
                     <div className="space-y-2">
                       <Label htmlFor="fixedNightlyMode">Fixed nightly mode</Label>

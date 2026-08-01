@@ -4,6 +4,7 @@ import { ArrowLeft, Pin } from "lucide-react";
 import { auth } from "@/lib/auth";
 import { loadEffectiveModuleFlags } from "@/lib/module-settings";
 import { getNoticeForMember } from "@/lib/notices";
+import { formatNZDate } from "@/lib/nzst-date";
 import { sanitizePageContentHtml } from "@/lib/page-content-html";
 import { MarkNoticeRead } from "@/components/mark-notice-read";
 import { NoticeAcknowledgeButton } from "@/components/notice-acknowledge-button";
@@ -66,9 +67,7 @@ export default async function NoticeDetailPage({
           {notice.publishedAt ? (
             <p className="text-sm text-muted-foreground">
               Posted{" "}
-              {new Date(notice.publishedAt).toLocaleDateString("en-NZ", {
-                dateStyle: "medium",
-              })}
+              {formatNZDate(new Date(notice.publishedAt))}
             </p>
           ) : null}
         </CardHeader>

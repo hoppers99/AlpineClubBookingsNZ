@@ -15,6 +15,8 @@ import {
   splitRoomName,
   windowDatesOf,
 } from "./arrivals-board";
+import { DISPLAY_SHORT_WEEKDAY } from "./status-helpers";
+import { APP_LOCALE, APP_TIME_ZONE } from "@/config/operational";
 
 // The whole-lodge blockout view (fork issues #30/#58; visual references:
 // docs/lobby-display/mockups/approved/whole-lodge.html options A/C and
@@ -30,33 +32,43 @@ import {
 // - no rooms → the STATEMENT variant (mock option B): a full-width block
 //   statement plus a week occupancy strip showing when the lodge frees.
 
+// Not shared `nzst-date` shapes (#2264): the blockout statement drops the YEAR
+// from both its date forms, because a lobby screen only ever names dates inside
+// the current stay window and the year would be noise on the wall. Zones pinned
+// to club time; the short form's weekday half is the one shared display
+// constant. See `status-helpers.DISPLAY_SHORT_WEEKDAY`.
+const DISPLAY_SHORT_DATE = new Intl.DateTimeFormat(APP_LOCALE, {
+  timeZone: APP_TIME_ZONE,
+  weekday: "short",
+  day: "numeric",
+  month: "short",
+});
+
+const DISPLAY_LONG_DATE = new Intl.DateTimeFormat(APP_LOCALE, {
+  timeZone: APP_TIME_ZONE,
+  weekday: "long",
+  day: "numeric",
+  month: "long",
+});
+
+// Every date below is an NZ date-only lodge night handed over at UTC midnight
+// rather than parsed in the browser's own zone (#2264) — see
+// `status-helpers.shortDay` for why the bare `T00:00:00` parse was wrong.
 function shortDate(date: string): string {
-  const day = new Date(`${date}T00:00:00`);
-  return day.toLocaleDateString("en-NZ", {
-    weekday: "short",
-    day: "numeric",
-    month: "short",
-  });
+  return DISPLAY_SHORT_DATE.format(new Date(`${date}T00:00:00Z`));
 }
 
 function longDate(date: string): string {
-  const day = new Date(`${date}T00:00:00`);
-  return day.toLocaleDateString("en-NZ", {
-    weekday: "long",
-    day: "numeric",
-    month: "long",
-  });
+  return DISPLAY_LONG_DATE.format(new Date(`${date}T00:00:00Z`));
 }
 
 function weekday(date: string): string {
-  return new Date(`${date}T00:00:00`).toLocaleDateString("en-NZ", {
-    weekday: "short",
-  });
+  return DISPLAY_SHORT_WEEKDAY.format(new Date(`${date}T00:00:00Z`));
 }
 
 function formatDayHeading(date: string, index: number): string {
-  const day = new Date(`${date}T00:00:00`);
-  const label = `${day.toLocaleDateString("en-NZ", { weekday: "short" })} ${day.getDate()}`;
+  const day = new Date(`${date}T00:00:00Z`);
+  const label = `${DISPLAY_SHORT_WEEKDAY.format(day)} ${day.getUTCDate()}`;
   return index === 0 ? `Tonight · ${label}` : label;
 }
 

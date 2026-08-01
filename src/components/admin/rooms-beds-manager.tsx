@@ -16,6 +16,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
+import { FieldHint, useFieldHint } from "@/components/ui/field-hint";
 import { Input } from "@/components/ui/input";
 import {
   Table,
@@ -300,6 +301,21 @@ export function RoomsBedsManager({
   const [bulkRoomCount, setBulkRoomCount] = useState("");
   const [bulkBedsPerRoom, setBulkBedsPerRoom] = useState("4");
   const [bulkNamePrefix, setBulkNamePrefix] = useState("Room");
+  /*
+    #2264: the name-prefix example used to be a "Room" placeholder — grey text
+    inside the box that reads as a prefix already chosen, and that disappears on
+    the first keystroke. It is helper text under the field now, and it spells out
+    what the prefix actually DOES (numbering) rather than just showing a word.
+
+    The sibling "Rooms" count lost its "8" placeholder outright with no hint to
+    replace it: the card's own copy above already says "for example 8 rooms of 4
+    beds", so a hint would be the same example twice — and "Beds per room" next
+    to it never had a placeholder at all, so removing it makes the row
+    consistent. These inputs are labelled by a plain `<span>`, so each one that
+    loses its placeholder gains an `aria-label` in the same edit — the file
+    already names its bunk-group inputs that way.
+  */
+  const bulkNamePrefixHint = useFieldHint();
 
   const totalBeds = useMemo(
     () => payload?.rooms.reduce((total, room) => total + room.beds.length, 0) ?? 0,
@@ -339,10 +355,21 @@ export function RoomsBedsManager({
       // a denial here means matrix↔enforcement drift or a mid-session
       // revocation — render nothing quietly instead of toasting a raw 403.
       // Genuine failures (5xx/network) keep the toast below.
-      if (response.status === 401 || response.status === 403) {
+      //
+      // 404 joins them. `/api/admin/bed-allocation/*` is module-gated, so it
+      // answers 404 both when the bed-allocation module is off and when the
+      // sign-in behind this tab has expired — a gated route hides that
+      // difference on purpose (`moduleGatedNotFoundResponse` in
+      // `src/lib/session-guards.ts`). Neither state has rooms to manage, and a
+      // toast reading "Not found" would name neither.
+      if (
+        response.status === 401 ||
+        response.status === 403 ||
+        response.status === 404
+      ) {
         if (process.env.NODE_ENV !== "production") {
           console.warn(
-            "RoomsBedsManager: bed-allocation fetch denied; hiding manager (matrix/enforcement drift or revoked session?)",
+            "RoomsBedsManager: bed-allocation fetch denied or unavailable; hiding manager (module off, revoked session, or matrix/enforcement drift?)",
           );
         }
         setForbidden(true);
@@ -840,7 +867,7 @@ export function RoomsBedsManager({
                   type="number"
                   min="1"
                   max="50"
-                  placeholder="8"
+                  aria-label="Rooms"
                   value={bulkRoomCount}
                   disabled={!canEdit}
                   onChange={(event) => setBulkRoomCount(event.target.value)}
@@ -863,8 +890,12 @@ export function RoomsBedsManager({
                   value={bulkNamePrefix}
                   disabled={!canEdit}
                   onChange={(event) => setBulkNamePrefix(event.target.value)}
-                  placeholder="Room"
+                  aria-label="Name prefix"
+                  {...bulkNamePrefixHint.fieldProps}
                 />
+                <FieldHint {...bulkNamePrefixHint.hintProps}>
+                  Example: Room — creates Room 1, Room 2 …
+                </FieldHint>
               </div>
               <div className="flex items-end">
                 <Button

@@ -89,7 +89,7 @@ export function PublicContentSettingsPanel() {
     <div className="space-y-3 rounded-md border p-4">
       <div>
         <p className="text-sm font-medium">Book Now button</p>
-        <p className="text-sm text-muted-foreground">Controls the public website header&apos;s Book Now button. A page target that is unpublished or removed falls back to the booking flow.</p>
+        <p className="text-sm text-muted-foreground">Controls the public website header&apos;s Book Now button; a visitor who is not signed in sees it labelled &ldquo;Member booking&rdquo;. A page target that is unpublished or removed falls back to the booking flow.</p>
       </div>
       <label className="flex items-center gap-3"><input type="checkbox" checked={settings.showBookNow} disabled={!canEdit} aria-describedby={!canEdit ? viewOnlyReasonId : undefined} onChange={(event) => setSettings({ ...settings, showBookNow: event.target.checked })} /><span>Show the Book Now button</span></label>
       {settings.showBookNow ? <div className="space-y-2 pl-1">
@@ -101,6 +101,7 @@ export function PublicContentSettingsPanel() {
     <div className="space-y-2 rounded-md border p-3">
       <p className="text-sm font-medium">Committee photos</p>
       <p className="text-sm text-muted-foreground">Whether members&apos; photos appear on the public committee roster, and their shape. Hidden by default; members without a photo show their initials.</p>
+      <p className="text-sm text-muted-foreground">&ldquo;Don&apos;t show photos&rdquo; takes the pictures off the public website altogether &mdash; they stop being handed out to the outside world at all, not just hidden from the roster page &mdash; so you can use it to answer a request to take someone&apos;s picture down. Members still see their own photo, and administrators with membership access still see it on the member&apos;s record.</p>
       <select className="w-full rounded-md border p-2 text-sm" value={settings.committeePhotoDisplay} disabled={!canEdit} aria-label="Committee photo display" aria-describedby={!canEdit ? viewOnlyReasonId : undefined} onChange={(event) => setSettings({ ...settings, committeePhotoDisplay: event.target.value as Settings["committeePhotoDisplay"] })}><option value="NONE">Don&apos;t show photos</option><option value="CIRCLE">Show photos (circular)</option><option value="SQUARE">Show photos (square)</option></select>
     </div>
     <ViewOnlyActionButton canEdit={canEdit} describeReason={false} disabled={saving} onClick={save}>{saving ? "Saving…" : "Save visibility"}</ViewOnlyActionButton></div></div>;

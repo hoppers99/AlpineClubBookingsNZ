@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react"
 import { Button } from "@/components/ui/button"
+import { formatNZDateTime } from "@/lib/nzst-date"
 import { fetchJson } from "./api"
 import { BudgetStatusChip, budgetTone, SectionCard, toneFillClass, type ToggleSection } from "./shared"
 import type { XeroUsageSummary } from "./types"
@@ -65,7 +66,7 @@ export function UsagePanel({
                 <BudgetStatusChip status={usage.today.budgetStatus} />
               </div>
               <p className="mt-1 text-xs text-muted-foreground">
-                Last rate limit: {usage.today.lastRateLimitAt ? new Date(usage.today.lastRateLimitAt).toLocaleString("en-NZ") : "none"}
+                Last rate limit: {usage.today.lastRateLimitAt ? formatNZDateTime(new Date(usage.today.lastRateLimitAt)) : "none"}
               </p>
             </div>
           </div>
@@ -91,7 +92,7 @@ export function UsagePanel({
                   <div key={failure.id} className="rounded-md bg-muted p-3 text-sm">
                     <div className="flex items-center justify-between gap-3">
                       <span className="font-medium">{failure.workflow ?? failure.operation}</span>
-                      <span className="text-xs text-muted-foreground">{new Date(failure.createdAt).toLocaleString("en-NZ")}</span>
+                      <span className="text-xs text-muted-foreground">{formatNZDateTime(new Date(failure.createdAt))}</span>
                     </div>
                     <p className="mt-1 text-xs text-muted-foreground">
                       {failure.operation} - {failure.resourceType}

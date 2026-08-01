@@ -1,5 +1,6 @@
 import jsPDF from "jspdf";
 import html2canvas from "html2canvas";
+import { formatNZLongDate } from "@/lib/nzst-date";
 
 /**
  * Force the light palette onto the off-screen document html2canvas renders from
@@ -59,8 +60,11 @@ export async function generateReportPDF(
   pdf.setFontSize(10);
   pdf.setTextColor(100, 100, 100);
   pdf.text(`Date range: ${dateRange.from} to ${dateRange.to}`, margin, margin + 12);
+  // The report cover keeps the long "16 April 2026" form it has always used
+  // (owner decision, #2264) — now pinned to club time rather than the
+  // exporter's own zone.
   pdf.text(
-    `Generated: ${new Date().toLocaleDateString("en-NZ", { day: "numeric", month: "long", year: "numeric" })}`,
+    `Generated: ${formatNZLongDate(new Date())}`,
     margin,
     margin + 17
   );

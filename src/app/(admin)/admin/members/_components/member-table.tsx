@@ -25,6 +25,7 @@ import { buildHrefWithReturnTo } from "@/lib/internal-return-path"
 import { getLifecycleStatusConfig } from "@/lib/admin-member-badges"
 import { CHIP_TONE_CLASSES, type ChipTone } from "@/lib/chip-tones"
 import { memberName } from "@/lib/member-serialization"
+import { formatNZDate } from "@/lib/nzst-date"
 import { getXeroContactGroupTone } from "@/lib/xero-contact-group-tone"
 import { buildXeroContactUrl, buildXeroInvoiceUrl } from "@/lib/xero-links"
 import type { SubscriptionStatus } from "@prisma/client"
@@ -332,11 +333,7 @@ export function MemberTable({
                 </div>
               </TableCell>
               <TableCell className="text-muted-foreground text-sm">
-                {new Date(member.joinedDate || member.createdAt).toLocaleDateString("en-NZ", {
-                  day: "numeric",
-                  month: "short",
-                  year: "numeric",
-                })}
+                {formatNZDate(new Date(member.joinedDate || member.createdAt))}
               </TableCell>
               <TableCell className="text-right">
                 <div className="flex justify-end gap-1">

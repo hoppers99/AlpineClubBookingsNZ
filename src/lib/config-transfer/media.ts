@@ -3,6 +3,7 @@ import {
   detectImageContentType,
   extractImageDimensions,
   sanitiseMediaImageFilename,
+  storableImageBytes,
 } from "@/lib/media-image";
 import type {
   CategoryPlanResult,
@@ -19,6 +20,22 @@ import type {
 // consistently. See ADR-001/ADR-002.
 
 const MEDIA_MAP_FILE = "media/media-map.json";
+
+// Bytes to store for a bundled image: EXIF/XMP/comment metadata stripped by the
+// shared fail-open helper (`storableImageBytes`, src/lib/media-image.ts).
+//
+// A recreated bundle image is an anonymously-served MediaImage — /api/images/[id]
+// serves it with `public, max-age=31536000, immutable`, exactly the same footing
+// as an admin image-library upload — so an unstripped phone photo in someone's
+// configuration bundle would publish its GPS coordinates effectively forever.
+// Fail-open (unlike the member-photo route) because an operator restoring a
+// configuration bundle must not have the import blocked by one unparseable
+// decorative image; an unconfirmed strip is logged instead.
+//
+// Applied identically by the two plan helpers and by apply below, so the
+// create-vs-reuse dedup — which compares filename + kind + byteSize + stored
+// bytes — classifies the same way in all three.
+const MEDIA_LOG_SOURCE = "config-transfer bundle image";
 
 /** Categories whose content can reference bundled images. */
 const IMAGE_REFERENCING_CATEGORIES = ["site-content", "lodge-config"] as const;
@@ -161,17 +178,24 @@ export async function planBundleMediaTarget(
   if (buffer.length > MAX_MEDIA_IMAGE_BYTES) {
     return { carried: false, existingId: null };
   }
-  if (!detectImageContentType(buffer)) return { carried: false, existingId: null };
+  const detected = detectImageContentType(buffer);
+  if (!detected) return { carried: false, existingId: null };
 
+  // Resolve against the bytes apply will actually store (metadata stripped), so
+  // this id prediction cannot disagree with the write.
+  const storable = storableImageBytes(buffer, detected, {
+    source: MEDIA_LOG_SOURCE,
+    path: entry.path,
+  });
   const candidates = await db.mediaImage.findMany({
     where: {
       filename: sanitiseMediaImageFilename(entry.filename),
-      byteSize: buffer.length,
+      byteSize: storable.length,
       kind: mediaKindFrom(entry.kind),
     },
     select: { id: true, data: true },
   });
-  const existing = candidates.find((c) => Buffer.from(c.data).equals(buffer));
+  const existing = candidates.find((c) => Buffer.from(c.data).equals(storable));
   return { carried: true, existingId: existing?.id ?? null };
 }
 
@@ -218,18 +242,24 @@ export async function planBundleMedia(
       continue;
     }
     const filename = sanitiseMediaImageFilename(meta.filename);
+    // Classify against the bytes apply will actually store (metadata stripped),
+    // so the disclosed create/unchanged plan matches the write.
+    const storable = storableImageBytes(buffer, detected, {
+      source: MEDIA_LOG_SOURCE,
+      path: meta.path,
+    });
     const candidates = await db.mediaImage.findMany({
       // Kind-scoped identically to the apply-side reuse lookup (#2322): without
       // this the dry-run could match a LOGO onto an existing CONTENT row and
       // report "unchanged" where apply goes on to create.
       where: {
         filename,
-        byteSize: buffer.length,
+        byteSize: storable.length,
         kind: mediaKindFrom(meta.kind),
       },
       select: { id: true, data: true },
     });
-    const existing = candidates.find((c) => Buffer.from(c.data).equals(buffer));
+    const existing = candidates.find((c) => Buffer.from(c.data).equals(storable));
     items.push({
       entity: "media-image",
       key: filename,
@@ -266,11 +296,15 @@ export async function recreateBundleMedia(
     const detected = detectImageContentType(buffer);
     if (!detected) continue; // untrusted: skip non-images
     const filename = sanitiseMediaImageFilename(meta.filename);
+    const storable = storableImageBytes(buffer, detected, {
+      source: MEDIA_LOG_SOURCE,
+      path: meta.path,
+    });
 
     const candidates = await tx.mediaImage.findMany({
       where: {
         filename,
-        byteSize: buffer.length,
+        byteSize: storable.length,
         // Reuse only within the same kind (#2322): matching a LOGO onto an
         // existing CONTENT row (or the reverse) would hand the theme a blob
         // whose lifecycle it does not own, or expose a picker image to the
@@ -279,7 +313,7 @@ export async function recreateBundleMedia(
       },
       select: { id: true, data: true },
     });
-    const existing = candidates.find((c) => Buffer.from(c.data).equals(buffer));
+    const existing = candidates.find((c) => Buffer.from(c.data).equals(storable));
     if (existing) {
       oldToNew.set(oldId, existing.id);
       continue;
@@ -290,8 +324,8 @@ export async function recreateBundleMedia(
       data: {
         filename,
         contentType: detected,
-        byteSize: buffer.length,
-        data: buffer,
+        byteSize: storable.length,
+        data: new Uint8Array(storable),
         width: dims?.width ?? null,
         height: dims?.height ?? null,
         uploadedByMemberId: actorMemberId,

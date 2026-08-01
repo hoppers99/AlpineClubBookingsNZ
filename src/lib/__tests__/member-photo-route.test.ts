@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 
 vi.mock("server-only", () => ({}));
 
@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   requireActiveSessionUser: vi.fn(),
   memberFindUnique: vi.fn(),
   memberUpdate: vi.fn(),
+  publicContentSettingsFindUnique: vi.fn(),
   mediaImageFindUnique: vi.fn(),
   mediaImageCreate: vi.fn(),
   mediaImageDeleteMany: vi.fn(),
@@ -54,6 +55,9 @@ vi.mock("@/lib/prisma", () => ({
       findUnique: mocks.mediaImageFindUnique,
       create: mocks.mediaImageCreate,
       deleteMany: mocks.mediaImageDeleteMany,
+    },
+    publicContentSettings: {
+      findUnique: mocks.publicContentSettingsFindUnique,
     },
     $transaction: mocks.transaction,
   },
@@ -222,12 +226,21 @@ function wireMemberLookups({
   committeePublished,
   memberActive = true,
   viewer,
+  // The club's public roster-photo setting. Defaults to CIRCLE (photos ON) so
+  // the anonymous-serving matrix below reads as "committee-published member,
+  // roster photos enabled"; the OFF case is exercised explicitly. The SCHEMA
+  // default is NONE, which the route treats as "do not serve anonymously".
+  committeePhotoDisplay = "CIRCLE",
 }: {
   photoImageId: string | null;
   committeePublished?: boolean;
   memberActive?: boolean;
   viewer?: { active: boolean; accessRoles: Array<{ role: string }> } | null;
+  committeePhotoDisplay?: "NONE" | "CIRCLE" | "SQUARE" | null;
 }) {
+  mocks.publicContentSettingsFindUnique.mockResolvedValue(
+    committeePhotoDisplay === null ? null : { committeePhotoDisplay },
+  );
   mocks.memberFindUnique.mockImplementation(
     async ({ where, select }: { where: { id: string }; select: Record<string, unknown> }) => {
       if (select.committeeAssignments) {
@@ -335,6 +348,9 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.auth.mockResolvedValue(null);
   mocks.requireActiveSessionUser.mockResolvedValue(null);
+  mocks.publicContentSettingsFindUnique.mockResolvedValue({
+    committeePhotoDisplay: "CIRCLE",
+  });
   mocks.mediaImageFindUnique.mockResolvedValue({
     data: PNG_BYTES,
     contentType: "image/png",
@@ -466,6 +482,317 @@ describe("GET /api/members/[id]/photo — serving authz matrix", () => {
     const response = await GET(servingRequest(TARGET_ID), params(TARGET_ID));
 
     expect(response.status).toBe(404);
+  });
+
+  // -------------------------------------------------------------------------
+  // #2242 finding 2. committeePhotoDisplay = NONE must actually STOP anonymous
+  // serving, not just hide photo metadata from /api/committee and the roster.
+  // The admin control reads "Don't show photos", so an operator handling a
+  // takedown request has to be able to trust it. It gates the ANONYMOUS branch
+  // only — self and membership admins keep seeing the photo.
+  // -------------------------------------------------------------------------
+  it("returns 404 to an anonymous fetch for a committee member when committeePhotoDisplay is NONE", async () => {
+    wireMemberLookups({
+      photoImageId: "img-1",
+      committeePublished: true,
+      committeePhotoDisplay: "NONE",
+    });
+
+    const response = await GET(servingRequest(TARGET_ID), params(TARGET_ID));
+
+    expect(response.status).toBe(404);
+    expect(mocks.mediaImageFindUnique).not.toHaveBeenCalled();
+  });
+
+  it("returns 404 to an anonymous fetch when no PublicContentSettings row exists (schema default NONE)", async () => {
+    wireMemberLookups({
+      photoImageId: "img-1",
+      committeePublished: true,
+      committeePhotoDisplay: null,
+    });
+
+    const response = await GET(servingRequest(TARGET_ID), params(TARGET_ID));
+
+    expect(response.status).toBe(404);
+    expect(mocks.mediaImageFindUnique).not.toHaveBeenCalled();
+  });
+
+  it("serves a committee photo anonymously when committeePhotoDisplay is CIRCLE", async () => {
+    wireMemberLookups({
+      photoImageId: "img-1",
+      committeePublished: true,
+      committeePhotoDisplay: "CIRCLE",
+    });
+
+    const response = await GET(servingRequest(TARGET_ID), params(TARGET_ID));
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Cache-Control")).toBe(
+      "public, max-age=300, must-revalidate",
+    );
+  });
+
+  it("still serves a committee photo to the owning member when committeePhotoDisplay is NONE (no-store)", async () => {
+    // Roster display OFF is a PUBLIC-visibility decision. The member's own
+    // profile photo must keep rendering for them, so the authenticated branch is
+    // deliberately not gated on the setting — and the response must drop out of
+    // the shared cache onto private/no-store now that it is no longer public.
+    wireMemberLookups({
+      photoImageId: "img-1",
+      committeePublished: true,
+      committeePhotoDisplay: "NONE",
+    });
+    mocks.auth.mockResolvedValue(ownerSession);
+
+    const response = await GET(servingRequest(TARGET_ID), params(TARGET_ID));
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Cache-Control")).toBe("private, no-store");
+    expect(response.headers.get("Vary")).toBe("Cookie");
+    expect(response.headers.get("ETag")).toBeNull();
+  });
+
+  it("still serves a committee photo to a membership admin when committeePhotoDisplay is NONE", async () => {
+    // Same reason: an admin with membership:view manages the photo in the admin
+    // member UI regardless of whether the public roster renders it.
+    wireMemberLookups({
+      photoImageId: "img-1",
+      committeePublished: true,
+      committeePhotoDisplay: "NONE",
+      viewer: { active: true, accessRoles: [{ role: "ADMIN_READONLY" }] },
+    });
+    mocks.auth.mockResolvedValue(readonlyAdminSession);
+
+    const response = await GET(servingRequest(TARGET_ID), params(TARGET_ID));
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Cache-Control")).toBe("private, no-store");
+  });
+
+  // -------------------------------------------------------------------------
+  // #2242 finding 1. The non-public branch must go through the SAME shared
+  // session guards POST and DELETE use, so it cannot skip the
+  // forcePasswordChange / two-factor gates. A guard refusal maps onto this
+  // route's 404, never its own 401/403.
+  // -------------------------------------------------------------------------
+  it("returns 404 for a member's own private photo when the session is two-factor pending", async () => {
+    wireMemberLookups({ photoImageId: "img-1", committeePublished: false });
+    mocks.auth.mockResolvedValue(ownerSession);
+    mocks.requireActiveSessionUser.mockResolvedValue(
+      NextResponse.json(
+        { error: "Two-factor verification required" },
+        { status: 403 },
+      ),
+    );
+
+    const response = await GET(servingRequest(TARGET_ID), params(TARGET_ID));
+
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: "Not found" });
+    expect(mocks.mediaImageFindUnique).not.toHaveBeenCalled();
+  });
+
+  it("returns 404 for a member's own private photo when a password change is pending", async () => {
+    wireMemberLookups({ photoImageId: "img-1", committeePublished: false });
+    mocks.auth.mockResolvedValue(ownerSession);
+    mocks.requireActiveSessionUser.mockResolvedValue(
+      NextResponse.json({ error: "Password change required" }, { status: 403 }),
+    );
+
+    const response = await GET(servingRequest(TARGET_ID), params(TARGET_ID));
+
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: "Not found" });
+    expect(mocks.mediaImageFindUnique).not.toHaveBeenCalled();
+  });
+
+  it("refuses a two-factor-pending session on GET exactly as POST and DELETE do", async () => {
+    // Parity assertion, not just an isolated GET check: the same blocked
+    // session must be refused by all three methods. Only the SHAPE differs —
+    // POST/DELETE surface the guard's own 403, GET maps it onto 404 so the
+    // photo's existence is never confirmed.
+    wireMemberLookups({ photoImageId: "img-1", committeePublished: false });
+    mocks.auth.mockResolvedValue(ownerSession);
+    mocks.requireActiveSessionUser.mockResolvedValue(
+      NextResponse.json(
+        { error: "Two-factor verification required" },
+        { status: 403 },
+      ),
+    );
+
+    const get = await GET(servingRequest(TARGET_ID), params(TARGET_ID));
+    const post = await POST(
+      uploadRequest(
+        TARGET_ID,
+        new File([PNG_BYTES], "me.png", { type: "image/png" }),
+      ),
+      params(TARGET_ID),
+    );
+    const del = await DELETE(servingRequest(TARGET_ID), params(TARGET_ID));
+
+    expect(get.status).toBe(404);
+    expect(post.status).toBe(403);
+    expect(del.status).toBe(403);
+    // Refused everywhere: no blob was read and no blob was written.
+    expect(mocks.mediaImageFindUnique).not.toHaveBeenCalled();
+    expect(mocks.mediaImageCreate).not.toHaveBeenCalled();
+    expect(mocks.memberUpdate).not.toHaveBeenCalled();
+  });
+
+  it("returns 404 to a membership admin whose own session is two-factor pending", async () => {
+    wireMemberLookups({
+      photoImageId: "img-1",
+      committeePublished: false,
+      viewer: { active: true, accessRoles: [{ role: "ADMIN_READONLY" }] },
+    });
+    mocks.auth.mockResolvedValue(readonlyAdminSession);
+    mocks.requireActiveSessionUser.mockResolvedValue(
+      NextResponse.json(
+        { error: "Two-factor verification required" },
+        { status: 403 },
+      ),
+    );
+
+    const response = await GET(servingRequest(TARGET_ID), params(TARGET_ID));
+
+    expect(response.status).toBe(404);
+    expect(mocks.mediaImageFindUnique).not.toHaveBeenCalled();
+  });
+
+  it("returns 404 to a membership admin whose own password change is pending", async () => {
+    wireMemberLookups({
+      photoImageId: "img-1",
+      committeePublished: false,
+      viewer: { active: true, accessRoles: [{ role: "ADMIN_READONLY" }] },
+    });
+    mocks.auth.mockResolvedValue(readonlyAdminSession);
+    mocks.requireActiveSessionUser.mockResolvedValue(
+      NextResponse.json({ error: "Password change required" }, { status: 403 }),
+    );
+
+    const response = await GET(servingRequest(TARGET_ID), params(TARGET_ID));
+
+    expect(response.status).toBe(404);
+    expect(mocks.mediaImageFindUnique).not.toHaveBeenCalled();
+  });
+
+  // Enumeration parity: the guard rework must not give an unauthorised caller
+  // any way to tell a REAL member id from one that does not exist. Every
+  // refusal is the same status, the same body and the same headers.
+  it("is indistinguishable between a real member id and a nonexistent one for an unauthorised caller", async () => {
+    const cases: Array<{
+      label: string;
+      wire: () => void;
+      session: unknown;
+    }> = [
+      {
+        label: "nonexistent member (anonymous)",
+        wire: () => {
+          mocks.publicContentSettingsFindUnique.mockResolvedValue({
+            committeePhotoDisplay: "CIRCLE",
+          });
+          mocks.memberFindUnique.mockResolvedValue(null);
+        },
+        session: null,
+      },
+      {
+        label: "real member, private photo (anonymous)",
+        wire: () =>
+          wireMemberLookups({ photoImageId: "img-1", committeePublished: false }),
+        session: null,
+      },
+      {
+        label: "real member, no photo (anonymous)",
+        wire: () => wireMemberLookups({ photoImageId: null }),
+        session: null,
+      },
+      {
+        label: "real committee member with roster photos off (anonymous)",
+        wire: () =>
+          wireMemberLookups({
+            photoImageId: "img-1",
+            committeePublished: true,
+            committeePhotoDisplay: "NONE",
+          }),
+        session: null,
+      },
+      {
+        label: "nonexistent member (signed-in non-admin)",
+        wire: () => {
+          mocks.publicContentSettingsFindUnique.mockResolvedValue({
+            committeePhotoDisplay: "CIRCLE",
+          });
+          mocks.memberFindUnique.mockResolvedValue(null);
+        },
+        session: otherMemberSession,
+      },
+      {
+        label: "real member, private photo (signed-in non-admin)",
+        wire: () =>
+          wireMemberLookups({
+            photoImageId: "img-1",
+            committeePublished: false,
+            viewer: { active: true, accessRoles: [{ role: "USER" }] },
+          }),
+        session: otherMemberSession,
+      },
+      {
+        label: "real member, private photo (two-factor-pending admin)",
+        wire: () => {
+          wireMemberLookups({
+            photoImageId: "img-1",
+            committeePublished: false,
+            viewer: { active: true, accessRoles: [{ role: "ADMIN_READONLY" }] },
+          });
+          mocks.requireActiveSessionUser.mockResolvedValue(
+            NextResponse.json(
+              { error: "Two-factor verification required" },
+              { status: 403 },
+            ),
+          );
+        },
+        session: readonlyAdminSession,
+      },
+    ];
+
+    const fingerprints: string[] = [];
+    for (const testCase of cases) {
+      vi.clearAllMocks();
+      mocks.requireActiveSessionUser.mockResolvedValue(null);
+      testCase.wire();
+      mocks.auth.mockResolvedValue(testCase.session);
+
+      const response = await GET(servingRequest(TARGET_ID), params(TARGET_ID));
+
+      // Body read as TEXT, never JSON: a regression that starts SERVING the
+      // bytes must surface as a fingerprint mismatch below, not as a parse
+      // error that hides which case leaked.
+      fingerprints.push(
+        JSON.stringify({
+          status: response.status,
+          body: await response.text(),
+          headers: [...response.headers.entries()]
+            .filter(([name]) => name !== "date")
+            .sort(),
+        }),
+      );
+    }
+
+    // One distinct response shape across every refusal — no oracle.
+    const distinct = new Set(fingerprints);
+    expect({
+      distinct: distinct.size,
+      byCase: Object.fromEntries(
+        cases.map((c, index) => [c.label, fingerprints[index]]),
+      ),
+    }).toEqual({
+      distinct: 1,
+      byCase: Object.fromEntries(
+        cases.map((c) => [c.label, fingerprints[0]]),
+      ),
+    });
+    expect(fingerprints[0]).toContain('\\"error\\":\\"Not found\\"');
+    expect(JSON.parse(fingerprints[0]).status).toBe(404);
   });
 
   it("returns 404 when photoImageId points at a non-MEMBER_PHOTO row (kind guard)", async () => {

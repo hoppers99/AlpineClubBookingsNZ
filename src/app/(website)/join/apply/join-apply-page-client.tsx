@@ -12,6 +12,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { FieldHint, describedByFieldHint } from "@/components/ui/field-hint";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -19,6 +20,18 @@ import {
   type MemberAddressValues,
 } from "@/lib/member-address";
 import type { ClubIdentity } from "@/config/club-identity-types";
+
+/*
+  #2264 — the phone row is three boxes sharing ONE example. Greyed "64", "27"
+  and "123 4567" inside them read as a number the application already carries.
+  A grouped micro-input row gets a single hint that all three boxes point at,
+  which is `describedByFieldHint` rather than `useFieldHint`: one hook owes
+  exactly one `fieldProps` spread, and this row needs the same id three times.
+  The boxes keep their `aria-label`s — those are their accessible NAME, and the
+  hint only describes them.
+*/
+const PHONE_HINT_ID = "join-apply-phone-hint";
+const PHONE_DESCRIBED_BY = describedByFieldHint(PHONE_HINT_ID);
 
 type FamilyMemberForm = {
   id: string;
@@ -467,29 +480,29 @@ export function JoinApplyPageClient({
                     <div className="flex gap-2">
                       <Input
                         className="w-20"
-                        placeholder="64"
                         value={form.phoneCountryCode}
                         onChange={updateField("phoneCountryCode")}
                         aria-label="Phone country code"
+                        aria-describedby={PHONE_DESCRIBED_BY}
                       />
                       <Input
                         className="w-20"
-                        placeholder="27"
                         value={form.phoneAreaCode}
                         onChange={updateField("phoneAreaCode")}
                         aria-label="Phone area code"
+                        aria-describedby={PHONE_DESCRIBED_BY}
                       />
                       <Input
                         className="flex-1"
-                        placeholder="123 4567"
                         value={form.phoneNumber}
                         onChange={updateField("phoneNumber")}
                         aria-label="Phone number"
+                        aria-describedby={PHONE_DESCRIBED_BY}
                       />
                     </div>
-                    <p className="text-xs text-muted-foreground">
-                      Country code, area code, and number
-                    </p>
+                    <FieldHint id={PHONE_HINT_ID}>
+                      Country code, area code, and number. Example: 64 27 123 4567
+                    </FieldHint>
                   </div>
                 </div>
 
