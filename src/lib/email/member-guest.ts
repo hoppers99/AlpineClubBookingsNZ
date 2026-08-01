@@ -29,6 +29,7 @@ import {
 } from "../email-templates";
 import { formatNZDate } from "../nzst-date";
 import { sendEmail, type EmailSendOutcome } from "./core";
+import type { BookingEmailRecipient } from "@/lib/booking-email-contract";
 
 /**
  * The six member-guest emails (epic #2305, MG2 #2307 and MG4 #2309).
@@ -68,6 +69,7 @@ import { sendEmail, type EmailSendOutcome } from "./core";
 interface MemberGuestStayParams {
   /** Booking this message belongs to (#2258). No `"none"` — see the note above. */
   bookingId: string;
+  recipient: BookingEmailRecipient;
   email: string;
   checkIn: Date;
   checkOut: Date;
@@ -129,7 +131,7 @@ export async function sendMemberGuestConsentRequestEmail(
       consentUrl: params.consentUrl,
       partyList,
     }),
-    bookingContext: { bookingId: params.bookingId },
+    bookingContext: { bookingId: params.bookingId, recipient: params.recipient },
     templateName: "member-guest-consent-request",
     templateData: {
       firstName: params.firstName,
@@ -215,7 +217,7 @@ export async function sendMemberGuestAddedEmail(
       partyList,
       removalNote,
     }),
-    bookingContext: { bookingId: params.bookingId },
+    bookingContext: { bookingId: params.bookingId, recipient: params.recipient },
     templateName: "member-guest-added",
     templateData: {
       firstName: params.firstName,
@@ -279,7 +281,7 @@ export async function sendMemberGuestRequestWithdrawnEmail(
       checkIn: params.checkIn,
       checkOut: params.checkOut,
     }),
-    bookingContext: { bookingId: params.bookingId },
+    bookingContext: { bookingId: params.bookingId, recipient: params.recipient },
     templateName: "member-guest-request-withdrawn",
     templateData: {
       firstName: params.firstName,
@@ -324,7 +326,7 @@ export async function sendMemberGuestConsentOutcomeEmail(
       consequenceNote: copy.consequenceNote,
       bookingId: params.bookingId,
     }),
-    bookingContext: { bookingId: params.bookingId },
+    bookingContext: { bookingId: params.bookingId, recipient: params.recipient },
     templateName: "member-guest-consent-outcome",
     templateData: {
       firstName: params.firstName,
@@ -379,7 +381,7 @@ export async function sendMemberGuestConsentAnsweredEmail(
       answeredSentence: copy.sentence,
       answeredNote: copy.note,
     }),
-    bookingContext: { bookingId: params.bookingId },
+    bookingContext: { bookingId: params.bookingId, recipient: params.recipient },
     templateName: "member-guest-consent-answered",
     templateData: {
       firstName: params.firstName,
@@ -413,7 +415,7 @@ export async function sendMemberGuestConsentExpiredEmail(
       checkIn: params.checkIn,
       checkOut: params.checkOut,
     }),
-    bookingContext: { bookingId: params.bookingId },
+    bookingContext: { bookingId: params.bookingId, recipient: params.recipient },
     templateName: "member-guest-consent-expired",
     templateData: {
       firstName: params.firstName,

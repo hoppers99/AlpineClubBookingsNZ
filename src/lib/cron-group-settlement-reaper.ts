@@ -140,7 +140,7 @@ export async function reapStaleGroupSettlements(
         select: {
           organiserBookingId: true,
           organiserMember: {
-            select: { email: true, firstName: true, lastName: true },
+            select: { id: true, email: true, firstName: true, lastName: true },
           },
           organiserBooking: { select: { checkIn: true, checkOut: true } },
         },
@@ -292,7 +292,7 @@ async function expireReapedChildren(
         select: {
           organiserBookingId: true,
           organiserMember: {
-            select: { email: true, firstName: true, lastName: true },
+            select: { id: true, email: true, firstName: true, lastName: true },
           },
           organiserBooking: { select: { checkIn: true, checkOut: true } },
         },
@@ -342,6 +342,7 @@ type ReleasedChild = {
   // The child's own lodge: the freed beds are at this lodge, so its waitlist
   // queue (not the default lodge's) is the one to re-process (multi-lodge).
   lodgeId: string;
+  memberId: string;
   memberEmail: string;
   memberFirstName: string;
 };
@@ -383,7 +384,7 @@ async function releaseSettlementChildren(
         checkIn: true,
         checkOut: true,
         lodgeId: true,
-        member: { select: { email: true, firstName: true } },
+        member: { select: { id: true, email: true, firstName: true } },
       },
     });
 
@@ -435,6 +436,7 @@ async function releaseSettlementChildren(
       checkIn: child.checkIn,
       checkOut: child.checkOut,
       lodgeId: child.lodgeId,
+      memberId: child.member.id,
       memberEmail: child.member.email,
       memberFirstName: child.member.firstName,
     }));
@@ -483,7 +485,7 @@ async function cancelReapedChildren(
         checkIn: true,
         checkOut: true,
         lodgeId: true,
-        member: { select: { email: true, firstName: true } },
+        member: { select: { id: true, email: true, firstName: true } },
       },
     });
 
@@ -511,6 +513,7 @@ async function cancelReapedChildren(
       checkIn: child.checkIn,
       checkOut: child.checkOut,
       lodgeId: child.lodgeId,
+      memberId: child.member.id,
       memberEmail: child.member.email,
       memberFirstName: child.member.firstName,
     }));
@@ -526,7 +529,7 @@ async function finishExpiry({
     id: string;
     groupBookingId: string;
     groupBooking: {
-      organiserMember: { email: string; firstName: string; lastName: string };
+      organiserMember: { id: string; email: string; firstName: string; lastName: string };
     };
   };
   cancelled: ReleasedChild[];
@@ -544,7 +547,7 @@ async function finishExpiry({
 
     try {
       await sendGroupJoinCancelledEmail({
-        bookingContext: { bookingId: child.id },
+        bookingContext: { bookingId: child.id, recipientMemberId: child.memberId },
         email: child.memberEmail,
         firstName: child.memberFirstName,
         organiserName,
@@ -582,7 +585,7 @@ async function finishReap({
     groupBooking: {
       // #2258: the organiser's own booking id gates the settlement emails.
       organiserBookingId: string;
-      organiserMember: { email: string; firstName: string; lastName: string };
+      organiserMember: { id: string; email: string; firstName: string; lastName: string };
       organiserBooking: { checkIn: Date; checkOut: Date };
     };
   };
@@ -632,7 +635,10 @@ async function finishReap({
 
   try {
     await sendGroupSettlementExpiredEmail({
-      bookingContext: { bookingId: settlement.groupBooking.organiserBookingId },
+      bookingContext: {
+        bookingId: settlement.groupBooking.organiserBookingId,
+        recipientMemberId: organiser.id,
+      },
       email: organiser.email,
       firstName: organiser.firstName,
       checkIn: organiserBooking.checkIn,
@@ -650,7 +656,7 @@ async function finishReap({
   for (const child of released) {
     try {
       await sendGroupJoinReleasedEmail({
-        bookingContext: { bookingId: child.id },
+        bookingContext: { bookingId: child.id, recipientMemberId: child.memberId },
         email: child.memberEmail,
         firstName: child.memberFirstName,
         organiserName,

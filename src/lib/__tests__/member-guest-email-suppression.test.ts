@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
- * #2307 (epic #2305, MG2) — what does and does NOT withhold the four
+ * #2307 (epic #2305, MG2) — what does and does NOT withhold the covered
  * member-guest emails.
  *
  * OWNER DECISION D-16, stated as two halves that must BOTH hold:
@@ -30,6 +30,7 @@ const mocks = vi.hoisted(() => ({
   emailLogCreate: vi.fn(),
   emailLogUpdate: vi.fn(),
   bookingFindUnique: vi.fn(),
+  memberFindUnique: vi.fn(),
   notificationPreferenceFindUnique: vi.fn(),
   getActiveEmailSuppression: vi.fn(),
   sendMail: vi.fn(),
@@ -51,6 +52,7 @@ vi.mock("@/lib/prisma", () => ({
   prisma: {
     emailLog: { create: mocks.emailLogCreate, update: mocks.emailLogUpdate },
     booking: { findUnique: mocks.bookingFindUnique },
+    member: { findUnique: mocks.memberFindUnique },
     // Present so a stray preference read would be a REJECTED promise rather
     // than a TypeError that could be mistaken for something else.
     notificationPreference: {
@@ -70,7 +72,12 @@ vi.mock("@/lib/email-message-renderer", () => ({
   }: {
     subject: string;
     html: string;
-  }) => ({ subject, html, settings: mocks.settingsStub }),
+  }) => ({
+    subject,
+    html,
+    settings: mocks.settingsStub,
+    bodyOverrideApplied: false,
+  }),
 }));
 vi.mock("@/lib/email-message-settings", async (importOriginal) => {
   const actual = await importOriginal<
@@ -107,6 +114,7 @@ import {
   sendMemberGuestConsentExpiredEmail,
   sendMemberGuestConsentOutcomeEmail,
   sendMemberGuestConsentRequestEmail,
+  sendMemberGuestRequestWithdrawnEmail,
 } from "@/lib/email/member-guest";
 
 const CHECK_IN = parseDateOnly("2026-08-08");
@@ -118,7 +126,7 @@ const PARTY = [
 ];
 
 /**
- * All four senders, each already bound to the same booking. Driven as a table so
+ * The covered senders, each already bound to the same booking. Driven as a table so
  * every assertion below is exhaustive over the set rather than over whichever
  * one somebody remembered.
  */
@@ -128,6 +136,7 @@ const SENDERS: Array<{ templateName: string; send: () => Promise<unknown> }> = [
     send: () =>
       sendMemberGuestConsentRequestEmail({
         bookingId: "bkg_1",
+        recipient: { kind: "member", memberId: "member_1" },
         email: "priya@example.nz",
         firstName: "Priya",
         bookerName: "Dave Ngata",
@@ -145,6 +154,7 @@ const SENDERS: Array<{ templateName: string; send: () => Promise<unknown> }> = [
     send: () =>
       sendMemberGuestAddedEmail({
         bookingId: "bkg_1",
+        recipient: { kind: "member", memberId: "member_1" },
         email: "hana@example.nz",
         firstName: "Hana",
         bookerName: "Dave Ngata",
@@ -170,6 +180,7 @@ const SENDERS: Array<{ templateName: string; send: () => Promise<unknown> }> = [
     send: () =>
       sendMemberGuestConsentOutcomeEmail({
         bookingId: "bkg_1",
+        recipient: { kind: "member", memberId: "owner_1" },
         email: "dave@example.nz",
         firstName: "Dave",
         guest: { firstName: "Priya", lastName: "Kaur" },
@@ -183,9 +194,24 @@ const SENDERS: Array<{ templateName: string; send: () => Promise<unknown> }> = [
     send: () =>
       sendMemberGuestConsentExpiredEmail({
         bookingId: "bkg_1",
+        recipient: { kind: "member", memberId: "member_1" },
         email: "priya@example.nz",
         firstName: "Priya",
         bookerName: "Dave Ngata",
+        checkIn: CHECK_IN,
+        checkOut: CHECK_OUT,
+      }),
+  },
+  {
+    templateName: "member-guest-request-withdrawn",
+    send: () =>
+      sendMemberGuestRequestWithdrawnEmail({
+        bookingId: "bkg_1",
+        recipient: { kind: "member", memberId: "removed_1" },
+        email: "priya@example.nz",
+        firstName: "Priya",
+        bookerName: "Dave Ngata",
+        context: "TAKEN_OFF",
         checkIn: CHECK_IN,
         checkOut: CHECK_OUT,
       }),
@@ -201,7 +227,53 @@ beforeEach(() => {
   mocks.emailLogUpdate.mockResolvedValue({});
   mocks.getActiveEmailSuppression.mockResolvedValue(null);
   mocks.sendMail.mockResolvedValue({ messageId: "msg_1" });
-  mocks.bookingFindUnique.mockResolvedValue({ noEmails: false });
+  mocks.bookingFindUnique.mockImplementation(
+    async (args: {
+      select?: {
+        noEmails?: boolean;
+        guests?: { where?: { memberId?: string } };
+      };
+    }) => {
+      if (args.select?.noEmails) return { noEmails: false };
+      return {
+        memberId: "owner_1",
+        deletedAt: null,
+        guests:
+          args.select?.guests?.where?.memberId === "member_1"
+            ? [{ id: "guest_1" }]
+            : [],
+      };
+    },
+  );
+  mocks.memberFindUnique.mockImplementation(
+    async (args: { where: { id: string } }) => ({
+      email:
+        args.where.id === "owner_1"
+          ? "dave@example.nz"
+          : args.where.id === "admin_1"
+            ? "admin@example.nz"
+          : args.where.id === "delegate_1"
+            ? "delegate@example.nz"
+            : "priya@example.nz",
+      inheritEmailFromId: null,
+      inheritEmailFrom: null,
+      role: "USER",
+      financeAccessLevel: "NONE",
+      active: true,
+      archivedAt: null,
+      canLogin: true,
+      accessRoles:
+        args.where.id === "admin_1"
+          ? [
+              {
+                role: "ADMIN_READONLY",
+                roleDefinitionId: null,
+                roleDefinition: null,
+              },
+            ]
+          : [],
+    }),
+  );
   mocks.getAdminEmails.mockResolvedValue([]);
   // Half 1 of D-16, enforced rather than described: nothing in this path may
   // read a notification preference.
@@ -229,7 +301,7 @@ describe("registry classification the switch depends on (#2307)", () => {
   );
 });
 
-describe('the per-booking "No emails" switch withholds all four (#2307, D-16 + D10)', () => {
+describe('the per-booking "No emails" switch withholds every covered sender (#2307, D-16 + D10)', () => {
   it.each(TEMPLATE_NAMES.map((name, index) => [name, index] as const))(
     "withholds %s and records it on the booking's withheld list",
     async (templateName, index) => {
@@ -319,5 +391,106 @@ describe("a muted member is still asked (#2307, D-16)", () => {
       await sender.send();
       expect(mocks.emailLogCreate.mock.calls[0][0].data.bookingId).toBe("bkg_1");
     }
+  });
+
+  it("keeps the target's #consent action and the delegate's bearer route through the real mail core", async () => {
+    await SENDERS[0].send();
+    const targetHtml = mocks.sendMail.mock.calls[0][0].html as string;
+    expect(targetHtml).toContain(
+      'href="http://localhost:3000/bookings/bkg_1#consent"',
+    );
+    expect(mocks.emailLogCreate.mock.calls[0][0].data).toMatchObject({
+      bookingRecipientMemberId: "member_1",
+      bookingBodyOverrideApplied: false,
+      bookingDetailLinkIncluded: true,
+    });
+
+    mocks.sendMail.mockClear();
+    mocks.emailLogCreate.mockClear();
+    await sendMemberGuestConsentRequestEmail({
+      bookingId: "bkg_1",
+      recipient: { kind: "member", memberId: "delegate_1" },
+      email: "delegate@example.nz",
+      firstName: "Aroha",
+      bookerName: "Dave Ngata",
+      audience: {
+        kind: "DELEGATE",
+        guest: { firstName: "Priya", lastName: "Kaur" },
+      },
+      checkIn: CHECK_IN,
+      checkOut: CHECK_OUT,
+      guestNights: NIGHTS,
+      consentExpiresAt: parseDateOnly("2026-08-07"),
+      consentUrl: "http://localhost:3000/bookings/consent/guest_1",
+      party: PARTY,
+    });
+
+    const delegateHtml = mocks.sendMail.mock.calls[0][0].html as string;
+    expect(delegateHtml).toContain(
+      'href="http://localhost:3000/bookings/consent/guest_1"',
+    );
+    expect(delegateHtml).not.toContain("/bookings/bkg_1");
+    expect(mocks.emailLogCreate.mock.calls[0][0].data).toMatchObject({
+      bookingRecipientMemberId: "delegate_1",
+      bookingBodyOverrideApplied: false,
+      bookingDetailLinkIncluded: false,
+    });
+  });
+
+  it.each([
+    ["removed member", "removed_1", "priya@example.nz"],
+    ["family delegate", "delegate_1", "delegate@example.nz"],
+  ])(
+    "does not expose the withdrawn booking to an ordinary %s",
+    async (_label, memberId, email) => {
+      await sendMemberGuestRequestWithdrawnEmail({
+        bookingId: "bkg_1",
+        recipient: { kind: "member", memberId },
+        email,
+        firstName: "Priya",
+        bookerName: "Dave Ngata",
+        context: "TAKEN_OFF",
+        audience:
+          memberId === "delegate_1"
+            ? {
+                kind: "DELEGATE",
+                guest: { firstName: "Priya", lastName: "Kaur" },
+              }
+            : { kind: "TARGET" },
+        checkIn: CHECK_IN,
+        checkOut: CHECK_OUT,
+      });
+
+      const html = mocks.sendMail.mock.calls[0][0].html as string;
+      expect(html).not.toContain("/bookings/bkg_1");
+      expect(mocks.emailLogCreate.mock.calls[0][0].data).toMatchObject({
+        bookingRecipientMemberId: memberId,
+        bookingDetailLinkIncluded: false,
+      });
+    },
+  );
+
+  it("includes the canonical detail link for a withdrawal recipient with independent bookings-view authority", async () => {
+    await sendMemberGuestRequestWithdrawnEmail({
+      bookingId: "bkg_1",
+      recipient: { kind: "member", memberId: "admin_1" },
+      email: "admin@example.nz",
+      firstName: "Alex",
+      bookerName: "Dave Ngata",
+      context: "TAKEN_OFF",
+      audience: {
+        kind: "DELEGATE",
+        guest: { firstName: "Priya", lastName: "Kaur" },
+      },
+      checkIn: CHECK_IN,
+      checkOut: CHECK_OUT,
+    });
+
+    const html = mocks.sendMail.mock.calls[0][0].html as string;
+    expect(html).toContain('/bookings/bkg_1');
+    expect(mocks.emailLogCreate.mock.calls[0][0].data).toMatchObject({
+      bookingRecipientMemberId: "admin_1",
+      bookingDetailLinkIncluded: true,
+    });
   });
 });

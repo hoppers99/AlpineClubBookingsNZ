@@ -631,7 +631,7 @@ export async function settleGroupBookingOnOrganiserCancel(
     );
 
     sendBookingCancelledEmail(
-      { bookingId: child.id },
+      { bookingId: child.id, recipientMemberId: child.memberId },
       child.member.email,
       child.member.firstName,
       child.checkIn,

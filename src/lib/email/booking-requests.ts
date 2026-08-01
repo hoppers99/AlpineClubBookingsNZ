@@ -17,7 +17,10 @@ import {
 } from "../nzst-date";
 import { formatCents as formatMoneyCents } from "@/lib/utils";
 import { sendEmail, type EmailSendOutcome } from "./core";
-import type { EmailBookingContext } from "@/lib/booking-email-suppression";
+import {
+  classifyBookingOwnerContext,
+  type BookingEmailSourceContext,
+} from "@/lib/booking-email-contract";
 
 // ---- Public booking request flow (issue #707) ----
 
@@ -25,7 +28,7 @@ export async function sendBookingRequestVerificationEmail(params: {
   // Booking this message belongs to (#2258). Explicit union: pass the real
   // booking id so the per-booking "No emails" switch can withhold this message,
   // or `"none"` when the flow genuinely has no booking yet.
-  bookingContext: EmailBookingContext;
+  bookingContext: BookingEmailSourceContext;
   email: string;
   firstName: string;
   token: string;
@@ -52,7 +55,7 @@ export async function sendBookingRequestVerificationEmail(params: {
       guestCount: params.guestCount,
       expiresAt: params.expiresAt,
     }),
-    bookingContext: params.bookingContext,
+    bookingContext: classifyBookingOwnerContext(params.bookingContext),
     templateName: "booking-request-verification",
     templateData: {
       firstName: params.firstName,
@@ -70,7 +73,7 @@ export async function sendBookingRequestApprovedEmail(params: {
   // Booking this message belongs to (#2258). Explicit union: pass the real
   // booking id so the per-booking "No emails" switch can withhold this message,
   // or `"none"` when the flow genuinely has no booking yet.
-  bookingContext: EmailBookingContext;
+  bookingContext: BookingEmailSourceContext;
   email: string;
   firstName: string;
   token: string;
@@ -102,7 +105,7 @@ export async function sendBookingRequestApprovedEmail(params: {
       priceCents: params.priceCents,
       expiresAt: params.expiresAt,
     }),
-    bookingContext: params.bookingContext,
+    bookingContext: classifyBookingOwnerContext(params.bookingContext),
     templateName: "booking-request-approved",
     templateData: {
       firstName: params.firstName,
@@ -130,7 +133,7 @@ export async function sendSplitGuestPaymentLinkEmail(params: {
   // Booking this message belongs to (#2258). Explicit union: pass the real
   // booking id so the per-booking "No emails" switch can withhold this message,
   // or `"none"` when the flow genuinely has no booking yet.
-  bookingContext: EmailBookingContext;
+  bookingContext: BookingEmailSourceContext;
   email: string;
   firstName: string;
   token: string;
@@ -158,7 +161,7 @@ export async function sendSplitGuestPaymentLinkEmail(params: {
       priceCents: params.priceCents,
       expiresAt: params.expiresAt,
     }),
-    bookingContext: params.bookingContext,
+    bookingContext: classifyBookingOwnerContext(params.bookingContext),
     templateName: "split-guest-payment-link",
     templateData: {
       firstName: params.firstName,
@@ -179,7 +182,7 @@ export async function sendBookingRequestQuoteEmail(params: {
   // Booking this message belongs to (#2258). Explicit union: pass the real
   // booking id so the per-booking "No emails" switch can withhold this message,
   // or `"none"` when the flow genuinely has no booking yet.
-  bookingContext: EmailBookingContext;
+  bookingContext: BookingEmailSourceContext;
   email: string;
   firstName: string;
   token: string;
@@ -217,7 +220,7 @@ export async function sendBookingRequestQuoteEmail(params: {
       schoolName: params.schoolName,
       isReminder: params.isReminder,
     }),
-    bookingContext: params.bookingContext,
+    bookingContext: classifyBookingOwnerContext(params.bookingContext),
     templateName: "booking-request-quote",
     templateData: {
       firstName: params.firstName,
@@ -240,7 +243,7 @@ export async function sendBookingRequestDeclinedEmail(params: {
   // Booking this message belongs to (#2258). Explicit union: pass the real
   // booking id so the per-booking "No emails" switch can withhold this message,
   // or `"none"` when the flow genuinely has no booking yet.
-  bookingContext: EmailBookingContext;
+  bookingContext: BookingEmailSourceContext;
   email: string;
   firstName: string;
   checkIn: Date;
@@ -260,7 +263,7 @@ export async function sendBookingRequestDeclinedEmail(params: {
       checkOut: params.checkOut,
       reason: params.reason,
     }),
-    bookingContext: params.bookingContext,
+    bookingContext: classifyBookingOwnerContext(params.bookingContext),
     templateName: "booking-request-declined",
     templateData: {
       firstName: params.firstName,
@@ -286,7 +289,7 @@ export async function sendBookingRequestPaymentExpiredEmail(params: {
   // Booking this message belongs to (#2258). Explicit union: pass the real
   // booking id so the per-booking "No emails" switch can withhold this message,
   // or `"none"` when the flow genuinely has no booking yet.
-  bookingContext: EmailBookingContext;
+  bookingContext: BookingEmailSourceContext;
   email: string;
   firstName: string;
   checkIn: Date;
@@ -304,7 +307,7 @@ export async function sendBookingRequestPaymentExpiredEmail(params: {
       checkIn: params.checkIn,
       checkOut: params.checkOut,
     }),
-    bookingContext: params.bookingContext,
+    bookingContext: classifyBookingOwnerContext(params.bookingContext),
     templateName: "booking-request-payment-expired",
     templateData: {
       firstName: params.firstName,
@@ -323,7 +326,7 @@ export async function sendSchoolAttendeeConfirmationEmail(params: {
   // Booking this message belongs to (#2258). Explicit union: pass the real
   // booking id so the per-booking "No emails" switch can withhold this message,
   // or `"none"` when the flow genuinely has no booking yet.
-  bookingContext: EmailBookingContext;
+  bookingContext: BookingEmailSourceContext;
   email: string;
   firstName: string;
   schoolName: string | null;
@@ -350,7 +353,7 @@ export async function sendSchoolAttendeeConfirmationEmail(params: {
       guestCount: params.guestCount,
       isReminder: params.isReminder,
     }),
-    bookingContext: params.bookingContext,
+    bookingContext: classifyBookingOwnerContext(params.bookingContext),
     templateName: "school-attendee-confirmation",
     templateData: {
       firstName: params.firstName,

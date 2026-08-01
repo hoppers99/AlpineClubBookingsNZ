@@ -205,6 +205,7 @@ export async function sendAdditionalPaymentReminders(): Promise<AdditionalPaymen
     try {
       const outcome = await sendAdditionalPaymentReminderEmail({
         bookingId: booking.id,
+        recipientMemberId: booking.memberId,
         email: booking.member.email,
         firstName: booking.member.firstName,
         additionalAmountCents,

@@ -1160,7 +1160,7 @@ describe("processStoredXeroInboundEvents", () => {
       }),
     });
     expect(sendBookingConfirmedEmail).toHaveBeenCalledWith(
-      { bookingId: "booking_ib_1" },
+      { bookingId: "booking_ib_1", recipientMemberId: "mem_1" },
       "member@example.com",
       "Alice",
       new Date("2026-07-10"),
@@ -1474,7 +1474,7 @@ describe("processStoredXeroInboundEvents", () => {
     });
 
     expect(sendBookingConfirmedEmail).toHaveBeenCalledWith(
-      { bookingId: "booking_ib_1" },
+      { bookingId: "booking_ib_1", recipientMemberId: "mem_1" },
       "member@example.com",
       "Alice",
       new Date("2026-07-10"),
@@ -2026,7 +2026,7 @@ describe("processStoredXeroInboundEvents", () => {
       },
     });
     expect(sendBookingCancelledEmail).toHaveBeenCalledWith(
-      { bookingId: "booking_ib_pl" },
+      { bookingId: "booking_ib_pl", recipientMemberId: "mem_pl" },
       "member@example.com",
       "Alice",
       expect.any(Date),
@@ -2100,7 +2100,7 @@ describe("processStoredXeroInboundEvents", () => {
       expect.objectContaining({ type: "CREDITED", amountCents: 6172 })
     );
     expect(sendBookingCancelledEmail).toHaveBeenCalledWith(
-      { bookingId: "booking_ib_cap" },
+      { bookingId: "booking_ib_cap", recipientMemberId: "mem_cap" },
       "member@example.com",
       "Alice",
       expect.any(Date),
@@ -2374,7 +2374,10 @@ describe("processStoredXeroInboundEvents", () => {
       })
     );
     expect(sendBookingCancelledEmail).toHaveBeenCalledWith(
-      { bookingId: "booking_ib_cancelled" },
+      {
+        bookingId: "booking_ib_cancelled",
+        recipientMemberId: "mem_cancelled",
+      },
       "member@example.com",
       "Alice",
       expect.any(Date),
@@ -2521,7 +2524,10 @@ describe("processStoredXeroInboundEvents", () => {
       })
     );
     expect(sendBookingCancelledEmail).toHaveBeenCalledWith(
-      { bookingId: "booking_ib_cancelled" },
+      {
+        bookingId: "booking_ib_cancelled",
+        recipientMemberId: "mem_cancelled",
+      },
       "member@example.com",
       "Alice",
       expect.any(Date),

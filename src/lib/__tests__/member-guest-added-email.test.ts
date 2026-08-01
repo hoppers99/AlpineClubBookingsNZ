@@ -74,6 +74,7 @@ const REMOVABLE: MemberGuestRemovalFacts = {
 };
 const SEND_PARAMS = {
   bookingId: "bkg_1",
+  recipient: { kind: "member" as const, memberId: "member_1" },
   email: "hana@example.nz",
   firstName: "Hana",
   bookerName: "Dave Ngata",
@@ -252,7 +253,10 @@ describe("sendMemberGuestAddedEmail (#2307)", () => {
     await sendMemberGuestAddedEmail(SEND_PARAMS);
 
     const call = sendEmailMock.mock.calls[0][0];
-    expect(call.bookingContext).toEqual({ bookingId: "bkg_1" });
+    expect(call.bookingContext).toEqual({
+      bookingId: "bkg_1",
+      recipient: { kind: "member", memberId: "member_1" },
+    });
     expect(call.templateName).toBe(TEMPLATE);
     expect(call.to).toBe("hana@example.nz");
     expect(call.lodgeId).toBe("lodge_1");

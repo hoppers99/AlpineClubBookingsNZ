@@ -57,6 +57,7 @@ import { sendMemberGuestRequestWithdrawnEmail } from "@/lib/email/member-guest";
 const TEMPLATE = "member-guest-request-withdrawn";
 const SEND_PARAMS = {
   bookingId: "bkg_1",
+  recipient: { kind: "member" as const, memberId: "member_removed" },
   email: "priya@example.nz",
   firstName: "Priya",
   bookerName: "Dave Ngata",
@@ -143,10 +144,11 @@ describe("memberGuestRequestWithdrawnTemplate (#2309)", () => {
     );
   });
 
-  it("offers no action link and no party listing", () => {
-    // There is nothing to do, and by the time this lands the reader is off the
-    // booking — a "view this booking" button would 403 and a party listing
-    // would disclose a party they are no longer part of.
+  it("offers no bearer/self-service action and no party listing", () => {
+    // This built-in body has nothing for an ordinary removed reader to do. The
+    // common mail core may append a canonical detail action only for a recipient
+    // who independently retains bookings-view authority; it never adds a party
+    // listing that would disclose who remains on the booking.
     expect(html).not.toContain("Answer this request");
     expect(html).not.toContain("#consent");
     expect(html).not.toContain("Everyone on this booking");
@@ -256,7 +258,10 @@ describe("sendMemberGuestRequestWithdrawnEmail (#2309)", () => {
     await sendMemberGuestRequestWithdrawnEmail(SEND_PARAMS);
 
     const call = sendEmailMock.mock.calls[0][0];
-    expect(call.bookingContext).toEqual({ bookingId: "bkg_1" });
+    expect(call.bookingContext).toEqual({
+      bookingId: "bkg_1",
+      recipient: { kind: "member", memberId: "member_removed" },
+    });
     expect(call.templateName).toBe(TEMPLATE);
     expect(call.to).toBe("priya@example.nz");
     expect(call.lodgeId).toBe("lodge_1");

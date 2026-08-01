@@ -54,6 +54,7 @@ import { composeMemberGuestConsentOutcome } from "@/lib/member-guest-email-notes
 const TEMPLATE = "member-guest-consent-outcome";
 const SEND_PARAMS = {
   bookingId: "bkg_1",
+  recipient: { kind: "member" as const, memberId: "member_1" },
   email: "dave@example.nz",
   firstName: "Dave",
   guest: { firstName: "Priya", lastName: "Kaur" },
@@ -115,7 +116,7 @@ describe("member-guest-consent-outcome registry entry (#2307)", () => {
     expect(getDefaultDeliveryMode(TEMPLATE)).toBe("always");
   });
 
-  it("refuses an override that drops the outcome, the consequence or the link", () => {
+  it("requires the outcome and consequence while keeping the authorized link optional", () => {
     if (!definition) throw new Error(`missing ${TEMPLATE}`);
 
     expect(definition.requiredTokens).toEqual(
@@ -123,9 +124,10 @@ describe("member-guest-consent-outcome registry entry (#2307)", () => {
         "outcomeHeading",
         "outcomeSentence",
         "consequenceNote",
-        "bookingId",
       ]),
     );
+    expect(definition.requiredTokens).not.toContain("bookingUrl");
+    expect(definition.allowedTokens).toContain("bookingUrl");
     for (const token of definition.requiredTokens) {
       expect(definition.defaultBody).toContain(`{{${token}}}`);
     }
@@ -179,7 +181,10 @@ describe("sendMemberGuestConsentOutcomeEmail (#2307)", () => {
     await sendMemberGuestConsentOutcomeEmail(SEND_PARAMS);
 
     const call = sendEmailMock.mock.calls[0][0];
-    expect(call.bookingContext).toEqual({ bookingId: "bkg_1" });
+    expect(call.bookingContext).toEqual({
+      bookingId: "bkg_1",
+      recipient: { kind: "member", memberId: "member_1" },
+    });
     expect(call.templateName).toBe(TEMPLATE);
     expect(call.to).toBe("dave@example.nz");
     expect(call.lodgeId).toBe("lodge_1");
