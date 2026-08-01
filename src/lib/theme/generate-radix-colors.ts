@@ -10,11 +10,14 @@
  * light/dark scales from an accent + gray seed against a background colour. The
  * algorithm is UNCHANGED from upstream save for two documented colorjs.io >= 0.6
  * adaptations (#2303): the missing-coordinate handling described below
- * `Appearance`, and the achromatic-reference-ramp guard on `ratioC` in
+ * `Appearance`, and the achromatic-reference-ramp chroma guard in
  * `getScaleFromColor`. Otherwise only the module shape (typed public signature,
- * ESM export) differs. Behavioural parity with the vendored source is pinned by
- * the golden-value tests in ./__tests__/generator-goldens.test.ts, which run on
- * Node 24 (the production image, node:24.17-alpine) in CI.
+ * ESM export) differs. The golden-value tests in
+ * ./__tests__/generator-goldens.test.ts pin parity for the shipping default
+ * seeds, which never reach that guard; ./__tests__/colorjs-coords.test.ts pins
+ * the guard itself, for both the low-chroma seeds that do reach it and the
+ * chromatic ones that must not. Both run on Node 24 (the production image,
+ * node:24.17-alpine) in CI.
  *
  * DO NOT hand-tune output here. The theme substrate (src/lib/theme/tokens.ts) and
  * the guarantee sweep depend on this producing byte-identical hexes across runs.
@@ -40,9 +43,9 @@ export type Appearance = "light" | "dark";
  * coalescing site moves a single hex across the 0.5.2 -> 0.7.1 bump.
  *
  * Two sites must NOT simply coalesce. `getButtonHoverColor` asks "is the hue
- * defined at all?" — see `hueIsMissing`. `getScaleFromColor` divides BY a chroma
- * that can now legitimately be 0 — see the `ratioC` guard there, the one place
- * the bump moves an output.
+ * defined at all?" — see `hueIsMissing`. `getScaleFromColor` would divide BY a
+ * chroma that is now exactly 0 for any low-chroma seed — see the chroma guard
+ * there, the one place the bump needs a real adaptation.
  */
 const num = (coord: number | null | undefined): number => coord ?? 0;
 
@@ -290,26 +293,41 @@ function getScaleFromColor(source: any, scales: any, backgroundColor: any): any[
     .slice()
     .sort((a2, b2) => source.deltaEOK(a2) - source.deltaEOK(b2))[0];
   /*
-   * #2303 — the one place the 0.5.2 -> 0.7.x bump changes an OUTPUT, not just a
-   * type. Upstream rescales the reference ramp's chroma so its closest step
-   * carries the seed's chroma. Radix's `gray` ramp is perfectly achromatic, and
-   * when it is the closest ramp (a seed with almost no chroma of its own) every
-   * step's chroma is zero. colorjs 0.5.2 did not quite say zero — its
-   * OKLab->OKLCh conversion left ~1e-16 of float noise on each step, so the
-   * division produced a ~1e14 ratio and the ramp came out tinted by whatever
-   * the noise happened to be. 0.7.x reports a true 0, so the ratio becomes
-   * Infinity, `0 * Infinity` is NaN, and the ramp serialises to the literal
-   * string "#NaNNaNNaN" — which then throws when it is re-parsed.
+   * #2303 — the one place the 0.5.2 -> 0.7.x bump needs a real adaptation, not
+   * just a coalesce. Upstream rescales the reference ramp's chroma so its
+   * closest step carries the seed's chroma, capped at 1.5x the seed's chroma:
    *
-   * An achromatic reference ramp has no chroma structure to rescale, so the
-   * identity ratio is the correct reading: the ramp stays grey, which is what a
-   * grey seed asked for. The tint 0.5.2 produced was float noise, not a design.
-   * Only a neutral-character seed with r == g == b reaches this branch.
+   *     coords[1] = Math.min(sourceC * 1.5, stepC * (sourceC / baseC))
+   *
+   * Radix's `gray` ramp is perfectly achromatic. Whenever it is the closest
+   * reference ramp — which is any LOW-CHROMA seed, not only an exactly grey one
+   * — every `stepC` and the divisor `baseC` are zero. colorjs 0.5.2 did not
+   * quite say zero: its OKLab->OKLCh conversion left ~1e-16 of float noise on
+   * each step, so the division produced a ~1e14 ratio, the right-hand term
+   * dwarfed the cap, and `Math.min` returned the cap — `sourceC * 1.5` — for
+   * every step. 0.7.x reports a true 0, so `baseC` is 0, the ratio is Infinity,
+   * `0 * Infinity` is NaN, and the ramp serialises to the literal string
+   * "#NaNNaNNaN", which throws when it is re-parsed.
+   *
+   * So the cap IS the behaviour 0.5.2 delivered here, and taking it directly is
+   * both the numerically correct limit and the behaviour-preserving read. Note
+   * what it does NOT do: it does not flatten the ramp to grey. A seed with a
+   * small but real chroma (including the neutral seed the substrate derives at
+   * PINS.neutralSeed.C) keeps its tint, exactly as before the bump; only a seed
+   * whose chroma is genuinely 0 yields a genuinely grey ramp — which is also
+   * what makes the "#NaNNaNNaN" case impossible.
+   *
+   * Deliberate divergence from the vendored upstream source: upstream has no
+   * such guard because under colorjs 0.5.x it never needed one.
    */
   const baseChroma = num(baseColor.coords[1]);
+  const sourceChromaCap = num(source.coords[1]) * 1.5;
   const ratioC = baseChroma === 0 ? 1 : source.coords[1] / baseChroma;
   scale.forEach((color) => {
-    color.coords[1] = Math.min(source.coords[1] * 1.5, num(color.coords[1]) * ratioC);
+    color.coords[1] =
+      baseChroma === 0
+        ? sourceChromaCap
+        : Math.min(source.coords[1] * 1.5, num(color.coords[1]) * ratioC);
     // The hue is copied across verbatim, missing or not: a missing hue on the
     // source means the whole scale is achromatic, exactly as under 0.5.x.
     color.coords[2] = source.coords[2];

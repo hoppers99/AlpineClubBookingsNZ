@@ -33,6 +33,21 @@ export const SYNTHETIC_SEEDS: ThemeSeeds = {
   support: "#e11d48",
 };
 
+/**
+ * A palette whose neutral-character seed is an exact grey (r == g == b), so it
+ * carries no hue at all. That seed derives a gray seed of such low chroma that
+ * Radix's perfectly achromatic `gray` ramp becomes its closest reference ramp —
+ * the degenerate divide-by-zero the colorjs 0.7 chroma guard in
+ * `getScaleFromColor` handles (#2303). Guarantee-sweep coverage only (no pinned
+ * goldens): `colorjs-coords.test.ts` pins the hexes, this proves the resulting
+ * grey-character ramp still clears every contrast floor by construction.
+ */
+export const ACHROMATIC_NEUTRAL_SEEDS: ThemeSeeds = {
+  accent: "#57b3ab",
+  neutralSource: "#808080",
+  support: "#b04d28",
+};
+
 /** The {@link SYNTHETIC_SEEDS} palette as full ClubThemeValues (schema tests). */
 export const SYNTHETIC_CLUB_THEME_VALUES: ClubThemeValues = {
   brandGold: "#eab308",
