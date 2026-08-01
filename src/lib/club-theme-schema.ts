@@ -305,9 +305,31 @@ export function fontCssVariable(fontKey: ClubThemeFontKey): string {
 // rawtext mode and close the element on </style regardless of nesting. No
 // valid CSS ever contains that sequence, so silent removal is safe and lossless.
 export function sanitiseRawCss(value: string): string {
-  // Match </style, then consume any non-'>' characters and the closing '>'
-  // so the entire tag token is removed rather than leaving a stray '>'.
-  return value.replace(/<\/style[^>]*>/gi, "");
+  // Repeated to a FIXPOINT, and this is the whole security property (#2420
+  // review). `String.replace` makes ONE pass over the ORIGINAL string: it never
+  // re-scans text that its own deletions bring together. A single pass was
+  // therefore a reassembly bypass, verified by execution before this fix:
+  //
+  //   "</sty</style>le><script>alert(1)</script>"
+  //     one pass  -> "</style><script>alert(1)</script>"   ← live breakout
+  //     fixpoint  -> "<script>alert(1)</script>"           ← inert inside <style>
+  //
+  // The surviving `<script>` text is harmless: nothing but `</style` leaves
+  // rawtext mode, so with every one of them gone the remainder is CSS text the
+  // browser never parses as markup.
+  //
+  // The `>` is OPTIONAL so the postcondition is checkable rather than
+  // approximate: the output contains no `</style` in any case, full stop. A
+  // trailing `</style` with no `>` of its own could otherwise borrow the `>`
+  // from the closing tag the consumer writes right after it.
+  let sanitised = value;
+
+  for (let previous = ""; sanitised !== previous; ) {
+    previous = sanitised;
+    sanitised = sanitised.replace(/<\/style[^>]*>?/gi, "");
+  }
+
+  return sanitised;
 }
 
 function sanitiseThemeColour(

@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { ContactPageClient } from "@/app/(website)/contact/contact-page-client";
 import { EmbeddedPageContentParts } from "@/components/website/embedded-page-content-parts";
 import { getCachedClubIdentity } from "@/lib/public-layout-config";
+import { setupInProgressMetadata } from "@/lib/website-setup-metadata";
 import { getDefaultLodgeId } from "@/lib/lodges";
 import { buildEmbeddedBody } from "@/lib/page-content-embeds";
 import {
@@ -11,6 +12,16 @@ import {
 import { prisma } from "@/lib/prisma";
 
 export async function generateMetadata(): Promise<Metadata> {
+  // Pre-setup, before any lookup (#2420 F1). This route matters more than most:
+  // its lookup has no `published === false` filter, so without this an
+  // unlaunched club would disclose the title and header text of a contact page
+  // it has explicitly UNPUBLISHED. See setupInProgressMetadata().
+  const holdingScreen = await setupInProgressMetadata();
+
+  if (holdingScreen) {
+    return holdingScreen;
+  }
+
   const [page, { name: clubName }] = await Promise.all([
     getSanitizedPageContentByPath("/contact"),
     getCachedClubIdentity(),
