@@ -14,13 +14,17 @@
 //    audited rather than swallowed or turned into a booking failure.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { sendMemberGuestAddNotifications } from "@/lib/member-guest-consent-notifications";
+import {
+  sendMemberGuestAddNotifications,
+  sendMemberGuestWithdrawnNotifications,
+} from "@/lib/member-guest-consent-notifications";
 import type { MemberGuestConsentDelegateResolver } from "@/lib/member-guest-delegate";
 import { parseDateOnly } from "@/lib/date-only";
 
 const h = vi.hoisted(() => ({
   sendConsentRequest: vi.fn(),
   sendAdded: vi.fn(),
+  sendWithdrawn: vi.fn(),
   logAudit: vi.fn(),
   loggerError: vi.fn(),
 }));
@@ -28,6 +32,7 @@ const h = vi.hoisted(() => ({
 vi.mock("@/lib/email/member-guest", () => ({
   sendMemberGuestConsentRequestEmail: h.sendConsentRequest,
   sendMemberGuestAddedEmail: h.sendAdded,
+  sendMemberGuestRequestWithdrawnEmail: h.sendWithdrawn,
 }));
 vi.mock("@/lib/audit", () => ({ logAudit: h.logAudit }));
 vi.mock("@/lib/logger", () => ({
@@ -93,6 +98,11 @@ function db(overrides?: {
         ],
       })),
     },
+    member: {
+      findMany: vi.fn(async () => [
+        { id: TARGET, firstName: "Tam", lastName: "Target" },
+      ]),
+    },
   } as unknown as Parameters<typeof sendMemberGuestAddNotifications>[0]["db"];
 }
 
@@ -117,6 +127,36 @@ beforeEach(() => {
   vi.clearAllMocks();
   h.sendConsentRequest.mockResolvedValue({ ok: true });
   h.sendAdded.mockResolvedValue({ ok: true });
+  h.sendWithdrawn.mockResolvedValue({ ok: true });
+});
+
+describe("withdrawal recipient identity (#2362)", () => {
+  it("threads each resolved family adult's own member id into retry provenance", async () => {
+    const result = await sendMemberGuestWithdrawnNotifications({
+      bookingId: BOOKING,
+      targetMemberIds: [TARGET],
+      context: "TAKEN_OFF",
+      db: db(),
+      delegateResolver: resolver(TWO_FAMILY_ADULTS),
+    });
+
+    expect(h.sendWithdrawn).toHaveBeenCalledTimes(2);
+    expect(
+      h.sendWithdrawn.mock.calls.map(([params]) => params.recipient),
+    ).toEqual([
+      { kind: "member", memberId: PARENT },
+      { kind: "member", memberId: OTHER_PARENT },
+    ]);
+    expect(h.sendWithdrawn.mock.calls.map(([params]) => params.email)).toEqual([
+      "parent@example.com",
+      "other@example.com",
+    ]);
+    expect(result).toEqual({
+      sentMemberIds: [TARGET],
+      failedMemberIds: [],
+      unreachableMemberIds: [],
+    });
+  });
 });
 
 describe("recipients (owner decision D-9)", () => {

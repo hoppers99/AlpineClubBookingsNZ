@@ -127,6 +127,7 @@ export async function PATCH(
         checkOut: booking.checkOut,
         adminNotes: parsed.data.adminNotes,
         bookingId,
+        recipientMemberId: booking.memberId,
         lodgeId: booking.lodgeId,
       }).catch((err) =>
         logger.error({ err, bookingId }, "Failed to send booking review approved email"),
@@ -241,6 +242,7 @@ export async function PATCH(
   if (parsed.data.notifyMember !== false) {
     sendBookingReviewRejectedEmail({
       bookingId: booking.id,
+      recipientMemberId: booking.memberId,
       email: booking.member.email,
       firstName: booking.member.firstName,
       checkIn: booking.checkIn,

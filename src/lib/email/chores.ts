@@ -14,6 +14,7 @@ import {
 import { EMAIL_DEFAULT_LODGE_NAME } from "@/lib/email-message-settings";
 import { formatNZDate } from "../nzst-date";
 import { sendEmail } from "./core";
+import type { BookingScopedEmailContext } from "@/lib/booking-email-contract";
 
 // #1285: the "Chore Roster" notification preference is honored by the caller
 // (`admin-roster-service.ts` via `shouldSendChoreRoster`), before a chore
@@ -24,7 +25,7 @@ export async function sendChoreRosterEmail(
   // guest of a booking and ChoreAssignment.bookingId is NOT NULL, so there is
   // no roster without a booking and `"none"` is deliberately not offered: the
   // per-booking "No emails" switch must always be able to withhold it.
-  bookingContext: { bookingId: string },
+  bookingContext: BookingScopedEmailContext,
   email: string,
   guestName: string,
   date: string,

@@ -908,6 +908,7 @@ export async function POST(
     if (member && notifyMember !== false) {
       sendBookingModifiedEmail({
         bookingId: result.booking.id,
+        recipientMemberId: member.id,
         email: member.email,
         firstName: member.firstName,
         modificationType: "GUEST_ADD",

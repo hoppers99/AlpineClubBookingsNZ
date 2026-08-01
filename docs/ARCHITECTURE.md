@@ -2169,6 +2169,30 @@ connection, then stores `FinanceSnapshot` and `FinanceSyncRun` rows for page
 rendering. There is no separate finance Xero OAuth app, token store, callback
 route, or usage-metering table.
 
+The simpler Base Reports page at `/admin/reports` is first-party and stay-night
+based (#2368). One overlap query applies the selected lodge and deleted scope to
+the explicit positive current-status cohort `PENDING`, `PAYMENT_PENDING`,
+`CONFIRMED`, `PAID`, `AWAITING_REVIEW`, and `COMPLETED`; that same cohort owns
+distinct booking/guest totals, weekly trends, current-status breakdown, and
+booked revenue. Booking stay dates are `checkIn` inclusive / `checkOut`
+exclusive, while the selected From/To dates are inclusive. Guest totals use each
+guest row's own half-open `[stayStart, stayEnd)` envelope; sparse explicit guest
+night rows do not override that envelope for this metric.
+`Booking.finalPriceCents` is allocated
+deterministically over the booking's complete stay before the selected range is
+sliced, so $1.00 over three nights is 34/33/33 cents and a one-night slice keeps
+its original share. Booked revenue is therefore not collected cash. Net
+collected cash is a separate booking-level payment figure derived from captured
+`Payment.amountCents` less refunds (#2408), never rebuilt from transaction rows;
+outstanding additions remain separately visible (#2350). Reports selects only
+captured `ADDITIONAL` transaction evidence to reuse #2408's consistency guard:
+when a positive additional amount is marked succeeded without such evidence,
+cash arithmetic is unchanged, a bounded server log names the affected booking
+IDs, and the API returns only aggregate possible-gap cents/count for the page,
+CSV, and PDF warning. Money on those report surfaces is rendered to exact cents.
+Occupancy intentionally keeps the pre-existing PAID/COMPLETED-only utilisation
+and custodian-exclusion semantics.
+
 ### Address autocomplete
 
 Address autocomplete uses server-side Addy credentials only in
@@ -2195,14 +2219,37 @@ Editable subjects reject secret-bearing tokens (including nomination, quote
 response, and optional chore links), and the render path strips bearer-link
 aliases from legacy stored overrides before SMTP, `EmailLog`, or application
 logging receives the subject.
-Every send carries a REQUIRED, typed `bookingContext` (`{ bookingId } | "none"`)
-so the mailer knows which booking a message belongs to; that is the choke point
+Every send carries a REQUIRED, typed `bookingContext`
+(`{ bookingId, recipient } | "none"`) so the mailer knows which booking a
+message belongs to and which exact recipient authority it must verify; that is
+the choke point
 for the per-booking "No emails" switch (`Booking.noEmails`, #2258), which
 withholds every member-facing message for a booking, records each withhold as an
 `EmailLog` row with status `SKIPPED_NO_EMAILS`, never touches admin-audience or
 account/security mail, and fails closed if the switch cannot be read. The retry
 cron and the two Xero-sent invoice emails re-check the same switch because they
 bypass `sendEmail`. See `docs/DOMAIN_INVARIANTS.md` for the full contract.
+For every live registered template in the booking-scoped suppression inventory,
+that same choke point may add the canonical encoded
+`/bookings/<booking-id>` detail URL (#2362). `booking-email-authority.ts`
+re-reads the booking and recipient member, then mirrors the detail page's read
+gate: active login-capable owner, linked member, or bookings-area viewer; deleted
+bookings remain Full-Admin-only. The actual SMTP destination must also still be
+that member's current direct or flattened inherited mailbox. Public/non-login
+contacts and aggregate reports are explicit recipient categories and never
+receive the authenticated URL. Built-in HTML rewrites or adds one booking CTA
+only after authorization. Stored override SOURCE stays byte-for-byte unchanged;
+at the final delivery boundary an authorized override is unchanged, while an
+unauthorized delivery copy loses any legacy/admin-authored authenticated booking
+href. Bearer action URLs are not booking detail URLs and are never removed by
+this policy. Retry-safe booking rows persist the checked recipient member id (or
+an explicit null for public/aggregate mail), override provenance, and whether
+finalized HTML contained a detail href in `EmailLog`. Their retained HTML lives
+in `bookingRetryHtmlBody`, not legacy `htmlBody`, so a rolled-back pre-#2362
+worker cannot select new-version booking rows. The current worker repeats
+mailbox ownership and booking authorization before its guarded claim, then
+re-finalizes both built-in and override delivery copies. A legacy row with
+unknown context retires fail-closed for manual review.
 If an admin/system alert cannot be delivered to any opted-in admin recipient
 because every send is suppressed or fails, the app records a critical
 communication audit event and surfaces it in Admin Email Deliverability.

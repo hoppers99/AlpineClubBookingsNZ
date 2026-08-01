@@ -35,7 +35,9 @@ import { getEmailTemplateDefinition } from "@/lib/email-message-registry";
  * `bookingId?: string`, so every call site — including every future one — has to
  * state which it is and cannot silently default to "not a booking email".
  */
-export type EmailBookingContext = { bookingId: string } | "none";
+export type { EmailBookingContext } from "@/lib/booking-email-contract";
+
+type EmailBookingSuppressionContext = { bookingId: string } | "none";
 
 /**
  * Pseudo template names for the two messages XERO sends on our behalf. They are
@@ -119,7 +121,7 @@ export const ALWAYS_BOOKING_SCOPED_TEMPLATE_NAMES: ReadonlySet<string> =
     // src/lib/email/member-guest.ts (#2307, #2309) — all six take { bookingId }. A
     // member-guest consent request, notice, outcome or lapse notice cannot exist
     // without the booking the guest row hangs off, so `"none"` is not offered by
-    // any of the five wrappers. They are member-audience for a load-bearing
+    // any of the six wrappers. They are member-audience for a load-bearing
     // reason (see isBookingSuppressibleTemplate below): owner decision D-16 has
     // them ignore the per-action notify tick and the member's own notification
     // preferences, so this switch is the ONLY thing that withholds them, and an
@@ -178,7 +180,7 @@ export type BookingEmailGateDecision =
  * Resolve the gate for one send. Never throws.
  */
 export async function resolveBookingEmailGate(
-  bookingContext: EmailBookingContext,
+  bookingContext: EmailBookingSuppressionContext,
   templateName: string,
 ): Promise<BookingEmailGateDecision> {
   if (bookingContext === "none") return { decision: "send" };
