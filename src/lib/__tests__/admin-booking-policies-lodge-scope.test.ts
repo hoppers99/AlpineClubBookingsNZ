@@ -102,6 +102,13 @@ function installTransactionMock() {
         findUnique: mocks.bookingDefaultsFindUnique,
         upsert: mocks.bookingDefaultsUpsert,
       },
+      lodge: {
+        findUnique: mocks.lodgeFindUnique,
+      },
+      minimumStayPolicy: {
+        create: mocks.minimumStayCreate,
+      },
+      $executeRaw: vi.fn().mockResolvedValue(1),
     }),
   );
 }
@@ -113,6 +120,7 @@ describe("cancellation policy partitions", () => {
     mocks.cancellationFindMany.mockResolvedValue([]);
     mocks.bookingDefaultsFindUnique.mockResolvedValue({ nonMemberHoldDays: 7 });
     mocks.lodgeFindUnique.mockResolvedValue({ id: "lodge-2", active: true });
+    installTransactionMock();
     installTransactionMock();
   });
 
@@ -273,6 +281,7 @@ describe("minimum-stay policy partitions", () => {
           endDate: "2026-09-30",
           triggerDays: [5, 6],
           minimumNights: 2,
+          capacityMode: "NO_HOLD",
           lodgeId: "lodge-2",
         },
       ),
@@ -280,7 +289,11 @@ describe("minimum-stay policy partitions", () => {
 
     expect(res.status).toBe(201);
     expect(mocks.minimumStayCreate).toHaveBeenCalledWith({
-      data: expect.objectContaining({ lodgeId: "lodge-2" }),
+      data: expect.objectContaining({
+        lodgeId: "lodge-2",
+        capacityMode: "NO_HOLD",
+        version: 1,
+      }),
     });
   });
 
@@ -295,13 +308,38 @@ describe("minimum-stay policy partitions", () => {
           endDate: "2026-09-30",
           triggerDays: [5, 6],
           minimumNights: 2,
+          capacityMode: "HOLD",
         },
       ),
     );
 
     expect(mocks.minimumStayCreate).toHaveBeenCalledWith({
-      data: expect.objectContaining({ lodgeId: null }),
+      data: expect.objectContaining({
+        lodgeId: null,
+        capacityMode: "HOLD",
+        version: 1,
+      }),
     });
+  });
+
+  it("POST requires an explicit capacity mode for every new-runtime write", async () => {
+    const res = await MIN_STAY_POST(
+      request(
+        "http://localhost/api/admin/booking-policies/minimum-stay",
+        "POST",
+        {
+          name: "Winter weekends",
+          startDate: "2026-06-01",
+          endDate: "2026-09-30",
+          triggerDays: [5, 6],
+          minimumNights: 2,
+        },
+      ),
+    );
+
+    expect(res.status).toBe(400);
+    expect(mocks.transaction).not.toHaveBeenCalled();
+    expect(mocks.minimumStayCreate).not.toHaveBeenCalled();
   });
 });
 

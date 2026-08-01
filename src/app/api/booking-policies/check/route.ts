@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from "next/server"
 import { requireActiveSession } from "@/lib/session-guards"
-import { validateMinimumStay, formatViolationsDetail } from "@/lib/booking-policies"
+import {
+  aggregatePolicyExceptionViolations,
+  validateMinimumStay,
+  formatViolationsDetail,
+} from "@/lib/booking-policies"
 import { z } from "zod"
 import { isDateOnlyString, parseDateOnly } from "@/lib/date-only"
 
@@ -43,10 +47,12 @@ export async function GET(request: NextRequest) {
   }
 
   const result = await validateMinimumStay(checkIn, checkOut, parsed.data.lodgeId)
+  const review = aggregatePolicyExceptionViolations(result.violations)
 
   return NextResponse.json({
     valid: result.valid,
-    violations: result.violations,
+    violations: review.violations,
+    exceptionReview: review,
     message: result.valid ? null : formatViolationsDetail(result.violations),
   })
 }

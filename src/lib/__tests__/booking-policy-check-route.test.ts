@@ -22,6 +22,10 @@ vi.mock("@/lib/prisma", () => ({
 vi.mock("@/lib/booking-policies", () => ({
   validateMinimumStay: mockValidateMinimumStay,
   formatViolationsDetail: () => "minimum stay violation",
+  aggregatePolicyExceptionViolations: (violations: unknown[]) => ({
+    violations,
+    capacityMode: null,
+  }),
 }));
 
 import { GET } from "@/app/api/booking-policies/check/route";
@@ -79,6 +83,7 @@ describe("booking policy check route", () => {
     await expect(response.json()).resolves.toEqual({
       valid: true,
       violations: [],
+      exceptionReview: { violations: [], capacityMode: null },
       message: null,
     });
     // No lodgeId in the query resolves the club-wide/default lodge rules

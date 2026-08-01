@@ -5,6 +5,7 @@ import {
   validateMinimumStayWithPolicies,
   type MinimumStayViolation,
 } from "@/lib/policies/minimum-stay";
+import { aggregatePolicyExceptionViolations } from "@/lib/booking-policy-exceptions";
 
 export {
   // test seam
@@ -55,5 +56,12 @@ export async function validateMinimumStay(
     return { valid: true, violations: [] };
   }
 
-  return validateMinimumStayWithPolicies(checkIn, checkOut, policies);
+  return validateMinimumStayWithPolicies(
+    checkIn,
+    checkOut,
+    policies,
+    effectiveLodgeId,
+  );
 }
+
+export { aggregatePolicyExceptionViolations };

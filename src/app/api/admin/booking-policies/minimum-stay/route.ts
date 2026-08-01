@@ -5,6 +5,7 @@ import { prisma } from "@/lib/prisma"
 import { z } from "zod"
 import { logAudit } from "@/lib/audit"
 import { isDateOnlyString, parseDateOnly } from "@/lib/date-only"
+import { lockMinimumStayPolicyScope } from "@/lib/minimum-stay-policy-set"
 
 const dateOnlyString = z.string().refine(isDateOnlyString, {
   message: "Date must be YYYY-MM-DD",
@@ -16,12 +17,17 @@ const createSchema = z.object({
   endDate: dateOnlyString,
   triggerDays: z.array(z.number().int().min(0).max(6)).min(1, "At least one trigger day is required"),
   minimumNights: z.number().int().min(2, "Minimum nights must be at least 2"),
+  capacityMode: z.enum(["HOLD", "NO_HOLD"]),
   active: z.boolean().optional(),
   // Per-lodge override partition (ADR-001 resolved question 3). Omitted =
   // club-wide (null lodgeId). Any rows for a lodge REPLACE the club-wide
   // set at runtime for that lodge.
   lodgeId: z.string().min(1).optional(),
 })
+
+function canonicalTriggerDays(days: number[]): number[] {
+  return [...new Set(days)].sort((a, b) => a - b)
+}
 
 export async function GET(request: NextRequest) {
   const guard = await requireAdmin({
@@ -59,29 +65,29 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    if (data.lodgeId) {
-      const lodge = await prisma.lodge.findUnique({
-        where: { id: data.lodgeId },
-        select: { id: true, active: true },
-      })
-      if (!lodge || !lodge.active) {
-        return NextResponse.json(
-          { error: "Lodge not found or not active" },
-          { status: 400 }
-        )
+    const policy = await prisma.$transaction(async (tx) => {
+      const lodgeId = data.lodgeId ?? null
+      await lockMinimumStayPolicyScope(tx, lodgeId)
+      if (lodgeId) {
+        const lodge = await tx.lodge.findUnique({
+          where: { id: lodgeId },
+          select: { id: true, active: true },
+        })
+        if (!lodge || !lodge.active) throw new InactivePolicyLodgeError()
       }
-    }
-
-    const policy = await prisma.minimumStayPolicy.create({
-      data: {
-        name: data.name,
-        startDate,
-        endDate,
-        triggerDays: data.triggerDays,
-        minimumNights: data.minimumNights,
-        active: data.active ?? true,
-        lodgeId: data.lodgeId ?? null,
-      },
+      return tx.minimumStayPolicy.create({
+        data: {
+          name: data.name,
+          startDate,
+          endDate,
+          triggerDays: canonicalTriggerDays(data.triggerDays),
+          minimumNights: data.minimumNights,
+          capacityMode: data.capacityMode,
+          active: data.active ?? true,
+          lodgeId,
+          version: 1,
+        },
+      })
     })
 
     logAudit({
@@ -94,6 +100,12 @@ export async function POST(request: NextRequest) {
     revalidatePublicPageContent()
     return NextResponse.json(policy, { status: 201 })
   } catch (error) {
+    if (error instanceof InactivePolicyLodgeError) {
+      return NextResponse.json(
+        { error: "Lodge not found or not active" },
+        { status: 400 },
+      )
+    }
     if (error instanceof z.ZodError) {
       return NextResponse.json(
         { error: "Validation failed", details: error.issues },
@@ -106,3 +118,5 @@ export async function POST(request: NextRequest) {
     )
   }
 }
+
+class InactivePolicyLodgeError extends Error {}
