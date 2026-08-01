@@ -38,17 +38,19 @@ Historical note: before `windowed` existed the gate hard-required `yes`, so ever
 
 This note deliberately gives you the **class rule, not a list**. An enumeration here goes stale the moment somebody adds a row: an earlier draft of this note named four migrations when the ledger already held at least nine of them, including the enum rename #2288 was built around — and the artefact written to stop an auditor misreading the record was itself the misleading one. Read the classes off the ledger:
 
-- **`yes` in the operator-acknowledgement sense.** A `contract`-phase row whose `lock_impact_plan` tells the operator to keep old-colour traffic idle, drained, or routed to the new runtime, or names a surface that errors "until cutover". Most say so in the text — `OLD-CODE CAVEAT`, `RESIDUAL WINDOW`, or "`old_code_compatible=yes` is asserted in the promo-redesign sense". `20260526120000_promo_code_per_individual_redesign` is the canonical row the later ones cite; `20260525010000_align_booking_change_request_with_review_queues` (the enum rename this rule came from), `20260708220200`, `20260708220300`, `20260709130000`, `20260714140000`, `20260717170000` and `20260719170000` are all in the class today.
-- **`no` used to flag a genuinely incompatible **data** migration** that tripped none of the breaking patterns — `20260528120000_add_booking_admin_review_workflow` ("old code … is not treated as fully enum-compatible with backfilled `AWAITING_REVIEW` rows") and `20260707000100_backfill_org_age_tier_not_applicable` (pre-#1440 clients cannot deserialize `NOT_APPLICABLE`).
+- **`yes` in the operator-acknowledgement sense.** A row whose `lock_impact_plan` tells the operator to keep old-colour traffic idle, drained, or routed to the new runtime, or names a surface that errors "until cutover". Most say so in the text — `OLD-CODE CAVEAT`, `RESIDUAL WINDOW`, or "`old_code_compatible=yes` is asserted in the promo-redesign sense". Do **not** filter by `phase`: the class is defined by the plan text, and while most of these are `contract`, `20260717170000_joining_fee_model` is an `expand` row whose caveat is money-affecting. `20260526120000_promo_code_per_individual_redesign` is the canonical row the later ones cite; `20260525010000_align_booking_change_request_with_review_queues` (the enum rename this rule came from), `20260708220200`, `20260708220300`, `20260709130000`, `20260714140000`, `20260717170000` and `20260719170000` are all in the class today.
+- **`no` used to flag a genuinely incompatible *data* migration** that tripped none of the breaking patterns — `20260528120000_add_booking_admin_review_workflow` ("old code … is not treated as fully enum-compatible with backfilled `AWAITING_REVIEW` rows") and `20260707000100_backfill_org_age_tier_not_applicable` (pre-#1440 clients cannot deserialize `NOT_APPLICABLE`).
 
-A mechanical starting point — it **over-collects, so read each row rather than trusting the filter**:
+The `no` class needs no filter and cannot go stale: the ledger holds exactly two `no` rows in total, and both are named above. `awk -F'\t' '$4 == "no"' docs/BLUE_GREEN_MIGRATION_SAFETY.tsv` proves it in one line.
+
+For the `yes` class, a mechanical starting point — it is a **starting point, not a definition**, and you must read each row it returns:
 
 ```bash
-awk -F'\t' '$4 != "windowed" && $5 ~ /OLD-CODE CAVEAT|RESIDUAL WINDOW|CAUTION|until cutover|drained|idle or routed/' \
+awk -F'\t' '$4 == "yes" && $5 ~ /OLD-CODE CAVEAT|RESIDUAL WINDOW|CAUTION|until cutover|drained|idle or routed/' \
   docs/BLUE_GREEN_MIGRATION_SAFETY.tsv
 ```
 
-It over-collects because a caveat can be about the **new** colour rather than the draining one: `20260716140000_xero_member_grouping` and `20260729180000_add_payment_manual_mark_paid` both carry an `OLD-CODE CAVEAT` heading and are genuinely `yes` for the old colour.
+It **over-collects**, because a caveat can be about the **new** colour rather than the draining one — `20260716140000_xero_member_grouping` and `20260729180000_add_payment_manual_mark_paid` both carry an `OLD-CODE CAVEAT` heading and are genuinely `yes` for the old colour. It can equally **under-collect**, because the wording is not standardised: the `no` row `20260528120000_add_booking_admin_review_workflow` states its incompatibility in prose that matches none of these phrases. The class is what the plan text *says*, not what the grep finds.
 
 Every one of these rows is deliberately left as it was declared rather than rewritten: rewriting would falsify the record of what was declared at the time, and each row's `lock_impact_plan` already carries the real caveat. New rows use `windowed` for both cases.
 
