@@ -4,6 +4,21 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
+- **Reports now follows the nights a booking stays, not the day somebody made
+  it (#2368).** The selected From/To dates include every overlapping lodge night
+  for Pending, Payment Pending, Confirmed, Paid, Awaiting Review, and Completed
+  bookings. Booking and guest totals are distinct, weekly/monthly buckets count
+  a spanning booking once, lodge/deleted scope is consistent, and integer-cent
+  Booked Revenue is allocated across the complete stay before a partial range is
+  sliced ($1.00 over three nights remains $0.34/$0.33/$0.33).
+
+  Reports also labels the money honestly: **Booked Revenue** is stay-night
+  pricing, while **Net Collected Cash** comes from captured payment totals less
+  refunds and **Outstanding Additions** remains visible on its own. Occupancy is
+  unchanged: only Paid/Completed bookings contribute, and custodian holds remain
+  excluded. CSV/PDF-facing copy, the operator guide, a dedicated browser flow,
+  and the named Reports screenshot contract now describe the same rules.
+
 - **A club's website now says "not ready yet" until its setup is finished,
   instead of quietly answering as though everything were fine (#2420).** Before
   a club saves its site style for the first time, every public web address shows

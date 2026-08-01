@@ -104,7 +104,8 @@ seasons, promos, and booking money):
 - [Waitlist](guides/waitlist.md) — the waitlist queue and force-confirm.
 - [Payments](guides/payments.md) — the booking-payment ledger and Xero invoice
   state.
-- [Reports](guides/reports.md) — occupancy, revenue, and member analytics.
+- [Reports](guides/reports.md) — stay-night occupancy, booked revenue,
+  payment-derived collected cash, outstanding additions, and member analytics.
 
 **Membership & applications guides** (batch 2 — members, applications,
 family/committee, the membership lifecycle, and membership billing):

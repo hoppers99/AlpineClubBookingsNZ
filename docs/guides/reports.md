@@ -4,7 +4,7 @@ Audience: Operator
 
 ## What it is
 
-A read-only analytics dashboard for booking occupancy, revenue, booking-status
+A read-only analytics dashboard for booking occupancy, booked revenue, collected cash, booking-status
 trends, and member-subscription stats over a date range you choose, with CSV and
 PDF export. Find it at **Admin → Finance → Reports** (`/admin/reports`).
 
@@ -31,18 +31,19 @@ date-only lodge nights, interpreted in the club time zone.
    quick range changes only the dates; your Lodge and Deleted selections stay
    as they are.
 
-   ![Reports dashboard: summary and member stat cards over the Occupancy Rate, Revenue by Month, Booking Trends, and pie charts, with Quick Range/From/To filters and CSV/PDF export](../images/admin/admin-reports.png)
+   ![Reports dashboard showing stay-night booking, Booked Revenue, Net Collected Cash, Outstanding Additions, occupancy, trends, and status cards with date, lodge, deleted, CSV, and PDF controls](../images/admin/admin-reports.png)
 
 2. If the club runs more than one lodge, a **Lodge** selector lets you scope
-   occupancy and metrics to one lodge or all lodges.
+   every booking-derived figure and occupancy to one lodge or all lodges.
 
 ### Read the figures
 
-1. The top cards show **Total Bookings**, **Booked Revenue**, **Outstanding
-   Additions**, **Total Guests**, and **Avg Occupancy** for the range. The
-   second row shows member stats (Active, Paid-Up, Unpaid, Overdue, New) for
-   the current season.
-2. The charts show **Occupancy Rate**, **Revenue by Day/Week/Month** (the
+1. The top cards show **Total Bookings**, **Booked Revenue**, **Net Collected
+   Cash**, **Outstanding Additions**, **Total Guests**, and **Avg Occupancy** for
+   the range. A booking and each guest row count once when at least one of their
+   actual stay nights overlaps the inclusive From/To dates. The second row shows
+   member stats (Active, Paid-Up, Unpaid, Overdue, New) for the current season.
+2. The charts show **Occupancy Rate**, **Booked Revenue by Day/Week/Month** (the
    granularity is chosen automatically from the range length), **Booking Trends
    (by week)**, **Member vs Non-Member Guests**, and **Booking Status
    Breakdown**.
@@ -70,12 +71,25 @@ This page is read-only. Its controls:
 | CSV | Download the figures as CSV | — | Filename `tac-report-<date>.csv` |
 | Download PDF | Generate a printable PDF | — | Falls back to the browser print dialog on error; always rendered light-on-white regardless of your theme |
 
-Notes: **Booked Revenue** is what the club priced, whether or not the money has
-arrived; it excludes cancelled and bumped bookings. **Outstanding Additions** is
-the part of that figure still owing because a booking change raised the price
-after payment and the extra was never collected — it sits *inside* Booked
-Revenue, so subtract it to see what has actually been collected. (Both figures,
-and the subtraction, are in the CSV.) The member stat cards always use the
+Notes: **Booked Revenue** is the booking system's price allocated over lodge
+nights (`checkIn` inclusive, `checkOut` exclusive). The full integer-cent
+`finalPriceCents` is divided before the selected range is sliced, so a $1.00
+three-night stay contributes $0.34, $0.33, and $0.33. The booking cohort is the
+explicit current statuses Pending, Payment Pending, Confirmed, Paid, Awaiting
+Review, and Completed; drafts, waitlist placeholders, bumped, and cancelled
+bookings do not silently become revenue.
+
+**Net Collected Cash** is different: it is captured `Payment.amountCents` less
+refunds for the overlapping bookings and is not allocated to individual nights.
+A captured later addition is already inside that payment amount and is never
+added again. **Outstanding Additions** remains the booking-level amount still
+owing after an upward change. Do not subtract it from selected stay-night
+revenue and call the result cash — the payment row owns the cash figure. All
+three appear separately in the CSV.
+
+Occupancy deliberately keeps its narrower PAID/COMPLETED meaning and excludes
+custodian bed holds, so a Confirmed booking can appear in bookings/revenue while
+not increasing this utilisation chart. The member stat cards always use the
 current season's data (shown in the print header); occupancy is sampled to keep
 long ranges readable.
 
@@ -87,8 +101,9 @@ long ranges readable.
 | CSV / PDF buttons are greyed out | The data has not finished loading | Wait for the dashboard to load, then export |
 | A chart says "No … data for this period" | There is no matching data in the range | Widen the range or change the Deleted / Lodge filter |
 | Occupancy shows 0% | No bed-nights were occupied in the range, or capacity is unset | Check the range and the lodge's capacity setup |
-| Revenue looks low | Cancelled and bumped bookings are excluded by design | Compare against the [Payments](payments.md) ledger for the full picture |
-| Revenue looks higher than the bank | Booked Revenue counts money that was priced but may not have arrived | Read **Outstanding Additions** beside it, and chase those bookings from [Bookings](bookings.md#chase-money-still-owed-after-a-booking-change) |
+| Booked Revenue looks lower than the booking's full price | Only the booking's price allocation for selected stay nights is included | Expand the range to the booking's complete stay |
+| Booked Revenue and Net Collected Cash differ | They measure different things: selected stay-night price versus booking-level captured cash less refunds | Use the [Payments](payments.md) ledger for the transaction detail |
+| Outstanding Additions is non-zero | A price increase is still owing on an overlapping booking | Chase it from [Bookings](bookings.md#chase-money-still-owed-after-a-booking-change) |
 
 ## Related links
 

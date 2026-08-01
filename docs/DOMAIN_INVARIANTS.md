@@ -356,6 +356,19 @@ Future reviews and issues should cite this file when proposing changes.
   the check-out day itself for payment chasing, while completion is a next-day
   transition of PAID bookings. A booking is therefore never both counted as a
   finished-stay-needing-payment AND still PAID-completable under the same rule.
+- Base Reports uses lodge nights, never booking creation time (#2368). Its
+  selected From/To window is inclusive and overlaps the half-open booking stay
+  `[checkIn, checkOut)`. Every non-occupancy figure uses one explicit positive
+  cohort: `PENDING`, `PAYMENT_PENDING`, `CONFIRMED`, `PAID`,
+  `AWAITING_REVIEW`, and `COMPLETED`, with the same lodge/deleted scope. Count
+  bookings once per overlapped bucket and guest rows once when any actual guest
+  night overlaps. Allocate all integer cents of `finalPriceCents` across the
+  booking's complete stay before slicing the report range (100/3 = 34/33/33).
+  This is **Booked revenue**, not cash. Net collected cash stays payment-derived
+  (`Payment.amountCents` less refunds, with a captured addition already inside
+  that amount; #2408), and outstanding additions remain separate (#2350).
+  Occupancy is the deliberate exception within the page: it stays limited to
+  PAID/COMPLETED and continues to exclude custodian occupancy (#2286).
 - Capacity is per lodge. A booking belongs to exactly one lodge
   (`Booking.lodgeId`); capacity is "beds available on date D at lodge L", and
   no code path may sum beds across lodges into a single club-wide number. Two

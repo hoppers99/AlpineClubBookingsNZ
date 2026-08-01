@@ -41,6 +41,13 @@ Normal finance report navigation reads stored snapshots or first-party
 AlpineClubBookingsNZ booking/payment data. It must not make live Xero calls on
 page render.
 
+The finance-permission **Base Reports** page is a separate, lighter operator
+surface at `/admin/reports`; see the [Reports guide](../guides/reports.md). Its
+booking and booked-revenue figures follow overlapping lodge stay nights, while
+its payment-derived net collected cash remains explicitly separate. The richer
+`/finance` dashboard contracts below continue to own Xero snapshots, comparisons,
+forward views, and reconciliation.
+
 ## Dashboard Surface
 
 `/finance` is the only finance UI route. It is controlled by query selectors:
