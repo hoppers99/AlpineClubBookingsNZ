@@ -3720,6 +3720,38 @@ dependants eat into the budget, the candidate parent's ancestors must fit in
 what is left, and the member's descendants are excluded outright so the dialog
 cannot offer a cycle.
 
+**Ranking is presentation; eligibility is not** (#2425, owner decision 1 Aug
+2026). That "no age clause at all" is a statement about who is ELIGIBLE, and it
+still holds exactly. What #2282 also did, though, was let a family's children
+compete for the picker's eight rows with the adult being searched for: ordered
+by `lastName` then `firstName`, a household of children with a shared surname
+filled every slot, and the adult was unreachable without extra typing the admin
+had no way of knowing was needed. So the parent-candidate search now returns
+**ADULTS first, then everyone else**, at the same page size — a re-ORDER of the
+same set, not a filter. It is implemented as two complementary queries
+(`ageTier: { in: [ADULT, NOT_APPLICABLE] }` and the matching `notIn`) over one
+shared `where`, rather than an `orderBy`, because Prisma has no computed sort
+key and sorting on `ageTier` itself would depend on the enum's declaration
+order. **The line is drawn at MINOR / not minor, not at ADULT / not adult**, and
+that is deliberate: `NOT_APPLICABLE` is the age-EXEMPT tier (see above), so a
+row carrying it in THIS search is a real person — usually an adult on a FORCED
+or N/A-allowing membership type — because organisations are excluded here by
+ROLE and never by tier. Ranking them with `not ADULT` would have interleaved
+them alphabetically among the household's children and left them crowded off
+exactly the page this rule exists to fix. They sort among the adults by name
+instead; nothing about the split claims they ARE adults, only that they are not
+minors. `Member.ageTier` is NOT NULL, so `in` and `notIn` are exact complements
+and the two halves are the same set, and the same count, an unranked query would
+return. The split is windowed
+correctly for pages beyond the first — this is a general list endpoint, and a
+ranking that reshuffled on page 2 would drop and duplicate rows — and the
+`total` the response carries is still the count of the WHOLE eligible set, which
+is what lets the dialog say the page was cut short ("Keep typing to narrow this
+down.", the #2308 member-guest finder's own sentence). The ranking is scoped to
+the `parentLinkEligibleFor` parameter, so every other caller of
+`GET /api/admin/members` — the members table, the exports, the other pickers —
+issues exactly the query it did before.
+
 Three rules about that predicate are load-bearing. First, the parent columns are
 **nullable**, so every "not this parent" clause must be written as
 `{ OR: [{ col: null }, { col: { not: id } }] }` — Prisma compiles a bare
@@ -4020,6 +4052,27 @@ and is hard-deleted at the end. The merge is **additive and master-wins**:
   `xeroContactId` always stay the master's. (Login-email uniqueness is a partial
   unique index `WHERE canLogin = true`, so two login rows on one email can never
   coexist mid-transaction.)
+  **The FIELD PATCH only** is derived from a read of both members taken
+  immediately before the write, never from the snapshot the transaction opened
+  with (#2243). Everything else in the merge — the guard matrix, the confirmation
+  phrase, the preview-token check, and the self-relation cycle nulling — still
+  runs on that opening snapshot. Every value in the patch is copied off the
+  loser, and two of them are real foreign keys — `photoImageId` (→ `MediaImage`)
+  and `familyGroupId` (→ `FamilyGroup`) — so a stale value can name a row that a
+  writer outside the `member-lifecycle` lock deleted mid-merge and fail the write
+  outright, rolling the entire merge back. Both member rows are row-locked
+  (`SELECT … FOR UPDATE`, id-ordered) immediately before that read, so neither
+  can move again before the write. If the fresh derivation disagrees with the
+  previewed one on any field, the merge **refuses**: a 409
+  (`merge_drift_in_transaction`) naming the drifted fields, nothing written, and
+  the operator re-runs the preview — the same "what was previewed is exactly what
+  is applied" promise the rest of the preview/confirm flows make. The original
+  bug is fixed either way, because the stale value is caught from the fresh read
+  *before* it reaches Postgres. A row lock does not protect the rows these FKs
+  point at, so a concurrent `FamilyGroup` delete can still abort the merge (as a
+  deadlock rather than a stale-value error); the master is still unlocked during
+  the guards and the self-relation pass, which is why the Member self-relation
+  moves exclude the master's own row (see #2437).
 - **Relation buckets.** Every Member-referencing relation is classified into
   exactly one bucket by `MEMBER_MERGE_RELATION_SPECS`, enforced complete by a
   DMMF/schema test that fails CI if a new relation is added unclassified:
@@ -4045,9 +4098,26 @@ and is hard-deleted at the end. The merge is **additive and master-wins**:
   - **snapshot** — FK-less scalar member-id columns
     (`MemberLifecycleActionRequest.memberId`, `BookingModification.memberId`,
     `MemberApplication` nominator/reviewer ids, `NominationToken`,
-    `IssueReport.resolvedById`, `AuditLog` columns, …) are **left pointing at the
-    loser's id by design** as immutable history; the same historic audit rows
-    that reference the loser keep its id and stored names on purpose.
+    `IssueReport.resolvedById`, `AuditLog` columns, the settings-audit
+    `updatedByMemberId` columns, `CalendarEvent`/`CalendarEventSeries.createdById`,
+    …) are **left pointing at the loser's id by design** as immutable history;
+    the same historic audit rows that reference the loser keep its id and stored
+    names on purpose. These carry no `@relation`, so the relation walk above
+    cannot see them and they used to be listed by hand and non-exhaustively —
+    which is how the two calendar columns escaped both (#2243). They are now
+    enumerated mechanically as well: any FK-less `String` column whose name is
+    used elsewhere in the schema as a Member FK column must appear in
+    `MEMBER_MERGE_SNAPSHOT_SCALAR_COLUMNS`, and `member-merge-dmmf.test.ts` fails
+    on the next one that does not. Columns with bespoke names
+    (`MemberApplication.nominator1Id`, `RefundRequest.reviewedBy`,
+    `IntegrationCredential.updatedByUserId` — a misnomer, it holds a member id —
+    and the like) are invisible to that scan and stay hand-documented, so that
+    part of the list is explicitly **best-effort, not exhaustive**.
+    One column found by the same review is deliberately **moved, not
+    snapshotted**: `BookingRequest.convertedMemberId` is the identity pointer to
+    the member a booking request converted into, replayed as a live member id by
+    the idempotent approval path, so the merge re-points it loser → master
+    alongside its FK twin `requestedByMemberId` (#2243).
 - **Subscription-collision blocker.** If the loser holds a *meaningful*
   `MemberSubscription` (any invoice/payment/charge-coverage signal) for a season
   the master holds **any** subscription row for — meaningful or not — the merge
@@ -4078,8 +4148,13 @@ and is hard-deleted at the end. The merge is **additive and master-wins**:
   re-verifies an HMAC preview token (over both ids, both `updatedAt`, and an
   outcome digest) so a drifted preview 409s. The admin must type
   `MERGE <loser full name>` (whitespace-normalised) to confirm, and one critical
-  `MEMBER_MERGED` audit records the loser snapshot, field outcome, per-relation
-  counts, collision resolutions, and a bounded 500-row moved-id sample.
+  `MEMBER_MERGED` audit records the loser snapshot, field outcome (the values
+  actually applied), per-relation counts, collision resolutions, and a bounded
+  500-row moved-id sample. The token pins the state at the moment the transaction
+  opened, so it catches drift **before** the merge starts but cannot see a change
+  that lands during it; that residual window is closed by the second patch
+  derivation above, which 409s on any disagreement — so a committed merge never
+  carries drift, and there is no drift field in the audit to read.
 
 ## Integrations
 

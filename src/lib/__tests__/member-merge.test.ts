@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   MEMBER_MERGE_RELATION_SPECS,
   MEMBER_MERGE_SNAPSHOT_SCALAR_COLUMNS,
+  diffFieldMergePatches,
   maxFamilyRole,
   memberMergeConfirmationPhrase,
   mergeMemberFields,
@@ -220,6 +221,158 @@ describe("mergeMemberFields", () => {
     ]) {
       expect(patch[forbidden]).toBeUndefined();
     }
+  });
+});
+
+describe("patch derivation from a snapshot versus a fresh read (#2243)", () => {
+  // The merge derives its field patch twice: once from the transaction-opening
+  // snapshot (what the preview token pins) and once from a read taken just
+  // before the write. These prove the two derivations really do diverge when a
+  // writer outside the member-lifecycle lock moves the loser mid-transaction,
+  // and that the divergence is reported field by field.
+
+  it("names a stale FK value: the snapshot patch writes a deleted blob, the fresh one does not", () => {
+    // `Member.photoImageId` is a real FK. An on-behalf photo upload for the
+    // loser deletes blob L1 and repoints the loser to L2, so a patch derived
+    // from the snapshot names a row that no longer exists — Postgres 23503 /
+    // Prisma P2003, rolling the whole merge back.
+    const master = baseMember({ id: "master", photoImageId: null });
+    const snapshotLoser = baseMember({ id: "loser", photoImageId: "L1" });
+    const freshLoser = baseMember({ id: "loser", photoImageId: "L2" });
+
+    const fromSnapshot = mergeMemberFields(master, snapshotLoser).patch;
+    const fromFresh = mergeMemberFields(master, freshLoser).patch;
+
+    expect(fromSnapshot.photoImageId).toBe("L1");
+    expect(fromFresh.photoImageId).toBe("L2");
+    expect(diffFieldMergePatches(fromSnapshot, fromFresh)).toEqual(["photoImageId"]);
+  });
+
+  it("names a stale familyGroupId — the patch's OTHER real FK", () => {
+    // The same class, not a photo quirk: a club admin can delete the group
+    // (SetNull) without taking the member-lifecycle lock, so the snapshot's
+    // group id can name a deleted FamilyGroup row by write time.
+    const master = baseMember({ id: "master", familyGroupId: null });
+    const snapshotLoser = baseMember({ id: "loser", familyGroupId: "fg-old" });
+    const freshLoser = baseMember({ id: "loser", familyGroupId: null });
+
+    expect(
+      diffFieldMergePatches(
+        mergeMemberFields(master, snapshotLoser).patch,
+        mergeMemberFields(master, freshLoser).patch,
+      ),
+    ).toEqual(["familyGroupId"]);
+  });
+
+  it("treats a field written as null differently from a field not written at all", () => {
+    const master = baseMember({ id: "master", photoImageId: null });
+    // Group fills carry the whole group, so the absorbed photo group writes
+    // photoUpdatedAt/photoUpdatedByMemberId as null alongside the id.
+    const withPhoto = baseMember({
+      id: "loser",
+      photoImageId: "L1",
+      photoUpdatedAt: null,
+      photoUpdatedByMemberId: null,
+    });
+    const withoutPhoto = baseMember({ id: "loser", photoImageId: null });
+
+    expect(
+      diffFieldMergePatches(
+        mergeMemberFields(master, withPhoto).patch,
+        mergeMemberFields(master, withoutPhoto).patch,
+      ),
+    ).toEqual(["photoImageId", "photoUpdatedAt", "photoUpdatedByMemberId"]);
+  });
+
+  it("reports nothing when the two reads agree, even across separate Date objects", () => {
+    // Two reads of the same row produce equal-but-distinct Dates; comparing by
+    // identity would report drift on every single merge that fills a date.
+    const master = baseMember({ id: "master", joinedDate: new Date("2024-01-01T00:00:00Z") });
+    const snapshotLoser = baseMember({
+      id: "loser",
+      joinedDate: new Date("2020-06-01T00:00:00Z"),
+    });
+    const freshLoser = baseMember({
+      id: "loser",
+      joinedDate: new Date("2020-06-01T00:00:00Z"),
+    });
+
+    const fromSnapshot = mergeMemberFields(master, snapshotLoser).patch;
+    const fromFresh = mergeMemberFields(master, freshLoser).patch;
+
+    expect(fromSnapshot.joinedDate).toBeInstanceOf(Date);
+    expect(fromSnapshot.joinedDate).not.toBe(fromFresh.joinedDate);
+    expect(diffFieldMergePatches(fromSnapshot, fromFresh)).toEqual([]);
+  });
+
+  it("reports a date whose instant really did move", () => {
+    const master = baseMember({ id: "master", joinedDate: new Date("2024-01-01T00:00:00Z") });
+    const snapshotLoser = baseMember({
+      id: "loser",
+      joinedDate: new Date("2020-06-01T00:00:00Z"),
+    });
+    const freshLoser = baseMember({
+      id: "loser",
+      joinedDate: new Date("2019-02-03T00:00:00Z"),
+    });
+
+    expect(
+      diffFieldMergePatches(
+        mergeMemberFields(master, snapshotLoser).patch,
+        mergeMemberFields(master, freshLoser).patch,
+      ),
+    ).toEqual(["joinedDate"]);
+  });
+
+  it("covers every patch-carried field: each one is copied from the loser and drifts with it", () => {
+    // The staleness class is not photo-specific — the patch carries ONLY values
+    // read off the loser, so each of them can be stale in exactly the same way.
+    // This walks the whole patch surface rather than trusting a spot check.
+    const master = baseMember({ id: "master" });
+    const populated = {
+      title: "MR",
+      gender: "MALE",
+      dateOfBirth: new Date("1980-05-05T00:00:00Z"),
+      occupation: "Engineer",
+      lifeMemberDate: new Date("2001-01-01T00:00:00Z"),
+      comments: "note",
+      familyGroupId: "fg-1",
+      phoneCountryCode: "64",
+      phoneAreaCode: "27",
+      phoneNumber: "4224115",
+      photoImageId: "L1",
+      photoUpdatedAt: new Date("2026-01-01T00:00:00Z"),
+      photoUpdatedByMemberId: "someone",
+      streetAddressLine1: "1 Road",
+      streetAddressLine2: "Flat 2",
+      streetCity: "Town",
+      streetRegion: "Region",
+      streetPostalCode: "1234",
+      streetCountry: "NZ",
+      postalAddressLine1: "PO Box 1",
+      postalAddressLine2: "c/o",
+      postalCity: "Town",
+      postalRegion: "Region",
+      postalPostalCode: "1234",
+      postalCountry: "NZ",
+      requiresInduction: true,
+      hutLeaderEligible: true,
+      hutLeaderEligibleAt: new Date("2022-02-02T00:00:00Z"),
+      joinedDate: new Date("2005-03-03T00:00:00Z"),
+    };
+    const snapshotLoser = baseMember({ id: "loser", ...populated });
+    // The whole loser row is wiped by a concurrent writer: nothing survives to
+    // be filled from, so every field the patch carried disappears from it.
+    const freshLoser = baseMember({ id: "loser" });
+
+    const fromSnapshot = mergeMemberFields(master, snapshotLoser).patch;
+    const fromFresh = mergeMemberFields(master, freshLoser).patch;
+
+    expect(Object.keys(fromSnapshot).sort()).toEqual(Object.keys(populated).sort());
+    expect(fromFresh).toEqual({});
+    expect(diffFieldMergePatches(fromSnapshot, fromFresh)).toEqual(
+      Object.keys(populated).sort(),
+    );
   });
 });
 
