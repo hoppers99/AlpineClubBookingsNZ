@@ -108,7 +108,7 @@ export function adminSplitSettlementCancelledLeadParagraph(
 }
 
 /**
- * #2263 × #2444 — the whole confirmed-but-UNPAID paragraph of a booking
+ * #2263 × #2444 × #2483 — the whole confirmed-but-UNPAID paragraph of a booking
  * confirmation, shared by the hand-built HTML confirmation
  * (`bookingConfirmedTemplate`) and the flat `{{paymentDueNote}}` token the
  * admin-editable body renders inside `{{paymentOutcome}}`.
@@ -119,59 +119,93 @@ export function adminSplitSettlementCancelledLeadParagraph(
  * two hand-kept copies is exactly the drift `composeOptionalEmailLine` and
  * `appliedCreditSummaryRows` exist to prevent, so the paragraph moved here.
  *
- * THE CLOSING SENTENCE, and why it promises nothing (#2444).
- * The "Total Due" line above is the BOOKING's own price. The invoice the member
- * actually pays against is a separate document, and the two can differ — a club
- * admin can net a member's account credit off the invoice, or adjust it, by
- * hand in Xero. So the sentence points the member at the invoice as the figure
- * to transfer, and names the commonest reason the two would differ. It does NOT
- * say that credit "will be applied", because on this path nothing applies it.
+ * TWO SHAPES, chosen by whether `accountCredit` is supplied.
  *
- * WHAT THIS PATH ACTUALLY DOES WITH CREDIT (re-verified in review, 1 Aug 2026 —
- * an earlier draft of this sentence asserted the opposite and was corrected
- * before merge; do not reinstate it without making the allocation real).
- * The one send site is the member whole-lodge approval in
- * `school-booking-request.ts`. It MINTS A BRAND-NEW BOOKING and writes no
- * `MemberCredit` row of any kind, so the
- * `enqueueXeroAppliedCreditAllocationOperation` call it makes always
- * short-circuits with "No unallocated applied credit; nothing to allocate."
- * (`xero-operation-outbox.ts`). #1620 "allocate-existing" fires only when
- * credit has been APPLIED to the booking app-side, up to the applied amount,
- * and no code path applies credit here. The Xero invoice is therefore raised
- * for the FULL amount and equals the "Total Due" line unless a human changes
- * it.
+ * 1. NO APPLICABLE CREDIT (`accountCredit` absent) — the #2444 paragraph,
+ *    unchanged to the byte. This is what every member on today's one live
+ *    unpaid path receives. The "Total Due" line above is the BOOKING's own
+ *    price; the invoice the member actually pays against is a separate document
+ *    a club admin can adjust by hand in Xero, so the closing sentence points at
+ *    the invoice as the figure to transfer and names the commonest reason the
+ *    two would differ. It is CONDITIONAL and states no second figure, because
+ *    most invoices match the total exactly, and it does NOT say credit "will be
+ *    applied", because on this path nothing applies it: the member whole-lodge
+ *    approval in `school-booking-request.ts` mints a brand-new booking and
+ *    writes no `MemberCredit` row, so the
+ *    `enqueueXeroAppliedCreditAllocationOperation` call it makes always
+ *    short-circuits with "No unallocated applied credit; nothing to allocate."
+ *    (re-verified in review, 1 Aug 2026 — an earlier draft asserted the
+ *    opposite and was corrected before merge; do not reinstate it without
+ *    making the allocation real).
  *
- * The sentence is deliberately CONDITIONAL and states no figure. Most members
- * hold no credit at all and most invoices match the total exactly, so an
- * unconditional claim would be false for them; and computing a real net figure
- * needs a Xero read, which a transactional send must not make (it would put a
- * provider round-trip, and a provider outage, in the path of a member's
- * confirmation). The owner's decision (1 Aug 2026) is that a neutral sentence
- * ships now and the computed figure is its own later piece of work.
+ * 2. CREDIT APPLIED TO THIS BOOKING (`accountCredit` supplied, #2483) — the
+ *    paragraph names the NET figure, shows the arithmetic in words, and inverts
+ *    the closing instruction. The caller supplies `accountCredit` only when the
+ *    club's own ledger answered cleanly (`resolveUnpaidCreditNetting`), and
+ *    that ledger is what DECIDES the Xero allocation, so the netted figure is
+ *    the club's real ask.
  *
- * `amount` and `reference` arrive ALREADY FORMATTED and already escaped for
- * the caller's medium — this module imports nothing (see the file docblock), so
- * money formatting stays with the caller, and the HTML path escapes the
- * club-entered reference at its own edge exactly as it did before.
+ *    Why the closing instruction inverts. Under (1) the email defers to the
+ *    invoice. It cannot do that here: the allocation that reduces the invoice
+ *    is processed asynchronously on the Xero outbox, so a member reading the
+ *    invoice first may still see the full price — and "transfer what the
+ *    invoice shows" would then produce exactly the overpayment this whole
+ *    change exists to prevent. So the netted figure stands, and a disagreement
+ *    is routed to the club rather than acted on by the member. Admins are not
+ *    left to notice it by hand: a separate reconciliation checker (#2501)
+ *    compares the club's credits against Xero's and warns them on drift. The
+ *    sentence promises only that the club will check — never that Xero has
+ *    already been updated, which this module cannot know.
+ *
+ * `amount`, `reference` and the `accountCredit` figures arrive ALREADY
+ * FORMATTED and already escaped for the caller's medium — this module imports
+ * nothing (see the file docblock), so money formatting stays with the caller,
+ * and the HTML path escapes the club-entered reference at its own edge exactly
+ * as it did before.
  */
 export function bookingPaymentDueNote({
   amount,
   reference,
   invoiceEmailed,
+  accountCredit,
 }: {
-  /** Amount owing, already formatted as money — "$300.00". */
+  /**
+   * What the member must TRANSFER, already formatted as money — "$300.00".
+   * Already net of `accountCredit.creditApplied` when that is supplied.
+   */
   amount: string;
   /** Internet-banking reference the member must quote, already escaped. */
   reference: string;
   /** TRUE only when an invoice really was raised (the Xero module is on). */
   invoiceEmailed: boolean;
+  /**
+   * #2483 — present ONLY when the club's own credit ledger says credit is
+   * applied to this booking and the figures reconcile. Absent renders the
+   * #2444 paragraph unchanged.
+   */
+  accountCredit?: {
+    /** The booking's full price, formatted — "$300.00". */
+    bookingTotal: string;
+    /** Credit applied to it, formatted and UNSIGNED — "$120.00". */
+    creditApplied: string;
+  };
 }): string {
+  const invoiceSentence = invoiceEmailed
+    ? " An invoice has been emailed to you separately."
+    : " The club will send you an invoice for it.";
+
+  if (!accountCredit) {
+    return (
+      `This booking is confirmed, but payment of ${amount} is still owing. Please pay by internet banking quoting reference ${reference}.` +
+      invoiceSentence +
+      " If the invoice asks for a different amount — for example because the club has put account credit you hold towards it — please transfer the amount the invoice shows."
+    );
+  }
+
   return (
-    `This booking is confirmed, but payment of ${amount} is still owing. Please pay by internet banking quoting reference ${reference}.` +
-    (invoiceEmailed
-      ? " An invoice has been emailed to you separately."
-      : " The club will send you an invoice for it.") +
-    " If the invoice asks for a different amount — for example because the club has put account credit you hold towards it — please transfer the amount the invoice shows."
+    `This booking is confirmed, but payment of ${amount} is still owing — the booking's price of ${accountCredit.bookingTotal} less the ${accountCredit.creditApplied} of account credit the club has put towards it. Please pay ${amount} by internet banking quoting reference ${reference}.` +
+    invoiceSentence +
+    ` If the invoice asks for a different amount, please transfer ${amount} and let the club know, and the club will check its own record of your credit against the invoice.`
   );
 }
 

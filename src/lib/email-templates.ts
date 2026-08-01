@@ -426,6 +426,14 @@ const SETTLED_LINE_LABELS: Record<ConfirmationSettlementMethod, string> = {
 const NOTHING_SETTLED_LABEL = "Nothing more to pay";
 
 /**
+ * #2328 × #2483: the one label under which account credit appears on a booking
+ * confirmation, whether the booking is settled (the pair below) or still owing
+ * (the netting rows further down). Shared so the two money outcomes cannot end
+ * up naming the same thing differently.
+ */
+const APPLIED_CREDIT_LABEL = "Account credit applied";
+
+/**
  * #2328: the single source of truth for how APPLIED ACCOUNT CREDIT shows on a
  * booking confirmation — shared by the hand-built HTML confirmation
  * (`bookingConfirmedTemplate`) and the flat `{{creditNote}}` token the
@@ -463,7 +471,7 @@ export function appliedCreditSummaryRows(
   if (appliedCreditCents <= 0 || settledCents < 0) return [];
   return [
     {
-      label: "Account credit applied",
+      label: APPLIED_CREDIT_LABEL,
       value: `-${formatMoneyCents(appliedCreditCents)}`,
     },
     {
@@ -488,27 +496,27 @@ export function appliedCreditSummaryRows(
  *  - unpaid (`paymentDue`): nothing has been settled at all, so there is no
  *    "paid by" figure — returns a negative sentinel that suppresses the rows.
  *
- *    WHY THAT IS SAFE, precisely (#2328 review). It is safe because this branch
- *    never carries applied credit, NOT because suppressing a credit line here
- *    would be the right answer if it did. There is exactly ONE send site that
- *    passes `paymentDue`: the member whole-lodge request conversion in
- *    `src/lib/school-booking-request.ts` (the `sendBookingConfirmedEmail` call
- *    at ~:2101). That path mints a brand-new booking from an approved request
- *    and never applies account credit to it — no `BOOKING_APPLIED` ledger row
- *    is written anywhere on it — so `loadBookingAppliedCredit` returns zero and
- *    there is nothing to suppress. `sendBookingConfirmedEmail` logs a warning
- *    if that precondition ever stops holding, because the suppression would
- *    then be hiding a real figure from a member.
+ *    That suppression is about the SETTLEMENT half of the pair only, and it is
+ *    unconditionally right: no money has moved, so there is no "Paid by card"
+ *    line to write. It does NOT mean an unpaid confirmation stays silent about
+ *    credit. Since #2483 the unpaid branch states the netting in its own shape
+ *    — booking total, credit applied, amount to transfer — built by
+ *    `unpaidMoneySummaryRows` below. Before #2483 the whole subject was
+ *    suppressed here, which was defensible only while no send site could pair
+ *    `paymentDue` with applied credit;
  *
  *    A #2444 DRAFT claimed the invoice for this booking has the member's
  *    floating credit notes ALLOCATED against it under #1620, because the send
  *    site enqueues an allocation op a few lines above the send. That is WRONG
- *    and is retracted (re-verified 1 Aug 2026):
- *    `enqueueXeroAppliedCreditAllocationOperation` only queues anything when
- *    the booking already carries `BOOKING_APPLIED` ledger rows, and this path
- *    writes none, so it always returns `{ queueOperationId: null }` and the
- *    invoice stands at the FULL amount. The suppression rests on the
- *    no-applied-credit precondition above and on nothing else;
+ *    as a statement about TODAY'S path and is retracted (re-verified 1 Aug
+ *    2026): `enqueueXeroAppliedCreditAllocationOperation` only queues anything
+ *    when the booking already carries `BOOKING_APPLIED` ledger rows, and the
+ *    one live `paymentDue` path writes none, so it always returns
+ *    `{ queueOperationId: null }` and the invoice stands at the FULL amount.
+ *    That gating is exactly why #2483 can compute the netting LOCALLY: the
+ *    same `BOOKING_APPLIED` rows that decide what Xero will allocate are the
+ *    rows the email reads, so the email and the invoice are driven from one
+ *    fact rather than from two independent guesses;
  *  - partly paid (`outstandingBalance`, #2397): the settled slice is the
  *    booking's price minus what is still owing, and the credit comes out of
  *    THAT, not out of the full price;
@@ -533,6 +541,108 @@ export function settledByPaymentCents({
 }): number {
   if (unpaid) return -1;
   return totalCents - outstandingCents - appliedCreditCents;
+}
+
+/**
+ * #2483: what a confirmed-but-UNPAID booking is really asking the member for,
+ * once the club's own account-credit ledger has been consulted.
+ *
+ * The bug. An unpaid confirmation states the booking's full price as
+ * "Total Due" and asks the member to transfer it. Where account credit has been
+ * applied to that booking app-side, the club's Xero invoice is reduced by
+ * exactly that credit (#1620 "allocate-existing" — the allocation is gated on
+ * the booking's `BOOKING_APPLIED` ledger rows), so the invoice asks for less
+ * than the email does and a member who follows the email OVERPAYS.
+ *
+ * Why the figure is computed HERE and not read back from Xero (owner decision,
+ * 2 Aug 2026). The allocation is asynchronous — queued on the Xero outbox and
+ * processed afterwards — so waiting for it would either delay a member-facing
+ * confirmation behind a provider operation or make the email's content depend
+ * on outbox timing. The owner's direction is that the email uses the booking
+ * app's OWN known credits, with no delay and an itemised amount, and that a
+ * SEPARATE reconciliation checker (#2501) warns admins whenever the club's
+ * ledger and Xero disagree. That split keeps the provider off the send path and
+ * puts drift in front of an admin instead of in front of a member.
+ *
+ * Why that local figure is trustworthy. It is not a re-derivation of something
+ * Xero owns: `deriveBookingAppliedCreditCents` sums the very
+ * `BOOKING_APPLIED` rows that DECIDE what the allocation will do. Email and
+ * invoice therefore rest on one fact. What can still drift is a hand edit made
+ * in Xero afterwards — which is what #2501 exists to surface.
+ *
+ * The two degraded shapes, both of which render the #2444 message UNCHANGED
+ * (`creditCents: 0`), because a precise figure that is wrong is worse than no
+ * figure at all:
+ *  - **No credit applied to this booking** — the overwhelming majority, and
+ *    every send on today's one live `paymentDue` path. Byte-for-byte the
+ *    pre-#2483 email.
+ *  - **Credit at least as large as the booking's price.** The arithmetic would
+ *    leave nothing (or less than nothing) to transfer, which contradicts the
+ *    very fact that this send is a payment-due one. Something upstream is
+ *    inconsistent, so the email states no netting and the sender logs it.
+ *
+ * Money is integer cents throughout; the only arithmetic is one subtraction, so
+ * no rounding is possible.
+ */
+export interface UnpaidCreditNetting {
+  /**
+   * Account credit the club's own ledger has applied to this booking, in
+   * integer cents. ZERO means "state no netting" — either none is applied, or
+   * the figures did not reconcile cleanly enough to put in front of a member.
+   */
+  creditCents: number;
+  /**
+   * What the member must transfer: the booking's price less `creditCents`.
+   * Equals the booking's price whenever `creditCents` is zero.
+   */
+  toTransferCents: number;
+}
+
+export function resolveUnpaidCreditNetting({
+  totalCents,
+  appliedCreditCents,
+}: {
+  totalCents: number;
+  appliedCreditCents: number;
+}): UnpaidCreditNetting {
+  const creditCents = Math.max(0, appliedCreditCents);
+  if (creditCents === 0 || totalCents <= 0 || creditCents >= totalCents) {
+    return { creditCents: 0, toTransferCents: totalCents };
+  }
+  return { creditCents, toTransferCents: totalCents - creditCents };
+}
+
+/**
+ * #2483: the money rows of an UNPAID confirmation — the single source of truth
+ * for them, shared by the hand-built HTML confirmation and the pre-composed
+ * `{{paymentOutcome}}` block an admin-editable body renders, exactly as
+ * `appliedCreditSummaryRows` is shared for a settled booking.
+ *
+ * Without netting it is the one "Total Due" line #2263 shipped, so an unpaid
+ * confirmation for a member holding no applicable credit is unchanged. With
+ * netting it is the reconciling trio #2328 established for a settled booking,
+ * in the tense an unpaid one needs: what the stay costs, what the club has
+ * already put towards it, and what is left to transfer. "Total Due" keeps its
+ * label — it is what the member owes, which is the point of the line — so a
+ * saved override built on `{{totalDue}}` states the netted figure with no edit.
+ *
+ * Values are unescaped plain text; the HTML path escapes at its own edge.
+ */
+export function unpaidMoneySummaryRows(
+  totalCents: number,
+  netting: UnpaidCreditNetting,
+): Array<{ label: string; value: string }> {
+  if (netting.creditCents <= 0) {
+    return [{ label: "Total Due", value: formatMoneyCents(totalCents) }];
+  }
+  return [
+    { label: "Booking Total", value: formatMoneyCents(totalCents) },
+    {
+      label: APPLIED_CREDIT_LABEL,
+      value: `-${formatMoneyCents(netting.creditCents)}`,
+    },
+    { label: "Total Due", value: formatMoneyCents(netting.toTransferCents) },
+  ];
 }
 
 export function bookingConfirmedTemplate(
@@ -649,8 +759,20 @@ export function bookingConfirmedTemplate(
     label: escapeHtml(row.label),
     value: escapeHtml(row.value),
   }));
+  // #2483: what an unpaid member is really being asked for, netted from the
+  // club's own credit ledger by the SHARED resolver the sender uses, so the
+  // table and the {{paymentOutcome}} block cannot disagree about the figure.
+  const unpaidNetting = resolveUnpaidCreditNetting({
+    totalCents,
+    appliedCreditCents,
+  });
   if (paymentDue) {
-    rows.push({ label: "Total Due", value: formatCents(totalCents) });
+    // One "Total Due" row when no credit applies (byte-for-byte the pre-#2483
+    // email), or the reconciling trio when it does — from the shared builder,
+    // escaped at this HTML edge on the same principle as the rows above.
+    for (const row of unpaidMoneySummaryRows(totalCents, unpaidNetting)) {
+      rows.push({ label: escapeHtml(row.label), value: escapeHtml(row.value) });
+    }
   } else if (outstandingBalance) {
     rows.push(
       { label: "Booking Total", value: formatCents(totalCents) },
@@ -673,11 +795,21 @@ export function bookingConfirmedTemplate(
   // must never appear on one renderer and not the other. The reference is
   // club-entered data, so it is escaped at this HTML edge (the composer takes
   // it already escaped, on the same principle as the shared money rows above).
+  // #2483: the amount is what the member must TRANSFER, so it is netted; the
+  // arithmetic behind it goes in the paragraph in words, for a body that
+  // renders {{paymentDueNote}} without the money table beside it.
   const paymentDueNote = paymentDue
     ? bookingPaymentDueNote({
-        amount: formatCents(totalCents),
+        amount: formatCents(unpaidNetting.toTransferCents),
         reference: escapeHtml(paymentDue.reference),
         invoiceEmailed: paymentDue.invoiceEmailed,
+        accountCredit:
+          unpaidNetting.creditCents > 0
+            ? {
+                bookingTotal: formatCents(totalCents),
+                creditApplied: formatCents(unpaidNetting.creditCents),
+              }
+            : undefined,
       })
     : "";
   // #2397, same convention: one composed sentence shared with the token path.

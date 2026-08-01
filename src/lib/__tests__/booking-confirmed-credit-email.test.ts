@@ -327,22 +327,46 @@ describe("#2328 booking-confirmed applied-credit note", () => {
     expectCleanBody(renderDefaultBody(templateData));
   });
 
-  it("shouts rather than hides if an unpaid send ever carries credit", async () => {
-    // The unpaid branch SUPPRESSES the pair, which is safe only while the
-    // precondition below holds. Deliberately NOT pinned as correct behaviour
-    // (an earlier version of this test asserted creditNote === "" for a send
-    // carrying $120.00 of credit, which would have hidden a real defect): what
-    // is pinned is that the impossible state is loud.
-    await send(
+  it("states the netting, rather than warning about it, when an unpaid send carries credit", async () => {
+    // THE PIN THIS REPLACES, and why (#2483). Until now the unpaid branch
+    // suppressed the credit pair outright and this test pinned that the
+    // suppression was at least LOUD — a warning, on a state believed
+    // unreachable. #2483 makes the state a specified one: the confirmation
+    // states what the member must transfer, netted from the club's own ledger.
+    // So the assertion inverts. It is not deleted, because "an unpaid send
+    // carrying credit" is exactly the case that must never again go unexplained
+    // in a member's inbox; it now pins the explanation instead of the alarm.
+    const { templateData } = await send(
       30000,
       { amountCents: 12000, settlementMethod: "bank_transfer" },
       { paymentDue: { reference: "BOOKING-ABC123", invoiceEmailed: false } },
     );
 
+    expect(templateData.paymentOutcome).toContain(
+      "Booking Total: $300.00\nAccount credit applied: -$120.00\nTotal Due: $180.00\n",
+    );
+    expect(templateData.totalDue).toBe("$180.00");
+    // Nothing is suppressed, so there is nothing to warn about.
+    expect(warnMock).not.toHaveBeenCalled();
+  });
+
+  it("shouts rather than hides when the netting cannot be stated", async () => {
+    // #2483 keeps one refusal: credit at least as large as the booking's price
+    // on a send that says the booking is UNPAID. Both cannot be true, so no
+    // figure derived from them belongs in a member's inbox — the member gets
+    // the #2444 paragraph and an admin gets the warning.
+    const { templateData } = await send(
+      30000,
+      { amountCents: 30000, settlementMethod: "bank_transfer" },
+      { paymentDue: { reference: "BOOKING-ABC123", invoiceEmailed: false } },
+    );
+
+    expect(templateData.paymentOutcome).toContain("Total Due: $300.00\n\n");
+    expect(templateData.paymentOutcome).not.toContain("Account credit applied");
     expect(warnMock).toHaveBeenCalledTimes(1);
     expect(warnMock.mock.calls[0][0]).toMatchObject({
       bookingId: "bk_2328",
-      appliedCreditCents: 12000,
+      appliedCreditCents: 30000,
     });
     expect(warnMock.mock.calls[0][1]).toContain("suppressed");
   });
@@ -534,13 +558,25 @@ describe("#2328 the {{creditNote}} token contract", () => {
   });
 });
 
-describe("#2328 the unpaid branch's suppression precondition", () => {
-  // The confirmed-but-unpaid branch renders NO credit pair. That is only
-  // defensible because the one send path that reaches it applies no account
-  // credit — not because suppressing a real credit spend would be right. These
-  // two assertions are the precondition itself, so a second `paymentDue` send
-  // site, or credit application appearing on the existing one, fails here
-  // rather than quietly shipping a member a "Total Due" with a hidden spend.
+describe("#2328 × #2483 the unpaid branch's live-path premise", () => {
+  // WHAT THESE TWO ASSERTIONS USED TO MEAN, and what they mean now.
+  //
+  // Until #2483 the confirmed-but-unpaid branch rendered NO credit lines at
+  // all, and that was defensible ONLY because the one send path reaching it
+  // applies no account credit. These assertions WERE that precondition: a
+  // second `paymentDue` send site, or credit application appearing on the
+  // existing one, meant a member could be shipped a "Total Due" with a real
+  // spend hidden behind it.
+  //
+  // #2483 removes that danger — an unpaid confirmation now states its netting
+  // (see the netting cases above), so the hidden-spend failure cannot happen
+  // whatever these files say. The assertions are KEPT DELIBERATELY, with a
+  // narrower job: they document why every unpaid confirmation sent today
+  // carries the #2444 paragraph and no netting, and they are the tripwire that
+  // says the netting copy has gone LIVE for real members. If either goes red,
+  // nothing is broken — re-read `bookingPaymentDueNote`'s credit shape and the
+  // #2483 contract in `email-templates.ts`, confirm the copy reads right for a
+  // member on the new path, and update this comment.
 
   const SRC_ROOT = path.join(process.cwd(), "src");
 
@@ -576,9 +612,12 @@ describe("#2328 the unpaid branch's suppression precondition", () => {
     // allocate-existing". That was WRONG and is retracted (#2444 review, 1 Aug
     // 2026): the allocation op the path enqueues is gated on exactly the
     // BOOKING_APPLIED rows this assertion proves absent, so it always
-    // short-circuits and the invoice stands at the full price. The absence
-    // asserted here is therefore doing double duty — it pins the #2328
-    // suppression AND it is why no member-facing copy may promise the netting.
+    // short-circuits and the invoice stands at the full price.
+    //
+    // #2483 turns that gating from a hazard into the design. The rows this
+    // assertion proves absent are the SAME rows that decide what Xero will
+    // allocate, which is why the email may net them locally: when they appear,
+    // both the invoice and the email move together, from one fact.
     const source = readFileSync(
       path.join(SRC_ROOT, "lib/school-booking-request.ts"),
       "utf8",
