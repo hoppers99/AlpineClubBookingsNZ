@@ -453,6 +453,44 @@ do not use unnamespaced `hashtext(<id>)` for new lock families.
   stays fixed either way: the stale FK value is detected from the fresh read and
   never handed to Postgres, so the failure mode is a plain 409, not a bare 500.
 
+  **The same refusal covers the family links (#2437).** The four Member
+  self-relation columns (`parentMemberId`, `secondaryParentId`,
+  `inheritEmailFromId`, `detailsConfirmedByMemberId`) are written by admin
+  paths outside the `member-lifecycle` lock (`admin-members-service.ts`, the
+  dependents link route). #2445's exclusion of the master's own row from the
+  self-relation moves stopped a mid-merge link write corrupting the graph (the
+  master as its own parent), but left the SILENT-LOSS arm: a link pointing at
+  the loser that lands after the opening snapshot survives the moves
+  un-repointed and is quietly nulled by the loser's hard-delete
+  (`onDelete: SetNull`) — no error, no audit. Three mechanisms compose to
+  close every interleaving. **Step 1 is value-conditional**: the master's
+  pointer at the loser is nulled with a `WHERE column = loserId` predicate
+  (re-evaluated after blocking under READ COMMITTED), so a pointer that moved
+  since the opening snapshot refuses at step 1 instead of being overwritten —
+  and a successful null holds the master's row lock to commit, which is what
+  makes the step-5 expectation for that column enforceable rather than a
+  check of step 1's own write. **The step-3 self-relation sweeps are
+  id-bounded** to the rows captured by the in-transaction token re-derivation
+  (counts and captured ids come from the same read), so a link that lands
+  after the capture is never absorbed onto the master unvetted — it stays
+  pointing at the loser. **The step-5 under-lock re-read** then checks all
+  three arms: any change to the four columns on either member row beyond the
+  merge's own step-1 nulling and step-3 re-pointing
+  (`diffSelfRelationLinkState`), and any OTHER row still referencing the
+  loser after the moves, 409s with the same `merge_drift_in_transaction`
+  refusal naming the changed links in club-admin vocabulary (owner decision
+  on #2437, 1 Aug 2026: detect and refuse — deliberately NOT a new
+  advisory-lock participant for the link writers, and NOT a DB CHECK
+  constraint). Interleavings after the re-check cannot reopen the hole: both
+  member rows are FOR UPDATE-locked, and an inbound FK write referencing the
+  loser from another row blocks on its KEY SHARE lock against that FOR UPDATE
+  and then fails loudly on the FK once the hard-delete commits. The refusal
+  itself writes **no audit row** — the 409 rolls the transaction back whole,
+  exactly like the #2243/#2445 field-drift refusal and the other merge
+  refusals (`merge_blocked`, `preview_drift`); recording refused merge
+  attempts (outside the transaction) would be a deliberate new convention
+  across all of those arms, and is an owner decision not taken on #2437.
+
   **One new row lock, no new lock family.** Immediately before that fresh read
   the merge takes `SELECT 1 FROM "Member" WHERE "id" IN (…) ORDER BY "id" FOR
   UPDATE` over the master and the loser. The loser was already row-locked by
@@ -471,9 +509,10 @@ do not use unnamespaced `hashtext(<id>)` for new lock families.
   still abort the merge — now by deadlocking against this lock (Postgres 40P01)
   rather than by writing a stale value (23503). Closing that would need the
   family-group writers to join the member-lifecycle lock family and is out of
-  scope; see #2437 for the related question of locking the master earlier
-  (before the guards and the self-relation pass) rather than only before the
-  field write.
+  scope. Locking the master earlier (before the guards and the self-relation
+  pass) rather than only before the field write was considered on #2437 and
+  deliberately **not** taken — the master stays unlocked until step 5, and the
+  family-link drift re-check above is what closes that window.
 
 Do not add or compose a row lock without updating this inventory and documenting
 its order against every advisory- and row-lock counterpart.
