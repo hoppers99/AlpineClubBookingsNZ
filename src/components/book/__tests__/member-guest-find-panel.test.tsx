@@ -359,10 +359,10 @@ describe("the list is bounded and the search is visible (F14, F15)", () => {
     const listbox = await screen.findByRole("listbox");
     expect(listbox.className).toContain("max-h-60");
     expect(listbox.className).toContain("overflow-y-auto");
-    // The truncation signal never carries a count. Two nodes carry the
-    // sentence since #2460 — the visible hint and the polite live region that
-    // announces it — and neither may grow one.
-    expect(screen.getAllByText(MEMBER_GUEST_FIND_COPY.truncated)).toHaveLength(2);
+    // The truncation signal never carries a count, and it is drawn exactly
+    // once: #2460 announces it by appending it to the status line the panel
+    // already had, rather than by putting the sentence on screen a second time.
+    expect(screen.getAllByText(MEMBER_GUEST_FIND_COPY.truncated)).toHaveLength(1);
     expect(screen.queryByText(/10 of/)).not.toBeInTheDocument();
   });
 
@@ -431,19 +431,26 @@ describe("the rate-limited and error states still render", () => {
   count and then nothing: the list simply stopped, with no way to know that the
   answer was to type another letter.
 
-  The fix follows the house live-region rule (`AGENTS.md`, `PolicyFeedback`, the
-  #2244 export-truncation notice): the `role="status"` wrapper is mounted from
-  the panel's first paint and only its CONTENT is gated, because a polite region
-  injected already-populated is silently dropped by some screen-reader/browser
-  pairings. Both halves of that are pinned below — the region must exist and be
-  EMPTY before there is anything to say, and it must be the SAME node afterwards,
-  which is what stops anyone "simplifying" the fix by moving the role onto the
-  visible paragraph inside the results block.
+  The sentence is announced by the panel's OWN status line — the permanently
+  mounted `aria-live="polite"` paragraph that already carries the result count —
+  and not by a second live region beside it. Two things follow, and both are
+  pinned below:
+
+  - The region is mounted and EMPTY before there is anything to say, and is the
+    SAME node once there is. That is the house rule (`AGENTS.md`,
+    `PolicyFeedback`, the #2244 export-truncation notice): a polite region
+    injected already-populated is silently dropped by some screen-reader/browser
+    pairings.
+  - The sentence exists exactly ONCE on screen and once in the announcement it
+    qualifies. A second `role="status"` holding the same words would read the
+    hint twice in browse mode, which the repo treats as a defect in its own
+    right (`hut-leaders/_components/assignment-form.tsx`).
 
   Mutation probes run against this block, each confirmed to turn it red: drop
-  the `role="status"` attribute; move the wrapper inside the
-  `candidates.length > 1` block; render the wrapper only when truncated; change
-  the announced string; drop `truncated` from the `showTruncationHint` gate.
+  the truncation clause from `announcement`; announce a string other than
+  `MEMBER_GUEST_FIND_COPY.truncated`; drop `truncated`, `candidates.length > 1`
+  or `!selected` from the `showTruncationHint` gate; read `truncated` from
+  RESULTS only, so it collapses while a search is in flight.
 */
 describe("#2460 — the truncation hint is announced to screen readers", () => {
   const TEN = Array.from({ length: 10 }, (_, i) => ({
@@ -453,8 +460,8 @@ describe("#2460 — the truncation hint is announced to screen readers", () => {
     ageTier: "ADULT" as const,
   }));
 
-  function region() {
-    return screen.getByTestId("member-guest-find-truncation-status");
+  function status() {
+    return screen.getByTestId("member-guest-find-status");
   }
 
   async function search(body: unknown) {
@@ -469,44 +476,43 @@ describe("#2460 — the truncation hint is announced to screen readers", () => {
     stubFetch();
     renderPanel();
     // Mounted on first paint, and empty: the region has to be in the
-    // accessibility tree BEFORE the sentence lands in it.
-    expect(region()).toHaveAttribute("role", "status");
-    expect(region()).toBeEmptyDOMElement();
+    // accessibility tree BEFORE anything lands in it.
+    expect(status()).toHaveAttribute("aria-live", "polite");
+    expect(status().textContent).toBe("");
   });
 
-  it("keeps the region mounted and empty when the results were not cut short", async () => {
+  it("says only the count when the results were not cut short", async () => {
     await search({ candidates: TEN, truncated: false });
-    expect(region()).toBeEmptyDOMElement();
+    expect(status().textContent).toBe("10 members found");
     expect(screen.queryByText(MEMBER_GUEST_FIND_COPY.truncated)).not.toBeInTheDocument();
   });
 
-  it("announces the sentence, verbatim, when the results were cut short", async () => {
+  it("announces the sentence, verbatim, on the end of the count it explains", async () => {
     await search({ candidates: TEN, truncated: true });
-    // Verbatim: no count is added for the screen reader, because this sentence
-    // must never grow one.
-    expect(region()).toHaveTextContent(MEMBER_GUEST_FIND_COPY.truncated);
-    expect(region().textContent).toBe(MEMBER_GUEST_FIND_COPY.truncated);
+    // Verbatim, and the only number in it is how many members ARE shown — the
+    // sentence never grows a count of who was left out.
+    expect(status().textContent).toBe(
+      `10 members found. ${MEMBER_GUEST_FIND_COPY.truncated}`,
+    );
   });
 
-  it("leaves the visible copy exactly as it was", async () => {
+  it("leaves the visible copy exactly as it was, and does not duplicate it", async () => {
     await search({ candidates: TEN, truncated: true });
-    // The visible hint is still its own paragraph under the list, unchanged —
-    // the announcement is an addition, not a rewrite. Two nodes hold the
-    // sentence; the one that is NOT the live region is the drawn one.
-    const drawn = screen
-      .getAllByText(MEMBER_GUEST_FIND_COPY.truncated)
-      .filter((node) => node !== region());
+    // Still its own paragraph under the list, unchanged — the announcement is
+    // an addition, not a rewrite. And still exactly one node holds the sentence
+    // on its own: a second live region cloning it would read it twice.
+    const drawn = screen.getAllByText(MEMBER_GUEST_FIND_COPY.truncated);
     expect(drawn).toHaveLength(1);
     expect(drawn[0]!.tagName).toBe("P");
     expect(drawn[0]!.className).toContain("text-muted-foreground");
-    expect(region().contains(drawn[0]!)).toBe(false);
+    expect(status().contains(drawn[0]!)).toBe(false);
   });
 
   it("swaps the content of the region that was already there, never mounts a new one", async () => {
     stubFetch(() => jsonResponse({ candidates: TEN, truncated: true }));
     renderPanel();
-    const before = region();
-    expect(before).toBeEmptyDOMElement();
+    const before = status();
+    expect(before.textContent).toBe("");
 
     await type("household@example.com");
     fireEvent.click(screen.getByRole("button", { name: "Find" }));
@@ -515,16 +521,58 @@ describe("#2460 — the truncation hint is announced to screen readers", () => {
     // Same DOM node, now populated. A fresh node here would mean the region was
     // injected already carrying the sentence, which is the case screen readers
     // drop.
-    expect(region()).toBe(before);
-    expect(region()).toHaveTextContent(MEMBER_GUEST_FIND_COPY.truncated);
+    expect(status()).toBe(before);
+    expect(status()).toHaveTextContent(MEMBER_GUEST_FIND_COPY.truncated);
   });
 
-  it("falls silent once a candidate is chosen, since the list is gone", async () => {
+  it("drops the hint once a candidate is chosen, since the list is gone", async () => {
     await search({ candidates: TEN, truncated: true });
-    expect(region()).toHaveTextContent(MEMBER_GUEST_FIND_COPY.truncated);
+    expect(status()).toHaveTextContent(MEMBER_GUEST_FIND_COPY.truncated);
 
     fireEvent.keyDown(screen.getByRole("combobox"), { key: "Enter" });
     await screen.findByRole("button", { name: "Add to booking" });
-    expect(region()).toBeEmptyDOMElement();
+    expect(status().textContent).toBe("Selected First0 Last0");
+    expect(screen.queryByText(MEMBER_GUEST_FIND_COPY.truncated)).not.toBeInTheDocument();
+  });
+
+  it("keeps the hint under the list while the next keystroke's search is in flight", async () => {
+    // The type-ahead deliberately leaves the previous page of rows on screen
+    // while the next request runs. The sentence that explains those rows has to
+    // stay with them: read from RESULTS alone it collapsed to false the moment
+    // the panel went LOADING, so the hint blinked out from under a list that
+    // had not changed — and was re-announced when it came back.
+    vi.useFakeTimers();
+    let release: (() => void) | null = null;
+    let call = 0;
+    stubFetch(() => {
+      call += 1;
+      if (call === 1) return jsonResponse({ candidates: TEN, truncated: true });
+      return new Promise<Response>((resolve) => {
+        release = () => resolve(jsonResponse({ candidates: TEN, truncated: true }));
+      });
+    });
+    renderPanel({ openSearchEnabled: true });
+
+    await type("wh");
+    await act(async () => {
+      vi.advanceTimersByTime(SEARCH_SETTLE_MS);
+    });
+    expect(screen.getAllByText(MEMBER_GUEST_FIND_COPY.truncated)).toHaveLength(1);
+
+    await type("whi");
+    await act(async () => {
+      vi.advanceTimersByTime(SEARCH_SETTLE_MS);
+    });
+
+    // Second request issued and still unanswered, rows still drawn from the
+    // previous response — and the hint still under them.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(screen.getByRole("listbox")).toBeInTheDocument();
+    expect(screen.getAllByText(MEMBER_GUEST_FIND_COPY.truncated)).toHaveLength(1);
+
+    await act(async () => {
+      release?.();
+    });
+    expect(screen.getAllByText(MEMBER_GUEST_FIND_COPY.truncated)).toHaveLength(1);
   });
 });

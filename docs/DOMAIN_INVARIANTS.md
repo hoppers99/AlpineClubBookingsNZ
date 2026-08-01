@@ -3883,13 +3883,18 @@ ranking that reshuffled on page 2 would drop and duplicate rows — and the
 `total` the response carries is still the count of the WHOLE eligible set, which
 is what lets the dialog say the page was cut short ("Keep typing to narrow this
 down.", the #2308 member-guest finder's own sentence). Both surfaces DRAW that
-sentence under the list and ANNOUNCE it (#2460): each keeps a `role="status"`
-wrapper mounted for the life of the panel and gates only its content, since a
-polite live region injected already populated is silently dropped by some
+sentence under the list and ANNOUNCE it (#2460), each through a live region that
+is mounted before there is anything to say and has only its content gated, since
+a polite region injected already populated is silently dropped by some
 screen-reader/browser pairings — the same house rule `PolicyFeedback` and the
-view-only banners follow. The announced words are the drawn words, verbatim: the
-sentence must never grow a count, so it does not grow one for a screen reader
-either. The ranking is scoped to
+view-only banners follow. The booking panel announces it on the end of the result
+count its existing status line already reads out, rather than from a second
+region of its own, so the sentence is never read twice; the dialog, which has no
+such line, keeps its own `sr-only` region ABOVE the results, because an
+invisible last child of a `space-y-*` stack still moves the visible content
+above it. The announced words are the drawn words, verbatim: the sentence must
+never grow a count of who was left out, so it does not grow one for a screen
+reader either. The ranking is scoped to
 the `parentLinkEligibleFor` parameter, so every other caller of
 `GET /api/admin/members` — the members table, the exports, the other pickers —
 issues exactly the query it did before.

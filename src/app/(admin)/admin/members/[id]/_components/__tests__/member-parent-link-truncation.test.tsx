@@ -258,11 +258,17 @@ describe("#2425 — where the truncated flag comes from", () => {
   there is, which is what stops anyone moving the role onto the visible
   paragraph inside the results branch.
 
+  Where it sits is pinned too. The wrapper is invisible, but a `space-y-*` stack
+  in Tailwind v4 hangs its gap off `:not(:last-child)`, so an invisible LAST
+  child still pushes the visible content above it around. It goes above the
+  results, never below them.
+
   Mutation probes run against this block, each confirmed to turn it red: drop
   the `role="status"` attribute; move the wrapper inside the results branch of
-  the ternary; render the wrapper only when truncated; announce a different
-  sentence from the drawn one; drop `resultsTruncated`, `searchResults.length`
-  or `!selected` from the `showTruncationHint` gate.
+  the ternary; move it below the ternary, where it can end up last; render the
+  wrapper only when truncated; announce a different sentence from the drawn one;
+  drop `resultsTruncated`, `searchResults.length` or `!selected` from the
+  `showTruncationHint` gate.
 */
 describe("#2460 — the parent picker announces the truncation hint", () => {
   function region() {
@@ -315,5 +321,26 @@ describe("#2460 — the parent picker announces the truncation hint", () => {
     // drop.
     expect(region()).toBe(before);
     expect(region().textContent).toBe(HINT);
+  });
+
+  it("never sits last in the stack, so it cannot open a gap on screen", () => {
+    // The region is invisible but it is still a child of a `space-y-4` stack,
+    // and Tailwind v4 compiles that gap onto `:not(:last-child)` — the element
+    // BEFORE each gap carries it. Put this region last and whatever used to be
+    // last gains a 16px bottom margin it never had, so the dialog grows a dead
+    // strip above its footer and reflows the instant a parent is picked
+    // (#2460 review). Above the results it is always a middle child.
+    renderDialog({ resultsTruncated: true });
+    const stack = region().parentElement;
+    expect(stack?.className).toContain("space-y-4");
+    expect(stack?.lastElementChild).not.toBe(region());
+  });
+
+  it("stays out of the stack's last slot with no parent selected either", () => {
+    // The `{selected && …}` block below the region renders nothing until a
+    // parent is picked, which is every moment from opening the dialog until one
+    // is — the state the gap would be visible in.
+    renderDialog({ selected: null, search: "", searchResults: [] });
+    expect(region().parentElement?.lastElementChild).not.toBe(region());
   });
 });

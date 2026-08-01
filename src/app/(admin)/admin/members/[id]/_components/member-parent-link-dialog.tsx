@@ -157,6 +157,58 @@ export function MemberParentLinkDialog({
             </div>
           </div>
 
+          {/*
+            The truncation sentence is ANNOUNCED as well as drawn (#2460).
+
+            It used to be a bare paragraph under the list, so an admin who had
+            just typed was never told the page had been cut short — under a
+            screen reader the list simply stopped, which is exactly the state
+            the sentence exists to explain. The member-guest finder carried the
+            identical defect; both are fixed together, because this dialog's
+            copy deliberately mirrors that one character for character
+            (`MEMBER_SEARCH_TRUNCATED_HINT`) and a one-sided fix would break
+            that claim.
+
+            Three things about the shape are load-bearing:
+
+            - THE WRAPPER IS MOUNTED FOR THE WHOLE LIFE OF THE OPEN DIALOG AND
+              ONLY ITS CONTENT IS GATED. That is the house live-region rule
+              (`AGENTS.md`: the banner "keeps its `role="status"` wrapper
+              permanently mounted and gates only the content, because a polite
+              live region injected already-populated is silently dropped by some
+              screen-reader/browser pairings" — same for `PolicyFeedback` and
+              `DependentNotice`, and the worked example is the #2244
+              export-truncation notice in `promo-redemptions-panel.tsx`). The
+              VISIBLE hint cannot carry the role itself: it lives inside the
+              results branch of the ternary below, which mounts in a single
+              commit already holding the sentence the moment a truncated search
+              lands — precisely the already-populated case that gets dropped.
+              Keep this element outside that ternary. The dialog does unmount
+              when it closes, so the guarantee is "registered empty before the
+              first search answers", which is the case this is about.
+            - IT SITS ABOVE THE TERNARY, NEVER AFTER IT (#2460 review). This
+              stack is `space-y-4`, and Tailwind v4 compiles that to
+              `margin-block-end` on `:where(& > :not(:last-child))` — the gap is
+              carried by the element BEFORE each gap, not after it. A sr-only
+              region added as the last child is invisible itself but promotes
+              whatever used to be last into `:not(:last-child)`, handing the
+              search results a 16px bottom margin they never had and reflowing
+              the dialog the moment a parent is picked. Above the ternary it is
+              always a middle child, so nothing on screen moves.
+            - THE ANNOUNCED WORDS ARE THE VISIBLE WORDS, VERBATIM. No count is
+              added for the screen reader. The sentence is pinned equal to the
+              member-guest finder's, where a count would describe members the
+              booker is not being shown; announcing a different sentence here
+              would fork that copy into a third string with nothing pinning it.
+          */}
+          <div
+            role="status"
+            className="sr-only"
+            data-testid="parent-link-truncation-status"
+          >
+            {showTruncationHint ? MEMBER_SEARCH_TRUNCATED_HINT : null}
+          </div>
+
           {selected ? (
             <div className="rounded-md border border-border p-3">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -216,49 +268,6 @@ export function MemberParentLinkDialog({
           ) : (
             <p className="text-sm text-muted-foreground">Start typing at least 2 characters to search.</p>
           )}
-
-          {/*
-            The truncation sentence is ANNOUNCED as well as drawn (#2460).
-
-            It used to be a bare paragraph under the list, so an admin who had
-            just typed was never told the page had been cut short — under a
-            screen reader the list simply stopped, which is exactly the state
-            the sentence exists to explain. The member-guest finder carried the
-            identical defect; both are fixed together, because this dialog's
-            copy deliberately mirrors that one character for character
-            (`MEMBER_SEARCH_TRUNCATED_HINT`) and a one-sided fix would break
-            that claim.
-
-            Two things about the shape are load-bearing:
-
-            - THE WRAPPER IS MOUNTED FOR THE WHOLE LIFE OF THE OPEN DIALOG AND
-              ONLY ITS CONTENT IS GATED. That is the house live-region rule
-              (`AGENTS.md`: the banner "keeps its `role="status"` wrapper
-              permanently mounted and gates only the content, because a polite
-              live region injected already-populated is silently dropped by some
-              screen-reader/browser pairings" — same for `PolicyFeedback` and
-              `DependentNotice`, and the worked example is the #2244
-              export-truncation notice in `promo-redemptions-panel.tsx`). The
-              VISIBLE hint cannot carry the role itself: it lives inside the
-              results branch of the ternary above, which mounts in a single
-              commit already holding the sentence the moment a truncated search
-              lands — precisely the already-populated case that gets dropped.
-              Keep this element outside that ternary. The dialog does unmount
-              when it closes, so the guarantee is "registered empty before the
-              first search answers", which is the case this is about.
-            - THE ANNOUNCED WORDS ARE THE VISIBLE WORDS, VERBATIM. No count is
-              added for the screen reader. The sentence is pinned equal to the
-              member-guest finder's, where a count would describe members the
-              booker is not being shown; announcing a different sentence here
-              would fork that copy into a third string with nothing pinning it.
-          */}
-          <div
-            role="status"
-            className="sr-only"
-            data-testid="parent-link-truncation-status"
-          >
-            {showTruncationHint ? MEMBER_SEARCH_TRUNCATED_HINT : null}
-          </div>
 
           {selected && (
             <div className="space-y-4">
