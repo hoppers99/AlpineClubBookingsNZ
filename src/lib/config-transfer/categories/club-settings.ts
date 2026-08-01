@@ -173,6 +173,13 @@ export const SINGLETONS: SingletonSpec[] = [
       "groupBookings", "lockers", "induction", "workParties", "promoCodes",
       "hutLeaders", "communications", "memberNotices", "skifieldConditions",
       "twoFactor", "analytics", "lobbyDisplay",
+      // eventsCalendar SHOULD-TRAVEL (#2241): "does this club run an events
+      // calendar?" is a plain club capability decision like communications or
+      // memberNotices — no credential, no per-install auth choice — so it
+      // travels with the other flags. Importing `true` onto a target is the
+      // pre-#2241 behaviour (the calendar was always on), and importing `false`
+      // only 404s the calendar surfaces; no calendar DATA travels in any case.
+      "eventsCalendar",
       // aiAssistant SHOULD-TRAVEL (#2211): a capability toggle like xeroIntegration,
       // not an auth-provider decision like magicLink/googleLogin. Importing `true`
       // onto a target with no Anthropic key is harmless — the /api/help/chat route
@@ -230,6 +237,7 @@ export const SINGLETONS: SingletonSpec[] = [
       hutLeaders: { required: true },
       communications: { required: true },
       memberNotices: { required: true },
+      eventsCalendar: { required: true },
       skifieldConditions: { required: true },
       twoFactor: { required: true },
       analytics: { required: true },
