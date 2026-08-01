@@ -124,8 +124,14 @@ jobs:
       - name: Generate Prisma client
         run: npm run db:generate
 
+      # The generous timeouts are the libfaketime tax, not slack: every clock
+      # call (and every subprocess spawn, which inherits the LD_PRELOAD shim)
+      # goes through the interposer, and the default 5s tipped four unrelated
+      # suites into timeouts on the first real run. A timeout here would read as
+      # a date bug and waste the reader's morning, which is the opposite of the
+      # point.
       - name: Run the unit suite with the real clock ${{ matrix.label }}
-        run: faketime -f '${{ matrix.offset }}' npm test
+        run: faketime -f '${{ matrix.offset }}' npm test -- --testTimeout=30000 --hookTimeout=30000
 
       - name: Explain a red canary
         if: failure()
@@ -146,7 +152,8 @@ jobs:
             echo
             echo '```bash'
             echo "sudo apt-get install -y faketime"
-            echo "FAKETIME_DONT_FAKE_MONOTONIC=1 faketime -f '${{ matrix.offset }}' npm test"
+            echo "FAKETIME_DONT_FAKE_MONOTONIC=1 faketime -f '${{ matrix.offset }}' \\"
+            echo "  npm test -- --testTimeout=30000 --hookTimeout=30000"
             echo '```'
             echo
             echo "Fix the test so it reads the frozen clock. See docs/TESTING.md,"

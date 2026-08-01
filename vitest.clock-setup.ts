@@ -17,13 +17,27 @@
 //
 // Why any of this exists, which instant, and how to opt out:
 // `src/lib/__tests__/helpers/clock.ts` and `docs/TESTING.md`.
-import { afterAll } from "vitest";
+import { afterAll, beforeEach } from "vitest";
 import {
+  ensureFrozenTestClock,
   installFrozenTestClock,
   restoreRealTestClock,
 } from "@/lib/__tests__/helpers/clock";
 
 installFrozenTestClock();
+
+// Re-freeze before each test, but ONLY when the clock has been handed back to
+// the real calendar — a suite that deliberately pinned another instant still has
+// fake timers installed and is left completely alone. Dozens of suites call
+// `vi.useRealTimers()` in an `afterEach` to undo their own pin; the ones whose
+// later describes have no clock hooks then run on the real calendar, straight
+// back out of the freeze. The rollover canary caught two doing exactly that.
+//
+// Registered first, so it runs before the file's own `beforeEach` and a per-test
+// pin still wins.
+beforeEach(() => {
+  ensureFrozenTestClock();
+});
 
 afterAll(() => {
   restoreRealTestClock();

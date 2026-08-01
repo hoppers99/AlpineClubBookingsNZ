@@ -11,8 +11,9 @@
  * any diff to blame. The vacuous variant is worse: a `not.toBe(403)` assertion
  * that starts passing off an unrelated 400 tests nothing at all.
  *
- * So every test run gets one fixed "today", installed from `vitest.setup.ts`
- * for every file, and no test can depend on what the real date happens to be.
+ * So every test run gets one fixed "today", installed from
+ * `vitest.clock-setup.ts` for every file, and no test can depend on what the
+ * real date happens to be.
  *
  * ## The instant, and why this one
  *
@@ -174,6 +175,32 @@ export function frozenTestNow(): Date {
 export function installFrozenTestClock(): void {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(frozenTestNow());
+}
+
+/**
+ * Re-freeze before each test IF, and only if, the clock has been handed back to
+ * the real calendar. Called from a root `beforeEach` in `vitest.clock-setup.ts`.
+ *
+ * 67 test files call `vi.useRealTimers()`, usually in an `afterEach` that undoes
+ * their own pin. Most re-pin in a `beforeEach`, so the handback is invisible —
+ * but a file whose LATER describes have no clock hooks of their own runs those
+ * on the real calendar, straight back out of the freeze. The rollover canary
+ * caught two doing exactly that (`admin-booking-copy.test.ts` and
+ * `batch-modify-payment.test.ts`), each a latent repeat of #2426/#2401/#2443/
+ * #2479 waiting for its fixture date to pass.
+ *
+ * The `isFakeTimers()` check is what makes this safe rather than a blunt reset:
+ * a suite that DELIBERATELY pinned another instant still has fake timers
+ * installed, so this leaves it completely alone. It only ever converts "real
+ * clock" back to "frozen clock", never one pin into another. And it runs before
+ * the file's own `beforeEach`, so a per-test pin still wins.
+ */
+export function ensureFrozenTestClock(): void {
+  if (realClockReason || vi.isFakeTimers()) {
+    return;
+  }
+
+  installFrozenTestClock();
 }
 
 /**
