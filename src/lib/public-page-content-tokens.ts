@@ -4,6 +4,10 @@ import { getTodayDateOnly } from "@/lib/date-only";
 import { APP_CURRENCY } from "@/config/operational";
 import { normalizeCancellationRule } from "@/lib/cancellation-rules";
 import { resolvePolicyRowsForLodge } from "@/lib/lodges";
+import {
+  resolveAdultMemberHostingPolicy,
+  type AdultMemberHostingPolicyLike,
+} from "@/lib/policies/adult-member-hosting";
 import { prisma } from "@/lib/prisma";
 import { collapseHutFeeColumns, type HutFeeColumn } from "@/lib/public-hut-fee-columns";
 
@@ -56,6 +60,12 @@ export type PublicBookingPolicy = {
     capacityHandling: string | null;
   }>;
   groupDiscount: string | null;
+  /**
+   * Plain-language adult-member hosting sentence (#2364), or null when the club
+   * (or this lodge) does not ask for one. Copy only — never the policy id,
+   * version or capacity mode.
+   */
+  adultMemberHosting: string | null;
 };
 
 export type PublicCancellationPolicy = {
@@ -563,7 +573,7 @@ export async function loadPublicBookingPolicy(slug?: string): Promise<PublicBook
   const lodge = slug === undefined ? null : await findPublicLodge(slug);
   if (slug !== undefined && !lodge) return null;
   const today = getTodayDateOnly();
-  const [defaults, periods, minimumStays, discount] = await Promise.all([
+  const [defaults, periods, minimumStays, discount, hostingRows] = await Promise.all([
     prisma.bookingDefaults.findUnique({
       where: { id: "default" },
       select: { nonMemberHoldEnabled: true, nonMemberHoldDays: true },
@@ -590,6 +600,22 @@ export async function loadPublicBookingPolicy(slug?: string): Promise<PublicBook
     prisma.groupDiscountSetting.findUnique({
       where: { id: "default" },
       select: { enabled: true, minGroupSize: true, summerOnly: true },
+    }),
+    // #2364. Both candidate rows for this page's scope; the resolver below picks
+    // between them. Without a lodge in the URL only the club-wide row applies,
+    // which is the same rule the periods and minimum-stay reads above follow.
+    prisma.adultMemberHostingPolicy.findMany({
+      where: lodge
+        ? { OR: [{ lodgeId: lodge.id }, { lodgeId: null }] }
+        : { lodgeId: null },
+      select: {
+        id: true,
+        scopeKey: true,
+        lodgeId: true,
+        mode: true,
+        capacityMode: true,
+        version: true,
+      },
     }),
   ]);
   const effectivePeriods = (lodge ? resolvePolicyRowsForLodge(periods, lodge.id) : periods).filter((period) => period.endDate >= today);
@@ -621,7 +647,41 @@ export async function loadPublicBookingPolicy(slug?: string): Promise<PublicBook
     groupDiscount: discount?.enabled
       ? `${discount.summerOnly ? "Summer groups" : "Groups"} of ${discount.minGroupSize} or more are charged the discounted group nightly rate.`
       : null,
+    adultMemberHosting: publicAdultMemberHostingCopy(hostingRows, lodge?.id ?? null),
   };
+}
+
+/**
+ * The public sentence for the adult-member hosting rule (#2364), or null.
+ *
+ * Says what the rule IS, because it is in force today and a prospective visitor
+ * planning a stay needs to know it — that is different from the minimum-stay
+ * `capacityHandling` sentence beside it, which stays off because it describes an
+ * exception workflow nobody can use until #2365. This copy is careful to stop at
+ * the same line: it says the club looks at such a booking, and does NOT invite
+ * anyone to request an exception or promise an outcome.
+ *
+ * Nothing internal is published: no policy id, version, capacity mode, or the
+ * fact that a scope override exists at all.
+ *
+ * A page with no lodge in its URL is answered by the club-wide row alone, so a
+ * lodge-specific relaxation never softens the club's stated rule on a page that
+ * is not about that lodge. `resolveAdultMemberHostingPolicy` refuses an
+ * unresolvable scope, which for a public page is a refusal to render rather than
+ * a wrong sentence — so the club-wide case (no lodge) resolves rows directly.
+ */
+function publicAdultMemberHostingCopy(
+  rows: AdultMemberHostingPolicyLike[],
+  lodgeId: string | null,
+): string | null {
+  const mode = lodgeId
+    ? resolveAdultMemberHostingPolicy(rows, lodgeId).mode
+    : (rows.find((row) => row.lodgeId === null)?.mode ?? "DISABLED");
+  if (mode !== "ADMIN_REVIEW_REQUIRED") return null;
+  return (
+    "Non-member guests are asked to stay with an adult member on the same " +
+    "booking. A booking without one is still made, and the club looks at it."
+  );
 }
 
 export async function loadPublicCancellationPolicy(slug?: string): Promise<PublicCancellationPolicy | null> {
