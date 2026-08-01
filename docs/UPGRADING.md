@@ -207,6 +207,13 @@ still holds the original list legitimately — Tokoroa's own fork, if it ports
 this release down — which is cleared like everyone else and re-enters its links
 with the steps above.
 
+**Running more than one install?** An emptied affiliations column does not
+travel between installs through a configuration bundle in the usual **Merge**
+mode, which only writes bundle fields that have a value in them: the plan
+reports the row as **Unchanged** and the target keeps its own list. Upgrade each
+install — the cleanup runs on every database of its own accord — or import in
+**Overwrite** mode. See the [Site Content guide](guides/site-content.md).
+
 **Re-running is safe.** After the cleanup the column is empty, so nothing
 matches the old list and a second run changes nothing. No audit row is written,
 for the same reason as the address cleanup: the value removed is markup this

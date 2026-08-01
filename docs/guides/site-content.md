@@ -57,6 +57,14 @@ Each column's content HTML is capped by the shared `SITE_CONTENT_LIMITS` (the
 same cap the configuration export/import enforces), and every column's key is
 one of the recognised `SITE_CONTENT_KEYS`.
 
+> **Copying a deliberately empty column to another install.** A configuration
+> import in **Merge** mode only writes bundle fields that have a value in them,
+> so it can never *clear* a footer column on the target: import a bundle whose
+> affiliations are empty and the plan reports that row as **Unchanged** while
+> the target keeps whatever it had. Use **Overwrite** mode when the empty state
+> is the thing you are propagating — see
+> [Config Transfer](config-transfer.md).
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |
@@ -65,6 +73,7 @@ one of the recognised `SITE_CONTENT_KEYS`.
 | Formatting looks different on the public site | The HTML was sanitised on save | Use the allowed tags shown in the toolbar; check the HTML Editor view |
 | Everything is read-only | Your admin role can view but not edit under the content area | Ask a full admin for content edit access |
 | Save is rejected as too long | The content exceeds the `SITE_CONTENT_LIMITS` cap | Shorten the column content |
+| A configuration import left a footer column showing the old content | **Merge** mode skips blank bundle fields, so it cannot clear a column | Re-import in **Overwrite** mode, or clear the column here and save |
 | The edit is saved but the public home page still shows the old text | The home page is cached for up to a minute for logged-out visitors | Wait a minute and reload, or check while signed in — signed-in views are never cached |
 
 ## Related links
