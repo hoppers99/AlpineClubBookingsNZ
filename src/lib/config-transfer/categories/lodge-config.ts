@@ -1,6 +1,10 @@
 import { strToU8, strFromU8 } from "fflate";
 
 import type { BundleEntry } from "../bundle";
+import {
+  cleanedLiteralWarning,
+  stripCleanedLiterals,
+} from "../cleaned-literals";
 import { serialiseCsv } from "../csv";
 import { registerEntity } from "../registry";
 import type { CategoryExporter, ExportContext } from "../export-types";
@@ -713,7 +717,16 @@ async function planLodgeConfig(ctx: PlanContext): Promise<CategoryPlanResult> {
     );
     {
       const data = buildLodgeData(descriptor, slug);
-      const write = updateDataForMode(ctx.mode, descriptor, data);
+      // #2511: refuse to re-plant a value a cleanup migration removed. The one
+      // registered lodge literal is the Waldvogel address (#2484), which is
+      // DORMANT today — `address` is not in LODGE_FIELDS, so buildLodgeData never
+      // produces it and this strip is a guaranteed no-op. Wiring it here anyway
+      // makes the guard live-by-construction: if `address` (or any future
+      // registered lodge field) is ever made portable, the planner drops the
+      // cleaned literal and surfaces the warning instead of re-planting it.
+      const guarded = stripCleanedLiterals("lodge", slug, descriptor, data);
+      for (const hit of guarded.hits) warnings.push(cleanedLiteralWarning(hit));
+      const write = updateDataForMode(ctx.mode, descriptor, guarded.write);
       const changed = changedFields(write, currentLodge);
       items.push({ entity: "lodge", key: slug, action: planActionFor(currentLodge, changed), changedFields: changed.length ? changed : undefined });
       // Door-code disclosure: creating with a code, or changing one.
@@ -834,7 +847,17 @@ async function applyLodgeConfig(ctx: ApplyContext): Promise<CategoryApplyResult>
 
     // 1) Lodge (by slug).
     const currentLodge = batch.lodges.get(slug) ?? null;
-    const lodgeData = buildLodgeData(descriptor, slug);
+    // #2511: mirror the plan's cleaned-literal strip so preview and apply stay
+    // in lockstep. A dormant no-op for the Waldvogel address today (it is not in
+    // LODGE_FIELDS, so buildLodgeData never writes it); live-by-construction if a
+    // registered lodge field is ever made portable — the applier then leaves the
+    // cleaned state instead of writing the removed value back.
+    const { write: lodgeData } = stripCleanedLiterals(
+      "lodge",
+      slug,
+      descriptor,
+      buildLodgeData(descriptor, slug),
+    );
     let lodgeId: string;
     if (currentLodge) {
       const write = updateDataForMode(ctx.mode, descriptor, lodgeData);

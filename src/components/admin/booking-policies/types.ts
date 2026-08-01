@@ -16,6 +16,22 @@ export interface MinStayPolicy {
   active: boolean
 }
 
+/**
+ * One scope's adult-member hosting setting (#2364).
+ *
+ * `configured: false` is the SYNTHESISED body the GET returns for a scope with
+ * no stored row: `version` is then 0 and `capacityMode` null, because a new
+ * policy has no automatic capacity choice (epic decision D-R6).
+ */
+export interface AdultMemberHostingPolicy {
+  scopeKey: string
+  lodgeId: string | null
+  mode: "INHERIT" | "DISABLED" | "ADMIN_REVIEW_REQUIRED"
+  capacityMode: "HOLD" | "NO_HOLD" | null
+  version: number
+  configured: boolean
+}
+
 export interface BookingPeriod {
   id: string
   name: string

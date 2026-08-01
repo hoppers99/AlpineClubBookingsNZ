@@ -23,6 +23,10 @@ import {
   planBundleMediaTarget,
   remapImageRefs,
 } from "../media";
+import {
+  cleanedLiteralWarning,
+  stripCleanedLiterals,
+} from "../cleaned-literals";
 import type { BundleEntry } from "../bundle";
 
 // Re-exported for tests and other categories that rewrite image references.
@@ -667,12 +671,20 @@ async function planSiteContent(ctx: PlanContext): Promise<CategoryPlanResult> {
     fingerprintParts.push(
       `page-content:${parsed.slug}:${current ? hashRow([...PAGE_CONTENT_FIELDS], current) : "absent"}`,
     );
-    // contentHtml diffs against the sanitised form (imageRemap is apply-time;
-    // for image-embedding pages this is conservative — may say "changed").
-    const write = updateDataForMode(ctx.mode, raw, {
+    // #2511: refuse to re-plant a value a cleanup migration removed. If this
+    // row's raw bundle value byte-matches a cleaned literal (e.g. the pre-#2431
+    // guest-booking hero for slug "home"), that field is dropped from the write
+    // set so the dry-run reflects that it will be kept as-is, and a named
+    // warning row is surfaced. The same strip runs in apply, so preview and
+    // apply stay in lockstep.
+    const guarded = stripCleanedLiterals("page-content", parsed.slug, raw, {
       ...parsed.data,
+      // contentHtml diffs against the sanitised form (imageRemap is apply-time;
+      // for image-embedding pages this is conservative — may say "changed").
       contentHtml: sanitizePageContentHtml(parsed.data.contentHtml),
     });
+    for (const hit of guarded.hits) warnings.push(cleanedLiteralWarning(hit));
+    const write = updateDataForMode(ctx.mode, raw, guarded.write);
     const changed = changedFields(write, current);
     items.push({
       entity: "page-content",
@@ -701,9 +713,14 @@ async function planSiteContent(ctx: PlanContext): Promise<CategoryPlanResult> {
     fingerprintParts.push(
       `site-content:${key}:${current ? hashRow([...SITE_CONTENT_FIELDS], current) : "absent"}`,
     );
-    const write = updateDataForMode(ctx.mode, raw, {
+    // #2511: refuse to re-plant a cleaned literal (e.g. the pre-#2490 RMCA
+    // footer affiliations for key FOOTER_AFFILIATIONS). Same guard the pages
+    // path uses; see the note there.
+    const guarded = stripCleanedLiterals("site-content", key, raw, {
       contentHtml: sanitizePageContentHtml(raw.contentHtml ?? ""),
     });
+    for (const hit of guarded.hits) warnings.push(cleanedLiteralWarning(hit));
+    const write = updateDataForMode(ctx.mode, raw, guarded.write);
     const changed = changedFields(write, current);
     items.push({
       entity: "site-content",
@@ -812,10 +829,19 @@ async function applySiteContent(ctx: ApplyContext): Promise<CategoryApplyResult>
     const html = sanitizePageContentHtml(
       remapImageRefs(parsed.data.contentHtml, oldToNew),
     );
+    // #2511: drop any field whose raw bundle value byte-matches a cleaned
+    // literal (e.g. the pre-#2431 guest-booking hero). On an existing row —
+    // the case the base seed always guarantees for "home" — the field is left
+    // unwritten, so the cleaned state the migration established stands. Every
+    // other field imports as normal. Mirrors the strip in planSiteContent.
+    const { write: pageData } = stripCleanedLiterals("page-content", parsed.slug, raw, {
+      ...parsed.data,
+      contentHtml: html,
+    });
     await applyRow({
       mode: ctx.mode,
       raw,
-      data: { ...parsed.data, contentHtml: html },
+      data: pageData,
       current,
       create: (data) =>
         ctx.tx.pageContent.create({ data: { slug: parsed.slug, ...data } }),
@@ -846,10 +872,16 @@ async function applySiteContent(ctx: ApplyContext): Promise<CategoryApplyResult>
     const html = sanitizePageContentHtml(
       remapImageRefs(raw.contentHtml ?? "", oldToNew),
     );
+    // #2511: drop contentHtml when it byte-matches a cleaned literal (e.g. the
+    // pre-#2490 RMCA footer). On the always-seeded FOOTER_AFFILIATIONS row this
+    // leaves the cleared state; mirrors the strip in planSiteContent.
+    const { write: siteData } = stripCleanedLiterals("site-content", key, raw, {
+      contentHtml: html,
+    });
     await applyRow({
       mode: ctx.mode,
       raw,
-      data: { contentHtml: html },
+      data: siteData,
       current,
       create: (data) =>
         ctx.tx.siteContent.create({ data: { key: key as never, ...data } }),

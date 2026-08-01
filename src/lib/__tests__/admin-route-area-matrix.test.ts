@@ -128,6 +128,9 @@ const EXPECTED_ROUTE_AREAS: Record<string, AdminPermissionArea> = {
   "/api/admin/booking-messages": "support",
   "/api/admin/booking-messages/preview": "support",
   "/api/admin/booking-messages/reset": "support",
+  // #2364: booking-policy configuration gates on the bookings area, like every
+  // other route in this folder — view to read it, edit to change it.
+  "/api/admin/booking-policies/adult-member-hosting": "bookings",
   "/api/admin/booking-policies/cancellation": "bookings",
   "/api/admin/booking-policies/group-discount": "bookings",
   "/api/admin/booking-policies/minimum-stay": "bookings",

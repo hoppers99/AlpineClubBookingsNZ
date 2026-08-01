@@ -5,7 +5,10 @@ import { NextRequest } from "next/server";
 vi.mock("@/lib/prisma", () => ({
   prisma: {
     member: { count: vi.fn(), findUnique: vi.fn(), findMany: vi.fn() },
-    booking: { create: vi.fn(), update: vi.fn(), findMany: vi.fn(), count: vi.fn() },
+    booking: { create: vi.fn(), update: vi.fn(), findMany: vi.fn(), count: vi.fn(), findUnique: vi.fn() },
+    // #2364: the hosting review is reconciled inside the booking write, and the
+    // on-behalf create path evaluates the submitted party before it.
+    adultMemberHostingPolicy: { findMany: vi.fn().mockResolvedValue([]) },
     lodge: { findFirst: vi.fn() },
     // #1982: default lodge capacity is a self-healed DB override, not a
     // club.json runtime fallback.

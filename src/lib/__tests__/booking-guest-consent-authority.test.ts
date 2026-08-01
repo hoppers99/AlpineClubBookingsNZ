@@ -274,6 +274,9 @@ function makeTx(booking: ReturnType<typeof makeBooking>) {
   return {
     $executeRaw: vi.fn().mockResolvedValue(undefined),
     $executeRawUnsafe: vi.fn().mockResolvedValue(undefined),
+    // #2364: the hosting review is reconciled inside the booking write, so
+    // every prisma/tx double a booking path runs against needs this client.
+    adultMemberHostingPolicy: { findMany: vi.fn().mockResolvedValue([]) },
     booking: {
       findUnique: vi.fn().mockResolvedValue(booking),
       findMany: vi.fn().mockResolvedValue([]),

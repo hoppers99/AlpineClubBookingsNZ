@@ -115,6 +115,7 @@ const CAPTURES: Capture[] = [
   { name: "admin-booking-policies-minimum-stay", route: "/admin/booking-policies/minimum-stay", area: "admin" },
   { name: "admin-booking-policies-group-discount", route: "/admin/booking-policies/group-discount", area: "admin" },
   { name: "admin-booking-policies-periods", route: "/admin/booking-policies/periods", area: "admin" },
+  { name: "admin-booking-policies-adult-member-hosting", route: "/admin/booking-policies/adult-member-hosting", area: "admin" },
   { name: "admin-booking-policies-public-requests", route: "/admin/booking-policies/public-requests", area: "admin" },
   { name: "admin-promo-codes", route: "/admin/promo-codes", area: "admin" },
   { name: "admin-seasons", route: "/admin/seasons", area: "admin" },

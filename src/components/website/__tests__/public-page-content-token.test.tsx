@@ -160,7 +160,7 @@ describe("public PageContent token rendering", () => {
   });
 
   it("renders safe empty states for empty booking and cancellation policies", () => {
-    const booking = renderToStaticMarkup(<BookingPolicyToken policy={{ lodge: null, hold: null, periods: [], minimumStays: [], groupDiscount: null }} />);
+    const booking = renderToStaticMarkup(<BookingPolicyToken policy={{ lodge: null, hold: null, periods: [], minimumStays: [], groupDiscount: null, adultMemberHosting: null }} />);
     const cancellation = renderToStaticMarkup(<CancellationPolicyToken policy={{ lodge: null, tiers: [], periods: [] }} />);
     expect(booking).toContain("No public information is currently available.");
     expect(cancellation).toContain("No public information is currently available.");
@@ -184,6 +184,7 @@ describe("public PageContent token rendering", () => {
             capacityHandling: null,
           }],
           groupDiscount: null,
+          adultMemberHosting: null,
         }}
       />,
     );
@@ -218,6 +219,7 @@ describe("public PageContent token rendering", () => {
               "If an exception is requested, the requested capacity is held while the club reviews it.",
           }],
           groupDiscount: null,
+          adultMemberHosting: null,
         }}
       />,
     );

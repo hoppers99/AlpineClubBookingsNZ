@@ -95,9 +95,11 @@ DB, which the empty-target guard prevents.
   structural validation + resource caps + safe-path checks, then every category
   planner's allowlist + DMMF type-checks) → `applyConfigImport` (single-flight
   advisory lock, in-lock re-plan, fingerprint-drift refusal, atomic transaction,
-  audit). Ordinary categories remain upsert-only; the minimum-stay category uses
-  its reviewed replace-set semantics, but an accepted empty-target bootstrap has
-  no existing policies to delete. The only deviation is the pre-apply backup
+  audit). Ordinary categories remain upsert-only; the booking-policy category uses
+  its reviewed replace-set semantics for both its files, but an accepted
+  empty-target bootstrap has
+  no existing policies or hosting scopes to delete. The only deviation is the
+  pre-apply backup
   (below).
 - **Empty-target definition — precise ("no operator footprint", six signals).**
   The base seed (`prisma/seed.ts`) is create-if-missing and pre-populates the

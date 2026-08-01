@@ -17,6 +17,11 @@ import {
 } from "../import-types";
 import { registerEntity } from "../registry";
 import {
+  applyAdultMemberHosting,
+  exportAdultMemberHosting,
+  planAdultMemberHosting,
+} from "./adult-member-hosting";
+import {
   folderLodgeSlug,
   lodgeFolderSegments,
 } from "./lodge-config";
@@ -360,12 +365,17 @@ export const bookingPoliciesExporter: CategoryExporter = {
       }));
     // Always emit the header, even for an empty set. Absence means "category
     // not carried"; a header-only file is the intentional destructive clear.
-    return [{
-      path: MINIMUM_STAY_POLICIES_FILE,
-      category: "booking-policies",
-      rowCount: rows.length,
-      bytes: strToU8(serialiseCsv([...FIELDS], rows)),
-    }];
+    return [
+      {
+        path: MINIMUM_STAY_POLICIES_FILE,
+        category: "booking-policies",
+        rowCount: rows.length,
+        bytes: strToU8(serialiseCsv([...FIELDS], rows)),
+      },
+      // #2364 travels in this category because it IS a booking policy and an
+      // operator moving "booking policies" between clubs means all of them.
+      await exportAdultMemberHosting(ctx),
+    ];
   },
 };
 
@@ -376,6 +386,15 @@ async function planBookingPolicies(ctx: PlanContext): Promise<CategoryPlanResult
   ];
   const errors: string[] = [];
   const fingerprintParts: string[] = [];
+
+  // #2364 plans alongside the minimum-stay set. Planned FIRST and unconditionally
+  // so a bundle missing either file reports both problems in one dry run rather
+  // than making the admin fix one, re-run, and discover the other.
+  const hosting = await planAdultMemberHosting(ctx);
+  items.push(...hosting.items);
+  errors.push(...hosting.errors);
+  fingerprintParts.push(...hosting.fingerprintParts);
+
   if (!ctx.files.has(MINIMUM_STAY_POLICIES_FILE)) {
     errors.push(
       `${MINIMUM_STAY_POLICIES_FILE} is required when booking-policies is selected; use a header-only file to intentionally clear every policy.`,
@@ -425,7 +444,12 @@ async function planBookingPolicies(ctx: PlanContext): Promise<CategoryPlanResult
       action: "delete",
     });
   }
-  items.sort((a, b) => a.key.localeCompare(b.key));
+  // Grouped by entity first: the two entities share a scope vocabulary, so a
+  // plain key sort would interleave "club-wide" (a hosting row) with
+  // "club-wide / Winter Saturday" (a minimum-stay row) and read as one list.
+  items.sort(
+    (a, b) => a.entity.localeCompare(b.entity) || a.key.localeCompare(b.key),
+  );
   return { items, warnings, errors, fingerprintParts };
 }
 
@@ -494,6 +518,11 @@ async function applyBookingPolicies(ctx: ApplyContext): Promise<CategoryApplyRes
     }
     result.deleted += 1;
   }
+
+  // #2364, last: it deletes rows too, and running it after the minimum-stay
+  // replace-set keeps the whole category's destructive work in one place at the
+  // end of one transaction. Both are rolled back together on any failure.
+  await applyAdultMemberHosting(ctx, result);
   return result;
 }
 
