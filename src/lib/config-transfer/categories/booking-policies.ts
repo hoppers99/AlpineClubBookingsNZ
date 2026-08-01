@@ -1,7 +1,7 @@
 import { strFromU8, strToU8 } from "fflate";
 import type { PolicyExceptionCapacityMode } from "@prisma/client";
 
-import type { BundleEntry } from "../bundle";
+import { ConfigTransferBundleError, type BundleEntry } from "../bundle";
 import { parseCsv, serialiseCsv } from "../csv";
 import type { CategoryExporter, ExportContext } from "../export-types";
 import {
@@ -99,6 +99,22 @@ function lodgeScope(slug: string): `lodge:${string}` {
   return `lodge:${slug}`;
 }
 
+/**
+ * How one policy row is described back to the admin when two of them collide on
+ * (scope, name). The natural key alone cannot tell them apart — that IS the
+ * collision — so the date range and the active flag are what make the message
+ * actionable in the admin screen.
+ */
+function describePolicyRow(policy: {
+  startDate: Date;
+  endDate: Date;
+  active: boolean;
+}): string {
+  return `${toDateOnly(policy.startDate)} to ${toDateOnly(policy.endDate)}, ${
+    policy.active ? "active" : "inactive"
+  }`;
+}
+
 function toDateOnly(value: Date): string {
   return value.toISOString().slice(0, 10);
 }
@@ -169,9 +185,21 @@ async function loadCurrent(db: ReadDb): Promise<{
     }
     const scope = slug ? lodgeScope(slug) : "club-wide";
     const key = naturalKey(scope, policy.name);
-    if (byKey.has(key)) {
+    const clash = byKey.get(key);
+    if (clash) {
+      // Configuration transfer identifies a minimum-stay policy by (scope,
+      // name) and the database intentionally has no unique constraint on that
+      // pair, so two rows can collide. Name BOTH of them — the key is identical
+      // by definition, so the date range and the active flag are the only way
+      // the admin can tell which is which — and say exactly what to do. A
+      // DEACTIVATED old row still collides: `loadCurrent` reads inactive rows so
+      // that a replace-set import can carry them, which is why deactivate-then-
+      // recreate produces this message rather than a clean export.
       errors.push(
-        `Target has duplicate minimum-stay policies for ${scope} / ${policy.name}; resolve the ambiguity before transfer.`,
+        `Two minimum-stay policies share the same scope and name "${scope} / ${policy.name}" ` +
+          `(${describePolicyRow(clash)}; ${describePolicyRow(policy)}). ` +
+          `Configuration transfer identifies a policy by its scope and name, so rename one of ` +
+          `them in Booking Policies — a deactivated policy still counts — then try again.`,
       );
       continue;
     }
@@ -310,7 +338,14 @@ export const bookingPoliciesExporter: CategoryExporter = {
   category: "booking-policies",
   async export(ctx: ExportContext): Promise<BundleEntry[]> {
     const current = await loadCurrent(ctx.db);
-    if (current.errors.length > 0) throw new Error(current.errors[0]);
+    // A CURATED error, not a bare one: `configTransferErrorResponse` turns any
+    // other Error into a generic 500 with the detail left in the server log, so
+    // a plain throw here aborted the WHOLE export with nothing the admin could
+    // act on. This is a fixable data problem in their own screen, so it must
+    // reach them as a 400 carrying the remedy.
+    if (current.errors.length > 0) {
+      throw new ConfigTransferBundleError(current.errors[0]);
+    }
     const rows = [...current.byKey.values()]
       .sort((a, b) => naturalKey(a.scope, a.name).localeCompare(naturalKey(b.scope, b.name)))
       .map((policy) => ({
@@ -406,7 +441,11 @@ async function applyBookingPolicies(ctx: ApplyContext): Promise<CategoryApplyRes
     throw new Error(`${MINIMUM_STAY_POLICIES_FILE} is required`);
   }
   const current = await loadCurrent(ctx.tx);
-  if (current.errors.length > 0) throw new Error(current.errors[0]);
+  // Same reasoning as the exporter: the collision is an actionable data problem,
+  // so it reaches the admin as a 400 rather than a generic 500.
+  if (current.errors.length > 0) {
+    throw new ConfigTransferBundleError(current.errors[0]);
+  }
   const errors: string[] = [];
   const parsed = parsePolicies(ctx, new Set(current.lodgeIdBySlug.keys()), errors);
   if (errors.length > 0) throw new Error(errors[0]);

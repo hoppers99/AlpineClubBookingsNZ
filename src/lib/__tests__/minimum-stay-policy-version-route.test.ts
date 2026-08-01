@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
   requireAdmin: vi.fn(),
   transaction: vi.fn(),
   findUnique: vi.fn(),
+  findFirst: vi.fn(),
   updateMany: vi.fn(),
   executeRaw: vi.fn(),
   logAudit: vi.fn(),
@@ -24,6 +25,7 @@ import {
   DELETE,
   PUT,
 } from "@/app/api/admin/booking-policies/minimum-stay/[id]/route";
+import { DUPLICATE_MINIMUM_STAY_POLICY_NAME_MESSAGE } from "@/lib/minimum-stay-policy-set";
 
 const policy = {
   id: "policy-1",
@@ -56,10 +58,13 @@ describe("minimum-stay policy versioned writes", () => {
       session: { user: { id: "admin-1" } },
     });
     mocks.executeRaw.mockResolvedValue(1);
+    // #2363 duplicate-name guard; default is "no other ACTIVE row uses it".
+    mocks.findFirst.mockResolvedValue(null);
     mocks.transaction.mockImplementation((callback) =>
       callback({
         minimumStayPolicy: {
           findUnique: mocks.findUnique,
+          findFirst: mocks.findFirst,
           updateMany: mocks.updateMany,
         },
         $executeRaw: mocks.executeRaw,
@@ -125,6 +130,65 @@ describe("minimum-stay policy versioned writes", () => {
     );
     expect(mocks.logAudit).toHaveBeenCalledTimes(1);
     expect(mocks.revalidate).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses a rename onto another ACTIVE policy's name in the same scope (#2363)", async () => {
+    mocks.findUnique.mockResolvedValue(policy);
+    mocks.findFirst.mockResolvedValue({ id: "policy-2" });
+
+    const response = await PUT(
+      request("PUT", { version: 4, name: "Summer holidays" }),
+      context,
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      error: DUPLICATE_MINIMUM_STAY_POLICY_NAME_MESSAGE,
+      code: "POLICY_NAME_CONFLICT",
+    });
+    // Same partition, ACTIVE only, and never counting the row being edited.
+    expect(mocks.findFirst).toHaveBeenCalledWith({
+      where: {
+        id: { not: "policy-1" },
+        lodgeId: "lodge-1",
+        name: "Summer holidays",
+        active: true,
+      },
+      select: { id: true },
+    });
+    expect(mocks.updateMany).not.toHaveBeenCalled();
+    expect(mocks.logAudit).not.toHaveBeenCalled();
+    expect(mocks.revalidate).not.toHaveBeenCalled();
+  });
+
+  it("refuses a REACTIVATE that would bring a duplicate name back into use", async () => {
+    mocks.findUnique.mockResolvedValue({ ...policy, active: false });
+    mocks.findFirst.mockResolvedValue({ id: "policy-2" });
+
+    const response = await PUT(request("PUT", { version: 4, active: true }), context);
+
+    expect(response.status).toBe(409);
+    expect(mocks.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ name: policy.name, active: true }),
+      }),
+    );
+    expect(mocks.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("does not ask the name question at all when the row stays INACTIVE", async () => {
+    mocks.findUnique
+      .mockResolvedValueOnce({ ...policy, active: false })
+      .mockResolvedValueOnce({ ...policy, active: false, name: "Renamed", version: 5 });
+    mocks.updateMany.mockResolvedValue({ count: 1 });
+
+    const response = await PUT(
+      request("PUT", { version: 4, name: "Renamed" }),
+      context,
+    );
+
+    expect(response.status).toBe(200);
+    expect(mocks.findFirst).not.toHaveBeenCalled();
   });
 
   it("requires a version for deactivation and guards the material write", async () => {

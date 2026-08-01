@@ -5,7 +5,10 @@ import { prisma } from "@/lib/prisma"
 import { z } from "zod"
 import { logAudit } from "@/lib/audit"
 import { isDateOnlyString, parseDateOnly } from "@/lib/date-only"
-import { lockMinimumStayPolicySet } from "@/lib/minimum-stay-policy-set"
+import {
+  DUPLICATE_MINIMUM_STAY_POLICY_NAME_MESSAGE,
+  lockMinimumStayPolicySet,
+} from "@/lib/minimum-stay-policy-set"
 
 const dateOnlyString = z.string().refine(isDateOnlyString, {
   message: "Date must be YYYY-MM-DD",
@@ -75,6 +78,22 @@ export async function POST(request: NextRequest) {
         })
         if (!lodge || !lodge.active) throw new InactivePolicyLodgeError()
       }
+      // #2363: configuration transfer identifies a minimum-stay policy by
+      // (scope, name) and the table deliberately carries no unique constraint
+      // on that pair, so nothing stopped an admin creating a second policy with
+      // the same name in the same scope — which then aborts the entire export.
+      // Refuse it here, under the policy-set lock already held, so the clash is
+      // caught where the admin can fix it in one keystroke. Deliberately
+      // ACTIVE-only: an inactive row is history, and forcing a rename before a
+      // name can be reused would be a worse trade. Deactivate-then-recreate
+      // still collides for the exporter, which now says exactly that.
+      if (data.active ?? true) {
+        const clash = await tx.minimumStayPolicy.findFirst({
+          where: { lodgeId, name: data.name, active: true },
+          select: { id: true },
+        })
+        if (clash) throw new DuplicatePolicyNameError()
+      }
       return tx.minimumStayPolicy.create({
         data: {
           name: data.name,
@@ -100,6 +119,15 @@ export async function POST(request: NextRequest) {
     revalidatePublicPageContent()
     return NextResponse.json(policy, { status: 201 })
   } catch (error) {
+    if (error instanceof DuplicatePolicyNameError) {
+      return NextResponse.json(
+        {
+          error: DUPLICATE_MINIMUM_STAY_POLICY_NAME_MESSAGE,
+          code: "POLICY_NAME_CONFLICT",
+        },
+        { status: 409 },
+      )
+    }
     if (error instanceof InactivePolicyLodgeError) {
       return NextResponse.json(
         { error: "Lodge not found or not active" },
@@ -120,3 +148,5 @@ export async function POST(request: NextRequest) {
 }
 
 class InactivePolicyLodgeError extends Error {}
+
+class DuplicatePolicyNameError extends Error {}

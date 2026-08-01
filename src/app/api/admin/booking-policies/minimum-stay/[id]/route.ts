@@ -5,7 +5,10 @@ import { prisma } from "@/lib/prisma"
 import { z } from "zod"
 import { logAudit } from "@/lib/audit"
 import { isDateOnlyString, parseDateOnly } from "@/lib/date-only"
-import { lockMinimumStayPolicySet } from "@/lib/minimum-stay-policy-set"
+import {
+  DUPLICATE_MINIMUM_STAY_POLICY_NAME_MESSAGE,
+  lockMinimumStayPolicySet,
+} from "@/lib/minimum-stay-policy-set"
 
 const dateOnlyString = z.string().refine(isDateOnlyString, {
   message: "Date must be YYYY-MM-DD",
@@ -78,6 +81,28 @@ export async function PUT(
       const endDate = data.endDate ? parseDateOnly(data.endDate) : existing.endDate
       if (endDate <= startDate) return { kind: "invalid-dates" as const }
 
+      // #2363: a rename — or a reactivate that brings an old name back — must
+      // not leave two ACTIVE policies sharing one (scope, name). That pair is
+      // how configuration transfer identifies a policy, and the table carries
+      // no unique constraint on it, so a duplicate created here would abort the
+      // whole export later. Checked under the policy-set lock already held, and
+      // against the scope this row lives in (PUT never moves a row's lodge).
+      // Inactive rows are exempt — see the message's own note.
+      const nextName = data.name ?? existing.name
+      const nextActive = data.active ?? existing.active
+      if (nextActive) {
+        const clash = await tx.minimumStayPolicy.findFirst({
+          where: {
+            id: { not: id },
+            lodgeId: existing.lodgeId,
+            name: nextName,
+            active: true,
+          },
+          select: { id: true },
+        })
+        if (clash) return { kind: "name-conflict" as const }
+      }
+
       const triggerDays = data.triggerDays
         ? canonicalTriggerDays(data.triggerDays)
         : existing.triggerDays
@@ -132,6 +157,18 @@ export async function PUT(
       return NextResponse.json(
         { error: "End date must be after start date" },
         { status: 400 },
+      )
+    }
+    if (outcome.kind === "name-conflict") {
+      // 409, like the version conflict above: the admin screen's existing
+      // 409 branch shows this sentence and reloads the list, so the row they
+      // have to rename around is on screen when they read it.
+      return NextResponse.json(
+        {
+          error: DUPLICATE_MINIMUM_STAY_POLICY_NAME_MESSAGE,
+          code: "POLICY_NAME_CONFLICT",
+        },
+        { status: 409 },
       )
     }
     if (outcome.kind === "unchanged") {

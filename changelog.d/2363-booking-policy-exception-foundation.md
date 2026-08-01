@@ -6,7 +6,12 @@
   Existing rules keep holding capacity. Each rule also carries a revision: if
   another admin or a config import saved first, your out-of-date save is refused
   and the current rule is reloaded for you instead of quietly overwriting theirs.
-  Your published booking-rules page states the choice in plain language.
+  Two rules that are both switched on in the same place can no longer share a
+  name: the save is refused and asks you to pick a different one, because a
+  configuration transfer identifies a rule by its name and could not tell them
+  apart. (A rule you have deactivated does not block the name, but if you later
+  export your settings while both exist, the export now tells you which two rules
+  clash and asks you to rename one, instead of failing with no explanation.)
 
   The rule itself is now enforced everywhere a member commits to nights, not
   just when they make a new booking: changing the dates of an existing booking,

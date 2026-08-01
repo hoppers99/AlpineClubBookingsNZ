@@ -10,7 +10,10 @@ import {
   bookingPoliciesImporter,
   MINIMUM_STAY_POLICIES_FILE,
 } from "@/lib/config-transfer/categories/booking-policies";
-import { readBundle } from "@/lib/config-transfer/bundle";
+import {
+  ConfigTransferBundleError,
+  readBundle,
+} from "@/lib/config-transfer/bundle";
 import { parseCsv } from "@/lib/config-transfer/csv";
 import { buildConfigExport } from "@/lib/config-transfer/export";
 import { buildImportPlan } from "@/lib/config-transfer/import";
@@ -303,6 +306,46 @@ describe("config-transfer booking policies (#2363)", () => {
     ]));
   });
 
+  it("fails a colliding EXPORT with an actionable typed error naming both rows (#2363)", async () => {
+    // Two rows sharing (scope, name) — freely creatable before the admin route
+    // guard, and still reachable by deactivate-then-recreate because
+    // `loadCurrent` reads inactive rows. This used to throw a bare Error, which
+    // `configTransferErrorResponse` turns into an opaque 500 with the detail
+    // left in the server log: the whole configuration export aborted and the
+    // admin was told nothing. It must be a ConfigTransferBundleError (400) that
+    // names both rows and the remedy.
+    const context = {
+      db: db([
+        policy,
+        {
+          ...policy,
+          id: "policy-2",
+          version: 1,
+          active: false,
+          startDate: new Date("2025-06-01T00:00:00.000Z"),
+          endDate: new Date("2025-09-30T00:00:00.000Z"),
+        },
+      ]),
+      includeDoorCodes: false,
+      media: { reference: vi.fn() },
+    } as ExportContext;
+
+    await expect(bookingPoliciesExporter.export(context)).rejects.toBeInstanceOf(
+      ConfigTransferBundleError,
+    );
+    const error: Error = await bookingPoliciesExporter
+      .export(context)
+      .then(() => new Error("export unexpectedly succeeded"))
+      .catch((err: unknown) => err as Error);
+    // The key alone cannot tell the two apart, so the date range and the active
+    // flag of BOTH rows are in the message, plus the fix.
+    expect(error.message).toContain('"lodge:tukino / Winter weekends"');
+    expect(error.message).toContain("2026-06-01 to 2026-09-30, active");
+    expect(error.message).toContain("2025-06-01 to 2025-09-30, inactive");
+    expect(error.message).toContain("rename one of them");
+    expect(error.message).toContain("a deactivated policy still counts");
+  });
+
   it("blocks ambiguous natural keys and malformed policy values", async () => {
     const duplicateTarget = db([
       policy,
@@ -311,7 +354,9 @@ describe("config-transfer booking policies (#2363)", () => {
     const duplicatePlan = await bookingPoliciesImporter.plan(
       planContext(csvRow(), duplicateTarget),
     );
-    expect(duplicatePlan.errors.join(" ")).toMatch(/target has duplicate/i);
+    expect(duplicatePlan.errors.join(" ")).toMatch(
+      /share the same scope and name/i,
+    );
 
     const malformed = csvRow({
       endDate: "2026-05-01",

@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   bookingDefaultsUpsert: vi.fn(),
   minimumStayFindMany: vi.fn(),
   minimumStayCreate: vi.fn(),
+  minimumStayFindFirst: vi.fn(),
   minimumStayExecuteRaw: vi.fn(),
   bookingPeriodFindMany: vi.fn(),
   bookingPeriodCreate: vi.fn(),
@@ -72,6 +73,7 @@ import { GET as CANCELLATION_GET, PUT as CANCELLATION_PUT } from "@/app/api/admi
 import { GET as MIN_STAY_GET, POST as MIN_STAY_POST } from "@/app/api/admin/booking-policies/minimum-stay/route";
 import { GET as PERIODS_GET, POST as PERIODS_POST } from "@/app/api/admin/booking-policies/periods/route";
 import { PUT as PERIOD_PUT } from "@/app/api/admin/booking-policies/periods/[id]/route";
+import { DUPLICATE_MINIMUM_STAY_POLICY_NAME_MESSAGE } from "@/lib/minimum-stay-policy-set";
 
 const adminSession = {
   user: { id: "admin-1", role: "ADMIN", accessRoles: [{ role: "ADMIN" }] },
@@ -108,6 +110,9 @@ function installTransactionMock() {
       },
       minimumStayPolicy: {
         create: mocks.minimumStayCreate,
+        // #2363 duplicate-name guard: an ACTIVE (scope, name) clash check under
+        // the policy-set lock. Default is "no clash".
+        findFirst: mocks.minimumStayFindFirst,
       },
       $executeRaw: mocks.minimumStayExecuteRaw,
     }),
@@ -250,6 +255,7 @@ describe("minimum-stay policy partitions", () => {
     mocks.auth.mockResolvedValue(adminSession);
     mocks.minimumStayFindMany.mockResolvedValue([]);
     mocks.minimumStayCreate.mockResolvedValue({ id: "msp-1" });
+    mocks.minimumStayFindFirst.mockResolvedValue(null);
     mocks.lodgeFindUnique.mockResolvedValue({ id: "lodge-2", active: true });
   });
 
@@ -324,6 +330,70 @@ describe("minimum-stay policy partitions", () => {
         version: 1,
       }),
     });
+  });
+
+  it("POST refuses a name another ACTIVE policy in the same scope already uses (#2363)", async () => {
+    // Configuration transfer identifies a policy by (scope, name) and the table
+    // carries no unique constraint on it, so a duplicate created here aborted
+    // the whole export. Refused where the admin can fix it.
+    mocks.minimumStayFindFirst.mockResolvedValue({ id: "msp-existing" });
+
+    const res = await MIN_STAY_POST(
+      request(
+        "http://localhost/api/admin/booking-policies/minimum-stay",
+        "POST",
+        {
+          name: "Winter weekends",
+          startDate: "2026-06-01",
+          endDate: "2026-09-30",
+          triggerDays: [5, 6],
+          minimumNights: 2,
+          capacityMode: "HOLD",
+          lodgeId: "lodge-2",
+        },
+      ),
+    );
+
+    expect(res.status).toBe(409);
+    await expect(res.json()).resolves.toEqual({
+      error: DUPLICATE_MINIMUM_STAY_POLICY_NAME_MESSAGE,
+      code: "POLICY_NAME_CONFLICT",
+    });
+    // Scoped to the same partition and to ACTIVE rows only, and asked under the
+    // policy-set lock the transaction already holds.
+    expect(mocks.minimumStayFindFirst).toHaveBeenCalledWith({
+      where: { lodgeId: "lodge-2", name: "Winter weekends", active: true },
+      select: { id: true },
+    });
+    expect(mocks.minimumStayExecuteRaw.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.minimumStayFindFirst.mock.invocationCallOrder[0],
+    );
+    expect(mocks.minimumStayCreate).not.toHaveBeenCalled();
+    expect(mocks.logAudit).not.toHaveBeenCalled();
+  });
+
+  it("POST allows re-using the name of a DEACTIVATED policy (deactivate-then-recreate)", async () => {
+    // Inactive rows are history: the API lets the name come back. The exporter
+    // is where that pair surfaces, with an error that says exactly that.
+    mocks.minimumStayFindFirst.mockResolvedValue(null);
+
+    const res = await MIN_STAY_POST(
+      request(
+        "http://localhost/api/admin/booking-policies/minimum-stay",
+        "POST",
+        {
+          name: "Winter weekends",
+          startDate: "2026-06-01",
+          endDate: "2026-09-30",
+          triggerDays: [5, 6],
+          minimumNights: 2,
+          capacityMode: "HOLD",
+        },
+      ),
+    );
+
+    expect(res.status).toBe(201);
+    expect(mocks.minimumStayCreate).toHaveBeenCalledTimes(1);
   });
 
   it("POST requires an explicit capacity mode for every new-runtime write", async () => {
