@@ -551,12 +551,66 @@ export async function processWaitlistForDates(freedDates: {
 }
 
 /**
+ * Put a same-lodge offer back on the waitlist, in its own short transaction
+ * under the lodge's capacity lock. Same writes as the capacity-lost branch
+ * inside `confirmWaitlistOffer`, status-guarded so it can never resurrect an
+ * offer a concurrent expiry or cancel has already moved on.
+ */
+async function revertSameLodgeOfferToWaitlisted(
+  bookingId: string,
+  lodgeId: string,
+  previousRange: { checkIn: Date; checkOut: Date }
+): Promise<void> {
+  await prisma.$transaction(async (tx) => {
+    await acquireLodgeCapacityLock(tx, lodgeId);
+    const restored = await tx.booking.updateMany({
+      where: { id: bookingId, status: BookingStatus.WAITLIST_OFFERED },
+      data: {
+        status: BookingStatus.WAITLISTED,
+        waitlistOfferedAt: null,
+        waitlistOfferExpiresAt: null,
+        waitlistOfferedLodgeId: null,
+        waitlistOfferedPriceCents: null,
+      },
+    });
+    if (restored.count === 1) {
+      await reconcileBedAllocationsForBooking({
+        bookingId,
+        db: tx,
+        previousRange,
+      });
+    }
+  });
+}
+
+/**
+ * The member-facing sentence for a same-lodge offer the minimum-stay policy no
+ * longer allows (#2363). It names the situation and the remedy without naming
+ * the rule, its night counts or its trigger days: this is the same discretion
+ * the public group-join surfaces keep, and the member cannot act on the detail
+ * anyway — a waitlist entry's dates are fixed. The frozen review snapshot stays
+ * server-side in the log line beside it.
+ */
+const WAITLIST_MINIMUM_STAY_ERROR =
+  "The minimum stay for these nights has changed since you joined the waitlist, " +
+  "so this offer can no longer be confirmed. You've been returned to the waitlist.";
+
+/**
  * Confirm a waitlist offer. Re-checks capacity and transitions to
  * PAYMENT_PENDING or PENDING based on member/non-member rules.
  *
  * A cross-lodge offer (ADR-004, waitlistOfferedLodgeId set) takes the
  * create-and-cancel path instead: a fresh booking at the offered lodge and
  * the entry cancelled, with `newBookingId` pointing at the replacement.
+ *
+ * #2363: both paths re-check the CURRENT minimum-stay policy set before the
+ * offer is turned into held capacity. An offer lives 48 hours, and an admin or
+ * a config import can tighten or add a rule inside that window, so a confirm is
+ * a fresh commitment to those nights and is held to the same rule as every
+ * other one. There is no admin branch here BY CONSTRUCTION: the transaction
+ * below refuses any actor other than the booking's own member with "Forbidden",
+ * so the only actor that ever reaches the check is a non-admin confirming their
+ * own offer.
  */
 export async function confirmWaitlistOffer(
   bookingId: string,
@@ -567,16 +621,88 @@ export async function confirmWaitlistOffer(
   error?: string;
   newBookingId?: string;
   updatedPriceCents?: number;
-  // Machine-readable rejection code forwarded from the cross-lodge path
-  // (e.g. "DUPLICATE_STAY") so the API route can surface it to the client.
+  // Machine-readable rejection code the API route surfaces to the client:
+  // "DUPLICATE_STAY" forwarded from the cross-lodge path, or
+  // "MINIMUM_STAY_VIOLATION" from the policy re-check below.
   code?: string;
 }> {
   const offerKind = await prisma.booking.findUnique({
     where: { id: bookingId },
-    select: { waitlistOfferedLodgeId: true },
+    select: {
+      waitlistOfferedLodgeId: true,
+      memberId: true,
+      status: true,
+      lodgeId: true,
+      checkIn: true,
+      checkOut: true,
+      waitlistOfferExpiresAt: true,
+    },
   });
   if (offerKind?.waitlistOfferedLodgeId) {
     return confirmCrossLodgeWaitlistOffer(bookingId, memberId);
+  }
+
+  // #2363, same-lodge offer: evaluate the booking's own lodge against the
+  // current policy set. Deliberately OUTSIDE the transaction below, like every
+  // other pre-write policy check in this repo — that transaction holds the
+  // per-lodge capacity lock, and a policy read on a second pool connection
+  // underneath it is the shape `member-guest-add-policy.ts` forbids. Only an
+  // offer this member actually owns is evaluated, so the check cannot answer
+  // anything about somebody else's booking; the transaction re-derives
+  // ownership, status and expiry regardless.
+  if (
+    offerKind &&
+    offerKind.memberId === memberId &&
+    offerKind.status === BookingStatus.WAITLIST_OFFERED &&
+    // An already-expired offer keeps its existing "offer has expired" answer
+    // from the transaction below rather than being re-explained as a refusal.
+    !(
+      offerKind.waitlistOfferExpiresAt &&
+      offerKind.waitlistOfferExpiresAt < new Date()
+    )
+  ) {
+    const { validateMinimumStay } = await import("@/lib/booking-policies");
+    const { aggregatePolicyExceptionViolations } = await import(
+      "@/lib/booking-policy-exceptions"
+    );
+    const offerLodgeId = offerKind.lodgeId ?? (await getDefaultLodgeId(prisma));
+    const stay = await validateMinimumStay(
+      offerKind.checkIn,
+      offerKind.checkOut,
+      offerLodgeId
+    );
+    if (!stay.valid) {
+      const exceptionReview = aggregatePolicyExceptionViolations(stay.violations);
+      logger.warn(
+        {
+          bookingId,
+          offerLodgeId,
+          violations: exceptionReview.violations.map((violation) => ({
+            policyId: violation.policyId,
+            policyVersion: violation.policyVersion,
+          })),
+        },
+        "Waitlist confirm refused: minimum-stay policy no longer satisfied"
+      );
+      // Fail closed WITHOUT consuming the offer: put the entry back on the
+      // waitlist exactly as the capacity-lost branch below does, so the member
+      // keeps their place and the next sweep can re-offer these nights (or the
+      // admin can relax the rule) instead of the offer being burnt.
+      await revertSameLodgeOfferToWaitlisted(bookingId, offerLodgeId, {
+        checkIn: offerKind.checkIn,
+        checkOut: offerKind.checkOut,
+      }).catch((err) =>
+        logger.error(
+          { err, bookingId },
+          "Failed to revert waitlist offer after minimum-stay refusal"
+        )
+      );
+      return {
+        success: false,
+        error: WAITLIST_MINIMUM_STAY_ERROR,
+        code: "MINIMUM_STAY_VIOLATION",
+      };
+    }
   }
 
   let result: { success: boolean; newStatus?: BookingStatus; error?: string };

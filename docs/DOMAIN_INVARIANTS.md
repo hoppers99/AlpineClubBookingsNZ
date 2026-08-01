@@ -2207,6 +2207,23 @@ non-admin actor, and the list is exact:
   modify-quote preview's own `minimumStayValid: true` for those requests: they
   cannot change a night of the stay, so the check could only block an unrelated
   fix on a booking that already sat outside the policy.
+- waitlist-offer confirmation (`POST /api/bookings/[id]/waitlist-confirm` →
+  `confirmWaitlistOffer`), on **both** offer kinds. Confirming turns a queue
+  placeholder into capacity-holding status, so it is a fresh commitment to those
+  nights, and an offer lives 48 hours — long enough for a rule to be tightened
+  under it. A same-lodge offer is evaluated against the booking's own lodge; a
+  cross-lodge offer (ADR-004) is evaluated against the **offered** lodge, which
+  matters because per-lodge policy resolution replaces rather than merges, so
+  that lodge can carry rules the member's own lodge never had, and because the
+  cross-lodge path calls `createConfirmedBooking` directly and would otherwise
+  apply no rule at all. Both checks run outside any transaction and fail closed
+  **without consuming the offer**: the entry reverts to `WAITLISTED` under the
+  relevant lodge's capacity lock, exactly as the capacity-lost and
+  no-longer-eligible branches do, and the member gets a plain sentence with code
+  `MINIMUM_STAY_VIOLATION` while the frozen snapshot stays in the server log.
+  There is no admin branch on this path by construction: the confirm refuses any
+  actor other than the booking's own member with `Forbidden`, so the only actor
+  that ever reaches the check is a non-admin confirming their own offer.
 
 An ADMIN actor (Full Admin or Booking Officer) is never blocked on any of them,
 including admin-on-behalf edits. Advisory surfaces — modify quote, policy check,

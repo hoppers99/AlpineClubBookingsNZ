@@ -202,6 +202,18 @@ async function revertOfferToWaitlisted(
 }
 
 /**
+ * The member-facing sentence for a cross-lodge offer the OFFERED lodge's
+ * minimum-stay rules refuse (#2363). Per-lodge policy resolution is
+ * replace-not-merge (ADR-001 resolved question 3), so the offered lodge's rules
+ * can differ entirely from the lodge the member queued at — this is not only a
+ * "the rule changed" case. Plain sentence to the member; the frozen review
+ * snapshot stays in the server log beside it.
+ */
+const CROSS_LODGE_MINIMUM_STAY_ERROR =
+  "That lodge's minimum stay for these nights is longer than your stay, so " +
+  "this offer cannot be confirmed. You've been returned to the waitlist.";
+
+/**
  * Accept a cross-lodge waitlist offer (ADR-004): create-and-cancel, never
  * mutate. The waitlist entry keeps its lodge; a fresh booking is created at
  * the offered lodge through the standard creation path (which re-checks
@@ -217,6 +229,90 @@ export async function confirmCrossLodgeWaitlistOffer(
   bookingId: string,
   memberId: string,
 ): Promise<CrossLodgeConfirmResult> {
+  // Phase 0 — #2363 minimum stay at the OFFERED lodge, evaluated OUTSIDE any
+  // transaction (the house pattern for pre-write policy checks; Phase 1 below
+  // holds that lodge's capacity lock, and a policy read on a second pool
+  // connection underneath it is the shape `member-guest-add-policy.ts`
+  // forbids). It matters here for two independent reasons: `createConfirmedBooking`
+  // is called directly further down, so nothing else on this path would apply
+  // the rule at all; and the offered lodge's policy set REPLACES rather than
+  // merges with the club-wide set, so a lodge the member never chose can carry
+  // rules their own lodge does not. Only an offer this member owns is
+  // evaluated; Phase 1 re-derives ownership, status and expiry regardless.
+  const preflight = await prisma.booking.findUnique({
+    where: { id: bookingId },
+    select: {
+      memberId: true,
+      status: true,
+      checkIn: true,
+      checkOut: true,
+      waitlistOfferedLodgeId: true,
+      waitlistOfferExpiresAt: true,
+    },
+  });
+  if (
+    preflight &&
+    preflight.memberId === memberId &&
+    preflight.status === BookingStatus.WAITLIST_OFFERED &&
+    preflight.waitlistOfferedLodgeId &&
+    // An already-expired offer keeps its existing "offer has expired" answer
+    // from Phase 1 rather than being re-explained as a policy refusal.
+    !(
+      preflight.waitlistOfferExpiresAt &&
+      preflight.waitlistOfferExpiresAt < new Date()
+    )
+  ) {
+    const { validateMinimumStay } = await import("@/lib/booking-policies");
+    const { aggregatePolicyExceptionViolations } = await import(
+      "@/lib/booking-policy-exceptions"
+    );
+    const offeredLodgeId = preflight.waitlistOfferedLodgeId;
+    const stay = await validateMinimumStay(
+      preflight.checkIn,
+      preflight.checkOut,
+      offeredLodgeId,
+    );
+    if (!stay.valid) {
+      const exceptionReview = aggregatePolicyExceptionViolations(stay.violations);
+      logger.warn(
+        {
+          bookingId,
+          offeredLodgeId,
+          violations: exceptionReview.violations.map((violation) => ({
+            policyId: violation.policyId,
+            policyVersion: violation.policyVersion,
+          })),
+        },
+        "Cross-lodge waitlist confirm refused: minimum-stay policy not satisfied",
+      );
+      // Fail closed WITHOUT consuming the offer, exactly as the no-longer-
+      // eligible branch in Phase 1 does: the entry goes back to WAITLISTED so
+      // the member keeps their place and the sweep can offer them their own
+      // lodge (or this one again once the rule allows it).
+      try {
+        await prisma.$transaction(async (tx) => {
+          await acquireLodgeCapacityLock(tx, offeredLodgeId);
+          const current = await tx.booking.findUnique({
+            where: { id: bookingId },
+            select: { id: true, status: true, checkIn: true, checkOut: true },
+          });
+          if (current?.status !== BookingStatus.WAITLIST_OFFERED) return;
+          await revertOfferToWaitlisted(tx, current);
+        });
+      } catch (err) {
+        logger.error(
+          { err, bookingId },
+          "Failed to revert cross-lodge offer after minimum-stay refusal",
+        );
+      }
+      return {
+        success: false,
+        error: CROSS_LODGE_MINIMUM_STAY_ERROR,
+        code: "MINIMUM_STAY_VIOLATION",
+      };
+    }
+  }
+
   // Phase 1 — validate the offer and re-check the quote under the offered
   // lodge's capacity lock.
   type Validated = {

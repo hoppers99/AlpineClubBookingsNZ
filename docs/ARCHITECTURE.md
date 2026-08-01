@@ -1548,9 +1548,15 @@ its `modify-dates` sibling all return their blocking HTTP 400 with the frozen
 exists, and verification re-reads the current policy set and fails closed with a
 409 `minimum_stay` outcome before any member, booking, payment or pay link is
 created — the emailed link lives 48 hours, long enough for a rule to change
-under it. Price-preserving modify requests (identity-only name fixes,
-credit-election-only edits) are exempt, matching the modify-quote preview, which
-already answers `minimumStayValid: true` for them. Modify quote and policy check
+under it. Waitlist-offer confirmation enforces on both offer kinds: a same-lodge
+confirm against the booking's own lodge and a cross-lodge confirm (ADR-004)
+against the **offered** lodge, whose policy set replaces rather than merges with
+the club-wide one. Both run outside any transaction and fail closed without
+consuming the offer — the entry reverts to `WAITLISTED` under the relevant
+lodge's capacity lock and the member gets a plain sentence with code
+`MINIMUM_STAY_VIOLATION`. Price-preserving modify requests (identity-only name
+fixes, credit-election-only edits) are exempt, matching the modify-quote
+preview, which already answers `minimumStayValid: true` for them. Modify quote and policy check
 expose the same structure as advisory data; policy check first resolves omitted
 lodge context to the active default and rejects an unknown/inactive explicit
 lodge. All evaluators receive the resolved booking lodge, so a lodge-specific
