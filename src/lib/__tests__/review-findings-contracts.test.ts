@@ -178,20 +178,45 @@ function createTempMigration(
   return { tempDir, migrationPath, ledgerPath };
 }
 
+// The migration-safety gates are bash scripts, so every fixture path handed to
+// them crosses a shell boundary. On Windows that shell is MSYS/Git-Bash, which
+// strips the backslashes out of an argv element ("C:\Users\x" arrives as
+// "C:Usersx") and then reports the fixture as missing — every one of these
+// shell-out tests failed locally for that reason alone, which is a false red on
+// a developer machine and hides real regressions. Forward slashes are accepted
+// by both shells and by Node on Windows. On Linux/CI `path` already produces
+// forward slashes, so this is a no-op there.
+function toShellPath(value: string) {
+  return value.replace(/\\/g, "/");
+}
+
+function toShellEnv(env: Record<string, string>) {
+  return Object.fromEntries(
+    Object.entries(env).map(([key, value]) => [
+      key,
+      value.includes("\\") ? toShellPath(value) : value,
+    ])
+  );
+}
+
 function runMigrationSafetyValidator(
   migrationPath: string,
   ledgerPath: string,
   env: Record<string, string> = {}
 ) {
-  return spawnSync("bash", ["scripts/validate-blue-green-migrations.sh", migrationPath], {
-    cwd: process.cwd(),
-    env: {
-      ...process.env,
-      MIGRATION_SAFETY_LEDGER: ledgerPath,
-      ...env,
-    },
-    encoding: "utf8",
-  });
+  return spawnSync(
+    "bash",
+    ["scripts/validate-blue-green-migrations.sh", toShellPath(migrationPath)],
+    {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        MIGRATION_SAFETY_LEDGER: toShellPath(ledgerPath),
+        ...toShellEnv(env),
+      },
+      encoding: "utf8",
+    }
+  );
 }
 
 const LEDGER_HEADER =
@@ -226,7 +251,7 @@ function runMigrationSafetyCoverage(
     cwd: process.cwd(),
     env: {
       ...process.env,
-      ...env,
+      ...toShellEnv(env),
     },
     encoding: "utf8",
   });
@@ -1249,6 +1274,10 @@ describe("review finding source/schema contracts", () => {
     expect(validator).toContain("HOT_TABLE_SQL_REGEX");
     expect(validator).toContain("lock impact plan");
     expect(ledger).toContain("old_code_compatible");
+    // #2288: the ledger header is where a row gets written from, so it has to
+    // carry the three accepted values (behaviour is pinned by the fixtures
+    // below; this keeps the operator-facing header from drifting out of step).
+    expect(ledger).toContain("yes, no, or windowed");
   });
 
   it("requires lock-impact documentation for hot-table migrations", () => {
@@ -1470,6 +1499,381 @@ describe("review finding source/schema contracts", () => {
       } finally {
         rmSync(fixture.tempDir, { recursive: true, force: true });
       }
+    }
+  );
+
+  it(
+    "refuses an enum-value rename that carries no ledger row (#2288)",
+    { timeout: 20000 },
+    () => {
+      // The gap this closes: BREAKING_SQL_REGEX matched DROP/RENAME COLUMN and
+      // friends but never ALTER TYPE ... RENAME VALUE, so a migration whose ONLY
+      // breaking statement renamed enum values passed the gate as harmless while
+      // the draining old colour kept sending the old label and got
+      // "invalid input value for enum". It must now demand a ledger row AND be
+      // reported as potentially blue/green-incompatible.
+      const fixture = createTempMigration(
+        "ALTER TYPE \"BookingChangeRequestStatus\" RENAME VALUE 'PENDING' TO 'REQUESTED';\n",
+        `${LEDGER_HEADER}\n`
+      );
+
+      try {
+        const result = runMigrationSafetyValidator(
+          fixture.migrationPath,
+          fixture.ledgerPath
+        );
+
+        expect(result.status, result.stderr).not.toBe(0);
+        expect(result.stderr).toContain("blue/green migration safety review");
+        expect(result.stderr).toContain(
+          "Potentially blue/green-incompatible migration detected"
+        );
+        expect(result.stderr).toMatch(/RENAME VALUE 'PENDING' TO 'REQUESTED'/);
+      } finally {
+        rmSync(fixture.tempDir, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it(
+    "catches an enum-value rename split across lines (#2288)",
+    { timeout: 20000 },
+    () => {
+      // The scan is line-oriented, so "RENAME VALUE" is matched bare — exactly
+      // like the sibling "RENAME COLUMN" alternative — rather than as
+      // "ALTER TYPE .* RENAME VALUE", which a statement wrapped after the type
+      // name would slip past. The committed 20260525010000 migration wraps its
+      // ALTER INDEX statements this way, so the spelling is real.
+      const fixture = createTempMigration(
+        [
+          'ALTER TYPE "BookingChangeRequestStatus"',
+          "  RENAME VALUE 'PENDING' TO 'REQUESTED';",
+          "",
+        ].join("\n"),
+        `${LEDGER_HEADER}\n`
+      );
+
+      try {
+        const result = runMigrationSafetyValidator(
+          fixture.migrationPath,
+          fixture.ledgerPath
+        );
+
+        expect(result.status, result.stderr).not.toBe(0);
+        expect(result.stderr).toContain(
+          "Potentially blue/green-incompatible migration detected"
+        );
+      } finally {
+        rmSync(fixture.tempDir, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it(
+    "requires the override for a ledgered enum-value rename (#2288)",
+    { timeout: 20000 },
+    () => {
+      const fixture = createTempMigration(
+        "ALTER TYPE \"BookingChangeRequestStatus\" RENAME VALUE 'PENDING' TO 'REQUESTED';\n",
+        [
+          LEDGER_HEADER,
+          "20990101000000_test_migration\texpand\tn/a\tyes\tEnum labels renamed after every reader moved to the new labels; old colour drained first.",
+        ].join("\n")
+      );
+
+      try {
+        const blocked = runMigrationSafetyValidator(
+          fixture.migrationPath,
+          fixture.ledgerPath
+        );
+        const allowed = runMigrationSafetyValidator(
+          fixture.migrationPath,
+          fixture.ledgerPath,
+          {
+            ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS: "1",
+            BLUE_GREEN_MIGRATION_OVERRIDE_REASON:
+              "enum rename verified against the previous deployed runtime",
+          }
+        );
+
+        expect(blocked.status, blocked.stderr).not.toBe(0);
+        expect(blocked.stderr).toContain("ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS");
+        expect(allowed.status, allowed.stderr).toBe(0);
+      } finally {
+        rmSync(fixture.tempDir, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it(
+    "accepts a windowed declaration for a deliberately breaking migration (#2288)",
+    { timeout: 20000 },
+    () => {
+      // `windowed` says plainly what `yes` used to have to lie about: this
+      // migration is NOT old-code compatible, the previous colour will error
+      // between migrate and cutover, and it is being deployed inside a
+      // maintenance window. The ledger row is then well-formed (no
+      // documentation failure) and the deploy still needs the operator override,
+      // exactly as before.
+      const fixture = createTempMigration(
+        "ALTER TYPE \"BookingChangeRequestStatus\" RENAME VALUE 'PENDING' TO 'REQUESTED';\n",
+        [
+          LEDGER_HEADER,
+          "20990101000000_test_migration\texpand\tn/a\twindowed\tNOT old-code compatible: the draining colour keeps sending PENDING and gets invalid input value for enum. Deploy inside an announced maintenance window, keep migrate-to-cutover short, and take the verified backup immediately before migrate because the rollback boundary is the migrate step.",
+        ].join("\n")
+      );
+
+      try {
+        const blocked = runMigrationSafetyValidator(
+          fixture.migrationPath,
+          fixture.ledgerPath
+        );
+        const allowed = runMigrationSafetyValidator(
+          fixture.migrationPath,
+          fixture.ledgerPath,
+          {
+            ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS: "1",
+            BLUE_GREEN_MIGRATION_OVERRIDE_REASON:
+              "maintenance window agreed with the owner for the enum rename",
+          }
+        );
+
+        // The ledger row itself is valid: no missing/malformed-documentation
+        // failure, only the ordinary breaking-SQL override requirement.
+        expect(blocked.stderr).not.toContain(
+          "missing required blue/green safety documentation"
+        );
+        expect(blocked.status, blocked.stderr).not.toBe(0);
+        expect(blocked.stderr).toContain(
+          "Ledger declares this migration windowed"
+        );
+        expect(allowed.status, allowed.stderr).toBe(0);
+      } finally {
+        rmSync(fixture.tempDir, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it(
+    "rejects a windowed declaration with no lock impact plan, override or not (#2288)",
+    { timeout: 20000 },
+    () => {
+      // `windowed` asserts a planned outage, so it must be justified in writing
+      // rather than become a quieter way to say `yes`. A missing plan is a
+      // documentation failure, which the ALLOW_BREAKING override cannot rescue.
+      const fixture = createTempMigration(
+        "ALTER TYPE \"BookingChangeRequestStatus\" RENAME VALUE 'PENDING' TO 'REQUESTED';\n",
+        [
+          LEDGER_HEADER,
+          "20990101000000_test_migration\texpand\tn/a\twindowed\t",
+        ].join("\n")
+      );
+
+      try {
+        const blocked = runMigrationSafetyValidator(
+          fixture.migrationPath,
+          fixture.ledgerPath
+        );
+        const stillBlocked = runMigrationSafetyValidator(
+          fixture.migrationPath,
+          fixture.ledgerPath,
+          {
+            ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS: "1",
+            BLUE_GREEN_MIGRATION_OVERRIDE_REASON:
+              "the override must not rescue an undocumented window",
+          }
+        );
+
+        expect(blocked.status, blocked.stderr).not.toBe(0);
+        expect(blocked.stderr).toContain(
+          "windowed migrations must document the incompatibility"
+        );
+        expect(stillBlocked.status, stillBlocked.stderr).not.toBe(0);
+      } finally {
+        rmSync(fixture.tempDir, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it(
+    "rejects old_code_compatible=no and unknown values on a breaking migration (#2288)",
+    { timeout: 20000 },
+    () => {
+      // `no` on a breaking migration is a contradiction, and the column was
+      // previously unvalidated — a typo such as "Yes" silently read as "not
+      // yes". Both are documentation failures the override cannot rescue.
+      const declaresNo = createTempMigration(
+        "ALTER TYPE \"BookingChangeRequestStatus\" RENAME VALUE 'PENDING' TO 'REQUESTED';\n",
+        [
+          LEDGER_HEADER,
+          "20990101000000_test_migration\texpand\tn/a\tno\tClaims there is nothing to acknowledge.",
+        ].join("\n")
+      );
+
+      try {
+        const result = runMigrationSafetyValidator(
+          declaresNo.migrationPath,
+          declaresNo.ledgerPath,
+          {
+            ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS: "1",
+            BLUE_GREEN_MIGRATION_OVERRIDE_REASON:
+              "the override must not rescue a contradictory declaration",
+          }
+        );
+
+        expect(result.status, result.stderr).not.toBe(0);
+        expect(result.stderr).toContain(
+          "breaking migrations must declare old_code_compatible=yes"
+        );
+      } finally {
+        rmSync(declaresNo.tempDir, { recursive: true, force: true });
+      }
+
+      const typo = createTempMigration(
+        "ALTER TYPE \"BookingChangeRequestStatus\" RENAME VALUE 'PENDING' TO 'REQUESTED';\n",
+        [
+          LEDGER_HEADER,
+          "20990101000000_test_migration\texpand\tn/a\tYes\tCapitalised value must not be accepted.",
+        ].join("\n")
+      );
+
+      try {
+        const result = runMigrationSafetyValidator(
+          typo.migrationPath,
+          typo.ledgerPath,
+          {
+            ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS: "1",
+            BLUE_GREEN_MIGRATION_OVERRIDE_REASON:
+              "the override must not rescue an unrecognised value",
+          }
+        );
+
+        expect(result.status, result.stderr).not.toBe(0);
+        expect(result.stderr).toContain(
+          "old_code_compatible must be yes, no, or windowed"
+        );
+      } finally {
+        rmSync(typo.tempDir, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it(
+    "requires the override for a windowed migration with no breaking SQL at all (#2288)",
+    { timeout: 20000 },
+    () => {
+      // A data-only migration can break the draining colour with no breaking
+      // DDL — the #1440 AgeTier backfill flipped rows to a value the previous
+      // Prisma client could not deserialize. When the ledger declares that
+      // honestly, the gate must demand the operator override even though no SQL
+      // pattern matched; the row is the only place that knows.
+      const fixture = createTempMigration(
+        'ALTER TABLE "Payment" ADD COLUMN "processorReference" TEXT;\n',
+        [
+          LEDGER_HEADER,
+          "20990101000000_test_migration\texpand\tn/a\twindowed\tNOT old-code compatible: the previous colour cannot deserialize the values this migration writes. Announced maintenance window; cut over promptly.",
+        ].join("\n")
+      );
+
+      try {
+        const blocked = runMigrationSafetyValidator(
+          fixture.migrationPath,
+          fixture.ledgerPath
+        );
+        const allowed = runMigrationSafetyValidator(
+          fixture.migrationPath,
+          fixture.ledgerPath,
+          {
+            ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS: "1",
+            BLUE_GREEN_MIGRATION_OVERRIDE_REASON:
+              "maintenance window agreed for the declared windowed migration",
+          }
+        );
+
+        expect(blocked.status, blocked.stderr).not.toBe(0);
+        expect(blocked.stderr).toContain(
+          "Ledger declares this migration windowed"
+        );
+        expect(allowed.status, allowed.stderr).toBe(0);
+      } finally {
+        rmSync(fixture.tempDir, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it(
+    "leaves additive enum values and index renames alone (#2288)",
+    { timeout: 20000 },
+    () => {
+      // The boundary of the new pattern. ALTER TYPE ... ADD VALUE is additive
+      // (43 committed migrations do it) and ALTER INDEX ... RENAME TO is
+      // genuinely old-code compatible because no application code references an
+      // index by name. Matching either would generate false positives forever
+      // and train operators to reach for the override.
+      const fixture = createTempMigration(
+        [
+          "ALTER TYPE \"BookingStatus\" ADD VALUE IF NOT EXISTS 'PAID' AFTER 'CONFIRMED';",
+          'ALTER INDEX "BookingChangeRequest_requesterId_status_createdAt_idx"',
+          '  RENAME TO "BookingChangeRequest_requestedBy_status_createdAt_idx";',
+          "",
+        ].join("\n"),
+        `${LEDGER_HEADER}\n`
+      );
+
+      try {
+        const result = runMigrationSafetyValidator(
+          fixture.migrationPath,
+          fixture.ledgerPath
+        );
+
+        expect(result.status, result.stderr).toBe(0);
+      } finally {
+        rmSync(fixture.tempDir, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it(
+    "surfaces the committed 20260525010000 enum renames against the real ledger (#2288)",
+    { timeout: 20000 },
+    () => {
+      // End-to-end on the real file: the migration that motivated the issue
+      // renamed three enum values AND two columns. It only ever tripped the gate
+      // on the column renames — the enum renames were invisible. Both classes
+      // must now be reported, and its committed contract/yes ledger row must
+      // stay valid (no retroactive invalidation).
+      const realMigrationPath = path.resolve(
+        process.cwd(),
+        "prisma/migrations/20260525010000_align_booking_change_request_with_review_queues/migration.sql"
+      );
+      const realLedgerPath = path.resolve(
+        process.cwd(),
+        "docs/BLUE_GREEN_MIGRATION_SAFETY.tsv"
+      );
+
+      const blocked = runMigrationSafetyValidator(
+        realMigrationPath,
+        realLedgerPath
+      );
+
+      expect(blocked.status, blocked.stderr).not.toBe(0);
+      expect(blocked.stderr).not.toContain(
+        "missing required blue/green safety documentation"
+      );
+      expect(blocked.stderr).toMatch(/RENAME VALUE 'PENDING' TO 'REQUESTED'/);
+      expect(blocked.stderr).toMatch(/RENAME COLUMN "requesterId"/);
+
+      const allowed = runMigrationSafetyValidator(
+        realMigrationPath,
+        realLedgerPath,
+        {
+          ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS: "1",
+          BLUE_GREEN_MIGRATION_OVERRIDE_REASON:
+            "committed contract migration, previously deployed with operator acknowledgement",
+        }
+      );
+
+      expect(allowed.status, allowed.stderr).toBe(0);
     }
   );
 
