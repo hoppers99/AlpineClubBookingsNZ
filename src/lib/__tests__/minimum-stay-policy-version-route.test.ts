@@ -79,6 +79,10 @@ describe("minimum-stay policy versioned writes", () => {
       currentVersion: 5,
     });
     expect(mocks.updateMany).not.toHaveBeenCalled();
+    expect(mocks.executeRaw).toHaveBeenCalledTimes(1);
+    expect(mocks.executeRaw.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.findUnique.mock.invocationCallOrder[0],
+    );
     expect(mocks.logAudit).not.toHaveBeenCalled();
     expect(mocks.revalidate).not.toHaveBeenCalled();
   });
@@ -100,7 +104,6 @@ describe("minimum-stay policy versioned writes", () => {
   it("guards a material PUT by version and increments exactly once", async () => {
     mocks.findUnique
       .mockResolvedValueOnce(policy)
-      .mockResolvedValueOnce(policy)
       .mockResolvedValueOnce({ ...policy, capacityMode: "NO_HOLD", version: 5 });
     mocks.updateMany.mockResolvedValue({ count: 1 });
 
@@ -117,6 +120,9 @@ describe("minimum-stay policy versioned writes", () => {
         version: { increment: 1 },
       },
     });
+    expect(mocks.executeRaw.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.findUnique.mock.invocationCallOrder[0],
+    );
     expect(mocks.logAudit).toHaveBeenCalledTimes(1);
     expect(mocks.revalidate).toHaveBeenCalledTimes(1);
   });

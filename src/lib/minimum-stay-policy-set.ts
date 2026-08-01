@@ -1,36 +1,16 @@
 import type { Prisma } from "@prisma/client";
 
-const POLICY_SET_LOCK_PREFIX = "minimum-stay-policy-set:";
-const CLUB_WIDE_SCOPE = "club-wide";
-
-/** Stable scope token shared by live CRUD and configuration import. */
-export function minimumStayPolicyScopeKey(lodgeId: string | null): string {
-  return lodgeId === null ? CLUB_WIDE_SCOPE : `lodge:${lodgeId}`;
-}
+export const MINIMUM_STAY_POLICY_SET_LOCK_KEY = "minimum-stay-policy-set";
 
 /**
- * Serialise every writer of one minimum-stay policy partition.
- * Read-only evaluation deliberately takes no lock.
+ * Serialise every writer of the small global minimum-stay policy set.
+ *
+ * The migration's BEFORE STATEMENT trigger takes this exact key before old-
+ * colour DML reaches any row. New live/config writers call this helper before
+ * reads or planning, then re-enter the transaction lock at DML time.
  */
-export async function lockMinimumStayPolicyScope(
+export async function lockMinimumStayPolicySet(
   tx: Prisma.TransactionClient,
-  lodgeId: string | null,
 ): Promise<void> {
-  const key = `${POLICY_SET_LOCK_PREFIX}${minimumStayPolicyScopeKey(lodgeId)}`;
-  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${key}))`;
-}
-
-/** Config import locks each touched partition in a fixed order after its own lock. */
-export async function lockMinimumStayPolicyScopes(
-  tx: Prisma.TransactionClient,
-  lodgeIds: Array<string | null>,
-): Promise<void> {
-  const unique = new Map(
-    lodgeIds.map((lodgeId) => [minimumStayPolicyScopeKey(lodgeId), lodgeId]),
-  );
-  for (const [, lodgeId] of [...unique.entries()].sort(([a], [b]) =>
-    a < b ? -1 : a > b ? 1 : 0,
-  )) {
-    await lockMinimumStayPolicyScope(tx, lodgeId);
-  }
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${MINIMUM_STAY_POLICY_SET_LOCK_KEY}))`;
 }

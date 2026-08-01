@@ -10,8 +10,8 @@ import {
   type MinimumStayPolicyExceptionViolation,
 } from "@/lib/booking-policy-exceptions";
 import {
-  lockMinimumStayPolicyScopes,
-  minimumStayPolicyScopeKey,
+  MINIMUM_STAY_POLICY_SET_LOCK_KEY,
+  lockMinimumStayPolicySet,
 } from "@/lib/minimum-stay-policy-set";
 import { getMinimumStayViolations } from "@/lib/policies/minimum-stay";
 
@@ -146,7 +146,8 @@ describe("minimum-stay policy write contract (#2363)", () => {
     expect(row).toContain("draining pre-#2363 colour");
     expect(row).toContain("new runtime requires capacityMode");
     expect(row).toContain("never relies on the DB default");
-    expect(row).toContain("BEFORE INSERT/UPDATE/DELETE trigger");
+    expect(row).toContain("BEFORE STATEMENT INSERT/UPDATE/DELETE trigger");
+    expect(row).toContain("advisory-before-row order");
     expect(row).toContain("old colour");
     expect(row).toContain("not double-incremented");
   });
@@ -165,22 +166,17 @@ describe("minimum-stay policy write contract (#2363)", () => {
     expect(route).not.toContain("capacityMode: data.capacityMode ??");
   });
 
-  it("derives and acquires shared scope locks in stable order", async () => {
+  it("acquires the one shared policy-set lock before reads and writes", async () => {
     const executeRaw = vi.fn().mockResolvedValue(1);
     const tx = { $executeRaw: executeRaw };
 
-    await lockMinimumStayPolicyScopes(
-      tx as Parameters<typeof lockMinimumStayPolicyScopes>[0],
-      ["lodge-z", null, "lodge-a", "lodge-z"],
+    await lockMinimumStayPolicySet(
+      tx as Parameters<typeof lockMinimumStayPolicySet>[0],
     );
 
-    expect(minimumStayPolicyScopeKey(null)).toBe("club-wide");
-    expect(executeRaw).toHaveBeenCalledTimes(3);
-    expect(executeRaw.mock.calls.map((call) => call[1])).toEqual([
-      "minimum-stay-policy-set:club-wide",
-      "minimum-stay-policy-set:lodge:lodge-a",
-      "minimum-stay-policy-set:lodge:lodge-z",
-    ]);
+    expect(MINIMUM_STAY_POLICY_SET_LOCK_KEY).toBe("minimum-stay-policy-set");
+    expect(executeRaw).toHaveBeenCalledTimes(1);
+    expect(executeRaw.mock.calls[0][1]).toBe("minimum-stay-policy-set");
   });
 
   it("puts old-colour writes behind the same DB lock and revision protocol", () => {
@@ -189,16 +185,18 @@ describe("minimum-stay policy write contract (#2363)", () => {
     );
 
     expect(migration).toContain(
-      'CREATE TRIGGER "MinimumStayPolicy_lock_and_version"',
+      'CREATE TRIGGER "MinimumStayPolicy_lock_set"',
     );
     expect(migration).toContain("BEFORE INSERT OR UPDATE OR DELETE");
+    expect(migration).toContain("FOR EACH STATEMENT");
     expect(migration).toContain(
-      "PERFORM pg_advisory_xact_lock(hashtext(old_scope_key))",
+      "PERFORM pg_advisory_xact_lock(hashtext('minimum-stay-policy-set'))",
     );
     expect(migration).toContain(
-      "PERFORM pg_advisory_xact_lock(hashtext(new_scope_key))",
+      'CREATE TRIGGER "MinimumStayPolicy_version"',
     );
-    expect(migration).toContain('old_scope_key COLLATE "C" < new_scope_key COLLATE "C"');
+    expect(migration).toContain("BEFORE INSERT OR UPDATE");
+    expect(migration).toContain("FOR EACH ROW");
     expect(migration).toContain(
       'NEW."version" := OLD."version" + 1',
     );

@@ -5,7 +5,7 @@ import { prisma } from "@/lib/prisma"
 import { z } from "zod"
 import { logAudit } from "@/lib/audit"
 import { isDateOnlyString, parseDateOnly } from "@/lib/date-only"
-import { lockMinimumStayPolicyScope } from "@/lib/minimum-stay-policy-set"
+import { lockMinimumStayPolicySet } from "@/lib/minimum-stay-policy-set"
 
 const dateOnlyString = z.string().refine(isDateOnlyString, {
   message: "Date must be YYYY-MM-DD",
@@ -67,7 +67,7 @@ export async function POST(request: NextRequest) {
 
     const policy = await prisma.$transaction(async (tx) => {
       const lodgeId = data.lodgeId ?? null
-      await lockMinimumStayPolicyScope(tx, lodgeId)
+      await lockMinimumStayPolicySet(tx)
       if (lodgeId) {
         const lodge = await tx.lodge.findUnique({
           where: { id: lodgeId },

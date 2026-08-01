@@ -13,62 +13,39 @@ ALTER TABLE "MinimumStayPolicy"
     ADD COLUMN "version" INTEGER NOT NULL DEFAULT 1;
 
 -- The database is the compatibility boundary during a blue/green drain. The
--- old colour cannot call the new TypeScript lock helper and does not know about
--- version, so every row writer takes the identical namespaced advisory key here
--- and every material UPDATE advances the revision. New-runtime writers already
--- take this lock and increment version; transaction advisory locks are
--- re-entrant, and the trigger recognises OLD.version + 1 so it never increments
--- them twice.
-CREATE OR REPLACE FUNCTION "lock_and_version_minimum_stay_policy"()
+-- old colour cannot call the new TypeScript lock helper, so a BEFORE STATEMENT
+-- trigger takes the exact same global policy-set lock before PostgreSQL takes
+-- any tuple lock. New-runtime writers already hold this key and re-enter it.
+-- Both colours therefore follow advisory -> row order; a row-level advisory
+-- trigger would invert that order for the old colour and can deadlock.
+CREATE OR REPLACE FUNCTION "lock_minimum_stay_policy_set"()
 RETURNS trigger
 LANGUAGE plpgsql
 AS $$
-DECLARE
-    old_scope_key TEXT;
-    new_scope_key TEXT;
+BEGIN
+    PERFORM pg_advisory_xact_lock(hashtext('minimum-stay-policy-set'));
+    RETURN NULL;
+END;
+$$;
+
+CREATE TRIGGER "MinimumStayPolicy_lock_set"
+BEFORE INSERT OR UPDATE OR DELETE ON "MinimumStayPolicy"
+FOR EACH STATEMENT
+EXECUTE FUNCTION "lock_minimum_stay_policy_set"();
+
+-- Revision handling is deliberately separate from locking. This row trigger
+-- runs only after the statement trigger already holds the policy-set key.
+CREATE OR REPLACE FUNCTION "version_minimum_stay_policy"()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
 BEGIN
     IF TG_OP = 'INSERT' THEN
-        new_scope_key := 'minimum-stay-policy-set:' ||
-            CASE
-                WHEN NEW."lodgeId" IS NULL THEN 'club-wide'
-                ELSE 'lodge:' || NEW."lodgeId"
-            END;
-        PERFORM pg_advisory_xact_lock(hashtext(new_scope_key));
         IF NEW."version" <> 1 THEN
             RAISE EXCEPTION 'MinimumStayPolicy inserts must start at version 1'
                 USING ERRCODE = '23514';
         END IF;
         RETURN NEW;
-    END IF;
-
-    old_scope_key := 'minimum-stay-policy-set:' ||
-        CASE
-            WHEN OLD."lodgeId" IS NULL THEN 'club-wide'
-            ELSE 'lodge:' || OLD."lodgeId"
-        END;
-
-    IF TG_OP = 'DELETE' THEN
-        PERFORM pg_advisory_xact_lock(hashtext(old_scope_key));
-        RETURN OLD;
-    END IF;
-
-    new_scope_key := 'minimum-stay-policy-set:' ||
-        CASE
-            WHEN NEW."lodgeId" IS NULL THEN 'club-wide'
-            ELSE 'lodge:' || NEW."lodgeId"
-        END;
-
-    -- The application never moves a policy between scopes, but fail safely for
-    -- maintenance SQL: acquire both scope keys in bytewise order so two moves
-    -- cannot form a lock cycle under a locale-dependent database collation.
-    IF old_scope_key = new_scope_key THEN
-        PERFORM pg_advisory_xact_lock(hashtext(old_scope_key));
-    ELSIF old_scope_key COLLATE "C" < new_scope_key COLLATE "C" THEN
-        PERFORM pg_advisory_xact_lock(hashtext(old_scope_key));
-        PERFORM pg_advisory_xact_lock(hashtext(new_scope_key));
-    ELSE
-        PERFORM pg_advisory_xact_lock(hashtext(new_scope_key));
-        PERFORM pg_advisory_xact_lock(hashtext(old_scope_key));
     END IF;
 
     IF ROW(
@@ -105,7 +82,7 @@ BEGIN
 END;
 $$;
 
-CREATE TRIGGER "MinimumStayPolicy_lock_and_version"
-BEFORE INSERT OR UPDATE OR DELETE ON "MinimumStayPolicy"
+CREATE TRIGGER "MinimumStayPolicy_version"
+BEFORE INSERT OR UPDATE ON "MinimumStayPolicy"
 FOR EACH ROW
-EXECUTE FUNCTION "lock_and_version_minimum_stay_policy"();
+EXECUTE FUNCTION "version_minimum_stay_policy"();

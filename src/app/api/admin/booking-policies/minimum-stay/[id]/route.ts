@@ -5,7 +5,7 @@ import { prisma } from "@/lib/prisma"
 import { z } from "zod"
 import { logAudit } from "@/lib/audit"
 import { isDateOnlyString, parseDateOnly } from "@/lib/date-only"
-import { lockMinimumStayPolicyScope } from "@/lib/minimum-stay-policy-set"
+import { lockMinimumStayPolicySet } from "@/lib/minimum-stay-policy-set"
 
 const dateOnlyString = z.string().refine(isDateOnlyString, {
   message: "Date must be YYYY-MM-DD",
@@ -63,11 +63,9 @@ export async function PUT(
   try {
     const data = updateSchema.parse(await request.json())
     const outcome = await prisma.$transaction(async (tx) => {
-      // lodgeId is immutable. Read it only to choose the lock key, then re-read
-      // every mutable field after the lock before deciding or writing.
-      const opened = await tx.minimumStayPolicy.findUnique({ where: { id } })
-      if (!opened) throw new PolicyNotFoundError()
-      await lockMinimumStayPolicyScope(tx, opened.lodgeId)
+      // The global policy-set lock is acquired before the first read. The DB
+      // statement trigger takes this same key for draining old-colour DML.
+      await lockMinimumStayPolicySet(tx)
       const existing = await tx.minimumStayPolicy.findUnique({ where: { id } })
       if (!existing) throw new PolicyNotFoundError()
       if (existing.version !== data.version) {
@@ -185,9 +183,7 @@ export async function DELETE(
   try {
     const data = deleteSchema.parse(await request.json())
     const outcome = await prisma.$transaction(async (tx) => {
-      const opened = await tx.minimumStayPolicy.findUnique({ where: { id } })
-      if (!opened) throw new PolicyNotFoundError()
-      await lockMinimumStayPolicyScope(tx, opened.lodgeId)
+      await lockMinimumStayPolicySet(tx)
       const existing = await tx.minimumStayPolicy.findUnique({ where: { id } })
       if (!existing) throw new PolicyNotFoundError()
       if (existing.version !== data.version) {

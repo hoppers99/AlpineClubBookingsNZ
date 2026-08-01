@@ -138,9 +138,9 @@ describeWithDatabase("MinimumStayPolicy drain trigger (#2363)", () => {
     });
   });
 
-  it("makes old INSERT/UPDATE/DELETE join the exact new-runtime scope key", async () => {
+  it("makes old INSERT/UPDATE/DELETE join the exact new-runtime set key", async () => {
     await withTriggerSchema(async (newRuntime, oldRuntime) => {
-      const key = "minimum-stay-policy-set:club-wide";
+      const key = "minimum-stay-policy-set";
       for (const sql of [
         `INSERT INTO "MinimumStayPolicy"
           ("id", "name", "startDate", "endDate", "triggerDays", "minimumNights")

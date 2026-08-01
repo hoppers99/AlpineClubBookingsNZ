@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   bookingDefaultsUpsert: vi.fn(),
   minimumStayFindMany: vi.fn(),
   minimumStayCreate: vi.fn(),
+  minimumStayExecuteRaw: vi.fn(),
   bookingPeriodFindMany: vi.fn(),
   bookingPeriodCreate: vi.fn(),
   bookingPeriodFindUnique: vi.fn(),
@@ -108,7 +109,7 @@ function installTransactionMock() {
       minimumStayPolicy: {
         create: mocks.minimumStayCreate,
       },
-      $executeRaw: vi.fn().mockResolvedValue(1),
+      $executeRaw: mocks.minimumStayExecuteRaw,
     }),
   );
 }
@@ -295,6 +296,9 @@ describe("minimum-stay policy partitions", () => {
         version: 1,
       }),
     });
+    expect(mocks.minimumStayExecuteRaw.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.lodgeFindUnique.mock.invocationCallOrder[0],
+    );
   });
 
   it("POST without a lodge stays club-wide", async () => {
