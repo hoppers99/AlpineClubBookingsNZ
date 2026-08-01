@@ -215,7 +215,7 @@ test("a member adds a member guest from the edit panel, and the target is asked"
     wandaPage.getByText(`Waiting for ${NOMINATOR_TWO.firstName} to approve`),
   ).toBeVisible();
 
-  await wandaPage.getByRole("button", { name: /^Save/ }).click();
+  await wandaPage.getByRole("button", { name: "Save Changes" }).click();
 
   // ...and saving actually asks them. The subject is the shared composer's, so
   // a wording change that broke the ask would break this too.
@@ -258,7 +258,7 @@ test("an officer adding on somebody's booking tells the member instead of asking
   await panel.getByRole("combobox").fill(NOMINATOR_TWO.email);
   await panel.getByRole("button", { name: "Find" }).click();
   await panel.getByRole("button", { name: "Add to booking" }).click();
-  await officerPage.getByRole("button", { name: /^Save/ }).click();
+  await officerPage.getByRole("button", { name: "Save Changes" }).click();
 
   // Told, not asked: the added-notice subject, never the consent request's.
   await waitForEmail(
