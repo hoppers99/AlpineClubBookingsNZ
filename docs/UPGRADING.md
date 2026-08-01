@@ -47,7 +47,7 @@ columns:
 | `migration_name` | The `prisma/migrations/<timestamp>_<name>` folder. |
 | `phase` | `expand` (adds shape), `contract` (removes shape), or `metadata-only`. |
 | `previous_expand_release` | For a `contract` migration, the earlier expand/runtime release it depends on. Do not deploy a contract migration before the named expand release has fully drained. |
-| `old_code_compatible` | One of exactly three values. `yes` = the previously deployed app color keeps working while this migration is applied. **`windowed` = the old color *will* error between migrate and cutover** — only valid inside an announced maintenance window, and its `lock_impact_plan` states what breaks and what the plan is. `no` = the migration trips none of the deploy guard's breaking patterns, so there is nothing to acknowledge — **but read its `lock_impact_plan` anyway**: before `windowed` existed, `no` was also how a genuinely old-code-incompatible data migration was flagged (`20260528120000_add_booking_admin_review_workflow`, `20260707000100_backfill_org_age_tier_not_applicable`), and those rows are left as they were declared. |
+| `old_code_compatible` | One of exactly three values, and **read the row's `lock_impact_plan` whichever one it is**. `yes` = the previously deployed app color keeps working while this migration is applied — but before `windowed` existed the gate *hard-required* `yes` for every breaking migration, so a number of `yes` rows are window-bounded in substance and say so in their plan text (`20260719170000_xero_grouping_age_tiers_multiselect`, for one, is `yes` while its admin grouping reads error with column-does-not-exist until cutover). **`windowed` = the old color *will* error between migrate and cutover** — only valid inside an announced maintenance window, and its `lock_impact_plan` states what breaks and what the plan is. `no` = the migration trips none of the deploy guard's breaking patterns, so there is nothing to acknowledge — but `no` was also how a genuinely old-code-incompatible data migration used to be flagged (`20260528120000_add_booking_admin_review_workflow`, `20260707000100_backfill_org_age_tier_not_applicable`). Those rows are left as they were declared; `docs/BLUE_GREEN_MIGRATION_POLICY.md` → "Historical note" gives the class rule for spotting them. |
 | `lock_impact_plan` | Plain-language notes: which tables it locks, when to run it, and any operator caveat (quiet window, defer option, "run during low X traffic"). |
 
 Before a deploy:
@@ -56,7 +56,9 @@ Before a deploy:
    `prisma/migrations` newer than the last one your database has applied).
 2. Look each up in the ledger. Note any row with `old_code_compatible=windowed`
    or `old_code_compatible=no`, any
-   `contract` row, and any `lock_impact_plan` that names a hot table (`Member`,
+   `contract` row, any `yes` row whose `lock_impact_plan` carries an old-code
+   caveat (`OLD-CODE CAVEAT`, `RESIDUAL WINDOW`, `CAUTION`, "until cutover",
+   "idle or routed"), and any `lock_impact_plan` that names a hot table (`Member`,
    `Booking`, `Payment`, membership/finance/auth tables) or a traffic window.
 3. Schedule the deploy for the quietest window those rows require, and line up
    the post-upgrade actions from the release's Migration/deployment notes.
