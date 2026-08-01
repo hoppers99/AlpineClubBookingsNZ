@@ -27,11 +27,16 @@ import {
 installFrozenTestClock();
 
 // Re-freeze before each test, but ONLY when the clock has been handed back to
-// the real calendar — a suite that deliberately pinned another instant still has
-// fake timers installed and is left completely alone. Dozens of suites call
-// `vi.useRealTimers()` in an `afterEach` to undo their own pin; the ones whose
-// later describes have no clock hooks then run on the real calendar, straight
-// back out of the freeze. The rollover canary caught two doing exactly that.
+// the real calendar — a suite that deliberately pinned another instant is left
+// completely alone, whether it pinned with fake timers or with a bare
+// `vi.setSystemTime`. Dozens of suites call `vi.useRealTimers()` in an
+// `afterEach` to undo their own pin; the ones whose later describes have no
+// clock hooks then run on the real calendar, straight back out of the freeze.
+// The rollover canary caught two doing exactly that.
+//
+// What it restores is the DEFAULT instant, never the suite's own pin — so a
+// suite that pins once in a `beforeAll` and also hands the clock back must
+// re-pin in a `beforeEach`.
 //
 // Registered first, so it runs before the file's own `beforeEach` and a per-test
 // pin still wins.

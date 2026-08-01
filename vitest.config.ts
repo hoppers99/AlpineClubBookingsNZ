@@ -19,6 +19,13 @@ export default defineConfig({
     exclude: [...configDefaults.exclude, "**/.claude/**", "e2e/**"],
     sequence: {
       // Load-bearing for the frozen test clock (#2481), not a style preference.
+      // "list" evaluates setupFiles in the order listed above. Vitest's own
+      // config type documents the DEFAULT as "parallel" (Promise.all), which
+      // would let vitest.setup.ts — and everything it imports — evaluate before
+      // the freeze is installed. It happens to run sequentially today only
+      // because resolveConfig never applies that documented default; pinning it
+      // is what actually makes the ordering above a contract.
+      setupFiles: "list",
       // "stack" runs `beforeAll`/`beforeEach` in definition order, so the setup
       // file's freeze installs FIRST and any suite that pins its own instant
       // with `vi.setSystemTime` in its own hook still wins. `after*` hooks run

@@ -200,6 +200,36 @@ describe("a suite that hands the clock back to real time", () => {
   });
 });
 
+describe("the setup-file ordering the whole design rests on", () => {
+  // `vitest.clock-setup.ts` must be evaluated FIRST and SEQUENTIALLY, or the
+  // freeze is not in place before `vitest.setup.ts` (and everything it imports)
+  // evaluates — the import-time-constant hole that bit `admin-sidebar.tsx:123`.
+  //
+  // Vitest's own config type documents `sequence.setupFiles` as defaulting to
+  // "parallel" (Promise.all). It resolves to the sequential branch today only
+  // because that documented default is never applied, so nothing but this
+  // explicit pin stands between the design and a `Promise.all`. Asserted here
+  // because a reviewer deleting the config line would otherwise see no failure.
+  const config = fs.readFileSync(
+    path.join(process.cwd(), "vitest.config.ts"),
+    "utf8"
+  );
+
+  it("lists the clock setup file before the general one", () => {
+    expect(config).toMatch(
+      /setupFiles:\s*\[\s*"\.\/vitest\.clock-setup\.ts"\s*,\s*"\.\/vitest\.setup\.ts"\s*\]/
+    );
+  });
+
+  it("pins the setup files to sequential evaluation", () => {
+    expect(config).toMatch(/sequence:\s*\{[\s\S]*?setupFiles:\s*"list"/);
+  });
+
+  it("pins hooks to definition order so a per-file pin still wins", () => {
+    expect(config).toMatch(/sequence:\s*\{[\s\S]*?hooks:\s*"stack"/);
+  });
+});
+
 describe("a suite that pins its own instant with no fake timers installed", () => {
   // Vitest has TWO mocked-Date states. `vi.setSystemTime(x)` while timers are
   // real mocks `Date` on its own and leaves `vi.isFakeTimers()` FALSE — which is
