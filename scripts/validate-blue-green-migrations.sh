@@ -385,6 +385,41 @@ ledger_field() {
   awk -F'\t' -v field_number="$field_number" '{ print $field_number }' <<<"$entry"
 }
 
+# Every migration name whose ledger row declares old_code_compatible=windowed
+# (#2288), newline-separated. Read ONCE, before the migration loop, because the
+# check below has to run for every migration — including ones whose SQL matches
+# no pattern at all — and a per-migration awk over the ledger would add a process
+# spawn per migration to the PR-time coverage sweep over the whole tree.
+# First row wins on a duplicated migration name, matching
+# ledger_entry_for_migration's own first-match semantics.
+windowed_ledger_migrations() {
+  [ -f "$MIGRATION_SAFETY_LEDGER" ] || return 0
+
+  awk -F'\t' '
+    /^[[:space:]]*#/ { next }
+    NF == 0 { next }
+    {
+      name = $1
+      value = $4
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", name)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+      if (seen[name]++) next
+      if (value == "windowed") print name
+    }
+  ' "$MIGRATION_SAFETY_LEDGER"
+}
+
+# Membership test against that set, in pure bash so it costs no process.
+ledger_declares_windowed() {
+  local migration_name="$1"
+
+  [ -n "$WINDOWED_LEDGER_MIGRATIONS" ] || return 1
+  case $'\n'"${WINDOWED_LEDGER_MIGRATIONS}"$'\n' in
+    *$'\n'"${migration_name}"$'\n'*) return 0 ;;
+  esac
+  return 1
+}
+
 validate_ledger_entry() {
   local migration_name="$1"
   local requires_hot_table_plan="$2"
@@ -454,14 +489,6 @@ validate_ledger_entry() {
     failed=1
   fi
 
-  # Reported back to the caller (this runs in the current shell, not a subshell)
-  # so a windowed declaration still demands the deploy-time override even when no
-  # SQL pattern matched — a data-only migration can break the old colour without
-  # any breaking DDL, and the ledger is the only place that knows.
-  if [ "$old_code_compatible" = "windowed" ]; then
-    ledger_declared_windowed=1
-  fi
-
   if [ "$requires_hot_table_plan" = "1" ] && [ -z "$lock_impact_plan" ]; then
     echo "${migration_name}: hot-table migrations must include a lock impact plan in the safety ledger." >&2
     failed=1
@@ -473,6 +500,7 @@ validate_ledger_entry() {
 found_breaking=0
 found_failure=0
 pending_count=0
+WINDOWED_LEDGER_MIGRATIONS="$(windowed_ledger_migrations)"
 
 if [ "$ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS" = "1" ] &&
   [ -z "$(trim_whitespace "$BLUE_GREEN_MIGRATION_OVERRIDE_REASON")" ]; then
@@ -524,14 +552,23 @@ for migration_sql in "$@"; do
   breaking_matches="$(sql_lines "$migration_sql" | grep -Ei "$BREAKING_SQL_REGEX" || true)"
   destructive_removal_matches="$(sql_lines "$migration_sql" | grep -Ei "$DESTRUCTIVE_REMOVAL_SQL_REGEX" || true)"
 
-  if [ -z "$hot_table_matches" ] && [ -z "$breaking_matches" ]; then
+  # #2288: consult the declaration BEFORE the skip below. A migration whose SQL
+  # matches nothing — a plain data UPDATE on a cold table, say — would otherwise
+  # never have its ledger row read at all, and a windowed declaration on exactly
+  # that shape of migration (the #1440 AgeTier backfill flipped rows to a value
+  # the previous colour's client could not deserialize) is the case the value
+  # exists for.
+  ledger_declared_windowed=0
+  if ledger_declares_windowed "$migration_name"; then
+    ledger_declared_windowed=1
+  fi
+
+  if [ -z "$hot_table_matches" ] && [ -z "$breaking_matches" ] &&
+    [ "$ledger_declared_windowed" = "0" ]; then
     continue
   fi
 
   ledger_entry="$(ledger_entry_for_migration "$migration_name" || true)"
-  # Set by validate_ledger_entry when this migration's row declares
-  # old_code_compatible=windowed; reset per migration.
-  ledger_declared_windowed=0
   if [ -z "$ledger_entry" ]; then
     echo "${migration_name}: missing ${MIGRATION_SAFETY_LEDGER} entry for blue/green migration safety review." >&2
     found_failure=1

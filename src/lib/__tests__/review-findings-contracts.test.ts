@@ -1802,6 +1802,71 @@ describe("review finding source/schema contracts", () => {
   );
 
   it(
+    "consults a windowed row even when the SQL matches no pattern at all (#2288)",
+    { timeout: 20000 },
+    () => {
+      // The sharpest form of the case above: a plain data UPDATE on a cold table
+      // trips neither the hot-table nor the breaking regex, so the validator used
+      // to skip the migration before ever opening its ledger row. A windowed
+      // declaration on exactly that shape — the #1440 AgeTier backfill flipped
+      // rows to a value the previous colour's client could not deserialize — must
+      // still demand the override, and its missing lock impact plan must still
+      // fail. A `yes` row on the same SQL stays silent, so the skip is not lost.
+      const declared = createTempMigration(
+        "UPDATE \"PageContent\" SET \"body\" = 'x' WHERE \"id\" = 'y';\n",
+        [
+          LEDGER_HEADER,
+          "20990101000000_test_migration\texpand\tn/a\twindowed\tNOT old-code compatible: the previous colour cannot deserialize the flipped value. Announced maintenance window; cut over promptly.",
+        ].join("\n")
+      );
+
+      try {
+        const blocked = runMigrationSafetyValidator(
+          declared.migrationPath,
+          declared.ledgerPath
+        );
+        const allowed = runMigrationSafetyValidator(
+          declared.migrationPath,
+          declared.ledgerPath,
+          {
+            ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS: "1",
+            BLUE_GREEN_MIGRATION_OVERRIDE_REASON:
+              "maintenance window agreed for the declared windowed data migration",
+          }
+        );
+
+        expect(blocked.status, blocked.stderr).not.toBe(0);
+        expect(blocked.stderr).toContain(
+          "Ledger declares this migration windowed"
+        );
+        expect(allowed.status, allowed.stderr).toBe(0);
+      } finally {
+        rmSync(declared.tempDir, { recursive: true, force: true });
+      }
+
+      const compatible = createTempMigration(
+        "UPDATE \"PageContent\" SET \"body\" = 'x' WHERE \"id\" = 'y';\n",
+        [
+          LEDGER_HEADER,
+          "20990101000000_test_migration\texpand\tn/a\tyes\tCold-table content edit; nothing for the draining colour to trip over.",
+        ].join("\n")
+      );
+
+      try {
+        const result = runMigrationSafetyValidator(
+          compatible.migrationPath,
+          compatible.ledgerPath
+        );
+
+        expect(result.status, result.stderr).toBe(0);
+        expect(result.stderr).not.toContain("windowed");
+      } finally {
+        rmSync(compatible.tempDir, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it(
     "leaves additive enum values and index renames alone (#2288)",
     { timeout: 20000 },
     () => {
