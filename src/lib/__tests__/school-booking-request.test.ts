@@ -305,6 +305,26 @@ function seasonWithRates() {
   ];
 }
 
+// #2338: a season carrying BOTH the per-guest rate rows (so priceSchoolGuests,
+// which always runs, does not throw) AND the flat whole-lodge night rate. The
+// mocked prisma.season.findMany serves both the per-guest lookup and the
+// flat-rate lookup inside approveMemberWholeLodgeRequest.
+function seasonWithFlatRate(flatWholeLodgeNightCents: number | null) {
+  return [
+    {
+      id: "season-1",
+      startDate: new Date("2026-07-01T00:00:00.000Z"),
+      endDate: new Date("2026-09-01T00:00:00.000Z"),
+      type: "WINTER",
+      flatWholeLodgeNightCents,
+      membershipTypeRates: [
+        { membershipTypeId: "type-nonmember", ageTier: "ADULT", pricePerNightCents: 5000 },
+        { membershipTypeId: "type-nonmember", ageTier: "CHILD", pricePerNightCents: 2500 },
+      ],
+    },
+  ];
+}
+
 describe("generateSchoolGuests", () => {
   it("builds named ADULT teachers and numbered School Child rows by tier", () => {
     const guests = generateSchoolGuests({
@@ -2512,5 +2532,117 @@ describe("approveMemberWholeLodgeRequest (#2263)", () => {
       guestCount: 4,
     });
     expect(prisma.booking.create).not.toHaveBeenCalled();
+  });
+
+  // #2338: the officer's per-approval flat whole-lodge pricing choice. The
+  // precedence pinned here is BINDING (owner decision 1 Aug 2026): manual total
+  // override > officer's whole-lodge toggle (when a flat rate covers the stay) >
+  // per-guest. The default is per-guest, so nothing changes silently.
+  describe("flat whole-lodge pricing (#2338)", () => {
+    function bookingData() {
+      return vi.mocked(prisma.booking.create).mock.calls[0][0].data as {
+        totalPriceCents: number;
+        finalPriceCents: number;
+        guests: { create: Array<{ priceCents: number }> };
+      };
+    }
+
+    it("charges nights x the season flat rate and ignores headcount when the officer prices as whole lodge", async () => {
+      // $600/night flat; the stay is 2 nights (CHECK_IN..CHECK_OUT) => $1200,
+      // regardless of how many guests. Deliberately different from the per-guest
+      // total (3 ADULT x 2 nights x $50 = $300) so the branch is unambiguous.
+      mockedSeasonFindMany.mockResolvedValue(seasonWithFlatRate(60000) as never);
+
+      await approveMemberWholeLodgeRequest({
+        requestId: "req-member",
+        adminMemberId: "admin-1",
+        // A headcount that WOULD change the per-guest total (6 x 2 x $50 = $600)
+        // but must not touch the flat total — proving headcount is ignored.
+        override: { priceAsWholeLodge: true, pricedHeadcount: 6 },
+      });
+
+      const data = bookingData();
+      expect(data.totalPriceCents).toBe(120000);
+      expect(data.finalPriceCents).toBe(120000);
+      // Headcount still drives the guest ROWS and capacity; only PRICE ignores it.
+      expect(data.guests.create).toHaveLength(6);
+      // Split across the rows sums EXACTLY to the flat total (no cent invented).
+      const perGuest = data.guests.create.map((guest) => guest.priceCents);
+      expect(perGuest.reduce((sum, cents) => sum + cents, 0)).toBe(120000);
+    });
+
+    it("prices per guest when the officer does NOT tick the toggle, even though a flat rate exists", async () => {
+      mockedSeasonFindMany.mockResolvedValue(seasonWithFlatRate(60000) as never);
+
+      await approveMemberWholeLodgeRequest({
+        requestId: "req-member",
+        adminMemberId: "admin-1",
+        // No priceAsWholeLodge => the default per-guest path (3 ADULT x 2 x $50).
+      });
+
+      expect(bookingData().totalPriceCents).toBe(30000);
+    });
+
+    it("falls back to per-guest when the officer ticks the toggle but the season has no flat rate", async () => {
+      // The safety net: an officer who ticks "price as whole lodge" on a season
+      // with no flat rate set is never charged zero — it prices per guest.
+      mockedSeasonFindMany.mockResolvedValue(seasonWithFlatRate(null) as never);
+
+      await approveMemberWholeLodgeRequest({
+        requestId: "req-member",
+        adminMemberId: "admin-1",
+        override: { priceAsWholeLodge: true },
+      });
+
+      expect(bookingData().totalPriceCents).toBe(30000);
+    });
+
+    it("lets the manual total override beat the whole-lodge flat rate", async () => {
+      mockedSeasonFindMany.mockResolvedValue(seasonWithFlatRate(60000) as never);
+
+      await approveMemberWholeLodgeRequest({
+        requestId: "req-member",
+        adminMemberId: "admin-1",
+        // Both signals present: the manual override must win over the flat rate.
+        override: { priceAsWholeLodge: true, priceOverrideCents: 77_777 },
+      });
+
+      expect(bookingData().totalPriceCents).toBe(77_777);
+    });
+
+    it("charges each night at ITS covering season's flat rate across a season boundary", async () => {
+      // Winter covers 1 Aug (flat $600), summer covers 2 Aug (flat $400); the
+      // 2-night stay must sum $600 + $400 = $1000, not one rate x 2 nights.
+      mockedSeasonFindMany.mockResolvedValue([
+        {
+          id: "season-winter",
+          startDate: new Date("2026-07-01T00:00:00.000Z"),
+          endDate: new Date("2026-08-01T00:00:00.000Z"),
+          type: "WINTER",
+          flatWholeLodgeNightCents: 60000,
+          membershipTypeRates: [
+            { membershipTypeId: "type-nonmember", ageTier: "ADULT", pricePerNightCents: 5000 },
+          ],
+        },
+        {
+          id: "season-summer",
+          startDate: new Date("2026-08-02T00:00:00.000Z"),
+          endDate: new Date("2026-09-01T00:00:00.000Z"),
+          type: "SUMMER",
+          flatWholeLodgeNightCents: 40000,
+          membershipTypeRates: [
+            { membershipTypeId: "type-nonmember", ageTier: "ADULT", pricePerNightCents: 5000 },
+          ],
+        },
+      ] as never);
+
+      await approveMemberWholeLodgeRequest({
+        requestId: "req-member",
+        adminMemberId: "admin-1",
+        override: { priceAsWholeLodge: true },
+      });
+
+      expect(bookingData().totalPriceCents).toBe(100000);
+    });
   });
 });
