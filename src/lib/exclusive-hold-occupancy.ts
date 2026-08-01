@@ -38,6 +38,13 @@ import { prisma } from "@/lib/prisma";
  *   guest. An unknown-occupant row is added to the `occupied` set and to the
  *   room-night composition index and to nothing else, so no `MOVE` and no
  *   `UNALLOCATE` can ever target it — there is no row for the planner to move.
+ *   That protects the ROW; the BED-NIGHT needs one thing more, because a real
+ *   `BedAllocation` row may legitimately sit on the same bed on the same night
+ *   (decision 1 never refuses the overlapping booking, the hold prune only
+ *   sweeps the held booking's own rows, and manual placement stays open) and
+ *   planner occupancy is keyed `bedId:stayDate`. So the planner also pins every
+ *   null-booking bed-night in `state.permanentlyOccupied`: evicting the
+ *   co-located booking releases that booking's claim and never the hold's.
  * - **Conservative for room mix.** A tierless unknown occupant counts as an
  *   ADULT, so auto-placement keeps another booking's unaccompanied minors out
  *   of a held lodge's rooms. That is the intended reading: an unrelated group

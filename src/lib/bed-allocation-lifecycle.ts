@@ -1067,6 +1067,43 @@ async function autoAllocateMissingBedNights({
 
   const displacements = plan.displacements ?? [];
 
+  /**
+   * Which of the planned displacements are still JUSTIFIED by the re-checked
+   * payload (#2317 review)?
+   *
+   * A displacement exists for exactly one reason: it frees the bed-night
+   * `(fromBedId, stayDate)` so a capacity-holding booking can take it. The
+   * write-time re-filters drop payload rows at ROW granularity — a whole-lodge
+   * hold covering part of a stay is the normal case — so a plan can arrive here
+   * with the displacement still in the list and the row it was clearing the way
+   * for already gone. Applying it then destroys an existing (possibly
+   * hand-placed) allocation in exchange for nothing, and writes a
+   * `provisional_displaced` audit entry for a claim that never happened.
+   *
+   * The unit is the DISPLACED BOOKING, not the individual row: #1677 relocates
+   * or unallocates a provisional stay whole and never night-splits it, so its
+   * displacement set is all-or-nothing here too. A booking's set survives when
+   * ANY bed-night its eviction freed is claimed by a surviving payload row.
+   */
+  const justifiedDisplacements = (
+    data: typeof createManyArgs.data,
+  ): BedAllocationDisplacement[] => {
+    if (displacements.length === 0) return [];
+    const claimed = new Set(
+      data.map((row) => `${row.bedId}:${formatDateOnly(row.stayDate)}`),
+    );
+    const justifiedBookingIds = new Set(
+      displacements
+        .filter((displacement) =>
+          claimed.has(`${displacement.fromBedId}:${displacement.stayDate}`),
+        )
+        .map((displacement) => displacement.bookingId),
+    );
+    return displacements.filter((displacement) =>
+      justifiedBookingIds.has(displacement.bookingId),
+    );
+  };
+
   // Write-time re-check (#2285 review): the planner's booking read happened
   // several queries ago and this reconcile is often called post-commit and
   // unlocked, so a hold SET / cancel / soft delete may have landed in between.
@@ -1143,9 +1180,27 @@ async function autoAllocateMissingBedNights({
     // for became held/cancelled/deleted since the read, we must not displace
     // anyone else's provisional rows on its behalf either.
     const data = await recheckPayload(client);
-    if (data.length === 0) return { count: 0, applied: false };
+    if (data.length === 0) {
+      return { count: 0, applied: false, appliedDisplacements: [] };
+    }
 
-    for (const displacement of displacements) {
+    // Only the displacements the re-checked payload still needs (see
+    // `justifiedDisplacements`). A row dropped by a write-time re-filter takes
+    // its displacement down with it rather than leaving a provisional booking
+    // evicted for a bed nobody ends up in.
+    const applicable = justifiedDisplacements(data);
+    if (applicable.length < displacements.length) {
+      logger.info(
+        {
+          bookingId,
+          plannedDisplacements: displacements.length,
+          appliedDisplacements: applicable.length,
+        },
+        "Bed allocation write-time re-check dropped displacements whose freed bed-nights are no longer claimed by the payload",
+      );
+    }
+
+    for (const displacement of applicable) {
       const where = {
         bookingGuestId: displacement.bookingGuestId,
         stayDate: new Date(`${displacement.stayDate}T00:00:00.000Z`),
@@ -1167,7 +1222,11 @@ async function autoAllocateMissingBedNights({
       ...createManyArgs,
       data,
     });
-    return { count: created.count, applied: true };
+    return {
+      count: created.count,
+      applied: true,
+      appliedDisplacements: applicable,
+    };
   };
 
   // Apply atomically: a failed createMany after an UNALLOCATE must never
@@ -1177,7 +1236,11 @@ async function autoAllocateMissingBedNights({
   const transactionalDb = db as typeof prisma;
   const canOpenTransaction = typeof transactionalDb.$transaction === "function";
 
-  let created: { count: number; applied: boolean };
+  let created: {
+    count: number;
+    applied: boolean;
+    appliedDisplacements: BedAllocationDisplacement[];
+  };
   if (canOpenTransaction) {
     // Which lodges does this write touch? A scoped reconcile locks exactly its
     // lodge; an unscoped (pre-backfill / club-wide) one locks every lodge whose
@@ -1206,11 +1269,11 @@ async function autoAllocateMissingBedNights({
   // audit-write failure can never roll back a committed displacement, and every
   // committed displacement always attempts its audit. Best-effort (swallowed).
   // Skipped entirely when the write-time re-check abandoned the plan (#2285
-  // review): nothing was displaced, so nothing may be audited as displaced.
-  if (created.applied) {
-    for (const displacement of displacements) {
-      await recordBedDisplacementAudit(db, displacement);
-    }
+  // review), and narrowed to the displacements that were actually applied
+  // (#2317 review): a displacement whose freed bed-night the payload no longer
+  // claims never happened, so it must never be audited as though it had.
+  for (const displacement of created.appliedDisplacements) {
+    await recordBedDisplacementAudit(db, displacement);
   }
 
   return created.count;

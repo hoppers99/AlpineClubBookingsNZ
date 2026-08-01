@@ -47,6 +47,7 @@ import {
   getBedAllocationDashboard,
   parseBedAllocationDateRange,
 } from "@/lib/admin-bed-allocation";
+import { buildFirstFitBedAllocationPlan } from "@/lib/bed-allocation";
 import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
 import { getLodgeHeldNights } from "@/lib/capacity";
 import {
@@ -395,6 +396,279 @@ describe("the synthesised rows are unattributed and non-displaceable", () => {
       ),
     ).toEqual([]);
   });
+
+  /**
+   * The sharp edge under "non-displaceable" (#2317 review, HIGH).
+   *
+   * "There is no row for the planner to move" protects the hold ROW. It does
+   * NOT protect the hold's BED-NIGHT, because a real `BedAllocation` row can
+   * legitimately sit on the same bed on the same night: ADR-001 decision 1
+   * never refuses an overlapping booking, setting a hold prunes only the HELD
+   * booking's own rows, and manual placement is deliberately left open. The
+   * planner keys occupancy as `bedId:stayDate`, so the synthesised row and the
+   * real row are ONE entry — and #1677 whole-booking displacement deletes that
+   * entry when it evicts the real row.
+   *
+   * These tests run the LIFECYCLE planner shape (`prioritizeCapacityHolding`,
+   * the only planner that displaces) over exactly that world.
+   */
+  describe("a co-located provisional row cannot be evicted into the hold's bed", () => {
+    const HELD_NIGHT = "2026-07-01";
+    const PLANNER_ROOM = {
+      id: "room-a",
+      name: "Kea",
+      sortOrder: 1,
+      active: true,
+      lodgeId: LODGE,
+      beds: [1, 2].map((n) => ({
+        id: `bed-a${n}`,
+        roomId: "room-a",
+        name: `A${n}`,
+        sortOrder: n,
+        active: true,
+      })),
+    };
+
+    /** The hold's synthesised occupancy: both beds, the one held night. */
+    const heldBedNights = wholeLodgeHoldOccupiedBedNightsForPlanner(
+      toWholeLodgeHoldSpans([
+        holdBooking({ checkOut: parseDateOnly("2026-07-02") }),
+      ]),
+      [PLANNER_ROOM],
+      [parseDateOnly(HELD_NIGHT)],
+    );
+
+    /**
+     * A provisional booking's REAL row on one of the held beds — the officer
+     * kept it (decision 1) or placed it by hand, and the hold prune never
+     * touched it because it belongs to a different booking.
+     */
+    const provisionalRow = {
+      bedId: "bed-a1",
+      roomId: "room-a",
+      stayDate: HELD_NIGHT,
+      bookingId: "booking-prov",
+      bookingGuestId: "guest-prov",
+      ageTier: "ADULT" as const,
+      approvedAt: null,
+      bookingCreatedAt: new Date("2026-06-20T00:00:00.000Z"),
+      holdsCapacity: false,
+      stayExtendsBeyondWindow: false,
+    };
+
+    /** The capacity-holding booking with an unplaced adult on the held night. */
+    const incoming = {
+      id: "booking-ord",
+      createdAt: new Date("2026-06-01T00:00:00.000Z"),
+      requestedRoomId: null,
+      lodgeId: LODGE,
+      holdsCapacity: true,
+      guests: [
+        {
+          id: "guest-ord",
+          bookingId: "booking-ord",
+          ageTier: "ADULT" as const,
+          stayStart: parseDateOnly(HELD_NIGHT),
+          stayEnd: parseDateOnly("2026-07-02"),
+        },
+      ],
+    };
+
+    it("leaves the guest unallocated instead of displacing into a held bed", () => {
+      const plan = buildFirstFitBedAllocationPlan({
+        enabled: true,
+        prioritizeCapacityHolding: true,
+        rooms: [PLANNER_ROOM],
+        bookings: [incoming],
+        occupiedBedNights: [...heldBedNights, provisionalRow],
+      });
+
+      // Nothing placed: every bed of the lodge is the held group's that night.
+      expect(plan.allocations).toEqual([]);
+      // And in particular NOT on the bed the provisional booking shares with
+      // the hold — the mutation this test exists for.
+      expect(plan.allocations).not.toContainEqual(
+        expect.objectContaining({ bedId: "bed-a1", stayDate: HELD_NIGHT }),
+      );
+      // No eviction: the provisional booking keeps its bed, and no
+      // `provisional_displaced` audit will be written for a claim that never
+      // happened.
+      expect(plan.displacements).toBeUndefined();
+      expect(plan.unallocatedGuestNights).toEqual([
+        {
+          bookingId: "booking-ord",
+          bookingGuestId: "guest-ord",
+          stayDate: HELD_NIGHT,
+          reason: "NO_BED_AVAILABLE",
+        },
+      ]);
+    });
+
+    it("still displaces that same provisional row when the hold is NOT there", () => {
+      // The control: without the synthesised occupancy the #1677 displacement
+      // is exactly what should happen, so the test above is pinning the hold
+      // and not merely a planner that never displaces.
+      const plan = buildFirstFitBedAllocationPlan({
+        enabled: true,
+        prioritizeCapacityHolding: true,
+        rooms: [PLANNER_ROOM],
+        bookings: [incoming],
+        occupiedBedNights: [
+          provisionalRow,
+          // Fill the other bed with a non-displaceable occupant so the only
+          // way in is through the provisional row.
+          { ...provisionalRow, bedId: "bed-a2", bookingId: null, bookingGuestId: null },
+        ],
+      });
+
+      expect(plan.allocations).toEqual([
+        expect.objectContaining({ bedId: "bed-a1", stayDate: HELD_NIGHT }),
+      ]);
+      expect(plan.displacements).toEqual([
+        expect.objectContaining({
+          type: "UNALLOCATE",
+          bookingId: "booking-prov",
+          stayDate: HELD_NIGHT,
+        }),
+      ]);
+    });
+
+    it("never sizes a whole-stay eviction off rows that share a held bed-night", () => {
+      // Phase 2 arithmetic in its own right. Every bed of the room is the
+      // hold's, and the provisional booking has a real row on BOTH of them.
+      // Counting those rows as beds an eviction would free makes the room look
+      // feasible; the party is then "placed" into beds that are still occupied,
+      // so nothing is written, nothing is recorded as unallocated, and the
+      // provisional booking is displaced for a placement that never happened.
+      const plan = buildFirstFitBedAllocationPlan({
+        enabled: true,
+        prioritizeCapacityHolding: true,
+        rooms: [PLANNER_ROOM],
+        bookings: [
+          {
+            ...incoming,
+            guests: [1, 2].map((n) => ({
+              id: `guest-ord-${n}`,
+              bookingId: "booking-ord",
+              ageTier: "ADULT" as const,
+              stayStart: parseDateOnly(HELD_NIGHT),
+              stayEnd: parseDateOnly("2026-07-02"),
+            })),
+          },
+        ],
+        occupiedBedNights: [
+          ...heldBedNights,
+          provisionalRow,
+          {
+            ...provisionalRow,
+            bedId: "bed-a2",
+            bookingGuestId: "guest-prov-2",
+          },
+        ],
+      });
+
+      expect(plan.allocations).toEqual([]);
+      expect(plan.displacements).toBeUndefined();
+      // Both guest-nights are reported, not silently swallowed.
+      expect(
+        plan.unallocatedGuestNights.map((row) => row.bookingGuestId).sort(),
+      ).toEqual(["guest-ord-1", "guest-ord-2"]);
+    });
+
+    it("does not count a co-located row as freeable when sizing a whole-stay eviction", () => {
+      // The Phase-2 path (`planEvictionsForRoom`) reaches the same conclusion
+      // by different arithmetic: crediting the provisional row against the
+      // night's shortfall would make the room look feasible and place the
+      // party into beds that are not free.
+      const plan = buildFirstFitBedAllocationPlan({
+        enabled: true,
+        prioritizeCapacityHolding: true,
+        rooms: [PLANNER_ROOM],
+        bookings: [
+          {
+            ...incoming,
+            guests: [
+              incoming.guests[0],
+              {
+                id: "guest-ord-2",
+                bookingId: "booking-ord",
+                ageTier: "ADULT" as const,
+                stayStart: parseDateOnly(HELD_NIGHT),
+                stayEnd: parseDateOnly("2026-07-02"),
+              },
+            ],
+          },
+        ],
+        occupiedBedNights: [...heldBedNights, provisionalRow],
+      });
+
+      expect(plan.allocations).toEqual([]);
+      expect(plan.displacements).toBeUndefined();
+    });
+
+    it("keeps the held bed-night occupied when the co-located booking is evicted for a DIFFERENT night", () => {
+      // The eviction here is entirely legitimate — it is driven by the free
+      // night, where the provisional booking really is in the way. What must
+      // not follow is that freeing that booking's rows also releases its
+      // bed-night on the HELD night, which it shares with the hold. #1677
+      // evicts a provisional stay whole, so this is the ordinary shape, not an
+      // exotic one.
+      const freeNight = "2026-07-02";
+      const plan = buildFirstFitBedAllocationPlan({
+        enabled: true,
+        prioritizeCapacityHolding: true,
+        rooms: [PLANNER_ROOM],
+        bookings: [
+          // Planned first: two adults on the free night, which the provisional
+          // booking's row on bed-a1 blocks.
+          {
+            ...incoming,
+            id: "booking-free-night",
+            guests: [1, 2].map((n) => ({
+              id: `guest-free-${n}`,
+              bookingId: "booking-free-night",
+              ageTier: "ADULT" as const,
+              stayStart: parseDateOnly(freeNight),
+              stayEnd: parseDateOnly("2026-07-03"),
+            })),
+          },
+          // Planned second: one adult on the HELD night. The only bed that
+          // could possibly be offered to them is the one the eviction above
+          // touched.
+          { ...incoming, createdAt: new Date("2026-06-02T00:00:00.000Z") },
+        ],
+        occupiedBedNights: [
+          ...heldBedNights,
+          provisionalRow,
+          { ...provisionalRow, stayDate: freeNight },
+        ],
+      });
+
+      // The free night is allocated (both beds) and the provisional booking is
+      // displaced for it...
+      expect(
+        plan.allocations
+          .filter((row) => row.stayDate === freeNight)
+          .map((row) => row.bedId)
+          .sort(),
+      ).toEqual(["bed-a1", "bed-a2"]);
+      expect(plan.displacements).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ bookingId: "booking-prov" }),
+        ]),
+      );
+      // ...but the held night gained nothing from it.
+      expect(
+        plan.allocations.filter((row) => row.stayDate === HELD_NIGHT),
+      ).toEqual([]);
+      expect(
+        plan.unallocatedGuestNights.map((row) => ({
+          stayDate: row.stayDate,
+          reason: row.reason,
+        })),
+      ).toEqual([{ stayDate: HELD_NIGHT, reason: "NO_BED_AVAILABLE" }]);
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -697,6 +971,237 @@ describe("planner 2 — the lifecycle auto-allocator", () => {
     });
 
     expect(writtenNights(db)).toEqual(["2026-07-03"]);
+  });
+
+  // -------------------------------------------------------------------------
+  // A provisional booking with a REAL row on a bed the hold also claims. This
+  // is not an edge case: ADR-001 decision 1 never refuses the overlapping
+  // booking, setting a hold prunes only the HELD booking's own rows, and manual
+  // placement is deliberately left open.
+  // -------------------------------------------------------------------------
+  /** An existing `BedAllocation` row for a displaceable provisional booking. */
+  function provisionalAllocation(overrides: AnyRow = {}) {
+    return {
+      bedId: "bed-a1",
+      roomId: "room-a",
+      bookingId: "booking-prov",
+      bookingGuestId: "guest-prov",
+      stayDate: parseDateOnly("2026-07-01"),
+      approvedAt: null,
+      bookingGuest: { ageTier: "ADULT" },
+      booking: {
+        status: "PENDING",
+        createdAt: new Date("2026-06-20T00:00:00.000Z"),
+        checkIn: parseDateOnly("2026-07-01"),
+        checkOut: parseDateOnly("2026-07-02"),
+        originBookingRequest: null,
+        adminCapacityHoldAt: null,
+      },
+      ...overrides,
+    };
+  }
+
+  /** The same booking as the planner's `bookings` load sees it. */
+  function provisionalBooking(overrides: AnyRow = {}) {
+    return ordinaryBooking({
+      id: "booking-prov",
+      status: "PENDING",
+      createdAt: new Date("2026-06-20T00:00:00.000Z"),
+      checkIn: parseDateOnly("2026-07-01"),
+      checkOut: parseDateOnly("2026-07-02"),
+      member: { firstName: "Kit", lastName: "Provisional", email: "k@x.nz" },
+      guests: [
+        guest({
+          id: "guest-prov",
+          bookingId: "booking-prov",
+          stayStart: parseDateOnly("2026-07-01"),
+          stayEnd: parseDateOnly("2026-07-02"),
+        }),
+      ],
+      ...overrides,
+    });
+  }
+
+  it("does not displace a provisional row off a held bed to place a capacity-holding adult", async () => {
+    // The hold takes both beds on 07-01 and 07-02; the provisional booking sits
+    // on one of them. Displacing it would free NOTHING — the hold still has the
+    // bed — so the guest must stay unallocated, the provisional booking must
+    // keep its row, and no `provisional_displaced` audit may be written for a
+    // claim that never happened.
+    const db = buildLifecycleDb([
+      ordinaryBooking(),
+      holdBooking(),
+      provisionalBooking(),
+    ]);
+    db.bedAllocation.findMany = vi.fn().mockResolvedValue([
+      provisionalAllocation(),
+    ]);
+
+    await reconcileBedAllocationsForBooking({
+      bookingId: "booking-ord",
+      db: db as never,
+    });
+
+    expect(writtenNights(db)).toEqual(["2026-07-03"]);
+    expect(db.bedAllocation.updateMany).not.toHaveBeenCalled();
+    expect(db.bedAllocation.deleteMany).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ bookingGuestId: "guest-prov" }),
+      }),
+    );
+    expect(db.auditLog.create).not.toHaveBeenCalled();
+  });
+
+  it("does not apply a displacement whose freed bed-night the re-checked payload no longer claims", async () => {
+    // A hold that commits between the plan and the write, covering only PART of
+    // the reconciled stay — the normal shape, since a hold and a stay rarely
+    // line up. The planner displaced a provisional booking to take 07-02; the
+    // re-filter then drops that very row. Applying the displacement anyway
+    // would delete the provisional booking's bed for an allocation that is
+    // never written, and audit it as though a capacity-holding booking had
+    // claimed the bed.
+    const stay = {
+      checkIn: parseDateOnly("2026-07-01"),
+      checkOut: parseDateOnly("2026-07-03"),
+    };
+    const twoAdults = ordinaryBooking({
+      ...stay,
+      guests: [1, 2].map((n) =>
+        guest({
+          id: `guest-ord-${n}`,
+          stayStart: stay.checkIn,
+          stayEnd: stay.checkOut,
+        }),
+      ),
+    });
+    // Blocks the second night only, on one of the two beds.
+    const blocker = provisionalBooking({
+      checkIn: parseDateOnly("2026-07-02"),
+      checkOut: parseDateOnly("2026-07-03"),
+      guests: [
+        guest({
+          id: "guest-prov",
+          bookingId: "booking-prov",
+          stayStart: parseDateOnly("2026-07-02"),
+          stayEnd: parseDateOnly("2026-07-03"),
+        }),
+      ],
+    });
+    // The hold arrives late and covers 07-02 alone.
+    const lateHold = holdBooking({
+      checkIn: parseDateOnly("2026-07-02"),
+      checkOut: parseDateOnly("2026-07-03"),
+    });
+
+    const db = buildLifecycleDb([twoAdults, blocker]);
+    db.bedAllocation.findMany = vi.fn().mockResolvedValue([
+      provisionalAllocation({
+        stayDate: parseDateOnly("2026-07-02"),
+        booking: {
+          ...provisionalAllocation().booking,
+          checkIn: parseDateOnly("2026-07-02"),
+          checkOut: parseDateOnly("2026-07-03"),
+        },
+      }),
+    ]);
+    let holdVisible = false;
+    db.booking.findMany = vi.fn(async ({ where, select }: AnyRow) => {
+      if (select?.checkIn && !select?.guests) {
+        // Invisible while planning, live by the time the write re-checks.
+        const rows = holdVisible ? [lateHold] : [];
+        holdVisible = true;
+        return rows.filter((row) => matchesWhere(row, where));
+      }
+      const matched = [twoAdults, blocker].filter((row) =>
+        matchesWhere(row, where),
+      );
+      if (!select?.guests) {
+        return matched.map((row) => ({
+          id: row.id,
+          status: row.status,
+          deletedAt: row.deletedAt ?? null,
+          wholeLodgeHold: row.wholeLodgeHold,
+        }));
+      }
+      return matched;
+    });
+
+    await reconcileBedAllocationsForBooking({
+      bookingId: "booking-ord",
+      db: db as never,
+    });
+
+    // The free night is still written for both guests...
+    expect(writtenNights(db)).toEqual(["2026-07-01", "2026-07-01"]);
+    // ...and the provisional booking keeps the bed it was going to lose.
+    expect(db.bedAllocation.deleteMany).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ bookingGuestId: "guest-prov" }),
+      }),
+    );
+    expect(db.bedAllocation.updateMany).not.toHaveBeenCalled();
+    // No audit entry claiming a displacement that never happened.
+    expect(db.auditLog.create).not.toHaveBeenCalled();
+  });
+
+  it("still applies a displacement whose freed bed-night the payload DOES claim", async () => {
+    // The control for the filter above: with no late hold, the same plan
+    // displaces the provisional booking and audits it, exactly as #1387 says.
+    const stay = {
+      checkIn: parseDateOnly("2026-07-01"),
+      checkOut: parseDateOnly("2026-07-03"),
+    };
+    const twoAdults = ordinaryBooking({
+      ...stay,
+      guests: [1, 2].map((n) =>
+        guest({
+          id: `guest-ord-${n}`,
+          stayStart: stay.checkIn,
+          stayEnd: stay.checkOut,
+        }),
+      ),
+    });
+    const blocker = provisionalBooking({
+      checkIn: parseDateOnly("2026-07-02"),
+      checkOut: parseDateOnly("2026-07-03"),
+      guests: [
+        guest({
+          id: "guest-prov",
+          bookingId: "booking-prov",
+          stayStart: parseDateOnly("2026-07-02"),
+          stayEnd: parseDateOnly("2026-07-03"),
+        }),
+      ],
+    });
+    const db = buildLifecycleDb([twoAdults, blocker]);
+    db.bedAllocation.findMany = vi.fn().mockResolvedValue([
+      provisionalAllocation({
+        stayDate: parseDateOnly("2026-07-02"),
+        booking: {
+          ...provisionalAllocation().booking,
+          checkIn: parseDateOnly("2026-07-02"),
+          checkOut: parseDateOnly("2026-07-03"),
+        },
+      }),
+    ]);
+
+    await reconcileBedAllocationsForBooking({
+      bookingId: "booking-ord",
+      db: db as never,
+    });
+
+    expect(writtenNights(db)).toEqual([
+      "2026-07-01",
+      "2026-07-01",
+      "2026-07-02",
+      "2026-07-02",
+    ]);
+    expect(db.bedAllocation.deleteMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ bookingGuestId: "guest-prov" }),
+      }),
+    );
+    expect(db.auditLog.create).toHaveBeenCalled();
   });
 
   it("write-time re-check: a hold committing after the plan is built writes nothing on its nights", async () => {
