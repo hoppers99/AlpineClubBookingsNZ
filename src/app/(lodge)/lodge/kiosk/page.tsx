@@ -6,6 +6,7 @@ import { KioskLodgeInstructions } from "@/components/kiosk-lodge-instructions";
 import { useClubIdentity } from "@/components/club-identity-provider";
 import type { KioskTier } from "@/lib/kiosk-access";
 import { APP_LOCALE, APP_TIME_ZONE } from "@/config/operational";
+import { parseDateOnly, todayDateOnlyForTimeZone } from "@/lib/date-only";
 import {
   addDaysToDateKey,
   getWeekStartDateKey,
@@ -74,12 +75,20 @@ interface AccessInfo {
 
 type KioskView = "week" | "day";
 
-function formatDate(date: Date): string {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
+/*
+  #2474 — a lodge night on this page is a date-only KEY ("2026-04-15"), never a
+  `Date`. Every "today" comes from `todayDateOnlyForTimeZone()` (the club's day)
+  and every step comes from `addDaysToDateKey` (UTC date-only arithmetic), so
+  the kiosk agrees with the server guards it calls and with the week strip it
+  renders.
+
+  What this replaced: a local `formatDate(new Date())` that read the DISPLAY
+  DEVICE's calendar day. A kiosk tablet left on a foreign zone — or simply set
+  wrong, which is the common case on a lodge device nobody administers — opened
+  on the wrong night, and the day-stepping helpers round-tripped through
+  `new Date(key + "T00:00:00")`, a LOCAL-midnight instant, so the same device
+  could also step across a DST boundary onto the wrong day.
+*/
 
 // Not one of the shared helpers: the kiosk header names the DAY OF THE WEEK in
 // full ("Wednesday, 15 April 2026") because that is what a hut leader scans for.
@@ -92,9 +101,10 @@ const LONG_WEEKDAY_DATE = new Intl.DateTimeFormat(APP_LOCALE, {
 });
 
 function displayDate(dateStr: string): string {
-  // Date-only lodge night: parse at UTC midnight so the club-time formatter
-  // cannot roll it back a day for a viewer outside New Zealand.
-  return LONG_WEEKDAY_DATE.format(new Date(dateStr + "T00:00:00Z"));
+  // Date-only lodge night: parse at UTC midnight (the repo's date-only seam) so
+  // the club-time formatter cannot roll it back a day for a viewer outside
+  // New Zealand.
+  return LONG_WEEKDAY_DATE.format(parseDateOnly(dateStr));
 }
 
 function formatArrivalTime(time: string): string {
@@ -131,10 +141,10 @@ export default function KioskPage() {
     },
     [previewAccount]
   );
-  const [date, setDate] = useState(() => formatDate(new Date()));
+  const [date, setDate] = useState(() => todayDateOnlyForTimeZone());
   const [view, setView] = useState<KioskView>("week");
   const [weekStart, setWeekStart] = useState(() =>
-    getWeekStartDateKey(formatDate(new Date()))
+    getWeekStartDateKey(todayDateOnlyForTimeZone())
   );
   const [weekDays, setWeekDays] = useState<KioskWeekDaySummary[]>([]);
   const [bookings, setBookings] = useState<BookingGroup[]>([]);
@@ -273,22 +283,16 @@ export default function KioskPage() {
 
   const canNavigateBack = () => {
     if (!access?.dateRange) return true;
-    const prev = new Date(date + "T00:00:00");
-    prev.setDate(prev.getDate() - 1);
-    return formatDate(prev) >= access.dateRange.minDate;
+    return addDaysToDateKey(date, -1) >= access.dateRange.minDate;
   };
 
   const canNavigateForward = () => {
     if (!access?.dateRange) return true;
-    const next = new Date(date + "T00:00:00");
-    next.setDate(next.getDate() + 1);
-    return formatDate(next) <= access.dateRange.maxDate;
+    return addDaysToDateKey(date, 1) <= access.dateRange.maxDate;
   };
 
   const changeDate = (delta: number) => {
-    const d = new Date(date + "T00:00:00");
-    d.setDate(d.getDate() + delta);
-    const newDate = formatDate(d);
+    const newDate = addDaysToDateKey(date, delta);
 
     // Enforce date range for restricted tiers
     if (access?.dateRange) {
@@ -326,7 +330,7 @@ export default function KioskPage() {
   };
 
   const showToday = () => {
-    const today = formatDate(new Date());
+    const today = todayDateOnlyForTimeZone();
     setDate(today);
     setWeekStart(getWeekStartDateKey(today));
     setView("week");
@@ -712,7 +716,7 @@ export default function KioskPage() {
         <KioskWeekView
           days={weekDays}
           weekStart={weekStart}
-          todayDate={formatDate(new Date())}
+          todayDate={todayDateOnlyForTimeZone()}
           selectedDate={date}
           lodgeName={access?.lodgeName}
           readOnly={effectiveTier === "staying-guest" || effectiveTier === "none"}

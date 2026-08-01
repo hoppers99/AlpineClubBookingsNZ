@@ -69,6 +69,7 @@ module is on.
 | "Lodge account not found. Run the database seed to create it." | The kiosk account row is missing | Seed the database, or create the account (multi-lodge) |
 | A kiosk account is flagged **Ambiguous** | It has staff access at more than one lodge | Set **Operates lodge** to a single lodge and save |
 | A kiosk falls back to the wrong lodge | The account is not bound to a lodge | Bind it to its lodge under **Operates lodge** (multi-lodge) |
+| The kiosk tablet's clock or time zone is set wrong | The device clock is separate from the club's calendar | Nothing to change for the kiosk: it takes "today" from the club's New Zealand day, so the week strip, the **Today** button and the night it opens on stay correct. Fix the device clock only if people read the time off the tablet itself |
 
 ## Related links
 
