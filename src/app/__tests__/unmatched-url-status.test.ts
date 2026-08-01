@@ -32,9 +32,10 @@ import { autoImplementMethods } from "next/dist/server/route-modules/app-route/h
  * above it), so misses would 404 while published pages still rendered the
  * holding screen, and an anonymous visitor could read off an unlaunched site's
  * page list. #2420 has since answered the wider question by putting a 503 gate
- * in `src/proxy.ts` ahead of the render; these cases stay because the shapes
- * that skip the proxy matcher (RSC prefetches) still reach this route, and the
- * oracle must not open for them either.
+ * in `src/proxy.ts` ahead of the render; these cases stay because a shape the
+ * gate does not CLAIM still reaches this route — an asset-extension URL that no
+ * route serves, which the gate refuses on purpose — and the oracle must not open
+ * for it either.
  */
 
 const mocks = vi.hoisted(() => {
@@ -217,11 +218,23 @@ describe("a published CMS page still answers 200", () => {
  * Stricter how: the guard used to consult the setup state only INSIDE
  * `if (!page)`, and that half-measure was the same oracle inverted. Pre-setup a
  * miss returned the bare club name while a HIT still returned the page's own
- * title and header text — and a request reaches this code by carrying
- * `Purpose: prefetch`, an ordinary header anyone can set, which the proxy
- * matcher skips. Suppressing `{children}` in the layout does not help, because
- * next@16.2.11 builds the document head as a separate flight slot from the
- * page's seed data, so metadata is produced even when the component never runs.
+ * title and header text — and a request could reach this code by skipping the
+ * proxy matcher's prefetch exemption. Suppressing `{children}` in the layout does
+ * not help, because next@16.2.11 builds the document head as a separate flight
+ * slot from the page's seed data, so metadata is produced even when the component
+ * never runs.
+ *
+ * #2404 CLOSED the header route in — the matcher's prefetch exemption is gone
+ * outright, so no header a caller can set skips the proxy — and every case below
+ * still stands, because the gate has a second precondition. It answers only for
+ * a path `isPublicWebsitePath()` claims, and asset-extension paths are refused
+ * on purpose: the holding screen is an HTML document and must never answer a
+ * request for an image. A URL of that shape that no route claims still reaches
+ * this code with no gate in front of it — `/API/x.png`, which the asset
+ * rewrites exclude along with the rest of `/api` and which then matches no
+ * `/api` route either, because Next's route table is case-sensitive. The point
+ * of this suite is that the answer must be
+ * uniform whether or not the gate ran.
  *
  * The property is therefore UNIFORMITY, not "misses are hidden": pre-setup,
  * hit, miss and unpublished must be indistinguishable. Full coverage of that
@@ -376,6 +389,24 @@ describe("unmatched /api URLs answer JSON, not the website's HTML", () => {
         unmatched.headers.get("content-type"),
       );
       await expect(gated!.text()).resolves.toBe(await unmatched.text());
+    });
+
+    it("carries no `vary` of its own — the known, accepted difference", () => {
+      // Recorded as a measurement rather than left to prose, because the doc
+      // (`docs/SECURITY-ATTACK-SURFACE.md`, "known and accepted") states it and
+      // a claim in that file has to be checkable.
+      //
+      // The gate answers from middleware and the reply never enters the render
+      // pipeline. With the module ON the same address is served by an app route
+      // handler, and `base-server.js`'s `setVaryHeader` appends
+      // `vary: RSC, Next-Router-State-Tree, …` for every app path before any
+      // handler runs — so the module-ON reply carries a `vary` this one does
+      // not. Only the middleware half is measurable here; the route-handler half
+      // is traced through the framework, not asserted, and that asymmetry is
+      // stated in the doc rather than papered over.
+      const gated = getFeatureFlagBlockResponse("/api/chores/zzz", choresOff);
+
+      expect(gated!.headers.get("vary")).toBeNull();
     });
 
     it.each(["PROPFIND", "TRACE", "MKCOL"])(

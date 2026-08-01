@@ -101,12 +101,18 @@ describe("Display templates — empty state names the cause (#2247)", () => {
     expect(screen.queryByText(/not even the built-in boards/i)).toBeNull();
   });
 
-  it("a 404 is reported as the module being off, not an empty database", async () => {
+  it("a 404 names BOTH causes, because the page cannot tell them apart", async () => {
+    // `/api/admin/display/*` is module-gated, and a gated route answers an
+    // anonymous caller with the same 404 the module gate sends, so that one
+    // anonymous probe cannot read which optional modules a club runs. A 404
+    // here therefore means either the module is off or the sign-in expired, and
+    // the copy has to offer both rather than asserting the one it cannot check.
     installFetch(404);
     render(<AdminDisplayTemplatesPage />);
 
-    await screen.findByText(/module looks switched off/i);
+    await screen.findByText(/sign-in may have expired/i);
     expect(screen.getByText(/Admin → Setup → Modules/)).toBeDefined();
+    expect(screen.getByText(/Sign in again/)).toBeDefined();
     expect(screen.queryByText(/not even the built-in boards/i)).toBeNull();
   });
 

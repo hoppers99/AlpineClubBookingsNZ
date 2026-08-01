@@ -16,10 +16,11 @@ export default async function AdminCalendarPage() {
   const session = await auth();
   if (!session?.user) redirect("/login");
 
-  // LOAD-BEARING, not belt-and-braces (#2241): the proxy's page matcher carries
-  // `missing: [next-router-prefetch]`, so a Next router prefetch of
-  // /admin/calendar never reaches the feature-route gate. This guard is what
-  // makes the module switch real for a prefetched render.
+  // Kept, not belt-and-braces (#2241): the proxy's feature-route gate enforces
+  // the MODULE FLAG only — `FEATURE_ROUTE_RULES` in
+  // `src/config/feature-routes.ts` lists route prefixes and never reads the
+  // account type — so the ORG half of this condition is enforced nowhere else
+  // on this path.
   //
   // The organisation exclusion is here for symmetry with the member page rather
   // than because an ORG account can reach this route today — the admin layout's

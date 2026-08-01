@@ -15,6 +15,7 @@ import {
   type AdminAccessRequirement,
   type AdminPermissionMatrix,
 } from "@/lib/admin-permissions";
+import { getRequiredFeaturesForPath } from "@/config/feature-routes";
 import {
   REQUEST_METHOD_HEADER,
   REQUEST_PATH_HEADER,
@@ -64,6 +65,71 @@ function unauthorisedResponse() {
   return NextResponse.json({ error: "Unauthorised" }, { status: 401 });
 }
 
+/**
+ * The reply an anonymous caller gets from a MODULE-GATED route — byte-identical
+ * to what `getFeatureFlagBlockResponse()` in `src/proxy.ts` sends when the
+ * module is switched off (#2404 re-review, owner decision 1 Aug 2026).
+ *
+ * Without this, one anonymous request read a club's configuration off any gated
+ * `/api` address: `401` meant "the module is on and something asked me to sign
+ * in", `404` meant "the module is off". Answering both with the same frozen
+ * 404 removes that difference on the ~121 gated routes that authenticate
+ * through the two guards below.
+ *
+ * Deliberately narrow. It applies ONLY when there is no session at all, so a
+ * signed-in caller still gets the honest `403` for a permission or account
+ * problem and nothing about ordinary admin work changes. Ungated routes keep
+ * their `401` exactly, because a 404 there would be a lie with no secret behind
+ * it. And a route that passes its own `unauthenticatedResponse` keeps that: a
+ * login redirect or a deliberate 403 is a contract someone chose.
+ */
+function moduleGatedNotFoundResponse() {
+  return NextResponse.json({ error: "Not found" }, { status: 404 });
+}
+
+/**
+ * Whether the path this request is being served under is module-gated.
+ *
+ * Reads the same `REQUEST_PATH_HEADER` the admin permission lookup already
+ * trusts. It is trustworthy here for a reason worth stating rather than
+ * assuming: `src/proxy.ts` OVERWRITES that header on every request it runs on,
+ * and it necessarily runs on every gated path (a gated path the matcher misses
+ * has a dead gate, which `csp-proxy.test.ts` fails on). So on a gated path the
+ * value is the framework's, not the caller's. On an UNGATED path the proxy may
+ * not run and a caller can supply any value it likes — but the only thing that
+ * buys is turning its own `401` into a `404`, which tells the caller nothing it
+ * did not already know. The lie can only go the harmless way.
+ *
+ * Fails OPEN (returns false, so the ordinary 401 is used) when the header is
+ * absent or `headers()` throws, because a wrong 404 on an ungated route would
+ * hide a real sign-in problem from a real member.
+ */
+async function isModuleGatedRequestPath(): Promise<boolean> {
+  try {
+    const requestHeaders = await headers();
+    const value = requestHeaders.get(REQUEST_PATH_HEADER);
+    if (!value) return false;
+
+    // The header carries `${pathname}${search}`; the route rules match on the
+    // pathname alone.
+    const pathname = value.split("?")[0];
+    return getRequiredFeaturesForPath(pathname).length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/** The anonymous-caller reply for a route, module-gated or not. */
+async function unauthenticatedResponseFor(
+  fallback: () => NextResponse,
+  override?: () => NextResponse,
+): Promise<NextResponse> {
+  if (override) return override();
+  return (await isModuleGatedRequestPath())
+    ? moduleGatedNotFoundResponse()
+    : fallback();
+}
+
 function forbiddenResponse() {
   return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 }
@@ -97,7 +163,9 @@ async function inferAdminAccessRequirement(
 /**
  * Shared admin auth helper. Returns the session on success; otherwise
  * a NextResponse with the correct 401 vs 403 split and the active
- * session check applied. Use at the top of admin route handlers:
+ * session check applied — except on a module-gated path, where an anonymous
+ * caller gets the module gate's own frozen 404 instead of the 401 (see
+ * `moduleGatedNotFoundResponse`). Use at the top of admin route handlers:
  *
  *   const guard = await requireAdmin();
  *   if (!guard.ok) return guard.response;
@@ -110,7 +178,10 @@ export async function requireAdmin(
   if (!session?.user?.id) {
     return {
       ok: false,
-      response: options.unauthenticatedResponse?.() ?? unauthorizedResponse(),
+      response: await unauthenticatedResponseFor(
+        unauthorizedResponse,
+        options.unauthenticatedResponse,
+      ),
     };
   }
 
@@ -194,9 +265,11 @@ type RequireActiveSessionUserOptions = {
 };
 
 /**
- * Shared active-session API helper for member-facing routes. It preserves the
- * existing member-route behavior: a missing session is 401 "Unauthorised" and
- * active/force-password-change checks are delegated to requireActiveSessionUser.
+ * Shared active-session API helper for member-facing routes. A missing session
+ * is 401 "Unauthorised" — or, on a module-gated path, the same frozen 404 the
+ * module gate itself sends, so an anonymous caller cannot read the module state
+ * off the auth failure (see `moduleGatedNotFoundResponse`). Active and
+ * force-password-change checks are delegated to requireActiveSessionUser.
  */
 export async function requireActiveSession(
   options: RequireActiveSessionOptions = {}
@@ -205,7 +278,10 @@ export async function requireActiveSession(
   if (!session?.user?.id) {
     return {
       ok: false,
-      response: options.unauthenticatedResponse?.() ?? unauthorisedResponse(),
+      response: await unauthenticatedResponseFor(
+        unauthorisedResponse,
+        options.unauthenticatedResponse,
+      ),
     };
   }
 

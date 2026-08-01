@@ -355,10 +355,21 @@ export function RoomsBedsManager({
       // a denial here means matrix↔enforcement drift or a mid-session
       // revocation — render nothing quietly instead of toasting a raw 403.
       // Genuine failures (5xx/network) keep the toast below.
-      if (response.status === 401 || response.status === 403) {
+      //
+      // 404 joins them. `/api/admin/bed-allocation/*` is module-gated, so it
+      // answers 404 both when the bed-allocation module is off and when the
+      // sign-in behind this tab has expired — a gated route hides that
+      // difference on purpose (`moduleGatedNotFoundResponse` in
+      // `src/lib/session-guards.ts`). Neither state has rooms to manage, and a
+      // toast reading "Not found" would name neither.
+      if (
+        response.status === 401 ||
+        response.status === 403 ||
+        response.status === 404
+      ) {
         if (process.env.NODE_ENV !== "production") {
           console.warn(
-            "RoomsBedsManager: bed-allocation fetch denied; hiding manager (matrix/enforcement drift or revoked session?)",
+            "RoomsBedsManager: bed-allocation fetch denied or unavailable; hiding manager (module off, revoked session, or matrix/enforcement drift?)",
           );
         }
         setForbidden(true);

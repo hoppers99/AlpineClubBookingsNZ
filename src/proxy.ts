@@ -37,11 +37,35 @@ import { getSetupInProgressResponse } from "./lib/setup-gate";
 const CACHEABLE_ANONYMOUS_PATHS = new Set(["/"]);
 
 /**
- * Both `max-age` and `s-maxage` on purpose: no shared cache was found in the
- * deployment path (Caddy runs without a cache module), so an `s-maxage`-only
- * value would be stored by nothing today. `max-age` earns the repeat-visit win
- * from the browser now, `s-maxage` is correct the moment a CDN is put in front.
- * `Vary: Cookie` keeps both honest.
+ * `private`, NOT `public`, and no `s-maxage` — a browser cache only (#2404
+ * re-review).
+ *
+ * The directive used to be `public, max-age=60, s-maxage=60, …`, with a check
+ * below meant to keep a flight (React Server Components) response out of it: a
+ * flight body is different bytes under the SAME URL, so a shared cache that
+ * ignores `Vary` could serve it to a browser asking for a page. **That check
+ * cannot work in middleware, so the `public` half had nothing holding it.**
+ * Next's middleware adapter DELETES every flight header before userland runs
+ * (`next/dist/server/web/adapter.js`, `FLIGHT_HEADERS` from
+ * `client/components/app-router-headers.js`: `rsc`, `next-router-state-tree`,
+ * `next-router-prefetch`, `next-router-segment-prefetch`, `next-hmr-refresh`) —
+ * measured through the real adapter, on both the node and edge middleware
+ * runtimes, and `?_rsc=` is stripped off `nextUrl` as well. `Purpose` and
+ * `Sec-Purpose` do survive, but they mark a PREFETCH, and a plain RSC
+ * navigation carries neither, so no surviving signal identifies a flight
+ * request. Middleware simply cannot tell the two apart.
+ *
+ * So the property is held by the directive itself instead: a shared cache is
+ * never invited to store the response, whatever body Next goes on to produce
+ * for it. `max-age` still earns the repeat-visit win from the browser, which is
+ * the only benefit that was ever measured — no shared cache exists in the
+ * deployment path today (Caddy runs without a cache module), so `s-maxage` was
+ * storing nothing anywhere.
+ *
+ * **Do not restore `public`/`s-maxage` without a mechanism that can distinguish
+ * a flight response, and middleware cannot be that mechanism.** #2352
+ * (static/ISR public pages) is where such a mechanism would come from; the
+ * pinning test is in `csp-proxy.test.ts`, which drives the real adapter.
  *
  * Survives the framework default: Next only writes its own `Cache-Control`
  * when the response does not already carry one
@@ -52,18 +76,15 @@ const CACHEABLE_ANONYMOUS_PATHS = new Set(["/"]);
  * The `Vary: Cookie` set alongside it also survives: Next APPENDS its RSC vary
  * rather than replacing the header (`base-server.js:1169` and `:1174` in the
  * vendored next@16.2.11 both use `res.appendHeader('vary', ...)`), so the
- * middleware value reaches the wire next to the framework's.
+ * middleware value reaches the wire next to the framework's. It still matters
+ * with `private`: one browser profile can hold sessions in sequence, and the
+ * anonymous render paints the header logged-out.
  *
- * Known, bounded trade-off: the cached body carries the PER-REQUEST CSP nonce,
- * so under a future shared cache/CDN `s-maxage` replays one visitor's nonce to
- * every anonymous visitor for up to 60s. That grants a third party nothing (a
- * nonce is not a secret and cannot be used without injecting markup into our own
- * response), but it does mean the nonce is not unique-per-response while a shared
- * cache is serving — never treat it as a CSRF token or session secret. Revisit
- * this trade-off if a CDN is put in front.
+ * The per-request CSP nonce is likewise no longer replayed to anyone else: with
+ * `private` the stored copy never leaves the one browser that fetched it.
  */
 const ANONYMOUS_PAGE_CACHE_CONTROL =
-  "public, max-age=60, s-maxage=60, stale-while-revalidate=300";
+  "private, max-age=60, stale-while-revalidate=300";
 
 /**
  * next-auth v5 session cookie — plain, `__Secure-` prefixed, and the chunked
@@ -78,24 +99,6 @@ const ANONYMOUS_PAGE_CACHE_CONTROL =
  */
 const SESSION_COOKIE_PATTERN =
   /^(?:__Secure-)?(?:authjs|next-auth)\.session-token(?:\.\d+)?$/;
-
-/**
- * Headers that mark a React Server Components navigation rather than a plain
- * document request (#2322). A flight response has a different body under the
- * SAME URL, so caching it beside the HTML risks a shared cache that ignores
- * `Vary` serving flight bytes to a browser asking for a page.
- *
- * `RSC` and `Next-Router-State-Tree` are the ones that actually reach here; the
- * two prefetch headers are already excluded by `config.matcher`'s `missing:`
- * clause, and are listed for symmetry so this stays correct if the matcher
- * changes.
- */
-const RSC_REQUEST_HEADERS = [
-  "RSC",
-  "Next-Router-State-Tree",
-  "Next-Router-Prefetch",
-  "Next-Router-Segment-Prefetch",
-];
 
 function normalisePathname(pathname: string) {
   return pathname.length > 1 && pathname.endsWith("/")
@@ -121,12 +124,10 @@ export function getAnonymousPageCacheControl(
     return null;
   }
 
-  // Only plain document requests. On stable Next builds the RSC-header
-  // validation is off, so a crafted `RSC: 1` GET would otherwise be handed a
-  // cacheable flight body under the HTML's cache key.
-  if (RSC_REQUEST_HEADERS.some((header) => request.headers.has(header))) {
-    return null;
-  }
+  // There is deliberately no flight-request check here: Next's adapter strips
+  // every flight header before this function can see it, so any such check
+  // would be dead code that reads like a guarantee. The `private` directive
+  // above is what makes a flight body harmless — see its docblock.
 
   const hasSessionCookie = request.cookies
     .getAll()
@@ -281,7 +282,7 @@ export async function proxy(request: NextRequest) {
 export default proxy;
 
 /**
- * The first matcher entry's negative lookahead decides which requests the proxy
+ * The root matcher entry's negative lookahead decides which requests the proxy
  * runs on at all — and therefore which requests the #2420 setup gate can answer.
  * A URL excluded here is a URL the gate never sees.
  *
@@ -291,13 +292,100 @@ export default proxy;
  * `/favicon.icons` by `favicon.ico` — whose unescaped dot also excluded
  * `/faviconXico`. All are ordinary website addresses. They skipped the proxy
  * entirely, so pre-setup they answered 200 instead of 503, and at all times they
- * were served with no CSP header. Anchored now: `api` must be followed by `/`
- * or end the path, and the two filenames must end it.
+ * were served with no CSP header. `api` was anchored then — it must be followed
+ * by `/` or end the path — and #2404 finished the other two by deleting them
+ * outright (see below): a carve-out for a file that does not exist can only cost.
  *
- * The image-extension alternative is deliberately left as a whole-path suffix —
- * those are `public/` asset shapes and running the proxy on them would mint a
- * nonce per image. `isPublicWebsitePath()` is aligned to agree, and
- * `csp-proxy.test.ts` asserts the two definitions cannot drift apart again.
+ * The two REMAINING bare prefixes were anchored in #2404 for the same reason F3
+ * gives, one namespace over: `_next/static` also excluded `/_next/staticfoo` and
+ * `_next/image` also excluded `/_next/imagemap` and `/_next/image/x`. No
+ * framework handler claims any of those, so they were ordinary website addresses
+ * being served with no CSP header — measured answering 404 with unnonced inline
+ * `<script>` tags.
+ *
+ * The two anchors differ in shape, and that is the point rather than an
+ * inconsistency: `_next/static` is a DIRECTORY, so only `/_next/static/…` is ever
+ * served and a trailing slash is the whole exclusion; `_next/image` is a single
+ * ENDPOINT taking a `?url=` query, so only the exact path is served and `$` is.
+ * Each now excludes precisely what the framework serves and nothing else, and
+ * `csp-proxy.test.ts` still asserts `/_next/static/chunks/main.js` stays outside.
+ *
+ * **The image-extension alternative was REMOVED in #2404 (owner decision,
+ * 1 Aug 2026), and the two named filenames with it.** It used to read
+ * `favicon\.ico$|logo\.png$|.*\.(?:png|jpg|…)$`, on the reasoning that a real
+ * asset must not pay a nonce mint. Three measured facts overturned that:
+ *
+ *  1. **It was the reason the class existed at all.** A URL the proxy skips is a
+ *     URL nothing of ours can attach a header to, and a URL the #2420 setup gate
+ *     never sees. The `afterFiles` rewrites in `next.config.ts` (rules in
+ *     `src/lib/asset-url-404.ts`) remove the DOCUMENT from an asset-shaped miss,
+ *     which is what makes the missing nonce harmless — but
+ *     only the proxy can put a `Content-Security-Policy` on the response, and
+ *     only the proxy can answer 503 pre-setup. Layer, not replacement.
+ *  2. **The exclusion was not buying anything.** Benchmarked on the compiled
+ *     matcher, the shorter lookahead is marginally CHEAPER per request (~1.4ns),
+ *     and the genuinely hot shape — the dozens of `/_next/static/…` chunk
+ *     requests one page load issues — is still excluded by its own alternative.
+ *     `public/` holds `branding/*` and `robots.txt` and nothing else, so the real
+ *     asset requests newly running the proxy are few, and they gain `nosniff`,
+ *     `X-Frame-Options` and the rest of `SECURITY_HEADERS` they did not have.
+ *  3. **`favicon.ico` and `logo.png` excluded nothing whatsoever.** Neither file
+ *     exists — `src/app/layout.tsx` points at `/branding/favicon.ico` — so both
+ *     were dead alternatives leaving two exposed URL shapes. If either file is
+ *     ever added, the filesystem serves it ahead of any rewrite and the whole
+ *     cost of the proxy running on it is one nonce mint.
+ *
+ * So an asset-shaped miss now meets BOTH layers, and they compose rather than
+ * fight: the proxy attaches the policy and the security headers, and the rewrite
+ * still terminates the request at `src/app/asset-not-found/route.ts` so no
+ * document is rendered. Which layer's `Content-Security-Policy` reaches the wire
+ * is decided by Next and is worth knowing: `sendResponse()`
+ * (`next/dist/server/send-response.js`) appends a route handler's header only
+ * when the name is not already set on the outgoing response, and the router
+ * server writes the middleware's headers first
+ * (`server/lib/router-server.js`, "apply any response headers from routing"). The
+ * proxy's per-request page policy therefore wins wherever the proxy runs, and the
+ * route's tighter `default-src 'none'` remains in force for the shapes it still
+ * skips — `/_next/static/chunks/deleted.js` — and as the floor if the matcher
+ * ever stops covering a shape. Either way a policy ships, which is the property.
+ *
+ * `isPublicWebsitePath()` in `src/lib/setup-gate.ts` still refuses asset-shaped
+ * paths, and no longer because it mirrors this string — it is now an independent
+ * rule with its own reason, recorded there. Keep the extension list there in step
+ * with `ASSET_URL_EXTENSIONS`; `src/lib/__tests__/asset-url-404.test.ts` fails if
+ * they diverge.
+ *
+ * **There is NO prefetch exemption, and its absence is load-bearing (#2404,
+ * owner decision 1 Aug 2026).** The entry used to carry a `missing:` clause that
+ * skipped any request bearing `Next-Router-Prefetch` or `Purpose: prefetch`,
+ * because Next's router prefetches whole route trees on hover and minting a
+ * nonce for a response the user may never see is waste. Those are ordinary
+ * request headers, so a bare `GET /anything` carrying `Purpose: prefetch`
+ * skipped the proxy on EVERY URL and was served with no nonce, no
+ * `Content-Security-Policy` and no #2420 setup gate — the same end state as the
+ * asset-URL class, on any address rather than only the asset-shaped ones.
+ *
+ * Narrowing the exemption to a REAL flight prefetch — the pair of entries that
+ * skipped only when a prefetch header and `RSC` arrived together — was tried and
+ * rejected, because the matcher cannot express Next's own definition of a flight
+ * request. Next flags one on `RSC: 1` EXACTLY
+ * (`next/dist/server/lib/is-rsc-request.js`), while a `missing:` item with no
+ * `value` treats any non-empty header as present
+ * (`prepare-destination.js`'s `matchHas`). So `RSC: 2`, `RSC: 0`, or two `RSC`
+ * headers that Node joins into `1, 1`, all skipped the proxy while Next went on
+ * to render the full HTML document — strictly more useful to a prober than the
+ * exemption itself. Pinning `value: "1"` would close that instance; deleting the
+ * clause closes the class.
+ *
+ * The exemption also has no measured cost to defend: benchmarked on the compiled
+ * matcher it was worth ~1.4ns per request, the same measurement that removed the
+ * extension alternative above. And #2352 (static/ISR public pages) needs it gone
+ * outright — a prefetch that skipped the proxy would put a nonce-less copy of a
+ * page into the page cache, which every later visitor would then be served.
+ *
+ * So the proxy now runs on every request the lookahead admits, prefetch or not,
+ * and no combination of request headers takes a URL outside it.
+ * `csp-proxy.test.ts` pins that across the whole prefetch/`RSC` matrix.
  *
  * Because that lookahead drops the whole of `/api`, the explicit entries below
  * are the ONLY way an API path reaches the proxy — so every `/api` prefix and
@@ -312,14 +400,7 @@ export default proxy;
  */
 export const config = {
   matcher: [
-    {
-      source:
-        "/((?!api(?:/|$)|_next/static|_next/image|favicon\\.ico$|logo\\.png$|.*\\.(?:png|jpg|jpeg|gif|webp|svg|ico)$).*)",
-      missing: [
-        { type: "header", key: "next-router-prefetch" },
-        { type: "header", key: "purpose", value: "prefetch" },
-      ],
-    },
+    "/((?!api(?:/|$)|_next/static/|_next/image$).*)",
     "/api/admin/:path*",
     "/api/admin/bed-allocation/:path*",
     "/api/admin/chores/:path*",

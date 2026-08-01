@@ -265,15 +265,21 @@ export function PromoCodesPageClient({
       // Backstop for matrix↔enforcement drift or a mid-session revocation: a
       // 401/403 degrades quietly to the manual inputs (no banner), while a
       // genuine failure — Xero not connected returns 500 — keeps the amber note.
-      if (
-        accountsRes.status === 401 ||
-        accountsRes.status === 403 ||
-        itemsRes.status === 401 ||
-        itemsRes.status === 403
-      ) {
+      //
+      // 404 belongs in the same quiet branch. `/api/admin/xero/*` is
+      // module-gated, so it answers 404 both when the Xero module is off and
+      // when the sign-in behind this tab has expired — a gated route hides that
+      // difference on purpose (`moduleGatedNotFoundResponse` in
+      // `src/lib/session-guards.ts`). Neither cause is "Xero is not connected",
+      // and a promo code is perfectly usable with its account code typed by
+      // hand, so the amber banner would be both wrong and in the way.
+      const denied = (status: number) =>
+        status === 401 || status === 403 || status === 404;
+
+      if (denied(accountsRes.status) || denied(itemsRes.status)) {
         if (process.env.NODE_ENV !== "production") {
           console.warn(
-            "PromoCodesPage: Xero reference fetch denied; using manual entry (matrix/enforcement drift or revoked session?)",
+            "PromoCodesPage: Xero reference fetch denied or unavailable; using manual entry (module off, revoked session, or matrix/enforcement drift?)",
           );
         }
         return;
