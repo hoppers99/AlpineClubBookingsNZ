@@ -30,6 +30,7 @@ const mocks = vi.hoisted(() => ({
   emailLogCreate: vi.fn(),
   emailLogUpdate: vi.fn(),
   bookingFindUnique: vi.fn(),
+  memberFindUnique: vi.fn(),
   notificationPreferenceFindUnique: vi.fn(),
   getActiveEmailSuppression: vi.fn(),
   sendMail: vi.fn(),
@@ -51,6 +52,7 @@ vi.mock("@/lib/prisma", () => ({
   prisma: {
     emailLog: { create: mocks.emailLogCreate, update: mocks.emailLogUpdate },
     booking: { findUnique: mocks.bookingFindUnique },
+    member: { findUnique: mocks.memberFindUnique },
     // Present so a stray preference read would be a REJECTED promise rather
     // than a TypeError that could be mistaken for something else.
     notificationPreference: {
@@ -70,7 +72,12 @@ vi.mock("@/lib/email-message-renderer", () => ({
   }: {
     subject: string;
     html: string;
-  }) => ({ subject, html, settings: mocks.settingsStub }),
+  }) => ({
+    subject,
+    html,
+    settings: mocks.settingsStub,
+    bodyOverrideApplied: false,
+  }),
 }));
 vi.mock("@/lib/email-message-settings", async (importOriginal) => {
   const actual = await importOriginal<
@@ -205,7 +212,32 @@ beforeEach(() => {
   mocks.emailLogUpdate.mockResolvedValue({});
   mocks.getActiveEmailSuppression.mockResolvedValue(null);
   mocks.sendMail.mockResolvedValue({ messageId: "msg_1" });
-  mocks.bookingFindUnique.mockResolvedValue({ noEmails: false });
+  mocks.bookingFindUnique.mockImplementation(
+    async (args: {
+      select?: {
+        noEmails?: boolean;
+        guests?: { where?: { memberId?: string } };
+      };
+    }) => {
+      if (args.select?.noEmails) return { noEmails: false };
+      return {
+        memberId: "owner_1",
+        deletedAt: null,
+        guests:
+          args.select?.guests?.where?.memberId === "member_1"
+            ? [{ id: "guest_1" }]
+            : [],
+      };
+    },
+  );
+  mocks.memberFindUnique.mockResolvedValue({
+    role: "USER",
+    financeAccessLevel: "NONE",
+    active: true,
+    archivedAt: null,
+    canLogin: true,
+    accessRoles: [],
+  });
   mocks.getAdminEmails.mockResolvedValue([]);
   // Half 1 of D-16, enforced rather than described: nothing in this path may
   // read a notification preference.
@@ -323,5 +355,49 @@ describe("a muted member is still asked (#2307, D-16)", () => {
       await sender.send();
       expect(mocks.emailLogCreate.mock.calls[0][0].data.bookingId).toBe("bkg_1");
     }
+  });
+
+  it("keeps the target's #consent action and the delegate's bearer route through the real mail core", async () => {
+    await SENDERS[0].send();
+    const targetHtml = mocks.sendMail.mock.calls[0][0].html as string;
+    expect(targetHtml).toContain(
+      'href="http://localhost:3000/bookings/bkg_1#consent"',
+    );
+    expect(mocks.emailLogCreate.mock.calls[0][0].data).toMatchObject({
+      bookingRecipientMemberId: "member_1",
+      bookingBodyOverrideApplied: false,
+      bookingDetailLinkIncluded: true,
+    });
+
+    mocks.sendMail.mockClear();
+    mocks.emailLogCreate.mockClear();
+    await sendMemberGuestConsentRequestEmail({
+      bookingId: "bkg_1",
+      recipient: { kind: "member", memberId: "delegate_1" },
+      email: "delegate@example.nz",
+      firstName: "Aroha",
+      bookerName: "Dave Ngata",
+      audience: {
+        kind: "DELEGATE",
+        guest: { firstName: "Priya", lastName: "Kaur" },
+      },
+      checkIn: CHECK_IN,
+      checkOut: CHECK_OUT,
+      guestNights: NIGHTS,
+      consentExpiresAt: parseDateOnly("2026-08-07"),
+      consentUrl: "http://localhost:3000/bookings/consent/guest_1",
+      party: PARTY,
+    });
+
+    const delegateHtml = mocks.sendMail.mock.calls[0][0].html as string;
+    expect(delegateHtml).toContain(
+      'href="http://localhost:3000/bookings/consent/guest_1"',
+    );
+    expect(delegateHtml).not.toContain("/bookings/bkg_1");
+    expect(mocks.emailLogCreate.mock.calls[0][0].data).toMatchObject({
+      bookingRecipientMemberId: "delegate_1",
+      bookingBodyOverrideApplied: false,
+      bookingDetailLinkIncluded: false,
+    });
   });
 });

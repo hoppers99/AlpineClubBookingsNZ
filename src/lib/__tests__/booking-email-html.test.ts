@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   applyBookingDetailLinkToBuiltInHtml,
   finalizeBookingEmailHtml,
+  hasBookingDetailHref,
 } from "@/lib/booking-email-html";
 
 beforeEach(() => {
@@ -47,6 +48,34 @@ describe("built-in booking email HTML links", () => {
     );
     expect(rendered).toContain(`href="${consentUrl}"`);
     expect(rendered).toContain('href="https://bookings.example.nz/bookings/bk_1"');
+  });
+
+  it("preserves a booking-page action fragment while canonicalizing the booking id", () => {
+    const html =
+      '<table role="presentation" cellpadding="0" cellspacing="0"><tr><td><a href="https://bookings.example.nz/bookings/stale-id#consent">Answer this request</a></td></tr></table>';
+
+    const rendered = applyBookingDetailLinkToBuiltInHtml(
+      html,
+      "https://bookings.example.nz/bookings/bk_1",
+    );
+
+    expect(rendered).toContain(
+      'href="https://bookings.example.nz/bookings/bk_1#consent"',
+    );
+    expect(rendered).toContain("Answer this request");
+  });
+
+  it("detects authenticated detail hrefs but not bearer consent routes", () => {
+    expect(
+      hasBookingDetailHref(
+        '<a href="https://bookings.example.nz/bookings/bk_1#consent">Answer</a>',
+      ),
+    ).toBe(true);
+    expect(
+      hasBookingDetailHref(
+        '<a href="https://bookings.example.nz/bookings/consent/guest_1">Answer</a>',
+      ),
+    ).toBe(false);
   });
 
   it("adds one canonical CTA when the built-in has no booking link", () => {

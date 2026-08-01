@@ -79,6 +79,20 @@ established the status), but it makes the "no clobber" guarantee **structural**
 rather than purely lock-dependent: a writer that somehow slipped the lock still
 cannot flip a booking a concurrent writer already moved.
 
+### Email retry authority uses a guarded row claim, not an advisory lock (#2362)
+
+`cron-email-retry.ts` composes no booking, capacity, membership-lifecycle, or
+money mutation. It reads the booking and recipient only to decide whether a
+retained authenticated detail URL may still be disclosed, re-finalizes the
+local HTML, then keeps the existing `EmailLog` `FAILED -> QUEUED` guarded
+`updateMany` claim before SMTP. Both that claim and a fail-closed retirement
+match the selected row's status, attempt count, and retained body, so only one
+concurrent runner can move the snapshot; losing either guard sends nothing.
+The additive `EmailLog` authority columns introduce no advisory-lock key or
+transaction participant; provider delivery remains outside a database
+transaction. Stored body overrides that cannot be safely re-finalized retire
+before the claim.
+
 ## The lock families
 
 All keys below are the argument(s) to `pg_advisory_xact_lock`. Two-argument keys

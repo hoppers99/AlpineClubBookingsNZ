@@ -256,7 +256,11 @@ admin with bookings-view access. For a public/non-login contact, an aggregate
 operator message, or an unauthorized member, the renderer removes the whole
 line containing `{{bookingUrl}}`; it does not leave a bare label. Existing
 stored overrides are not rewritten, and public bearer links such as `/pay/<token>`
-or consent/respond URLs remain separate and unchanged.
+or consent/respond URLs remain separate and unchanged. Failed retry-safe booking
+mail repeats the current authority check from durable recipient context before
+replay. If access was revoked, built-in mail loses only the authenticated detail
+CTA; an override containing that now-unauthorized href is not rewritten or sent
+and instead requires a reviewed manual re-send.
 
 Anything optional is therefore supplied as a **pre-composed line**: the sender
 builds the whole line — label, value and its trailing blank line — or the empty

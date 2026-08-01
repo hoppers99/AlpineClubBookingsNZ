@@ -2141,7 +2141,15 @@ The rules are:
   body, and the status is terminal).
 - **The retry cron re-evaluates before every replay.** A `FAILED` row can
   predate the moment the switch was turned on, so `cron-email-retry.ts` re-reads
-  it from the row's `bookingId` and fails closed the same way.
+  it from the row's `bookingId` and fails closed the same way. It also repeats
+  the booking-detail authority check from durable `EmailLog` recipient/context
+  provenance; the address is never used as identity. Built-in HTML is
+  re-finalized before the guarded retry claim, so a revoked recipient loses the
+  detail CTA while bearer actions and page fragments remain intact. Legacy rows
+  with no durable context retire without sending. Stored overrides remain
+  byte-for-byte; if an override retained a now-unauthorized detail href, retry
+  retires the row and requires a reviewed manual re-send rather than rewriting
+  or disclosing it.
 - **Waitlist candidacy excludes a silenced booking.**
   `processWaitlistForDates` filters on `noEmails: false`, so no NEW offer is
   made to a silenced entry and, in the ordinary case, no offer clock starts for

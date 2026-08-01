@@ -15,11 +15,16 @@ function findBookingHref(html: string, fromIndex = 0) {
     // `/bookings/consent/<token>` is a bearer action for recipients who may
     // not have a login. It must never be removed or rewritten as though it
     // were the authenticated `/bookings/<booking-id>` detail route.
-    `href="${baseUrl}\\/bookings(?:\\/(?!consent(?:\\/|[?#]|$))[^"#?]*)?(?:[?#][^"]*)?"`,
+    `href="${baseUrl}\\/bookings(?:\\/(?!consent(?:\\/|[?#]|$))[^"#?]*)?([?#][^"]*)?"`,
     "g",
   );
   pattern.lastIndex = fromIndex;
   return pattern.exec(html);
+}
+
+/** Whether HTML contains an authenticated booking-detail href (not a bearer action). */
+export function hasBookingDetailHref(html: string): boolean {
+  return findBookingHref(html) != null;
 }
 
 function removeBookingButtons(html: string): string {
@@ -78,9 +83,14 @@ export function applyBookingDetailLinkToBuiltInHtml(
   let replaced = false;
   let match = findBookingHref(next);
   while (match) {
-    next = `${next.slice(0, match.index)}href="${safeUrl}"${next.slice(match.index + match[0].length)}`;
+    // A booking-detail CTA can itself target an action on the page (for
+    // example the member-guest consent card at `#consent`). Canonicalize only
+    // the booking path; preserve the query/fragment suffix byte-for-byte.
+    const suffix = match[1] ?? "";
+    const replacement = `href="${safeUrl}${suffix}"`;
+    next = `${next.slice(0, match.index)}${replacement}${next.slice(match.index + match[0].length)}`;
     replaced = true;
-    match = findBookingHref(next, match.index + safeUrl.length);
+    match = findBookingHref(next, match.index + replacement.length);
   }
   return replaced ? next : appendBookingButton(next, bookingUrl);
 }

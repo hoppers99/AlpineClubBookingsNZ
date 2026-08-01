@@ -13,6 +13,9 @@ All notable public reference-release changes should be recorded here.
   remain unchanged. Clubs may use the optional `{{bookingUrl}}` chip in each
   concrete-booking template. Existing saved wording is not rewritten, and a
   recipient who is no longer authorized gets no dangling or dead link line.
+  Failed delivery retries repeat that authorization check before replay, and
+  consent links still land on the exact consent action rather than the top of
+  the booking page.
 
 - **Clubs that had saved their own email wording stop emailing our editing notes
   (#2269).** Older releases shipped little square-bracketed notes inside the

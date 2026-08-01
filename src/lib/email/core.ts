@@ -19,7 +19,10 @@ import {
 } from "@/lib/booking-email-suppression";
 import { isPlaceholderContactEmail } from "@/lib/placeholder-contact-email";
 import { resolveBookingEmailLink } from "@/lib/booking-email-authority";
-import { finalizeBookingEmailHtml } from "@/lib/booking-email-html";
+import {
+  finalizeBookingEmailHtml,
+  hasBookingDetailHref,
+} from "@/lib/booking-email-html";
 import {
   getEmailTransporter,
   shouldPersistEmailHtml,
@@ -288,6 +291,20 @@ export async function sendEmail({
         // withheld ones — the retry cron re-evaluates the switch from this
         // column before it replays a FAILED row.
         bookingId: bookingContext === "none" ? null : bookingContext.bookingId,
+        // #2362: retries must repeat the current authority check from a durable
+        // identity. `to` is deliberately never treated as proof of access.
+        // The nullable override flag doubles as the provenance marker: null is
+        // a legacy/unknown row; false/true means this context was recorded.
+        ...(bookingContext === "none"
+          ? {}
+          : {
+              bookingRecipientMemberId:
+                bookingContext.recipient.kind === "member"
+                  ? bookingContext.recipient.memberId
+                  : null,
+              bookingBodyOverrideApplied: prepared.bodyOverrideApplied,
+              bookingDetailLinkIncluded: hasBookingDetailHref(prepared.html),
+            }),
       },
     });
     emailLogId = log.id;

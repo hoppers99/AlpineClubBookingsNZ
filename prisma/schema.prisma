@@ -4331,9 +4331,18 @@ model EmailLog {
   // table (a validating FK would scan it, and would put a constraint on the hot
   // Booking table), and a withheld-email audit row must survive the hard
   // booking delete in booking-delete.ts rather than being nulled out.
-  bookingId     String?
-  createdAt     DateTime       @default(now())
-  updatedAt     DateTime       @updatedAt
+  bookingId                      String?
+  // Durable retry-time authority context (#2362). Null provenance flags mean
+  // the row predates this context and must fail closed rather than infer an
+  // identity from `to`. A null member id with non-null flags is an explicit
+  // public/non-login or aggregate recipient and therefore receives no
+  // authenticated booking-detail URL. The included-link bit fails closed if a
+  // later deployment origin cannot safely locate the retained href.
+  bookingRecipientMemberId       String?
+  bookingBodyOverrideApplied     Boolean?
+  bookingDetailLinkIncluded      Boolean?
+  createdAt                      DateTime       @default(now())
+  updatedAt                      DateTime       @updatedAt
 
   @@index([to])
   @@index([status])
