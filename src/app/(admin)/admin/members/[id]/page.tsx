@@ -208,6 +208,7 @@ export default function MemberDetailPage({
     parentLinkOpen,
     parentLinkSearch,
     parentLinkSearchResults,
+    parentLinkResultsTruncated,
     parentLinkSearching,
     selectedLinkParent,
     parentLinkNotificationParentId,
@@ -1023,6 +1024,7 @@ export default function MemberDetailPage({
         search={parentLinkSearch}
         searching={parentLinkSearching}
         searchResults={parentLinkSearchResults}
+        resultsTruncated={parentLinkResultsTruncated}
         selected={selectedLinkParent}
         notificationParentId={parentLinkNotificationParentId}
         disableLogin={parentLinkDisableLogin}
