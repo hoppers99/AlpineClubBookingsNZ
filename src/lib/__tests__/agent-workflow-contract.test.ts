@@ -20,14 +20,28 @@ describe("repository agent workflow contract", () => {
     expect(agents).toContain("global -> lodge -> member");
     expect(agents).toContain("credit-ledger-only invariants");
     expect(agents).toContain("takes both applicable tiers");
+    expect(agents).toContain("physical, isolated `node_modules`");
+    expect(agents).toContain("checkpoint outside the worktree");
+    expect(agents).toContain("PR CI owns the full `npm test`");
+    expect(agents).toMatch(/Do not\s+delay a draft PR/);
+    expect(agents).not.toContain("Run the **full** `npm test` before opening the PR");
 
     expect(claude).toContain("Read [`AGENTS.md`](AGENTS.md) first");
     expect(claude).toContain("never overrides `AGENTS.md`");
     expect(claude).toContain('Follow `AGENTS.md` → "Orchestration Model"');
+    expect(claude).toContain("PR CI owns the full test, build, migration-drift");
+    expect(claude).toContain("Do not duplicate them locally");
+    expect(claude).not.toContain("Run the full `npm test` before opening a PR");
 
     expect(codex).toContain("Root `AGENTS.md` is authoritative");
     expect(codex).toContain("last 10 merged PRs affecting the subsystem");
     expect(codex).toContain("Delegate bulk implementation to implementor subagents");
+    expect(codex).toContain("## Windows worktree runtime and dependency preflight");
+    expect(codex).toContain("npm ci --ignore-scripts");
+    expect(codex).toContain("[IO.Directory]::Delete($modules)");
+    expect(codex).toContain("Refusing unexpected junction target");
+    expect(codex).toContain("### 5. Split fast local evidence from full CI gates");
+    expect(codex).toContain("GitHub Actions owns the full");
 
     expect(subagents).toContain("Follow the role split in root `AGENTS.md`");
     expect(subagents).toContain("Implementor subagents may edit only their clearly bounded issue/worktree area");

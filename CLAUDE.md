@@ -68,6 +68,10 @@ for an interactive Claude Code session:
 - **One worktree per lane**; stack dependent issues (PR base = parent branch).
   Because CI only runs on `main`-based PRs, validate a stacked PR via a
   throwaway draft "CI probe" PR of the same commit against `main`.
+  Follow `docs/agents/CODEX_WORKFLOW.md` → "Windows worktree runtime and
+  dependency preflight": each branch keeps a physical, isolated `node_modules`
+  and shares only npm's cache, never a dependency junction or generated Prisma
+  Client.
 - **Delegate deliberately.** Every subagent re-establishes context, re-explores,
   and reports back, and the orchestrator then re-reads that report — so the
   payoff has to exceed that overhead. Do not spawn one for work you could finish
@@ -93,11 +97,12 @@ for an interactive Claude Code session:
   pass, not an error — and Fable's bug-finding gains explicitly exclude security
   analysis. Opus refuses far less here, and falls back rather than stopping
   outright.
-- **Run the full `npm test` before opening a PR**, not just the targeted subset —
-  a subagent's targeted run routinely misses regressions its diff caused in
-  adjacent suites (frozen snapshots, mocks a new call needs, route-area
-  matrices, knip, the blue/green migration ledger). Separate real regressions
-  from the repo's known-environmental failures by comparing against `main`'s CI.
+- **Split fast local checks from full CI gates.** Locally generate Prisma, lint,
+  typecheck, run focused touched/adjacent tests, mutation-test new guards, and
+  run docs linkcheck or knip when their surfaces change. Then push the draft PR:
+  PR CI owns the full test, build, migration-drift, E2E, scan, and container
+  gates. Run a full suite locally only to diagnose CI or when CI is unavailable,
+  and record why.
 - **PRs open as drafts and stay draft** until fully reviewed, fixed, and
   CI-green; then flip to ready and post an owner-addressed "merge ready" comment
   covering what was built, review findings, fixes, decisions, and carry-forward.
@@ -129,15 +134,19 @@ incidental internal refactors that change no contract or behavior.
 ## Local validation
 
 Tests need `DATABASE_URL` pointed at an unreachable dummy (do not point at a live
-seeded database). Typical gate before opening a PR:
+seeded database). First run the Windows runtime and isolated-dependency preflight
+in `docs/agents/CODEX_WORKFLOW.md`. The normal fast local gate before pushing a
+draft PR is:
 
 ```bash
-npm run lint
 npm run db:generate
+npm run lint
 npm run typecheck
-npm test
-npm run build
+npm test -- <focused touched-and-adjacent test paths>
+npm run docs:linkcheck # when docs change
+npm run knip           # when files or exports change
 ```
 
-Run `npm run db:check-drift` against a shadow database whenever you touch
-`prisma/schema.prisma`.
+GitHub Actions runs the full `npm test`, build, migration-drift, E2E,
+static/secret/dependency, and container gates. Do not duplicate them locally
+before push unless diagnosing a CI failure or CI is unavailable.

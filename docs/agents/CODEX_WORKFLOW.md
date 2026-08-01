@@ -60,6 +60,135 @@ not clash. The orchestrator must inspect open work and coordinate before
 claiming a lane. A small in-flight edit may stay with the orchestrator, but
 this does not remove the adversarial-review requirement for gated work.
 
+## Windows worktree runtime and dependency preflight
+
+Run this before delegating validation in every new Windows worktree. The
+orchestrator coordinates it; implementors must not start competing installs or
+use an `npx` fallback that downloads an unreviewed package.
+
+### 1. Activate and verify the pinned Node runtime
+
+The default shell may expose system Node 22 even when `fnm` has Node 24.
+Initialise `fnm` inside the same PowerShell process that will run npm, use the
+repository's `.nvmrc`, and fail closed if either engine is wrong:
+
+```powershell
+fnm env --shell powershell | Out-String | Invoke-Expression
+fnm use --install-if-missing
+
+$nodeMajor = [int](node -p "process.versions.node.split('.')[0]")
+$npmMajor = [int](npm --version).Split('.')[0]
+if ($nodeMajor -ne 24 -or $npmMajor -lt 11) {
+  throw "Expected Node 24 and npm 11+, got Node $nodeMajor and npm $npmMajor"
+}
+```
+
+Repeat the activation prefix in every fresh PowerShell validation shell; shell
+state does not carry between tool calls.
+
+### 2. Require an isolated dependency tree
+
+Every active branch owns a physical `node_modules` inside its own worktree.
+Never junction or symlink it to another checkout. Prisma generation writes the
+branch's client into `node_modules/@prisma/client`; a shared dependency tree lets
+one lane silently change another lane's types. npm's cache is already shared and
+provides download reuse without sharing mutable generated output.
+
+Before installing, inspect any existing entry and refuse reparse points:
+
+```powershell
+$worktree = (Resolve-Path -LiteralPath $PWD).Path
+$modules = Join-Path $worktree "node_modules"
+if (Test-Path -LiteralPath $modules) {
+  $modulesItem = Get-Item -LiteralPath $modules -Force
+  if (($modulesItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw "Refusing shared/reparse-point node_modules at $modules"
+  }
+}
+```
+
+On Windows, a direct `npm ci` has reproduced a race that starts
+`unrs-resolver` before its locked `napi-postinstall` helper is available. Use the
+verified two-phase install: extract the exact lockfile without scripts, then
+rebuild only the reviewed packages whose install scripts this lockfile needs.
+If `package-lock.json` changes or npm reports a different script-package list,
+stop for review instead of extending it by guesswork.
+
+```powershell
+npm ci --ignore-scripts
+npm rebuild @prisma/engines @sentry/cli core-js esbuild prisma unrs-resolver
+
+$env:DATABASE_URL = "postgresql://codex:codex@127.0.0.1:5432/codex_local"
+npm run db:generate
+
+if (-not (Test-Path -LiteralPath "node_modules/.bin/prisma.cmd") -or
+    -not (Test-Path -LiteralPath "node_modules/.bin/vitest.cmd")) {
+  throw "Dependency preflight did not produce the required local binaries"
+}
+```
+
+The placeholder URL is non-live and generation does not connect to it. Use a
+separately provisioned local test database only for commands that actually need
+a connection; never substitute production or provider credentials.
+
+### 3. Remove worktrees without traversing old junctions
+
+New lanes must not create dependency junctions. Before removing any older
+worktree, however, inspect `node_modules`. PowerShell `Remove-Item` throws on a
+junction in the supported environment, while `git worktree remove` can follow
+one and erase the shared target. Verify the exact expected target, unlink only
+the junction with the non-recursive .NET call, and prove the target survived:
+
+```powershell
+$worktree = (Resolve-Path -LiteralPath "C:\path\to\exact-worktree").Path
+$modules = Join-Path $worktree "node_modules"
+$expectedTarget = (Resolve-Path -LiteralPath "C:\path\to\expected\node_modules").Path
+
+if (Test-Path -LiteralPath $modules) {
+  $modulesItem = Get-Item -LiteralPath $modules -Force
+  if (($modulesItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    if ($modulesItem.LinkType -ne "Junction") {
+      throw "Refusing to unlink non-junction reparse point at $modules"
+    }
+    $actualTarget = [IO.Path]::GetFullPath(($modulesItem.Target | Select-Object -First 1))
+    $separator = [IO.Path]::DirectorySeparatorChar
+    if ($actualTarget.TrimEnd($separator) -ne $expectedTarget.TrimEnd($separator)) {
+      throw "Refusing unexpected junction target $actualTarget"
+    }
+    [IO.Directory]::Delete($modules)
+    if (Test-Path -LiteralPath $modules -or -not (Test-Path -LiteralPath $expectedTarget)) {
+      throw "Junction unlink failed or damaged its target"
+    }
+  }
+}
+```
+
+Only then verify the worktree is clean, its head is merged into the intended
+base, and run `git worktree remove` on that exact path. Do not use `-Force` to
+paper over a failed safety check.
+
+### 4. Preserve progress while lanes run
+
+Long-running implementors keep a checkpoint outside the worktree and update it
+after every material investigation, edit, test, and commit. Commit coherent
+stages locally before an expected session or usage boundary. While CI runs, the
+orchestrator uses free agent slots for independent dependency-ready lanes or
+reviews, but never overlaps colliding work simply to maximise slot count.
+
+### 5. Split fast local evidence from full CI gates
+
+Before push, run the branch-correct Prisma generation, lint, typecheck, focused
+touched/adjacent tests, and mutation checks for every new guard. Add docs
+linkcheck when documentation changes and knip when files or exports change.
+These fast checks catch branch-specific mistakes before they consume a runner.
+
+Push a draft PR after that evidence is green. GitHub Actions owns the full
+`npm test`, build, migration-drift, E2E, static/secret/dependency, and container
+gates. Do not delay a draft PR just to duplicate those full gates locally; the
+public repository's CI minutes are the standard execution path. Run a full
+suite locally only to diagnose a CI failure or when CI is unavailable, and
+record the reason and result in the PR.
+
 For concurrency-sensitive work, the orchestrator also reviews the open PRs and
 last 10 merged PRs affecting the subsystem, reconciles their lock/state/provider
 contracts, and records the relevant PR numbers in the PR lock-impact section.
