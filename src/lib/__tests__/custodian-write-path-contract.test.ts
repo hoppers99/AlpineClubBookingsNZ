@@ -66,7 +66,15 @@ const GUARDED_WRITE_SITES: Array<{
   file: string;
   statement: string;
   mechanism: string;
-  /** A string that must appear in the file for the mechanism to be real. */
+  /**
+   * A string that must appear in the file for the mechanism to be real.
+   *
+   * Matched with runs of whitespace collapsed on BOTH sides (see
+   * `containsEvidence`), so a reformat — Prettier-on-save wrapping a long call
+   * across lines is the obvious one — cannot fail this test with a message
+   * about a missing custodian guard when the guard is perfectly intact. The
+   * evidence names the mechanism; it is not a formatting pin.
+   */
   evidence: string;
 }> = [
   {
@@ -120,6 +128,59 @@ const GUARDED_WRITE_SITES: Array<{
   },
 ];
 
+/**
+ * The whole-lodge-hold half of the same contract (#2317).
+ *
+ * `dropRowsOn…`/`findBlockingWholeLodgeHolds` at a write path is what makes
+ * DOMAIN_INVARIANTS' "both writers re-read the live holds immediately before
+ * writing" a machine-checked claim rather than prose. Only the AUTOMATIC
+ * placers appear: manual placement is deliberately never refused for a
+ * whole-lodge hold (ADR-001 decision 1 hands the overlap to the officer), which
+ * is the one place the two exclusions differ.
+ */
+const WHOLE_LODGE_GUARDED_WRITE_SITES: Array<{
+  file: string;
+  statement: string;
+  mechanism: string;
+  evidence: string;
+}> = [
+  {
+    file: "src/lib/admin-bed-allocation.ts",
+    statement: "bedAllocation.createMany",
+    mechanism:
+      "runAutoBedAllocation feeds the blocking holds to the planner as #1768 unknown-occupant rows AND re-reads them on the transaction client inside its locked transaction, dropping any suggestion landing on a held lodge-night.",
+    evidence: "await findBlockingWholeLodgeHolds({",
+  },
+  {
+    file: "src/lib/bed-allocation-lifecycle.ts",
+    statement: "bedAllocation.createMany",
+    mechanism:
+      "autoAllocateMissingBedNights feeds the blocking holds to the planner AND re-filters the payload against the live holds on the writing client immediately before the createMany — the reconcile is routinely called post-commit and unlocked, so the plan-time read alone would let a hold created in between be written over.",
+    evidence: "return dropRowsOnWholeLodgeHeldNights(client, offCustodianHolds, {",
+  },
+  {
+    file: "src/lib/bed-allocation-lifecycle.ts",
+    statement: "bedAllocation.updateMany",
+    mechanism:
+      "The displacement MOVE writes `bedId: displacement.toBedId`, and a displacement is applied only when the RE-CHECKED payload still claims the bed-night it frees — so a MOVE cannot survive the re-filter that dropped the row it was clearing the way for.",
+    evidence: "const applicable = justifiedDisplacements(data);",
+  },
+];
+
+/**
+ * Whitespace-insensitive substring match — see the `evidence` note above.
+ *
+ * Whitespace is stripped entirely rather than collapsed, because a formatter
+ * does not only wrap lines: it also adds and removes spaces inside argument
+ * lists and braces. None of the evidence strings depend on whitespace inside a
+ * string literal, so this costs nothing and removes the whole class of
+ * "reformatting fails the guard test" false alarms.
+ */
+function containsEvidence(source: string, evidence: string): boolean {
+  const squash = (value: string) => value.replace(/\s+/g, "");
+  return squash(source).includes(squash(evidence));
+}
+
 describe("custodian write-path contract (#2286)", () => {
   it("covers every BedAllocation write site that places a guest on a bed", () => {
     // Rebuild the enumeration from the WHOLE source tree rather than trusting
@@ -162,7 +223,25 @@ describe("custodian write-path contract (#2286)", () => {
     for (const site of GUARDED_WRITE_SITES) {
       const source = readRepoFile(site.file);
       expect(
-        source.includes(site.evidence),
+        containsEvidence(source, site.evidence),
+        `${site.file} no longer contains the evidence for: ${site.mechanism}`,
+      ).toBe(true);
+    }
+  });
+
+  it("keeps the whole-lodge-hold exclusion on the same write paths", () => {
+    // #2317 extended the same application-code-only pattern to exclusive
+    // whole-lodge holds: no database constraint stands behind THAT exclusion
+    // either, and it covers every bed of a lodge rather than one bed-night, so
+    // a write path that loses the guard loses far more. Enumerated separately
+    // from GUARDED_WRITE_SITES because the two exclusions do not cover the same
+    // set of writes: manual placement is deliberately NOT refused for a
+    // whole-lodge hold (ADR-001 decision 1 keeps the overlap officer-resolved),
+    // whereas it is for a custodian hold.
+    for (const site of WHOLE_LODGE_GUARDED_WRITE_SITES) {
+      const source = readRepoFile(site.file);
+      expect(
+        containsEvidence(source, site.evidence),
         `${site.file} no longer contains the evidence for: ${site.mechanism}`,
       ).toBe(true);
     }

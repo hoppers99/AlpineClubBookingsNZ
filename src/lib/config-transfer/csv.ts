@@ -39,8 +39,14 @@ export class CsvParseError extends Error {
   }
 }
 
-/** Parse CSV into records keyed by header. Unknown/missing columns tolerated. */
-export function parseCsv(text: string): { headers: string[]; rows: CsvRow[] } {
+/**
+ * Parse CSV into records keyed by header. Unknown/missing columns are normally
+ * tolerated; destructive replace-set callers can require exact row widths.
+ */
+export function parseCsv(
+  text: string,
+  options: { strictColumnCount?: boolean } = {},
+): { headers: string[]; rows: CsvRow[] } {
   const records: string[][] = [];
   let field = "";
   let record: string[] = [];
@@ -116,6 +122,11 @@ export function parseCsv(text: string): { headers: string[]; rows: CsvRow[] } {
     const cols = records[r];
     // Skip a blank trailing line (single empty field).
     if (cols.length === 1 && cols[0] === "") continue;
+    if (options.strictColumnCount && cols.length !== headers.length) {
+      throw new CsvParseError(
+        `Row ${r + 1}: expected ${headers.length} columns but found ${cols.length}`,
+      );
+    }
     const row: CsvRow = {};
     for (let c = 0; c < headers.length; c += 1) {
       row[headers[c]] = cols[c] ?? "";

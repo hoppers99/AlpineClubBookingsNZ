@@ -11,7 +11,11 @@ import { sendMemberSetupInviteEmail } from "@/lib/email";
 import { applyRateLimit } from "@/lib/rate-limit";
 import { createAuditLog } from "@/lib/audit";
 import logger from "@/lib/logger";
-import { isPrismaUniqueConstraintError } from "@/lib/prisma-errors";
+import {
+  describeUniqueConstraintTarget,
+  isPrismaUniqueConstraintError,
+} from "@/lib/prisma-errors";
+import { isLoginEmailUniqueConflict } from "@/lib/member-email";
 import { issueActionToken } from "@/lib/action-tokens";
 import { getMemberSetupInviteExpiryDate } from "@/lib/member-setup-invite";
 import { parseDateOnly } from "@/lib/date-only";
@@ -703,11 +707,47 @@ export async function POST(req: NextRequest) {
       }
     }
   } catch (err) {
+    // Narrowed from "any P2002 here means a login email already exists"
+    // (#2455, the same treatment #2412 gave the member create): the import
+    // pre-checks the addresses before it writes, so this only has to catch the
+    // race that pre-check cannot close — a concurrent write claiming an address
+    // in between, which the partial unique index `Member_email_login_unique`
+    // rejects. A collision the database names as some OTHER constraint is still
+    // a 409, because something really is already taken, but it no longer sends
+    // the admin off to hunt for a duplicate address in a CSV where every
+    // address is fine.
+    //
+    // A P2002 that names nothing is read as the address clash only when this
+    // import actually creates someone who can log in: the index is
+    // `WHERE "canLogin" = true`, so a batch of non-login rows cannot have hit
+    // it. Nothing else in the transaction can collide either — the access-role
+    // rows are written with `skipDuplicates`, `AuditLog` carries no unique
+    // constraint, and the create writes neither `googleSub` nor
+    // `xeroContactId`. The constraint is logged beside the error because the
+    // pino `err` serializer keeps only name/message/stack and drops `meta`.
     if (isPrismaUniqueConstraintError(err)) {
+      if (
+        isLoginEmailUniqueConflict(err, {
+          canClaimLoginEmail: membersToCreate.some((row) => row.canLogin),
+        })
+      ) {
+        return NextResponse.json(
+          {
+            error:
+              "Import failed because one or more login emails already exist. No members were created.",
+          },
+          { status: 409 },
+        );
+      }
+
+      logger.error(
+        { err, constraint: describeUniqueConstraintTarget(err) },
+        "Member import hit an unexpected unique constraint",
+      );
       return NextResponse.json(
         {
           error:
-            "Import failed because one or more login emails already exist. No members were created.",
+            "Import failed because one of the imported details is already used by another record. No members were created.",
         },
         { status: 409 },
       );

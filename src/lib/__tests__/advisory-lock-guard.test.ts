@@ -114,6 +114,12 @@ const SCOPED_ADVISORY_LOCK_INVENTORY: Record<string, number> = {
   "src/lib/config-transfer/apply.ts": 1,
   "src/lib/member-credit.ts": 1,
   "src/lib/member-lifecycle-actions.ts": 2,
+  // #2363: every minimum-stay policy writer takes the one global policy-set
+  // key before reading/planning. The migration's BEFORE STATEMENT trigger
+  // takes the exact same key for draining old-colour INSERT/UPDATE/DELETE before
+  // PostgreSQL reaches tuple locks. Config import orders its existing singleton
+  // first, then this key; live CRUD takes only this key.
+  "src/lib/minimum-stay-policy-set.ts": 1,
   // #1937: executeMemberMerge takes the shared member-lifecycle:{id} key for
   // BOTH the master and the loser, in sorted id order (deadlock-free), so a
   // merge serialises with any concurrent delete/archive/merge touching either

@@ -9,6 +9,7 @@ import {
 
 import { logAudit } from "@/lib/audit";
 import { ApiError } from "@/lib/api-error";
+import { MinimumStayPolicyViolationError } from "@/lib/booking-policy-exceptions";
 import {
   applyChoreCleanup,
   applyGuestChanges,
@@ -376,6 +377,51 @@ export async function modifyBookingBatch({
       role: actor.role,
       input,
     });
+
+    // #2363: this is the live member/admin edit surface, so the minimum-stay
+    // policy is enforced on the SAVE and not only advised on the preview. It
+    // mirrors the protected sibling `modifyBookingDates` exactly: a non-admin
+    // actor is hard-blocked with the full frozen review snapshot
+    // (policy id/version/name, resolved scope, affected NZ nights, typed
+    // requirements, eligibility and capacity mode), and the check runs BEFORE
+    // the guest plan, pricing and the capacity check so nothing is priced or
+    // claimed for a stay the policy refuses. The server is authoritative here:
+    // the edit panel's banner is advisory only and never gates Save.
+    //
+    // THE EXEMPTION IS "THE NIGHTS DID NOT MOVE", not "the request was one of
+    // two shapes". `resolveTargetDates` has already resolved the effective
+    // envelope — including the widening a `guestStayRanges` payload can cause —
+    // so `dates.datesChanged` IS the predicate the rationale always described:
+    // an edit that leaves the stay's nights exactly as they were cannot admit a
+    // NEW violation, so enforcing on it could only hard-block an unrelated fix
+    // to a booking that was already grandfathered outside the policy, with no
+    // remedy available to the member. That is not hypothetical: the member panel
+    // sends `guestStayRanges` unconditionally in grid and range modes, so the
+    // narrower identity-only/credit-only test blocked ordinary guest adds and
+    // name fixes. `modify-quote` gates its own check on the identical
+    // `targetDatesChanged`, computed the same way from the same envelope logic,
+    // so preview and apply agree on EVERY request shape — keep the two in step.
+    if (actor.role !== "ADMIN" && dates.datesChanged) {
+      const { validateMinimumStay, formatViolationsDetail } = await import(
+        "@/lib/booking-policies"
+      );
+      // `tx`, never the module client: this runs under BOTH the global money
+      // lock and the per-lodge capacity lock, so a read on a second pool
+      // connection here is the pool-starvation shape `member-guest-add-policy.ts`
+      // forbids. See docs/CONCURRENCY_AND_LOCKING.md → minimum-stay composition.
+      const stayResult = await validateMinimumStay(
+        dates.newCheckIn,
+        dates.newCheckOut,
+        bookingLodgeId,
+        tx,
+      );
+      if (!stayResult.valid) {
+        throw new MinimumStayPolicyViolationError(
+          formatViolationsDetail(stayResult.violations),
+          stayResult.violations,
+        );
+      }
+    }
 
     const guestPlan = await prepareGuestPlan(tx, {
       booking,

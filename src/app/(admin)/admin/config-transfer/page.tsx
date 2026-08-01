@@ -18,16 +18,21 @@ import {
   CONFIG_TRANSFER_CATEGORIES,
   type ConfigTransferCategory,
 } from "@/lib/config-transfer/manifest";
+import {
+  formatConfigImportTotals,
+  visibleImportPlanItems,
+} from "@/lib/config-transfer/preview";
 
 // Full-admin Configuration Export & Import page. Export selected categories to a
 // portable zip; import a bundle via a mandatory dry-run before applying (the
-// server takes a database backup and never deletes). Validation errors BLOCK
+// server takes a database backup). Validation errors BLOCK
 // apply; key-weak renames are resolved via the match picker. docs/config-transfer.
 
 const CATEGORY_LABELS: Record<ConfigTransferCategory, string> = {
   "site-content": "Site content & appearance",
   "club-settings": "Club settings",
   "lodge-config": "Lodge configuration",
+  "booking-policies": "Booking policies",
   committee: "Committee (roles)",
   induction: "Induction checklists",
   "membership-fees": "Membership fees (joining & annual)",
@@ -39,7 +44,7 @@ type ImportMode = "merge" | "overwrite";
 type PlanItem = {
   entity: string;
   key: string;
-  action: "create" | "update" | "unchanged";
+  action: "create" | "update" | "delete" | "unchanged";
   changedFields?: string[];
   candidates?: Array<{ id: string; label: string }>;
 };
@@ -49,6 +54,7 @@ type PlanItem = {
 const ACTION_BADGE: Record<PlanItem["action"], { label: string; badge: string }> = {
   create: { label: "New", badge: "bg-success-3 text-success-11" },
   update: { label: "Updated", badge: "bg-warning-3 text-warning-11" },
+  delete: { label: "Deleted", badge: "bg-danger-3 text-danger-11" },
   unchanged: { label: "Unchanged", badge: "bg-muted text-muted-foreground" },
 };
 type CategoryPlan = {
@@ -66,7 +72,7 @@ type ImportPlan = {
   integrityWarnings: string[];
   errors: string[];
   xero: { sourceTenantId: string | null; targetTenantId: string | null; mismatch: boolean };
-  summary: { create: number; update: number; unchanged: number };
+  summary: { create: number; update: number; delete: number; unchanged: number };
 };
 type Resolution = { entity: string; key: string; matchId: string };
 
@@ -255,15 +261,23 @@ export default function ConfigTransferPage() {
         body: form,
       });
       const data = (await res.json().catch(() => null)) as
-        | { result?: { totals: Record<string, number> }; error?: string }
+        | {
+            result?: {
+              totals: {
+                created: number;
+                updated: number;
+                deleted: number;
+                unchanged: number;
+              };
+            };
+            error?: string;
+          }
         | null;
       if (!res.ok || !data?.result) {
         throw new Error(data?.error ?? "Apply failed.");
       }
       const t = data.result.totals;
-      setApplied(
-        `Applied: ${t.created} created, ${t.updated} updated, ${t.unchanged} unchanged.`,
-      );
+      setApplied(`Applied: ${formatConfigImportTotals(t)}.`);
       setPlan(null);
       setResolutions([]);
       setImportCategories(null);
@@ -285,9 +299,10 @@ export default function ConfigTransferPage() {
         </h1>
         <p className="mt-2 max-w-3xl text-sm text-muted-foreground">
           Move configuration, site content, and lodge setup between instances as a
-          portable file. This is not a database backup: importing never deletes,
-          so restoring a bundle will not remove anything added since it was
-          exported. Members and transactional data are never included.
+          portable file. This is not a database backup: ordinary categories do
+          not delete, while booking policies replace the complete minimum-stay
+          set after previewing every deletion. Members and transactional data
+          are never included.
         </p>
       </div>
 
@@ -395,11 +410,21 @@ export default function ConfigTransferPage() {
                 Plan:{" "}
                 <span className="text-success-11">{plan.summary.create} new</span>,{" "}
                 <span className="text-warning-11">{plan.summary.update} updated</span>,{" "}
+                <span className="text-danger-11">{plan.summary.delete} deleted</span>,{" "}
                 <span className="text-muted-foreground">
                   {plan.summary.unchanged} unchanged
                 </span>
                 .
               </p>
+
+              {plan.selectedCategories.includes("booking-policies") && (
+                <p className="flex items-start gap-2 rounded-md bg-danger-3 p-2 font-medium text-danger-11">
+                  <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" />
+                  Booking policies are a complete replace-set: policies omitted
+                  from the bundle will be deleted, in both Merge and Overwrite
+                  modes. Review every Deleted row below before applying.
+                </p>
+              )}
 
               {plan.errors.length > 0 && (
                 <div className="rounded-md bg-danger-3 p-2">
@@ -524,17 +549,13 @@ export default function ConfigTransferPage() {
               )}
 
               {plan.categories.map((cat) => {
-                // Show changed rows (create/update) before unchanged, so real
-                // changes are never hidden under the 50-row display cap in a big
-                // category (e.g. lodge-config's rooms/beds/seasons).
-                const sorted = [...cat.items].sort((a, b) => {
-                  const rank = (x: PlanItem) => (x.action === "unchanged" ? 1 : 0);
-                  return rank(a) - rank(b);
-                });
-                const shown = sorted.slice(0, 50);
-                const hiddenUnchanged = sorted
-                  .slice(50)
-                  .filter((i) => i.action === "unchanged").length;
+                // Every mutation is shown, even when there are more than 50.
+                // Only unchanged rows may be capped; otherwise a destructive
+                // replace-set could tell the admin to review "every Deleted
+                // row below" while silently hiding some of them.
+                const { shown, hiddenUnchanged } = visibleImportPlanItems(
+                  cat.items,
+                );
                 return (
                 <div key={cat.category}>
                   <p className="font-medium">{CATEGORY_LABELS[cat.category]}</p>

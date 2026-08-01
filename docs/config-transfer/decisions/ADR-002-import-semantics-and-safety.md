@@ -18,20 +18,31 @@ anything uncertain or destructive.
 
 ## Decision
 
-### Upsert-only, never delete
+### Upsert-only by default; one reviewed replace-set
 
-For every row: match by natural key (or candidate match for key-weak
-entities) → update if found, create if not. **Import never deletes.**
+For ordinary categories, match every row by natural key (or candidate match for
+key-weak entities) → update if found, create if not. Those categories never
+delete.
 Importing a two-lodge bundle twice yields two lodges; importing a one-lodge
 bundle into a two-lodge site updates the matching lodge (or creates a third),
-never removes one. A mirror/replace mode is explicitly deferred; if ever
-added it must be reference-aware (refuse to delete config referenced by live
-rows — e.g. `ChoreAssignment → ChoreTemplate` is `onDelete: Restrict`).
+never removes one. A general mirror/replace mode remains explicitly deferred;
+if ever added it must be reference-aware (refuse to delete config referenced by
+live rows — e.g. `ChoreAssignment → ChoreTemplate` is `onDelete: Restrict`).
 
-**Stated limitation (must appear in UI copy):** because import never
-deletes, "restoring a snapshot" is approximate — anything added after the
-snapshot survives. True point-in-time rollback is the automatic pre-apply
-database backup, not this tool.
+The sole reviewed exception is `booking-policies/minimum-stay.csv` (#2363).
+Minimum-stay policies have no transactional foreign-key dependants and the
+bundle represents the complete club-wide/lodge-scoped set, keyed by exact
+`(scope, name)`. Apply creates, updates, and deletes to match that file under the
+shared policy-set advisory lock. The preview never truncates changed/deleted
+rows and its warning names deletion explicitly. A valid exact header with no
+data rows intentionally clears the set; any parse, header, row, scope, duplicate,
+or current-state error produces no mutation plan and blocks Apply.
+
+**Stated limitation (must appear in UI copy):** ordinary categories do not
+delete, so "restoring a snapshot" is approximate — anything added after the
+snapshot survives except an omitted minimum-stay policy. The policy exception
+is destructive but fully previewed. True point-in-time rollback is the automatic
+pre-apply database backup, not this tool.
 
 ### Plan → resolve → apply
 
@@ -82,11 +93,14 @@ database backup, not this tool.
      hand-edited bundle is listed (never blocks); the admin can apply as-is or
      "reseal" to regenerate the manifest first.
 3. **Apply.** Take the automatic DB backup, then in ONE transaction: take the
-   single-flight advisory lock, **re-plan against in-lock state**, refuse on
-   validation errors or ANY fingerprint mismatch (never apply a stale or
-   substituted plan — a second import queued behind the lock re-plans against
-   the winner's committed writes), then execute in dependency order (lodges →
-   rooms → beds → per-lodge config; singletons independently). Any failure
+   single-flight config-transfer advisory lock; if booking policies are selected,
+   take the shared minimum-stay policy-set lock next; **re-plan against in-lock
+   state**; refuse on validation errors or ANY fingerprint mismatch (never apply
+   a stale or substituted plan — a second import queued behind the lock re-plans
+   against the winner's committed writes); then execute in dependency order
+   (lodges → rooms → beds → minimum-stay policies → per-lodge config; singletons
+   independently). The permanent lock order is config-transfer singleton →
+   minimum-stay policy set. Any failure
    rolls back the entire import. Confident, non-destructive changes are not
    individually prompted — they are visible in the preview and covered by the
    single final confirm.
@@ -119,8 +133,10 @@ item-level tick lists.
   blast radius of any importer bug to "restore the backup" — this is what
   makes an interactive, behaviour-changing tool acceptable to ship
   incrementally.
-- Never-delete keeps live references safe by construction, at the cost of
-  the approximate-restore limitation above.
+- Default never-delete semantics keep live references safe by construction, at
+  the cost of the approximate-restore limitation above. The isolated
+  minimum-stay exception carries stronger schema, preview, version, and locking
+  requirements because it can delete.
 
 ## Security Considerations
 

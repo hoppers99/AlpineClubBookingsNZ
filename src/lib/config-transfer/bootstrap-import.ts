@@ -14,6 +14,7 @@ import {
   type ApplyConfigImportResult,
 } from "./apply";
 import type { ImportMode, ReadDb } from "./import-types";
+import { formatConfigImportTotals } from "./preview";
 
 /**
  * C9 — Config bundle auto-import on boot (ADR-003, disaster-recovery / clone).
@@ -622,7 +623,7 @@ export async function runConfigBootstrapImport(
               category: "system",
               severity: "critical",
               outcome: "success",
-              summary: `Auto-imported configuration bundle on boot (${info.totals.created} created, ${info.totals.updated} updated)`,
+              summary: `Auto-imported configuration bundle on boot (${formatConfigImportTotals(info.totals)})`,
               metadata: {
                 bundleSha256,
                 provenance,
@@ -647,8 +648,7 @@ export async function runConfigBootstrapImport(
         totals: result.totals,
         categories: plan.selectedCategories,
       },
-      `Config bundle auto-imported on boot: created ${result.totals.created}, ` +
-        `updated ${result.totals.updated}, unchanged ${result.totals.unchanged}.`,
+      `Config bundle auto-imported on boot: ${formatConfigImportTotals(result.totals)}.`,
     );
 
     return {

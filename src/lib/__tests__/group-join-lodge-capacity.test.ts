@@ -25,6 +25,11 @@ const mocks = vi.hoisted(() => ({
   resolveLinkedBookingMembers: vi.fn(),
   assertLinkedBookingMembersCanBeBooked: vi.fn(),
   normalizeBookingGuestInputs: vi.fn(),
+  validateMinimumStay: vi.fn(),
+  assertMembershipTypeBookingAllowed: vi.fn(),
+  requiresPaidSubscriptionForMemberForBooking: vi.fn(),
+  findUnpaidMemberGuests: vi.fn(),
+  createConfirmedBooking: vi.fn(),
 }));
 
 vi.mock("@/lib/prisma", () => ({
@@ -72,12 +77,40 @@ vi.mock("@/lib/booking-guests", async () => {
   };
 });
 
+vi.mock("@/lib/booking-policies", () => ({
+  validateMinimumStay: mocks.validateMinimumStay,
+  formatViolationsDetail: () => "Lodge B weekends: minimum 2 nights",
+}));
+
+vi.mock("@/lib/membership-type-policy", () => ({
+  assertMembershipTypeBookingAllowed:
+    mocks.assertMembershipTypeBookingAllowed,
+  requiresPaidSubscriptionForMemberForBooking:
+    mocks.requiresPaidSubscriptionForMemberForBooking,
+  priceBookingGuestsWithMembershipTypePolicy: vi.fn(),
+}));
+
+vi.mock("@/lib/booking-member-guest-subscriptions", () => ({
+  findUnpaidMemberGuests: mocks.findUnpaidMemberGuests,
+}));
+
+vi.mock("@/lib/booking-create", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/booking-create")>(
+    "@/lib/booking-create",
+  );
+  return { ...actual, createConfirmedBooking: mocks.createConfirmedBooking };
+});
+
 import {
   createNonMemberJoinRequest,
   joinGroupBookingAsMember,
   GroupBookingError,
 } from "@/lib/group-booking";
-import { addDaysDateOnly, getTodayDateOnly } from "@/lib/date-only";
+import {
+  addDaysDateOnly,
+  formatDateOnly,
+  getTodayDateOnly,
+} from "@/lib/date-only";
 
 // Kept relative to the real clock: the ended-stay gate (#1723 path 3) rejects
 // joins once the organiser booking's check-out reaches NZ today, so a
@@ -178,6 +211,10 @@ describe("joinGroupBookingAsMember caps against the group's lodge", () => {
     mocks.normalizeBookingGuestInputs.mockImplementation((guests: unknown[]) =>
       guests.map((g) => ({ ...(g as object), isMember: true }))
     );
+    mocks.assertMembershipTypeBookingAllowed.mockResolvedValue(undefined);
+    mocks.requiresPaidSubscriptionForMemberForBooking.mockResolvedValue(false);
+    mocks.findUnpaidMemberGuests.mockResolvedValue([]);
+    mocks.validateMinimumStay.mockResolvedValue({ valid: true, violations: [] });
   });
 
   it("sizes the member-join cap with the group's lodge, not the default lodge", async () => {
@@ -202,5 +239,69 @@ describe("joinGroupBookingAsMember caps against the group's lodge", () => {
 
     expect(mocks.getLodgeCapacity).toHaveBeenCalledWith(LODGE_B);
     expect(mocks.getDefaultLodgeId).not.toHaveBeenCalled();
+  });
+
+  it("returns a frozen non-default-lodge policy review before any booking write", async () => {
+    const violation = {
+      reasonCode: "MINIMUM_STAY",
+      policyId: "policy-lodge-b",
+      policyVersion: 5,
+      policyName: "Lodge B weekends",
+      resolvedScope: {
+        kind: "LODGE",
+        lodgeId: LODGE_B,
+        effectiveLodgeId: LODGE_B,
+      },
+      affectedNights: [formatDateOnly(checkIn)],
+      exceptionEligible: true,
+      capacityMode: "HOLD",
+      message: "Lodge B requires two nights.",
+      triggerDay: "Friday",
+      minimumNights: 2,
+      actualNights: 1,
+      requirements: {
+        kind: "MINIMUM_STAY",
+        minimumNights: 2,
+        actualNights: 1,
+        triggerDays: [5],
+      },
+    } as const;
+    mocks.groupFindUnique.mockResolvedValue(activeGroup(LODGE_B));
+    mocks.validateMinimumStay.mockResolvedValue({
+      valid: false,
+      violations: [violation],
+    });
+
+    await expect(
+      joinGroupBookingAsMember(
+        {
+          code: "ABCD2345",
+          guests: [
+            {
+              firstName: "Jo",
+              lastName: "Member",
+              ageTier: "ADULT",
+              memberId: "joiner-1",
+              isMember: true,
+            },
+          ],
+        },
+        "joiner-1",
+        "MEMBER",
+      ),
+    ).rejects.toMatchObject({
+      status: 400,
+      code: "MINIMUM_STAY_VIOLATION",
+      details: "Lodge B weekends: minimum 2 nights",
+      violations: [violation],
+      exceptionReview: { violations: [violation], capacityMode: "HOLD" },
+    });
+
+    expect(mocks.validateMinimumStay).toHaveBeenCalledWith(
+      checkIn,
+      checkOut,
+      LODGE_B,
+    );
+    expect(mocks.createConfirmedBooking).not.toHaveBeenCalled();
   });
 });

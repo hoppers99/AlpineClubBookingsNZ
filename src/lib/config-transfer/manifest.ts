@@ -10,15 +10,21 @@ import { z } from "zod";
 
 /**
  * Bundle format version. Bump the MAJOR meaning of this when the on-disk shape
- * changes incompatibly; the importer refuses a bundle whose formatVersion is
- * greater than the one it understands (ADR-001 "version tolerance").
+ * changes incompatibly; the importer accepts only the exact version it
+ * understands (ADR-001 "version tolerance").
  *
  * v2 (#2187): the `club-theme` entity dropped to the three seed columns
  * (`brandGold`/`brandDeep`/`brandSafety`). A v1 bundle still carries the four
  * former brand columns and is NOT translated (D19) — the importer rejects any
  * `formatVersion < 2` outright rather than silently discarding those columns.
+ *
+ * v3 (#2363): adds the destructive `booking-policies` replace-set category.
+ * A v2 reader neither recognises that category nor knows that an omitted row
+ * means DELETE, so this is an incompatible capability boundary. This repo's
+ * existing exact-version import contract rejects both older and newer bundles;
+ * operators re-export from the current app instead of silently losing policy.
  */
-export const CONFIG_TRANSFER_FORMAT_VERSION = 2;
+export const CONFIG_TRANSFER_FORMAT_VERSION = 3;
 
 /**
  * Top-level categories a bundle can carry. Order is the dependency-safe apply
@@ -28,6 +34,7 @@ export const CONFIG_TRANSFER_CATEGORIES = [
   "site-content",
   "club-settings",
   "lodge-config",
+  "booking-policies",
   "committee",
   "induction",
   "membership-fees",
