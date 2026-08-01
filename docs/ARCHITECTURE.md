@@ -1396,6 +1396,49 @@ The source of truth is `prisma/schema.prisma`. Key domains are:
   `URGENT`/`WARNING`/`NOTIFY` priority and an inclusive NZ date-only display
   window, rendered above the public and member site headers.
 
+### Reading a unique-constraint failure (P2002) — measured, not assumed
+
+Prisma 7 reaches PostgreSQL through the `pg` driver adapter (`PrismaPg`, wired
+in `src/lib/prisma-adapter.ts`), and that changes the shape of a P2002 from what
+most Prisma documentation and older code assume. Measured on 1 Aug 2026 against
+PostgreSQL 16 with Prisma 7.9.0 and this repo's real migration tree:
+
+- **`meta.target` is never populated.** It was the old Rust query engine's
+  field. Any code that reads only `meta.target` to decide which constraint fired
+  is dead code on this stack — that is exactly how the join-code collision retry
+  in `src/lib/group-booking.ts` silently stopped firing (#2412).
+- **The colliding columns arrive at
+  `meta.driverAdapterError.cause.constraint.fields`.** The adapter parses them
+  out of the `Key (…)` detail of the SQLSTATE 23505 error, so the list holds
+  COLUMN names, never the index name. The index name appears only inside
+  `cause.originalMessage`.
+- **Column names keep whatever quoting Postgres used.** A camelCase column comes
+  back as `"joinCode"` with literal double quotes; a lowercase one as `email`.
+  Compare case-insensitively and strip quotes.
+- **A raw partial index is indistinguishable from a schema-level `@unique`.**
+  `Member_email_login_unique` (hand-written SQL, `WHERE "canLogin" = true`)
+  reports its column `email` exactly the way `GroupBooking.joinCode`
+  (`@unique` in the schema) reports `"joinCode"`. The long-assumed "the two
+  index kinds surface differently" distinction is not real, and cost two
+  separate sessions' reasoning before it was measured.
+
+Do not re-derive this by reading adapter source. Use
+`describeUniqueConstraintTarget` in `src/lib/prisma-errors.ts`, which reads every
+shape most-trustworthy-first (so it keeps working if the adapter is ever dropped
+and `meta.target` returns, or if Postgres withholds the `Key (…)` detail and only
+the rendered message is left) and normalises the quoting, case and composite
+separator away, so one constraint always describes itself the same way whichever
+shape carried it. Verbatim captured errors live in
+`src/lib/__tests__/helpers/p2002-fixtures.ts`.
+
+Two limits on that advice. All of the above is about **unique** constraints
+(SQLSTATE 23505) only: for a CHECK or trigger violation the adapter drops the
+Postgres `constraint` field altogether, so the helper has nothing to return and
+the booking-envelope triggers are matched on their `RAISE EXCEPTION` text instead
+(`src/lib/booking-envelope-invariants.ts`). And the rendered message echoes the
+call arguments, so any match against it is made on Prisma's whole sentence —
+member free text can otherwise supply a convincing-looking field list of its own.
+
 ## Booking and Payment Flow
 
 The happy-path request/data flow for a card booking. Capacity is claimed under
