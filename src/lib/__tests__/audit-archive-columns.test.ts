@@ -812,6 +812,18 @@ describe("audit archive writer serialises every column (#2290)", () => {
       rejection = error;
     }
 
+    // The contract first: nothing was deleted — not the archived rows, and not
+    // the expired ones. If this fails, someone has isolated the job's steps so
+    // that pruning survives a failed archive, which permanently deletes rows
+    // the archive never received. Read the reasoning in `runAuditLogRetentionJob`
+    // before "fixing" this test.
+    expect(mocks.deleteMany).not.toHaveBeenCalled();
+    // The archive prune never issued its DELETE either — the failed INSERT is
+    // the only statement the archive database saw.
+    expect(archiveDb.$executeRaw).toHaveBeenCalledTimes(1);
+
+    // Then the triage message, which has to name both halves so the operator
+    // does not read a cron failure as "only the archive is paused".
     expect(rejection).toBeInstanceOf(Error);
     const failure = rejection as Error;
     expect(failure.message).toContain("nothing was archived");
@@ -820,11 +832,5 @@ describe("audit archive writer serialises every column (#2290)", () => {
     // The original PostgreSQL error is preserved for diagnosis.
     expect(failure.message).toContain('column "noteRef"');
     expect(failure.cause).toBe(columnMissing);
-
-    // Nothing was deleted: not the archived rows, and not the expired ones.
-    expect(mocks.deleteMany).not.toHaveBeenCalled();
-    // The archive prune never issued its DELETE either — the failed INSERT is
-    // the only statement the archive database saw.
-    expect(archiveDb.$executeRaw).toHaveBeenCalledTimes(1);
   });
 });
