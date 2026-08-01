@@ -1009,15 +1009,33 @@ export function diffSelfRelationLinkState(params: {
   return drifts;
 }
 
+/**
+ * Club-admin vocabulary for the four self-relation columns, matching the
+ * changelog's register ("who a member's parent or second parent is, whose
+ * email address they share, and who confirmed their details"). The 409 message
+ * is the WHOLE admin-facing contract — the merge page renders `data.error`
+ * verbatim and never reads `details` — so it must not name raw database
+ * columns; the raw column stays in `details.driftFamilyLinks` for machine
+ * consumers and the audit trail. Unknown columns (a future fifth
+ * self-relation) fall back to the column name rather than hiding.
+ */
+const FAMILY_LINK_LABELS: Record<string, string> = {
+  parentMemberId: "parent",
+  secondaryParentId: "second parent",
+  inheritEmailFromId: "shared email address",
+  detailsConfirmedByMemberId: "details confirmed by",
+};
+
 /** Plain-English rendering of one family-link drift entry for the 409 message. */
 export function describeFamilyLinkDrift(drift: FamilyLinkDrift): string {
+  const label = FAMILY_LINK_LABELS[drift.column] ?? drift.column;
   switch (drift.where) {
     case "master":
-      return `${drift.column} (on the surviving member)`;
+      return `${label} (on the surviving member)`;
     case "duplicate":
-      return `${drift.column} (on the duplicate)`;
+      return `${label} (on the duplicate)`;
     case "inbound":
-      return `${drift.column} (another member now links to the duplicate)`;
+      return `${label} (another member now links to the duplicate)`;
   }
 }
 

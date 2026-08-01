@@ -1498,7 +1498,7 @@ describe("family-link drift under the lock (#2437)", () => {
         db: client as never,
       }),
     ).rejects.toThrow(
-      /family links changed while the merge was running: parentMemberId \(on the surviving member\).*Re-run the preview/,
+      /family links changed while the merge was running: parent \(on the surviving member\).*Re-run the preview/,
     );
   });
 
@@ -1582,7 +1582,7 @@ describe("family-link drift under the lock (#2437)", () => {
       details: { driftFamilyLinks: [{ column: "parentMemberId", where: "inbound" }] },
     });
     await expect(run()).rejects.toThrow(
-      /parentMemberId \(another member now links to the duplicate\)/,
+      /parent \(another member now links to the duplicate\)/,
     );
     expect(memberDelegate.delete).not.toHaveBeenCalled();
     expect(

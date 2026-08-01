@@ -537,16 +537,26 @@ describe("family-link drift under the lock (#2437, diffSelfRelationLinkState)", 
     ).toEqual([]);
   });
 
-  it("names each drift for the 409 in plain English", () => {
+  it("names each drift for the 409 in the admin's vocabulary, never as a raw DB column", () => {
+    // The merge page renders the message verbatim and never reads `details`,
+    // so this string is what a club administrator uses to work out — with the
+    // other admin — what changed before retrying an irreversible merge.
     expect(
       describeFamilyLinkDrift({ column: "parentMemberId", where: "master" }),
-    ).toBe("parentMemberId (on the surviving member)");
+    ).toBe("parent (on the surviving member)");
     expect(
       describeFamilyLinkDrift({ column: "inheritEmailFromId", where: "duplicate" }),
-    ).toBe("inheritEmailFromId (on the duplicate)");
+    ).toBe("shared email address (on the duplicate)");
     expect(
       describeFamilyLinkDrift({ column: "secondaryParentId", where: "inbound" }),
-    ).toBe("secondaryParentId (another member now links to the duplicate)");
+    ).toBe("second parent (another member now links to the duplicate)");
+    expect(
+      describeFamilyLinkDrift({ column: "detailsConfirmedByMemberId", where: "master" }),
+    ).toBe("details confirmed by (on the surviving member)");
+    // A future fifth column falls back to its name rather than hiding.
+    expect(
+      describeFamilyLinkDrift({ column: "guardianMemberId", where: "inbound" }),
+    ).toBe("guardianMemberId (another member now links to the duplicate)");
   });
 });
 
