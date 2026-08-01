@@ -346,14 +346,18 @@ export default function ReportsPage() {
 
   return (
     <div className="space-y-6 print:space-y-4">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-end print:hidden">
+      <div className="flex flex-col gap-4 print:hidden">
         <div>
           <h1 className="text-2xl font-bold text-foreground">Reports</h1>
           <p className="mt-1 text-sm text-muted-foreground">
             Occupancy, revenue, booking, and member analytics
           </p>
         </div>
-        <div className="ml-auto flex items-end gap-3">
+        <div
+          role="group"
+          aria-label="Report filters and exports"
+          className="flex w-full flex-wrap items-end gap-3"
+        >
           <DateRangeControls
             presets={reportsDateRangePresets}
             from={from}

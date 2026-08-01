@@ -75,6 +75,47 @@ afterEach(() => {
 });
 
 describe("ReportsPage quick ranges", () => {
+  it("wraps the full multi-lodge toolbar without changing its keyboard order", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(JSON.stringify(EMPTY_REPORT), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+
+    render(<ReportsPage />);
+    const toolbar = await screen.findByRole("group", {
+      name: "Report filters and exports",
+    });
+    const quickRange = screen.getByRole("combobox", { name: "Quick Range" });
+    const from = screen.getByLabelText("From");
+    const to = screen.getByLabelText("To");
+    const lodge = screen.getByDisplayValue("All lodges");
+    const deleted = screen.getByDisplayValue("Hide deleted");
+    const reset = screen.getByRole("button", { name: /^Reset\./ });
+    const update = screen.getByRole("button", { name: "Update" });
+    const csv = await screen.findByRole("button", { name: "CSV" });
+    const pdf = screen.getByRole("button", { name: "Download PDF" });
+
+    expect(toolbar).toHaveClass("w-full", "flex-wrap");
+    expect(reset).toBeDisabled();
+
+    const controls = Array.from(
+      toolbar.querySelectorAll<HTMLElement>("input, select, button"),
+    );
+    expect(controls.indexOf(quickRange)).toBeLessThan(controls.indexOf(from));
+    expect(controls.indexOf(from)).toBeLessThan(controls.indexOf(to));
+    expect(controls.indexOf(to)).toBeLessThan(controls.indexOf(lodge));
+    expect(controls.indexOf(lodge)).toBeLessThan(controls.indexOf(deleted));
+    expect(controls.indexOf(deleted)).toBeLessThan(controls.indexOf(reset));
+    expect(controls.indexOf(reset)).toBeLessThan(controls.indexOf(update));
+    expect(controls.indexOf(update)).toBeLessThan(controls.indexOf(csv));
+    expect(controls.indexOf(csv)).toBeLessThan(controls.indexOf(pdf));
+  });
+
   it("preserves lodge and deleted scope when Next Month changes only the dates", async () => {
     const requests: string[] = [];
     vi.stubGlobal(

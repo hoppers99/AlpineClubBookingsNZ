@@ -433,7 +433,10 @@ async function shoot(context: BrowserContext, capture: Capture): Promise<void> {
       .first()
       .waitFor({ state: "hidden", timeout: 15_000 })
       .catch(() => undefined);
-    await page.waitForTimeout(800);
+    // Recharts animates freshly-loaded SVG series for 1.5s. Wait through that
+    // shared finite animation so named captures contain the chart data rather
+    // than only axes/legends from the first frame.
+    await page.waitForTimeout(1_800);
     if (capture.prepare) {
       await capture.prepare(page);
     }
