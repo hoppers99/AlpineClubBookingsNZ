@@ -26,7 +26,7 @@ const hostedRaceDatabaseUrl =
 const databaseUrl = explicitDatabaseUrl || hostedRaceDatabaseUrl;
 const describeWithDatabase = databaseUrl ? describe : describe.skip;
 const migrationPath =
-  "prisma/migrations/20260801190000_add_booking_policy_exception_foundation/migration.sql";
+  "prisma/migrations/20260802130000_add_booking_policy_exception_foundation/migration.sql";
 
 function quoteIdentifier(value: string): string {
   return `"${value.replaceAll('"', '""')}"`;

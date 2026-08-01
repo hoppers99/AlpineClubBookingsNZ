@@ -16,7 +16,7 @@ import {
 import { getMinimumStayViolations } from "@/lib/policies/minimum-stay";
 
 const MIGRATION =
-  "20260801190000_add_booking_policy_exception_foundation";
+  "20260802130000_add_booking_policy_exception_foundation";
 
 function repoFile(path: string): string {
   return readFileSync(join(process.cwd(), path), "utf8");
