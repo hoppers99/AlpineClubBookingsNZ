@@ -92,6 +92,12 @@ type AuditArchiveColumnSpec = {
  * `INSERT` column list and its bound values are both generated from this map's
  * key order, so they can never disagree.
  */
+// Deliberately a plain annotated object literal, not `Object.freeze(...)`: the
+// freeze overload makes TypeScript report a missing column as a bewildering
+// `Type 'Function' is missing ...` overload failure, where the annotation alone
+// reports the crisp `Property '<column>' is missing in type ... but required in
+// type 'Record<ArchivedAuditLogColumn, AuditArchiveColumnSpec>'`. That message
+// is the whole point of the guard, so it wins over runtime immutability.
 export const AUDIT_ARCHIVE_COLUMNS: Record<
   ArchivedAuditLogColumn,
   AuditArchiveColumnSpec
