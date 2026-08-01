@@ -187,7 +187,7 @@ export async function POST(
     }
 
     sendBookingConfirmedEmail(
-      { bookingId: booking.id },
+      { bookingId: booking.id, recipientMemberId: booking.memberId },
       booking.member.email,
       booking.member.firstName,
       booking.checkIn,
@@ -231,7 +231,7 @@ export async function POST(
   // For PENDING bookings, send pending email
   if (result.newStatus === BookingStatus.PENDING && booking.nonMemberHoldUntil) {
     sendBookingPendingEmail(
-      { bookingId: booking.id },
+      { bookingId: booking.id, recipientMemberId: booking.memberId },
       booking.member.email,
       booking.member.firstName,
       booking.checkIn,

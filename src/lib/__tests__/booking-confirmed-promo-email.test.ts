@@ -156,7 +156,7 @@ async function captureConfirmedTemplateData(
   }
   const { sendBookingConfirmedEmail } = await import("../email/booking");
   await sendBookingConfirmedEmail(
-    { bookingId: "bk_test" },
+    { bookingId: "bk_test", recipientMemberId: "member_1" },
     "member@example.org",
     "Sam",
     new Date("2026-08-15"),
@@ -682,6 +682,7 @@ describe("booking-modified default body (#2267)", () => {
     const { sendBookingModifiedEmail } = await import("../email/booking");
     await sendBookingModifiedEmail({
       bookingId: "bk_test",
+      recipientMemberId: "member_1",
       email: "member@example.org",
       firstName: "Sam",
       modificationType: "DATE_CHANGE",

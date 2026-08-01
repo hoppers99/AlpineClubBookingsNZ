@@ -2205,7 +2205,10 @@ export async function approveMemberWholeLodgeRequest(input: {
       })
       .catch(() => null);
     sendBookingConfirmedEmail(
-      { bookingId: conversion.bookingId },
+      {
+        bookingId: conversion.bookingId,
+        recipientMemberId: conversion.memberId,
+      },
       ownerContact?.email ?? request.contactEmail,
       ownerContact?.firstName ?? request.contactFirstName,
       request.checkIn,

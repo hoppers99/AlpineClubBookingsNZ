@@ -4,6 +4,7 @@ import {
   APPROVED_EMAIL_TEMPLATE_TOKEN_SET,
   EXTRA_TEMPLATE_TOKENS,
   EMAIL_TEMPLATE_DEFINITIONS,
+  EMAIL_TEMPLATE_KEY_SET,
   getEmailTemplateDefinition,
   sampleValue,
 } from "@/lib/email-message-registry";
@@ -27,6 +28,10 @@ import {
   ALWAYS_BOOKING_SCOPED_TEMPLATE_NAMES,
   isBookingSuppressibleTemplate,
 } from "@/lib/booking-email-suppression";
+import {
+  BOOKING_URL_TEMPLATE_NAMES,
+  findBookingUrlTemplateContractFindings,
+} from "@/lib/booking-email-template-contract";
 
 // #2268 — the guard these replace was circular. The old check ran
 // validateEmailTemplateContent over every default body, but the per-template
@@ -43,6 +48,422 @@ const DEFAULTS = EMAIL_AUDIT_DEFAULTS as unknown as Record<
   string,
   EmailTemplateDefaults
 >;
+
+function renderWithLegacyWholeLineBookingUrlRemoval(
+  template: string,
+  data: Record<string, string>,
+): string {
+  return template
+    .replace(/^.*\{\{\s*bookingUrl\s*\}\}.*(?:\r?\n|$)/gm, "")
+    .replace(/\{\{([^{}]+)\}\}/g, (_match, tokenName: string) => {
+      return data[tokenName.trim()] ?? "";
+    });
+}
+
+function renderWithPerLineOnlyBookingUrlRemoval(
+  template: string,
+  data: Record<string, string>,
+): string {
+  return template
+    .replace(
+      /^[ \t]*\{\{\s*bookingUrl\s*\}\}[ \t]*(?:\r\n|\n|\r|$)/gm,
+      "",
+    )
+    .replace(/\{\{([^{}]+)\}\}/g, (_match, tokenName: string) => {
+      return data[tokenName.trim()] ?? "";
+    });
+}
+
+function renderWithSplitLineSuffixPattern(
+  template: string,
+  data: Record<string, string>,
+  suffixPattern: RegExp,
+): string {
+  const parts = template.split(/(\r\n|\n|\r)/);
+  const replacements = new Map<number, string | null>();
+  const tokenOnly = /^[ \t]*\{\{\s*bookingUrl\s*\}\}[ \t]*$/i;
+  let rendered = "";
+
+  for (let index = 0; index + 2 < parts.length; index += 2) {
+    const line = parts[index] ?? "";
+    const nextLine = parts[index + 2] ?? "";
+    if (parts[index + 1] === undefined || !tokenOnly.test(nextLine)) continue;
+    const withoutCta = line.replace(suffixPattern, "").trimEnd();
+    if (withoutCta !== line.trimEnd()) {
+      replacements.set(index, withoutCta || null);
+      replacements.set(index + 2, null);
+    }
+  }
+
+  for (let index = 0; index < parts.length; index += 2) {
+    const line = parts[index] ?? "";
+    const lineEnding = parts[index + 1] ?? "";
+    if (replacements.has(index)) {
+      const replacement = replacements.get(index);
+      if (replacement) rendered += replacement + lineEnding;
+    } else if (!tokenOnly.test(line)) {
+      rendered += line + lineEnding;
+    }
+  }
+
+  return rendered.replace(/\{\{([^{}]+)\}\}/g, (_match, tokenName: string) => {
+    return data[tokenName.trim()] ?? "";
+  });
+}
+
+describe("#2362 booking detail URL template contract", () => {
+  it("classifies exactly the live registered booking-scoped inventory", () => {
+    expect(
+      findBookingUrlTemplateContractFindings({
+        bookingScopedInventory: ALWAYS_BOOKING_SCOPED_TEMPLATE_NAMES,
+        registeredTemplates: EMAIL_TEMPLATE_KEY_SET,
+        bookingUrlTemplates: BOOKING_URL_TEMPLATE_NAMES,
+      }),
+    ).toEqual([]);
+  });
+
+  it("detects a deliberately removed booking template classification", () => {
+    const mutated = new Set(BOOKING_URL_TEMPLATE_NAMES);
+    mutated.delete("booking-confirmed");
+
+    expect(
+      findBookingUrlTemplateContractFindings({
+        bookingScopedInventory: ALWAYS_BOOKING_SCOPED_TEMPLATE_NAMES,
+        registeredTemplates: EMAIL_TEMPLATE_KEY_SET,
+        bookingUrlTemplates: mutated,
+      }),
+    ).toContainEqual({ kind: "missing", templateName: "booking-confirmed" });
+  });
+
+  it("makes bookingUrl optional, sampled, and visible in every classified default", () => {
+    for (const templateName of BOOKING_URL_TEMPLATE_NAMES) {
+      const definition = getEmailTemplateDefinition(templateName);
+      expect(definition, templateName).toBeDefined();
+      expect(definition?.allowedTokens, templateName).toContain("bookingUrl");
+      expect(definition?.requiredTokens, templateName).not.toContain("bookingUrl");
+      expect(definition?.defaultBody, templateName).toContain("{{bookingUrl}}");
+      expect(definition?.sampleData.bookingUrl, templateName).toBe(
+        "https://bookings.example.org/bookings/bkg_example",
+      );
+    }
+  });
+
+  it("renders the preview sample but removes the entire optional line when unauthorized", () => {
+    const definition = getEmailTemplateDefinition("booking-confirmed");
+    if (!definition) throw new Error("missing booking-confirmed");
+
+    expect(renderTemplateString(definition.defaultBody, definition.sampleData)).toContain(
+      "View this booking: https://bookings.example.org/bookings/bkg_example",
+    );
+    const withoutAuthority = renderTemplateString(definition.defaultBody, {
+      ...definition.sampleData,
+      bookingUrl: "",
+    });
+    expect(withoutAuthority).not.toContain("View this booking:");
+    expect(withoutAuthority).not.toContain("/bookings/bkg_example");
+  });
+
+  it("does not alter or invalidate an existing override that omits bookingUrl", () => {
+    const storedBody = "Hi {{firstName}}, your booking is confirmed.";
+    expect(renderTemplateString(storedBody, { firstName: "Aroha", bookingUrl: "" })).toBe(
+      "Hi Aroha, your booking is confirmed.",
+    );
+    expect(
+      validateEmailTemplateContent({
+        templateName: "booking-pending",
+        subject: "Booking pending",
+        bodyText: storedBody,
+      }).valid,
+    ).toBe(true);
+  });
+
+  it.each([
+    {
+      name: "payment action separated by a pipe",
+      template:
+        "Pay now: {{paymentUrl}} | View this booking: {{bookingUrl}}",
+      data: { paymentUrl: "https://pay.example.test/p/bearer-payment" },
+      expected: "Pay now: https://pay.example.test/p/bearer-payment",
+    },
+    {
+      name: "respond action after an unavailable booking CTA",
+      template:
+        "View booking: {{bookingUrl}} • Respond: {{respondUrl}}",
+      data: { respondUrl: "https://book.example.test/respond/bearer-response" },
+      expected: "Respond: https://book.example.test/respond/bearer-response",
+    },
+    {
+      name: "consent action beside an em-dash-separated booking CTA",
+      template:
+        "Consent: {{consentUrl}} — Open booking details: {{bookingUrl}}",
+      data: { consentUrl: "https://book.example.test/consent/bearer-consent" },
+      expected: "Consent: https://book.example.test/consent/bearer-consent",
+    },
+    {
+      name: "HTML-shaped actions separated by a break",
+      template:
+        '<a href="{{consentUrl}}">Give consent</a><br><a href="{{bookingUrl}}">View booking</a>',
+      data: { consentUrl: "https://book.example.test/consent/bearer-html" },
+      expected:
+        '<a href="https://book.example.test/consent/bearer-html">Give consent</a>',
+    },
+    {
+      name: "unrelated prose sharing a fragment with the booking CTA",
+      template:
+        "Payment remains due. View this booking: {{bookingUrl}}",
+      data: {},
+      expected: "Payment remains due.",
+    },
+    {
+      name: "a bearer action after an unrecognised booking-link label",
+      template:
+        "Use this private page: {{bookingUrl}} then pay: {{paymentUrl}}",
+      data: { paymentUrl: "https://pay.example.test/p/bearer-after" },
+      expected: "pay: https://pay.example.test/p/bearer-after",
+    },
+    {
+      name: "a bearer action before an unrecognised booking-link label",
+      template:
+        "Pay: {{paymentUrl}} then use this private page: {{bookingUrl}}",
+      data: { paymentUrl: "https://pay.example.test/p/bearer-before" },
+      expected: "Pay: https://pay.example.test/p/bearer-before",
+    },
+  ])("preserves $name when bookingUrl is unavailable", ({ template, data, expected }) => {
+    expect(renderTemplateString(template, { ...data, bookingUrl: "" })).toBe(expected);
+  });
+
+  it("removes an unrecognised standalone booking CTA instead of leaving a dangling label", () => {
+    expect(
+      renderTemplateString("Use this private page: {{bookingUrl}}", {
+        bookingUrl: "",
+      }),
+    ).toBe("");
+  });
+
+  it("removes a dedicated optional booking-link line without changing surrounding CRLF lines", () => {
+    expect(
+      renderTemplateString(
+        "Keep the payment instructions.\r\nView this booking: {{bookingUrl}}\r\nKeep the consent instructions.",
+        { bookingUrl: "" },
+      ),
+    ).toBe("Keep the payment instructions.\r\nKeep the consent instructions.");
+  });
+
+  it("removes an immediately preceding standalone CTA label with a token-only CRLF line", () => {
+    const template =
+      "View this booking:\r\n{{bookingUrl}}\r\nKeep this operational sentence.";
+
+    expect(renderTemplateString(template, { bookingUrl: "" })).toBe(
+      "Keep this operational sentence.",
+    );
+  });
+
+  it.each([
+    {
+      name: "unrelated preceding copy",
+      template:
+        "Payment instructions:\r\n{{bookingUrl}}\r\nKeep this operational sentence.",
+      data: { bookingUrl: "" },
+      expected:
+        "Payment instructions:\r\nKeep this operational sentence.",
+    },
+    {
+      name: "unrelated prose before a recognized CTA suffix",
+      template:
+        "Payment remains due — View this booking:\r\n{{bookingUrl}}\r\nKeep this operational sentence.",
+      data: { bookingUrl: "" },
+      expected:
+        "Payment remains due\r\nKeep this operational sentence.",
+    },
+    {
+      name: "a bearer action before a recognized CTA suffix",
+      template:
+        "Pay now: {{paymentUrl}} | View this booking:\r\n{{bookingUrl}}\r\nKeep this operational sentence.",
+      data: {
+        bookingUrl: "",
+        paymentUrl: "https://pay.example.test/p/bearer-previous-line",
+      },
+      expected:
+        "Pay now: https://pay.example.test/p/bearer-previous-line\r\nKeep this operational sentence.",
+    },
+    {
+      name: "a preceding line where the CTA words are not a standalone suffix",
+      template:
+        "View this booking: call support if it fails.\r\n{{bookingUrl}}\r\nKeep this operational sentence.",
+      data: { bookingUrl: "" },
+      expected:
+        "View this booking: call support if it fails.\r\nKeep this operational sentence.",
+    },
+    {
+      name: "a non-adjacent CTA label",
+      template:
+        "View this booking:\r\n\r\n{{bookingUrl}}\r\nKeep this operational sentence.",
+      data: { bookingUrl: "" },
+      expected:
+        "View this booking:\r\n\r\nKeep this operational sentence.",
+    },
+    {
+      name: "a next line that also carries a bearer action",
+      template:
+        "View this booking:\r\n{{bookingUrl}} | Pay now: {{paymentUrl}}\r\nKeep this operational sentence.",
+      data: {
+        bookingUrl: "",
+        paymentUrl: "https://pay.example.test/p/bearer-near-miss",
+      },
+      expected:
+        "View this booking:\r\nPay now: https://pay.example.test/p/bearer-near-miss\r\nKeep this operational sentence.",
+    },
+  ])("does not delete $name", ({ template, data, expected }) => {
+    expect(renderTemplateString(template, data)).toBe(expected);
+  });
+
+  it.each([
+    "The committee will review this booking:",
+    "If the request is withdrawn, do not review this booking:",
+  ])(
+    "preserves unrelated split-line prose: %s",
+    (prose) => {
+      const template = `${prose}\n{{bookingUrl}}\nKeep this operational sentence.`;
+      expect(renderTemplateString(template, { bookingUrl: "" })).toBe(
+        `${prose}\nKeep this operational sentence.`,
+      );
+    },
+  );
+
+  it.each([
+    "**View this booking:**",
+    "__Open your booking details:__",
+  ])("removes an emphasized split-line CTA: %s", (label) => {
+    expect(
+      renderTemplateString(
+        `${label}\r\n{{bookingUrl}}\r\nKeep this operational sentence.`,
+        { bookingUrl: "" },
+      ),
+    ).toBe("Keep this operational sentence.");
+  });
+
+  it("keeps a bearer action before an emphasized split-line CTA", () => {
+    expect(
+      renderTemplateString(
+        "Pay now: {{paymentUrl}} | **View this booking:**\n{{bookingUrl}}\nKeep this operational sentence.",
+        {
+          bookingUrl: "",
+          paymentUrl: "https://pay.example.test/p/bearer-emphasis",
+        },
+      ),
+    ).toBe(
+      "Pay now: https://pay.example.test/p/bearer-emphasis\nKeep this operational sentence.",
+    );
+  });
+
+  it("keeps an authorized emphasized split-line CTA byte-for-byte", () => {
+    expect(
+      renderTemplateString(
+        "**View this booking:**\r\n{{bookingUrl}}\r\nKeep this operational sentence.",
+        { bookingUrl: "https://book.example.test/bookings/bk_1" },
+      ),
+    ).toBe(
+      "**View this booking:**\r\nhttps://book.example.test/bookings/bk_1\r\nKeep this operational sentence.",
+    );
+  });
+
+  it("would truncate prose if the split-line suffix lost its start/separator boundary", () => {
+    const template =
+      "The committee will review this booking:\n{{bookingUrl}}\nKeep this operational sentence.";
+    const mutatedUnboundedSuffix =
+      /\b(?:review\s+(?:this\s+)?booking)[ \t]*:[ \t]*$/i;
+
+    expect(
+      renderWithSplitLineSuffixPattern(
+        template,
+        { bookingUrl: "" },
+        mutatedUnboundedSuffix,
+      ),
+    ).toBe("The committee will\nKeep this operational sentence.");
+    expect(renderTemplateString(template, { bookingUrl: "" })).toBe(
+      "The committee will review this booking:\nKeep this operational sentence.",
+    );
+  });
+
+  it("would leave emphasis dangling if the split-line suffix dropped its balanced variants", () => {
+    const template =
+      "**View this booking:**\n{{bookingUrl}}\nKeep this operational sentence.";
+    const mutatedPlainOnlySuffix =
+      /(?:^|[ \t]*\|[ \t]*)\bview\s+(?:this\s+)?booking[ \t]*:[ \t]*$/i;
+
+    expect(
+      renderWithSplitLineSuffixPattern(
+        template,
+        { bookingUrl: "" },
+        mutatedPlainOnlySuffix,
+      ),
+    ).toBe("**View this booking:**\nKeep this operational sentence.");
+    expect(renderTemplateString(template, { bookingUrl: "" })).toBe(
+      "Keep this operational sentence.",
+    );
+  });
+
+  it("keeps the authorized two-line CTA byte-for-byte apart from token substitution", () => {
+    expect(
+      renderTemplateString(
+        "View this booking:\r\n{{bookingUrl}}\r\nKeep this operational sentence.",
+        { bookingUrl: "https://book.example.test/bookings/bk_1" },
+      ),
+    ).toBe(
+      "View this booking:\r\nhttps://book.example.test/bookings/bk_1\r\nKeep this operational sentence.",
+    );
+  });
+
+  it("preserves unrelated subject text when the optional booking CTA is unavailable", () => {
+    expect(
+      renderTemplateString(
+        "Payment response needed — View this booking: {{bookingUrl}}",
+        { bookingUrl: "" },
+      ),
+    ).toBe("Payment response needed");
+  });
+
+  it("keeps authorized mixed-line overrides rendered normally", () => {
+    expect(
+      renderTemplateString(
+        "Pay: {{paymentUrl}} | View this booking: {{bookingUrl}}",
+        {
+          paymentUrl: "https://pay.example.test/p/bearer-payment",
+          bookingUrl: "https://book.example.test/bookings/bk_1",
+        },
+      ),
+    ).toBe(
+      "Pay: https://pay.example.test/p/bearer-payment | View this booking: https://book.example.test/bookings/bk_1",
+    );
+  });
+
+  it("would fail under the removed whole-line deletion", () => {
+    const template =
+      "Pay now: {{paymentUrl}} | View this booking: {{bookingUrl}}";
+    const data = {
+      paymentUrl: "https://pay.example.test/p/bearer-payment",
+      bookingUrl: "",
+    };
+
+    expect(renderWithLegacyWholeLineBookingUrlRemoval(template, data)).toBe("");
+    expect(renderTemplateString(template, data)).toBe(
+      "Pay now: https://pay.example.test/p/bearer-payment",
+    );
+  });
+
+  it("would leave the preceding CTA label under the per-line-only implementation", () => {
+    const template =
+      "View this booking:\r\n{{bookingUrl}}\r\nKeep this operational sentence.";
+    const data = { bookingUrl: "" };
+
+    expect(renderWithPerLineOnlyBookingUrlRemoval(template, data)).toBe(
+      "View this booking:\r\nKeep this operational sentence.",
+    );
+    expect(renderTemplateString(template, data)).toBe(
+      "Keep this operational sentence.",
+    );
+  });
+});
 
 describe("#2268 guard 1 — no authoring annotations in a shipped default", () => {
   it("finds none in the shipped defaults", () => {

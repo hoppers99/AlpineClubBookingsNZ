@@ -280,6 +280,9 @@ export async function PUT(
     // be recorded honestly. Only stamp notifyMember:false when there was an
     // email to suppress; otherwise there was nothing to opt out of.
     const memberEmail = booking.member.email || refundRequest.member.email;
+    const recipientMemberId = booking.member.email
+      ? booking.member.id
+      : refundRequest.member.id;
     const notifyAuditFields =
       memberEmail && notifyMember === false ? { notifyMember: false } : {};
 
@@ -316,7 +319,10 @@ export async function PUT(
         }),
         // Member-facing and booking-scoped: the per-booking "No emails"
         // switch withholds it (#2258).
-        bookingContext: { bookingId: booking.id },
+        bookingContext: {
+          bookingId: booking.id,
+          recipient: { kind: "member", memberId: recipientMemberId },
+        },
         templateName: "refund-request-approved",
         templateData: {
           firstName: refundRequest.member.firstName,
@@ -359,6 +365,9 @@ export async function PUT(
     // be recorded honestly. Only stamp notifyMember:false when there was an
     // email to suppress; otherwise there was nothing to opt out of.
     const memberEmail = booking.member.email || refundRequest.member.email;
+    const recipientMemberId = booking.member.email
+      ? booking.member.id
+      : refundRequest.member.id;
     const notifyAuditFields =
       memberEmail && notifyMember === false ? { notifyMember: false } : {};
 
@@ -394,7 +403,10 @@ export async function PUT(
         }),
         // Member-facing and booking-scoped: the per-booking "No emails"
         // switch withholds it (#2258).
-        bookingContext: { bookingId: booking.id },
+        bookingContext: {
+          bookingId: booking.id,
+          recipient: { kind: "member", memberId: recipientMemberId },
+        },
         templateName: "refund-request-declined",
         templateData: {
           firstName: refundRequest.member.firstName,

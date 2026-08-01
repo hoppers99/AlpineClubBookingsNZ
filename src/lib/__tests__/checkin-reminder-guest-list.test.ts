@@ -58,7 +58,7 @@ describe("check-in reminder guest list (#2307)", () => {
     const { sendCheckinReminderEmail } = await import("../email/booking");
 
     await sendCheckinReminderEmail(
-      { bookingId: "bk_test" },
+      { bookingId: "bk_test", recipientMemberId: "member_1" },
       "member@example.org",
       "Sam",
       CHECK_IN,
@@ -88,7 +88,7 @@ describe("check-in reminder guest list (#2307)", () => {
     const { sendCheckinReminderEmail } = await import("../email/booking");
 
     await sendCheckinReminderEmail(
-      { bookingId: "bk_test" },
+      { bookingId: "bk_test", recipientMemberId: "member_1" },
       "member@example.org",
       "Sam",
       CHECK_IN,
@@ -108,7 +108,7 @@ describe("check-in reminder guest list (#2307)", () => {
     const { sendCheckinReminderEmail } = await import("../email/booking");
 
     await sendCheckinReminderEmail(
-      { bookingId: "bk_test" },
+      { bookingId: "bk_test", recipientMemberId: "member_1" },
       "member@example.org",
       "Sam",
       CHECK_IN,
@@ -122,7 +122,7 @@ describe("check-in reminder guest list (#2307)", () => {
 
     sendEmailMock.mockClear();
     await sendCheckinReminderEmail(
-      { bookingId: "bk_test" },
+      { bookingId: "bk_test", recipientMemberId: "member_1" },
       "member@example.org",
       "Sam",
       CHECK_IN,
@@ -146,7 +146,7 @@ describe("check-in reminder guest list (#2307)", () => {
   it("still names every guest in a body saved with the OLD pair of tokens", async () => {
     const { sendCheckinReminderEmail } = await import("../email/booking");
     await sendCheckinReminderEmail(
-      { bookingId: "bk_test" },
+      { bookingId: "bk_test", recipientMemberId: "member_1" },
       "member@example.org",
       "Sam",
       CHECK_IN,
@@ -188,7 +188,7 @@ describe("check-in reminder guest list (#2307)", () => {
       "Check-in Reminder\n\nGuest list:\n\n{{guestFirstName}} {{guestLastName}}\n\nSee you there.";
 
     await sendCheckinReminderEmail(
-      { bookingId: "bk_test" },
+      { bookingId: "bk_test", recipientMemberId: "member_1" },
       "member@example.org",
       "Sam",
       CHECK_IN,
@@ -206,7 +206,7 @@ describe("check-in reminder guest list (#2307)", () => {
 
     sendEmailMock.mockClear();
     await sendCheckinReminderEmail(
-      { bookingId: "bk_test" },
+      { bookingId: "bk_test", recipientMemberId: "member_1" },
       "member@example.org",
       "Sam",
       CHECK_IN,
@@ -231,7 +231,7 @@ describe("check-in reminder guest list (#2307)", () => {
     const { sendCheckinReminderEmail } = await import("../email/booking");
     const { renderTemplateString } = await import("../email-message-renderer");
     await sendCheckinReminderEmail(
-      { bookingId: "bk_test" },
+      { bookingId: "bk_test", recipientMemberId: "member_1" },
       "member@example.org",
       "Sam",
       CHECK_IN,
@@ -291,7 +291,7 @@ describe("check-in reminder guest list (#2307)", () => {
     // either "{{guestName}}" unresolved or the names still mis-joined.
     const { sendCheckinReminderEmail } = await import("../email/booking");
     await sendCheckinReminderEmail(
-      { bookingId: "bk_test" },
+      { bookingId: "bk_test", recipientMemberId: "member_1" },
       "member@example.org",
       "Sam",
       CHECK_IN,

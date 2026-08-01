@@ -356,6 +356,26 @@ Future reviews and issues should cite this file when proposing changes.
   the check-out day itself for payment chasing, while completion is a next-day
   transition of PAID bookings. A booking is therefore never both counted as a
   finished-stay-needing-payment AND still PAID-completable under the same rule.
+- Base Reports uses lodge nights, never booking creation time (#2368). Its
+  selected From/To window is inclusive and overlaps the half-open booking stay
+  `[checkIn, checkOut)`. Every non-occupancy figure uses one explicit positive
+  cohort: `PENDING`, `PAYMENT_PENDING`, `CONFIRMED`, `PAID`,
+  `AWAITING_REVIEW`, and `COMPLETED`, with the same lodge/deleted scope. Count
+  bookings once per overlapped bucket. Count guest rows once when their own
+  half-open `[stayStart, stayEnd)` envelope overlaps the selected range; sparse
+  explicit guest-night rows do not override that envelope for this metric.
+  Allocate all integer cents of `finalPriceCents` across the
+  booking's complete stay before slicing the report range (100/3 = 34/33/33).
+  This is **Booked revenue**, not cash. Net collected cash stays payment-derived
+  (`Payment.amountCents` less refunds, with a captured addition already inside
+  that amount; #2408), and outstanding additions remain separate (#2350). The
+  #2408 guard is binding here too: a collected-addition claim without captured
+  `ADDITIONAL` transaction evidence must not change cash arithmetic or leak
+  transaction rows, but must log and expose an aggregate possible-understatement
+  warning in the page, CSV, and PDF. All Reports money presentation preserves
+  exact integer cents.
+  Occupancy is the deliberate exception within the page: it stays limited to
+  PAID/COMPLETED and continues to exclude custodian occupancy (#2286).
 - Capacity is per lodge. A booking belongs to exactly one lodge
   (`Booking.lodgeId`); capacity is "beds available on date D at lodge L", and
   no code path may sum beds across lodges into a single club-wide number. Two
@@ -2241,8 +2261,20 @@ The rules are:
   address-keyed switch would also swallow two-factor codes, password resets,
   magic-link logins and email-change notices — account lockout, not a
   preference. Every send therefore carries a REQUIRED, typed `bookingContext`
-  (`{ bookingId } | "none"`), so a new send site is a compile error until its
-  author states which it is.
+  (`{ bookingId, recipient } | "none"`), so a new send site is a compile error
+  until its author states which it is. For a concrete booking the context also
+  names the recipient category (an explicit member id, public/non-login, or
+  aggregate operator), so address matching can never stand in for authority.
+- **Authenticated booking links follow the booking-detail read gate (#2362).**
+  A concrete booking email receives the canonical, encoded
+  `/bookings/<booking-id>` URL only when the recipient is active, can sign in,
+  and is the owner, a linked booking guest, or holds bookings-view admin access;
+  the outbound address must also still equal that member's current direct or
+  flattened inherited mailbox.
+  Deleted bookings remain Full-Admin-only. Public/non-login contacts, aggregate
+  reports, unrelated members, failed authority reads, and templates outside the
+  live booking-scoped inventory receive no authenticated booking URL. Bearer
+  payment, quote, consent, and response links stay distinct and unchanged.
 - **Admin-audience mail is never withheld.** The registry's
   `EmailTemplateDefinition.audience` is the authority, so admin/system alerts
   (payment failure, duplicate-capture refund, and the rest) still reach an
@@ -2257,7 +2289,17 @@ The rules are:
   body, and the status is terminal).
 - **The retry cron re-evaluates before every replay.** A `FAILED` row can
   predate the moment the switch was turned on, so `cron-email-retry.ts` re-reads
-  it from the row's `bookingId` and fails closed the same way.
+  it from the row's `bookingId` and fails closed the same way. It also repeats
+  the booking-detail authority check from durable `EmailLog` recipient/context
+  provenance; the address is matched to that identity's current direct or
+  flattened inherited mailbox, never used as identity by itself. Built-in and
+  stored-override DELIVERY copies are re-finalized before the guarded retry
+  claim, so a revoked/stale recipient loses the detail CTA while bearer actions
+  and page fragments remain intact. Stored override SOURCE and re-save behavior
+  stay byte-for-byte unchanged. Legacy rows with no durable context retire
+  without sending. New booking retry bodies live only in the authority-aware
+  `bookingRetryHtmlBody` column; legacy `htmlBody` stays null so an application
+  rollback to the pre-#2362 worker cannot replay them without these checks.
 - **Waitlist candidacy excludes a silenced booking.**
   `processWaitlistForDates` filters on `noEmails: false`, so no NEW offer is
   made to a silenced entry and, in the ordinary case, no offer clock starts for

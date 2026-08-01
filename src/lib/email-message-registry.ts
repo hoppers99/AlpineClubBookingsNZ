@@ -11,6 +11,7 @@ import {
   splitGuestPortionOwnBookingLine,
 } from "@/lib/email-message-notes";
 import { FALLBACK_LODGE_CAPACITY } from "@/lib/lodge-capacity";
+import { BOOKING_URL_TEMPLATE_NAMES } from "@/lib/booking-email-template-contract";
 
 type EmailTemplateAudience = "member" | "admin" | "system";
 export type NotificationDeliveryModeValue = "always" | "content_only" | "disabled";
@@ -460,7 +461,9 @@ const REQUIRED_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, string[]>
   // sensitive-log); firstName + the stay dates are the load-bearing content.
   "split-guest-portion-cancelled": ["firstName", "checkIn", "checkOut"],
   "admin-partner-share-swept": ["memberName", "partnerName", "reason"],
-  "booking-review-approved": ["bookingId"],
+  // The authenticated detail link is optional and centrally authorized
+  // (#2362), so neither its old raw id nor bookingUrl can be required.
+  "booking-review-approved": [],
   "induction-sign-off-request": ["inductionUrl"],
   "school-attendee-confirmation": ["token"],
   "group-booking-join-verification": ["token"],
@@ -494,7 +497,6 @@ const REQUIRED_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, string[]>
     "outcomeHeading",
     "outcomeSentence",
     "consequenceNote",
-    "bookingId",
   ],
   "member-guest-consent-answered": [
     "answeredHeading",
@@ -864,6 +866,9 @@ function uniqueSortedTokens(values: string[]): string[] {
 // shipped default from the same preview values the admin editor shows.
 export function sampleValue(token: string): string {
   if (token === "BASE_URL") return "https://bookings.example.org";
+  if (token === "bookingUrl") {
+    return "https://bookings.example.org/bookings/bkg_example";
+  }
   if (token === "CLUB_NAME") return "Example Mountain Club";
   if (token === "CLUB_BOOKINGS_NAME") return "Example Mountain Club - Bookings";
   if (token === "CLUB_LODGE_NAME") return "Example Mountain Club Lodge";
@@ -1171,6 +1176,7 @@ export const EMAIL_TEMPLATE_DEFINITIONS: EmailTemplateDefinition[] = (
     ...GLOBAL_EMAIL_TEMPLATE_TOKENS,
     ...extractTokensFromDefaults(defaults.defaultSubject, defaults.defaultBody),
     ...(EXTRA_TEMPLATE_TOKENS[key] ?? []),
+    ...(BOOKING_URL_TEMPLATE_NAMES.has(key) ? ["bookingUrl"] : []),
     // An accepted alternative to a required token is by definition allowed.
     ...Object.values(REQUIRED_TOKEN_ALTERNATIVES[key] ?? {}).flat(),
   ]);
@@ -1261,6 +1267,7 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "bookerName",
   "bookingId",
   "bookingReference",
+  "bookingUrl",
   "bookingReferenceNote",
   "bumpedMemberName",
   "changeFee",

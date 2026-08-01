@@ -118,7 +118,7 @@ async function send(
   loadAppliedCreditMock.mockResolvedValue(appliedCredit);
   const { sendBookingConfirmedEmail } = await import("@/lib/email/booking");
   await sendBookingConfirmedEmail(
-    { bookingId: "bk_2328" },
+    { bookingId: "bk_2328", recipientMemberId: "member_2328" },
     "member@example.org",
     "Sam",
     new Date("2026-08-15"),
@@ -374,7 +374,7 @@ describe("#2328 booking-confirmed applied-credit note", () => {
     loadAppliedCreditMock.mockRejectedValue(new Error("db down"));
     const { sendBookingConfirmedEmail } = await import("@/lib/email/booking");
     await sendBookingConfirmedEmail(
-      { bookingId: "bk_2328" },
+      { bookingId: "bk_2328", recipientMemberId: "member_2328" },
       "member@example.org",
       "Sam",
       new Date("2026-08-15"),

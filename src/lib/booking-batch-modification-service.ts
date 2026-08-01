@@ -1055,6 +1055,7 @@ async function dispatchBatchPostTransactionSideEffects({
 
   sendBookingModifiedEmail({
     bookingId: result.booking.id,
+    recipientMemberId: member.id,
     email: member.email,
     firstName: member.firstName,
     modificationType: "BATCH_MODIFY",

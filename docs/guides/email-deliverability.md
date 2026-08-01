@@ -5,9 +5,10 @@ Audience: Operator
 ## What it is
 
 A monitoring page for what actually reached members: which recipients are
-**suppressed** (bounced or complained), which sends **exhausted their retries**
-and never landed, whether tokenised emails (sign-in, pay links) needed
-recovery, and whether admin alerts had to escalate. It answers "did the email
+**suppressed** (bounced or complained), which sends need attention after
+provider retry exhaustion or a fail-closed security retirement, whether
+tokenised emails (sign-in, pay links) needed recovery, and whether admin alerts
+had to escalate. It answers "did the email
 get through?" where [Delivery Rules](notification-rules.md) answer "should it
 have been sent?". Find it at **Admin → Monitoring & Support → Email Deliverability**
 (`/admin/email-deliverability`).
@@ -39,8 +40,15 @@ actions; a view-only support role sees the figures but cannot act.
      is known good.
    - **Token Email Recovery** — tokenised emails (sign-in / pay links) that
      failed and were scanned for reissue; reissue the ones a member still needs.
-   - **Exhausted Email Failures** — sends that used every retry attempt and never
-     delivered; mark reviewed once handled.
+   - **Exhausted Email Failures** — sends that need operator attention. Most used
+     every provider retry attempt, but a legacy booking email can instead be
+     retired without another send when the worker cannot safely re-prove the
+     recipient's authorization. Read the displayed **Failure reason** for the
+     authoritative cause and next step. For a security retirement, regenerate a
+     fresh email through the current booking workflow and manually re-send it
+     only if the recipient still needs it. Complete that instruction before
+     choosing **Archive**. Never recover or copy an old retained email body; the
+     retirement clears it by design.
    - **Admin Alert Delivery** — admin alerts that had to escalate within the
      lookback window.
 
@@ -52,7 +60,7 @@ This is a monitoring page — it has no configuration. The figures it shows:
 | --- | --- | --- |
 | Email Deliverability | Active suppressions (bounced/complained recipients) | Clear a suppression (support edit) |
 | Token Email Recovery | Active / reissued / scanned counts, per-failure list | Reissue a token email (support edit) |
-| Exhausted Email Failures | Active / reviewed / max attempts / scanned counts | Mark a failure reviewed (support edit) |
+| Exhausted Email Failures | Active / reviewed / max attempts / scanned counts, plus each row's failure reason | Follow the displayed recovery instruction, then archive (support edit) |
 | Admin Alert Delivery | Recent escalations, lookback window (days) | — (informational) |
 
 ## Troubleshooting
@@ -61,6 +69,7 @@ This is a monitoring page — it has no configuration. The figures it shows:
 | --- | --- | --- |
 | A member never got any email | Their address is suppressed after a bounce/complaint | Confirm the address, then clear the suppression here |
 | A pay or sign-in link never arrived | The tokenised email failed | Reissue it from **Token Email Recovery** |
+| A failure says it was not retried because recipient authorization context predates #2362 | The legacy booking email was retired fail-closed; this is a security retirement, not three provider send attempts | Follow the displayed instruction: regenerate a fresh email through the current booking workflow, manually re-send it only if it is still needed, then archive the failure |
 | The action buttons are greyed out | Your role has support view, not edit | Ask a full admin for Support & System edit access |
 | Lots of exhausted failures at once | A provider outage or misconfiguration | Check email delivery config in [`../../CONFIGURATION.md`](../../CONFIGURATION.md#email-delivery); review then clear once resolved |
 | Figures look stale | The page snapshots on load | Click **Refresh** |
