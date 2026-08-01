@@ -57,6 +57,9 @@ interface ReportData {
   summary: {
     totalBookings: number;
     totalRevenueCents: number;
+    // Booking-level net cash from captured Payment.amountCents less refunds;
+    // unlike booked revenue, this is not allocated across stay nights.
+    netCollectedCents: number;
     // #2350: how much of the booked revenue above has not been collected —
     // upward booking changes whose extra is still PENDING or FAILED.
     outstandingAdditionalCents: number;
@@ -67,12 +70,12 @@ interface ReportData {
     nonMemberGuests: number;
   };
   statusBreakdown: {
+    pending: number;
+    paymentPending: number;
     confirmed: number;
     paid: number;
+    awaitingReview: number;
     completed: number;
-    pending: number;
-    cancelled: number;
-    bumped: number;
   };
   memberStats: {
     totalActiveMembers: number;
@@ -101,22 +104,24 @@ interface ReportData {
   trends: Array<{
     week: string;
     total: number;
-    confirmed: number;
-    cancelled: number;
-    bumped: number;
     pending: number;
+    paymentPending: number;
+    confirmed: number;
+    paid: number;
+    awaitingReview: number;
+    completed: number;
   }>;
 }
 
 
 function getRevenueDescription(granularity: RevenueGranularity): string {
   if (granularity === "daily") {
-    return "Daily totals for date ranges up to 14 days.";
+    return "Booked revenue allocated across each selected stay night for ranges up to 14 days.";
   }
   if (granularity === "weekly") {
-    return "Weekly totals for date ranges from 15 to 90 days.";
+    return "Booked revenue allocated across selected stay nights and grouped by week for ranges from 15 to 90 days.";
   }
-  return "Monthly totals for date ranges longer than 90 days.";
+  return "Booked revenue allocated across selected stay nights and grouped by month for ranges longer than 90 days.";
 }
 
 function StatCard({
@@ -215,12 +220,12 @@ export default function ReportsPage() {
 
   const statusPieData = data
     ? [
+        { name: bookingStatusLabel("PENDING"), value: data.statusBreakdown.pending },
+        { name: bookingStatusLabel("PAYMENT_PENDING"), value: data.statusBreakdown.paymentPending },
         { name: bookingStatusLabel("CONFIRMED"), value: data.statusBreakdown.confirmed },
-        { name: "Paid", value: data.statusBreakdown.paid },
-        { name: "Completed", value: data.statusBreakdown.completed },
-        { name: "Pending", value: data.statusBreakdown.pending },
-        { name: "Cancelled", value: data.statusBreakdown.cancelled },
-        { name: "Bumped", value: data.statusBreakdown.bumped },
+        { name: bookingStatusLabel("PAID"), value: data.statusBreakdown.paid },
+        { name: bookingStatusLabel("AWAITING_REVIEW"), value: data.statusBreakdown.awaitingReview },
+        { name: bookingStatusLabel("COMPLETED"), value: data.statusBreakdown.completed },
       ].filter((entry) => entry.value > 0)
     : [];
 
@@ -240,6 +245,7 @@ export default function ReportsPage() {
     rows.push(["Summary"]);
     rows.push(["Total Bookings", String(data.summary.totalBookings)]);
     rows.push(["Booked Revenue", (data.summary.totalRevenueCents / 100).toFixed(2)]);
+    rows.push(["Net Collected Cash", (data.summary.netCollectedCents / 100).toFixed(2)]);
     rows.push([
       "Outstanding Additional Payments",
       (data.summary.outstandingAdditionalCents / 100).toFixed(2),
@@ -247,13 +253,6 @@ export default function ReportsPage() {
     rows.push([
       "Bookings With An Outstanding Addition",
       String(data.summary.outstandingAdditionalBookings),
-    ]);
-    rows.push([
-      "Booked Revenue Less Outstanding",
-      (
-        (data.summary.totalRevenueCents - data.summary.outstandingAdditionalCents) /
-        100
-      ).toFixed(2),
     ]);
     rows.push(["Total Guests", String(data.summary.totalGuests)]);
     rows.push(["Avg Occupancy Rate", `${data.summary.avgOccupancyRate}%`]);
@@ -278,8 +277,8 @@ export default function ReportsPage() {
       ]);
     }
     rows.push([]);
-    rows.push([`Revenue by ${revenueGranularityLabel}`]);
-    rows.push([revenueGranularityLabel, "Revenue", "Bookings"]);
+    rows.push([`Booked Revenue by ${revenueGranularityLabel}`]);
+    rows.push([revenueGranularityLabel, "Booked Revenue", "Distinct Bookings"]);
     for (const entry of data.revenue) {
       rows.push([
         entry.tooltipLabel,
@@ -289,15 +288,26 @@ export default function ReportsPage() {
     }
     rows.push([]);
     rows.push(["Booking Trends by Week"]);
-    rows.push(["Week", "Total", bookingStatusLabel("CONFIRMED"), "Cancelled", "Bumped", "Pending"]);
+    rows.push([
+      "Week",
+      "Total",
+      bookingStatusLabel("PENDING"),
+      bookingStatusLabel("PAYMENT_PENDING"),
+      bookingStatusLabel("CONFIRMED"),
+      bookingStatusLabel("PAID"),
+      bookingStatusLabel("AWAITING_REVIEW"),
+      bookingStatusLabel("COMPLETED"),
+    ]);
     for (const entry of data.trends) {
       rows.push([
         entry.week,
         String(entry.total),
-        String(entry.confirmed),
-        String(entry.cancelled),
-        String(entry.bumped),
         String(entry.pending),
+        String(entry.paymentPending),
+        String(entry.confirmed),
+        String(entry.paid),
+        String(entry.awaitingReview),
+        String(entry.completed),
       ]);
     }
 
@@ -422,13 +432,19 @@ export default function ReportsPage() {
               <StatCard
                 title="Total Bookings"
                 value={data.summary.totalBookings}
-                subtitle="Active bookings in selected range"
+                subtitle="Distinct bookings with at least one selected stay night"
                 icon={CalendarRange}
               />
               <StatCard
                 title="Booked Revenue"
                 value={formatDollarsDisplay(data.summary.totalRevenueCents)}
-                subtitle="Total priced, whether or not it has been collected. Excludes cancelled and bumped bookings"
+                subtitle="Price allocated to selected stay nights; not collected cash"
+                icon={DollarSign}
+              />
+              <StatCard
+                title="Net Collected Cash"
+                value={formatDollarsDisplay(data.summary.netCollectedCents)}
+                subtitle="Captured payment cash less refunds for overlapping bookings; not allocated by night"
                 icon={DollarSign}
               />
               <StatCard
@@ -436,13 +452,13 @@ export default function ReportsPage() {
                 value={formatDollarsDisplay(
                   data.summary.outstandingAdditionalCents,
                 )}
-                subtitle={`Inside the figure above and not yet collected, across ${data.summary.outstandingAdditionalBookings} booking${data.summary.outstandingAdditionalBookings === 1 ? "" : "s"}`}
+                subtitle={`Still owing across ${data.summary.outstandingAdditionalBookings} overlapping booking${data.summary.outstandingAdditionalBookings === 1 ? "" : "s"}; shown separately from cash`}
                 icon={AlertTriangle}
               />
               <StatCard
                 title="Total Guests"
                 value={data.summary.totalGuests}
-                subtitle="Guests across active bookings"
+                subtitle="Distinct guest rows staying at least one selected night"
                 icon={Users}
               />
               <StatCard
@@ -514,7 +530,7 @@ export default function ReportsPage() {
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
                   <DollarSign className="h-5 w-5" />
-                  {`Revenue by ${getRevenueGranularityLabel(data.revenueGranularity)}`}
+                  {`Booked Revenue by ${getRevenueGranularityLabel(data.revenueGranularity)}`}
                 </CardTitle>
                 <p className="text-sm text-muted-foreground">
                   {getRevenueDescription(data.revenueGranularity)}
@@ -529,7 +545,7 @@ export default function ReportsPage() {
                     />
                   </div>
                 ) : (
-                  <p className="py-8 text-center text-muted-foreground">No revenue data for this period</p>
+                  <p className="py-8 text-center text-muted-foreground">No booked revenue data for this period</p>
                 )}
               </CardContent>
             </Card>

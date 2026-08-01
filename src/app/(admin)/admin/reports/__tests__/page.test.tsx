@@ -37,6 +37,7 @@ const EMPTY_REPORT = {
   summary: {
     totalBookings: 0,
     totalRevenueCents: 0,
+    netCollectedCents: 0,
     outstandingAdditionalCents: 0,
     outstandingAdditionalBookings: 0,
     totalGuests: 0,
@@ -45,12 +46,12 @@ const EMPTY_REPORT = {
     nonMemberGuests: 0,
   },
   statusBreakdown: {
+    pending: 0,
+    paymentPending: 0,
     confirmed: 0,
     paid: 0,
+    awaitingReview: 0,
     completed: 0,
-    pending: 0,
-    cancelled: 0,
-    bumped: 0,
   },
   memberStats: {
     totalActiveMembers: 0,
@@ -107,5 +108,83 @@ describe("ReportsPage quick ranges", () => {
       expect(latest).toContain("lodgeId=lodge-2");
       expect(latest).toContain("deleted=include");
     });
+  });
+
+  it("renders booked revenue, payment-derived cash, and outstanding additions as distinct figures", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            ...EMPTY_REPORT,
+            summary: {
+              ...EMPTY_REPORT.summary,
+              totalBookings: 1,
+              totalRevenueCents: 10_000,
+              netCollectedCents: 7_500,
+              outstandingAdditionalCents: 2_500,
+              outstandingAdditionalBookings: 1,
+            },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      ),
+    );
+
+    render(<ReportsPage />);
+    expect(await screen.findByText("Booked Revenue")).toBeVisible();
+    expect(screen.getByText("Net Collected Cash")).toBeVisible();
+    expect(screen.getByText("Outstanding Additions")).toBeVisible();
+    expect(screen.getByText("Booked Revenue by Month")).toBeVisible();
+    expect(screen.getByText(/Price allocated to selected stay nights/)).toBeVisible();
+  });
+
+  it("exports stay-night booked revenue and collected cash with unambiguous CSV labels", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            ...EMPTY_REPORT,
+            summary: {
+              ...EMPTY_REPORT.summary,
+              totalRevenueCents: 10_000,
+              netCollectedCents: 7_500,
+              outstandingAdditionalCents: 2_500,
+              outstandingAdditionalBookings: 1,
+            },
+            revenue: [
+              {
+                periodStart: "2026-04-01",
+                periodEnd: "2026-04-30",
+                label: "Apr 2026",
+                tooltipLabel: "April 2026",
+                revenueCents: 10_000,
+                bookingCount: 1,
+              },
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      ),
+    );
+    const createObjectUrl = vi.fn(() => "blob:report");
+    Object.defineProperty(URL, "createObjectURL", { configurable: true, value: createObjectUrl });
+    Object.defineProperty(URL, "revokeObjectURL", { configurable: true, value: vi.fn() });
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
+
+    render(<ReportsPage />);
+    const csvButton = await screen.findByRole("button", { name: "CSV" });
+    await waitFor(() => expect(csvButton).toBeEnabled());
+    fireEvent.click(csvButton);
+
+    const blob = createObjectUrl.mock.calls[0][0] as Blob;
+    const csv = await blob.text();
+    expect(csv).toContain("Booked Revenue,100.00");
+    expect(csv).toContain("Net Collected Cash,75.00");
+    expect(csv).toContain("Outstanding Additional Payments,25.00");
+    expect(csv).toContain("Booked Revenue by Month");
+    expect(csv).toContain("Month,Booked Revenue,Distinct Bookings");
+    expect(csv).not.toContain("Booked Revenue Less Outstanding");
   });
 });

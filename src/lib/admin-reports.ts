@@ -1,4 +1,4 @@
-import { BookingStatus } from "@prisma/client";
+import { BookingStatus, PaymentStatus } from "@prisma/client";
 import {
   addDays,
   addMonths,
@@ -11,13 +11,45 @@ import {
   startOfMonth,
   startOfWeek,
 } from "date-fns";
+import {
+  addUtcDays,
+  allocateCentsEvenly,
+  buildIsoDateRange,
+  differenceInUtcDays,
+  parseFinanceBookingMetricDate,
+} from "@/lib/finance-booking-metric-calculations";
+import { isGuestActiveOnNight, type GuestStayRange } from "@/lib/booking-guest-stay-ranges";
 
 export type RevenueGranularity = "daily" | "weekly" | "monthly";
 
+/**
+ * The Base Reports population is deliberately positive and exhaustive. New
+ * BookingStatus values do not silently become revenue merely because they are
+ * not CANCELLED/BUMPED (#2368).
+ */
+export const REPORT_BOOKING_STATUSES = [
+  BookingStatus.PENDING,
+  BookingStatus.PAYMENT_PENDING,
+  BookingStatus.CONFIRMED,
+  BookingStatus.PAID,
+  BookingStatus.AWAITING_REVIEW,
+  BookingStatus.COMPLETED,
+] as const;
+
+export type ReportBookingStatus = (typeof REPORT_BOOKING_STATUSES)[number];
+
+export interface ReportGuestLike extends GuestStayRange {
+  id: string;
+  isMember: boolean;
+}
+
 export interface RevenueBookingLike {
-  createdAt: Date;
+  id: string;
+  checkIn: Date;
+  checkOut: Date;
   finalPriceCents: number;
   status: BookingStatus;
+  guests: ReportGuestLike[];
 }
 
 export interface RevenueDataPoint {
@@ -27,6 +59,23 @@ export interface RevenueDataPoint {
   tooltipLabel: string;
   revenueCents: number;
   bookingCount: number;
+}
+
+export interface BookingTrendDataPoint {
+  week: string;
+  total: number;
+  pending: number;
+  paymentPending: number;
+  confirmed: number;
+  paid: number;
+  awaitingReview: number;
+  completed: number;
+}
+
+export interface ReportGuestSummary {
+  totalGuests: number;
+  memberGuests: number;
+  nonMemberGuests: number;
 }
 
 const MONDAY_WEEK = { weekStartsOn: 1 as const };
@@ -53,31 +102,56 @@ export function getRevenueGranularityLabel(granularity: RevenueGranularity): str
   return "Month";
 }
 
+/**
+ * Allocate the WHOLE booking price across all lodge nights, then return only
+ * the inclusive selected range. The order is significant: a $1.00 three-night
+ * stay is 34/33/33 cents even when the report selects only its second night.
+ */
+export function getBookingRevenueByNight(
+  booking: Pick<RevenueBookingLike, "checkIn" | "checkOut" | "finalPriceCents">,
+  rangeStart: Date,
+  rangeEnd: Date,
+): Array<{ date: string; revenueCents: number }> {
+  const checkIn = toUtcDateOnly(booking.checkIn);
+  const checkOut = toUtcDateOnly(booking.checkOut);
+  const totalStayNights = differenceInUtcDays(checkIn, checkOut);
+  if (totalStayNights < 1) return [];
+
+  const allNightRevenue = allocateCentsEvenly(booking.finalPriceCents, totalStayNights);
+  const selectedStart = maxDate(checkIn, toUtcDateOnly(rangeStart));
+  const selectedEndExclusive = minDate(checkOut, addUtcDays(toUtcDateOnly(rangeEnd), 1));
+  if (selectedStart >= selectedEndExclusive) return [];
+
+  const offset = differenceInUtcDays(checkIn, selectedStart);
+  const selectedDates = buildIsoDateRange(selectedStart, addUtcDays(selectedEndExclusive, -1));
+  return selectedDates.map((date, index) => ({
+    date,
+    revenueCents: allNightRevenue[offset + index] ?? 0,
+  }));
+}
+
 export function buildRevenueSeries(
   bookings: RevenueBookingLike[],
   rangeStart: Date,
-  rangeEnd: Date
+  rangeEnd: Date,
 ): { granularity: RevenueGranularity; data: RevenueDataPoint[] } {
   const granularity = getRevenueGranularity(rangeStart, rangeEnd);
   const buckets = initializeBuckets(rangeStart, rangeEnd, granularity);
+  const bookingIdsByBucket = new Map<string, Set<string>>();
 
   for (const booking of bookings) {
-    if (
-      booking.status === BookingStatus.CANCELLED ||
-      booking.status === BookingStatus.BUMPED ||
-      booking.status === BookingStatus.AWAITING_REVIEW
-    ) {
-      continue;
-    }
+    if (!isReportBookingStatus(booking.status)) continue;
+    for (const night of getBookingRevenueByNight(booking, rangeStart, rangeEnd)) {
+      const key = getBucketKey(parseFinanceBookingMetricDate(night.date, "night"), granularity);
+      const bucket = buckets.get(key);
+      if (!bucket) continue;
 
-    const key = getBucketKey(booking.createdAt, granularity);
-    const bucket = buckets.get(key);
-    if (!bucket) {
-      continue;
+      bucket.revenueCents += night.revenueCents;
+      const bookingIds = bookingIdsByBucket.get(key) ?? new Set<string>();
+      bookingIds.add(booking.id);
+      bookingIdsByBucket.set(key, bookingIds);
+      bucket.bookingCount = bookingIds.size;
     }
-
-    bucket.revenueCents += booking.finalPriceCents;
-    bucket.bookingCount += 1;
   }
 
   return {
@@ -86,21 +160,110 @@ export function buildRevenueSeries(
   };
 }
 
+export function buildBookingTrendSeries(
+  bookings: RevenueBookingLike[],
+  rangeStart: Date,
+  rangeEnd: Date,
+): BookingTrendDataPoint[] {
+  const weeklyBuckets = initializeBuckets(rangeStart, rangeEnd, "weekly");
+  const rows = new Map<string, BookingTrendDataPoint>();
+  const bookingIdsByBucket = new Map<string, Set<string>>();
+
+  for (const key of weeklyBuckets.keys()) {
+    rows.set(key, emptyTrendRow(key));
+  }
+
+  for (const booking of bookings) {
+    if (!isReportBookingStatus(booking.status)) continue;
+    const touchedBuckets = new Set(
+      getBookingRevenueByNight(booking, rangeStart, rangeEnd).map((night) =>
+        getBucketKey(parseFinanceBookingMetricDate(night.date, "night"), "weekly"),
+      ),
+    );
+
+    for (const key of touchedBuckets) {
+      const row = rows.get(key);
+      if (!row) continue;
+      const bookingIds = bookingIdsByBucket.get(key) ?? new Set<string>();
+      bookingIds.add(booking.id);
+      bookingIdsByBucket.set(key, bookingIds);
+      row.total = bookingIds.size;
+      row[trendStatusKey(booking.status)] += 1;
+    }
+  }
+
+  return Array.from(rows.values());
+}
+
+/** Count each overlapping BookingGuest row once, even on a multi-night stay. */
+export function summarizeOverlappingGuests(
+  bookings: RevenueBookingLike[],
+  rangeStart: Date,
+  rangeEnd: Date,
+): ReportGuestSummary {
+  const selectedDates = buildIsoDateRange(toUtcDateOnly(rangeStart), toUtcDateOnly(rangeEnd));
+  const guests = new Map<string, ReportGuestLike>();
+
+  for (const booking of bookings) {
+    for (const guest of booking.guests) {
+      if (
+        selectedDates.some((date) =>
+          isGuestActiveOnNight(
+            guest,
+            parseFinanceBookingMetricDate(date, "night"),
+            booking,
+          ),
+        )
+      ) {
+        guests.set(guest.id, guest);
+      }
+    }
+  }
+
+  const rows = Array.from(guests.values());
+  const memberGuests = rows.filter((guest) => guest.isMember).length;
+  return {
+    totalGuests: rows.length,
+    memberGuests,
+    nonMemberGuests: rows.length - memberGuests,
+  };
+}
+
+/**
+ * Cash is payment-derived and deliberately NOT allocated over stay nights.
+ * `Payment.amountCents` already contains captured additions (#2408); rebuilding
+ * it from transaction rows would undercount legacy/group captures or double
+ * count a later addition.
+ */
+export function summarizeNetCollectedCash(
+  payments: Array<{
+    status: PaymentStatus | null;
+    amountCents: number;
+    refundedAmountCents: number;
+  } | null>,
+): number {
+  let capturedGrossCents = 0;
+  let refundedCents = 0;
+  for (const payment of payments) {
+    if (!payment) continue;
+    if (
+      payment.status === PaymentStatus.SUCCEEDED ||
+      payment.status === PaymentStatus.PARTIALLY_REFUNDED ||
+      payment.status === PaymentStatus.REFUNDED
+    ) {
+      capturedGrossCents += payment.amountCents;
+    }
+    refundedCents += payment.refundedAmountCents;
+  }
+  return Math.max(capturedGrossCents - refundedCents, 0);
+}
+
 function initializeBuckets(
   rangeStart: Date,
   rangeEnd: Date,
-  granularity: RevenueGranularity
+  granularity: RevenueGranularity,
 ): Map<string, RevenueDataPoint> {
   const buckets = new Map<string, RevenueDataPoint>();
-
-  // Terminate on the calendar-date key, not the raw instant. rangeStart/rangeEnd
-  // are date-only values carried as UTC-midnight Dates, but the cursor advances
-  // with date-fns (host-local) arithmetic. When the host observes DST and the
-  // range straddles a transition (e.g. Pacific/Auckland in early April), the
-  // cursor's wall-clock drifts an hour relative to rangeEnd and an instant
-  // `isAfter` check silently drops the final bucket. Comparing ISO yyyy-MM-dd
-  // keys (lexicographically ordered) is DST/timezone-robust and identical under
-  // UTC, where CI runs.
   const endKey = toDateKey(rangeEnd);
 
   if (granularity === "daily") {
@@ -141,7 +304,7 @@ function initializeBuckets(
 function createBucket(
   periodStart: Date,
   periodEnd: Date,
-  granularity: RevenueGranularity
+  granularity: RevenueGranularity,
 ): RevenueDataPoint {
   return {
     periodStart: toDateKey(periodStart),
@@ -154,23 +317,17 @@ function createBucket(
 }
 
 function formatBucketLabel(periodStart: Date, granularity: RevenueGranularity): string {
-  if (granularity === "daily") {
-    return format(periodStart, "EEE d MMM");
-  }
-  if (granularity === "weekly") {
-    return `Week of ${format(periodStart, "d MMM")}`;
-  }
+  if (granularity === "daily") return format(periodStart, "EEE d MMM");
+  if (granularity === "weekly") return `Week of ${format(periodStart, "d MMM")}`;
   return format(periodStart, "MMM yyyy");
 }
 
 function formatBucketTooltip(
   periodStart: Date,
   periodEnd: Date,
-  granularity: RevenueGranularity
+  granularity: RevenueGranularity,
 ): string {
-  if (granularity === "daily") {
-    return format(periodStart, "EEEE d MMMM yyyy");
-  }
+  if (granularity === "daily") return format(periodStart, "EEEE d MMMM yyyy");
   if (granularity === "weekly") {
     return `Week of ${format(periodStart, "d MMM yyyy")} to ${format(periodEnd, "d MMM yyyy")}`;
   }
@@ -178,12 +335,8 @@ function formatBucketTooltip(
 }
 
 function getBucketKey(date: Date, granularity: RevenueGranularity): string {
-  if (granularity === "daily") {
-    return toDateKey(date);
-  }
-  if (granularity === "weekly") {
-    return toDateKey(startOfWeek(date, MONDAY_WEEK));
-  }
+  if (granularity === "daily") return toDateKey(date);
+  if (granularity === "weekly") return toDateKey(startOfWeek(date, MONDAY_WEEK));
   return toDateKey(startOfMonth(date));
 }
 
@@ -193,4 +346,50 @@ function clampToRangeEnd(periodEnd: Date, rangeEnd: Date): Date {
 
 function toDateKey(value: Date): string {
   return format(value, "yyyy-MM-dd");
+}
+
+function toUtcDateOnly(value: Date): Date {
+  return parseFinanceBookingMetricDate(value.toISOString().slice(0, 10), "date");
+}
+
+function minDate(left: Date, right: Date): Date {
+  return left <= right ? left : right;
+}
+
+function maxDate(left: Date, right: Date): Date {
+  return left >= right ? left : right;
+}
+
+function emptyTrendRow(week: string): BookingTrendDataPoint {
+  return {
+    week,
+    total: 0,
+    pending: 0,
+    paymentPending: 0,
+    confirmed: 0,
+    paid: 0,
+    awaitingReview: 0,
+    completed: 0,
+  };
+}
+
+function trendStatusKey(status: ReportBookingStatus): Exclude<keyof BookingTrendDataPoint, "week" | "total"> {
+  switch (status) {
+    case BookingStatus.PENDING:
+      return "pending";
+    case BookingStatus.PAYMENT_PENDING:
+      return "paymentPending";
+    case BookingStatus.CONFIRMED:
+      return "confirmed";
+    case BookingStatus.PAID:
+      return "paid";
+    case BookingStatus.AWAITING_REVIEW:
+      return "awaitingReview";
+    case BookingStatus.COMPLETED:
+      return "completed";
+  }
+}
+
+function isReportBookingStatus(status: BookingStatus): status is ReportBookingStatus {
+  return (REPORT_BOOKING_STATUSES as readonly BookingStatus[]).includes(status);
 }
