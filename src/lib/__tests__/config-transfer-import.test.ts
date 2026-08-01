@@ -56,7 +56,7 @@ function targetDb(existingPages: Array<Record<string, unknown>>): ReadDb {
 describe("config-transfer import plan", () => {
   it("classifies an unmatched page as create", async () => {
     const plan = await buildImportPlan(targetDb([]), pagesBundle([BASE_PAGE]), { mode: "merge" });
-    expect(plan.summary).toEqual({ create: 1, update: 0, unchanged: 0 });
+    expect(plan.summary).toEqual({ create: 1, update: 0, delete: 0, unchanged: 0 });
     expect(plan.categories[0].items[0]).toMatchObject({
       entity: "page-content",
       key: "about",

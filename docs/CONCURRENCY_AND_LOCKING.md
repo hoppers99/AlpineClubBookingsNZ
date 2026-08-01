@@ -111,11 +111,71 @@ are the literal `1`.
 | **Membership applicant** | `hashtext(<applicant-email key>)` | `membershipApplicationApplicantLockKey` (`nomination.ts`) | — | Per-email applicant dedup at submit time. |
 | **Roster generation** | `hashtext("roster:<date>")` | inline (`admin-roster-service.ts`) | — | Roster generation for one calendar date. |
 | **Config-transfer import** | `hashtext("config-transfer-import")` | `acquireConfigImportLock(tx)` (`config-transfer/apply.ts`) | — | Single-flights configuration-bundle apply. |
+| **Minimum-stay policy set** | `hashtext("minimum-stay-policy-set")` | `lockMinimumStayPolicySet(tx)` (`minimum-stay-policy-set.ts`) plus the migration's `MinimumStayPolicy_lock_set` statement trigger | policy config | Serialises every live CRUD and config-transfer replacement across the small club/lodge policy set. The database trigger puts draining old-colour DML behind the exact same key before any tuple lock. |
 | **Membership subscription billing** | `hashtext("membership-subscription-billing:<seasonYear>")` | `confirmSubscriptionBillingPreview`, `reconcileSubscriptionBillingExceptions` (`membership-subscription-billing.ts`) | — | Annual/approval charge snapshot creation for one membership year; the #2148 refresh-reconciliation holds the same key so exception auto-resolution serialises with confirm and never resolves rows a concurrent confirm is regenerating. The #2161 operator family-marker writers (MARK/UNMARK on the subscription-billing route) deliberately take **no** advisory lock: they only insert/release a `FamilyGroupSeasonInvoiceMarker` row (single-active enforced by a partial unique index, so a concurrent double-mark is a benign no-op), and confirm re-derives suppression from the live marker rows under this same lock inside its transaction, so a mark landing mid-confirm either is seen by the in-tx re-preview or shifts the confirmation token — never a torn snapshot. |
 | **Authoritative fee schedule** | `hashtext("fee-schedule:<domain>:<key>")` | `lockFeeSchedule` (`authoritative-fees.ts`) | — | Serialises effective-dated membership or entrance-fee schedule changes for one configured key. |
 | **Member partner link** | sorted `hashtext("member-partner-link:<memberId>")` keys | `lockPartnerMembers` (`member-partner-link.ts`) | — | Serialises partner-link invariants across every member touched by a link; same-family keys are sorted. |
 | **Xero member contact link (legacy key)** | `hashtext(<memberId>)` | short local-link transactions (`xero-contacts.ts`) | — | First-writer-wins local `Member.xeroContactId` linking after provider work. This legacy unnamespaced key is shared by both Xero contact-link writers; do not copy it for new domains. |
 | **Backup run claim** | `hashtext("backup:run-lock")` | `claimBackupRun` (`backup-run.ts`, #2095) | — | Single-flights managed database backups across containers (nightly cron vs admin run-now). Held only for the milliseconds of the reap-stale → active-check → insert-RUNNING claim transaction; the `pg_dump`/upload pipeline runs entirely outside any transaction, so a crashed run can never wedge the lock (a dead RUNNING row is reaped by heartbeat age on the next claim). Single-lock holder; composes with no other family. The config-transfer pre-apply safety backup deliberately bypasses this claim (it must run inline; concurrent dumps are independent snapshots writing uniquely-named files). |
+
+### Composition: minimum-stay policy set (#2363)
+
+`POST /api/admin/booking-policies/minimum-stay` and the row-level `PUT` and
+`DELETE` routes call `lockMinimumStayPolicySet(tx)` before their first policy or
+lodge read, then re-read/validate and write inside the same transaction. The
+policy set is club-sized, so one global configuration key is intentionally
+preferred to per-scope concurrency: it gives every writer one unambiguous lock
+order across a blue/green drain.
+
+The additive migration also installs `MinimumStayPolicy_lock_set`, a `BEFORE
+STATEMENT` trigger for INSERT, UPDATE and DELETE. A draining old colour cannot
+call the TypeScript helper, but PostgreSQL takes the same
+`hashtext("minimum-stay-policy-set")` transaction lock before that statement
+reaches any row. New-runtime DML merely re-enters the lock it already holds.
+This keeps both colours in **advisory → tuple row** order; do not move this lock
+into a row trigger, which would invert old-colour order against the new routes.
+A separate `BEFORE ROW` trigger manages only the integer revision after the
+statement lock is held: material old-colour updates advance an unchanged token,
+new `OLD + 1` CAS writes are not double-incremented, and non-material writes keep
+the old token.
+
+Configuration transfer composes two global configuration keys in one fixed
+order: `config-transfer-import` **first**, then `minimum-stay-policy-set`, before
+the booking-policy category re-fingerprints or replaces any rows. Live CRUD
+takes only the second key, and no policy writer takes them in reverse, so this
+composition cannot form a cycle. The database statement trigger re-enters the
+second key during import DML.
+
+#### Which client reads the policy set
+
+`validateMinimumStay` (`booking-policies.ts`) takes an optional trailing `db`
+that defaults to the module-level Prisma client. The rule is one line: **a
+caller already inside `prisma.$transaction` MUST pass its own `tx`.** Two
+callers are in that position — `modifyBookingBatch`
+(`booking-batch-modification-service.ts`) and `modifyBookingDates`
+(`booking-date-modification-service.ts`) — and both run the check while holding
+`pg_advisory_xact_lock(1)` **and** the per-lodge capacity lock. Reading through
+the module client there checks out a **second pool connection underneath both
+locks**, which is the pool-starvation shape the ordering rule at the top of
+`member-guest-add-policy.ts` exists to forbid: under load every connection can
+end up held by a transaction waiting for a connection. Passing `tx` also gives
+the check the transaction's own snapshot instead of a second, later one.
+
+Every other caller is deliberately OUTSIDE a transaction and keeps the default:
+booking create, both public group-join stages, the member group join, the two
+waitlist-offer confirm paths, the advisory modify quote, and the policy-check
+route. Those are pre-write checks with no lock held, so the module client is
+correct and cheapest there. The residual window between such a read and the
+claim that follows it is milliseconds and is the same footing every other
+pre-write policy check on those paths sits on.
+
+This is a **pool** argument, not a lock-order one: no minimum-stay policy writer
+ever takes a per-lodge capacity lock, and no booking path takes the policy-set
+key, so the two keyspaces are disjoint and cannot deadlock in either order.
+`booking-batch-modification-minimum-stay.test.ts` and
+`booking-date-modification-minimum-stay.test.ts` each pin their call site to the
+transaction client so a future edit cannot silently reintroduce the second
+connection.
 
 ### Composition: application-approval mapping (E10, #1936)
 
@@ -241,6 +301,55 @@ do not use unnamespaced `hashtext(<id>)` for new lock families.
 
 ### Narrow row- and table-lock protocols
 
+**Lock raw, read typed (#2289).** Every **raw** row lock below takes its lock
+with `$executeRaw` on a statement that selects a **constant** (`SELECT 1 … FOR
+UPDATE`), and then reads whatever it needs through the ordinary Prisma model,
+inside the same transaction and therefore under that same lock. (Not every row
+lock in this document is raw — the member-photo cleanup writers acquire the
+`Member` row lock through an ordinary `member.update`, as that protocol
+describes. The rule below is about raw statements.) The lock is held for the rest
+of the transaction, so the two statements are behaviour-identical to one
+`SELECT the-columns … FOR UPDATE`, at the cost of one extra round trip in a
+transaction that already makes several.
+
+**With one exception that every raw lock on a MUTABLE key must handle.** The
+equivalence holds only while the lock statement matches at least one row.
+`FOR UPDATE` locks nothing when it matches nothing, and this repository runs at
+READ COMMITTED deliberately (see `src/lib/member-merge.ts`), so the follow-up
+model read takes a **fresh statement snapshot** and can return a row that was
+inserted — or renamed onto that key — after the lock ran, with no lock held on
+it. A single `SELECT * … FOR UPDATE` could not do that: an unlocked row could
+never be in its result set. `$executeRaw` returns the affected-row count, so the
+zero-match case is detectable for free; treat it as **not found**, which is
+exactly what the single-statement form produced for that interleaving. This bites
+only where the lock key can change under you: `booking-create-promo.ts` locks on
+`PromoCode.code` and checks the count for this reason, while every other site
+below keys on an immutable cuid (or materialises its singleton before locking)
+and cannot see a row appear between the two statements.
+
+The reason is not tidiness. `$queryRaw<SomeRow[]>` is an **unchecked cast**: raw
+SQL returns the *physical* column names and the generic declares whatever the
+author believed, so where the two disagree every property arrives `undefined` —
+and `undefined` is quietly falsy in exactly the comparisons that guard money.
+Booking creation used to read its locked promo that way, and in a deployment
+whose columns differed it silently disabled the total-redemption cap
+(`undefined !== null` is true, `n > undefined` is false) and zeroed the
+FREE_NIGHTS discount (`?? 0`), so members were quoted a discount and charged
+without it, for months, with nothing logged. Prisma owns the mapping, so a model
+read cannot drift that way.
+
+A statement that genuinely cannot be a model read — the rate limiter's atomic
+`CASE … RETURNING` upsert is the only one in production code — validates its rows
+with `decodeRawRows` from `src/lib/raw-sql-rows.ts` instead. Both halves are
+enforced across non-test code in `src/`, `scripts/` and `prisma/`: ESLint rules
+refuse a `$queryRaw<…>` generic or a `SELECT *` in a raw statement, written
+either as a tagged template or as a `Prisma.sql` composition passed to the call;
+and `src/lib/__tests__/raw-sql-shape-guard.test.ts` pins the whole raw-SQL
+call-site inventory so a new one has to be classified. Tests are deliberately
+exempt from both — `concurrency-lock-races.realdb.test.ts` reads raw counts on
+purpose, and a test's wrong shape fails the test on the spot rather than
+mispricing a booking.
+
 - **Trusted legacy induction baseline** —
   `src/lib/induction-baseline.ts` (`runInductionBaseline`, #2361): apply takes
   `LOCK TABLE "MemberInduction" IN SHARE ROW EXCLUSIVE MODE` as the **first
@@ -302,9 +411,15 @@ do not use unnamespaced `hashtext(<id>)` for new lock families.
   `MemberInduction`.
 
 - `booking-create-promo.ts` locks the selected `PromoCode` row with `FOR UPDATE`
-  before validating and consuming its use count. Booking creation has already
-  taken the per-lodge capacity lock, so the current order is lodge -> promo row;
-  no counterpart writer may take the promo row and then a lodge lock.
+  and then reads it through `tx.promoCode.findUnique` (lock raw, read typed —
+  #2289) before validating and consuming its use count. It is the only site that
+  locks on a **mutable** key (`PromoCode.code`), so it also checks the
+  affected-row count `$executeRaw` returns: a lock that matched nothing is
+  treated as "Promo code not found" rather than reading a row it does not hold —
+  see the zero-match exception under "Lock raw, read typed" above. Booking
+  creation has
+  already taken the per-lodge capacity lock, so the current order is lodge ->
+  promo row; no counterpart writer may take the promo row and then a lodge lock.
 - **Every booking-modification path that may write `currentRedemptions`** takes
   the same protocol via `lockPromoCodeRowsForUpdate` / the reprice wrapper
   `lockAndRefreshPromoCodeUsage` (both `src/lib/promo.ts`), *before* its first
@@ -335,9 +450,12 @@ do not use unnamespaced `hashtext(<id>)` for new lock families.
   rather than by `ORDER BY ... FOR UPDATE`, so the ordering does not depend on
   the query plan. The lock became load-bearing with #2299: a reprice can now
   *release* a usage slot as well as take one, so check-then-consume must be
-  serialised. The helper selects only `"id"` and discards the result — it exists
-  purely for its lock and never reads a value out of a raw row, which is the
-  trap #2289 documents.
+  serialised. The helper selects a **constant** through `$executeRaw`
+  (`SELECT 1 … FOR UPDATE`) and discards the result — it exists purely for its
+  lock and never reads a value out of a raw row, which is the trap #2289
+  documents. Because it keys on the immutable `PromoCode.id`, it needs no
+  affected-row check: a missing id simply locks nothing and the caller's own
+  lookup reports "Promo code not found".
   #2390 added one more read under the same lock and changed what the decision
   produces. The reprice paths pass `capOverflow: "coverExisting"`, which makes
   `validateAndCalculatePromoDiscount` read — still under the lock, and still
@@ -359,8 +477,9 @@ do not use unnamespaced `hashtext(<id>)` for new lock families.
   is independent of the booking/capacity/credit lock cluster.
 - **Club-theme logo writer** — `src/lib/club-theme.ts` (`saveClubTheme`, #2322):
   the site-style save transaction locks the `ClubTheme` singleton
-  (`SELECT "logoUrl" FROM "ClubTheme" WHERE "id" = 'default' FOR UPDATE`) and
-  reads the currently-stored logo under that lock, so two concurrent saves
+  (`$executeRaw`SELECT 1 FROM "ClubTheme" WHERE "id" = 'default' FOR UPDATE``)
+  and reads the currently-stored logo back through `tx.clubTheme.findUnique`
+  under that lock (lock raw, read typed — #2289), so two concurrent saves
   serialise and can never both delete the same replaced `LOGO` blob (or orphan
   each other's new one). Because `FOR UPDATE` locks nothing when the row is
   absent, the transaction first materialises the singleton with a
@@ -397,9 +516,11 @@ do not use unnamespaced `hashtext(<id>)` for new lock families.
     table-disjoint for locking purposes.
 
 - **Member photo writer** — `src/app/api/members/[id]/photo/route.ts` (epic #171):
-  the upload (POST) and remove (DELETE) transactions each `SELECT "photoImageId"
-  FROM "Member" WHERE "id" = $1 FOR UPDATE` before creating/repointing the blob,
-  so two concurrent replace/remove requests for the same member serialise on the
+  the upload (POST) and remove (DELETE) transactions each take
+  `$executeRaw`SELECT 1 FROM "Member" WHERE "id" = $1 FOR UPDATE`` and then read
+  the existing `photoImageId` back through the Prisma model under that lock
+  (lock raw, read typed — #2289) before creating/repointing the blob, so two
+  concurrent replace/remove requests for the same member serialise on the
   member row and can never leave a `MEMBER_PHOTO` blob orphaned. Member-id keyed;
   no advisory lock; disjoint from the booking/capacity/credit and money lock
   clusters. The counterpart cleanup writer `deleteOwnedMemberPhotoBlobs` runs
@@ -453,6 +574,44 @@ do not use unnamespaced `hashtext(<id>)` for new lock families.
   stays fixed either way: the stale FK value is detected from the fresh read and
   never handed to Postgres, so the failure mode is a plain 409, not a bare 500.
 
+  **The same refusal covers the family links (#2437).** The four Member
+  self-relation columns (`parentMemberId`, `secondaryParentId`,
+  `inheritEmailFromId`, `detailsConfirmedByMemberId`) are written by admin
+  paths outside the `member-lifecycle` lock (`admin-members-service.ts`, the
+  dependents link route). #2445's exclusion of the master's own row from the
+  self-relation moves stopped a mid-merge link write corrupting the graph (the
+  master as its own parent), but left the SILENT-LOSS arm: a link pointing at
+  the loser that lands after the opening snapshot survives the moves
+  un-repointed and is quietly nulled by the loser's hard-delete
+  (`onDelete: SetNull`) — no error, no audit. Three mechanisms compose to
+  close every interleaving. **Step 1 is value-conditional**: the master's
+  pointer at the loser is nulled with a `WHERE column = loserId` predicate
+  (re-evaluated after blocking under READ COMMITTED), so a pointer that moved
+  since the opening snapshot refuses at step 1 instead of being overwritten —
+  and a successful null holds the master's row lock to commit, which is what
+  makes the step-5 expectation for that column enforceable rather than a
+  check of step 1's own write. **The step-3 self-relation sweeps are
+  id-bounded** to the rows captured by the in-transaction token re-derivation
+  (counts and captured ids come from the same read), so a link that lands
+  after the capture is never absorbed onto the master unvetted — it stays
+  pointing at the loser. **The step-5 under-lock re-read** then checks all
+  three arms: any change to the four columns on either member row beyond the
+  merge's own step-1 nulling and step-3 re-pointing
+  (`diffSelfRelationLinkState`), and any OTHER row still referencing the
+  loser after the moves, 409s with the same `merge_drift_in_transaction`
+  refusal naming the changed links in club-admin vocabulary (owner decision
+  on #2437, 1 Aug 2026: detect and refuse — deliberately NOT a new
+  advisory-lock participant for the link writers, and NOT a DB CHECK
+  constraint). Interleavings after the re-check cannot reopen the hole: both
+  member rows are FOR UPDATE-locked, and an inbound FK write referencing the
+  loser from another row blocks on its KEY SHARE lock against that FOR UPDATE
+  and then fails loudly on the FK once the hard-delete commits. The refusal
+  itself writes **no audit row** — the 409 rolls the transaction back whole,
+  exactly like the #2243/#2445 field-drift refusal and the other merge
+  refusals (`merge_blocked`, `preview_drift`); recording refused merge
+  attempts (outside the transaction) would be a deliberate new convention
+  across all of those arms, and is an owner decision not taken on #2437.
+
   **One new row lock, no new lock family.** Immediately before that fresh read
   the merge takes `SELECT 1 FROM "Member" WHERE "id" IN (…) ORDER BY "id" FOR
   UPDATE` over the master and the loser. The loser was already row-locked by
@@ -471,9 +630,10 @@ do not use unnamespaced `hashtext(<id>)` for new lock families.
   still abort the merge — now by deadlocking against this lock (Postgres 40P01)
   rather than by writing a stale value (23503). Closing that would need the
   family-group writers to join the member-lifecycle lock family and is out of
-  scope; see #2437 for the related question of locking the master earlier
-  (before the guards and the self-relation pass) rather than only before the
-  field write.
+  scope. Locking the master earlier (before the guards and the self-relation
+  pass) rather than only before the field write was considered on #2437 and
+  deliberately **not** taken — the master stays unlocked until step 5, and the
+  family-link drift re-check above is what closes that window.
 
 Do not add or compose a row lock without updating this inventory and documenting
 its order against every advisory- and row-lock counterpart.
@@ -862,3 +1022,9 @@ excuse the invoice again.
   side effect.
 - **Composing two locks in one transaction?** Global `lock(1)` before any
   per-lodge lock; multiple same-family locks in sorted key order.
+- **Writing raw SQL for a row lock?** Take it with `$executeRaw` on a statement
+  that selects a constant, then read what you need through the Prisma model
+  under that lock (#2289). Never type a `$queryRaw` result and read it: the
+  generic is an unchecked cast and a column that does not exist arrives
+  `undefined`, not as an error. If a statement genuinely cannot be a model read,
+  validate its rows with `decodeRawRows` (`src/lib/raw-sql-rows.ts`).

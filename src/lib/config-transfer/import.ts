@@ -16,6 +16,7 @@ import { mediaApplies, planBundleMedia } from "./media";
 import { siteContentImporter } from "./categories/site-content";
 import { clubSettingsImporter } from "./categories/club-settings";
 import { lodgeConfigImporter } from "./categories/lodge-config";
+import { bookingPoliciesImporter } from "./categories/booking-policies";
 import { lodgeOpsImporter } from "./categories/lodge-ops";
 import { displayImporter } from "./categories/display";
 import { committeeImporter } from "./categories/committee";
@@ -35,6 +36,9 @@ export const CATEGORY_IMPORTERS: CategoryImporter[] = [
   siteContentImporter,
   clubSettingsImporter,
   lodgeConfigImporter,
+  // Booking policies depend on lodge slugs and intentionally replace their
+  // complete policy set, so they apply immediately after lodge configuration.
+  bookingPoliciesImporter,
   lodgeOpsImporter,
   displayImporter,
   committeeImporter,
@@ -106,12 +110,13 @@ export async function buildImportPlanFromParsed(
   const fingerprintParts: string[] = [];
   const errors: string[] = [];
   const doorCodeChanges: string[] = [];
-  const summary = { create: 0, update: 0, unchanged: 0 };
+  const summary = { create: 0, update: 0, delete: 0, unchanged: 0 };
 
   const tally = (items: CategoryPlan["items"]) => {
     for (const item of items) {
       if (item.action === "create") summary.create += 1;
       else if (item.action === "update") summary.update += 1;
+      else if (item.action === "delete") summary.delete += 1;
       else summary.unchanged += 1;
     }
   };

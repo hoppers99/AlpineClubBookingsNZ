@@ -8,6 +8,7 @@ import { ensureMemberAccessRolesFromCompatibilityFields } from "@/lib/member-acc
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/session-guards";
 import { buildXeroContactUrl } from "@/lib/xero-links";
+import { getXeroOrgShortCode } from "@/lib/xero-link-short-code";
 import { upsertXeroObjectLink } from "@/lib/xero-sync";
 import {
   callXeroApi,
@@ -199,13 +200,22 @@ export async function POST(request: NextRequest) {
       assignedByMemberId: session.user.id,
     });
 
-    const xeroLink = buildXeroContactUrl(cachedContact.contactId);
+    // #2314: two links, deliberately different. The STORED one is
+    // organisation-agnostic — a short code baked into a XeroObjectLink row is
+    // wrong the moment the club reconnects to a different Xero organisation, so
+    // the short code is applied when the row is rendered instead. The one
+    // RETURNED to the admin who just imported is scoped now, so their click
+    // lands in this club's books.
+    const storedXeroLink = buildXeroContactUrl(cachedContact.contactId);
+    const xeroLink = buildXeroContactUrl(cachedContact.contactId, {
+      shortCode: await getXeroOrgShortCode(),
+    });
     await upsertXeroObjectLink({
       localModel: "Member",
       localId: member.id,
       xeroObjectType: "CONTACT",
       xeroObjectId: cachedContact.contactId,
-      xeroObjectUrl: xeroLink,
+      xeroObjectUrl: storedXeroLink,
       role: "CONTACT",
       metadata: {
         contactName: cachedContact.name ?? `${firstName} ${lastName}`,

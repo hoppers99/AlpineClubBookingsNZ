@@ -20,6 +20,23 @@ import {
 import { registerXeroOrganisationCacheInvalidator } from "@/lib/xero-organisation-cache-bus";
 import { callXeroApi, getAuthenticatedXeroClient } from "./xero-api-client";
 
+/**
+ * How long a SUCCESSFUL organisation read is reused in this process.
+ *
+ * The honest bound on it (#2314 review): invalidation runs over the in-process
+ * bus in `xero-organisation-cache-bus.ts`, which reaches only the process that
+ * handled the connect/disconnect. In a multi-process deployment a web, cron or
+ * worker process that did not can therefore keep the PREVIOUS organisation's
+ * summary — its name, its financial year end and its deep-link short code — for
+ * up to this TTL after a reconnect to a different Xero organisation.
+ *
+ * That is accepted for screens: they re-render, so the links correct themselves
+ * once the entry expires, and re-reading per render is the cost the shared cache
+ * exists to avoid (see `xero-link-short-code.ts`). It is NOT accepted for email,
+ * which cannot be re-rendered and whose links actively switch the reader's Xero
+ * session — the three alert senders pass `getXeroOrgShortCode({ confirmLive:
+ * true })`, which forces the read and names no organisation unless it succeeded.
+ */
 const ORG_CACHE_TTL_MS = 12 * 60 * 60 * 1000; // 12 hours
 
 interface OrgYearEndCacheEntry {

@@ -17,6 +17,42 @@ WAITLISTED -> WAITLIST_OFFERED -> CONFIRMED/PAID or WAITLISTED/CANCELLED
 AWAITING_REVIEW -> PENDING (quote accepted, #1254) or CONFIRMED/PAID or CANCELLED
 ```
 
+### Minimum-stay exception foundation (#2363)
+
+A minimum-stay violation causes **no booking-state transition** in this release.
+Member booking create, member group join, and ordinary date modification (on the
+live `modify` route as well as `modify-dates`) keep their blocking HTTP 400
+behavior for non-admin actors. The public non-member group join now blocks at
+both of its stages: the staging request never reaches `GroupBookingJoin` (no
+token, no row, no email), and the verification step re-reads the current policy
+set and returns a 409 `minimum_stay` outcome instead of creating the non-login
+member, the PENDING child booking, the PENDING payment and the pay link — so a
+rule tightened during the link's 48-hour life fails closed rather than admitting
+the stay. Quote and policy-check endpoints return advisory facts, and the
+booking wizard continues to show the existing message without advancing. The
+authenticated responses now carry a frozen `exceptionReview` whose violations
+include the policy version, so the later workflow can present one combined
+review without reconstructing what the member encountered; the two PUBLIC
+non-member group-join stages deliberately carry none of it — they answer with a
+generic sentence and their code/outcome, and the snapshot reaches the club only
+through the server log line each stage writes.
+
+Accepting a waitlist offer can also end in **no transition at all** without
+being a refusal: the same-lodge minimum-stay check runs on an unlocked read
+before the claiming transaction, so the claim refuses with `CONFIRM_RETRY`
+(HTTP 409) when it finds a live offer the check never classified — an entry the
+offer sweep moved `WAITLISTED -> WAITLIST_OFFERED` in between, or one that
+became a cross-lodge offer. Nothing is written, so the state machine is exactly
+where it was and the member simply confirms again.
+
+The `HOLD`/`NO_HOLD` value in that snapshot is policy metadata today. No
+exception request is persisted and no capacity is held or released because of
+it. #2365 adds the durable request/approval states, revalidation, and capacity
+reservation rules. Until that work lands, capacity exhaustion, subscription or
+membership refusal, duplicate member-night, authentication, payment, privacy,
+invalid-date, and data-integrity failures remain hard stops with no transition
+into review.
+
 `DRAFT -> PAYMENT_PENDING` is also where a stored account-credit election is
 spent (#2265). A draft carries the member's election on
 `Booking.creditElectionCents` and consumes no credit while it may still be
@@ -1276,6 +1312,18 @@ rewritten — warning-only on the manual board is the intended function (owner
 decision 2026-07-11), not a pending hard-block. Same-booking mixing is unrestricted — Phase 0 remains the
 night-level adult-coverage rule, and minors-only ROOMS are allowed whenever
 the booking has an adult on-site that night.
+
+Two occupancies with no booking behind them feed this invariant as
+attribution-less rows and so are covered by that last clause: a **custodian bed
+hold** (#2286) and, since #2317, an **exclusive whole-lodge hold** — every
+active bed of the held lodge on every held night. Both are tierless, so both
+read as an adult: another booking's unaccompanied minors are kept out of the
+rooms, and no name, booking id or age tier of the held group ever reaches the
+planner. Neither can be displaced: neither has a row to move, and — because a
+real allocation row may sit on the same bed on the same night, and planner
+occupancy is keyed `bedId:stayDate` — the planner also pins those bed-nights as
+permanently occupied, so evicting the co-located booking releases that
+booking's claim and never the hold's.
 
 Reconciliation widens its loads to the envelope of every booking overlapping
 the reconcile range (`min(checkIn) .. max(checkOut)` union the range) so the

@@ -902,6 +902,162 @@ export function diffFieldMergePatches(
 }
 
 // ---------------------------------------------------------------------------
+// #2437 — family-link (Member self-relation) drift, re-checked under the lock
+// ---------------------------------------------------------------------------
+
+/**
+ * The Member self-relation FK columns — the family links: parent, secondary
+ * parent, email inheritance, details-confirmed-by. Derived from the spec
+ * table's `selfRelation` flag, which is HAND-WRITTEN — the derivation alone
+ * guarantees nothing about a fifth self-relation. What enforces it is the
+ * DMMF/schema test in member-merge-dmmf.test.ts, which asserts the flag in
+ * both directions against the schema (every singular Member→Member FK-owning
+ * relation is flagged, only those, all bucket `move`), so a new self-relation
+ * added WITHOUT the flag fails CI instead of silently escaping both the
+ * under-lock drift re-check in `executeMemberMerge` and #2445's
+ * master-row-excluding, id-bounded sweep (#2437).
+ */
+export const MEMBER_SELF_RELATION_COLUMNS: readonly string[] =
+  MEMBER_MERGE_RELATION_SPECS.filter((s) => s.selfRelation).map((s) => s.column);
+
+export type FamilyLinkDrift = {
+  /** The self-relation column that moved. */
+  column: string;
+  /**
+   * Which side moved: the master's own outgoing link, the duplicate's own
+   * outgoing link, or another member's row that still points AT the duplicate
+   * after the moves (an inbound link written mid-merge).
+   */
+  where: "master" | "duplicate" | "inbound";
+};
+
+/**
+ * #2437 — the family links on which the under-lock state disagrees with the
+ * transaction-opening snapshot the merge plan was built from.
+ *
+ * The four self-relation columns are written by admin paths that take no
+ * `member-lifecycle` advisory lock (`admin-members-service.ts` and the
+ * dependents link route), so a link can land between the merge's opening
+ * snapshot and its writes. #2445 already stopped the CORRUPTION arm of that
+ * race — `applyMoves` excludes the master's own row, so the master can never
+ * become its own parent. What remained was SILENT LOSS: a link pointing at the
+ * duplicate that lands mid-merge survives the moves un-repointed, and the
+ * duplicate's hard-delete then nulls it via `onDelete: SetNull` — no error, no
+ * warning, no audit entry; the admin's just-saved link is simply gone. This
+ * differ detects every such interleaving from the fresh under-lock read so the
+ * merge can refuse with the same 409 the field-patch drift check uses (owner
+ * decision 1 Aug 2026: detect and refuse; deliberately NOT a new advisory-lock
+ * participant and NOT a DB CHECK constraint).
+ *
+ * "Unchanged" is measured against what the merge ITSELF has done to these
+ * columns by the time of the fresh read, not against the raw snapshot:
+ *
+ *  - MASTER row: step 1 (`nullSelfRelationCycles`) nulls a snapshot value equal
+ *    to the loser id, and `applyMoves` excludes the master's row, so the
+ *    expected value is the snapshot's with that one transform applied. Step 1
+ *    is VALUE-CONDITIONAL and 409s itself when the pointer moved under it, and
+ *    a successful null holds the master's row lock to commit — that pairing is
+ *    what makes the `null` expectation here enforceable rather than a
+ *    tautology over step 1's own write (the differ still fails closed on a
+ *    surviving pointer as defense-in-depth). The live master-arm detections at
+ *    this step are therefore the columns step 1 did NOT touch.
+ *  - DUPLICATE row: step 3 (`applyMoves`) re-points captured non-master rows
+ *    whose column equals the loser id — including, degenerately, the
+ *    duplicate's own.
+ *  - INBOUND rows: after step 3 no OTHER row may still reference the loser in
+ *    any of the four columns; one that does was written after the token
+ *    re-derivation captured that column's rows (the moves are id-bounded to
+ *    that capture, so a later row is deliberately NOT swept) and would be
+ *    silently nulled by the hard-delete — or, had it been swept, silently
+ *    absorbed onto the master without the family-graph guards ever seeing it.
+ *
+ * Values are normalised with `?? null` so an absent column (a narrower select,
+ * a mock row) compares like a null one.
+ */
+export function diffSelfRelationLinkState(params: {
+  masterId: string;
+  loserId: string;
+  masterSnapshot: Record<string, unknown>;
+  loserSnapshot: Record<string, unknown>;
+  masterAtWrite: Record<string, unknown>;
+  loserAtWrite: Record<string, unknown>;
+  /** Rows other than master/loser still referencing the loser at write time. */
+  inboundAtWrite: readonly Record<string, unknown>[];
+}): FamilyLinkDrift[] {
+  const value = (row: Record<string, unknown>, column: string): unknown =>
+    row[column] ?? null;
+  const drifts: FamilyLinkDrift[] = [];
+  for (const column of MEMBER_SELF_RELATION_COLUMNS) {
+    const masterSnapshotValue = value(params.masterSnapshot, column);
+    const masterExpected =
+      masterSnapshotValue === params.loserId ? null : masterSnapshotValue;
+    if (value(params.masterAtWrite, column) !== masterExpected) {
+      drifts.push({ column, where: "master" });
+    }
+
+    const loserSnapshotValue = value(params.loserSnapshot, column);
+    const loserExpected =
+      loserSnapshotValue === params.loserId ? params.masterId : loserSnapshotValue;
+    if (value(params.loserAtWrite, column) !== loserExpected) {
+      drifts.push({ column, where: "duplicate" });
+    }
+
+    if (params.inboundAtWrite.some((row) => value(row, column) === params.loserId)) {
+      drifts.push({ column, where: "inbound" });
+    }
+  }
+  return drifts;
+}
+
+/**
+ * Club-admin vocabulary for the four self-relation columns, matching the
+ * changelog's register ("who a member's parent or second parent is, whose
+ * email address they share, and who confirmed their details"). The 409 message
+ * is the WHOLE admin-facing contract — the merge page renders `data.error`
+ * verbatim and never reads `details` — so it must not name raw database
+ * columns; the raw column stays in `details.driftFamilyLinks` for machine
+ * consumers and the audit trail. Unknown columns (a future fifth
+ * self-relation) fall back to the column name rather than hiding.
+ */
+const FAMILY_LINK_LABELS: Record<string, string> = {
+  parentMemberId: "parent",
+  secondaryParentId: "second parent",
+  inheritEmailFromId: "shared email address",
+  detailsConfirmedByMemberId: "details confirmed by",
+};
+
+/** Plain-English rendering of one family-link drift entry for the 409 message. */
+export function describeFamilyLinkDrift(drift: FamilyLinkDrift): string {
+  const label = FAMILY_LINK_LABELS[drift.column] ?? drift.column;
+  switch (drift.where) {
+    case "master":
+      return `${label} (on the surviving member)`;
+    case "duplicate":
+      return `${label} (on the duplicate)`;
+    case "inbound":
+      return `${label} (another member now links to the duplicate)`;
+  }
+}
+
+/**
+ * The one 409 every family-link drift arm throws (#2437): step 1's
+ * value-conditional nulling when the master's pointer moved under it, and the
+ * step-5 under-lock differ. Same code and message register as the #2243 field
+ * drift so the route and the merge page need no new handling.
+ */
+function familyLinkDriftError(drifts: readonly FamilyLinkDrift[]): MemberMergeError {
+  return new MemberMergeError(
+    `These family links changed while the merge was running: ${drifts
+      .map(describeFamilyLinkDrift)
+      .join(", ")}. ` +
+      "Nothing was saved. Re-run the preview and try again.",
+    409,
+    "merge_drift_in_transaction",
+    { driftFamilyLinks: [...drifts] },
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Partner-link merge plan (pure)
 // ---------------------------------------------------------------------------
 
@@ -1374,6 +1530,22 @@ async function countLoserRows(
 }
 
 /**
+ * The one predicate every self-relation MOVE derivation shares (#2437): rows
+ * pointing at the duplicate, excluding the master's own row. Used by the
+ * preview's move counts, the execute-time token re-derivation / id capture,
+ * and the moved-id audit sample, so the three can never disagree about which
+ * rows count as "moved" — the master's own pointer at the duplicate is CLEARED
+ * by step 1, not moved, and is surfaced as a preview warning instead.
+ */
+function selfRelationMoveWhere(
+  column: string,
+  masterId: string,
+  loserId: string,
+): Record<string, unknown> {
+  return { [column]: loserId, id: { not: masterId } };
+}
+
+/**
  * FK-less member-id columns the merge MOVES rather than snapshots, as
  * `{ key, delegate, column }` (#2243). They own no `@relation`, so they cannot
  * live in `MEMBER_MERGE_RELATION_SPECS` (which must equal the FK-owner universe
@@ -1455,10 +1627,21 @@ export async function buildMemberMergePreview(params: {
   const collisions: { model: string; resolution: string; count: number }[] = [];
 
   // Relation move counts (loser rows that will re-point). Resolve models are
-  // reported as collisions with their resolution.
+  // reported as collisions with their resolution. Self-relation counts exclude
+  // the master's own row — its pointer at the duplicate is CLEARED by step 1,
+  // not moved, and is warned about explicitly below (#2437). The predicate is
+  // shared with the execute-time token re-derivation, so the digest agrees.
   const moveSpecs = MEMBER_MERGE_RELATION_SPECS.filter((s) => s.bucket === "move");
   const moveCounts = await Promise.all(
-    moveSpecs.map((s) => countLoserRows(db, s.delegate, s.column, loserId)),
+    moveSpecs.map((s) => {
+      if (!s.selfRelation) return countLoserRows(db, s.delegate, s.column, loserId);
+      const delegate = (db as unknown as Record<string, {
+        count: (args: unknown) => Promise<number>;
+      }>)[s.delegate];
+      return delegate.count({
+        where: selfRelationMoveWhere(s.column, masterId, loserId),
+      });
+    }),
   );
   moveSpecs.forEach((s, i) => {
     if (moveCounts[i] > 0) relationMoves.push({ model: s.key, count: moveCounts[i] });
@@ -1479,6 +1662,24 @@ export async function buildMemberMergePreview(params: {
   if (discardedSelfRefs.length > 0) {
     warnings.push(
       `The duplicate's own ${discardedSelfRefs.join(", ")} link(s) are discarded — the master keeps its own (inbound references to the duplicate are still re-pointed).`,
+    );
+  }
+
+  // The MASTER's own self-relation columns pointing at the duplicate are
+  // CLEARED by the merge (a surviving member cannot be linked to a record that
+  // is about to be deleted, and re-pointing would link it to itself). They are
+  // deliberately NOT counted as relation moves above, so without this warning
+  // the clearance would be invisible in the preview (#2437).
+  const clearedMasterSelfRefs = MEMBER_MERGE_RELATION_SPECS.filter(
+    (s) => s.selfRelation,
+  )
+    .filter(
+      (s) => (masterFull as unknown as Record<string, unknown>)[s.column] === loserId,
+    )
+    .map((s) => s.field);
+  if (clearedMasterSelfRefs.length > 0) {
+    warnings.push(
+      `The master's own ${clearedMasterSelfRefs.join(", ")} link(s) point at the duplicate and will be CLEARED by the merge — they are not moved (a member cannot be linked to itself).`,
     );
   }
 
@@ -1807,7 +2008,8 @@ export async function executeMemberMerge(params: {
       masterFull as unknown as Record<string, unknown>,
       loserFull as unknown as Record<string, unknown>,
     );
-    const relationMoveCountsPreview = await previewRelationCountsForToken(tx, masterId, loserId);
+    const relationPreview = await previewRelationCountsForToken(tx, masterId, loserId);
+    const relationMoveCountsPreview = relationPreview.counts;
     const collisionsPreview = (await summariseResolveCollisions(tx, masterId, loserId)).collisions;
     const core: MemberMergePreviewCore = {
       fieldMerge: previewedFieldOutcome.diff,
@@ -1832,16 +2034,27 @@ export async function executeMemberMerge(params: {
     }
 
     // Collect a bounded moved-id sample BEFORE mutating.
-    const movedIdSample = await collectMovedIdSample(tx, loserId);
+    const movedIdSample = await collectMovedIdSample(tx, masterId, loserId);
 
-    // 1) Null master self-relation cycles first.
-    await nullSelfRelationCycles(tx, masterFull, loserId);
+    // 1) Null master self-relation cycles first — value-conditionally: a
+    // pointer that moved since the snapshot refuses here with the family-link
+    // drift 409 (#2437) instead of being overwritten. On success the master's
+    // row lock is held to commit.
+    const selfRelationNulls = await nullSelfRelationCycles(tx, masterFull, loserId);
 
     // 2) Resolve collisions.
     const resolveResults = await resolveAllCollisions(tx, masterId, loserId);
 
-    // 3) Moves.
-    const relationMoves = await applyMoves(tx, masterId, loserId);
+    // 3) Moves — self-relation sweeps bounded to the ids captured by the token
+    // re-derivation above, so a family link that landed since then is never
+    // absorbed unvetted; it stays pointing at the duplicate and the step-5
+    // inbound re-check refuses the merge (#2437).
+    const relationMoves = await applyMoves(
+      tx,
+      masterId,
+      loserId,
+      relationPreview.selfRelationRefs,
+    );
 
     // 4) Loser Xero teardown (link-role aware; NO Xero API calls).
     const xeroTeardown = await teardownLoserXero(tx, masterId, loserId);
@@ -1934,6 +2147,61 @@ export async function executeMemberMerge(params: {
         { driftFields },
       );
     }
+
+    // #2437 — the family links are re-checked under the SAME locks, in both
+    // directions. The four Member self-relation columns are written by admin
+    // paths outside the member-lifecycle lock (admin-members-service.ts, the
+    // dependents link route), and #2445's exclusion of the master's own row
+    // from the moves turned the mid-merge race from corruption into SILENT
+    // LOSS: a link pointing at the duplicate that lands after the opening
+    // snapshot survives the moves un-repointed and is then quietly nulled by
+    // the hard-delete's `onDelete: SetNull` — no error, no audit. So: any
+    // change to the four columns on either member row beyond the merge's own
+    // step-1/step-3 rewrites, and any OTHER row still referencing the
+    // duplicate after the moves, refuses here with the same 409 drift refusal
+    // as the field check above (owner decision 1 Aug 2026: detect and refuse;
+    // deliberately NOT a new advisory-lock participant and NOT a DB CHECK
+    // constraint). Nothing is committed — the transaction rolls back whole —
+    // and the operator's re-run previews the link from the start.
+    //
+    // The three checks compose with two write-side bounds to cover EVERY
+    // interleaving: step 1's null is value-conditional (a master pointer that
+    // moved since the snapshot 409s at step 1, and a successful null holds the
+    // master's row lock to commit), and the step-3 sweeps are id-bounded to
+    // the token re-derivation's capture (a link that lands later is never
+    // absorbed unvetted — it stays pointing at the duplicate and the inbound
+    // arm here refuses it). Interleavings after this point cannot reopen the
+    // hole either: both member rows are FOR UPDATE-locked above, and an
+    // inbound FK write referencing the duplicate from another row blocks (its
+    // FK check takes KEY SHARE on the duplicate's row, which conflicts with
+    // FOR UPDATE) and then fails loudly on the FK once the hard-delete
+    // commits.
+    const memberFindMany = (tx as unknown as Record<string, {
+      findMany: (args: unknown) => Promise<Record<string, unknown>[]>;
+    }>)["member"];
+    const inboundAtWrite = await memberFindMany.findMany({
+      where: {
+        id: { notIn: [masterId, loserId] },
+        OR: MEMBER_SELF_RELATION_COLUMNS.map((column) => ({ [column]: loserId })),
+      },
+      select: {
+        id: true,
+        ...Object.fromEntries(MEMBER_SELF_RELATION_COLUMNS.map((c) => [c, true])),
+      },
+    });
+    const driftLinks = diffSelfRelationLinkState({
+      masterId,
+      loserId,
+      masterSnapshot: masterFull as unknown as Record<string, unknown>,
+      loserSnapshot: loserFull as unknown as Record<string, unknown>,
+      masterAtWrite: masterAtWrite as unknown as Record<string, unknown>,
+      loserAtWrite: loserAtWrite as unknown as Record<string, unknown>,
+      inboundAtWrite,
+    });
+    if (driftLinks.length > 0) {
+      throw familyLinkDriftError(driftLinks);
+    }
+
     const fieldsChanged = Object.keys(fieldOutcome.patch);
     if (fieldsChanged.length > 0) {
       await tx.member.update({ where: { id: masterId }, data: fieldOutcome.patch });
@@ -2000,6 +2268,10 @@ export async function executeMemberMerge(params: {
           resolutionWarnings: resolveResults.warnings,
           xeroTeardown,
           photoReconcile,
+          // The master's own family links at the duplicate, CLEARED (not moved)
+          // by step 1 — recorded explicitly so the audit never claims a cleared
+          // link was carried over (#2437).
+          selfRelationCyclesNulled: selfRelationNulls.nulledColumns,
           movedIdSample: movedIdSample.sample,
           movedIdSampleTruncated: movedIdSample.truncated,
         },
@@ -2086,15 +2358,50 @@ function buildLoserSnapshot(loser: Member, xeroContactIdAtOpen: string | null) {
   };
 }
 
+/**
+ * The execute-time re-derivation the preview token is verified against, plus —
+ * for the four Member self-relation columns — the ID CAPTURE the moves are
+ * bounded to (#2437). Counts and captured ids come from the SAME read: the
+ * self-relation counts are the length of the captured id list, so a row the
+ * token check never saw can never be inside the capture. Anything that lands
+ * after this read stays pointing at the duplicate (`applyMoves` sweeps only the
+ * captured ids), and the step-5 inbound re-check refuses the merge — closing
+ * the window where a family link written mid-transaction would be absorbed
+ * onto the master without the guards or the operator ever seeing it.
+ *
+ * The master's own row is EXCLUDED from the self-relation counts here and in
+ * `buildMemberMergePreview` together (the digest requires both derivations to
+ * agree): the master's pointer at the duplicate is not moved but CLEARED by
+ * step 1, so counting it as a move showed the operator a "History moved" row
+ * for a link the merge in fact deletes. The preview surfaces the clearance as
+ * an explicit warning instead, and master-side changes inside the transaction
+ * are policed by step 1's value-conditional null and the step-5 master arm,
+ * not by these counts.
+ */
 async function previewRelationCountsForToken(
   db: MergeDbClient,
   masterId: string,
   loserId: string,
-): Promise<{ model: string; count: number }[]> {
+): Promise<{
+  counts: { model: string; count: number }[];
+  selfRelationRefs: Record<string, string[]>;
+}> {
   const out: { model: string; count: number }[] = [];
   const moveSpecs = MEMBER_MERGE_RELATION_SPECS.filter((s) => s.bucket === "move");
+  const selfRelationRefs: Record<string, string[]> = {};
   const counts = await Promise.all(
-    moveSpecs.map((s) => countLoserRows(db, s.delegate, s.column, loserId)),
+    moveSpecs.map(async (s) => {
+      if (!s.selfRelation) return countLoserRows(db, s.delegate, s.column, loserId);
+      const delegate = (db as unknown as Record<string, {
+        findMany: (args: unknown) => Promise<{ id: string }[]>;
+      }>)[s.delegate];
+      const rows = await delegate.findMany({
+        where: selfRelationMoveWhere(s.column, masterId, loserId),
+        select: { id: true },
+      });
+      selfRelationRefs[s.column] = rows.map((r) => r.id);
+      return rows.length;
+    }),
   );
   moveSpecs.forEach((s, i) => {
     if (counts[i] > 0) out.push({ model: s.key, count: counts[i] });
@@ -2102,11 +2409,12 @@ async function previewRelationCountsForToken(
   // Same order and same source as `buildMemberMergePreview`, so the digest the
   // token is verified against matches the one it was issued from (#2243).
   out.push(...(await countFkLessMoveRows(db, loserId)));
-  return out;
+  return { counts: out, selfRelationRefs };
 }
 
 async function collectMovedIdSample(
   db: MergeDbClient,
+  masterId: string,
   loserId: string,
 ): Promise<{ sample: { model: string; id: string }[]; truncated: boolean }> {
   const sample: { model: string; id: string }[] = [];
@@ -2122,7 +2430,14 @@ async function collectMovedIdSample(
     }>)[s.delegate];
     const remaining = MOVED_ID_SAMPLE_CAP - sample.length;
     const rows = await delegate.findMany({
-      where: { [s.column]: loserId },
+      // Self-relation columns exclude the master's own row: its pointer at the
+      // duplicate is CLEARED by step 1, never moved, so recording it in the
+      // audit's movedIdSample was an affirmatively wrong account of an
+      // irreversible change (#2437). The clearance is audited separately as
+      // `selfRelationCyclesNulled`.
+      where: s.selfRelation
+        ? selfRelationMoveWhere(s.column, masterId, loserId)
+        : { [s.column]: loserId },
       select: { id: true },
       take: remaining + 1,
     });
@@ -2168,27 +2483,57 @@ async function reconcileLoserMemberPhotos(
   });
 }
 
+/**
+ * Step 1 — null the master's own pointers at the duplicate, VALUE-CONDITIONALLY
+ * (#2437). The snapshot only decides which columns to LOOK at; each write
+ * re-checks `column = loserId` in its own predicate, so under READ COMMITTED it
+ * can only null the value it observed. A write that lands on the master between
+ * the transaction-opening snapshot and this step (the guards, the token
+ * re-derivation and the moved-id sample are dozens of round-trips) makes the
+ * predicate miss — `count === 0` — and the merge refuses with the same 409 the
+ * step-5 differ uses, instead of blindly overwriting the concurrent link with
+ * null and then reading its own null back as "unchanged" at step 5. That
+ * includes a concurrent UNLINK (loser -> null): the outcome would have been the
+ * same null, but the operator previewed a different starting state, so it
+ * refuses in the fail-closed direction like every other drift arm.
+ *
+ * A successful conditional null takes the master's exclusive row lock and holds
+ * it to commit, which is what makes the step-5 master-arm expectation (`null`)
+ * genuinely safe rather than tautological: nothing can re-set the column after
+ * this step succeeds.
+ *
+ * Returns the columns actually nulled, so the audit can record the clearance
+ * explicitly (they are deliberately NOT counted as relation moves).
+ */
 async function nullSelfRelationCycles(
   tx: Prisma.TransactionClient,
   master: Member,
   loserId: string,
-): Promise<void> {
-  const data: Record<string, null> = {};
+): Promise<{ nulledColumns: string[] }> {
+  const nulledColumns: string[] = [];
+  const drifts: FamilyLinkDrift[] = [];
   for (const s of MEMBER_MERGE_RELATION_SPECS) {
     if (!s.selfRelation) continue;
-    if ((master as unknown as Record<string, unknown>)[s.column] === loserId) {
-      data[s.column] = null;
+    if ((master as unknown as Record<string, unknown>)[s.column] !== loserId) continue;
+    const res = await tx.member.updateMany({
+      where: { id: master.id, [s.column]: loserId },
+      data: { [s.column]: null },
+    });
+    if (res.count === 0) {
+      drifts.push({ column: s.column, where: "master" });
+    } else {
+      nulledColumns.push(s.column);
     }
   }
-  if (Object.keys(data).length > 0) {
-    await tx.member.update({ where: { id: master.id }, data });
-  }
+  if (drifts.length > 0) throw familyLinkDriftError(drifts);
+  return { nulledColumns };
 }
 
 async function applyMoves(
   tx: Prisma.TransactionClient,
   masterId: string,
   loserId: string,
+  selfRelationRefs: Record<string, readonly string[]>,
 ): Promise<{ model: string; count: number }[]> {
   const moves: { model: string; count: number }[] = [];
   for (const s of MEMBER_MERGE_RELATION_SPECS) {
@@ -2197,21 +2542,35 @@ async function applyMoves(
       updateMany: (args: unknown) => Promise<{ count: number }>;
     }>)[s.delegate];
     // Member SELF-relations (`parentMemberId`, `secondaryParentId`,
-    // `inheritEmailFromId`, `detailsConfirmedByMemberId`) exclude the MASTER's
-    // own row. `nullSelfRelationCycles` (step 1) already nulled any such pointer
-    // the master held at the transaction-opening snapshot, but that read is not
-    // under the master's row lock, so a writer outside the member-lifecycle lock
-    // can set `master.<selfRelation> = loserId` between the snapshot and here.
-    // Rewriting that to `masterId` would make the master its own parent (or its
-    // own email source / details confirmer) — a self-cycle this merge is
-    // supposed to prevent. Leaving it pointing at the loser is safe: the loser
-    // is hard-deleted moments later and every one of these FKs is
-    // `onDelete: SetNull`, so the pointer is nulled correctly by the delete.
-    // The broader fix — locking the master before the guards/self-cycle pass
-    // rather than only before the field write — is filed as #2437.
+    // `inheritEmailFromId`, `detailsConfirmedByMemberId`) sweep ONLY the rows
+    // captured by the token re-derivation (`selfRelationRefs`), and never the
+    // MASTER's own row:
+    //
+    //  - The id bound (#2437) is what stops a family link written mid-merge
+    //    being ABSORBED unvetted. A `X.parentMemberId = loser` that commits
+    //    after the token counts were captured but before this sweep would
+    //    otherwise be silently re-pointed onto the master — a link the guards
+    //    (`evaluateFamilyLinkGraphBlockers`) never evaluated and the operator
+    //    never previewed, capable of committing the exact family cycle / depth
+    //    breach the guards exist to refuse. Bounded to the captured ids, the
+    //    late row keeps pointing at the loser and the step-5 inbound re-check
+    //    refuses the merge with the family-link drift 409. The value predicate
+    //    (`[column]: loserId`) still re-evaluates under READ COMMITTED, so a
+    //    captured row whose link was concurrently REMOVED is respected, not
+    //    re-pointed.
+    //  - The master exclusion (#2445) stands even if a capture ever contained
+    //    the master's id: rewriting the master's own pointer to `masterId`
+    //    would make it its own parent (or its own email source / details
+    //    confirmer). Step 1 nulls the snapshot-visible case value-conditionally;
+    //    any residual divergence on the two locked rows is refused by the
+    //    step-5 differ (`diffSelfRelationLinkState`), so neither a self-cycle
+    //    nor a silent null can reach the commit.
     const res = await delegate.updateMany({
       where: s.selfRelation
-        ? { [s.column]: loserId, id: { not: masterId } }
+        ? {
+            [s.column]: loserId,
+            id: { in: [...(selfRelationRefs[s.column] ?? [])], not: masterId },
+          }
         : { [s.column]: loserId },
       data: { [s.column]: masterId },
     });

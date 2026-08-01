@@ -59,6 +59,26 @@ export class ConfigTransferBundleError extends Error {
   }
 }
 
+/** Exact-version gate, parameterised so tests can prove old/new-reader safety. */
+export function assertConfigTransferFormatVersion(
+  bundleVersion: number,
+  supportedVersion = CONFIG_TRANSFER_FORMAT_VERSION,
+): void {
+  if (bundleVersion > supportedVersion) {
+    throw new ConfigTransferBundleError(
+      `Bundle format version ${bundleVersion} is newer than this ` +
+        `app supports (${supportedVersion}); upgrade before importing`,
+    );
+  }
+  if (bundleVersion < supportedVersion) {
+    throw new ConfigTransferBundleError(
+      `Bundle format version ${bundleVersion} predates this app's ` +
+        `format (${supportedVersion}) and cannot be imported; ` +
+        `re-export from an up-to-date app`,
+    );
+  }
+}
+
 export type BundleEntry = {
   /** Path within the zip, e.g. "site-content/pages.csv". Never "manifest.json". */
   path: string;
@@ -296,24 +316,10 @@ export function readBundle(zipBytes: Uint8Array): ReadBundleResult {
   }
   const manifest = parsed.data;
 
-  if (manifest.formatVersion > CONFIG_TRANSFER_FORMAT_VERSION) {
-    throw new ConfigTransferBundleError(
-      `Bundle format version ${manifest.formatVersion} is newer than this ` +
-        `app supports (${CONFIG_TRANSFER_FORMAT_VERSION}); upgrade before importing`,
-    );
-  }
+  assertConfigTransferFormatVersion(manifest.formatVersion);
 
-  // #2187 (D19): the club-theme entity changed incompatibly at v2 (seven brand
-  // columns collapsed to three seeds). There is NO v1 translation path — a v1
-  // bundle carries orphan columns this app no longer understands, so reject it
-  // loudly rather than silently dropping them.
-  if (manifest.formatVersion < CONFIG_TRANSFER_FORMAT_VERSION) {
-    throw new ConfigTransferBundleError(
-      `Bundle format version ${manifest.formatVersion} predates this app's ` +
-        `format (${CONFIG_TRANSFER_FORMAT_VERSION}) and cannot be imported; ` +
-        `re-export from an up-to-date app`,
-    );
-  }
+  // v2 changed the theme columns; v3 adds destructive booking-policy replace
+  // semantics. Neither has a safe translation path, so capability is exact.
 
   // Files-first: every file actually present (bar the manifest) is usable.
   const files = new Map<string, Uint8Array>();

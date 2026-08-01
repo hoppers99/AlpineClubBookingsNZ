@@ -9,6 +9,15 @@
 // that nothing anywhere branches on the repeat count.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+// The timing-floor assertions below used to read `Date.now()`. Since #2481 every
+// test file runs with the wall clock FROZEN, which makes `Date.now()` a constant
+// — the two "it actually waited" assertions would have failed and, worse, the
+// two "it did NOT wait" assertions would have passed vacuously off a hard-coded
+// zero, reporting green while checking nothing. `realElapsedMs` measures with
+// the monotonic clock the freeze leaves alone; see its docblock for why it is
+// deliberately a different API from the `performance.now()` the guard reads.
+import { realElapsedMs } from "@/lib/__tests__/helpers/clock";
+
 const h = vi.hoisted(() => ({
   createStructuredAuditLog: vi.fn(),
   auditLogCount: vi.fn(),
@@ -175,12 +184,12 @@ describe("2. response-timing equalisation", () => {
   it("actually waits when the answer came back faster than the floor", async () => {
     __setMemberGuestRefusalFloorMs(60);
     // Two clocks on purpose: the helper is driven by the monotonic one it
-    // actually uses, while the ASSERTION measures real elapsed time, so this
-    // cannot pass by both sides sharing a broken clock.
+    // actually uses, while the ASSERTION measures real elapsed time from a
+    // different API, so this cannot pass by both sides sharing a broken clock.
     const clock = startMemberGuestRefusalClock();
-    const wallBefore = Date.now();
+    const before = process.hrtime.bigint();
     await equaliseMemberGuestRefusalTiming(clock);
-    expect(Date.now() - wallBefore).toBeGreaterThanOrEqual(50);
+    expect(realElapsedMs(before)).toBeGreaterThanOrEqual(50);
   });
 
   it("does not wait at all when the answer already took longer than the floor", async () => {
@@ -191,9 +200,9 @@ describe("2. response-timing equalisation", () => {
     const clock = (startMemberGuestRefusalClock() - 5_000) as ReturnType<
       typeof startMemberGuestRefusalClock
     >;
-    const wallBefore = Date.now();
+    const before = process.hrtime.bigint();
     await equaliseMemberGuestRefusalTiming(clock);
-    expect(Date.now() - wallBefore).toBeLessThan(20);
+    expect(realElapsedMs(before)).toBeLessThan(20);
   });
 
   it("applies the WHOLE floor rather than skipping it when the elapsed time is impossible", () => {
@@ -402,7 +411,7 @@ describe("3. logging repeated refusals — for an admin, NEVER a block", () => {
 describe("handleMemberGuestAddRefusal — the one call every add path makes", () => {
   it("does nothing for an ordinary validation error", async () => {
     __setMemberGuestRefusalFloorMs(5_000);
-    const before = Date.now();
+    const before = process.hrtime.bigint();
     await handleMemberGuestAddRefusal({
       request: request(),
       actorMemberId: "m-booker",
@@ -416,7 +425,7 @@ describe("handleMemberGuestAddRefusal — the one call every add path makes", ()
     // The floor must NOT be applied to ordinary errors: a quarter-second (here
     // five seconds) on "check-out must be after check-in" would slow the whole
     // booking flow down to hide nothing.
-    expect(Date.now() - before).toBeLessThan(1_000);
+    expect(realElapsedMs(before)).toBeLessThan(1_000);
     expect(h.createStructuredAuditLog).not.toHaveBeenCalled();
     expect(h.applyMemberScopedRateLimit).not.toHaveBeenCalled();
   });
@@ -424,7 +433,7 @@ describe("handleMemberGuestAddRefusal — the one call every add path makes", ()
   it("spends the throttle budget, audits, and equalises for a collapsed refusal", async () => {
     __setMemberGuestRefusalFloorMs(40);
     const startedAt = startMemberGuestRefusalClock();
-    const wallBefore = Date.now();
+    const before = process.hrtime.bigint();
     await handleMemberGuestAddRefusal({
       request: request(),
       actorMemberId: "m-booker",
@@ -435,7 +444,7 @@ describe("handleMemberGuestAddRefusal — the one call every add path makes", ()
     });
     expect(h.applyMemberScopedRateLimit).toHaveBeenCalled();
     expect(h.createStructuredAuditLog).toHaveBeenCalled();
-    expect(Date.now() - wallBefore).toBeGreaterThanOrEqual(30);
+    expect(realElapsedMs(before)).toBeGreaterThanOrEqual(30);
   });
 
   it("never converts a refusal into a 429, even when the budget is spent", async () => {

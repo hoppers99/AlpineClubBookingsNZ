@@ -61,6 +61,11 @@ import {
   findFutureCustodianHoldsForBed,
 } from "@/lib/custodian-occupancy";
 import {
+  buildWholeLodgeHeldNightPredicate,
+  findBlockingWholeLodgeHolds,
+  wholeLodgeHoldOccupiedBedNightsForPlanner,
+} from "@/lib/exclusive-hold-occupancy";
+import {
   OPERATIONALLY_PRESENT_GUEST_WHERE,
   isOperationallyPresentConsent,
 } from "@/lib/member-guest-consent";
@@ -783,7 +788,13 @@ function assertBunkGroupTypeConsistency(
 // serialisation point. Callers run this inside a transaction (self-wrapped when
 // no client is supplied).
 async function lockRoomForBunkGroup(roomId: string, db: BedAllocationDb) {
-  await db.$queryRaw`SELECT id FROM "LodgeRoom" WHERE id = ${roomId} FOR UPDATE`;
+  // `$executeRaw`, and the identifier quoted, both for the same reason (#2289):
+  // the statement exists ONLY for its lock, so saying so in the call makes it
+  // impossible to mistake for a read whose shape somebody might later trust.
+  // `id` worked unquoted only because the column happens to be lowercase; every
+  // other raw statement in this repository quotes, and an unquoted identifier
+  // silently folds case the day a column is not.
+  await db.$executeRaw`SELECT 1 FROM "LodgeRoom" WHERE "id" = ${roomId} FOR UPDATE`;
 }
 
 async function assertBunkGroupCanAdmit(input: {
@@ -1927,12 +1938,26 @@ export async function getBedAllocationDashboard(input: {
   // `to` passes straight through as the exclusive end; adding a day here would
   // hold a bed on a night the board never renders.
   const rangeNights = eachDateOnlyInRange(input.range.from, input.range.to);
-  const custodianBedHolds = await findCustodianBedHolds({
-    lodgeId: input.lodgeId,
-    from: input.range.from,
-    toExclusive: input.range.to,
-    db,
-  });
+  // Blocking whole-lodge holds (#2317): loaded on the SAME half-open window as
+  // the custodian holds, and for the same reason — a hold takes every bed of
+  // its lodge for its nights but owns no `BedAllocation` row anywhere, so it is
+  // invisible to `serializedAllocations` above. Its own query, not a filter
+  // over `bookings`: a hold blocks whether or not its guest rows have been
+  // entered yet, and the board's booking load demands an overlapping guest.
+  const [custodianBedHolds, blockingWholeLodgeHolds] = await Promise.all([
+    findCustodianBedHolds({
+      lodgeId: input.lodgeId,
+      from: input.range.from,
+      toExclusive: input.range.to,
+      db,
+    }),
+    findBlockingWholeLodgeHolds({
+      lodgeId: input.lodgeId,
+      from: input.range.from,
+      toExclusive: input.range.to,
+      db,
+    }),
+  ]);
   const custodianHolds: DashboardCustodianHold[] = custodianBedHolds.map(
     (hold) => ({
       assignmentId: hold.assignmentId,
@@ -1967,6 +1992,19 @@ export async function getBedAllocationDashboard(input: {
           })),
           ...custodianOccupiedBedNightsForPlanner(
             custodianBedHolds,
+            rangeNights,
+          ),
+          // Exclusive whole-lodge holds (#2317, owner decision option (a)):
+          // every active bed of the held lodge, on every held night, as
+          // unattributed (null booking / null guest) non-displaceable
+          // occupancy. The held group's own guests are already excluded from
+          // `plannerBookings` (the #120/#2285 short-circuit above), so this
+          // only ever stops ANOTHER booking's guests being auto-placed onto
+          // beds the held group is physically using — the clash surfaces as
+          // NO_BED_AVAILABLE in the awaiting-allocation list instead.
+          ...wholeLodgeHoldOccupiedBedNightsForPlanner(
+            blockingWholeLodgeHolds,
+            rooms,
             rangeNights,
           ),
         ],
@@ -2158,6 +2196,30 @@ export async function runAutoBedAllocation(input: {
     source: "AUTO" as const,
   }));
 
+  // Which lodge is each suggestion's room in? A scoped run already knows (the
+  // whole board is that lodge); a club-wide run resolves it once, here. This
+  // answers two questions with one lookup: which lodges the write must lock,
+  // and — for the #2317 whole-lodge-hold re-filter — which lodge's hold could
+  // take a given suggestion's bed. Resolved before the transaction opens so the
+  // lock stays the transaction's first statement.
+  const roomLodgeIdById = new Map<string, string>();
+  const candidateRoomLodgeIds = input.lodgeId
+    ? []
+    : (
+        await db.lodgeRoom.findMany({
+          where: {
+            id: { in: [...new Set(candidateRows.map((row) => row.roomId))] },
+          },
+          select: { id: true, lodgeId: true },
+        })
+      ).map((room) => {
+        roomLodgeIdById.set(room.id, room.lodgeId);
+        return room.lodgeId;
+      });
+  const lodgeIds = input.lodgeId
+    ? [input.lodgeId]
+    : [...new Set(candidateRoomLodgeIds)].sort();
+
   /**
    * The locked write half of the run (#2286).
    *
@@ -2235,28 +2297,49 @@ export async function runAutoBedAllocation(input: {
       return { count: 0 };
     }
 
+    // Whole-lodge-hold re-filter (#2317), the exact mirror of the custodian one
+    // above. The planner WAS fed these nights as blocking unattributed
+    // occupancy — but from the same unlocked dashboard read, and the
+    // unallocatable re-check above cannot cover this: it asks whether the
+    // SUGGESTED booking became unallocatable, and a hold set on somebody ELSE's
+    // booking leaves the suggested booking perfectly allocatable while taking
+    // every bed it was about to be placed on. Re-read the holds HERE, under the
+    // locks the hold writer takes, and drop any suggestion landing on a held
+    // lodge-night. A row whose lodge cannot be resolved is treated as held by
+    // ANY hold (null-tolerant), which is the conservative direction.
+    const isWholeLodgeHeld = buildWholeLodgeHeldNightPredicate(
+      await findBlockingWholeLodgeHolds({
+        lodgeId: input.lodgeId,
+        from,
+        toExclusive,
+        db: tx,
+      }),
+    );
+    const unheldRows = writableRows.filter(
+      (row) =>
+        !isWholeLodgeHeld(
+          input.lodgeId ?? roomLodgeIdById.get(row.roomId) ?? null,
+          formatDateOnly(row.stayDate),
+        ),
+    );
+    if (unheldRows.length < writableRows.length) {
+      logger.info(
+        {
+          droppedCount: writableRows.length - unheldRows.length,
+          lodgeId: input.lodgeId ?? null,
+        },
+        "Run Auto Allocation dropped suggestions targeting whole-lodge-held nights",
+      );
+    }
+    if (unheldRows.length === 0) {
+      return { count: 0 };
+    }
+
     return tx.bedAllocation.createMany({
-      data: writableRows,
+      data: unheldRows,
       skipDuplicates: true,
     });
   };
-
-  // Which lodges does this run touch? A scoped run locks exactly its lodge; a
-  // club-wide run locks every lodge whose rooms the suggestions target.
-  const lodgeIds = input.lodgeId
-    ? [input.lodgeId]
-    : [
-        ...new Set(
-          (
-            await db.lodgeRoom.findMany({
-              where: {
-                id: { in: [...new Set(candidateRows.map((row) => row.roomId))] },
-              },
-              select: { lodgeId: true },
-            })
-          ).map((room) => room.lodgeId),
-        ),
-      ].sort();
 
   // A caller-supplied client is already transactional, so run inline on it
   // rather than nesting a transaction (the other self-wrapping helpers here do

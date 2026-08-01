@@ -749,13 +749,53 @@ Future reviews and issues should cite this file when proposing changes.
   the hold; both record the removed rows in their audit entry so a mistaken
   hold can be undone by hand. Divergence guard:
   `src/lib/__tests__/held-booking-allocation-agreement.test.ts`.
-- **A held booking's nights are not modelled as occupied for other bookings'
-  planning (ADR-001 amendment, #2285):** the hold blocks new admissions through
-  the capacity rule, but neither planner sees the held group's beds as taken or
-  its minors as present, so an officer-kept overlapping booking can be
-  auto-placed onto those beds and the cross-booking age-mix invariant (#1768)
-  cannot account for the held group. Overlaps remain officer-resolved
-  (#119/#177); changing this is the open decision #2317.
+- **A held booking's nights ARE occupied as far as both planners are concerned
+  (ADR-001 amendment, #2285, resolved by #2317):** a whole-lodge hold's nights
+  are synthesised into both bed-allocation planners as **unattributed,
+  non-displaceable** occupancy — every active bed of that lodge, every held
+  night — while the hold still owns no `BedAllocation` row anywhere. The rows
+  carry a null booking and a null guest (#1768 "unknown occupant" shape,
+  exactly like a custodian bed hold), which is what makes them unattributed (no
+  name, no booking id, no age tier — a hold can begin life as a public school
+  request) and non-displaceable (there is no row for a `MOVE` or `UNALLOCATE`
+  to target). A tierless unknown occupant counts as an adult, so the
+  cross-booking age-mix guard treats a held lodge's rooms conservatively.
+  An officer-kept overlapping booking is therefore never auto-placed onto beds
+  the held group is using: those guest-nights surface as `NO_BED_AVAILABLE` in
+  the awaiting-allocation list, which is the visible form of a clash the
+  officer has already been told about (#119/#177). Being unattributed is a
+  property of the bed-NIGHT and not only of the row: a real `BedAllocation` row
+  can legitimately share a held bed-night (decision 1 never refuses the
+  overlapping booking), and planner occupancy is keyed `bedId:stayDate`, so the
+  planner pins every null-booking bed-night as permanently occupied and
+  evicting the co-located booking releases that booking's claim and never the
+  hold's. **The blocking predicate is the capacity engine's own** —
+  `wholeLodgeHold` AND `bookingHoldsCapacity` / `capacityHoldingBookingFilter()`
+  over the same lodge, which is `getLodgeHeldNights`'s population — so a planner
+  can never report a night as held that the engine would admit into, and a stale
+  hold flag on a booking that stopped holding capacity blocks nothing in either
+  place. (The one deliberate asymmetry is direction-safe: where the planner
+  cannot resolve a lodge for a hold or a room it treats the night as held, which
+  refuses a bed the engine would have admitted rather than the reverse. Both
+  columns are NOT NULL, so this is a dead branch kept conservative.) Both
+  writers re-read the live holds on the client that is about to write, so a hold
+  committing between plan and write cannot be written over; every placement
+  transaction this code **opens itself** takes the per-lodge advisory lock as
+  its first statement, while a reconcile running inside a CALLER's transaction —
+  or the lifecycle's common no-displacement path, which opens none — inherits
+  that caller's lock discipline and relies on the re-read alone, exactly as the
+  custodian exclusion does. **Manual placement is deliberately untouched:**
+  ADR-001 decision 1 hands an overlap to the booking officer to resolve by hand,
+  and a write-time refusal would remove that path. The officer's view of a hold
+  is the board's banner plus the **Overlaps exclusive hold** chip on the
+  clashing booking; the bed GRID does not mark held cells, and the banner is
+  built from the board's booking load (which needs a guest row overlapping the
+  window) rather than from the deliberately-unfiltered blocking query, so a hold
+  with no guests entered yet blocks without appearing there. Source:
+  `src/lib/exclusive-hold-occupancy.ts`; guards:
+  `src/lib/__tests__/exclusive-hold-planner-occupancy.test.ts` and the
+  whole-lodge entries in
+  `src/lib/__tests__/custodian-write-path-contract.test.ts`.
 - **The requested-room lock follows the approved rows, not the hold (#776,
   #2285):** setting an exclusive hold prunes the booking's approved allocations,
   so `isBookingBedAllocationLocked` goes false and the member's requested-room
@@ -2236,8 +2276,118 @@ their check-out one night at a time even across a weekend minimum-stay rule —
 the added night alone would fail the minimum, but the whole stay satisfies it.
 A genuinely too-short whole stay is still reported. (The create path evaluates
 each new booking's own range, so a separate contiguous one-night booking is
-still subject to the minimum — deferred as scope B on #2124.) Issue #1668 adds an **admin-only
-override** (`adminOverride`, honoured solely when
+still subject to the minimum — deferred as scope B on #2124.)
+
+Minimum-stay is also the first consumer of the booking-policy exception
+foundation (#2363). The only soft-policy reason codes are `MINIMUM_STAY` and the
+reserved `ADULT_MEMBER_HOSTING_REQUIRED`; every other failure remains a hard
+stop and cannot enter `aggregatePolicyExceptionViolations`. A minimum-stay
+violation freezes its policy id/version, resolved club-wide or lodge-specific
+scope, exact affected NZ lodge nights, minimum/actual-night requirements,
+eligibility, message, and `HOLD`/`NO_HOLD` capacity mode. Multiple eligible
+violations sort deterministically and aggregate to `HOLD` if any row says
+`HOLD`.
+
+That snapshot is transport data only in #2363: it explains a refusal, it never
+authorises one. **Every** member-facing mutation path stops server-side for a
+non-admin actor, and the list is exact:
+
+- booking create (`POST /api/bookings`) — HTTP 400;
+- member group join (`POST /api/group-bookings/[code]/join`) — HTTP 400 with
+  code `MINIMUM_STAY_VIOLATION`;
+- public non-member group join, at **both** stages — staging
+  (`POST /api/group-bookings/[code]/join-request`) refuses with HTTP 400 before
+  a verification token, join row, or email exists, and verification
+  (`POST /api/group-bookings/join/verify/[token]`) re-reads the CURRENT policy
+  set and fails closed with HTTP 409 `minimum_stay` before any member, booking,
+  payment or pay link is created — an emailed link lives 48 hours, so a rule
+  tightened inside that window must not be honoured. Both stages are
+  unauthenticated, so both answer with the SAME generic sentence
+  (`PUBLIC_GROUP_JOIN_MINIMUM_STAY_MESSAGE`) and carry nothing else: staging
+  throws a `GroupBookingError` with a message and `MINIMUM_STAY_VIOLATION` only,
+  verification returns `{ outcome, message }` only. The rule-naming sentence and
+  the frozen snapshot exist solely in a `logger.warn` line each stage writes
+  beside its refusal — not merely unread by the route, but absent from what the
+  route holds, because both surfaces are one field-spread from the wire;
+- member date modification through the live edit surface
+  (`PUT /api/bookings/[id]/modify` → `modifyBookingBatch`) — HTTP 400, checked
+  before the guest plan, pricing and capacity. Its sibling
+  `PUT /api/bookings/[id]/modify-dates` (`modifyBookingDates`) carries the same
+  block. On the batch path the check runs **only when the edit actually moves a
+  night** — the resolved envelope after any `guestStayRanges` widening differs
+  from the stored one (`resolveTargetDates().datesChanged`). An edit that leaves
+  every night where it was (a guest add, a guest removal, a name fix, a credit
+  election) cannot admit a NEW violation, so enforcing it could only hard-block
+  an unrelated fix to a booking already grandfathered outside the policy, with
+  no remedy the member can reach. `modify-quote` gates its own advisory check on
+  the identical predicate (`targetDatesChanged`, computed the same way), so
+  preview and apply agree on every request shape.
+- waitlist-offer confirmation (`POST /api/bookings/[id]/waitlist-confirm` →
+  `confirmWaitlistOffer`), on **both** offer kinds. Confirming turns a queue
+  placeholder into capacity-holding status, so it is a fresh commitment to those
+  nights, and an offer lives 48 hours — long enough for a rule to be tightened
+  under it. A same-lodge offer is evaluated against the booking's own lodge; a
+  cross-lodge offer (ADR-004) is evaluated against the **offered** lodge, which
+  matters because per-lodge policy resolution replaces rather than merges, so
+  that lodge can carry rules the member's own lodge never had, and because the
+  cross-lodge path calls `createConfirmedBooking` directly and would otherwise
+  apply no rule at all. Both checks run outside any transaction and fail closed
+  **without consuming the offer**: the entry reverts to `WAITLISTED` under the
+  relevant lodge's capacity lock, exactly as the capacity-lost and
+  no-longer-eligible branches do, and the member gets a plain sentence with code
+  `MINIMUM_STAY_VIOLATION` while the frozen snapshot stays in the server log.
+  There is no admin branch on this path by construction: the confirm refuses any
+  actor other than the booking's own member with `Forbidden`, so the only actor
+  that ever reaches the check is a non-admin confirming their own offer.
+  Because the same-lodge check reads the offer OUTSIDE the claiming transaction
+  and runs only when that read already saw a live same-lodge offer this member
+  owns, the claim carries a backstop: it records whether the check actually ran,
+  and if it finds `WAITLIST_OFFERED` under the lodge lock either without that
+  evidence or with a `waitlistOfferedLodgeId` the pre-read did not see, it
+  refuses with code `CONFIRM_RETRY` (HTTP 409) and writes nothing at all. The
+  offer sweep (`processWaitlistForDates`) makes exactly the
+  `WAITLISTED -> WAITLIST_OFFERED` transition that invalidates the pre-read and
+  the route carries no rate limit, so without the backstop an offer created in
+  that window would be claimed with the policy never evaluated. Refusing is
+  retry-safe by construction — no status moves, no allocation is touched and the
+  offer is not consumed — so the next attempt re-reads the row and the guard
+  evaluates for real.
+
+The admin exemption is **not one predicate**, and the difference is deliberate.
+State it per path:
+
+- **Booking create** exempts an authorised **on-behalf** booking only
+  (`isAuthorizedOnBehalf`). A dual-hat admin booking for THEMSELVES is still
+  checked — #1442's decision: acting as a member means being held to the members'
+  rules. Role alone buys nothing here.
+- **Both modify paths and the modify-quote preview** exempt any ADMIN actor
+  (`actor.role !== "ADMIN"` / `!isAdmin`), including admin-on-behalf edits.
+- **Member group join** exempts any ADMIN session (`sessionRole !== "ADMIN"`),
+  self-join included — the create path's narrower rule is not mirrored here.
+- **The two public non-member group-join stages and both waitlist-offer confirm
+  paths have no admin branch at all**, because no admin actor can reach them:
+  the public stages are unauthenticated non-member surfaces, and a confirm
+  refuses any actor other than the booking's own member with `Forbidden`.
+
+Advisory surfaces — modify quote, policy check,
+and the edit panel's banner — report the same facts without gating anything;
+the panel deliberately leaves Save enabled because the server is authoritative.
+No request row is persisted, no capacity is reserved from `HOLD`, and evaluation
+never bypasses capacity, subscription, membership, linked-member-night,
+authentication, payment, privacy, date, or data-integrity gates. #2365 owns
+durable request state, approval/revalidation, capacity reservation, and the
+mixed soft/hard admission order. Every caller evaluates against the resolved
+booking lodge; unknown or inactive explicit lodge ids are refused rather than
+falling back.
+
+Minimum-stay policy administration is versioned. Every create supplies
+`capacityMode`; every update/toggle/delete carries the loaded `version` and a
+stale version is refused instead of overwriting a concurrent admin or import.
+Config transfer is the one replace-set exception: it takes the config-import
+lock then the shared policy-set lock, re-plans, and may delete omitted policies
+only after they appeared in Preview. Existing policies migrate to `HOLD`.
+
+Issue #1668 adds an **admin-only override** (`adminOverride`, honoured solely when
 `bookingManagementAuthorizationRole(session.user) === "ADMIN"`, i.e. Full Admin
 or Booking Officer) that lifts those date-window locks so an admin can move the
 dates of an in-progress or fully-past booking. The override is **date-only**:
@@ -4411,7 +4561,30 @@ and is hard-deleted at the end. The merge is **additive and master-wins**:
   point at, so a concurrent `FamilyGroup` delete can still abort the merge (as a
   deadlock rather than a stale-value error); the master is still unlocked during
   the guards and the self-relation pass, which is why the Member self-relation
-  moves exclude the master's own row (see #2437).
+  moves exclude the master's own row. The four **family-link** columns
+  (`parentMemberId`, `secondaryParentId`, `inheritEmailFromId`,
+  `detailsConfirmedByMemberId`) are protected in three places (#2437): step 1
+  nulls a master pointer at the duplicate **value-conditionally** (a pointer
+  that moved since the opening snapshot refuses right there, instead of being
+  overwritten and read back as "unchanged"); the step-3 sweeps are
+  **id-bounded** to the rows captured by the in-transaction token
+  re-derivation (a link written after that capture is never absorbed onto the
+  master unvetted — it stays pointing at the duplicate); and the step-5
+  under-lock re-read checks all three arms — either member's own outgoing
+  links beyond the merge's own rewrites, and any other row still referencing
+  the loser after the moves — refusing with the same 409 on any drift. Two
+  invariants follow: a merge never **creates** a self-referencing family link
+  (step 1 clears a master→duplicate pointer, the moves exclude the master's
+  own row, and every mid-merge divergence refuses — note this does NOT forbid
+  a **pre-existing** self-reference: `detailsConfirmedByMemberId` equal to the
+  member's own id is the legitimate self-confirmed state gating
+  `canBeBookedAsMember` (`member-profile-completeness.ts`), and a merge
+  carries it through untouched), and a family link saved while the merge runs
+  is never silently lost or silently absorbed — the merge refuses, nothing is
+  written, and the operator's re-run previews the up-to-date links, including
+  an explicit warning when the master's own link at the duplicate will be
+  cleared (owner decision on #2437, 1 Aug 2026: detect and refuse; no new
+  advisory-lock participants, no DB CHECK constraint).
 - **Relation buckets.** Every Member-referencing relation is classified into
   exactly one bucket by `MEMBER_MERGE_RELATION_SPECS`, enforced complete by a
   DMMF/schema test that fails CI if a new relation is added unclassified:
@@ -4566,6 +4739,44 @@ and is hard-deleted at the end. The merge is **additive and master-wins**:
 
 ## Operations
 
+- **Raw SQL never declares its own result shape (#2289).** `$queryRaw<SomeRow[]>`
+  is an unchecked CAST: raw SQL returns the *physical* column names while the
+  type argument declares whatever the author believed, and nothing verifies the
+  two agree — not the compiler (the cast silences it) and not the tests (a mocked
+  Prisma returns the author's own wrong belief). Where they disagreed in a live
+  deployment every property arrived `undefined`, which is quietly falsy in
+  exactly the comparisons that guard money: a promo's total-redemption cap never
+  fired (`undefined !== null` true, `n > undefined` false) and FREE_NIGHTS promos
+  applied no discount at booking creation (`?? 0`), while the quote path — an
+  ordinary mapped Prisma read — showed the member one.
+
+  Two disciplines close it, and both are enforced. **Lock raw, read typed:** a
+  raw statement taken for a row lock selects a CONSTANT through `$executeRaw`
+  (`SELECT 1 … FOR UPDATE`) and the data is read back through the Prisma model
+  under that same lock — one extra round trip, and Prisma owns the mapping so the
+  names cannot drift. The two statements are behaviour-identical to one
+  `SELECT the-columns … FOR UPDATE` *while the lock matches a row*; where the
+  lock key is MUTABLE, the affected-row count `$executeRaw` returns must also be
+  checked, because `FOR UPDATE` locks nothing when it matches nothing and the
+  follow-up read (READ COMMITTED, fresh snapshot) could otherwise return a row
+  nothing holds a lock on. Only `booking-create-promo.ts` locks on a mutable key
+  (`PromoCode.code`); every other site keys on an immutable cuid.
+  **Validate what you cannot model:** a statement Prisma genuinely cannot express
+  (only the rate limiter's atomic `CASE … RETURNING` upsert) passes its rows
+  through `decodeRawRows` (`src/lib/raw-sql-rows.ts`), which throws naming the
+  offending column — and which also records what Postgres really sends on this
+  stack, since `COUNT(*)`/`int8` arrive as a **BigInt** (arithmetic on which
+  throws) and `numeric`/`decimal` as a **`Prisma.Decimal`**.
+
+  `eslint` `no-restricted-syntax` rules refuse the type argument and a
+  `SELECT *` in a raw statement — in either call form, tagged template or
+  `Prisma.sql` composition — across non-test code in `src/`, `scripts/` and
+  `prisma/`; `src/lib/__tests__/raw-sql-shape-guard.test.ts` scans the same three
+  directories, pins the per-file inventory of raw READS, requires at least one
+  `decodeRawRows()` call per raw read or a documented opt-out (only the two
+  `SELECT 1` connectivity probes), and holds every `FOR UPDATE` to `$executeRaw`
+  over a constant. Tests are exempt from both by design. Full protocol in
+  `docs/CONCURRENCY_AND_LOCKING.md` -> "Lock raw, read typed".
 - Production deployment must respect `docs/BLUE_GREEN_MIGRATION_POLICY.md`.
 - Public CI and local validation must use test/demo credentials or placeholders.
 - Production data, production backups, live provider accounts, and live webhooks

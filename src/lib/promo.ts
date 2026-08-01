@@ -1729,11 +1729,16 @@ export async function validatePromoCodeFull(
  * statements, so two concurrent modifications of different bookings can both
  * read "one use left" and both take it. Booking creation has taken a `FOR
  * UPDATE` lock on its promo row since the per-individual redesign
- * (`booking-create-promo.ts`, docs/CONCURRENCY_AND_LOCKING.md → "Narrow
- * row-lock protocols") — though it locks by selecting the whole row and then
- * READING it, so it does not have property 2 below; this helper is the
- * lock-only form used by the four modification paths, which matters more now
- * that a reprice can RELEASE a slot as well as take one.
+ * (`booking-create-promo.ts`, docs/CONCURRENCY_AND_LOCKING.md → "Narrow row-
+ * and table-lock protocols"), and since #2289 it takes it the same way this
+ * helper does — `$executeRaw` over a constant — so it has property 2 below too.
+ * It used to `SELECT *` and read the raw row, and that unchecked cast is what
+ * silently disabled a redemption cap and a FREE_NIGHTS discount. The two are
+ * still not interchangeable: booking creation keys on the promo `code` (and so
+ * must also check the affected-row count — see the zero-match note there),
+ * while this helper is the id-keyed, lock-only form used by the four
+ * modification paths, which matters more now that a reprice can RELEASE a slot
+ * as well as take one.
  *
  * Every path that may write `currentRedemptions` for an existing booking takes
  * it: the batch modification path (`booking-modify-plan.ts`), adding guests
@@ -1754,9 +1759,9 @@ export async function validatePromoCodeFull(
  *    `ORDER BY ... FOR UPDATE` keeps the ordering independent of the query
  *    plan. Callers already hold the per-lodge capacity lock, so the order stays
  *    lodge -> promo row, as documented.
- * 2. **No dependence on the raw result shape.** Only `"id"` is selected and the
- *    result is discarded; the statement exists purely for its lock, so it
- *    cannot repeat the raw-SQL shape trap of #2289.
+ * 2. **No dependence on the raw result shape.** A constant is selected through
+ *    `$executeRaw` and the result is discarded; the statement exists purely for
+ *    its lock, so it cannot repeat the raw-SQL shape trap of #2289.
  *
  * A missing id simply locks nothing — the caller's own lookup reports "Promo
  * code not found".
@@ -1767,7 +1772,10 @@ export async function lockPromoCodeRowsForUpdate(
 ): Promise<void> {
   const ids = [...new Set(promoCodeIds.filter((id): id is string => Boolean(id)))].sort();
   for (const id of ids) {
-    await tx.$queryRaw`SELECT "id" FROM "PromoCode" WHERE "id" = ${id} FOR UPDATE`;
+    // `$executeRaw` on a CONSTANT, not `$queryRaw` on a column (#2289): the
+    // statement exists only for its lock, so saying so in the call is what keeps
+    // it from ever being mistaken for a read whose shape somebody trusts.
+    await tx.$executeRaw`SELECT 1 FROM "PromoCode" WHERE "id" = ${id} FOR UPDATE`;
   }
 }
 

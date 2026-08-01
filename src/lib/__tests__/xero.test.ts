@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest"
 
+import { realElapsedMs } from "@/lib/__tests__/helpers/clock"
+
 const mocks = vi.hoisted(() => ({
   recordXeroApiUsage: vi.fn(),
 }))
@@ -869,7 +871,11 @@ describe("withXeroRetry", () => {
 
   it("caps wait time to maxWaitSec", async () => {
     let calls = 0
-    const start = Date.now()
+    // Measured on the monotonic clock, not `Date.now()`: #2481 freezes `Date`
+    // for every test file, which would turn the cap assertion below into a
+    // permanent `0 < 2000` — green even if the clamp regressed and the call
+    // really did sleep.
+    const start = process.hrtime.bigint()
     const fn = () => {
       calls++
       if (calls === 1) {
@@ -885,7 +891,7 @@ describe("withXeroRetry", () => {
     // maxWaitSec=0 means don't actually wait
     const result = await withXeroRetry(fn, { maxRetries: 1, maxWaitSec: 0 })
     expect(result).toBe("done")
-    expect(Date.now() - start).toBeLessThan(2000) // Should not have waited 999 seconds
+    expect(realElapsedMs(start)).toBeLessThan(2000) // Should not have waited 999 seconds
   })
 
   it("retries transient Xero server errors", async () => {

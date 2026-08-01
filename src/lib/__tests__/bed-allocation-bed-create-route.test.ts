@@ -20,7 +20,7 @@ const {
   lodgeBedDelete,
   bedAllocationFindMany,
   prismaTransaction,
-  txQueryRaw,
+  txExecuteRaw,
   txLodgeBedFindMany,
   txLodgeBedCreate,
 } = vi.hoisted(() => ({
@@ -30,7 +30,7 @@ const {
   lodgeBedDelete: vi.fn(),
   bedAllocationFindMany: vi.fn(),
   prismaTransaction: vi.fn(),
-  txQueryRaw: vi.fn(),
+  txExecuteRaw: vi.fn(),
   txLodgeBedFindMany: vi.fn(),
   txLodgeBedCreate: vi.fn(),
 }));
@@ -126,7 +126,7 @@ describe("bed-allocation bed routes P2003 mapping (#1700)", () => {
       async (cb: (tx: unknown) => Promise<unknown>) =>
         cb({
           // Room already deleted: the FOR UPDATE lock matches no rows...
-          $queryRaw: txQueryRaw.mockResolvedValue([]),
+          $executeRaw: txExecuteRaw.mockResolvedValue(0),
           lodgeBed: {
             // ...the group has no members...
             findMany: txLodgeBedFindMany.mockResolvedValue([]),

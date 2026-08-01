@@ -40,6 +40,13 @@ export async function POST(
   if (!result.success) {
     const status = result.error === "Forbidden" ? 403
       : result.error === "Booking not found" ? 404
+      // #2363: the offer changed between the service's unlocked pre-read and
+      // its locked claim, so it refused without writing anything rather than
+      // claim an offer whose minimum-stay policy was never evaluated. 409 for
+      // the same reason the group-join verify route uses one — the request was
+      // fine when it was made and the club's state moved under it — and it is
+      // retryable: confirming again re-reads everything and runs the guard.
+      : result.code === "CONFIRM_RETRY" ? 409
       : 400;
     return NextResponse.json(
       {

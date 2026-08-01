@@ -907,6 +907,23 @@ booking flow shows a member the rules for the lodge they booked. Lodge
 opening/closing/day-to-day kiosk instructions follow the same replace-not-merge
 rule per document.
 
+Each minimum-stay row also carries an explicit exception-capacity mode and a
+revision. `HOLD` means a later exception-review request will reserve the
+requested capacity while it waits; `NO_HOLD` means capacity is not reserved
+until approval. Existing rows migrate to `HOLD`, and every new admin/API write
+must choose one. The revision is an optimistic concurrency token: update,
+activate/deactivate, and delete writes that present an older version are refused
+and the admin reloads the current row instead of overwriting it.
+
+Minimum-stay policies are the one destructive config-transfer category. The
+bundle file `booking-policies/minimum-stay.csv` is a complete club-wide and
+lodge-scoped set, not a patch: omitted target rows appear as **Deleted** in the
+dry-run and are removed on Apply, while a valid header-only file explicitly
+clears the set. Malformed or missing headers block Apply. Import takes the
+config-transfer lock and then the minimum-stay policy-set lock, re-plans inside
+the transaction, and relies on the automatic pre-apply database backup for
+rollback. Ordinary config-transfer categories remain non-deleting.
+
 ### 8. Eligibility restrictions and cross-lodge waitlist
 
 - **Eligibility is default-open.** Every active member can book every active

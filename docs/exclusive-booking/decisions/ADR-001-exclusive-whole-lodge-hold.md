@@ -233,27 +233,98 @@ generated or demanded for held bookings.
   an amendment here plus enforcement at the chokepoint, the planner and the
   lifecycle together — today it blocks nowhere, consistently. This is the manual
   half of the same question #2317 asks of the planners (whether held nights are
-  modelled as blocking occupancy), and should be decided with it: a yes there
-  without a yes here would leave the board refusing what the planner allows.
+  modelled as blocking occupancy).
+  **Answered (owner, 1 Aug 2026, #2317): yes for the planners, no for the manual
+  paths.** The automatic paths now treat a hold's nights as occupied (see the
+  #2317 amendment below); manual placement keeps its never-refuse posture,
+  because decision 1 makes the officer the one who resolves an overlap and a
+  hard block would remove that path. The asymmetry is deliberate, not an
+  oversight: the board no longer *offers* a held bed, but it still *accepts* one
+  when the officer insists.
 
-- **Accepted consequence of the short-circuit (#2285 follow-up, 2026-07-29):
+- **~~Accepted consequence of the short-circuit (#2285 follow-up, 2026-07-29):
   a held booking's nights are NOT modelled as occupied for OTHER bookings'
-  planning.** This ADR says a held group implicitly occupies every bed, but that
-  occupancy is expressed only through the capacity rule (which blocks new
-  admissions) — never as `BedAllocation` rows, and neither planner synthesises
-  it as blocking occupancy. Before #2285 the rows the lifecycle wrongly created
-  for held bookings gave the planners an accidental, undocumented occupancy
-  signal; removing them removed that signal too. Two effects follow and are
-  accepted: an overlapping booking admitted by an officer (decision 1 never
-  refuses, so overlaps exist by design) can be auto-placed onto beds the held
+  planning.~~ SUPERSEDED by #2317 (owner decision, 1 Aug 2026) — see the
+  amendment below.** As originally built, this ADR said a held group implicitly
+  occupies every bed but expressed that occupancy only through the capacity rule
+  (which blocks new admissions) — never as `BedAllocation` rows, and neither
+  planner synthesised it. Before #2285 the rows the lifecycle wrongly created for
+  held bookings gave the planners an accidental, undocumented occupancy signal;
+  removing them removed that signal too. Two effects followed and were accepted
+  at the time: an overlapping booking admitted by an officer (decision 1 never
+  refuses, so overlaps exist by design) could be auto-placed onto beds the held
   group is physically using, and the cross-booking age-mix invariant (#1768,
-  "Bed Allocation Lifecycle" in `docs/STATE_MACHINES.md`) cannot see the held
-  group's minors, so it cannot protect against mixing them with another
-  booking's adults. Both remain **officer-resolved**, consistent with decisions
-  1 and the conflict-surfacing work in #119/#177: the officer is shown every
-  overlapping booking when the hold is set and resolves it manually. Modelling
-  held nights as blocking occupancy in both planners is tracked as the separate
-  `needs-decision` follow-up #2317 rather than assumed here.
+  "Bed Allocation Lifecycle" in `docs/STATE_MACHINES.md`) could not see the held
+  group's minors.
+
+- **Amendment (#2317, owner decision 1 Aug 2026, option (a)): both planners
+  model a hold's nights as unattributed, non-displaceable occupancy.** A
+  blocking whole-lodge hold now contributes EVERY active bed of its lodge on
+  EVERY held night to both planners' `occupiedBedNights` — the admin board
+  (`getBedAllocationDashboard`) and the lifecycle auto-allocator
+  (`autoAllocateMissingBedNights`) — while still creating no `BedAllocation` row
+  anywhere. Source of truth: `src/lib/exclusive-hold-occupancy.ts`, which mirrors
+  `custodian-occupancy.ts`.
+  - The rows are #1768 "unknown occupant" rows (null booking, null guest). That
+    one choice is what makes the occupancy **unattributed** — no name, no booking
+    id, no age tier reaches the planner, which matters because a hold can begin
+    life as a PUBLIC school request — and **non-displaceable**: the planner only
+    registers an evictable occupant for rows naming both a booking and a guest,
+    so no `MOVE` or `UNALLOCATE` has anything to target.
+  - That protects the ROW. The BED-NIGHT needs one thing more, because decision
+    1 guarantees a real `BedAllocation` row can share it — the hold prune sweeps
+    only the held booking's own rows, and manual placement stays open — while
+    planner occupancy is keyed `bedId:stayDate`. The planner therefore pins
+    every null-booking bed-night as permanently occupied, so #1677
+    whole-booking eviction releases the evicted booking's claim and never the
+    hold's, and no room is sized as feasible off rows whose eviction frees
+    nothing. Without that, displacing the co-located booking would have handed
+    a held bed to a capacity-holding adult.
+  - A tierless unknown occupant counts as an ADULT, so the #1768 age-mix
+    invariant now treats a held lodge's rooms conservatively rather than being
+    blind to the held group. The second accepted effect above is closed.
+  - **The blocking predicate is the capacity engine's own** —
+    `wholeLodgeHold` AND `bookingHoldsCapacity()` /
+    `capacityHoldingBookingFilter()` over the same lodge, which is
+    `getLodgeHeldNights`'s population.
+    A planner can therefore never report a night as held that admission would
+    let a booking into, and a stale hold flag on a booking that stopped holding
+    capacity blocks nothing in either place. This is deliberately NOT the #2285
+    short-circuit's predicate (the raw flag), which answers a different question:
+    "may this booking own per-bed rows?". Where a lodge cannot be resolved for a
+    hold or a room the planner treats the night as held — the conservative
+    direction, and a dead branch anyway (both columns are NOT NULL).
+  - **Effect on the officer:** an overlapping booking the officer chose to keep
+    now sits in the awaiting-allocation list on the held nights instead of being
+    quietly placed into a bed the held group is sleeping in. More red on the
+    board, for a clash the officer was already shown when the hold was set —
+    which is the point. What they read is the existing exclusive-hold banner
+    plus the **Overlaps exclusive hold** chip; `NO_BED_AVAILABLE` is the
+    planner's internal reason code and is not rendered anywhere, the bed grid
+    does not mark held cells, and the banner comes from the board's booking
+    load (guest row required) rather than the unfiltered blocking query. Adding
+    a per-cell rendering or a per-night reason is deliberately out of scope
+    here: this decision is about what the planners DO, not about new board UI.
+  - **Manual placement is unchanged, deliberately.** Decision 1 admits overlaps
+    on purpose and hands them to the booking officer to resolve by hand
+    (#119/#177); hard-blocking a manual placement would remove the very
+    resolution path this ADR requires. The open question in the #2251 note above
+    ("should another booking's hold hard-block manual placement everywhere?")
+    therefore stands answered **no** for now: the automatic paths stop guessing,
+    the officer keeps the override.
+  - Both writers re-read the live holds on the client that is about to write,
+    mirroring the custodian re-filter — the unallocatable-booking re-check
+    cannot cover a hold set on somebody ELSE's booking. Every placement
+    transaction the code opens itself takes the per-lodge advisory lock as its
+    first statement; a reconcile inside a caller's transaction, and the
+    lifecycle's common no-displacement path (which opens none), rely on the
+    re-read alone — the same posture #2286 chose for custodian holds. A
+    displacement is applied only when the re-checked payload still claims the
+    bed-night it frees, so a partial drop can no longer evict a provisional
+    booking for an allocation that is never written. Guards:
+    `src/lib/__tests__/exclusive-hold-planner-occupancy.test.ts` and the
+    whole-lodge entries in
+    `src/lib/__tests__/custodian-write-path-contract.test.ts`.
 
 ## Post-implementation decisions (owner, 2026-07-14)
 

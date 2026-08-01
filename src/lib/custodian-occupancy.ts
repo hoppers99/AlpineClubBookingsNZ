@@ -354,7 +354,12 @@ export async function assertBedNightsFreeOfCustodianHold(input: {
  *
  * Fed to `buildFirstFitBedAllocationPlan` as #1768 "unknown occupant" rows
  * (null `bookingId`/`bookingGuestId`): blocking, never evictable, and
- * conservative for room mix. The room-mix side effect is INTENDED and
+ * conservative for room mix. "Never evictable" holds for the BED-NIGHT and not
+ * just for the row: a hut-leader assignment can be created for a bed that
+ * already carries an allocation, and planner occupancy is keyed
+ * `bedId:stayDate`, so the planner pins every null-booking bed-night in
+ * `state.permanentlyOccupied` and evicting the co-located booking never hands
+ * the custodian's bed to anyone (#2317 review). The room-mix side effect is INTENDED and
  * documented in docs/CAPACITY_MODEL.md — the custodian's room reads as
  * containing an out-of-booking adult, so auto-placement keeps other bookings'
  * unaccompanied minors out of that room for the season. An unrelated adult

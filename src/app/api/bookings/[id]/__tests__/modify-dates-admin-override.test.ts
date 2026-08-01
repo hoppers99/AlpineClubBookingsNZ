@@ -34,6 +34,10 @@ import {
   XeroLockDateCheckFailedError,
   XeroPeriodLockedError,
 } from "@/lib/xero-period-lock-guard";
+import {
+  MinimumStayPolicyViolationError,
+  type MinimumStayPolicyExceptionViolation,
+} from "@/lib/booking-policy-exceptions";
 
 function req(body: unknown) {
   return new NextRequest("http://localhost/api/bookings/b1/modify-dates", {
@@ -226,6 +230,58 @@ describe("PUT /api/bookings/[id]/modify-dates Xero lock-date guard mapping (issu
     expect(res.status).toBe(503);
     await expect(res.json()).resolves.toMatchObject({
       code: "XERO_LOCK_DATE_CHECK_FAILED",
+    });
+  });
+});
+
+describe("PUT /api/bookings/[id]/modify-dates minimum-stay mapping (#2363)", () => {
+  it("returns the frozen review in the existing blocking 400 response", async () => {
+    const violation: MinimumStayPolicyExceptionViolation = {
+      reasonCode: "MINIMUM_STAY",
+      policyId: "policy-lodge-b",
+      policyVersion: 9,
+      policyName: "Lodge B winter week",
+      resolvedScope: {
+        kind: "LODGE",
+        lodgeId: "lodge-b",
+        effectiveLodgeId: "lodge-b",
+      },
+      affectedNights: ["2027-09-02", "2027-09-03"],
+      exceptionEligible: true,
+      capacityMode: "NO_HOLD",
+      message: "Lodge B requires three nights.",
+      triggerDay: "Thursday",
+      minimumNights: 3,
+      actualNights: 2,
+      requirements: {
+        kind: "MINIMUM_STAY",
+        minimumNights: 3,
+        actualNights: 2,
+        triggerDays: [4],
+      },
+    };
+    h.modifyBookingDates.mockRejectedValue(
+      new MinimumStayPolicyViolationError(
+        "Lodge B winter week: minimum 3 nights",
+        [violation],
+      ),
+    );
+
+    const res = await PUT(
+      req({ checkIn: "2027-09-02", checkOut: "2027-09-04" }),
+      { params },
+    );
+
+    expect(res.status).toBe(400);
+    await expect(res.json()).resolves.toEqual({
+      error: "Lodge B winter week: minimum 3 nights",
+      code: "MINIMUM_STAY_VIOLATION",
+      details: "Lodge B winter week: minimum 3 nights",
+      violations: [violation],
+      exceptionReview: {
+        violations: [violation],
+        capacityMode: "NO_HOLD",
+      },
     });
   });
 });

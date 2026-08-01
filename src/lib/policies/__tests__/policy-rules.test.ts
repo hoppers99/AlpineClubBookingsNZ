@@ -203,27 +203,38 @@ describe("policy change-fee rules", () => {
 
 describe("policy minimum-stay rules", () => {
   const saturdayPolicy: MinimumStayPolicyLike = {
+    id: "minimum-stay-1",
     name: "Winter Saturday Minimum Stay",
     startDate: new Date("2026-06-01"),
     endDate: new Date("2026-09-30"),
     triggerDays: [6],
     minimumNights: 2,
+    lodgeId: null,
+    version: 4,
+    capacityMode: "HOLD",
   };
 
   it("matches pure minimum-stay policies and formats violations", () => {
     const violations = getMinimumStayViolations(
       new Date("2026-07-04"),
       new Date("2026-07-05"),
-      [saturdayPolicy]
+      [saturdayPolicy],
+      "lodge-1",
     );
 
     expect(violations).toEqual([
-      {
+      expect.objectContaining({
+        reasonCode: "MINIMUM_STAY",
+        policyId: "minimum-stay-1",
+        policyVersion: 4,
         policyName: "Winter Saturday Minimum Stay",
         triggerDay: "Saturday",
         minimumNights: 2,
         actualNights: 1,
-      },
+        affectedNights: ["2026-07-04"],
+        capacityMode: "HOLD",
+        exceptionEligible: true,
+      }),
     ]);
     expect(formatViolationsDetail(violations)).toBe(
       "Bookings including a Saturday night require a minimum stay of 2 nights (Winter Saturday Minimum Stay). Your booking is 1 night."
@@ -235,7 +246,8 @@ describe("policy minimum-stay rules", () => {
       validateMinimumStayWithPolicies(
         new Date("2026-07-04"),
         new Date("2026-07-06"),
-        [saturdayPolicy]
+        [saturdayPolicy],
+        "lodge-1",
       )
     ).toEqual({ valid: true, violations: [] });
   });

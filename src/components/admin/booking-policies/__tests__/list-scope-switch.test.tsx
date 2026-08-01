@@ -92,6 +92,8 @@ const CLUB_MIN_STAY = {
   endDate: "2026-09-30T00:00:00.000Z",
   triggerDays: [6],
   minimumNights: 2,
+  capacityMode: "HOLD",
+  version: 4,
   active: true,
 };
 

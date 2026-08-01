@@ -345,7 +345,7 @@ async function planAgeTiers(ctx: PlanContext): Promise<CategoryPlanResult> {
 // ---- Apply -----------------------------------------------------------------
 
 async function applyAgeTiers(ctx: ApplyContext): Promise<CategoryApplyResult> {
-  const result: CategoryApplyResult = { created: 0, updated: 0, unchanged: 0, skipped: 0 };
+  const result: CategoryApplyResult = { created: 0, updated: 0, deleted: 0, unchanged: 0, skipped: 0 };
   if (!ctx.files.has(AGE_TIERS_FILE)) return result;
   const errors: string[] = []; // plan blocked all errors; defensive only
   const parsed = parseAgeTiers(ctx.files, errors);

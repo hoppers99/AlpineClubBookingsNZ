@@ -1017,9 +1017,10 @@ function makeRepriceTx(
   const counterUpdates: unknown[] = [];
 
   const tx = {
-    $queryRaw: vi.fn(async () => {
+    $executeRaw: vi.fn(async () => {
       calls.push("lock");
-      return [];
+      // $executeRaw returns an affected-row count, never rows (#2289).
+      return 1;
     }),
     promoCode: {
       findUnique: vi.fn(async () => {

@@ -55,6 +55,28 @@ before changing Next.js APIs or conventions.
   is a documented reason.
 - Booking, payment, membership, waitlist, bed-allocation, email, Xero, and cron
   lifecycle changes must update tests and relevant docs.
+- **Never write a test that depends on the real calendar.** Every unit test file
+  runs with "today" frozen at `2026-07-01T00:00:00.000Z` (midday NZ, so UTC and
+  NZ agree on the date), installed for every file by
+  `vitest.clock-setup.ts`. Write fixtures relative to that instant —
+  `2026-08-01` is future, `2026-06-01` is past, permanently. Note `Date.now()` is
+  therefore no longer a stopwatch: measure elapsed time with the `realElapsedMs`
+  helper (`process.hrtime.bigint()`), never `Date.now()` and never a
+  `Date.now()`-based poll deadline, which can no longer expire. A suite that
+  needs a *different* fixed instant pins its own with `vi.setSystemTime` in its
+  own hook, which runs after the freeze is installed and therefore wins; that is
+  not an opt-out. The root re-freeze restores the *default* instant, never a
+  suite's own pin, so a suite that pins **and** hands the clock back with
+  `vi.useRealTimers()` must re-pin in a `beforeEach`. A file that needs the
+  *real* wall clock calls `optOutOfFrozenClock("<reason>")` at module top level
+  and must be added to the counted allowlist in
+  `src/lib/__tests__/frozen-test-clock.test.ts` — expect to justify it, and split
+  a file that mixes both rather than opting it out wholesale. The
+  `Clock rollover canary` workflow re-runs the suite with the machine's *real*
+  clock wound forward on `main` pushes and nightly; it is deliberately not a PR
+  check. Full convention in `docs/TESTING.md`. This exists because four separate
+  rollovers (#2426, #2401, #2443, #2479) turned `main` and every open PR red at
+  once, and one of them made an assertion pass *vacuously* rather than fail.
 - Whenever a feature is added, changed, or removed, update all documentation it
   touches in the same PR: `README.md`, the relevant `docs/` guides, and any
   implementation or operator notes. Keep code, tests, and docs in lockstep. Skip

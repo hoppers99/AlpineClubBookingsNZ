@@ -45,6 +45,7 @@ import { buildFinanceRevenueReconciliation } from "@/lib/finance-revenue-reconci
 import { refreshFinancialYearConfig } from "@/lib/financial-year-server";
 import { hasFinanceManagerAccess } from "@/lib/admin-permissions";
 import { buildXeroReportsUrl } from "@/lib/xero-links";
+import { getXeroOrgShortCode } from "@/lib/xero-link-short-code";
 import type { FinanceAccessMember } from "@/lib/finance-auth";
 import {
   DEFAULT_FINANCE_SNAPSHOT_SCOPE,
@@ -856,7 +857,12 @@ async function buildMappedPnlDashboard(input: {
         label: "Xero monthly facts",
         description:
           "Revenue and costs come from stored monthly Xero account balances (one amount per account and month). Opening the dashboard does not call Xero live; drill into Xero for day-level detail.",
-        href: buildXeroReportsUrl(),
+        // #2314 review: the report centre is the highest-value Xero link in the
+        // product and its audience is exactly the multi-organisation treasurer
+        // #2314 exists for, so it resolves the short code like every other
+        // server-side producer. The cached read is what made that affordable
+        // (see getXeroOrgShortCode); a null one degrades to the generic link.
+        href: buildXeroReportsUrl({ shortCode: await getXeroOrgShortCode() }),
         linkLabel: "Open Xero reports",
       },
       {
@@ -1405,7 +1411,8 @@ async function buildBalanceOrWorkingCapitalDashboard(input: {
         label: "Balance-sheet source",
         description:
           "Balance sheet and working-capital figures come from stored monthly Xero account balances (month-end positions per account). Drill into Xero for day-level detail.",
-        href: buildXeroReportsUrl(),
+        // Same rule as the P&L views' source note above (#2314 review).
+        href: buildXeroReportsUrl({ shortCode: await getXeroOrgShortCode() }),
         linkLabel: "Open Xero reports",
       },
     ],
