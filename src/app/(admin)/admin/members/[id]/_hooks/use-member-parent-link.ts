@@ -39,6 +39,7 @@ export function useMemberParentLink({
     results: rawParentResults,
     searching: parentLinkSearching,
     error: parentSearchError,
+    total: parentResultTotal,
   } = useDebouncedMemberSearch<LinkParentSearchResult>({
     query: parentLinkSearch,
     enabled:
@@ -67,6 +68,13 @@ export function useMemberParentLink({
     [rawParentResults, selectedLinkParent?.id],
   );
 
+  // #2425: were there more eligible people than the eight this page shows? The
+  // comparison is against the RAW page, before the selected-parent filter above
+  // removes a row, so picking somebody cannot by itself make the dialog claim
+  // results were cut. `total` is the server's count of the whole eligible set,
+  // and is 0 while the search is inactive or failed — so this is false there.
+  const parentLinkResultsTruncated =
+    parentResultTotal > rawParentResults.length;
 
   const openParentLinkDialog = () => {
     if (!member) return;
@@ -169,6 +177,7 @@ export function useMemberParentLink({
     parentLinkOpen,
     parentLinkSearch,
     parentLinkSearchResults,
+    parentLinkResultsTruncated,
     parentLinkSearching,
     selectedLinkParent,
     parentLinkNotificationParentId,

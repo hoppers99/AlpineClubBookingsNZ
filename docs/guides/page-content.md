@@ -38,8 +38,16 @@ button. Page Content is edited under the **content** permission area.
    `{{committee-members-cards}}` — the editor's token help button lists every
    token the page supports), and its published state. Use **+ Add Page** to
    create a new page.
-3. **System** pages (e.g. Club Lodge `/home`, Page Not Found `/404`) cannot be
-   unpublished and keep their fixed menu order.
+3. Every page the starter site ships (Home, About, Join, Apply, Rules, Contact,
+   Committee, Privacy, Terms, FAQ, and the **System** pages Club Lodge `/home`
+   and Page Not Found `/404`) cannot be hidden — code routes, the footer, and
+   the sitemap link them. Only pages you add yourself can be hidden; a hidden
+   page returns 404 to the public and drops out of the site menu. System pages
+   additionally keep their fixed slug and menu order. If a built-in page ever
+   shows a **Hidden** badge (only possible from hand-edited data), its card
+   offers a one-click **Publish** to repair it — until then the public site
+   treats the content as absent: `/contact`, `/join` and `/join/apply` fall
+   back to their built-in copy and forms, and `/home` answers 404.
 
 ### Enable authoritative fee/policy blocks
 
@@ -60,7 +68,7 @@ button. Page Content is edited under the **content** permission area.
 | Page title / menu title | The page name and its public menu label | Per page | Length-capped by `PAGE_CONTENT_LIMITS` |
 | Slug (`/path`) | The page's public path | Derived from the page | System pages are fixed; slugs must be valid, non-reserved |
 | Menu order | Position in the public site menu | Per page | Between the `PAGE_CONTENT_LIMITS` sort-order min/max; system pages fixed |
-| Published / NO MENU | Whether the page is live and whether it appears in the menu | Per page | System pages can't be unpublished |
+| Published / NO MENU | Whether the page is live and whether it appears in the menu | Per page | Only admin-created pages can be hidden; built-in and system pages stay published |
 | Content (rich text + tokens) | The page body | Per page | HTML sanitised; only recognised `{{tokens}}` render |
 | Joining fees / Annual membership fees / Hut fees | Whether fee tokens may publish those authoritative amounts | Off | Money stays in integer cents; types must also be marked public |
 | Booking policy summaries / Cancellation policies | Whether policy tokens may publish those blocks | Off | — |
@@ -73,7 +81,7 @@ button. Page Content is edited under the **content** permission area.
 | --- | --- | --- |
 | A fee token shows nothing on the public page | Its family isn't enabled under Public fee and policy blocks | Tick the family and **Save visibility**; also mark the membership types public |
 | The Book Now button goes to the booking flow, not my page | The target page is unpublished or was removed | Publish the target page, or re-select it |
-| I can't unpublish a page | It's a **System** page | System pages can't be unpublished by design |
+| I can't unpublish a page | It's a built-in page — anything the starter site ships (Home, About, Join, Apply, Rules, Contact, Committee, Privacy, Terms, FAQ, 404), not just the two **System** pages | Built-in pages can't be hidden by design; only pages you added yourself can be |
 | Save is rejected | A field exceeds `PAGE_CONTENT_LIMITS`, or the slug is invalid/reserved | Fix the flagged field; keep slugs valid and non-reserved |
 | Everything is read-only | Your admin role can view but not edit under the content area | Ask a full admin for content edit access |
 

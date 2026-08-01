@@ -77,7 +77,13 @@ type Capture = {
 // often needs; public-home anchors the adopter-facing docs. #2050 extends this.
 const CAPTURES: Capture[] = [
   { name: "admin-dashboard", route: "/admin/dashboard", area: "admin" },
-  { name: "admin-members", route: "/admin/members", area: "admin" },
+  {
+    name: "admin-members",
+    route: "/admin/members",
+    area: "admin",
+    waitForText: "Open",
+    prepare: prepareMembersDocumentationTable,
+  },
   { name: "admin-bookings", route: "/admin/bookings", area: "admin" },
   { name: "admin-bed-allocation", route: "/admin/bed-allocation", area: "admin" },
   {
@@ -245,9 +251,44 @@ const VIEWPORT = { width: 1280, height: 800 } as const;
 // a deliberate, documented harness step (#2050) — not a per-guide hack — so every
 // operator screenshot is free of the widget without touching runtime app code.
 const HIDE_OVERLAYS_CSS =
-  '[data-report-issue-ignore="true"] { display: none !important; }';
+  '[data-report-issue-ignore="true"], nextjs-portal { display: none !important; }';
 const BASE_URL = process.env.E2E_BASE_URL ?? "http://localhost:3001";
 const IMAGES_ROOT = path.resolve(path.join(import.meta.dirname, "..", "..", "docs", "images"));
+
+/**
+ * The Members table intentionally scrolls horizontally in the product, but its
+ * single route-level operator screenshot documents the right-hand Xero,
+ * Joined, and Open columns as well as the earlier status columns. Select the
+ * real compact density and scale only the table enough to fit that complete
+ * non-mutating overview inside the blessed 1280px capture.
+ */
+async function prepareMembersDocumentationTable(page: Page): Promise<void> {
+  await page.getByRole("button", { name: "Compact" }).click();
+  const table = page.getByRole("table", { name: "Members" });
+  await table.waitFor({ state: "visible", timeout: 15_000 });
+  await table.evaluate((element) => {
+    const tableElement = element as HTMLElement;
+    const scrollContainer = tableElement.parentElement;
+    if (!scrollContainer) throw new Error("Members table has no scroll container");
+    scrollContainer.scrollLeft = 0;
+    const scale = Math.min(1, scrollContainer.clientWidth / tableElement.scrollWidth);
+    tableElement.style.zoom = String(scale);
+  });
+  await page.waitForTimeout(100);
+
+  const viewport = page.viewportSize();
+  if (!viewport) throw new Error("Could not resolve the screenshot viewport");
+  for (const name of ["Xero", "Joined", "Actions"] as const) {
+    const box = await page.getByRole("columnheader", { name }).boundingBox();
+    if (!box || box.x < 0 || box.x + box.width > viewport.width) {
+      throw new Error(`${name} is outside the admin-members screenshot viewport`);
+    }
+  }
+  await page.getByRole("link", { name: "Open" }).first().waitFor({
+    state: "visible",
+    timeout: 10_000,
+  });
+}
 
 /**
  * #2366 screenshot AC: Dave's past CONFIRMED demo booking is seeded with three

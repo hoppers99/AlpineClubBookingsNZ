@@ -165,8 +165,6 @@ export default function MemberDetailPage({
     }
   };
 
-  const shouldAutoOpenEdit = searchParams.get("edit") === "true";
-
   // Dependent dialog state
   const {
     dependentOpen,
@@ -208,6 +206,7 @@ export default function MemberDetailPage({
     parentLinkOpen,
     parentLinkSearch,
     parentLinkSearchResults,
+    parentLinkResultsTruncated,
     parentLinkSearching,
     selectedLinkParent,
     parentLinkNotificationParentId,
@@ -446,32 +445,6 @@ export default function MemberDetailPage({
         ?.scrollIntoView({ behavior: "smooth", block: "start" });
     }, 250);
   }, [loading, member, openSection]);
-
-  // The members-list row Edit button navigates here with ?edit=true. The old
-  // behavior opened the edit dialog; now it expands the Contact & Personal
-  // group, unlocks it, and scrolls to it — once per member id.
-  const handledInitialEditParam = useRef(false);
-  useEffect(() => {
-    handledInitialEditParam.current = false;
-  }, [id]);
-  useEffect(() => {
-    if (
-      handledInitialEditParam.current ||
-      !shouldAutoOpenEdit ||
-      loading ||
-      !member
-    ) {
-      return;
-    }
-    handledInitialEditParam.current = true;
-    openSection("contact");
-    contactEdit.startEdit();
-    window.setTimeout(() => {
-      document
-        .getElementById("member-group-contact")
-        ?.scrollIntoView({ behavior: "smooth", block: "start" });
-    }, 250);
-  }, [contactEdit, loading, member, openSection, shouldAutoOpenEdit]);
 
   const isSelf = session?.user?.id === id;
   const actorIsFullAdmin = isFullAdmin({
@@ -1023,6 +996,7 @@ export default function MemberDetailPage({
         search={parentLinkSearch}
         searching={parentLinkSearching}
         searchResults={parentLinkSearchResults}
+        resultsTruncated={parentLinkResultsTruncated}
         selected={selectedLinkParent}
         notificationParentId={parentLinkNotificationParentId}
         disableLogin={parentLinkDisableLogin}

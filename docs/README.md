@@ -110,8 +110,8 @@ seasons, promos, and booking money):
 **Membership & applications guides** (batch 2 — members, applications,
 family/committee, the membership lifecycle, and membership billing):
 
-- [Members](guides/members.md) — the member directory, search, CSV import,
-  roles, seasonal membership, and merge.
+- [Members](guides/members.md) — the member directory, login-readiness status,
+  safe read-only opening, CSV import, roles, seasonal membership, and merge.
 - [Member Applications](guides/member-applications.md) — the join/nomination
   review queue and how approval maps people to member records.
 - [Member Fields](guides/member-fields.md) — which extra profile fields are
@@ -144,7 +144,8 @@ family/committee, the membership lifecycle, and membership billing):
   and family billing. (Also covers the `fee-configuration` route, which
   redirects here.)
 - [Subscriptions](guides/subscriptions.md) — annual membership-fee billing,
-  family billing mode, and manual mark-paid.
+  shared member Access status, permission-safe member links, family billing
+  mode, and manual mark-paid.
 - [Refunds & Credits](guides/refund-requests.md) — the refund-appeal and
   credit-approval review queue.
 - [Internet Banking](guides/internet-banking.md) — bed holds and lead-time rules

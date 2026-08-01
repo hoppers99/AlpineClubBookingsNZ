@@ -8,7 +8,8 @@ The admin area behind the club's **lobby TV display** — a live, self-updating
 noticeboard you hang on the lodge wall that shows arrivals, departures, who's in
 which room, today's chores, and arrival information, all driven by data the system
 already holds. This hub is where you pair screens, author what they show, and look
-up the display vocabulary. Find it at **Admin → Lobby Display** (`/admin/display`).
+up the display vocabulary. Find it at **Admin → Lodge Operations → Lobby Display**
+(`/admin/display`).
 
 The whole area is gated by the **`lobbyDisplay`** module, which is **off by
 default**. The **Lobby Display** sidebar entry and every page below it appear only
@@ -51,7 +52,8 @@ compose one. The authoring model behind the split is
 ## The quickest path: the guided setup wizard
 
 If you are setting a screen up for the first time — or replacing a TV — use
-**Admin → Lobby Display → Guided setup** (`/admin/display/setup`) instead of
+**Admin → Lodge Operations → Lobby Display → Guided setup**
+(`/admin/display/setup`) instead of
 working through the cards yourself. It is six steps in the order the job
 actually happens:
 
@@ -122,8 +124,9 @@ change one thing rather than set the whole thing up.
 
 1. Enable **Lobby TV display** under **Admin → Setup → Modules** (it is off by
    default). The **Lobby Display** entry then appears in the sidebar.
-2. Open **Admin → Lobby Display**. The hub cards through to **Devices**, the
-   **Visual builder**, **Layouts (Advanced)**, **Templates**, and **Reference**.
+2. Open **Admin → Lodge Operations → Lobby Display**. The hub cards through to
+   **Devices**, the **Visual builder**, **Layouts (Advanced)**, **Templates**, and
+   **Reference**.
    Most operators want the **Visual builder** — it composes a board without HTML
    (see below); the Layouts/Templates cards are the advanced, hand-authored path.
 

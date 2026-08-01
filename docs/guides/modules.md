@@ -69,6 +69,7 @@ deploy-time setup default **off**; general-purpose modules default **on**):
 | Google sign-in (`googleLogin`) | Sign in with a linked Google account | Off |
 | Google Analytics (`analytics`) | Consent-gated GA4 on public pages | Off |
 | Lobby TV display (`lobbyDisplay`) | Read-only paired lobby screens | Off |
+| Add another member as a guest (`memberGuests`) | Lets a member put another club member — outside their own family group — on their booking, on the create path and when editing. By default the other member is emailed and asked first and a bed is held until they answer. Also brings admin adds, the admin booking-copy and the booking-request pipeline under the same notify rule. Its policy lives on **Admin › Bookings setup › Member guests** | Off |
 
 Each card's **readiness** badge reads Enabled, Disabled, or **Needs setup** (the
 module is on but a dependency — credentials, an API key, inventory — is missing).

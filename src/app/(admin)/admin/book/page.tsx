@@ -721,6 +721,31 @@ export default function AdminBookPage() {
                 </div>
               </div>
             )}
+            {/*
+              NO "+ Add Member Guest" HERE, and it is a real limitation rather
+              than an oversight (MG4 #2309, declared and documented in
+              `docs/guides/book.md` Step 2).
+
+              The officer's member finder is BOOKING-SCOPED —
+              `/api/admin/bookings/[id]/member-guest-candidates` — because that
+              is what lets the lookup be gated and audited against a booking
+              that exists. This is a creation wizard: there is no booking id to
+              scope it to. The alternatives were both worse. Pointing the panel
+              at the MEMBER routes would apply the club's member-facing privacy
+              gate and the member rate limits to an officer, which is exactly
+              what owner decision D-20 rules out. Minting a second,
+              booking-less admin find endpoint would be a new unaudited-by-
+              booking lookup surface over the whole membership roll, added on a
+              stacked branch, to save one step.
+
+              The server side is NOT the constraint: `POST /api/bookings`
+              already accepts a cross-family member link on an authorised
+              on-behalf create. So the workaround is complete rather than
+              partial — create the booking, then add the member guest from its
+              edit panel, which writes the same consent record and sends the
+              same email. Wiring a picker here belongs in its own issue with the
+              endpoint question answered first.
+            */}
             <GuestForm
               guests={guests}
               onGuestsChange={setGuests}

@@ -4,20 +4,41 @@ All notable public reference-release changes should be recorded here.
 
 ## Unreleased
 
-- **Reports now follows the nights a booking stays, not the day somebody made
-  it (#2368).** The selected From/To dates include every overlapping lodge night
-  for Pending, Payment Pending, Confirmed, Paid, Awaiting Review, and Completed
-  bookings. Booking and guest totals are distinct, weekly/monthly buckets count
-  a spanning booking once, lodge/deleted scope is consistent, and integer-cent
-  Booked Revenue is allocated across the complete stay before a partial range is
-  sliced ($1.00 over three nights remains $0.34/$0.33/$0.33).
+<!-- changelog-pointer-note:start -->
 
-  Reports also labels the money honestly: **Booked Revenue** is stay-night
-  pricing, while **Net Collected Cash** comes from captured payment totals less
-  refunds and **Outstanding Additions** remains visible on its own. Occupancy is
-  unchanged: only Paid/Completed bookings contribute, and custodian holds remain
-  excluded. CSV/PDF-facing copy, the operator guide, a dedicated browser flow,
-  and the named Reports screenshot contract now describe the same rules.
+Entries for the next release are written as one file per pull request in
+[`changelog.d/`](changelog.d/README.md), not added here by hand (#2452);
+`scripts/release/compile-changelog.mjs` folds them into a version section when a
+release is cut. Any entries still listed below were written before that change
+and are folded in the same way.
+
+<!-- changelog-pointer-note:end -->
+- **Finding the right parent again: the Link Parent search lists adults first,
+  and says when it ran out of room (#2425).** Recording a parent of any age was
+  the right call — a 16 or 17 year old can genuinely be a parent — but it had a
+  consequence nobody meant. The search shows eight people at a time, ordered by
+  surname then first name, so a family who all share a surname could put their
+  **children in all eight slots** and leave the adult the admin was actually
+  looking for off the list entirely, with nothing on screen to say the list had
+  been cut short. On a big family, the parent was simply unreachable.
+
+  The list now puts **the grown-ups at the top and children and youth last**.
+  This changes the ORDER and nothing else: exactly the same people are offered as
+  before — any active, non-archived member of any age who is not an organisation
+  or school account — and the younger candidates follow immediately below. Adults
+  come first, and so does a member whose membership type makes them age-exempt
+  (an honorary or life member, who carries no age tier at all): they are
+  grown-ups too, and sorting them in among the children would have left the
+  problem unfixed for the very families it was reported on. The dialog now says
+  so ("adults are listed first, children and youth last"), so the order does not
+  read as a fault. Who may be recorded as a parent, and who the club emails about
+  a dependent (always an adult), are both completely unchanged.
+
+  When more people matched than the list can show, it now says **"Keep typing to
+  narrow this down."** underneath — the same sentence the booking screens use
+  when a member search is cut short, so the product says one thing in one voice.
+  The hint appears only when the list really was truncated, never under a
+  complete one, and never when nothing matched at all.
 
 - **The cancellation queue stops spending Xero API calls on questions nobody can
   act on (#2402).** Opening **Admin → Members → Cancellation Requests** asked
@@ -152,6 +173,27 @@ All notable public reference-release changes should be recorded here.
   server error. The demo seed's school children now carry surnames, matching
   what the real school form writes.
 
+- **A member merge that is overtaken mid-merge now stops cleanly instead of
+  failing with an unexplained error (#2243).** Merging two member profiles runs
+  as one long transaction, and it used to work out what to copy onto the
+  surviving record the moment that transaction opened, then write it much later.
+  A member photo can be uploaded at any time without waiting for a merge to
+  finish, so an on-behalf photo upload landing in that gap left the merge writing
+  a photo reference that had already been deleted — the database refused it and
+  the whole merge rolled back as an unexplained error, with nothing in the
+  operator's preview to hint at why. The merge now re-checks what it is about to
+  copy just before it writes, covering every field it copies rather than photos
+  alone (the duplicate's family group is the other one that could fail the same
+  way), and locks both member records for that final step. If anything did change
+  in the meantime, the merge stops with a clear message naming what changed,
+  saves nothing, and asks the operator to re-run the preview — so what was
+  previewed is always exactly what gets applied. Nothing changes for an ordinary
+  merge. Two smaller corrections ride along: where a booking request was already
+  turned into a booking for the duplicate, that link now follows the surviving
+  member (it previously kept pointing at the deleted record); and the safety net
+  that stops a new member-referencing column being forgotten by a merge now also
+  covers columns that hold a member id without a database foreign key — two
+  calendar columns had slipped past it — with a test that fails on the next one.
 - **The finance dashboard was counting a paid price increase twice, and now
   counts it once (#2408).** When a booking's price goes up after it was made —
   someone adds a guest — the difference is tracked as an "additional payment".
@@ -973,9 +1015,9 @@ All notable public reference-release changes should be recorded here.
   is stuck and what actually fixes it (cancel the booking, add another guest,
   re-quote the request), never a dead-end "ask the club".
   The published banner-coverage figures were re-measured with the new settings
-  card: **299** gated admin controls, **252** of them covered by a banner (226
+  card: **301** gated admin controls, **252** of them covered by a banner (226
   in their own file, 26 by a verified vouching parent — 5 of those through the
-  wizard frame), and **47** across 25 files deliberately keeping their own
+  wizard frame), and **49** across 26 files deliberately keeping their own
   reason.
   **Review hardening in the same change.** A "no thanks" that the system cannot
   carry out — an already-paid booking whose refund-or-credit choice only the club
@@ -1474,10 +1516,10 @@ All notable public reference-release changes should be recorded here.
   added its three, once more when #2286's Release/Change bed controls landed,
   again when the cash / off-Xero payment feature, #2262, landed its four
   per-button-reason controls, and again with #2307's Member guests settings
-  card): **299**
+  card): **301**
   gated admin controls, **252** of them covered by a banner (226 in their own
   file, 26 by a verified vouching parent — 5 of those through the wizard frame),
-  and **47** across 25 files deliberately keeping their own reason.
+  and **49** across 26 files deliberately keeping their own reason.
 - **Choosing to use your account credit and then saving the booking as a draft
   no longer throws that choice away (#2265).** Ticking "use my credit" in the
   booking wizard and pressing **Save as draft** used to discard the amount you

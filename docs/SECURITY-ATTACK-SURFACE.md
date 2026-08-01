@@ -232,6 +232,12 @@ These family rules are enforced by automated tests (issue #1132):
 - `src/app/api/lodges/route.ts`
 - `src/app/api/member/**/route.ts`
 - `src/app/api/members/family/**/route.ts`
+- `src/app/api/members/guest-candidates/**/route.ts` — **a deliberate PII
+  surface, see the Sensitive Data Inventory below.** The exact-email resolve
+  exists whenever the `memberGuests` module is on; the name type-ahead exists
+  only where a club has additionally switched open search on, and both answer
+  **404** when their gate is off so an unauthorised caller cannot learn the club
+  has the feature at all.
 - `src/app/api/notifications/preferences/route.ts`
 - `src/app/api/payments/**/route.ts`
 - `src/app/api/profile/route.ts`
@@ -296,6 +302,7 @@ Admin route subfamilies are:
 | Password hashes and session security fields | `Member.passwordHash`, `forcePasswordChange`, `passwordChangedAt`, Auth.js JWT callbacks. | bcrypt, email verification before session, session invalidation on password change. | #615 for account-recovery behavior; #617 for lifecycle interactions. |
 | Action and verification tokens | Password reset, setup invite, verification, email change, nomination, chore, cancellation confirmation helpers. | Token helpers store hashes/expiry where implemented; some routes are session-bound in addition to token-bound. | #615 for token URL/log exposure and enumeration. |
 | Member PII | Member/profile/family/admin/application routes. | Session/admin guards, audit logs on sensitive changes, scoped selects in public committee route that exclude email and gate phone by assignment flag. | #613/#614 for route boundaries; #617 for integrity and lifecycle review. |
+| **Member name list, deliberately browsable when a club opts in** (`memberGuests`, epic #2305) | `src/app/api/members/guest-candidates/**` (member finder, #2308) and `src/app/api/admin/bookings/[id]/member-guest-candidates` (officer picker, #2309). | **The honest model, not softened:** with *open member search* ON the club's member name list IS browsable to any member who can start a booking — that is the setting's purpose, it is a per-club choice, and it ships OFF. The controls are (1) rate limits, burst and daily, keyed per acting member as well as per IP; (2) a full audit trail — every query in both modes, including empty, under-minimum and rate-limited ones, and the email path stores the **full address** because "who looked up which household" is the whole point of the row; (3) a ten-row cap with prefix-only matching and a boolean overflow rather than a count, so harvesting is slow and noisy rather than one request; (4) minors excluded from the type-ahead by default. Neither path evaluates eligibility, so neither can become an eligibility oracle, and the envelope is always 200 and identical for found, not-found and inactive. The officer picker is NOT bound by the two member-facing switches (D-20) but its NAME mode is gated on **`membership:view`**, so #1376's directory-less Booking Officer falls back to exact-email; its lookups are audited through the same two writers. Neither privacy setting travels in config transfer (D-18). | #2305 / #2308 / #2309; the two settings' defaults and the audit actions are pinned by `member-guest-widening.test.ts`. |
 | Booking and payment records | Booking, payment, refund, admin booking/payment routes. | Session guards, service-level ownership, Stripe server-side calls, payment transaction records. | #617 for money-state invariants, idempotency, and integer cents. |
 | Stripe identifiers and client secrets | Payment routes and webhook/service layers. | Server-side Stripe secret key resolved from the encrypted `IntegrationCredential` store (#2082), never in the client bundle; client secret returned only through authenticated payment routes; publishable key delivered at runtime from the store. | #616/#617 for webhook idempotency and client-secret ownership. |
 | Operational Xero tokens and object links | `admin/xero/**`, Xero token store, outbox/inbound reconciliation. | Admin guard, encrypted token store, OAuth state cookie, feature gates. | #616 for OAuth/webhook/retry boundaries. |
@@ -1093,10 +1100,10 @@ lobby TV display (fork #54) and the global 404 (#2356).
   — not the rescue of a broken visitor-facing 404. Say so plainly anywhere this
   is described to clubs.
 - **Two latent defects travelled with the frozen artefact, both from "no request,
-  no database at build time".** In the artefact,
-  `getSanitizedPageContentByPath("/404")` had failed at build and been swallowed
-  by the surrounding catch, so the admin-authored `/404` CMS page could not
-  appear in it — the hardcoded fallback was baked in. And the root layout's
+  no database at build time".** In the artefact, the `/404` page-content lookup
+  (now `getPublishedPageContentByPath("/404")`, #2440) had failed at build and
+  been swallowed by the surrounding catch, so the admin-authored `/404` CMS page
+  could not appear in it — the hardcoded fallback was baked in. And the root layout's
   `generateMetadata()` fell back to `SAFE_DEFAULT_CONFIG`, baking the template
   placeholder club name and `http://localhost:3000` into that artefact's
   `<title>` and OG tags. Both were confined to the artefact, which is why they
@@ -1420,9 +1427,14 @@ address — real page, typo, and bot probe alike — which is the configuration 
     `if (!page)`, so pre-setup a miss answered with the club name while a HIT
     answered with the page's own title and header text — the enumeration oracle
     the guard existed to prevent, merely inverted. `/`, `/contact`, `/join` and
-    `/join/apply` had no guard at all, and `/contact` and `/join` look their
-    content up with no `published === false` filter, so an unlaunched club also
-    disclosed pages it had explicitly unpublished. Measured effect: an anonymous
+    `/join/apply` had no guard at all, and — until #2440 — `/contact` and
+    `/join` looked their content up with no `published === false` filter, so an
+    unlaunched club also disclosed pages it had explicitly unpublished. (Closed
+    post-setup as well as pre-setup: every public render path now reads through
+    `getPublishedPageContentByPath()` in `src/lib/page-content-html.ts`, which
+    treats an unpublished row as absent, and a contract test bans the
+    unfiltered by-path read from application code outside that module so the
+    routes cannot drift apart again.) Measured effect at the time: an anonymous
     prober with a slug wordlist could recover the full page inventory of a site
     that had never opened, plus each page's title and header text.
   - Closed by `src/lib/website-setup-metadata.ts`. Every `generateMetadata()`

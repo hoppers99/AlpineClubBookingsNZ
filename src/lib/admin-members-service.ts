@@ -23,11 +23,18 @@ import {
   membershipTypeAgeExemption,
 } from "@/lib/membership-types";
 import logger from "@/lib/logger";
-import { isPrismaUniqueConstraintError } from "@/lib/prisma-errors";
+import {
+  describeUniqueConstraintTarget,
+  isPrismaUniqueConstraintError,
+} from "@/lib/prisma-errors";
 import { getXeroApiErrorInfo } from "@/lib/xero-api-errors";
 import { copyStreetAddressToPostal } from "@/lib/member-address";
 import { PLACEHOLDER_CONTACT_EMAIL_DOMAINS } from "@/lib/placeholder-contact-email";
 import { validateInheritEmailSource } from "@/lib/member-email-inheritance";
+import {
+  isLoginEmailUniqueConflict,
+  MEMBER_LOGIN_EMAIL_TAKEN_MESSAGE,
+} from "@/lib/member-email";
 import {
   buildParentLinks,
   NO_INHERITABLE_EMAIL_SOURCE_MESSAGE,
@@ -75,7 +82,6 @@ import {
   resolveAccessRoleTokens,
   isAccessRole,
   type AccessRoleInput,
-  type AppAccessRole,
 } from "@/lib/access-roles";
 import {
   accessRoleAssignmentRowsFromTokens,
@@ -87,6 +93,7 @@ import {
   financeAccessLevelFromMatrix,
   getAdminPermissionMatrix,
 } from "@/lib/admin-permissions";
+import { getMemberLoginStageSortRank } from "@/lib/member-login-stage";
 
 const maxStr = (len: number) => z.string().max(len).optional().nullable();
 
@@ -172,7 +179,7 @@ export const createMemberSchema = z.object({
 const SORT_BY_WHITELIST = [
   "name",
   "email",
-  "role",
+  "access",
   "ageTier",
   "active",
   "createdAt",
@@ -303,8 +310,11 @@ export async function listAdminMembers(
     case "email":
       orderBy = { email: sortDir };
       break;
-    case "role":
-      orderBy = { role: sortDir };
+    case "access":
+      // Access is a derived four-stage login journey, so its page order is
+      // resolved below from the same fields as getMemberLoginStage. Never use
+      // hidden role as a proxy for the status the header announces.
+      orderBy = [{ lastName: "asc" }, { firstName: "asc" }];
       break;
     case "ageTier":
       orderBy = { ageTier: sortDir };
@@ -848,22 +858,169 @@ export async function listAdminMembers(
       take: 1,
     },
     passwordResetTokens: {
+      where: activePendingInviteFilter,
       orderBy: { createdAt: "desc" as const },
       take: 1,
       select: { expiresAt: true, used: true },
     },
   };
 
-  const [members, total] = await Promise.all([
-    prisma.member.findMany({
-      where,
+  const skip = (page - 1) * pageSize;
+
+  // #2425: the parent picker lists ADULTS FIRST. This is a PRESENTATION rule and
+  // nothing else — the `where` both halves run against is the same eligibility
+  // predicate assembled above, so every candidate the search offered before is
+  // still offered, at the same page size, and the write route's contract (the
+  // #2254 no-drift rule) is untouched. #2282 removed the adults-only clause
+  // because a 16 or 17 year old can genuinely be a parent; the side effect was
+  // that a surname shared by a family put the CHILDREN — sorted by the same
+  // lastName/firstName order — in every one of the eight slots before the adult
+  // the admin was actually looking for, who was then unreachable without extra
+  // typing they had no way of knowing was needed.
+  //
+  // Two complementary queries rather than one, because the ranking cannot be
+  // expressed as an `orderBy`: Prisma has no computed sort key, and sorting on
+  // `ageTier` itself would depend on the enum's DECLARATION order. Splitting the
+  // set in two and concatenating is exact, and stays correct for pages beyond
+  // the first — the picker only ever asks for page 1, but this endpoint is a
+  // general list API and a ranking that silently reshuffled on page 2 would drop
+  // and duplicate rows.
+  //
+  // The line is drawn at "is this candidate a MINOR", not at "is this candidate
+  // an ADULT" (#2425 review). `NOT_APPLICABLE` is the age-EXEMPT tier, not the
+  // organisation tier: `resolveEnforcedAgeTier` gives it to a real person on a
+  // FORCED membership type, and preserves an admin's hand-picked N/A while the
+  // type ALLOWS it (`src/lib/age-tier-enforcement.ts`, #1440/#2106). Since the
+  // picker excludes organisations by ROLE and never by tier
+  // (`dependentParentEligibleWhere`), every N/A row that reaches this ranking is
+  // one of those age-exempt PEOPLE — an honorary or life member, typically an
+  // adult — and ranking them below the household's children would leave them
+  // crowded off exactly the page this issue exists to fix. They join the top
+  // block instead, where they sort among the adults by name; nothing here
+  // claims they ARE adults, only that they are not minors.
+  const NON_MINOR_AGE_TIERS: AgeTier[] = ["ADULT", "NOT_APPLICABLE"];
+  async function findParentLinkCandidatesNonMinorsFirst() {
+    const rankedWhere = (ageClause: Prisma.MemberWhereInput) => ({
+      ...where,
+      AND: [...andConditions, ageClause],
+    });
+    // `in` / `notIn` are exact complements here because `Member.ageTier` is NOT
+    // NULL (`prisma/schema.prisma`, `AgeTier @default(ADULT)`), so every
+    // eligible row lands in exactly one half and the two together are the same
+    // set — and the same count — an unranked query would return.
+    const nonMinorClause: Prisma.MemberWhereInput = {
+      ageTier: { in: NON_MINOR_AGE_TIERS },
+    };
+    const minorClause: Prisma.MemberWhereInput = {
+      ageTier: { notIn: NON_MINOR_AGE_TIERS },
+    };
+    // Page 1 needs no boundary: the top block starts at row 0. A deeper page has
+    // to know where that block ENDS before it can slice across it, and only then
+    // is the extra count worth issuing.
+    const nonMinorTotal =
+      skip > 0
+        ? await prisma.member.count({ where: rankedWhere(nonMinorClause) })
+        : null;
+    const nonMinors =
+      nonMinorTotal === null || skip < nonMinorTotal
+        ? await prisma.member.findMany({
+            where: rankedWhere(nonMinorClause),
+            orderBy,
+            select,
+            skip,
+            take: pageSize,
+          })
+        : [];
+    if (nonMinors.length >= pageSize) return nonMinors;
+    const minors = await prisma.member.findMany({
+      where: rankedWhere(minorClause),
       orderBy,
       select,
-      skip: (page - 1) * pageSize,
-      take: pageSize,
-    }),
-    prisma.member.count({ where }),
-  ]);
+      // Once the top block is exhausted the remainder of the window continues
+      // into the minors, so the offset is whatever the window overshot it by
+      // (zero whenever the page started inside the top block).
+      skip: nonMinorTotal === null ? 0 : Math.max(0, skip - nonMinorTotal),
+      take: pageSize - nonMinors.length,
+    });
+    return [...nonMinors, ...minors];
+  }
+
+  let members;
+  let total: number;
+  if (sortBy === "access") {
+    // Prisma cannot order by the existence of an active related invite token,
+    // so resolve the lightweight status keys for the filtered cohort first,
+    // rank them with the shared login-stage helper, then fetch only this page's
+    // full rows. This keeps filtering and pagination server-side while making
+    // the visible/announced Access order truthful.
+    const accessCandidates = await prisma.member.findMany({
+      where,
+      orderBy: [{ lastName: "asc" }, { firstName: "asc" }, { id: "asc" }],
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        canLogin: true,
+        passwordChangedAt: true,
+        lastLoginAt: true,
+        passwordResetTokens: {
+          where: activePendingInviteFilter,
+          orderBy: { createdAt: "desc" as const },
+          take: 1,
+          select: { expiresAt: true },
+        },
+      },
+    });
+    const direction = sortDir === "asc" ? 1 : -1;
+    accessCandidates.sort((left, right) => {
+      const leftRank = getMemberLoginStageSortRank({
+        canLogin: left.canLogin,
+        hasCompletedAccountSetup: hasMemberCompletedAccountSetup(left),
+        pendingInviteExpiresAt: left.passwordResetTokens[0]?.expiresAt ?? null,
+      });
+      const rightRank = getMemberLoginStageSortRank({
+        canLogin: right.canLogin,
+        hasCompletedAccountSetup: hasMemberCompletedAccountSetup(right),
+        pendingInviteExpiresAt: right.passwordResetTokens[0]?.expiresAt ?? null,
+      });
+      if (leftRank !== rightRank) return (leftRank - rightRank) * direction;
+      return (
+        left.lastName.localeCompare(right.lastName) ||
+        left.firstName.localeCompare(right.firstName) ||
+        left.id.localeCompare(right.id)
+      );
+    });
+    total = accessCandidates.length;
+    const pageIds = accessCandidates
+      .slice(skip, skip + pageSize)
+      .map(({ id }) => id);
+    const pageOrder = new Map(pageIds.map((id, index) => [id, index]));
+    const unsortedMembers = pageIds.length
+      ? await prisma.member.findMany({
+          where: { AND: [where, { id: { in: pageIds } }] },
+          orderBy,
+          select,
+        })
+      : [];
+    members = unsortedMembers.sort(
+      (left, right) =>
+        (pageOrder.get(left.id) ?? Number.MAX_SAFE_INTEGER) -
+        (pageOrder.get(right.id) ?? Number.MAX_SAFE_INTEGER),
+    );
+  } else {
+    [members, total] = await Promise.all([
+      parentLinkEligibleFor
+        ? findParentLinkCandidatesNonMinorsFirst()
+        : prisma.member.findMany({
+            where,
+            orderBy,
+            select,
+            skip,
+            take: pageSize,
+          }),
+      prisma.member.count({ where }),
+    ]);
+  }
 
   // #2254: a dependant-link search that finds nobody eligible used to render a
   // bare "No eligible members found.", which told the admin nothing — and hid a
@@ -973,7 +1130,6 @@ export async function listAdminMembers(
     const pendingInviteExpiresAt =
       !hasCompletedAccountSetup &&
       latestToken &&
-      !latestToken.used &&
       latestToken.expiresAt > now
         ? latestToken.expiresAt
         : null;
@@ -1325,7 +1481,7 @@ export async function createAdminMember(
     });
     if (existing) {
       return jsonResult(
-        { error: "A member with this email already exists" },
+        { error: MEMBER_LOGIN_EMAIL_TAKEN_MESSAGE },
         { status: 409 },
       );
     }
@@ -1492,9 +1648,37 @@ export async function createAdminMember(
       { status: 201 },
     );
   } catch (error) {
+    // Backstop for the race the pre-check above cannot close: the uniqueness
+    // query runs before the transaction, so a concurrent write can claim the
+    // address in between and the partial unique index `Member_email_login_unique`
+    // rejects this create. Narrowed from "any P2002 here means the email is
+    // taken" (#2412, matching what #2385 did for the member edit): a collision
+    // on some other unique constraint is still a 409, because something really
+    // is already taken, but it no longer sends the admin off to fix an address
+    // that is fine. It is logged either way, since on this path no other unique
+    // constraint should be reachable at all — and the constraint is logged
+    // beside the error, because the pino `err` serializer keeps only
+    // name/message/stack and would drop `meta` entirely.
+    //
+    // A create that cannot log in never gets the unnamed-P2002 benefit of the
+    // doubt: the login-email index is `WHERE "canLogin" = true`, so no email
+    // constraint can fire on that insert.
     if (isPrismaUniqueConstraintError(error)) {
+      if (isLoginEmailUniqueConflict(error, { canClaimLoginEmail: canLogin })) {
+        return jsonResult(
+          { error: MEMBER_LOGIN_EMAIL_TAKEN_MESSAGE },
+          { status: 409 },
+        );
+      }
+      logger.error(
+        { err: error, constraint: describeUniqueConstraintTarget(error) },
+        "Member create hit an unexpected unique constraint",
+      );
       return jsonResult(
-        { error: "A member with this email already exists" },
+        {
+          error:
+            "Could not create this member: one of their details is already used by another record",
+        },
         { status: 409 },
       );
     }

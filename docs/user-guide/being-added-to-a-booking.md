@@ -14,8 +14,10 @@ the adults in their family group are asked instead, on a dedicated page
 (`/bookings/consent/<id>`).
 
 Some clubs choose to **tell** rather than ask. In that case your place is held
-straight away, the email says so, and you can still take yourself off the
-booking if you would rather not go.
+straight away and the email says so. In most cases you can then take yourself
+off the booking if you would rather not go — but not in every case, and the
+email tells you which it is. *How to come off it, honestly*, further down this
+page, lists the situations where only the club can take you off.
 
 ## When you'd use it
 
@@ -37,8 +39,10 @@ booking if you would rather not go.
    **your nights**, the date to answer by, and everyone on the booking.
 3. Choose **Yes, add me** or **No thanks**.
    - **Yes** confirms your place. The person who made the booking is emailed.
-   - **No** releases the bed that was held for you and takes you off the
-     booking. They are emailed about that too.
+   - **No** normally releases the bed that was held for you and takes you off
+     the booking, and they are emailed about that too. On a few bookings it
+     cannot be actioned from your side — the paragraph after this list says
+     which, and what happens instead.
 4. If you do nothing, the request **lapses on its own** at the answer-by date.
    The bed is released and the person who made the booking is told. You never
    have to do anything to decline.
@@ -78,10 +82,38 @@ between a refund and account credit, and if the club's system refuses your
 
 ### If you were told, not asked
 
-Your club may add member guests without asking first. The email (and a notice
-on the booking page) says your place is already held. If you would rather not
-go, use **Remove me from this booking** on the booking's page — the same
-self-removal every guest has.
+There are three ways you can end up on a booking without being asked, and the
+email says which one it was:
+
+- **Your club adds member guests straight away.** Clubs can turn the asking off;
+  the email then says your place is already held.
+- **The club added you on somebody's behalf.** A booking officer put you on
+  a member's booking. You are still emailed — that is not optional for the club.
+- **The booking came from a booking request.** Somebody outside the club asked
+  for beds, the club priced it, and an officer linked you to one of the places.
+
+**How to come off it, honestly.** In most cases the email offers
+**Remove me from this booking** and it works. In some it cannot, and the email
+says so instead of offering a button that would refuse:
+
+- you are the **only** person on the booking, so taking yourself off would leave
+  it empty — the club has to cancel it instead;
+- the booking was **priced by hand** by the club (every booking that came from a
+  booking request is). Its places cannot be changed from your account at all,
+  and the person named on it usually cannot help either — only the club can take
+  you off, by cancelling or re-quoting;
+- **check-in has already started**, or the booking is in a state that no longer
+  allows guest changes.
+
+In every one of those the club can act, so contact the club office.
+
+### If your place is taken away again
+
+If the request is withdrawn before you answer, if the club takes you off a
+booking, or if a booking-request booking is re-arranged and your place goes to
+somebody else, you get one email saying so. Nothing is left for you to do, and
+the bed that was being held for you is released. If that looks like a mistake,
+contact the club.
 
 ## What to expect
 
@@ -97,6 +129,12 @@ self-removal every guest has.
   changes for them.
 - **A held bed is only a held bed.** Until you say yes you are not on the chore
   roster, the arrivals list, or a bed plan, and no arrival email names you.
+- **Saying yes covers the booking, not just the version you saw.** If the person
+  who made the booking later moves the dates, adds nights, changes lodge or
+  changes who else is coming, you are not asked again and you are not told. Your
+  place simply carries over. That is a deliberate choice by the club rather than
+  an oversight — if the new dates do not suit you, take yourself off (or ask the
+  club, if the list above says you cannot).
 
 ## Troubleshooting
 
@@ -106,6 +144,9 @@ self-removal every guest has.
 | The card offers only **Yes** | Saying no cannot be actioned from your side (you are the only guest, or the booking is quote-priced) | The card names who can act — ask the person who made the booking, or the club |
 | You said no but were told it could not be done | The booking has already been paid and the reduction needs a refund-or-credit decision by the owner or the club | Ask the person who made the booking, or the club office, to take you off |
 | You never answered and the request disappeared | It lapsed at the answer-by date; the bed was released | If you did want to come, ask the person who made the booking to add you again |
+| There is no **Remove me from this booking** button at all | This booking is one the list above says you cannot come off yourself — most often it was priced by hand from a booking request | Contact the club office; only they can cancel or re-quote it |
+| Your dates changed and nobody asked you | Agreeing once covers the booking however it later changes | If the new dates do not suit you, take yourself off, or ask the club |
+| You got an email saying you are no longer on a booking | The request was withdrawn, the club took you off, or a booking-request booking was re-arranged | Nothing to do. Contact the club if that looks wrong |
 
 ## Related links
 

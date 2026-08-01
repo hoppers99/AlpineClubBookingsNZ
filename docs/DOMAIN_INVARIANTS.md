@@ -1754,6 +1754,73 @@ because both are surprising and neither should be discovered by a member:
   `consentStatus` as a field. Excluding them would make the export incomplete
   about a commitment that exists.
 
+**MG4 (#2309) closes the last three paths.** MG1 provisioned the columns, MG2
+turned them on for the member-facing add, MG3 built the finder, and MG4 covers
+the edit path, admin parity and the booking-request pipeline. Its rules:
+
+- **Adding a member guest while EDITING is the same act as adding one while
+  creating.** The edit panel's section goes through the modification path, which
+  resolves the family boundary and plans consent through the same single writer
+  every other add uses. There is no second consent rule for the edit path, and a
+  refusal on it is the same neutral D-8 sentence.
+- **Every path that can place a member on a booking now records who did it and
+  tells the member.** Four write points reach this: the member add, the admin
+  add, the admin booking-copy, and the booking-request pipeline (owner decisions
+  MG4-D-a and MG4-D-b). The pipeline has THREE such points, not the two the issue
+  body named — the capacity hold's booking create, the approval-time guest swap,
+  and the approval that runs with no hold behind it — and all three write
+  `ADMIN_ASSIGNED` naming the approving officer. There is no exemption: MG4-D-b
+  was ticked in the direction of bringing the pipeline under the rule, so this
+  section records the rule rather than an exception to it.
+- **A held booking's guest swap can substitute one person for another in place.**
+  The approval preserves each guest row's id so pre-assigned beds survive
+  (#1254), which means replacing a member on a row looks like an ordinary update.
+  Both parties must be told: the newcomer that they are on the booking, the
+  person dropped that they are not. A reused row's consent record is cleared when
+  the person on it changes — a stale `ADMIN_ASSIGNED` would vouch for somebody
+  who was never asked, which `classifyMemberGuestConsent` calls a broken row.
+- **A member guest who comes OFF a booking is told, once, by whichever path
+  removed them.** `member-guest-request-withdrawn` covers a request called off
+  before anybody answered, a settled member guest taken off, and a pipeline
+  substitution. It is sent by the single-guest removal route and the batch edit
+  and by NOTHING else: a decline and a lapse each already have their own message
+  for the same event, and a member removing themselves is not told what they just
+  did. A row whose `consentStatus` is `NULL` owes nobody anything, because no
+  message was ever sent about it.
+- **"Always notify" beats the per-action tick and the member's preferences, and
+  loses to the per-booking No-emails switch** (owner decision D-16, and the
+  precedent D10 set over #1705's invoice email). None of the six member-guest
+  senders consults `shouldSendEmail`, and no caller gates them on an admin's
+  notify choice — being asked, being told you are on a booking, and being told
+  you are off it are not courtesy messages. All six pass a real `bookingContext`,
+  so a silenced booking withholds them and each withheld send lands on that
+  booking's withheld-banner record where an operator can see what was held back.
+- **The officer's member picker gates its NAME mode on `membership:view`, not on
+  `bookings:edit`** (owner decision D-20). It is deliberately NOT bound by the
+  club's two member-facing privacy switches: an admin holding `membership:view`
+  can already browse the whole roll from `/admin/members`, so gating their
+  booking-side picker on a member-facing setting protects nothing. The rider is
+  what keeps #1376 true — a Booking Officer whose role carries no membership
+  access gets a 404 on the NAME mode and falls back to exact-email resolve, which
+  needs only `bookings:edit`. Every officer lookup is audited through the same two
+  writers the member routes use, including the malformed-address and
+  lookup-failed outcomes, so officers are not invisible in the trail that exists
+  to make browsing detectable. The **email mode is a `POST` with the address in
+  the body**, matching `POST /api/members/guest-candidates/resolve`: a member's
+  address must never travel in a URL, where it would reach the access log, the
+  browser history and the `Referer` of everything the page loads next.
+- **Which reader gets which picker is decided by ONE predicate**
+  (`resolveMemberGuestNameSearchAccess`), the same `viewerRole === "ADMIN"` the
+  edit panel uses to choose its routes. Deciding "may this reader search by name"
+  from a different permission than "which routes will this reader call" strands
+  the read-only bookings viewer between them: with `membership:view` they get a
+  name box that 404s on the member route, and without it they lose a search their
+  club turned on for every member.
+- **Exactly one file turns either open-search value into a decision about who is
+  discoverable.** Routes declare the AUDIENCE they are serving;
+  `member-guest-find-service.ts` decides what that means. A second decision site
+  is how two surfaces come to disagree about whether the roll is browsable.
+
 The eight legal column shapes, and only those eight, are. In the four column
 cells, **null** means the column must be `NULL`, **set** means it must be
 non-`NULL`, and **any** means either is legal; where the responder's identity
@@ -3298,6 +3365,24 @@ the correct member identity — and therefore correct member pricing — instead
 silently re-adding the member as a mispriced non-member. The member-scoped
 `GET /api/admin/members/[id]/family` remains gated on `membership:view` for
 membership surfaces.
+MG4 (#2309) adds a **third** bookings-scoped picker, and it is the one
+exception to the sentence above — stated here rather than left for a reader to
+discover, because the exception is deliberate and owner-decided (D-20).
+`/api/admin/bookings/[id]/member-guest-candidates` finds a member to add as a
+**member guest** on the booking being edited, and it has two modes with two
+different gates. The **email mode** (`POST`, the address in the body so it never
+reaches an access log or a `Referer`) behaves exactly like the two pickers above:
+`bookings:edit` only, no membership access required. The **name mode** (`GET`,
+a name fragment) **does require `membership:view`**, and a Booking Officer
+without it gets a 404 on that mode alone — the same answer the member route
+gives when open search is off — and falls back to the exact-email box. That
+preserves #1376 in full: the officer keeps every capability, including correct
+member identity and member pricing, and loses only a type-ahead over the
+membership roll they were deliberately not given access to. A picker that
+browsed the whole roll from inside a booking would have undone #1376 through a
+door nobody thought to look at. The same decision statement governs whether the
+club's member-facing open-search setting binds an officer (it does not) — see
+the member-guest consent cluster above.
 On-behalf CREATION is aligned with modification (#1313/#1442): `/api/bookings`,
 `/api/bookings/quote`, and `/api/promo-codes/validate` authorize a
 `forMemberId` via `bookingManagementAuthorizationRole` (`bookings:edit`), so a
@@ -3468,9 +3553,17 @@ public `/api/images/[id]` content path — that content route enforces the split
 in code by returning 404 for any non-`CONTENT` row, so the invariant holds even
 if a `MEMBER_PHOTO` id is learned. A photo is public **only** when the member
 is active and holds an active, published `CommitteeAssignment` — the same
-predicate `/api/committee` uses (which is uncapped, so every publicly-rostered
-member is exactly the set whose photo is servable); otherwise it is visible
-solely to the member or a `membership:view` admin. The committee-public ETag is
+predicate `/api/committee` uses, so every publicly-rostered member is the set
+whose photo is servable; otherwise it is visible solely to the member or a
+`membership:view` admin. The photo rule is the predicate alone: the roster
+endpoint additionally applies a pathological `take: 500` backstop
+(`src/app/api/committee/route.ts`) against a misconfigured or hostile admin
+publishing an absurd number of assignments on an unauthenticated public route.
+That backstop is far above any real committee (typically <30) so it never trims
+a genuine roster, but it is a display bound, not a narrowing of the predicate —
+past 500 published assignments the roster would list fewer members than have
+servable photos, which is the safe direction (a photo is never made public by
+being trimmed off the roster). The committee-public ETag is
 an opaque digest, never the raw `MediaImage` id. Uploaded photos have their
 EXIF/XMP/comment metadata (camera GPS) stripped before storage. Whether the
 public committee roster renders those photos is a separate presentational opt-in
@@ -3509,6 +3602,15 @@ A `FamilyGroup` with zero `FamilyGroupMember` rows is inert: it never affects
 booking eligibility, pricing, or any member-visible UI, because family
 visibility and eligibility everywhere derive from `familyGroupMemberships`
 (`getMemberFamily`, `resolveMemberFamily`), never from bare `FamilyGroup` rows.
+
+*(Corrected by the member-guest epic, #2305. "Eligibility everywhere derives from
+`familyGroupMemberships`" is no longer true of BOOKING-GUEST eligibility: with
+the `memberGuests` module on, a member outside the booker's family group may be
+added as a guest, and `familyGroupMemberships` then decides only whether that add
+needs the other member's CONSENT — see "Member-Guest Consent". Everything else in
+this paragraph — pricing, family billing, the memberless-group rule — is
+unchanged, and the family boundary remains the single definition of "family" that
+the consent planner, the authorization check and the D-8 collapse all read.)*
 Family billing never infers a recipient from group role, login holder, or email
 inheritance. In `BILL_FAMILY_VIA_BILLING_MEMBER` mode the explicit billing
 member must be an active, unarchived member of that family; missing or removed
@@ -3701,6 +3803,47 @@ classification, on the write routes and in the search's SQL alike. This is a
 restoration of what the ADULT clause excluded by accident, not a narrowing of
 "any age": every real age tier, INFANT included, may be recorded as a parent.
 
+**What one MEMBER may see about another member's parent** (#2424, owner decision
+2026-08-01). `GET /api/members/family` and `GET /api/member/onboarding` both
+list, for every member of the viewer's family groups, the parents recorded
+against them — and a parent link carries no shared-group requirement of its own,
+so a listed parent can be somebody the viewer has no family relationship with at
+all. The member-facing link is therefore built by WHITELIST, in two layers:
+
+- **Always, however the viewer is related: `id`, `firstName`, `lastName`,
+  `parentLinkType`, `inheritEmailFromId` — and nothing else.** That is the
+  literal always-list, not a summary of one. Name and link type are what let a
+  family see who the club believes their child's parents are;
+  `inheritEmailFromId` is what the "(notifications)" marker on the family page
+  is matched on, and an id pointing at whoever holds the mailbox is not itself a
+  contact detail.
+- **Only when the VIEWER shares a family group with that parent: `email`, plus
+  the status fields `ageTier`, `active` and `canLogin`.** For a parent in none
+  of the viewer's groups all four are ABSENT from the JSON — for the viewer's
+  own parents as much as for anyone else's. The address is the point, but the
+  status fields go with it because they are facts about a person the viewer has
+  no family relationship with, and `ageTier` in particular would say whether a
+  named stranger is a child. #2282 made that materially wider by allowing
+  parentage at any age, so what this payload could reach stopped being other
+  adults' details and started including children's. No member-facing client
+  reads any of the three: the family page renders a parent as a name plus the
+  notifications marker, and the onboarding wizard does not read parent links at
+  all.
+
+The rule is enforced server-side in `buildMemberFacingParentLinks`
+(`src/lib/member-parent-links.ts`) and never by a client declining to render a
+field: the JSON payload is the exposure, whatever the screen shows. Because the
+visible link is assembled field by field rather than by deleting from a spread,
+a column added to the query later cannot leak by default — and the tests pin
+each branch's key set exactly, so widening either one has to be deliberate. Both
+payloads read each parent's own `familyGroupMemberships` to decide — the family
+service inside `FAMILY_MEMBER_PROFILE_SELECT`, onboarding through
+`MEMBER_ONBOARDING_FAMILY_SELECT`, which exists so the onboarding GATE select
+(run on every authenticated page render) does not pay for two joins it never
+reads. **Admin surfaces are unchanged** — the admin member detail payload builds
+its links from `buildParentLinks`, which still carries the email, because an
+administrator's view of a member's contact details is not what this narrows.
+
 Alongside the cap, the admin link route requires: the parent must be active,
 non-archived and not an organisation account (**at any age tier**); the target
 must not be archived, must not already be linked to that parent, must not
@@ -3731,6 +3874,38 @@ member's own
 dependants eat into the budget, the candidate parent's ancestors must fit in
 what is left, and the member's descendants are excluded outright so the dialog
 cannot offer a cycle.
+
+**Ranking is presentation; eligibility is not** (#2425, owner decision 1 Aug
+2026). That "no age clause at all" is a statement about who is ELIGIBLE, and it
+still holds exactly. What #2282 also did, though, was let a family's children
+compete for the picker's eight rows with the adult being searched for: ordered
+by `lastName` then `firstName`, a household of children with a shared surname
+filled every slot, and the adult was unreachable without extra typing the admin
+had no way of knowing was needed. So the parent-candidate search now returns
+**ADULTS first, then everyone else**, at the same page size — a re-ORDER of the
+same set, not a filter. It is implemented as two complementary queries
+(`ageTier: { in: [ADULT, NOT_APPLICABLE] }` and the matching `notIn`) over one
+shared `where`, rather than an `orderBy`, because Prisma has no computed sort
+key and sorting on `ageTier` itself would depend on the enum's declaration
+order. **The line is drawn at MINOR / not minor, not at ADULT / not adult**, and
+that is deliberate: `NOT_APPLICABLE` is the age-EXEMPT tier (see above), so a
+row carrying it in THIS search is a real person — usually an adult on a FORCED
+or N/A-allowing membership type — because organisations are excluded here by
+ROLE and never by tier. Ranking them with `not ADULT` would have interleaved
+them alphabetically among the household's children and left them crowded off
+exactly the page this rule exists to fix. They sort among the adults by name
+instead; nothing about the split claims they ARE adults, only that they are not
+minors. `Member.ageTier` is NOT NULL, so `in` and `notIn` are exact complements
+and the two halves are the same set, and the same count, an unranked query would
+return. The split is windowed
+correctly for pages beyond the first — this is a general list endpoint, and a
+ranking that reshuffled on page 2 would drop and duplicate rows — and the
+`total` the response carries is still the count of the WHOLE eligible set, which
+is what lets the dialog say the page was cut short ("Keep typing to narrow this
+down.", the #2308 member-guest finder's own sentence). The ranking is scoped to
+the `parentLinkEligibleFor` parameter, so every other caller of
+`GET /api/admin/members` — the members table, the exports, the other pickers —
+issues exactly the query it did before.
 
 Three rules about that predicate are load-bearing. First, the parent columns are
 **nullable**, so every "not this parent" clause must be written as
@@ -4032,6 +4207,27 @@ and is hard-deleted at the end. The merge is **additive and master-wins**:
   `xeroContactId` always stay the master's. (Login-email uniqueness is a partial
   unique index `WHERE canLogin = true`, so two login rows on one email can never
   coexist mid-transaction.)
+  **The FIELD PATCH only** is derived from a read of both members taken
+  immediately before the write, never from the snapshot the transaction opened
+  with (#2243). Everything else in the merge — the guard matrix, the confirmation
+  phrase, the preview-token check, and the self-relation cycle nulling — still
+  runs on that opening snapshot. Every value in the patch is copied off the
+  loser, and two of them are real foreign keys — `photoImageId` (→ `MediaImage`)
+  and `familyGroupId` (→ `FamilyGroup`) — so a stale value can name a row that a
+  writer outside the `member-lifecycle` lock deleted mid-merge and fail the write
+  outright, rolling the entire merge back. Both member rows are row-locked
+  (`SELECT … FOR UPDATE`, id-ordered) immediately before that read, so neither
+  can move again before the write. If the fresh derivation disagrees with the
+  previewed one on any field, the merge **refuses**: a 409
+  (`merge_drift_in_transaction`) naming the drifted fields, nothing written, and
+  the operator re-runs the preview — the same "what was previewed is exactly what
+  is applied" promise the rest of the preview/confirm flows make. The original
+  bug is fixed either way, because the stale value is caught from the fresh read
+  *before* it reaches Postgres. A row lock does not protect the rows these FKs
+  point at, so a concurrent `FamilyGroup` delete can still abort the merge (as a
+  deadlock rather than a stale-value error); the master is still unlocked during
+  the guards and the self-relation pass, which is why the Member self-relation
+  moves exclude the master's own row (see #2437).
 - **Relation buckets.** Every Member-referencing relation is classified into
   exactly one bucket by `MEMBER_MERGE_RELATION_SPECS`, enforced complete by a
   DMMF/schema test that fails CI if a new relation is added unclassified:
@@ -4057,9 +4253,26 @@ and is hard-deleted at the end. The merge is **additive and master-wins**:
   - **snapshot** — FK-less scalar member-id columns
     (`MemberLifecycleActionRequest.memberId`, `BookingModification.memberId`,
     `MemberApplication` nominator/reviewer ids, `NominationToken`,
-    `IssueReport.resolvedById`, `AuditLog` columns, …) are **left pointing at the
-    loser's id by design** as immutable history; the same historic audit rows
-    that reference the loser keep its id and stored names on purpose.
+    `IssueReport.resolvedById`, `AuditLog` columns, the settings-audit
+    `updatedByMemberId` columns, `CalendarEvent`/`CalendarEventSeries.createdById`,
+    …) are **left pointing at the loser's id by design** as immutable history;
+    the same historic audit rows that reference the loser keep its id and stored
+    names on purpose. These carry no `@relation`, so the relation walk above
+    cannot see them and they used to be listed by hand and non-exhaustively —
+    which is how the two calendar columns escaped both (#2243). They are now
+    enumerated mechanically as well: any FK-less `String` column whose name is
+    used elsewhere in the schema as a Member FK column must appear in
+    `MEMBER_MERGE_SNAPSHOT_SCALAR_COLUMNS`, and `member-merge-dmmf.test.ts` fails
+    on the next one that does not. Columns with bespoke names
+    (`MemberApplication.nominator1Id`, `RefundRequest.reviewedBy`,
+    `IntegrationCredential.updatedByUserId` — a misnomer, it holds a member id —
+    and the like) are invisible to that scan and stay hand-documented, so that
+    part of the list is explicitly **best-effort, not exhaustive**.
+    One column found by the same review is deliberately **moved, not
+    snapshotted**: `BookingRequest.convertedMemberId` is the identity pointer to
+    the member a booking request converted into, replayed as a live member id by
+    the idempotent approval path, so the merge re-points it loser → master
+    alongside its FK twin `requestedByMemberId` (#2243).
 - **Subscription-collision blocker.** If the loser holds a *meaningful*
   `MemberSubscription` (any invoice/payment/charge-coverage signal) for a season
   the master holds **any** subscription row for — meaningful or not — the merge
@@ -4090,8 +4303,13 @@ and is hard-deleted at the end. The merge is **additive and master-wins**:
   re-verifies an HMAC preview token (over both ids, both `updatedAt`, and an
   outcome digest) so a drifted preview 409s. The admin must type
   `MERGE <loser full name>` (whitespace-normalised) to confirm, and one critical
-  `MEMBER_MERGED` audit records the loser snapshot, field outcome, per-relation
-  counts, collision resolutions, and a bounded 500-row moved-id sample.
+  `MEMBER_MERGED` audit records the loser snapshot, field outcome (the values
+  actually applied), per-relation counts, collision resolutions, and a bounded
+  500-row moved-id sample. The token pins the state at the moment the transaction
+  opened, so it catches drift **before** the merge starts but cannot see a change
+  that lands during it; that residual window is closed by the second patch
+  derivation above, which 409s on any disagreement — so a committed merge never
+  carries drift, and there is no drift field in the audit to read.
 
 ## Integrations
 

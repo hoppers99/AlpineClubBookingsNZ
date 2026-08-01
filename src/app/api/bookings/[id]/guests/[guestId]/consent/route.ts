@@ -21,7 +21,10 @@ import { prisma } from "@/lib/prisma";
  * themselves, or a delegate the resolver accepts (owner decisions D-5/D-10) —
  * so it takes no `EXPECTED_ROUTE_AREAS` pin.
  *
- * EVERY FAILURE IS THE SAME 403 WITH THE SAME BODY. "No such booking", "no such
+ * EVERY FAILURE IS THE SAME 403 WITH THE SAME BODY, once the `memberGuests`
+ * module is on — with it off the proxy's feature-route gate answers 404 ahead of
+ * this handler and nothing here runs (#2435), which tells a caller only that the
+ * club does not run the module. "No such booking", "no such
  * guest row", "that row is not a consent request", "already answered" and "you
  * are not the target or an accepted delegate" are indistinguishable from
  * outside, so neither id can be used as an existence oracle. That uniformity is

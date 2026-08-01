@@ -322,7 +322,7 @@ const NOTICE = "AdminViewOnlyNotice";
 */
 const FIGURES = {
   /** Every `<ViewOnlyActionButton>` render site in the admin tree. */
-  callSites: 299,
+  callSites: 301,
   /** Those that hand their explanation to a banner, by either rule. */
   optOuts: 252,
   /** `describeReason={false}` — needs a banner in the SAME file. */
@@ -334,11 +334,11 @@ const FIGURES = {
   /** …of the vouched: proved through the wizard shell's channel (#2324). */
   shellVouchedOptOuts: 5,
   /** Controls that KEEP the per-button reason, and the files holding them. */
-  exceptions: 47,
-  exceptionFiles: 25,
+  exceptions: 49,
+  exceptionFiles: 26,
   /** The remainder bucket: neither a member detail card nor dialog-only. */
-  leafControls: 34,
-  leafFiles: 20,
+  leafControls: 36,
+  leafFiles: 21,
   /** Components that render an `AdminViewOnlySectionBanner`. */
   bannerComponents: 80,
 } as const;
@@ -1204,6 +1204,11 @@ describe("view-only section banner coverage (#2160)", () => {
                opt-outs under the panel's existing AdminViewOnlySectionBanner
                (optOuts 250 -> 252, staticOptOuts 224 -> 226; vouched,
                exceptions and bannerComponents unchanged — no new banner).
+          301  +2  #2359 makes the Subscriptions header's Xero sync actions
+               finance-edit-aware. Both keep their own reason because the
+               sibling billing panel's banner does not cover header actions
+               (exceptions 47 -> 49, exceptionFiles 25 -> 26, leaf bucket
+               34/20 -> 36/21; opt-outs and bannerComponents unchanged).
       */
       // #2259 adds the per-booking "No emails"
       // switch (`booking-no-emails-controls.tsx`), a leaf control dropped into
@@ -1357,8 +1362,39 @@ describe("view-only section banner coverage (#2160)", () => {
         .replace(/[*`]/g, "")
         .replace(/\s+/g, " ");
 
+    /*
+      #2452 moved changelog entries OUT of CHANGELOG.md: a PR now writes its
+      entry as a `changelog.d/<pr>-<slug>.md` fragment, and the release compile
+      folds the fragments into a version section later. A stale figure written
+      into a fragment therefore dodges the scan above entirely — it is invisible
+      until the release that publishes it, by which point the PR that introduced
+      it merged green and is long gone.
+
+      So every fragment is scanned in the same bucket as CHANGELOG.md, and a
+      stale figure fails on its OWN pull request. The difference is presence: a
+      fragment is not REQUIRED to quote these sentences (almost none do), it is
+      only forbidden from quoting a superseded version of one.
+    */
+    const fragmentsDir = join(process.cwd(), "changelog.d");
+    const scanned: { rel: string; phrases: string[]; requirePresence: boolean }[] = [
+      ...Object.entries(published).map(([rel, phrases]) => ({
+        rel,
+        phrases,
+        requirePresence: true,
+      })),
+      ...(existsSync(fragmentsDir)
+        ? readdirSync(fragmentsDir)
+            .filter((name) => name.endsWith(".md") && name !== "README.md")
+            .map((name) => ({
+              rel: `changelog.d/${name}`,
+              phrases: published["CHANGELOG.md"],
+              requirePresence: false,
+            }))
+        : []),
+    ];
+
     const offenders: string[] = [];
-    for (const [rel, phrases] of Object.entries(published)) {
+    for (const { rel, phrases, requirePresence } of scanned) {
       const file = join(process.cwd(), ...rel.split("/"));
       // A moved document must fail here, not throw ENOENT and not pass silently.
       if (!existsSync(file)) {
@@ -1367,7 +1403,7 @@ describe("view-only section banner coverage (#2160)", () => {
       }
       const flat = flatten(readFileSync(file, "utf8"));
       for (const phrase of phrases) {
-        if (!flat.includes(phrase)) {
+        if (!flat.includes(phrase) && requirePresence) {
           offenders.push(`${rel}: "${phrase}"`);
           continue;
         }
@@ -1398,7 +1434,8 @@ describe("view-only section banner coverage (#2160)", () => {
       offenders,
       `These documents no longer state the figures the census above measures. ` +
         `A rollout change moves the numbers; re-measure and update AGENTS.md, ` +
-        `docs/ARCHITECTURE.md, docs/STYLE_GUIDE.md, CHANGELOG.md and the ` +
+        `docs/ARCHITECTURE.md, docs/STYLE_GUIDE.md, CHANGELOG.md (and any ` +
+        `changelog.d/ fragment quoting them) and the ` +
         `ViewOnlyActionButton JSDoc together.`,
     ).toEqual([]);
   });

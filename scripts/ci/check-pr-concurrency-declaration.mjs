@@ -1,7 +1,10 @@
-import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 
+import { fetchLivePrBody, gitDiffChangedFiles, selectPrBody } from "./pr-body.mjs";
+
 const HEADING = "## Concurrency And Lock Impact";
+
+const GATE_LABEL = "PR concurrency declaration check";
 
 export const REQUIRED_FIELDS = [
   "Writer class(es), canonical lock key(s), and acquisition order",
@@ -73,57 +76,6 @@ export function validateConcurrencyDeclaration(body, changedFiles = []) {
   }
 }
 
-// Body-source selection, factored pure so it can be unit tested without network
-// access. A successfully fetched live body (even an empty one, which fails
-// closed) wins; the event-payload body is used only when the fetch was
-// unavailable or failed (fetchedBody === null).
-export function selectPrBody({ fetchedBody, eventBody }) {
-  if (typeof fetchedBody === "string") {
-    return fetchedBody;
-  }
-  return typeof eventBody === "string" ? eventBody : "";
-}
-
-// Fetch the CURRENT PR body from the GitHub API so that an author who edits the
-// body after a failing run can re-run the job and go green. The workflow uses
-// the default `pull_request` event types (no `edited`), so the event payload
-// body can be stale; re-running replays that stale payload. Returns null on any
-// missing input or failure so the caller falls back to the event body (which
-// preserves today's behavior and still fails closed on a missing/empty body).
-async function fetchLivePrBody() {
-  const token = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN;
-  const repo = process.env.GITHUB_REPOSITORY;
-  const prNumber = process.env.PR_NUMBER;
-  if (!token || !repo || !prNumber) {
-    return null;
-  }
-  try {
-    const response = await fetch(`https://api.github.com/repos/${repo}/pulls/${prNumber}`, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: "application/vnd.github+json",
-        "User-Agent": "alpineclub-concurrency-gate",
-        "X-GitHub-Api-Version": "2022-11-28",
-      },
-    });
-    if (!response.ok) {
-      console.warn(
-        `PR concurrency declaration check: could not fetch live PR body (HTTP ${response.status}); falling back to event payload body.`,
-      );
-      return null;
-    }
-    const data = await response.json();
-    // GitHub sends `body: null` for an empty PR body; normalize to "" so an
-    // empty live body fails closed rather than falling back to the event payload.
-    return typeof data.body === "string" ? data.body : "";
-  } catch (error) {
-    console.warn(
-      `PR concurrency declaration check: live PR body fetch failed (${error.message}); falling back to event payload body.`,
-    );
-    return null;
-  }
-}
-
 const invokedPath = process.argv[1] ? pathToFileURL(process.argv[1]).href : null;
 if (invokedPath === import.meta.url) {
   try {
@@ -131,18 +83,16 @@ if (invokedPath === import.meta.url) {
     const head = process.env.PR_HEAD_SHA;
     const changedFiles =
       base && head
-        ? execFileSync("git", ["diff", "--name-only", `${base}...${head}`], {
-            encoding: "utf8",
-          })
+        ? gitDiffChangedFiles(base, head)
             .split(/\r?\n/)
             .filter(Boolean)
         : [];
-    const fetchedBody = await fetchLivePrBody();
+    const fetchedBody = await fetchLivePrBody(GATE_LABEL);
     const body = selectPrBody({ fetchedBody, eventBody: process.env.PR_BODY });
     validateConcurrencyDeclaration(body, changedFiles);
     console.log("PR concurrency declaration is complete.");
   } catch (error) {
-    console.error(`PR concurrency declaration check failed: ${error.message}`);
+    console.error(`${GATE_LABEL} failed: ${error.message}`);
     process.exitCode = 1;
   }
 }

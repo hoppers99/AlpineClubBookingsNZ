@@ -848,16 +848,21 @@ const adminHelpEntries: HelpEntry[] = [
       "Members",
       "Members is the main directory for member records, login access, profile data, roles, imports, and member-level actions.",
       [
-        "Search or filter first, then open the member detail page for edits.",
+        "Search or filter first, then use the member name or Open action to read the detail page; choose Edit inside a section only when you intend to change it.",
         "Use Reset to restore the list search, filters, sort, and page in one action.",
         "Use bulk import/update only with reviewed CSV data and clear rollback expectations.",
         "Check access roles, seasonal membership type, family group, and subscription status separately.",
       ],
       [
         {
+          name: "Access",
+          description:
+            "Shows account readiness, not role: No login, Not invited, Invited, or Can log in. The warning, information, and success tones carry the same meaning here and on Subscriptions.",
+        },
+        {
           name: "Access role",
           description:
-            "Controls app access such as user, admin, finance, lodge, or organisation access. On-behalf booking family selection works from a Booking Officer's bookings:edit permission, so dropping membership:view from a customised role does not break member pricing.",
+            "The member detail page separately controls app access such as user, admin, finance, lodge, or organisation access. On-behalf booking family selection works from a Booking Officer's bookings:edit permission, so dropping membership:view from a customised role does not break member pricing.",
         },
         {
           name: "Seasonal membership type",
@@ -883,10 +888,15 @@ const adminHelpEntries: HelpEntry[] = [
       [
         "Filter by season, member, status, or overdue state.",
         "Use Reset to restore list filters, sort, and page without changing the selected season.",
-        "Inspect the linked member and Xero/payment records before marking or retrying anything.",
+        "Inspect the linked member and Xero/payment records before marking or retrying anything; member names open detail only when your role also has membership view.",
         "Use subscription lockout settings for policy changes rather than one-off manual edits.",
       ],
       [
+        {
+          name: "Access",
+          description:
+            "Shows the same No login, Not invited, Invited, or Can log in account-readiness state used on Members; it is not an access-role label.",
+        },
         {
           name: "Subscription status",
           description:
@@ -2352,7 +2362,11 @@ const ADMIN_HELP_QUESTIONS: Record<string, HelpQuestion[]> = {
   "/admin/members": [
     {
       q: "How do I edit a member?",
-      a: "Search or filter to the member first, then open their detail page to make edits.",
+      a: "Search or filter to the member, use their name or Open to enter the read-only detail page, expand the relevant section, then choose that section's Edit.",
+    },
+    {
+      q: "What does Access mean here?",
+      a: "Account readiness, not role: No login, Not invited, Invited, or Can log in. The same label and tone appears on Subscriptions.",
     },
     {
       q: "What does the access role control?",
