@@ -43,16 +43,22 @@
 #     anywhere in the statement) or resolves a conflict with `DO UPDATE`;
 #   * begins with WITH and contains an UPDATE/DELETE/INSERT/MERGE — a
 #     data-modifying CTE;
-#   * is an `ALTER TABLE ... ALTER COLUMN ... TYPE ... USING ...` — the USING
-#     expression transforms every existing value;
+#   * is an `ALTER TABLE ... ALTER COLUMN ... TYPE ...` — the cast recasts every
+#     stored value in place, with or without a USING clause (an implicit
+#     assignment cast still rounds a numeric or truncates a timestamp; #2418, R5);
 #   * is a `DO` block whose body contains any of the above keywords. A PL/pgSQL
-#     body is opaque to a line-oriented gate, so it is classified conservatively.
+#     body is opaque to a line-oriented gate, so it is classified conservatively;
+#   * is a bare `CALL`, or a top-level `SELECT`/`PERFORM` that invokes a routine
+#     THIS migration defines with a write in its body — the "helper function plus
+#     one invocation" backfill shape, which runs the write at migration time
+#     (#2418, R6).
 #
 # A plain `INSERT ... VALUES` is deliberately NOT data-rewriting: it adds rows
 # and cannot alter anything a club has typed. Neither is a `CREATE FUNCTION`
-# body containing an UPDATE — that defines future runtime behaviour (a trigger),
-# not a migration-time rewrite, and it is covered by the trigger suites instead.
-# Both exclusions are documented in docs/BLUE_GREEN_MIGRATION_POLICY.md.
+# body containing an UPDATE that is only ATTACHED with CREATE TRIGGER and never
+# invoked here — that defines future runtime behaviour, not a migration-time
+# rewrite, and it is covered by the trigger suites instead. Both exclusions are
+# documented in docs/BLUE_GREEN_MIGRATION_POLICY.md.
 #
 # Overridable via environment (used by the contract tests):
 #   MIGRATIONS_DIR                    directory of migration folders
@@ -108,7 +114,14 @@ GRANDFATHERED_COUNT="${#GRANDFATHERED_UNVERIFIED_DATA_MIGRATIONS[@]}"
 # The pinned size of the list above. Bump it in the SAME commit that edits the
 # list, never afterwards: a mismatch is the gate telling you an entry moved
 # without review.
-EXPECTED_GRANDFATHERED_COUNT="${EXPECTED_GRANDFATHERED_COUNT:-85}"
+EXPECTED_GRANDFATHERED_COUNT="${EXPECTED_GRANDFATHERED_COUNT:-87}"
+
+# The day this gate was introduced (#2418). No migration authored on or after it
+# may be grandfathered: the whole point is that the NEXT data-rewriting migration
+# ships a fixture, so a name whose 14-digit timestamp prefix is >= this is refused
+# below rather than being allowed to buy its way out (#2418, R7). Every historical
+# entry predates it. Overridable so the contract tests can pin the boundary.
+GATE_INTRODUCED_PREFIX="${GATE_INTRODUCED_PREFIX:-20260802150000}"
 
 failures=0
 
@@ -137,27 +150,67 @@ data_rewriting_statements() {
     -f "$SQL_STATEMENT_SPLITTER" "$file")" || return 2
 
   printf '%s\n' "$statements" | awk '
+    # Pass 1: record the routines THIS migration defines whose body performs a
+    # write. Recording a name is not classification: a trigger function is defined
+    # here but only ATTACHED with CREATE TRIGGER, never invoked at migration time,
+    # so it stays shape-only. Only a same-migration SELECT/CALL that INVOKES one
+    # (pass 2) is a migration-time rewrite (#2418, R6).
     {
-      stmt = $0
-      # Leading keyword, uppercased for matching. Quoted identifiers keep their
-      # own case because only this local copy is folded.
-      upper = toupper(stmt)
-      sub(/^[[:space:]]+/, "", upper)
+      lines[NR] = $0
+      u = toupper($0)
+      sub(/^[[:space:]]+/, "", u)
+      if (u ~ /^CREATE([[:space:]]+OR[[:space:]]+REPLACE)?[[:space:]]+(FUNCTION|PROCEDURE)[[:space:]]/ &&
+          u ~ /[^A-Z_](UPDATE|DELETE|TRUNCATE|MERGE|INSERT)[^A-Z_]/) {
+        name = u
+        sub(/^CREATE([[:space:]]+OR[[:space:]]+REPLACE)?[[:space:]]+(FUNCTION|PROCEDURE)[[:space:]]+/, "", name)
+        sub(/[[:space:](].*$/, "", name)   # the name ends at the first space or "("
+        if (name != "") {
+          writers[name] = 1
+          bare = name; sub(/^.*\./, "", bare); writers[bare] = 1  # also unqualified
+        }
+      }
+    }
+    END {
+      for (k = 1; k <= NR; k++) {
+        stmt = lines[k]
+        # Leading keyword, uppercased for matching. Quoted identifiers keep their
+        # own case because only this local copy is folded.
+        upper = toupper(stmt)
+        sub(/^[[:space:]]+/, "", upper)
 
-      if (upper ~ /^(UPDATE|DELETE[[:space:]]+FROM|TRUNCATE|MERGE)([[:space:]]|$)/) { print stmt; next }
-      if (upper ~ /^INSERT([[:space:]]|$)/) {
-        if (upper ~ /[^A-Z_]SELECT[^A-Z_]/ || upper ~ /DO[[:space:]]+UPDATE/) { print stmt }
-        next
-      }
-      if (upper ~ /^WITH([[:space:]]|$)/) {
-        if (upper ~ /[^A-Z_](UPDATE|DELETE|INSERT|MERGE)[^A-Z_]/) { print stmt }
-        next
-      }
-      if (upper ~ /^ALTER[[:space:]]+TABLE/ && upper ~ /ALTER[[:space:]]+COLUMN/ &&
-          upper ~ /[^A-Z_]TYPE[^A-Z_]/ && upper ~ /[^A-Z_]USING[^A-Z_]/) { print stmt; next }
-      if (upper ~ /^DO([[:space:]]|$)/) {
-        if (upper ~ /[^A-Z_](UPDATE|DELETE|TRUNCATE|MERGE|INSERT)[^A-Z_]/) { print stmt }
-        next
+        if (upper ~ /^(UPDATE|DELETE[[:space:]]+FROM|TRUNCATE|MERGE)([[:space:]]|$)/) { print stmt; continue }
+        if (upper ~ /^INSERT([[:space:]]|$)/) {
+          if (upper ~ /[^A-Z_]SELECT[^A-Z_]/ || upper ~ /DO[[:space:]]+UPDATE/) print stmt
+          continue
+        }
+        if (upper ~ /^WITH([[:space:]]|$)/) {
+          if (upper ~ /[^A-Z_](UPDATE|DELETE|INSERT|MERGE)[^A-Z_]/) print stmt
+          continue
+        }
+        # Any ALTER COLUMN ... TYPE rewrites every stored value through the cast,
+        # with or without a USING clause: an implicit assignment cast still rounds
+        # a numeric, truncates a timestamp, etc. USING is no longer required
+        # (#2418, R5) — the false-positive cost is one fixture on a type change,
+        # which is the class most worth verifying against real rows.
+        if (upper ~ /^ALTER[[:space:]]+TABLE/ && upper ~ /ALTER[[:space:]]+COLUMN/ &&
+            upper ~ /[^A-Z_]TYPE[^A-Z_]/) { print stmt; continue }
+        if (upper ~ /^DO([[:space:]]|$)/) {
+          if (upper ~ /[^A-Z_](UPDATE|DELETE|TRUNCATE|MERGE|INSERT)[^A-Z_]/) print stmt
+          continue
+        }
+        # A stored procedure invoked at migration time runs whatever it holds;
+        # treat any bare CALL as a rewrite (#2418, R6).
+        if (upper ~ /^CALL([[:space:]]|$)/) { print stmt; continue }
+        # A top-level SELECT/PERFORM that invokes a routine this migration defined
+        # with a write body performs that write now — the "helper function plus one
+        # invocation" backfill shape (#2418, R6).
+        if (upper ~ /^(SELECT|PERFORM)([[:space:]]|$)/) {
+          for (name in writers) {
+            esc = name; gsub(/\./, "\\.", esc)
+            if (upper ~ ("(^|[^A-Z0-9_.])" esc "[[:space:]]*\\(")) { print stmt; break }
+          }
+          continue
+        }
       }
     }
   '
@@ -222,6 +275,15 @@ if [ "$GRANDFATHERED_COUNT" != "$EXPECTED_GRANDFATHERED_COUNT" ]; then
 fi
 
 for grandfathered in "${GRANDFATHERED_UNVERIFIED_DATA_MIGRATIONS[@]}"; do
+  # A new data-rewriting migration cannot be grandfathered: the list enumerates
+  # historical debt, it is not an exemption a fresh migration can append itself to
+  # (#2418, R7). The prefix is the 14-digit timestamp before the first '_'.
+  grandfather_prefix="${grandfathered%%_*}"
+  if [[ "$grandfather_prefix" > "$GATE_INTRODUCED_PREFIX" || "$grandfather_prefix" == "$GATE_INTRODUCED_PREFIX" ]]; then
+    fail "Data-migration verification FAILED: ${grandfathered} was authored on or after the gate (${GATE_INTRODUCED_PREFIX}) and cannot be grandfathered." \
+      "The grandfather list only enumerates migrations that shipped BEFORE this gate. A new data-rewriting migration must ship a verification fixture — write ${DATA_MIGRATION_VERIFICATION_DIR#"${REPO_ROOT}/"}/${grandfathered}.ts instead."
+    continue
+  fi
   if [ ! -d "${MIGRATIONS_DIR}/${grandfathered}" ]; then
     fail "Data-migration verification FAILED: grandfathered migration ${grandfathered} does not exist." \
       "Remove the stale line from ${grandfather_file}."

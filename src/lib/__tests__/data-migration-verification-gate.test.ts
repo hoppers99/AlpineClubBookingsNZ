@@ -111,6 +111,10 @@ function runGate(
       DATA_MIGRATION_VERIFICATION_DIR: bashPath(tree.fixturesDir),
       DATA_MIGRATION_GRANDFATHER_FILE: bashPath(tree.grandfatherFile),
       EXPECTED_GRANDFATHERED_COUNT: "0",
+      // These trees use a far-future synthetic migration name (2099) as the
+      // grandfather subject, so push the "authored after the gate" cutoff (#2418,
+      // R7) beyond it by default; the dedicated R7 case below sets a real cutoff.
+      GATE_INTRODUCED_PREFIX: "29990101000000",
       ...env,
     },
     encoding: "utf8",
@@ -171,6 +175,23 @@ describe("data-migration classifier (#2418)", () => {
       "an UPDATE behind a nested, multi-line block comment",
       `/* repair /* see #1234 */ addresses */\nUPDATE "Lodge" SET "address" = NULL WHERE "address" = 'x';`,
     ],
+    [
+      // #2418 R5: an implicit assignment cast (no USING) still recasts every
+      // stored value — rounds this numeric, truncates a timestamp elsewhere.
+      "a column type change without a USING clause",
+      `ALTER TABLE "Payment" ALTER COLUMN "amount" SET DATA TYPE numeric(10,0);`,
+    ],
+    [
+      // #2418 R6: a stored procedure invoked at migration time runs its body now.
+      "a bare CALL of a stored procedure",
+      `CALL public.backfill_member_slugs();`,
+    ],
+    [
+      // #2418 R6: the "helper function plus one invocation" backfill shape — the
+      // rewrite escapes classification if only the CREATE is inspected.
+      "a helper function this migration defines and then invokes",
+      `CREATE OR REPLACE FUNCTION pg_temp.repair() RETURNS void AS $fn$ BEGIN UPDATE "Lodge" SET "address" = NULL; END $fn$ LANGUAGE plpgsql;\nSELECT pg_temp.repair();`,
+    ],
   ];
 
   it.each(rewrites)(
@@ -204,6 +225,13 @@ describe("data-migration classifier (#2418)", () => {
     [
       "a trigger function whose body updates rows at runtime",
       `CREATE FUNCTION touch() RETURNS trigger AS $$ BEGIN UPDATE "A" SET "b" = 1; RETURN NEW; END $$ LANGUAGE plpgsql;`,
+    ],
+    [
+      // #2418 R6: a write-bodied function DEFINED and ATTACHED as a trigger, but
+      // never invoked at migration time, stays shape-only — the exact form of the
+      // committed 20260802130000 policy-lock migration.
+      "a trigger function defined and attached but never invoked",
+      `CREATE FUNCTION lock_set() RETURNS trigger AS $$ BEGIN UPDATE "A" SET "b" = 1; RETURN NULL; END $$ LANGUAGE plpgsql;\nCREATE TRIGGER "A_lock" BEFORE INSERT ON "A" FOR EACH STATEMENT EXECUTE FUNCTION lock_set();`,
     ],
     ["a column default change", `ALTER TABLE "A" ALTER COLUMN "b" SET DEFAULT false;`],
   ];
@@ -307,6 +335,21 @@ describe("data-migration verification coverage gate (#2418)", () => {
     const result = runGate(tree, { EXPECTED_GRANDFATHERED_COUNT: "1" });
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("no longer classifies as data-rewriting");
+  }, GATE_TIMEOUT_MS);
+
+  it("refuses to grandfather a migration authored on or after the gate", () => {
+    // The grandfather list enumerates historical debt; a NEW data-rewriting
+    // migration cannot append itself to it to skip its fixture (#2418, R7). The
+    // synthetic subject is a 2099 timestamp, so a realistic cutoff refuses it.
+    const tree = createTree([{ name: MIGRATION_NAME, sql: REWRITE }], {
+      grandfathered: [MIGRATION_NAME],
+    });
+    const result = runGate(tree, {
+      EXPECTED_GRANDFATHERED_COUNT: "1",
+      GATE_INTRODUCED_PREFIX: "20260802150000",
+    });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("cannot be grandfathered");
   }, GATE_TIMEOUT_MS);
 
   it("passes over this repository's own migration history", () => {

@@ -46,10 +46,11 @@ A migration counts as **data-rewriting** when any top-level statement:
 - begins with `UPDATE`, `DELETE`, `TRUNCATE` or `MERGE` — these can only reach rows that already exist;
 - begins with `INSERT` and derives values from existing rows (a `SELECT` anywhere in the statement) or resolves a conflict with `DO UPDATE`;
 - begins with `WITH` and contains an `UPDATE`/`DELETE`/`INSERT`/`MERGE` (a data-modifying CTE);
-- is an `ALTER TABLE ... ALTER COLUMN ... TYPE ... USING ...`, whose `USING` expression transforms every existing value; or
-- is a `DO` block containing any of the above (a PL/pgSQL body is opaque to a line-oriented gate, so it is classified conservatively).
+- is an `ALTER TABLE ... ALTER COLUMN ... TYPE ...`, with or without a `USING` clause — the cast recasts every stored value in place, and an implicit assignment cast still rounds a numeric or truncates a timestamp (#2418);
+- is a `DO` block containing any of the above (a PL/pgSQL body is opaque to a line-oriented gate, so it is classified conservatively); or
+- is a bare `CALL`, or a top-level `SELECT`/`PERFORM` that invokes a routine the same migration **defines with a write in its body** — the "helper function plus one invocation" backfill runs its write at migration time (#2418).
 
-A plain `INSERT ... VALUES` is deliberately **not** data-rewriting: it adds rows and cannot alter anything a club has typed. Neither is a `CREATE FUNCTION` body containing an `UPDATE` — that defines future runtime behaviour (a trigger), which the trigger suites cover instead. Statements are reconstructed with the same dollar-quote-aware splitter the deploy gate uses (`scripts/lib/split-sql-statements.awk`), so both gates grade the same program.
+A plain `INSERT ... VALUES` is deliberately **not** data-rewriting: it adds rows and cannot alter anything a club has typed. Neither is a `CREATE FUNCTION` body containing an `UPDATE` that is only **attached** with `CREATE TRIGGER` and never invoked in the migration — that defines future runtime behaviour, which the trigger suites cover instead. A comment cannot hide a statement either: the splitter skips `--` line comments and `/* */` block comments (nested), so `/* repair */ UPDATE ...` still classifies. Statements are reconstructed with the same dollar-quote-aware splitter the deploy gate uses (`scripts/lib/split-sql-statements.awk`), so both gates grade the same program.
 
 ### Writing a fixture
 
@@ -75,7 +76,7 @@ Without that variable the real-database checks do not run, but the suite still f
 
 ### The grandfather list
 
-`scripts/data-migration-verification-grandfathered.txt` names the 85 data-rewriting migrations that shipped before this gate existed (recorded 2 August 2026). The count is pinned in the script, so the list cannot grow unnoticed. Removing a name is how a historical migration gets retro-fitted: write the fixture, delete the line, drop the pinned count. **Adding** a name means "this data-rewriting migration ships unverified" and needs the same justification a security waiver would, stated in the PR body. A migration cannot be both grandfathered and verified — the gate fails on that, so the list can never decay into decoration.
+`scripts/data-migration-verification-grandfathered.txt` names the 87 data-rewriting migrations that shipped before this gate existed (recorded 2 August 2026; the list was 85 until the classifier was tightened to catch two historical `ALTER COLUMN ... SET DATA TYPE` migrations). The count is pinned in the script, so the list cannot grow unnoticed. Removing a name is how a historical migration gets retro-fitted: write the fixture, delete the line, drop the pinned count. A **new** migration can never be grandfathered: the gate refuses any entry whose timestamp prefix is at or after the day it was introduced, so a fresh data-rewriting migration must ship a fixture rather than buy its way out (#2418). A migration cannot be both grandfathered and verified — the gate fails on that, so the list can never decay into decoration.
 
 ## Historical Migrations
 

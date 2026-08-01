@@ -7,18 +7,26 @@
 #
 # They are listed rather than exempted by a baseline date on purpose. A date
 # cutoff hides how much is uncovered; a list states it, one line per migration,
-# and shrinks visibly as fixtures are written. Retro-fitting all 85 would be
+# and shrinks visibly as fixtures are written. Retro-fitting all 87 would be
 # archaeology on databases that applied them months ago — the point of the gate
 # is that the NEXT one cannot ship unverified.
+#
+# (Recorded as 85. It grew to 87 when the classifier was tightened to treat an
+# ALTER COLUMN ... SET DATA TYPE without a USING clause as data-rewriting — an
+# implicit cast still recasts every stored value — which surfaced two historical
+# type-change migrations that had slipped the old rule; see #2418, R5.)
 #
 # RULES
 #   * This list only ever SHRINKS in normal work. Removing a name means its
 #     fixture now exists (prisma/migration-verification/<name>.ts); drop
 #     EXPECTED_GRANDFATHERED_COUNT in check-data-migration-verification.sh by one
 #     in the same commit.
-#   * ADDING a name means "this data-rewriting migration ships UNVERIFIED" and
-#     needs the same justification a security waiver would, stated in the PR
-#     body. The pinned count exists so an addition cannot ride in unnoticed.
+#   * A NEW migration can never be added here. Every name predates the gate; the
+#     gate refuses any entry whose 14-digit timestamp prefix is at or after the
+#     day it was introduced (20260802150000), so a fresh data-rewriting migration
+#     cannot buy its way out of shipping a fixture (#2418, R7). Growing the list
+#     is only legitimate for a historical migration a tightened classifier newly
+#     recognises, as the two #2418/R5 type changes above were.
 #   * A name here that also has a fixture is a hard failure — the two states are
 #     mutually exclusive, so the list can never drift into decoration.
 #   * A name here that no longer classifies as data-rewriting is a hard failure
@@ -48,6 +56,11 @@
 20260411183500_redact_sensitive_email_log_html
 20260411203000_add_infant_age_tier_and_family_group_notification_pref
 20260412190000_backfill_infant_age_tier_settings
+# Surfaced by the tightened classifier (#2418, R5): an ALTER COLUMN ... SET DATA
+# TYPE recasts every stored value even with no USING clause — here "GuestChoreToken"
+# and "BookingGuestStayRange" date columns are recast timestamp -> DATE, dropping
+# the time component in place. Historical, already applied; grandfathered.
+20260413000000_reconcile_remaining_schema_drift
 20260413193000_add_issue_reports_and_booking_review_flags
 20260426131500_hash_action_tokens_at_rest
 20260509090000_enrich_payment_refund_ledger
@@ -70,6 +83,9 @@
 20260613090000_update_starter_home_page_content
 20260614090000_add_booking_guest_night
 20260615110000_add_lodge_induction_signoff
+# Surfaced by the tightened classifier (#2418, R5): ALTER COLUMN "name" TYPE
+# VARCHAR(200) recasts every existing locker name in place. Historical; grandfathered.
+20260622100000_harden_locker_names
 20260627120000_core_module_defaults_off
 20260628133000_add_nomination_reminder_state
 20260628170000_add_seasonal_membership_types
