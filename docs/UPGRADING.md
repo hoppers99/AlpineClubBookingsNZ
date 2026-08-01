@@ -101,6 +101,62 @@ bundle** upgrades an old bundle's meaning: a valid v3 export must include
 `booking-policies/minimum-stay.csv` with the complete intended policy set (or its
 exact header alone when clearing the set is intentional).
 
+### One-off cleanup of another club's lodge address (#2484)
+
+`20260802110000_clear_waldvogel_lodge_address` is a **data-only cleanup**. It
+adds and removes no schema, touches no hot table, and is safe to run in the
+ordinary deploy window with the previous app colour still serving.
+
+**What it fixes.** Two steps in the upgrade history combine to write
+`Waldvogel Lodge, Iwikau Village, Mt Ruapehu, New Zealand` — Tokoroa Alpine
+Club's real lodge — into the default lodge's address on every database built
+from this repository: `20260708000000_add_lodge_entity_and_multi_lodge_module`
+creates the default lodge, and `20260717160100_add_lodge_address` backfills that
+address into it. The public Contact page then shows it under Club Details. The
+backfill was right when it was written — this codebase *was* that club's live
+site, and the step moved the address out of the page's own source and into the
+database so the live deployment kept showing it — but the same step now runs for
+everybody. This migration sets the address back to empty wherever it is still
+exactly that string.
+
+**What you will notice.** If your Contact page shows that exact address today,
+then after you cut over the **whole map block under Club Details disappears —
+including your lodge's name.** The page draws the pin icon, the lodge name and
+the address line together, and only when an address is set, so clearing the
+address takes the name line with it. Both come back the moment you enter an
+address (see the next paragraph). Nothing else on the page changes: your contact
+role and its phone and email, the contact form, and your page content are all
+untouched.
+
+**Post-upgrade action: put your own address in, then check the page.** **Admin →
+Setup & Configuration → Site Appearance & Content → Club Identity → Lodge
+details → Address**, then **Save lodge details** (`/admin/appearance/identity`).
+It shows on the Contact page and in the `{{lodge-address}}` content token within
+seconds. A multi-lodge club sets each lodge's address under **Admin → Setup →
+Lodges** instead. Nothing in the product prompts you, so add this to your
+post-upgrade list — it is about a minute's work.
+
+**Then load your public Contact page and confirm what it shows.** Do this even
+if you expect the cleanup to have emptied the field on its own. The lodge details
+form saves every field it loaded when the page was opened, so an admin who had
+that form open *before* the upgrade and pressed **Save lodge details**
+*afterwards* writes the old address straight back — and this cleanup runs once,
+so it will not clear it a second time. If the old address is still on the page,
+open the same form, replace it with your own (or clear it) and save.
+
+**An address you entered yourself is never touched.** The cleanup matches that
+one exact string and nothing else, so a club that has already set its own
+address keeps it byte for byte, as does every additional lodge a multi-lodge
+club has created. The deliberate exception is a deployment that still holds the
+original string legitimately — Tokoroa's own fork, if it ports this release down
+— which is cleared like everyone else and re-enters the address with the steps
+above.
+
+**Re-running is safe.** After the cleanup no row matches that string, so a
+second run changes nothing. No audit row is written: the value removed is a
+string this project wrote into the row itself, quoted in full here and in the
+migration's own comment, not club-authored content that could be lost.
+
 ### The public "Book Now" button is switched OFF for every club (#2430)
 
 **After this release every club's public "Book Now" button is off, whether or
