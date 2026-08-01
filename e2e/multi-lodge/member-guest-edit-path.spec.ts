@@ -208,8 +208,11 @@ test("a member adds a member guest from the edit panel, and the target is asked"
       `${NOMINATOR_TWO.firstName} will be emailed when you save this change, and their bed is held until they answer.`,
     ),
   ).toBeVisible();
+  // The WIZARD-audience badge, which carries the target's name — "Waiting for
+  // consent" is the member/admin label for a PERSISTED row and never renders on
+  // an unsaved one (`describeMemberGuestConsentBadge`, WIZARD column).
   await expect(
-    wandaPage.getByText("Waiting for consent", { exact: false }),
+    wandaPage.getByText(`Waiting for ${NOMINATOR_TWO.firstName} to approve`),
   ).toBeVisible();
 
   await wandaPage.getByRole("button", { name: /^Save/ }).click();

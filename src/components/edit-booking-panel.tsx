@@ -1271,7 +1271,7 @@ export function EditBookingPanel({
       surfacedMemberGuestRefusalRef.current = null;
       return;
     }
-    const signature = `${lastMemberGuestAttempt?.memberId ?? ""} ${memberGuestAddError}`;
+    const signature = `${lastMemberGuestAttempt?.memberId ?? ""}\u0000${memberGuestAddError}`;
     if (surfacedMemberGuestRefusalRef.current === signature) return;
     surfacedMemberGuestRefusalRef.current = signature;
     setMemberGuestFinderOpen(true);
