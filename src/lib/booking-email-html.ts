@@ -34,6 +34,80 @@ function findAnyBookingHref(html: string, fromIndex = 0) {
   return pattern.exec(html);
 }
 
+// Match a complete visible absolute/root-relative URL candidate rather than
+// searching for `/bookings/...` anywhere in text. The latter would corrupt an
+// unrelated URL such as `/help?next=/bookings/bk_1`. The prefix is retained so
+// a candidate can be removed without changing its surrounding prose.
+const VISIBLE_URL_CANDIDATE_PATTERN =
+  /(^|[\s([{"'=,:;])((?:https?:\/\/|\/)[^\s<>"']+)/gi;
+const ESCAPED_TEXT_DELIMITER_PATTERN = /&(?:quot|#39|apos|lt|gt|nbsp);/i;
+const TRAILING_TEXT_PUNCTUATION_PATTERN = /[),.!\]}]+$/;
+
+function splitVisibleUrlCandidate(candidate: string): {
+  url: string;
+  trailing: string;
+} {
+  // `plainTextEmailTemplate` escapes quotes around a URL. Do not consume the
+  // closing entity as part of the candidate being removed.
+  const delimiterIndex = candidate.search(ESCAPED_TEXT_DELIMITER_PATTERN);
+  const escapedDelimiter =
+    delimiterIndex < 0 ? "" : candidate.slice(delimiterIndex);
+  const withoutDelimiter =
+    delimiterIndex < 0 ? candidate : candidate.slice(0, delimiterIndex);
+  const punctuation =
+    withoutDelimiter.match(TRAILING_TEXT_PUNCTUATION_PATTERN)?.[0] ?? "";
+
+  return {
+    url: punctuation
+      ? withoutDelimiter.slice(0, -punctuation.length)
+      : withoutDelimiter,
+    trailing: `${punctuation}${escapedDelimiter}`,
+  };
+}
+
+function isAuthenticatedBookingDetailUrl(candidate: string): boolean {
+  try {
+    // Text rendered through plainTextEmailTemplate represents `&` as `&amp;`.
+    // Decode only that URL delimiter for parsing; the delivered copy itself is
+    // never decoded or rewritten.
+    const parsed = new URL(
+      candidate.replace(/&amp;/gi, "&"),
+      "https://visible-email-url.invalid",
+    );
+    const { pathname } = parsed;
+    if (pathname === "/bookings") return true;
+    if (!pathname.startsWith("/bookings/")) return false;
+
+    const firstSegment = pathname.slice("/bookings/".length).split("/", 1)[0];
+    // `/bookings/consent/...` is a bearer action for recipients who may not be
+    // able to sign in. Preserve it byte-for-byte, including query/fragment.
+    return firstSegment.toLowerCase() !== "consent";
+  } catch {
+    return false;
+  }
+}
+
+function removeVisibleBookingDetailUrls(html: string): string {
+  // Stored override bodies are HTML-escaped by plainTextEmailTemplate. Scan
+  // only text nodes so URLs in attributes, comments, and layout markup are not
+  // accidentally rewritten. Authorized output never calls this function.
+  return html
+    .split(/(<[^>]*>)/g)
+    .map((part, index) => {
+      if (index % 2 === 1) return part;
+      return part.replace(
+        VISIBLE_URL_CANDIDATE_PATTERN,
+        (match, prefix: string, candidate: string) => {
+          const { url, trailing } = splitVisibleUrlCandidate(candidate);
+          return isAuthenticatedBookingDetailUrl(url)
+            ? `${prefix}${trailing}`
+            : match;
+        },
+      );
+    })
+    .join("");
+}
+
 /** Whether HTML contains an authenticated booking-detail href (not a bearer action). */
 export function hasBookingDetailHref(html: string): boolean {
   return findBookingHref(html) != null;
@@ -55,7 +129,7 @@ function removeBookingButtons(html: string): string {
     }
     match = findAnyBookingHref(next);
   }
-  return next;
+  return removeVisibleBookingDetailUrls(next);
 }
 
 function appendBookingButton(html: string, bookingUrl: string): string {
@@ -111,7 +185,8 @@ export function applyBookingDetailLinkToBuiltInHtml(
  * Finalize the rendered delivery copy without ever mutating stored override
  * source. An authorized override remains byte-for-byte unchanged; an
  * unauthorized override loses stale/admin-authored authenticated booking
- * hrefs at this last outbound boundary. Bearer consent links remain intact.
+ * hrefs and visible URL text at this last outbound boundary. Bearer consent
+ * links remain intact.
  */
 export function finalizeBookingEmailHtml(params: {
   html: string;
