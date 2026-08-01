@@ -34,9 +34,19 @@ configurable — see [Subscription lockout](subscription-lockout.md)).
 
    ![Subscriptions page: the season/status filters, summary cards, and the members table with subscription status and Xero invoice columns](../images/admin/admin-subscriptions.png)
 
-2. Each row shows the member, age group, Xero contact group, status, Xero invoice
-   link, and paid date. Only **linked** members are checked in Xero — unlinked
-   members stay *Not Invoiced* until a Xero contact is linked or created.
+2. Each row shows the member, **Access**, age group, Xero contact group, status,
+   Xero invoice link, and paid date. Access uses the same four account-readiness
+   states as Members: **No login** (neutral), **Not invited** (warning),
+   **Invited** (information), and **Can log in** (success). It does not describe
+   the member's role. Xero group colours are categorical only; the cached group
+   catalog assigns `cat1` through `cat6` in order and wraps after six, so names —
+   not colour — remain the identity.
+
+   A subscription viewer who also has membership view can use the member name
+   to open the read-only member detail page. A finance-only viewer sees the same
+   name as plain text: the page does not advertise a membership route they
+   cannot open. Only **linked** members are checked in Xero — unlinked members
+   stay *Not Invoiced* until a Xero contact is linked or created.
 
 > **Who shows as *Not Required*.** A member's **membership type** — not their
 > login role — decides whether they owe a subscription. A member shows *Not

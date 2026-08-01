@@ -138,6 +138,16 @@ chosen for maximum separation from cat1-5 and the four semantic hues — and
 retired the legacy `--hue-*` accent pairs entirely; every categorical chip now
 reaches a generated cat scale.)
 
+The Members and Subscriptions tables are a worked identity-versus-state case.
+Their **Access** chip is semantic state from `member-login-stage.ts`: No login →
+neutral, Not invited → warning, Invited → info, Can log in → success. Role is
+deliberately absent. Xero contact groups are identities, not severity, so both
+tables call `getXeroContactGroupTone`: the full cached catalog position selects
+`cat1..cat6` modulo six; a stable-id hash is the deterministic fallback before
+the catalog arrives or for a retired group. Collisions are intentional and the
+visible group name remains authoritative. Never choose a Xero tone from the
+subset or order of groups on one member row.
+
 The same rule applies to raw NEUTRALS, though for a narrower reason than the
 brand accent — and the reason is worth stating precisely, because a safety net
 already exists.
