@@ -24,6 +24,7 @@ vi.mock("@/lib/public-layout-config", () => ({
 }));
 
 import { WebsiteFooter } from "@/components/website-footer";
+import { starterSiteContent } from "../../../prisma/starter-site-content";
 
 describe("WebsiteFooter", () => {
   beforeEach(() => {
@@ -74,6 +75,44 @@ describe("WebsiteFooter", () => {
     expect(screen.getByText("Test Alpine Club")).toBeTruthy();
     expect(screen.queryByText("Quick Links")).toBeNull();
     expect(screen.getByText("Affiliations")).toBeTruthy();
+  });
+
+  // #2490: a fresh install ships no affiliations at all, because a club's
+  // affiliations are facts about that club. The footer must degrade to two
+  // columns rather than leaving an "Affiliations" heading over nothing.
+  it("renders a fresh install's starter footer with no affiliations column", async () => {
+    const starter = new Map(
+      starterSiteContent.map((section) => [section.key, section.contentHtml]),
+    );
+    // getSiteFooterContent sanitises and resolves tokens, and returns "" for an
+    // empty section before doing either (site-content.ts, renderFooterSection);
+    // the starter values below carry no tokens and survive sanitising as-is.
+    mocks.getSiteFooterContent.mockResolvedValue({
+      blurbHtml: starter.get("FOOTER_BLURB") ?? "",
+      quickLinksHtml: starter.get("FOOTER_QUICK_LINKS") ?? "",
+      affiliationsHtml: starter.get("FOOTER_AFFILIATIONS") ?? "",
+    });
+
+    const { container } = render(
+      await WebsiteFooter({ pageSlug: "home", logoDataUrl: null }),
+    );
+
+    expect(screen.getByText("Quick Links")).toBeTruthy();
+    expect(screen.queryByText("Affiliations")).toBeNull();
+    expect(
+      screen.queryByRole("heading", { level: 2, name: "Affiliations" }),
+    ).toBeNull();
+    expect(container.textContent).not.toMatch(
+      /RMCA|Ruapehu|Federated Mountain Clubs/i,
+    );
+    // Two columns, not three-with-a-blank: the grid is sized from the same
+    // value that decides whether the column renders at all.
+    expect(container.querySelector(".md\\:grid-cols-2")).toBeTruthy();
+    expect(container.querySelector(".md\\:grid-cols-3")).toBeNull();
+    // The legal row is code-managed and always present.
+    expect(
+      screen.getByRole("link", { name: "Privacy Policy" }),
+    ).toBeTruthy();
   });
 
   it("reflects a DB-first club rename in the logo label and copyright", async () => {

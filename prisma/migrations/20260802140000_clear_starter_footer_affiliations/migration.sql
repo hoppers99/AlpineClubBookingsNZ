@@ -1,0 +1,122 @@
+-- Clear the starter footer affiliations that the historical migration chain
+-- stamps onto every install (#2490, the follow-up filed by the #2489 review of
+-- #2484).
+--
+-- WHY THIS EXISTS
+--
+-- 20260702124500_add_site_content creates "SiteContent" and backfills the three
+-- public footer columns with the copy that was, until then, hardcoded in
+-- src/components/website-footer.tsx. That backfill was right when it was
+-- written: this codebase WAS the live Tokoroa Alpine Club site, the footer
+-- carried that markup in its own source, and the migration moved it from code
+-- into data so the live deployment kept its own footer when the columns became
+-- admin-editable (see that file's own comment). Now that the repository is a
+-- reusable product, the same chain runs on every fresh install and every fork,
+-- so an unrelated club's EVERY public page footer advertises
+-- 'Ruapehu Mountain Clubs Association (RMCA)' -- a regional body it does not
+-- belong to -- alongside 'Federated Mountain Clubs (FMC)'. This is the same
+-- class as #2484 (another club's real-world identity shipped as starter data)
+-- on the one remaining surface that review found.
+--
+-- The whole column goes, not just the RMCA line. A club's affiliations are
+-- facts about that club, which this project cannot know, so the owner-recorded
+-- answer is that a fresh install lists NONE until the club adds its own
+-- (prisma/starter-site-content.ts now ships FOOTER_AFFILIATIONS empty, and
+-- src/lib/__tests__/seed-account-defaults.test.ts now runs the same
+-- /Waldvogel|Iwikau|Ruapehu|Whakapapa|Tokoroa/i geography guard over
+-- starterSiteContent that already covered buildSeedChoreTemplates() and
+-- starterPageContent -- the gap that let this ship).
+--
+-- An applied migration cannot be edited -- Prisma records a checksum and a
+-- rewrite is migration drift for every database that already ran it -- so a NEW
+-- migration is the only mechanism that cleans both a fresh install and an
+-- already-stamped database on its next `prisma migrate deploy`.
+--
+-- VALUE-SCOPED, NOT ROW-SCOPED. The WHERE clause matches the exact literal that
+-- 20260702124500 wrote, byte for byte, in addition to the row's key. A club that
+-- has edited its affiliations under Admin > Site Appearance & Content > Site
+-- Content keeps them exactly as saved -- even a club that only deleted the RMCA
+-- line, because the remaining value no longer matches. The only value this
+-- statement can remove is the one string this project put there itself. The
+-- deliberate, accepted exception is a deployment still holding that literal
+-- legitimately -- Tokoroa's own fork, if it ports this down -- which is cleared
+-- too and must re-enter its affiliations; that is called out in the changelog
+-- fragment and in docs/UPGRADING.md.
+--
+-- CLEARED, NOT DELETED. Setting "contentHtml" = '' keeps the row, its stable id
+-- and its key, so the admin editor shows the section deliberately empty rather
+-- than falling back to a starter default (getSiteContentForAdmin in
+-- src/lib/site-content.ts substitutes the starter only for a MISSING row). Both
+-- outcomes now render nothing, because the starter for this key is itself empty
+-- -- deleting the row would work too, and is simply more destructive than the
+-- job needs.
+--
+-- "updatedAt" IS DELIBERATELY UNTOUCHED, matching 20260731140000 and
+-- 20260802110000: this is a system repair, not an admin edit. The visible
+-- consequence is that the Site Content editor's "Last saved" stamp for this
+-- section still reads the original backfill time; it is cosmetic, and an
+-- admin's first real save corrects it. Leaving it also keeps the payload free of
+-- CURRENT_TIMESTAMP/now(), so the session-clock DML gate (#1627/#1656) passes
+-- without an acknowledgement.
+--
+-- IDEMPOTENT. After the UPDATE no row matches the literal (the value is now ''),
+-- so a re-run selects nothing and changes nothing. A row that never held it is
+-- never touched.
+--
+-- NO AUDIT ROW, deliberately, and unlike an admin save through
+-- /api/admin/site-content (which does write one). What is removed is not
+-- club-authored content a club could lose: it is a string this project wrote
+-- into the row itself, it is quoted verbatim here, in the changelog fragment and
+-- in docs/UPGRADING.md, and restoring it is one paste into one editor.
+-- "AuditLog" is a 7-year retained store; there is nothing here worth keeping in
+-- it.
+--
+-- BLUE/GREEN. Phase metadata-only: no DDL at all, one value-scoped UPDATE.
+-- "SiteContent" is a three-row cold config table (read on public page render,
+-- written only by an admin saving a footer column), so the row locks are
+-- momentary and no hot-table traffic window applies.
+--
+-- READS are compatible in both directions during the drain. The footer renders
+-- the affiliations column only when its HTML is non-empty and derives its grid
+-- column count from the same value (src/components/website-footer.tsx:
+-- `columnCount = 1 + (quickLinksHtml ? 1 : 0) + (affiliationsHtml ? 1 : 0)` and
+-- `{affiliationsHtml ? <div .../> : null}`), so an old colour still serving
+-- simply drops from three columns to two -- no heading over an empty list, no
+-- empty grid cell, and nothing that can error. The admin editor shows the
+-- section empty, which is a state it already supports ("Leave a section empty to
+-- hide that footer column"). No render guard needed changing for this.
+--
+-- WRITES need one caveat, and it is a stale-form hazard rather than a colour
+-- incompatibility -- the same shape as 20260802110000's, and narrower. The Site
+-- Content panel (src/components/admin/site-content-panel.tsx) loads all three
+-- columns when the page opens and PUTs ONE section at a time from that draft, so
+-- an admin on EITHER colour who had the page open before this migration ran and
+-- presses "Save Footer: affiliations" afterwards writes the literal straight
+-- back, and because this is a one-shot migration it never re-runs to clear it
+-- again. Nothing breaks and nothing is lost -- the markup is sitting visibly in
+-- that editor and one Clear + Save removes it -- but the operator must VERIFY
+-- the public footer after cutover rather than assume the clear stuck. Note the
+-- public pages are cached briefly for logged-out visitors, so allow a minute (or
+-- check while signed in) before concluding anything. docs/UPGRADING.md states
+-- that as part of the post-upgrade action.
+--
+-- Nothing here matches the validator's hot-table or breaking-SQL regexes
+-- (scripts/validate-blue-green-migrations.sh: "SiteContent" is not a hot table
+-- and there is no DROP/RENAME/type change/SET NOT NULL), so
+-- scripts/check-migration-safety-coverage.sh does not REQUIRE a
+-- docs/BLUE_GREEN_MIGRATION_SAFETY.tsv row -- 20260702124500, the migration being
+-- corrected, has none for the same reason. One is recorded anyway, matching every
+-- other data-rewriting migration in this stretch of history (20260731140000,
+-- 20260801150000, 20260802100000, 20260802110000), because docs/UPGRADING.md
+-- tells an operator to look up every pending migration in the ledger and this one
+-- changes what their public site shows.
+--
+-- The literal below is a byte-for-byte copy of the value in 20260702124500,
+-- including its $cms$ dollar quoting;
+-- src/lib/__tests__/site-content-affiliations-cleanup.test.ts extracts that
+-- value from the backfill SQL and fails if the two ever drift apart.
+
+UPDATE "SiteContent"
+SET "contentHtml" = ''
+WHERE "key" = 'FOOTER_AFFILIATIONS'
+  AND "contentHtml" = $cms$<h3>Affiliations</h3><ul><li><a href="https://www.fmc.org.nz/" target="_blank" rel="noopener noreferrer">Federated Mountain Clubs (FMC)</a></li><li><a href="https://rmca.org.nz/" target="_blank" rel="noopener noreferrer">Ruapehu Mountain Clubs Association (RMCA)</a></li><li><a href="{{facebook-url}}" target="_blank" rel="noopener noreferrer">Facebook</a></li></ul>$cms$;
