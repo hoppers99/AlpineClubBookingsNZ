@@ -549,9 +549,13 @@ async function upsertXeroObjectLinkWithClient(
   // code baked into a row is wrong the moment the club reconnects to a
   // different Xero organisation, and nothing would ever correct it; the
   // organisation is applied when the row is read instead
-  // (`applyXeroOrgShortCode`). Enforcing it at this single funnel means no
-  // caller has to remember, and a legacy row that already carries one is
-  // normalised the next time it is written.
+  // (`applyXeroOrgShortCode`). Enforcing it here means none of the ~50 callers
+  // that reach the column THROUGH this funnel has to remember, and a legacy row
+  // that already carries a short code is normalised the next time it is
+  // written. This funnel is not the only writer, though — three files write the
+  // column with direct Prisma calls they cannot route through here (see
+  // `xero-object-url-write-guard.test.ts`, which fails CI on any direct write
+  // that does not strip).
   const xeroObjectUrl = stripXeroOrgShortCode(
     normalizedLink.xeroObjectUrl ??
       buildXeroObjectUrl(
