@@ -90,6 +90,31 @@ export function resolveAdminReviewFields(args: {
   };
 }
 
+/**
+ * Turn an admin's on-behalf hosting confirmation into the decision the
+ * reconciler records, or `null` for "nobody has decided this yet" (#2364, D-R4).
+ *
+ * Two things it deliberately will NOT do. It never produces a decision for a
+ * MEMBER-created booking — a member cannot approve their own exception, so their
+ * hazard opens PENDING and waits for an admin. And it never produces one from
+ * the admin ROLE alone: an admin who supplies no reason gets `null`, which opens
+ * the review PENDING rather than waving it through. The route refuses that
+ * request outright and asks for the reason, so an admin never accidentally
+ * leaves a member's booking sitting in a queue they did not know about — but
+ * even if a future caller forgets that refusal, the failure mode here is an
+ * extra review, never a silent approval.
+ */
+export function resolveAdultMemberHostingDecision(args: {
+  isOnBehalf: boolean;
+  sessionUserId: string;
+  adultMemberHostingReason: string | undefined;
+}): { reason: string; byMemberId: string } | null {
+  if (!args.isOnBehalf) return null;
+  const reason = args.adultMemberHostingReason?.trim();
+  if (!reason) return null;
+  return { reason, byMemberId: args.sessionUserId };
+}
+
 export type PricedGuest = {
   priceCents: number;
   perNightCents: number[];

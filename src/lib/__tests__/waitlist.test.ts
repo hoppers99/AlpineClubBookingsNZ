@@ -36,6 +36,9 @@ const mockTx = {
     findMany: vi.fn().mockResolvedValue([{ id: "lodge-1" }]),
     findUnique: vi.fn().mockResolvedValue({ name: "Lodge One" }),
   },
+  // #2364: the hosting review is reconciled inside the booking write, so
+  // every prisma/tx double a booking path runs against needs this client.
+  adultMemberHostingPolicy: { findMany: vi.fn().mockResolvedValue([]) },
   booking: {
     findMany: vi.fn(),
     findUnique: vi.fn(),
@@ -57,6 +60,9 @@ vi.mock("@/lib/prisma", () => ({
       typeof fn === "function"
         ? mockPrismaTransaction(fn)
         : Promise.resolve(fn),
+    // #2364: the hosting review is reconciled inside the booking write, so
+    // every prisma/tx double a booking path runs against needs this client.
+    adultMemberHostingPolicy: { findMany: vi.fn().mockResolvedValue([]) },
     booking: {
       findUnique: (...args: unknown[]) => mockBookingFindUnique(...args),
       findMany: (...args: unknown[]) => mockBookingFindMany(...args),

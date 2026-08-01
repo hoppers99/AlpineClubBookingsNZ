@@ -27,6 +27,9 @@ const h = vi.hoisted(() => ({
 
 const txClient = {
   $executeRaw: vi.fn(),
+  // #2364: the hosting review is reconciled inside the booking write, so
+  // every prisma/tx double a booking path runs against needs this client.
+  adultMemberHostingPolicy: { findMany: vi.fn().mockResolvedValue([]) },
   booking: {
     findUnique: h.txBookingFindUnique,
     updateMany: h.txBookingUpdateMany,

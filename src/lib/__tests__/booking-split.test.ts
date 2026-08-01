@@ -151,10 +151,18 @@ const tx = {
       { id: MEMBER_TYPE, key: "FULL" },
     ],
   },
+  // #2364: the hosting review is reconciled inside the booking write, so
+  // every prisma/tx double a booking path runs against needs this client.
+  adultMemberHostingPolicy: { findMany: vi.fn().mockResolvedValue([]) },
   booking: {
     create: (...a: unknown[]) => h.bookingCreate(...a),
     update: (...a: unknown[]) => h.bookingUpdate(...a),
     findFirst: (...a: unknown[]) => h.bookingFindFirst(...a),
+    // #2364: the create transaction reconciles the hosting review from the rows
+    // it just wrote. Answering undefined is the "booking not found" branch,
+    // which writes nothing — right for a double that models the create alone.
+    findUnique: vi.fn(),
+    findMany: vi.fn().mockResolvedValue([]),
   },
   payment: { create: (...a: unknown[]) => h.paymentCreate(...a) },
   lodge: { findFirst: (...a: unknown[]) => h.lodgeFindFirst(...a) },

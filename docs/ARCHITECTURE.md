@@ -123,10 +123,13 @@ Important route groups:
 > from them and the app brand utilities / wizard preview / muted-tone clamp still
 > read them (the website's legal-callout and mobile-menu `bg-brand-*` utilities
 > are a small remaining consumer, left for their own render review). Config-transfer
-> bundles are **format version 3** (`CONFIG_TRANSFER_FORMAT_VERSION`) and require
-> an exact version match. Version 3 adds the destructive, fully previewed
-> minimum-stay policy replace-set; both older and newer bundle versions are
-> refused rather than interpreted under the wrong semantics.
+> bundles are **format version 4** (`CONFIG_TRANSFER_FORMAT_VERSION`) and require
+> an exact version match. Version 3 added the destructive, fully previewed
+> minimum-stay policy replace-set and version 4 adds a second required file to
+> that category, the adult-member hosting policy; both older and newer bundle
+> versions are refused rather than interpreted under the wrong semantics, because
+> an older reader would silently ignore a file it does not know while reporting
+> that it had replaced the club's complete booking-policy set.
 
 Every app-shell layout (`(public)`, `(authenticated)`, `(admin)`, `(finance)`)
 injects the admin-configured theme via `getWebsiteThemeRenderState()` inside an
@@ -852,12 +855,12 @@ Booking Policies sections (#2142) and is now the **default across the admin
 tree** (#2160, extended by #2168 and #2324) — not a claim that nothing is left.
 Measured
 on the current tree by `view-only-banner-contract.test.ts`, which asserts these
-figures rather than trusting a hand count: **80 components render a banner, and
-252 of the 301 `ViewOnlyActionButton` call sites opt out** of the per-button
+figures rather than trusting a hand count: **81 components render a banner, and
+255 of the 304 `ViewOnlyActionButton` call sites opt out** of the per-button
 reason. (Earlier revisions of this page published 76/232/264/211 — those were
 upstream-historical and had drifted; the numbers here are the ones the contract
-test currently pins, which is the only authority.) Those 252 split by WHICH rule
-covers them: **226** pass the literal
+test currently pins, which is the only authority.) Those 255 split by WHICH rule
+covers them: **229** pass the literal
 `describeReason={false}` and are covered by a banner in the same file, and **26**
 pass `describeReason={!ancestorRendersViewOnlyBanner}` and are covered by a
 verified vouching parent — 21 by a parent's own JSX render site (#2168), 5 by the
@@ -1573,6 +1576,60 @@ admission order belong to #2365. Hard failures such as capacity exhaustion,
 subscription/membership eligibility, duplicate member-nights, payment,
 authentication/privacy, invalid dates, and data-integrity faults remain outside
 the soft allowlist structurally.
+
+### Adult-member hosting policy
+
+The second consumer of that foundation, and the first that does not block
+anybody. A club may ask that every non-member guest-night overlaps an adult
+member staying on the same booking; `AdultMemberHostingPolicy` holds one row per
+scope (club-wide plus per-lodge overrides that may also say `Inherit`), with
+scope identity pinned by a CHECK on `scopeKey`, an explicit `capacityMode`
+carrying no database default, and a revision that every write compare-and-swaps
+on under the `adult-member-hosting-policy-set` advisory key.
+
+The evaluator in `src/lib/policies/adult-member-hosting.ts` is pure: it takes
+resolved policy rows and participant facts and returns the frozen
+`ADULT_MEMBER_HOSTING_REQUIRED` violation, extended with the exact uncovered
+guest+night pairs and the qualifying member ids for every candidate night.
+Booking ownership is never an input, so it can never be mistaken for attendance,
+and the live `Member` row — not the guest row's `isMember` snapshot — decides who
+qualifies.
+
+`src/lib/adult-member-hosting-review.ts` is the only module that turns a
+persisted booking into evaluator input and the answer back into review state.
+Because it derives everything from live rows and is idempotent, every booking
+path that can change the party simply calls it at the end of its own transaction:
+create (draft, confirmed, waitlisted, and the #738 split child, which borrows its
+parent's adults as host-only participants), batch modify, date modify, admin date
+shift, guest add, guest removal and waitlist confirm, plus every path that
+creates a whole party of its own — the booking-request approval and its
+held-booking conversion, the quote-time hold, the school and member whole-lodge
+approvals, and the verified non-member group joiner. A hazard clears the moment
+current facts cover every night, and reopens only when the uncovered set or the
+policy revision materially differs.
+
+Because the split child borrows its parent's rows, the dependency runs both ways,
+so mutation paths call `reconcileAdultMemberHostingReviewWithSiblings`: it
+reconciles the mutated booking and then the live same-member siblings the borrow
+reads, one level deep, in the same transaction. Without that, shortening the
+member's own stay on the parent would silently drop the child's hazard and
+extending it would leave a stale review nobody could clear. Two source-contract
+tests hold the shape: every module containing a `booking.create(` must reach a
+hosting recorder, and only the review service itself may call the single-booking
+reconciler.
+
+The review is deliberately NOT folded into `requiresAdminReview` /
+`adminReviewStatus`: those carry the minors-only rule, several paths wipe them
+when it stops applying, and a hosting hazard has a different lifecycle. The two
+are reported together as structured codes at read time instead. The only
+enforcement that refuses anything is D-R4's on-behalf seam on create: an admin
+booking for somebody else is stopped with 409
+`ADULT_MEMBER_HOSTING_CONFIRM_REQUIRED` until they give a reason, which is stored
+with their id against the approval — `/admin/book` renders the reason panel that
+answers it, on the confirm and the save-as-draft path alike, because the check
+runs ahead of the draft fork. `adultMemberHostingReviewedById` is a real
+`SetNull` relation to `Member` with a `member-merge.ts` spec, so that attribution
+survives a merge and does not dangle after a deletion.
 
 1. A member selects a lodge (implicit when only one active lodge exists) and
    check-in and check-out dates.

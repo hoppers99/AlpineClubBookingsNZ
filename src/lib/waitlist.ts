@@ -17,6 +17,7 @@ import {
 import { logAudit } from "./audit";
 import logger from "@/lib/logger";
 import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
+import { reconcileAdultMemberHostingReviewWithSiblings } from "@/lib/adult-member-hosting-review";
 import { priceBookingGuestsWithMembershipTypePolicy } from "@/lib/membership-type-policy";
 import {
   loadSeasonRateData,
@@ -883,6 +884,16 @@ export async function confirmWaitlistOffer(
           checkOut: booking.checkOut,
         },
       });
+
+      // #2364, for the same reason the minimum-stay check above re-runs here: an
+      // offer lives 48 hours, and the club's hosting policy — or a participant's
+      // membership, age tier or active/cancelled/archived state — can move under
+      // it. Confirming turns a queue placeholder into a capacity-holding
+      // booking, so the hazard is re-derived against TODAY's facts rather than
+      // the ones that applied when the booking joined the queue. Unlike minimum
+      // stay this cannot refuse the confirmation: hosting is a review, so the
+      // member gets their booking and the club gets the review.
+      await reconcileAdultMemberHostingReviewWithSiblings(bookingId, tx);
 
       return { success: true, newStatus };
     });

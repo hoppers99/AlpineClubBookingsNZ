@@ -50,6 +50,7 @@ import {
   sendBookingRequestApprovedEmail,
   sendGroupBookingJoinVerificationEmail,
 } from "@/lib/email";
+import { reconcileAdultMemberHostingReviewWithSiblings } from "@/lib/adult-member-hosting-review";
 import logger from "@/lib/logger";
 import {
   buildGuestCreateData,
@@ -1423,6 +1424,15 @@ export async function verifyAndCreateNonMemberJoin(
         },
         select: { id: true },
       });
+
+      // #2364. A verified NON-MEMBER joiner booking is all non-member guests
+      // owned by a fresh non-login contact, so nobody on it can host. It hangs
+      // off the organiser's booking by `parentBookingId`, but it belongs to a
+      // DIFFERENT member, so the organiser's adults are deliberately not
+      // borrowed (see `loadSiblingHosts`): "an adult member on the same booking"
+      // keeps meaning what it says, and the review is how an admin decides
+      // whether the organiser's presence is good enough.
+      await reconcileAdultMemberHostingReviewWithSiblings(booking.id, tx);
 
       await tx.payment.create({
         data: {
