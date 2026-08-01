@@ -1,12 +1,18 @@
 /**
  * Real P2002 errors, as Prisma 7 + `@prisma/adapter-pg` actually raises them.
  *
- * Every `meta` and `message` below was CAPTURED LIVE on 1 Aug 2026 (#2412) by
+ * The four collision fixtures — `joinCode`, `organiserBookingId`, the login-email
+ * partial index and `googleSub` — were CAPTURED LIVE on 1 Aug 2026 (#2412) by
  * forcing each collision against a throwaway PostgreSQL 16 container built from
  * this repo's own migration tree, through a client constructed exactly the way
  * `src/lib/prisma.ts` constructs it — `new PrismaClient({ adapter: new PrismaPg(…) })`,
  * client version 7.9.0. They are verbatim: do not "tidy" the escaped double
  * quotes inside `constraint.fields`, that quoting is part of what was measured.
+ *
+ * The fixtures below them are marked SYNTHETIC where they are: shapes built to
+ * probe the parser (an error naming nothing, an adapter detail contradicting the
+ * message, a composite constraint) that adapter-pg was not observed emitting.
+ * Never read one of those as evidence of what the driver really does.
  *
  * The headline finding, so nobody has to rediscover it a third time:
  *
@@ -112,8 +118,68 @@ export const googleSubCollisionError = () =>
     },
   );
 
-/** A P2002 carrying nothing identifiable (no adapter detail, bare message). */
+/**
+ * SYNTHETIC. A P2002 carrying nothing identifiable — no adapter detail, and a
+ * message with no field list. Adapter-pg was never seen raising this (it always
+ * populated `driverAdapterError`); it stands in for the stack changing under us
+ * or Postgres withholding the `Key (…)` detail, which is the case the
+ * unnamed-collision fallbacks exist for. Assumed, not measured.
+ */
 export const unidentifiableUniqueCollisionError = () =>
   livePrismaP2002("\nInvalid `prisma.member.create()` invocation:\n\n\nboom", {
     modelName: "Member",
   });
+
+/**
+ * SYNTHETIC. Adapter detail and rendered message name DIFFERENT columns, which
+ * the real client never does — the message is rendered from the same field list.
+ * It exists to pin the precedence: the adapter detail is the measured signal, so
+ * a parser that quietly fell back to the message would answer "googlesub" here.
+ */
+export const contradictoryAdapterAndMessageError = () =>
+  livePrismaP2002(
+    '\nInvalid `prisma.member.create()` invocation:\n\n\nUnique constraint failed on the fields: (`"googleSub"`)',
+    {
+      modelName: "Member",
+      driverAdapterError: {
+        name: "DriverAdapterError",
+        cause: {
+          originalCode: "23505",
+          originalMessage:
+            'duplicate key value violates unique constraint "Member_email_login_unique"',
+          kind: "UniqueConstraintViolation",
+          constraint: { fields: ["email"] },
+        },
+      },
+    },
+  );
+
+/**
+ * SYNTHETIC, a matched pair. The same composite collision
+ * (`MemberSubscription @@unique([memberId, seasonYear])`) as the adapter reports
+ * it (a field ARRAY) and as it survives when only the rendered message is left
+ * (a comma-separated list). Both must describe themselves identically, or a
+ * caller comparing names gets a different answer depending on whether Postgres
+ * happened to send the `Key (…)` detail.
+ */
+export const compositeCollisionError = (
+  shape: "adapter-detail" | "message-only",
+) =>
+  livePrismaP2002(
+    '\nInvalid `prisma.memberSubscription.create()` invocation:\n\n\nUnique constraint failed on the fields: (`"memberId"`,`"seasonYear"`)',
+    shape === "message-only"
+      ? { modelName: "MemberSubscription" }
+      : {
+          modelName: "MemberSubscription",
+          driverAdapterError: {
+            name: "DriverAdapterError",
+            cause: {
+              originalCode: "23505",
+              originalMessage:
+                'duplicate key value violates unique constraint "MemberSubscription_memberId_seasonYear_key"',
+              kind: "UniqueConstraintViolation",
+              constraint: { fields: ['"memberId"', '"seasonYear"'] },
+            },
+          },
+        },
+  );

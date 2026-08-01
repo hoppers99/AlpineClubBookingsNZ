@@ -23,7 +23,10 @@ import {
   membershipTypeAgeExemption,
 } from "@/lib/membership-types";
 import logger from "@/lib/logger";
-import { isPrismaUniqueConstraintError } from "@/lib/prisma-errors";
+import {
+  describeUniqueConstraintTarget,
+  isPrismaUniqueConstraintError,
+} from "@/lib/prisma-errors";
 import { getXeroApiErrorInfo } from "@/lib/xero-api-errors";
 import { copyStreetAddressToPostal } from "@/lib/member-address";
 import { PLACEHOLDER_CONTACT_EMAIL_DOMAINS } from "@/lib/placeholder-contact-email";
@@ -1504,16 +1507,22 @@ export async function createAdminMember(
     // on some other unique constraint is still a 409, because something really
     // is already taken, but it no longer sends the admin off to fix an address
     // that is fine. It is logged either way, since on this path no other unique
-    // constraint should be reachable at all.
+    // constraint should be reachable at all — and the constraint is logged
+    // beside the error, because the pino `err` serializer keeps only
+    // name/message/stack and would drop `meta` entirely.
+    //
+    // A create that cannot log in never gets the unnamed-P2002 benefit of the
+    // doubt: the login-email index is `WHERE "canLogin" = true`, so no email
+    // constraint can fire on that insert.
     if (isPrismaUniqueConstraintError(error)) {
-      if (isLoginEmailUniqueConflict(error)) {
+      if (isLoginEmailUniqueConflict(error, { canClaimLoginEmail: canLogin })) {
         return jsonResult(
           { error: MEMBER_LOGIN_EMAIL_TAKEN_MESSAGE },
           { status: 409 },
         );
       }
       logger.error(
-        { err: error },
+        { err: error, constraint: describeUniqueConstraintTarget(error) },
         "Member create hit an unexpected unique constraint",
       );
       return jsonResult(

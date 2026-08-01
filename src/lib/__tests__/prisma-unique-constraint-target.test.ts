@@ -3,8 +3,10 @@
  * and the two things that read it: the join-code collision retry and the
  * login-email backstop.
  *
- * The fixtures are live captures — see `helpers/p2002-fixtures.ts` for how and
- * when they were taken, and for the finding they pin down.
+ * The collision fixtures are live captures; a few extra shapes there are marked
+ * SYNTHETIC because they probe the parser rather than record the driver. See
+ * `helpers/p2002-fixtures.ts` for how and when the captures were taken, and for
+ * the finding they pin down.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Prisma } from "@prisma/client";
@@ -12,6 +14,8 @@ import { Prisma } from "@prisma/client";
 import { describeUniqueConstraintTarget } from "@/lib/prisma-errors";
 import { isLoginEmailUniqueConflict } from "@/lib/member-email";
 import {
+  compositeCollisionError,
+  contradictoryAdapterAndMessageError,
   googleSubCollisionError,
   joinCodeCollisionError,
   loginEmailCollisionError,
@@ -30,15 +34,40 @@ import { prisma } from "@/lib/prisma";
 import { createGroupBooking } from "@/lib/group-booking";
 
 describe("adapter-pg P2002 shape (captured live, PostgreSQL 16 + Prisma 7.9.0)", () => {
-  it("never populates meta.target, whatever kind of index fired", () => {
+  it("carries the colliding columns in the adapter detail and nothing in meta.target", () => {
+    // Pins the shape of the CAPTURES, not Prisma's behaviour: these are the
+    // bytes that came back on 1 Aug 2026, kept legible so an edit that "tidies"
+    // a fixture into a shape the driver never emits is visible here.
     for (const build of [
       joinCodeCollisionError,
       organiserBookingCollisionError,
       loginEmailCollisionError,
       googleSubCollisionError,
     ]) {
-      expect(build().meta).not.toHaveProperty("target");
+      const meta = build().meta as {
+        target?: unknown;
+        driverAdapterError?: {
+          cause?: { constraint?: { fields?: unknown }; originalCode?: unknown };
+        };
+      };
+      expect(meta).not.toHaveProperty("target");
+      expect(meta.driverAdapterError?.cause?.originalCode).toBe("23505");
+      expect(meta.driverAdapterError?.cause?.constraint?.fields).toEqual([
+        expect.any(String),
+      ]);
     }
+  });
+
+  it("answers from the adapter detail, not the rendered message", () => {
+    // The measured signal wins: this fixture's message names googleSub while
+    // its `constraint.fields` names email, so dropping the adapter branch and
+    // falling through to the message flips the answer.
+    expect(
+      describeUniqueConstraintTarget(contradictoryAdapterAndMessageError()),
+    ).toBe("email");
+    expect(
+      isLoginEmailUniqueConflict(contradictoryAdapterAndMessageError()),
+    ).toBe(true);
   });
 
   it("names the colliding column for a schema-level @unique, quoting and all", () => {
@@ -92,6 +121,20 @@ describe("describeUniqueConstraintTarget fallbacks", () => {
     expect(describeUniqueConstraintTarget(error)).toBe("memberid seasonyear");
   });
 
+  it("describes a composite constraint identically whichever shape carried it", () => {
+    // The adapter hands over an array, the message a comma-separated list. A
+    // caller comparing names must not get a different answer depending on
+    // whether Postgres sent the `Key (…)` detail.
+    expect(
+      describeUniqueConstraintTarget(compositeCollisionError("adapter-detail")),
+    ).toBe(
+      describeUniqueConstraintTarget(compositeCollisionError("message-only")),
+    );
+    expect(
+      describeUniqueConstraintTarget(compositeCollisionError("message-only")),
+    ).toBe("memberid seasonyear");
+  });
+
   it("reads a constraint index name when the adapter reports one", () => {
     const error = Object.assign(new Error("boom"), {
       code: "P2002",
@@ -124,6 +167,45 @@ describe("describeUniqueConstraintTarget fallbacks", () => {
       { code: "P2002", meta: { driverAdapterError: { cause: {} } } },
     );
     expect(describeUniqueConstraintTarget(error)).toBe("email");
+  });
+
+  it("is not hijacked by member data rendered into the invocation excerpt", () => {
+    // The preamble echoes the CALL ARGUMENTS, so anything an admin typed can
+    // appear above Prisma's own sentence. Matching a bare `fields: (…)` would
+    // read this member's comments field and blame googleSub for what the
+    // database says is the login-email clash.
+    const error = Object.assign(
+      new Error(
+        [
+          "",
+          "Invalid `prisma.member.create()` invocation in",
+          "/app/src/lib/admin-members-service.ts:1400:33",
+          "",
+          '→ 1400   data: { comments: "fields: (googleSub)" },',
+          "Unique constraint failed on the fields: (`email`)",
+        ].join("\n"),
+      ),
+      { code: "P2002", meta: { driverAdapterError: { cause: {} } } },
+    );
+    expect(describeUniqueConstraintTarget(error)).toBe("email");
+    expect(isLoginEmailUniqueConflict(error)).toBe(true);
+  });
+
+  it("is not hijacked by a `constraint:` name in the invocation excerpt either", () => {
+    const error = Object.assign(
+      new Error(
+        [
+          "",
+          "Invalid `prisma.member.create()` invocation in",
+          '→ 1400   data: { comments: "constraint: `Member_googleSub_key`" },',
+          "Unique constraint failed on the constraint: `Member_email_login_unique`",
+        ].join("\n"),
+      ),
+      { code: "P2002" },
+    );
+    expect(describeUniqueConstraintTarget(error)).toBe(
+      "member_email_login_unique",
+    );
   });
 
   it("reads a `constraint:` index name from the message", () => {
@@ -162,6 +244,22 @@ describe("isLoginEmailUniqueConflict against the live shapes", () => {
   it("still owns a P2002 that names nothing", () => {
     expect(
       isLoginEmailUniqueConflict(unidentifiableUniqueCollisionError()),
+    ).toBe(true);
+  });
+
+  it("disowns the unnamed P2002 for a write that cannot claim a login email", () => {
+    // `Member_email_login_unique` is `WHERE "canLogin" = true`, so a non-login
+    // write cannot have hit it, whatever else collided.
+    expect(
+      isLoginEmailUniqueConflict(unidentifiableUniqueCollisionError(), {
+        canClaimLoginEmail: false,
+      }),
+    ).toBe(false);
+    // A NAMED email clash is still the email clash, flag or no flag.
+    expect(
+      isLoginEmailUniqueConflict(loginEmailCollisionError(), {
+        canClaimLoginEmail: false,
+      }),
     ).toBe(true);
   });
 

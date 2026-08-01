@@ -23,8 +23,8 @@ export function resolveEffectiveEmail(member: EmailResolvableMember): string {
 
 /**
  * The single wording an admin sees when an address is already somebody's
- * login. Shared so the member edit and the family-group login-holder transfer
- * refuse in the same words (#2385).
+ * login. Shared so the member edit (#2385), the family-group login-holder
+ * transfer (#2385) and the member create (#2412) refuse in the same words.
  */
 export const MEMBER_LOGIN_EMAIL_TAKEN_MESSAGE =
   "A member with this email already exists";
@@ -57,11 +57,22 @@ export const MEMBER_LOGIN_EMAIL_TAKEN_MESSAGE =
  * name a different constraint (a unique column added to one of these writes
  * later, say), do not claim the email is taken: fall through to the generic
  * failure rather than sending the admin off to fix an address that is fine.
+ *
+ * `canClaimLoginEmail: false` withdraws that benefit of the doubt for the
+ * unnamed case, and a caller writing a member who cannot log in must pass it
+ * (#2412): `Member_email_login_unique` is `WHERE "canLogin" = true` and no
+ * unconditional email unique survives, so NO email constraint can fire on such
+ * a write and "that address is taken" would be provably wrong advice. A named
+ * email clash is still honoured either way — the flag only decides who owns the
+ * P2002 that names nothing.
  */
-export function isLoginEmailUniqueConflict(error: unknown): boolean {
+export function isLoginEmailUniqueConflict(
+  error: unknown,
+  { canClaimLoginEmail = true }: { canClaimLoginEmail?: boolean } = {}
+): boolean {
   if (!isPrismaUniqueConstraintError(error)) {
     return false;
   }
   const target = describeUniqueConstraintTarget(error);
-  return target === null || target.includes("email");
+  return target === null ? canClaimLoginEmail : target.includes("email");
 }

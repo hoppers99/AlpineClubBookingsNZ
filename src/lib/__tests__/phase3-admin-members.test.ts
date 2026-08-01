@@ -2591,6 +2591,31 @@ describe("Phase 3: Admin Member Management", () => {
       });
     });
 
+    it("does not blame the email for an unnamed collision on a non-login create", async () => {
+      mockedAuth.mockResolvedValue(adminSession);
+      // No pre-check runs for a non-login member — they may share an address —
+      // and the partial index `WHERE "canLogin" = true` cannot fire on this
+      // insert, so an unidentifiable P2002 must not be called an email clash.
+      vi.mocked(prisma.$transaction).mockRejectedValue({ code: "P2002" });
+
+      const req = new NextRequest("http://localhost/api/admin/members", {
+        method: "POST",
+        body: JSON.stringify({
+          firstName: "Test",
+          lastName: "User",
+          email: "shared@test.com",
+          canLogin: false,
+        }),
+        headers: { "Content-Type": "application/json" },
+      });
+      const res = await createMember(req);
+      expect(res.status).toBe(409);
+      await expect(res.json()).resolves.toMatchObject({
+        error:
+          "Could not create this member: one of their details is already used by another record",
+      });
+    });
+
     it("allows shared email when creating a non-login member", async () => {
       mockedAuth.mockResolvedValue(adminSession);
       vi.mocked(prisma.member.findFirst).mockResolvedValue({ id: "existing-login" } as any);

@@ -29,9 +29,11 @@ All notable public reference-release changes should be recorded here.
   anything else ever collided. The email wording is now used only when the email
   rule actually fired; anything else gets a plain "one of their details is
   already used by another record" and is written to the server log, since on this
-  path it would mean something unexpected. The member **edit** path was narrowed
-  the same way in #2385; the two now share one piece of code, and it is the
-  measured one.
+  path it would mean something unexpected. A member who cannot log in is never
+  told their address is taken at all — the login-email rule cannot apply to them.
+  The member **edit** path (#2385) now shares the same measured code for deciding
+  whether the email rule fired, though it still answers a non-email clash with
+  its existing "failed to update" error.
 
   For developers: `docs/ARCHITECTURE.md` now records exactly what the `pg` driver
   adapter populates on a uniqueness failure, including the finding that a

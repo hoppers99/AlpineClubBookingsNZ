@@ -14,9 +14,22 @@ export function isPrismaUniqueConstraintError(error: unknown) {
   return hasPrismaErrorCode(error, "P2002");
 }
 
-/** Lowercase, and drop the backticks and double quotes the shapes below carry. */
+/**
+ * Lowercase, drop the backticks and double quotes the shapes below carry, and
+ * put a composite list on one separator. Shape 2 hands over a field ARRAY
+ * (joined with a space) while shape 3 captures Prisma's rendered list verbatim
+ * (`` (`memberId`,`seasonYear`) ``), so without this the same composite
+ * constraint would describe itself differently depending on whether Postgres
+ * sent the `Key (…)` detail. Callers get one answer per constraint, whatever
+ * shape carried it.
+ */
 function normaliseConstraintTarget(raw: string): string {
-  return raw.replace(/[`"]/g, "").trim().toLowerCase();
+  return raw
+    .replace(/[`"]/g, "")
+    .toLowerCase()
+    .split(/[\s,]+/)
+    .filter(Boolean)
+    .join(" ");
 }
 
 function readStringArray(value: unknown): string[] {
@@ -26,9 +39,13 @@ function readStringArray(value: unknown): string[] {
 }
 
 /**
- * Names what a P2002 (or any constraint failure) actually collided on —
- * lowercased, quotes and backticks stripped — or null when the error carries
- * nothing identifiable.
+ * Names what a unique-constraint failure (SQLSTATE 23505 / P2002) actually
+ * collided on — lowercased, quotes and backticks stripped, composite lists
+ * space-separated — or null when the error carries nothing identifiable.
+ *
+ * Unique constraints only. A CHECK or trigger violation loses its constraint
+ * name entirely under the driver adapter, which is why
+ * `booking-envelope-invariants.ts` scans nested message text instead.
  *
  * ## What `@prisma/adapter-pg` really populates (measured, #2412)
  *
@@ -99,14 +116,21 @@ export function describeUniqueConstraintTarget(error: unknown): string | null {
 
   // 3. The formatted message, which is rendered from the same field list. The
   //    real message wraps the sentence in an "Invalid `prisma.x.y()` invocation
-  //    in …" preamble plus a source excerpt, so match anywhere rather than
-  //    anchoring.
+  //    in …" preamble plus a source excerpt of the call, so the sentence is
+  //    matched anywhere rather than at the start — but on Prisma's whole
+  //    sentence, because that excerpt renders CALL ARGUMENTS. Member free text
+  //    reading `fields: (googleSub)` would otherwise be matched first and name
+  //    the wrong column.
   const message = error instanceof Error ? error.message : "";
-  const messageFields = message.match(/fields: \(([^)]*)\)/i)?.[1];
+  const messageFields = message.match(
+    /Unique constraint failed on the fields: \(([^)]*)\)/i
+  )?.[1];
   if (messageFields) {
     return normaliseConstraintTarget(messageFields);
   }
-  const index = message.match(/constraint: `([^`]*)`/i)?.[1];
+  const index = message.match(
+    /Unique constraint failed on the constraint: `([^`]*)`/i
+  )?.[1];
   if (index) {
     return normaliseConstraintTarget(index);
   }

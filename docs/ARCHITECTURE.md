@@ -1426,8 +1426,18 @@ Do not re-derive this by reading adapter source. Use
 `describeUniqueConstraintTarget` in `src/lib/prisma-errors.ts`, which reads every
 shape most-trustworthy-first (so it keeps working if the adapter is ever dropped
 and `meta.target` returns, or if Postgres withholds the `Key (…)` detail and only
-the rendered message is left) and normalises the quoting and case away. Verbatim
-captured errors live in `src/lib/__tests__/helpers/p2002-fixtures.ts`.
+the rendered message is left) and normalises the quoting, case and composite
+separator away, so one constraint always describes itself the same way whichever
+shape carried it. Verbatim captured errors live in
+`src/lib/__tests__/helpers/p2002-fixtures.ts`.
+
+Two limits on that advice. All of the above is about **unique** constraints
+(SQLSTATE 23505) only: for a CHECK or trigger violation the adapter drops the
+Postgres `constraint` field altogether, so the helper has nothing to return and
+the booking-envelope triggers are matched on their `RAISE EXCEPTION` text instead
+(`src/lib/booking-envelope-invariants.ts`). And the rendered message echoes the
+call arguments, so any match against it is made on Prisma's whole sentence —
+member free text can otherwise supply a convincing-looking field list of its own.
 
 ## Booking and Payment Flow
 

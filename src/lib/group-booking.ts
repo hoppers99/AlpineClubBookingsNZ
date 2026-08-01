@@ -258,7 +258,18 @@ export async function createGroupBooking(
         // not the organiserBookingId one below. Unreachable in practice at
         // 31^8 codes, but while the retry was broken (#2412) every collision
         // fell through to "this booking already has a group", which would have
-        // been a confusing thing to tell an organiser.
+        // been a confusing thing to tell an organiser. Logged with the
+        // constraint it read, because the route returns a GroupBookingError
+        // verbatim without logging: at these odds the realistic cause is a
+        // misread P2002, not five real clashes, and that must leave a trace.
+        logger.error(
+          {
+            organiserBookingId: booking.id,
+            attempts: CODE_GENERATION_ATTEMPTS,
+            constraint: describeUniqueConstraintTarget(err),
+          },
+          "Group booking join-code generation exhausted its attempts"
+        );
         throw new GroupBookingError(
           "Could not generate a unique join code, please try again",
           500
