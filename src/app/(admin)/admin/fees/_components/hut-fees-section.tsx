@@ -46,6 +46,8 @@ interface Season {
   startDate: string;
   endDate: string;
   active: boolean;
+  // Flat whole-lodge night rate in integer cents, or null when not set (#2338).
+  flatWholeLodgeNightCents: number | null;
   membershipTypeRates: MembershipTypeRate[];
 }
 
@@ -139,6 +141,9 @@ export function HutFeesSection({ canEdit }: { canEdit: boolean }) {
   const [endDate, setEndDate] = useState("");
   const [active, setActive] = useState(true);
   const [rates, setRates] = useState<Record<string, number>>({});
+  // #2338: the season's flat whole-lodge night rate in integer cents, or null
+  // when the club does not charge a flat whole-lodge rate for this season.
+  const [flatWholeLodgeCents, setFlatWholeLodgeCents] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
 
   const fetchAgeTiers = useCallback(async () => {
@@ -221,6 +226,7 @@ export function HutFeesSection({ canEdit }: { canEdit: boolean }) {
     setEndDate("");
     setActive(true);
     setRates(emptyRates(rateTypes, ageTiers));
+    setFlatWholeLodgeCents(null);
     setEditingId(null);
     setShowForm(false);
     setError("");
@@ -234,11 +240,13 @@ export function HutFeesSection({ canEdit }: { canEdit: boolean }) {
     setEndDate(season.endDate.split("T")[0]);
     setActive(season.active);
     setRates(seasonToRatesMap(season.membershipTypeRates, rateTypes, ageTiers));
+    setFlatWholeLodgeCents(season.flatWholeLodgeNightCents);
     setShowForm(true);
   }
 
   function startCreate() {
     setRates(emptyRates(rateTypes, ageTiers));
+    setFlatWholeLodgeCents(null);
     setShowForm(true);
   }
 
@@ -265,6 +273,10 @@ export function HutFeesSection({ canEdit }: { canEdit: boolean }) {
       endDate,
       active,
       membershipTypeRates,
+      // #2338: send the flat whole-lodge rate explicitly (null clears it) so an
+      // edit here always reflects what the form shows. The windows-only Seasons
+      // page never sends this field, so a window edit there leaves it untouched.
+      flatWholeLodgeNightCents: flatWholeLodgeCents,
       ...(editingId ? {} : { lodgeId: lodgeId ?? undefined }),
     };
 
@@ -333,6 +345,18 @@ export function HutFeesSection({ canEdit }: { canEdit: boolean }) {
     } else {
       setRates((prev) => ({ ...prev, [key]: Math.round(dollars * 100) }));
     }
+  }
+
+  // #2338: an EMPTY flat whole-lodge field means "no flat rate" (null), NOT $0 —
+  // clearing it must switch the season back to per-guest whole-lodge pricing,
+  // never charge nothing for the building. A typed dollar amount stores cents.
+  function handleFlatWholeLodgeChange(value: string) {
+    if (value.trim() === "") {
+      setFlatWholeLodgeCents(null);
+      return;
+    }
+    const dollars = parseFloat(value);
+    setFlatWholeLodgeCents(isNaN(dollars) ? null : Math.round(dollars * 100));
   }
 
   /*
@@ -496,6 +520,42 @@ export function HutFeesSection({ canEdit }: { canEdit: boolean }) {
                       )}
                     </div>
 
+                    {/*
+                      #2338: the season's flat whole-lodge night rate. Optional —
+                      leaving it blank keeps whole-lodge approvals priced per
+                      guest. When set, a booking officer can choose "price as
+                      whole lodge" on a member's whole-lodge approval to charge
+                      nights x this rate regardless of headcount.
+                    */}
+                    <div className="space-y-2">
+                      <Label htmlFor="flat-whole-lodge-rate" className="text-base font-semibold">
+                        Flat whole-lodge night rate ({APP_CURRENCY}, optional)
+                      </Label>
+                      <p className="text-sm text-muted-foreground">
+                        A single price per night for the whole building, regardless of how many
+                        people come. Leave blank to price whole-lodge bookings per guest. When set,
+                        a booking officer can choose &quot;price as whole lodge&quot; when they
+                        approve a member&apos;s whole-lodge request, and the booking is charged this
+                        rate per night instead of per guest.
+                      </p>
+                      <div className="relative max-w-xs">
+                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground">$</span>
+                        <Input
+                          id="flat-whole-lodge-rate"
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          className="pl-7"
+                          value={flatWholeLodgeCents != null ? (flatWholeLodgeCents / 100).toFixed(2) : ""}
+                          onChange={(e) => handleFlatWholeLodgeChange(e.target.value)}
+                          aria-describedby="flat-whole-lodge-rate-hint"
+                        />
+                      </div>
+                      <FieldHint id="flat-whole-lodge-rate-hint" className="mt-1">
+                        Example: 600.00 per night for the whole lodge
+                      </FieldHint>
+                    </div>
+
                     <div className="flex items-center space-x-2">
                       <input type="checkbox" id="active" checked={active} onChange={(e) => setActive(e.target.checked)} className="rounded border-input" />
                       <Label htmlFor="active">Active</Label>
@@ -549,6 +609,20 @@ export function HutFeesSection({ canEdit }: { canEdit: boolean }) {
                       </CardDescription>
                     </CardHeader>
                     <CardContent>
+                      {/* #2338: the season's flat whole-lodge rate, shown only
+                          when one is set. Absence reads as "priced per guest". */}
+                      <p className="mb-4 text-sm">
+                        <span className="font-semibold">Flat whole-lodge night rate: </span>
+                        {season.flatWholeLodgeNightCents != null ? (
+                          <span className="font-mono">
+                            {formatCents(season.flatWholeLodgeNightCents)} per night
+                          </span>
+                        ) : (
+                          <span className="text-muted-foreground">
+                            Not set (whole-lodge bookings priced per guest)
+                          </span>
+                        )}
+                      </p>
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                         {rateTypes.map((rt) => (
                           <div key={rt.id}>
