@@ -10,8 +10,8 @@ import { CSP_HEADER, setSecurityHeaders } from "@/lib/csp";
  * `_next/static` chunk fell through to the `(website)/[...slug]` CMS catch-all
  * and was answered with the club's whole "page not found" DOCUMENT — measured at
  * ~29KB of `text/html` carrying 19 inline `<script>` tags with no `nonce`, on a
- * response with no `Content-Security-Policy` header at all, because the proxy
- * that mints the nonce does not run on those paths.
+ * response with no `Content-Security-Policy` header at all, because at the time
+ * the proxy that mints the nonce did not run on those paths.
  *
  * The body is EMPTY on purpose, and that is the security property: with no
  * document there is nothing for a policy to have to permit, so the missing nonce
@@ -28,6 +28,21 @@ import { CSP_HEADER, setSecurityHeaders } from "@/lib/csp";
  * response — strictly tighter than the edge's set-if-absent `default-src 'self'`
  * fallback, and it needs no nonce, so nothing about it can rot the way the
  * page-render path did.
+ *
+ * **Which policy reaches the wire depends on whether the proxy ran, and that is
+ * worth knowing rather than discovering.** Since #2404's Option A the matcher no
+ * longer skips image extensions, so `src/proxy.ts` runs on `/foo.png` and writes
+ * its own per-request page policy first; Next then APPENDS a route handler's
+ * header only when the name is not already set on the outgoing response
+ * (`next/dist/server/send-response.js`, the `isHeaderPresent` check, against the
+ * headers `server/lib/router-server.js` has already applied "from routing"). So
+ * the proxy's nonced policy is what ships for a rewritten image miss, and the
+ * `default-src 'none'` below is what ships for the shapes the matcher still skips
+ * — `/_next/static/…` — and for a direct request to this URL that somehow
+ * bypassed the matcher. Both are correct answers for an empty body; the property
+ * that matters is that one of them always ships, from whichever layer answered.
+ * `X-Content-Type-Options`, `X-Frame-Options` and the rest are identical in both
+ * layers, so nothing there depends on the order.
  *
  * `/asset-not-found` is itself a reachable URL and answers exactly this: a 404
  * with no body. That is deliberate — it has no extension, so it cannot be

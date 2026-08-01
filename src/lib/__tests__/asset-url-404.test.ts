@@ -24,6 +24,7 @@ import {
   UPLOADED_IMAGE_URL_PREFIX,
 } from "@/lib/asset-url-404";
 import { IMAGES_ROOT, imagePublicUrl } from "@/lib/image-storage";
+import { getRequiredFeaturesForPath } from "@/config/feature-routes";
 import { isPublicWebsitePath } from "@/lib/setup-gate";
 import * as assetNotFoundRoute from "@/app/asset-not-found/route";
 import nextConfig from "../../../next.config";
@@ -37,12 +38,18 @@ import { config } from "../../proxy";
  *   real route is there to serve.**
  *
  * Production CSP is nonce-only (`script-src 'self' 'nonce-…'`, `src/lib/csp.ts`)
- * and the nonce comes from `src/proxy.ts`, which by design does not run on
- * static-asset shapes — #2420 re-affirmed that exclusion, and `csp-proxy.test.ts`
- * asserts those shapes stay outside the matcher so a real asset never pays a
- * nonce mint. The bug was what happened on a MISS: the request fell through to
- * the `(website)/[...slug]` CMS catch-all and rendered the club's 404 document
- * anyway, unnonced and with no CSP header at all.
+ * and the nonce comes from `src/proxy.ts`. Until #2404 its matcher skipped every
+ * static-asset shape, so a MISS on one fell through to the `(website)/[...slug]`
+ * CMS catch-all and rendered the club's 404 document unnonced and with no CSP
+ * header at all.
+ *
+ * #2404 closed that from both directions, and the coverage table below is where
+ * the two are reconciled. The `afterFiles` rewrites remove the DOCUMENT from an
+ * asset-shaped miss, and the matcher's extension exclusion was then dropped
+ * (owner decision, 1 Aug 2026) so the proxy also runs on those shapes and can
+ * attach a policy at all. Most asset rows are therefore covered TWICE now, which
+ * is the intended end state rather than redundancy: either layer alone would hold
+ * the invariant, and a shape covered by neither is still the bug.
  *
  * `scripts/ci/check-prerendered-script-nonces.mjs` cannot see this class — it
  * reads emitted prerender HTML, and these responses render per request. So the
@@ -221,21 +228,30 @@ const shapes: ReadonlyArray<readonly [string, Coverage[]]> = [
   ["/_next/staticfoo", ["proxy"]],
   ["/_next/imagemap", ["proxy"]],
   ["/_next/image/x", ["proxy"]],
-  // Asset-shaped URLs: outside the matcher on purpose (a real one must not pay a
-  // nonce mint), so a miss must be terminated by a rewrite rather than rendered.
-  ["/foo.png", ["asset-404"]],
-  ["/foo.jpg", ["asset-404"]],
-  ["/foo.jpeg", ["asset-404"]],
-  ["/foo.gif", ["asset-404"]],
-  ["/foo.webp", ["asset-404"]],
-  ["/foo.svg", ["asset-404"]],
-  ["/foo.ico", ["asset-404"]],
-  ["/favicon.ico", ["asset-404"]],
-  ["/logo.png", ["asset-404"]],
-  ["/gallery.svg", ["asset-404"]],
-  ["/wp-content/uploads/x.jpg", ["asset-404"]],
-  ["/branding/favicon.ico", ["asset-404"]],
-  ["/branding/logo.example.png", ["asset-404"]],
+  // Asset-shaped URLs: covered twice since the matcher's extension exclusion was
+  // dropped. The rewrite removes the document; the proxy attaches the policy and
+  // the security headers, and brings these shapes inside the #2420 setup gate's
+  // reach — which is why `isPublicWebsitePath()` must go on refusing them for a
+  // reason of its own, asserted below.
+  ["/foo.png", ["proxy", "asset-404"]],
+  ["/foo.jpg", ["proxy", "asset-404"]],
+  ["/foo.jpeg", ["proxy", "asset-404"]],
+  ["/foo.gif", ["proxy", "asset-404"]],
+  ["/foo.webp", ["proxy", "asset-404"]],
+  ["/foo.svg", ["proxy", "asset-404"]],
+  ["/foo.ico", ["proxy", "asset-404"]],
+  // The two named carve-outs #2404 deleted. No such file exists in `public/` —
+  // the root layout points at `/branding/favicon.ico` — so each was a dead
+  // alternative that left one URL shape with no policy on it.
+  ["/favicon.ico", ["proxy", "asset-404"]],
+  ["/logo.png", ["proxy", "asset-404"]],
+  ["/gallery.svg", ["proxy", "asset-404"]],
+  ["/wp-content/uploads/x.jpg", ["proxy", "asset-404"]],
+  ["/branding/favicon.ico", ["proxy", "asset-404"]],
+  ["/branding/logo.example.png", ["proxy", "asset-404"]],
+  // `_next/static` keeps its exclusion — it is the hot path, dozens of requests
+  // per page load — so a deleted chunk is covered by the rewrite ALONE and the
+  // terminal route's own `default-src 'none'` is what reaches the wire for it.
   ["/_next/static/chunks/nope.js", ["asset-404"]],
   ["/_next/static", ["proxy", "asset-404"]],
   // The uploaded-images route: a REAL route whose every URL ends in an image
@@ -248,9 +264,12 @@ const shapes: ReadonlyArray<readonly [string, Coverage[]]> = [
   ["/api/chores/zzz.png", ["proxy", "api-asset-404"]],
   // Case variants of the same. The matcher is compiled case-SENSITIVELY and
   // rewrites case-INSENSITIVELY, which is exactly how `/API/x.png` fell between a
-  // lookahead-based carve-out and the matcher in the first cut of this fix.
-  ["/API/x.png", ["api-asset-404"]],
-  ["/Api/does-not-exist.png", ["api-asset-404"]],
+  // lookahead-based carve-out and the matcher in the first cut of this fix. The
+  // matcher's `api` alternative is lowercase, so these DO run the proxy now that
+  // the extension alternative is gone — and the ordered rewrite still sends them
+  // to the JSON, which is what keeps #2405's parity.
+  ["/API/x.png", ["proxy", "api-asset-404"]],
+  ["/Api/does-not-exist.png", ["proxy", "api-asset-404"]],
   ["/FOO.PNG", ["proxy", "asset-404"]],
   // Plain `/api` URLs: src/app/api/[[...unmatched]]/route.ts answers JSON.
   ["/api", ["api-json"]],
@@ -533,26 +552,31 @@ describe("the /api namespace keeps #2405's module-state parity", () => {
 
   it("does not identity-rewrite the rest of /api, which would skip the module gate", () => {
     // Recorded because it is the design decision a future reader is most likely
-    // to want to "simplify". `src/proxy.ts`'s matcher is case-SENSITIVE, so
-    // `/API/admin/lockers/1.png` never reaches the module gate; an identity
-    // rewrite over the whole `/api` namespace substitutes the destination's
-    // LITERAL lowercase `/api` and would hand that request to the real, gated
-    // handler with the gate never having run. The frozen JSON keeps the gate the
-    // only way in.
-    expect(
-      unstable_doesProxyMatch({
-        config,
-        nextConfig: {},
-        url: "/api/admin/lockers/1.png",
-      }),
-    ).toBe(true);
-    expect(
-      unstable_doesProxyMatch({
-        config,
-        nextConfig: {},
-        url: "/API/admin/lockers/1.png",
-      }),
-    ).toBe(false);
+    // to want to "simplify". An identity rewrite over the whole `/api` namespace
+    // substitutes the destination's LITERAL lowercase `/api`, so it would hand
+    // `/API/admin/lockers/1.png` to the real, module-gated handler — and nothing
+    // would have gated it, because the gate's own route table is case-SENSITIVE
+    // (`matchesPrefix` in `src/config/feature-routes.ts` uses `startsWith`, and
+    // its patterns carry no `i` flag). The frozen JSON keeps the gate the only
+    // way in.
+    //
+    // The proxy DOES run on both forms since #2404 widened the matcher, which is
+    // an improvement — the response carries a policy either way — but it is not
+    // the gate, so it does not change this decision. Both facts are pinned so a
+    // future reader can see which one the argument rests on.
+    expect(getRequiredFeaturesForPath("/api/admin/lockers/1.png")).toEqual([
+      "lockers",
+    ]);
+    expect(getRequiredFeaturesForPath("/API/admin/lockers/1.png")).toEqual([]);
+    for (const url of [
+      "/api/admin/lockers/1.png",
+      "/API/admin/lockers/1.png",
+    ]) {
+      expect(
+        unstable_doesProxyMatch({ config, nextConfig: {}, url }),
+        `${url} must run the proxy`,
+      ).toBe(true);
+    }
     expect(resolveRewrites("/API/admin/lockers/1.png")).toBe(
       API_ASSET_NOT_FOUND_PATH,
     );
@@ -599,22 +623,46 @@ describe("the /api namespace keeps #2405's module-state parity", () => {
 
 describe("the rewrite rules and the proxy matcher cannot drift", () => {
   /**
-   * The matcher is a LITERAL string because Next extracts `export const config`
-   * from the middleware source statically — it cannot evaluate an imported
-   * constant or a template literal. So the extension list is written twice by
-   * necessity, and this is what stops the copies disagreeing: adding `avif` to
-   * the matcher and not to the rules would leave `/foo.avif` skipped by the proxy
-   * AND unterminated by the rewrites, which is the hole #2404 closed.
+   * The matcher no longer carries an extension list at all — #2404 dropped it so
+   * the proxy runs on asset shapes too — and this asserts that, because the
+   * absence is what the coverage table above now depends on. If an extension
+   * alternative ever comes back, every `["proxy", "asset-404"]` row silently
+   * becomes a single-layer row again.
    */
-  it("lists the same extensions as the matcher", () => {
+  it("no longer excludes asset extensions from the proxy at all", () => {
     const source = (config.matcher[0] as { source: string }).source;
-    const alternation = source.match(/\\\.\(\?:([a-z|]+)\)\$/)?.[1];
 
-    expect(
-      alternation,
-      "matcher must still carry an extension alternation",
-    ).toBeDefined();
-    expect(alternation!.split("|")).toEqual([...ASSET_URL_EXTENSIONS]);
+    expect(source).not.toMatch(/\\\.\(\?:[a-z|]+\)\$/);
+    for (const extension of ASSET_URL_EXTENSIONS) {
+      expect(source, `matcher must not carry a ${extension} carve-out`).not.toContain(
+        extension,
+      );
+    }
+  });
+
+  /**
+   * The coupling that REPLACED it, and it is the one that can still produce a
+   * document. `isPublicWebsitePath()` keeps refusing asset-shaped paths so the
+   * #2420 holding screen — a 503 HTML document — is never the answer to a request
+   * for an image. An extension the rewrites terminate but that classifier does
+   * NOT recognise would be gated pre-setup and answered with exactly the document
+   * this issue exists to stop sending.
+   *
+   * Driven through the real function rather than through its private pattern, so
+   * a rewrite of the classifier that keeps the behaviour keeps passing.
+   */
+  it("keeps every terminated extension out of the pre-setup gate", () => {
+    for (const extension of ASSET_URL_EXTENSIONS) {
+      for (const url of [`/foo.${extension}`, `/a/b/foo.${extension}`]) {
+        expect(
+          isPublicWebsitePath(url),
+          `${url} is terminated as an asset miss, so the setup gate must not claim it`,
+        ).toBe(false);
+      }
+    }
+
+    // Guards the loop: a classifier that refused everything would pass it.
+    expect(isPublicWebsitePath("/foo.avif")).toBe(true);
   });
 
   it("keeps the matcher exclusions to the set that has been paid for", () => {
@@ -623,8 +671,13 @@ describe("the rewrite rules and the proxy matcher cannot drift", () => {
     // miss here rendering an unnonced document" — recorded in the JSDoc above
     // `config` in src/proxy.ts. Changing this string means re-deciding the
     // coverage table above, not just updating the expectation.
+    //
+    // Three alternatives, and only three: `/api` (its own JSON terminal and
+    // #2405's parity, with the ordered `/api/…` entries re-admitting the gated
+    // prefixes), `_next/static/` (the hot path; misses covered by the rewrite),
+    // and `_next/image$` (a real handler that answers its own plain-text 400).
     expect((config.matcher[0] as { source: string }).source).toBe(
-      "/((?!api(?:/|$)|_next/static/|_next/image$|favicon\\.ico$|logo\\.png$|.*\\.(?:png|jpg|jpeg|gif|webp|svg|ico)$).*)",
+      "/((?!api(?:/|$)|_next/static/|_next/image$).*)",
     );
   });
 

@@ -292,13 +292,9 @@ export default proxy;
  * `/favicon.icons` by `favicon.ico` — whose unescaped dot also excluded
  * `/faviconXico`. All are ordinary website addresses. They skipped the proxy
  * entirely, so pre-setup they answered 200 instead of 503, and at all times they
- * were served with no CSP header. Anchored now: `api` must be followed by `/`
- * or end the path, and the two filenames must end it.
- *
- * The image-extension alternative is deliberately left as a whole-path suffix —
- * those are `public/` asset shapes and running the proxy on them would mint a
- * nonce per image. `isPublicWebsitePath()` is aligned to agree, and
- * `csp-proxy.test.ts` asserts the two definitions cannot drift apart again.
+ * were served with no CSP header. `api` was anchored then — it must be followed
+ * by `/` or end the path — and #2404 finished the other two by deleting them
+ * outright (see below): a carve-out for a file that does not exist can only cost.
  *
  * The two REMAINING bare prefixes were anchored in #2404 for the same reason F3
  * gives, one namespace over: `_next/static` also excluded `/_next/staticfoo` and
@@ -314,16 +310,50 @@ export default proxy;
  * Each now excludes precisely what the framework serves and nothing else, and
  * `csp-proxy.test.ts` still asserts `/_next/static/chunks/main.js` stays outside.
  *
- * What no anchor here can fix is a MISS inside a namespace that stays excluded on
- * purpose: `/foo.png` and `/_next/static/chunks/deleted.js` skip the proxy
- * correctly — a real asset must not pay a nonce mint — and used to fall through
- * to the CMS catch-all and render the club's 404 document with no nonce and no
- * policy. That is closed one layer down, by the `afterFiles` rewrites in
- * `next.config.ts` (see `src/lib/asset-url-404.ts`), which answer those misses
- * with no document at all, so the absent nonce stops mattering rather than being
- * worked around. Keep the two in step: an extension added to the alternation
- * above must be added there too, and `src/lib/__tests__/asset-url-404.test.ts`
- * fails if they diverge.
+ * **The image-extension alternative was REMOVED in #2404 (owner decision,
+ * 1 Aug 2026), and the two named filenames with it.** It used to read
+ * `favicon\.ico$|logo\.png$|.*\.(?:png|jpg|…)$`, on the reasoning that a real
+ * asset must not pay a nonce mint. Three measured facts overturned that:
+ *
+ *  1. **It was the reason the class existed at all.** A URL the proxy skips is a
+ *     URL nothing of ours can attach a header to, and a URL the #2420 setup gate
+ *     never sees. The `afterFiles` rewrites in `next.config.ts` (rules in
+ *     `src/lib/asset-url-404.ts`) remove the DOCUMENT from an asset-shaped miss,
+ *     which is what makes the missing nonce harmless — but
+ *     only the proxy can put a `Content-Security-Policy` on the response, and
+ *     only the proxy can answer 503 pre-setup. Layer, not replacement.
+ *  2. **The exclusion was not buying anything.** Benchmarked on the compiled
+ *     matcher, the shorter lookahead is marginally CHEAPER per request (~1.4ns),
+ *     and the genuinely hot shape — the dozens of `/_next/static/…` chunk
+ *     requests one page load issues — is still excluded by its own alternative.
+ *     `public/` holds `branding/*` and `robots.txt` and nothing else, so the real
+ *     asset requests newly running the proxy are few, and they gain `nosniff`,
+ *     `X-Frame-Options` and the rest of `SECURITY_HEADERS` they did not have.
+ *  3. **`favicon.ico` and `logo.png` excluded nothing whatsoever.** Neither file
+ *     exists — `src/app/layout.tsx` points at `/branding/favicon.ico` — so both
+ *     were dead alternatives leaving two exposed URL shapes. If either file is
+ *     ever added, the filesystem serves it ahead of any rewrite and the whole
+ *     cost of the proxy running on it is one nonce mint.
+ *
+ * So an asset-shaped miss now meets BOTH layers, and they compose rather than
+ * fight: the proxy attaches the policy and the security headers, and the rewrite
+ * still terminates the request at `src/app/asset-not-found/route.ts` so no
+ * document is rendered. Which layer's `Content-Security-Policy` reaches the wire
+ * is decided by Next and is worth knowing: `sendResponse()`
+ * (`next/dist/server/send-response.js`) appends a route handler's header only
+ * when the name is not already set on the outgoing response, and the router
+ * server writes the middleware's headers first
+ * (`server/lib/router-server.js`, "apply any response headers from routing"). The
+ * proxy's per-request page policy therefore wins wherever the proxy runs, and the
+ * route's tighter `default-src 'none'` remains in force for the shapes it still
+ * skips — `/_next/static/chunks/deleted.js` — and as the floor if the matcher
+ * ever stops covering a shape. Either way a policy ships, which is the property.
+ *
+ * `isPublicWebsitePath()` in `src/lib/setup-gate.ts` still refuses asset-shaped
+ * paths, and no longer because it mirrors this string — it is now an independent
+ * rule with its own reason, recorded there. Keep the extension list there in step
+ * with `ASSET_URL_EXTENSIONS`; `src/lib/__tests__/asset-url-404.test.ts` fails if
+ * they diverge.
  *
  * **Why the same source appears twice (#2404).** Matcher entries are OR-ed — the
  * proxy runs if ANY entry matches — so the pair below reads as one rule: run
@@ -354,7 +384,7 @@ export const config = {
   matcher: [
     {
       source:
-        "/((?!api(?:/|$)|_next/static/|_next/image$|favicon\\.ico$|logo\\.png$|.*\\.(?:png|jpg|jpeg|gif|webp|svg|ico)$).*)",
+        "/((?!api(?:/|$)|_next/static/|_next/image$).*)",
       missing: [
         { type: "header", key: "next-router-prefetch" },
         { type: "header", key: "purpose", value: "prefetch" },
@@ -362,7 +392,7 @@ export const config = {
     },
     {
       source:
-        "/((?!api(?:/|$)|_next/static/|_next/image$|favicon\\.ico$|logo\\.png$|.*\\.(?:png|jpg|jpeg|gif|webp|svg|ico)$).*)",
+        "/((?!api(?:/|$)|_next/static/|_next/image$).*)",
       missing: [{ type: "header", key: "RSC" }],
     },
     "/api/admin/:path*",

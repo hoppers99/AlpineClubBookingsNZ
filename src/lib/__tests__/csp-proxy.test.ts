@@ -723,11 +723,15 @@ describe("anonymous public-page cache headers (#2322)", () => {
  * 200: `/apiary`, `/api-docs` (the `api` alternative was a bare PREFIX, not a
  * path segment), `/favicon.icons`, `/logo.pngs` (same, and `favicon.ico`'s dot
  * was unescaped so `/faviconXico` skipped too), and `/gallery.svg` (an
- * image-extension suffix, which the matcher skips on purpose).
+ * image-extension suffix, which the matcher skipped on purpose).
  *
- * The two were reconciled in opposite directions on purpose — see
- * `isPublicWebsitePath`'s own comment for why the extension case is the
- * classifier's problem and the prefix cases are the matcher's.
+ * #2420 reconciled the two in opposite directions: the prefix bugs were the
+ * matcher's to fix, the extension case was left to the classifier. #2404's
+ * Option A then removed the extension exclusion from the matcher as well, so the
+ * subset invariant below is now satisfied with room to spare — the matcher runs
+ * on strictly more than the gate claims. `isPublicWebsitePath()`'s refusal of
+ * asset shapes survives on its own reasoning, not as a mirror of this string;
+ * see its comment, and the pair of assertions further down.
  */
 describe("the proxy matcher covers every path the setup gate would gate", () => {
   const matches = (url: string) =>
@@ -777,21 +781,86 @@ describe("the proxy matcher covers every path the setup gate would gate", () => 
     },
   );
 
-  it("still skips the /api, static and asset shapes #2405 depends on", () => {
-    // The reconciliation must not have widened the matcher onto the paths whose
-    // exclusion is load-bearing elsewhere: /api keeps its own JSON 404 route and
-    // its module-gate verb parity, and static assets must not pay a nonce mint.
+  it("still skips the /api and static shapes #2405 and the hot path depend on", () => {
+    // The three alternatives that remain, and the only three. `/api` keeps its
+    // own JSON 404 route and its module-gate verb parity; `_next/static` is the
+    // hot path (dozens of chunk requests per page load) and `_next/image` is a
+    // real handler that answers its own plain-text 400. A miss inside either
+    // `_next` namespace is covered one layer down, by the `afterFiles` rewrites.
     for (const url of [
       "/api",
       "/api/",
       "/api/definitely-missing",
+      "/api/does-not-exist.png",
+      "/_next/static/chunks/main.js",
+      "/_next/image",
+    ]) {
+      expect(matches(url), `${url} must stay outside the matcher`).toBe(false);
+    }
+  });
+
+  /**
+   * The asset shapes MOVED, and that is #2404's Option A (owner decision,
+   * 1 Aug 2026). They used to be asserted as skipped, alongside `/api` and
+   * `_next/static`, on the reasoning that a real image must not pay a nonce
+   * mint. The reasoning did not survive measurement: the shorter lookahead is
+   * marginally cheaper per request, the genuinely hot `_next/static` shape is
+   * still excluded by its own alternative, and the exclusion was the reason an
+   * asset-shaped URL could be answered with no policy of ours on it at all.
+   *
+   * `/favicon.ico` and `/logo.png` are here for a second reason: they were NAMED
+   * carve-outs for files that do not exist (`public/` holds `branding/` and
+   * `robots.txt`; the root layout points at `/branding/favicon.ico`), so they
+   * excluded nothing and left two URL shapes exposed. If either file is ever
+   * added, the filesystem serves it ahead of any rewrite.
+   */
+  it("now runs on the asset shapes it used to skip (#2404 Option A)", () => {
+    for (const url of [
+      "/favicon.ico",
+      "/logo.png",
+      "/branding/logo.png",
+      "/branding/favicon.ico",
+      "/gallery.svg",
+      "/foo.png",
+      "/foo.jpg",
+      "/foo.jpeg",
+      "/foo.gif",
+      "/foo.webp",
+      "/foo.ico",
+      "/wp-content/uploads/x.jpg",
+    ]) {
+      expect(
+        matches(url),
+        `${url} must run the proxy, so its response carries a CSP header`,
+      ).toBe(true);
+    }
+  });
+
+  /**
+   * The half of Option A that has to NOT change, and the reason
+   * `isPublicWebsitePath()` is now an independent rule rather than a mirror of
+   * the matcher string.
+   *
+   * The gate lives inside `proxy()`. Before Option A an asset shape never got
+   * there; now every one of them does, and if the classifier called them website
+   * paths a club mid-setup would answer a request for an image with the "Site
+   * setup in progress" screen — a 503 HTML DOCUMENT, from the exact URL class
+   * #2404 exists to answer without one. `setup-gate.ts` refuses them on its own
+   * terms, and this is where the two facts are asserted together.
+   */
+  it("brings asset shapes inside the gate's reach without letting the gate claim them", () => {
+    for (const url of [
       "/favicon.ico",
       "/logo.png",
       "/branding/logo.png",
       "/gallery.svg",
-      "/_next/static/chunks/main.js",
+      "/wp-content/uploads/x.jpg",
     ]) {
-      expect(matches(url), `${url} must stay outside the matcher`).toBe(false);
+      expect(matches(url), `${url} must run the proxy`).toBe(true);
+      expect(
+        isPublicWebsitePath(url),
+        `${url} must not be gated: a 503 holding screen is a document`,
+      ).toBe(false);
     }
   });
 

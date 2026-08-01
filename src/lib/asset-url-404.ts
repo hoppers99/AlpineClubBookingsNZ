@@ -2,28 +2,38 @@
  * Static-asset URLs nothing serves are answered without a document (#2404).
  *
  * **What was wrong.** `src/proxy.ts` mints the CSP nonce per request, and its
- * matcher deliberately skips static-asset shapes — anything ending in an image
- * extension, plus `_next/static` and `_next/image` — because running edge
- * middleware on the dozens of chunk and image requests a single page load issues
- * is the hottest path in the app. That is correct for a file that EXISTS, and
- * #2420 re-affirmed it: `csp-proxy.test.ts` asserts those shapes stay outside the
- * matcher precisely so a real asset never pays a nonce mint.
+ * matcher used to skip every static-asset shape — anything ending in an image
+ * extension, plus `_next/static` and `_next/image` — on the reasoning that
+ * running edge middleware on the dozens of chunk and image requests a single page
+ * load issues is the hottest path in the app.
  *
- * It was wrong for a file that does NOT exist. The miss fell through to the
- * `(website)/[...slug]` CMS catch-all, which called `notFound()` and rendered the
- * club's whole "page not found" document — with no nonce on any inline script,
- * because the thing that mints nonces had been skipped, and with no
- * `Content-Security-Policy` header at all. `Caddyfile`'s set-if-absent
- * `default-src 'self'` fallback then supplied a policy carrying no `'nonce-…'`
- * source, which blocked every one of those scripts. Same end state as #2356, on
- * the URL shapes bots actually hit.
+ * That was fine for a file that EXISTS and wrong for one that does NOT. The miss
+ * fell through to the `(website)/[...slug]` CMS catch-all, which called
+ * `notFound()` and rendered the club's whole "page not found" document — with no
+ * nonce on any inline script, because the thing that mints nonces had been
+ * skipped, and with no `Content-Security-Policy` header at all. `Caddyfile`'s
+ * set-if-absent `default-src 'self'` fallback then supplied a policy carrying no
+ * `'nonce-…'` source, which blocked every one of those scripts. Same end state as
+ * #2356, on the URL shapes bots actually hit.
  *
- * **The fix leaves the matcher's asset exclusions exactly as #2420 set them** and
- * removes the render instead. `afterFiles` rewrites terminate the miss before the
- * dynamic catch-all can claim it: a machine asked for image bytes or JavaScript,
- * and ~29KB of club branding was waste on both sides. It also removes a render
- * amplifier — every probe of `/wp-content/uploads/x.png` used to buy a full
- * dynamic React render, and bots probe those addresses continuously.
+ * **This module is the layer that removes the RENDER.** `afterFiles` rewrites
+ * terminate the miss before the dynamic catch-all can claim it: a machine asked
+ * for image bytes or JavaScript, and ~29KB of club branding was waste on both
+ * sides. It also removes a render amplifier — every probe of
+ * `/wp-content/uploads/x.png` used to buy a full dynamic React render, and bots
+ * probe those addresses continuously.
+ *
+ * **The other layer is in the matcher, and it landed alongside this one.** Owner
+ * decision, 1 Aug 2026 (#2404 "Option A"): the extension exclusion came out of
+ * `config.matcher` as well, because removing the document only makes the missing
+ * nonce harmless — it cannot put a `Content-Security-Policy` on the response, and
+ * it cannot bring the URL inside the #2420 setup gate. Measured, the exclusion
+ * was not even buying speed. So an asset-shaped miss now meets both layers and
+ * they compose: the proxy attaches the policy, the rewrite removes the document.
+ * The rules below are unchanged by that and stay load-bearing on their own — they
+ * are what keeps `/_next/static/chunks/deleted.js` (still excluded, still the hot
+ * path) from rendering anything, and what keeps every other probe from buying a
+ * render it would otherwise still get.
  *
  * **Why `afterFiles`.** Next checks the filesystem — `public/`, `_next/static`,
  * and the non-dynamic routes — BEFORE it consults an `afterFiles` rewrite, so a
@@ -44,6 +54,14 @@
  * unmatched `/api` URL already goes, and the general rule that follows needs no
  * lookahead and so has no case seam to leak through.
  *
+ * Option A closed the matcher's half of that seam — `/API/x.png` runs the proxy
+ * now, so a lookahead-based carve-out would no longer produce an unnonced
+ * document. The ordered rule stays anyway, because the seam it closes has a
+ * second consequence that Option A does not touch: a `/API/…` asset shape
+ * falling into the GENERAL rule would be answered with the empty 404 while its
+ * lowercase twin got JSON, which is #2405's module-state parity read off from one
+ * anonymous request.
+ *
  * **A rewrite is not the end of routing, and one route depends on that.** An
  * `afterFiles` rewrite carries `check: true`
  * (`next/dist/server/lib/router-utils/filesystem.js`, `buildCustomRoute`), so
@@ -61,10 +79,21 @@
  */
 
 /**
- * Extensions the proxy matcher skips, so the ones a miss must be terminated on.
- * Kept in step with the alternation inside `src/proxy.ts`'s `config.matcher` and
- * with `STATIC_ASSET_EXTENSION_PATTERN` in `src/lib/setup-gate.ts`; the guard in
- * `src/lib/__tests__/asset-url-404.test.ts` fails if they drift.
+ * The extensions a miss is terminated on.
+ *
+ * These used to be the extensions `src/proxy.ts`'s matcher skipped, and the list
+ * was kept byte-identical to that alternation. #2404's Option A deleted the
+ * alternation, so the only copy left to stay in step with is
+ * `STATIC_ASSET_EXTENSION_PATTERN` in `src/lib/setup-gate.ts` — and that coupling
+ * matters MORE than the old one did: an extension terminated here but
+ * unrecognised there would be classed a public-website path and answered, on a
+ * club mid-setup, with the 503 holding screen. That is an HTML document on an
+ * asset URL, i.e. this issue reopened through the gate. The guard in
+ * `src/lib/__tests__/asset-url-404.test.ts` fails if the two drift.
+ *
+ * An extension MISSING from this list is a cost regression rather than a security
+ * one: `/foo.avif` renders the club's 404 page, but the proxy runs on it, so it
+ * is nonced and carries a policy like any other page.
  */
 export const ASSET_URL_EXTENSIONS = [
   "png",
@@ -153,13 +182,21 @@ export const UPLOADED_IMAGE_IDENTITY_DESTINATION = `${UPLOADED_IMAGE_URL_PREFIX}
  * falling through the case seam described above.
  *
  * Deliberately NOT an identity rewrite, even though that would be the smaller
- * change. `src/proxy.ts`'s matcher is case-SENSITIVE, so `/API/admin/lockers/1.png`
- * skips the proxy and therefore the module gate; an identity rewrite over the
- * whole `/api` namespace substitutes the destination's LITERAL lowercase `/api`
- * and would hand that request to the real, module-gated handler with the gate
- * never having run. Terminating at the frozen JSON keeps the gate the only way
- * in. (Verified against `unstable_doesMiddlewareMatch`: `/api/admin/lockers/1.png`
- * matches the proxy, `/API/admin/lockers/1.png` does not.)
+ * change. An identity rewrite over the whole `/api` namespace substitutes the
+ * destination's LITERAL lowercase `/api`, so it would hand
+ * `/API/admin/lockers/1.png` to the real, module-gated handler — with nothing
+ * having gated it, because the module gate's route table is case-SENSITIVE
+ * (`matchesPrefix` in `src/config/feature-routes.ts` is a `startsWith`, and its
+ * patterns carry no `i` flag, so `/API/…` matches no rule and
+ * `getRequiredFeaturesForPath()` returns nothing). Terminating at the frozen JSON
+ * keeps the gate the only way in.
+ *
+ * Since #2404's Option A the proxy itself runs on both case forms — the matcher's
+ * `api` alternative is lowercase and the extension alternative that used to catch
+ * the `.png` tail is gone — so the response carries a policy either way. That is
+ * an improvement and it does not weaken the argument above: running is not the
+ * same as gating, and it is the gate this rule protects. Both facts are pinned in
+ * `src/lib/__tests__/asset-url-404.test.ts`.
  */
 export const API_ASSET_MISS_SOURCE = `/api/:path((?:.*)\\.(?:${EXTENSION_ALTERNATION}))`;
 

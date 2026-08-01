@@ -105,8 +105,10 @@ export const NON_WEBSITE_ROOT_SEGMENTS: ReadonlySet<string> = new Set([
   // Two independent reasons it has to be listed, and NEITHER is "missing images
   // would get a 503" — they would not. The rewrites run in `afterFiles`, which
   // is AFTER middleware, so the gate only ever sees the ORIGINAL URL
-  // (`/foo.png`), and the matcher skips that shape anyway. A rewritten request
-  // never reaches this function at all.
+  // (`/foo.png`), and the extension rule below refuses that shape. A rewritten
+  // request never reaches this function at all. (Since #2404's Option A the
+  // proxy DOES run on `/foo.png`, so the gate really is consulted for it now —
+  // which is exactly why that extension rule has to stay.)
   //
   //  1. `/asset-not-found` is a REAL, directly reachable URL, and a direct
   //     request for it does run the proxy — it has no extension, so the matcher
@@ -133,20 +135,35 @@ const NON_WEBSITE_EXACT_PATHS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Static-asset shapes the proxy matcher deliberately skips, so the gate must
- * agree that they are not website pages (#2420 review finding F3).
+ * Static-asset shapes that are never public-website pages, whatever the setup
+ * state.
  *
- * This half of the reconciliation goes the OTHER way from the prefix bugs fixed
- * in the matcher: those were widened to cover real website addresses, whereas
- * this list is narrowed to match the matcher, because running the proxy on every
- * image request to mint a nonce it does not need is a worse trade than leaving a
- * handful of asset-shaped URLs ungated. Kept byte-identical to the extension
- * alternative in `config.matcher`; `csp-proxy.test.ts` fails if they drift.
+ * **This is an INDEPENDENT rule with its own reason, and it stopped mirroring
+ * `config.matcher` in #2404.** It was introduced in #2420 (review finding F3) as
+ * the classifier's half of a reconciliation: the matcher skipped every
+ * image-extension path so a real asset never paid a nonce mint, and the gate had
+ * to agree, because claiming a path the proxy never runs on asserts a 503 that
+ * can never be served. #2404's Option A then removed that exclusion from the
+ * matcher, so the mirror is gone — the proxy now runs on `/gallery.svg`, the gate
+ * really is consulted for it, and this rule is the only thing deciding the answer.
+ *
+ * The reason it must stay is simpler than the one it replaced, and stronger: **the
+ * holding screen is an HTML DOCUMENT.** A request for an image or a deleted
+ * script chunk must never be answered with one — that is the whole of #2404 — and
+ * a club mid-setup would otherwise answer every such request with the 503 "Site
+ * setup in progress" page. `public/branding/*` is also what the holding screen
+ * itself loads, so gating those URLs would strip the screen of the club's own
+ * imagery in the one state it exists for.
+ *
+ * The list is kept in step with `ASSET_URL_EXTENSIONS` in
+ * `src/lib/asset-url-404.ts` — the shapes the `afterFiles` rewrites terminate —
+ * because an extension terminated there but unrecognised here is exactly the
+ * gap that puts a document back on an asset URL.
+ * `src/lib/__tests__/asset-url-404.test.ts` fails if the two drift apart.
  *
  * Consequence, recorded rather than hidden: pre-setup, a request for an
  * asset-shaped URL that no file backs (`/gallery.svg`) is answered by the app
- * rather than the gate. It carries no club content — the layout still
- * substitutes the holding screen for the page — but its status is 200, not 503.
+ * rather than the gate — since #2404, with an empty 404 rather than a 200.
  */
 const STATIC_ASSET_EXTENSION_PATTERN =
   /\.(?:png|jpg|jpeg|gif|webp|svg|ico)$/i;

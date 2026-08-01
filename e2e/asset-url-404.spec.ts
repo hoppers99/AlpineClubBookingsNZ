@@ -6,20 +6,27 @@ import { E2E_ADMIN } from "./helpers/fixtures";
  * Static-asset URLs on the wire (#2404).
  *
  * The CSP is nonce-only and the nonce is minted per request by `src/proxy.ts`,
- * whose matcher deliberately does not run on asset shapes. A MISS on one of
- * those shapes used to fall through to the `(website)/[...slug]` CMS catch-all
- * and render the club's whole 404 document with no nonce and no CSP header at
- * all — measured on the merged #2434 build: `GET /foo.png` answered 404 with
- * ~29KB of `text/html`, 19 inline `<script>` tags, 0 of them nonced.
+ * whose matcher used to skip every asset shape. A MISS on one of those shapes
+ * fell through to the `(website)/[...slug]` CMS catch-all and rendered the club's
+ * whole 404 document with no nonce and no CSP header at all — measured on the
+ * merged #2434 build: `GET /foo.png` answered 404 with ~29KB of `text/html`,
+ * 19 inline `<script>` tags, 0 of them nonced.
+ *
+ * Two layers close that, and both are measured here: `afterFiles` rewrites remove
+ * the document, and (#2404 Option A) the matcher no longer skips image
+ * extensions, so the proxy runs on those URLs and a policy is attached to
+ * whatever answers.
  *
  * The unit suite (`src/lib/__tests__/asset-url-404.test.ts`) pins the routing
- * rules; only a running server can show the two things that actually matter and
- * that a route table cannot express:
+ * rules; only a running server can show the things that actually matter and that
+ * a route table cannot express:
  *  • a REAL asset is still served, because Next checks the filesystem before it
  *    consults an `afterFiles` rewrite — get that ordering wrong and every image
- *    in the app 404s; and
+ *    in the app 404s — and it is still served now that middleware runs on it;
  *  • a MISS is answered with no document, so there is no unnonced script to
- *    block in the first place.
+ *    block in the first place; and
+ *  • a policy header actually arrives on the wire in both cases, which is the
+ *    half of the fix a routing table cannot show at all.
  *
  * Anonymous on purpose: these are the addresses scanners and stale browser tabs
  * ask for, never a logged-in human.
@@ -55,6 +62,15 @@ const missingAssetUrls = [
   "/_next/static/chunks/nope.js",
 ];
 
+/** The policy `src/app/asset-not-found/route.ts` sets on its own responses. */
+const TERMINAL_CSP = "default-src 'none'; frame-ancestors 'none'; base-uri 'none'";
+
+/**
+ * `/_next/static` is the one namespace above that the proxy matcher still skips,
+ * so it is the one URL whose policy can only have come from the terminal route.
+ */
+const PROXY_SKIPPED_URL = "/_next/static/chunks/nope.js";
+
 test("a missing asset URL is answered with nothing, not the 404 document", async ({
   request,
 }) => {
@@ -76,13 +92,35 @@ test("a missing asset URL is answered with nothing, not the 404 document", async
       [],
     );
 
-    // Set by the route itself, so it holds without the reverse proxy in front.
-    expect(response.headers()["content-security-policy"]).toBe(
-      "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+    // A policy always ships, and it comes from the app rather than the edge, so
+    // this holds without the reverse proxy in front. WHICH policy depends on the
+    // layer that answered, and both are correct for an empty body:
+    //  • `src/proxy.ts` runs on image-extension URLs since #2404's Option A and
+    //    writes its per-request page policy first. Next appends a route
+    //    handler's header only when the name is not already set on the outgoing
+    //    response (`next/dist/server/send-response.js`), so the proxy's nonced
+    //    policy is what reaches the wire for those.
+    //  • `/_next/static/…` is still outside the matcher, so the terminal route's
+    //    own `default-src 'none'` is what ships there. That case is asserted
+    //    exactly, below the loop, so the route's headers stay pinned.
+    const csp = response.headers()["content-security-policy"];
+
+    expect(csp, `${url} must carry a policy from the app`).toBeTruthy();
+    expect(
+      csp === TERMINAL_CSP || csp.includes("'nonce-"),
+      `${url} must carry either the terminal policy or a nonced page policy, got: ${csp}`,
+    ).toBe(true);
+    expect(csp, `${url} must not be framable`).toContain(
+      "frame-ancestors 'none'",
     );
+    // Identical in both layers, so these do not depend on which one answered.
     expect(response.headers()["x-frame-options"]).toBe("DENY");
     expect(response.headers()["x-content-type-options"]).toBe("nosniff");
   }
+
+  // The exact pin, on the one shape the proxy cannot have touched.
+  const skipped = await request.get(PROXY_SKIPPED_URL);
+  expect(skipped.headers()["content-security-policy"]).toBe(TERMINAL_CSP);
 });
 
 test("a real static asset is still served — the rewrite must not shadow the filesystem", async ({
@@ -92,10 +130,18 @@ test("a real static asset is still served — the rewrite must not shadow the fi
   // layout points at lives in this directory). If `afterFiles` ordering were
   // wrong, or the rules were moved to `beforeFiles`, this 404s and the whole
   // site loses its images — which is the failure this test exists to catch.
+  //
+  // Since #2404's Option A the proxy also RUNS on this URL, so this is now the
+  // measurement of that too: middleware must not disturb the bytes Next serves
+  // from `public/`, and the response gains the app's security headers, which it
+  // did not carry before.
   const response = await request.get("/branding/favicon.example.ico");
 
   expect(response.status()).toBe(200);
   expect((await response.body()).byteLength).toBeGreaterThan(0);
+  expect(response.headers()["x-content-type-options"]).toBe("nosniff");
+  expect(response.headers()["x-frame-options"]).toBe("DENY");
+  expect(response.headers()["content-security-policy"]).toContain("'nonce-");
 });
 
 test("a real _next/static chunk is still served", async ({ page, request }) => {

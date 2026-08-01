@@ -137,12 +137,22 @@ const exemptUrls = [
   "/sitemap.xml",
   "/favicon.ico",
   "/_next/static/chunks/main.js",
-  // Asset-shaped URLs the proxy matcher skips on purpose, so the gate agrees
-  // they are not website pages rather than claiming a 503 it can never serve
-  // (#2420 review F3).
+  // Asset-shaped URLs. #2420's F3 kept these out of the gate because the proxy
+  // matcher skipped them, so a 503 could never have been served for one. #2404's
+  // Option A removed that exclusion — the proxy runs on them now and the gate
+  // really is asked — and the answer must not change, for a stronger reason: the
+  // holding screen is an HTML DOCUMENT, and answering a request for an image
+  // with one is precisely what #2404 exists to stop. The last two are MISSES
+  // (nothing backs either URL), which is the case the rewrites terminate with an
+  // empty 404; a 503 here would put the document straight back.
   "/logo.png",
   "/branding/logo.png",
   "/gallery.svg",
+  "/branding/definitely-missing.png",
+  "/wp-content/uploads/x.jpg",
+  // The terminal route those misses are rewritten to. Reachable directly, and it
+  // has no extension, so only NON_WEBSITE_ROOT_SEGMENTS keeps it out.
+  "/asset-not-found",
 ];
 
 describe("which addresses the setup gate covers", () => {
