@@ -75,7 +75,7 @@ Whether families are billed together is not set here — it is the club-level
 
 | Control | What it does | Notes / constraints |
 | --- | --- | --- |
-| Search / Min members / Max members / Has pending requests | Filter the groups list | Clear resets them |
+| Search / Min members / Max members / Has pending requests | Filter the groups list | **Reset** restores them; it remains visible and is disabled at defaults |
 | Group Name | The family group's name | Required |
 | Members | The members in the group | At least one required; primary active members |
 | Approve / Reject (request queue) | Action a pending family-link request | Child/group-create approvals offer a member-email choice |

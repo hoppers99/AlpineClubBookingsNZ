@@ -7,6 +7,7 @@ import { useRouter, useSearchParams } from "next/navigation"
 import { Badge } from "@/components/ui/badge"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
+import { DatasetResetButton } from "@/components/admin/dataset-reset-button"
 import {
   AdminViewOnlySectionBanner,
   ViewOnlyActionButton,
@@ -154,8 +155,13 @@ export default function RefundRequestsPage() {
     { id: string; status: "APPROVED" | "REJECTED"; noEmails: boolean } | null
   >(null)
   const [notifyDialogOpen, setNotifyDialogOpen] = useState(false)
-  const currentRefundRequestsPath =
-    filter === "PENDING" ? "/admin/refund-requests" : `/admin/refund-requests?status=${filter}`
+  const currentParams = new URLSearchParams(searchParams.toString())
+  currentParams.delete("status")
+  if (filter !== "PENDING") currentParams.set("status", filter)
+  const currentQuery = currentParams.toString()
+  const currentRefundRequestsPath = currentQuery
+    ? `/admin/refund-requests?${currentQuery}`
+    : "/admin/refund-requests"
 
   useEffect(() => {
     router.replace(currentRefundRequestsPath, { scroll: false })
@@ -417,6 +423,10 @@ export default function RefundRequestsPage() {
             {status === "ALL" ? "All" : status.charAt(0) + status.slice(1).toLowerCase()}
           </Button>
         ))}
+        <DatasetResetButton
+          disabled={filter === "PENDING"}
+          onReset={() => setFilter("PENDING")}
+        />
       </div>
 
       {loading ? (

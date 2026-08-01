@@ -50,7 +50,9 @@ change settings and templates.
 
 1. In the register, filter with **Search member** and the status select (All
    statuses, In progress, Completed, Draft, Voided). Each row shows the
-   **Sign-offs** count (e.g. `1/2`) and the assigned **Signers**.
+   **Sign-offs** count (e.g. `1/2`) and the assigned **Signers**. **Reset**
+   restores only the register search and status; it does not clear the member or
+   signer typeaheads used by create and reassign workflows.
 2. Row actions: **View** opens the printable sign-off sheet; **Signers** opens an
    inline editor to reassign; **Complete** marks a record complete (override);
    **Void** cancels it (you must give a reason).

@@ -104,7 +104,9 @@ and stored as integer cents; dates are NZ date-only lodge nights.
    discount figure.
 3. Filter by **redeemed date range** (quick presets or custom dates) and, on a
    multi-lodge site, by **lodge**. The tiles and table recompute for the filter;
-   the tiles also show the all-time figure alongside the filtered one.
+   the tiles also show the all-time figure alongside the filtered one. **Reset**
+   restores all dates, all lodges, and page 1 without closing the selected promo
+   code's redemption report.
 4. Each table row is one booking's redemption: when it was redeemed, the member
    (name and email, linking to their profile), the booking reference (linking to
    the booking), the lodge, the stay dates and nights, the eligible guest count,

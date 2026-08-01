@@ -67,3 +67,12 @@ prisma/schema.prisma text eol=lf
 # Same fix and same zero churn as the migration SQL (#2399): the stored blobs
 # are already LF, so this only stops Windows re-materialising them as CRLF.
 *.sh text eol=lf
+
+# CHANGELOG.md: every concurrent lane prepends its entry to `## Unreleased`,
+# so plain three-way merge conflicts on nearly every rebase and every
+# update-from-main — all session long, on every agent stream. `union` keeps
+# BOTH sides' added lines automatically, which is exactly the resolution every
+# one of those conflicts got by hand. Caveat: on a release-cut commit (moving
+# Unreleased under a version header) union can concatenate two restructurings
+# silently — eyeball the CHANGELOG on release PRs.
+CHANGELOG.md merge=union

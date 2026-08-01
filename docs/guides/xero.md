@@ -65,7 +65,9 @@ idempotent — retrying the same work never double-charges.
    cron, and only linked members are refreshed.
 3. **Xero Operations** lists outbound sync attempts; retry active failures, reset
    stale running jobs, or mark an individual operation non-replayable / resolved.
-   **Inbound Events** lists stored webhooks with a per-event **Replay**.
+   **Inbound Events** lists stored webhooks with a per-event **Replay**. Each
+   queue has its own **Reset** for filters and page; it keeps the current section,
+   the sibling queue's URL state, and unrelated URL context.
 
 ### Create or link a member's Xero contact
 
@@ -118,8 +120,8 @@ idempotent — retrying the same work never double-charges.
 | Connect / Disconnect Xero | Establish or remove the operational Xero connection | Finance edit; disconnect stops invoicing/reconciliation/paid-status |
 | Contact Sync / Targeted force sync | Broad or single-record contact link/repair | Finance edit |
 | Membership Status Refresh | Refresh current-season paid status from Xero | Also a daily cron; linked members only |
-| Xero Operations | Retry / reset / mark non-replayable / resolve outbound work | Finance edit; idempotent |
-| Inbound Events | Replay stored webhook events | Finance edit |
+| Xero Operations | Filter and page outbound work; retry / reset / mark non-replayable / resolve it | Dataset Reset keeps the section and Inbound state; write actions need finance edit and are idempotent |
+| Inbound Events | Filter and page stored webhooks; replay an event | Dataset Reset keeps the section and Operations state; Replay needs finance edit |
 | Xero Setup → Mappings | Account/item code mappings and hut/joining fee item codes | Finance edit; joining-fee amounts live in [Fees](fees.md) |
 | Member grouping | Grouping mode + rules, dry-run, bulk re-sync | Finance edit; never auto-re-groups; runbook-driven cutover |
 | API budget / Usage | Daily call volume, rate limits, recent failures | Read-only meter |

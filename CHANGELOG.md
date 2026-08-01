@@ -19,6 +19,43 @@ All notable public reference-release changes should be recorded here.
   excluded. CSV/PDF-facing copy, the operator guide, a dedicated browser flow,
   and the named Reports screenshot contract now describe the same rules.
 
+- **The cancellation queue stops spending Xero API calls on questions nobody can
+  act on (#2402).** Opening **Admin → Members → Cancellation Requests** asked
+  Xero, for every participant on the page, whether that member's contact still
+  owed the club money — on every page load, every filter change and every
+  refresh, whoever was looking. Xero meters those calls daily, and most of them
+  bought nothing: they were asked for participants who had already been rejected
+  or cancelled, and for admins whose role cannot approve a cancellation at all.
+
+  The check now runs only where its answer can still change what somebody does:
+  for an admin whose role has **edit** access to membership — the same permission
+  the Approve and Reject buttons need — and for a participant that is genuinely
+  still awaiting approval, meaning the request is open, the member has confirmed,
+  and the membership has not since been deactivated or cancelled.
+
+  Only the Xero half is affected. Outstanding **bookings and guest appearances**
+  come from ordinary database reads that cost nothing external, so they are still
+  loaded and still shown to everyone, including view-only admins.
+
+  There is a real cost to this and it was accepted deliberately: a **view-only**
+  membership admin is no longer told that money is owing on a participant. They
+  are not left to guess. A request holding affected rows now carries a short blue
+  note — *The money-owing check was not run for … below* — with each affected
+  member marked, because an absent warning panel and "nothing is owing" look
+  identical on screen and only one of them would have been true. The note says
+  plainly that the question was not asked, not that the answer was no.
+
+  The **Approve** button now follows the same rule the server does, rather than
+  the looser approximation it carried before. A membership deactivated after its
+  cancellation was raised no longer offers an Approve that the server would
+  refuse — the button is disabled and a line beneath it says why. That is what
+  makes the saving safe: a row is only left unchecked when an approval of it
+  would have been refused anyway.
+
+  Nothing about approving itself changed. Pressing **Approve** still asks Xero
+  live, every time, for everyone, still refuses while anything is owing, and
+  still refuses when Xero cannot be asked at all — as does the second check made
+  immediately before a Xero contact is archived.
 - **A club's website now says "not ready yet" until its setup is finished,
   instead of quietly answering as though everything were fine (#2420).** Before
   a club saves its site style for the first time, every public web address shows
@@ -68,6 +105,52 @@ All notable public reference-release changes should be recorded here.
   being set up, then leave that claim in visitors' browsers for a minute — the
   club's own pages now tell the difference between "not set up" and "could not
   check".
+
+- **A booking confirmation now explains account credit that paid part of the
+  stay (#2328).** A member who put $120.00 of account credit towards a $300.00
+  booking was charged $180.00 on their card and then read "Total Paid: $300.00"
+  in the confirmation, with nothing in the message to explain the difference —
+  the email quoted the booking's price and never knew about the credit, which is
+  recorded in the member credit ledger. Every confirmation now carries two
+  reconciling lines beneath the total — `Account credit applied: -$120.00` and
+  `Paid by card: $180.00` — so the three figures add up against the member's own
+  card statement. `Total Paid` deliberately stays the booking's full price: the
+  credit really did pay for part of the stay. Where money really did change
+  hands, the second line names how the club was actually paid (`Paid by card`,
+  `Paid by bank transfer`, or `Paid by cash or bank transfer` for a settlement an
+  admin recorded by hand), read from the booking's own payment record. A booking
+  that used no credit is unchanged, down to the byte — no blank line, no empty
+  label. A stay fully covered by credit says `Nothing more to pay: $0.00`: the
+  club took nothing by any method, and the payment record cannot say which method
+  the member would have used, so none is named. A partly-paid settlement breaks
+  down the slice that was settled, and a
+  booking confirmed with money still owing states no payment at all. The built-in
+  HTML email and the admin-editable body are built from one shared helper, so
+  they cannot drift; clubs that write their own money lines in an override get a
+  new `{{creditNote}}` token for the pair (existing overrides keep rendering and
+  re-saving unchanged). Money stays in integer cents throughout.
+- **One unreadable booking request no longer takes down the whole queue
+  (#2342).** The **All** filter on the admin Booking Requests page returned a
+  server error on any database holding a request whose saved guest list could
+  not be read back — a missing surname was enough, and the demo seed shipped
+  exactly such a row. Every request on the page disappeared behind that one bad
+  row. Admin reads are now tolerant across all three saved blobs a request
+  carries — its guest list, its member links, and its latest quote — so a row
+  that fails validation renders in the list and in its own per-request payload
+  under a **Saved details need attention** note instead of erroring the page.
+  The note names only what actually failed, and shows the salvaged guest names
+  as they were saved (line breaks collapsed, over-long values trimmed) rather
+  than as confirmed details. Nothing about a well-formed request changed.
+  Acting on such a request is refused rather than merely discouraged: Save
+  quote, Send quote, Hold slots and Approve are turned off in the panel, and
+  the server refuses quoting, pricing, holding and approving — including a
+  school approval that supplies its own group numbers, which previously skipped
+  the saved guest list altogether and could have invoiced a large group as a
+  handful of people. Saving a quote no longer overwrites the stored member
+  links with what the page happens to be displaying. Declining still works, and
+  is the way out; the refusals now read as plain English rather than as a
+  server error. The demo seed's school children now carry surnames, matching
+  what the real school form writes.
 
 - **The finance dashboard was counting a paid price increase twice, and now
   counts it once (#2408).** When a booking's price goes up after it was made —
@@ -420,6 +503,18 @@ All notable public reference-release changes should be recorded here.
   and leap-year February boundaries. Changing the quick range keeps the current
   Lodge and Deleted filters, and the shared Quick Range select now has an
   accessible programmatic label.
+- **Admin datasets now share one predictable Reset action (#2358).** Across 22
+  member, booking, finance, support, Xero, induction, promo, and locker lists,
+  **Reset** stays visible and is disabled only when search, filters, explicit
+  sort, and page are already at that dataset's defaults. It resets the whole
+  dataset rather than only the last control, uses replace-style URL updates so
+  filter changes do not fill browser history, and preserves work context such
+  as lodge, season, tab, cohort, focused record, sibling Xero panel state, and
+  unknown future URL keys. Payments returns to the rolling NZ three-month
+  Updated range through today (not all history), while Reports returns to its
+  month-boundary default through current month-end and keeps the selected
+  lodge. Finance Dashboard keeps the current view and lodge while restoring
+  Last Month, Previous Period, Next Month, and empty expense filters.
 - **Bed moves now stay on the guest's original lodge nights (#2366).** Dragging
   an existing allocation chip across date columns now chooses only the
   destination bed: the preview and keyboard announcement show the original NZ

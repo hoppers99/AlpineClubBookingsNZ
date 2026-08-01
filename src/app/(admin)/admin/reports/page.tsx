@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import dynamic from "next/dynamic";
-import { format, subMonths, startOfMonth, endOfMonth } from "date-fns";
+import { format } from "date-fns";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { useClubIdentity } from "@/components/club-identity-provider";
@@ -24,9 +24,14 @@ import { getRevenueGranularityLabel } from "@/lib/admin-reports";
 import { formatDollarsDisplay } from "@/lib/finance-format";
 import { bookingStatusLabel } from "@/lib/status-colors";
 import { DateRangeControls } from "@/components/admin/date-range-controls";
+import { DatasetResetButton } from "@/components/admin/dataset-reset-button";
 import { reportsDateRangePresets } from "@/lib/date-range-presets";
 import { todayDateOnlyForTimeZone } from "@/lib/date-only";
 import { escapeCsvCell } from "@/lib/csv";
+import {
+  getReportsDatasetDefaults,
+  resetReportsDatasetState,
+} from "@/lib/admin-dataset-reset-state";
 
 // Charts load on demand (#1147): recharts is ~139kB gz, so the trees live in
 // _components/report-charts and mount after the page shell. The placeholders
@@ -156,12 +161,9 @@ export default function ReportsPage() {
   // default range on the club-timezone "today" rather than the browser's local
   // date (a browser trailing NZ across a month boundary would otherwise seed a
   // window a whole month behind).
-  const [clubYear, clubMonth, clubDay] = todayDateOnlyForTimeZone()
-    .split("-")
-    .map(Number);
-  const clubToday = new Date(clubYear, clubMonth - 1, clubDay);
-  const defaultFrom = format(startOfMonth(subMonths(clubToday, 3)), "yyyy-MM-dd");
-  const defaultTo = format(endOfMonth(clubToday), "yyyy-MM-dd");
+  const clubToday = todayDateOnlyForTimeZone();
+  const { from: defaultFrom, to: defaultTo } =
+    getReportsDatasetDefaults(clubToday);
 
   const [from, setFrom] = useState(defaultFrom);
   const [to, setTo] = useState(defaultTo);
@@ -388,6 +390,17 @@ export default function ReportsPage() {
               <option value="only">Deleted only</option>
             </select>
           </div>
+          <DatasetResetButton
+            disabled={
+              from === defaultFrom && to === defaultTo && deleted === "hide"
+            }
+            onReset={() => {
+              const reset = resetReportsDatasetState({ lodgeId }, clubToday);
+              setFrom(reset.from);
+              setTo(reset.to);
+              setDeleted(reset.deleted);
+            }}
+          />
           <Button onClick={fetchReports} disabled={loading}>
             {loading ? "Loading..." : "Update"}
           </Button>

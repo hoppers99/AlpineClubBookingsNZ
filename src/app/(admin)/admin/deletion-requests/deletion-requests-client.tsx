@@ -10,6 +10,7 @@ import {
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { DatasetResetButton } from "@/components/admin/dataset-reset-button";
 import {
   Dialog,
   DialogContent,
@@ -106,6 +107,7 @@ export default function DeletionRequestsClient({
   const canEdit = useAdminAreaEditAccess("membership");
   const [statusFilter, setStatusFilter] = useState("PENDING");
   const [page, setPage] = useState(1);
+  const [adminInitiatedPage, setAdminInitiatedPage] = useState(1);
   const [data, setData] = useState<ApiResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -227,23 +229,38 @@ export default function DeletionRequestsClient({
                 {data ? `${data.total} total` : "Loading..."}
               </CardDescription>
             </div>
-            <Select
-              value={statusFilter}
-              onValueChange={(v) => {
-                setStatusFilter(v);
-                setPage(1);
-              }}
-            >
-              <SelectTrigger className="w-36">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="PENDING">Pending</SelectItem>
-                <SelectItem value="APPROVED">Approved</SelectItem>
-                <SelectItem value="REJECTED">Rejected</SelectItem>
-                <SelectItem value="ALL">All</SelectItem>
-              </SelectContent>
-            </Select>
+            <div className="flex items-center gap-2">
+              <Select
+                value={statusFilter}
+                onValueChange={(v) => {
+                  setStatusFilter(v);
+                  setPage(1);
+                  setAdminInitiatedPage(1);
+                }}
+              >
+                <SelectTrigger className="w-36">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="PENDING">Pending</SelectItem>
+                  <SelectItem value="APPROVED">Approved</SelectItem>
+                  <SelectItem value="REJECTED">Rejected</SelectItem>
+                  <SelectItem value="ALL">All</SelectItem>
+                </SelectContent>
+              </Select>
+              <DatasetResetButton
+                disabled={
+                  statusFilter === "PENDING" &&
+                  page === 1 &&
+                  adminInitiatedPage === 1
+                }
+                onReset={() => {
+                  setStatusFilter("PENDING");
+                  setPage(1);
+                  setAdminInitiatedPage(1);
+                }}
+              />
+            </div>
           </div>
         </CardHeader>
         <CardContent>
@@ -364,6 +381,8 @@ export default function DeletionRequestsClient({
         sessionMemberId={sessionMemberId}
         statusFilter={statusFilter}
         statusBadge={statusBadge}
+        page={adminInitiatedPage}
+        setPage={setAdminInitiatedPage}
       />
 
       {/* Review Dialog (self-service) */}
@@ -486,13 +505,16 @@ function AdminInitiatedDeletionSection({
   sessionMemberId,
   statusFilter,
   statusBadge,
+  page,
+  setPage,
 }: {
   sessionMemberId: string;
   statusFilter: string;
   statusBadge: (status: string) => React.ReactNode;
+  page: number;
+  setPage: React.Dispatch<React.SetStateAction<number>>;
 }) {
   const canEdit = useAdminAreaEditAccess("membership");
-  const [page, setPage] = useState(1);
   const [data, setData] = useState<LifecycleApiResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -507,7 +529,7 @@ function AdminInitiatedDeletionSection({
   // back to page 1 so a deep page from the previous filter is never shown.
   useEffect(() => {
     setPage(1);
-  }, [statusFilter]);
+  }, [setPage, statusFilter]);
 
   const fetchRequests = useCallback(async () => {
     setLoading(true);

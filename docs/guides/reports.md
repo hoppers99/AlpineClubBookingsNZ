@@ -35,6 +35,8 @@ date-only lodge nights, interpreted in the club time zone.
 
 2. If the club runs more than one lodge, a **Lodge** selector lets you scope
    every booking-derived figure and occupancy to one lodge or all lodges.
+   **Reset** restores the
+   rolling default date window and **Hide deleted**, but keeps that lodge scope.
 
 ### Read the figures
 
@@ -67,6 +69,7 @@ This page is read-only. Its controls:
 | From / To | The reporting date range | month-of (today - 3 months) to end-of-month of today | NZ date-only, club time zone; To must be after From |
 | Lodge | Scope metrics to one lodge | All lodges | Only shown with more than one active lodge |
 | Deleted | Include soft-deleted bookings | Hide deleted | Include deleted, or Deleted only |
+| Reset | Restore the date range and Deleted filter | start of the month three months prior through current month-end; Hide deleted | Keeps the selected lodge; disabled at defaults |
 | Update | Re-run the query | — | — |
 | CSV | Download the figures as CSV | — | Filename `tac-report-<date>.csv` |
 | Download PDF | Generate a printable PDF | — | Falls back to the browser print dialog on error; always rendered light-on-white regardless of your theme |

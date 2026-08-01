@@ -30,7 +30,8 @@ support-**view** admin can browse but not act. See [`ARCHITECTURE.md`](../ARCHIT
 
 1. Go to **Admin → Issue Reports**. Filter by **Open**, **Resolved**, or
    **All**. Each row shows the page title, status, whether a screenshot is
-   retained, the description, and who reported it when.
+   retained, the description, and who reported it when. **Reset** restores Open
+   and page 1 without closing or changing a report selected through the URL.
 
    ![Issue Reports queue with the status filter and a list of member-submitted reports showing status and screenshot badges](../images/admin/admin-issue-reports.png)
 
