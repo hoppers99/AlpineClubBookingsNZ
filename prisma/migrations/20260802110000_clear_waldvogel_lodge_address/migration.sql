@@ -1,0 +1,69 @@
+-- Clear the Tokoroa lodge address that the historical migration chain stamps
+-- onto every install (#2484; owner decision recorded on the issue, 2 Aug 2026).
+--
+-- WHY THIS EXISTS
+--
+-- 20260708000000_add_lodge_entity_and_multi_lodge_module bootstraps the default
+-- Lodge row, and 20260717160100_add_lodge_address then backfills its "address"
+-- with 'Waldvogel Lodge, Iwikau Village, Mt Ruapehu, New Zealand'. That backfill
+-- was right when it was written: this codebase WAS the live Tokoroa Alpine Club
+-- site, the contact page carried the same string hardcoded, and the migration
+-- moved it from code into data so the live deployment kept showing its own
+-- address (see that file's own comment). Now that the repository is a reusable
+-- product, the same chain runs on every fresh install and every fork, so an
+-- unrelated club's public Contact page advertises another club's real lodge --
+-- reported by the owner against a clean local staging stack, 2 Aug 2026.
+--
+-- prisma/seed.ts is already policed for exactly this class: seed-account-defaults
+-- .test.ts asserts /Waldvogel|Iwikau|Ruapehu|Whakapapa|Tokoroa/i never appears in
+-- the seeds, which is why the seeds write no address at all. The migration chain
+-- carries no such guard, so the guard never saw this. An applied migration cannot
+-- be edited -- Prisma records a checksum and a rewrite is migration drift for
+-- every database that already ran it -- so a NEW migration is the only mechanism
+-- that cleans both a fresh install and an already-stamped database on its next
+-- `prisma migrate deploy`.
+--
+-- VALUE-SCOPED, NOT ROW-SCOPED. The WHERE clause matches the exact literal the
+-- backfill wrote, rather than default_lodge_id() (the row the backfill targeted).
+-- A club that has typed its own address under Admin > Club Identity > Lodge
+-- details keeps it byte for byte, and so does every additional lodge a
+-- multi-lodge club has created. The only value this statement can remove is the
+-- one string this project put there itself. The deliberate, accepted exception is
+-- a deployment still holding that literal legitimately -- Tokoroa's own fork, if
+-- it ports this down -- which is cleared too and must re-enter its address; that
+-- is called out in the changelog fragment and in docs/UPGRADING.md.
+--
+-- IDEMPOTENT. After the UPDATE no row matches the literal, so a re-run selects
+-- nothing and changes nothing. A row that never held it is never touched.
+--
+-- NO AUDIT ROW, deliberately, and unlike 20260801150000. What is removed is not
+-- club-authored content a club could lose: it is a string this project wrote into
+-- the row itself, it is quoted verbatim here, in the changelog fragment and in
+-- docs/UPGRADING.md, and restoring it is one admin field. "AuditLog" is a
+-- 7-year retained store; there is nothing here worth keeping in it.
+--
+-- BLUE/GREEN. Phase metadata-only: no DDL at all, one value-scoped UPDATE.
+-- "Lodge" is a tiny cold config table (a handful of rows, read on page render,
+-- never on a hot write path), so the row locks are momentary and no hot-table
+-- traffic window applies. The payload contains no CURRENT_TIMESTAMP/now(), so the
+-- session-clock DML gate (#1627/#1656) passes without an acknowledgement. Old and
+-- new app colours are compatible in both directions during the drain: the contact
+-- page renders the address block only when "address" is non-null
+-- (src/app/(website)/contact/page.tsx, loadDefaultLodgeContact) and the
+-- {{lodge-address}} content token resolves to empty, so an old colour still
+-- serving simply stops showing the block -- it cannot error on it.
+--
+-- Nothing here matches the validator's hot-table or breaking-SQL regexes
+-- (scripts/validate-blue-green-migrations.sh: "Lodge" is not a hot table and
+-- there is no DROP/RENAME/type change/SET NOT NULL), so
+-- scripts/check-migration-safety-coverage.sh does not REQUIRE a
+-- docs/BLUE_GREEN_MIGRATION_SAFETY.tsv row -- 20260717160100, the migration being
+-- corrected, has none for the same reason. One is recorded anyway, matching every
+-- other data-rewriting migration in this stretch of history (20260731140000,
+-- 20260801150000, 20260802100000), because docs/UPGRADING.md tells an operator to
+-- look up every pending migration in the ledger and this one changes what their
+-- public site shows.
+
+UPDATE "Lodge"
+SET "address" = NULL
+WHERE "address" = 'Waldvogel Lodge, Iwikau Village, Mt Ruapehu, New Zealand';
