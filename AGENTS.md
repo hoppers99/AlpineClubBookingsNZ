@@ -60,10 +60,14 @@ before changing Next.js APIs or conventions.
   NZ agree on the date), installed for every file by
   `vitest.clock-setup.ts`. Write fixtures relative to that instant —
   `2026-08-01` is future, `2026-06-01` is past, permanently. Note `Date.now()` is
-  therefore no longer a stopwatch: measure elapsed time with
-  `process.hrtime.bigint()`. A suite that needs a *different* fixed instant pins
-  its own with `vi.setSystemTime` in its own hook, which runs after the freeze is
-  installed and therefore wins; that is not an opt-out. A file that needs the
+  therefore no longer a stopwatch: measure elapsed time with the `realElapsedMs`
+  helper (`process.hrtime.bigint()`), never `Date.now()` and never a
+  `Date.now()`-based poll deadline, which can no longer expire. A suite that
+  needs a *different* fixed instant pins its own with `vi.setSystemTime` in its
+  own hook, which runs after the freeze is installed and therefore wins; that is
+  not an opt-out. The root re-freeze restores the *default* instant, never a
+  suite's own pin, so a suite that pins **and** hands the clock back with
+  `vi.useRealTimers()` must re-pin in a `beforeEach`. A file that needs the
   *real* wall clock calls `optOutOfFrozenClock("<reason>")` at module top level
   and must be added to the counted allowlist in
   `src/lib/__tests__/frozen-test-clock.test.ts` — expect to justify it, and split

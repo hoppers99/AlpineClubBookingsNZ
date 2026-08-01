@@ -50,14 +50,22 @@ Two details there are load-bearing rather than stylistic:
   everything `vitest.setup.ts` imports. Vitest evaluates `setupFiles` in order,
   so a dedicated first file freezes the clock before any other module in the run.
 
-A root `beforeEach` then re-freezes before each test **if and only if** the clock
-has been handed back to the real calendar. Dozens of suites undo their own pin
-with `vi.useRealTimers()` in an `afterEach`; where their later describes have no
-clock hooks, those tests used to drop straight back out of the freeze — the
-rollover canary caught two doing exactly that. A suite that deliberately pinned
-another instant still has fake timers installed and is left completely alone, so
-this only ever converts "real clock" back to "frozen clock", never one pin into
-another.
+A root `beforeEach` then re-freezes before each test **if and only if** nothing
+is currently mocking `Date`. Dozens of suites undo their own pin with
+`vi.useRealTimers()` in an `afterEach`; where their later describes have no clock
+hooks, those tests used to drop straight back out of the freeze — the rollover
+canary caught two doing exactly that. A suite that deliberately pinned another
+instant is left completely alone, so this only ever converts "real clock" back to
+"frozen clock", never one pin into another.
+
+The check is `vi.getMockedSystemTime() !== null`, not `vi.isFakeTimers()`,
+because Vitest has two mocked-`Date` states and only one installs fake timers: a
+bare `vi.setSystemTime(...)` called while timers are real mocks `Date` on its own
+and leaves `vi.isFakeTimers()` false. Guarding on fake timers overwrote that kind
+of pin with the default instant.
+
+And what the re-freeze restores is always the **default** instant, never a
+suite's own pin — see rule 4 below.
 
 ### Why
 
@@ -115,12 +123,33 @@ generalised.
    safe — the root `beforeEach` re-freezes before the next test — but never rely
    on real time being restored, and never call it expecting later tests in the
    file to see the real date.
+
+   One sharp edge if you do **both**: the re-freeze restores the **default**
+   instant, not your pin. A suite that pins once in a `beforeAll` and also hands
+   the clock back therefore keeps its instant only until the first handback —
+   every test after that silently runs at 1 July 2026. Pin in a `beforeEach`
+   instead when your suite does both.
 5. **Measuring how long something took? `Date.now()` is no longer a stopwatch.**
    Under the freeze it is a constant, so `Date.now() - before` is always `0` —
    which makes an "it waited long enough" assertion fail and, far worse, makes an
-   "it did NOT wait" assertion pass vacuously. Use `process.hrtime.bigint()`
-   (or `performance.now()`); both stay real, and both are what
-   `member-guest-probe-guard.test.ts` uses for the privacy timing floor.
+   "it did NOT wait" assertion pass vacuously. Use the shared helper:
+
+   ```ts
+   import { realElapsedMs } from "@/lib/__tests__/helpers/clock";
+
+   const before = process.hrtime.bigint();
+   await shouldNotHaveWaited();
+   expect(realElapsedMs(before)).toBeLessThan(20);
+   ```
+
+   `process.hrtime.bigint()` is monotonic, so neither the freeze nor the canary's
+   libfaketime shim touches it. `performance.now()` also stays real, but it is
+   only safe when **the code under test does not read it too** — otherwise a
+   suite that later installs blanket fake timers moves the guard and its test
+   together and the assertion passes without anything having waited.
+   `member-guest-probe-guard.test.ts` measures its privacy timing floor with
+   `process.hrtime.bigint()` for exactly that reason: the guard itself reads
+   `performance.now()`, so the test deliberately measures with a different API.
 6. **Remember `APP_TIME_ZONE` follows `process.env.TZ`**
    (`src/config/operational.ts:5-8`). Setting `TZ=UTC` to simulate the CI runner
    also moves the *club* zone to UTC, so a timezone bug can silently pass. To
@@ -148,7 +177,10 @@ to the allowlist in
 [`../src/lib/__tests__/frozen-test-clock.test.ts`](../src/lib/__tests__/frozen-test-clock.test.ts),
 which pins both the exact list of opted-out files and their count. That contract
 test is what keeps the opt-out honest: widening it is always a deliberate diff a
-reviewer sees, never a quiet default.
+reviewer sees, never a quiet default. It scans **every** module under the
+collected roots, not only files named `*.test.ts` — the opt-out's effect is
+module state, so a call in a shared helper would otherwise switch the freeze off
+for every suite importing it without appearing in the allowlist at all.
 
 Before adding one, check that you actually need the **real** date rather than a
 **different** one — case 3 above needs no opt-out at all. A file that mixes
@@ -165,13 +197,20 @@ The freeze is not airtight by construction: a file can opt out, and code can
 reach a date through a path the freeze does not cover. So
 `.github/workflows/clock-rollover-canary.yml` re-runs the whole unit suite with
 the machine's **real** clock wound forward by **a day, a month and a year**, as
-three parallel matrix jobs, and fails if any test result changes.
+three parallel matrix jobs, and **fails when the suite fails** under the shifted
+clock (after `--retry=2`).
 
-That is the acceptance criterion stated directly: winding the real system clock
-forward by a year must not change any test result. A properly frozen test cannot
-notice the canary at all — it still sees 1 July 2026. What notices is anything
-that escaped the freeze, which is exactly the population that will go red on its
-own one day.
+Two limits worth knowing. It does not compare results against a baseline run, so
+a test that changes fail→pass is not reported; and the retry, which exists to
+absorb libfaketime's slowdown, means only a repeatable failure is reported — a
+date dependence that surfaces on one ordering in three can be retried green. A
+test that really reaches the real calendar fails on every attempt, because the
+clock is shifted for the whole run, so the retry does not soften that signal.
+
+The acceptance criterion in plain English: winding the real system clock forward
+by a year must not break the suite. A properly frozen test cannot notice the
+canary at all — it still sees 1 July 2026. What notices is anything that escaped
+the freeze, which is exactly the population that will go red on its own one day.
 
 The shift uses [libfaketime](https://github.com/wolfcw/libfaketime) rather than
 setting the runner's system clock: no VM-wide side effects, no fight with NTP

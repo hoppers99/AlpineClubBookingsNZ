@@ -110,14 +110,21 @@ Write date fixtures relative to that instant and they stay correct for good:
 `2026-08-01` is the future, `2026-06-01` is the past. Do not write a fixture
 against the real clock, and do not opt a file out because it wants a *different*
 fixed date — pin that one in the file's own `beforeAll`, which wins over the
-default.
+default. Use a `beforeEach` instead if the suite also hands the clock back with
+`vi.useRealTimers()`, because the re-freeze restores the default instant rather
+than your pin. Measure elapsed time with `realElapsedMs` from
+`src/lib/__tests__/helpers/clock.ts`; under the freeze `Date.now()` is a
+constant, so a `Date.now()` stopwatch reads `0` and a `Date.now()` deadline never
+expires.
 
 A file that genuinely needs the real wall clock calls
 `optOutOfFrozenClock("<reason>")` at module top level and is added to the counted
-allowlist in `src/lib/__tests__/frozen-test-clock.test.ts`. A nightly
-`Clock rollover canary` workflow re-runs the suite with the machine's **real**
-clock wound forward by a day, a month and a year — which a frozen test cannot
-notice and an escaped one can — to catch anything the freeze misses.
+allowlist in `src/lib/__tests__/frozen-test-clock.test.ts`. The
+`Clock rollover canary` workflow — on pushes to `main`, nightly, and on manual
+dispatch, but deliberately never as a pull-request check — re-runs the suite with
+the machine's **real** clock wound forward by a day, a month and a year, which a
+frozen test cannot notice and an escaped one can, to catch anything the freeze
+misses.
 
 `docs/TESTING.md` has the full convention, the `TEST_CLOCK_OFFSET_DAYS` /
 `TEST_CLOCK_ISO` overrides for reproducing a specific rollover locally, and why
