@@ -3,6 +3,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  FieldHint,
+  describedByFieldHint,
+  useFieldHint,
+} from "@/components/ui/field-hint";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { BackLink } from "@/components/admin/back-link";
@@ -95,6 +100,42 @@ interface ValidationIssue {
   message: string;
 }
 
+/*
+  #2264 — the slot HTML hint id, spelled EXACTLY ONCE. Slots render inside a
+  `.map()`, so `useFieldHint` cannot be called per row and the id is derived
+  from the row index instead; deriving it at each use site would mean the same
+  template literal written twice, where a typo in either copy silently orphans
+  the hint with nothing failing.
+*/
+function slotHtmlHintId(index: number) {
+  return `slot-html-hint-${index}`;
+}
+
+/*
+  #2264 review — the HTML textarea's ONLY accessible name is built from the
+  slot's label, and a label is authored data: a layout can declare a slot with
+  a blank one (which would leave the textarea unnamed again) or two slots with
+  the SAME one (which would give two textareas the same name, ambiguous to a
+  screen reader and to Playwright alike). The slot key is unique by
+  construction — it is this list's React key — so it stands in for a blank
+  label and disambiguates a repeated one. The row index is the last resort, for
+  the theoretical slot with neither.
+*/
+function slotFieldName(
+  slots: readonly SlotDraft[],
+  slot: SlotDraft,
+  index: number,
+): string {
+  if (!slot.label.trim()) {
+    return slot.slotKey.trim() || `Slot ${index + 1}`;
+  }
+  const isDuplicate =
+    slots.filter((other) => other.label.trim() === slot.label.trim()).length > 1;
+  return isDuplicate && slot.slotKey.trim()
+    ? `${slot.label} (${slot.slotKey})`
+    : slot.label;
+}
+
 function emptyDraft(): TemplateDraft {
   return {
     id: null,
@@ -126,6 +167,13 @@ export default function AdminDisplayTemplatesPage() {
   // view-level action) but every input, and the Save/Delete/Add/Duplicate write
   // controls, stay disabled (#1940).
   const canEdit = useAdminAreaEditAccess("lodge");
+  // #2264 — authoring examples move out of the placeholders. Where a muted note
+  // already sat under the field, the example is folded INTO that note and the
+  // note promoted to a FieldHint, so nothing gains a second line.
+  const keyHint = useFieldHint();
+  const nameHint = useFieldHint();
+  const cssHint = useFieldHint();
+  const footerHint = useFieldHint();
 
   // Closed registries surfaced read-only into the editor (client-safe pure data).
   const modules = useMemo(() => listDisplayModules(), []);
@@ -682,30 +730,31 @@ export default function AdminDisplayTemplatesPage() {
               <Input
                 id="template-key"
                 className="w-56 font-mono"
-                placeholder="foyer-board"
                 value={draft.key}
                 disabled={draft.id !== null || !canEdit}
                 onChange={(event) =>
                   setDraft((current) => ({ ...current, key: event.target.value }))
                 }
+                {...keyHint.fieldProps}
               />
-              <p className="text-muted-foreground text-xs">
+              <FieldHint {...keyHint.hintProps}>
                 {draft.id
                   ? "Locked — the key is fixed once devices bind to it."
-                  : "Lower-case slug. Fixed after creation."}
-              </p>
+                  : "Lower-case slug, for example foyer-board. Fixed after creation."}
+              </FieldHint>
             </div>
             <div className="min-w-64 flex-1 space-y-1">
               <Label htmlFor="template-name">Name</Label>
               <Input
                 id="template-name"
-                placeholder="Foyer board"
                 value={draft.name}
                 disabled={!canEdit}
                 onChange={(event) =>
                   setDraft((current) => ({ ...current, name: event.target.value }))
                 }
+                {...nameHint.fieldProps}
               />
+              <FieldHint {...nameHint.hintProps}>Example: Foyer board</FieldHint>
             </div>
           </div>
 
@@ -807,14 +856,20 @@ export default function AdminDisplayTemplatesPage() {
                         className={`${textareaClass} min-h-24`}
                         spellCheck={false}
                         disabled={!canEdit}
-                        placeholder={"Empty — HTML goes here, e.g. <p>{{lodge-name}}</p>"}
+                        /* #2264 — this textarea had no Label; the placeholder
+                           was its only accessible name, so it is named here in
+                           the same edit that removes the example. */
+                        aria-label={`${slotFieldName(draft.slots, slot, index)} HTML`}
                         value={slot.html}
                         onChange={(event) =>
                           updateSlot(index, { html: event.target.value })
                         }
+                        aria-describedby={describedByFieldHint(
+                          slotHtmlHintId(index),
+                        )}
                       />
-                      <p className="text-muted-foreground text-xs">
-                        HTML with tokens:{" "}
+                      <FieldHint id={slotHtmlHintId(index)}>
+                        Leave empty to show nothing here. HTML with tokens:{" "}
                         <code className="bg-muted rounded px-1">
                           {"{{config:key}}"}
                         </code>
@@ -830,8 +885,12 @@ export default function AdminDisplayTemplatesPage() {
                         <code className="bg-muted rounded px-1">
                           {"{{module:name}}"}
                         </code>{" "}
-                        embed. Scripts and external URLs are stripped on serve.
-                      </p>
+                        embed — for example{" "}
+                        <code className="bg-muted rounded px-1">
+                          {"<p>{{lodge-name}}</p>"}
+                        </code>
+                        . Scripts and external URLs are stripped on serve.
+                      </FieldHint>
                     </div>
                   ) : (
                     <div className="space-y-3">
@@ -943,11 +1002,19 @@ export default function AdminDisplayTemplatesPage() {
                 setDraft((current) => ({ ...current, cssOverrides: next }))
               }
               disabled={!canEdit}
-              placeholder={".board { color: var(--brand-gold); }"}
+              /* #2264 — the example moves into the note below. The textarea
+                 lives inside the shared token component, so the wiring is
+                 threaded through its `describedBy` prop rather than spread. */
+              describedBy={cssHint.fieldProps["aria-describedby"]}
               textareaClassName="min-h-24"
             />
-            <p className="text-muted-foreground text-xs">
-              Layered after the layout default. Theme tokens you can reach for:{" "}
+            <FieldHint {...cssHint.hintProps}>
+              Example:{" "}
+              <code className="bg-muted rounded px-1">
+                {".board { color: var(--brand-gold); }"}
+              </code>
+              . Layered after the layout default. Theme tokens you can reach
+              for:{" "}
               {cssTokens.map((token, i) => (
                 <span key={token.name}>
                   {i > 0 && ", "}
@@ -958,7 +1025,7 @@ export default function AdminDisplayTemplatesPage() {
               ))}
               . External URLs, <code>@import</code>, and script vectors are
               stripped automatically on save.
-            </p>
+            </FieldHint>
           </div>
 
           <div className="space-y-1">
@@ -973,15 +1040,19 @@ export default function AdminDisplayTemplatesPage() {
                 setDraft((current) => ({ ...current, footerHtml: next }))
               }
               disabled={!canEdit}
-              placeholder={"Wi-Fi: {{config:wifi-code}} · {{lodge-name}}"}
+              describedBy={footerHint.fieldProps["aria-describedby"]}
               textareaClassName="min-h-20"
               configSource={previewLodgeConfig}
             />
-            <p className="text-muted-foreground text-xs">
+            <FieldHint {...footerHint.hintProps}>
               The page footer. HTML with the same tokens, or a{" "}
               <code className="bg-muted rounded px-1">{"{{module:name}}"}</code>{" "}
-              embed.
-            </p>
+              embed — for example{" "}
+              <code className="bg-muted rounded px-1">
+                {"Wi-Fi: {{config:wifi-code}} · {{lodge-name}}"}
+              </code>
+              .
+            </FieldHint>
           </div>
 
           {errors.length > 0 && (

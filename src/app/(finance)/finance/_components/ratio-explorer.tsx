@@ -22,6 +22,18 @@ import {
   formatDollarsDisplay,
   formatFinancePercent,
 } from "@/lib/finance-format";
+import { APP_LOCALE, APP_TIME_ZONE } from "@/config/operational";
+
+// Not one of the shared helpers: finance chart axes need the SHORT month
+// ("Apr 2026"), not the long month `formatNZMonthYear` renders. The zone was
+// already pinned to club time; it now says so through `APP_TIME_ZONE` rather
+// than a hardcoded "Pacific/Auckland", matching the `APP_LOCALE` beside it and
+// every other pinned formatter in the tree.
+const SHORT_MONTH_YEAR = new Intl.DateTimeFormat(APP_LOCALE, {
+  month: "short",
+  year: "numeric",
+  timeZone: APP_TIME_ZONE,
+});
 
 const chartLoading = () => <div style={{ height: 300 }} />;
 const TrendChart = dynamic(
@@ -45,11 +57,7 @@ interface RangeChip {
 }
 
 function shortMonthLabel(monthKey: string) {
-  return new Date(`${monthKey}-01T00:00:00.000Z`).toLocaleDateString("en-NZ", {
-    month: "short",
-    year: "numeric",
-    timeZone: "Pacific/Auckland",
-  });
+  return SHORT_MONTH_YEAR.format(new Date(`${monthKey}-01T00:00:00.000Z`));
 }
 
 function defaultSeriesId(

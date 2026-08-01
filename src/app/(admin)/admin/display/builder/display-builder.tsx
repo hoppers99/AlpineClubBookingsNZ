@@ -16,6 +16,7 @@ import {
 } from "@dnd-kit/core";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { FieldHint, useFieldHint } from "@/components/ui/field-hint";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -84,6 +85,10 @@ import {
 // reorder is also available via a menu / arrow buttons, and @dnd-kit runs with a
 // KeyboardSensor + live-region announcements so the drag itself is operable from
 // the keyboard. The builder only ever emits shapes the save contract accepts.
+
+/** #2264 — the board-key ALERT's id, so `useFieldHint` can list it ahead of the
+ *  hint. Only one builder is mounted at a time, so a fixed id cannot collide. */
+const BUILDER_KEY_ERROR_ID = "builder-key-error";
 
 const SKELETON_LABELS: Record<BuilderSkeleton, string> = {
   columns: "Columns (side by side)",
@@ -161,6 +166,16 @@ export default function DisplayBuilder(props: DisplayBuilderProps) {
   // bouncing off the server as a bare "Invalid request" (§U2/U3).
   const creating = props.layoutId === null;
   const keyValid = isValidBuilderKey(key.trim());
+  // #2264 — examples move out of the placeholders and under the fields.
+  // The key field already had a hand-rolled describedby pair, so it is
+  // converted rather than duplicated; its inline "use lower-case letters…"
+  // ALERT is now named and listed FIRST, so a screen reader hears what is wrong
+  // before it hears the example.
+  const keyInvalid = creating && key.trim() !== "" && !keyValid;
+  const nameHint = useFieldHint();
+  const keyHint = useFieldHint(keyInvalid ? BUILDER_KEY_ERROR_ID : undefined);
+  const footerHint = useFieldHint();
+  const cssHint = useFieldHint();
 
   // Keyboard reorder focus (§U4): zone keys are positional (re-derived on every
   // reorder), so after a move React reuses the DOM node at each index and the
@@ -442,7 +457,7 @@ export default function DisplayBuilder(props: DisplayBuilderProps) {
             <Label htmlFor="builder-name">Name</Label>
             <Input
               id="builder-name"
-              placeholder="Foyer board"
+              {...nameHint.fieldProps}
               value={name}
               disabled={!canEdit}
               onChange={(e) => {
@@ -453,29 +468,33 @@ export default function DisplayBuilder(props: DisplayBuilderProps) {
                 if (creating && !keyTouched) setKey(slugifyKey(next));
               }}
             />
+            <FieldHint {...nameHint.hintProps}>Example: Foyer board</FieldHint>
           </div>
           <div className="space-y-1">
             <Label htmlFor="builder-key">Board key (slug)</Label>
             <Input
               id="builder-key"
               className="w-56 font-mono"
-              placeholder="foyer-board"
               value={key}
               disabled={!creating || !canEdit}
-              aria-invalid={creating && key.trim() !== "" && !keyValid}
-              aria-describedby="builder-key-hint"
+              aria-invalid={keyInvalid}
+              {...keyHint.fieldProps}
               onChange={(e) => {
                 setKeyTouched(true);
                 setKey(e.target.value);
               }}
             />
-            <p id="builder-key-hint" className="text-muted-foreground text-xs">
+            <FieldHint {...keyHint.hintProps}>
               {creating
-                ? `Auto-filled from the name. Lower-case letters, numbers and hyphens only, up to ${BUILDER_KEY_MAX_LENGTH} characters; fixed after creation.`
+                ? `Auto-filled from the name — for example foyer-board. Lower-case letters, numbers and hyphens only, up to ${BUILDER_KEY_MAX_LENGTH} characters; fixed after creation.`
                 : "Locked after creation."}
-            </p>
-            {creating && key.trim() !== "" && !keyValid && (
-              <p className="text-destructive text-xs" role="alert">
+            </FieldHint>
+            {keyInvalid && (
+              <p
+                id={BUILDER_KEY_ERROR_ID}
+                className="text-destructive text-xs"
+                role="alert"
+              >
                 Use lower-case letters, numbers and hyphens only, up to{" "}
                 {BUILDER_KEY_MAX_LENGTH} characters (e.g. foyer-board).
               </p>
@@ -577,10 +596,19 @@ export default function DisplayBuilder(props: DisplayBuilderProps) {
               value={footerHtml}
               onValueChange={setFooterHtml}
               disabled={!canEdit}
-              placeholder={"Wi-Fi: {{config:wifi-code}} · {{lodge-name}}"}
+              /* #2264 — the textarea lives inside the shared token component,
+                 so the hint wiring threads through its `describedBy` prop
+                 rather than being spread onto the control directly. */
+              describedBy={footerHint.fieldProps["aria-describedby"]}
               textareaClassName="min-h-20"
               configSource={previewLodgeConfig}
             />
+            <FieldHint {...footerHint.hintProps}>
+              Example:{" "}
+              <code className="bg-muted rounded px-1">
+                {"Wi-Fi: {{config:wifi-code}} · {{lodge-name}}"}
+              </code>
+            </FieldHint>
           </div>
           <div className="space-y-1">
             <DisplayTokenTextarea
@@ -590,9 +618,15 @@ export default function DisplayBuilder(props: DisplayBuilderProps) {
               value={cssOverrides}
               onValueChange={setCssOverrides}
               disabled={!canEdit}
-              placeholder={".dlb-zone { gap: 2vmin; }"}
+              describedBy={cssHint.fieldProps["aria-describedby"]}
               textareaClassName="min-h-20"
             />
+            <FieldHint {...cssHint.hintProps}>
+              Example:{" "}
+              <code className="bg-muted rounded px-1">
+                {".dlb-zone { gap: 2vmin; }"}
+              </code>
+            </FieldHint>
           </div>
         </div>
 
@@ -1122,6 +1156,8 @@ function ContentEditor(props: {
   onSetOption: (key: string, value: string | number | boolean) => void;
 }) {
   const { content, canEdit, modules } = props;
+  // #2264 — the HTML block's example moves under the field.
+  const htmlHint = useFieldHint();
   const selectClass = "border-input bg-background h-9 w-full rounded-md border px-3 text-sm";
   const mode = content.type;
   return (
@@ -1175,10 +1211,16 @@ function ContentEditor(props: {
             value={content.html}
             onValueChange={props.onSetHtml}
             disabled={!canEdit}
-            placeholder={"<p>{{lodge-name}}</p>"}
+            describedBy={htmlHint.fieldProps["aria-describedby"]}
             textareaClassName="min-h-24"
             configSource={props.configSource}
           />
+          <FieldHint {...htmlHint.hintProps}>
+            Example:{" "}
+            <code className="bg-muted rounded px-1">
+              {"<p>{{lodge-name}}</p>"}
+            </code>
+          </FieldHint>
         </div>
       )}
     </div>

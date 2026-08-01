@@ -22,6 +22,7 @@ import {
 } from "@/components/ui/select";
 import { APP_CURRENCY, APP_TIME_ZONE } from "@/config/operational";
 import { formatDateOnlyForTimeZone } from "@/lib/date-only";
+import { formatNZDate } from "@/lib/nzst-date";
 import { formatCents } from "@/lib/pricing";
 import { useLodgeOptions } from "@/components/lodge-select";
 import {
@@ -128,9 +129,7 @@ function formatPromoDateInput(value: string | null) {
 }
 
 function formatPromoDateDisplay(value: string | null) {
-  return value
-    ? new Date(value).toLocaleDateString("en-NZ", { timeZone: APP_TIME_ZONE })
-    : "";
+  return value ? formatNZDate(new Date(value)) : "";
 }
 
 export function PromoCodesPageClient({
@@ -165,6 +164,8 @@ export function PromoCodesPageClient({
   const codeHint = useFieldHint();
   const descriptionHint = useFieldHint();
   const percentOffHint = useFieldHint();
+  const valueDollarsHint = useFieldHint();
+  const fixedNightlyPriceHint = useFieldHint();
   const freeNightsPerIndividualHint = useFieldHint();
   const xeroItemCodeHint = useFieldHint();
   const xeroAccountCodeHint = useFieldHint();
@@ -1004,13 +1005,14 @@ export function PromoCodesPageClient({
                         className="pl-7"
                         value={valueDollars}
                         onChange={(e) => setValueDollars(e.target.value)}
-                        placeholder="0.00"
                         required
+                        {...valueDollarsHint.fieldProps}
                       />
                     </div>
-                    <p className="text-xs text-muted-foreground">
+                    <FieldHint {...valueDollarsHint.hintProps}>
                       Each eligible guest receives this amount off, capped at their stay total.
-                    </p>
+                      Example: 25.00
+                    </FieldHint>
                   </div>
                 )}
 
@@ -1045,9 +1047,13 @@ export function PromoCodesPageClient({
                         onChange={(e) => setLifetimeFreeNightsCap(e.target.value)}
                         placeholder="Leave blank for no lifetime cap"
                       />
+                      {/* #2264 — the "Leave blank for no lifetime cap"
+                          instruction is stated once, in the placeholder (where
+                          it describes the empty control's own behaviour); the
+                          line below no longer repeats it. */}
                       <p className="text-xs text-muted-foreground">
                         Caps the total free nights any one member can claim from this code across all
-                        their bookings. Leave blank for no lifetime cap.
+                        their bookings.
                       </p>
                     </div>
                   </>
@@ -1071,15 +1077,15 @@ export function PromoCodesPageClient({
                           className="pl-7"
                           value={fixedNightlyPriceDollars}
                           onChange={(e) => setFixedNightlyPriceDollars(e.target.value)}
-                          placeholder="0.00"
                           required
+                          {...fixedNightlyPriceHint.fieldProps}
                         />
                       </div>
-                      <p className="text-xs text-muted-foreground">
+                      <FieldHint {...fixedNightlyPriceHint.hintProps}>
                         Applied to each eligible guest-night. When assigned to members, the &quot;how
                         the code applies&quot; choice below decides whether it prices the whole group
-                        or only the assigned members&apos; own nights.
-                      </p>
+                        or only the assigned members&apos; own nights. Example: 30.00
+                      </FieldHint>
                     </div>
                     <div className="space-y-2">
                       <Label htmlFor="fixedNightlyMode">Fixed nightly mode</Label>

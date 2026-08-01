@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button"
 import { buildHrefWithReturnTo } from "@/lib/internal-return-path"
 import { buildXeroContactUrl } from "@/lib/xero-links"
 import { formatAgeTierName } from "@/lib/use-age-tier-options"
+import { formatNZDate, formatNZDateTime, formatNZTime } from "@/lib/nzst-date"
 import { fetchJson, postJson } from "./api"
 import {
   BudgetStatusChip,
@@ -257,7 +258,7 @@ export function HealthAndDiagnosticsPanels({
               />
               <HealthStatCard
                 label="Last membership refresh"
-                value={<span className="text-base font-semibold">{health.lastMembershipRefresh.at ? new Date(health.lastMembershipRefresh.at).toLocaleString("en-NZ") : "Never"}</span>}
+                value={<span className="text-base font-semibold">{health.lastMembershipRefresh.at ? formatNZDateTime(new Date(health.lastMembershipRefresh.at)) : "Never"}</span>}
                 subtitle={health.lastMembershipRefresh.lastCronStatus ? `Last cron status: ${health.lastMembershipRefresh.lastCronStatus}` : "No cron run recorded yet."}
                 onClick={() => scrollToSection("membershipSync")}
               />
@@ -376,10 +377,10 @@ function MissingInvoicesList({
                 <span className="ml-2 text-muted-foreground">{booking.memberEmail}</span>
               </p>
               <p className="text-xs text-muted-foreground">
-                {new Date(booking.checkIn).toLocaleDateString("en-NZ")} to {new Date(booking.checkOut).toLocaleDateString("en-NZ")} - Payment {shortId(booking.paymentId)}
+                {formatNZDate(new Date(booking.checkIn))} to {formatNZDate(new Date(booking.checkOut))} - Payment {shortId(booking.paymentId)}
               </p>
             </div>
-            <p className="text-xs text-muted-foreground">Created {new Date(booking.createdAt).toLocaleString("en-NZ")}</p>
+            <p className="text-xs text-muted-foreground">Created {formatNZDateTime(new Date(booking.createdAt))}</p>
           </div>
         </div>
       ))}
@@ -447,13 +448,13 @@ function ContactGroupMismatchPanel({
                 <p className="text-xs text-muted-foreground">{data.informationalCount} member{data.informationalCount === 1 ? "" : "s"} match no rule but sit in managed group{data.informationalCount === 1 ? "" : "s"} — information only, never re-synced automatically.</p>
               ) : null}
               <p className="text-xs text-muted-foreground">
-                {data.cacheReady && data.lastRefreshedAt ? `Cache last refreshed ${new Date(data.lastRefreshedAt).toLocaleString("en-NZ")}.` : "The shared Xero contact-group cache has not been refreshed yet."}
+                {data.cacheReady && data.lastRefreshedAt ? `Cache last refreshed ${formatNZDateTime(new Date(data.lastRefreshedAt))}.` : "The shared Xero contact-group cache has not been refreshed yet."}
               </p>
               {data.resync ? (
                 <p className="text-xs text-success">
                   {data.resync.requestedContacts === 0
-                    ? `Nothing was flagged to re-sync; audit recomputed at ${new Date(data.resync.resyncedAt).toLocaleTimeString("en-NZ")}.`
-                    : `Re-synced ${data.resync.resyncedContacts} of ${data.resync.requestedContacts} flagged contact${data.resync.requestedContacts === 1 ? "" : "s"} from Xero at ${new Date(data.resync.resyncedAt).toLocaleTimeString("en-NZ")}${data.resync.removedContacts > 0 ? ` (${data.resync.removedContacts} no longer exist in Xero; their stale cache entries were removed)` : ""}.`}
+                    ? `Nothing was flagged to re-sync; audit recomputed at ${formatNZTime(new Date(data.resync.resyncedAt))}.`
+                    : `Re-synced ${data.resync.resyncedContacts} of ${data.resync.requestedContacts} flagged contact${data.resync.requestedContacts === 1 ? "" : "s"} from Xero at ${formatNZTime(new Date(data.resync.resyncedAt))}${data.resync.removedContacts > 0 ? ` (${data.resync.removedContacts} no longer exist in Xero; their stale cache entries were removed)` : ""}.`}
                 </p>
               ) : null}
             </div>
@@ -547,13 +548,13 @@ function ContactLinkMismatchPanel({
               </div>
               <p className="text-sm text-muted-foreground">Compares linked members against the cached Xero contact snapshot. Use this to unlink bad email-based matches, then relink the correct contact from the member record.</p>
               <p className="text-xs text-muted-foreground">
-                {data.cacheReady && data.lastRefreshedAt ? `Contact cache last refreshed ${new Date(data.lastRefreshedAt).toLocaleString("en-NZ")}.` : "The shared Xero contact cache has not been refreshed yet."}
+                {data.cacheReady && data.lastRefreshedAt ? `Contact cache last refreshed ${formatNZDateTime(new Date(data.lastRefreshedAt))}.` : "The shared Xero contact cache has not been refreshed yet."}
               </p>
               {data.resync ? (
                 <p className="text-xs text-success">
                   {data.resync.requestedContacts === 0
-                    ? `Nothing was flagged to re-sync; audit recomputed at ${new Date(data.resync.resyncedAt).toLocaleTimeString("en-NZ")}.`
-                    : `Re-synced ${data.resync.resyncedContacts} of ${data.resync.requestedContacts} flagged contact${data.resync.requestedContacts === 1 ? "" : "s"} from Xero at ${new Date(data.resync.resyncedAt).toLocaleTimeString("en-NZ")}${data.resync.removedContacts > 0 ? ` (${data.resync.removedContacts} no longer exist in Xero; their stale cache entries were removed)` : ""}.`}
+                    ? `Nothing was flagged to re-sync; audit recomputed at ${formatNZTime(new Date(data.resync.resyncedAt))}.`
+                    : `Re-synced ${data.resync.resyncedContacts} of ${data.resync.requestedContacts} flagged contact${data.resync.requestedContacts === 1 ? "" : "s"} from Xero at ${formatNZTime(new Date(data.resync.resyncedAt))}${data.resync.removedContacts > 0 ? ` (${data.resync.removedContacts} no longer exist in Xero; their stale cache entries were removed)` : ""}.`}
                 </p>
               ) : null}
             </div>

@@ -3,7 +3,7 @@ import {
   FinanceSnapshotType,
   Prisma,
 } from "@prisma/client";
-import { APP_LOCALE, APP_TIME_ZONE } from "@/config/operational";
+import { formatNZDate } from "@/lib/nzst-date";
 import {
   DEFAULT_FINANCE_REPORT_CATEGORIES,
   type FinanceReportCategoryKindValue,
@@ -217,15 +217,6 @@ function snapshotOverlapsRange(
   const toDate = parseDateOnlyString(to);
 
   return snapshotEnd(snapshot) >= fromDate && snapshotStart(snapshot) <= toDate;
-}
-
-function formatDateLabel(date: Date) {
-  return date.toLocaleDateString(APP_LOCALE, {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-    timeZone: APP_TIME_ZONE,
-  });
 }
 
 function formatSignedCents(amountCents: number) {
@@ -659,7 +650,7 @@ function loadSnapshotLines(input: {
     const payload = readPnlReportPayload(snapshot.payload);
     const label =
       (payload ? readPnlPeriodLabel(payload) : null) ??
-      formatDateLabel(snapshotEnd(snapshot));
+      formatNZDate(snapshotEnd(snapshot));
     const lines = payload
       ? categorizeLines({
           lines: extractPnlLines({

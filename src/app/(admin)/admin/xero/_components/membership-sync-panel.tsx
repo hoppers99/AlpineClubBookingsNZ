@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react"
 import { Button } from "@/components/ui/button"
+import { formatNZDateTime } from "@/lib/nzst-date"
 import { fetchJson, postJson } from "./api"
 import { SectionCard, type ToggleSection } from "./shared"
 import type { MembershipSyncMode, SyncResult, XeroHealthSnapshot } from "./types"
@@ -87,11 +88,11 @@ export function MembershipSyncPanel({
         <div className="rounded-md border bg-muted p-3 text-sm">
           <p>
             <span className="text-muted-foreground">Last refresh:</span>{" "}
-            {lastRefresh?.at ? new Date(lastRefresh.at).toLocaleString("en-NZ") : "No refresh recorded yet"}
+            {lastRefresh?.at ? formatNZDateTime(new Date(lastRefresh.at)) : "No refresh recorded yet"}
           </p>
           {lastRefresh?.lastCronStartedAt ? (
             <p className="mt-1 text-xs text-muted-foreground">
-              Cron started {new Date(lastRefresh.lastCronStartedAt).toLocaleString("en-NZ")}
+              Cron started {formatNZDateTime(new Date(lastRefresh.lastCronStartedAt))}
               {lastRefresh.lastCronStatus ? ` - ${lastRefresh.lastCronStatus}` : ""}
             </p>
           ) : null}

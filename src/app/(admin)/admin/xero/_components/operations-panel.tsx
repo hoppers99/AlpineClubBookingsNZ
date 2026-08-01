@@ -11,11 +11,13 @@ import {
   ViewOnlyActionButton,
 } from "@/components/admin/view-only-action"
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access"
+import { FieldHint, useFieldHint } from "@/components/ui/field-hint"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { redactSensitiveText } from "@/lib/redact-sensitive-json"
 import { summarizeXeroOperation } from "@/lib/xero-operation-summaries"
 import { resetXeroOperationsDatasetSearchParams } from "@/lib/admin-dataset-reset-state"
+import { formatNZDateTime } from "@/lib/nzst-date"
 import { fetchJson, postJson } from "./api"
 import {
   FailureStateChip,
@@ -48,6 +50,9 @@ export function OperationsPanel({
   // Retry/reset/mark-non-replayable/resolve all write finance-area Xero
   // operations routes; a view-only finance admin browses but cannot act (#1997).
   const canEdit = useAdminAreaEditAccess("finance")
+  // #2264 — the example operation type moves under the box; inside it, grey text
+  // read as a filter already applied.
+  const operationTypeHint = useFieldHint()
   const router = useRouter()
   const pathname = usePathname()
   const searchParams = useSearchParams()
@@ -403,7 +408,8 @@ export function OperationsPanel({
           </div>
           <div className="space-y-1">
             <Label className="text-xs text-muted-foreground" htmlFor="xero-op-operation-type">Operation</Label>
-            <Input id="xero-op-operation-type" value={operationTypeFilter === "all" ? "" : operationTypeFilter} onChange={(event) => { setOperationTypeFilter(event.target.value || "all"); resetPage() }} placeholder="CREATE" />
+            <Input id="xero-op-operation-type" value={operationTypeFilter === "all" ? "" : operationTypeFilter} onChange={(event) => { setOperationTypeFilter(event.target.value || "all"); resetPage() }} {...operationTypeHint.fieldProps} />
+            <FieldHint {...operationTypeHint.hintProps}>Example: CREATE</FieldHint>
           </div>
           <div className="space-y-1">
             <Label className="text-xs text-muted-foreground" htmlFor="xero-op-resource-id">Resource ID</Label>
@@ -496,7 +502,7 @@ export function OperationItem({
           <FailureStateChip state={operation.failureState} />
         ) : null}
         <span className="text-sm font-medium">{operation.entityType} {operation.operationType}</span>
-        <span className="text-xs text-muted-foreground">{new Date(operation.createdAt).toLocaleString("en-NZ")}</span>
+        <span className="text-xs text-muted-foreground">{formatNZDateTime(new Date(operation.createdAt))}</span>
       </div>
       <div className="flex flex-wrap gap-4 text-xs text-muted-foreground">
         <span>Direction: {operation.direction}</span>

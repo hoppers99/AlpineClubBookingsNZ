@@ -7,6 +7,16 @@ import {
 } from "@/lib/date-only";
 import { getFinancialYearEndMonth } from "@/lib/financial-year";
 import { isMonthKey, shiftMonthKey } from "@/lib/finance-monthly-facts";
+import { formatNZDate, formatNZMonthYear } from "@/lib/nzst-date";
+
+// Trend-axis month label ("Jun 2026"). Deliberately the SHORT month, unlike the
+// shared `formatNZMonthYear` ("June 2026") used for headings: chart axes have to
+// fit a dozen ticks side by side, so this keeps its own pinned formatter.
+const TREND_MONTH_LABEL = new Intl.DateTimeFormat(APP_LOCALE, {
+  timeZone: APP_TIME_ZONE,
+  month: "short",
+  year: "numeric",
+});
 
 export const FINANCE_DASHBOARD_VIEWS = [
   "bookings",
@@ -197,14 +207,7 @@ function monthEndString(monthKey: string): string {
 }
 
 function formatMonthLabel(monthKey: string) {
-  return parseDateOnly(monthStartString(monthKey)).toLocaleDateString(
-    APP_LOCALE,
-    {
-      month: "long",
-      year: "numeric",
-      timeZone: APP_TIME_ZONE,
-    }
-  );
+  return formatNZMonthYear(parseDateOnly(monthStartString(monthKey)));
 }
 
 function monthRangeLabel(fromMonth: string, toMonth: string) {
@@ -563,25 +566,20 @@ export function resolveFinanceDashboardSelection(input: {
   };
 }
 
+// #2264: `parseDateOnly` answers `new Date(NaN)` for anything that is not a
+// `YYYY-MM-DD` string, and `Intl.format` THROWS on that where the
+// `toLocaleDateString` call this replaced quietly rendered "Invalid Date".
+// `financeDashboardWindowDetail` below is exported and takes plain strings, so
+// a malformed window must degrade to a readable label rather than throw a
+// finance page away entirely.
 function formatDate(dateOnly: string) {
-  return parseDateOnly(dateOnly).toLocaleDateString(APP_LOCALE, {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-    timeZone: APP_TIME_ZONE,
-  });
+  const parsed = parseDateOnly(dateOnly);
+  return Number.isNaN(parsed.getTime()) ? dateOnly : formatNZDate(parsed);
 }
 
 /** Short month label ("Jun 2026") for trend axes. */
 export function financeDashboardTrendMonthLabel(monthKey: string) {
-  return parseDateOnly(monthStartString(monthKey)).toLocaleDateString(
-    APP_LOCALE,
-    {
-      month: "short",
-      year: "numeric",
-      timeZone: APP_TIME_ZONE,
-    }
-  );
+  return TREND_MONTH_LABEL.format(parseDateOnly(monthStartString(monthKey)));
 }
 
 export function financeDashboardWindowDetail(

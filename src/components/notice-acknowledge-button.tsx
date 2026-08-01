@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Check } from "lucide-react";
+import { formatNZDate } from "@/lib/nzst-date";
 
 /**
  * Member-facing "Acknowledge" control, shown only for notices that require
@@ -30,9 +31,7 @@ export function NoticeAcknowledgeButton({
         <Check className="h-4 w-4" />
         Acknowledged
         {acknowledgedAt
-          ? ` on ${new Date(acknowledgedAt).toLocaleDateString("en-NZ", {
-              dateStyle: "medium",
-            })}`
+          ? ` on ${formatNZDate(new Date(acknowledgedAt))}`
           : ""}
       </p>
     );

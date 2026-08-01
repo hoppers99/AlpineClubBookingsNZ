@@ -46,6 +46,7 @@ import {
   AdminViewOnlySectionBanner,
   ViewOnlyActionButton,
 } from "@/components/admin/view-only-action";
+import { formatNZDate } from "@/lib/nzst-date";
 
 type ApiBanner = {
   id: string;
@@ -107,12 +108,10 @@ function formatDateOnly(value: string): string {
   if (Number.isNaN(parsed.getTime())) {
     return value;
   }
-  return parsed.toLocaleDateString("en-NZ", {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-    timeZone: "UTC",
-  });
+  // The value is already pinned to UTC midnight above, and NZ is UTC+12/+13, so
+  // reading it back in club time lands on the same calendar day — the rendered
+  // string is unchanged by the move to the shared helper (#2264).
+  return formatNZDate(parsed);
 }
 
 function excerpt(message: string, maxLength = 160): string {

@@ -8,6 +8,7 @@ import {
   ViewOnlyActionButton,
 } from "@/components/admin/view-only-action";
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
+import { formatNZDate, formatNZDateTime } from "@/lib/nzst-date";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Dialog,
@@ -105,13 +106,7 @@ function formatDate(value: string | null) {
   if (!value) {
     return "Not yet";
   }
-  return new Date(value).toLocaleString("en-NZ", {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  });
+  return formatNZDateTime(new Date(value));
 }
 
 function statusLabel(status: ApplicationStatus) {
@@ -650,7 +645,7 @@ export default function MemberApplicationsPage() {
                             {familyMember.firstName} {familyMember.lastName}
                           </p>
                           <p className="text-muted-foreground">
-                            DOB {new Date(familyMember.dateOfBirth).toLocaleDateString("en-NZ")}
+                            DOB {formatNZDate(new Date(familyMember.dateOfBirth))}
                           </p>
                         </div>
                       ))}

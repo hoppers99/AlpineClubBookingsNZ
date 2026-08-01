@@ -5,6 +5,7 @@ import Link from "next/link";
 import { Check, ExternalLink } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { FieldHint, useFieldHint } from "@/components/ui/field-hint";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -16,6 +17,7 @@ import {
   type AncestorViewOnlyBannerProps,
 } from "@/components/admin/view-only-action";
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
+import { formatNZDateTime, formatNZTime } from "@/lib/nzst-date";
 import { useRestoreBuiltInBoards } from "../templates/restore-built-ins";
 import {
   DISPLAY_TERM_BOARD,
@@ -867,6 +869,10 @@ export function PairStep({
   /** Set (or change) the board the screen will be bound to at pairing. */
   onChoose: (templateId: string) => void;
 }) {
+  // #2264 — the suggested screen name moves under the field. Parked inside the
+  // box it read as a name already chosen, and it vanished on the first
+  // keystroke; the interpolated lodge name is carried across unchanged.
+  const deviceNameHint = useFieldHint();
   const [deviceName, setDeviceName] = useState("");
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
@@ -1129,10 +1135,13 @@ export function PairStep({
                     <Input
                       id="pair-name"
                       value={deviceName}
-                      placeholder={`Lobby TV — ${lodgeName}`}
                       disabled={helpers.canEdit !== true}
                       onChange={(event) => setDeviceName(event.target.value)}
+                      {...deviceNameHint.fieldProps}
                     />
+                    <FieldHint {...deviceNameHint.hintProps}>
+                      {`Example: Lobby TV — ${lodgeName}`}
+                    </FieldHint>
                   </div>
                 ) : null}
                 <ViewOnlyActionButton
@@ -1241,9 +1250,9 @@ export function PairStep({
                 </Badge>
                 Waiting for the screen to claim it
                 {pending?.pairingArmedUntil
-                  ? ` — the code stops working at ${new Date(
-                      pending.pairingArmedUntil,
-                    ).toLocaleTimeString("en-NZ")}`
+                  ? ` — the code stops working at ${formatNZTime(
+                      new Date(pending.pairingArmedUntil),
+                    )}`
                   : ""}
                 .
               </p>
@@ -1274,7 +1283,7 @@ export function PairStep({
                     {device.name} — showing{" "}
                     {device.templateName ?? "the club default board"}
                     {device.lastSeenAt
-                      ? `, last seen ${new Date(device.lastSeenAt).toLocaleString("en-NZ")}`
+                      ? `, last seen ${formatNZDateTime(new Date(device.lastSeenAt))}`
                       : ", not seen yet"}
                   </li>
                 ))}
@@ -1337,7 +1346,7 @@ export function DoneStep({ context, helpers }: StepProps) {
               <li key={device.id}>
                 {device.name} — showing{" "}
                 {device.templateName ?? "the club default board"}, last seen{" "}
-                {new Date(device.lastSeenAt as string).toLocaleString("en-NZ")}
+                {formatNZDateTime(new Date(device.lastSeenAt as string))}
               </li>
             ))}
           </ul>

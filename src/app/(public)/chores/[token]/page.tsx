@@ -4,6 +4,17 @@ import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { CheckCircle2, Circle, AlertTriangle, Mountain, Lock } from "lucide-react";
 import { useClubIdentity } from "@/components/club-identity-provider";
+import { APP_LOCALE, APP_TIME_ZONE } from "@/config/operational";
+
+// Not one of the shared helpers: the chore sheet names the DAY OF THE WEEK in
+// full ("Wednesday, 15 April 2026"), matching the chore-roster email subject.
+const LONG_WEEKDAY_DATE = new Intl.DateTimeFormat(APP_LOCALE, {
+  timeZone: APP_TIME_ZONE,
+  weekday: "long",
+  year: "numeric",
+  month: "long",
+  day: "numeric",
+});
 
 interface Assignment {
   id: string;
@@ -75,12 +86,11 @@ export default function GuestChorePage() {
 
   if (!data) return null;
 
-  const formattedDate = new Date(data.date + "T00:00:00").toLocaleDateString("en-NZ", {
-    weekday: "long",
-    year: "numeric",
-    month: "long",
-    day: "numeric",
-  });
+  // Date-only chore night: parse at UTC midnight so the club-time formatter
+  // cannot roll it back a day for a viewer outside New Zealand.
+  const formattedDate = LONG_WEEKDAY_DATE.format(
+    new Date(data.date + "T00:00:00Z"),
+  );
 
   const groups: Record<string, Assignment[]> = { MORNING: [], EVENING: [], ANYTIME: [] };
   for (const a of data.assignments) {

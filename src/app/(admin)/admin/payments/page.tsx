@@ -21,6 +21,7 @@ import {
 import { useXeroStatus } from "@/hooks/use-xero-status";
 import { useXeroOrgShortCode } from "@/hooks/use-xero-org-short-code";
 import { buildXeroInvoiceUrl } from "@/lib/xero-links";
+import { FieldHint, describedByFieldHint } from "@/components/ui/field-hint";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import {
@@ -78,6 +79,9 @@ import { DateRangeControls } from "@/components/admin/date-range-controls";
 import { auditAndPaymentsDateRangePresets } from "@/lib/date-range-presets";
 import { buildXeroRecordActivityUrl } from "@/lib/xero-record-links";
 import { buildHrefWithReturnTo } from "@/lib/internal-return-path";
+
+// #2264 — the id of the single hint shared by the three amount filter boxes.
+const PAYMENT_AMOUNT_HINT_ID = "payment-amount-filter-hint";
 
 function formatCents(cents: number): string {
   return "$" + (cents / 100).toFixed(2);
@@ -771,47 +775,58 @@ export default function PaymentsPage() {
         }
         advanced={
           <>
+            {/* #2264 — ONE hint for the amount group rather than an example
+                parked in each box, where grey text reads as a filter already
+                applied. A hook cannot serve three controls, so the shared id is
+                wired to each box with `describedByFieldHint`. */}
             <div className="space-y-1">
-              <Label className="text-xs" htmlFor="payment-amount-exact">Amount exact</Label>
-              <Input
-                id="payment-amount-exact"
-                inputMode="decimal"
-                value={amountExact}
-                onChange={(event) => {
-                  setAmountExact(event.target.value);
-                  resetPage();
-                }}
-                placeholder="125.00"
-                className="w-32"
-              />
-            </div>
-            <div className="space-y-1">
-              <Label className="text-xs" htmlFor="payment-amount-min">Amount min</Label>
-              <Input
-                id="payment-amount-min"
-                inputMode="decimal"
-                value={amountMin}
-                onChange={(event) => {
-                  setAmountMin(event.target.value);
-                  resetPage();
-                }}
-                placeholder="50.00"
-                className="w-32"
-              />
-            </div>
-            <div className="space-y-1">
-              <Label className="text-xs" htmlFor="payment-amount-max">Amount max</Label>
-              <Input
-                id="payment-amount-max"
-                inputMode="decimal"
-                value={amountMax}
-                onChange={(event) => {
-                  setAmountMax(event.target.value);
-                  resetPage();
-                }}
-                placeholder="250.00"
-                className="w-32"
-              />
+              <div className="flex flex-wrap items-end gap-3">
+                <div className="space-y-1">
+                  <Label className="text-xs" htmlFor="payment-amount-exact">Amount exact</Label>
+                  <Input
+                    id="payment-amount-exact"
+                    inputMode="decimal"
+                    value={amountExact}
+                    onChange={(event) => {
+                      setAmountExact(event.target.value);
+                      resetPage();
+                    }}
+                    className="w-32"
+                    aria-describedby={describedByFieldHint(PAYMENT_AMOUNT_HINT_ID)}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs" htmlFor="payment-amount-min">Amount min</Label>
+                  <Input
+                    id="payment-amount-min"
+                    inputMode="decimal"
+                    value={amountMin}
+                    onChange={(event) => {
+                      setAmountMin(event.target.value);
+                      resetPage();
+                    }}
+                    className="w-32"
+                    aria-describedby={describedByFieldHint(PAYMENT_AMOUNT_HINT_ID)}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs" htmlFor="payment-amount-max">Amount max</Label>
+                  <Input
+                    id="payment-amount-max"
+                    inputMode="decimal"
+                    value={amountMax}
+                    onChange={(event) => {
+                      setAmountMax(event.target.value);
+                      resetPage();
+                    }}
+                    className="w-32"
+                    aria-describedby={describedByFieldHint(PAYMENT_AMOUNT_HINT_ID)}
+                  />
+                </div>
+              </div>
+              <FieldHint id={PAYMENT_AMOUNT_HINT_ID}>
+                Amounts in dollars. Example: 125.00
+              </FieldHint>
             </div>
             <DateRangeControls
               presets={auditAndPaymentsDateRangePresets}

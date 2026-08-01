@@ -10,6 +10,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { FieldHint, useFieldHint } from "@/components/ui/field-hint";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 
@@ -57,6 +58,13 @@ export function ManualPaymentDialog({
   onSubmit: (submission: ManualPaymentSubmission) => void;
 }) {
   const [note, setNote] = useState("");
+  /*
+    #2264 — the example note moves out of the placeholder (grey text inside the
+    box reads as a note already written) and folds into the muted line that was
+    already under this field, so the field keeps ONE description rather than
+    gaining a second.
+  */
+  const noteHint = useFieldHint();
 
   // A fresh row means a fresh note — never carry one admin's note across to the
   // next subscription they open.
@@ -102,12 +110,12 @@ export function ManualPaymentDialog({
                 value={note}
                 maxLength={NOTE_MAX_LENGTH}
                 onChange={(event) => setNote(event.target.value)}
-                placeholder="e.g. cash, cheque #123"
+                {...noteHint.fieldProps}
               />
-              <p className="text-xs text-muted-foreground">
-                Kept with the club&apos;s records. The member never sees this
-                note.
-              </p>
+              <FieldHint {...noteHint.hintProps}>
+                e.g. cash, cheque #123. Kept with the club&apos;s records. The
+                member never sees this note.
+              </FieldHint>
             </div>
             <p className="text-sm text-muted-foreground">
               The subscription is marked paid either way. Choose whether the

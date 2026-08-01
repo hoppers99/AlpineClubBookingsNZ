@@ -53,6 +53,19 @@ import {
   PAYMENT_OWED_BOOKING_STATUSES,
 } from "@/lib/booking-status";
 import { checkCapacity } from "@/lib/capacity";
+import { formatNZDate, formatNZTime } from "@/lib/nzst-date";
+import { APP_LOCALE, APP_TIME_ZONE } from "@/config/operational";
+
+// Not one of the shared helpers: the three tightest slots on this page — the
+// upcoming-events list (a fixed-width `w-14` column), the "Next Stay" summary
+// pair and the draft "Expires" note — deliberately drop the year to stay
+// compact, and always have. The admin dashboard's twin cards do the same.
+// Zone-pinned to club time like every other date on this page.
+const COMPACT_DAY_MONTH = new Intl.DateTimeFormat(APP_LOCALE, {
+  timeZone: APP_TIME_ZONE,
+  day: "numeric",
+  month: "short",
+});
 
 function formatPromoBenefitSummary(promo: AvailablePromoCode) {
   if (promo.type === "PERCENTAGE") {
@@ -427,15 +440,9 @@ export default async function DashboardPage() {
           {nextStay ? (
             <>
               <div className="text-lg font-semibold">
-                {new Date(nextStay.checkIn).toLocaleDateString("en-NZ", {
-                  day: "numeric",
-                  month: "short",
-                })}
+                {COMPACT_DAY_MONTH.format(new Date(nextStay.checkIn))}
                 {" — "}
-                {new Date(nextStay.checkOut).toLocaleDateString("en-NZ", {
-                  day: "numeric",
-                  month: "short",
-                })}
+                {COMPACT_DAY_MONTH.format(new Date(nextStay.checkOut))}
               </div>
               <p className="text-xs text-muted-foreground mt-1">
                 {nextStay._count.guests} guest
@@ -517,10 +524,7 @@ export default async function DashboardPage() {
                     className="flex items-baseline gap-2 text-sm"
                   >
                     <span className="w-14 shrink-0 text-xs font-medium text-muted-foreground">
-                      {new Date(event.startsAt).toLocaleDateString("en-NZ", {
-                        day: "numeric",
-                        month: "short",
-                      })}
+                      {COMPACT_DAY_MONTH.format(new Date(event.startsAt))}
                     </span>
                     <span className="min-w-0 flex-1 truncate text-foreground">
                       {event.title}
@@ -533,10 +537,7 @@ export default async function DashboardPage() {
                     <span className="shrink-0 text-xs text-muted-foreground">
                       {event.allDay
                         ? "All day"
-                        : new Date(event.startsAt).toLocaleTimeString("en-NZ", {
-                            hour: "numeric",
-                            minute: "2-digit",
-                          })}
+                        : formatNZTime(new Date(event.startsAt))}
                     </span>
                   </li>
                 ))}
@@ -653,20 +654,9 @@ export default async function DashboardPage() {
                   >
                     <div className="min-w-0">
                       <p className="font-medium text-sm">
-                        {new Date(booking.checkIn).toLocaleDateString("en-NZ", {
-                          day: "numeric",
-                          month: "short",
-                          year: "numeric",
-                        })}
+                        {formatNZDate(new Date(booking.checkIn))}
                         {" — "}
-                        {new Date(booking.checkOut).toLocaleDateString(
-                          "en-NZ",
-                          {
-                            day: "numeric",
-                            month: "short",
-                            year: "numeric",
-                          },
-                        )}
+                        {formatNZDate(new Date(booking.checkOut))}
                       </p>
                       <p className="text-xs text-muted-foreground">
                         {booking._count.guests} guest
@@ -675,12 +665,9 @@ export default async function DashboardPage() {
                         {booking.draftExpiresAt && (
                           <span className="text-warning-11 ml-2">
                             Expires{" "}
-                            {new Date(
-                              booking.draftExpiresAt,
-                            ).toLocaleDateString("en-NZ", {
-                              day: "numeric",
-                              month: "short",
-                            })}
+                            {COMPACT_DAY_MONTH.format(
+                              new Date(booking.draftExpiresAt),
+                            )}
                           </span>
                         )}
                       </p>
@@ -741,20 +728,9 @@ export default async function DashboardPage() {
                   >
                     <div className="min-w-0">
                       <p className="font-medium text-sm">
-                        {new Date(booking.checkIn).toLocaleDateString("en-NZ", {
-                          day: "numeric",
-                          month: "short",
-                          year: "numeric",
-                        })}
+                        {formatNZDate(new Date(booking.checkIn))}
                         {" — "}
-                        {new Date(booking.checkOut).toLocaleDateString(
-                          "en-NZ",
-                          {
-                            day: "numeric",
-                            month: "short",
-                            year: "numeric",
-                          },
-                        )}
+                        {formatNZDate(new Date(booking.checkOut))}
                       </p>
                       <p className="text-xs text-muted-foreground">
                         {booking._count.guests} guest

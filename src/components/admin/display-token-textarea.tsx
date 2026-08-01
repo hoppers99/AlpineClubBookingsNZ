@@ -143,6 +143,19 @@ export interface DisplayTokenTextareaProps {
    * must state its access decision explicitly, typically `disabled={!canEdit}`. */
   disabled: boolean;
   placeholder?: string;
+  /**
+   * #2264 — `aria-describedby` for the inner textarea, so a caller that moved
+   * its example value out of the placeholder and into a `<FieldHint>` sibling
+   * can still WIRE that hint to the control. Callers pass the describedby
+   * string their field-hint helper produced.
+   *
+   * A plain string, deliberately, rather than a props bag spread onto the
+   * textarea here: the repo-wide half-wiring guard in `field-hint.test.tsx`
+   * counts raw occurrences of the hook and its two prop bags across `src/`, so
+   * a spread inside this shared pass-through would be counted a second time for
+   * a single caller-side hook and trip a contract it does not actually break.
+   */
+  describedBy?: string;
   /** Extra textarea classes (typically a min-height like `min-h-20`). */
   textareaClassName?: string;
   /** HTML mode: the preview lodge's live config keys (see useDisplayLodgeConfig). */
@@ -390,6 +403,7 @@ export function DisplayTokenTextarea(props: DisplayTokenTextareaProps) {
         spellCheck={false}
         disabled={props.disabled}
         placeholder={props.placeholder}
+        aria-describedby={props.describedBy}
         value={props.value}
         onChange={(event) => {
           captureSelection(event);

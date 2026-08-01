@@ -6,7 +6,7 @@ import {
   isAdditionalPaymentOwed,
   type AdditionalPaymentChasePayment,
 } from "@/lib/additional-payment-chase";
-import { APP_TIME_ZONE } from "@/config/operational";
+import { formatNZDateTime } from "@/lib/nzst-date";
 import { formatCents } from "@/lib/utils";
 
 /**
@@ -48,10 +48,6 @@ export interface BookingAdditionalPaymentPanelProps {
   canResend: boolean;
   /** Injectable for tests; defaults to wall-clock now. */
   now?: Date;
-}
-
-function formatNzDateTime(value: Date) {
-  return value.toLocaleString("en-NZ", { timeZone: APP_TIME_ZONE });
 }
 
 export function BookingAdditionalPaymentPanel({
@@ -117,7 +113,7 @@ export function BookingAdditionalPaymentPanel({
             </dt>
             <dd className="font-medium">
               {requestedOn
-                ? `${formatNzDateTime(requestedOn)}${
+                ? `${formatNZDateTime(requestedOn)}${
                     ageDays != null
                       ? ` (${ageDays} day${ageDays === 1 ? "" : "s"} ago)`
                       : ""
@@ -130,7 +126,7 @@ export function BookingAdditionalPaymentPanel({
               Member last emailed
             </dt>
             <dd className="font-medium">
-              {lastChasedAt ? formatNzDateTime(lastChasedAt) : "Not yet"}
+              {lastChasedAt ? formatNZDateTime(lastChasedAt) : "Not yet"}
             </dd>
           </div>
         </dl>

@@ -20,6 +20,10 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  FieldHint,
+  describedByFieldHint,
+} from "@/components/ui/field-hint";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -36,6 +40,11 @@ import {
   ADMIN_VIEW_ONLY_ACTION_REASON,
   useAdminAreaEditAccess,
 } from "@/hooks/use-admin-area-edit-access";
+import { formatNZDate, formatNZDateTime } from "@/lib/nzst-date";
+
+/** #2264 — the rejection-reason hint id, spelled once. Only one review dialog
+ *  is mounted at a time, so a fixed id cannot collide. */
+const REVIEW_NOTE_HINT_ID = "review-note-hint";
 
 interface DeletionRequestMember {
   id: string;
@@ -87,15 +96,6 @@ interface LifecycleApiResponse {
   pageSize: number;
   totalPages: number;
 }
-
-const dateTime = (value: string) =>
-  new Date(value).toLocaleDateString("en-NZ", {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
 
 export default function DeletionRequestsClient({
   sessionMemberId,
@@ -292,7 +292,7 @@ export default function DeletionRequestsClient({
                         {statusBadge(req.status)}
                       </div>
                       <p className="text-xs text-muted-foreground">
-                        Requested {dateTime(req.createdAt)}
+                        Requested {formatNZDateTime(new Date(req.createdAt))}
                       </p>
                       {req.reason && (
                         <p className="text-sm text-muted-foreground">
@@ -309,11 +309,7 @@ export default function DeletionRequestsClient({
                       {req.reviewedAt && (
                         <p className="text-xs text-muted-foreground">
                           Reviewed{" "}
-                          {new Date(req.reviewedAt).toLocaleDateString("en-NZ", {
-                            day: "numeric",
-                            month: "short",
-                            year: "numeric",
-                          })}
+                          {formatNZDate(new Date(req.reviewedAt))}
                         </p>
                       )}
                     </div>
@@ -436,13 +432,27 @@ export default function DeletionRequestsClient({
               id="review-note"
               value={reviewNote}
               onChange={(e) => setReviewNote(e.target.value)}
+              /* #2264 — the APPROVE branch is a genuine instruction ("Internal
+                 note") and stays inside the box. The REJECT branch was an
+                 example of a reason, which read as a reason already typed, so
+                 it moves to the hint below. A deterministic id rather than
+                 `useFieldHint` because the hint only exists on one branch —
+                 an always-spread `aria-describedby` would dangle on the other. */
               placeholder={
+                reviewDialog?.action === "reject" ? undefined : "Internal note"
+              }
+              aria-describedby={
                 reviewDialog?.action === "reject"
-                  ? "E.g. Outstanding bookings must be resolved first"
-                  : "Internal note"
+                  ? describedByFieldHint(REVIEW_NOTE_HINT_ID)
+                  : undefined
               }
               rows={3}
             />
+            {reviewDialog?.action === "reject" ? (
+              <FieldHint id={REVIEW_NOTE_HINT_ID}>
+                E.g. Outstanding bookings must be resolved first
+              </FieldHint>
+            ) : null}
           </div>
           <DialogFooter>
             <Button
@@ -633,7 +643,7 @@ function AdminInitiatedDeletionSection({
                         {renderStatus(req.status)}
                       </div>
                       <p className="text-xs text-muted-foreground">
-                        Requested by {requesterLabel} · {dateTime(req.requestedAt)}
+                        Requested by {requesterLabel} · {formatNZDateTime(new Date(req.requestedAt))}
                       </p>
                       {req.reason && (
                         <p className="text-sm text-muted-foreground">

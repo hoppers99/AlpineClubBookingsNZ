@@ -13,6 +13,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { FieldHint, useFieldHint } from "@/components/ui/field-hint";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -113,6 +114,11 @@ export default function LodgeSetupWizardPage() {
   // (The seed/copy steps also hit bookings-area routes, which independently
   // enforce their own edit level — surfaced as a forbidden-save on 403.) #1940
   const canEdit = useAdminAreaEditAccess("lodge");
+  // #2264 — the room/locker prefix examples move under their fields. Both keep
+  // the `${lodge.name}` interpolation, so the example still reads as this
+  // lodge's own naming rather than a generic one.
+  const roomPrefixHint = useFieldHint();
+  const lockerPrefixHint = useFieldHint();
 
   const [lodge, setLodge] = useState<LodgeRecord | null>(null);
   const [otherLodges, setOtherLodges] = useState<LodgeRecord[]>([]);
@@ -621,12 +627,15 @@ export default function LodgeSetupWizardPage() {
                 <Label htmlFor="wizard-room-prefix">Room name prefix</Label>
                 <Input
                   id="wizard-room-prefix"
-                  placeholder={`${lodge.name} room`}
                   value={roomPrefix}
                   onChange={(e) => setRoomPrefix(e.target.value)}
                   maxLength={80}
                   disabled={!canEdit}
+                  {...roomPrefixHint.fieldProps}
                 />
+                <FieldHint {...roomPrefixHint.hintProps}>
+                  {`Example: ${lodge.name} room`}
+                </FieldHint>
               </div>
             </div>
             {roomsSeeded && <p className="text-sm text-success-11">{roomsSeeded}</p>}
@@ -679,12 +688,15 @@ export default function LodgeSetupWizardPage() {
                 <Label htmlFor="wizard-locker-prefix">Name prefix</Label>
                 <Input
                   id="wizard-locker-prefix"
-                  placeholder={`${lodge.name} locker`}
                   value={lockerPrefix}
                   onChange={(e) => setLockerPrefix(e.target.value)}
                   maxLength={80}
                   disabled={!canEdit}
+                  {...lockerPrefixHint.fieldProps}
                 />
+                <FieldHint {...lockerPrefixHint.hintProps}>
+                  {`Example: ${lodge.name} locker`}
+                </FieldHint>
               </div>
             </div>
             {lockersSeeded && (

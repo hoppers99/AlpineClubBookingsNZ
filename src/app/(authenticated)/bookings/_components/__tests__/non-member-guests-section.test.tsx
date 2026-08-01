@@ -95,13 +95,17 @@ describe("NonMemberGuestsSection (#1975 parent detail section)", () => {
   });
 
   it("hides dates when they match the parent and shows them when they differ", () => {
+    // #2264: these stay dates render through `formatNZDate`, the club-pinned
+    // medium form ("Aug 2026"), where they used to use `dateStyle: "long"`
+    // ("August 2026"). The month is matched in its short form here for that
+    // reason — the assertion is about whether the dates appear at all.
     const { rerender } = render(
       <NonMemberGuestsSection
         guests={[child({ datesDiffer: false })]}
         nonOwnerAdminViewer={false}
       />,
     );
-    expect(screen.queryByText(/August 2026/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Aug 2026/)).not.toBeInTheDocument();
 
     rerender(
       <NonMemberGuestsSection
@@ -109,7 +113,7 @@ describe("NonMemberGuestsSection (#1975 parent detail section)", () => {
         nonOwnerAdminViewer={false}
       />,
     );
-    expect(screen.getByText(/August 2026/)).toBeInTheDocument();
+    expect(screen.getByText(/Aug 2026/)).toBeInTheDocument();
   });
 
   it("lists multiple children each with its own link and status", () => {

@@ -4,6 +4,7 @@ import { Newspaper, Pin } from "lucide-react";
 import { auth } from "@/lib/auth";
 import { loadEffectiveModuleFlags } from "@/lib/module-settings";
 import { listNoticesForMember } from "@/lib/notices";
+import { formatNZDate } from "@/lib/nzst-date";
 import {
   Card,
   CardContent,
@@ -86,10 +87,7 @@ export default async function NoticesPage() {
                       </span>
                       {notice.publishedAt ? (
                         <span className="block text-xs text-muted-foreground">
-                          {new Date(notice.publishedAt).toLocaleDateString(
-                            "en-NZ",
-                            { dateStyle: "medium" },
-                          )}
+                          {formatNZDate(new Date(notice.publishedAt))}
                         </span>
                       ) : null}
                     </span>

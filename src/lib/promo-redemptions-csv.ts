@@ -1,5 +1,5 @@
 import { escapeCsvCell } from "./csv";
-import { APP_TIME_ZONE } from "@/config/operational";
+import { formatNZDateTime } from "@/lib/nzst-date";
 
 // The 13-column export header. Kept as the single source of truth so the header
 // row and every data row built by `buildPromoRedemptionCsvCells` stay aligned.
@@ -39,11 +39,7 @@ export interface PromoRedemptionCsvRow {
 }
 
 export function formatRedeemedAt(value: string): string {
-  return new Date(value).toLocaleString("en-NZ", {
-    timeZone: APP_TIME_ZONE,
-    dateStyle: "medium",
-    timeStyle: "short",
-  });
+  return formatNZDateTime(new Date(value));
 }
 
 /**

@@ -2,6 +2,7 @@
 
 import { BackLink } from "@/components/admin/back-link";
 import { RefreshCw } from "lucide-react";
+import { formatNZTime } from "@/lib/nzst-date";
 import { useHealthData } from "../health/_components/use-health-data";
 import { BackgroundJobsSection } from "../health/_components/background-jobs-section";
 
@@ -16,7 +17,7 @@ export default function BackgroundJobsPage() {
           <h1 className="text-2xl font-bold text-foreground">Background Jobs</h1>
           <div className="flex items-center gap-3">
             <span className="text-sm text-muted-foreground">
-              Last refresh: {lastRefresh.toLocaleTimeString("en-NZ")}
+              Last refresh: {formatNZTime(lastRefresh)}
             </span>
             <button
               onClick={refresh}

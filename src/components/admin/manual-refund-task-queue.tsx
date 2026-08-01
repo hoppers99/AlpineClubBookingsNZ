@@ -13,6 +13,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { FieldHint, useFieldHint } from "@/components/ui/field-hint";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { ViewOnlyActionButton } from "@/components/admin/view-only-action";
@@ -51,6 +52,15 @@ export function ManualRefundTaskQueue() {
   >(null);
   const [note, setNote] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  /*
+    #2264: the worked example for the note used to be its placeholder, which
+    reads as a value already typed and disappears on the first keystroke. It is
+    helper text under the box now. It still switches on the resolution — the
+    example for "paid back" is not the example for "dismissed" — but it says
+    NOTHING about the note being required or optional: the Label above already
+    carries that, and repeating it there would announce it twice.
+  */
+  const noteHint = useFieldHint();
 
   const load = useCallback(async () => {
     try {
@@ -207,12 +217,13 @@ export function ManualRefundTaskQueue() {
                   value={note}
                   maxLength={NOTE_MAX_LENGTH}
                   onChange={(event) => setNote(event.target.value)}
-                  placeholder={
-                    target.resolution === "completed"
-                      ? "e.g. cash handed back at the lodge"
-                      : "e.g. member asked us to keep it as a donation"
-                  }
+                  {...noteHint.fieldProps}
                 />
+                <FieldHint {...noteHint.hintProps}>
+                  {target.resolution === "completed"
+                    ? "e.g. cash handed back at the lodge"
+                    : "e.g. member asked us to keep it as a donation"}
+                </FieldHint>
               </div>
               <DialogFooter className="gap-2 sm:gap-2">
                 <Button

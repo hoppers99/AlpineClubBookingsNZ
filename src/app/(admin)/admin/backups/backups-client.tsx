@@ -10,6 +10,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { FieldHint, useFieldHint } from "@/components/ui/field-hint";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Spinner } from "@/components/ui/spinner";
@@ -23,6 +24,7 @@ import {
   useSectionEditState,
   ForbiddenSaveError,
 } from "@/hooks/use-section-edit-state";
+import { formatNZDateTime } from "@/lib/nzst-date";
 
 interface BackupRunSummary {
   id: string;
@@ -78,7 +80,7 @@ async function readError(res: Response, fallback: string): Promise<string> {
 
 function formatDateTime(iso: string | null): string {
   if (!iso) return "—";
-  return new Date(iso).toLocaleString("en-NZ");
+  return formatNZDateTime(new Date(iso));
 }
 
 function StatusPill({
@@ -411,6 +413,10 @@ function ConfigCard({
   canManageDestination: boolean;
   onSaved: () => Promise<BackupStatus | null>;
 }) {
+  // #2264 — bucket/region examples move under their fields; parked in the
+  // placeholder they read as a destination already configured.
+  const bucketHint = useFieldHint();
+  const regionHint = useFieldHint();
   const section = useSectionEditState<ConfigDraft>({
     initial: {
       enabled: status.enabled,
@@ -536,20 +542,26 @@ function ConfigCard({
               <Input
                 id="backup-bucket"
                 value={draft.bucket}
-                placeholder="my-club-backups"
                 disabled={editingDisabled || !canManageDestination}
                 onChange={(e) => section.setDraft({ bucket: e.target.value })}
+                {...bucketHint.fieldProps}
               />
+              <FieldHint {...bucketHint.hintProps}>
+                Example: my-club-backups
+              </FieldHint>
             </div>
             <div className="grid gap-2">
               <Label htmlFor="backup-region">Region</Label>
               <Input
                 id="backup-region"
                 value={draft.region}
-                placeholder="ap-southeast-2"
                 disabled={editingDisabled || !canManageDestination}
                 onChange={(e) => section.setDraft({ region: e.target.value })}
+                {...regionHint.fieldProps}
               />
+              <FieldHint {...regionHint.hintProps}>
+                Example: ap-southeast-2
+              </FieldHint>
             </div>
           </div>
           {section.editing && !canManageDestination ? (
@@ -603,6 +615,9 @@ function CredentialsCard({
   canManageDestination: boolean;
   onSaved: () => Promise<BackupStatus | null>;
 }) {
+  // #2264 — the shadow-database URL example moves into the note already sitting
+  // under the field (promoted, not stacked), so it survives the first keystroke.
+  const restoreUrlHint = useFieldHint();
   const [accessKeyId, setAccessKeyId] = useState("");
   const [secretAccessKey, setSecretAccessKey] = useState("");
   const [restoreUrl, setRestoreUrl] = useState("");
@@ -711,15 +726,16 @@ function CredentialsCard({
             id="backup-restore-url"
             type="password"
             autoComplete="new-password"
-            placeholder="postgresql://…/shadow_db"
             value={restoreUrl}
             disabled={!canManageDestination || saving}
             onChange={(e) => setRestoreUrl(e.target.value)}
+            {...restoreUrlHint.fieldProps}
           />
-          <p className="text-xs text-muted-foreground">
+          <FieldHint {...restoreUrlHint.hintProps}>
             When set, each backup is restored into this disposable database and
-            smoke-checked. It must NOT point at the live database.
-          </p>
+            smoke-checked. It must NOT point at the live database. Example:
+            postgresql://…/shadow_db
+          </FieldHint>
         </div>
 
         {error ? (

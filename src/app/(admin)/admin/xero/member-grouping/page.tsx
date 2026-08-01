@@ -24,6 +24,7 @@ import {
 import { formatAgeTierName } from "@/lib/use-age-tier-options";
 import { canonicalizeAgeTiers } from "@/lib/age-tier-schema";
 import { loadAdminXeroContactGroups } from "@/lib/admin-xero-contact-groups";
+import { formatNZDateTime } from "@/lib/nzst-date";
 
 type GroupingMode = "NONE" | "MEMBERSHIP_TYPE" | "MEMBERSHIP_TYPE_AND_AGE";
 type RuleKind = "MANAGED" | "ACCEPTED";
@@ -322,7 +323,7 @@ export default function XeroMemberGroupingPage() {
         <span className="font-medium">Last synced:</span>
         <span className="text-muted-foreground">
           {config.lastRefreshedAt
-            ? new Date(config.lastRefreshedAt).toLocaleString("en-NZ")
+            ? formatNZDateTime(new Date(config.lastRefreshedAt))
             : "never — refresh from Xero to populate the contact-group cache"}
         </span>
       </div>

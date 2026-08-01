@@ -11,6 +11,7 @@ import {
   splitRoomName,
   windowDatesOf,
 } from "./arrivals-board";
+import { DISPLAY_SHORT_WEEKDAY } from "./status-helpers";
 
 // The by-booking singles board (fork issues #30/#58; visual reference:
 // docs/lobby-display/mockups/singles-by-booking.html): Room | Guest | night
@@ -100,7 +101,9 @@ export function SinglesBoard({
         Guest
       </span>
       {windowDates.map((date, index) => {
-        const day = new Date(`${date}T00:00:00`);
+        // UTC midnight, read back in club time (#2264) — see
+        // `status-helpers.shortDay` for why a bare `T00:00:00` parse is wrong.
+        const day = new Date(`${date}T00:00:00Z`);
         return (
           <span
             key={date}
@@ -108,7 +111,7 @@ export function SinglesBoard({
             data-today={index === 0 || undefined}
             style={{ gridColumn: index + (hasRooms ? 3 : 2) }}
           >
-            {day.toLocaleDateString("en-NZ", { weekday: "short" })} {day.getDate()}
+            {DISPLAY_SHORT_WEEKDAY.format(day)} {day.getUTCDate()}
           </span>
         );
       })}

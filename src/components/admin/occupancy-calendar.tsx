@@ -5,7 +5,7 @@ import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { formatDateOnly, getTodayDateOnly, parseDateOnly } from "@/lib/date-only";
-import { APP_LOCALE } from "@/config/operational";
+import { APP_LOCALE, APP_TIME_ZONE } from "@/config/operational";
 import { CalendarDays, ChevronLeft, ChevronRight, Users } from "lucide-react";
 
 type OccupancyCalendarMode = "range" | "single";
@@ -141,12 +141,30 @@ function getMonthGrid(year: number, monthIndex: number) {
   return { daysInMonth, startOffset };
 }
 
+// Not one of the shared `nzst-date` helpers (#2264): the cell label deliberately
+// carries the weekday and drops the year — the year is already stated by the
+// month heading above the grid, and a day cell has no room for it. The zone is
+// pinned to club time so a `parseDateOnly` UTC-midnight value cannot slide back
+// a day for an admin whose browser sits west of UTC.
+const CELL_WEEKDAY_DATE = new Intl.DateTimeFormat(APP_LOCALE, {
+  timeZone: APP_TIME_ZONE,
+  weekday: "short",
+  day: "numeric",
+  month: "short",
+});
+
+// Deliberately UTC, NOT club time. `visibleMonth` is a UTC-midnight month start
+// and the grid around it is built from `getUTCFullYear`/`getUTCMonth`, so the
+// heading has to be read in the same zone as the grid it names — re-zoning it to
+// Pacific/Auckland would print the wrong month on the first/last day boundary.
+const VISIBLE_MONTH_LABEL = new Intl.DateTimeFormat(APP_LOCALE, {
+  timeZone: "UTC",
+  month: "long",
+  year: "numeric",
+});
+
 function formatDisplayDate(dateString: string) {
-  return parseDateOnly(dateString).toLocaleDateString(APP_LOCALE, {
-    weekday: "short",
-    day: "numeric",
-    month: "short",
-  });
+  return CELL_WEEKDAY_DATE.format(parseDateOnly(dateString));
 }
 
 export function OccupancyCalendar({
@@ -369,11 +387,7 @@ export function OccupancyCalendar({
   const year = visibleMonth.getUTCFullYear();
   const monthIndex = visibleMonth.getUTCMonth();
   const { daysInMonth, startOffset } = getMonthGrid(year, monthIndex);
-  const visibleMonthLabel = visibleMonth.toLocaleDateString(APP_LOCALE, {
-    month: "long",
-    year: "numeric",
-    timeZone: "UTC",
-  });
+  const visibleMonthLabel = VISIBLE_MONTH_LABEL.format(visibleMonth);
 
   return (
     <div className="rounded-lg border border-border bg-card">

@@ -77,7 +77,11 @@ test("a booking officer completes an on-behalf booking draft", async ({
   ).toBeVisible();
 
   // Pick the target member (alice) through the search picker.
-  await page.getByPlaceholder("Type a name or email...").fill(personas.booker.firstName);
+  // #2264: the picker's visible label is now associated with its input, so
+  // select by accessible name instead of by placeholder.
+  await page
+    .getByRole("textbox", { name: "Search for a member to book on behalf of" })
+    .fill(personas.booker.firstName);
   await page
     .getByRole("button", {
       name: new RegExp(`${personas.booker.firstName} ${personas.booker.lastName}`),

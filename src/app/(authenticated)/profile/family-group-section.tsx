@@ -145,6 +145,17 @@ export function FamilyGroupSection({ familyGroups, canManage = false }: FamilyGr
   // #2257 — the suggested group name lives UNDER the field, not inside it: a
   // grey "Smith Family" in the box reads as a name the form has already taken.
   const createGroupNameHint = useFieldHint();
+  /*
+    #2264 — the three "member@example.com" boxes. Each already carried a muted
+    note beneath it, so the example is folded INTO that note rather than stacked
+    below as a second near-identical line. The hooks are declared here, at the
+    top of the component, not inside the family-group `.map()`: only one invite
+    form is ever open (`showInviteForm` holds a single group id), exactly as the
+    static `id="invite-email"` beside it already assumes.
+  */
+  const inviteEmailHint = useFieldHint();
+  const joinEmailHint = useFieldHint();
+  const createPartnerEmailHint = useFieldHint();
   const [createPartnerEmail, setCreatePartnerEmail] = useState("");
   const [createDeclarePartner, setCreateDeclarePartner] = useState(false);
   const [createChildren, setCreateChildren] = useState<CreateChildRow[]>([]);
@@ -787,12 +798,12 @@ export function FamilyGroupSection({ familyGroups, canManage = false }: FamilyGr
                         type="email"
                         value={email}
                         onChange={(e) => setEmail(e.target.value)}
-                        placeholder="member@example.com"
                         required
+                        {...inviteEmailHint.fieldProps}
                       />
-                      <p className="text-xs text-muted-foreground mt-1">
-                        They must already be a registered member. They will be able to accept or decline.
-                      </p>
+                      <FieldHint {...inviteEmailHint.hintProps} className="mt-1">
+                        Example: member@example.com. They must already be a registered member. They will be able to accept or decline.
+                      </FieldHint>
                     </div>
                     <div className="flex flex-col gap-2 sm:flex-row">
                       <Button type="submit" size="sm" disabled={submitting}>
@@ -960,12 +971,12 @@ export function FamilyGroupSection({ familyGroups, canManage = false }: FamilyGr
                   type="email"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  placeholder="member@example.com"
                   required
+                  {...joinEmailHint.fieldProps}
                 />
-                <p className="text-xs text-muted-foreground mt-1">
-                  An admin will review and approve your request.
-                </p>
+                <FieldHint {...joinEmailHint.hintProps} className="mt-1">
+                  Example: member@example.com. An admin will review and approve your request.
+                </FieldHint>
               </div>
               <div className="flex flex-col gap-2 sm:flex-row">
                 <Button type="submit" size="sm" disabled={submitting}>
@@ -1017,11 +1028,11 @@ export function FamilyGroupSection({ familyGroups, canManage = false }: FamilyGr
                       setCreateDeclarePartner(false);
                     }
                   }}
-                  placeholder="member@example.com"
+                  {...createPartnerEmailHint.fieldProps}
                 />
-                <p className="text-xs text-muted-foreground mt-1">
-                  A registered member is invited once your group is approved. If they are not a member yet, we&apos;ll email them a link to join and be added to your group.
-                </p>
+                <FieldHint {...createPartnerEmailHint.hintProps} className="mt-1">
+                  Example: member@example.com. A registered member is invited once your group is approved. If they are not a member yet, we&apos;ll email them a link to join and be added to your group.
+                </FieldHint>
                 {createPartnerEmail.trim() && (
                   <div className="mt-2 flex items-start gap-2">
                     <Checkbox

@@ -1,11 +1,12 @@
 "use client";
 
-import { useEffect, useState, type Dispatch, type SetStateAction } from "react";
+import { useMemo, useState, type Dispatch, type SetStateAction } from "react";
 import { toast } from "sonner";
 import {
   memberUsesSamePostalAddress,
   shouldDefaultLinkSideEffects,
 } from "@/lib/admin-member-detail-helpers";
+import { useDebouncedMemberSearch } from "@/hooks/use-debounced-member-search";
 import {
   NZ_COUNTRY_NAME,
   withDefaultNzCountry,
@@ -44,6 +45,9 @@ const defaultDependentForm: DependentForm = {
   postalCountry: NZ_COUNTRY_NAME,
 };
 
+// Stable identity so the masked-off state below doesn't churn consumers' memos.
+const NO_INELIGIBLE_MATCHES: LinkDependentIneligibleMatch[] = [];
+
 interface UseMemberDependentDialogParams {
   member: MemberDetail | null;
   fetchMember: () => Promise<void>;
@@ -67,12 +71,10 @@ export function useMemberDependentDialog({
   const [dependentMode, setDependentMode] =
     useState<DependentDialogMode>("create");
   const [linkDependentSearch, setLinkDependentSearch] = useState("");
-  const [linkDependentSearchResults, setLinkDependentSearchResults] = useState<
-    LinkDependentSearchResult[]
-  >([]);
-  const [linkDependentSearching, setLinkDependentSearching] = useState(false);
   // #2254: matches the search found but could not offer, each with the reason,
-  // so the empty state can name them instead of saying nothing.
+  // so the empty state can name them instead of saying nothing. Fed by the
+  // shared search hook's `onResponse` seam (#2264): the server reports these
+  // ALONGSIDE the rows, so they cannot be recovered from the rows themselves.
   const [
     linkDependentIneligibleMatches,
     setLinkDependentIneligibleMatches,
@@ -95,95 +97,63 @@ export function useMemberDependentDialog({
   const [linkDependentFamilyGroupIds, setLinkDependentFamilyGroupIds] =
     useState<string[]>([]);
 
-  useEffect(() => {
-    if (!dependentOpen || dependentMode !== "link" || !memberId) {
-      setLinkDependentSearchResults([]);
-      setLinkDependentIneligibleMatches([]);
-      setLinkDependentMatchedNobody(false);
-      setLinkDependentSearching(false);
-      return;
-    }
+  // #2264: the type-2-characters / wait-300ms / discard-stale-responses
+  // machinery is the shared admin member search, used here exactly as the
+  // parent-link dialog uses it. One behaviour improves in passing: choosing a
+  // candidate used to be a search-effect dependency, so every selection fired a
+  // fresh request purely to drop one row. The self-filter is now a render-time
+  // memo, so selecting somebody re-filters the rows already in hand.
+  const {
+    results: linkDependentSearchRows,
+    searching: linkDependentSearching,
+    error: linkDependentSearchError,
+    active: linkDependentSearchActive,
+  } = useDebouncedMemberSearch<LinkDependentSearchResult>({
+    query: linkDependentSearch,
+    enabled: dependentOpen && dependentMode === "link" && Boolean(memberId),
+    params: { pageSize: "8", dependentLinkEligibleFor: memberId ?? "" },
+    errorFallback: "Failed to search members",
+    // #2254: the two empty-state signals live beside `members` in the response,
+    // and neither may be inferred from the rendered list (it is filtered
+    // client-side below). `onResponse` hands over the whole body for exactly
+    // this case.
+    onResponse: (payload) => {
+      const body = payload as {
+        dependentLinkIneligible?: LinkDependentIneligibleMatch[];
+        dependentLinkSearchMatchedNobody?: boolean;
+      };
+      setLinkDependentIneligibleMatches(body.dependentLinkIneligible ?? []);
+      setLinkDependentMatchedNobody(
+        body.dependentLinkSearchMatchedNobody === true,
+      );
+    },
+  });
 
-    const query = linkDependentSearch.trim();
-    if (query.length < 2) {
-      setLinkDependentSearchResults([]);
-      setLinkDependentIneligibleMatches([]);
-      setLinkDependentMatchedNobody(false);
-      setLinkDependentSearching(false);
-      return;
-    }
+  const linkDependentSearchResults = useMemo(
+    () =>
+      linkDependentSearchRows
+        .map((candidate) => ({
+          id: candidate.id,
+          firstName: candidate.firstName,
+          lastName: candidate.lastName,
+          email: candidate.email,
+          ageTier: candidate.ageTier,
+          active: candidate.active,
+          canLogin: candidate.canLogin,
+          dateOfBirth: candidate.dateOfBirth,
+          parentLinks: candidate.parentLinks ?? [],
+        }))
+        .filter((candidate) => candidate.id !== selectedLinkDependent?.id),
+    [linkDependentSearchRows, selectedLinkDependent?.id],
+  );
 
-    let cancelled = false;
-    setLinkDependentSearching(true);
-
-    const timer = setTimeout(async () => {
-      try {
-        const params = new URLSearchParams({
-          q: query,
-          pageSize: "8",
-          dependentLinkEligibleFor: memberId,
-        });
-        const res = await fetch(`/api/admin/members?${params.toString()}`);
-        const data = await res.json().catch(() => ({}));
-
-        if (!res.ok) {
-          throw new Error(data.error || "Failed to search members");
-        }
-
-        if (!cancelled) {
-          setLinkDependentIneligibleMatches(
-            (data.dependentLinkIneligible ??
-              []) as LinkDependentIneligibleMatch[],
-          );
-          setLinkDependentMatchedNobody(
-            data.dependentLinkSearchMatchedNobody === true,
-          );
-          setLinkDependentSearchResults(
-            (data.members ?? [])
-              .map((candidate: LinkDependentSearchResult) => ({
-                id: candidate.id,
-                firstName: candidate.firstName,
-                lastName: candidate.lastName,
-                email: candidate.email,
-                ageTier: candidate.ageTier,
-                active: candidate.active,
-                canLogin: candidate.canLogin,
-                dateOfBirth: candidate.dateOfBirth,
-                parentLinks: candidate.parentLinks ?? [],
-              }))
-              .filter(
-                (candidate: LinkDependentSearchResult) =>
-                  candidate.id !== selectedLinkDependent?.id,
-              ),
-          );
-        }
-      } catch (error) {
-        if (!cancelled) {
-          setLinkDependentSearchResults([]);
-          setLinkDependentIneligibleMatches([]);
-          setLinkDependentMatchedNobody(false);
-          setDependentFormError(
-            error instanceof Error ? error.message : "Failed to search members",
-          );
-        }
-      } finally {
-        if (!cancelled) {
-          setLinkDependentSearching(false);
-        }
-      }
-    }, 300);
-
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, [
-    dependentMode,
-    dependentOpen,
-    linkDependentSearch,
-    memberId,
-    selectedLinkDependent?.id,
-  ]);
+  // The two #2254 signals are masked the same way the hook masks its own
+  // results: a closed dialog, a too-short query or a failed search must never
+  // render the previous search's leftovers. Clearing them on failure is what
+  // the old hand-rolled catch block did, and for the same reason — a stale
+  // "nobody matched" would contradict the error message shown beside it.
+  const showLinkDependentSignals =
+    linkDependentSearchActive && !linkDependentSearchError;
 
   const openDependentDialog = () => {
     if (!member) return;
@@ -240,10 +210,8 @@ export function useMemberDependentDialog({
     setDependentFormError("");
     setDependentMode("create");
     setLinkDependentSearch("");
-    setLinkDependentSearchResults([]);
     setLinkDependentIneligibleMatches([]);
     setLinkDependentMatchedNobody(false);
-    setLinkDependentSearching(false);
     setSelectedLinkDependent(null);
     setLinkDependentInheritEmail(false);
     setLinkDependentNotificationParentId("");
@@ -339,7 +307,6 @@ export function useMemberDependentDialog({
       member?.familyGroups.map((group) => group.id) ?? [],
     );
     setLinkDependentSearch("");
-    setLinkDependentSearchResults([]);
     setLinkDependentIneligibleMatches([]);
     setLinkDependentMatchedNobody(false);
     setDependentFormError("");
@@ -354,7 +321,6 @@ export function useMemberDependentDialog({
       member?.familyGroups.map((group) => group.id) ?? [],
     );
     setLinkDependentSearch("");
-    setLinkDependentSearchResults([]);
     setLinkDependentIneligibleMatches([]);
     setLinkDependentMatchedNobody(false);
     setDependentFormError("");
@@ -426,12 +392,19 @@ export function useMemberDependentDialog({
     dependentForm,
     dependentPostalSameAsPhysical,
     dependentSaving,
-    dependentFormError,
+    // A failed search reports through the dialog's own error line, exactly as
+    // the parent-link dialog does it (#2264). Derived rather than written into
+    // state, so the message clears itself when the next search succeeds.
+    dependentFormError: dependentFormError || linkDependentSearchError,
     dependentMode,
     linkDependentSearch,
     linkDependentSearchResults,
-    linkDependentIneligibleMatches,
-    linkDependentMatchedNobody,
+    linkDependentIneligibleMatches: showLinkDependentSignals
+      ? linkDependentIneligibleMatches
+      : NO_INELIGIBLE_MATCHES,
+    linkDependentMatchedNobody: showLinkDependentSignals
+      ? linkDependentMatchedNobody
+      : false,
     linkDependentSearching,
     selectedLinkDependent,
     linkDependentNotificationParentId,
