@@ -602,6 +602,26 @@ describe("public PageContent token view models", () => {
     expect((await loadPublicBookingPolicy())?.adultMemberHosting).not.toBeNull();
   });
 
+  it("scopes the hosting policy READ, not just the resolution (#2364)", async () => {
+    // The resolver re-filters whatever comes back, so a drift in this predicate
+    // is invisible to every other test here: the double answers the same rows
+    // regardless of `where`. Assert the query itself, or a one-token change to
+    // the scope filter ships green.
+    mocks.lodge.mockResolvedValue({ id: "lodge-1", name: "Lodge One", slug: "one" });
+    await loadPublicBookingPolicy("one");
+    expect(mocks.hostingPolicies.mock.calls[0][0].where).toEqual({
+      OR: [{ lodgeId: "lodge-1" }, { lodgeId: null }],
+    });
+
+    mocks.hostingPolicies.mockClear();
+    await loadPublicBookingPolicy();
+    // No lodge in the URL: the club row alone, never a lodge override that
+    // would let one lodge's setting speak for the whole club.
+    expect(mocks.hostingPolicies.mock.calls[0][0].where).toEqual({
+      lodgeId: null,
+    });
+  });
+
   it("describes divergent card and credit cancellation terms", async () => {
     mocks.cancellation.mockResolvedValue([{
       daysBeforeStay: 14,

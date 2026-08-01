@@ -2360,9 +2360,23 @@ linked to a guest row on that exact night. Three consequences, each deliberate:
   treated as a non-member guest — the safe direction, since that means it needs
   hosting rather than provides it.
 - **Child, youth, infant and NOT_APPLICABLE (organisation) members cannot
-  host**, and neither can an inactive, cancelled or archived one. They are still
-  members, so their OWN nights never need covering: the rule is about non-member
-  guest-nights only.
+  host.** They are still members in good standing, so their OWN nights never
+  need covering: the minors rule (`requiresAdminReview`) owns children, and this
+  rule is about non-member guest-nights only.
+- **A membership that has lapsed is not a membership.** An inactive, cancelled
+  or archived member cannot host AND their own nights need hosting: the safe
+  direction above is applied to a member who is resolvable but no longer in good
+  standing, because for this rule they are functionally a non-member (D-R3). The
+  standing test is the single predicate both sides are built from, so a
+  participant cannot fall between them and escape the rule entirely — which is
+  what happened before the #2364 review. It is keyed off standing only, never
+  `ageTier`, so an active organisation member is unchanged.
+- **An unaccepted member-guest invite cannot host.** `consentStatus: PENDING` is
+  not operationally present (D-12) — the kiosk, the arrival roster, bed
+  allocation and the arrival emails all leave that row out — so counting it as a
+  host would let a member suppress the review with an adult who never agreed to
+  come, and the lodge would then receive the non-member guests unaccompanied.
+  The review clears by itself the moment the invite is accepted.
 
 Nights come from the sparse `BookingGuestNight` rows (#713), so a non-contiguous
 stay is judged night by night. Rows predating #713 fall back to the GUEST's own
@@ -2377,6 +2391,17 @@ party yields one hazard rather than two. Group bookings are explicitly NOT
 affected: a joiner's booking belongs to a different member, so an organiser's
 adults never host somebody else's guests and "the same booking" keeps meaning
 what it says.
+
+That borrowing makes the dependency **symmetric**, and reconciliation has to
+match it: shortening the member's own stay on the parent takes a host away from
+the child, and extending it gives one back, without a single row on the child
+changing. Every mutation path therefore reconciles the mutated booking AND the
+live same-member siblings the borrow reads, inside the same transaction
+(`reconcileAdultMemberHostingReviewWithSiblings`). The fan-out is one level and
+that is exact rather than a safety margin — the relation is direct-parent /
+direct-child, so expanding from a sibling could only lead back. A sibling always
+opens PENDING: an admin's on-behalf reason belongs to the booking they were
+making, never to a row reached through it.
 
 **Consequence.** Hosting is a REVIEW, not a refusal — the club chose "admin
 review required", and D-R4 makes it always administratively overridable. A
@@ -2398,7 +2423,18 @@ the door can do.
   rule with HTTP 409 `ADULT_MEMBER_HOSTING_CONFIRM_REQUIRED` until the admin
   supplies a reason, which is then persisted with their id against an APPROVED
   review. Role alone buys nothing: a dual-hat admin booking for themselves is a
-  member here, exactly as #1442 decided for minimum stay.
+  member here, exactly as #1442 decided for minimum stay. `/admin/book` answers
+  that 409 with a reason panel on both submit paths — confirm and save-as-draft,
+  since the check runs before the draft fork — mirroring the over-capacity
+  warn-and-confirm beside it. A `*_CONFIRM_REQUIRED` refusal no surface can
+  satisfy is a permanent block, so the contract test pins that every such code
+  the create route can return has a client that branches on it.
+- **The reviewer is a real foreign key.** `adultMemberHostingReviewedById`
+  carries a `SetNull` relation to `Member` and a `member-merge.ts` spec, like
+  every other actor-attribution column on `Booking`. Member merge repoints it and
+  member deletion nulls it; a bare id would be invisible to the DMMF
+  completeness guard and D-R4's "who let this through" would rot into a dangling
+  id the database never surfaces.
 - **Every other path opens the review PENDING for everybody, admin included.**
   Accepting a hosting exception is a deliberate act with a reason attached, not a
   side effect of an unrelated edit, so a modification, a guest change or a
@@ -2408,7 +2444,19 @@ the door can do.
 idempotent, so it runs at the end of every booking path that can change the
 party: create (draft, confirmed, waitlisted, and the split child), batch modify,
 date modify, admin date shift, guest add, guest removal and waitlist confirm —
-each inside its own transaction, with the caller's `tx`. A hazard **clears**
+each inside its own transaction, with the caller's `tx`. It also runs on every
+path that CREATES a whole party without going through `booking-create.ts`: the
+public booking-request approval and its held-booking conversion, the
+quote-time hold, both school/member whole-lodge approvals, and the verified
+non-member group joiner. Those are the parties the rule most obviously targets —
+every guest a non-member, the owner a non-login contact — and leaving them
+unrecorded meant the hazard was present but invisible until some unrelated later
+edit materialised it months on. They all open PENDING and none of them is
+blocked: approving a REQUEST is not the reasoned acceptance of a hosting
+exception that D-R4 asks for. `adult-member-hosting-review.test.ts` enforces this
+structurally — every module in `src/` containing a `booking.create(` must reach a
+hosting recorder, and no module outside the review service may call the
+single-booking reconciler. A hazard **clears**
 whenever current facts cover every night, for any reason: an adult member was
 added, a guest left, the nights moved, the member was reinstated, the policy was
 switched off, or the booking moved to a lodge that never had the rule. It

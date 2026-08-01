@@ -190,9 +190,16 @@ This card asks for that, without ever leaving a member at a dead end.
 **Who counts as the adult member.** They must be on the booking as a guest in
 their own right, on that night. Being the person who MADE the booking is not
 enough — plenty of members book for family who are travelling without them — and
-child or youth members do not count, nor does a member whose membership is
-inactive, cancelled or archived. Members' own nights never need covering; only
-non-member guest-nights do.
+child or youth members do not count, and neither does a member guest who has
+been invited but has not accepted yet — they are not counted as being at the
+lodge anywhere else either, so they cannot be the responsible adult here.
+
+A member whose membership is inactive, cancelled or archived does not count
+either, and for this rule the club treats them the same way it treats a guest:
+their own nights need covering too. Members in good standing never need
+covering; only non-member guest-nights do. If your club would rather that a
+lapsed member still counted as a member for this one rule, say so and it can be
+changed — it is a deliberate choice, not an accident.
 
 **When the review goes away.** By itself, as soon as the facts change. Add an
 adult member to the booking, remove the guest, move the nights, reinstate a
@@ -202,9 +209,17 @@ changes — different guests or different nights — not because somebody correc
 spelling.
 
 **Booking on behalf of a member.** If the party would trip the rule, you are
-stopped once and asked for a reason. The reason and your name are stored with the
-booking, so "who let this through, and why" has an answer months later. That is
-the only place the rule refuses anything.
+stopped once and asked for a reason. A panel appears on the review step with a
+box for it; type the reason and click **Record the reason and create**. Saving as
+a draft asks the same question in the same place. The reason and your name are
+stored with the booking, so "who let this through, and why" has an answer months
+later. That is the only place the rule refuses anything.
+
+**Requests you approve.** Approving a public booking request, a school request or
+a member's whole-lodge request never asks you for a reason and is never blocked —
+but because those parties are all non-member guests, the booking appears for
+review just like any other. Approving the request is not the same as accepting
+the hosting exception, so the review stays open until somebody decides it.
 
 **What the public sees.** When the requirement is on, the public booking-rules
 block states it in one sentence. It says nothing about asking for an exception,

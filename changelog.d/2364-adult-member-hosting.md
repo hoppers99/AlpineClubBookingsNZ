@@ -15,11 +15,14 @@
   **Who counts as the adult member.** They have to be on the booking as a guest
   in their own right, on that night. Being the person who made the booking is
   not enough — plenty of members book for family who are travelling without
-  them — and child or youth members do not count, nor does a member whose
-  membership is inactive, cancelled or archived. Members' own nights never need
-  covering; only non-member guest-nights do. A guest staying only some of the
-  nights is judged night by night, so a member who is there for part of the stay
-  covers exactly the nights they are actually there.
+  them — and child or youth members do not count, nor does a member guest who
+  has been invited but has not accepted yet, since they are not counted as being
+  at the lodge anywhere else either. A member whose membership is inactive,
+  cancelled or archived does not count either, and for this rule the club treats
+  them exactly as it treats a guest: their own nights need covering too. Members
+  in good standing never need covering; only non-member guest-nights do. A guest
+  staying only some of the nights is judged night by night, so a member who is
+  there for part of the stay covers exactly the nights they are actually there.
 
   **The review clears itself.** Add an adult member to the booking, remove the
   guest, move the nights, reinstate a member, or turn the policy off, and the
@@ -31,9 +34,20 @@
   the lodge can do.
 
   **Booking on behalf of a member** is the one place the rule refuses anything,
-  and only once: if the party would trip it you are asked for a reason, and that
-  reason and your name are stored with the booking, so "who let this through, and
-  why" has an answer months later. Nothing is waved through silently.
+  and only once: if the party would trip it a panel appears on the review step
+  asking for a reason — the same place the over-capacity confirmation appears,
+  and the same question whether you are confirming the booking or saving it as a
+  draft. That reason and your name are stored with the booking, so "who let this
+  through, and why" has an answer months later, and it survives a later merge of
+  duplicate member accounts. Nothing is waved through silently.
+
+  **Requests you approve** are never blocked and never ask you for a reason, but
+  they do appear for review: a public booking request, a school booking and a
+  member's whole-lodge request are all-guest parties with no adult member on
+  them, so the club sees them for what they are instead of discovering it months
+  later on an unrelated edit. The same is true of a split mixed party — change
+  the member's own dates and the guests' half of the booking is re-checked
+  straight away, in both directions.
 
   When the requirement is switched on, your public booking-rules page states it
   in one plain sentence. It says nothing about asking for an exception, because

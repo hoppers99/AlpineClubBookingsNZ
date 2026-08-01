@@ -82,6 +82,13 @@ any booking path touches it. Reopening is deliberately NARROW: a renamed guest,
 or an extra host on an already-covered night, is the same hazard and does not
 re-prompt an admin who has already decided.
 
+"Touches it" includes touching its #738 SPLIT SIBLING. The child borrows its
+parent's adults, so the parent's own nights and guests move the child's answer;
+every mutation path therefore re-derives both halves in one transaction. A
+sibling always enters at PENDING — the `(none) -> APPROVED` edge needs an
+explicit reason from the admin who was asked, and nobody was asked about a
+booking they only reached through another one.
+
 There is no transition into the shared `AWAITING_REVIEW` booking status and no
 check-in block, unlike the minors-only rule (#1372/#1422). Capacity is not
 reserved from the frozen `HOLD` value; that, the member request state and the
