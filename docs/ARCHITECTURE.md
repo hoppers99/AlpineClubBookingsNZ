@@ -1480,6 +1480,37 @@ sequenceDiagram
     S-->>R: webhook confirms payment (idempotent)
 ```
 
+### Booking-policy exception foundation
+
+Minimum-stay evaluation now produces a stable review snapshot, but it does not
+yet create an exception request or change booking state. The closed soft-policy
+allowlist in `src/lib/booking-policy-exceptions.ts` contains only
+`MINIMUM_STAY` and the contract reserved for the follow-up hosting evaluator,
+`ADULT_MEMBER_HOSTING_REQUIRED`. Every violation freezes the reason, policy id
+and version, resolved club-wide/lodge scope, exact affected NZ lodge nights,
+typed requirements, eligibility, and the policy's `HOLD` or `NO_HOLD` capacity
+mode. Aggregation is deterministic and **HOLD wins** when any eligible violation
+requires it. A runtime object carrying a non-allowlisted reason is rejected.
+
+`MinimumStayPolicy.capacityMode` is required and existing rows migrate to
+`HOLD`; `MinimumStayPolicy.version` is the optimistic concurrency token for
+admin writes and config transfer. Booking create, member group join, and member
+date modification still return their existing blocking HTTP 400, now with the
+frozen `violations` and `exceptionReview`. Modify quote and policy check expose
+the same structure as advisory data; policy check first resolves omitted lodge
+context to the active default and rejects an unknown/inactive explicit lodge.
+All evaluators receive the resolved booking lodge, so a lodge-specific policy
+cannot silently fall back to the club default.
+
+This is intentionally not the approval workflow. No exception row is persisted,
+no `HOLD` capacity is reserved, no hard failure becomes reviewable, and no
+caller continues into admission after a minimum-stay block. Durable requests,
+approval/revalidation, capacity reservation, and the combined soft-plus-hard
+admission order belong to #2365. Hard failures such as capacity exhaustion,
+subscription/membership eligibility, duplicate member-nights, payment,
+authentication/privacy, invalid dates, and data-integrity faults remain outside
+the soft allowlist structurally.
+
 1. A member selects a lodge (implicit when only one active lodge exists) and
    check-in and check-out dates.
 2. Capacity is calculated per lodge as that lodge's beds minus its

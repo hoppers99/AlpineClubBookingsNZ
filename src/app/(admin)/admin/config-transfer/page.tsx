@@ -552,7 +552,7 @@ export default function ConfigTransferPage() {
                 // Every mutation is shown, even when there are more than 50.
                 // Only unchanged rows may be capped; otherwise a destructive
                 // replace-set could tell the admin to review "every Deleted
-                // row above" while silently hiding some of them.
+                // row below" while silently hiding some of them.
                 const { shown, hiddenUnchanged } = visibleImportPlanItems(
                   cat.items,
                 );

@@ -467,9 +467,10 @@ Intentionally excluded / deferred:
   roles, induction templates, membership fee schedules (joining fees, annual
   fees and their invoice-line components), Xero configuration mappings.
 - **Is not:** a database backup. The `pg_dump` subsystem (`src/lib/backup.ts`)
-  remains the whole-database disaster-recovery tool. Import here **never
-  deletes** — restoring a bundle will not remove things added after it was
-  exported; the automatic pre-apply DB backup is the true rollback.
+  remains the whole-database disaster-recovery tool. Ordinary categories do not
+  delete, but the minimum-stay booking-policy category deliberately replaces
+  its complete set after previewing every deletion. The automatic pre-apply DB
+  backup is the true rollback.
 - **Never contains:** secrets, members, auth/role fields, transactional data
   (bookings, payments, credits, allocations), Xero connection/runtime state,
   **integration / provider credentials** (`IntegrationCredential`, permanently
@@ -490,8 +491,10 @@ Intentionally excluded / deferred:
   taken at plan time and re-checked at apply; if the database changed in between,
   the apply is refused and the admin re-runs the dry-run (ADR-002). No schema
   migration is required.
-- Single-flight import lock: `pg_advisory_xact_lock(hashtext('config-transfer-import'))`
-  (see `docs/CONCURRENCY_AND_LOCKING.md`).
+- Lock order is `pg_advisory_xact_lock(hashtext('config-transfer-import'))`
+  first, then the shared minimum-stay policy-set lock when the booking-policy
+  category is selected. Planning is repeated after both locks are held (see
+  `docs/CONCURRENCY_AND_LOCKING.md`).
 
 ## Boot-time bootstrap auto-import (DR / clone, ADR-003, #1988)
 

@@ -2116,8 +2116,36 @@ their check-out one night at a time even across a weekend minimum-stay rule —
 the added night alone would fail the minimum, but the whole stay satisfies it.
 A genuinely too-short whole stay is still reported. (The create path evaluates
 each new booking's own range, so a separate contiguous one-night booking is
-still subject to the minimum — deferred as scope B on #2124.) Issue #1668 adds an **admin-only
-override** (`adminOverride`, honoured solely when
+still subject to the minimum — deferred as scope B on #2124.)
+
+Minimum-stay is also the first consumer of the booking-policy exception
+foundation (#2363). The only soft-policy reason codes are `MINIMUM_STAY` and the
+reserved `ADULT_MEMBER_HOSTING_REQUIRED`; every other failure remains a hard
+stop and cannot enter `aggregatePolicyExceptionViolations`. A minimum-stay
+violation freezes its policy id/version, resolved club-wide or lodge-specific
+scope, exact affected NZ lodge nights, minimum/actual-night requirements,
+eligibility, message, and `HOLD`/`NO_HOLD` capacity mode. Multiple eligible
+violations sort deterministically and aggregate to `HOLD` if any row says
+`HOLD`.
+
+That snapshot is transport data only in #2363. Booking create, group join, and
+ordinary member date modification still stop with HTTP 400; modify quote and
+policy check report the same facts without authorising a save. No request row is
+persisted, no capacity is reserved from `HOLD`, and evaluation never bypasses
+capacity, subscription, membership, linked-member-night, authentication,
+payment, privacy, date, or data-integrity gates. #2365 owns durable request
+state, approval/revalidation, capacity reservation, and the mixed soft/hard
+admission order. Every caller evaluates against the resolved booking lodge;
+unknown or inactive explicit lodge ids are refused rather than falling back.
+
+Minimum-stay policy administration is versioned. Every create supplies
+`capacityMode`; every update/toggle/delete carries the loaded `version` and a
+stale version is refused instead of overwriting a concurrent admin or import.
+Config transfer is the one replace-set exception: it takes the config-import
+lock then the shared policy-set lock, re-plans, and may delete omitted policies
+only after they appeared in Preview. Existing policies migrate to `HOLD`.
+
+Issue #1668 adds an **admin-only override** (`adminOverride`, honoured solely when
 `bookingManagementAuthorizationRole(session.user) === "ADMIN"`, i.e. Full Admin
 or Booking Officer) that lifts those date-window locks so an admin can move the
 dates of an in-progress or fully-past booking. The override is **date-only**:

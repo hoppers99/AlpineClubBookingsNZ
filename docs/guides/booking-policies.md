@@ -103,13 +103,30 @@ rules — see
    ![Minimum Night Stay: the empty state and Add Policy button for weekday minimum-stay rules](../images/admin/admin-booking-policies-minimum-stay.png)
 
 2. Name the policy, set the minimum nights, the date range, and which
-   **Trigger Days** (Sun–Sat) activate it, then click **Create Policy**. The
-   minimum stay applies whenever a booking includes any trigger day in the
-   range. (Admins can still override it when booking on behalf.)
-3. To change an existing policy, click its **Edit** button. **Update Policy**
+   **Trigger Days** (Sun–Sat) activate it. Choose **Exception capacity
+   handling** explicitly:
+
+   - **Hold requested capacity during review** means the planned exception
+     review will reserve the affected beds while the club decides.
+   - **Do not hold capacity until approval** means an exception request will
+     reserve no beds until it is approved.
+
+   Click **Create Policy**. The minimum stay applies whenever a booking includes
+   any trigger day in the range. Existing policies start in **Hold** mode.
+   This release stores, transfers, and publishes the choice, but a member who
+   hits the rule is still stopped; submitting and approving exception requests
+   arrives in the follow-up review workflow. Admins can still override the rule
+   when booking on behalf.
+3. The public `{{booking-policies}}` block states the selected capacity handling
+   in plain language. Check that copy wherever your club publishes booking
+   rules, especially before the exception-review workflow is enabled.
+4. To change an existing policy, click its **Edit** button. **Update Policy**
    stays greyed out until you actually change something — including trigger
    days, where ticking a day and unticking it again counts as no change.
-4. Each row carries two different controls that used to look alike.
+   Each save carries the row revision you loaded. If another admin or a config
+   import changes it first, your stale save is refused and the current row is
+   reloaded; reopen **Edit** and apply your change to that version.
+5. Each row carries two different controls that used to look alike.
    **Deactivate** (outlined) is the reversible pause — the policy stops applying
    and the row shows an **Activate** button to bring it back. **Delete** (red)
    takes the policy out of use and records a `delete` in the audit log. Nothing
@@ -119,6 +136,11 @@ rules — see
    difference is what the audit log records, not whether it can be undone.
    Both are one-click writes, so each button is disabled while it is working:
    clicking twice in a row does not record the same change twice.
+6. Config transfer treats minimum-stay policies as one complete set. A bundle
+   policy omitted from `booking-policies/minimum-stay.csv` is shown as
+   **Deleted** in Preview and removed on Apply; a valid header-only file clears
+   the set. Review every deletion and keep the automatic pre-apply backup. This
+   is the sole replace-set exception — ordinary config categories do not delete.
 
 ### Public Booking Requests
 
@@ -166,6 +188,7 @@ rules — see
 | Summer seasons only | Group Discount | Restrict the group discount to summer | on | — |
 | Minimum nights | Minimum Stay | Nights required when a trigger day is included | 2 | Minimum 2 |
 | Trigger days | Minimum Stay | Which weekdays activate the rule | Sat | At least one day |
+| Exception capacity handling | Minimum Stay | Whether a future exception request holds the affected capacity during review | Existing rows: Hold | Required on create; Hold wins when several eligible rules apply |
 | Show indicative pricing | Public Requests | Price shown on the public request form | off | — |
 | Quote response window | Public Requests | Days a quote link stays valid | 14 | 1–60 days |
 | Reminder lead time | Public Requests | Days before expiry to remind the requester | 3 | 0–30, must be shorter than the window |
@@ -182,6 +205,7 @@ rules — see
 | A "Public copy may be out of date" banner | Your Terms/FAQ still describe the old non-member hold | Click **Edit public pages** and update the copy to match the current policy |
 | A period's rules are not applying | The booking's check-in is outside the period, or the period is inactive | Check the dates and the Active toggle on the period card |
 | Group discount never triggers | It is disabled, the group is under the minimum, or it is summer-only and the stay is in winter | Enable it, lower the minimum group size, or untick Summer seasons only |
+| A minimum-stay update closes and the row changes back | Another admin or a configuration import saved a newer row revision first | The stale write was refused and the current row was reloaded. Reopen **Edit**, review the current values, and make the change again |
 | Reminder lead time won't save | It is not shorter than the quote response window | Set a lead time shorter than the window |
 | A Public Booking Requests number box is shaded and will not accept typing, and there is no view-only banner | That card is not open for editing yet — its boxes are read-only until you open it | Click **Edit** in that card's header. The boxes turn white and **Save** and **Cancel** appear |
 | A Public Booking Requests card says "the quote timing has been changed since this page loaded" | The quote response window or the reminder lead time changed while your page was open — another admin, you in a second tab, or a configuration import — and your change would leave the reminder no shorter than the window. Nothing was written | Reload the page to see the current values, then make your change again |
