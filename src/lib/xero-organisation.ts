@@ -54,20 +54,20 @@ let cached: OrgYearEndCacheEntry | null = null;
 let yearEndInFlight: Promise<number | null> | null = null;
 
 /**
- * When the last year-end read FAILED (null = the last read succeeded, or none
- * has run since the caches were reset).
+ * When a non-forced live year-end attempt is allowed again (null = no failure
+ * is currently suppressing one).
  *
  * This is attempt control, not a negative value cache: it never invents or
- * pins a month. Within {@link YEAR_END_FAILURE_THROTTLE_MS} of a failure a
- * non-forced caller is handed exactly the value a fresh failing read would
- * have handed it ({@link yearEndFallbackMonth}) — it just skips the live Xero
- * call that was about to fail again. See #2283 review F1.
+ * pins a month. Inside the window a non-forced caller is handed exactly the
+ * value a fresh failing read would have handed it ({@link yearEndFallbackMonth})
+ * — it just skips the live Xero call that was about to fail again. See #2283
+ * review F1, and {@link yearEndFailureThrottleMs} for how long the window is.
  */
-let yearEndFailedAt: number | null = null;
+let yearEndSuppressedUntil: number | null = null;
 
 /**
- * How long a FAILED year-end read suppresses the next live attempt (#2283
- * review F1).
+ * The DEFAULT window a failed year-end read suppresses the next live attempt
+ * for (#2283 review F1).
  *
  * Deliberately much shorter than the summary read's 60-second negative TTL,
  * because this month is money-adjacent: it feeds membership financial-year
@@ -75,11 +75,68 @@ let yearEndFailedAt: number | null = null;
  * at once. Fifteen seconds is enough to stop member-facing traffic turning one
  * broken connection into a live `getOrganisations` call per request — which is
  * what would otherwise pin Xero's per-minute limit and push the instance
- * towards the daily limit and the process-global breaker — while capping the
- * extra recovery latency at a quarter of a minute. `forceRefresh` (an admin
- * explicitly re-checking) ignores this window entirely.
+ * towards the daily limit — while capping the extra recovery latency at a
+ * quarter of a minute. `forceRefresh` (an admin explicitly re-checking) ignores
+ * this window entirely.
  */
 const YEAR_END_FAILURE_THROTTLE_MS = 15 * 1000; // 15 seconds
+
+/**
+ * The window used instead when XERO ITSELF is the problem and we already hold a
+ * real month to serve (#2423 review F1).
+ *
+ * Deliberately mirrors `XERO_TRANSIENT_FAILURE_COOLDOWN_SEC` (120s) in
+ * `xero-api-client.ts` — the process-global breaker's own cooldown. It is
+ * duplicated rather than imported on purpose: this module stays decoupled from
+ * that one's internals (it already name-keys its error classes for the same
+ * reason), and every test that mocks `@/lib/xero-api-client` wholesale would
+ * otherwise import `undefined` and compute a NaN window.
+ *
+ * Why it exists. Before #2423 this read ARMED that breaker, which suppressed it
+ * — and everything else — for the cooldown. Opting out of arming (rightly:
+ * member traffic must not stop invoicing) removed that suppression too, leaving
+ * a 15-second throttle as the only bound on a read that makes a live
+ * `getOrganisations` call every window for the whole of an outage. So the storm
+ * control comes back LOCALLY: when the failure says "Xero is unreachable or
+ * refusing", this read backs off for about as long as the breaker would have
+ * held it, without touching any other caller.
+ *
+ * Two deliberate limits on it, both from #2283:
+ *
+ *   * Only when {@link yearEndFallbackMonth} is non-null. On a COLD cache the
+ *     served value is `null`, which `getFinancialYearResolution` turns into the
+ *     March default — moving the membership season boundary (and with it the
+ *     subscription-enforcement gate). A cold cache must therefore keep
+ *     re-attempting at the short window until a real month arrives; backing off
+ *     for two minutes is only acceptable when the answer we serve meanwhile is
+ *     the real one.
+ *   * Only for failures nobody can fix by acting now. A `disconnected` failure
+ *     is fixed by an admin reconnecting, and the very next request after they
+ *     do must pick it up — so that keeps the 15-second window.
+ *
+ * `forceRefresh` remains the escape hatch from both windows.
+ */
+const YEAR_END_OUTAGE_THROTTLE_MS = 120 * 1000; // 2 minutes
+
+/**
+ * How long this failure suppresses the next live attempt.
+ *
+ * `unavailable` covers a 5xx/408, a refused socket, AND the process-global
+ * transient breaker refusing before any HTTP; `rate_limited` covers a live 429
+ * and the daily-limit gate refusing pre-HTTP. Both mean "the wait is real and
+ * re-asking sooner only spends quota" — exactly what the breaker used to
+ * enforce for this read. Everything else (`disconnected`) keeps the short
+ * window so an admin's reconnect is picked up at once.
+ */
+function yearEndFailureThrottleMs(
+  failureKind: XeroOrganisationReadFailureKind,
+  fallbackMonth: number | null,
+): number {
+  if (fallbackMonth === null) return YEAR_END_FAILURE_THROTTLE_MS;
+  return failureKind === "unavailable" || failureKind === "rate_limited"
+    ? YEAR_END_OUTAGE_THROTTLE_MS
+    : YEAR_END_FAILURE_THROTTLE_MS;
+}
 
 /**
  * The best month available WITHOUT a live Xero call: the last successful
@@ -124,18 +181,19 @@ let orgReadGeneration = 0;
  * Note what this deliberately does NOT do: negative-cache the VALUE, unlike
  * the connected-org summary below. This month feeds membership financial-year
  * resolution, so no failure ever pins a month for a TTL. What a failure does
- * do (#2283 review F1) is record {@link yearEndFailedAt}, which suppresses the
- * next live ATTEMPT for {@link YEAR_END_FAILURE_THROTTLE_MS}; the value served
+ * do (#2283 review F1) is set {@link yearEndSuppressedUntil}, which suppresses
+ * the next live ATTEMPT for {@link yearEndFailureThrottleMs}; the value served
  * in that window is the same {@link yearEndFallbackMonth} a fresh failing read
  * would return, and `forceRefresh` skips the window outright.
  *
  * What it DOES share with the summary read is the retry posture (#2283,
- * decision item 9 option A): one attempt, no rate-limit retries, transient
- * budget intact. Failure handling is "degrade now, try again shortly", so
- * waiting out a 429 for minutes inside this call buys nothing — and it
- * competes for the same per-minute Xero budget as whatever caused the 429.
- * The throttle above is what replaces the storm control that waiting used to
- * provide as a side effect.
+ * decision item 9 option A, extended by #2423): exactly one attempt, no
+ * rate-limit retries, no transient retry, and no arming of the process-global
+ * breaker. Failure handling is "degrade now, try again shortly", so waiting
+ * inside this call buys nothing — and it competes for the same Xero budget as
+ * whatever is failing. Attempt throttling is what replaces the storm control
+ * that waiting, and later the breaker this read used to arm, provided as side
+ * effects.
  */
 async function readXeroFinancialYearEndMonth(): Promise<number | null> {
   const generation = orgReadGeneration;
@@ -155,11 +213,25 @@ async function readXeroFinancialYearEndMonth(): Promise<number | null> {
         // minute budget the failing sync needs. One attempt, immediate
         // degrade, fresh attempt a few seconds later.
         maxRetries: 0,
-        // KEEP the transient (5xx/408) budget at withXeroRetry's default of 1
-        // — `maxRetries: 0` alone would zero it via the `min(maxRetries, 1)`
-        // default. That half of #2283 is unchanged: one 5xx is worth a second
-        // attempt before the read degrades.
-        maxTransientRetries: 1,
+        // No transient (5xx/408) retry either — the same pairing the summary
+        // read takes below, and for the same reason (#2423 review).
+        //
+        // #2283 kept the budget at 1 for ONE stated purpose: exhausting it is
+        // what arms the breaker, so a budget of 1 meant "it takes two
+        // consecutive 5xx to arm". `armTransientBreaker: false` deletes that
+        // purpose, and what the second attempt then buys is a second live Xero
+        // call on every failed read — during an outage, 2 calls per throttle
+        // window against a per-tenant daily cap that invoicing shares — plus,
+        // when the 5xx carries `Retry-After`, a sleep of up to `maxWaitSec`
+        // INSIDE the member request, with every concurrent caller joined to it
+        // by the single flight below. A read that degrades to a good cached
+        // month and re-attempts shortly gains nothing from either.
+        //
+        // `maxTransientRetries: 0` alone would be worse than leaving it at 1
+        // (the FIRST 5xx would arm the breaker) — which is why it is only
+        // correct alongside the opt-out below. One call, immediate degrade,
+        // fresh attempt once the throttle window expires.
+        maxTransientRetries: 0,
         // But this read may NEVER ARM the process-global transient breaker
         // (#2423). Exhausting the transient budget otherwise calls
         // `rememberXeroTransientOutage`, which fails EVERY Xero call in this
@@ -185,6 +257,11 @@ async function readXeroFinancialYearEndMonth(): Promise<number | null> {
         // active, `withXeroRetry` refuses this read before any HTTP and it
         // degrades to {@link yearEndFallbackMonth} exactly as any other
         // failure does.
+        //
+        // What the opt-out DID cost is storm control: arming was also what
+        // suppressed this read during an outage. That is restored locally,
+        // without touching any other caller, by
+        // {@link YEAR_END_OUTAGE_THROTTLE_MS}.
         armTransientBreaker: false,
       },
     );
@@ -195,26 +272,30 @@ async function readXeroFinancialYearEndMonth(): Promise<number | null> {
       cached = { month, fetchedAt: Date.now() };
       // Recovery is immediate: a success clears the throttle, so the next
       // failure starts a fresh window rather than extending an old one.
-      yearEndFailedAt = null;
+      yearEndSuppressedUntil = null;
     }
     return month;
   } catch (error) {
+    // The best month we already hold — the last successful year-end read, else
+    // the summary cache's copy of the same Xero field. (Both are cleared by an
+    // invalidation, so this cannot resurrect the old org's month either.)
+    // Without the second hop a cold-cache failure returned null, which
+    // `getFinancialYearResolution` turns into the March default. It decides
+    // BOTH what this failure serves and how long it suppresses the next
+    // attempt, so it is read once, here.
+    const fallbackMonth = yearEndFallbackMonth();
+    const failureKind = classifyOrganisationReadFailure(error).kind;
     logger.warn(
-      { err: error },
+      { err: error, failureKind, fallbackMonth },
       "Failed to read Xero organisation financial year-end month",
     );
     if (generation === orgReadGeneration) {
       // Guarded like the cache write: a read abandoned by a reconnect must not
       // throttle the FRESH connection's first attempt.
-      yearEndFailedAt = Date.now();
+      yearEndSuppressedUntil =
+        Date.now() + yearEndFailureThrottleMs(failureKind, fallbackMonth);
     }
-    // Fall back to the best month we already hold — the last successful
-    // year-end read, else the summary cache's copy of the same Xero field.
-    // (Both are cleared by an invalidation, so this cannot resurrect the old
-    // org's month either.) Without the second hop a cold-cache failure
-    // returned null, which `getFinancialYearResolution` turns into the March
-    // default.
-    return yearEndFallbackMonth();
+    return fallbackMonth;
   }
 }
 
@@ -233,8 +314,9 @@ async function readXeroFinancialYearEndMonth(): Promise<number | null> {
  *
  * Single flight only bounds callers that overlap IN TIME. Serial traffic — the
  * member-facing subscription gate, one request after another — is bounded
- * instead by the short post-failure throttle (see {@link yearEndFailedAt});
- * `forceRefresh` bypasses both and always goes live.
+ * instead by the post-failure throttle (see {@link yearEndSuppressedUntil} and
+ * {@link yearEndFailureThrottleMs}); `forceRefresh` bypasses both and always
+ * goes live.
  */
 export async function getXeroFinancialYearEndMonth(
   forceRefresh = false,
@@ -244,13 +326,10 @@ export async function getXeroFinancialYearEndMonth(
       return cached.month;
     }
     if (yearEndInFlight) return yearEndInFlight;
-    if (
-      yearEndFailedAt !== null &&
-      Date.now() - yearEndFailedAt < YEAR_END_FAILURE_THROTTLE_MS
-    ) {
-      // A live attempt failed moments ago. Hand back the same value a fresh
+    if (yearEndSuppressedUntil !== null && Date.now() < yearEndSuppressedUntil) {
+      // A live attempt failed recently. Hand back the same value a fresh
       // failing attempt would produce, without making the call — see
-      // YEAR_END_FAILURE_THROTTLE_MS. Nothing is pinned: the very next call
+      // {@link yearEndFailureThrottleMs}. Nothing is pinned: the very next call
       // after the window (or any forceRefresh) goes live again.
       return yearEndFallbackMonth();
     }
@@ -826,7 +905,7 @@ function resetXeroOrganisationCaches(): void {
   cached = null;
   // The year-end failure throttle is scoped to the connection that failed: a
   // reconnect must go live on the very next call, not wait the window out.
-  yearEndFailedAt = null;
+  yearEndSuppressedUntil = null;
   // Nulls positive AND negative summary entries: after a reconnect the next
   // read must go live even if the last attempt failed seconds ago.
   orgSummaryCache = null;
