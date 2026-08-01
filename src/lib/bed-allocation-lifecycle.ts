@@ -22,6 +22,11 @@ import {
   custodianOccupiedBedNightsForPlanner,
   findCustodianBedHolds,
 } from "@/lib/custodian-occupancy";
+import {
+  buildWholeLodgeHeldNightPredicate,
+  findBlockingWholeLodgeHolds,
+  wholeLodgeHoldOccupiedBedNightsForPlanner,
+} from "@/lib/exclusive-hold-occupancy";
 import { lodgeNullTolerantScope } from "@/lib/lodges";
 import logger from "@/lib/logger";
 import { OPERATIONALLY_PRESENT_GUEST_WHERE } from "@/lib/member-guest-consent";
@@ -455,6 +460,71 @@ async function dropRowsOnCustodianHeldBedNights<
   return writable;
 }
 
+/**
+ * Drop any payload row that would land on a whole-lodge-held night (#2317).
+ *
+ * The exact mirror of the custodian re-filter above, and it exists for the same
+ * reason: the planner IS fed the hold as blocking unattributed occupancy, but
+ * that read happened several queries earlier and this reconcile is routinely
+ * called post-commit and unlocked. Nothing in the database stops a row landing
+ * on a held bed-night, so a hold that commits between the plan and the write
+ * would otherwise be written straight over.
+ *
+ * `dropAllocationRowsForUnallocatableBookings` does NOT cover this: it asks
+ * whether the booking we are placing became unallocatable, and a hold set on a
+ * DIFFERENT booking leaves ours perfectly allocatable while taking every bed it
+ * was about to occupy.
+ *
+ * A row whose room has no resolved lodge is treated as held by ANY hold
+ * (null-tolerant matching), which is the conservative direction.
+ */
+async function dropRowsOnWholeLodgeHeldNights<
+  TRow extends { roomId: string; stayDate: Date },
+>(
+  db: BedAllocationLifecycleDb,
+  rows: TRow[],
+  context: {
+    lodgeId?: string;
+    bookingId: string;
+    roomLodgeIdById: ReadonlyMap<string, string>;
+  },
+): Promise<TRow[]> {
+  if (rows.length === 0) return rows;
+
+  const stayDates = rows.map((row) => row.stayDate);
+  const from = stayDates.reduce((a, b) => (a < b ? a : b));
+  const latest = stayDates.reduce((a, b) => (a > b ? a : b));
+  const toExclusive = addDaysDateOnly(latest, 1);
+
+  const isWholeLodgeHeld = buildWholeLodgeHeldNightPredicate(
+    await findBlockingWholeLodgeHolds({
+      lodgeId: context.lodgeId,
+      from,
+      toExclusive,
+      db,
+    }),
+  );
+
+  const writable = rows.filter(
+    (row) =>
+      !isWholeLodgeHeld(
+        context.lodgeId ?? context.roomLodgeIdById.get(row.roomId) ?? null,
+        formatDateOnly(row.stayDate),
+      ),
+  );
+  if (writable.length < rows.length) {
+    logger.info(
+      {
+        bookingId: context.bookingId,
+        lodgeId: context.lodgeId ?? null,
+        droppedCount: rows.length - writable.length,
+      },
+      "Bed allocation write-time re-check dropped rows targeting whole-lodge-held nights",
+    );
+  }
+  return writable;
+}
+
 function normalizeRange(
   range?: BedAllocationLifecycleRange | null,
 ): BedAllocationLifecycleRange | null {
@@ -880,18 +950,43 @@ async function autoAllocateMissingBedNights({
     })),
   })) satisfies BedAllocationRoom[];
 
+  // Which lodge is each planned room in? Only the write-time whole-lodge-hold
+  // re-filter (#2317) needs this, and only on a CLUB-WIDE reconcile — a scoped
+  // one already knows its lodge. Built from the rooms already loaded, so it
+  // costs no extra query either way.
+  const roomLodgeIdById = new Map<string, string>(
+    rooms.flatMap((room) => (room.lodgeId ? [[room.id, room.lodgeId]] : [])),
+  );
+
   // Custodian bed holds (#2286): a bed held for a season by a hut-leader
   // assignment has no Booking and no BedAllocation row, so it is invisible to
   // `existingAllocations` above. Feed it to the planner as #1768 "unknown
   // occupant" rows — blocking, NEVER evictable (so a displacement can never
   // move a booking onto it either) and conservative for room mix.
-  const custodianHolds = await findCustodianBedHolds({
-    // Club-wide when the reconcile is unscoped, matching every other load here.
-    lodgeId: lodgeId ?? undefined,
-    from: envelope.checkIn,
-    toExclusive: envelope.checkOut,
-    db,
-  });
+  //
+  // Exclusive whole-lodge holds (#2317) are loaded on the same envelope for the
+  // same reason: a held group implicitly occupies every bed of its lodge for
+  // its nights (ADR-001) and owns no `BedAllocation` row anywhere (#2285), so
+  // it too is invisible to `existingAllocations`. Its own query, not a filter
+  // over `bookings` above: that load is restricted to bed-allocatable statuses
+  // AND to bookings with a guest overlapping the range, and a hold's blocking
+  // power depends on neither — it is the capacity engine's population or
+  // nothing (see exclusive-hold-occupancy.ts).
+  const [custodianHolds, blockingWholeLodgeHolds] = await Promise.all([
+    findCustodianBedHolds({
+      // Club-wide when the reconcile is unscoped, matching every other load here.
+      lodgeId: lodgeId ?? undefined,
+      from: envelope.checkIn,
+      toExclusive: envelope.checkOut,
+      db,
+    }),
+    findBlockingWholeLodgeHolds({
+      lodgeId: lodgeId ?? undefined,
+      from: envelope.checkIn,
+      toExclusive: envelope.checkOut,
+      db,
+    }),
+  ]);
   const envelopeNights = eachDateOnlyInRange(
     envelope.checkIn,
     envelope.checkOut,
@@ -907,6 +1002,17 @@ async function autoAllocateMissingBedNights({
     bookings: plannerBookings,
     occupiedBedNights: [
       ...custodianOccupiedBedNightsForPlanner(custodianHolds, envelopeNights),
+      // #2317 (owner decision option (a)): every active bed of a held lodge, on
+      // every held night, as unattributed non-displaceable occupancy. The held
+      // booking itself is never planned (the #2285 short-circuit above), so
+      // this only ever stops ANOTHER booking's guests from being auto-placed
+      // onto beds the held group is physically using — those guest-nights come
+      // back as NO_BED_AVAILABLE for the officer instead.
+      ...wholeLodgeHoldOccupiedBedNightsForPlanner(
+        blockingWholeLodgeHolds,
+        rooms,
+        envelopeNights,
+      ),
       ...existingAllocations.map((allocation) => ({
         bedId: allocation.bedId,
         bookingId: allocation.bookingId,
@@ -986,9 +1092,17 @@ async function autoAllocateMissingBedNights({
     // the custodian exclusion (owner decision, option (a)). Re-read the holds
     // HERE, on the SAME client that is about to write, and drop any row that
     // would land on one. Mirrors runAutoBedAllocation's re-filter exactly.
-    return dropRowsOnCustodianHeldBedNights(client, rows, {
+    const offCustodianHolds = await dropRowsOnCustodianHeldBedNights(
+      client,
+      rows,
+      { lodgeId: lodgeId ?? undefined, bookingId },
+    );
+    // Whole-lodge-hold re-filter (#2317), the same shape and the same reason —
+    // see dropRowsOnWholeLodgeHeldNights.
+    return dropRowsOnWholeLodgeHeldNights(client, offCustodianHolds, {
       lodgeId: lodgeId ?? undefined,
       bookingId,
+      roomLodgeIdById,
     });
   };
 

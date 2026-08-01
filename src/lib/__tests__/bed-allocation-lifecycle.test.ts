@@ -3518,9 +3518,12 @@ describe("exclusive whole-lodge hold (ADR-001, #2285)", () => {
       db: db as any,
     });
 
-    // The plan WAS built (the planner ran its loads) but not written.
+    // The plan WAS built (the planner ran its loads) but not written. Three
+    // booking reads now: the planner's own load, the blocking whole-lodge-hold
+    // load it feeds to the planner as occupancy (#2317), and the write-time
+    // re-check — which is the one that stops this write.
     expect(db.lodgeRoom.findMany).toHaveBeenCalled();
-    expect(db.booking.findMany).toHaveBeenCalledTimes(2);
+    expect(db.booking.findMany).toHaveBeenCalledTimes(3);
     expect(db.bedAllocation.createMany).not.toHaveBeenCalled();
     expect(result.createdCount).toBe(0);
   });
