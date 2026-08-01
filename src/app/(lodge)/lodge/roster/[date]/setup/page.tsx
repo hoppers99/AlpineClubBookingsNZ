@@ -4,6 +4,10 @@ import type { AgeTier } from "@prisma/client";
 import { useState, useEffect, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { APP_LOCALE, APP_TIME_ZONE } from "@/config/operational";
+import {
+  computeFrequencyInfo,
+  type FrequencyInfo,
+} from "@/lib/chore-frequency-preview";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -52,12 +56,6 @@ interface Allocation {
   bookingId: string;
 }
 
-interface FrequencyInfo {
-  choreId: string;
-  excluded: boolean;
-  reason: string | null;
-}
-
 const MAX_AGE_BY_TIER: Partial<Record<AgeTier, number>> = {
   INFANT: 4,
   CHILD: 9,
@@ -84,58 +82,9 @@ function displayDate(dateStr: string): string {
   return LONG_WEEKDAY_DATE.format(new Date(dateStr + "T00:00:00Z"));
 }
 
-function computeFrequencyInfo(
-  chore: ChoreTemplate,
-  lastRosteredDates: Record<string, string>,
-  dateStr: string
-): FrequencyInfo {
-  const mode = chore.frequencyMode ?? "DAILY";
-  if (mode === "DAILY") {
-    return { choreId: chore.id, excluded: false, reason: null };
-  }
-
-  if (mode === "EVERY_X_DAYS") {
-    const interval = chore.frequencyDays;
-    if (!interval || interval < 2)
-      return { choreId: chore.id, excluded: false, reason: null };
-    const lastDateStr = lastRosteredDates[chore.id];
-    if (!lastDateStr)
-      return { choreId: chore.id, excluded: false, reason: null };
-    const lastDate = new Date(lastDateStr + "T00:00:00");
-    const currentDate = new Date(dateStr + "T00:00:00");
-    const daysSince = Math.floor(
-      (currentDate.getTime() - lastDate.getTime()) / (1000 * 60 * 60 * 24)
-    );
-    if (daysSince < interval) {
-      return {
-        choreId: chore.id,
-        excluded: true,
-        reason: `Last done ${daysSince} day${daysSince !== 1 ? "s" : ""} ago, next due in ${interval - daysSince} day${interval - daysSince !== 1 ? "s" : ""}`,
-      };
-    }
-    return { choreId: chore.id, excluded: false, reason: null };
-  }
-
-  if (mode === "SPECIFIC_DAYS") {
-    const days = chore.frequencyDaysOfWeek;
-    if (!days || days.length === 0)
-      return { choreId: chore.id, excluded: false, reason: null };
-    const currentDate = new Date(dateStr + "T00:00:00");
-    const dow = currentDate.getDay() === 0 ? 7 : currentDate.getDay();
-    if (!days.includes(dow)) {
-      const dayNames = ["", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-      const scheduled = days.map((d) => dayNames[d]).join(", ");
-      return {
-        choreId: chore.id,
-        excluded: true,
-        reason: `Scheduled for ${scheduled} only`,
-      };
-    }
-    return { choreId: chore.id, excluded: false, reason: null };
-  }
-
-  return { choreId: chore.id, excluded: false, reason: null };
-}
+// `computeFrequencyInfo` — the "is this chore due tonight?" preview — lives in
+// `@/lib/chore-frequency-preview` so it can be unit-tested against the server
+// allocator's rules (#2478); a helper defined inside a page component cannot be.
 
 // ---------------------------------------------------------------------------
 // Component

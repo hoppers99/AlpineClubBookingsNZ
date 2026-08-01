@@ -82,7 +82,7 @@ change these pages.
 | Setting | What it controls | Default | Notes / constraints |
 | --- | --- | --- | --- |
 | Lodge name | Public lodge name (`{{lodge-name}}` token) | Configured default | Appears on the public site |
-| Address | Public lodge address (`{{lodge-address}}` token) | Configured default | Appears on the contact page |
+| Address | Public lodge address (`{{lodge-address}}` token) | Blank | Appears on the contact page; while it is blank the contact page shows no address block and the token renders nothing |
 | Travel note | Extra travel/access note for visitors | Blank | Optional |
 | Door code | The lodge door/access code | Blank | Shared **only** in confirmation emails, never public |
 

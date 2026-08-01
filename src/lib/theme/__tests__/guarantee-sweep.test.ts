@@ -8,6 +8,7 @@ import {
   SEED_SETS,
   SYNTHETIC_SEEDS,
   SYNTHETIC_CLUB_THEME_VALUES,
+  ACHROMATIC_NEUTRAL_SEEDS,
 } from "./reference-seed-sets";
 import {
   sweepGuarantees,
@@ -37,7 +38,8 @@ function allThemes(): Array<{ theme: Built; lightN12: string; label: string }> {
   const out: Array<{ theme: Built; lightN12: string; label: string }> = [];
   // The shipping default (golden-pinned) plus the synthetic bright-accent stress
   // palette — the two reference palettes the substrate must hold for. Neither is
-  // a real club's brand (#2190 D15).
+  // a real club's brand (#2190 D15). The exact-grey neutral palette is swept
+  // separately below: it carries one KNOWN, pre-existing G5a shortfall.
   const seeds: Array<[string, (typeof SEED_SETS)["default"]]> = [
     ...(Object.entries(SEED_SETS) as Array<[string, (typeof SEED_SETS)["default"]]>),
     ["synthetic", SYNTHETIC_SEEDS],
@@ -59,6 +61,41 @@ describe("theme guarantee sweep", () => {
       sweepGuarantees(theme, lightN12, label),
     );
     expect(failures).toEqual([]);
+  });
+
+  /*
+   * The exact-grey neutral-character palette (#2303). A seed with r == g == b
+   * carries no hue, so the gray seed the substrate derives from it sits at the
+   * neutral-seed pin's chroma on hue ~355 — low enough that Radix's perfectly
+   * achromatic `gray` ramp becomes its closest reference ramp, which is the
+   * degenerate case `getScaleFromColor`'s chroma guard exists for. This sweep
+   * proves that ramp class is contrast-verified, not merely well-formed.
+   *
+   * It clears every guarantee EXCEPT one, which is pinned here rather than
+   * hidden: light-mode card/page separation lands just under the G5a floor
+   * (ΔL 0.011 vs 0.012, contrast 1.03 vs 1.04). That shortfall is PRE-EXISTING
+   * and has nothing to do with the colorjs bump — measured directly against
+   * colorjs.io 0.5.2 it fails identically, because it is a property of where
+   * that palette's neutral 1 and 2 land, not of how their chroma is computed.
+   * (The pre-fix form of the guard flattened the ramp to a pure grey, which
+   * happened to widen ΔL enough to pass — a false pass on a wrong ramp.)
+   *
+   * If this list ever changes, do not edit it to match: the grey-neutral
+   * palette's compliance profile has genuinely moved and needs a look.
+   */
+  it("exact-grey neutral palette: clears every guarantee but the known G5a card separation", () => {
+    const light = buildThemeSubstrate(ACHROMATIC_NEUTRAL_SEEDS, "light");
+    const lightN12 = light.neutralHex[11];
+    const failures = [
+      ...sweepGuarantees(light, lightN12, "grey/light"),
+      ...sweepGuarantees(buildThemeSubstrate(ACHROMATIC_NEUTRAL_SEEDS, "dark"), lightN12, "grey/dark"),
+    ];
+    expect(failures).toEqual([
+      { guarantee: "G5a", cell: "grey/light/card-deltaL", ratio: 0.011, floor: G5A_CARD_SEPARATION.minDeltaL },
+      { guarantee: "G5a", cell: "grey/light/card-contrast", ratio: 1.03, floor: G5A_CARD_SEPARATION.minContrast },
+    ]);
+    // Everything else — G1/G2/G2b/G2c/G4/G5b, both modes — is clean.
+    expect(failures.filter((f) => f.guarantee !== "G5a")).toEqual([]);
   });
 
   it("G2c: the SHIPPED derived --muted-foreground tone clears AA on neutral steps 1–4, both modes, both seeds", () => {
