@@ -856,11 +856,11 @@ tree** (#2160, extended by #2168 and #2324) — not a claim that nothing is left
 Measured
 on the current tree by `view-only-banner-contract.test.ts`, which asserts these
 figures rather than trusting a hand count: **81 components render a banner, and
-254 of the 303 `ViewOnlyActionButton` call sites opt out** of the per-button
+255 of the 304 `ViewOnlyActionButton` call sites opt out** of the per-button
 reason. (Earlier revisions of this page published 76/232/264/211 — those were
 upstream-historical and had drifted; the numbers here are the ones the contract
-test currently pins, which is the only authority.) Those 254 split by WHICH rule
-covers them: **228** pass the literal
+test currently pins, which is the only authority.) Those 255 split by WHICH rule
+covers them: **229** pass the literal
 `describeReason={false}` and are covered by a banner in the same file, and **26**
 pass `describeReason={!ancestorRendersViewOnlyBanner}` and are covered by a
 verified vouching parent — 21 by a parent's own JSX render site (#2168), 5 by the
@@ -1601,9 +1601,22 @@ Because it derives everything from live rows and is idempotent, every booking
 path that can change the party simply calls it at the end of its own transaction:
 create (draft, confirmed, waitlisted, and the #738 split child, which borrows its
 parent's adults as host-only participants), batch modify, date modify, admin date
-shift, guest add, guest removal and waitlist confirm. A hazard clears the moment
+shift, guest add, guest removal and waitlist confirm, plus every path that
+creates a whole party of its own — the booking-request approval and its
+held-booking conversion, the quote-time hold, the school and member whole-lodge
+approvals, and the verified non-member group joiner. A hazard clears the moment
 current facts cover every night, and reopens only when the uncovered set or the
 policy revision materially differs.
+
+Because the split child borrows its parent's rows, the dependency runs both ways,
+so mutation paths call `reconcileAdultMemberHostingReviewWithSiblings`: it
+reconciles the mutated booking and then the live same-member siblings the borrow
+reads, one level deep, in the same transaction. Without that, shortening the
+member's own stay on the parent would silently drop the child's hazard and
+extending it would leave a stale review nobody could clear. Two source-contract
+tests hold the shape: every module containing a `booking.create(` must reach a
+hosting recorder, and only the review service itself may call the single-booking
+reconciler.
 
 The review is deliberately NOT folded into `requiresAdminReview` /
 `adminReviewStatus`: those carry the minors-only rule, several paths wipe them
@@ -1612,7 +1625,11 @@ are reported together as structured codes at read time instead. The only
 enforcement that refuses anything is D-R4's on-behalf seam on create: an admin
 booking for somebody else is stopped with 409
 `ADULT_MEMBER_HOSTING_CONFIRM_REQUIRED` until they give a reason, which is stored
-with their id against the approval.
+with their id against the approval — `/admin/book` renders the reason panel that
+answers it, on the confirm and the save-as-draft path alike, because the check
+runs ahead of the draft fork. `adultMemberHostingReviewedById` is a real
+`SetNull` relation to `Member` with a `member-merge.ts` spec, so that attribution
+survives a merge and does not dangle after a deletion.
 
 1. A member selects a lodge (implicit when only one active lodge exists) and
    check-in and check-out dates.

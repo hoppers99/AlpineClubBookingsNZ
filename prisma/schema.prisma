@@ -648,6 +648,11 @@ model Member {
   adminCreditAdjustmentRequestsReviewed      AdminCreditAdjustmentRequest[]             @relation("AdminCreditAdjustmentRequestsReviewed")
   bookingsCreatedOnBehalf                    Booking[]                                  @relation("BookingsCreatedBy")
   bookingsAdminReviewed                      Booking[]                                  @relation("BookingsAdminReviewed")
+  // #2364: hosting exceptions this admin accepted (D-R4 attribution). A real
+  // relation rather than a bare id column, exactly like its sibling above, so
+  // member merge repoints it and member deletion nulls it — the DMMF
+  // completeness guard in member-merge only sees Member-TYPED fields.
+  bookingsAdultMemberHostingReviewed         Booking[]                                  @relation("BookingsAdultMemberHostingReviewed")
   bookingsAdminCapacityHeld                  Booking[]                                  @relation("BookingsAdminCapacityHeld")
   bookingsCapacityOverridden                 Booking[]                                  @relation("BookingsCapacityOverridden")
   bookingsWholeLodgeHeld                     Booking[]                                  @relation("BookingsWholeLodgeHeld")
@@ -1661,6 +1666,13 @@ model Booking {
   // what makes D-R4's "never silently auto-approved" checkable after the fact.
   // The durable member-request / admin-execution workflow is #2365's; these
   // columns are the state it will drive, not that workflow.
+  //
+  // `adultMemberHostingReviewedById` is backed by the real
+  // `adultMemberHostingReviewedBy` relation below (SetNull) and registered in
+  // `member-merge.ts`, on the same terms as `adminReviewedById`. An attribution
+  // column that outlives the member it names is not attribution, and a bare
+  // String would be invisible to the DMMF completeness guard that is this
+  // repo's stated safety net for merge.
   adultMemberHostingReview         Json?
   adultMemberHostingReviewStatus   AdminReviewStatus?
   adultMemberHostingReviewReason   String?           @db.VarChar(500)
@@ -1766,6 +1778,7 @@ model Booking {
   createdBy                   Member?                         @relation("BookingsCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
   deletedBy                   Member?                         @relation("BookingsDeletedBy", fields: [deletedById], references: [id], onDelete: SetNull)
   adminReviewedBy             Member?                         @relation("BookingsAdminReviewed", fields: [adminReviewedById], references: [id], onDelete: SetNull)
+  adultMemberHostingReviewedBy Member?                        @relation("BookingsAdultMemberHostingReviewed", fields: [adultMemberHostingReviewedById], references: [id], onDelete: SetNull)
   adminCapacityHoldBy         Member?                         @relation("BookingsAdminCapacityHeld", fields: [adminCapacityHoldByMemberId], references: [id], onDelete: SetNull)
   capacityOverriddenBy        Member?                         @relation("BookingsCapacityOverridden", fields: [capacityOverriddenByMemberId], references: [id], onDelete: SetNull)
   wholeLodgeHoldBy            Member?                         @relation("BookingsWholeLodgeHeld", fields: [wholeLodgeHoldByMemberId], references: [id], onDelete: SetNull)

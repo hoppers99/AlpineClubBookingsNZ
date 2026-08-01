@@ -322,11 +322,11 @@ const NOTICE = "AdminViewOnlyNotice";
 */
 const FIGURES = {
   /** Every `<ViewOnlyActionButton>` render site in the admin tree. */
-  callSites: 303,
+  callSites: 304,
   /** Those that hand their explanation to a banner, by either rule. */
-  optOuts: 254,
+  optOuts: 255,
   /** `describeReason={false}` — needs a banner in the SAME file. */
-  staticOptOuts: 228,
+  staticOptOuts: 229,
   /** `describeReason={!ancestorRendersViewOnlyBanner}` — needs a vouch. */
   vouchedOptOuts: 26,
   /** …of the vouched: proved at a parent's own JSX render site (#2168). */
@@ -1217,6 +1217,13 @@ describe("view-only section banner coverage (#2160)", () => {
                vouched split, exceptions and the leaf bucket are untouched:
                nothing keeps its own reason, and no control here is gated on
                anything narrower than the bookings area the banner states.
+          304  +1  #2364 review: /admin/book gains "Record the reason and
+               create" — the surface that answers the adult-member hosting 409,
+               which shipped with no client able to satisfy it. A static
+               opt-out beside the existing over-capacity confirm, under the
+               page's banner it already sits behind, so optOuts 254 -> 255 and
+               staticOptOuts 228 -> 229 and nothing else moves (no new banner
+               component, no new exception).
       */
       // #2259 adds the per-booking "No emails"
       // switch (`booking-no-emails-controls.tsx`), a leaf control dropped into

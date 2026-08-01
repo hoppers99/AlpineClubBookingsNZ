@@ -155,9 +155,40 @@ ALTER TABLE "Booking"
     ADD COLUMN "adultMemberHostingReviewedById" TEXT,
     ADD COLUMN "adultMemberHostingReviewedAt" TIMESTAMP(3);
 
+-- The reviewer column is a real foreign key, matching "adminReviewedById" and
+-- every other actor-attribution column on Booking. A bare TEXT id would outlive
+-- the member it names: member merge repoints actor columns by walking the
+-- Prisma relations, and deleting a member SetNulls them, so an id with no
+-- relation is silently skipped by both and D-R4's "who accepted this hazard"
+-- decays into a dangling id the database would never surface.
+--
+-- SetNull, not Restrict: losing the attribution must never block deleting a
+-- member, and the reason text stays on the row either way. Created NOT VALID
+-- then validated, so the ACCESS EXCLUSIVE lock is held only for the catalog
+-- update and the row scan runs under a SHARE UPDATE EXCLUSIVE lock that does
+-- not block booking writes. (The columns were added empty two statements above,
+-- so the validation scan finds nothing to check.)
+ALTER TABLE "Booking"
+    ADD CONSTRAINT "Booking_adultMemberHostingReviewedById_fkey"
+    FOREIGN KEY ("adultMemberHostingReviewedById") REFERENCES "Member"("id")
+    ON DELETE SET NULL ON UPDATE CASCADE
+    NOT VALID;
+
+ALTER TABLE "Booking"
+    VALIDATE CONSTRAINT "Booking_adultMemberHostingReviewedById_fkey";
+
 -- No index on the new columns, on purpose. Nothing in #2364 QUERIES by hosting
 -- review state: every read is by booking id, from a path that already has the
 -- booking. The queue that will scan for pending hosting reviews is #2365's, and
 -- it should add the (predicated) index alongside the query that needs it —
 -- together with its row in prisma/partial-unique-indexes.tsv, which CI holds to
 -- set equality against the live database.
+--
+-- That includes the reviewer foreign key, which its sibling "adminReviewedById"
+-- DOES index. The difference is what reads it: the admin review queue filters by
+-- adminReviewedById, while nothing filters by this column. The only unindexed
+-- scans it can cause are a member DELETE and a member merge repointing it —
+-- rare, admin-initiated, already-slow lifecycle operations — and the cost of
+-- avoiding them is a CREATE INDEX holding a write-blocking SHARE lock on the
+-- hot Booking table, which is the larger risk of the two. #2365 adds the index
+-- with the query that makes it earn its keep.

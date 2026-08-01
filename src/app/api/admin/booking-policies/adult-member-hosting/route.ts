@@ -1,3 +1,4 @@
+import type { AdultMemberHostingPolicy } from "@prisma/client";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
@@ -113,7 +114,14 @@ export async function PUT(request: NextRequest) {
   const scopeKey = scopeKeyFor(lodgeId);
 
   try {
-    const policy = await prisma.$transaction(async (tx) => {
+    // Discriminated on purpose, exactly as `minimum-stay/[id]/route.ts` does.
+    // Returning the row alone would make the unchanged branch indistinguishable
+    // from a real write out here, and the audit entry and the ISR bust below
+    // would still fire — which is the thing the guard inside exists to prevent.
+    const result = await prisma.$transaction<
+      | { kind: "unchanged"; policy: AdultMemberHostingPolicy }
+      | { kind: "written"; policy: AdultMemberHostingPolicy }
+    >(async (tx) => {
       // Before the first read, so the row this write compare-and-swaps against
       // cannot move underneath it. The migration's statement trigger re-enters
       // the same key when the DML below fires.
@@ -136,15 +144,18 @@ export async function PUT(request: NextRequest) {
         // that has since been deleted (a configuration import can do that).
         // Creating one anyway would resurrect a policy the club removed.
         if (data.version !== undefined) throw new StalePolicyError();
-        return tx.adultMemberHostingPolicy.create({
-          data: {
-            scopeKey,
-            lodgeId,
-            mode: data.mode,
-            capacityMode: data.capacityMode,
-            version: 1,
-          },
-        });
+        return {
+          kind: "written",
+          policy: await tx.adultMemberHostingPolicy.create({
+            data: {
+              scopeKey,
+              lodgeId,
+              mode: data.mode,
+              capacityMode: data.capacityMode,
+              version: 1,
+            },
+          }),
+        };
       }
 
       if (data.version !== existing.version) throw new StalePolicyError();
@@ -156,8 +167,9 @@ export async function PUT(request: NextRequest) {
         // Nothing material changed. Return the row untouched rather than write
         // it: the revision trigger would hold the token anyway, but a no-op
         // UPDATE would still log an audit entry asserting a change that never
-        // happened and bust the public-page cache (#2143).
-        return existing;
+        // happened and bust the public-page cache (#2143). `kind` is what
+        // carries that out of the transaction — see the caller.
+        return { kind: "unchanged", policy: existing };
       }
 
       const updated = await tx.adultMemberHostingPolicy.updateMany({
@@ -174,8 +186,20 @@ export async function PUT(request: NextRequest) {
         where: { scopeKey },
       });
       if (!reloaded) throw new StalePolicyError();
-      return reloaded;
+      return { kind: "written", policy: reloaded };
     });
+
+    const policy = result.policy;
+
+    // Before the audit entry and before the revalidation, deliberately. An
+    // admin who opened the card and saved without changing anything wrote
+    // nothing, so the log must not name them as having changed the rule — an
+    // operator asking "who changed this, and when" has to be able to trust the
+    // answer — and the public page's cache must not be purged for a write that
+    // did not happen (#2143).
+    if (result.kind === "unchanged") {
+      return NextResponse.json({ ...policy, configured: true });
+    }
 
     logAudit({
       action: "adult-member-hosting-policy.update",

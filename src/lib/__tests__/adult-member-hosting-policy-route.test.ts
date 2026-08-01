@@ -235,7 +235,40 @@ describe("adult-member hosting policy route (#2364)", () => {
     expect(response.status).toBe(200);
     expect(mocks.updateMany).not.toHaveBeenCalled();
     // The audit entry and the revalidation belong to a real change; this is a
-    // read that happened to arrive as a PUT.
+    // read that happened to arrive as a PUT. An operator asking "who changed
+    // the hosting rule, and when" must not be handed a list of admins who
+    // opened the card and saved it unchanged — and the public page's cache must
+    // not be purged for a write that did not happen (#2143).
+    expect(mocks.logAudit).not.toHaveBeenCalled();
+    expect(mocks.revalidate).not.toHaveBeenCalled();
+    // The row still comes back, so the card refreshes to the stored truth.
+    expect(await response.json()).toMatchObject({
+      version: 4,
+      mode: "ADMIN_REVIEW_REQUIRED",
+      configured: true,
+    });
+  });
+
+  it("audits and revalidates for a real change, so the guard above is not vacuous", async () => {
+    mocks.findUnique
+      .mockResolvedValueOnce(stored)
+      .mockResolvedValueOnce({ ...stored, mode: "DISABLED", version: 5 });
+    mocks.updateMany.mockResolvedValue({ count: 1 });
+    const response = await PUT(
+      put({ mode: "DISABLED", capacityMode: "HOLD", version: 4 }),
+    );
+    expect(response.status).toBe(200);
+    expect(mocks.logAudit).toHaveBeenCalledTimes(1);
+    expect(mocks.revalidate).toHaveBeenCalledTimes(1);
+  });
+
+  it("audits and revalidates the FIRST save, which creates the row", async () => {
+    mocks.findUnique.mockResolvedValue(null);
+    mocks.create.mockResolvedValue({ ...stored, version: 1 });
+    const response = await PUT(
+      put({ mode: "ADMIN_REVIEW_REQUIRED", capacityMode: "HOLD" }),
+    );
+    expect(response.status).toBe(200);
     expect(mocks.logAudit).toHaveBeenCalledTimes(1);
     expect(mocks.revalidate).toHaveBeenCalledTimes(1);
   });

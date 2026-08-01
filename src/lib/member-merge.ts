@@ -169,6 +169,17 @@ export const MEMBER_MERGE_RELATION_SPECS: readonly MemberMergeRelationSpec[] = [
   spec("Booking", "createdBy", "createdById", "move"),
   spec("Booking", "deletedBy", "deletedById", "move"),
   spec("Booking", "adminReviewedBy", "adminReviewedById", "move"),
+  // #2364: the admin who accepted an adult-member hosting exception, and the
+  // reason they gave (D-R4). An actor back-reference with no member-scoped
+  // unique constraint, exactly like `adminReviewedBy` above, so it `move`s —
+  // the surviving member keeps the attribution and "who let this through" stays
+  // answerable after a merge.
+  spec(
+    "Booking",
+    "adultMemberHostingReviewedBy",
+    "adultMemberHostingReviewedById",
+    "move",
+  ),
   spec("Booking", "adminCapacityHoldBy", "adminCapacityHoldByMemberId", "move"),
   spec("Booking", "capacityOverriddenBy", "capacityOverriddenByMemberId", "move"),
   spec("Booking", "wholeLodgeHoldBy", "wholeLodgeHoldByMemberId", "move"),
