@@ -118,6 +118,10 @@ type CancellationParticipant = {
   // approval-time Full-Admin guard's own predicate.
   holdsPrivilegedAccess: boolean;
   accountType: "user" | "organisation" | "admin" | "lodge";
+  // #2284 (S1): true when this is a non-login member somebody else put on the
+  // request, so the "Confirmed" stamp was recorded on their behalf. Surfaced as
+  // an explicit note by the row.
+  includedWithoutOwnOrSecondAdultConfirmation: boolean;
 };
 
 type CancellationRequest = {
