@@ -23,10 +23,26 @@ import { describe, expect, it } from "vitest";
 // Advisory locks and their composition order live in
 // `advisory-lock-guard.test.ts`; this file is only about result SHAPE.
 
-const SRC_DIR = path.join(process.cwd(), "src");
+/**
+ * Every directory of non-test TypeScript this guard walks.
+ *
+ * `src/` is the application. `scripts/` and `prisma/` are here because they are
+ * where hand-written SQL is MOST likely — Prisma cannot express a bulk
+ * correlated update, so a one-off repair CLI is exactly where somebody reaches
+ * for `$queryRaw`, and `scripts/` holds the money-adjacent backfills
+ * (`backfill-orphaned-applied-credits.ts`, `backfill-cancel-flattened-payments`,
+ * `backfill-finance-monthly-facts`, `xero-booking-repair`). A guard that stopped
+ * at `src/` would leave the surface with the highest chance of the #2289 failure
+ * mode entirely unwatched while CONTRIBUTING.md promised otherwise.
+ *
+ * `e2e/` is deliberately absent: it is entirely Playwright tests, exempt for the
+ * same reason `src/**\/__tests__` is — a test's raw statement runs against a
+ * throwaway database and its result is asserted on the spot.
+ */
+const SCANNED_DIRS = ["src", "scripts", "prisma"];
 
 /**
- * Every non-test file under `src/` that calls `$queryRaw` / `$queryRawUnsafe` —
+ * Every non-test file scanned that calls `$queryRaw` / `$queryRawUnsafe` —
  * the two entry points that hand back a RESULT SET and can therefore lie about
  * its shape. `$executeRaw` / `$executeRawUnsafe` return an affected-row count
  * and are immune by construction, so they are not inventoried here.
@@ -111,28 +127,47 @@ function codeLines(source: string): string {
 }
 
 /**
- * Every raw tagged-template call in `source`, with its tag, any type argument,
- * and the SQL between the backticks. Raw SQL templates in this repository never
- * nest a backtick, so the non-greedy body match is exact.
+ * Every raw-SQL statement in `source`, with its method, any type argument, and
+ * the SQL text. Raw SQL templates in this repository never nest a backtick, so
+ * the body match is exact.
+ *
+ * BOTH CALL FORMS, deliberately. Prisma takes a raw statement as a tagged
+ * template (``$queryRaw`SELECT …` ``) and as an ordinary call over a composed
+ * `Prisma.Sql` (`$queryRaw(Prisma.sql`SELECT …`)`) — and the second is this
+ * repository's own idiom for anything longer than a one-liner
+ * (`src/lib/audit-retention.ts` builds its archive statements that way). A
+ * matcher that required a backtick immediately after the method name saw NONE of
+ * those, so the "no type argument", "no `SELECT *`" and "every `FOR UPDATE` on
+ * `$executeRaw` over a constant" assertions below all passed vacuously on the
+ * style the codebase actually writes. `$queryRawUnsafe("…")` string arguments
+ * are matched for the same reason.
+ *
+ * One residual, closed in lint rather than here: a statement composed into a
+ * variable on one line and passed to `$queryRaw` on another has no SQL text at
+ * the call site to read. `NO_SELECT_STAR_IN_PRISMA_SQL` in `eslint.config.mjs`
+ * is anchored on `Prisma.sql` itself precisely so that form is still caught.
  */
-function rawTemplates(
+function rawStatements(
   source: string,
 ): { tag: string; typeArgument: string | null; sql: string }[] {
   const pattern =
-    /\$(executeRaw|queryRaw)(Unsafe)?\s*(<[^>]*>)?\s*`([^`]*)`/g;
+    /\$(executeRaw|queryRaw)(Unsafe)?\s*(<[^>]*>)?\s*(?:`([^`]*)`|\(\s*(?:Prisma\.sql\s*)?(?:`([^`]*)`|"([^"]*)"|'([^']*)'))/g;
   const found: { tag: string; typeArgument: string | null; sql: string }[] = [];
   let match: RegExpExecArray | null;
   while ((match = pattern.exec(source)) !== null) {
     found.push({
       tag: `$${match[1]}${match[2] ?? ""}`,
       typeArgument: match[3] ?? null,
-      sql: match[4],
+      sql: match[4] ?? match[5] ?? match[6] ?? match[7] ?? "",
     });
   }
   return found;
 }
 
-const sources = walk(SRC_DIR)
+const sources = SCANNED_DIRS.flatMap((dir) => {
+  const full = path.join(process.cwd(), dir);
+  return fs.existsSync(full) ? walk(full) : [];
+})
   .map((file) => ({
     rel: path.relative(process.cwd(), file).split(path.sep).join("/"),
     text: fs.readFileSync(file, "utf8"),
@@ -141,6 +176,79 @@ const sources = walk(SRC_DIR)
   .map(({ rel, text }) => ({ rel, text, code: codeLines(text) }));
 
 describe("raw SQL cannot lie about its result shape (#2289)", () => {
+  // A source-scanning guard's real failure mode is passing VACUOUSLY: the
+  // matcher stops recognising the shape it is supposed to police, every
+  // assertion below goes green over an empty list, and the guard reads as
+  // covered while covering nothing. That is precisely what the original
+  // backtick-anchored matcher did to the `Prisma.sql` call form. So pin the
+  // matcher itself, in both directions.
+  it("recognises every way a raw statement can be written", () => {
+    const seen = rawStatements(
+      [
+        'await db.$queryRaw<Row[]>`SELECT * FROM "A"`;',
+        'await db.$executeRaw`SELECT 1 FROM "B" FOR UPDATE`;',
+        'await db.$queryRaw<Row[]>(Prisma.sql`SELECT * FROM "C" FOR UPDATE`);',
+        'await db.$executeRaw(Prisma.sql`DELETE FROM "D"`);',
+        'await db.$queryRawUnsafe<Row[]>("SELECT * FROM E");',
+        "await db.$queryRawUnsafe(`SELECT * FROM \"F\"`);",
+      ].join("\n"),
+    );
+
+    expect(
+      seen.map((s) => `${s.tag}${s.typeArgument ?? ""}`),
+      "The raw-statement matcher stopped seeing one of the forms Prisma " +
+        "accepts. Every assertion in this file iterates it, so a form it " +
+        "cannot see is a form nothing here checks (#2289).",
+    ).toEqual([
+      "$queryRaw<Row[]>",
+      "$executeRaw",
+      "$queryRaw<Row[]>",
+      "$executeRaw",
+      "$queryRawUnsafe<Row[]>",
+      "$queryRawUnsafe",
+    ]);
+    // The SQL text has to come out too, or the SELECT-*/constant assertions
+    // would inspect an empty string and pass on anything.
+    expect(seen.map((s) => s.sql.trim())).toEqual([
+      'SELECT * FROM "A"',
+      'SELECT 1 FROM "B" FOR UPDATE',
+      'SELECT * FROM "C" FOR UPDATE',
+      'DELETE FROM "D"',
+      "SELECT * FROM E",
+      'SELECT * FROM "F"',
+    ]);
+  });
+
+  it("sees the call-form statements this repository actually ships", () => {
+    // `audit-retention.ts` composes with `Prisma.sql`, which is the idiom the
+    // matcher used to miss entirely. If this file ever stops using it, replace
+    // the anchor rather than deleting the check.
+    const auditRetention = sources.find(
+      ({ rel }) => rel === "src/lib/audit-retention.ts",
+    );
+    expect(auditRetention, "src/lib/audit-retention.ts has moved").toBeDefined();
+
+    const seen = rawStatements(auditRetention!.code);
+    // Two `$executeRaw(Prisma.sql`…`)` compositions (archive insert, archive
+    // prune) and four `$executeRawUnsafe(`…`)` DDL statements — each one a
+    // call, not a tagged template, and every one of them invisible to the
+    // original matcher.
+    expect(
+      seen.filter((s) => s.tag === "$executeRaw").length,
+      "The matcher no longer sees `$executeRaw(Prisma.sql`…`)` in the one " +
+        "production file that writes raw SQL that way.",
+    ).toBeGreaterThanOrEqual(2);
+    expect(
+      seen.filter((s) => s.tag === "$executeRawUnsafe").length,
+      "The matcher no longer sees `$executeRawUnsafe(`…`)` call arguments.",
+    ).toBeGreaterThanOrEqual(4);
+    expect(seen.some((s) => /INSERT INTO "AuditLogArchive"/.test(s.sql))).toBe(
+      true,
+    );
+    // Nothing in this file is a READ, which is why it is not in the inventory.
+    expect(seen.some((s) => s.tag.startsWith("$queryRaw"))).toBe(false);
+  });
+
   it("keeps every raw READ inside the reviewed inventory", () => {
     const found: Record<string, number> = {};
     for (const { rel, code } of sources) {
@@ -163,17 +271,36 @@ describe("raw SQL cannot lie about its result shape (#2289)", () => {
   it("validates every raw read that is not a documented opt-out", () => {
     // Derived from what is actually in the tree, not from the inventory above,
     // so a raw read added without touching either list fails here as well.
+    //
+    // COUNTED, not merely mentioned. "Does this file contain the string
+    // `decodeRawRows` anywhere" is a FILE-level check, and it stops meaning
+    // anything the moment a file legitimately decodes one statement: every
+    // further raw read in `rate-limit.ts` would have been waved through by its
+    // neighbour's decoder call, and the inventory test above only compares
+    // counts, so bumping a number and leaving the new read unvalidated passed
+    // both guards. Requiring at least one decoder CALL per raw read makes the
+    // guard scale with the statements rather than with the filenames.
     const unvalidated = sources
-      .filter(({ code }) => /\$queryRaw(Unsafe)?\b/.test(code))
       .filter(({ rel }) => !(rel in RAW_READ_OPT_OUTS))
-      .filter(({ code }) => !code.includes(DECODER))
-      .map(({ rel }) => rel);
+      .map(({ rel, code }) => ({
+        rel,
+        reads: (code.match(/\$queryRaw(Unsafe)?\b/g) ?? []).length,
+        decodes: (code.match(new RegExp(`\\b${DECODER}\\s*\\(`, "g")) ?? []).length,
+      }))
+      .filter(({ reads }) => reads > 0)
+      .filter(({ rel, reads, decodes }) =>
+        // The decoder's own module defines the function rather than calling it.
+        rel === DECODER_MODULE ? false : decodes < reads,
+      )
+      .map(({ rel, reads, decodes }) => `${rel}: ${reads} raw read(s), ${decodes} ${DECODER}() call(s)`);
 
     expect(
       unvalidated,
       `Raw read(s) neither validated with ${DECODER} (${DECODER_MODULE}) nor ` +
         "listed in RAW_READ_OPT_OUTS with a reason. An opt-out is only honest " +
-        "when the returned rows are genuinely never read.",
+        "when the returned rows are genuinely never read. Note this counts " +
+        `${DECODER}() CALLS against raw reads per file: one decoded statement ` +
+        "does not cover a second, undecoded one beside it.",
     ).toEqual([]);
   });
 
@@ -199,7 +326,7 @@ describe("raw SQL cannot lie about its result shape (#2289)", () => {
   it("never types a raw result (the unchecked cast itself)", () => {
     const offenders: string[] = [];
     for (const { rel, code } of sources) {
-      for (const template of rawTemplates(code)) {
+      for (const template of rawStatements(code)) {
         if (template.typeArgument) {
           offenders.push(`${rel}: ${template.tag}${template.typeArgument}`);
         }
@@ -221,7 +348,7 @@ describe("raw SQL cannot lie about its result shape (#2289)", () => {
   it("never SELECT *s in a raw statement", () => {
     const offenders: string[] = [];
     for (const { rel, code } of sources) {
-      for (const template of rawTemplates(code)) {
+      for (const template of rawStatements(code)) {
         if (/SELECT\s+\*/i.test(template.sql)) {
           offenders.push(`${rel}: ${template.sql.trim().slice(0, 60)}`);
         }
@@ -240,7 +367,7 @@ describe("raw SQL cannot lie about its result shape (#2289)", () => {
   it("takes every row lock with $executeRaw on a constant (lock raw, read typed)", () => {
     const offenders: string[] = [];
     for (const { rel, code } of sources) {
-      for (const template of rawTemplates(code)) {
+      for (const template of rawStatements(code)) {
         if (!/FOR UPDATE/i.test(template.sql)) continue;
         if (template.tag !== "$executeRaw") {
           offenders.push(`${rel}: FOR UPDATE issued through ${template.tag}`);
