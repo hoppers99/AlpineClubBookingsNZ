@@ -108,6 +108,60 @@ export function adminSplitSettlementCancelledLeadParagraph(
 }
 
 /**
+ * #2263 × #2444 — the whole confirmed-but-UNPAID paragraph of a booking
+ * confirmation, shared by the hand-built HTML confirmation
+ * (`bookingConfirmedTemplate`) and the flat `{{paymentDueNote}}` token the
+ * admin-editable body renders inside `{{paymentOutcome}}`.
+ *
+ * It was written out TWICE — once in `email-templates.ts` and once in
+ * `email/booking.ts` — with only a comment claiming the two copies were
+ * byte-identical. #2444 has to add a sentence to it, and adding a sentence to
+ * two hand-kept copies is exactly the drift `composeOptionalEmailLine` and
+ * `appliedCreditSummaryRows` exist to prevent, so the paragraph moved here.
+ *
+ * THE ACCOUNT-CREDIT SENTENCE, and why it is worded conditionally (#2444).
+ * Under #1620 "allocate-existing" the club's Xero invoice for this booking is
+ * raised for the FULL amount and the member's own floating credit notes are
+ * then ALLOCATED against it (the same approval enqueues that allocation), so
+ * Xero asks the member for LESS than the "Total Due" line above. A member
+ * holding credit who transferred the figure in this email would OVERPAY, and
+ * the club would unwind it by hand.
+ *
+ * The sentence is deliberately CONDITIONAL and states no figure. The great
+ * majority of members hold no credit at all, so an unconditional "credit has
+ * been applied" would be false for them; and computing the real net figure
+ * needs a Xero read, which a transactional send must not make (it would put a
+ * provider round-trip, and a provider outage, in the path of a member's
+ * confirmation). The owner's decision (1 Aug 2026) is that this neutral
+ * sentence ships now and the computed figure is its own later piece of work.
+ *
+ * `amount` and `reference` arrive ALREADY FORMATTED and already escaped for
+ * the caller's medium — this module imports nothing (see the file docblock), so
+ * money formatting stays with the caller, and the HTML path escapes the
+ * club-entered reference at its own edge exactly as it did before.
+ */
+export function bookingPaymentDueNote({
+  amount,
+  reference,
+  invoiceEmailed,
+}: {
+  /** Amount owing, already formatted as money — "$300.00". */
+  amount: string;
+  /** Internet-banking reference the member must quote, already escaped. */
+  reference: string;
+  /** TRUE only when an invoice really was raised (the Xero module is on). */
+  invoiceEmailed: boolean;
+}): string {
+  return (
+    `This booking is confirmed, but payment of ${amount} is still owing. Please pay by internet banking quoting reference ${reference}.` +
+    (invoiceEmailed
+      ? " An invoice has been emailed to you separately."
+      : " The club will send you an invoice for it.") +
+    " If you hold account credit with the club, it will be applied to your invoice, so please transfer the amount the invoice shows."
+  );
+}
+
+/**
  * #2268 — the one member-facing sentence about their OWN booking, shared by the
  * hand-built HTML below and the `{{ownBookingNote}}` token the admin-editable
  * body renders. The flat body used to promise "your own booking is unaffected

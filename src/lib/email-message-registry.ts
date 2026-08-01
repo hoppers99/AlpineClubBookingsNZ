@@ -1451,8 +1451,10 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "totalAlerts",
   // #2263: the two halves of an UNPAID confirmation. `totalDue` replaces
   // `totalPaid` (exactly one of the pair carries a figure), and
-  // `paymentDueNote` is the pre-composed sentence naming the amount owing and
-  // the internet-banking reference.
+  // `paymentDueNote` is the pre-composed paragraph naming the amount owing and
+  // the internet-banking reference — and, since #2444, telling a member who
+  // holds account credit to transfer whatever the club's invoice asks for
+  // rather than the figure above it.
   //
   // #2397 adds a third, PARTLY paid state — a cash settlement the admin said
   // did not cover an uncollected price increase — in which BOTH carry a

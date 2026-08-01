@@ -310,10 +310,17 @@ describe("#2328 booking-confirmed applied-credit note", () => {
     );
 
     expect(templateData.creditNote).toBe("");
+    // #2444 adds the account-credit sentence to this branch, and ONLY this
+    // branch: the club's Xero invoice has the member's floating credit notes
+    // allocated against it, so the "Total Due" figure above can overstate what
+    // the member should transfer. The credit PAIR is still absent — nothing has
+    // been settled, so there is no "paid by" story to tell.
     expect(templateData.paymentOutcome).toBe(
       "Total Due: $300.00\n\nThis booking is confirmed, but payment of $300.00 is still owing. " +
         "Please pay by internet banking quoting reference BOOKING-ABC123. " +
-        "The club will send you an invoice for it.",
+        "The club will send you an invoice for it. " +
+        "If you hold account credit with the club, it will be applied to your invoice, " +
+        "so please transfer the amount the invoice shows.",
     );
     expect(html).not.toContain("Account credit applied");
     expectCleanBody(renderDefaultBody(templateData));

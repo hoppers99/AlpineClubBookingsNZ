@@ -1,0 +1,320 @@
+import { describe, it, expect, vi, beforeEach } from "vitest";
+
+// #2444 — the confirmed-but-UNPAID booking confirmation told a member to
+// transfer the booking's FULL price ("Total Due: $300.00"). Under #1620
+// "allocate-existing" the club's Xero invoice for that same booking has the
+// member's floating credit notes ALLOCATED against it, so Xero asks for less.
+// A member holding credit who followed the email OVERPAID, and the club unwound
+// it by hand.
+//
+// The INTERIM fix (owner decision, 1 Aug 2026): one neutral, conditional
+// sentence pointing at the invoice. No figure is computed and no Xero read is
+// made — the computed-figure version is deliberately its own later piece of
+// work. What is pinned here is that the sentence renders on the paymentDue
+// branch and NOWHERE else, that both renderers get it from the one shared
+// composer, and that it reads sensibly for the great majority of members, who
+// hold no account credit at all.
+
+const { sendEmailMock, loadLodgeSettingsMock, loadAppliedCreditMock } =
+  vi.hoisted(() => ({
+    sendEmailMock: vi.fn().mockResolvedValue({ status: "sent" }),
+    loadLodgeSettingsMock: vi.fn(),
+    loadAppliedCreditMock: vi.fn(),
+  }));
+
+vi.mock("@/lib/email/core", () => ({
+  sendEmail: sendEmailMock,
+}));
+
+vi.mock("@/lib/booking-confirmation-credit", () => ({
+  loadBookingAppliedCredit: loadAppliedCreditMock,
+}));
+
+vi.mock("@/lib/email-message-settings", () => ({
+  EMAIL_DEFAULT_LODGE_NAME: "Example Club Lodge",
+  EMAIL_DEFAULT_FROM_NAME: "Example Club - Online Booking System",
+  loadEmailMessageSettingsForLodge: loadLodgeSettingsMock,
+  loadEmailMessageSettings: vi.fn(),
+  applyEmailMessageSettingsToHtml: vi.fn((html: string) => html),
+  applyEmailMessageSettingsToSubject: vi.fn((subject: string) => subject),
+  buildEmailTemplateGlobalData: vi.fn(() => ({})),
+}));
+
+import { getEmailTemplateDefinition } from "@/lib/email-message-registry";
+import { bookingPaymentDueNote } from "@/lib/email-message-notes";
+import {
+  bookingConfirmedTemplate,
+  plainTextEmailTemplate,
+} from "@/lib/email-templates";
+import {
+  renderTemplateString,
+  type EmailTemplateData,
+} from "@/lib/email-message-renderer";
+
+// THE FIXTURE. Every assertion below — the flat token, the composed
+// {{paymentOutcome}} block, the rendered default body, and the hand-built HTML
+// a member actually receives — is checked against this ONE string, which is why
+// the two renderers cannot be allowed to drift apart.
+const CREDIT_SENTENCE =
+  "If you hold account credit with the club, it will be applied to your invoice, " +
+  "so please transfer the amount the invoice shows.";
+
+const GLOBAL_DATA: EmailTemplateData = {
+  BASE_URL: "https://bookings.example.org",
+  CLUB_LODGE_TRAVEL_NOTE: "Take the Bruce Road.",
+};
+
+const NO_CREDIT = { amountCents: 0, settlementMethod: "card" as const };
+
+const CHECK_IN = new Date("2026-08-15");
+const CHECK_OUT = new Date("2026-08-17");
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  loadLodgeSettingsMock.mockResolvedValue({
+    lodgeTravelNote: "Take the Bruce Road.",
+    doorCode: "1234",
+  });
+  loadAppliedCreditMock.mockResolvedValue(NO_CREDIT);
+});
+
+function renderDefaultBody(templateData: EmailTemplateData): string {
+  const definition = getEmailTemplateDefinition("booking-confirmed");
+  if (!definition) throw new Error("missing booking-confirmed definition");
+  return renderTemplateString(definition.defaultBody, {
+    ...GLOBAL_DATA,
+    ...templateData,
+  });
+}
+
+async function send(
+  senderOptions: Record<string, unknown> = {},
+): Promise<{ templateData: EmailTemplateData; html: string }> {
+  const { sendBookingConfirmedEmail } = await import("@/lib/email/booking");
+  await sendBookingConfirmedEmail(
+    { bookingId: "bk_2444" },
+    "member@example.org",
+    "Sam",
+    CHECK_IN,
+    CHECK_OUT,
+    2,
+    30000,
+    senderOptions,
+  );
+  expect(sendEmailMock).toHaveBeenCalledTimes(1);
+  const call = sendEmailMock.mock.calls[0][0];
+  expect(call.templateName).toBe("booking-confirmed");
+  return { templateData: call.templateData, html: call.html };
+}
+
+const PAYMENT_DUE = {
+  paymentDue: { reference: "BOOKING-ABC123", invoiceEmailed: true },
+};
+
+describe("#2444 the unpaid confirmation's account-credit sentence", () => {
+  it("tells an unpaid member to transfer what the invoice asks for", async () => {
+    const { templateData, html } = await send(PAYMENT_DUE);
+
+    // The flat token an override may place on its own, the pre-composed block
+    // the shipped default body renders, and the HTML — one sentence, three
+    // paths, from one composer.
+    expect(templateData.paymentDueNote).toContain(CREDIT_SENTENCE);
+    expect(templateData.paymentOutcome).toContain(CREDIT_SENTENCE);
+    expect(html).toContain(CREDIT_SENTENCE);
+
+    // It follows the existing #2263 story rather than replacing any of it: the
+    // amount owing, the reference to quote, and what is happening about an
+    // invoice all still come first.
+    expect(templateData.paymentOutcome).toBe(
+      "Total Due: $300.00\n\n" +
+        "This booking is confirmed, but payment of $300.00 is still owing. " +
+        "Please pay by internet banking quoting reference BOOKING-ABC123. " +
+        "An invoice has been emailed to you separately. " +
+        CREDIT_SENTENCE,
+    );
+
+    const rendered = renderDefaultBody(templateData);
+    expect(rendered).toContain(CREDIT_SENTENCE);
+    // No line trails off after a label, sign or dash, in the substituted body
+    // or in the plain text a member receives.
+    for (const text of [rendered, plainTextEmailTemplate(rendered)]) {
+      for (const line of text.split("\n")) {
+        expect(
+          line.trimEnd(),
+          `dangling line: ${JSON.stringify(line)}`,
+        ).not.toMatch(/[-+:–]$/);
+      }
+    }
+  });
+
+  it("reads as a condition, not as a claim that the member holds credit", async () => {
+    // The great majority of members hold no account credit at all, so an
+    // unconditional "your credit has been applied" would be false for them.
+    // The sentence must open with the condition and must state no figure —
+    // there is no Xero read on this path and none is wanted (the send would
+    // then carry a provider round-trip, and a provider outage, into a member's
+    // confirmation).
+    const { templateData, html } = await send(PAYMENT_DUE);
+
+    expect(CREDIT_SENTENCE.startsWith("If you hold account credit")).toBe(true);
+    // No second money figure anywhere in the paragraph: the only amount an
+    // unpaid confirmation names is the booking's own price.
+    expect(
+      (templateData.paymentDueNote as string).match(/\$[\d,]+\.\d{2}/g),
+    ).toEqual(["$300.00"]);
+    // And no credit BREAKDOWN — nothing has been settled, so there is no
+    // "paid by" story and #2328's pair stays suppressed (its own suite pins
+    // why that is safe on this path).
+    expect(templateData.creditNote).toBe("");
+    expect(html).not.toContain("Account credit applied");
+  });
+
+  it("says the same thing when the club raises no invoice automatically", async () => {
+    // Xero module off: the club sends the invoice by hand, and the member still
+    // must not transfer the figure above it if they hold credit.
+    const { templateData } = await send({
+      paymentDue: { reference: "BOOKING-ABC123", invoiceEmailed: false },
+    });
+
+    expect(templateData.paymentDueNote).toBe(
+      "This booking is confirmed, but payment of $300.00 is still owing. " +
+        "Please pay by internet banking quoting reference BOOKING-ABC123. " +
+        "The club will send you an invoice for it. " +
+        CREDIT_SENTENCE,
+    );
+  });
+
+  it.each([
+    ["paid in full", {}],
+    [
+      "partly paid (#2397)",
+      { outstandingBalance: { amountCents: 3000, payableOnline: true } },
+    ],
+  ])("says nothing about account credit on a %s confirmation", async (
+    _label,
+    senderOptions,
+  ) => {
+    const { templateData, html } = await send(senderOptions);
+
+    expect(templateData.paymentDueNote).toBe("");
+    expect(templateData.paymentOutcome).not.toContain("If you hold account credit");
+    expect(renderDefaultBody(templateData)).not.toContain(
+      "If you hold account credit",
+    );
+    expect(html).not.toContain("If you hold account credit");
+  });
+
+  it("says nothing about it when account credit covered the whole stay", async () => {
+    // The one settled case where credit really was involved. It is settled, so
+    // there is nothing left to transfer and no invoice to check — the #2328
+    // pair already explains where the money came from, and this sentence would
+    // only invite a member to go looking for a payment they do not owe.
+    loadAppliedCreditMock.mockResolvedValue({
+      amountCents: 30000,
+      settlementMethod: "card" as const,
+    });
+    const { templateData, html } = await send();
+
+    expect(templateData.creditNote).toBe(
+      "Account credit applied: -$300.00\nNothing more to pay: $0.00\n",
+    );
+    expect(templateData.paymentDueNote).toBe("");
+    expect(html).not.toContain("If you hold account credit");
+  });
+
+  it("renders identically from the HTML template and the flat token", async () => {
+    // The drift guard proper. #2263 kept two hand-written copies of this
+    // paragraph, one per renderer; #2444 had to add a sentence to it, so the
+    // paragraph moved to a single composer. Both renderers are driven from the
+    // same fixture here, so a change made to one and not the other fails.
+    const { templateData, html } = await send(PAYMENT_DUE);
+    const composed = bookingPaymentDueNote({
+      amount: "$300.00",
+      reference: "BOOKING-ABC123",
+      invoiceEmailed: true,
+    });
+
+    expect(templateData.paymentDueNote).toBe(composed);
+    expect(html).toContain(composed);
+    expect(
+      bookingConfirmedTemplate("Sam", CHECK_IN, CHECK_OUT, 2, 30000, {
+        paymentDue: { reference: "BOOKING-ABC123", invoiceEmailed: true },
+      }),
+    ).toContain(composed);
+  });
+
+  it("escapes a club-entered reference on the HTML path only", async () => {
+    // The composer takes the reference ALREADY escaped for the caller's medium
+    // (it imports nothing and knows nothing about HTML), exactly as the shared
+    // money rows do. The plain-text token must keep the raw reference or a
+    // member cannot type it into their banking app.
+    const html = bookingConfirmedTemplate("Sam", CHECK_IN, CHECK_OUT, 2, 30000, {
+      paymentDue: { reference: "A&B<1>", invoiceEmailed: false },
+    });
+
+    expect(html).toContain("quoting reference A&amp;B&lt;1&gt;.");
+    expect(html).not.toContain("quoting reference A&B<1>.");
+
+    const { templateData } = await send({
+      paymentDue: { reference: "A&B<1>", invoiceEmailed: false },
+    });
+    expect(templateData.paymentDueNote).toContain("quoting reference A&B<1>.");
+  });
+});
+
+describe("#2444 the shared composer", () => {
+  it("appends the sentence to both invoice outcomes and nothing else", () => {
+    for (const invoiceEmailed of [true, false]) {
+      const note = bookingPaymentDueNote({
+        amount: "$120.00",
+        reference: "BOOKING-XYZ",
+        invoiceEmailed,
+      });
+      expect(note.endsWith(CREDIT_SENTENCE)).toBe(true);
+      expect(note).toContain(
+        "This booking is confirmed, but payment of $120.00 is still owing.",
+      );
+      expect(note).toContain("quoting reference BOOKING-XYZ.");
+    }
+
+    expect(
+      bookingPaymentDueNote({
+        amount: "$120.00",
+        reference: "BOOKING-XYZ",
+        invoiceEmailed: true,
+      }),
+    ).toContain("An invoice has been emailed to you separately.");
+    expect(
+      bookingPaymentDueNote({
+        amount: "$120.00",
+        reference: "BOOKING-XYZ",
+        invoiceEmailed: false,
+      }),
+    ).toContain("The club will send you an invoice for it.");
+  });
+
+  it("is one paragraph, so no body can leave it half-rendered", () => {
+    // It is supplied as a single {{paymentDueNote}} value and carried whole
+    // inside {{paymentOutcome}}; an override cannot place the payment
+    // instruction without the credit caveat that qualifies it.
+    const note = bookingPaymentDueNote({
+      amount: "$120.00",
+      reference: "BOOKING-XYZ",
+      invoiceEmailed: true,
+    });
+    expect(note).not.toContain("\n");
+  });
+});
+
+describe("#2444 the token contract is unchanged", () => {
+  it("adds no new token, so every saved override keeps rendering", () => {
+    // The sentence rides on {{paymentDueNote}}, which #2263 already supplies
+    // and approves. A NEW token would have been invisible to every club that
+    // saved an override before today — on the one branch where following the
+    // email can make a member overpay.
+    const definition = getEmailTemplateDefinition("booking-confirmed");
+    if (!definition) throw new Error("missing booking-confirmed definition");
+    expect(definition.allowedTokens).toContain("paymentDueNote");
+    expect(definition.allowedTokens).toContain("paymentOutcome");
+  });
+});

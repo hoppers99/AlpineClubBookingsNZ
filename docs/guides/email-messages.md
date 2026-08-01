@@ -247,6 +247,18 @@ Two consequences worth knowing before you edit one:
   only need `{{creditNote}}` if you write your own money lines out of
   `{{totalPaid}}` and friends — and if you do, include it, or a member charged
   $180.00 will read `Total Paid: $300.00` with nothing to explain the difference.
+- **A confirmation that still owes money points at the invoice, not at its own
+  total.** When a booking is confirmed with payment still owing (a member
+  whole-lodge approval), `{{paymentDueNote}}` — carried inside
+  `{{paymentOutcome}}` — ends with *"If you hold account credit with the club,
+  it will be applied to your invoice, so please transfer the amount the invoice
+  shows."* The club's invoice for that booking already has the member's credit
+  notes applied to it, so it asks for less than the `Total Due:` figure, and a
+  member with credit who paid the emailed figure would send too much. The
+  sentence is conditional on purpose — most members hold no credit — and it
+  states no second amount. You do not need to do anything to get it: it is part
+  of the same token an override already uses, and it appears only on the unpaid
+  confirmation.
 
 ### Consent emails ignore a member's notification preferences
 

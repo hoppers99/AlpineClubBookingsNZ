@@ -32,6 +32,7 @@ import type { MemberGuestPartyList } from "@/lib/member-guest-email-notes";
 import {
   adminSplitSettlementCancelledLeadParagraph,
   adminSplitSettlementUnpaidLeadParagraph,
+  bookingPaymentDueNote,
   duplicateCaptureRefundOutcomeParagraph,
   splitGuestPortionOwnBookingLine,
 } from "./email-message-notes";
@@ -669,13 +670,18 @@ export function bookingConfirmedTemplate(
     rows.push({ label: "Total Paid", value: formatCents(totalCents) }, ...creditRows);
   }
 
-  // One composed sentence, shared with the {{paymentDueNote}} token in
-  // sendBookingConfirmedEmail so an operator override tells the same story.
+  // One composed paragraph, from the SHARED composer the {{paymentDueNote}}
+  // token in sendBookingConfirmedEmail is built from, so an operator override
+  // tells the same story — including the #2444 account-credit sentence, which
+  // must never appear on one renderer and not the other. The reference is
+  // club-entered data, so it is escaped at this HTML edge (the composer takes
+  // it already escaped, on the same principle as the shared money rows above).
   const paymentDueNote = paymentDue
-    ? `This booking is confirmed, but payment of ${formatCents(totalCents)} is still owing. Please pay by internet banking quoting reference ${escapeHtml(paymentDue.reference)}.` +
-      (paymentDue.invoiceEmailed
-        ? " An invoice has been emailed to you separately."
-        : " The club will send you an invoice for it.")
+    ? bookingPaymentDueNote({
+        amount: formatCents(totalCents),
+        reference: escapeHtml(paymentDue.reference),
+        invoiceEmailed: paymentDue.invoiceEmailed,
+      })
     : "";
   // #2397, same convention: one composed sentence shared with the token path.
   const outstandingBalanceNote = outstandingBalance
