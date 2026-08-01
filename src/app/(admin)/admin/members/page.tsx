@@ -1,7 +1,6 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { useRouter } from "next/navigation"
 import { useSession } from "next-auth/react"
 import { isFullAdmin } from "@/lib/access-roles"
 import { Download, RefreshCw, Upload } from "lucide-react"
@@ -19,7 +18,6 @@ import { toast } from "sonner"
 import { useScrollToFeedback } from "@/hooks/use-scroll-to-feedback"
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access"
 import { useXeroOrgShortCode } from "@/hooks/use-xero-org-short-code"
-import { buildHrefWithReturnTo } from "@/lib/internal-return-path"
 import { MemberBulkActionBar } from "./_components/member-bulk-action-bar"
 import { MemberBulkDialog } from "./_components/member-bulk-dialog"
 import { MemberBulkMembershipDialog } from "./_components/member-bulk-membership-dialog"
@@ -41,7 +39,6 @@ interface MembersResponse {
 }
 
 export default function MembersPage() {
-  const router = useRouter()
   const { data: session } = useSession()
   const canEditMembership = useAdminAreaEditAccess("membership")
   const actorIsFullAdmin = isFullAdmin({
@@ -244,10 +241,6 @@ export default function MembersPage() {
     void refreshXeroGroups()
   }
 
-  const handleEditMember = (member: Member) => {
-    router.push(buildHrefWithReturnTo(`/admin/members/${member.id}?edit=true`, membersListPath))
-  }
-
   const handleBulkUpdated = (updated: number) => {
     showSuccess(`Updated ${updated} member(s)`)
     setSelectedIds(new Set())
@@ -399,6 +392,7 @@ export default function MembersPage() {
           selectedIds={selectedIds}
           canEdit={canEditMembership}
           xeroOrgShortCode={xeroOrgShortCode}
+          xeroContactGroupCatalog={xeroContactGroupsList}
           sortBy={sortBy}
           sortDir={sortDir}
           membersListPath={membersListPath}
@@ -406,7 +400,6 @@ export default function MembersPage() {
           onToggleSelectAll={toggleSelectAll}
           onToggleSort={toggleSort}
           onOpenPasswordActionDialog={openPasswordActionDialog}
-          onEditMember={handleEditMember}
         />
         <MemberPagination
           page={page}

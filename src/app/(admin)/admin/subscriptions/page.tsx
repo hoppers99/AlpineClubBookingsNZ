@@ -1,7 +1,6 @@
 "use client";
 
 import type { AgeTier, SubscriptionStatus } from "@prisma/client";
-import Link from "next/link";
 import { useState, useEffect, useCallback } from "react";
 import type { ReactNode } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -33,8 +32,9 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Badge } from "@/components/ui/badge";
 import { Alert } from "@/components/ui/alert";
+import { MemberLoginStageChip } from "@/components/admin/member-login-stage-chip";
+import { MemberDetailLink } from "@/components/admin/member-detail-link";
 import { AdminPageHeader } from "@/components/admin/admin-page-header";
 import { AdminDataTable } from "@/components/admin/admin-data-table";
 import {
@@ -58,10 +58,15 @@ import {
   Clock,
   type LucideIcon,
 } from "lucide-react";
-import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
+import {
+  useAdminAreaEditAccess,
+  useAdminAreaViewAccess,
+} from "@/hooks/use-admin-area-edit-access";
 import { useXeroStatus } from "@/hooks/use-xero-status";
 import { useXeroOrgShortCode } from "@/hooks/use-xero-org-short-code";
 import { buildXeroInvoiceUrl } from "@/lib/xero-links";
+import { CHIP_TONE_CLASSES } from "@/lib/chip-tones";
+import { getXeroContactGroupTone } from "@/lib/xero-contact-group-tone";
 import { useConfirm } from "@/components/confirm-dialog";
 import { SubscriptionBillingPanel } from "./_components/subscription-billing-panel";
 import {
@@ -95,6 +100,9 @@ interface Subscription {
     lastName: string;
     email: string;
     ageTier: AgeTier;
+    canLogin: boolean;
+    hasCompletedAccountSetup: boolean;
+    pendingInviteExpiresAt: string | null;
     xeroContactId: string | null;
   };
 }
@@ -191,6 +199,7 @@ export default function SubscriptionsPage() {
   const searchParams = useSearchParams();
   const ageTierOptions = useAgeTierOptions();
   const canEditFinance = useAdminAreaEditAccess("finance");
+  const canViewMembership = useAdminAreaViewAccess("membership");
   // Org short code for the Xero invoice deep links (#2283). One mount per
   // page; served from the server-side 12h org cache, and null degrades the
   // links to the generic Xero URL rather than hiding them.
@@ -379,7 +388,7 @@ export default function SubscriptionsPage() {
   useEffect(() => { fetchData(); }, [fetchData]);
   const totalPages = Math.ceil(total / pageSize);
   // The manual mark-paid action column only exists for finance-edit users.
-  const columnCount = canEditFinance ? 8 : 7;
+  const columnCount = canEditFinance ? 9 : 8;
 
   function toggleSort(column: SubscriptionSortBy) {
     setPage(1);
@@ -629,6 +638,7 @@ export default function SubscriptionsPage() {
           <TableRow>
             <SubscriptionSortHeader column="member">Member</SubscriptionSortHeader>
             <SubscriptionSortHeader column="email">Email</SubscriptionSortHeader>
+            <TableHead>Access</TableHead>
             <SubscriptionSortHeader column="ageTier">Age Group</SubscriptionSortHeader>
             <SubscriptionSortHeader column="xeroContactGroup">Xero Contact Group</SubscriptionSortHeader>
             <SubscriptionSortHeader column="status">Status</SubscriptionSortHeader>
@@ -660,22 +670,32 @@ export default function SubscriptionsPage() {
             data.map((sub) => (
               <TableRow key={sub.id}>
                 <TableCell className="font-medium">
-                  <Link
-                    href={buildHrefWithReturnTo(`/admin/members/${sub.memberId}?edit=true`, currentSubscriptionsPath)}
+                  <MemberDetailLink
+                    canViewMembership={canViewMembership}
+                    href={buildHrefWithReturnTo(
+                      `/admin/members/${sub.memberId}`,
+                      currentSubscriptionsPath,
+                    )}
                     className="rounded-sm text-foreground hover:text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   >
                     {sub.member.lastName}, {sub.member.firstName}
-                  </Link>
+                  </MemberDetailLink>
                 </TableCell>
                 <TableCell className="text-sm">{sub.member.email}</TableCell>
+                <TableCell>
+                  <MemberLoginStageChip member={sub.member} />
+                </TableCell>
                 <TableCell className="text-sm">{getAgeTierLabel(ageTierOptions, sub.member.ageTier)}</TableCell>
                 <TableCell>
                   {sub.xeroContactGroups.length > 0 ? (
                     <div className="flex flex-wrap gap-1">
                       {sub.xeroContactGroups.map((group) => (
-                        <Badge key={group.id} variant="secondary">
+                        <span
+                          key={group.id}
+                          className={`inline-flex items-center rounded-md border border-transparent px-2 py-0.5 text-xs font-medium whitespace-nowrap ${CHIP_TONE_CLASSES[getXeroContactGroupTone(group.id, xeroContactGroupsList)]}`}
+                        >
                           {group.name}
-                        </Badge>
+                        </span>
                       ))}
                     </div>
                   ) : sub.member.xeroContactId && !sub.xeroContactGroupsLoaded ? (

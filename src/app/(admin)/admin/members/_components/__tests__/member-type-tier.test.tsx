@@ -143,6 +143,7 @@ function renderMemberTable(members: Member[]) {
       selectedIds={new Set()}
       canEdit
       xeroOrgShortCode={null}
+      xeroContactGroupCatalog={[]}
       sortBy="name"
       sortDir="asc"
       membersListPath="/admin/members"
@@ -150,7 +151,6 @@ function renderMemberTable(members: Member[]) {
       onToggleSelectAll={vi.fn()}
       onToggleSort={vi.fn()}
       onOpenPasswordActionDialog={vi.fn()}
-      onEditMember={vi.fn()}
     />,
   );
 }

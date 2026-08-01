@@ -12,8 +12,8 @@ export function useCollapsibleMemberSections() {
   const [persistedSections, setPersistedSections] = useState<
     CollapsibleMemberSection[]
   >([])
-  // Sections opened programmatically (deep links like ?edit=true or
-  // #account-credit). They stay out of localStorage so a deep-linked visit
+  // Sections opened programmatically (the #account-credit deep link). They
+  // stay out of localStorage so a deep-linked visit
   // does not pin the group open for every future member page.
   const [forcedSections, setForcedSections] = useState<
     CollapsibleMemberSection[]

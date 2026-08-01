@@ -106,6 +106,16 @@ test("treasurer edits finance but is blocked from content", async ({ page }) => 
   await page.goto("/finance");
   await expect(page).toHaveURL(/\/finance/);
 
+  // Subscriptions is finance-readable, but member detail is membership-gated.
+  // A finance-only row therefore shows its member as plain text with no local
+  // member route (and cannot smuggle the retired edit query into one).
+  await page.goto("/admin/subscriptions");
+  await expect(page).toHaveURL(/\/admin\/subscriptions/);
+  await expect(page.getByRole("table", { name: "Subscriptions" })).toBeVisible();
+  await expect(
+    page.locator('a[href^="/admin/members/"]'),
+  ).toHaveCount(0);
+
   // Out-of-area: content = none → redirected to the overview dashboard.
   await page.goto("/admin/page-content");
   await expect(page).toHaveURL(/\/admin\/dashboard/);

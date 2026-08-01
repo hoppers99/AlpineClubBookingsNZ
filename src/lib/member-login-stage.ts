@@ -48,6 +48,25 @@ export const LOGIN_STAGE_LABELS: Record<MemberLoginStage, string> = {
 }
 
 /**
+ * Semantic tone for each login-journey stage.
+ *
+ * These are deliberately about account readiness, not the member's role:
+ * no login is informationally neutral, an enabled account that has not been
+ * invited needs attention, an outstanding invitation is in progress, and a
+ * completed account is ready. Members and Subscriptions both consume this map
+ * so the same person cannot appear with different Access meaning or colour.
+ */
+export const LOGIN_STAGE_TONES: Record<
+  MemberLoginStage,
+  "neutral" | "warning" | "info" | "success"
+> = {
+  "no-login": "neutral",
+  "not-invited": "warning",
+  invited: "info",
+  "can-login": "success",
+}
+
+/**
  * The `inviteStatus` query-param value that filters to each stage. The three
  * login-on values are the existing action kinds (kept for least churn); the
  * no-login value is new for #1444.

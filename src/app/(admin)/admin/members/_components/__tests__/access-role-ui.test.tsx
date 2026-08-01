@@ -203,6 +203,7 @@ function renderMemberTable(members: Member[], canEdit = true) {
       selectedIds={new Set()}
       canEdit={canEdit}
       xeroOrgShortCode={null}
+      xeroContactGroupCatalog={[]}
       sortBy="name"
       sortDir="asc"
       membersListPath="/admin/members"
@@ -210,7 +211,6 @@ function renderMemberTable(members: Member[], canEdit = true) {
       onToggleSelectAll={vi.fn()}
       onToggleSort={vi.fn()}
       onOpenPasswordActionDialog={vi.fn()}
-      onEditMember={vi.fn()}
     />,
   );
 }
@@ -234,11 +234,11 @@ describe("admin member access-role UI", () => {
     vi.clearAllMocks();
   });
 
-  it("shows one Access column with type + login stage and drops the Login column (#1444)", () => {
+  it("shows one semantic Access column from login stage, never role", () => {
     renderMemberTable([
-      // USER, canLogin, setup complete → "User · Can log in".
+      // USER, canLogin, setup complete -> "Can log in".
       { ...baseMember, id: "member-user-can-login" },
-      // Privileged tokens + a pending unexpired invite → "Admin · Invited".
+      // Privileged tokens + a pending unexpired invite -> "Invited".
       {
         ...baseMember,
         id: "member-admin-invited",
@@ -246,7 +246,7 @@ describe("admin member access-role UI", () => {
         hasCompletedAccountSetup: false,
         pendingInviteExpiresAt: "2999-01-01T00:00:00.000Z",
       },
-      // ORG, login on, no invite/password yet → "Organisation · Not invited".
+      // ORG, login on, no invite/password yet -> "Not invited".
       {
         ...baseMember,
         id: "member-org-not-invited",
@@ -273,12 +273,11 @@ describe("admin member access-role UI", () => {
     expect(screen.queryByRole("columnheader", { name: /^Login$/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("columnheader", { name: /Finance Access/ })).not.toBeInTheDocument();
 
-    // The single Access cell renders "{Type} · {Stage}" per login-on member.
-    expect(screen.getByText("User · Can log in")).toBeInTheDocument();
-    expect(screen.getByText("Admin · Invited")).toBeInTheDocument();
-    expect(screen.getByText("Organisation · Not invited")).toBeInTheDocument();
-    // The no-login case is just "No login", with no duplicated type prefix.
-    expect(screen.getByText("No login")).toBeInTheDocument();
+    expect(screen.getByText("Can log in")).toHaveClass("bg-success-3", "text-success-11");
+    expect(screen.getByText("Invited")).toHaveClass("bg-info-3", "text-info-11");
+    expect(screen.getByText("Not invited")).toHaveClass("bg-warning-3", "text-warning-11");
+    expect(screen.getByText("No login")).toHaveClass("bg-muted", "text-foreground");
+    expect(screen.queryByText(/Admin ·|Organisation ·|User ·/)).not.toBeInTheDocument();
 
     // The old duplicated copy is gone from both retired surfaces.
     expect(screen.queryByText("No Login")).not.toBeInTheDocument();
@@ -329,8 +328,12 @@ describe("admin member access-role UI", () => {
 
     expect(screen.queryByLabelText("Select all members on this page")).toBeNull();
     expect(screen.queryByLabelText("Select Alice Summit")).toBeNull();
-    expect(screen.queryByRole("columnheader", { name: "Actions" })).toBeNull();
+    expect(screen.getByRole("columnheader", { name: "Actions" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
+    expect(screen.getByRole("link", { name: "Open Alice Summit" })).toHaveAttribute(
+      "href",
+      "/admin/members/member-1?returnTo=%2Fadmin%2Fmembers",
+    );
     expect(screen.getByText("Summit Household")).toBeInTheDocument();
     expect(
       screen.queryByRole("link", { name: "Summit Household" }),
