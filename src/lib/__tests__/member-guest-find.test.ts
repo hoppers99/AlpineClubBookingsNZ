@@ -18,6 +18,7 @@ import {
   describeHouseholdCandidatePrompt,
   hasIndistinguishableMemberGuestCandidates,
   memberGuestResolveAgeTiers,
+  resolveMemberGuestNameSearchAccess,
   memberGuestSearchAgeTiers,
   normalizeMemberGuestEmail,
   parseMemberGuestSearchQuery,
@@ -238,5 +239,67 @@ describe("the panel's copy — load-bearing privacy sentences", () => {
 describe("truncateSearchQueryForAudit", () => {
   it("bounds what a typed fragment can store on an audit row", () => {
     expect(truncateSearchQueryForAudit("x".repeat(500))).toHaveLength(64);
+  });
+});
+
+describe("resolveMemberGuestNameSearchAccess (MG4 #2309)", () => {
+  /**
+   * THE PERSONA THE TWO PREDICATES DISAGREED ABOUT.
+   *
+   * The booking page decided "may this reader search by name" from
+   * `bookings:view`, while the edit panel decided which ROUTES to call from
+   * `bookings:edit`. A read-only bookings viewer — a real, shipped role — sits
+   * between the two, and got a broken answer either way round.
+   */
+  const READ_ONLY_VIEWER = { actingAsAdmin: false };
+  const OFFICER = { actingAsAdmin: true };
+
+  it("gives a read-only bookings viewer WITH membership:view the club's own answer, not a 404 box", () => {
+    // The panel sends them down the MEMBER routes, where the name search does
+    // not exist unless the club turned open search on. Handing them the
+    // type-ahead because they can read the member directory elsewhere drew a
+    // search box that silently failed on every keystroke.
+    expect(
+      resolveMemberGuestNameSearchAccess({
+        ...READ_ONLY_VIEWER,
+        hasMembershipView: true,
+        clubNameSearchEnabled: false,
+      }),
+    ).toBe(false);
+  });
+
+  it("gives a read-only bookings viewer WITHOUT membership:view the club-enabled search they are entitled to", () => {
+    // The mirror failure: on a club that deliberately turned name search on for
+    // every member, this viewer — who IS a member — was the one person denied
+    // it, for holding a bookings permission.
+    expect(
+      resolveMemberGuestNameSearchAccess({
+        ...READ_ONLY_VIEWER,
+        hasMembershipView: false,
+        clubNameSearchEnabled: true,
+      }),
+    ).toBe(true);
+  });
+
+  it("keeps D-20 for an officer: membership:view decides, the club's setting does not", () => {
+    // An officer's picker is not bound by a member-facing privacy switch (D-20),
+    // and the #1376 officer without membership access falls back to exact email
+    // (rider (a)) — on a club that has open search ON as much as one that does not.
+    for (const clubNameSearchEnabled of [true, false]) {
+      expect(
+        resolveMemberGuestNameSearchAccess({
+          ...OFFICER,
+          hasMembershipView: true,
+          clubNameSearchEnabled,
+        }),
+      ).toBe(true);
+      expect(
+        resolveMemberGuestNameSearchAccess({
+          ...OFFICER,
+          hasMembershipView: false,
+          clubNameSearchEnabled,
+        }),
+      ).toBe(false);
+    }
   });
 });

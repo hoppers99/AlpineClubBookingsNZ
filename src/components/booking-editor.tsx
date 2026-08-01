@@ -26,6 +26,11 @@ interface Guest {
   consent?: {
     tone: "pending" | "ok" | "blocked";
     label: string;
+    // MG4 (#2309): the classified sub-state, threaded through for the edit
+    // panel's helper sentences. Not rendered here — the read view shows only
+    // the label — but carried so the panel does not have to guess "the club put
+    // this person here" from a tone that also covers an ordinary consent.
+    subState?: string | null;
   };
 }
 

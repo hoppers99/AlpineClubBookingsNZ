@@ -113,8 +113,10 @@ import {
 // compiler and break the guard.
 import { isOperationallyPresentConsent } from "@/lib/member-guest-consent";
 import { MEMBER_GUEST_MODULE_KEY } from "@/lib/member-guest-consent";
+import { classifyMemberGuestConsent } from "@/lib/member-guest-consent";
 import { isEffectiveModuleEnabled } from "@/lib/admin-modules";
 import { loadMemberGuestSettings } from "@/lib/member-guest-settings";
+import { resolveMemberGuestNameSearchAccess } from "@/lib/member-guest-find";
 import { eachDateOnlyInRange, getTodayDateOnly } from "@/lib/date-only";
 import {
   bookingManagementAuthorizationRole,
@@ -815,6 +817,18 @@ export default async function BookingDetailPage({
    * D-20 — an admin picker is not bound by a member-facing privacy switch, and
    * the #1376 persona without membership access falls back to exact email).
    *
+   * AND "WHICH READER" IS DECIDED BY THE SAME PREDICATE THE PANEL ROUTES ON,
+   * which is `viewerAuthorizationRole === "ADMIN"` — i.e. `bookings:edit`. It
+   * was previously `isAdmin || canViewAsAdmin` (`bookings:view`), and the two
+   * disagree over a real, shipped persona: a read-only bookings viewer. One
+   * holding `membership:view` was handed a name type-ahead while the panel sent
+   * them down the MEMBER routes, where the name search 404s unless the club
+   * turned open search on — a search box that silently fails. One WITHOUT
+   * `membership:view` was denied name search on a club that had deliberately
+   * turned it on for every member, including them. Deriving both from one
+   * predicate is the fix: whoever is not in admin mode is a member for this
+   * purpose and gets exactly the club's member-facing answer.
+   *
    * THE FAMILY BOUNDARY IS NOT SHIPPED FROM HERE, and that is deliberate rather
    * than an omission. The panel already fetches the booking owner's family list
    * for its quick-add row — `/api/members/family` for a member, the booking's
@@ -830,10 +844,17 @@ export default async function BookingDetailPage({
   const memberGuestSettings = memberGuestModuleEnabled
     ? await loadMemberGuestSettings()
     : null;
-  const canSearchMembersByName =
-    isAdmin || canViewAsAdmin
-      ? hasAdminAreaAccess(session.user, { area: "membership", level: "view" })
-      : (memberGuestSettings?.openMemberSearchEnabled ?? false);
+  // `viewerAuthorizationRole === "ADMIN"` and nothing else: it is the exact
+  // value shipped as `viewerRole` below, and the value the panel branches on to
+  // choose the admin picker's routes. See the note above.
+  const canSearchMembersByName = resolveMemberGuestNameSearchAccess({
+    actingAsAdmin: viewerAuthorizationRole === "ADMIN",
+    hasMembershipView: hasAdminAreaAccess(session.user, {
+      area: "membership",
+      level: "view",
+    }),
+    clubNameSearchEnabled: memberGuestSettings?.openMemberSearchEnabled ?? false,
+  });
   const editorData: BookingEditorData = {
     id: booking.id,
     checkIn: new Date(booking.checkIn).toISOString().split("T")[0],
@@ -862,7 +883,14 @@ export default async function BookingDetailPage({
             ? (consentResponderNameById.get(g.consentRespondedByMemberId) ?? null)
             : null,
         });
-        return consent ? { consent } : {};
+        // MG4 (#2309) adds the SUB-STATE beside the badge, because the edit
+        // panel needs to tell "still being asked" from "the club put them
+        // here" and a tone of `"ok"` covers both plus every ordinary consent.
+        // Classified here, from the persisted columns, rather than inferred
+        // client-side from a label string an admin can override.
+        return consent
+          ? { consent: { ...consent, subState: classifyMemberGuestConsent(g, g.memberId) } }
+          : {};
       })(),
     })),
     viewerRole: viewerAuthorizationRole,

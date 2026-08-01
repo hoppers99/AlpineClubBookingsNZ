@@ -20,6 +20,14 @@ import { formatCents } from "@/lib/utils";
 import { getAgeTierLabel, useAgeTierOptions } from "@/lib/use-age-tier-options";
 import { GuestNightGrid } from "@/components/guest-night-grid";
 import { EditMemberGuestFinder } from "@/components/booking/edit-member-guest-section";
+// The create wizard's own prediction + column translation, imported rather than
+// re-implemented (MG4 #2309). The first cut of this panel wrote its own copy of
+// both and the two immediately disagreed about an admin add — see
+// `predictMemberGuestConsent`'s note on `actorKind`.
+import {
+  memberGuestConsentPreviewColumns,
+  predictMemberGuestConsent,
+} from "@/app/(authenticated)/book/_components/member-guest-preview";
 import { describeMemberGuestConsentBadge } from "@/lib/member-guest-consent-card";
 import type { MemberGuestCandidate } from "@/lib/member-guest-find";
 import { BookingNoEmailsNotice } from "@/components/booking-no-emails-notice";
@@ -111,17 +119,11 @@ function quoteRefusalMessage(
  * exactly. Returns null for every other added guest.
  */
 function renderAddedGuestConsent(guest: NewGuest) {
-  if (!guest.memberGuestConsentPreview) return null;
-  const pending = guest.memberGuestConsentPreview === "PENDING";
+  const columns = memberGuestConsentPreviewColumns(guest);
+  if (!columns) return null;
+  const preview = guest.memberGuestConsentPreview;
   const badge = describeMemberGuestConsentBadge({
-    guest: {
-      memberId: guest.memberId ?? null,
-      consentStatus: pending ? "PENDING" : "CONFIRMED",
-      consentRequestedAt: null,
-      consentRespondedAt: null,
-      consentRespondedByMemberId: null,
-      consentExpiresAt: null,
-    },
+    guest: { memberId: guest.memberId ?? null, ...columns },
     audience: "WIZARD",
     targetFirstName: guest.firstName,
   });
@@ -142,12 +144,53 @@ function renderAddedGuestConsent(guest: NewGuest) {
         </span>
       ) : null}
       <p className="mt-1 text-xs text-muted-foreground">
-        {pending
+        {preview === "PENDING"
           ? `${name} will be emailed when you save this change, and their bed is held until they answer.`
-          : "Your club adds member guests straight away and emails them to say so."}
+          : preview === "ADMIN_ASSIGNED"
+            ? // MG4-D-a, both halves, and the second is the one an officer is
+              // likely to assume away. Tensed for the edit panel — nothing is
+              // written until the save — exactly as the PENDING line above is.
+              `Added by the club and told by email. ${name} will not be asked first.`
+            : "Your club adds member guests straight away and emails them to say so."}
       </p>
     </>
   );
+}
+
+/**
+ * The one explanatory sentence under an EXISTING member-guest row (MG4 #2309).
+ *
+ * Two rows carry one, and both come from the signed-off mockup:
+ *
+ *  - a row still waiting for an answer, where the control below it says "Cancel
+ *    request" rather than "Remove" and the booker deserves to know that
+ *    pressing it sends an email and frees a held bed;
+ *  - a row the club placed (`ADMIN_ASSIGNED`), where MG4-D-a's second half —
+ *    they were told, and they were never asked — is the part that goes without
+ *    saying and therefore goes unsaid.
+ *
+ * Every other row returns null and is byte-identical to before: family guests,
+ * non-member guests, ordinary consents, and every booking that predates the
+ * feature.
+ */
+function renderExistingGuestConsentHelper(guest: Guest) {
+  const name = guest.firstName.trim() || "They";
+  if (guest.consent?.tone === "pending") {
+    return (
+      <p className="mt-1 text-xs text-muted-foreground">
+        Cancelling withdraws the request. {name} is told, and their held bed is
+        released.
+      </p>
+    );
+  }
+  if (guest.consent?.subState === "ADMIN_ASSIGNED") {
+    return (
+      <p className="mt-1 text-xs text-muted-foreground">
+        Added by the club and told by email. {name} was not asked first.
+      </p>
+    );
+  }
+  return null;
 }
 
 function shiftDateKey(date: string, days: number): string {
@@ -186,7 +229,20 @@ interface Guest {
    * person on the other end gets a different email for each. Absent - not
    * null-valued - on family and non-member rows.
    */
-  consent?: { tone: "pending" | "ok" | "blocked"; label: string };
+  consent?: {
+    tone: "pending" | "ok" | "blocked";
+    label: string;
+    /**
+     * The classified sub-state (`member-guest-consent.ts`'s eight-shape table),
+     * computed server-side from the persisted columns.
+     *
+     * The TONE cannot stand in for it: `"ok"` covers an ordinary consent, a
+     * notify-only auto-confirm and an admin placement alike, and the helper
+     * sentence under the row is different for the last of those. Absent on
+     * every row that has no badge.
+     */
+    subState?: string | null;
+  };
 }
 
 interface FamilyMember {
@@ -315,7 +371,7 @@ interface NewGuest {
    * fake deadline ends up on screen. The server recomputes the family boundary
    * and is the only thing that decides what is persisted.
    */
-  memberGuestConsentPreview?: "PENDING" | "NOTIFY_ONLY";
+  memberGuestConsentPreview?: "PENDING" | "NOTIFY_ONLY" | "ADMIN_ASSIGNED";
 }
 
 // Server-computed partner-sharer quick-add candidate (#1746): a confirmed
@@ -657,20 +713,27 @@ export function EditBookingPanel({
         : "/api/members/family";
 
     fetch(familyUrl)
-      .then((res) => (res.ok ? res.json() : { familyMembers: [] }))
+      // A NON-OK RESPONSE IS "UNKNOWN", NOT "NO FAMILY" — the same rule the
+      // wizard's loader keeps, and it was broken here (MG4 #2309). Mapping a
+      // 500 to `{ familyMembers: [] }` and then setting the loaded flag told
+      // the consent prediction "we asked, and this booker has no family at
+      // all", which makes EVERY candidate look beyond-family — including the
+      // booker's own child, whose quick-add button is missing from the same
+      // failed response. The prediction then promises a consent email that is
+      // never sent and a held bed that does not exist. Returning null keeps the
+      // guard down and predicts nothing, which under-informs instead.
+      .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
-        if (!cancelled) {
+        if (!cancelled && data) {
           setFamilyMembers(data.familyMembers || []);
           setPartnerCandidates(data.partnerSharingCandidates || []);
           setFamilyMembersLoaded(true);
         }
       })
       .catch(() => {
-        if (!cancelled) {
-          setFamilyMembers([]);
-          // Deliberately NOT set: a failed fetch is "unknown", not "no family".
-          // See the flag's own note.
-        }
+        // Nothing to set: a thrown fetch is the same "unknown" as a non-ok
+        // response, and clearing the list would only discard whatever a
+        // previous successful load had already put on screen.
       });
 
     return () => {
@@ -1184,6 +1247,36 @@ export function EditBookingPanel({
     };
   }, [fetchQuote, modificationPayloadJson]);
 
+  /**
+   * Put D-8's refusal back on screen, by re-opening the section that draws it.
+   *
+   * THE BUG THIS FIXES, and it made two props dead code. "Add to booking"
+   * CLOSES the finder — the wizard's shape, and the right one — but the
+   * server's answer only arrives on the debounced quote that follows, by which
+   * time `EditMemberGuestFinder` is unmounted and its `addError` /
+   * `refusedCandidate` render nowhere at all. The booker got the panel-level
+   * quote error and no statement of who it was about; MG3's F9 shape (the
+   * neutral sentence beside a chip naming the candidate) never appeared on this
+   * surface, and its unit test asserted a state the integration never produced.
+   *
+   * ON THE TRANSITION ONLY. A refused member guest STAYS in `addedGuests`, so
+   * every later quote re-asks the same question and returns the same refusal;
+   * re-opening on each one would spring the section back open under a booker
+   * who had closed it and moved on to their dates. The signature remembers what
+   * has already been surfaced, and resets when the refusal clears.
+   */
+  const surfacedMemberGuestRefusalRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!memberGuestAddError) {
+      surfacedMemberGuestRefusalRef.current = null;
+      return;
+    }
+    const signature = `${lastMemberGuestAttempt?.memberId ?? ""} ${memberGuestAddError}`;
+    if (surfacedMemberGuestRefusalRef.current === signature) return;
+    surfacedMemberGuestRefusalRef.current = signature;
+    setMemberGuestFinderOpen(true);
+  }, [memberGuestAddError, lastMemberGuestAttempt]);
+
   function handleRemoveGuest(guestId: string) {
     setRemovedGuestIds((prev) => new Set([...prev, guestId]));
   }
@@ -1294,13 +1387,23 @@ export function EditBookingPanel({
     if (alreadyAdded) return;
 
     const memberGuest = booking.memberGuest;
-    // Undefined, never a guessed value — see `familyMembersLoaded`. The list is
-    // the booking OWNER's on both paths: a member fetches their own family, an
-    // officer fetches the booking's `eligible-family`, which is the owner's.
-    const crossFamily =
-      memberGuest && familyMembersLoaded
-        ? !familyMembers.some((member) => member.id === candidate.memberId)
-        : false;
+    // THE SHARED PREDICATE, not a second copy of it (MG4 #2309). The panel's
+    // first cut inlined the rule here and dropped the admin branch, so an
+    // officer on an ask-first club read "Waiting for consent — the bed is held
+    // until they answer" beside a card that said the member would be added
+    // immediately. Undefined for a family-scope add and for an unknown family
+    // list — see `predictMemberGuestConsent` for both. The list is the booking
+    // OWNER's on both paths: a member fetches their own family, an officer
+    // fetches the booking's `eligible-family`, which is the owner's.
+    const consentPreview = memberGuest
+      ? predictMemberGuestConsent({
+          candidateMemberId: candidate.memberId,
+          familyMemberIds: familyMembers.map((member) => member.id),
+          familyMembersLoaded,
+          approvalRequired: memberGuest.approvalRequired,
+          actorKind: booking.viewerRole === "ADMIN" ? "ADMIN" : "MEMBER",
+        })
+      : undefined;
 
     setMemberGuestAddError(null);
     setAppliedNewPromo(null);
@@ -1315,12 +1418,8 @@ export function EditBookingPanel({
         ageTier: candidate.ageTier,
         isMember: true,
         memberId: candidate.memberId,
-        ...(crossFamily && memberGuest
-          ? {
-              memberGuestConsentPreview: memberGuest.approvalRequired
-                ? ("PENDING" as const)
-                : ("NOTIFY_ONLY" as const),
-            }
+        ...(consentPreview
+          ? { memberGuestConsentPreview: consentPreview }
           : {}),
         ...(perGuestDatesEnabled && !isInProgressEdit
           ? { stayStart: checkIn, stayEnd: checkOut }
@@ -1804,6 +1903,11 @@ export function EditBookingPanel({
             <CardTitle>Guests ({totalGuestCount})</CardTitle>
             <div className="flex flex-wrap gap-2">
               {booking.memberGuest?.enabled && !overrideEnabled ? (
+                // NOT capacity-disabled, deliberately — see the `atCapacity`
+                // note on the finder below. The panel holds no capacity signal
+                // that is true of the CURRENT party before a quote exists, and
+                // an over-capacity add is refused by the quote with a reason
+                // rather than by a silent grey button.
                 <Button
                   ref={memberGuestTriggerRef}
                   type="button"
@@ -1857,6 +1961,25 @@ export function EditBookingPanel({
                   .map((guest) => guest.memberId)
                   .filter((id): id is string => Boolean(id)),
               ]}
+              /*
+                ALWAYS FALSE, AND THAT IS THE HONEST ANSWER HERE (MG4 #2309).
+                The prop means "the party is already at the lodge's capacity, so
+                do not let another person be selected", and this panel has no
+                signal that answers it. `quote.capacityAvailable` is the wrong
+                one twice over: it exists only once the booker has made a change
+                (there is no quote on an untouched panel, which is exactly when
+                the finder is first opened), and it describes the PROPOSED party
+                — including the very guest just added — rather than the current
+                one, so a false there would disable the control that caused it.
+                Fetching lodge capacity separately would be a second source of
+                truth for a rule the quote already enforces.
+
+                WHERE THE REFUSAL SURFACES INSTEAD: the modify-quote round trip.
+                An over-capacity add comes back as a quote refusal and is shown
+                in the panel's error line, and the over-capacity confirm flow
+                (#1668) covers the admin case. A greyed-out button with no
+                explanation would be strictly worse than a clear refusal.
+              */
               atCapacity={false}
               addError={memberGuestAddError}
               refusedCandidate={memberGuestAddError ? lastMemberGuestAttempt : null}
@@ -2082,6 +2205,20 @@ export function EditBookingPanel({
                   <p className="text-sm text-muted-foreground">
                     {getAgeTierLabel(ageTierOptions, guest.ageTier)} &middot; {guest.isMember ? "Member" : "Non-member"}
                   </p>
+                  {/*
+                    MG4 (#2309): the two helper sentences the signed-off mockup
+                    draws under a member-guest row, and the reason they are not
+                    decoration. The first tells the booker what pressing the
+                    control WILL DO before they press it — a still-unanswered
+                    request is withdrawn, the person is told, and the bed they
+                    were holding goes back — which is a different act from
+                    taking a settled guest off, and the person on the other end
+                    gets a different email for each. The second states both
+                    halves of MG4-D-a on a row the club placed, including the
+                    half an officer is most likely to assume away: the member
+                    was not asked, and they were told anyway.
+                  */}
+                  {!isRemoved && renderExistingGuestConsentHelper(guest)}
                   {(guest.stayStart && guest.stayStart !== booking.checkIn) ||
                   (guest.stayEnd && guest.stayEnd !== booking.checkOut) ? (
                     <p className="text-xs text-muted-foreground">
@@ -2137,6 +2274,28 @@ export function EditBookingPanel({
                   ) : (
                     !overrideEnabled &&
                     remainingGuests.length + addedGuests.length > 1 && (
+                      /*
+                        DECLARED DIVERGENCE FROM THE SIGNED-OFF MOCKUP (MG4
+                        #2309), recorded here and stated to the owner in the PR
+                        rather than left for a reader to notice.
+
+                        The mockup draws TWO controls on an unanswered row —
+                        "Cancel request", which notifies, beside a plain
+                        "Remove", which does not. This ships ONE control that
+                        always notifies. A non-notifying Remove on a PENDING row
+                        would be a silent-disappearance path: the member has an
+                        email in their inbox asking them a question, a bed is
+                        held in their name, and the row would vanish with no
+                        word to them at all. That directly contradicts the
+                        plan's own §7.1 trigger, which owes a withdrawal notice
+                        for "a still-PENDING request cancelled by the booker or
+                        an admin", and it would leave the one population the
+                        epic exists to protect worse off than before.
+
+                        What the mockup's second control was really buying — the
+                        booker understanding what the first one does — is
+                        delivered by the helper sentence above instead.
+                      */
                       <Button
                         variant="ghost"
                         size="sm"

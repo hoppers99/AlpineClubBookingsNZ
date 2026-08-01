@@ -131,15 +131,18 @@ describe("which route answers the lookup", () => {
     findByEmail();
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-    expect(String(fetchMock.mock.calls[0][0])).toBe(
-      "/api/members/guest-candidates/resolve",
-    );
+    const [url] = fetchMock.mock.calls[0] as unknown as [unknown];
+    expect(String(url)).toBe("/api/members/guest-candidates/resolve");
   });
 
-  it("sends an admin's email lookup to the booking-scoped admin route instead", async () => {
-    // The officer's lookup is gated and audited differently, so it must not go
-    // through the member route — which would apply the member rate limits and
-    // the member's privacy gate to somebody neither was written for.
+  it("sends an admin's email lookup to the booking-scoped admin route, in the BODY", async () => {
+    // Two properties. The officer's lookup is gated and audited differently, so
+    // it must not go through the member route — which would apply the member
+    // rate limits and the member's privacy gate to somebody neither was written
+    // for. And the address travels in a POST body, not a query string: a GET
+    // would put another member's email into the access log, the browser history
+    // and the `Referer` of everything the page loads next, which is exactly why
+    // the member route is a POST too.
     const fetchMock = vi.fn(async () => jsonResponse({ candidates: [] }));
     global.fetch = fetchMock as unknown as typeof fetch;
 
@@ -147,29 +150,32 @@ describe("which route answers the lookup", () => {
     findByEmail();
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-    const url = String(fetchMock.mock.calls[0][0]);
-    expect(url).toContain("/api/admin/bookings/bk-1/member-guest-candidates");
-    expect(url).toContain("mode=email");
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [
+      unknown,
+      RequestInit,
+    ];
+    expect(String(url)).toBe(
+      "/api/admin/bookings/bk-1/member-guest-candidates",
+    );
+    expect(String(url)).not.toContain("email");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(String(init.body))).toEqual({ email: "sam@example.com" });
   });
 });
 
-describe("refusals", () => {
-  it("renders the server's neutral sentence beside the person it was about", () => {
-    // The add is optimistic and the refusal arrives on the quote that follows,
-    // by which time the finder has been re-opened by the edit panel. Drawing
-    // the sentence beside a chip naming the candidate is MG3's F9.
-    renderFinder({
-      addError: "This member can't be added to this booking right now.",
-      refusedCandidate: {
-        memberId: "m-sam",
-        firstName: "Sam",
-        lastName: "Whittaker",
-        ageTier: "ADULT",
-      },
-    });
-    expect(
-      screen.getByText("This member can't be added to this booking right now."),
-    ).toBeInTheDocument();
-    expect(screen.getByText(/Sam Whittaker/)).toBeInTheDocument();
-  });
-});
+/*
+ * REFUSALS ARE NOT TESTED HERE, DELIBERATELY, and the reason is the finding
+ * that removed the test that used to be.
+ *
+ * `addError` and `refusedCandidate` are props: handing them straight to this
+ * component and asserting they render proves only that the props are wired,
+ * which was never in doubt. What WAS in doubt — and was in fact broken — is
+ * whether the edit panel ever puts the component on screen at a moment when
+ * they are set: "Add to booking" closes the finder, and the server's refusal
+ * only arrives on the debounced quote that follows, by which time this
+ * component is unmounted and neither prop renders anywhere at all.
+ *
+ * So the refusal is covered where the sequence lives, in
+ * `src/components/__tests__/edit-booking-panel-member-guest.test.tsx`, driven
+ * through the real open → add → close → refusal path.
+ */
