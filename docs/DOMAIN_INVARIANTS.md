@@ -1459,9 +1459,10 @@ Future reviews and issues should cite this file when proposing changes.
   please transfer the amount the invoice shows" — which is honest for the great
   majority of members, whose invoice matches the total exactly. It names NO
   second figure and makes NO Xero read: a transactional confirmation must not
-  carry a provider round-trip, or a provider outage, in its send path. Stating
-  the real net figure is deferred work (owner decision, 1 Aug 2026), not an
-  omission.
+  carry a provider round-trip, or a provider outage, in its send path. This is
+  the shape sent whenever no applicable credit can be stated — including every
+  send on today's one live unpaid path — and #2483 leaves it unchanged to the
+  byte.
   **The sentence must not promise that credit WILL be applied.** The one send
   site (member whole-lodge approval) mints a brand-new booking and writes no
   `MemberCredit` row, so the `enqueueXeroAppliedCreditAllocationOperation` call
@@ -1475,6 +1476,69 @@ Future reviews and issues should cite this file when proposing changes.
   as the credit rows above; it rides on an EXISTING token, so an override a club
   saved before #2444 keeps rendering it. Every other money outcome — paid,
   partly paid, and fully credit-covered — is byte-for-byte unchanged.
+- An UNPAID confirmation that DOES carry applied credit states the netting, from
+  the club's OWN ledger (#2483; owner decision 2 Aug 2026). Where the booking
+  carries `BOOKING_APPLIED` rows the Xero invoice is reduced by exactly that
+  credit (allocate-existing, below), so the full price would ask a member for
+  more than the club wants and they would OVERPAY. The `paymentDue` branch
+  therefore renders the reconciling trio — `Booking Total`, `Account credit
+  applied`, `Total Due` — from `unpaidMoneySummaryRows`, the shared builder both
+  renderers use, and `bookingPaymentDueNote` names the netted figure and states
+  the arithmetic in words. `{{totalDue}}` carries the NETTED figure (it has
+  always meant "what is still owed"), so no token was added.
+  **The figure is LOCAL by decision, and it is not a guess at Xero.** The
+  allocation is asynchronous, so reading it back would either delay a
+  member-facing confirmation behind a provider operation or make its content
+  depend on outbox timing. `deriveBookingAppliedCreditCents` is the club's OWN
+  amount-owing law — the same figure `prepareManualSettlement` derives an
+  effective price from, the same one the card-capture amount guard accepts, and
+  the same `desiredAppliedCents` the deallocation engine converges an invoice to
+  — so the netted figure is exactly what the club would accept as full
+  settlement.
+  **It is NOT the same predicate the allocation gate reads** (review, 2 Aug
+  2026; an earlier draft of this bullet claimed it was).
+  `enqueueXeroAppliedCreditAllocationOperation` aggregates only the
+  `xeroCreditNoteId: null` UNALLOCATED subset — a work-remaining filter over
+  those rows — so the two agree only while a stamped row really does mean the
+  credit is already off the LIVE invoice. Three things break that, and all three
+  are #2501's to surface rather than the email's: a hand edit in Xero; an
+  allocation op that FAILED or was never processed, leaving the invoice at the
+  full price with the work stalled; and a stamp that outlived the invoice it
+  recorded (an invoice unlinked and re-raised), after which the gate finds no
+  unallocated rows and queues nothing at all. #2501's checker must therefore
+  compare Σ STAMPED `BOOKING_APPLIED` against the live invoice's own
+  allocations, not merely club credits against Xero credits.
+  **It never asks for a figure the ledger contradicts.**
+  `resolveUnpaidCreditNetting` has four outcomes. No credit (or a non-positive
+  price) renders the #2444 paragraph unchanged. Credit smaller than the price
+  states the trio and asks for the difference. Credit EQUAL to the price states
+  `Total Due: $0.00` and asks for nothing — that is not a contradiction but the
+  documented steady state of the #1887 reprice clamp, and the state
+  `prepareManualSettlement` refuses as "This booking has nothing owing", so
+  folding it into a refusal that printed the full price would instruct a 100%
+  overpayment. Only credit LARGER than the price refuses, and the refusal states
+  no figure at all: the booking's price appears as `Booking Total`, `{{totalDue}}`
+  is EMPTY so no saved override can print one, no payment reference is quoted,
+  and the member is asked to wait while the club confirms what is left. The
+  sender logs that case. A failed ledger read fails open to the #2444 paragraph.
+  **Its closing instruction inverts, deliberately — and in ONE direction.**
+  #2444 tells the member to transfer what the invoice shows; once the email has
+  netted, that would produce the very overpayment this prevents, because the
+  invoice may not have been reduced yet. So the netted figure stands against an
+  invoice asking for MORE. It does NOT stand against one asking for LESS: that
+  is the direction a hand edit in Xero produces, and holding the email's larger
+  figure there would recreate the #2444 overpayment. Pay the smaller of the two;
+  route the disagreement to the club either way.
+  **One number, every message on the send site.** With the Xero module OFF there
+  is no invoice object and no allocation op, so nothing downstream would ever
+  reconcile an admin who invoiced the gross price against a member who was told
+  to transfer the netted one. `sendAdminWholeLodgeManualInvoiceEmail` therefore
+  takes the same ledger read and quotes the same figure
+  (`wholeLodgeManualInvoiceAmountCents`). The PENDING receivable the conversion
+  writes is the booking's price, which equals that figure only while the path
+  applies no credit — the premise the #2328 module guard pins; a path that ever
+  applies credit here must write the receivable at the effective price too, as
+  `booking-create` already does.
 - Applied credit reduces the Internet-Banking invoice by ALLOCATING the member's
   EXISTING floating credit notes (#1620, "allocate-existing"; owner decision
   2026-07-08). A member's credit is already represented in Xero as floating

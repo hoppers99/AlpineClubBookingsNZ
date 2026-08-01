@@ -87,6 +87,9 @@ import {
 import { getDefaultLodgeCapacity, getLodgeCapacity } from "@/lib/lodge-capacity";
 import { generateHutLeaderPin, hashHutLeaderPin } from "@/lib/lodge-pin-session";
 import logger from "@/lib/logger";
+// #2483: the club's own applied-credit total, so the admin's hand-written
+// invoice asks for the same figure the member's confirmation does.
+import { deriveBookingAppliedCreditCents } from "@/lib/member-credit";
 import {
   priceBookingGuests,
   toGroupDiscountConfig,
@@ -2166,6 +2169,26 @@ export async function approveMemberWholeLodgeRequest(input: {
       }
     } else {
       invoiceMode = "manual";
+      // #2483: the member's confirmation nets the booking's price against the
+      // club's own applied-credit ledger. On THIS branch there is no Xero
+      // invoice and no allocation op, so nothing downstream would ever
+      // reconcile an admin who invoiced the gross price against a member who
+      // was told to transfer the netted one — the club would chase a shortfall
+      // its own ledger says does not exist. So the admin's instruction is built
+      // from the same ledger read. Zero today (this conversion mints a
+      // brand-new booking and writes no `MemberCredit` row, which the #2328
+      // module guard pins), so the alert is byte-for-byte unchanged; both sides
+      // arm together the instant this path can carry applied credit. Fails open
+      // to zero: an unreadable ledger must not withhold an invoice instruction.
+      const manualInvoiceCreditCents = await deriveBookingAppliedCreditCents(
+        conversion.bookingId,
+      ).catch((err) => {
+        logger.error(
+          { err, bookingId: conversion.bookingId },
+          "Failed to read applied credit for a manual whole-lodge invoice alert; invoicing the full price",
+        );
+        return 0;
+      });
       sendAdminWholeLodgeManualInvoiceEmail({
         memberName: `${request.contactFirstName} ${request.contactLastName}`.trim(),
         contactEmail: request.contactEmail,
@@ -2173,6 +2196,7 @@ export async function approveMemberWholeLodgeRequest(input: {
         checkOut: request.checkOut,
         guestCount: guests.length,
         totalCents: totalPriceCents,
+        appliedCreditCents: manualInvoiceCreditCents,
         paymentReference: conversion.paymentReference,
       }).catch((err) =>
         logger.error(

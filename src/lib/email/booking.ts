@@ -4,6 +4,9 @@ import type { AppliedCreditSummary } from "@/lib/email-templates";
 import {
   appliedCreditSummaryRows,
   settledByPaymentCents,
+  resolveUnpaidCreditNetting,
+  unpaidCreditNoteInput,
+  unpaidMoneySummaryRows,
   bookingConfirmedTemplate,
   bookingPendingTemplate,
   bookingBumpedTemplate,
@@ -190,21 +193,7 @@ export async function sendBookingConfirmedEmail(
           provisionalGuests.holdUntil,
         )}, we'll automatically take that guest portion from your saved payment method and your guests are confirmed. If we can't take payment, we'll contact you to arrange it. If the lodge fills with member bookings first, that portion is not charged and those guests are bumped.`
       : "";
-  // #2263: the composed unpaid-confirmation paragraph, from the SHARED composer
-  // the FILE template renders, so an operator override keeps parity (the same
-  // convention provisionalGuestsNote follows). Empty when the booking is paid.
-  // #2444 put the account-credit sentence inside that composer rather than
-  // beside it here, so the two renderers cannot ship different advice about how
-  // much a member should transfer. Plain text, so the reference goes in raw;
-  // the HTML path escapes it at its own edge.
   const paymentDue = options?.paymentDue;
-  const paymentDueNote = paymentDue
-    ? bookingPaymentDueNote({
-        amount: formatMoneyCents(totalCents),
-        reference: paymentDue.reference,
-        invoiceEmailed: paymentDue.invoiceEmailed,
-      })
-    : "";
   // #2263 × #2267: the whole money outcome as ONE pre-composed block for the
   // default body ({{promoSummary}}'s convention — complete lines or nothing),
   // because the paid and unpaid stories are mutually exclusive and a flat body
@@ -234,25 +223,60 @@ export async function sendBookingConfirmedEmail(
     unpaid: Boolean(paymentDue),
     outstandingCents: outstandingBalance?.amountCents ?? 0,
   });
-  // #2328 (review): the two states in which the pair is SUPPRESSED on a booking
-  // that really did spend credit. Both are believed unreachable, and both would
-  // be invisible if they were not logged — a suppressed pair looks exactly like
-  // a booking that used no credit, which is the very failure #2328 exists to
-  // fix. Logged here rather than inside the row builder because this is the one
-  // place per send that holds the booking id, and the HTML template is composed
-  // from these same figures a few lines below.
-  if (paymentDue && appliedCreditCents > 0) {
-    // The suppression on an unpaid confirmation is only safe because this send
-    // path applies no credit (see `settledByPaymentCents`). If that stops being
-    // true, the member is being shown a "Total Due" with a credit spend hidden
-    // behind it.
+  // #2483: on an UNPAID confirmation the credit is not a "where the money came
+  // from" story — nothing has been paid — it is a reduction in what the member
+  // must transfer. This resolves that netting from the club's OWN ledger figure
+  // read above, with no Xero read and no wait on the outbox (owner decision,
+  // 2 Aug 2026). The same resolver runs inside `bookingConfirmedTemplate`, from
+  // the same two inputs, so the HTML table and the tokens below always agree.
+  const unpaidNetting = resolveUnpaidCreditNetting({
+    totalCents,
+    appliedCreditCents,
+  });
+  // #2263 × #2444 × #2483: the composed unpaid-confirmation paragraph, from the
+  // SHARED composer the FILE template renders, so an operator override keeps
+  // parity (the same convention provisionalGuestsNote follows). Empty when the
+  // booking is paid. The amount is what the member must TRANSFER — netted when
+  // credit applies — and the composer states the arithmetic in words, so a body
+  // that renders this token without the money block still tells the whole
+  // story. Plain text, so the reference goes in raw; the HTML path escapes it
+  // at its own edge.
+  const paymentDueNote = paymentDue
+    ? bookingPaymentDueNote({
+        amount: formatMoneyCents(unpaidNetting.toTransferCents),
+        reference: paymentDue.reference,
+        invoiceEmailed: paymentDue.invoiceEmailed,
+        accountCredit: unpaidCreditNoteInput(
+          totalCents,
+          unpaidNetting,
+          formatMoneyCents,
+        ),
+      })
+    : "";
+  // #2328 (review): the states in which credit a booking really spent goes
+  // UNSTATED. Both are believed unreachable, and both would be invisible if
+  // they were not logged — a silent email looks exactly like a booking that
+  // used no credit, which is the very failure #2328 exists to fix. Logged here
+  // rather than inside the row builders because this is the one place per send
+  // that holds the booking id, and the HTML template is composed from these
+  // same figures a few lines below.
+  if (paymentDue && appliedCreditCents > 0 && unpaidNetting.creditCents === 0) {
+    // #2483 replaced the blanket unpaid-branch suppression this used to warn
+    // about: an unpaid confirmation now STATES its netting, including the
+    // fully-covered case (`"covered"` — credit exactly equal to the price —
+    // which states $0.00 rather than the old refusal's full price). What is
+    // left is credit LARGER than the booking's price on a send that says the
+    // booking is unpaid, which cannot both be true, plus the degenerate
+    // non-positive-price send. The member is asked for no figure at all rather
+    // than one derived from contradictory inputs, and an admin gets this.
     logger.warn(
       {
         bookingId: bookingContext.bookingId,
         appliedCreditCents,
         totalCents,
+        nettingOutcome: unpaidNetting.outcome,
       },
-      "Confirmed-but-unpaid booking confirmation carries applied account credit; the credit lines were suppressed (#2328)",
+      "Confirmed-but-unpaid booking confirmation carries applied account credit the netting could not state; the email asks the member for no figure (#2483)",
     );
   } else if (!paymentDue && settledCents < 0) {
     // More credit consumed than the booking is now worth. The #1887 reprice
@@ -286,8 +310,15 @@ export async function sendBookingConfirmedEmail(
   )
     .map((row) => `${row.label}: ${row.value}\n`)
     .join("");
+  // #2483: the unpaid money block, from the SHARED row builder the HTML table
+  // uses. One "Total Due" line when no credit applies — byte-for-byte the
+  // pre-#2483 block — the reconciling trio when it does, and a bare
+  // "Booking Total" when the ledger contradicts the price.
+  const unpaidMoneyBlock = unpaidMoneySummaryRows(totalCents, unpaidNetting)
+    .map((row) => `${row.label}: ${row.value}\n`)
+    .join("");
   const paymentOutcome = paymentDue
-    ? `Total Due: ${formatMoneyCents(totalCents)}\n\n${paymentDueNote}`
+    ? `${unpaidMoneyBlock}\n${paymentDueNote}`
     : outstandingBalance
       ? `Booking Total: ${formatMoneyCents(totalCents)}\nPaid: ${formatMoneyCents(outstandingPaidCents)}\n${creditNote}Still Owing: ${formatMoneyCents(outstandingBalance.amountCents)}\n\n${outstandingBalanceNote}`
       : `Total Paid: ${formatMoneyCents(totalCents)}\n${creditNote}\nPayment has been processed successfully.`;
@@ -349,13 +380,25 @@ export async function sendBookingConfirmedEmail(
       // BOTH, because both are true — {{totalPaid}} is what the club actually
       // has (cash plus any credit applied) and {{totalDue}} is what is still
       // owed, never the whole price.
+      // #2483: {{totalDue}} has always meant "what is still owed", so on an
+      // unpaid send it is the NETTED figure — a saved override that writes its
+      // own "Total Due: {{totalDue}}" line asks for the transferable amount
+      // with no edit, which is the whole point of not inventing a new token.
+      // On the `"unreconciled"` outcome it is EMPTY, not the gross price: the
+      // whole point of that outcome is that no figure may be asked for, and an
+      // override is the one path that could still print one. Empty is the
+      // token's existing convention on a branch that has no figure to state
+      // (see {{totalPaid}} directly above), and the editor already warns about
+      // a label typed in front of an emptyable token.
       totalPaid: paymentDue
         ? ""
         : formatMoneyCents(
             outstandingBalance ? outstandingPaidCents : totalCents,
           ),
       totalDue: paymentDue
-        ? formatMoneyCents(totalCents)
+        ? unpaidNetting.outcome === "unreconciled"
+          ? ""
+          : formatMoneyCents(unpaidNetting.toTransferCents)
         : outstandingBalance
           ? formatMoneyCents(outstandingBalance.amountCents)
           : "",
