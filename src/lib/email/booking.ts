@@ -23,6 +23,7 @@ import {
   bookingModificationSummaryRows,
 } from "../email-templates";
 import {
+  bookingPaymentDueNote,
   composeChoreLine,
   composeOptionalEmailLine,
   splitGuestPortionOwnBookingLine,
@@ -188,15 +189,20 @@ export async function sendBookingConfirmedEmail(
           provisionalGuests.holdUntil,
         )}, we'll automatically take that guest portion from your saved payment method and your guests are confirmed. If we can't take payment, we'll contact you to arrange it. If the lodge fills with member bookings first, that portion is not charged and those guests are bumped.`
       : "";
-  // #2263: the composed unpaid-confirmation sentence, byte-identical to the one
+  // #2263: the composed unpaid-confirmation paragraph, from the SHARED composer
   // the FILE template renders, so an operator override keeps parity (the same
   // convention provisionalGuestsNote follows). Empty when the booking is paid.
+  // #2444 put the account-credit sentence inside that composer rather than
+  // beside it here, so the two renderers cannot ship different advice about how
+  // much a member should transfer. Plain text, so the reference goes in raw;
+  // the HTML path escapes it at its own edge.
   const paymentDue = options?.paymentDue;
   const paymentDueNote = paymentDue
-    ? `This booking is confirmed, but payment of ${formatMoneyCents(totalCents)} is still owing. Please pay by internet banking quoting reference ${paymentDue.reference}.` +
-      (paymentDue.invoiceEmailed
-        ? " An invoice has been emailed to you separately."
-        : " The club will send you an invoice for it.")
+    ? bookingPaymentDueNote({
+        amount: formatMoneyCents(totalCents),
+        reference: paymentDue.reference,
+        invoiceEmailed: paymentDue.invoiceEmailed,
+      })
     : "";
   // #2263 × #2267: the whole money outcome as ONE pre-composed block for the
   // default body ({{promoSummary}}'s convention — complete lines or nothing),

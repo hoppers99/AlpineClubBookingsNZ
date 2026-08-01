@@ -31,6 +31,7 @@ import type { MemberGuestPartyList } from "@/lib/member-guest-email-notes";
 import {
   adminSplitSettlementCancelledLeadParagraph,
   adminSplitSettlementUnpaidLeadParagraph,
+  bookingPaymentDueNote,
   duplicateCaptureRefundOutcomeParagraph,
   splitGuestPortionOwnBookingLine,
 } from "./email-message-notes";
@@ -498,14 +499,15 @@ export function appliedCreditSummaryRows(
  *    if that precondition ever stops holding, because the suppression would
  *    then be hiding a real figure from a member.
  *
- *    An EARLIER version of this comment justified the suppression by saying the
- *    amount owing is the figure the club's Xero invoice was raised for, so
- *    netting credit off it would disagree with the invoice. That reasoning is
- *    WRONG and is retracted: under #1620 "allocate-existing" the booking
- *    invoice is raised for the FULL amount and the member's floating credit
- *    notes are ALLOCATED against it (this very send site enqueues that
- *    allocation a few lines above the send), so the invoice total is not the
- *    net-of-credit figure the argument assumed;
+ *    A #2444 DRAFT claimed the invoice for this booking has the member's
+ *    floating credit notes ALLOCATED against it under #1620, because the send
+ *    site enqueues an allocation op a few lines above the send. That is WRONG
+ *    and is retracted (re-verified 1 Aug 2026):
+ *    `enqueueXeroAppliedCreditAllocationOperation` only queues anything when
+ *    the booking already carries `BOOKING_APPLIED` ledger rows, and this path
+ *    writes none, so it always returns `{ queueOperationId: null }` and the
+ *    invoice stands at the FULL amount. The suppression rests on the
+ *    no-applied-credit precondition above and on nothing else;
  *  - partly paid (`outstandingBalance`, #2397): the settled slice is the
  *    booking's price minus what is still owing, and the credit comes out of
  *    THAT, not out of the full price;
@@ -664,13 +666,18 @@ export function bookingConfirmedTemplate(
     rows.push({ label: "Total Paid", value: formatCents(totalCents) }, ...creditRows);
   }
 
-  // One composed sentence, shared with the {{paymentDueNote}} token in
-  // sendBookingConfirmedEmail so an operator override tells the same story.
+  // One composed paragraph, from the SHARED composer the {{paymentDueNote}}
+  // token in sendBookingConfirmedEmail is built from, so an operator override
+  // tells the same story — including the #2444 account-credit sentence, which
+  // must never appear on one renderer and not the other. The reference is
+  // club-entered data, so it is escaped at this HTML edge (the composer takes
+  // it already escaped, on the same principle as the shared money rows above).
   const paymentDueNote = paymentDue
-    ? `This booking is confirmed, but payment of ${formatCents(totalCents)} is still owing. Please pay by internet banking quoting reference ${escapeHtml(paymentDue.reference)}.` +
-      (paymentDue.invoiceEmailed
-        ? " An invoice has been emailed to you separately."
-        : " The club will send you an invoice for it.")
+    ? bookingPaymentDueNote({
+        amount: formatCents(totalCents),
+        reference: escapeHtml(paymentDue.reference),
+        invoiceEmailed: paymentDue.invoiceEmailed,
+      })
     : "";
   // #2397, same convention: one composed sentence shared with the token path.
   const outstandingBalanceNote = outstandingBalance

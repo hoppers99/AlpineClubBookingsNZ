@@ -204,6 +204,27 @@ build its own money lines from the per-piece tokens (`{{totalPaid}}`,
 `{{totalDue}}`, `{{paymentDueNote}}`, `{{paymentReference}}`); exactly one of
 `{{totalPaid}}`/`{{totalDue}}` carries a figure on any given send.
 
+On that unpaid send only, `{{paymentDueNote}}` closes with one further
+sentence: *"If the invoice asks for a different amount — for example because the
+club has put account credit you hold towards it — please transfer the amount the
+invoice shows."* The `Total Due:` line is the **booking's** price; the invoice
+the member pays against is a separate document an admin can adjust by hand, so
+the email defers to it rather than to itself. The sentence is deliberately
+conditional and names no second amount — for the great majority of members the
+invoice matches the total exactly — and it is part of the same
+`{{paymentDueNote}}` value, so no new token was added: an override that renders
+`{{paymentOutcome}}` or `{{paymentDueNote}}` picks the sentence up with no edit
+at all. An override that builds its own money lines from the per-piece tokens
+**without** either of those, as the paragraph above allows, has never carried the
+unpaid send's payment instructions and still does not — add `{{paymentDueNote}}`
+to such a body, or its members are told a `Total Due:` figure and never told how
+to pay it. The sentence renders on the unpaid send and nowhere else; on every
+other send `{{paymentDueNote}}` is empty, so it is declared emptyable and the
+editor warns if you type a label in front of it. Note that nothing nets account
+credit off such an invoice automatically: an admin who wants a member's credit
+applied does it in Xero, which is why the sentence describes a possibility
+rather than promising one.
+
 Account credit spent on the booking is explained by the pre-composed
 `{{creditNote}}` block, on the same convention again. When a member put account
 credit towards their stay it renders two reconciling lines — `Account credit

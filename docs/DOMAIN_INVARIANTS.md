@@ -1409,6 +1409,32 @@ Future reviews and issues should cite this file when proposing changes.
   are built from ONE shared row builder (`appliedCreditSummaryRows`), the
   `{{promoSummary}}` precedent, so the two paths cannot tell different stories
   about the same booking. Money is integer cents throughout.
+- An UNPAID confirmation defers to the INVOICE, and promises nothing about it
+  (#2444). The `paymentDue` branch states the booking's own price as `Total Due`
+  and asks for an internet-banking transfer, but the document the member pays
+  against is the club's invoice, which an admin can adjust by hand — netting
+  account credit off it is the commonest reason. The paragraph therefore closes
+  with a CONDITIONAL sentence — "If the invoice asks for a different amount —
+  for example because the club has put account credit you hold towards it —
+  please transfer the amount the invoice shows" — which is honest for the great
+  majority of members, whose invoice matches the total exactly. It names NO
+  second figure and makes NO Xero read: a transactional confirmation must not
+  carry a provider round-trip, or a provider outage, in its send path. Stating
+  the real net figure is deferred work (owner decision, 1 Aug 2026), not an
+  omission.
+  **The sentence must not promise that credit WILL be applied.** The one send
+  site (member whole-lodge approval) mints a brand-new booking and writes no
+  `MemberCredit` row, so the `enqueueXeroAppliedCreditAllocationOperation` call
+  it makes always short-circuits — allocate-existing below fires only on credit
+  APPLIED app-side — and the Xero invoice is raised for, and stays at, the full
+  price. A first draft of this copy asserted the netting and was corrected
+  before merge; reinstating it requires making the allocation real first.
+  The sentence is composed by `bookingPaymentDueNote` and rendered from that ONE
+  composer by both the hand-built HTML and the `{{paymentDueNote}}` token
+  (carried whole inside `{{paymentOutcome}}`), on the same anti-drift principle
+  as the credit rows above; it rides on an EXISTING token, so an override a club
+  saved before #2444 keeps rendering it. Every other money outcome — paid,
+  partly paid, and fully credit-covered — is byte-for-byte unchanged.
 - Applied credit reduces the Internet-Banking invoice by ALLOCATING the member's
   EXISTING floating credit notes (#1620, "allocate-existing"; owner decision
   2026-07-08). A member's credit is already represented in Xero as floating
