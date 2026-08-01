@@ -869,51 +869,74 @@ export async function listAdminMembers(
   //
   // Two complementary queries rather than one, because the ranking cannot be
   // expressed as an `orderBy`: Prisma has no computed sort key, and sorting on
-  // `ageTier` itself would depend on the enum's DECLARATION order (and would put
-  // age-exempt humans, `NOT_APPLICABLE`, ahead of adults). Splitting on
-  // `ADULT` / `not ADULT` and concatenating is exact, and stays correct for
-  // pages beyond the first — the picker only ever asks for page 1, but this
-  // endpoint is a general list API and a ranking that silently reshuffled on
-  // page 2 would drop and duplicate rows.
-  async function findParentLinkCandidatesAdultsFirst() {
+  // `ageTier` itself would depend on the enum's DECLARATION order. Splitting the
+  // set in two and concatenating is exact, and stays correct for pages beyond
+  // the first — the picker only ever asks for page 1, but this endpoint is a
+  // general list API and a ranking that silently reshuffled on page 2 would drop
+  // and duplicate rows.
+  //
+  // The line is drawn at "is this candidate a MINOR", not at "is this candidate
+  // an ADULT" (#2425 review). `NOT_APPLICABLE` is the age-EXEMPT tier, not the
+  // organisation tier: `resolveEnforcedAgeTier` gives it to a real person on a
+  // FORCED membership type, and preserves an admin's hand-picked N/A while the
+  // type ALLOWS it (`src/lib/age-tier-enforcement.ts`, #1440/#2106). Since the
+  // picker excludes organisations by ROLE and never by tier
+  // (`dependentParentEligibleWhere`), every N/A row that reaches this ranking is
+  // one of those age-exempt PEOPLE — an honorary or life member, typically an
+  // adult — and ranking them below the household's children would leave them
+  // crowded off exactly the page this issue exists to fix. They join the top
+  // block instead, where they sort among the adults by name; nothing here
+  // claims they ARE adults, only that they are not minors.
+  const NON_MINOR_AGE_TIERS: AgeTier[] = ["ADULT", "NOT_APPLICABLE"];
+  async function findParentLinkCandidatesNonMinorsFirst() {
     const rankedWhere = (ageClause: Prisma.MemberWhereInput) => ({
       ...where,
       AND: [...andConditions, ageClause],
     });
-    // Page 1 needs no boundary: the adult block starts at row 0. A deeper page
-    // has to know where that block ENDS before it can slice across it, and only
-    // then is the extra count worth issuing.
-    const adultTotal =
+    // `in` / `notIn` are exact complements here because `Member.ageTier` is NOT
+    // NULL (`prisma/schema.prisma`, `AgeTier @default(ADULT)`), so every
+    // eligible row lands in exactly one half and the two together are the same
+    // set — and the same count — an unranked query would return.
+    const nonMinorClause: Prisma.MemberWhereInput = {
+      ageTier: { in: NON_MINOR_AGE_TIERS },
+    };
+    const minorClause: Prisma.MemberWhereInput = {
+      ageTier: { notIn: NON_MINOR_AGE_TIERS },
+    };
+    // Page 1 needs no boundary: the top block starts at row 0. A deeper page has
+    // to know where that block ENDS before it can slice across it, and only then
+    // is the extra count worth issuing.
+    const nonMinorTotal =
       skip > 0
-        ? await prisma.member.count({ where: rankedWhere({ ageTier: "ADULT" }) })
+        ? await prisma.member.count({ where: rankedWhere(nonMinorClause) })
         : null;
-    const adults =
-      adultTotal === null || skip < adultTotal
+    const nonMinors =
+      nonMinorTotal === null || skip < nonMinorTotal
         ? await prisma.member.findMany({
-            where: rankedWhere({ ageTier: "ADULT" }),
+            where: rankedWhere(nonMinorClause),
             orderBy,
             select,
             skip,
             take: pageSize,
           })
         : [];
-    if (adults.length >= pageSize) return adults;
-    const others = await prisma.member.findMany({
-      where: rankedWhere({ ageTier: { not: "ADULT" } }),
+    if (nonMinors.length >= pageSize) return nonMinors;
+    const minors = await prisma.member.findMany({
+      where: rankedWhere(minorClause),
       orderBy,
       select,
-      // Once the adult block is exhausted the remainder of the window continues
-      // into the non-adults, so the offset is whatever the window overshot it
-      // by (zero whenever the page started inside the adult block).
-      skip: adultTotal === null ? 0 : Math.max(0, skip - adultTotal),
-      take: pageSize - adults.length,
+      // Once the top block is exhausted the remainder of the window continues
+      // into the minors, so the offset is whatever the window overshot it by
+      // (zero whenever the page started inside the top block).
+      skip: nonMinorTotal === null ? 0 : Math.max(0, skip - nonMinorTotal),
+      take: pageSize - nonMinors.length,
     });
-    return [...adults, ...others];
+    return [...nonMinors, ...minors];
   }
 
   const [members, total] = await Promise.all([
     parentLinkEligibleFor
-      ? findParentLinkCandidatesAdultsFirst()
+      ? findParentLinkCandidatesNonMinorsFirst()
       : prisma.member.findMany({
           where,
           orderBy,

@@ -612,16 +612,21 @@ describe("Phase 3: Admin Member Management", () => {
       // "and not this": age must not NARROW the parent-candidate set. Since
       // #2425 an age clause does appear — as the RANKING split — so the refusal
       // is stated the only way that still means something: the two halves are
-      // exact complements (`ADULT` and `not ADULT`) over otherwise IDENTICAL
-      // clauses. Deleting the second query, or narrowing either half's age
-      // clause to a subset, fails here rather than silently returning the
-      // picker to adults-only while the write route accepts more.
+      // exact complements (`in` and `notIn` over the same tiers) on otherwise
+      // IDENTICAL clauses. Deleting the second query, or narrowing either
+      // half's age clause to a subset, fails here rather than silently
+      // returning the picker to adults-only while the write route accepts more.
+      // The tiers themselves are pinned because WHICH side of the split
+      // `NOT_APPLICABLE` lands on is the difference between an age-exempt
+      // person ranking with the adults and ranking below every child (#2425
+      // review) — the tier is age-EXEMPT, and organisations are excluded from
+      // this search by role, so it belongs in the top half.
       const ageClauses = searchCalls.map((call) =>
         (call.where?.AND as any[]).filter((clause) => "ageTier" in clause)
       );
       expect(ageClauses).toEqual([
-        [{ ageTier: "ADULT" }],
-        [{ ageTier: { not: "ADULT" } }],
+        [{ ageTier: { in: ["ADULT", "NOT_APPLICABLE"] } }],
+        [{ ageTier: { notIn: ["ADULT", "NOT_APPLICABLE"] } }],
       ]);
       const withoutAge = searchCalls.map((call) =>
         (call.where?.AND as any[]).filter((clause) => !("ageTier" in clause))

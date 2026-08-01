@@ -11,9 +11,16 @@
 //
 // THE FIX IS PRESENTATION ONLY (owner decision, 1 Aug 2026): adults rank first,
 // then everyone else, at the same page size. Nobody is filtered out — the
-// non-adults follow the adults, and the second half of this file proves the two
+// minors follow the grown-ups, and the second half of this file proves the two
 // halves compose into exactly the set a single unranked query would return, in
 // the same order within each block, across page boundaries.
+//
+// The line is drawn at MINOR / NOT MINOR rather than ADULT / NOT ADULT (#2425
+// review): `NOT_APPLICABLE` is the age-EXEMPT tier carried by real people on a
+// forced or N/A-allowing membership type, and organisations are kept out of this
+// search by ROLE, so an N/A row here is a grown-up. Ranking them below the
+// household's children would have left the fix unbuilt for exactly the members
+// it was written for — Whetu Kingi below.
 //
 // The fake below deliberately implements only `orderBy`, `skip`, `take` and the
 // age clause, and passes every other clause through: eligibility is pinned in
@@ -88,7 +95,26 @@ const KINGI_ADULTS: FakeMember[] = [
   { id: "adult-2", firstName: "Zara", lastName: "Kingi", ageTier: "ADULT" },
 ];
 
-const ALL_KINGI = [...KINGI_CHILDREN, ...KINGI_ADULTS];
+/**
+ * A grown-up of the household whose current-season membership type is age-exempt
+ * (honorary/life), so `resolveEnforcedAgeTier` stores her tier as
+ * `NOT_APPLICABLE` — not an organisation, which this search excludes by role.
+ * Her first name deliberately sorts AFTER every child's, so an ADULT-only
+ * ranking would push her off the eight-row page exactly as #2425 describes.
+ */
+const KINGI_AGE_EXEMPT: FakeMember[] = [
+  {
+    id: "exempt-1",
+    firstName: "Whetu",
+    lastName: "Kingi",
+    ageTier: "NOT_APPLICABLE",
+  },
+];
+
+const ALL_KINGI = [...KINGI_CHILDREN, ...KINGI_ADULTS, ...KINGI_AGE_EXEMPT];
+
+/** The tiers that rank in the top block: everyone who is not a minor. */
+const NON_MINOR_TIERS = new Set<AgeTier>(["ADULT", "NOT_APPLICABLE"]);
 
 /** The row shape `listAdminMembers` maps over, with nothing else set. */
 function toRow(member: FakeMember) {
@@ -116,24 +142,38 @@ function toRow(member: FakeMember) {
   };
 }
 
-/** The only clause the fake understands; everything else is passed through. */
-function ageClauseOf(args: any): { equals?: string; not?: string } | null {
+/**
+ * The only clause the fake understands; everything else is passed through.
+ *
+ * Every age-clause shape Prisma accepts here is served faithfully — the current
+ * `in`/`notIn` split and the `ADULT` / `not ADULT` one it replaced — so a
+ * mutation back to either fails on the ROWS it returns rather than by confusing
+ * the fake. An unrecognised shape throws instead of silently filtering nothing,
+ * which would rescue a broken ranking with a green test.
+ */
+type FakeAgeClause = { include: AgeTier[] } | { exclude: AgeTier[] };
+
+function ageClauseOf(args: any): FakeAgeClause | null {
   const conditions = (args?.where?.AND ?? []) as any[];
   const clause = conditions.find(
     (condition) => condition && typeof condition === "object" && "ageTier" in condition,
   );
   if (!clause) return null;
-  return typeof clause.ageTier === "string"
-    ? { equals: clause.ageTier }
-    : { not: clause.ageTier?.not };
+  const value = clause.ageTier;
+  if (typeof value === "string") return { include: [value as AgeTier] };
+  if (Array.isArray(value?.in)) return { include: value.in as AgeTier[] };
+  if (Array.isArray(value?.notIn)) return { exclude: value.notIn as AgeTier[] };
+  if (typeof value?.not === "string") return { exclude: [value.not as AgeTier] };
+  throw new Error(`Unsupported ageTier clause: ${JSON.stringify(value)}`);
 }
 
 function selectFor(args: any): FakeMember[] {
   const clause = ageClauseOf(args);
   const filtered = ALL_KINGI.filter((member) => {
     if (!clause) return true;
-    if (clause.equals) return member.ageTier === clause.equals;
-    return member.ageTier !== clause.not;
+    return "include" in clause
+      ? clause.include.includes(member.ageTier)
+      : !clause.exclude.includes(member.ageTier);
   });
   // Whatever the caller asked to sort by, honoured generically so a reverted
   // ranking is served faithfully rather than being rescued by the fake.
@@ -195,9 +235,11 @@ describe("#2425 — parent-picker candidate ranking", () => {
   it("reaches the adults on a surname nine children share, without extra typing", async () => {
     const body = await searchParentCandidates(1);
 
-    // Both adults are ON the eight-row page. Before the ranking they were rows
-    // ten and eleven of an alphabetical list the picker never asked for.
+    // Every grown-up of the household is ON the eight-row page. Before the
+    // ranking they were rows ten to twelve of an alphabetical list the picker
+    // never asked for.
     expect(body.members.map((member) => member.id)).toEqual([
+      "exempt-1",
       "adult-1",
       "adult-2",
       "kid-1",
@@ -205,23 +247,44 @@ describe("#2425 — parent-picker candidate ranking", () => {
       "kid-3",
       "kid-4",
       "kid-5",
-      "kid-6",
     ]);
     // Stated as a property too, so a fixture reshuffle cannot make the list
-    // above pass for the wrong reason: no non-adult precedes an adult.
-    const firstNonAdult = body.members.findIndex(
-      (member) => member.ageTier !== "ADULT",
+    // above pass for the wrong reason: no minor precedes a grown-up.
+    const firstMinor = body.members.findIndex(
+      (member) => !NON_MINOR_TIERS.has(member.ageTier),
     );
-    expect(firstNonAdult).toBeGreaterThan(0);
+    expect(firstMinor).toBeGreaterThan(0);
     expect(
-      body.members.slice(firstNonAdult).every((member) => member.ageTier !== "ADULT"),
+      body.members
+        .slice(firstMinor)
+        .every((member) => !NON_MINOR_TIERS.has(member.ageTier)),
     ).toBe(true);
+  });
+
+  it("ranks an age-exempt member with the adults, never among the children", async () => {
+    // #2425 review. `NOT_APPLICABLE` is the age-EXEMPT tier, not the
+    // organisation tier — organisations are excluded from this search by ROLE
+    // (`dependentParentEligibleWhere`), so a row carrying it here is a real
+    // person, typically an adult on an honorary or life membership type. Split
+    // on ADULT alone, Whetu sorts after Ivy and falls off the very page this
+    // issue exists to fix, which is the pre-#2425 behaviour for that member.
+    const body = await searchParentCandidates(1);
+    const ids = body.members.map((member) => member.id);
+
+    expect(ids).toContain("exempt-1");
+    const lastGrownUp = Math.max(
+      ids.indexOf("exempt-1"),
+      ids.indexOf("adult-1"),
+      ids.indexOf("adult-2"),
+    );
+    const firstChild = ids.indexOf("kid-1");
+    expect(firstChild).toBeGreaterThan(lastGrownUp);
   });
 
   it("counts the whole eligible set, so the dialog can say the page was cut short", async () => {
     const body = await searchParentCandidates(1);
 
-    // 11 eligible, 8 shown: `total > members.length` is what the dialog turns
+    // 12 eligible, 8 shown: `total > members.length` is what the dialog turns
     // into "Keep typing to narrow this down." Counting only the adults, or
     // counting the page, would silence the hint exactly when it is needed.
     expect(body.total).toBe(ALL_KINGI.length);
@@ -242,6 +305,7 @@ describe("#2425 — parent-picker candidate ranking", () => {
     expect(new Set(ids).size).toBe(ids.length);
     expect([...ids].sort()).toEqual(ALL_KINGI.map((member) => member.id).sort());
     expect(second.members.map((member) => member.id)).toEqual([
+      "kid-6",
       "kid-7",
       "kid-8",
       "kid-9",

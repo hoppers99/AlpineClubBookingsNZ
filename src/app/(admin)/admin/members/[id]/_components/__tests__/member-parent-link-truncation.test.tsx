@@ -146,8 +146,13 @@ describe("#2425 — the parent picker's truncation hint", () => {
 
   it("also says adults come first, so the order does not read as a bug", () => {
     renderDialog();
+    // Both halves of the sentence: the ranking guarantees that MINORS come last
+    // (an age-exempt member ranks with the adults, not among the children —
+    // #2425 review), so the copy says that rather than only "adults first".
     expect(
-      screen.getByText(/active member of any age; adults are listed first/i),
+      screen.getByText(
+        /active member of any age; adults are listed first, children and youth last/i,
+      ),
     ).toBeInTheDocument();
   });
 });

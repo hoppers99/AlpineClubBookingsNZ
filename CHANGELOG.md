@@ -13,13 +13,17 @@ All notable public reference-release changes should be recorded here.
   looking for off the list entirely, with nothing on screen to say the list had
   been cut short. On a big family, the parent was simply unreachable.
 
-  The list now puts **adults at the top**, then everyone else. This changes the
-  ORDER and nothing else: exactly the same people are offered as before — any
-  active, non-archived member of any age who is not an organisation or school
-  account — and the younger candidates follow immediately below the adults. The
-  dialog now says so ("adults are listed first"), so the order does not read as a
-  fault. Who may be recorded as a parent, and who the club emails about a
-  dependent (always an adult), are both completely unchanged.
+  The list now puts **the grown-ups at the top and children and youth last**.
+  This changes the ORDER and nothing else: exactly the same people are offered as
+  before — any active, non-archived member of any age who is not an organisation
+  or school account — and the younger candidates follow immediately below. Adults
+  come first, and so does a member whose membership type makes them age-exempt
+  (an honorary or life member, who carries no age tier at all): they are
+  grown-ups too, and sorting them in among the children would have left the
+  problem unfixed for the very families it was reported on. The dialog now says
+  so ("adults are listed first, children and youth last"), so the order does not
+  read as a fault. Who may be recorded as a parent, and who the club emails about
+  a dependent (always an adult), are both completely unchanged.
 
   When more people matched than the list can show, it now says **"Keep typing to
   narrow this down."** underneath — the same sentence the booking screens use

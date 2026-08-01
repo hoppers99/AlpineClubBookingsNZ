@@ -111,12 +111,15 @@ export function MemberParentLinkDialog({
               offer — every eligible member of any age is still in the list,
               further down. Said out loud because an admin who reads the list as
               alphabetical would otherwise read an adult appearing above a child
-              with the same surname as a bug. */}
+              with the same surname as a bug. The second clause is the one the
+              ranking actually guarantees (#2425 review): the split is minors
+              versus everyone else, so an age-exempt member sits in the top block
+              with the adults rather than among the children. */}
           <DialogDescription>
             Link {member.firstName} {member.lastName} under an active member of
-            any age; adults are listed first. Organisation and school accounts
-            are not people, so they are not offered. Club notifications still
-            route to an adult.
+            any age; adults are listed first, children and youth last.
+            Organisation and school accounts are not people, so they are not
+            offered. Club notifications still route to an adult.
           </DialogDescription>
         </DialogHeader>
         {error && <div className="p-2 bg-danger-3 border border-danger-6 text-danger-11 rounded text-sm">{error}</div>}

@@ -3688,10 +3688,20 @@ filled every slot, and the adult was unreachable without extra typing the admin
 had no way of knowing was needed. So the parent-candidate search now returns
 **ADULTS first, then everyone else**, at the same page size — a re-ORDER of the
 same set, not a filter. It is implemented as two complementary queries
-(`ageTier: ADULT` and `ageTier: { not: ADULT }`) over one shared `where`, rather
-than an `orderBy`, because Prisma has no computed sort key and sorting on
-`ageTier` itself would depend on the enum's declaration order (and would rank
-age-exempt humans, `NOT_APPLICABLE`, above adults). The split is windowed
+(`ageTier: { in: [ADULT, NOT_APPLICABLE] }` and the matching `notIn`) over one
+shared `where`, rather than an `orderBy`, because Prisma has no computed sort
+key and sorting on `ageTier` itself would depend on the enum's declaration
+order. **The line is drawn at MINOR / not minor, not at ADULT / not adult**, and
+that is deliberate: `NOT_APPLICABLE` is the age-EXEMPT tier (see above), so a
+row carrying it in THIS search is a real person — usually an adult on a FORCED
+or N/A-allowing membership type — because organisations are excluded here by
+ROLE and never by tier. Ranking them with `not ADULT` would have interleaved
+them alphabetically among the household's children and left them crowded off
+exactly the page this rule exists to fix. They sort among the adults by name
+instead; nothing about the split claims they ARE adults, only that they are not
+minors. `Member.ageTier` is NOT NULL, so `in` and `notIn` are exact complements
+and the two halves are the same set, and the same count, an unranked query would
+return. The split is windowed
 correctly for pages beyond the first — this is a general list endpoint, and a
 ranking that reshuffled on page 2 would drop and duplicate rows — and the
 `total` the response carries is still the count of the WHOLE eligible set, which

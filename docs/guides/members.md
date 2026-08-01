@@ -160,8 +160,10 @@ prose here rather than with a screenshot:
   lists eight people at a time, and because a parent may now be any age, a
   family that shares a surname could fill all eight with the children — leaving
   the adult you were looking for off the list with nothing to say so. The list
-  now puts adults at the top and everyone else below them; nobody is left out,
-  they are simply further down. When more people matched than the list can show,
+  now puts the grown-ups at the top and children and youth below them; nobody is
+  left out, they are simply further down. An age-exempt member (an honorary or
+  life member who carries no age tier) counts as a grown-up here and is listed
+  with the adults. When more people matched than the list can show,
   it says **"Keep typing to narrow this down."** underneath — the same sentence
   the booking screens use when a member search is cut short. If you see it, add
   another letter or two, or type the person's email address or member ID.
