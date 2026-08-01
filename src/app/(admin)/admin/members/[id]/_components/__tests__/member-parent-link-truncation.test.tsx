@@ -151,7 +151,7 @@ describe("#2425 — the parent picker's truncation hint", () => {
     // #2425 review), so the copy says that rather than only "adults first".
     expect(
       screen.getByText(
-        /active member of any age; adults are listed first, children and youth last/i,
+        /active member of any age; adults are listed ahead of any children or youth that match/i,
       ),
     ).toBeInTheDocument();
   });
