@@ -69,6 +69,18 @@ const batchModifySchema = z.object({
       }),
     )
     .optional(),
+  // #2337: link a placeholder guest to a member (admin-only, member whole-lodge
+  // only — enforced in the service by `resolveGuestMemberLinks` and the
+  // member-origin check). Re-rates the linked row at the member rate in place.
+  linkGuestToMember: z
+    .array(
+      z.object({
+        guestId: z.string().min(1),
+        memberId: z.string().min(1),
+      }),
+    )
+    .max(60)
+    .optional(),
   promoCode: z.string().optional(),
   // #2266 (MED-4): guest-targeted promo beneficiaries. Existing guests bind by
   // bookingGuestId (stale ids refuse loudly); positional indexes exist only
@@ -104,6 +116,8 @@ const OVERRIDE_DATE_ONLY_FIELDS = [
   "removeGuestIds",
   "guestStayRanges",
   "guestUpdates",
+  // #2337: a placeholder→member link is a guest change, never a date override.
+  "linkGuestToMember",
   "promoCode",
   "promoGuestIds",
   "promoAddedGuestIndexes",

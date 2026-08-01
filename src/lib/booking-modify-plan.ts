@@ -80,7 +80,10 @@ import {
   type MemberGuestConsentGuestFields,
   type MemberGuestConsentWritePlanEntry,
 } from "@/lib/member-guest-add-policy";
-import type { MemberGuestAddActor } from "@/lib/member-guest-consent";
+import type {
+  MemberGuestAddActor,
+  MemberGuestConsentColumns,
+} from "@/lib/member-guest-consent";
 import {
   BookingGuestStayRangeValidationError,
   normalizeGuestStayRanges,
@@ -284,6 +287,128 @@ export function resolveGuestNameUpdates({
   return updates;
 }
 
+export type ResolvedGuestMemberLink = {
+  guestId: string;
+  memberId: string;
+  previousFirstName: string;
+  previousLastName: string;
+};
+
+export const GUEST_MEMBER_LINK_ADMIN_ONLY_MESSAGE =
+  "Linking a placeholder guest to a member is an admin-only action.";
+export const GUEST_MEMBER_LINK_WHOLE_LODGE_ONLY_MESSAGE =
+  "A placeholder guest can only be linked to a member on a whole-lodge booking.";
+export const GUEST_MEMBER_LINK_PLACEHOLDER_ONLY_MESSAGE =
+  "Only an unlinked placeholder guest can be linked to a member; a guest already linked to a member cannot be re-pointed.";
+
+/**
+ * Resolve the #2337 placeholder→member links, enforcing the narrow gate that
+ * makes this the ONE sanctioned reversal of the member-guest refusal
+ * (`resolveGuestNameUpdates` still refuses to touch a member-linked guest at
+ * :250-252, and that refusal is left intact — a rename can never re-rate).
+ *
+ * This is the SYNCHRONOUS gate: actor role, the whole-lodge fence, placeholder-
+ * only, and the structural sanity checks (dedupe, not-also-removed, not-also-
+ * renamed). The DEEPER eligibility — the target member exists/active, the family
+ * boundary + consent, membership-type policy, and person-night conflicts — is
+ * enforced by threading the linked members through the same machinery an
+ * `addGuests` member guest uses (see `prepareGuestPlan`). The member-ORIGIN fence
+ * (this must be a member whole-lodge booking, not a SCHOOL one) is asynchronous
+ * and lives on the apply/quote paths beside the quote-priced block.
+ */
+export function resolveGuestMemberLinks({
+  booking,
+  input,
+  role,
+}: {
+  booking: Pick<LoadedBookingForModify, "guests" | "wholeLodgeHold">;
+  input: Pick<
+    BatchModifyInput,
+    "linkGuestToMember" | "removeGuestIds" | "guestUpdates"
+  >;
+  role: Role;
+}): ResolvedGuestMemberLink[] {
+  if (!input.linkGuestToMember?.length) {
+    return [];
+  }
+
+  // Narrow gate 1 — admin/officer only. The reversal must be unreachable from
+  // member self-service, however this resolver is reached.
+  if (role !== "ADMIN") {
+    throw new ApiError(GUEST_MEMBER_LINK_ADMIN_ONLY_MESSAGE, 403);
+  }
+  // Narrow gate 2 — whole-lodge bookings only, so the exemption cannot touch an
+  // ordinary booking and the #1386 paid-name lock stays intact everywhere else.
+  if (!booking.wholeLodgeHold) {
+    throw new ApiError(GUEST_MEMBER_LINK_WHOLE_LODGE_ONLY_MESSAGE, 400);
+  }
+
+  const removedGuestIds = new Set(input.removeGuestIds ?? []);
+  const updatedGuestIds = new Set(
+    (input.guestUpdates ?? []).map((update) => update.guestId),
+  );
+  const guestsById = new Map(booking.guests.map((guest) => [guest.id, guest]));
+  const seenGuestIds = new Set<string>();
+  const seenMemberIds = new Set<string>();
+  const links: ResolvedGuestMemberLink[] = [];
+
+  for (const link of input.linkGuestToMember) {
+    const memberId = link.memberId?.trim();
+    if (!memberId) {
+      throw new ApiError("A member must be chosen to link a guest to", 400);
+    }
+    if (seenGuestIds.has(link.guestId)) {
+      throw new ApiError("Each guest can only be linked once", 400);
+    }
+    seenGuestIds.add(link.guestId);
+    // One member cannot be two guests on the same booking; catching it here keeps
+    // the person-night conflict check from having to reason about a self-clash.
+    if (seenMemberIds.has(memberId)) {
+      throw new ApiError("The same member cannot be linked to two guests", 400);
+    }
+    seenMemberIds.add(memberId);
+
+    if (removedGuestIds.has(link.guestId)) {
+      throw new ApiError(
+        "A guest cannot be linked and removed in the same change",
+        400,
+      );
+    }
+    // A link replaces the placeholder name with the member's identity, so a
+    // simultaneous free-text rename of the same row is ambiguous — refuse it, the
+    // same instinct as the rename+remove guard.
+    if (updatedGuestIds.has(link.guestId)) {
+      throw new ApiError(
+        "A guest cannot be renamed and linked in the same change",
+        400,
+      );
+    }
+
+    const guest = guestsById.get(link.guestId);
+    if (!guest) {
+      throw new ApiError(
+        "One or more guest links referenced a guest not found on this booking",
+        400,
+      );
+    }
+    // Narrow gate 3 — placeholder-only. NEVER member→member: a guest that already
+    // carries a member identity keeps the same lock a rename keeps, so the
+    // reversal can never silently transfer a booking to a different member.
+    if (guest.isMember || guest.memberId) {
+      throw new ApiError(GUEST_MEMBER_LINK_PLACEHOLDER_ONLY_MESSAGE, 400);
+    }
+
+    links.push({
+      guestId: guest.id,
+      memberId,
+      previousFirstName: guest.firstName,
+      previousLastName: guest.lastName,
+    });
+  }
+
+  return links;
+}
+
 export type GuestPlan = {
   remainingGuests: BookingGuest[];
   proposedRemainingGuests: ProposedRemainingGuest[];
@@ -300,6 +425,19 @@ export type GuestPlan = {
    * Empty on every family-scope modification.
    */
   memberGuestEntries: Map<string, MemberGuestConsentWritePlanEntry>;
+  /**
+   * #2337: the resolved placeholder→member links this modification applies, in
+   * request order, with the placeholder's previous name for the audit row. Empty
+   * on every modification that names no link.
+   */
+  guestMemberLinks: ResolvedGuestMemberLink[];
+  /**
+   * #2337: the member-guest consent columns to write onto each linked EXISTING
+   * row, keyed by guestId. Undefined for a family-scope link (writes nothing new);
+   * a beyond-family link carries the same columns an added cross-family member
+   * guest would — so the consent email fires exactly as remove-and-re-add does.
+   */
+  guestMemberLinkColumns: Map<string, MemberGuestConsentColumns | undefined>;
   totalGuestCount: number;
   requiresAdminReview: boolean;
   adminReviewReason: string | null;
@@ -362,11 +500,19 @@ export async function prepareGuestPlan(
   // consent-free and always-notify, stamped with the acting admin.
   const memberGuestActor: MemberGuestAddActor =
     role === "ADMIN" ? { kind: "ADMIN", adminMemberId: actorId } : { kind: "MEMBER" };
+  // #2337: resolve the placeholder→member links (the synchronous narrow gate)
+  // BEFORE the member/boundary resolution, so their member ids join the same
+  // resolve — a linked member is checked for existence/eligibility and placed in
+  // the family boundary exactly like an added member guest, reusing all of it.
+  const guestMemberLinks = resolveGuestMemberLinks({ booking, input, role });
   const { members: linkedMembers, boundary } =
     await resolveLinkedBookingMembersWithBoundary(
       tx,
       booking.memberId,
-      (input.addGuests ?? []).map((guest) => guest.memberId),
+      [
+        ...(input.addGuests ?? []).map((guest) => guest.memberId),
+        ...guestMemberLinks.map((link) => link.memberId),
+      ],
       {
         skipAuthorization: role === "ADMIN",
         memberGuestWideningEnabled: memberGuestPolicy?.wideningEnabled ?? false,
@@ -400,6 +546,45 @@ export async function prepareGuestPlan(
   });
   const memberGuestEntries = consentPlan.entriesByMemberId;
   const normalizedAddGuests = input.addGuests ? consentPlan.guests : undefined;
+
+  // #2337: plan the consent columns for the linked EXISTING rows through the same
+  // pure planner (option a — a beyond-family link reuses the MG2/MG3 consent
+  // machinery unchanged). Keyed by guestId because the columns land on a row that
+  // already exists rather than one being created. Entries are merged into
+  // `memberGuestEntries` so a beyond-family link fires exactly the notification an
+  // added cross-family member guest would.
+  const linkConsentPlan = planMemberGuestConsentWrites({
+    guests: guestMemberLinks.map((link) => ({
+      guestId: link.guestId,
+      memberId: link.memberId,
+    })),
+    boundary,
+    actor: memberGuestActor,
+    now,
+    bookingCheckIn: newCheckIn,
+    policy:
+      memberGuestPolicy ?? {
+        wideningEnabled: false,
+        approvalRequired: true,
+        pendingHoldExpiryDays: 0,
+      },
+  });
+  const guestMemberLinkColumns = new Map<
+    string,
+    MemberGuestConsentColumns | undefined
+  >(linkConsentPlan.guests.map((guest) => [guest.guestId, guest.memberGuestConsent]));
+  const linkCrossFamilyByGuestId = new Map<string, boolean>(
+    linkConsentPlan.guests.map((guest) => [
+      guest.guestId,
+      Boolean(guest.crossFamilyMemberGuest),
+    ]),
+  );
+  const linkByGuestId = new Map(
+    guestMemberLinks.map((link) => [link.guestId, link]),
+  );
+  for (const [memberId, entry] of linkConsentPlan.entriesByMemberId) {
+    memberGuestEntries.set(memberId, entry);
+  }
 
   const removeSet = new Set(input.removeGuestIds ?? []);
   const remainingGuests = booking.guests.filter((g) => !removeSet.has(g.id));
@@ -460,18 +645,35 @@ export async function prepareGuestPlan(
     : undefined;
 
   const proposedGuestRows = [
-    ...proposedRemainingGuests.map((entry) => ({
-      bookingGuestId: entry.guest.id,
-      ageTier: entry.guest.ageTier as AgeTier,
-      isMember: entry.guest.isMember,
-      memberId: entry.guest.memberId ?? null,
-      stayStart: entry.stayStart,
-      stayEnd: entry.stayEnd,
-      nights: entry.nights,
-      // Nights the guest already bought keep their booked price (#1036);
-      // only nights outside the stored set price at current season rates.
-      lockedNightPrices: lockedNightPricesForGuest(entry.guest),
-    })),
+    ...proposedRemainingGuests.map((entry) => {
+      const link = linkByGuestId.get(entry.guest.id);
+      return {
+        bookingGuestId: entry.guest.id,
+        ageTier: entry.guest.ageTier as AgeTier,
+        // #2337: a linked placeholder enters pricing with the MEMBER identity, so
+        // the membership-type policy and the season-rate resolver price it at the
+        // member rate. A non-linked guest is untouched.
+        isMember: link ? true : entry.guest.isMember,
+        memberId: link ? link.memberId : (entry.guest.memberId ?? null),
+        stayStart: entry.stayStart,
+        stayEnd: entry.stayEnd,
+        nights: entry.nights,
+        // Nights the guest already bought keep their booked price (#1036);
+        // only nights outside the stored set price at current season rates.
+        //
+        // #2337 LOAD-BEARING: a linked placeholder MUST clear its booked
+        // non-member lockedNightPrices, or every night stays locked to the stored
+        // non-member price and the re-rate silently does nothing — the member
+        // never gets the member rate. Clearing them reprices the whole stay at the
+        // member season rate.
+        lockedNightPrices: link ? [] : lockedNightPricesForGuest(entry.guest),
+        // Carry the D-8 marker for a beyond-family link so the person-night guard
+        // collapses exactly as it does for an added cross-family member guest.
+        ...(link && linkCrossFamilyByGuestId.get(entry.guest.id)
+          ? { crossFamilyMemberGuest: true }
+          : {}),
+      };
+    }),
     ...(normalizedAddGuestsWithRanges ?? []).map((g) => ({
       bookingGuestId: null,
       ageTier: g.ageTier as AgeTier,
@@ -559,6 +761,8 @@ export async function prepareGuestPlan(
     adminReviewReason,
     reviewUpdate,
     memberGuestEntries,
+    guestMemberLinks,
+    guestMemberLinkColumns,
   };
 }
 
@@ -1420,6 +1624,7 @@ export async function applyGuestChanges(
     proposedRemainingGuests,
     normalizedAddGuests,
     guestNameUpdates,
+    guestMemberLinks,
     priceBreakdown,
     inProgressPlan,
   }: {
@@ -1434,6 +1639,13 @@ export async function applyGuestChanges(
       | Array<BookingGuestInput & MemberGuestConsentGuestFields>
       | undefined;
     guestNameUpdates?: ResolvedGuestNameUpdate[];
+    // #2337: the member identity (and any consent columns) to stamp onto each
+    // linked EXISTING placeholder row, keyed by guestId. The row is re-rated by
+    // the pricing pass above; this write records who it is now FOR.
+    guestMemberLinks?: Map<
+      string,
+      { memberId: string; consentColumns?: MemberGuestConsentColumns }
+    >;
     priceBreakdown: PricingResult["priceBreakdown"];
     inProgressPlan: BookingEditGuestRangePlan | null;
   },
@@ -1442,6 +1654,7 @@ export async function applyGuestChanges(
   const nameUpdatesByGuestId = new Map(
     (guestNameUpdates ?? []).map((update) => [update.guestId, update]),
   );
+  const linkByGuestId = guestMemberLinks ?? new Map();
 
   type BreakdownGuest = { nightDates: Date[]; perNightCents: number[] };
 
@@ -1477,6 +1690,11 @@ export async function applyGuestChanges(
     for (let e = 0; e < existingCount; e++) {
       const entry = inProgressPlan.proposedExistingGuests[e];
       const nameUpdate = nameUpdatesByGuestId.get(entry.guest.id);
+      // #2337: stamp the member identity onto a linked existing row here too, for
+      // identity consistency if a link ever rides the in-progress path (the
+      // re-rate itself lives on the recalculate path, which prices from
+      // guestsForPricing rather than this plan).
+      const link = linkByGuestId.get(entry.guest.id);
       const envelope = await syncGuestNights(
         entry.guest.id,
         priceBreakdown.guests[e],
@@ -1490,6 +1708,13 @@ export async function applyGuestChanges(
             ? {
                 firstName: nameUpdate.firstName,
                 lastName: nameUpdate.lastName,
+              }
+            : {}),
+          ...(link
+            ? {
+                isMember: true,
+                memberId: link.memberId,
+                ...(link.consentColumns ?? {}),
               }
             : {}),
           stayStart: envelope.stayStart,
@@ -1597,6 +1822,11 @@ export async function applyGuestChanges(
   for (let i = 0; i < remainingGuests.length; i++) {
     const proposedRange = proposedRemainingGuests[i];
     const nameUpdate = nameUpdatesByGuestId.get(remainingGuests[i].id);
+    // #2337: a placeholder→member link stamps the member identity onto this
+    // existing row (today this loop wrote only names here). The row was already
+    // repriced at the member rate above via its cleared lockedNightPrices; this
+    // records who it is FOR, plus any beyond-family consent columns.
+    const link = linkByGuestId.get(remainingGuests[i].id);
     const envelope = await syncGuestNights(
       remainingGuests[i].id,
       priceBreakdown.guests[i],
@@ -1610,6 +1840,13 @@ export async function applyGuestChanges(
           ? {
               firstName: nameUpdate.firstName,
               lastName: nameUpdate.lastName,
+            }
+          : {}),
+        ...(link
+          ? {
+              isMember: true,
+              memberId: link.memberId,
+              ...(link.consentColumns ?? {}),
             }
           : {}),
         stayStart: envelope.stayStart,

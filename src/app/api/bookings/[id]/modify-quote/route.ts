@@ -145,6 +145,17 @@ const modifyQuoteSchema = z.object({
       })
     )
     .optional(),
+  // #2337: mirror of the apply route's placeholder→member link so the preview
+  // shows the same re-rate delta the save will settle. Gated identically.
+  linkGuestToMember: z
+    .array(
+      z.object({
+        guestId: z.string().min(1),
+        memberId: z.string().min(1),
+      })
+    )
+    .max(60)
+    .optional(),
   promoCode: z.string().optional(),
   // #2266 (MED-4): beneficiaries for guest-targeted promo codes, mirroring the
   // apply route — EXISTING guests bind by bookingGuestId (a stale id refuses
@@ -181,6 +192,8 @@ const OVERRIDE_DATE_ONLY_QUOTE_FIELDS = [
   "removeGuestIds",
   "guestStayRanges",
   "guestUpdates",
+  // #2337: a placeholder→member link is a guest change, never a date override.
+  "linkGuestToMember",
   "promoCode",
   "promoGuestIds",
   "promoAddedGuestIndexes",

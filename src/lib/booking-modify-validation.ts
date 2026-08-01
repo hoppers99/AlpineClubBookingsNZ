@@ -59,6 +59,15 @@ export type BatchModifyInput = {
     firstName: string;
     lastName: string;
   }>;
+  // #2337: link an unnamed placeholder guest on a MEMBER whole-lodge booking to a
+  // real member, re-rating that guest at the member rate in place. A first-class
+  // sibling of `guestUpdates` — NOT a loosened rename: a rename can never touch
+  // isMember/memberId/rateMembershipTypeId (booking-modify-plan.ts:250-252 stays
+  // intact), whereas this deliberately does, for the one narrow case the owner
+  // sanctioned (option 2, quote-first, 1 Aug 2026). Gated hard by
+  // `resolveGuestMemberLinks` (admin-only, whole-lodge-only, placeholder-only) and
+  // by the member-origin check on the apply/quote paths.
+  linkGuestToMember?: Array<{ guestId: string; memberId: string }>;
   promoCode?: string;
   // #2266 (MED-4): a guest-targeted promo's beneficiaries. EXISTING guests are
   // bound by bookingGuestId — a positional index would be re-bound to whatever
@@ -430,6 +439,40 @@ export async function isQuotePricedBooking(
 
 export const QUOTE_PRICED_EDIT_BLOCK_MESSAGE =
   "This booking keeps a negotiated booking-request price, so standard edits are disabled — they would reprice every guest at season rates. Re-price or issue a revised quote from its booking request instead.";
+
+/**
+ * True when this booking was created from an authenticated member whole-lodge
+ * request (#2263) — `requestedByMemberId` set and `exclusivityRequested` — as
+ * opposed to a public or SCHOOL booking request. Mirrors
+ * `isMemberWholeLodgeRequest` at the booking level.
+ *
+ * The #2337 placeholder→member link keys on this, NOT on `Booking.wholeLodgeHold`
+ * alone: a school whole-lodge booking ALSO carries `wholeLodgeHold` (the admin
+ * capacity action), and its non-member student rows would pass the placeholder
+ * gate — so re-rating one at a member rate would silently corrupt the school's
+ * flat-split negotiated price. Member-origin is the fence that keeps the re-rate
+ * to the one booking class whose placeholders were always meant to re-rate.
+ *
+ * Every member whole-lodge booking is also "quote-priced" (its placeholders were
+ * flat-split at approval), so `isQuotePricedBooking` returns true for it and the
+ * standard structural-edit block would refuse the link; the apply/quote paths
+ * exempt a member-whole-lodge link-only request from that block for exactly this
+ * reason.
+ */
+export async function isMemberWholeLodgeBooking(
+  db: Prisma.TransactionClient,
+  bookingId: string,
+): Promise<boolean> {
+  const request = await db.bookingRequest.findFirst({
+    where: {
+      OR: [{ convertedBookingId: bookingId }, { heldBookingId: bookingId }],
+      requestedByMemberId: { not: null },
+      exclusivityRequested: true,
+    },
+    select: { id: true },
+  });
+  return Boolean(request);
+}
 
 export async function assertBookingNotQuotePriced(
   db: Prisma.TransactionClient,

@@ -27,9 +27,11 @@ import {
   type BatchModifyInput,
   type BookingModificationSettlementMethod,
   type LoadedBookingForModify,
+  type ResolvedGuestMemberLink,
   type ResolvedGuestNameUpdate,
   type PricingResult,
   isBookingFullyPaidForGuestNameEdits,
+  isMemberWholeLodgeBooking,
   isQuotePricedBooking,
   QUOTE_PRICED_EDIT_BLOCK_MESSAGE,
 } from "@/lib/booking-modify";
@@ -221,6 +223,8 @@ export async function modifyBookingBatch({
       input.removeGuestIds?.length ||
       input.guestStayRanges?.length ||
       input.guestUpdates?.length ||
+      // #2337: a placeholder→member link is a guest change, never a date override.
+      input.linkGuestToMember?.length ||
       input.promoCode ||
       input.promoGuestIds?.length ||
       input.promoAddedGuestIndexes?.length ||
@@ -354,6 +358,9 @@ export async function modifyBookingBatch({
         input.addGuests?.length ||
         input.removeGuestIds?.length ||
         input.guestStayRanges?.length ||
+        // #2337: a link re-rates a guest, so it is structural — it must never take
+        // the identity-only price-preserving echo (that would skip the re-rate).
+        input.linkGuestToMember?.length ||
         input.promoCode ||
         input.removePromoCode,
     );
@@ -367,8 +374,46 @@ export async function modifyBookingBatch({
       !requestedStructuralChange &&
       !input.guestUpdates?.length &&
       input.applyCreditCents !== undefined;
+    // #2337: the placeholder→member link. The synchronous gate (admin,
+    // whole-lodge, placeholder-only) runs inside `prepareGuestPlan`; the
+    // member-ORIGIN fence runs here, where the DB is in hand. A SCHOOL whole-lodge
+    // booking also carries `wholeLodgeHold`, so without this a student row could
+    // be re-rated at a member rate — corrupting the school's negotiated price.
+    const hasLinks = Boolean(input.linkGuestToMember?.length);
+    const memberWholeLodgeForLink = hasLinks
+      ? await isMemberWholeLodgeBooking(tx, bookingId)
+      : false;
+    if (hasLinks && !memberWholeLodgeForLink) {
+      throw new ApiError(
+        "Linking a placeholder to a member is only available on member whole-lodge bookings.",
+        400,
+      );
+    }
+    // A member whole-lodge booking is quote-priced (its placeholders were
+    // flat-split at approval), but a link-only request is EXACTLY the sanctioned
+    // re-rate of those placeholders, so it is exempt from the quote-priced block
+    // the same way an identity-only edit is. The exemption is link-ONLY: a link
+    // combined with a date/add/remove/promo change on a quote-priced booking is
+    // still refused, because those DO disturb the negotiated basis.
+    const requestIsMemberLinkExempt =
+      hasLinks &&
+      memberWholeLodgeForLink &&
+      !(
+        input.checkIn ||
+        input.checkOut ||
+        input.addGuests?.length ||
+        input.removeGuestIds?.length ||
+        input.guestStayRanges?.length ||
+        input.promoCode ||
+        input.removePromoCode
+      );
     const quotePriced = await isQuotePricedBooking(tx, bookingId);
-    if (!requestIsIdentityOnly && !requestIsCreditElectionOnly && quotePriced) {
+    if (
+      !requestIsIdentityOnly &&
+      !requestIsCreditElectionOnly &&
+      !requestIsMemberLinkExempt &&
+      quotePriced
+    ) {
       throw new ApiError(QUOTE_PRICED_EDIT_BLOCK_MESSAGE, 400);
     }
 
@@ -444,6 +489,18 @@ export async function modifyBookingBatch({
       // still rejected. Never loosen structural edits — hence identity-only.
       allowTypoFixWhenFullyPaid: requestIsIdentityOnly,
     });
+    // #2337: the resolved links (with previous placeholder names for the audit)
+    // and the per-row write map (member identity + any consent columns).
+    const guestMemberLinks = guestPlan.guestMemberLinks;
+    const linkWriteByGuestId = new Map(
+      guestMemberLinks.map((link) => [
+        link.guestId,
+        {
+          memberId: link.memberId,
+          consentColumns: guestPlan.guestMemberLinkColumns.get(link.guestId),
+        },
+      ]),
+    );
     const identityOnlyModification =
       guestNameUpdates.length > 0 && !requestedStructuralChange;
     // A fully-paid, non-quoted booking whose name edit cleared the typo guard
@@ -536,6 +593,8 @@ export async function modifyBookingBatch({
       proposedRemainingGuests: guestPlan.proposedRemainingGuests,
       normalizedAddGuests: guestPlan.normalizedAddGuests,
       guestNameUpdates,
+      // #2337: stamp the member identity + consent columns onto the linked rows.
+      guestMemberLinks: linkWriteByGuestId,
       priceBreakdown: pricing.priceBreakdown,
       inProgressPlan: pricing.inProgressPlan,
     });
@@ -651,15 +710,22 @@ export async function modifyBookingBatch({
         // (#1386) from an ordinary pre-payment name update, so the abuse-
         // sensitive path is queryable. (modificationType is a free-text String,
         // not a Prisma enum — no schema change.)
-        modificationType: paidNameTypoFix
-          ? "GUEST_TYPO_FIX"
-          : identityOnlyModification
-            ? "GUEST_UPDATE"
-            : // #2266: a credit-election-only edit is queryably distinct from a
-              // structural modification (modificationType is free text).
-              requestIsCreditElectionOnly
-              ? "CREDIT_ELECTION"
-              : "BATCH_MODIFY",
+        // #2337: a placeholder→member link is the notable, money-moving event, so
+        // it takes precedence in the queryable discriminator. The linked-guest
+        // detail lives in previousData/newData so the identity change is never
+        // silent (modificationType is free text, not a Prisma enum — no schema
+        // change).
+        modificationType: guestMemberLinks.length > 0
+          ? "GUEST_MEMBER_LINK"
+          : paidNameTypoFix
+            ? "GUEST_TYPO_FIX"
+            : identityOnlyModification
+              ? "GUEST_UPDATE"
+              : // #2266: a credit-election-only edit is queryably distinct from a
+                // structural modification (modificationType is free text).
+                requestIsCreditElectionOnly
+                ? "CREDIT_ELECTION"
+                : "BATCH_MODIFY",
         previousData: {
           checkIn: new Date(booking.checkIn).toISOString().split("T")[0],
           checkOut: new Date(booking.checkOut).toISOString().split("T")[0],
@@ -677,6 +743,17 @@ export async function modifyBookingBatch({
             firstName: update.previousFirstName,
             lastName: update.previousLastName,
           })),
+          // #2337: the placeholder identity BEFORE the link, so the audit records
+          // exactly what each linked row was.
+          ...(guestMemberLinks.length > 0
+            ? {
+                linkedGuests: guestMemberLinks.map((link) => ({
+                  guestId: link.guestId,
+                  firstName: link.previousFirstName,
+                  lastName: link.previousLastName,
+                })),
+              }
+            : {}),
         },
         newData: {
           checkIn: dates.newCheckIn.toISOString().split("T")[0],
@@ -691,6 +768,15 @@ export async function modifyBookingBatch({
             firstName: update.firstName,
             lastName: update.lastName,
           })),
+          // #2337: which member each placeholder is now linked to.
+          ...(guestMemberLinks.length > 0
+            ? {
+                linkedGuests: guestMemberLinks.map((link) => ({
+                  guestId: link.guestId,
+                  memberId: link.memberId,
+                })),
+              }
+            : {}),
           totalPriceCents: pricing.newTotalPriceCents,
           discountCents: promo.newDiscountCents,
           promoAdjustmentCents: promo.newPromoAdjustmentCents,
@@ -778,7 +864,10 @@ export async function modifyBookingBatch({
       settlementMethod: payments.settlementMethod,
       policyRetainedAmountCents: payments.policyRetainedAmountCents,
       guestNameUpdates,
-      guestIdentityChanged: guestNameUpdates.length > 0,
+      // #2337: a link changes who a guest row is FOR (placeholder → member), so
+      // it is an identity change for the Xero name-sync the same as a rename.
+      guestIdentityChanged:
+        guestNameUpdates.length > 0 || guestMemberLinks.length > 0,
       identityOnlyModification,
       creditElectionOnlyModification: requestIsCreditElectionOnly,
       // Read back from the row this transaction just wrote, so a lifecycle
@@ -801,8 +890,18 @@ export async function modifyBookingBatch({
       // MG2 #2307: the cross-family guests this modification added, matched to
       // the rows it actually created, carried OUT of the transaction so the
       // sends happen after the commit.
+      // #2337: the linked EXISTING rows carry the member identity now too, so a
+      // beyond-family link owes the same consent notification an added
+      // cross-family member guest does. They are matched by memberId alongside the
+      // created rows.
       memberGuestNotificationRows: matchMemberGuestNotificationRows({
-        createdGuests,
+        createdGuests: [
+          ...createdGuests,
+          ...guestMemberLinks.map((link) => ({
+            id: link.guestId,
+            memberId: link.memberId,
+          })),
+        ],
         entriesByMemberId: guestPlan.memberGuestEntries,
       }),
       /**
