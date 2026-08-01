@@ -38,7 +38,8 @@ is integer cents (shown as dollars); dates are NZ date-only lodge nights.
 ### Filter the queue
 
 1. Use **From**, **To**, and **Page size**, then click **Apply**. Click
-   **Clear** to reset. The filters are stored in the page URL.
+   **Reset** to restore empty dates, 25 rows, and page 1. The filters are stored
+   in the page URL; unrelated URL context is preserved.
 
 ### Force-confirm a booking
 
@@ -65,7 +66,7 @@ The waitlist is a work queue, not a settings page. Its controls:
 | --- | --- | --- | --- |
 | From / To | Filter by stay date | empty | NZ date-only |
 | Page size | Rows per page | 25 | 10 / 25 / 50 / 100 |
-| Apply / Clear | Apply or reset the filters | — | Stored in the URL |
+| Apply / Reset | Apply or restore the dataset defaults | — | Stored in the URL; Reset is disabled at defaults |
 | Force Confirm | Confirm a waitlisted booking | — | Needs bookings edit access; may prompt for email choice and/or overbook confirmation |
 
 Status chips include **Waitlisted** and **Waitlist Offered**; a warning line

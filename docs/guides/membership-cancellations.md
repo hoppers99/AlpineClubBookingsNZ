@@ -49,7 +49,8 @@ allocated Xero credit note.
 
 1. Go to **Admin → Members → Cancellation Requests**. The page shows an **Archive
    Review Queue** and a **Cancellation Review Queue**, with a status filter (Open,
-   Completed, Rejected, Withdrawn, All) and a **Refresh** button.
+   Completed, Rejected, Withdrawn, All), **Reset**, and a separate **Refresh**
+   button. Reset restores Open; Refresh reloads the current filtered queues.
 
    ![Cancellation Requests page: the status filter, the Archive Review Queue, and the Cancellation Review Queue](../images/admin/admin-membership-cancellations.png)
 
@@ -151,6 +152,7 @@ The review queue itself has no persistent settings — only per-review inputs.
 | Control | What it does | Notes / constraints |
 | --- | --- | --- |
 | Status filter | Open / Completed / Rejected / Withdrawn / All | Default is Open |
+| Reset | Restore the Open filter | Always visible; disabled at the default |
 | Admin note / Review note | Note sent to the member and the audit log | Up to 1000 characters |
 | Notify choice (approve/reject) | Whether the member is emailed | Processed either way; recorded in the audit log |
 | Approve Archive | Archives the member | Two-admin rule: the requester cannot approve |
