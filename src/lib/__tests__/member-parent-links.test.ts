@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   getParentEmailSourceId,
+  buildMemberFacingParentLinks,
   buildParentLinks,
   matchParentLinkIdForNotification,
   resolveInheritedEmailSourceId,
@@ -344,5 +345,137 @@ describe("buildParentLinks", () => {
 
   it("returns an empty list when there are no parents", () => {
     expect(buildParentLinks({})).toEqual([]);
+  });
+
+  it("keeps the email — admin surfaces still see it (#2424)", () => {
+    const links = buildParentLinks({ parent: { id: "p1", ...base } });
+    expect(links[0].email).toBe("a@b.test");
+  });
+});
+
+describe("buildMemberFacingParentLinks (#2424)", () => {
+  const base = {
+    firstName: "A",
+    lastName: "B",
+    email: "a@b.test",
+  };
+
+  it("returns the email when the parent shares a group with the viewer", () => {
+    const links = buildMemberFacingParentLinks(
+      {
+        parent: {
+          id: "p1",
+          ...base,
+          familyGroupMemberships: [{ familyGroupId: "g1" }],
+        },
+      },
+      ["g1"],
+    );
+    expect(links[0].email).toBe("a@b.test");
+  });
+
+  it("omits the email when no group is shared, keeping name and link type", () => {
+    const links = buildMemberFacingParentLinks(
+      {
+        parent: {
+          id: "p1",
+          ...base,
+          familyGroupMemberships: [{ familyGroupId: "g-other" }],
+        },
+      },
+      ["g1"],
+    );
+    expect(links[0]).toEqual({
+      id: "p1",
+      firstName: "A",
+      lastName: "B",
+      parentLinkType: "PRIMARY",
+    });
+    expect(links[0]).not.toHaveProperty("email");
+  });
+
+  it("omits the email for a parent in no group at all", () => {
+    const links = buildMemberFacingParentLinks(
+      { parent: { id: "p1", ...base, familyGroupMemberships: [] } },
+      ["g1"],
+    );
+    expect(links[0]).not.toHaveProperty("email");
+  });
+
+  it("omits the email when the viewer belongs to no group", () => {
+    const links = buildMemberFacingParentLinks(
+      {
+        parent: {
+          id: "p1",
+          ...base,
+          familyGroupMemberships: [{ familyGroupId: "g1" }],
+        },
+      },
+      [],
+    );
+    expect(links[0]).not.toHaveProperty("email");
+  });
+
+  it("carries the display fields the member view uses", () => {
+    const links = buildMemberFacingParentLinks(
+      {
+        parent: {
+          id: "p1",
+          ...base,
+          ageTier: "YOUTH",
+          active: true,
+          canLogin: false,
+          inheritEmailFromId: "gp1",
+          familyGroupMemberships: [{ familyGroupId: "g1" }],
+        },
+      },
+      ["g1"],
+    );
+    expect(links[0]).toMatchObject({
+      ageTier: "YOUTH",
+      active: true,
+      canLogin: false,
+      inheritEmailFromId: "gp1",
+    });
+  });
+
+  it("is a whitelist: a field the query adds later cannot leak through", () => {
+    const links = buildMemberFacingParentLinks(
+      {
+        parent: {
+          id: "p1",
+          ...base,
+          familyGroupMemberships: [{ familyGroupId: "g-other" }],
+          // A future select could add contact fields; the builder copies only
+          // the fields it names, so this never reaches the payload.
+          phoneNumber: "0211234567",
+        } as Parameters<typeof buildMemberFacingParentLinks>[0]["parent"],
+      },
+      ["g1"],
+    );
+    expect(links[0]).not.toHaveProperty("phoneNumber");
+    expect(links[0]).not.toHaveProperty("familyGroupMemberships");
+  });
+
+  it("decides per parent, not per member", () => {
+    const links = buildMemberFacingParentLinks(
+      {
+        parent: {
+          id: "p1",
+          ...base,
+          email: "in@b.test",
+          familyGroupMemberships: [{ familyGroupId: "g1" }],
+        },
+        secondaryParent: {
+          id: "p2",
+          ...base,
+          email: "out@b.test",
+          familyGroupMemberships: [{ familyGroupId: "g-other" }],
+        },
+      },
+      ["g1"],
+    );
+    expect(links[0].email).toBe("in@b.test");
+    expect(links[1]).not.toHaveProperty("email");
   });
 });

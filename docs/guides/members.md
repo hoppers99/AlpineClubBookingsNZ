@@ -154,6 +154,12 @@ prose here rather than with a screenshot:
   edit or confirm their details, or answer a consent request for them; those
   need an active adult with a login who shares a family group with them, which
   the parent link neither grants nor is consulted for.
+  **A parent link is not a licence to see that parent's contact details** (#2424).
+  You see them here, as an administrator, whatever the link. Members do not: on
+  their own family page a parent's **email address is shown only when that
+  parent is in one of their own family groups**, and a parent outside them all
+  appears by name alone. Recording a parent therefore never publishes that
+  person's address to a family they are not part of.
   **Who the club emails is decided separately, and always resolves to an adult.**
   A dependent's club email goes to the nearest adult at or above them in the
   family who has a real address, so a dependent added under a young parent has

@@ -215,6 +215,83 @@ export function buildParentLinks(member: {
 }
 
 /**
+ * A parent as one MEMBER may see another member's parent: the same link, with
+ * the email address present only where the rule below allows it.
+ */
+export type MemberFacingParentLink = Omit<ParentLinkSummary, "email"> & {
+  email?: string;
+};
+
+/** A parent row read with the family groups it belongs to (#2424). */
+export type ParentLinkWithGroups = Omit<ParentLinkSummary, "parentLinkType"> & {
+  familyGroupMemberships?: Array<{ familyGroupId: string }> | null;
+};
+
+/**
+ * MEMBER-FACING parent links: name and relationship always, the parent's EMAIL
+ * ADDRESS only when the VIEWER shares a family group with that parent (#2424,
+ * owner decision 2026-08-01).
+ *
+ * A parent link carries no shared-group requirement of its own — the admin link
+ * route will record a parent who is in none of the child's groups — so the
+ * member family payload was handing every viewer the address of people outside
+ * their own family entirely. #2282 widened that further by allowing parentage at
+ * any age, so the reachable set stopped being "other adults" and started
+ * including children.
+ *
+ * The rule is enforced HERE, server-side, and never by a client choosing not to
+ * render the field: the JSON is the leak, not the screen. The visible shape is
+ * built by WHITELIST rather than by deleting `email` from a spread, so a field
+ * added to the query later cannot leak by default.
+ *
+ * The viewer's own groups are the yardstick, not the subject member's: the
+ * subject is by construction someone the viewer already shares a group with, and
+ * it is the parent hanging off them who may not be.
+ */
+export function buildMemberFacingParentLinks(
+  member: {
+    parent?: ParentLinkWithGroups | null;
+    secondaryParent?: ParentLinkWithGroups | null;
+  },
+  viewerFamilyGroupIds: Iterable<string>,
+): MemberFacingParentLink[] {
+  const viewerGroupIds = new Set(viewerFamilyGroupIds);
+  const groupIdsByParentId = new Map<string, string[]>();
+  for (const parent of [member.parent, member.secondaryParent]) {
+    if (!parent) continue;
+    groupIdsByParentId.set(
+      parent.id,
+      (parent.familyGroupMemberships ?? []).map(
+        (membership) => membership.familyGroupId,
+      ),
+    );
+  }
+
+  return buildParentLinks(member).map((link) => {
+    const visible: MemberFacingParentLink = {
+      id: link.id,
+      firstName: link.firstName,
+      lastName: link.lastName,
+      parentLinkType: link.parentLinkType,
+    };
+    if (link.ageTier !== undefined) visible.ageTier = link.ageTier;
+    if (link.active !== undefined) visible.active = link.active;
+    if (link.canLogin !== undefined) visible.canLogin = link.canLogin;
+    if (link.inheritEmailFromId !== undefined) {
+      visible.inheritEmailFromId = link.inheritEmailFromId;
+    }
+
+    const sharesFamilyGroupWithViewer = (
+      groupIdsByParentId.get(link.id) ?? []
+    ).some((groupId) => viewerGroupIds.has(groupId));
+    if (sharesFamilyGroupWithViewer) {
+      visible.email = link.email;
+    }
+    return visible;
+  });
+}
+
+/**
  * Which of a member's linked parents an admin's "notification email" selection
  * names. Selection-matching only — it deliberately does not decide the mailbox,
  * because that is a walk up the family chain (#2255,

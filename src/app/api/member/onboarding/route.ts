@@ -4,6 +4,7 @@ import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { requireActiveSessionUser } from "@/lib/session-guards";
 import {
+  MEMBER_ONBOARDING_FAMILY_SELECT,
   MEMBER_ONBOARDING_PROFILE_SELECT,
   getMemberDisplayName,
   getMemberOnboardingStatus,
@@ -11,7 +12,7 @@ import {
   shouldShowMemberOnboarding,
   type MemberOnboardingProfile,
 } from "@/lib/member-onboarding";
-import { buildParentLinks } from "@/lib/member-parent-links";
+import { buildMemberFacingParentLinks } from "@/lib/member-parent-links";
 import { getMissingMemberProfileFieldDetails } from "@/lib/member-profile-completeness";
 import { loadMemberFieldsFlags } from "@/lib/member-fields-settings";
 
@@ -26,7 +27,14 @@ function serializeStatus(member: MemberOnboardingProfile) {
 
 function serializeFamilyMember(
   member: MemberOnboardingProfile,
-  currentMemberId: string
+  currentMemberId: string,
+  /**
+   * #2424: the VIEWER's own family groups. A parent recorded against a family
+   * member need not be in any of them — parent links carry no shared-group
+   * requirement — and a parent outside them all is returned without an email
+   * address.
+   */
+  viewerFamilyGroupIds: string[]
 ) {
   const status = serializeStatus(member);
   const isCurrentUser = member.id === currentMemberId;
@@ -62,7 +70,7 @@ function serializeFamilyMember(
     isCurrentUser,
     status,
     nextAction,
-    parentLinks: buildParentLinks(member),
+    parentLinks: buildMemberFacingParentLinks(member, viewerFamilyGroupIds),
     notificationEmailFromId: member.inheritEmailFromId ?? null,
   };
 }
@@ -96,7 +104,10 @@ export async function GET() {
                 select: {
                   role: true,
                   member: {
-                    select: MEMBER_ONBOARDING_PROFILE_SELECT,
+                    // #2424: the family-scoped select — it carries each
+                    // parent's family groups so the payload can decide, on the
+                    // server, whether this viewer may have that parent's email.
+                    select: MEMBER_ONBOARDING_FAMILY_SELECT,
                   },
                 },
                 orderBy: { member: { firstName: "asc" } },
@@ -183,7 +194,7 @@ export async function GET() {
       name: membership.familyGroup.name,
       members: membership.familyGroup.memberships.map((groupMember) => ({
         groupRole: groupMember.role,
-        ...serializeFamilyMember(groupMember.member, currentMember.id),
+        ...serializeFamilyMember(groupMember.member, currentMember.id, groupIds),
       })),
     })),
     pendingRequests: pendingRequests.map((request) => ({
