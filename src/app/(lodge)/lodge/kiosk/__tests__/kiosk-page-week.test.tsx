@@ -388,6 +388,19 @@ describe("KioskPage club-time dates (#2474)", () => {
     // The club crosses midnight into Monday 3 August. Nobody touches the
     // tablet; only the clock moves.
     vi.setSystemTime(new Date("2026-08-02T12:00:30.000Z"));
+
+    // First, the half-minute BEFORE the tick lands. A re-render in that window
+    // must not move the chip on its own: the page is still serving Sunday, and
+    // a chip reading the club's calendar inline would already say Monday. This
+    // is the divergence #2474's review found, in miniature — chip and served
+    // night move together or not at all. Refresh is just a cheap re-render.
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    await settleKiosk();
+    expect(
+      screen.getByRole("button", { name: "Open Sunday, 2 August" })
+    ).toHaveTextContent("Today");
+    expect(accessDates).not.toContain("2026-08-03");
+
     // One `CLUB_DAY_TICK_MS` (page.tsx) — raising that constant should fail
     // this case rather than quietly slow the kiosk down.
     await act(async () => {
