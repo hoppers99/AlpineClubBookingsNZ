@@ -907,9 +907,15 @@ export function diffFieldMergePatches(
 
 /**
  * The Member self-relation FK columns — the family links: parent, secondary
- * parent, email inheritance, details-confirmed-by. Derived from the spec table
- * so a fifth self-relation cannot appear without automatically joining the
- * under-lock drift re-check in `executeMemberMerge` (#2437).
+ * parent, email inheritance, details-confirmed-by. Derived from the spec
+ * table's `selfRelation` flag, which is HAND-WRITTEN — the derivation alone
+ * guarantees nothing about a fifth self-relation. What enforces it is the
+ * DMMF/schema test in member-merge-dmmf.test.ts, which asserts the flag in
+ * both directions against the schema (every singular Member→Member FK-owning
+ * relation is flagged, only those, all bucket `move`), so a new self-relation
+ * added WITHOUT the flag fails CI instead of silently escaping both the
+ * under-lock drift re-check in `executeMemberMerge` and #2445's
+ * master-row-excluding, id-bounded sweep (#2437).
  */
 export const MEMBER_SELF_RELATION_COLUMNS: readonly string[] =
   MEMBER_MERGE_RELATION_SPECS.filter((s) => s.selfRelation).map((s) => s.column);
