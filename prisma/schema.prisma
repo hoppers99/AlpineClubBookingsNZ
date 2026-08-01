@@ -1538,6 +1538,13 @@ model Season {
   startDate DateTime   @db.Date
   endDate   DateTime   @db.Date
   active    Boolean    @default(true)
+  // Flat whole-lodge nightly rate for this season, in integer cents (#2338).
+  // NULL = not set: a whole-lodge approval then prices per guest exactly as
+  // before. When set, an officer who ticks "price as whole lodge" on the
+  // approve panel charges `nights x this rate` and headcount is ignored; the
+  // officer's manual total override still wins over both. Additive/nullable so
+  // the draining old colour's omitted-column INSERTs keep working (blue/green).
+  flatWholeLodgeNightCents Int?
   lodgeId   String     @default(dbgenerated("default_lodge_id()"))
   createdAt DateTime   @default(now())
   updatedAt DateTime   @updatedAt

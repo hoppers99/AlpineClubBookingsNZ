@@ -1,0 +1,13 @@
+-- #2338 flat whole-lodge night rate per season.
+--
+-- Additive EXPAND only: ONE nullable INTEGER column on the (cold, catalog-only)
+-- Season table. Money in integer cents (docs/DOMAIN_INVARIANTS.md -> Money).
+-- NULL means "no flat whole-lodge rate set", so a whole-lodge approval prices
+-- per guest exactly as it does today; when set, an officer who chooses to price
+-- as whole lodge charges `nights x this rate` and ignores headcount.
+--
+-- Blue/green-safe: the column is nullable with no default, so the draining old
+-- colour's INSERTs that omit it still land a NULL and its reads never touch it.
+-- Season is not a hot table, so no lock-impact window is needed (a single cold
+-- ADD COLUMN takes a brief ACCESS EXCLUSIVE lock and rewrites nothing).
+ALTER TABLE "Season" ADD COLUMN "flatWholeLodgeNightCents" INTEGER;
