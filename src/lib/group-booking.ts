@@ -968,6 +968,44 @@ export async function createNonMemberJoinRequest(
     );
   }
 
+  // #2363: the public non-member join is held to the same minimum-stay policy
+  // as the member join (joinGroupBookingAsMember) — this contact is never an
+  // admin, so there is no override branch. Staging is refused BEFORE a
+  // verification token is issued or a GroupBookingJoin row is written, so a
+  // stay the policy refuses never reaches a mailbox as a live confirmation
+  // link. The joiner inherits the organiser's dates at the group's own lodge,
+  // so those are what is evaluated.
+  //
+  // The refusal is surfaced like the guest-cap refusal above: the plain
+  // sentence and its code, no frozen snapshot. It is not on the route's
+  // neutral list because it discloses nothing about who or what exists — a
+  // caller already holding a valid, joinable group code learns only that the
+  // organiser's own dates are too short, which the group's public page already
+  // shows them.
+  const { validateMinimumStay, formatViolationsDetail } = await import(
+    "@/lib/booking-policies"
+  );
+  const stay = await validateMinimumStay(
+    group.organiserBooking.checkIn,
+    group.organiserBooking.checkOut,
+    groupLodgeId
+  );
+  if (!stay.valid) {
+    const exceptionReview = aggregatePolicyExceptionViolations(stay.violations);
+    throw new GroupBookingError(
+      // A non-member cannot move these dates — only the organiser can — so the
+      // sentence they read on /join/[code] names the fix rather than the rule.
+      "This group's stay is shorter than the minimum stay required for those nights, so it cannot accept sign-ups. Please contact the organiser.",
+      400,
+      {
+        code: "MINIMUM_STAY_VIOLATION",
+        details: formatViolationsDetail(stay.violations),
+        violations: exceptionReview.violations,
+        exceptionReview,
+      }
+    );
+  }
+
   // A real login member should use the authenticated member path so we don't
   // create a duplicate non-login member for them.
   const existingMember = await prisma.member.findFirst({
@@ -1037,6 +1075,17 @@ export type VerifyNonMemberJoinResult =
   | { outcome: "expired" }
   | { outcome: "not_joinable"; message: string }
   | { outcome: "capacity_full"; fullNights: string[] }
+  // #2363: the minimum-stay policy set is re-read at verification time, so a
+  // rule tightened (or newly created) after this request was staged fails
+  // closed here instead of admitting a stay the club no longer allows. It is
+  // its own outcome, not a thrown error, because a throw becomes a generic 500
+  // at the verify route. The frozen snapshot rides along for #2365's review.
+  | {
+      outcome: "minimum_stay";
+      message: string;
+      violations: PolicyExceptionViolation[];
+      exceptionReview: AggregatedPolicyExceptions;
+    }
   | { outcome: "already_done"; bookingId: string }
   | {
       outcome: "created";
@@ -1185,6 +1234,53 @@ export async function verifyAndCreateNonMemberJoin(
   // organiser's lodge.
   const groupLodgeId =
     organiserBooking.lodgeId ?? (await getDefaultLodgeId(prisma));
+
+  // #2363: re-validate minimum stay against the CURRENT policy set before any
+  // booking is created. Stage 1 (createNonMemberJoinRequest) checked it when
+  // the link was emailed, but that link lives for 48 hours, during which an
+  // admin or a config import can tighten or add a rule — and the organiser's
+  // own dates can move. Re-reading here makes the second stage fail CLOSED
+  // rather than admitting a stay under a rule that now applies.
+  //
+  // Deliberately outside the booking transaction, like every other pre-write
+  // check on this path: `validateMinimumStay` reads through the module-level
+  // Prisma client, so running it inside would take a second pool connection
+  // while the per-lodge capacity lock is held, and minimum-stay rows are not
+  // protected by that lock anyway (policy writes take the policy-set lock, in
+  // the opposite order). The residual window is the few milliseconds between
+  // this read and the claim below, which is the same footing as the member
+  // join path.
+  const {
+    validateMinimumStay: validateVerifyMinimumStay,
+    formatViolationsDetail: formatVerifyViolationsDetail,
+  } = await import("@/lib/booking-policies");
+  const verifyStay = await validateVerifyMinimumStay(
+    checkIn,
+    checkOut,
+    groupLodgeId
+  );
+  if (!verifyStay.valid) {
+    const exceptionReview = aggregatePolicyExceptionViolations(
+      verifyStay.violations
+    );
+    logger.warn(
+      {
+        joinId: join.id,
+        groupLodgeId,
+        violations: exceptionReview.violations.map((violation) => ({
+          policyId: violation.policyId,
+          policyVersion: violation.policyVersion,
+        })),
+      },
+      "Group join verification refused: minimum-stay policy no longer satisfied"
+    );
+    return {
+      outcome: "minimum_stay",
+      message: formatVerifyViolationsDetail(verifyStay.violations),
+      violations: exceptionReview.violations,
+      exceptionReview,
+    };
+  }
 
   // All joiner guests are non-members; price them from the live season rates.
   const guests: PricedGuestInput[] = snapshotGuests.map((g) => ({

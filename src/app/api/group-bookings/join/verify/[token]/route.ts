@@ -43,6 +43,18 @@ export async function POST(
           { outcome: "capacity_full", fullNights: result.fullNights },
           { status: 409 }
         );
+      // #2363: the minimum-stay rules changed (or the organiser's dates moved)
+      // between staging and this confirmation, so the join fails closed. A 409
+      // for the same reason capacity_full is one — the request was fine when it
+      // was made and the club's state has since moved under it. Only the plain
+      // sentence crosses the wire: the frozen snapshot stays server-side, as it
+      // does on the public staging route, so this unauthenticated surface never
+      // becomes a policy-configuration read.
+      case "minimum_stay":
+        return NextResponse.json(
+          { outcome: "minimum_stay", message: result.message },
+          { status: 409 }
+        );
       case "already_done":
         return NextResponse.json(
           { outcome: "already_done", bookingId: result.bookingId },

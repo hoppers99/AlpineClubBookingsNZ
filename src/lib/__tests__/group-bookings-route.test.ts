@@ -587,6 +587,37 @@ describe("POST /api/group-bookings/[code]/join-request (non-member)", () => {
       code: "GROUP_STAY_ENDED",
     });
   });
+
+  it("surfaces a minimum-stay refusal plainly, without the frozen snapshot (#2363)", async () => {
+    // Same reasoning as the ended-stay refusal above: the public GET summary
+    // already shows this code's stay dates, so naming the reason discloses
+    // nothing new — and a neutral fake-success would leave the joiner waiting
+    // for a verification email that is never coming. The frozen review stays
+    // server-side: this endpoint is unauthenticated and must not become a way
+    // to read the club's policy ids and versions.
+    mocks.createNonMemberJoinRequest.mockRejectedValueOnce(
+      new GroupBookingError(
+        "This group's stay is shorter than the minimum stay required for those nights, so it cannot accept sign-ups. Please contact the organiser.",
+        400,
+        {
+          code: "MINIMUM_STAY_VIOLATION",
+          details: "Lodge B weekends: minimum 2 nights",
+          violations: [],
+          exceptionReview: { violations: [], capacityMode: null },
+        }
+      )
+    );
+    const res = await joinRequestPOST(reqBody(), {
+      params: Promise.resolve({ code: "ABCD2345" }),
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body).toEqual({
+      error:
+        "This group's stay is shorter than the minimum stay required for those nights, so it cannot accept sign-ups. Please contact the organiser.",
+      code: "MINIMUM_STAY_VIOLATION",
+    });
+  });
 });
 
 describe("POST /api/group-bookings/join/verify/[token] (non-member confirm)", () => {
@@ -671,6 +702,25 @@ describe("POST /api/group-bookings/join/verify/[token] (non-member confirm)", ()
     await expect(res.json()).resolves.toEqual({
       outcome: "not_joinable",
       message: "This group's stay has ended",
+    });
+  });
+
+  it("maps a minimum_stay outcome to 409 with its plain sentence only (#2363)", async () => {
+    // The policy set moved under a staged request, so this is a conflict with
+    // the club's current state, exactly like capacity_full. The service carries
+    // the frozen review for #2365, but this unauthenticated response must not:
+    // only the sentence the joiner reads crosses the wire.
+    mocks.verifyAndCreateNonMemberJoin.mockResolvedValueOnce({
+      outcome: "minimum_stay",
+      message: "Lodge B weekends: minimum 2 nights",
+      violations: [{ policyId: "policy-lodge-b" }],
+      exceptionReview: { violations: [], capacityMode: "HOLD" },
+    });
+    const res = await callVerify(VALID_TOKEN);
+    expect(res.status).toBe(409);
+    await expect(res.json()).resolves.toEqual({
+      outcome: "minimum_stay",
+      message: "Lodge B weekends: minimum 2 nights",
     });
   });
 

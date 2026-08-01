@@ -17,6 +17,8 @@ type Outcome =
   | "expired"
   | "not_joinable"
   | "capacity_full"
+  // #2363: the lodge's minimum-stay rules no longer allow this group's dates.
+  | "minimum_stay"
   | "error";
 
 interface CreatedDetails {
@@ -52,7 +54,12 @@ export function GroupJoinVerifyPageClient({
       if (res.status === 410) return setOutcome("expired");
       if (res.status === 409) {
         setMessage(data.message || "");
-        return setOutcome(data.outcome === "capacity_full" ? "capacity_full" : "not_joinable");
+        if (data.outcome === "capacity_full") return setOutcome("capacity_full");
+        // #2363: minimum stay is its own 409 outcome — the group's dates no
+        // longer satisfy the lodge's rules, which is not the same story as a
+        // group that stopped accepting joins.
+        if (data.outcome === "minimum_stay") return setOutcome("minimum_stay");
+        return setOutcome("not_joinable");
       }
       if (!res.ok) return setOutcome("error");
 
@@ -161,6 +168,26 @@ export function GroupJoinVerifyPageClient({
               <AlertTriangle className="h-6 w-6 shrink-0" />
               <p className="font-medium">
                 The lodge has filled up for these dates, so this spot is no longer available.
+              </p>
+            </div>
+          ) : null}
+
+          {outcome === "minimum_stay" ? (
+            <div className="space-y-2">
+              <div className="flex items-start gap-2 text-warning-11">
+                <AlertTriangle className="h-6 w-6 shrink-0" />
+                <p className="font-medium">
+                  This group&apos;s stay is shorter than the minimum stay
+                  required for those nights, so we can&apos;t confirm your spot.
+                </p>
+              </div>
+              {message ? (
+                <p className="text-sm text-muted-foreground">{message}</p>
+              ) : null}
+              <p className="text-sm text-muted-foreground">
+                Please contact the organiser — the rules for these dates changed
+                after you asked to join. Nothing has been booked and you
+                haven&apos;t been charged.
               </p>
             </div>
           ) : null}
