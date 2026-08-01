@@ -5,7 +5,7 @@ const CLUB_WIDE_SCOPE = "club-wide";
 
 /** Stable scope token shared by live CRUD and configuration import. */
 export function minimumStayPolicyScopeKey(lodgeId: string | null): string {
-  return lodgeId ?? CLUB_WIDE_SCOPE;
+  return lodgeId === null ? CLUB_WIDE_SCOPE : `lodge:${lodgeId}`;
 }
 
 /**
@@ -29,7 +29,7 @@ export async function lockMinimumStayPolicyScopes(
     lodgeIds.map((lodgeId) => [minimumStayPolicyScopeKey(lodgeId), lodgeId]),
   );
   for (const [, lodgeId] of [...unique.entries()].sort(([a], [b]) =>
-    a.localeCompare(b),
+    a < b ? -1 : a > b ? 1 : 0,
   )) {
     await lockMinimumStayPolicyScope(tx, lodgeId);
   }

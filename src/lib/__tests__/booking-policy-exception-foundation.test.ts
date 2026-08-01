@@ -146,6 +146,9 @@ describe("minimum-stay policy write contract (#2363)", () => {
     expect(row).toContain("draining pre-#2363 colour");
     expect(row).toContain("new runtime requires capacityMode");
     expect(row).toContain("never relies on the DB default");
+    expect(row).toContain("BEFORE INSERT/UPDATE/DELETE trigger");
+    expect(row).toContain("old colour");
+    expect(row).toContain("not double-incremented");
   });
 
   it("requires new-runtime creates to submit capacityMode explicitly", () => {
@@ -175,8 +178,35 @@ describe("minimum-stay policy write contract (#2363)", () => {
     expect(executeRaw).toHaveBeenCalledTimes(3);
     expect(executeRaw.mock.calls.map((call) => call[1])).toEqual([
       "minimum-stay-policy-set:club-wide",
-      "minimum-stay-policy-set:lodge-a",
-      "minimum-stay-policy-set:lodge-z",
+      "minimum-stay-policy-set:lodge:lodge-a",
+      "minimum-stay-policy-set:lodge:lodge-z",
     ]);
+  });
+
+  it("puts old-colour writes behind the same DB lock and revision protocol", () => {
+    const migration = repoFile(
+      `prisma/migrations/${MIGRATION}/migration.sql`,
+    );
+
+    expect(migration).toContain(
+      'CREATE TRIGGER "MinimumStayPolicy_lock_and_version"',
+    );
+    expect(migration).toContain("BEFORE INSERT OR UPDATE OR DELETE");
+    expect(migration).toContain(
+      "PERFORM pg_advisory_xact_lock(hashtext(old_scope_key))",
+    );
+    expect(migration).toContain(
+      "PERFORM pg_advisory_xact_lock(hashtext(new_scope_key))",
+    );
+    expect(migration).toContain('old_scope_key COLLATE "C" < new_scope_key COLLATE "C"');
+    expect(migration).toContain(
+      'NEW."version" := OLD."version" + 1',
+    );
+    expect(migration).toContain(
+      'NEW."version" <> OLD."version" + 1',
+    );
+    expect(migration).toContain(
+      'NEW."version" := OLD."version";',
+    );
   });
 });
