@@ -2197,7 +2197,14 @@ non-admin actor, and the list is exact:
   (`POST /api/group-bookings/join/verify/[token]`) re-reads the CURRENT policy
   set and fails closed with HTTP 409 `minimum_stay` before any member, booking,
   payment or pay link is created — an emailed link lives 48 hours, so a rule
-  tightened inside that window must not be honoured;
+  tightened inside that window must not be honoured. Both stages are
+  unauthenticated, so both answer with the SAME generic sentence
+  (`PUBLIC_GROUP_JOIN_MINIMUM_STAY_MESSAGE`) and carry nothing else: staging
+  throws a `GroupBookingError` with a message and `MINIMUM_STAY_VIOLATION` only,
+  verification returns `{ outcome, message }` only. The rule-naming sentence and
+  the frozen snapshot exist solely in a `logger.warn` line each stage writes
+  beside its refusal — not merely unread by the route, but absent from what the
+  route holds, because both surfaces are one field-spread from the wire;
 - member date modification through the live edit surface
   (`PUT /api/bookings/[id]/modify` → `modifyBookingBatch`) — HTTP 400, checked
   before the guest plan, pricing and capacity. Its sibling
@@ -2228,6 +2235,19 @@ non-admin actor, and the list is exact:
   There is no admin branch on this path by construction: the confirm refuses any
   actor other than the booking's own member with `Forbidden`, so the only actor
   that ever reaches the check is a non-admin confirming their own offer.
+  Because the same-lodge check reads the offer OUTSIDE the claiming transaction
+  and runs only when that read already saw a live same-lodge offer this member
+  owns, the claim carries a backstop: it records whether the check actually ran,
+  and if it finds `WAITLIST_OFFERED` under the lodge lock either without that
+  evidence or with a `waitlistOfferedLodgeId` the pre-read did not see, it
+  refuses with code `CONFIRM_RETRY` (HTTP 409) and writes nothing at all. The
+  offer sweep (`processWaitlistForDates`) makes exactly the
+  `WAITLISTED -> WAITLIST_OFFERED` transition that invalidates the pre-read and
+  the route carries no rate limit, so without the backstop an offer created in
+  that window would be claimed with the policy never evaluated. Refusing is
+  retry-safe by construction — no status moves, no allocation is touched and the
+  offer is not consumed — so the next attempt re-reads the row and the guard
+  evaluates for real.
 
 The admin exemption is **not one predicate**, and the difference is deliberate.
 State it per path:

@@ -154,8 +154,15 @@ export function formatViolationsDetail(violations: MinimumStayViolation[]): stri
  * there (the public `{{booking-policies}}` token is the surface that decides
  * what of that is public, and it is separately gated). The reader cannot act on
  * the detail either — a non-member cannot move a group's dates, only the
- * organiser can — so the sentence names the fix instead. The detailed sentence
- * and the frozen review snapshot still reach the club, in the server log.
+ * organiser can — so the sentence names the fix instead.
+ *
+ * The detailed sentence and the frozen review snapshot still reach the club, in
+ * a server log line each stage writes beside its refusal — and ONLY there. Both
+ * stages hand their caller this sentence plus a code/outcome and nothing else:
+ * the staged refusal is a thrown error caught next to an unauthenticated
+ * response body, and the verification refusal is a returned object the route
+ * spreads fields out of, so a detail carried on either is one careless spread
+ * from publication rather than merely unread.
  *
  * Shared by both stages so they cannot drift, which is exactly how verification
  * came to answer with the detailed sentence while staging answered with this.

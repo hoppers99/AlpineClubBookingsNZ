@@ -30,9 +30,20 @@ member, the PENDING child booking, the PENDING payment and the pay link — so a
 rule tightened during the link's 48-hour life fails closed rather than admitting
 the stay. Quote and policy-check endpoints return advisory facts, and the
 booking wizard continues to show the existing message without advancing. The
-response now carries a frozen `exceptionReview` whose violations include the
-policy version, so the later workflow can present one combined review without
-reconstructing what the member encountered.
+authenticated responses now carry a frozen `exceptionReview` whose violations
+include the policy version, so the later workflow can present one combined
+review without reconstructing what the member encountered; the two PUBLIC
+non-member group-join stages deliberately carry none of it — they answer with a
+generic sentence and their code/outcome, and the snapshot reaches the club only
+through the server log line each stage writes.
+
+Accepting a waitlist offer can also end in **no transition at all** without
+being a refusal: the same-lodge minimum-stay check runs on an unlocked read
+before the claiming transaction, so the claim refuses with `CONFIRM_RETRY`
+(HTTP 409) when it finds a live offer the check never classified — an entry the
+offer sweep moved `WAITLISTED -> WAITLIST_OFFERED` in between, or one that
+became a cross-lodge offer. Nothing is written, so the state machine is exactly
+where it was and the member simply confirms again.
 
 The `HOLD`/`NO_HOLD` value in that snapshot is policy metadata today. No
 exception request is persisted and no capacity is held or released because of

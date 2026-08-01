@@ -247,11 +247,7 @@ describe("createNonMemberJoinRequest enforces minimum stay (#2363, stage 1)", ()
     ).rejects.toMatchObject({
       status: 400,
       code: "MINIMUM_STAY_VIOLATION",
-      // `details` never leaves the service on this path — the public staging
-      // route serialises `error` and `code` only.
-      details: DETAILED_MINIMUM_STAY_SENTENCE,
-      violations: [violation],
-      exceptionReview: { violations: [violation], capacityMode: "HOLD" },
+      message: PUBLIC_GROUP_JOIN_MINIMUM_STAY_MESSAGE,
     });
 
     expect(mocks.validateMinimumStay).toHaveBeenCalledWith(
@@ -259,6 +255,50 @@ describe("createNonMemberJoinRequest enforces minimum stay (#2363, stage 1)", ()
       checkOut,
       LODGE_B,
     );
+  });
+
+  it("logs the detailed sentence for the club and puts none of it on the thrown error", async () => {
+    mocks.validateMinimumStay.mockResolvedValue({
+      valid: false,
+      violations: [violation],
+    });
+
+    const error = (await createNonMemberJoinRequest(stageOneInput).then(
+      () => null,
+      (err: unknown) => err,
+    )) as Record<string, unknown> | null;
+
+    // The club gets the detail and the frozen policy identity, same shape as
+    // the verification stage logs.
+    expect(mocks.loggerWarn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        groupBookingId: "group-1",
+        groupLodgeId: LODGE_B,
+        detail: DETAILED_MINIMUM_STAY_SENTENCE,
+        violations: [{ policyId: "policy-lodge-b", policyVersion: 4 }],
+      }),
+      expect.stringContaining("minimum-stay policy"),
+    );
+
+    // The thrown error carries the generic sentence and its code — nothing
+    // else. This is caught one `...err` spread from an unauthenticated body, so
+    // "the route happens not to read them" is not the guarantee we want.
+    expect(error).not.toBeNull();
+    expect(error).toMatchObject({ code: "MINIMUM_STAY_VIOLATION" });
+    expect((error as { details?: unknown }).details).toBeUndefined();
+    expect((error as { violations?: unknown }).violations).toBeUndefined();
+    expect(
+      (error as { exceptionReview?: unknown }).exceptionReview,
+    ).toBeUndefined();
+    // Not even indirectly: no rule name, night count or trigger weekday
+    // anywhere on the error a careless handler could spread.
+    const spread = JSON.stringify({
+      ...(error as object),
+      message: (error as unknown as Error).message,
+    });
+    expect(spread).not.toContain("Lodge B weekends");
+    expect(spread).not.toContain("policy-lodge-b");
+    expect(spread).not.toContain("minimum stay of 3 nights");
   });
 
   it("issues no token, writes no join row, and sends no email when it refuses", async () => {
@@ -316,13 +356,12 @@ describe("verifyAndCreateNonMemberJoin re-validates minimum stay (#2363, stage 2
 
     // The wire message is the SAME generic sentence stage 1 answers with — the
     // detailed sentence naming the rule, its nights and its trigger weekday is
-    // for the club's log, not an unauthenticated 409 body. The frozen snapshot
-    // still rides the service result for #2365; the route drops it.
+    // for the club's log, not an unauthenticated 409 body. The result carries
+    // the outcome and that sentence and NOTHING else: the route spreads fields
+    // out of it, so the frozen snapshot must not be sitting on it at all.
     await expect(verifyAndCreateNonMemberJoin(VALID_TOKEN)).resolves.toEqual({
       outcome: "minimum_stay",
       message: PUBLIC_GROUP_JOIN_MINIMUM_STAY_MESSAGE,
-      violations: [violation],
-      exceptionReview: { violations: [violation], capacityMode: "HOLD" },
     });
 
     // Nothing was created and no claim was spent: no member, no booking, no
@@ -351,6 +390,10 @@ describe("verifyAndCreateNonMemberJoin re-validates minimum stay (#2363, stage 2
     expect((result as { message?: string }).message).toBe(
       PUBLIC_GROUP_JOIN_MINIMUM_STAY_MESSAGE,
     );
+    // Nor does anything else on the returned object: `{ outcome, message }`
+    // exactly, so a `...result` spread at the route publishes nothing.
+    expect(Object.keys(result).sort()).toEqual(["message", "outcome"]);
+    expect(JSON.stringify(result)).not.toContain("policy-lodge-b");
   });
 
   it("evaluates the CURRENT policy set against the organiser's dates at the group's lodge", async () => {
