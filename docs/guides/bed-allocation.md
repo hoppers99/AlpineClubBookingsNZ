@@ -63,6 +63,25 @@ year in one go).
    **Approve Visible** to approve them. The "N draft allocations to approve"
    badge tracks how many are still draft.
 
+**Nights when a group has taken the whole lodge are never auto-allocated to
+anyone else.** If a booking holds the whole lodge for a night, every bed is
+counted as taken for that night even though the held group is never placed on
+individual beds — because the group really is sleeping in them. Auto-allocation
+will not put another booking's guest into one, and neither will the automatic
+placement that runs when a booking changes. Those guests stay in the
+awaiting-allocation list for the held nights, and the board says the reason is
+that no bed is available.
+
+That is on purpose. A booking overlapping a whole-lodge hold is never refused
+when it is made — the hold is shown to you as a clash to sort out, not blocked
+— so the choice of who actually sleeps where on those nights is yours. What
+changed is that the system no longer quietly makes that choice for you by
+filling beds the held group is using. You can still place a guest on one of
+those beds **by hand** if that is what you have agreed with the group: drag,
+**Select bed**, and **Assign range…** all work as usual. The held group's own
+name never appears on the bed grid for those nights — the beds simply read as
+taken, and the hold itself is shown as its own banner above the board.
+
 ### Allocate a guest by hand
 
 1. In the awaiting-allocation pool, use a guest's **Select bed** dropdown and
@@ -236,7 +255,9 @@ that booking, so the booking's own **Audit log** link finds it.
 Notes: bed types (single, bunk top/bottom, double) are descriptive and do not
 change capacity; a double bed-night can hold two occupants (declared partners).
 Bookings that hold an **exclusive whole-lodge hold** are not placed on
-individual beds — the whole lodge is taken for their nights. Setting a hold on a
+individual beds — the whole lodge is taken for their nights, and for those
+nights every bed also counts as taken when anything else is placed
+automatically, so no other booking's guest is auto-allocated into one. Setting a hold on a
 booking therefore **removes the bed assignments it already has**, including any
 you placed by hand and any that were approved; the removed assignments are
 recorded in the audit log, so you can rebuild them if the hold turns out to be a
@@ -259,6 +280,7 @@ you place them yourself.
 | "Showing part of this stay" | You followed a link for a booking longer than the board window | Step forward with › to see the rest of the stay |
 | A range assign says "Nothing was written" | At least one night is blocked — held for a hut leader, bed taken, guest not booked, or a whole-lodge hold | Read the lists; fix the range, or use **Assign the N free nights** to take just the free ones (if any night is outside the guest's stay, you are asked to confirm that first). A hut-leader hold is cleared on the **Hut Leader Assignments** page, not here |
 | A range assign is refused on every night | This booking has an exclusive whole-lodge hold | Held bookings take the whole lodge and get no individual beds — remove the hold first if that is wrong |
+| Guests stay in the awaiting-allocation list, with no bed available, on certain nights | Another booking holds the whole lodge for those nights, so every bed counts as taken | Decide who really sleeps there: clear the hold if it is wrong, move the overlapping booking's dates, or place the guest by hand if you have agreed it with the group. Auto-allocation will not make that call for you |
 | "That took too long to save" | The range was large enough for the save to time out; nothing was written | Split it into shorter ranges and assign them one after the other |
 | The member says they can no longer change their requested room | A range assign approved their beds | That is expected: confirming beds locks the room request. Removing every approved allocation re-opens it |
 | The Bed allocation card is missing from a booking | The `bedAllocation` module is off, or your admin role can view but not edit bookings | Enable the module under **Admin → Setup → Modules**, or ask a full admin for bookings edit access — the board is still readable meanwhile |

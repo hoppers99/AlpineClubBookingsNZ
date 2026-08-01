@@ -439,13 +439,44 @@ prune after stamping the hold on the converted booking. The board/lifecycle
 agreement is tested in
 `src/lib/__tests__/held-booking-allocation-agreement.test.ts`.
 
-Accepted consequence (ADR-001 amendment, #2285): because a held booking owns no
-rows and neither planner synthesises its nights as blocking occupancy, a held
-group's beds are **not** modelled as occupied when other bookings are planned —
-an overlapping booking the officer chose to keep (decision 1 never refuses one)
-can be auto-placed onto beds the held group is physically using. Overlaps stay
-officer-resolved, surfaced when the hold is set (#119/#177); whether to model
-held nights as blocking occupancy instead is the open decision #2317.
+**Held nights are blocking occupancy in both planners (#2317).** A held booking
+owns no `BedAllocation` rows, so until #2317 a held lodge looked to the planners
+like a lodge full of free beds and an officer-kept overlapping booking could be
+auto-placed onto beds the held group was physically using. Owner decision, 1 Aug
+2026 (option (a)): both planners now synthesise the hold as **unattributed,
+non-displaceable** occupancy — every active bed of that lodge, every held night —
+still without creating a single row.
+
+- **Unattributed and non-displaceable by construction.** The synthesised rows
+  are #1768 "unknown occupant" rows (null booking, null guest), exactly like a
+  custodian bed hold. No name, no booking id and no age tier reaches the planner
+  — a hold can start life as a public school request — and there is no row for a
+  `MOVE`/`UNALLOCATE` to target, so no planner action can shift a hold. A
+  tierless unknown occupant counts as an adult, so the #1768 room-mix guard
+  treats a held lodge conservatively: another booking's unaccompanied minors are
+  kept out of rooms an unrelated group is sleeping in.
+- **The blocking predicate is this engine's own**, never a parallel list:
+  `wholeLodgeHold` AND `bookingHoldsCapacity()` / `capacityHoldingBookingFilter()`
+  — character for character `getLodgeHeldNights`'s population. So the planners
+  can never report a night held that admission would let a booking into, and a
+  stale `wholeLodgeHold = true` on a booking that stopped holding capacity blocks
+  nothing in either place. It is deliberately NOT the #2285 short-circuit's
+  predicate, which asks a different question ("may this booking own rows?") and
+  is keyed on the raw flag.
+- **The effect an officer sees** is that an overlapping booking's guest-nights
+  on held nights come back as `NO_BED_AVAILABLE` in the awaiting-allocation list
+  instead of being quietly placed. That is more red on the board for a clash the
+  officer has already been shown when the hold was set (#119/#177) — which is
+  the point of the decision.
+- **Manual placement is untouched.** ADR-001 decision 1 admits overlaps on
+  purpose and hands them to the booking officer; a write-time refusal would take
+  away the very resolution path the ADR requires. What #2317 adds is that the
+  automatic paths stop making the decision for them.
+- Both writers re-read the live holds under their per-lodge advisory lock
+  immediately before writing (mirroring the custodian re-filter), so a hold
+  committing between plan and write is not written over. Source:
+  `src/lib/exclusive-hold-occupancy.ts`; guard:
+  `src/lib/__tests__/exclusive-hold-planner-occupancy.test.ts`.
 
 Setting a hold also drops the booking out of the requested-room lock (#776):
 that lock is "this booking has at least one APPROVED `BedAllocation` row", and

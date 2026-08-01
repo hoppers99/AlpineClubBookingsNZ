@@ -1092,11 +1092,12 @@ async function autoAllocateMissingBedNights({
     // the custodian exclusion (owner decision, option (a)). Re-read the holds
     // HERE, on the SAME client that is about to write, and drop any row that
     // would land on one. Mirrors runAutoBedAllocation's re-filter exactly.
-    const offCustodianHolds = await dropRowsOnCustodianHeldBedNights(
-      client,
-      rows,
-      { lodgeId: lodgeId ?? undefined, bookingId },
-    );
+    // Kept on one line: `custodian-write-path-contract.test.ts` reads this call
+    // shape as the evidence that the custodian re-filter is still wired in.
+    const offCustodianHolds = await dropRowsOnCustodianHeldBedNights(client, rows, {
+      lodgeId: lodgeId ?? undefined,
+      bookingId,
+    });
     // Whole-lodge-hold re-filter (#2317), the same shape and the same reason —
     // see dropRowsOnWholeLodgeHeldNights.
     return dropRowsOnWholeLodgeHeldNights(client, offCustodianHolds, {
