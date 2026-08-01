@@ -6,12 +6,19 @@
 # inspects migrations that are still PENDING against a target database. A
 # regex-matching migration committed without a ledger entry therefore stays
 # invisible until a production/fork deploy hits the gate and aborts before
-# cutover. This script closes that gap by asserting, at PR time, two things:
+# cutover. This script closes that gap by asserting, at PR time, three things:
 #
-#   1. Ledger coverage: every committed migration at or after the ledger
+#   1. Ledger well-formedness: EVERY row in the ledger names a migration exactly
+#      once and declares old_code_compatible from the closed vocabulary
+#      (yes/no/windowed). Checked over the whole file rather than only the rows
+#      the coverage sweep below reaches, because 73 of the 174 committed rows are
+#      for migrations whose SQL matches no validator regex — their fourth column
+#      used to be validated by nothing, so a near-miss spelling of `windowed`
+#      disarmed the declaration silently (#2288).
+#   2. Ledger coverage: every committed migration at or after the ledger
 #      baseline whose SQL matches the validator's hot-table/breaking regexes
 #      carries a well-formed docs/BLUE_GREEN_MIGRATION_SAFETY.tsv entry.
-#   2. Timestamp hygiene: no two migrations share a timestamp prefix, so a new
+#   3. Timestamp hygiene: no two migrations share a timestamp prefix, so a new
 #      migration can never sort ambiguously against an existing one. The
 #      historical duplicate prefixes that predate this gate are grandfathered.
 #
@@ -46,13 +53,42 @@ GRANDFATHERED_DUPLICATE_PREFIXES=(
 
 failures=0
 
-# ---------------------------------------------------------------------------
-# 1. Ledger coverage for every migration at or after the ledger baseline.
-# ---------------------------------------------------------------------------
 if [ ! -f "$MIGRATION_SAFETY_LEDGER" ]; then
   echo "check-migration-safety-coverage: ledger not found at ${MIGRATION_SAFETY_LEDGER}" >&2
   exit 1
 fi
+
+# ---------------------------------------------------------------------------
+# 1. Ledger well-formedness: closed vocabulary, no duplicate migration names.
+# ---------------------------------------------------------------------------
+# Delegated to the validator with NO migration arguments: its single ledger pass
+# runs before the (then empty) migration loop, so this lints every row in the file
+# and there is exactly one definition of the vocabulary rather than a second copy
+# of the awk here to drift out of step. It runs unconditionally — before the
+# coverage sweep, which only reads rows for in-scope migrations, and independently
+# of whether any migration is in scope at all.
+ledger_lint_err="$(mktemp)"
+if ! MIGRATION_SAFETY_LEDGER="$MIGRATION_SAFETY_LEDGER" \
+     ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS=0 \
+     BLUE_GREEN_MIGRATION_OVERRIDE_REASON="" \
+     bash "$VALIDATOR" >/dev/null 2>"$ledger_lint_err"; then
+  echo "Ledger well-formedness check FAILED: ${MIGRATION_SAFETY_LEDGER} has a malformed row." >&2
+  echo "old_code_compatible must be exactly yes, no, or windowed, and each migration may appear once (see docs/BLUE_GREEN_MIGRATION_POLICY.md)." >&2
+  # Drop the validator's own pending-migration trailer: no migration was passed.
+  grep -v '^Pending migrations ' "$ledger_lint_err" >&2 || true
+  failures=1
+else
+  ledger_row_count="$(
+    awk -F'\t' '/^[[:space:]]*#/ { next } NF == 0 { next } { rows++ } END { print rows + 0 }' \
+      "$MIGRATION_SAFETY_LEDGER"
+  )"
+  echo "Ledger well-formedness check passed for ${ledger_row_count} row(s)." >&2
+fi
+rm -f "$ledger_lint_err"
+
+# ---------------------------------------------------------------------------
+# 2. Ledger coverage for every migration at or after the ledger baseline.
+# ---------------------------------------------------------------------------
 
 # Baseline = the first data row's migration name. Migrations older than the
 # baseline predate the ledger (documented as grandfathered historical
@@ -99,7 +135,7 @@ else
        bash "$VALIDATOR" "${covered_sql_files[@]}" >/dev/null 2>"$coverage_err"; then
     echo "Ledger coverage check FAILED: a migration matches the blue/green safety regexes but has no valid ${MIGRATION_SAFETY_LEDGER} entry." >&2
     echo "Add a ledger row (see docs/BLUE_GREEN_MIGRATION_POLICY.md) before merging." >&2
-    grep -E 'missing|must ' "$coverage_err" >&2 || true
+    grep -E 'missing|must |duplicate' "$coverage_err" >&2 || true
     failures=1
   else
     echo "Ledger coverage check passed for ${#covered_sql_files[@]} migration(s) at or after ${baseline_migration}." >&2
@@ -108,7 +144,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 2. Timestamp-prefix uniqueness ratchet (grandfathering known duplicates).
+# 3. Timestamp-prefix uniqueness ratchet (grandfathering known duplicates).
 # ---------------------------------------------------------------------------
 is_grandfathered() {
   local prefix="$1"
