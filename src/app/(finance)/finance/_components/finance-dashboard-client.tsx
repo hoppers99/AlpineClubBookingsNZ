@@ -20,7 +20,9 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import dynamic from "next/dynamic";
+import { useRouter } from "next/navigation";
 import { KpiStatCard } from "@/components/finance/charts/kpi-stat-card";
+import { DatasetResetButton } from "@/components/admin/dataset-reset-button";
 
 // Charts load on demand (#1147): recharts is ~139kB gz, so the chart
 // components mount after the dashboard shell instead of blocking First Load
@@ -52,10 +54,15 @@ import {
   FINANCE_DASHBOARD_VIEWS,
 } from "@/lib/finance-dashboard-ranges";
 import type { FinanceDashboardPageModel } from "@/lib/finance-dashboard-page";
+import {
+  isFinanceDashboardDatasetDefault,
+  resetFinanceDashboardDatasetSearchParams,
+} from "@/lib/admin-dataset-reset-state";
 import { RatioExplorer } from "./ratio-explorer";
 
 interface FinanceDashboardClientProps {
   model: FinanceDashboardPageModel;
+  currentSearch: string;
 }
 
 function toCsvCell(value: string | number) {
@@ -104,12 +111,23 @@ function toneVariant(tone: FinanceDashboardPageModel["syncStatus"]["tone"]) {
   return "secondary";
 }
 
-export function FinanceDashboardClient({ model }: FinanceDashboardClientProps) {
+export function FinanceDashboardClient({
+  model,
+  currentSearch,
+}: FinanceDashboardClientProps) {
+  const router = useRouter();
   const [generatingPdf, setGeneratingPdf] = useState(false);
   const reportRef = useRef<HTMLDivElement>(null);
   // Ratios picks its range client-side; sync health has no time window.
   const hideRangeControls =
     model.selection.view === "ratios" || model.selection.view === "sync-health";
+  const isDatasetDefault = isFinanceDashboardDatasetDefault(model.selection);
+
+  function resetDataset() {
+    const params = resetFinanceDashboardDatasetSearchParams(currentSearch);
+    const query = params.toString();
+    router.replace(query ? `/finance?${query}` : "/finance", { scroll: false });
+  }
 
   async function downloadPdf() {
     if (!reportRef.current) return;
@@ -192,7 +210,11 @@ export function FinanceDashboardClient({ model }: FinanceDashboardClientProps) {
           </div>
         </CardHeader>
         <CardContent>
-          <form className="grid gap-4 lg:grid-cols-4 xl:grid-cols-5" method="get">
+          <form
+            key={currentSearch}
+            className="grid gap-4 lg:grid-cols-4 xl:grid-cols-5"
+            method="get"
+          >
             <div className="space-y-1.5">
               <Label htmlFor="finance-view">View</Label>
               <select
@@ -279,11 +301,15 @@ export function FinanceDashboardClient({ model }: FinanceDashboardClientProps) {
                 </select>
               </div>
             ) : null}
-            <div className="flex items-end">
-              <Button type="submit" className="w-full">
+            <div className="flex items-end gap-2">
+              <Button type="submit" className="flex-1">
                 <Filter className="h-4 w-4" />
                 Apply
               </Button>
+              <DatasetResetButton
+                disabled={isDatasetDefault}
+                onReset={resetDataset}
+              />
             </div>
 
             {!hideRangeControls ? (

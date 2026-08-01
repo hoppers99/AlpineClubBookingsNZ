@@ -124,12 +124,12 @@ function renderToolbar() {
     <MemberFilterToolbar
       search=""
       filters={emptyFilters}
-      activeFilterCount={0}
       xeroFeatures={{ liveMemberGroupLookups: false, autoLoadContactGroups: false }}
       xeroContactGroupsList={[]}
       onSearchChange={vi.fn()}
       onSetFilter={vi.fn()}
-      onClearFilters={vi.fn()}
+      resetDisabled={true}
+      onReset={vi.fn()}
     />,
   );
 }

@@ -409,6 +409,7 @@ const adminHelpEntries: HelpEntry[] = [
       "This page searches and manages normal booking records after they have been created.",
       [
         "Use member, date, status, and payment filters to find the target booking.",
+        "Use Reset to restore search, filters, sort, and page without changing the selected lodge.",
         "Open a booking to inspect guests, payments, capacity status, notes, and available actions.",
         "Use cancel, copy, force-confirm, or review actions only when the booking state allows it.",
       ],
@@ -683,6 +684,7 @@ const adminHelpEntries: HelpEntry[] = [
       "Payments shows payment records, reconciliation state, and recovery actions across Stripe and Internet Banking paths.",
       [
         "Filter by member, booking, status, source, or date to find the payment record.",
+        "Use Reset to restore all filters, sort, and page, including the rolling three-month Updated range through today.",
         "Inspect provider IDs, booking links, and transaction kind before taking recovery action.",
         "Use generated invoices or retry actions only when the payment source matches the workflow.",
       ],
@@ -742,7 +744,8 @@ const adminHelpEntries: HelpEntry[] = [
       [
         "Choose a Quick Range, including Next Month, or enter From and To dates.",
         "Set the Lodge and Deleted filters, then select Update to refresh the report.",
-        "Check the active range and filters before exporting CSV or PDF.",
+        "Use Reset to restore the rolling default date range and hide deleted bookings without changing the selected lodge.",
+        "Check the active range and filters before exporting CSV or PDF or sharing a report outside the admin team.",
       ],
       [
         {
@@ -834,6 +837,7 @@ const adminHelpEntries: HelpEntry[] = [
       "Members is the main directory for member records, login access, profile data, roles, imports, and member-level actions.",
       [
         "Search or filter first, then open the member detail page for edits.",
+        "Use Reset to restore the list search, filters, sort, and page in one action.",
         "Use bulk import/update only with reviewed CSV data and clear rollback expectations.",
         "Check access roles, seasonal membership type, family group, and subscription status separately.",
       ],
@@ -866,6 +870,7 @@ const adminHelpEntries: HelpEntry[] = [
       "Subscriptions tracks membership subscription invoices, payment state, lockout behavior, and season-specific dues.",
       [
         "Filter by season, member, status, or overdue state.",
+        "Use Reset to restore list filters, sort, and page without changing the selected season.",
         "Inspect the linked member and Xero/payment records before marking or retrying anything.",
         "Use subscription lockout settings for policy changes rather than one-off manual edits.",
       ],
@@ -2215,6 +2220,7 @@ const financeHelpEntries: HelpEntry[] = [
       "The Finance dashboard combines booking metrics, revenue/cost views, mapped Xero snapshots, sync diagnostics, and export tools.",
       [
         "Choose the view, date range, comparison range, and forward window, then apply filters.",
+        "Use Reset to restore Last Month, Previous Period, Next Month, and empty expense filters without changing the current view or lodge scope.",
         "Use CSV or PDF exports for committee reporting or offline reconciliation.",
         "If you are a finance manager, run a manual sync when the sync status indicates stale or missing data.",
       ],

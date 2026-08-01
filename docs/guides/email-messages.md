@@ -66,10 +66,11 @@ at all** — so a line you write as `Door code: {{doorCode}}` prints a bare
 That is why several tokens are **pre-composed whole lines** rather than bare
 values: `{{doorCodeNote}}`, `{{reasonNote}}`, `{{adminNoteLine}}`,
 `{{reviewNoteLine}}`, `{{committeeNote}}`, `{{amountRecordedNote}}`,
-`{{promoSummary}}`, `{{provisionalGuestsNote}}` and their siblings each render
-the **entire** line — label, value and the blank line after it — or nothing
-whatsoever. Put one of those tokens on its own, with no label of your own in
-front of it, and the email reads correctly whether or not the value exists.
+`{{promoSummary}}`, `{{creditNote}}`, `{{provisionalGuestsNote}}` and their
+siblings each render the **entire** line — label, value and the blank line after
+it — or nothing whatsoever. Put one of those tokens on its own, with no label of
+your own in front of it, and the email reads correctly whether or not the value
+exists.
 
 Two consequences worth knowing:
 
@@ -230,7 +231,22 @@ Two consequences worth knowing before you edit one:
   template engine, not something an override can do.
 - **Never type a currency sign in front of a money token.** Tokens such as
   `{{consequenceNote}}` already contain the formatted amount, so a `$` in front
-  of one prints `$$48.00`.
+  of one prints `$$48.00`. For the same reason, never type a `-` or `+` in front
+  of `{{promoSummary}}`, `{{promoAdjustment}}` or `{{creditNote}}` — each already
+  carries its own sign, and Save refuses a body that does.
+- **The booking confirmation explains account credit for you.**
+  `{{creditNote}}` produces the two reconciling lines a member needs when they
+  paid part of a stay from their account credit — `Account credit applied:
+  -$120.00` and `Paid by card: $180.00` (or `Paid by bank transfer` / `Paid by
+  cash or bank transfer`, matching how the club was actually paid; or
+  `Nothing more to pay: $0.00` when the credit covered the whole stay and no
+  money changed hands at all) — and **nothing at all** for the great majority of
+  bookings, which use no credit.
+  `Total Paid` stays the booking's full price above it, so the three figures add
+  up. The built-in wording already carries this inside `{{paymentOutcome}}`; you
+  only need `{{creditNote}}` if you write your own money lines out of
+  `{{totalPaid}}` and friends — and if you do, include it, or a member charged
+  $180.00 will read `Total Paid: $300.00` with nothing to explain the difference.
 
 ### Consent emails ignore a member's notification preferences
 

@@ -190,7 +190,13 @@ export const EXTRA_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, strin
   // {{discount}} can only express a price cut. The pre-composed tokens are
   // listed here too (belt and braces): they are allowed for an override even
   // if a later default-body rewrite stops using one of them.
+  // #2328: {{creditNote}} is pre-composed and already carried inside
+  // {{paymentOutcome}}, which the shipped default body renders — so it is
+  // declared here, not written into the body a second time. It stays supplied
+  // and allowed so an override that builds its own money lines can explain a
+  // card charge smaller than the total.
   "booking-confirmed": [
+    "creditNote",
     "discount",
     "doorCode",
     "doorCodeNote",
@@ -1023,6 +1029,19 @@ export function sampleValue(token: string): string {
   if (token === "paymentOutcome") {
     return "Total Paid: $123.45\n\nPayment has been processed successfully.";
   }
+  // #2328: previewed in its NON-empty shape, like every other pre-composed
+  // block, and reconciling with the same $123.45 total the money tokens above
+  // fall through to: $23.45 of account credit plus $100.00 on the card.
+  //
+  // Deliberately absent from the {{paymentOutcome}} sample above, even though a
+  // live send with credit carries it inside that block: the paid sample already
+  // shows only one of three money outcomes, and the ordinary confirmation — the
+  // one an admin is nearly always editing — has no credit lines at all. An
+  // admin who writes both tokens previews the pair once from each, which is
+  // exactly what a live send would give them.
+  if (token === "creditNote") {
+    return "Account credit applied: -$23.45\nPaid by card: $100.00\n";
+  }
   // #2267: one coherent booking-modified sample — a 2-guest stay whose dates
   // moved from 1–3 Jul to 8–10 Jul and whose price rose from $123.45 to
   // $150.00 with no change fee, leaving $26.55 to pay. Every token below tells
@@ -1239,6 +1258,12 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "contactEmail",
   "correlationKey",
   "count",
+  // #2328: pre-composed "Account credit applied: -$120.00" + "Paid by card:
+  // $180.00" pair on a booking confirmation (empty when no account credit paid
+  // for any of the stay); the {{promoSummary}} convention. Reconciles against
+  // the {{totalPaid}} figure above it, which stays the booking's FULL price.
+  // The credit value carries its own minus sign — never type one in front.
+  "creditNote",
   "creditRestored",
   "creditRestoredMessage",
   "creditUsed",

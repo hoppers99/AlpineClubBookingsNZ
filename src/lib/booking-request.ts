@@ -145,23 +145,163 @@ function cleanNullableString(value?: string | null) {
   return trimmed || null;
 }
 
+/**
+ * What an admin is told when a stored blob on a booking request cannot be read
+ * back and they tried to ACT on it (#2342).
+ *
+ * These strings reach the officer verbatim — the admin panel renders
+ * `error` from the route response — so they say what happened and what to do
+ * instead, in plain English. They are NOT developer diagnostics: the schema
+ * failure itself is a data condition, not a bug in the request being made,
+ * which is why the accompanying status is 409 (conflict with the stored state)
+ * rather than 500.
+ *
+ * There is no guest-edit affordance anywhere in the admin UI, so the honest
+ * remedies are exactly two: decline the request, or have the stored row
+ * repaired. Do not add "fix the details" wording until such a screen exists.
+ */
+export const UNREADABLE_STORED_GUESTS_MESSAGE =
+  "This request's saved guest details could not be read, so it can't be approved, priced, quoted, or held. Decline it, or contact support to repair the stored data.";
+
+/** Sibling of {@link UNREADABLE_STORED_GUESTS_MESSAGE} for the member links. */
+export const UNREADABLE_STORED_LINKS_MESSAGE =
+  "This request's saved member links could not be read, so it can't be approved, priced, quoted, or held. Decline it, or contact support to repair the stored data.";
+
+/**
+ * STRICT read of a stored guest list. Throws when the stored JSON does not
+ * satisfy `bookingRequestGuestSchema`.
+ *
+ * This is the reader every WRITE, pricing, quoting and conversion path uses
+ * (#2342): a request whose guests cannot be trusted must never be turned into
+ * booking guests, priced, or invoiced. Read-only ADMIN display goes through
+ * `readBookingRequestGuestsForDisplay` instead, which shows a bad row rather
+ * than taking the whole page down with it.
+ */
 export function parseBookingRequestGuests(raw: unknown): BookingRequestGuest[] {
   const parsed = z.array(bookingRequestGuestSchema).safeParse(raw);
   if (!parsed.success) {
-    throw new BookingRequestError("Stored booking request guests are invalid", 500);
+    throw new BookingRequestError(UNREADABLE_STORED_GUESTS_MESSAGE, 409);
   }
   return parsed.data;
 }
 
-function parseBookingRequestLinkedGuestMembers(
+/**
+ * Display-only guest row for an ADMIN READ of a stored booking request (#2342).
+ *
+ * Deliberately looser than `BookingRequestGuest`: `ageTier` is a plain string,
+ * because a row whose stored JSON fails `bookingRequestGuestSchema` may carry
+ * anything at all and the point of this shape is to SHOW what is stored, not to
+ * vouch for it. Never feed it to a write, pricing, or conversion path — those
+ * keep using `parseBookingRequestGuests` and keep rejecting a bad row.
+ */
+export interface AdminBookingRequestGuestDisplay {
+  firstName: string;
+  lastName: string;
+  ageTier: string;
+}
+
+/**
+ * Salvage one stored field as display text. Anything that is not a string (a
+ * number, null, a nested object) has no sensible rendering, so it becomes an
+ * empty cell rather than "[object Object]".
+ *
+ * Full `nameField` parity on the two cleanups that are about SAFETY rather
+ * than validity: the CR/LF collapse (#323 — this text reaches an admin JSON
+ * payload having bypassed the schema that would normally have cleaned it) and
+ * the 100-character cap (a stored blob that skipped the schema can be
+ * arbitrarily long, and the queue renders it into a badge). Length and
+ * emptiness are NOT re-validated: the whole point of this reader is to show
+ * what is stored, and the row is flagged either way.
+ */
+function displayGuestText(value: unknown): string {
+  if (typeof value !== "string") return "";
+  return value.replace(/[\r\n]+/g, " ").trim().slice(0, 100);
+}
+
+/**
+ * TOLERANT read of a stored guest list for admin display (#2342).
+ *
+ * A well-formed list parses strictly and comes back exactly as
+ * `parseBookingRequestGuests` would have returned it, with
+ * `needsAttention: false` — so nothing about a healthy row changes.
+ *
+ * A list that fails the schema — the seeded historical school request whose
+ * children carried `lastName: ""` is the case that found this — is NOT thrown
+ * on. The stored names are shown as saved (bar the CR/LF collapse and length
+ * cap in `displayGuestText`) and the row is flagged, so one malformed
+ * historical row costs one odd-looking row in the queue instead of a 500 that
+ * takes down every request on the page (which is what the admin queue's "All"
+ * filter did before this).
+ */
+export function readBookingRequestGuestsForDisplay(raw: unknown): {
+  guests: AdminBookingRequestGuestDisplay[];
+  needsAttention: boolean;
+} {
+  const strict = z.array(bookingRequestGuestSchema).safeParse(raw);
+  if (strict.success) {
+    return { guests: strict.data, needsAttention: false };
+  }
+  // Not an array at all (null, an object, a string): there is nothing to show,
+  // but the row itself still renders — flagged — rather than throwing.
+  const rows = Array.isArray(raw) ? raw : [];
+  return {
+    guests: rows.map((row) => {
+      const guest = (row ?? {}) as Record<string, unknown>;
+      return {
+        firstName: displayGuestText(guest.firstName),
+        lastName: displayGuestText(guest.lastName),
+        ageTier: displayGuestText(guest.ageTier),
+      };
+    }),
+    needsAttention: true,
+  };
+}
+
+/**
+ * STRICT read of the stored linked-member list. Throws when the stored JSON
+ * does not satisfy `bookingRequestLinkedGuestMemberSchema`.
+ *
+ * Exported (#2342) so `createBookingRequestQuote` can re-read the column
+ * before it OVERWRITES it: the admin panel posts the tolerant display list,
+ * which is empty for a row whose stored blob failed to parse, so without this
+ * check one "Save quote" would replace a recoverable link with nothing.
+ */
+export function parseBookingRequestLinkedGuestMembers(
   raw: unknown
 ): BookingRequestLinkedGuestMember[] {
   if (!raw) return [];
   const parsed = z.array(bookingRequestLinkedGuestMemberSchema).safeParse(raw);
   if (!parsed.success) {
-    throw new BookingRequestError("Stored linked booking request members are invalid", 500);
+    throw new BookingRequestError(UNREADABLE_STORED_LINKS_MESSAGE, 409);
   }
   return parsed.data;
+}
+
+/**
+ * TOLERANT read of the stored linked-member list for admin display (#2342).
+ *
+ * The other stored JSON blob the admin payload parses, and the other way one
+ * bad row could 500 the whole queue. Same rule as the guest list: an unreadable
+ * blob flags the row instead of throwing. It falls back to NO links rather than
+ * to a salvaged half-list — a guest index or member id we cannot trust is worse
+ * than none.
+ *
+ * The narrow claim this supports, and no wider one: a link dropped from the
+ * DISPLAY cannot quietly unlink a guest **on conversion**, because approval and
+ * hold both re-read the column strictly through `linkedGuestMemberMap`. It says
+ * nothing about a WRITE that echoes the display list back — `linkedGuestMembers`
+ * is an overwritten column on the quote save, which is why that path re-reads
+ * the stored column strictly and refuses rather than replacing it.
+ */
+function readLinkedGuestMembersForDisplay(raw: unknown): {
+  links: BookingRequestLinkedGuestMember[];
+  needsAttention: boolean;
+} {
+  if (!raw) return { links: [], needsAttention: false };
+  const parsed = z.array(bookingRequestLinkedGuestMemberSchema).safeParse(raw);
+  return parsed.success
+    ? { links: parsed.data, needsAttention: false }
+    : { links: [], needsAttention: true };
 }
 
 export function linkedGuestMemberMap(raw: unknown): Map<number, string> {
@@ -975,6 +1115,18 @@ export async function priceBookingRequest(input: {
       409
     );
   }
+  // #2342: refuse to price a request whose stored guest data cannot be read
+  // back. This route is the ONE admin action on that list that never needed to
+  // read the guests — it only stamps priceCents — so it returned 200 on a row
+  // that approve, quote and hold all refuse. That is not a harmless
+  // inconsistency:
+  // the price it stamps is split across the guest list later (approval and
+  // hold both call splitPriceAcrossGuests over the STRICT list), and for a
+  // GENERAL request reaching PRICED is precisely what arms the Approve button.
+  // Pricing therefore refuses on the same terms as the rest, which is also
+  // what docs/guides/booking-requests.md now tells operators.
+  parseBookingRequestGuests(existing.guests);
+  parseBookingRequestLinkedGuestMembers(existing.linkedGuestMembers);
 
   const claimed = await prisma.bookingRequest.updateMany({
     where: {
@@ -2402,6 +2554,21 @@ function parseAdminTeachers(raw: unknown) {
 export function serializeBookingRequestForAdmin(
   request: BookingRequest & { lodge?: { name: string } | null }
 ) {
+  // #2342: an admin READ never dies on one malformed historical row. This is
+  // the single serialiser behind BOTH the queue list
+  // (GET /api/admin/booking-requests, including status=ALL) and the
+  // per-request payloads the price and decline routes return, so making it
+  // tolerant covers the list and the detail together. (Pricing a flagged row
+  // is refused before it gets here; decline is the path that reaches this
+  // serialiser with a flagged row, and it is the intended one.)
+  //
+  // The two stored blobs are flagged SEPARATELY (#2342 review finding D). One
+  // OR'd flag forced the panel to describe both failures whichever had
+  // happened, so a row whose links were fine was told its links were hidden,
+  // and a row whose names were fine was told to distrust them. Each flag means
+  // exactly one thing: that blob failed its schema.
+  const guestDisplay = readBookingRequestGuestsForDisplay(request.guests);
+  const linkedDisplay = readLinkedGuestMembersForDisplay(request.linkedGuestMembers);
   return {
     id: request.id,
     type: request.type,
@@ -2421,16 +2588,23 @@ export function serializeBookingRequestForAdmin(
     schoolName: request.schoolName,
     teachers: parseAdminTeachers(request.teachers),
     cateringPreference: request.cateringPreference,
-    linkedGuestMembers: parseBookingRequestLinkedGuestMembers(
-      request.linkedGuestMembers
-    ),
+    linkedGuestMembers: linkedDisplay.links,
     contactFirstName: request.contactFirstName,
     contactLastName: request.contactLastName,
     contactEmail: request.contactEmail,
     contactPhone: request.contactPhone,
     checkIn: request.checkIn.toISOString(),
     checkOut: request.checkOut.toISOString(),
-    guests: parseBookingRequestGuests(request.guests),
+    guests: guestDisplay.guests,
+    // Each flag is emitted ONLY when THAT blob failed its schema, so a
+    // well-formed row's payload stays byte-for-byte what it was before #2342
+    // and no client has to care about a flag until there is something to flag.
+    // `guests` above is then the salvaged list rather than validated data.
+    ...(guestDisplay.needsAttention ? { guestDataNeedsAttention: true } : {}),
+    // `linkedGuestMembers` above is then empty — no half-trusted links.
+    ...(linkedDisplay.needsAttention
+      ? { linkedMemberDataNeedsAttention: true }
+      : {}),
     message: request.message,
     indicativePriceCents: request.indicativePriceCents,
     priceCents: request.priceCents,

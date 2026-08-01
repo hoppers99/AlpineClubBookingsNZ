@@ -61,7 +61,9 @@ date-only lodge night (no times), matching the rules in
    Updated, Check In, Check Out). Active filters appear as removable chips, and
    the whole filter state is stored in the page URL so a filtered view can be
    bookmarked or shared.
-3. Click **Clear** to reset every filter.
+3. Click **Reset** to restore search, every filter, sort, and page. In a
+   multi-lodge club it keeps the selected **Lodge**, so Reset does not move you
+   out of the lodge you are working in.
 4. When the **Add another member as a guest** module is in use (or anything is
    still stuck from when it was), two **consent queue chips** sit above the
    table (#2307):
@@ -270,6 +272,7 @@ are its filters and columns.
 | More filters → Additional Payment | Bookings that still owe extra | All | "Still owing" |
 | Updated / Check In / Check Out ranges | Date-range filters | empty | NZ date-only |
 | Lodge | Filter by lodge | All lodges | Only shown when more than one active lodge exists |
+| Reset | Restore search, filters, sort, and page | — | Keeps the selected lodge; disabled at the dataset defaults |
 | + Create Booking | Open the Book on Behalf wizard | — | Disabled for view-only bookings roles |
 | Booking page → Admin tools → Cash / off-Xero payment | Record a payment made in cash or by a bank transfer that never reached Xero, or reverse one | — | Needs finance **edit** (not bookings edit). Never contacts Xero. Asks whether the money also covers any extra still owing from a later change. See the [Payments guide](payments.md) |
 
@@ -282,7 +285,7 @@ lives in [`STATE_MACHINES.md`](../STATE_MACHINES.md#booking-lifecycle).
 
 | Symptom | Likely cause | Fix |
 | --- | --- | --- |
-| No bookings show | Filters are too narrow, or you are viewing the wrong month | Click **Clear**, then re-apply one filter at a time |
+| No bookings show | Filters are too narrow, or you are viewing the wrong month | Click **Reset**, then re-apply one filter at a time |
 | A booking you expect is missing | It may be soft-deleted or in another lodge | Under **More filters** set Deleted to "Include deleted", and (multi-lodge) check the Lodge filter |
 | A row shows a **Review** chip | The booking needs admin review (for example a minor without an adult) | Click the chip to open the [Booking Requests → Approvals](booking-requests.md) queue |
 | A row reads **Partly paid** with an amount due | A change raised the price after payment and the extra was never collected | Open the booking and work through the **Additional payment outstanding** panel |

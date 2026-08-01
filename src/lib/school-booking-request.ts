@@ -532,6 +532,16 @@ export async function approveSchoolBookingRequest(input: {
 
   const teachers = parseSchoolTeachers(request.teachers);
   const linkedMembers = linkedGuestMemberMap(request.linkedGuestMembers);
+  // #2342: strict-read the STORED guests unconditionally, even when the admin
+  // supplies a count override that replaces them. The override branch used to
+  // skip this parse entirely, which made a request whose stored guest list
+  // cannot be read back approvable, priceable, capacity-checkable and
+  // invoiceable from admin-typed numbers alone — and the admin panel prefills
+  // those numbers from the SALVAGED list, in which an unreadable age tier
+  // counts as zero, so a 30-child request could be invoiced for two people.
+  // A row we cannot read is not convertible by any route: decline it, or
+  // repair the stored data.
+  const storedGuests = parseBookingRequestGuests(request.guests);
   // When the admin varies the quantity, regenerate the guest list from the
   // preserved teachers + the new child counts; otherwise use the submitted
   // snapshot. The new list then drives pricing, capacity and the booking below.
@@ -540,7 +550,7 @@ export async function approveSchoolBookingRequest(input: {
         teachers,
         childCounts: input.guestOverride.childCounts,
       })
-    : parseBookingRequestGuests(request.guests);
+    : storedGuests;
   if (guests.length === 0) {
     throw new BookingRequestError("At least one guest is required", 422);
   }
