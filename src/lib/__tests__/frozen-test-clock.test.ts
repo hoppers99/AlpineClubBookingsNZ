@@ -1,0 +1,229 @@
+import fs from "node:fs";
+import path from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+
+import {
+  FROZEN_TEST_CLOCK_BASE_ISO,
+  frozenClockOptOutReason,
+  frozenTestNow,
+  optOutOfFrozenClock,
+} from "@/lib/__tests__/helpers/clock";
+import { todayDateOnlyForTimeZone } from "@/lib/date-only";
+
+// ---------------------------------------------------------------------------
+// The frozen test clock's contract (#2481, absorbing #2443).
+//
+// Every test file runs with "today" pinned to FROZEN_TEST_CLOCK_BASE_ISO, set
+// once in vitest.setup.ts, so a calendar rollover can never again turn `main`
+// and every open PR red at once (#2426, #2401, #2443, #2479).
+//
+// The opt-out is per file and counted. A file that genuinely needs the real
+// wall clock calls optOutOfFrozenClock("<reason>") at module top level AND is
+// listed below. That list is the whole point: an opt-out has to be a deliberate
+// diff a reviewer sees, or it quietly becomes the norm and the freeze is
+// decorative.
+//
+// When this test fails because you added an opt-out: do not just paste the new
+// path in. Ask first whether the file actually needs the REAL date, or only a
+// DIFFERENT fixed one — the second case needs no opt-out at all, just a
+// `vi.setSystemTime(...)` in the file's own hook, which runs after the setup
+// file's and therefore wins. Files that mix both get split, not opted out.
+// ---------------------------------------------------------------------------
+
+/**
+ * Every test file allowed to run on the real wall clock, with the reason it is
+ * allowed. Paths are repo-relative and POSIX-separated.
+ */
+const REAL_CLOCK_OPT_OUT_FILES: Record<string, string> = {
+  "src/lib/__tests__/frozen-test-clock-opt-out.test.ts":
+    "the opt-out mechanism's own end-to-end proof: it must observe a clock that advances",
+};
+
+/** Guards against an entry being added to the map without a reviewed count. */
+const REAL_CLOCK_OPT_OUT_COUNT = 1;
+
+const SRC_ROOT = path.join(process.cwd(), "src");
+
+const OPT_OUT_CALL = /optOutOfFrozenClock\(\s*(["'`])([\s\S]*?)\1\s*\)/g;
+const OPT_OUT_MENTION = /optOutOfFrozenClock\s*\(/;
+
+function walkTestFiles(dir: string): string[] {
+  if (!fs.existsSync(dir)) return [];
+  return fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const entryPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) return walkTestFiles(entryPath);
+    return /\.test\.tsx?$/.test(entry.name) ? [entryPath] : [];
+  });
+}
+
+function repoRelative(absolutePath: string): string {
+  return path.relative(process.cwd(), absolutePath).split(path.sep).join("/");
+}
+
+const TEST_FILES = walkTestFiles(SRC_ROOT);
+
+/**
+ * This file names the helper (and calls it with bad input to prove it refuses),
+ * so it would otherwise scan as an opt-out. It cannot hide behind this
+ * exclusion: the "pins 'today' for this file" case asserts it is itself frozen.
+ */
+const SELF_PATH = "src/lib/__tests__/frozen-test-clock.test.ts";
+
+describe("frozen test clock", () => {
+  it("collects the test files it is meant to govern", () => {
+    // A broken walker would make every assertion below vacuous — the exact
+    // failure mode this whole issue is about.
+    expect(TEST_FILES.length).toBeGreaterThan(500);
+  });
+
+  it("pins 'today' for this file", () => {
+    expect(Date.now()).toBe(frozenTestNow().getTime());
+    expect(frozenClockOptOutReason()).toBeNull();
+  });
+
+  it("does not advance while a test runs", () => {
+    const first = Date.now();
+    // A real clock ticks over a busy wait of this length; the frozen one cannot.
+    const spinUntil = performance.now() + 25;
+    while (performance.now() < spinUntil) {
+      /* busy wait on the REAL monotonic clock, which the freeze leaves alone */
+    }
+    expect(Date.now()).toBe(first);
+  });
+
+  it("leaves real timers alone so awaited promises still resolve", async () => {
+    await expect(
+      new Promise<string>((resolve) => setTimeout(() => resolve("resolved"), 1))
+    ).resolves.toBe("resolved");
+  });
+
+  it("reads the same calendar date in UTC and in the club's zone", () => {
+    // The reason the instant is midnight UTC (= midday NZST) rather than a
+    // "tidier" NZ midnight: a runner in UTC and a club in Pacific/Auckland must
+    // agree on what day it is, or every date-only fixture becomes zone-dependent.
+    const base = new Date(FROZEN_TEST_CLOCK_BASE_ISO);
+    const nzCalendarDate = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Pacific/Auckland",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(base);
+
+    expect(nzCalendarDate).toBe(base.toISOString().slice(0, 10));
+    expect(nzCalendarDate).toBe("2026-07-01");
+  });
+
+  it("drives the date-only helpers the domain actually reads", () => {
+    // Proves the freeze reaches the layer bookings are judged against, not just
+    // a bare `new Date()`.
+    expect(todayDateOnlyForTimeZone("Pacific/Auckland")).toBe(
+      frozenTestNow().toISOString().slice(0, 10)
+    );
+  });
+});
+
+describe("frozen test clock opt-out allowlist", () => {
+  const filesCallingOptOut = TEST_FILES.filter(
+    (file) =>
+      OPT_OUT_MENTION.test(fs.readFileSync(file, "utf8")) &&
+      repoRelative(file) !== SELF_PATH
+  ).map(repoRelative);
+
+  it("matches the reviewed allowlist exactly", () => {
+    expect(filesCallingOptOut.sort()).toEqual(
+      Object.keys(REAL_CLOCK_OPT_OUT_FILES).sort()
+    );
+  });
+
+  it("matches the reviewed count", () => {
+    // Deliberately redundant with the list above: a careless "just add the path"
+    // fix has to touch the count too, which is what makes it a reviewed change.
+    expect(filesCallingOptOut).toHaveLength(REAL_CLOCK_OPT_OUT_COUNT);
+    expect(Object.keys(REAL_CLOCK_OPT_OUT_FILES)).toHaveLength(
+      REAL_CLOCK_OPT_OUT_COUNT
+    );
+  });
+
+  it("gives every opt-out a substantive written reason", () => {
+    for (const relativePath of Object.keys(REAL_CLOCK_OPT_OUT_FILES)) {
+      const source = fs.readFileSync(
+        path.join(process.cwd(), relativePath),
+        "utf8"
+      );
+      const reasons = [...source.matchAll(OPT_OUT_CALL)].map((match) =>
+        match[2].trim()
+      );
+
+      expect(
+        reasons,
+        `${relativePath} must call optOutOfFrozenClock with a literal reason string`
+      ).toHaveLength(1);
+      expect(
+        reasons[0].length,
+        `${relativePath}'s opt-out reason is too thin to review: ${reasons[0]}`
+      ).toBeGreaterThanOrEqual(20);
+      expect(REAL_CLOCK_OPT_OUT_FILES[relativePath].length).toBeGreaterThanOrEqual(20);
+    }
+  });
+
+  it("refuses an opt-out with no reason", () => {
+    expect(() => optOutOfFrozenClock("")).toThrow(/requires a non-empty reason/);
+    expect(() => optOutOfFrozenClock("   ")).toThrow(/requires a non-empty reason/);
+    // The rejected calls must not have flipped this file onto the real clock.
+    expect(frozenClockOptOutReason()).toBeNull();
+  });
+});
+
+describe("frozen test clock canary overrides", () => {
+  const savedIso = process.env.TEST_CLOCK_ISO;
+  const savedOffset = process.env.TEST_CLOCK_OFFSET_DAYS;
+
+  afterEach(() => {
+    if (savedIso === undefined) delete process.env.TEST_CLOCK_ISO;
+    else process.env.TEST_CLOCK_ISO = savedIso;
+    if (savedOffset === undefined) delete process.env.TEST_CLOCK_OFFSET_DAYS;
+    else process.env.TEST_CLOCK_OFFSET_DAYS = savedOffset;
+  });
+
+  it("winds the clock forward by whole days", () => {
+    process.env.TEST_CLOCK_ISO = FROZEN_TEST_CLOCK_BASE_ISO;
+
+    process.env.TEST_CLOCK_OFFSET_DAYS = "1";
+    expect(frozenTestNow().toISOString()).toBe("2026-07-02T00:00:00.000Z");
+
+    process.env.TEST_CLOCK_OFFSET_DAYS = "30";
+    expect(frozenTestNow().toISOString()).toBe("2026-07-31T00:00:00.000Z");
+
+    process.env.TEST_CLOCK_OFFSET_DAYS = "365";
+    expect(frozenTestNow().toISOString()).toBe("2027-07-01T00:00:00.000Z");
+  });
+
+  it("accepts an absolute instant and a negative offset", () => {
+    process.env.TEST_CLOCK_ISO = "2026-12-02T00:00:00.000Z";
+    delete process.env.TEST_CLOCK_OFFSET_DAYS;
+    expect(frozenTestNow().toISOString()).toBe("2026-12-02T00:00:00.000Z");
+
+    process.env.TEST_CLOCK_OFFSET_DAYS = "-1";
+    expect(frozenTestNow().toISOString()).toBe("2026-12-01T00:00:00.000Z");
+  });
+
+  it("fails loudly on a malformed override rather than silently ignoring it", () => {
+    // A canary that quietly fell back to the base instant would report green
+    // while testing nothing — the vacuous-pass failure mode again.
+    process.env.TEST_CLOCK_ISO = "not-a-date";
+    expect(() => frozenTestNow()).toThrow(/parseable ISO-8601 instant/);
+
+    process.env.TEST_CLOCK_ISO = FROZEN_TEST_CLOCK_BASE_ISO;
+    process.env.TEST_CLOCK_OFFSET_DAYS = "1.5";
+    expect(() => frozenTestNow()).toThrow(/integer number of days/);
+
+    process.env.TEST_CLOCK_OFFSET_DAYS = "soon";
+    expect(() => frozenTestNow()).toThrow(/integer number of days/);
+  });
+
+  it("defaults to the base instant with no overrides set", () => {
+    delete process.env.TEST_CLOCK_ISO;
+    delete process.env.TEST_CLOCK_OFFSET_DAYS;
+    expect(frozenTestNow().toISOString()).toBe(FROZEN_TEST_CLOCK_BASE_ISO);
+  });
+});

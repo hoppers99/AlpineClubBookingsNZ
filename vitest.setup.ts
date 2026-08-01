@@ -13,8 +13,12 @@
 // is byte-for-byte identical to the unset behaviour and no test that asserts the
 // sender address changes. Set with ??= so any test that deliberately exercises a
 // different/!ok config by assigning or deleting these keeps control.
-import { vi } from "vitest";
+import { afterAll, beforeAll, vi } from "vitest";
 import { SAFE_DEFAULT_CONFIG } from "@/config/club";
+import {
+  installFrozenTestClock,
+  restoreRealTestClock,
+} from "@/lib/__tests__/helpers/clock";
 
 // `server-only` is a Next.js guard that throws when a module is imported outside
 // a Server Component. Server-side libraries (e.g. member-photo.ts) legitimately
@@ -26,3 +30,28 @@ vi.mock("server-only", () => ({}));
 process.env.EMAIL_FROM ??= SAFE_DEFAULT_CONFIG.supportEmail;
 process.env.AWS_SES_ACCESS_KEY_ID ??= "test-ses-access-key-id";
 process.env.AWS_SES_SECRET_ACCESS_KEY ??= "test-ses-secret-access-key";
+
+// Freeze "today" for every test file (#2481, absorbing #2443). Four times a
+// calendar rollover turned `main` and every open PR red at once with nothing in
+// any diff to blame (#2426, #2401, #2443, #2479), because fixed date fixtures
+// sat under code reading the real wall clock. One fixed instant —
+// 2026-07-01T00:00:00.000Z, midday NZ so UTC and NZ agree on the date — removes
+// that whole class.
+//
+// Only `Date` is faked, so real timers still drive awaited promises. A suite
+// that wants a different instant just pins its own: `sequence.hooks: "stack"`
+// (declared in vitest.config.ts) runs these setup hooks first, so any per-file
+// `vi.setSystemTime` overrides this one. A file that needs the REAL clock calls
+// `optOutOfFrozenClock("<reason>")` at module top level and is then pinned by
+// `src/lib/__tests__/frozen-test-clock.test.ts`.
+//
+// The canary workflow winds this forward via `TEST_CLOCK_OFFSET_DAYS` (integer
+// days) or `TEST_CLOCK_ISO` (an absolute instant); both are documented in
+// `src/lib/__tests__/helpers/clock.ts`.
+beforeAll(() => {
+  installFrozenTestClock();
+});
+
+afterAll(() => {
+  restoreRealTestClock();
+});
