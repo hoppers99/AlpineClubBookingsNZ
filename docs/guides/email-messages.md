@@ -250,15 +250,17 @@ Two consequences worth knowing before you edit one:
 - **A confirmation that still owes money points at the invoice, not at its own
   total.** When a booking is confirmed with payment still owing (a member
   whole-lodge approval), `{{paymentDueNote}}` — carried inside
-  `{{paymentOutcome}}` — ends with *"If you hold account credit with the club,
-  it will be applied to your invoice, so please transfer the amount the invoice
-  shows."* The club's invoice for that booking already has the member's credit
-  notes applied to it, so it asks for less than the `Total Due:` figure, and a
-  member with credit who paid the emailed figure would send too much. The
-  sentence is conditional on purpose — most members hold no credit — and it
-  states no second amount. You do not need to do anything to get it: it is part
-  of the same token an override already uses, and it appears only on the unpaid
-  confirmation.
+  `{{paymentOutcome}}` — ends with *"If the invoice asks for a different amount
+  — for example because the club has put account credit you hold towards it —
+  please transfer the amount the invoice shows."* The `Total Due:` figure is the
+  booking's own price; the invoice is a separate document you can adjust in
+  Xero, so the email tells the member to follow the invoice rather than the
+  email. The sentence is conditional on purpose — for most members the two
+  agree — and it states no second amount. Nothing puts a member's account credit
+  towards such an invoice for you; if you want that, do it in Xero, and the
+  member has already been told to pay what the invoice asks. You do not need to
+  do anything to get the sentence: it is part of the same token an override
+  already uses, and it appears only on the unpaid confirmation.
 
 ### Consent emails ignore a member's notification preferences
 

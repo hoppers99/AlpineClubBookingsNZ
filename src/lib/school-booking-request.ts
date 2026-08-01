@@ -2134,10 +2134,22 @@ export async function approveMemberWholeLodgeRequest(input: {
         // #1620 floating-credit parity with the Internet Banking create path
         // (booking-create.ts): allocate the member's existing credit notes
         // against this invoice so they pay the credit-reduced amount. Enqueued
-        // AFTER the invoice op (older createdAt is processed first) and it skips
-        // itself when no credit was applied. The owner here is a real member who
-        // may well be carrying account credit — the school path's non-login
-        // contact never is, which is why the school block omits it.
+        // AFTER the invoice op (older createdAt is processed first). The owner
+        // here is a real member who may well be carrying account credit — the
+        // school path's non-login contact never is, which is why the school
+        // block omits it.
+        //
+        // NO-OP TODAY (#2444 review, 1 Aug 2026) — the paragraph above states
+        // the INTENT, not the behaviour. The enqueue only queues an op when the
+        // booking already carries applied-credit ledger rows: the MemberCredit
+        // type whose name #2328's guard greps this whole module for and never
+        // finds. This conversion mints a brand-new booking and writes none, so
+        // the call always returns `{ queueOperationId: null, message: "No
+        // unallocated applied credit; nothing to allocate." }` and the Xero
+        // invoice stands at the full price. It is kept as the structural hook
+        // for the day this path can carry applied credit. Until then NOTHING
+        // member-facing may claim the netting happens — see
+        // `bookingPaymentDueNote`, whose first draft did exactly that.
         const queuedAllocation =
           await enqueueXeroAppliedCreditAllocationOperation(
             conversion.bookingId,

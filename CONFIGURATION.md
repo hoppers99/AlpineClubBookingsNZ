@@ -205,16 +205,19 @@ build its own money lines from the per-piece tokens (`{{totalPaid}}`,
 `{{totalPaid}}`/`{{totalDue}}` carries a figure on any given send.
 
 On that unpaid send only, `{{paymentDueNote}}` closes with one further
-sentence: *"If you hold account credit with the club, it will be applied to your
-invoice, so please transfer the amount the invoice shows."* The club's invoice
-for such a booking has the member's existing credit notes allocated against it,
-so it asks for **less** than the `Total Due:` line above, and a member holding
-credit who transferred that figure would overpay. The sentence is deliberately
-conditional and names no second amount — it is true for the great majority of
-members, who hold no credit at all — and it is part of the same
+sentence: *"If the invoice asks for a different amount — for example because the
+club has put account credit you hold towards it — please transfer the amount the
+invoice shows."* The `Total Due:` line is the **booking's** price; the invoice
+the member pays against is a separate document an admin can adjust by hand, so
+the email defers to it rather than to itself. The sentence is deliberately
+conditional and names no second amount — for the great majority of members the
+invoice matches the total exactly — and it is part of the same
 `{{paymentDueNote}}` value, so an override saved before it existed carries it
 automatically and no new token has to be added to a body. It renders on the
-unpaid send and nowhere else.
+unpaid send and nowhere else. Note that nothing nets account credit off such an
+invoice automatically: an admin who wants a member's credit applied does it in
+Xero, which is why the sentence describes a possibility rather than promising
+one.
 
 Account credit spent on the booking is explained by the pre-composed
 `{{creditNote}}` block, on the same convention again. When a member put account

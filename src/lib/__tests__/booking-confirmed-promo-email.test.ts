@@ -263,7 +263,7 @@ describe("booking-confirmed promo summary (#2267)", () => {
     // booking-confirmed-payment-due-credit-email.test.ts); everything before it
     // is the #2263 wording unchanged.
     expect(templateData.paymentOutcome).toBe(
-      "Total Due: $300.00\n\nThis booking is confirmed, but payment of $300.00 is still owing. Please pay by internet banking quoting reference BOOKING-ABC123. The club will send you an invoice for it. If you hold account credit with the club, it will be applied to your invoice, so please transfer the amount the invoice shows.",
+      "Total Due: $300.00\n\nThis booking is confirmed, but payment of $300.00 is still owing. Please pay by internet banking quoting reference BOOKING-ABC123. The club will send you an invoice for it. If the invoice asks for a different amount — for example because the club has put account credit you hold towards it — please transfer the amount the invoice shows.",
     );
     // The per-piece tokens stay honest for overrides that build their own
     // lines: exactly one of the pair carries a figure.

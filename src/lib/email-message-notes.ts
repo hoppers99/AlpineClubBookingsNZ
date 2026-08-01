@@ -119,21 +119,35 @@ export function adminSplitSettlementCancelledLeadParagraph(
  * two hand-kept copies is exactly the drift `composeOptionalEmailLine` and
  * `appliedCreditSummaryRows` exist to prevent, so the paragraph moved here.
  *
- * THE ACCOUNT-CREDIT SENTENCE, and why it is worded conditionally (#2444).
- * Under #1620 "allocate-existing" the club's Xero invoice for this booking is
- * raised for the FULL amount and the member's own floating credit notes are
- * then ALLOCATED against it (the same approval enqueues that allocation), so
- * Xero asks the member for LESS than the "Total Due" line above. A member
- * holding credit who transferred the figure in this email would OVERPAY, and
- * the club would unwind it by hand.
+ * THE CLOSING SENTENCE, and why it promises nothing (#2444).
+ * The "Total Due" line above is the BOOKING's own price. The invoice the member
+ * actually pays against is a separate document, and the two can differ — a club
+ * admin can net a member's account credit off the invoice, or adjust it, by
+ * hand in Xero. So the sentence points the member at the invoice as the figure
+ * to transfer, and names the commonest reason the two would differ. It does NOT
+ * say that credit "will be applied", because on this path nothing applies it.
  *
- * The sentence is deliberately CONDITIONAL and states no figure. The great
- * majority of members hold no credit at all, so an unconditional "credit has
- * been applied" would be false for them; and computing the real net figure
+ * WHAT THIS PATH ACTUALLY DOES WITH CREDIT (re-verified in review, 1 Aug 2026 —
+ * an earlier draft of this sentence asserted the opposite and was corrected
+ * before merge; do not reinstate it without making the allocation real).
+ * The one send site is the member whole-lodge approval in
+ * `school-booking-request.ts`. It MINTS A BRAND-NEW BOOKING and writes no
+ * `MemberCredit` row of any kind, so the
+ * `enqueueXeroAppliedCreditAllocationOperation` call it makes always
+ * short-circuits with "No unallocated applied credit; nothing to allocate."
+ * (`xero-operation-outbox.ts`). #1620 "allocate-existing" fires only when
+ * credit has been APPLIED to the booking app-side, up to the applied amount,
+ * and no code path applies credit here. The Xero invoice is therefore raised
+ * for the FULL amount and equals the "Total Due" line unless a human changes
+ * it.
+ *
+ * The sentence is deliberately CONDITIONAL and states no figure. Most members
+ * hold no credit at all and most invoices match the total exactly, so an
+ * unconditional claim would be false for them; and computing a real net figure
  * needs a Xero read, which a transactional send must not make (it would put a
  * provider round-trip, and a provider outage, in the path of a member's
- * confirmation). The owner's decision (1 Aug 2026) is that this neutral
- * sentence ships now and the computed figure is its own later piece of work.
+ * confirmation). The owner's decision (1 Aug 2026) is that a neutral sentence
+ * ships now and the computed figure is its own later piece of work.
  *
  * `amount` and `reference` arrive ALREADY FORMATTED and already escaped for
  * the caller's medium — this module imports nothing (see the file docblock), so
@@ -157,7 +171,7 @@ export function bookingPaymentDueNote({
     (invoiceEmailed
       ? " An invoice has been emailed to you separately."
       : " The club will send you an invoice for it.") +
-    " If you hold account credit with the club, it will be applied to your invoice, so please transfer the amount the invoice shows."
+    " If the invoice asks for a different amount — for example because the club has put account credit you hold towards it — please transfer the amount the invoice shows."
   );
 }
 

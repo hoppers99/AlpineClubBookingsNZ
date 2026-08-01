@@ -1,19 +1,31 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
+
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // #2444 — the confirmed-but-UNPAID booking confirmation told a member to
-// transfer the booking's FULL price ("Total Due: $300.00"). Under #1620
-// "allocate-existing" the club's Xero invoice for that same booking has the
-// member's floating credit notes ALLOCATED against it, so Xero asks for less.
-// A member holding credit who followed the email OVERPAID, and the club unwound
-// it by hand.
+// transfer the booking's FULL price ("Total Due: $300.00") without ever
+// mentioning the invoice that figure is supposed to agree with. The invoice is
+// a separate document a club admin can adjust by hand — netting a member's
+// account credit off it, most commonly — so a member who transfers the emailed
+// figure can send more than the club is asking for.
 //
 // The INTERIM fix (owner decision, 1 Aug 2026): one neutral, conditional
 // sentence pointing at the invoice. No figure is computed and no Xero read is
 // made — the computed-figure version is deliberately its own later piece of
-// work. What is pinned here is that the sentence renders on the paymentDue
-// branch and NOWHERE else, that both renderers get it from the one shared
-// composer, and that it reads sensibly for the great majority of members, who
-// hold no account credit at all.
+// work.
+//
+// WHAT THE SENTENCE MUST NOT SAY, and why (review, 1 Aug 2026). Its first draft
+// promised that credit a member holds "will be applied to your invoice",
+// justified by #1620 "allocate-existing". That is FALSE on this path: the one
+// send site mints a brand-new booking with no BOOKING_APPLIED ledger rows, so
+// the allocation op it enqueues always short-circuits and the invoice stands at
+// the full price. The guard below pins the copy against promising it again.
+//
+// What is pinned here is that the sentence renders on the paymentDue branch and
+// NOWHERE else, that both renderers get it from the one shared composer, that
+// it promises nothing the system does not do, and that it reads sensibly for
+// the great majority of members, who hold no account credit at all.
 
 const { sendEmailMock, loadLodgeSettingsMock, loadAppliedCreditMock } =
   vi.hoisted(() => ({
@@ -56,8 +68,13 @@ import {
 // a member actually receives — is checked against this ONE string, which is why
 // the two renderers cannot be allowed to drift apart.
 const CREDIT_SENTENCE =
-  "If you hold account credit with the club, it will be applied to your invoice, " +
-  "so please transfer the amount the invoice shows.";
+  "If the invoice asks for a different amount — for example because the club " +
+  "has put account credit you hold towards it — please transfer the amount " +
+  "the invoice shows.";
+
+// A short marker for the "renders nowhere else" assertions, so they keep
+// working if the sentence is reworded but keep failing if it leaks.
+const SENTENCE_MARKER = "the amount the invoice shows";
 
 const GLOBAL_DATA: EmailTemplateData = {
   BASE_URL: "https://bookings.example.org",
@@ -111,7 +128,7 @@ const PAYMENT_DUE = {
   paymentDue: { reference: "BOOKING-ABC123", invoiceEmailed: true },
 };
 
-describe("#2444 the unpaid confirmation's account-credit sentence", () => {
+describe("#2444 the unpaid confirmation's pay-what-the-invoice-asks sentence", () => {
   it("tells an unpaid member to transfer what the invoice asks for", async () => {
     const { templateData, html } = await send(PAYMENT_DUE);
 
@@ -147,16 +164,16 @@ describe("#2444 the unpaid confirmation's account-credit sentence", () => {
     }
   });
 
-  it("reads as a condition, not as a claim that the member holds credit", async () => {
-    // The great majority of members hold no account credit at all, so an
-    // unconditional "your credit has been applied" would be false for them.
-    // The sentence must open with the condition and must state no figure —
-    // there is no Xero read on this path and none is wanted (the send would
-    // then carry a provider round-trip, and a provider outage, into a member's
+  it("reads as a condition, not as a claim about this member's invoice", async () => {
+    // Most invoices ask for exactly the "Total Due" figure, so an unconditional
+    // "your invoice asks for less" would be false for nearly everyone. The
+    // sentence must open with the condition and must state no figure — there is
+    // no Xero read on this path and none is wanted (the send would then carry a
+    // provider round-trip, and a provider outage, into a member's
     // confirmation).
     const { templateData, html } = await send(PAYMENT_DUE);
 
-    expect(CREDIT_SENTENCE.startsWith("If you hold account credit")).toBe(true);
+    expect(CREDIT_SENTENCE.startsWith("If the invoice asks for a")).toBe(true);
     // No second money figure anywhere in the paragraph: the only amount an
     // unpaid confirmation names is the booking's own price.
     expect(
@@ -190,18 +207,16 @@ describe("#2444 the unpaid confirmation's account-credit sentence", () => {
       "partly paid (#2397)",
       { outstandingBalance: { amountCents: 3000, payableOnline: true } },
     ],
-  ])("says nothing about account credit on a %s confirmation", async (
+  ])("says nothing about the invoice amount on a %s confirmation", async (
     _label,
     senderOptions,
   ) => {
     const { templateData, html } = await send(senderOptions);
 
     expect(templateData.paymentDueNote).toBe("");
-    expect(templateData.paymentOutcome).not.toContain("If you hold account credit");
-    expect(renderDefaultBody(templateData)).not.toContain(
-      "If you hold account credit",
-    );
-    expect(html).not.toContain("If you hold account credit");
+    expect(templateData.paymentOutcome).not.toContain(SENTENCE_MARKER);
+    expect(renderDefaultBody(templateData)).not.toContain(SENTENCE_MARKER);
+    expect(html).not.toContain(SENTENCE_MARKER);
   });
 
   it("says nothing about it when account credit covered the whole stay", async () => {
@@ -219,7 +234,7 @@ describe("#2444 the unpaid confirmation's account-credit sentence", () => {
       "Account credit applied: -$300.00\nNothing more to pay: $0.00\n",
     );
     expect(templateData.paymentDueNote).toBe("");
-    expect(html).not.toContain("If you hold account credit");
+    expect(html).not.toContain(SENTENCE_MARKER);
   });
 
   it("renders identically from the HTML template and the flat token", async () => {
@@ -303,6 +318,55 @@ describe("#2444 the shared composer", () => {
       invoiceEmailed: true,
     });
     expect(note).not.toContain("\n");
+  });
+
+  it("promises no credit netting the system does not actually do", () => {
+    // THE REGRESSION GUARD for this issue's own first draft, which said "If you
+    // hold account credit with the club, it will be applied to your invoice".
+    // Nothing on the one send path applies credit (see the premise test below),
+    // so that was a promise the club would silently break. The sentence may
+    // point at the invoice and may explain WHY the two figures can differ; it
+    // may not assert that anything will happen to this member's invoice.
+    const note = bookingPaymentDueNote({
+      amount: "$120.00",
+      reference: "BOOKING-XYZ",
+      invoiceEmailed: true,
+    });
+
+    for (const promise of [
+      "it will be applied",
+      "will be applied to your invoice",
+      "has been applied to your invoice",
+      "credit has been applied",
+    ]) {
+      expect(note.toLowerCase(), `unkeepable promise: ${promise}`).not.toContain(
+        promise,
+      );
+    }
+    // Whatever it says about credit must sit behind the invoice condition.
+    expect(note).toContain("If the invoice asks for a different amount");
+    expect(note.indexOf("If the invoice asks for a different amount")).toBeLessThan(
+      note.indexOf("account credit"),
+    );
+  });
+
+  it("rests on a send path that applies no account credit at all", () => {
+    // The sentence is worded around what this path really does. It mints a
+    // brand-new booking and writes NO MemberCredit row, so the
+    // enqueueXeroAppliedCreditAllocationOperation call it makes always
+    // short-circuits ("No unallocated applied credit; nothing to allocate.")
+    // and the Xero invoice stands at the full price. If that ever changes, the
+    // copy can — and should — be revisited, so fail here rather than let the
+    // wording quietly become either wrong or needlessly timid.
+    // (#2328's own suite pins the single-send-site half of this premise.)
+    const source = readFileSync(
+      path.join(process.cwd(), "src", "lib", "school-booking-request.ts"),
+      "utf8",
+    );
+
+    expect(source).not.toContain("BOOKING_APPLIED");
+    expect(source).not.toContain("applyCreditToBooking");
+    expect(source).not.toContain("memberCredit");
   });
 });
 
