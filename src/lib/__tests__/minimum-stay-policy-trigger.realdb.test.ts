@@ -1,8 +1,11 @@
 /**
  * Opt-in PostgreSQL proof for the #2363 blue/green trigger boundary.
  *
- * Ordinary test runs skip this file. To run it, provide a throwaway loopback
- * database on port 55442+ whose name contains `booking_policy_2363`:
+ * Ordinary test runs skip this file. Hosted CI also imports it from the
+ * existing guarded concurrency-race harness and supplies that harness's
+ * dedicated localhost database; every test still creates and drops a unique
+ * schema. To run it directly, provide a throwaway loopback database on port
+ * 55442+ whose name contains `booking_policy_2363`:
  *
  *   BOOKING_POLICY_TRIGGER_TEST_DATABASE_URL=postgresql://...@127.0.0.1:55442/booking_policy_2363 \
  *     npm test -- src/lib/__tests__/minimum-stay-policy-trigger.realdb.test.ts
@@ -13,8 +16,14 @@ import path from "node:path";
 import { Client } from "pg";
 import { describe, expect, it } from "vitest";
 
-const databaseUrl =
+const explicitDatabaseUrl =
   process.env.BOOKING_POLICY_TRIGGER_TEST_DATABASE_URL ?? "";
+const hostedRaceDatabaseUrl =
+  process.env.CI === "true" &&
+  process.env.RUN_CONCURRENCY_RACE_TESTS === "1"
+    ? process.env.CONCURRENCY_RACE_DATABASE_URL ?? ""
+    : "";
+const databaseUrl = explicitDatabaseUrl || hostedRaceDatabaseUrl;
 const describeWithDatabase = databaseUrl ? describe : describe.skip;
 const migrationPath =
   "prisma/migrations/20260801190000_add_booking_policy_exception_foundation/migration.sql";
@@ -32,10 +41,13 @@ function assertSafeDatabaseUrl(value: string): void {
     ) ||
     !Number.isFinite(port) ||
     port < 55442 ||
-    !decodeURIComponent(url.pathname).includes("booking_policy_2363")
+    ![
+      "booking_policy_2363",
+      ...(hostedRaceDatabaseUrl ? ["concurrency_race_1881"] : []),
+    ].some((marker) => decodeURIComponent(url.pathname).includes(marker))
   ) {
     throw new Error(
-      "Booking-policy trigger tests require a loopback throwaway database on port 55442+ whose name contains booking_policy_2363.",
+      "Booking-policy trigger tests require a loopback throwaway database on port 55442+ with the expected dedicated test marker.",
     );
   }
 }

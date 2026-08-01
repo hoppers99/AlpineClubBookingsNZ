@@ -141,5 +141,8 @@ describe("minimum-stay policy versioned writes", () => {
       where: { id: "policy-1", version: 4, active: true },
       data: { active: false, version: { increment: 1 } },
     });
+    expect(mocks.executeRaw.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.findUnique.mock.invocationCallOrder[0],
+    );
   });
 });

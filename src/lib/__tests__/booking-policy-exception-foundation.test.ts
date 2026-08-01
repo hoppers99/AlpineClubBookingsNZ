@@ -207,4 +207,25 @@ describe("minimum-stay policy write contract (#2363)", () => {
       'NEW."version" := OLD."version";',
     );
   });
+
+  it("wires the isolated-schema trigger proof into hosted disposable PostgreSQL", () => {
+    const triggerTest = repoFile(
+      "src/lib/__tests__/minimum-stay-policy-trigger.realdb.test.ts",
+    );
+    const hostedHarness = repoFile(
+      "src/lib/__tests__/concurrency-lock-races.realdb.test.ts",
+    );
+
+    expect(hostedHarness).toContain(
+      'import "./minimum-stay-policy-trigger.realdb.test";',
+    );
+    expect(triggerTest).toContain('process.env.CI === "true"');
+    expect(triggerTest).toContain(
+      'process.env.RUN_CONCURRENCY_RACE_TESTS === "1"',
+    );
+    expect(triggerTest).toContain("CONCURRENCY_RACE_DATABASE_URL");
+    expect(triggerTest).toContain("concurrency_race_1881");
+    expect(triggerTest).toContain("CREATE SCHEMA");
+    expect(triggerTest).toContain("DROP SCHEMA IF EXISTS");
+  });
 });
