@@ -2122,7 +2122,9 @@ The rules are:
 - **Authenticated booking links follow the booking-detail read gate (#2362).**
   A concrete booking email receives the canonical, encoded
   `/bookings/<booking-id>` URL only when the recipient is active, can sign in,
-  and is the owner, a linked booking guest, or holds bookings-view admin access.
+  and is the owner, a linked booking guest, or holds bookings-view admin access;
+  the outbound address must also still equal that member's current direct or
+  flattened inherited mailbox.
   Deleted bookings remain Full-Admin-only. Public/non-login contacts, aggregate
   reports, unrelated members, failed authority reads, and templates outside the
   live booking-scoped inventory receive no authenticated booking URL. Bearer
@@ -2143,13 +2145,15 @@ The rules are:
   predate the moment the switch was turned on, so `cron-email-retry.ts` re-reads
   it from the row's `bookingId` and fails closed the same way. It also repeats
   the booking-detail authority check from durable `EmailLog` recipient/context
-  provenance; the address is never used as identity. Built-in HTML is
-  re-finalized before the guarded retry claim, so a revoked recipient loses the
-  detail CTA while bearer actions and page fragments remain intact. Legacy rows
-  with no durable context retire without sending. Stored overrides remain
-  byte-for-byte; if an override retained a now-unauthorized detail href, retry
-  retires the row and requires a reviewed manual re-send rather than rewriting
-  or disclosing it.
+  provenance; the address is matched to that identity's current direct or
+  flattened inherited mailbox, never used as identity by itself. Built-in and
+  stored-override DELIVERY copies are re-finalized before the guarded retry
+  claim, so a revoked/stale recipient loses the detail CTA while bearer actions
+  and page fragments remain intact. Stored override SOURCE and re-save behavior
+  stay byte-for-byte unchanged. Legacy rows with no durable context retire
+  without sending. New booking retry bodies live only in the authority-aware
+  `bookingRetryHtmlBody` column; legacy `htmlBody` stays null so an application
+  rollback to the pre-#2362 worker cannot replay them without these checks.
 - **Waitlist candidacy excludes a silenced booking.**
   `processWaitlistForDates` filters on `noEmails: false`, so no NEW offer is
   made to a silenced entry and, in the ordinary case, no offer clock starts for

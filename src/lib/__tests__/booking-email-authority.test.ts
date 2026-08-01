@@ -19,6 +19,9 @@ vi.mock("@/lib/logger", () => ({
 import { resolveBookingEmailLink } from "@/lib/booking-email-authority";
 
 const ACTIVE_MEMBER = {
+  email: "member@example.test",
+  inheritEmailFromId: null,
+  inheritEmailFrom: null,
   role: "MEMBER",
   financeAccessLevel: "NONE",
   active: true,
@@ -55,6 +58,7 @@ describe("booking email detail-link authority", () => {
         bookingId: "bk/one ?",
         templateName: "booking-confirmed",
         recipient: { kind: "member", memberId: "owner_1" },
+        deliveryAddress: "member@example.test",
       }),
     ).resolves.toEqual({
       authority: "signed-in-booking-owner",
@@ -73,11 +77,57 @@ describe("booking email detail-link authority", () => {
         bookingId: "bk_1",
         templateName: "chore-roster",
         recipient: { kind: "member", memberId: "guest_member_1" },
+        deliveryAddress: "member@example.test",
       }),
     ).resolves.toMatchObject({
       authority: "signed-in-linked-member",
       bookingUrl: "https://bookings.example.nz/bookings/bk_1",
     });
+  });
+
+  it("fails closed when the delivery address is no longer the member's current mailbox", async () => {
+    mocks.bookingFindUnique.mockResolvedValue(booking({ memberId: "owner_1" }));
+    mocks.memberFindUnique.mockResolvedValue({
+      ...ACTIVE_MEMBER,
+      email: "new-address@example.test",
+    });
+
+    await expect(
+      resolveBookingEmailLink({
+        bookingId: "bk_1",
+        templateName: "booking-confirmed",
+        recipient: { kind: "member", memberId: "owner_1" },
+        deliveryAddress: "old-address@example.test",
+      }),
+    ).resolves.toEqual({ authority: "unauthorized", bookingUrl: null });
+  });
+
+  it("matches inherited delivery against the current flattened mailbox source", async () => {
+    mocks.bookingFindUnique.mockResolvedValue(booking({ linked: true }));
+    mocks.memberFindUnique.mockResolvedValue({
+      ...ACTIVE_MEMBER,
+      email: "dependent-stale-copy@example.test",
+      inheritEmailFromId: "parent_1",
+      inheritEmailFrom: { email: "parent-current@example.test" },
+    });
+
+    await expect(
+      resolveBookingEmailLink({
+        bookingId: "bk_1",
+        templateName: "chore-roster",
+        recipient: { kind: "member", memberId: "guest_member_1" },
+        deliveryAddress: "parent-current@example.test",
+      }),
+    ).resolves.toMatchObject({ authority: "signed-in-linked-member" });
+
+    await expect(
+      resolveBookingEmailLink({
+        bookingId: "bk_1",
+        templateName: "chore-roster",
+        recipient: { kind: "member", memberId: "guest_member_1" },
+        deliveryAddress: "dependent-stale-copy@example.test",
+      }),
+    ).resolves.toEqual({ authority: "unauthorized", bookingUrl: null });
   });
 
   it("allows a bookings-view admin but not an unrelated member", async () => {
@@ -92,6 +142,7 @@ describe("booking email detail-link authority", () => {
         bookingId: "bk_1",
         templateName: "refund-request-approved",
         recipient: { kind: "member", memberId: "viewer_1" },
+        deliveryAddress: "member@example.test",
       }),
     ).resolves.toMatchObject({ authority: "bookings-view-admin" });
 
@@ -101,6 +152,7 @@ describe("booking email detail-link authority", () => {
         bookingId: "bk_1",
         templateName: "refund-request-approved",
         recipient: { kind: "member", memberId: "stranger_1" },
+        deliveryAddress: "member@example.test",
       }),
     ).resolves.toEqual({ authority: "unauthorized", bookingUrl: null });
   });
@@ -113,6 +165,7 @@ describe("booking email detail-link authority", () => {
           bookingId: "bk_private",
           templateName: "booking-confirmed",
           recipient: { kind },
+          deliveryAddress: "public@example.test",
         }),
       ).resolves.toEqual({ authority: kind, bookingUrl: null });
       expect(mocks.bookingFindUnique).not.toHaveBeenCalled();
@@ -127,6 +180,7 @@ describe("booking email detail-link authority", () => {
         bookingId: "bk_1",
         templateName: "booking-confirmed",
         recipient: { kind: "member", memberId: "owner_1" },
+        deliveryAddress: "member@example.test",
       }),
     ).resolves.toEqual({ authority: "unauthorized", bookingUrl: null });
 
@@ -137,6 +191,7 @@ describe("booking email detail-link authority", () => {
         bookingId: "bk_1",
         templateName: "booking-confirmed",
         recipient: { kind: "member", memberId: "owner_1" },
+        deliveryAddress: "member@example.test",
       }),
     ).resolves.toEqual({ authority: "unauthorized", bookingUrl: null });
 
@@ -146,6 +201,7 @@ describe("booking email detail-link authority", () => {
         bookingId: "bk_1",
         templateName: "booking-confirmed",
         recipient: { kind: "member", memberId: "owner_1" },
+        deliveryAddress: "member@example.test",
       }),
     ).resolves.toEqual({ authority: "unauthorized", bookingUrl: null });
     expect(mocks.loggerError).toHaveBeenCalledTimes(1);
@@ -157,6 +213,7 @@ describe("booking email detail-link authority", () => {
         bookingId: "bk_1",
         templateName: "admin-daily-digest",
         recipient: { kind: "member", memberId: "owner_1" },
+        deliveryAddress: "member@example.test",
       }),
     ).resolves.toEqual({ authority: "unauthorized", bookingUrl: null });
     expect(mocks.bookingFindUnique).not.toHaveBeenCalled();

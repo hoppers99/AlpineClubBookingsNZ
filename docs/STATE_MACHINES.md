@@ -1755,15 +1755,17 @@ Known email log statuses: `QUEUED`, `SENT`, `FAILED`, `BOUNCED`.
 ```text
 email queued -> send attempted -> sent
 send failure -> retryable failed -> suppression + booking authority rechecked
-current authority -> built-in HTML re-finalized -> guarded claim -> retried by cron
-revoked authority -> detail CTA removed, bearer/page action preserved -> retried
-unknown legacy authority or immutable override with revoked detail link -> retired for manual review
+current authority + current mailbox -> delivery HTML re-finalized -> guarded claim -> retried by cron
+revoked authority or stale mailbox -> detail CTA removed, bearer/page action preserved -> retried
+unknown legacy authority -> retired for manual review
+application rollback -> old worker cannot select quarantined new-version booking body
 exhausted or suppressed -> admin-visible failure/suppression
 ```
 
 To verify: retry backoff, suppression handling, durable recipient identity,
-revoked-authority fail-closed behavior, page-fragment/bearer preservation, and
-which business-critical emails require admin alerts.
+direct/inherited mailbox drift, revoked-authority fail-closed behavior,
+page-fragment/bearer preservation, rollback isolation, and which
+business-critical emails require admin alerts.
 
 ## Xero Outbox And Reconciliation Lifecycle
 

@@ -20,6 +20,7 @@ describe("booking-email retry authority migration (#2362)", () => {
       'ADD COLUMN "bookingBodyOverrideApplied" BOOLEAN',
     );
     expect(sql).toContain('ADD COLUMN "bookingDetailLinkIncluded" BOOLEAN');
+    expect(sql).toContain('ADD COLUMN "bookingRetryHtmlBody" TEXT');
     expect(statements).not.toMatch(/\bNOT\s+NULL\b/i);
     expect(statements).not.toMatch(/\bDEFAULT\b/i);
     expect(statements).not.toMatch(/\b(?:UPDATE|DELETE|INSERT)\b/i);
@@ -33,6 +34,7 @@ describe("booking-email retry authority migration (#2362)", () => {
     expect(emailLog).toMatch(/bookingRecipientMemberId\s+String\?/);
     expect(emailLog).toMatch(/bookingBodyOverrideApplied\s+Boolean\?/);
     expect(emailLog).toMatch(/bookingDetailLinkIncluded\s+Boolean\?/);
+    expect(emailLog).toMatch(/bookingRetryHtmlBody\s+String\?/);
   });
 
   it("records the no-backfill, fail-closed drain contract in the safety ledger", () => {
@@ -43,8 +45,10 @@ describe("booking-email retry authority migration (#2362)", () => {
 
     expect(row).toBeDefined();
     expect(row).toContain("NO backfill");
-    expect(row).toContain("fail-closed");
+    expect(row).toContain("fails closed");
     expect(row).toContain("brief ACCESS EXCLUSIVE lock");
     expect(row).toContain("advisory-lock key");
+    expect(row).toContain("rollback");
+    expect(row).toContain("htmlBody");
   });
 });

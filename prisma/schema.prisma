@@ -4341,6 +4341,10 @@ model EmailLog {
   bookingRecipientMemberId       String?
   bookingBodyOverrideApplied     Boolean?
   bookingDetailLinkIncluded      Boolean?
+  // Retryable HTML for new booking-scoped rows is quarantined here rather than
+  // in legacy htmlBody. A rolled-back pre-#2362 worker filters on htmlBody and
+  // therefore cannot replay a new row without the new authority checks.
+  bookingRetryHtmlBody           String?        @db.Text
   createdAt                      DateTime       @default(now())
   updatedAt                      DateTime       @updatedAt
 

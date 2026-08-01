@@ -86,6 +86,8 @@ describe("N-10: EmailLog tracking", () => {
     mockPrisma.emailSuppression.findUnique.mockResolvedValue(null);
     mockPrisma.emailSuppression.create.mockResolvedValue({});
     mockPrisma.emailSuppression.update.mockResolvedValue({});
+    mockPrisma.member.findUnique.mockResolvedValue(null);
+    mockPrisma.booking.findUnique.mockResolvedValue(null);
     mockTransporter.sendMail.mockResolvedValue({ messageId: "msg-123" });
   });
 
@@ -493,6 +495,24 @@ describe("N-10: EmailLog tracking", () => {
     (process.env as Record<string, string>).NODE_ENV = "production";
 
     const { sendBookingPendingEmail } = await import("../email");
+
+    mockPrisma.booking.findUnique.mockImplementation(
+      async (args: { select?: { noEmails?: boolean } }) =>
+        args.select?.noEmails
+          ? { noEmails: false }
+          : { memberId: "member_1", deletedAt: null, guests: [] },
+    );
+    mockPrisma.member.findUnique.mockResolvedValue({
+      email: "member@example.com",
+      inheritEmailFromId: null,
+      inheritEmailFrom: null,
+      role: "USER",
+      financeAccessLevel: "NONE",
+      active: true,
+      archivedAt: null,
+      canLogin: true,
+      accessRoles: [],
+    });
 
     await sendBookingPendingEmail(
       { bookingId: "bk_test", recipientMemberId: "member_1" },

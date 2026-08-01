@@ -13,7 +13,9 @@ All notable public reference-release changes should be recorded here.
   remain unchanged. Clubs may use the optional `{{bookingUrl}}` chip in each
   concrete-booking template. Existing saved wording is not rewritten, and a
   recipient who is no longer authorized gets no dangling or dead link line.
-  Failed delivery retries repeat that authorization check before replay, and
+  Failed delivery retries repeat that authorization check and confirm the
+  destination is still the member's current direct/inherited mailbox before
+  replay. New retry bodies also fail closed across an application rollback;
   consent links still land on the exact consent action rather than the top of
   the booking page.
 

@@ -230,14 +230,24 @@ beforeEach(() => {
       };
     },
   );
-  mocks.memberFindUnique.mockResolvedValue({
-    role: "USER",
-    financeAccessLevel: "NONE",
-    active: true,
-    archivedAt: null,
-    canLogin: true,
-    accessRoles: [],
-  });
+  mocks.memberFindUnique.mockImplementation(
+    async (args: { where: { id: string } }) => ({
+      email:
+        args.where.id === "owner_1"
+          ? "dave@example.nz"
+          : args.where.id === "delegate_1"
+            ? "delegate@example.nz"
+            : "priya@example.nz",
+      inheritEmailFromId: null,
+      inheritEmailFrom: null,
+      role: "USER",
+      financeAccessLevel: "NONE",
+      active: true,
+      archivedAt: null,
+      canLogin: true,
+      accessRoles: [],
+    }),
+  );
   mocks.getAdminEmails.mockResolvedValue([]);
   // Half 1 of D-16, enforced rather than described: nothing in this path may
   // read a notification preference.

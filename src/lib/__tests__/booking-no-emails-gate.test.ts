@@ -38,7 +38,7 @@ vi.mock("@/lib/email-message-renderer", () => ({
   }: {
     subject: string;
     html: string;
-  }) => ({ subject, html, settings: {} }),
+  }) => ({ subject, html, settings: {}, bodyOverrideApplied: false }),
 }));
 vi.mock("@/lib/email-suppression", () => ({
   getActiveEmailSuppression: mocks.getActiveEmailSuppression,
@@ -227,8 +227,34 @@ describe('sendEmail gate: booking "No emails" switch off', () => {
     });
 
     expect(mocks.emailLogCreate).toHaveBeenCalledWith({
-      data: expect.objectContaining({ bookingId: "bk_42" }),
+      data: expect.objectContaining({
+        bookingId: "bk_42",
+        htmlBody: null,
+        bookingRetryHtmlBody: "<p>body</p>",
+      }),
     });
+  });
+
+  it("keeps new booking retry HTML invisible to the rolled-back worker", async () => {
+    await sendEmail({
+      to: "member@example.com",
+      subject: "Operational update",
+      html: "<p>retained only for the authority-aware worker</p>",
+      templateName: "booking-modified",
+      bookingContext: {
+        bookingId: "bk_rollback",
+        recipient: { kind: "non-login-public-contact" },
+      },
+    });
+
+    const logged = mocks.emailLogCreate.mock.calls[0][0].data;
+    expect(logged.htmlBody).toBeNull();
+    expect(logged.bookingRetryHtmlBody).toBe(
+      "<p>retained only for the authority-aware worker</p>",
+    );
+    // This is the previous cron binary's executable body predicate after the
+    // initial send later transitions the same row to FAILED.
+    expect({ ...logged, status: "FAILED" }.htmlBody !== null).toBe(false);
   });
 
   it("stores a null bookingId for a send with no booking", async () => {
@@ -241,7 +267,10 @@ describe('sendEmail gate: booking "No emails" switch off', () => {
     });
 
     expect(mocks.emailLogCreate).toHaveBeenCalledWith({
-      data: expect.objectContaining({ bookingId: null }),
+      data: expect.objectContaining({
+        bookingId: null,
+        htmlBody: "<p>123456</p>",
+      }),
     });
   });
 });

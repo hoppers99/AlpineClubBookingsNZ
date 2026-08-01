@@ -2086,18 +2086,22 @@ that same choke point may add the canonical encoded
 `/bookings/<booking-id>` detail URL (#2362). `booking-email-authority.ts`
 re-reads the booking and recipient member, then mirrors the detail page's read
 gate: active login-capable owner, linked member, or bookings-area viewer; deleted
-bookings remain Full-Admin-only. Public/non-login contacts and aggregate reports
-are explicit recipient categories and never receive the authenticated URL.
-Built-in HTML rewrites or adds one booking CTA only after authorization, while
-stored body overrides are left byte-for-byte alone and receive only the optional
-`{{bookingUrl}}` data they explicitly use. Bearer action URLs are not booking
-detail URLs and are never removed by this policy. Retry-safe booking rows persist
-the checked recipient member id (or an explicit null for public/aggregate mail),
-override provenance, and whether finalized HTML contained a detail href in
-`EmailLog`. The retry worker repeats authorization from that durable context
-before its guarded claim and re-finalizes built-in HTML. A legacy row with
-unknown context, or a stored override whose retained detail link is no longer
-authorized, retires fail-closed for manual review.
+bookings remain Full-Admin-only. The actual SMTP destination must also still be
+that member's current direct or flattened inherited mailbox. Public/non-login
+contacts and aggregate reports are explicit recipient categories and never
+receive the authenticated URL. Built-in HTML rewrites or adds one booking CTA
+only after authorization. Stored override SOURCE stays byte-for-byte unchanged;
+at the final delivery boundary an authorized override is unchanged, while an
+unauthorized delivery copy loses any legacy/admin-authored authenticated booking
+href. Bearer action URLs are not booking detail URLs and are never removed by
+this policy. Retry-safe booking rows persist the checked recipient member id (or
+an explicit null for public/aggregate mail), override provenance, and whether
+finalized HTML contained a detail href in `EmailLog`. Their retained HTML lives
+in `bookingRetryHtmlBody`, not legacy `htmlBody`, so a rolled-back pre-#2362
+worker cannot select new-version booking rows. The current worker repeats
+mailbox ownership and booking authorization before its guarded claim, then
+re-finalizes both built-in and override delivery copies. A legacy row with
+unknown context retires fail-closed for manual review.
 If an admin/system alert cannot be delivered to any opted-in admin recipient
 because every send is suppressed or fails, the app records a critical
 communication audit event and surfaces it in Admin Email Deliverability.

@@ -255,12 +255,14 @@ that the exact signed-in recipient is the booking owner, a linked member, or an
 admin with bookings-view access. For a public/non-login contact, an aggregate
 operator message, or an unauthorized member, the renderer removes the whole
 line containing `{{bookingUrl}}`; it does not leave a bare label. Existing
-stored overrides are not rewritten, and public bearer links such as `/pay/<token>`
-or consent/respond URLs remain separate and unchanged. Failed retry-safe booking
-mail repeats the current authority check from durable recipient context before
-replay. If access was revoked, built-in mail loses only the authenticated detail
-CTA; an override containing that now-unauthorized href is not rewritten or sent
-and instead requires a reviewed manual re-send.
+stored override source and re-save behavior are not rewritten, and public bearer
+links such as `/pay/<token>` or consent/respond URLs remain separate and
+unchanged. At delivery time, a legacy/admin-authored authenticated booking href
+is removed from an unauthorized override copy; authorized output is unchanged.
+Failed retry-safe booking mail repeats both the current authority check and the
+current direct/inherited mailbox match from durable recipient context before
+replay. Retained new-version booking HTML is isolated from the legacy retry
+column, so rolling the application back to the pre-#2362 worker cannot resend it.
 
 Anything optional is therefore supplied as a **pre-composed line**: the sender
 builds the whole line — label, value and its trailing blank line — or the empty

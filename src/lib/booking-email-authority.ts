@@ -7,6 +7,7 @@ import {
   type BookingEmailRecipientAuthority,
 } from "@/lib/booking-email-contract";
 import { ALWAYS_BOOKING_SCOPED_TEMPLATE_NAMES } from "@/lib/booking-email-suppression";
+import { normalizeEmailAddress } from "@/lib/email-suppression";
 import logger from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
 
@@ -35,6 +36,7 @@ export async function resolveBookingEmailLink(params: {
   bookingId: string;
   templateName: string;
   recipient: BookingEmailRecipient;
+  deliveryAddress: string;
 }): Promise<BookingEmailLinkDecision> {
   if (!ALWAYS_BOOKING_SCOPED_TEMPLATE_NAMES.has(params.templateName)) {
     return { authority: "unauthorized", bookingUrl: null };
@@ -68,6 +70,9 @@ export async function resolveBookingEmailLink(params: {
     const member = await prisma.member.findUnique({
       where: { id: recipientMemberId },
       select: {
+        email: true,
+        inheritEmailFromId: true,
+        inheritEmailFrom: { select: { email: true } },
         role: true,
         financeAccessLevel: true,
         active: true,
@@ -81,7 +86,13 @@ export async function resolveBookingEmailLink(params: {
       !member ||
       member.active !== true ||
       member.canLogin !== true ||
-      member.archivedAt != null
+      member.archivedAt != null ||
+      normalizeEmailAddress(params.deliveryAddress) !==
+        normalizeEmailAddress(
+          member.inheritEmailFromId
+            ? (member.inheritEmailFrom?.email ?? "")
+            : member.email,
+        )
     ) {
       return { authority: "unauthorized", bookingUrl: null };
     }
@@ -127,6 +138,7 @@ export async function resolveBookingEmailLink(params: {
         bookingId: params.bookingId,
         templateName: params.templateName,
         recipientMemberId: params.recipient.memberId,
+        deliveryAddress: params.deliveryAddress,
       },
       "Failed to classify a booking-email recipient; omitting the booking detail link",
     );

@@ -99,4 +99,26 @@ describe("built-in booking email HTML links", () => {
       }),
     ).toBe(storedOverride);
   });
+
+  it("sanitizes only the unauthorized delivery copy of a stored override", () => {
+    const storedOverride =
+      '<p>Club-authored body</p><a href="https://bookings.example.nz/bookings/bk_private">Open booking</a>' +
+      '<a href="https://old-bookings.example.nz/bookings/bk_private">Old origin</a>' +
+      '<a href="/bookings/bk_private">Relative booking</a>' +
+      '<a href="https://bookings.example.nz/bookings/consent/consent_secret">Answer consent</a>' +
+      '<a href="https://bookings.example.nz/custom/help">Help</a>';
+
+    const delivered = finalizeBookingEmailHtml({
+      html: storedOverride,
+      bookingUrl: null,
+      bookingScoped: true,
+      bodyOverrideApplied: true,
+    });
+
+    expect(delivered).not.toContain("/bookings/bk_private");
+    expect(delivered).not.toContain("old-bookings.example.nz");
+    expect(delivered).toContain("/bookings/consent/consent_secret");
+    expect(delivered).toContain("/custom/help");
+    expect(storedOverride).toContain("/bookings/bk_private");
+  });
 });

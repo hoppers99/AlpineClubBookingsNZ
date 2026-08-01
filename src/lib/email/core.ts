@@ -224,6 +224,7 @@ export async function sendEmail({
           bookingId: bookingContext.bookingId,
           templateName,
           recipient: bookingContext.recipient,
+          deliveryAddress: to,
         });
   const prepared = await prepareEmailMessage({
     templateName,
@@ -284,7 +285,12 @@ export async function sendEmail({
         to: emailLogRecipient,
         subject: sanitizedSubject,
         templateName,
-        htmlBody: persistHtmlBody ? prepared.html : null,
+        // New booking rows quarantine retryable HTML from the pre-#2362
+        // worker, whose fixed query selects only legacy htmlBody. This makes a
+        // later application rollback fail closed without withholding the
+        // initial send. Sensitive templates remain unretained in both fields.
+        htmlBody:
+          bookingContext === "none" && persistHtmlBody ? prepared.html : null,
         status: "QUEUED",
         lastAttemptAt: new Date(),
         // #2258: booking attribution on every booking-scoped message, not just
@@ -304,6 +310,7 @@ export async function sendEmail({
                   : null,
               bookingBodyOverrideApplied: prepared.bodyOverrideApplied,
               bookingDetailLinkIncluded: hasBookingDetailHref(prepared.html),
+              bookingRetryHtmlBody: persistHtmlBody ? prepared.html : null,
             }),
       },
     });
@@ -337,7 +344,9 @@ export async function sendEmail({
             // switch is a transient fault: FAILED lets the retry cron pick the
             // row up again, and that cron re-checks the switch before replaying.
             status: withheld ? "SKIPPED_NO_EMAILS" : "FAILED",
-            ...(withheld ? { htmlBody: null } : {}),
+            ...(withheld
+              ? { htmlBody: null, bookingRetryHtmlBody: null }
+              : {}),
             errorMessage,
           },
         });
@@ -402,6 +411,7 @@ export async function sendEmail({
           data: {
             status: "BOUNCED",
             htmlBody: null,
+            bookingRetryHtmlBody: null,
             errorMessage: `Email suppressed after SES ${activeSuppression.reason.toLowerCase()} feedback`,
           },
         });

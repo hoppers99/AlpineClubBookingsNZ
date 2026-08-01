@@ -8,7 +8,10 @@
 -- non-NULL override flag and a NULL recipient member id, which explicitly means
 -- "no authenticated booking-detail link". The included-link bit lets a later
 -- retry fail closed if deployment URL drift prevents locating the retained href.
+-- Retryable booking HTML is isolated from the legacy htmlBody column so a
+-- rolled-back pre-#2362 cron worker cannot select and replay new-version rows.
 ALTER TABLE "EmailLog"
   ADD COLUMN "bookingRecipientMemberId" TEXT,
   ADD COLUMN "bookingBodyOverrideApplied" BOOLEAN,
-  ADD COLUMN "bookingDetailLinkIncluded" BOOLEAN;
+  ADD COLUMN "bookingDetailLinkIncluded" BOOLEAN,
+  ADD COLUMN "bookingRetryHtmlBody" TEXT;

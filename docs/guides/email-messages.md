@@ -207,7 +207,7 @@ Per-template editor:
 | Stale overrides | A count is shown if any stored overrides reference templates that no longer exist (a data-cleanup task) |
 | Retired tokens | A warning names any saved override still using a token its template no longer offers. A token that is not supplied renders as **nothing**, so the line it sits on can go out empty — open the named template, swap the old token for the chips now shown, and save (or reset it to the current default) |
 | Audit | Template edits are audited (who changed what, when) |
-| Authorized booking link | Concrete-booking templates offer optional `{{bookingUrl}}`. It renders the encoded booking-detail URL only for a signed-in owner, linked member, or bookings-view admin. The whole line disappears for public/non-login, aggregate, or unauthorized recipients; bearer action links remain separate |
+| Authorized booking link | Concrete-booking templates offer optional `{{bookingUrl}}`. It renders the encoded booking-detail URL only for a signed-in owner, linked member, or bookings-view admin whose direct/inherited mailbox still matches the delivery address. The whole line, plus any old concrete booking href in the delivered copy, disappears for public/non-login, aggregate, stale-mailbox, or unauthorized recipients; saved override wording and bearer action links remain unchanged |
 | Pre-composed blocks | Some tokens hold a whole sentence or block the system builds for you. You can move one or leave it out, but you cannot reformat what is inside it — see below |
 
 ### Tokens that hold a whole block, and what that means for you

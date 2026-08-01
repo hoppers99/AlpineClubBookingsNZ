@@ -34,6 +34,7 @@ vi.mock("@/lib/prisma", () => ({
 
 vi.mock("@/lib/email-suppression", () => ({
   getActiveEmailSuppression: mocks.getActiveEmailSuppression,
+  normalizeEmailAddress: (value: string) => value.trim().toLowerCase(),
 }));
 
 vi.mock("nodemailer", () => ({
@@ -78,6 +79,7 @@ function failedEmail(overrides: Record<string, unknown> = {}) {
     bookingRecipientMemberId: "member_1",
     bookingBodyOverrideApplied: false,
     bookingDetailLinkIncluded: false,
+    bookingRetryHtmlBody: null,
     attempts: 0,
     ...overrides,
   };
@@ -102,6 +104,9 @@ describe("retryFailedEmails (issue #820)", () => {
           : { memberId: "member_1", deletedAt: null, guests: [] },
     );
     mocks.memberFindUnique.mockResolvedValue({
+      email: "member@example.test",
+      inheritEmailFromId: null,
+      inheritEmailFrom: null,
       role: "USER",
       financeAccessLevel: "NONE",
       active: true,
@@ -121,7 +126,10 @@ describe("retryFailedEmails (issue #820)", () => {
         where: expect.objectContaining({
           status: "FAILED",
           attempts: { lt: 3 },
-          htmlBody: { not: null },
+          OR: [
+            { htmlBody: { not: null } },
+            { bookingRetryHtmlBody: { not: null } },
+          ],
         }),
       }),
     );
@@ -142,6 +150,7 @@ describe("retryFailedEmails (issue #820)", () => {
         status: "FAILED",
         attempts: 1,
         htmlBody: "<p>hello</p>",
+        bookingRetryHtmlBody: null,
       },
       data: expect.objectContaining({ status: "QUEUED", attempts: 2 }),
     });
@@ -193,6 +202,7 @@ describe("retryFailedEmails (issue #820)", () => {
       data: {
         status: "BOUNCED",
         htmlBody: null,
+        bookingRetryHtmlBody: null,
         errorMessage: "Email suppressed after SES bounce feedback",
       },
     });
@@ -285,6 +295,9 @@ describe('retryFailedEmails and the per-booking "No emails" switch (#2258)', () 
           : { memberId: "member_1", deletedAt: null, guests: [] },
     );
     mocks.memberFindUnique.mockResolvedValue({
+      email: "member@example.test",
+      inheritEmailFromId: null,
+      inheritEmailFrom: null,
       role: "USER",
       financeAccessLevel: "NONE",
       active: true,
@@ -366,12 +379,15 @@ describe('retryFailedEmails and the per-booking "No emails" switch (#2258)', () 
     expect(retry.html).not.toContain("View booking");
     expect(mocks.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: expect.objectContaining({ htmlBody: retry.html }),
+        data: expect.objectContaining({
+          htmlBody: retry.html,
+          bookingDetailLinkIncluded: false,
+        }),
       }),
     );
   });
 
-  it("retires a stored override rather than rewriting its link after authority is revoked", async () => {
+  it("sanitizes a stored override delivery copy after authority is revoked", async () => {
     const storedOverride =
       '<p>Club-authored body</p><a href="http://localhost:3000/bookings/bk_1">Open booking</a>';
     mocks.findMany.mockResolvedValue([
@@ -390,16 +406,65 @@ describe('retryFailedEmails and the per-booking "No emails" switch (#2258)', () 
 
     const result = await retryFailedEmails();
 
-    expect(result).toEqual({ retried: 0, succeeded: 0, failed: 0 });
-    expect(mocks.sendMail).not.toHaveBeenCalled();
-    expect(mocks.updateMany).toHaveBeenCalledWith({
-      where: expect.objectContaining({ id: "email_1", status: "FAILED" }),
-      data: expect.objectContaining({
-        attempts: 3,
-        htmlBody: null,
-        errorMessage: expect.stringContaining("stored body override"),
-      }),
+    expect(result).toEqual({ retried: 1, succeeded: 1, failed: 0 });
+    expect(mocks.sendMail).toHaveBeenCalledTimes(1);
+    expect(mocks.sendMail.mock.calls[0][0].html).toContain("Club-authored body");
+    expect(mocks.sendMail.mock.calls[0][0].html).not.toContain(
+      "/bookings/bk_1",
+    );
+    expect(mocks.updateMany.mock.calls[0][0].data).toMatchObject({
+      bookingDetailLinkIncluded: false,
     });
+  });
+
+  it("removes the detail link when the member no longer owns the retained destination", async () => {
+    mocks.findMany.mockResolvedValue([
+      failedEmail({
+        to: "old-mailbox@example.test",
+        htmlBody:
+          '<table role="presentation" cellpadding="0" cellspacing="0"><tr><td><a href="http://localhost:3000/bookings/bk_1">View booking</a></td></tr></table><p>Operational update</p>',
+        bookingDetailLinkIncluded: true,
+      }),
+    ]);
+
+    const result = await retryFailedEmails();
+
+    expect(result).toEqual({ retried: 1, succeeded: 1, failed: 0 });
+    expect(mocks.sendMail.mock.calls[0][0].to).toBe(
+      "old-mailbox@example.test",
+    );
+    expect(mocks.sendMail.mock.calls[0][0].html).not.toContain(
+      "/bookings/bk_1",
+    );
+    expect(mocks.updateMany.mock.calls[0][0].data).toMatchObject({
+      bookingDetailLinkIncluded: false,
+    });
+  });
+
+  it("retries new booking rows from rollback-isolated storage", async () => {
+    const quarantinedHtml = "<p>rollback-isolated booking update</p>";
+    mocks.findMany.mockResolvedValue([
+      failedEmail({
+        htmlBody: null,
+        bookingRetryHtmlBody: quarantinedHtml,
+      }),
+    ]);
+
+    const result = await retryFailedEmails();
+
+    expect(result).toEqual({ retried: 1, succeeded: 1, failed: 0 });
+    expect(mocks.sendMail.mock.calls[0][0].html).toContain(quarantinedHtml);
+    expect(mocks.sendMail.mock.calls[0][0].html).toContain(
+      "/bookings/bk_1",
+    );
+    expect(mocks.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          htmlBody: null,
+          bookingRetryHtmlBody: quarantinedHtml,
+        }),
+      }),
+    );
   });
 
   it("retries an authorized stored override byte-for-byte", async () => {
@@ -504,6 +569,7 @@ describe('retryFailedEmails and the per-booking "No emails" switch (#2258)', () 
         status: "FAILED",
         attempts: 0,
         htmlBody: "<p>hello</p>",
+        bookingRetryHtmlBody: null,
       },
       data: expect.objectContaining({ attempts: 3, htmlBody: null }),
     });

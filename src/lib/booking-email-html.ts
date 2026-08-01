@@ -22,6 +22,18 @@ function findBookingHref(html: string, fromIndex = 0) {
   return pattern.exec(html);
 }
 
+function findAnyBookingHref(html: string, fromIndex = 0) {
+  const pattern = new RegExp(
+    // Unauthorized final sanitation must also catch a legacy hard-coded app
+    // origin and relative hrefs. Rewriting authorized built-ins stays on the
+    // stricter current-origin matcher above; this wider matcher only removes.
+    'href="(?:https?:\\/\\/[^/"?#]+)?\\/bookings(?:\\/(?!consent(?:\\/|[?#]|$))[^"#?]*)?([?#][^"]*)?"',
+    "g",
+  );
+  pattern.lastIndex = fromIndex;
+  return pattern.exec(html);
+}
+
 /** Whether HTML contains an authenticated booking-detail href (not a bearer action). */
 export function hasBookingDetailHref(html: string): boolean {
   return findBookingHref(html) != null;
@@ -29,7 +41,7 @@ export function hasBookingDetailHref(html: string): boolean {
 
 function removeBookingButtons(html: string): string {
   let next = html;
-  let match = findBookingHref(next);
+  let match = findAnyBookingHref(next);
   while (match) {
     const tableStart = next.lastIndexOf(
       '<table role="presentation" cellpadding="0" cellspacing="0"',
@@ -41,7 +53,7 @@ function removeBookingButtons(html: string): string {
     } else {
       next = `${next.slice(0, tableStart)}${next.slice(tableEnd + "</table>".length)}`;
     }
-    match = findBookingHref(next);
+    match = findAnyBookingHref(next);
   }
   return next;
 }
@@ -95,13 +107,21 @@ export function applyBookingDetailLinkToBuiltInHtml(
   return replaced ? next : appendBookingButton(next, bookingUrl);
 }
 
-/** Stored body overrides remain an explicit admin-authored contract. */
+/**
+ * Finalize the rendered delivery copy without ever mutating stored override
+ * source. An authorized override remains byte-for-byte unchanged; an
+ * unauthorized override loses stale/admin-authored authenticated booking
+ * hrefs at this last outbound boundary. Bearer consent links remain intact.
+ */
 export function finalizeBookingEmailHtml(params: {
   html: string;
   bookingUrl: string | null;
   bookingScoped: boolean;
   bodyOverrideApplied: boolean;
 }): string {
-  if (!params.bookingScoped || params.bodyOverrideApplied) return params.html;
+  if (!params.bookingScoped) return params.html;
+  if (params.bodyOverrideApplied) {
+    return params.bookingUrl ? params.html : removeBookingButtons(params.html);
+  }
   return applyBookingDetailLinkToBuiltInHtml(params.html, params.bookingUrl);
 }

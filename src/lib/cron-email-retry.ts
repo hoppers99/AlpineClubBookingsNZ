@@ -24,7 +24,8 @@ async function retireUnverifiableBookingEmail(params: {
   templateName: string;
   to: string;
   expectedAttempts: number;
-  expectedHtmlBody: string;
+  expectedHtmlBody: string | null;
+  expectedBookingRetryHtmlBody: string | null;
   errorMessage: string;
   logMessage: string;
 }): Promise<void> {
@@ -35,11 +36,13 @@ async function retireUnverifiableBookingEmail(params: {
         status: "FAILED",
         attempts: params.expectedAttempts,
         htmlBody: params.expectedHtmlBody,
+        bookingRetryHtmlBody: params.expectedBookingRetryHtmlBody,
       },
       data: {
         attempts: MAX_ATTEMPTS,
         lastAttemptAt: new Date(),
         htmlBody: null,
+        bookingRetryHtmlBody: null,
         errorMessage: params.errorMessage,
       },
     })
@@ -98,7 +101,10 @@ export async function retryFailedEmails(): Promise<{
     where: {
       status: "FAILED",
       attempts: { lt: MAX_ATTEMPTS },
-      htmlBody: { not: null },
+      OR: [
+        { htmlBody: { not: null } },
+        { bookingRetryHtmlBody: { not: null } },
+      ],
       lastAttemptAt: { not: { gte: backoffThreshold } },
     },
     orderBy: { createdAt: "asc" },
@@ -110,7 +116,8 @@ export async function retryFailedEmails(): Promise<{
   let failed = 0;
 
   for (const emailLog of failedEmails) {
-    let retryHtml = emailLog.htmlBody!;
+    const usesBookingRetryBody = emailLog.bookingRetryHtmlBody != null;
+    let retryHtml = emailLog.bookingRetryHtmlBody ?? emailLog.htmlBody!;
     // F26 (#1885): a FAILED row can be created before an SNS bounce/complaint
     // suppresses the recipient (the pre-send check in core.ts passed, then the
     // SMTP send failed after the suppression landed). Re-check here so a
@@ -135,6 +142,7 @@ export async function retryFailedEmails(): Promise<{
           data: {
             status: "BOUNCED",
             htmlBody: null,
+            bookingRetryHtmlBody: null,
             errorMessage: `Email suppressed after SES ${activeSuppression.reason.toLowerCase()} feedback`,
           },
         })
@@ -207,7 +215,8 @@ export async function retryFailedEmails(): Promise<{
             templateName: emailLog.templateName,
             to: emailLog.to,
             expectedAttempts: emailLog.attempts,
-            expectedHtmlBody: retryHtml,
+            expectedHtmlBody: emailLog.htmlBody,
+            expectedBookingRetryHtmlBody: emailLog.bookingRetryHtmlBody,
           },
           "Retired a booking-scoped email with no recorded booking (queued before #2258); it cannot be checked against the booking's \"No emails\" switch",
         );
@@ -235,6 +244,7 @@ export async function retryFailedEmails(): Promise<{
             data: {
               status: "SKIPPED_NO_EMAILS",
               htmlBody: null,
+              bookingRetryHtmlBody: null,
               errorMessage:
                 'Withheld: this booking has the "No emails" switch turned on',
             },
@@ -272,7 +282,8 @@ export async function retryFailedEmails(): Promise<{
             templateName: emailLog.templateName,
             to: emailLog.to,
             expectedAttempts: emailLog.attempts,
-            expectedHtmlBody: retryHtml,
+            expectedHtmlBody: emailLog.htmlBody,
+            expectedBookingRetryHtmlBody: emailLog.bookingRetryHtmlBody,
             errorMessage:
               "Not retried: this booking email predates retry-time recipient authorization context (#2362). Re-send it by hand if the recipient still needs it.",
             logMessage:
@@ -295,7 +306,8 @@ export async function retryFailedEmails(): Promise<{
             templateName: emailLog.templateName,
             to: emailLog.to,
             expectedAttempts: emailLog.attempts,
-            expectedHtmlBody: retryHtml,
+            expectedHtmlBody: emailLog.htmlBody,
+            expectedBookingRetryHtmlBody: emailLog.bookingRetryHtmlBody,
             errorMessage:
               "Not retried: the retained booking-detail link could not be safely located under the current application URL (#2362). Re-send it by hand after reviewing the recipient and deployment URL.",
             logMessage:
@@ -310,40 +322,25 @@ export async function retryFailedEmails(): Promise<{
           recipient: emailLog.bookingRecipientMemberId
             ? { kind: "member", memberId: emailLog.bookingRecipientMemberId }
             : { kind: "non-login-public-contact" },
+          deliveryAddress: emailLog.to,
         });
 
-        if (emailLog.bookingBodyOverrideApplied) {
-          // Stored overrides remain byte-for-byte admin-authored contracts. If
-          // one retained an authenticated booking href that the recipient may
-          // no longer use, fail closed instead of silently rewriting the
-          // override or sending the stale disclosure.
-          if (!bookingLink.bookingUrl && emailLog.bookingDetailLinkIncluded) {
-            await retireUnverifiableBookingEmail({
-              emailLogId: emailLog.id,
-              bookingId: emailLog.bookingId,
-              templateName: emailLog.templateName,
-              to: emailLog.to,
-              expectedAttempts: emailLog.attempts,
-              expectedHtmlBody: retryHtml,
-              errorMessage:
-                "Not retried: the recipient no longer has access to the retained booking-detail link, and the stored body override cannot be rewritten (#2362). Re-send it by hand after reviewing the recipient and template.",
-              logMessage:
-                "Retired a stored-override booking email after recipient authority was revoked",
-            });
-            continue;
-          }
-        } else {
-          retryHtml = finalizeBookingEmailHtml({
-            html: retryHtml,
-            bookingUrl: bookingLink.bookingUrl,
-            bookingScoped: true,
-            bodyOverrideApplied: false,
-          });
-        }
+        // This transforms only the retained/rendered delivery copy. Stored
+        // override source is never written here: authorized overrides stay
+        // byte-for-byte unchanged, while revoked/public recipients lose stale
+        // authenticated hrefs before the guarded claim and send.
+        retryHtml = finalizeBookingEmailHtml({
+          html: retryHtml,
+          bookingUrl: bookingLink.bookingUrl,
+          bookingScoped: true,
+          bodyOverrideApplied: emailLog.bookingBodyOverrideApplied,
+        });
       }
     }
 
     const newAttempts = emailLog.attempts + 1;
+    const retainedHtml =
+      emailLog.bookingRetryHtmlBody ?? emailLog.htmlBody;
 
     // F33 (#1885): claim the row before sending. If a previous run crashed
     // after SES accepted the message but before the SENT write committed, the
@@ -356,12 +353,20 @@ export async function retryFailedEmails(): Promise<{
         status: "FAILED",
         attempts: emailLog.attempts,
         htmlBody: emailLog.htmlBody,
+        bookingRetryHtmlBody: emailLog.bookingRetryHtmlBody,
       },
       data: {
         status: "QUEUED",
         attempts: newAttempts,
         lastAttemptAt: new Date(),
-        ...(retryHtml !== emailLog.htmlBody ? { htmlBody: retryHtml } : {}),
+        ...(retryHtml !== retainedHtml
+          ? usesBookingRetryBody
+            ? { bookingRetryHtmlBody: retryHtml }
+            : { htmlBody: retryHtml }
+          : {}),
+        ...(emailLog.bookingDetailLinkIncluded != null
+          ? { bookingDetailLinkIncluded: hasBookingDetailHref(retryHtml) }
+          : {}),
       },
     });
     if (claim.count !== 1) {
