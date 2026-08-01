@@ -31,6 +31,13 @@ All notable public reference-release changes should be recorded here.
   that gate by design, so without the page-level check a prefetched render could
   still have produced the calendar.
 
+  The operator diagnostic (`scripts/diagnose-calendar-access.ts`, the one the
+  calendar guide sends you to for "why can this person do that?") reports the
+  new legs in the order the app applies them: the module switch first, then the
+  organisation check, then the create and edit/delete gates. It previously
+  re-implemented only the old write gate, so it would have answered "CAN
+  create" for an organisation account with a committee assignment.
+
 - **The cancellation queue stops spending Xero API calls on questions nobody can
   act on (#2402).** Opening **Admin → Members → Cancellation Requests** asked
   Xero, for every participant on the page, whether that member's contact still

@@ -190,7 +190,9 @@ export const SINGLETONS: SingletonSpec[] = [
       // memberGuests SHOULD-TRAVEL (#2306, epic #2305, owner decision D-18):
       // "may a member add another member as a guest?" is a club capability
       // decision like groupBookings or waitlist, not a per-install auth or
-      // credential decision, so it travels with the other 21 flags. Importing
+      // credential decision, so it travels with the other capability flags
+      // above (a count is deliberately not quoted here: it went stale the
+      // moment #2241 added eventsCalendar to the list). Importing
       // `true` onto a target is harmless in this release (the flag is inert)
       // and, once MG2 lands, still lands on the target's OWN policy singleton.
       // The two PRIVACY toggles that decide how a member is FOUND live on the
@@ -202,8 +204,11 @@ export const SINGLETONS: SingletonSpec[] = [
         "retired-but-not-yet-dropped flag; kept out of every read via " +
         "CLUB_MODULE_SETTINGS_COLUMN_SELECT and awaiting a contract DROP (#139)",
       // OWNER JUDGEMENT (#2178): the two auth-provider sign-in toggles do not
-      // travel today, unlike the other 19 module flags (incl. twoFactor,
-      // analytics, xeroIntegration) which do. Enabling an authentication
+      // travel today, unlike EVERY other module flag (incl. twoFactor,
+      // analytics, xeroIntegration) which does. (This read "the other 19
+      // module flags" until #2241; the count had already been overtaken twice
+      // by #2211 and #2306, so it is stated without a number now.) Enabling an
+      // authentication
       // method is a per-deployment security decision — so they are excluded.
       // NOT a safe one-line flip to should-travel: the login page renders the
       // magic-link form off the flag alone (no delivery-presence gate), and the
