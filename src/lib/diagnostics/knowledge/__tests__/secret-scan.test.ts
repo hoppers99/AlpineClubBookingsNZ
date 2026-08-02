@@ -45,6 +45,56 @@ describe("scanForSecrets", () => {
     expect(findings.map((f) => f.rule)).toContain("assigned-secret-literal");
   });
 
+  it("flags URL-embedded credentials (the DATABASE_URL connection shape)", () => {
+    // Synthetic password assembled at runtime — never a real credential.
+    const pw = `${"REAL"}${"PASS"}${"w0rd9Q"}`;
+    const findings = scanForSecrets(`DATABASE_URL=postgres://u:${pw}@h:5432/db\n`);
+    expect(findings.map((f) => f.rule)).toContain("url-embedded-credential");
+    // Preview is redacted to the scheme prefix — the password never appears.
+    expect(findings[0].preview).not.toContain(pw);
+    expect(findings[0].preview.endsWith("…")).toBe(true);
+  });
+
+  it("flags an UNQUOTED high-entropy assignment to a secret-named key", () => {
+    // Mixed-case + digits, length >= 16, assembled from fragments.
+    const token = `${"aB3xK9mP2"}${"qR7sT1vW5yZ"}`;
+    const findings = scanForSecrets(`SECRET_KEY=${token}\n`);
+    expect(findings.map((f) => f.rule)).toContain("assigned-secret-literal");
+  });
+
+  it("does NOT flag a placeholder connection string (user:password@…)", () => {
+    // Weak/dev passwords are documentation, not a leak.
+    expect(scanForSecrets("postgres://user:password@localhost:5432/db")).toEqual(
+      [],
+    );
+    expect(scanForSecrets("postgresql://user:pass@localhost/tacbookings")).toEqual(
+      [],
+    );
+    expect(scanForSecrets("postgres://postgres:postgres@127.0.0.1/postgres")).toEqual(
+      [],
+    );
+    expect(scanForSecrets("postgresql://codex:codex@127.0.0.1:5432/codex_local")).toEqual(
+      [],
+    );
+    // A symbolic redaction is not a live password either.
+    expect(scanForSecrets("mysql://root:***@db")).toEqual([]);
+  });
+
+  it("does NOT flag ordinary unquoted code assigned to a secret-named key", () => {
+    // Code references / dotted identifiers must not read as literal secrets.
+    expect(scanForSecrets("const secret = process.env.CLIENT_SECRET;")).toEqual(
+      [],
+    );
+    expect(scanForSecrets("apiKey: config.provider.apiKeyValue")).toEqual([]);
+  });
+
+  it("does NOT flag a host:port URL that carries no userinfo", () => {
+    // `://host:port/…` has no `user:password@`, so it is not a credential.
+    expect(scanForSecrets("see https://example.com:8080/path for docs")).toEqual(
+      [],
+    );
+  });
+
   it("does NOT flag documented placeholders (example/redacted/etc.)", () => {
     // Same AWS shape but with an EXAMPLE marker inside the token region.
     expect(scanForSecrets(`AKIA${"IOSFODNN7EXAMPLE"}`)).toEqual([]);

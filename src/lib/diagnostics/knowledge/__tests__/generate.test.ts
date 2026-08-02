@@ -147,6 +147,39 @@ describe("buildKnowledgeBundle — fail closed", () => {
     }
   });
 
+  it("THROWS when a doc embeds live URL credentials (connection string)", () => {
+    const pw = `${"REAL"}${"PASS"}${"w0rd9Q"}`;
+    const leaky: KnowledgeSourceFile = {
+      path: "docs/DEPLOY.md",
+      content: `Set:\n\nDATABASE_URL=postgres://svc:${pw}@db:5432/app\n`,
+    };
+    expect(() => build([docFile, leaky])).toThrow(KnowledgeBundleSecretError);
+    try {
+      build([docFile, leaky]);
+    } catch (err) {
+      expect((err as KnowledgeBundleSecretError).findings[0].finding.rule).toBe(
+        "url-embedded-credential",
+      );
+    }
+  });
+
+  it("THROWS on an unquoted high-entropy secret assignment in a doc", () => {
+    const token = `${"aB3xK9mP2"}${"qR7sT1vW5yZ"}`;
+    const leaky: KnowledgeSourceFile = {
+      path: "docs/ENV.md",
+      content: `Config:\n\nSECRET_KEY=${token}\n`,
+    };
+    expect(() => build([docFile, leaky])).toThrow(KnowledgeBundleSecretError);
+  });
+
+  it("does NOT throw on a placeholder connection string in a doc", () => {
+    const ok: KnowledgeSourceFile = {
+      path: "docs/LOCAL.md",
+      content: "Local dev:\n\nDATABASE_URL=postgres://user:password@localhost/db\n",
+    };
+    expect(() => build([docFile, ok])).not.toThrow();
+  });
+
   it("rejects duplicate paths (order-dependence would break determinism)", () => {
     expect(() =>
       build([
