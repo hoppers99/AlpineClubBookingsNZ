@@ -175,13 +175,22 @@ No foreign keys (metering must never block a `Member` change), no seeded rows
 (the settings singleton is created on first write, and a positive budget is a
 deliberate act).
 
-## Carry-forward
+## Concurrency proof
 
-A deterministic multi-connection `.realdb` over-budget **race** test (two clients
-latched on the advisory lock, mirroring
-`concurrency-lock-races.realdb.test.ts`) is the ideal complement to the
-exhaustive unit + wiring tests here; it needs a throwaway Postgres harness and is
-recommended as a follow-up. The concurrency correctness is otherwise established
-by the mutation-tested guard (`decideReservation`), the wiring test that proves
-advisory-lock-first + read-live-reservations + guarded-insert + no-insert-on-loss,
-and the documented lock argument above.
+The money-safety invariant — that no burst of concurrent reservers can push
+`settled + reserved` over the monthly budget — is proven at three levels:
+
+- **Unit / mutation:** `decideReservation` (the pure admission guard) is
+  exhaustively unit- and mutation-tested without a database (one-cent-over deny,
+  exact-fit allow, budget-0 deny, reserve>budget deny).
+- **Wiring:** `ai-diagnostics-usage.test.ts` proves the reserve path takes the
+  advisory lock FIRST, then reads live reservations + settled spend, then makes a
+  guarded insert, and inserts nothing on a lost claim.
+- **Real PostgreSQL race:** `ai-diagnostics-budget-race.realdb.test.ts` drives
+  the production `reserveDiagnosticsBudget` from two/three genuinely concurrent
+  callers against a real Postgres and asserts exactly the budgeted number of
+  reservations win and the live-reservation sum never exceeds the budget. It is
+  off by default and runs in CI's `Migration drift check` job via the guarded
+  `concurrency-lock-races.realdb.test.ts` harness (opt-in
+  `RUN_CONCURRENCY_RACE_TESTS=1`, dedicated loopback database), so ordinary
+  `npm test` never needs a live database.

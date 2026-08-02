@@ -31,6 +31,12 @@ import type { Prisma, PrismaClient } from "@prisma/client";
 // the explicit CI race command without changing the workflow or making ordinary
 // `npm test` depend on a database.
 import "./minimum-stay-policy-trigger.realdb.test";
+// #2532 reuses the same guarded harness to prove the AI Diagnostics monthly
+// budget (AID-2, #2371) can never be overspent by concurrent reservers. Its
+// race describe is `describe.skip` unless RUN_CONCURRENCY_RACE_TESTS=1, so this
+// import adds the over-budget race proof to the explicit CI race command without
+// making ordinary `npm test` depend on a database.
+import "./ai-diagnostics-budget-race.realdb.test";
 import {
   afterAll,
   beforeAll,
