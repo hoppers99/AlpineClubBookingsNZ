@@ -166,6 +166,52 @@ test("an anonymous visitor gets the signed-out header on a stored page", async (
   await expect(page.getByRole("link", { name: "Dashboard" })).toHaveCount(0);
 });
 
+test("a stored page loads in a browser with no CSP or hydration complaint", async ({
+  page,
+}) => {
+  // The "zero CSP violations in the console" half of the #2352 measurement gate,
+  // asserted in a real browser rather than eyeballed — and the same run covers
+  // hydration, because both replacements for the layout's request reads could fail
+  // here and nowhere else:
+  //  • a blocked inline script means the fixed nonce and the stored HTML disagree,
+  //    and the page never becomes interactive;
+  //  • a hydration mismatch would mean a client component rendered one thing during
+  //    generation and another in the browser — the footer's `data-page-slug`, which
+  //    now comes from `usePathname()` instead of a request header, is the one to
+  //    watch.
+  // Filtered to those two classes on purpose: a broad "no console errors" assertion
+  // would fail on unrelated noise and get deleted rather than fixed.
+  const complaints: string[] = [];
+  const WATCHED = [
+    "content security policy",
+    "refused to execute",
+    "refused to load",
+    "hydration",
+    "hydrating",
+  ];
+
+  page.on("console", (message) => {
+    if (message.type() !== "error" && message.type() !== "warning") return;
+    const text = message.text();
+    if (WATCHED.some((needle) => text.toLowerCase().includes(needle))) {
+      complaints.push(text);
+    }
+  });
+
+  await page.goto(CMS_PAGE);
+  // The CTA is rendered by a client component reading the marker cookie, so it
+  // being visible means React has hydrated and any mismatch has been reported.
+  await expect(page.getByRole("link", { name: "Log In" }).first()).toBeVisible();
+
+  expect(complaints).toEqual([]);
+  // And the footer's slug came out as the real address, not the "home" fallback
+  // `usePathname()` returns with no router context.
+  await expect(page.locator("footer[data-page-slug]")).toHaveAttribute(
+    "data-page-slug",
+    CMS_PAGE.replace(/^\//, ""),
+  );
+});
+
 test.describe("signed in", () => {
   test.use({ storageState: storageStatePath(E2E_ADMIN.email) });
 
