@@ -13,6 +13,8 @@
  *    9–10 keep the generator's hue-faithful free lightness.
  *  - A3 derived backgrounds (never picked): light L≈0.985 C0.004, dark L≈0.20.
  *  - Neutral seed derived from the neutral-character hue: oklch(0.50, 0.008, H).
+ *    An ACHROMATIC (hueless) character has no tint direction, so its seed drops to
+ *    chroma 0 — a true grey, which meets the G5a card/page floor (#2491).
  *  - A2 input/ring is pinned to neutral-10 uniformly in the alias layer (J1); the
  *    computed pick is exposed here only for measurement/reporting.
  *  - A4 AA solid-foreground fallback: keep the generator's on-solid pick iff ≥4.5:1,
@@ -165,13 +167,42 @@ export type HueScaleName = (typeof HUE_SCALES)[number];
 // ---------------------------------------------------------------------------
 // Derivations.
 // ---------------------------------------------------------------------------
+/**
+ * True when `hex` is ACHROMATIC — an exactly-grey colour (r == g == b) carries no
+ * hue, and colorjs reports its oklch hue as MISSING (`null` on >= 0.6, `NaN` on
+ * 0.5.x). The `oklch()` helper above coalesces that to 0, which erases the
+ * distinction, so this reads the raw coordinate. A colour with any real chroma —
+ * including a very low-chroma one like `#6b7373` — has a defined hue and is NOT
+ * achromatic. Used by `deriveGrayAndBg` to decide whether a neutral-character
+ * source actually has a hue to tint the grey ramp toward (#2491).
+ */
+function isAchromatic(hex: string): boolean {
+  const hue = new Color(hex).to("oklch").coords[2];
+  return hue === null || hue === undefined || Number.isNaN(hue);
+}
+
 export function deriveGrayAndBg(neutralSource: string): {
   graySeed: string;
   bgLight: string;
   bgDark: string;
 } {
   const [, , H] = oklch(neutralSource);
-  const graySeed = fromOklch(PINS.neutralSeed.L, PINS.neutralSeed.C, H);
+  /*
+   * #2491 — an achromatic neutral-character source has no hue for the ramp to tint
+   * toward. Its missing hue coalesces to 0 above, so the pinned 0.008 seed chroma
+   * would point the tint at an ARBITRARY hue-0 (red): the grey theme ships a faint
+   * pink cast, and — because hue 0 is the worst-separating landing — the light-mode
+   * card (neutral-1) / page (neutral-2) separation drops to ΔL 0.011 / contrast
+   * 1.03, just under the signed-off G5a floor (0.012 / 1.04). A hueless character
+   * has no tint direction, so derive a TRUE grey seed (chroma 0) for it: the ramp
+   * is honestly neutral and its card/page separation meets the floor by
+   * construction, landing on it exactly (like a right-on-the-floor chromatic seed,
+   * with the pinned J8 shadow the primary reinforcement). Chromatic sources — any
+   * real hue, including the shipping default — never take this branch and are
+   * byte-for-byte unchanged.
+   */
+  const seedC = isAchromatic(neutralSource) ? 0 : PINS.neutralSeed.C;
+  const graySeed = fromOklch(PINS.neutralSeed.L, seedC, H);
   const bgLight = fromOklch(PINS.background.lightL, PINS.background.C, H);
   const bgDark = fromOklch(PINS.background.darkL, PINS.background.C, H);
   return { graySeed, bgLight, bgDark };

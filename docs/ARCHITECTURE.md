@@ -2501,6 +2501,36 @@ silent login loop investigated in #1669 — the bounced replay carries no
 session cookie, so it lands in the deliberately quiet `no-cookie` bucket
 above.
 
+## AI Diagnostics knowledge bundle
+
+The admin-only AI Diagnostics product (epic #2369) answers code/docs/schema
+questions from the artifact **actually running**, not a working tree or model
+memory. It does this through a deterministic, versioned **knowledge bundle**
+(#2372): a JSON snapshot of the allowlisted docs, schema, and (optionally by
+overlay) source of the deployed commit, with per-file content hashes, sensitivity
+tags, symbols, and a bounded, individually-hashed excerpt index.
+
+The bundle is generated inside the Docker builder by `npm run diagnostics:bundle`
+(`docs/` and `.git` are dropped from the runtime image, so the commit SHA is
+injected at build time via `GIT_COMMIT_SHA`), traced into `.next/standalone`, and
+copied into the runner. It is:
+
+- **Deterministic** — a pure function of `(files, commitSha, observedAt)` with
+  sorted keys and LF-normalized content, so the same source is byte-identical.
+- **Fail-closed** — generation refuses to emit if a secret is detected; the
+  runtime loader (`src/lib/diagnostics/knowledge/`) disables code answers on a
+  missing, malformed, tampered, hash-mismatched, or unverified-commit bundle,
+  never falling back to a working tree.
+- **Cited evidence, never authority** — retrieval sends only bounded excerpts,
+  each with a citation verifying commit + content hash + excerpt hash, framed as
+  verbatim source at a commit and explicitly not a live runtime fact. The bundle
+  is untrusted, prompt-injection-capable evidence.
+
+Private/fork knowledge uses a generic, deployment-owned overlay
+(`config/diagnostics-knowledge.json`, git-ignored); public code never mandates
+any club's paths. Full reference:
+[`diagnostics/KNOWLEDGE_BUNDLE.md`](diagnostics/KNOWLEDGE_BUNDLE.md).
+
 ## Security and Privacy Boundaries
 
 - Auth uses credentials sessions with explicit admin, admin-area, and finance

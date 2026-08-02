@@ -928,6 +928,16 @@ prepare_application_images() {
     return 0
   fi
 
+  # AID-3 (#2372): stamp the deployed-code knowledge bundle with the verified
+  # commit SHA + observed-at. `.git` is absent from the Docker build context, so
+  # the in-builder generator reads these from build args that compose forwards
+  # from the environment (docker-compose.yml). Exported here from the clean,
+  # ff-only main checkout this deploy is building.
+  GIT_COMMIT_SHA="$(git rev-parse HEAD)"
+  KNOWLEDGE_BUNDLE_OBSERVED_AT="$(git show -s --format=%cI HEAD)"
+  export GIT_COMMIT_SHA KNOWLEDGE_BUNDLE_OBSERVED_AT
+  info "Stamping deployed-code knowledge bundle with commit $(git rev-parse --short=12 HEAD)."
+
   if [ "$FORCE_NO_CACHE" = "1" ]; then
     docker compose build --pull --no-cache "$CRON_SERVICE" "$TARGET_SERVICE" "$MIGRATE_SERVICE"
   else
