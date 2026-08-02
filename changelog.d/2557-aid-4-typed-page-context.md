@@ -8,7 +8,9 @@
 
   Every lookup re-checks your own admin permissions from the database at that
   moment, so a permission removed a minute ago takes effect on your very next
-  question, and a page that draws on two areas (bed allocation, which needs both
+  question, and an account that has just been deactivated is refused here exactly
+  as it is refused everywhere else in the admin area, even if its browser tab is
+  still open. A page that draws on two areas (bed allocation, which needs both
   Bookings and Lodge Operations) needs both, not either. If you are missing one,
   the assistant is told plainly that the detail is omitted and why, instead of
   quietly seeing less than you expected — or more.

@@ -84,6 +84,7 @@ import {
 // Withdraw affordance is derived from the same list this file's WHERE clauses
 // name rather than restating it (#2263 review finding M3).
 import { MEMBER_WHOLE_LODGE_OPEN_STATUSES } from "@/lib/member-whole-lodge-requests";
+import { MEMBER_WHOLE_LODGE_GUEST_NAME_PREFIX } from "@/lib/placeholder-guest-names";
 import { prisma } from "@/lib/prisma";
 import { bookableAgeTierEnum } from "@/lib/age-tier-schema";
 import { nameField } from "@/lib/zod-helpers";
@@ -644,16 +645,6 @@ export async function createBookingRequest(input: CreateBookingRequestInput) {
 // ---------------------------------------------------------------------------
 // Member whole-lodge request (#2263, epic #2245)
 // ---------------------------------------------------------------------------
-
-/**
- * Display-name prefix for the placeholder guests a member whole-lodge request
- * carries. The member never names their party at request time (privacy decision
- * D5 — the form asks for an approximate headcount only), but every existing
- * reader of `BookingRequest.guests` assumes a list of that length, so the row
- * stores "Guest 1..N" placeholders. Names are edited in later, on the converted
- * booking, through the ordinary guest-edit path.
- */
-const MEMBER_WHOLE_LODGE_GUEST_NAME_PREFIX = "Guest";
 
 /**
  * How many whole-lodge requests one member may have open at a time (owner

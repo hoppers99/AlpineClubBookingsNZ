@@ -5,6 +5,7 @@ import {
   LostSupersedeClaimError,
   NoEligiblePolicyExceptionError,
   OpenExceptionRequestConflictError,
+  PolicyExceptionCapacityUnavailableError,
 } from "@/lib/booking-exception-request-service";
 
 /**
@@ -24,6 +25,11 @@ export function mapExceptionRequestError(error: unknown): NextResponse {
     return NextResponse.json({ error: error.message }, { status: 409 });
   }
   if (error instanceof LostSupersedeClaimError) {
+    return NextResponse.json({ error: error.message }, { status: 409 });
+  }
+  // The lodge cannot currently hold the requested change (#2525 FIX 4): a
+  // capacity conflict, mapped like the other request-creation conflicts.
+  if (error instanceof PolicyExceptionCapacityUnavailableError) {
     return NextResponse.json({ error: error.message }, { status: 409 });
   }
   throw error;

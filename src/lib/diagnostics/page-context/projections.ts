@@ -34,10 +34,9 @@ import "server-only";
 
 import { formatDateOnly } from "@/lib/date-only";
 import { prisma } from "@/lib/prisma";
-import { redactSensitiveText } from "@/lib/redact-sensitive-json";
 
+import { boundedRedacted } from "./bound";
 import {
-  DIAGNOSTICS_PAGE_CONTEXT_BOUNDS,
   type DiagnosticsPageContextFact,
   type DiagnosticsRecordKind,
 } from "./types";
@@ -52,22 +51,47 @@ export interface RecordProjectionInput {
 }
 
 /**
- * The ONE path every free-text value takes: redact, then hard-bound. Truncation
- * is marked so the model cannot read a cut-off value as a whole one.
+ * The EXHAUSTIVE list of shapes a server-derived value may have — one per kind of
+ * value the readers below actually produce. It is a union of tight shapes rather
+ * than one permissive character class on purpose: a class wide enough to cover a
+ * date, an instant and an enum in a single pattern (letters, digits, space, `_`,
+ * `.`, `:`, `+`, `-`) also covers `sk_live_…`, `whsec_…` and `Bearer …`, so the
+ * one mistake this guard exists to catch — using `derivedFact` for a free-text
+ * column — would have shipped a secret verbatim.
+ *
+ * Add a shape here only for a value the server itself constructs, never to make a
+ * database column fit — and keep every shape a CLOSED character class between
+ * strict anchors, which is what also keeps control characters out of the raw path.
+ * (A JavaScript `$` without the `m` flag matches only at the end of input, so a
+ * trailing newline genuinely fails these; the tests pin that property.)
  */
-function boundedRedacted(value: string): string {
-  const redacted = redactSensitiveText(value).trim();
-  const max = DIAGNOSTICS_PAGE_CONTEXT_BOUNDS.factValueMaxChars;
-  return redacted.length > max ? `${redacted.slice(0, max - 1)}…` : redacted;
-}
-
 /**
- * The shape a server-DERIVED value may have: a Prisma enum token, `yes`/`no`, a
- * count, an integer-cents amount, an NZ date-only day, or an ISO instant. Short
- * and punctuation-poor by construction, so it is already bounded and carries no
- * free text to redact.
+ * A hard length bound on top of the shapes below, because several of them are
+ * unbounded by construction (`^[A-Z][A-Z0-9_]*$` accepts a 9000-character run of
+ * capitals, `^-?\d+$` any number of digits). Nothing the server builds comes close:
+ * the longest real value is a 24-character ISO instant. Without this, a hostile or
+ * corrupt column that happens to be enum-shaped would travel unbounded and consume
+ * the whole rendered evidence budget.
  */
-const DERIVED_VALUE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9 _.:+-]{0,63}$/;
+const DERIVED_VALUE_MAX_CHARS = 64;
+
+const DERIVED_VALUE_SHAPES: readonly RegExp[] = [
+  /** A Prisma enum token: `CONFIRMED`, `PAYMENT_PENDING`, `NOT_APPLICABLE`. */
+  /^[A-Z][A-Z0-9_]*$/,
+  /** A count or an integer-cents amount, signed for a reversal. */
+  /^-?\d+$/,
+  /** A boolean, as rendered by `yesNo`. */
+  /^(?:yes|no)$/,
+  /** An NZ date-only lodge day, as rendered by `formatDateOnly`. */
+  /^\d{4}-\d{2}-\d{2}$/,
+  /** An ISO-8601 instant, as rendered by `Date.prototype.toISOString`. */
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/,
+];
+
+function isDerivedValueShape(value: string): boolean {
+  if (value.length > DERIVED_VALUE_MAX_CHARS) return false;
+  return DERIVED_VALUE_SHAPES.some((shape) => shape.test(value));
+}
 
 /**
  * A fact whose value comes from a CLOSED vocabulary the server owns (enum,
@@ -78,12 +102,12 @@ const DERIVED_VALUE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9 _.:+-]{0,63}$/;
  * The shape is therefore VERIFIED rather than trusted. A value that is not
  * closed-vocabulary shaped — i.e. someone used this constructor for a free-text
  * column — falls back to the redact-and-bound path instead of travelling raw, so
- * the failure mode of that mistake is a redacted fact, never an unbounded one.
+ * the failure mode of that mistake is a redacted, bounded fact.
  */
 function derivedFact(key: string, value: string): DiagnosticsPageContextFact {
   return {
     key,
-    value: DERIVED_VALUE_PATTERN.test(value) ? value : boundedRedacted(value),
+    value: isDerivedValueShape(value) ? value : boundedRedacted(value),
     sensitive: false,
   };
 }

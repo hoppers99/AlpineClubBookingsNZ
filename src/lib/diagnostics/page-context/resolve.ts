@@ -31,18 +31,21 @@ import "server-only";
 import { createHash } from "node:crypto";
 
 import type { AdminPermissionArea } from "@/lib/admin-permissions";
-import { redactSensitiveText } from "@/lib/redact-sensitive-json";
 
 import {
   hasAllAreaViews,
   missingAreaViews,
   readFreshAdminPermissionMatrix,
+  type FreshAdminPermissionMatrixFailure,
 } from "./authorize";
-import { parseDiagnosticsPageSelector } from "./parse";
+import { boundedRedacted } from "./bound";
+import {
+  parseDiagnosticsPageSelector,
+  type DiagnosticsPageSelector,
+} from "./parse";
 import { readRecordProjection } from "./projections";
 import type { DiagnosticsPageContextRoute } from "./registry";
 import {
-  DIAGNOSTICS_PAGE_CONTEXT_BOUNDS,
   DIAGNOSTICS_PAGE_CONTEXT_SCHEMA_VERSION,
   DIAGNOSTICS_SENSITIVE_INCLUSION_COPY,
   type DiagnosticsPageContext,
@@ -51,7 +54,6 @@ import {
   type DiagnosticsPageContextOmission,
   type DiagnosticsPageContextReason,
   type DiagnosticsPageSelection,
-  type DiagnosticsPageSelector,
   type DiagnosticsRecordKind,
 } from "./types";
 
@@ -93,12 +95,6 @@ interface AttemptedRecordRef {
   id: string;
 }
 
-function boundedRedacted(value: string): string {
-  const redacted = redactSensitiveText(value).trim();
-  const max = DIAGNOSTICS_PAGE_CONTEXT_BOUNDS.factValueMaxChars;
-  return redacted.length > max ? `${redacted.slice(0, max - 1)}…` : redacted;
-}
-
 /**
  * The operator's own view tokens, re-emitted after allowlisting. Tabs, steps,
  * statuses and error codes are already registry-allowlisted values, so they pass
@@ -135,6 +131,21 @@ function evidenceByteCount(
 ): number {
   return Buffer.byteLength(JSON.stringify({ selection, facts }), "utf8");
 }
+
+/**
+ * Every way the fresh actor read can fail, mapped to the reason it reports. Held
+ * as a total `Record` so a new failure code cannot compile until it has been given
+ * a reason — the alternative, a ternary with a fallback, would quietly file a new
+ * failure under an existing one.
+ */
+const ACTOR_FAILURE_REASON: Record<
+  FreshAdminPermissionMatrixFailure,
+  DiagnosticsPageContextReason
+> = {
+  member_not_found: "actor_unresolved",
+  member_blocked: "actor_blocked",
+  read_failed: "actor_read_failed",
+};
 
 function audit(input: {
   routeKey: string | null;
@@ -260,7 +271,14 @@ export async function resolveDiagnosticsPageContext(
       reason: parsed.issues.includes("unknown_route")
         ? "unknown_route"
         : "invalid_selector",
+      // Nothing is echoed to the model: a refused selector yields no page context.
       route: null,
+      // The route is still AUDITED when the selector named a registered one and
+      // only a token failed its allowlist. Without this, a sweep probing a route's
+      // allowlists audits as `routeKey: null` — indistinguishable from junk aimed
+      // at no page — while the equivalent sweep using a valid token and bad record
+      // ids is fully attributable.
+      auditRoute: parsed.route ?? null,
       omissions: [],
       observedAt,
     });
@@ -280,12 +298,9 @@ export async function resolveDiagnosticsPageContext(
   if (!actor.ok) {
     return emptyResult({
       status: "unavailable",
-      // A missing member and an unreadable role graph both deny, but they are
-      // different incidents and the trail says which.
-      reason:
-        actor.failure === "read_failed"
-          ? "actor_read_failed"
-          : "actor_unresolved",
+      // A missing member, a locked-out account and an unreadable role graph all
+      // deny, but they are different incidents and the trail says which.
+      reason: ACTOR_FAILURE_REASON[actor.failure],
       // Nothing is echoed to the model before the actor is established...
       route: null,
       // ...but the route WAS validated, so the audit keeps it: a burst of actor

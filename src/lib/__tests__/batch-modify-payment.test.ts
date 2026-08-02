@@ -590,6 +590,51 @@ describe("PUT /api/bookings/[id]/modify", () => {
     // 10_000 timeouts below.
   }, 10_000);
 
+  it("tx-mode (#2525): runs the modification on the caller's tx and DEFERS post-commit", async () => {
+    const booking = makeBooking();
+    (booking.guests as Array<Record<string, unknown>>)[0].nights = [
+      { stayDate: new Date("2026-06-01"), priceCents: 2500 },
+      { stayDate: new Date("2026-06-02"), priceCents: 2500 },
+    ];
+    const tx = makeTx(booking);
+    // Deliberately DO NOT stub mockTransaction: in tx-mode the service MUST run
+    // the DB work on the supplied tx and must open NO transaction of its own — if
+    // it did, the default mock returns undefined and the assertions below fail.
+    mockCalculateBookingPrice.mockReturnValue({
+      totalPriceCents: 10000,
+      guests: [
+        { priceCents: 5000, perNightCents: [2500, 2500], nightDates: [] },
+        { priceCents: 5000, perNightCents: [2500, 2500], nightDates: [] },
+      ],
+    });
+
+    const { modifyBookingBatch } = await import(
+      "@/lib/booking-batch-modification-service"
+    );
+    const result = await modifyBookingBatch({
+      bookingId: "bk1",
+      actor: { id: "m1", role: "USER" },
+      input: {
+        addGuests: [
+          { firstName: "New", lastName: "Guest", ageTier: "ADULT", isMember: true },
+        ],
+      } as never,
+      ipAddress: "127.0.0.1",
+      tx: tx as never,
+    });
+
+    // Ran inside the caller's transaction — the service opened NONE of its own.
+    expect(mockTransaction).not.toHaveBeenCalled();
+    expect(tx.booking.update).toHaveBeenCalled();
+    // Post-commit provider work is deferred, and the provider-derived fields are
+    // null until the caller runs it.
+    expect(typeof result.deferredPostCommit).toBe("function");
+    expect(result.additionalPaymentClientSecret).toBeNull();
+    expect(result.stripeRefundId).toBeNull();
+    // The deferred thunk runs the post-commit work (idempotent, returns void).
+    await expect(result.deferredPostCommit!()).resolves.toBeUndefined();
+  }, 10_000);
+
   it("allows identity-only edits on a quote-priced booking without repricing (#1099)", async () => {
     // A school booking's student names must be editable; the negotiated flat
     // price must not move. Identity-only edits skip the pricing engine, so

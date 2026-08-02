@@ -46,6 +46,14 @@ Anything else is rejected. The schema is `.strict()`, so an unknown key is a
 refusal rather than something quietly ignored — that is what stops a future
 client opening a second serialization channel through this object.
 
+The schema itself is **module-private to `parse.ts`**, and that is a security
+property rather than tidiness. A strict object schema is not total on its own: zod
+accepts a `JSON.parse`-created `__proto__` own property and silently strips it,
+reporting no unknown key at all. An exported schema would therefore be a second
+door that repairs a selector this layer is required to refuse, so
+`parseDiagnosticsPageSelector` is the only way in — and the resolver takes the
+selector as `unknown` for the same reason, so no caller needs the schema anyway.
+
 ## How a resolution runs
 
 `resolveDiagnosticsPageContext` (`src/lib/diagnostics/page-context/resolve.ts`)
@@ -63,10 +71,17 @@ problem — every failure is a structured, evidence-free result.
    re-read **from the database-joined access roles on every single resolution**,
    exactly as `/api/help/chat` does for its surface downgrade. Never the JWT,
    never a session copy, never a cache. A route that declares two areas needs
-   `view` on **both** (AND, never OR). Any fault reading the roles denies, and a
-   missing member (`actor_unresolved`) is reported separately from an unreadable
-   role graph (`actor_read_failed`) so a database outage and an authorization
-   anomaly are not the same audit row.
+   `view` on **both** (AND, never OR). The same read also checks the account state
+   the rest of the admin surface checks — `requireAdmin` refuses a member who is
+   deactivated (`active = false`, which is what the members screen's deactivate
+   action writes, leaving `canLogin` untouched) or under a forced password change,
+   and so does this. Any fault reading the roles denies, and the three ways it can
+   fail stay distinct in the audit row: a missing member (`actor_unresolved`), a
+   locked-out account (`actor_blocked`) and an unreadable role graph
+   (`actor_read_failed`) are different events, so a database outage, an ordinary
+   lock-out and an authorization anomaly are never one row. The two-factor gate is
+   deliberately NOT here: it decides on session facts no member row carries, so it
+   stays with `requireAdmin` on the route AID-7 (#2378) builds.
 3. **Re-fetch** (`projections.ts`) — a fixed, typed, column-allowlisted read of
    the one record, by id. No dynamic columns, no caller-influenced filter, no
    model-authored SQL.
@@ -82,8 +97,14 @@ constructors share one redact-then-cap path. `derivedFact` deliberately skips
 redaction — the redactor treats a standalone run of eight or more digits as
 phone-like, which would rewrite a large integer-cents amount to `[REDACTED]` —
 so it **verifies** the closed-vocabulary shape instead and falls back to the
-redact-and-cap path for anything else. Using it for a free-text column therefore
-yields a redacted fact, never an unbounded one.
+redact-and-cap path for anything else. That verification is a union of the exact
+shapes the server itself builds (a `SCREAMING_SNAKE` Prisma enum token, a signed
+integer, `yes`/`no`, a `yyyy-mm-dd` lodge day, an ISO instant), each capped at 64
+characters. It is deliberately not one permissive character class: a class wide
+enough to cover all five in a single pattern also covers `sk_live_…`, `whsec_…` and
+`Bearer …`, so the one mistake the check exists to catch would have shipped a
+secret verbatim. Using `derivedFact` for a free-text column therefore yields a
+redacted, bounded fact.
 
 ## The route registry
 
@@ -104,18 +125,44 @@ no filters, no record" and widens one field at a time.
 | `admin.payments` | `/admin/payments` | `finance` | payment |
 | `admin.stuck-states` | `/admin/stuck-states` | `support` | — |
 | `admin.setup` | `/admin/setup` | `support` | — |
+| `admin.setup-finance` | `/admin/setup/finance` | `finance` | — |
 | `admin.health` | `/admin/health` | `support` | — |
 
-Two drift guards keep this table honest, both in
+Four drift guards keep this table honest, all in
 `src/lib/diagnostics/page-context/__tests__/registry.test.ts`:
 
 - **Never weaker than the admin UI.** Each `pathname` is resolved through
   `getAdminRouteRequirement` and the lattice's own area must appear in
   `requiredAreas`. Page context can never become a side channel around the
   permission the admin page itself enforces.
+- **Every step's own sub-path too.** A `steps` token here names a sub-page — the
+  guided-setup wizard links out to one route per step — so each `pathname/step` is
+  resolved the same way. This is not hypothetical: `/admin/setup/finance` is gated
+  on `finance` while its parent is gated on `support`, so it is not a step of the
+  wizard row at all. It has its own row above, gated exactly as the page is.
 - **Status vocabularies track the database.** The booking and payment status
   token lists are asserted equal to the `BookingStatus` and `PaymentStatus`
   Prisma enums, so a schema change cannot leave a stale vocabulary behind.
+- **The stuck-state severities track their union.** `StuckStateSeverity` is a
+  hand-written TypeScript union rather than a generated enum, so the registry pins
+  the forward direction with `satisfies` at compile time and the test pins the
+  reverse — a fourth severity cannot be added without this list gaining it.
+
+**Filter keys are the page's real query parameters**, and a deliberate subset of
+them: pagination and sort keys are excluded because they say nothing about why a
+page shows what it shows. Because rejection is total, a client must send only
+allowlisted keys — one unlisted key costs the operator their whole page context, so
+this is a contract AID-7 (#2378) builds against, not a hint.
+
+Unlike the four guards above, the filter keys are **not** pinned by a test. Each
+page reads its parameters its own way — a typed `searchParams` object on a server
+page, `useSearchParams().get(...)` on a client one, a zod query schema on an API
+route — so any assertion strong enough to catch drift would have to parse page
+source, and would break on a refactor that changed nothing real. They are derived
+by hand instead, and each row records where its keys came from. Drift here costs an
+operator their page context on that page; it cannot widen what is read, because the
+filter values are never used as a query — they are re-emitted as the operator's own
+selection and nothing else.
 
 ### Adding a page
 
@@ -198,8 +245,9 @@ Nothing about the page or the record is persisted by this layer. The resolved
 context carries a separate `audit` object holding only the approved metadata of
 [ADR-004](decisions/ADR-004-sensitive-context-retention-redaction-audit-metadata.md)
 §4 — route key, areas checked, allowed/denied, record kind, a **sha256 hash** of
-`kind:id` (never the raw id), fact count, byte count, and the observed-at
-instant. No fact values, no names, no prompt, no answer. It is a separate object
+`kind:id` (never the raw id), fact count, byte count (measured over the resolved
+selection-plus-facts payload, not over any particular rendering of it), and the
+observed-at instant. No fact values, no names, no prompt, no answer. It is a separate object
 precisely so a caller that persists an audit row cannot accidentally persist a
 field value.
 
@@ -211,7 +259,11 @@ result instead would make id enumeration through this path unattributable,
 because almost every probe in such a sweep is a miss. For the same reason the
 route key and areas checked survive an exit that withholds the route from the
 *evidence*: an actor that could not be established is told nothing, but the row
-still says which surface was hit.
+still says which surface was hit — and the same holds one gate earlier, where a
+selector whose route resolved cleanly but whose token failed that route's allowlist
+still audits the route. Without that, a sweep probing the allowlists would look
+like junk aimed at no page, while the equivalent sweep using a valid token and bad
+record ids is fully attributable.
 
 ## Known limits
 

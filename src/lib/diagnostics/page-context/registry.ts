@@ -17,7 +17,16 @@
  * resolution. It is never the union, and it may never be weaker than the admin
  * route lattice's own requirement for `pathname` — pinned by
  * `registry.test.ts`, which resolves each `pathname` through
- * `getAdminRouteRequirement` and asserts the lattice's area is present here.
+ * `getAdminRouteRequirement` and asserts the lattice's area is present here. It
+ * resolves each `steps` token as a SUB-PATH of `pathname` too, because a step that
+ * names a sub-page gated on a different area (as `/admin/setup/finance` is) would
+ * otherwise pass a guard that only ever looks at the parent path.
+ *
+ * FILTER KEYS ARE THE PAGE'S REAL QUERY PARAMETERS, and a subset of them: the
+ * client must send only allowlisted keys, because rejection is total (`parse.ts`)
+ * and one unlisted key costs the operator their whole page context. Pagination and
+ * sort keys are deliberately excluded — they say nothing about why a page shows
+ * what it shows.
  *
  * The registry is intentionally SMALL. A page belongs here when an operator
  * plausibly asks "why is this page showing me this?", not merely because it
@@ -26,6 +35,7 @@
  */
 
 import type { AdminPermissionArea } from "@/lib/admin-permissions";
+import type { StuckStateSeverity } from "@/lib/stuck-state-dashboard";
 
 import type { DiagnosticsRecordKind } from "./types";
 
@@ -77,8 +87,20 @@ const PAYMENT_STATUS_TOKENS = [
   "partially-refunded",
 ] as const;
 
-/** Stuck-state severities, mirrored from `StuckStateSeverity`. */
-const STUCK_STATE_SEVERITY_TOKENS = ["critical", "warning", "info"] as const;
+/**
+ * Stuck-state severities. `StuckStateSeverity` is a hand-written TS union rather
+ * than a generated enum, so there is no Prisma value to compare against at
+ * runtime the way the two status lists above are compared. `satisfies` pins the
+ * forward direction at COMPILE time (a token that is not a severity fails to
+ * build); `registry.test.ts` pins the reverse direction, that no severity is
+ * missing from this list. The import is type-only, so this module still carries no
+ * runtime dependency on the dashboard.
+ */
+const STUCK_STATE_SEVERITY_TOKENS = [
+  "critical",
+  "warning",
+  "info",
+] as const satisfies readonly StuckStateSeverity[];
 
 export interface DiagnosticsPageContextRoute {
   /** Stable registry key. The ONLY route identifier a client may send. */
@@ -167,7 +189,9 @@ const ROUTES: readonly DiagnosticsPageContextRoute[] = [
     recordKind: "booking",
     statuses: BOOKING_STATUS_TOKENS,
     errorCodes: DIAGNOSTICS_PAGE_ERROR_CODES,
-    filterKeys: ["lodgeId"],
+    // The waitlist has no lodge dimension: its only operator-set filters are the
+    // date window (`page`/`pageSize` excluded as pagination).
+    filterKeys: ["from", "to"],
   }),
   route({
     // The one genuinely cross-area row: bed allocation reads the bookings being
@@ -179,7 +203,8 @@ const ROUTES: readonly DiagnosticsPageContextRoute[] = [
     requiredAreas: ["bookings", "lodge"],
     recordKind: null,
     errorCodes: DIAGNOSTICS_PAGE_ERROR_CODES,
-    filterKeys: ["lodgeId", "date"],
+    // The board window is `from`/`to`; there is no single `date` parameter.
+    filterKeys: ["lodgeId", "from", "to"],
   }),
   route({
     key: "admin.members",
@@ -188,7 +213,8 @@ const ROUTES: readonly DiagnosticsPageContextRoute[] = [
     requiredAreas: ["membership"],
     recordKind: "member",
     errorCodes: DIAGNOSTICS_PAGE_ERROR_CODES,
-    filterKeys: ["search", "ageTier"],
+    // The members list's free-text search parameter is `q`, not `search`.
+    filterKeys: ["q", "ageTier"],
   }),
   route({
     key: "admin.member-detail",
@@ -207,7 +233,20 @@ const ROUTES: readonly DiagnosticsPageContextRoute[] = [
     recordKind: "payment",
     statuses: PAYMENT_STATUS_TOKENS,
     errorCodes: DIAGNOSTICS_PAGE_ERROR_CODES,
-    filterKeys: ["source", "status", "from", "to"],
+    // The page has no `from`/`to`: it filters on an activity window
+    // (`lastUpdatedFrom`/`lastUpdatedTo`, defaulted to the last three club-timezone
+    // months) and a separate stay window. That default window is the single most
+    // common reason a payment an operator expects is not on screen, so it belongs
+    // in the context of "why am I not seeing this".
+    filterKeys: [
+      "source",
+      "status",
+      "search",
+      "lastUpdatedFrom",
+      "lastUpdatedTo",
+      "checkInFrom",
+      "checkInTo",
+    ],
   }),
   route({
     key: "admin.stuck-states",
@@ -217,7 +256,8 @@ const ROUTES: readonly DiagnosticsPageContextRoute[] = [
     recordKind: null,
     statuses: STUCK_STATE_SEVERITY_TOKENS,
     errorCodes: DIAGNOSTICS_PAGE_ERROR_CODES,
-    filterKeys: ["domain"],
+    // No filters: the dashboard takes no query parameters at all — domains are
+    // rendered as cards, not filtered — and an empty list refuses the field.
   }),
   route({
     key: "admin.setup",
@@ -225,13 +265,29 @@ const ROUTES: readonly DiagnosticsPageContextRoute[] = [
     label: "Guided setup",
     requiredAreas: ["support"],
     recordKind: null,
-    steps: [
-      "foundations",
-      "booking-rules",
-      "cancellation",
-      "finance",
-      "integrations",
-    ],
+    // These are the guided-setup SUB-PAGES, not in-page steps, and each one's own
+    // lattice requirement must be covered by this row. All four resolve to
+    // `support`; `/admin/setup/finance` resolves to `finance`, so it is NOT a step
+    // here — it has its own row below, gated on `finance`. Widening this list to it
+    // would let a support-only admin resolve context for a page the lattice
+    // redirects them away from.
+    steps: ["foundations", "booking-rules", "cancellation", "integrations"],
+    errorCodes: DIAGNOSTICS_PAGE_ERROR_CODES,
+  }),
+  route({
+    // The guided-setup finance step is its own admin page with its own lattice
+    // requirement: the admin layout resolves `/admin/setup/finance` to
+    // `finance:view` and redirects a support-only admin away from it. So it gets
+    // its own row requiring exactly `finance` — mirroring the page rather than
+    // exceeding it, because a finance-only admin (who CAN open this page) would
+    // otherwise be denied context for the page they are looking at. If a future
+    // fact here describes the wizard's overall progress rather than the finance
+    // step alone, this row needs `support` as well.
+    key: "admin.setup-finance",
+    pathname: "/admin/setup/finance",
+    label: "Guided setup — finance",
+    requiredAreas: ["finance"],
+    recordKind: null,
     errorCodes: DIAGNOSTICS_PAGE_ERROR_CODES,
   }),
   route({

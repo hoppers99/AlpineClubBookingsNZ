@@ -14,6 +14,7 @@ import {
   ADMIN_PERMISSION_AREAS,
   getAdminRouteRequirement,
 } from "@/lib/admin-permissions";
+import type { StuckStateSeverity } from "@/lib/stuck-state-dashboard";
 
 import {
   DIAGNOSTICS_PAGE_CONTEXT_ROUTES,
@@ -117,6 +118,31 @@ describe("no route is gated below the admin route lattice", () => {
       expect(entry.requiredAreas).toContain(requirement?.area);
     },
   );
+
+  // A `steps` token names a SUB-PAGE of `pathname` here (the guided-setup wizard
+  // links out to one route per step), and the guard above only ever resolves the
+  // parent path. `/admin/setup/finance` is gated on `finance` while its parent is
+  // gated on `support`, so without this a support-only row could allowlist a step
+  // naming a page the lattice redirects that admin away from — and the first
+  // step-scoped fact anyone adds would leak across the gate.
+  it("covers each step's own sub-path requirement too", () => {
+    const stepped = DIAGNOSTICS_PAGE_CONTEXT_ROUTES.filter(
+      (entry) => entry.steps.length > 0,
+    );
+    expect(stepped.length).toBeGreaterThan(0);
+    for (const entry of stepped) {
+      for (const step of entry.steps) {
+        const requirement = getAdminRouteRequirement(
+          `${concretePath(entry.pathname)}/${step}`,
+          "GET",
+        );
+        // An in-page step resolves to the parent's own requirement via prefix
+        // matching, so a null here would mean the path is unregistered entirely.
+        expect(requirement).not.toBeNull();
+        expect(entry.requiredAreas).toContain(requirement?.area);
+      }
+    }
+  });
 });
 
 describe("status vocabularies track the database", () => {
@@ -142,6 +168,32 @@ describe("status vocabularies track the database", () => {
     for (const entry of paymentRoutes) {
       expect([...entry.statuses].sort()).toEqual(expected);
     }
+  });
+});
+
+describe("the stuck-state severity vocabulary tracks its union", () => {
+  // `StuckStateSeverity` is a hand-written TS union, so there is no runtime enum
+  // to compare against the way BookingStatus/PaymentStatus are compared above.
+  // `satisfies` in the registry pins the forward direction (no token that is not a
+  // severity); this pins the reverse (no severity missing from the tokens). The
+  // Record literal is what makes it work: adding a fourth severity fails to
+  // typecheck here until it is listed, and then fails the assertion until it is
+  // added to the registry.
+  const EVERY_SEVERITY: Record<StuckStateSeverity, true> = {
+    critical: true,
+    warning: true,
+    info: true,
+  };
+
+  it("allowlists exactly the severities the dashboard can produce", () => {
+    // Looked up by key rather than filtered by shape: severities belong to this
+    // one dashboard, and a shape filter would silently start policing a future
+    // route that happens to carry some other status vocabulary.
+    const dashboard = getDiagnosticsPageContextRoute("admin.stuck-states");
+    expect(dashboard).toBeDefined();
+    expect([...(dashboard?.statuses ?? [])].sort()).toEqual(
+      Object.keys(EVERY_SEVERITY).sort(),
+    );
   });
 });
 

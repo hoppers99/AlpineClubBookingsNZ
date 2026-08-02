@@ -122,6 +122,22 @@ describe("POST /api/bookings/[id]/exception-requests", () => {
     expect(mocks.createMod).toHaveBeenCalledTimes(1);
     expect(mocks.logAudit).toHaveBeenCalledTimes(1);
     expect(mocks.sendAlert).toHaveBeenCalledTimes(1);
+    // #2525 FIX 7: the route resolves whether the live booking holds capacity and
+    // threads it in. A CONFIRMED booking holds capacity, so baseHoldsCapacity=true.
+    expect(mocks.createMod).toHaveBeenCalledWith(
+      expect.objectContaining({ baseHoldsCapacity: true }),
+    );
+  });
+
+  it("threads baseHoldsCapacity=false for a non-capacity-holding (DRAFT) base", async () => {
+    // A DRAFT booking holds no capacity, so the reservation footprint must be the
+    // full proposed party (#2525 FIX 7).
+    mocks.bookingFindUnique.mockResolvedValue({ ...makeBooking(), status: "DRAFT" });
+    const res = await POST(postReq({ checkOut: "2026-07-05", memberMessage: "please" }), params);
+    expect(res.status).toBe(201);
+    expect(mocks.createMod).toHaveBeenCalledWith(
+      expect.objectContaining({ baseHoldsCapacity: false }),
+    );
   });
 
   it("notify-post-commit-never-throws: a rejected alert still returns 201", async () => {

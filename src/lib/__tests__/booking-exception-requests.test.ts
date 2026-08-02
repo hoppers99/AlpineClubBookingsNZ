@@ -259,6 +259,32 @@ describe("computeProposalReservation", () => {
     expect(computeProposalReservation(snapshot)).toEqual([]);
   });
 
+  it("FIX 7: a non-capacity-holding base reserves the FULL proposed footprint", () => {
+    // #2525 FIX 7: with baseHoldsCapacity:false the base holds no beds of its own,
+    // so the FULL proposed footprint must be reserved — not the incremental delta.
+    const snapshot: ExceptionProposalSnapshot = {
+      kind: "MODIFICATION",
+      lodgeId: "lodge_1",
+      bookingId: "bk_1",
+      base: party([guest({ nights: ["2026-07-04", "2026-07-05"] })]),
+      proposed: party([
+        guest({ nights: ["2026-07-04", "2026-07-05"] }),
+        guest({ firstName: "B", lastName: "B", nights: ["2026-07-04"] }),
+      ]),
+    };
+    // Holding base (default): only the incremental extra guest on 07-04.
+    expect(computeProposalReservation(snapshot)).toEqual([
+      { night: "2026-07-04", beds: 1 },
+    ]);
+    // Non-holding base: the entire proposed party is held.
+    expect(
+      computeProposalReservation(snapshot, { baseHoldsCapacity: false }),
+    ).toEqual([
+      { night: "2026-07-04", beds: 2 },
+      { night: "2026-07-05", beds: 1 },
+    ]);
+  });
+
   it("perNightBedDemand counts each guest once per night", () => {
     const demand = perNightBedDemand(
       party([

@@ -386,6 +386,17 @@ it takes none of theirs), so it cannot form a cycle. FAIL-CLOSED throughout: a
 missing delegate, a lock/read/insert fault, or an unwritable meter denies the
 paid call.
 
+The mutual exclusion this rests on is proven against a real PostgreSQL by
+`ai-diagnostics-budget-race.realdb.test.ts` (#2532), which runs from the same
+opt-in harness as the rest of this document's race proofs. Its lead test FORCES
+the overspend interleaving rather than racing for it: a third connection holds
+the per-month key open, and both reservers are then observed queued on that
+exact key in `pg_locks` while `pg_stat_activity` still shows them with no
+transaction id — i.e. blocked before either wrote anything — before the holder
+is released. So removing the lock, taking it after the budget reads, or taking
+it after the guarded insert each fail deterministically instead of flaking. See
+`docs/ai-diagnostics/README.md` ("Concurrency proof").
+
 The first four are the **booking / capacity / credit cluster** — they interact,
 and are where the ordering discipline matters. The remaining rows are
 independent single-domain locks. Their namespaced keys do not intentionally
@@ -1002,12 +1013,25 @@ capacity reason.
 
 A held `POLICY_EXCEPTION` `BookingChangeRequest` (see `docs/STATE_MACHINES.md` →
 "Booking-policy exception requests") reserves capacity so an eventual approval is
-guaranteed to fit: a new-booking request reserves the full proposal's per-night
-beds, a modification request reserves only the incremental beds beyond the
-unchanged live booking (`computeProposalReservation`,
-`src/lib/booking-exception-requests.ts`). The binding lock contract the #2365
-execution lane MUST follow when it wires the live reservation and the atomic
-approve-and-execute:
+guaranteed to fit: it reserves the incremental beds beyond the unchanged live
+booking when that booking is capacity-holding, or the FULL proposed footprint
+when the base is **not** capacity-holding (a DRAFT / generic PENDING / un-held
+PAYMENT_PENDING / WAITLISTED / BUMPED booking — all editable per
+`getBookingEditPolicy` yet outside `capacityHoldingBookingFilter`, so their beds
+are not counted for a delta to sit atop) (`computeProposalReservation`,
+`src/lib/booking-exception-requests.ts`). It never writes a hold larger than the
+lodge's real headroom — the create path runs an admission check under the lodge
+lock and refuses an over-capacity hold rather than parking phantom beds. The
+reservation ledger keys to a
+`BookingChangeRequest` (`PolicyExceptionReservationNight.changeRequestId`), so it
+holds **modification** requests. New-booking requests live in the separate
+`NewBookingPolicyExceptionRequest` table (#2524's dedicated-table decision) and
+do **not** yet hold a provisional reservation — their approval-time capacity
+recheck (the NO_HOLD path) is what prevents overbooking until the new-booking
+executor and its reservation shape land with the admin approval route (#2526).
+`computeProposalReservation` already returns the FULL proposal for a `NEW_BOOKING`
+snapshot, so wiring that hold later is additive. The binding lock contract every
+writer follows:
 
 - **No new advisory-lock family.** A reservation write or release, and the
   approval that turns a reservation into the executed booking, is a capacity and
@@ -1015,8 +1039,12 @@ approve-and-execute:
   EXISTING keys in the house order — global `lock(1)` first, then
   `acquireLodgeCapacityLock(tx, lodgeId)`, then the member-night guard's
   per-member key and `lockMemberCreditLedger(memberId, tx)` when credit is
-  composed. It introduces no `pg_advisory_xact_lock` key of its own, so nothing
-  new is added to the `advisory-lock-guard.test.ts` inventories.
+  composed. It introduces no `pg_advisory_xact_lock` **key** of its own, so no new
+  key family joins the `advisory-lock-guard.test.ts` inventories — only two
+  classified global-`lock(1)` **sites** compose the existing key
+  (`booking-exception-request-service.ts` for the request-hold reservation and
+  `booking-exception-execution.ts` for the approval / terminal release), each
+  minting the key once through a private `acquireGlobalBookingLock` helper.
 - **Reservations count as occupancy under the per-lodge lock.** The canonical
   per-night capacity calculation (`capacity.ts`) must count a held request's
   active reservation alongside `capacityHoldingBookingFilter()` bookings, read
@@ -1032,13 +1060,86 @@ approve-and-execute:
   invoked transaction-aware so there is no mark-approved-then-call gap.
 - **NO_HOLD approval rechecks capacity and keeps pending on conflict.** When the
   frozen aggregate is `NO_HOLD` (nothing was reserved), the approval rechecks
-  capacity under the per-lodge lock; a conflict keeps the request `REQUESTED`
-  with a recorded `lastConflictReason` (it does not fail it), so a later retry
-  can still succeed.
+  capacity under the per-lodge lock BEFORE the claim; a conflict keeps the request
+  `REQUESTED` with a recorded `lastConflictReason` (it does not fail it), so a
+  later retry can still succeed.
+- **HOLD approval also rechecks capacity — after releasing its own hold.** A HOLD
+  request holds its own beds, so the engine cannot recheck it before the claim
+  (its own reservation would count against it). Instead it claims, releases the
+  reservation, then rechecks under the same lock; if the lodge no longer fits, it
+  throws an internal rollback signal that undoes the whole approval (claim +
+  release) and surfaces `keptPendingCapacity`, leaving the request `REQUESTED` and
+  pending rather than executing an overbooking. The engine asserts capacity itself
+  and never relies on the executor seam being a hard refusal.
+- **A MODIFICATION approval fails closed without a live-integrity check.** The
+  optional `verifyLiveProposalIntegrity` hook is the ONLY gate comparing a
+  modification's frozen `base` against the live booking; the tamper hash covers
+  only the frozen snapshot. If a `MODIFICATION` reaches the engine without that
+  hook it throws `PolicyExceptionIntegrityHookMissingError` (a wiring bug, fail
+  loud) rather than executing against a possibly-stale base. New-booking snapshots
+  have no live base to drift and legitimately run without it.
 
 The live reservation writer, its `capacity.ts` integration and the transaction-
-aware canonical execution are the #2365 execution lane; this note records the
-contract they are held to so a reviewer can check the wiring against it.
+aware canonical execution are the #2365 execution lane, **built in #2525**. The
+wiring, checked against the contract above:
+
+- **Reservation store** — `PolicyExceptionReservationNight`
+  (`src/lib/booking-exception-reservations.ts`): one row per held
+  `(changeRequestId, night)`, carrying the denormalised `lodgeId` and bed count.
+  There is **no `active` flag**: a row exists IFF the request is currently holding
+  that night, so release is a `deleteMany` and the capacity read is a plain sum of
+  the rows that still exist. `reservePolicyExceptionCapacity` writes the footprint
+  (upsert per night, idempotent on the unique key);
+  `releasePolicyExceptionReservation` deletes it;
+  `buildLodgePolicyExceptionReservationCounter` is the per-night counter the four
+  capacity engines add to `occupiedBeds` **exactly as they add the custodian
+  counter** (`checkCapacity`, `checkCapacityForGuestRanges`,
+  `checkCapacityForPartnerSharedAdmission`, `getMonthAvailability`).
+- **Request-hold writer (#2524 service, wired in #2525's integration)** —
+  `createModificationExceptionRequest`
+  (`booking-exception-request-service.ts`) reserves the incremental hold for a
+  `HOLD`-aggregate modification request inside its creation transaction, under
+  global `lock(1)` → per-lodge lock, keyed on the new request id. A `NO_HOLD`
+  aggregate reserves nothing (the approval rechecks capacity instead), and a
+  modification whose footprint does not grow reserves nothing (the live booking
+  already holds those beds). The member-owned terminal transitions in the same
+  service release atomically under the same lock order:
+  `cancelModificationExceptionRequest` (pre-reads the frozen lodge, guarded
+  member/booking claim, then `releasePolicyExceptionReservation`) and the
+  supersede branch of `createModificationExceptionRequest` (releases the prior
+  request's hold before reserving the replacement). A lost claim releases and
+  reserves nothing.
+- **Transaction-aware canonical services (#2525)** — `createConfirmedBooking`
+  (`booking-create.ts`) and `modifyBookingBatch`
+  (`booking-batch-modification-service.ts`) each now accept an optional caller
+  `tx` via `withOptionalTransaction` (`src/lib/db-transaction.ts`). Standalone
+  callers open a self-contained transaction and run their provider work inline,
+  exactly as before; a caller that supplies `tx` runs the DB work in that
+  transaction and receives a `deferredPostCommit` thunk so email / Xero / Stripe
+  work fires strictly AFTER the caller commits. This is what removes the
+  mark-approved-then-call-service gap.
+- **Atomic approve-and-execute + terminal release**
+  (`src/lib/booking-exception-execution.ts`): the approval pre-reads the immutable
+  frozen `lodgeId`, then takes global `lock(1)` (one shared
+  `acquireGlobalBookingLock` helper, so the advisory-lock inventory sees one site)
+  and `acquireLodgeCapacityLock` — the canonical service re-enters the lodge lock
+  and takes the member-night / member-credit keys after that, preserving
+  global → lodge → member order. It reauthorizes from fresh DB roles, re-reads the
+  request under the locks, runs the proposal-hash tamper gate and the
+  `classifyPolicyExceptionDrift` gate, rechecks capacity for a NO_HOLD aggregate,
+  claims `REQUESTED → APPROVED` with the integer `version` CAS, releases the
+  reservation, and invokes the tx-aware canonical service — all in one
+  transaction. A lost claim (stale version, or a losing `updateMany`) releases
+  nothing and runs no side effect. `resolvePolicyExceptionRequestTerminal` is the
+  reject/cancel/supersede sibling: the same global → lodge lock order and the same
+  guarded `version` CAS, releasing the reservation atomically with the terminal
+  status write.
+
+Every one of these writers composes only the existing keys, so
+`advisory-lock-guard.test.ts` gains two classified global-`lock(1)` sites
+(`src/lib/booking-exception-request-service.ts` for the request-hold reservation
+and `src/lib/booking-exception-execution.ts` for the approval / terminal release)
+and no new key family.
 
 ### One-open-request slot for exception requests (#2524)
 

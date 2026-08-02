@@ -18,6 +18,13 @@
  *
  * Any fault reading the roles denies. "We could not establish what you may see"
  * resolves to "you see nothing", never to the previous answer.
+ *
+ * ACCOUNT STATE IS PART OF THE READ, not something the caller is trusted to have
+ * checked. `requireAdmin` refuses a member whose account is deactivated or under
+ * a forced password change, so this gate refuses the same states from the same
+ * freshly-read row — otherwise a session that is still holding a cookie would
+ * keep full page-context access on an account every other admin surface has
+ * already locked out.
  */
 
 import "server-only";
@@ -52,13 +59,21 @@ export function missingAreaViews(
 }
 
 /**
- * Why a fresh matrix read produced no matrix. Both deny, and neither is ever an
+ * Why a fresh matrix read produced no matrix. All three deny, and none is ever an
  * empty matrix the caller can reason about — but they are DIFFERENT operational
- * events, and an audit trail that conflates them makes a database outage and an
- * authorization anomaly (a stale or forged acting member id) look identical.
+ * events, and an audit trail that conflates them makes a database outage, an
+ * authorization anomaly (a stale or forged acting member id) and an ordinary
+ * account lock-out look identical.
+ *
+ * `member_blocked` covers the account-state levers that lock an admin out of the
+ * rest of the admin surface: `active === false` (what the members screen's
+ * deactivate action writes) and `forcePasswordChange === true`. They share one
+ * code because they are one operational class — a legitimate, administrator-driven
+ * lock-out with no triage difference — unlike the outage/anomaly split above.
  */
 export type FreshAdminPermissionMatrixFailure =
   | "member_not_found"
+  | "member_blocked"
   | "read_failed";
 
 export type FreshAdminPermissionMatrixResult =
@@ -67,12 +82,27 @@ export type FreshAdminPermissionMatrixResult =
 
 /**
  * Re-read the acting admin's effective permission matrix from the database.
- * Never throws: a missing member and a failed read both come back as a typed
- * refusal the caller must treat as a denial.
+ * Never throws: a missing member, a locked-out account and a failed read all come
+ * back as a typed refusal the caller must treat as a denial.
  *
- * `canLogin` is selected because `getAdminPermissionMatrix` empties the matrix
- * for a member who cannot log in; omitting it would silently keep a deactivated
- * account's roles alive for Diagnostics.
+ * WHY THREE ACCOUNT-STATE COLUMNS, not just the roles:
+ *
+ *  - `active` is the platform's actual revocation lever. `requireAdmin` refuses
+ *    `!member.active` with 403 "Account is deactivated", and the members screen's
+ *    deactivate action writes `active: false` and leaves `canLogin` untouched. A
+ *    gate that read only `canLogin` would leave a just-deactivated admin with full
+ *    page-context access while every other admin surface already refuses them.
+ *  - `forcePasswordChange` is refused by `requireAdmin` for the same reason, so an
+ *    account that cannot open an admin page cannot re-read one through here either.
+ *  - `canLogin` is selected because `getAdminPermissionMatrix` empties the matrix
+ *    for a member who cannot log in — archive and membership cancellation clear it
+ *    — so omitting it would hand that derivation a wider input than it should get.
+ *
+ * NOT COVERED, deliberately: the two-factor gate. `isTwoFactorSessionBlocked`
+ * decides on SESSION facts (`twoFactorRequired` / `twoFactorVerified`) that no
+ * member row carries, and this module takes a member id precisely so it cannot be
+ * handed a session to trust. That check therefore stays where it can be made
+ * honestly — `requireAdmin`, on the route AID-7 (#2378) builds.
  */
 export async function readFreshAdminPermissionMatrix(
   memberId: string,
@@ -81,11 +111,16 @@ export async function readFreshAdminPermissionMatrix(
     const member = await prisma.member.findUnique({
       where: { id: memberId },
       select: {
+        active: true,
         canLogin: true,
+        forcePasswordChange: true,
         accessRoles: { select: MEMBER_ACCESS_ROLE_SELECT },
       },
     });
     if (!member) return { ok: false, failure: "member_not_found" };
+    if (!member.active || member.forcePasswordChange) {
+      return { ok: false, failure: "member_blocked" };
+    }
 
     // Built WITHOUT an `adminPermissionMatrix` key on purpose: its presence
     // short-circuits derivation to the embedded (session-carried) matrix, which
