@@ -23,6 +23,14 @@ interface AdminNotificationUser {
   id: string;
   name: string;
   email: string;
+  /** Access-role labels, shown so the unavailable categories make sense. */
+  roleLabels?: string[];
+  /**
+   * Alert categories this admin's permission areas cover (#2548). Categories
+   * outside the list are never sent to them, so they render locked rather than
+   * pretending a tick would do something.
+   */
+  availableKeys?: AdminNotificationPreferenceKey[];
   preferences: AdminNotificationPreferences;
 }
 
@@ -48,6 +56,15 @@ export function AdminNotificationSettings({
     setEditing(false);
   }
 
+  /**
+   * Categories this admin can actually be sent (#2548). Older callers that do
+   * not supply the list fall back to every category, matching the previous
+   * Full-Admin-only grid.
+   */
+  function availableKeysFor(admin: AdminNotificationUser) {
+    return admin.availableKeys ?? ADMIN_NOTIFICATION_PREFERENCE_KEYS;
+  }
+
   function togglePreference(memberId: string, key: AdminNotificationPreferenceKey) {
     setAdmins((current) =>
       current.map((admin) =>
@@ -70,7 +87,9 @@ export function AdminNotificationSettings({
       const saved = savedAdmins.find((s) => s.id === admin.id);
       if (!saved) continue;
       const diff: Partial<AdminNotificationPreferences> = {};
-      for (const key of ADMIN_NOTIFICATION_PREFERENCE_KEYS) {
+      // Locked categories can never be toggled, and the PUT route rejects them
+      // outright — never send one, even if state drifted.
+      for (const key of availableKeysFor(admin)) {
         if (admin.preferences[key] !== saved.preferences[key]) {
           diff[key] = admin.preferences[key];
         }
@@ -184,29 +203,53 @@ export function AdminNotificationSettings({
       </div>
 
       <div className="grid gap-4 xl:grid-cols-2">
-        {admins.map((admin) => (
+        {admins.map((admin) => {
+          const available = availableKeysFor(admin);
+
+          return (
           <Card key={admin.id} className="border-border shadow-sm">
             <CardHeader className="pb-4">
               <CardTitle className="text-base">{admin.name}</CardTitle>
               <CardDescription>
                 <span>{admin.email}</span>
+                {admin.roleLabels && admin.roleLabels.length > 0 ? (
+                  <span className="mt-1 block text-xs">
+                    {admin.roleLabels.join(", ")}
+                  </span>
+                ) : null}
               </CardDescription>
             </CardHeader>
             <CardContent className="grid gap-3 sm:grid-cols-2">
+              {available.length === 0 ? (
+                <p className="text-sm text-muted-foreground sm:col-span-2">
+                  This admin&apos;s role cannot edit any area that owns an alert,
+                  so there are no alerts to send them. Give their role edit
+                  access to an area — bookings, membership, finance or support —
+                  to make its alerts available.
+                </p>
+              ) : null}
               {ADMIN_NOTIFICATION_PREFERENCE_KEYS.map((key) => {
                 const meta = ADMIN_NOTIFICATION_PREFERENCE_META[key];
                 const controlId = `${admin.id}-${key}`;
+                // #2548: an alert outside this admin's areas is never sent, so
+                // the box stays locked and unticked instead of implying a tick
+                // would subscribe them.
+                const locked = !available.includes(key);
 
                 return (
                   <div
                     key={key}
-                    className="flex items-start gap-3 rounded-lg border border-border p-3"
+                    className={`flex items-start gap-3 rounded-lg border border-border p-3${
+                      locked ? " opacity-60" : ""
+                    }`}
                   >
                     <Checkbox
                       id={controlId}
                       checked={admin.preferences[key]}
-                      disabled={!editing}
-                      onCheckedChange={() => editing && togglePreference(admin.id, key)}
+                      disabled={!editing || locked}
+                      onCheckedChange={() =>
+                        editing && !locked && togglePreference(admin.id, key)
+                      }
                     />
                     <div className="space-y-1">
                       <Label htmlFor={controlId} className="cursor-pointer text-sm font-medium">
@@ -215,13 +258,20 @@ export function AdminNotificationSettings({
                       <p className="text-xs leading-5 text-muted-foreground">
                         {meta.description}
                       </p>
+                      {locked ? (
+                        <p className="text-xs leading-5 text-muted-foreground">
+                          Not available: this alert belongs to an area their
+                          role cannot edit.
+                        </p>
+                      ) : null}
                     </div>
                   </div>
                 );
               })}
             </CardContent>
           </Card>
-        ))}
+          );
+        })}
       </div>
       </div>
     </div>

@@ -8,10 +8,14 @@ import {
 import { prisma } from "@/lib/prisma";
 import {
   ADMIN_NOTIFICATION_PREFERENCE_KEYS,
+  ADMIN_NOTIFICATION_PREFERENCE_META,
   ADMIN_NOTIFICATION_PREFERENCE_SELECT,
+  canReceiveAdminNotification,
+  isAdminNotificationRecipient,
   resolveAdminNotificationPreferences,
+  resolveEffectiveAdminNotificationPreferences,
 } from "@/lib/admin-notification-preferences";
-import { hasAdminAccess } from "@/lib/access-roles";
+import { MEMBER_ACCESS_ROLE_SELECT } from "@/lib/access-role-definitions";
 
 const preferenceUpdateSchema = z
   .object({
@@ -68,7 +72,10 @@ export async function PUT(request: Request) {
       id: true,
       firstName: true,
       lastName: true,
-      accessRoles: { select: { role: true } },
+      canLogin: true,
+      // Joined definitions so the area checks below resolve definition-backed
+      // (custom or club-edited) access roles, not just the enum bundles.
+      accessRoles: { select: MEMBER_ACCESS_ROLE_SELECT },
       notificationPreference: {
         select: ADMIN_NOTIFICATION_PREFERENCE_SELECT,
       },
@@ -78,9 +85,30 @@ export async function PUT(request: Request) {
   if (!targetMember) {
     return NextResponse.json({ error: "Admin user not found" }, { status: 404 });
   }
-  if (!hasAdminAccess(targetMember)) {
+  // #2548: any admin-portal user may be a recipient — scoped officers and
+  // definition-backed custom roles included — not only Full Admins.
+  if (!isAdminNotificationRecipient(targetMember)) {
     return NextResponse.json(
       { error: "Notification preferences can only be managed for admin users" },
+      { status: 400 }
+    );
+  }
+
+  // A category outside the target's areas is never delivered to them, so
+  // storing a value for it would only bank a preference that silently takes
+  // effect the day someone widens their role. Refuse it instead.
+  const unavailableKeys = ADMIN_NOTIFICATION_PREFERENCE_KEYS.filter(
+    (key) =>
+      parsed.data.preferences[key] !== undefined &&
+      !canReceiveAdminNotification(targetMember, key)
+  );
+  if (unavailableKeys.length > 0) {
+    return NextResponse.json(
+      {
+        error: `This admin's role cannot receive: ${unavailableKeys
+          .map((key) => ADMIN_NOTIFICATION_PREFERENCE_META[key].label)
+          .join(", ")}. Alerts follow edit access to the area that owns them.`,
+      },
       { status: 400 }
     );
   }
@@ -133,6 +161,11 @@ export async function PUT(request: Request) {
 
   return NextResponse.json({
     memberId: targetMember.id,
-    preferences: resolveAdminNotificationPreferences(updated),
+    // Effective, area-masked values: what this admin will actually be sent,
+    // which is what the grid re-renders from (#2548).
+    preferences: resolveEffectiveAdminNotificationPreferences(
+      targetMember,
+      updated
+    ),
   });
 }
