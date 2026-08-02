@@ -274,6 +274,7 @@ because there is nowhere to ask yet.
 | Exception capacity handling | Minimum Stay | Whether a future exception request holds the affected capacity during review | Existing rows: Hold | Required on create; Hold wins when several eligible rules apply |
 | Non-member guests without an adult member | Adult Member Hosting | Allowed, or sent to an admin to review | Allowed (club); Use the club-wide setting (lodge) | The club-wide scope cannot inherit |
 | Exception capacity handling | Adult Member Hosting | Whether a future exception request holds the affected capacity during review | None — you must choose | Required on every save |
+| Paid-up adult member required | Configured on [Subscription Lockout](subscription-lockout.md), not here | Refuses a booking that reprices somebody for an unpaid subscription and has no paid-up adult member on it | Off (only applies when you choose "let them book, at non-member rates") | Always holds the bed while a request is pending; not configurable |
 | Show indicative pricing | Public Requests | Price shown on the public request form | off | — |
 | Quote response window | Public Requests | Days a quote link stays valid | 14 | 1–60 days |
 | Reminder lead time | Public Requests | Days before expiry to remind the requester | 3 | 0–30, must be shorter than the window |

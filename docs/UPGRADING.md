@@ -96,6 +96,39 @@ as a red flag and check the release notes before deploying.
 
 ## Unreleased
 
+### The subscription booking lockout becomes a three-way choice (#2543)
+
+**Nothing changes for your club on this upgrade.** The one migration,
+`20260803000000_subscription_lockout_three_way_mode`, is purely additive: it
+creates the `SubscriptionLockoutMode` type and adds a **nullable** `mode` column
+to the single-row cold `MembershipLockoutSettings` table, with no default and no
+backfill. It is ledgered `expand` / `old_code_compatible=yes`, trips none of the
+deploy guard's breaking patterns, needs no traffic window, and needs no
+`ALLOW_BREAKING` override.
+
+A null `mode` means "this club has not chosen yet", and the application reads the
+existing `enabled` boolean instead (`true` → stop them booking, `false` → let them
+book). So your current behaviour carries over exactly, and no booking is repriced.
+
+The old `enabled` column is **deliberately not dropped** in this release: a
+draining blue/green colour is still reading it, and the new code writes both
+columns on every save so a rollback lands on the nearest equivalent behaviour.
+Dropping it is a separate contract migration in a later release, which will name
+this one as its `previous_expand_release`.
+
+**The new third option is opt-in and money-affecting.** Once upgraded, an admin
+can change **Admin → Subscription Lockout → Booking lockout** from the previous
+on/off toggle to one of three answers, the third of which is new: *let an unpaid
+member book, at non-member rates*. Choosing it charges that member's own nights at
+the club's existing non-member rate (the same rate rows and the same Xero item
+code as any other non-member — no new invoice type), tells them why on the quote,
+and requires a paid-up adult member on the booking, refusing with a
+Booking-Officer override path (which holds the bed) when there is none. Read
+`docs/guides/subscription-lockout.md` → "What 'non-member rates' does to a
+booking" before switching a live club, and tell your treasurer first. Reversing it
+is a settings change, not a migration, and does not re-price bookings already
+taken.
+
 ### Re-export configuration bundles for format version 4 (#2364)
 
 Configuration bundles now require exact **format version 4**. Version 4 adds a

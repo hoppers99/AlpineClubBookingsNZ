@@ -16,7 +16,9 @@ Which cards you see depends on the active modules; membership configuration is a
 
 - You are configuring the club's seasonal membership categories.
 - You want to change which optional profile fields are collected from members.
-- You are turning the unpaid-subscription booking lockout on or off.
+- You are choosing what happens when a member with an unpaid subscription tries
+  to book: stop them, let them book normally, or let them book at non-member
+  rates.
 
 ## Step-by-step
 

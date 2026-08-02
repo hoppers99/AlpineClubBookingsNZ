@@ -2612,20 +2612,89 @@ shape (facts in, decisions and member-facing sentences out, no I/O):
   under BOTH the current hard-block lockout and the decided non-member-rate
   direction so it never over-promises a booking.
 
-**Enforcement is a separate, owner-gated rollout (NOT yet wired).** Today an
-unpaid required member is **hard-blocked** from booking — a 403 on the create,
-confirm-draft, group-join and modify paths — not repriced. Turning that block
-into "reprice + require a paid-up adult" is a Critical money-regime change with
-coupled decisions the owner must settle: whether to soften the block at all,
-opt-in per club vs. replace the block outright, whether an unpaid member's nights
-consume capacity, and the Xero invoice narration for a member billed at
-non-member rates. The pure evaluator is the reviewed foundation those paths will
-consume once the rollout is decided; on its own it moves no money and changes no
-booking path. **Reversal:** if the club's position is that an unpaid subscription
-should keep hard-blocking, the reversal is to not wire the evaluator into the
-booking paths — the block already stands. The paid-up-adult half keys off the
-same standing predicate as #2364, so its reversal is #2364's reversal (drop the
-standing clauses from `participantQualifiesAsHost`), never a narrower one here.
+**Enforcement is wired, behind one club setting (#2543).**
+`MembershipLockoutSettings.mode` (`SubscriptionLockoutMode`) picks between three
+mutually exclusive answers, and it is the ONLY thing that can move a club's money
+here:
+
+- **`NO_BLOCK`** — no subscription gate at all; unpaid members book at member
+  rates.
+- **`HARD_BLOCK`** — the historical behaviour: 403 `SUBSCRIPTION_REQUIRED` /
+  `GUEST_SUBSCRIPTION_REQUIRED` on the create, confirm-draft, modify-quote,
+  guest-add and group-join paths. **The effective default**, so no club moved.
+- **`NON_MEMBER_PRICING`** — the rule above: the unpaid member is repriced, told
+  why, and the booking must carry a paid-up adult member.
+
+**Nothing moved on the release that shipped this.** The migration adds `mode`
+NULLABLE with no backfill; a null means "read the legacy `enabled` boolean"
+(`true → HARD_BLOCK`, `false → NO_BLOCK`), resolved in
+`normalizeMembershipLockoutSettings`. A club that had deliberately switched the
+lockout off therefore stays off, and one that had it on keeps hard-blocking, until
+an admin picks a mode in Admin → Subscription lockout. `enabled` is not dropped in
+the same release — the application writes both columns on every save
+(`legacyEnabledForLockoutMode`) so a draining blue/green colour keeps reading a
+truthful value; a later contract release drops it.
+
+**The mode is resolved once per request and passed down.** Every consumer reads it
+through `member-subscription-eligibility.ts`: `resolveSubscriptionLockoutMode()`
+outside transactions (it reseeds the financial-year cache, which can reach Xero),
+and `peekSubscriptionLockoutMode()` for the pricing gate, which runs *inside*
+booking transactions holding the per-lodge capacity lock and therefore must not be
+able to make a provider call. Each of the five write paths resolves the mode once
+and hands it to `evaluateNonMemberPricingRequirements`, so the HARD_BLOCK gate and
+the paid-up-adult requirement cannot branch on different answers if an admin saves
+the setting mid-request.
+
+**Only the refusals are mode-gated, never the lookups.** `findUnpaidMemberGuests`
+/ `findUnpaidMemberGuestNames` still run under `NON_MEMBER_PRICING`: they are what
+raise the D-8 neutral refusal for an unpaid member guest from beyond the booker's
+family, and that privacy boundary is not the lockout policy's to relax.
+
+**The reprice happens at the single pricing gate**, not at the five write paths.
+`resolveGuestRateMembershipTypes` is the one function all ~25 booking-pricing call
+sites already pass through, so "consistent across every write path" is a
+structural property rather than a review checklist.
+
+**The paid-up-adult requirement is conditional on a reprice.** It applies only to
+a party that actually contains somebody being repriced for an unpaid
+subscription. `NON_MEMBER_PRICING` is a *relaxation* of the hard block; applied
+unconditionally the requirement would newly refuse bookings that are legal today
+and have nothing to do with subscriptions (a paid-up Youth member booking their
+own bed, a family whose only member row is a child, an all-non-member party).
+"Is a responsible adult member present?" in the general case is
+`ADULT_MEMBER_HOSTING_REQUIRED`'s question (#2364), configured separately; the two
+compose, and a party can trip both.
+
+**The refusal is a door, not a wall.** A missing paid-up adult raises
+`PAID_UP_ADULT_MEMBER_REQUIRED` — **409, not 403**, deliberately outside
+`HARD_STOP_BOOKING_FAILURE_CODES`: the booking *is* permitted, by a Booking
+Officer, through the #2363/#2365 exception-request workflow. The violation is
+frozen with `capacityMode: "HOLD"` (owner decision 4), so a pending override keeps
+the beds rather than making the member race for capacity while an admin reads
+their request. `requirements` carries **counts and no identities** — every field is
+rendered back to the refused member, and naming who is unpaid would turn a booking
+refusal into a financial-status oracle. The fingerprint follows: it hashes the
+hazard ("this party has nobody paid-up on it"), not who, so re-saving the same
+party shape does not reopen a decided review.
+
+**A repriced member stops counting as a host** (owner decision 3). Under
+`NON_MEMBER_PRICING` the booking-side loader stamps
+`HostingParticipant.subscriptionSettled = false` on them, and
+`participantQualifiesAsHost` refuses them — somebody the club is charging as a
+non-member is not the responsible member the hosting rule asks for. **Absent means
+settled**, so under the other two modes the field is never populated and the
+hosting answer is byte-identical to pre-#2543. Deliberately asymmetric, and
+narrower than the lapsed-member rule: `participantIsNonMemberGuest` does NOT read
+the field, so an unpaid member's own nights do not become uncovered guest-nights
+needing admin review. A lapsed membership is gone; an unpaid subscription is a
+membership in good standing with a bill outstanding.
+
+**Reversal:** set the mode back to `HARD_BLOCK` (or `NO_BLOCK`) in Admin →
+Subscription lockout. No migration, no code change, and no already-taken booking is
+re-priced — the rate is snapshotted per guest row as it always was. The
+paid-up-adult half keys off the same standing predicate as #2364, so a reversal of
+*that* half is #2364's reversal (drop the standing clauses from
+`participantQualifiesAsHost`), never a narrower one here.
 
 Issue #1668 adds an **admin-only override** (`adminOverride`, honoured solely when
 `bookingManagementAuthorizationRole(session.user) === "ADMIN"`, i.e. Full Admin
