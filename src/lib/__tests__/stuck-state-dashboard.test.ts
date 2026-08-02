@@ -129,6 +129,7 @@ function buildDeps(overrides?: Partial<StuckStateDashboardDependencies>) {
     getTokenEmailRecoveryQueue: vi.fn().mockResolvedValue(emails.tokenRecovery),
     getWaitlistOfferEmailDeliveries: vi.fn().mockResolvedValue(new Map()),
     countUnconfirmedSchoolAttendeeLists: vi.fn().mockResolvedValue(0),
+    countBookingsWithUnnamedPlaceholderGuests: vi.fn().mockResolvedValue(0),
     getBedAllocationDashboard: vi.fn().mockResolvedValue({
       unallocatedGuestNights: [],
       suggestedUnallocatedGuestNights: [],
