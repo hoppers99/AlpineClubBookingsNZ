@@ -163,6 +163,10 @@ vi.mock("@/lib/xero-token-store", () => ({
 vi.mock("@/lib/xero-organisation", () => ({
   getXeroLockDates: h.getXeroLockDates,
   getEffectiveXeroLockDate: h.getEffectiveXeroLockDate,
+  // #2543's lockout-mode read refreshes the financial-year config, which asks
+  // Xero for the year-end month. Null is the documented "unavailable" answer
+  // and falls back to the club default, so these tests stay about date gating.
+  getXeroFinancialYearEndMonth: vi.fn(async () => null),
 }));
 vi.mock("@/lib/booking-create", async () => {
   // Re-export the REAL constant (the factory is hoisted, so it cannot see the

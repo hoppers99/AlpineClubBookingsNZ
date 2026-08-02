@@ -804,6 +804,15 @@ describe("consent columns have exactly one writer", () => {
       // message for the same event.
       "src/app/api/bookings/[id]/guests/[guestId]/route.ts":
         "the guest-removal route reads the removed row's consent state to decide who is owed a withdrawal notice",
+      // --- #2543's paid-up-adult requirement on the guests route. A READER
+      // through the shared D-12 predicate: a newly added adult member guest
+      // only satisfies the requirement once their invite is accepted, so the
+      // route reads `consentStatus` for the adds it is about to persist. It
+      // composes no consent shape and writes no consent column — the write
+      // plan still comes from `buildMemberGuestConsentWrite` via the shared
+      // add policy, exactly as before this lane.
+      "src/app/api/bookings/[id]/guests/route.ts":
+        "the guest-add route reads consent presence so a pending invite cannot stand in as the paid-up adult member",
       // --- #2364's adult-member hosting evaluator. A READER, and a pure one:
       // it selects `consentStatus` and passes it through the shared
       // `isOperationallyPresentConsent` predicate to decide whether an adult
