@@ -33,7 +33,11 @@ import {
   NonMemberContactForm,
   type NonMemberOwner,
 } from "@/components/admin/non-member-contact-form";
-import { formatLocalDateOnly, localCalendarDayToDateOnly } from "@/lib/date-only";
+import {
+  countNightsDateOnly,
+  formatCalendarDayOnly,
+  parseDateOnly,
+} from "@/lib/date-only";
 import { formatNZDate, formatNZWeekdayDate } from "@/lib/nzst-date";
 
 import { CreditCard, Landmark } from "lucide-react";
@@ -89,8 +93,9 @@ export default function AdminBookPage() {
   // booking restrictions. Hidden with fewer than two lodges (ADR-002).
   const { lodges, loading: lodgesLoading } = useLodgeOptions("admin");
   const [lodgeId, setLodgeId] = useState<string | null>(null);
-  const [checkIn, setCheckIn] = useState<Date | null>(null);
-  const [checkOut, setCheckOut] = useState<Date | null>(null);
+  // Lodge nights are NZ date-only `yyyy-MM-dd` strings end-to-end (#2474).
+  const [checkIn, setCheckIn] = useState<string | null>(null);
+  const [checkOut, setCheckOut] = useState<string | null>(null);
   const [guests, setGuests] = useState<GuestData[]>([]);
   const [notes, setNotes] = useState("");
   const [memberReviewJustification, setMemberReviewJustification] = useState("");
@@ -140,12 +145,18 @@ export default function AdminBookPage() {
   >("confirm");
   const [adultMemberHostingReason, setAdultMemberHostingReason] = useState("");
 
-  // A retroactive booking is one whose check-in is genuinely in the past (local
-  // date), with the flag on. Drives the guest-cap relaxation and the POST body.
-  const localToday = new Date();
-  localToday.setHours(0, 0, 0, 0);
+  // A retroactive booking is one whose check-in is genuinely in the past, with
+  // the flag on. Drives the guest-cap relaxation and the POST body. Compared as
+  // date-only strings (#2474): "today" is the browser's own calendar day, and a
+  // lexicographic compare of `yyyy-MM-dd` values is a chronological one.
+  const nowLocal = new Date();
+  const todayStr = formatCalendarDayOnly(
+    nowLocal.getFullYear(),
+    nowLocal.getMonth(),
+    nowLocal.getDate(),
+  );
   const isRetroactive =
-    allowPastDates && checkIn !== null && checkIn < localToday;
+    allowPastDates && checkIn !== null && checkIn < todayStr;
 
   // Fetch family members for the selected member
   useEffect(() => {
@@ -263,15 +274,15 @@ export default function AdminBookPage() {
     setResolvedCapacity(lodgeCapacity);
   }
 
-  async function handleDateSelect(ci: Date, co: Date) {
+  async function handleDateSelect(ci: string, co: string) {
     setCheckIn(ci);
     setCheckOut(co);
     setError("");
     // A prior 409 confirm panel belongs to the previous dates/party; a stale
     // one must not offer a pre-authorised overbook of the new selection.
     setOverCapacityNights(null);
-    const ciStr = formatLocalDateOnly(ci);
-    const coStr = formatLocalDateOnly(co);
+    const ciStr = ci;
+    const coStr = co;
 
     const res = await fetch(
       `/api/availability/check?checkIn=${ciStr}&checkOut=${coStr}${
@@ -319,8 +330,8 @@ export default function AdminBookPage() {
     setAdultMemberHostingReason("");
     setError("");
     setPriceLoading(true);
-    const checkInStr = formatLocalDateOnly(checkIn!);
-    const checkOutStr = formatLocalDateOnly(checkOut!);
+    const checkInStr = checkIn!;
+    const checkOutStr = checkOut!;
 
     const res = await fetch("/api/bookings/quote", {
       method: "POST",
@@ -393,8 +404,8 @@ export default function AdminBookPage() {
     setSubmitting(true);
     setError("");
     setErrorReason(null);
-    const checkInStr = formatLocalDateOnly(checkIn!);
-    const checkOutStr = formatLocalDateOnly(checkOut!);
+    const checkInStr = checkIn!;
+    const checkOutStr = checkOut!;
 
     const res = await fetch("/api/bookings", {
       method: "POST",
@@ -472,8 +483,8 @@ export default function AdminBookPage() {
   async function handleSaveAsDraft(opts: { hostingReason?: string } = {}) {
     setSavingDraft(true);
     setError("");
-    const checkInStr = formatLocalDateOnly(checkIn!);
-    const checkOutStr = formatLocalDateOnly(checkOut!);
+    const checkInStr = checkIn!;
+    const checkOutStr = checkOut!;
 
     const res = await fetch("/api/bookings", {
       method: "POST",
@@ -524,9 +535,11 @@ export default function AdminBookPage() {
     setSavingDraft(false);
   }
 
+  // Whole date-only nights between the two lodge dates — exact, DST-immune UTC
+  // arithmetic (#2474).
   const nights =
     checkIn && checkOut
-      ? Math.ceil((checkOut.getTime() - checkIn.getTime()) / (1000 * 60 * 60 * 24))
+      ? countNightsDateOnly(parseDateOnly(checkIn), parseDateOnly(checkOut))
       : 0;
 
   function formatCents(cents: number) {
@@ -689,7 +702,7 @@ export default function AdminBookPage() {
                     setOverCapacityNights(null);
                     // Unticking must not strand an already-selected past range
                     // that only the server would reject at submit.
-                    if (!e.target.checked && checkIn && checkIn < localToday) {
+                    if (!e.target.checked && checkIn && checkIn < todayStr) {
                       setCheckIn(null);
                       setCheckOut(null);
                     }
@@ -727,8 +740,8 @@ export default function AdminBookPage() {
               Add Guests
               {checkIn && checkOut && (
                 <span className="ml-2 text-sm font-normal text-muted-foreground">
-                  {formatNZDate(localCalendarDayToDateOnly(checkIn))} -{" "}
-                  {formatNZDate(localCalendarDayToDateOnly(checkOut))} ({nights} night
+                  {formatNZDate(parseDateOnly(checkIn))} -{" "}
+                  {formatNZDate(parseDateOnly(checkOut))} ({nights} night
                   {nights !== 1 ? "s" : ""})
                 </span>
               )}
@@ -837,13 +850,13 @@ export default function AdminBookPage() {
                 <div>
                   <span className="text-muted-foreground">Check-in:</span>{" "}
                   <span className="font-medium">
-                    {formatNZWeekdayDate(localCalendarDayToDateOnly(checkIn!))}
+                    {formatNZWeekdayDate(parseDateOnly(checkIn!))}
                   </span>
                 </div>
                 <div>
                   <span className="text-muted-foreground">Check-out:</span>{" "}
                   <span className="font-medium">
-                    {formatNZWeekdayDate(localCalendarDayToDateOnly(checkOut!))}
+                    {formatNZWeekdayDate(parseDateOnly(checkOut!))}
                   </span>
                 </div>
                 <div>
@@ -1045,7 +1058,7 @@ export default function AdminBookPage() {
 
           {isRetroactive && (
             <div className="rounded-md bg-muted border border-border p-3 text-sm text-muted-foreground">
-              Recording a past stay ({formatNZDate(localCalendarDayToDateOnly(checkIn!))}). The
+              Recording a past stay ({formatNZDate(parseDateOnly(checkIn!))}). The
               member email is optional (you choose on confirm); drafts are not
               available for retroactive bookings.
             </div>

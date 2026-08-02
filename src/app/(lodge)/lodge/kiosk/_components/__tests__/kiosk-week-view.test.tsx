@@ -11,6 +11,7 @@ import {
   weekHasAccessibleDay,
   type KioskWeekDaySummary,
 } from "../kiosk-week-view";
+import { captureHostTimeZone } from "@/lib/__tests__/helpers/timezone";
 
 const weekDays: KioskWeekDaySummary[] = [
   {
@@ -112,17 +113,11 @@ describe("KioskWeekView", () => {
 describe("kiosk date-key arithmetic (#2474)", () => {
   // Node applies a zone when TZ is ASSIGNED and keeps it once the variable is
   // removed, so restoring means assigning the resolved starting zone back
-  // first, then deleting the variable.
-  const ORIGINAL_TZ_ENV = process.env.TZ;
-  const ORIGINAL_HOST_ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  // first, then deleting the variable (#2485).
+  const hostTimeZone = captureHostTimeZone();
 
   afterEach(() => {
-    if (ORIGINAL_TZ_ENV === undefined) {
-      process.env.TZ = ORIGINAL_HOST_ZONE;
-      delete process.env.TZ;
-    } else {
-      process.env.TZ = ORIGINAL_TZ_ENV;
-    }
+    hostTimeZone.restore();
   });
 
   it("steps date keys across month, year and leap-day boundaries", () => {

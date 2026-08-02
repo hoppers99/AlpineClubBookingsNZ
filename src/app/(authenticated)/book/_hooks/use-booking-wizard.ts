@@ -12,7 +12,7 @@ import {
   getBookingErrorPaymentTargets,
   type BookingErrorPaymentTarget,
 } from "@/lib/booking-error-payment-targets";
-import { formatLocalDateOnly } from "@/lib/date-only";
+import { countNightsDateOnly, parseDateOnly } from "@/lib/date-only";
 import { buildBookingMemberNightConflictSummary } from "@/lib/booking-member-night-conflict-messages";
 import { shouldShowInviteFamilyGroupMembersLink } from "@/lib/family-booking";
 import { hasAccessRole, hasAdminAccess } from "@/lib/access-roles";
@@ -155,8 +155,10 @@ export function useBookingWizard() {
   const [createdBooking, setCreatedBooking] = useState<CreatedBooking | null>(
     null,
   );
-  const [checkIn, setCheckIn] = useState<Date | null>(null);
-  const [checkOut, setCheckOut] = useState<Date | null>(null);
+  // Lodge nights are carried as NZ date-only `yyyy-MM-dd` strings end-to-end
+  // (#2474), never a local-midnight `Date`.
+  const [checkIn, setCheckIn] = useState<string | null>(null);
+  const [checkOut, setCheckOut] = useState<string | null>(null);
   const [guests, setGuests] = useState<GuestData[]>([]);
   const [notes, setNotes] = useState("");
   const [priceQuote, setPriceQuote] = useState<PriceQuote | null>(null);
@@ -269,8 +271,8 @@ export function useBookingWizard() {
     }
 
     return {
-      checkIn: formatLocalDateOnly(checkIn),
-      checkOut: formatLocalDateOnly(checkOut),
+      checkIn,
+      checkOut,
     };
   }
 
@@ -502,7 +504,7 @@ export function useBookingWizard() {
   useEffect(() => {
     const params = new URLSearchParams();
     if (checkIn) {
-      params.set("checkIn", formatLocalDateOnly(checkIn));
+      params.set("checkIn", checkIn);
     }
     const query = params.toString();
     fetch(`/api/payments/options${query ? `?${query}` : ""}`)
@@ -857,7 +859,7 @@ export function useBookingWizard() {
     }
   }
 
-  async function handleDateSelect(ci: Date, co: Date) {
+  async function handleDateSelect(ci: string, co: string) {
     setCheckIn(ci);
     setCheckOut(co);
     setError("");
@@ -871,8 +873,8 @@ export function useBookingWizard() {
     setActiveWorkPartyEvents([]);
     setWorkPartyError("");
     setWorkPartyClearedNotice(null);
-    const ciStr = formatLocalDateOnly(ci);
-    const coStr = formatLocalDateOnly(co);
+    const ciStr = ci;
+    const coStr = co;
     const lodgeParam = lodgeId ? `&lodgeId=${encodeURIComponent(lodgeId)}` : "";
 
     // Fetch availability for selected range
@@ -934,8 +936,8 @@ export function useBookingWizard() {
     setPriceLoading(true);
 
     // Fetch price quote
-    const checkInStr = formatLocalDateOnly(checkIn!);
-    const checkOutStr = formatLocalDateOnly(checkOut!);
+    const checkInStr = checkIn!;
+    const checkOutStr = checkOut!;
     const res = await fetch("/api/bookings/quote", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1021,8 +1023,8 @@ export function useBookingWizard() {
     setGuestProfileBlocks([]);
     setMemberNightConflicts([]);
     setShowWaitlistPrompt(false);
-    const checkInStr = formatLocalDateOnly(checkIn!);
-    const checkOutStr = formatLocalDateOnly(checkOut!);
+    const checkInStr = checkIn!;
+    const checkOutStr = checkOut!;
 
     const res = await fetch("/api/bookings", {
       method: "POST",
@@ -1135,8 +1137,8 @@ export function useBookingWizard() {
     setErrorPaymentTargets([]);
     setGuestProfileBlocks([]);
     setMemberNightConflicts([]);
-    const checkInStr = formatLocalDateOnly(checkIn!);
-    const checkOutStr = formatLocalDateOnly(checkOut!);
+    const checkInStr = checkIn!;
+    const checkOutStr = checkOut!;
 
     const res = await fetch("/api/bookings", {
       method: "POST",
@@ -1189,8 +1191,8 @@ export function useBookingWizard() {
     setErrorPaymentTargets([]);
     setGuestProfileBlocks([]);
     setMemberNightConflicts([]);
-    const checkInStr = formatLocalDateOnly(checkIn!);
-    const checkOutStr = formatLocalDateOnly(checkOut!);
+    const checkInStr = checkIn!;
+    const checkOutStr = checkOut!;
 
     const res = await fetch("/api/bookings", {
       method: "POST",
@@ -1232,8 +1234,11 @@ export function useBookingWizard() {
     }
   }
 
+  // Whole date-only nights between the two lodge dates. UTC date-only
+  // arithmetic (#2474) — DST-immune and exact, unlike a millisecond span that
+  // an off-midnight instant would round.
   const nights = checkIn && checkOut
-    ? Math.ceil((checkOut.getTime() - checkIn.getTime()) / (1000 * 60 * 60 * 24))
+    ? countNightsDateOnly(parseDateOnly(checkIn), parseDateOnly(checkOut))
     : 0;
 
   function getGuestProfileBlockMessage(block: GuestProfileRequiredMember) {
@@ -1326,8 +1331,8 @@ export function useBookingWizard() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         workPartyEventId: selectedWorkPartyEventId,
-        checkIn: formatLocalDateOnly(checkIn),
-        checkOut: formatLocalDateOnly(checkOut),
+        checkIn,
+        checkOut,
         guests: reviewGuestPayload.map((g) => ({
           ageTier: g.ageTier,
           isMember: g.isMember,

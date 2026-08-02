@@ -2,12 +2,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   addDaysDateOnly,
   eachDateOnlyInRange,
+  formatCalendarDayOnly,
   formatDateOnly,
   formatDateOnlyForTimeZone,
-  formatLocalDateOnly,
   getTodayDateOnly,
   isDateOnlyString,
-  localCalendarDayToDateOnly,
   endOfDateOnlyForTimeZone,
   parseDateOnly,
   startOfDateOnlyForTimeZone,
@@ -27,8 +26,13 @@ describe("date-only helpers", () => {
     );
   });
 
-  it("formats local calendar dates without UTC timezone drift", () => {
-    expect(formatLocalDateOnly(new Date(2026, 3, 30))).toBe("2026-04-30");
+  it("builds a lodge-night key from calendar parts (0-based month), zero-padded", () => {
+    // #2474: the canonical client encoding of a lodge night. A pure function of
+    // its integer parts, so it carries no browser-timezone dependency at all —
+    // the property the whole migration turns on.
+    expect(formatCalendarDayOnly(2026, 3, 30)).toBe("2026-04-30");
+    expect(formatCalendarDayOnly(2026, 0, 1)).toBe("2026-01-01");
+    expect(formatCalendarDayOnly(2026, 11, 9)).toBe("2026-12-09");
   });
 
   it("formats instants as New Zealand date-only values", () => {
@@ -177,48 +181,7 @@ describe("todayDateOnlyForTimeZone", () => {
   });
 });
 
-describe("localCalendarDayToDateOnly (#2264)", () => {
-  // A date picker hands back `new Date(year, month, day)` — midnight where the
-  // BROWSER is. Formatting that instant with a club-pinned formatter names the
-  // day as Auckland sees it, which is a DIFFERENT day for anyone far enough
-  // east. These pin the re-encoding that removes the mismatch.
-  const NZ = new Intl.DateTimeFormat("en-NZ", {
-    timeZone: "Pacific/Auckland",
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-  });
-
-  it("re-encodes a local-midnight calendar day at UTC midnight", () => {
-    const picked = new Date(2026, 3, 16); // 16 April, browser-local midnight
-    expect(localCalendarDayToDateOnly(picked).toISOString()).toBe(
-      "2026-04-16T00:00:00.000Z"
-    );
-  });
-
-  it("keeps the picked day when a club-pinned formatter renders it", () => {
-    const picked = new Date(2026, 3, 1); // 1 April, browser-local midnight
-    expect(NZ.format(localCalendarDayToDateOnly(picked))).toBe("1 Apr 2026");
-  });
-
-  it("names the same day the submitted value encodes, in club time", () => {
-    // `formatLocalDateOnly` is what the booking request actually carries. The
-    // contract that matters is that the club-pinned SCREEN text and the
-    // submitted VALUE name the same night — which is exactly what went wrong
-    // when a club-pinned formatter was handed the raw picker instant.
-    const picked = new Date(2026, 11, 31);
-    const submitted = formatLocalDateOnly(picked); // "2026-12-31"
-    expect(NZ.format(localCalendarDayToDateOnly(picked))).toBe(
-      NZ.format(parseDateOnly(submitted))
-    );
-  });
-
-  it("ignores a time of day, keeping only the local calendar date", () => {
-    // The booking wizard derives a hold deadline by subtracting whole days in
-    // milliseconds, which lands off midnight across a DST change.
-    const offMidnight = new Date(2026, 3, 16, 23, 30);
-    expect(localCalendarDayToDateOnly(offMidnight).toISOString()).toBe(
-      "2026-04-16T00:00:00.000Z"
-    );
-  });
-});
+// The lodge-night identity that #2474 pins across every browser zone lives in
+// `booking-calendar-timezone.test.tsx` (the migrated component surface). The
+// `localCalendarDayToDateOnly` bridge these tests used to cover was deleted with
+// the local-midnight encoding it existed to patch.

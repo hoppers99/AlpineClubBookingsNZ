@@ -33,6 +33,23 @@ Future reviews and issues should cite this file when proposing changes.
   (the composition heuristic is removed). Fee changes affect future resolution
   only.
 - Do not introduce floating point money arithmetic.
+- **Member whole-lodge approval pricing has a fixed precedence (#2338, owner
+  decision 1 Aug 2026).** A season may carry an optional flat whole-lodge night
+  rate (`Season.flatWholeLodgeNightCents`, integer cents, nullable = not set).
+  When the approving officer prices a member whole-lodge request
+  (`approveMemberWholeLodgeRequest`), the total is chosen in this order and no
+  other: (1) the officer's manual total override, if given, wins over everything;
+  (2) else, if the officer ticked "price as whole lodge" AND a flat rate covers
+  **every** night of the stay, the total is the sum of each night's covering
+  season's flat rate, and **headcount is ignored for price** (it still drives the
+  guest rows and the capacity check); (3) else per-guest pricing, exactly as
+  before. The flat branch is never automatic — it is the officer's per-approval
+  choice, defaulting to per-guest so nothing changes silently — and a stay only
+  ever falls out of it when a night has no flat rate, in which case it reverts to
+  per-guest rather than charging zero. A stay spanning a season boundary is
+  charged each night at that night's season flat rate. The pure per-night math is
+  `priceWholeLodgeFlat` (`src/lib/policies/pricing.ts`); the same figure is
+  previewed in the admin queue and computed authoritatively at approval time.
 - **A promo "use" means the member actually got something (#2299).** A
   `PromoRedemptionAllocation` row exists only where the application delivered a
   benefit — `discountCents > 0`, `priceAdjustmentCents ≠ 0`, or
@@ -346,6 +363,25 @@ Future reviews and issues should cite this file when proposing changes.
   (`setHours(0,0,0,0)`) instant: under the `TZ=Pacific/Auckland` server pin the
   latter resolves to `(D-1)T12:00Z` and shifts the boundary by a day for the
   first ~13h of each NZ day (F8/F32, #1888).
+- **Client-side, a selected lodge night is an NZ date-only `yyyy-MM-dd` string
+  carried end-to-end.** The booking calendar (`src/components/booking-calendar.tsx`),
+  the member booking wizard, and the admin "book on behalf" kiosk
+  (`src/app/(admin)/admin/book/page.tsx`) never hold a lodge night as a
+  local-midnight `new Date(year, month, day)` (#2474). That construction is
+  midnight in the BROWSER's zone, so the moment such a value reached an
+  instant-based API (a club-pinned `Intl` formatter, a UTC serialiser, or
+  DST-crossing day arithmetic) it named the day the browser sat on — off by one
+  for a booker far enough from New Zealand. The value submitted, the club-pinned
+  label displayed, the night count, and the hold deadline are all derived from
+  the string via `parseDateOnly` / `addDaysDateOnly` / `countNightsDateOnly`,
+  which pin the day to UTC midnight (rendered as club midday, the same calendar
+  day in every zone). `formatCalendarDayOnly(year, monthIndex, day)` is the
+  canonical encoder; the #2264 `localCalendarDayToDateOnly` bridge, which patched
+  only the display half of this hazard while the fragile encoding lived on, is
+  gone. `src/lib/__tests__/booking-calendar-timezone.test.tsx` pins the
+  lodge-night identity across browsers behind, at, and ahead of NZ, on an NZ
+  DST-transition night. (This is the CLIENT representation; server-side capacity
+  date arithmetic keeps its own `@db.Date`/date-only helpers, above.)
 - **Rendering** a date or a time is a separate invariant from storing or
   comparing one, and has its own single seam: `src/lib/nzst-date.ts`. Its six
   helpers — `formatNZDate` ("16 Apr 2026"), `formatNZDateTime`
