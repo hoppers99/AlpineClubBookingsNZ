@@ -49,6 +49,13 @@ const FAMILY_MEMBER_PROFILE_SELECT = {
   profileCompletedAt: true,
   detailsConfirmedAt: true,
   detailsConfirmedByMemberId: true,
+  // #2284 (S3): resolve the delegated-confirmation voucher's name so the
+  // member-facing payload can show a read-only "Details last confirmed by X on
+  // date" provenance line. A deliberate whitelist addition (the #2424 precedent
+  // gates what the viewer is allowed to see): only the confirmer's NAME is
+  // returned, never an address, and the confirmer is already an adult in the
+  // viewer's family group, so this discloses no new identity.
+  detailsConfirmedBy: { select: { id: true, firstName: true, lastName: true } },
   onboardingConfirmedAt: true,
   inheritEmailFromId: true,
   // #2255: the member the family's notifications actually reach. Under a
@@ -107,6 +114,15 @@ type FamilyMemberRecord = MemberProfileCompletenessInput & {
   accessRoles?: Array<{ role: string | null }>;
   inheritEmailFromId?: string | null;
   inheritEmailFrom?: {
+    id: string;
+    firstName: string;
+    lastName: string;
+  } | null;
+  // #2284 (S3): the adult who last confirmed this member's details (the
+  // delegated-confirmation voucher), for the read-only provenance line.
+  // `detailsConfirmedByMemberId` / `detailsConfirmedAt` come from
+  // MemberProfileCompletenessInput above; only the resolved name is added here.
+  detailsConfirmedBy?: {
     id: string;
     firstName: string;
     lastName: string;
@@ -438,6 +454,15 @@ export async function getMemberFamily(memberId: string): Promise<JsonRouteResult
      * per-parent marker covers it) or when there is no inheritance at all.
      */
     notificationEmailFromName: string | null;
+    /**
+     * #2284 (S3): read-only provenance for a DELEGATED details confirmation —
+     * who confirmed this member's details on their behalf, and when. Null when
+     * the member confirmed their own details (the self-confirmed sentinel
+     * `detailsConfirmedByMemberId === id`), or when nothing has been confirmed.
+     * This is the missing surface from the issue's Q4: a delegated edit was
+     * audited but never shown to the family.
+     */
+    detailsConfirmedBy: { name: string; at: string | null } | null;
   }> = [];
 
   /**
@@ -460,6 +485,29 @@ export async function getMemberFamily(memberId: string): Promise<JsonRouteResult
     );
     if (isListedParent) return null;
     return `${source.firstName} ${source.lastName}`.trim() || null;
+  }
+
+  /**
+   * #2284 (S3): "Details last confirmed by X on date", from the already-stamped
+   * `detailsConfirmedByMemberId` / `detailsConfirmedAt`. Only a DELEGATED
+   * confirmation is attributed: the self-confirmed sentinel
+   * (`detailsConfirmedByMemberId === member.id`) means the member vouched for
+   * themselves, so there is no "someone else" to name.
+   */
+  function delegatedConfirmationProvenance(
+    member: FamilyMemberRecord,
+  ): { name: string; at: string | null } | null {
+    const confirmer = member.detailsConfirmedBy;
+    if (
+      !confirmer ||
+      !member.detailsConfirmedByMemberId ||
+      member.detailsConfirmedByMemberId === member.id
+    ) {
+      return null;
+    }
+    const name = `${confirmer.firstName} ${confirmer.lastName}`.trim();
+    if (!name) return null;
+    return { name, at: toDateInputValue(member.detailsConfirmedAt) };
   }
 
   function addMember(member: FamilyMemberRecord, relationship: FamilyMemberRelationship) {
@@ -539,6 +587,7 @@ export async function getMemberFamily(memberId: string): Promise<JsonRouteResult
       parentLinks: buildMemberFacingParentLinks(member, groupIds),
       notificationEmailFromId: member.inheritEmailFromId ?? null,
       notificationEmailFromName: notificationSourceBeyondParents(member),
+      detailsConfirmedBy: delegatedConfirmationProvenance(member),
     });
   }
 

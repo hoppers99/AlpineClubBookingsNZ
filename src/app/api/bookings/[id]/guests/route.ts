@@ -817,6 +817,12 @@ export async function POST(
           createdGuests: createdGuests,
           entriesByMemberId: memberGuestEntries,
         }),
+        // #2284 (S2): every member id this add created a guest row for, carried
+        // out of the transaction so the family-scope FYI can be sent after the
+        // commit. The dispatcher decides which are family scope.
+        familyAddMemberIds: createdGuests
+          .map((guest) => guest.memberId)
+          .filter((memberId): memberId is string => Boolean(memberId)),
       };
     });
 
@@ -844,6 +850,29 @@ export async function POST(
         logger.error(
           { err, bookingId },
           "Failed to dispatch member-guest add notifications",
+        );
+      }
+    }
+
+    // #2284 (S2): tell FAMILY co-members (or the adults acting for them) that
+    // this add put them on the booking. Runs regardless of the memberGuests
+    // module and filters to family scope itself, so it never doubles the
+    // member-guest dispatch above.
+    if (result.familyAddMemberIds.length > 0) {
+      const { sendFamilyMemberBookingAddNotifications } = await import(
+        "@/lib/family-booking-add-notifications"
+      );
+      try {
+        await sendFamilyMemberBookingAddNotifications({
+          bookingId,
+          bookerMemberId: result.booking.memberId,
+          actorMemberId: session.user.id,
+          addedMemberIds: result.familyAddMemberIds,
+        });
+      } catch (err) {
+        logger.error(
+          { err, bookingId },
+          "Failed to dispatch family booking-add notifications",
         );
       }
     }

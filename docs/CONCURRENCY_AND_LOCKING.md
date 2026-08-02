@@ -993,6 +993,48 @@ self-corrects — but a release that also flips booking status or moves money
 (cancel, hold-expiry) takes `lock(1)` for the status/money reason, not the
 capacity reason.
 
+### Provisional reservations for held policy-exception requests (#2365)
+
+A held `POLICY_EXCEPTION` `BookingChangeRequest` (see `docs/STATE_MACHINES.md` →
+"Booking-policy exception requests") reserves capacity so an eventual approval is
+guaranteed to fit: a new-booking request reserves the full proposal's per-night
+beds, a modification request reserves only the incremental beds beyond the
+unchanged live booking (`computeProposalReservation`,
+`src/lib/booking-exception-requests.ts`). The binding lock contract the #2365
+execution lane MUST follow when it wires the live reservation and the atomic
+approve-and-execute:
+
+- **No new advisory-lock family.** A reservation write or release, and the
+  approval that turns a reservation into the executed booking, is a capacity and
+  (for a modification) money/status transition on a booking, so it composes the
+  EXISTING keys in the house order — global `lock(1)` first, then
+  `acquireLodgeCapacityLock(tx, lodgeId)`, then the member-night guard's
+  per-member key and `lockMemberCreditLedger(memberId, tx)` when credit is
+  composed. It introduces no `pg_advisory_xact_lock` key of its own, so nothing
+  new is added to the `advisory-lock-guard.test.ts` inventories.
+- **Reservations count as occupancy under the per-lodge lock.** The canonical
+  per-night capacity calculation (`capacity.ts`) must count a held request's
+  active reservation alongside `capacityHoldingBookingFilter()` bookings, read
+  under the per-lodge capacity lock on the booking's own lodge (read-key → lock →
+  re-read). A held request never overbooks because the reservation is claimed
+  under that same lock.
+- **Release is atomic with the terminal transition.** `REJECTED`, `CANCELLED`
+  and `SUPERSEDED` release the reservation in the SAME guarded transaction that
+  writes the status; a lost `updateMany` claim on `status = REQUESTED` (with the
+  integer `version` token) runs no release and no side effect. An `APPROVED`
+  request does not "release then create" — the reservation becomes the executed
+  booking's own beds inside one transaction, with the canonical booking service
+  invoked transaction-aware so there is no mark-approved-then-call gap.
+- **NO_HOLD approval rechecks capacity and keeps pending on conflict.** When the
+  frozen aggregate is `NO_HOLD` (nothing was reserved), the approval rechecks
+  capacity under the per-lodge lock; a conflict keeps the request `REQUESTED`
+  with a recorded `lastConflictReason` (it does not fail it), so a later retry
+  can still succeed.
+
+The live reservation writer, its `capacity.ts` integration and the transaction-
+aware canonical execution are the #2365 execution lane; this note records the
+contract they are held to so a reviewer can check the wiring against it.
+
 ## Credit restoration: exactly-once is now STRUCTURAL (#1636)
 
 `restoreCreditFromBooking` (`member-credit.ts`) restores a cancelled booking's
