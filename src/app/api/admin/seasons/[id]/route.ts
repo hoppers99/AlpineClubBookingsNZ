@@ -24,6 +24,11 @@ const updateSeasonSchema = z.object({
   endDate: dateOnlyString.optional(),
   active: z.boolean().optional(),
   membershipTypeRates: membershipTypeSeasonRateInputSchema.optional(),
+  // Flat whole-lodge night rate in integer cents (#2338). Nullable so the Hut
+  // Fees editor can CLEAR it (null); omitted leaves it untouched — the
+  // windows-only /admin/seasons PUT never sends it, so a window edit never wipes
+  // a configured flat rate. Flows through `...seasonData` into the update.
+  flatWholeLodgeNightCents: z.number().int().min(0).nullable().optional(),
 })
 
 export async function GET(
