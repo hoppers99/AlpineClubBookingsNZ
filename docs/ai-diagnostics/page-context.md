@@ -76,10 +76,17 @@ problem — every failure is a structured, evidence-free result.
    deactivated (`active = false`, which is what the members screen's deactivate
    action writes, leaving `canLogin` untouched) or under a forced password change,
    and so does this. Any fault reading the roles denies, and the three ways it can
-   fail stay distinct in the audit row: a missing member (`actor_unresolved`), a
-   locked-out account (`actor_blocked`) and an unreadable role graph
-   (`actor_read_failed`) are different events, so a database outage, an ordinary
-   lock-out and an authorization anomaly are never one row. The two-factor gate is
+   fail stay distinct in the resolved context's `reason`: a missing member
+   (`actor_unresolved`), a locked-out account (`actor_blocked`) and an unreadable
+   role graph (`actor_read_failed`) are different events, and the caller is told
+   which one happened. The **audit rows of all three are byte-identical**, and
+   deliberately so: ADR-004 §4's approved metadata list is closed and carries no
+   failure-reason field, so `DiagnosticsPageContextAudit` has none, and widening
+   that list is an ADR-004 amendment and an owner decision. The distinction is
+   carried on `reason` for the caller to act on, and it is disclosed to the model
+   in the rendered evidence block (`no page context was retrieved (reason: …)`), so
+   separating a database outage from an ordinary lock-out means reading the
+   resolved context, not the audit row alone. The two-factor gate is
    deliberately NOT here: it decides on session facts no member row carries, so it
    stays with `requireAdmin` on the route AID-7 (#2378) builds.
 3. **Re-fetch** (`projections.ts`) — a fixed, typed, column-allowlisted read of
@@ -103,8 +110,15 @@ integer, `yes`/`no`, a `yyyy-mm-dd` lodge day, an ISO instant), each capped at 6
 characters. It is deliberately not one permissive character class: a class wide
 enough to cover all five in a single pattern also covers `sk_live_…`, `whsec_…` and
 `Bearer …`, so the one mistake the check exists to catch would have shipped a
-secret verbatim. Using `derivedFact` for a free-text column therefore yields a
-redacted, bounded fact.
+secret verbatim. The check is not a general safety net, though: a value that is
+uppercase alphanumeric (an AWS access-key id, a base32 TOTP secret) or all
+digits (a phone, IRD or card number) matches the enum or integer shape and
+travels raw, bounded only at 64 characters — unavoidable, because redaction's
+digit-run heuristic would rewrite an eight-digit cents amount. The real control
+is each reader's explicit column allowlist: a free-text column reaches
+`derivedFact` only if someone adds it there, and a column whose values can be
+uppercase alphanumeric or all digits must use `textFact` or `sensitiveFact`
+instead.
 
 ## The route registry
 

@@ -60,7 +60,13 @@ import {
 export interface ResolveDiagnosticsPageContextInput {
   /** UNTRUSTED client selector. Never pre-validate and pass a trusted object. */
   selector: unknown;
-  /** The admin asking. Their permissions are re-read here, not taken on trust. */
+  /**
+   * The admin asking. Their permissions are re-read here, not taken on trust.
+   *
+   * MUST be the caller's OWN session member id, derived server-side — never a
+   * client-supplied value. See the caller contract on
+   * `resolveDiagnosticsPageContext`.
+   */
   actingMemberId: string;
   /**
    * The resolution instant. Injected so the result is deterministic under test;
@@ -256,6 +262,16 @@ const AREA_DENIAL_MESSAGE: Record<AdminPermissionArea, string> = {
  * Resolve one page context. Never throws for an input or authorization problem —
  * every such case is a structured, evidence-free result, because a thrown error
  * in this path is an outage in the assistant rather than a denial.
+ *
+ * CALLER CONTRACT: `actingMemberId` MUST be the caller's own member id, taken
+ * from their authenticated session on the server. It is not a value a client may
+ * choose or influence. The reason is the actor distinction above: the result's
+ * `reason` separates `actor_unresolved` (no such member) from `actor_blocked`
+ * (deactivated, or under a forced password change), so a caller that could pass
+ * an arbitrary id would be able to ask "does this member exist, and is their
+ * account locked out?" for any id it liked — the field that makes these incidents
+ * triageable would become an account-state oracle. The route AID-7 (#2378) builds
+ * must therefore take the id from `requireAdmin`, never from the request body.
  */
 export async function resolveDiagnosticsPageContext(
   input: ResolveDiagnosticsPageContextInput,
@@ -299,7 +315,13 @@ export async function resolveDiagnosticsPageContext(
     return emptyResult({
       status: "unavailable",
       // A missing member, a locked-out account and an unreadable role graph all
-      // deny, but they are different incidents and the trail says which.
+      // deny, but they are different incidents — and THIS is the only place that
+      // says which. The audit rows of all three are byte-identical, because
+      // ADR-004 §4's approved metadata list is closed and carries no
+      // failure-reason field; the distinction is carried here on `reason` for the
+      // caller to act on, and disclosed to the model in the rendered evidence
+      // block. That is also why `actingMemberId` must be the caller's own session
+      // id (see this function's caller contract).
       reason: ACTOR_FAILURE_REASON[actor.failure],
       // Nothing is echoed to the model before the actor is established...
       route: null,

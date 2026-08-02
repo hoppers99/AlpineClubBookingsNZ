@@ -99,10 +99,24 @@ function isDerivedValueShape(value: string): boolean {
  * `redactSensitiveText`: its phone-like digit-run heuristic would rewrite an
  * eight-digit integer-cents amount to `[REDACTED]`, corrupting money.
  *
- * The shape is therefore VERIFIED rather than trusted. A value that is not
- * closed-vocabulary shaped — i.e. someone used this constructor for a free-text
- * column — falls back to the redact-and-bound path instead of travelling raw, so
- * the failure mode of that mistake is a redacted, bounded fact.
+ * The shape is therefore VERIFIED rather than trusted: a value matching none of
+ * the closed-vocabulary shapes falls back to the redact-and-bound path instead of
+ * travelling raw, which is what keeps a NAMED secret shape (`sk_live_…`,
+ * `whsec_…`, `Bearer …`) off the raw path.
+ *
+ * WHAT THAT CHECK DOES NOT DO. It is not a general safety net for misusing this
+ * constructor. Two classes of free-text value match the shapes above and so do
+ * travel RAW, bounded only by `DERIVED_VALUE_MAX_CHARS`: an uppercase
+ * alphanumeric value (the `^[A-Z][A-Z0-9_]*$` enum shape also fits an AWS
+ * access-key id or a base32 TOTP secret) and an all-digit value (the integer
+ * shape also fits a phone number, an IRD number or a card number). That is
+ * unavoidable by design, because redaction cannot run on this path at all — its
+ * phone-like digit-run heuristic would rewrite an eight-digit cents amount.
+ *
+ * The real control is therefore each reader's explicit column ALLOWLIST
+ * (`readBooking` / `readMember` / `readPayment` below): a free-text column reaches
+ * this constructor only if someone adds it there. A column whose values can be
+ * uppercase alphanumeric or all digits must use `textFact` or `sensitiveFact`.
  */
 function derivedFact(key: string, value: string): DiagnosticsPageContextFact {
   return {

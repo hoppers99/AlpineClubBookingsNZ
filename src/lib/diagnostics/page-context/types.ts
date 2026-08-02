@@ -105,8 +105,11 @@ export type DiagnosticsPageContextReason =
   | "actor_blocked"
   /**
    * The role read itself failed. Kept distinct from `actor_unresolved` so a
-   * database fault and an authorization anomaly are not the same audit row —
-   * both still deny, and neither ever produces an empty-matrix pass.
+   * database fault and an authorization anomaly are not one indistinguishable
+   * code — both still deny, and neither ever produces an empty-matrix pass. The
+   * distinction lives HERE and nowhere else: ADR-004 §4's closed metadata list has
+   * no failure-reason field, so the audit rows of all three actor failures are
+   * byte-identical (see `resolveDiagnosticsPageContext`).
    */
   | "actor_read_failed"
   | "permission_denied"

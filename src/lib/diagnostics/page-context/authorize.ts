@@ -61,9 +61,19 @@ export function missingAreaViews(
 /**
  * Why a fresh matrix read produced no matrix. All three deny, and none is ever an
  * empty matrix the caller can reason about — but they are DIFFERENT operational
- * events, and an audit trail that conflates them makes a database outage, an
- * authorization anomaly (a stale or forged acting member id) and an ordinary
- * account lock-out look identical.
+ * events: a database outage, an authorization anomaly (a stale or forged acting
+ * member id) and an ordinary account lock-out.
+ *
+ * WHERE THAT DISTINCTION LIVES — AND WHERE IT DOES NOT. It is carried on the
+ * resolved context's `reason` (`actor_read_failed` / `actor_unresolved` /
+ * `actor_blocked`), which is the caller's to act on, and it is disclosed to the
+ * model in the rendered evidence block. It is NOT in the audit row: ADR-004 §4's
+ * approved metadata list is closed and carries no failure-reason field, so
+ * `DiagnosticsPageContextAudit` has none and all three actor failures produce
+ * BYTE-IDENTICAL audit objects. That is deliberate rather than an oversight —
+ * widening the list is an ADR-004 amendment and an owner decision — so anything
+ * triaging these incidents apart must read the resolved context, never the row
+ * alone.
  *
  * `member_blocked` covers the account-state levers that lock an admin out of the
  * rest of the admin surface: `active === false` (what the members screen's
