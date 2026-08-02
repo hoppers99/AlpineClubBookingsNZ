@@ -61,6 +61,12 @@ interface FamilyMemberStatus {
    * than a listed parent. Null when a parent marker already covers it.
    */
   notificationEmailFromName?: string | null;
+  /**
+   * #2284 (S3): read-only provenance for a delegated details confirmation — who
+   * last confirmed this member's details on their behalf, and when. Null when
+   * the member confirmed their own details or nothing was confirmed.
+   */
+  detailsConfirmedBy?: { name: string; at: string | null } | null;
 }
 
 interface PendingFamilyRequest {
@@ -645,6 +651,21 @@ export function FamilyGroupSection({ familyGroups, canManage = false }: FamilyGr
                                 <p className="text-xs text-muted-foreground">
                                   Club email for {member.firstName} goes to{" "}
                                   {status.notificationEmailFromName}.
+                                </p>
+                              )}
+                              {/* #2284 (S3): a delegated details edit was
+                                  audited but never shown to the family. This
+                                  read-only line closes that gap — it names who
+                                  confirmed this member's details on their behalf
+                                  and when. */}
+                              {status?.detailsConfirmedBy && (
+                                <p className="text-xs text-muted-foreground">
+                                  Details last confirmed by{" "}
+                                  {status.detailsConfirmedBy.name}
+                                  {status.detailsConfirmedBy.at
+                                    ? ` on ${status.detailsConfirmedBy.at}`
+                                    : ""}
+                                  .
                                 </p>
                               )}
                             </div>

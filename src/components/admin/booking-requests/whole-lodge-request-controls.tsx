@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { formatNZDate } from "@/lib/nzst-date";
+import { formatCents } from "@/lib/utils";
 
 /*
   #2263 — the admin-side additions for whole-lodge requests, kept as small
@@ -221,6 +222,12 @@ export function WholeLodgeAvailabilityStrip({
  * to fall back on (both are refused at the service layer), so without this field
  * an out-of-season whole-lodge request would be a dead end: the approval would
  * 409 with "set a price before approving" and there would be nowhere to set one.
+ *
+ * `pricingMode` (#2338, owner decision 1 Aug 2026) is the officer's per-approval
+ * choice between per-guest pricing (the default — nothing changes silently) and
+ * the club's flat whole-lodge rate. It is offered ONLY when
+ * `flatWholeLodgeTotalCents` is non-null, i.e. a flat rate covers every night of
+ * the stay; the manual price override above still wins over both.
  */
 export function MemberWholeLodgeApprovalFields({
   requestId,
@@ -229,6 +236,10 @@ export function MemberWholeLodgeApprovalFields({
   onHeadcountChange,
   priceDollars,
   onPriceChange,
+  flatWholeLodgeTotalCents,
+  nights,
+  pricingMode,
+  onPricingModeChange,
   disabled,
 }: {
   requestId: string;
@@ -237,10 +248,65 @@ export function MemberWholeLodgeApprovalFields({
   onHeadcountChange: (value: string) => void;
   priceDollars: string;
   onPriceChange: (value: string) => void;
+  // The flat whole-lodge total for this stay, or null when no flat rate covers
+  // it (the toggle is then not offered and pricing stays per guest).
+  flatWholeLodgeTotalCents: number | null;
+  nights: number;
+  pricingMode: "per-guest" | "whole-lodge";
+  onPricingModeChange: (mode: "per-guest" | "whole-lodge") => void;
   disabled?: boolean;
 }) {
+  const flatRateOffered = flatWholeLodgeTotalCents != null;
   return (
-    <div className="grid gap-3 rounded-md border border-border p-3 sm:grid-cols-2">
+    <div className="space-y-3">
+      {flatRateOffered ? (
+        <fieldset
+          className="space-y-2 rounded-md border border-border p-3"
+          disabled={disabled}
+        >
+          <legend className="px-1 text-sm font-medium">
+            How to price this whole-lodge booking
+          </legend>
+          <p className="text-xs text-muted-foreground">
+            This season has a flat whole-lodge rate. Choose how to charge for the
+            stay. Whatever you pick, a total price override below still wins.
+          </p>
+          <label className="flex items-start gap-2 text-sm">
+            <input
+              type="radio"
+              name={`whole-lodge-pricing-${requestId}`}
+              className="mt-1"
+              checked={pricingMode !== "whole-lodge"}
+              disabled={disabled}
+              onChange={() => onPricingModeChange("per-guest")}
+            />
+            <span>
+              <span className="font-medium">Price per guest</span> — each guest at
+              the season rate, as usual.
+            </span>
+          </label>
+          <label className="flex items-start gap-2 text-sm">
+            <input
+              type="radio"
+              name={`whole-lodge-pricing-${requestId}`}
+              className="mt-1"
+              checked={pricingMode === "whole-lodge"}
+              disabled={disabled}
+              onChange={() => onPricingModeChange("whole-lodge")}
+            />
+            <span>
+              <span className="font-medium">Price as whole lodge</span> —{" "}
+              {formatCents(flatWholeLodgeTotalCents)} for the whole building
+              {nights > 0
+                ? ` (${nights} ${nights === 1 ? "night" : "nights"} at the season flat rate${nights === 1 ? "" : ", each night at its own season's rate"})`
+                : ""}
+              . Headcount does not affect this price.
+            </span>
+          </label>
+        </fieldset>
+      ) : null}
+
+      <div className="grid gap-3 rounded-md border border-border p-3 sm:grid-cols-2">
       <div className="space-y-1">
         <Label htmlFor={`whole-lodge-headcount-${requestId}`}>
           Headcount to book and price
@@ -275,9 +341,11 @@ export function MemberWholeLodgeApprovalFields({
           onChange={(event) => onPriceChange(event.target.value)}
         />
         <p className="text-xs text-muted-foreground">
-          Leave blank to price at the season rates. Required when no season
-          covers these dates — there is no separate pricing step on this path.
+          {flatRateOffered
+            ? "Leave blank to price at the pricing method chosen above. Required when no season covers these dates — there is no separate pricing step on this path. A value here overrides both per-guest and whole-lodge pricing."
+            : "Leave blank to price at the season rates. Required when no season covers these dates — there is no separate pricing step on this path."}
         </p>
+      </div>
       </div>
     </div>
   );

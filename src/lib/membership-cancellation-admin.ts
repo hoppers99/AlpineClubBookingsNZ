@@ -129,6 +129,23 @@ type AdminSerializedMembershipCancellationParticipant = {
   holdsPrivilegedAccess: boolean;
   /** Derived User Type, so an organisation account is visibly one. */
   accountType: UserType;
+  /**
+   * #2284 (S1): this participant is a NON-LOGIN member who was included by
+   * someone else, so the "Confirmed" stamp on their row was written on their
+   * behalf — they have no login to personally confirm with, and (owner decision
+   * S1) there is no second-adult signature step, so nobody else confirmed for
+   * them either. The reviewer sees an explicit "included without their own or a
+   * second adult's confirmation" flag and applies judgement, rather than the
+   * auto-stamped confirmation being indistinguishable from a personally-given one.
+   *
+   * Keyed purely on `!canLogin` and "not the requester": a non-login member is
+   * never issued a confirmation token (see `requiresOwnConfirmation` in
+   * membership-cancellation-requests.ts), so any `confirmedAt` on their row is by
+   * definition auto-stamped. A login-holding target an admin raised the request
+   * for is deliberately NOT flagged — the flag is about the non-login member who
+   * would otherwise have no voice, which is exactly the S1 concern.
+   */
+  includedWithoutOwnOrSecondAdultConfirmation: boolean;
 };
 
 export type AdminSerializedMembershipCancellationRequest = {
@@ -284,6 +301,12 @@ function serializeRequest(
       // approving this participant needs a Full Admin.
       holdsPrivilegedAccess: memberHoldsPrivilegedRole(participant.member),
       accountType: classifyAccountRecord(participant.member),
+      // #2284 (S1): a non-login member somebody else put on this request could
+      // not personally confirm, and there is no second-adult signature, so the
+      // reviewer is told the confirmation stamp was made on their behalf.
+      includedWithoutOwnOrSecondAdultConfirmation:
+        !participant.member.canLogin &&
+        participant.memberId !== request.requestedByMemberId,
     })),
   };
 }

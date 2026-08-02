@@ -1564,6 +1564,13 @@ model Season {
   startDate DateTime   @db.Date
   endDate   DateTime   @db.Date
   active    Boolean    @default(true)
+  // Flat whole-lodge nightly rate for this season, in integer cents (#2338).
+  // NULL = not set: a whole-lodge approval then prices per guest exactly as
+  // before. When set, an officer who ticks "price as whole lodge" on the
+  // approve panel charges `nights x this rate` and headcount is ignored; the
+  // officer's manual total override still wins over both. Additive/nullable so
+  // the draining old colour's omitted-column INSERTs keep working (blue/green).
+  flatWholeLodgeNightCents Int?
   lodgeId   String     @default(dbgenerated("default_lodge_id()"))
   createdAt DateTime   @default(now())
   updatedAt DateTime   @updatedAt
@@ -4936,7 +4943,15 @@ model FamilyGroupMember {
   id            String   @id @default(cuid())
   familyGroupId String
   memberId      String
-  role          String   @default("MEMBER") // ADMIN or MEMBER (group admin can manage the group)
+  // #2284 (S4): NOT consulted for authorisation anywhere. The one power it ever
+  // gated — the one-step partner declaration (member-partner-link.ts) — was
+  // re-anchored onto Member.detailsConfirmedByMemberId, so this column now
+  // records nothing that grants anything. Written "ADMIN" or "MEMBER" by a
+  // scatter of flows (see the #2284 census); merge upgrades toward "ADMIN"
+  // (member-merge.ts maxFamilyRole) but nothing reads the result. Retained for
+  // now rather than dropped in the same PR as the re-anchor; scheduled for
+  // removal in a dedicated migration (see #2284 close-out / follow-up).
+  role          String   @default("MEMBER")
   joinedAt      DateTime @default(now())
 
   familyGroup FamilyGroup @relation(fields: [familyGroupId], references: [id], onDelete: Cascade)
@@ -5062,6 +5077,10 @@ model NotificationPreference {
   bookingBumped              Boolean  @default(true)
   bookingCancelled           Boolean  @default(true)
   bookingWaitlist            Boolean  @default(true)
+  // #2284 (S2): FYI when a family co-member adds you (or someone you are the
+  // login-holding adult for) to a booking. General family behaviour, sent
+  // regardless of the memberGuests module; default on, personally opt-outable.
+  bookingAddedByFamily       Boolean  @default(true)
   choreRoster                Boolean  @default(true)
   marketingEmails            Boolean  @default(false)
   adminNewBooking            Boolean  @default(true)

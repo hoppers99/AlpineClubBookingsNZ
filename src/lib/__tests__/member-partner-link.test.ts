@@ -4,9 +4,10 @@ vi.mock("server-only", () => ({}));
 
 vi.mock("@/lib/prisma", () => ({
   prisma: {
-    member: { findUnique: vi.fn(), findFirst: vi.fn() },
+    member: { findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn() },
     familyGroupMember: {
       findFirst: vi.fn(),
+      findMany: vi.fn(),
       count: vi.fn(),
       findUnique: vi.fn(),
       upsert: vi.fn(),
@@ -58,6 +59,7 @@ import {
 import { sweepFuturePartnerSharedAllocations } from "@/lib/bed-allocation-lifecycle";
 import {
   canonicalPartnerPair,
+  listOneStepPartnerCandidates,
   PARTNER_REQUEST_SENT_GENERIC_MESSAGE,
   requestPartnerLink,
   respondToPartnerLink,
@@ -78,6 +80,7 @@ const adultA = {
   active: true,
   canLogin: true,
   ageTier: "ADULT",
+  detailsConfirmedByMemberId: null as string | null,
 };
 const adultB = {
   id: "member-b",
@@ -87,6 +90,7 @@ const adultB = {
   active: true,
   canLogin: true,
   ageTier: "ADULT",
+  detailsConfirmedByMemberId: null as string | null,
 };
 const nonLoginAdultC = {
   id: "member-c",
@@ -96,6 +100,14 @@ const nonLoginAdultC = {
   active: true,
   canLogin: false,
   ageTier: "ADULT",
+  // #2284 (S4): Alice (adultA) is CURRENTLY the recorded voucher for Cora's
+  // details, so she may one-step declare a partnership over Cora. This is not a
+  // lone designation: the voucher pointer is self-assignable by any adult login
+  // co-member sharing Cora's group (via the delegated-details route), so any such
+  // adult can become the voucher and gain the same one-step power — the equal
+  // "all adults in a family group" boundary #2284 recorded. The gate keys on the
+  // pointer's CURRENT value; these fixtures fix it at member-a.
+  detailsConfirmedByMemberId: "member-a" as string | null,
 };
 
 function mockMemberLookup(members: Array<typeof adultA>) {
@@ -126,6 +138,66 @@ describe("canonicalPartnerPair", () => {
       memberAId: "member-a",
       memberBId: "member-b",
     });
+  });
+});
+
+describe("listOneStepPartnerCandidates (#2284 S4)", () => {
+  it("returns the non-login adult co-members this member is the recorded voucher for", async () => {
+    vi.mocked(prisma.familyGroupMember.findMany).mockResolvedValue([
+      { familyGroupId: "g1" },
+      { familyGroupId: "g2" },
+    ] as never);
+    vi.mocked(prisma.member.findMany).mockResolvedValue([
+      {
+        id: "member-c",
+        firstName: "Cora",
+        lastName: "Ash",
+        canLogin: false,
+      },
+    ] as never);
+
+    const result = await listOneStepPartnerCandidates("member-a");
+
+    expect(result).toEqual([
+      { id: "member-c", firstName: "Cora", lastName: "Ash", canLogin: false },
+    ]);
+    // The candidate query keys on the voucher pointer + shared group + no-login
+    // adult, and NOT on any family-group role.
+    const memberFindManyArgs = vi.mocked(prisma.member.findMany).mock
+      .calls[0][0] as { where: Record<string, unknown> };
+    expect(memberFindManyArgs.where).toMatchObject({
+      canLogin: false,
+      active: true,
+      ageTier: "ADULT",
+      detailsConfirmedByMemberId: "member-a",
+      familyGroupMemberships: { some: { familyGroupId: { in: ["g1", "g2"] } } },
+    });
+    expect(JSON.stringify(memberFindManyArgs.where)).not.toContain("ADMIN");
+  });
+
+  it("returns nothing when the member is in no family group", async () => {
+    vi.mocked(prisma.familyGroupMember.findMany).mockResolvedValue([] as never);
+
+    const result = await listOneStepPartnerCandidates("member-a");
+
+    expect(result).toEqual([]);
+    expect(prisma.member.findMany).not.toHaveBeenCalled();
+  });
+
+  it("excludes a vouchered member who already has a CONFIRMED partner", async () => {
+    vi.mocked(prisma.familyGroupMember.findMany).mockResolvedValue([
+      { familyGroupId: "g1" },
+    ] as never);
+    vi.mocked(prisma.member.findMany).mockResolvedValue([
+      { id: "member-c", firstName: "Cora", lastName: "Ash", canLogin: false },
+    ] as never);
+    vi.mocked(prisma.memberPartnerLink.findMany).mockResolvedValue([
+      { memberAId: "member-c", memberBId: "member-x" },
+    ] as never);
+
+    const result = await listOneStepPartnerCandidates("member-a");
+
+    expect(result).toEqual([]);
   });
 });
 
@@ -296,8 +368,10 @@ describe("requestPartnerLink", () => {
     expect(result.ok === false && result.error).toMatch(/respond to their request/i);
   });
 
-  it("one-steps to CONFIRMED when a family-group admin declares a no-login member", async () => {
+  it("one-steps to CONFIRMED when the recorded voucher declares a no-login member (#2284 S4)", async () => {
     mockMemberLookup([adultA, nonLoginAdultC]);
+    // Shared-group probe succeeds; the voucher check keys on the target's
+    // detailsConfirmedByMemberId (adultA), not the family-group role.
     vi.mocked(prisma.familyGroupMember.findFirst).mockResolvedValue({
       familyGroupId: "group-1",
     } as never);
@@ -312,11 +386,11 @@ describe("requestPartnerLink", () => {
 
     expect(result.ok).toBe(true);
     expect(result.ok && result.status).toBe("CONFIRMED");
-    expect(prisma.familyGroupMember.findFirst).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({ memberId: adultA.id, role: "ADMIN" }),
-      })
-    );
+    // The shared-group probe no longer filters on role: "ADMIN".
+    const findFirstArgs = vi.mocked(prisma.familyGroupMember.findFirst).mock
+      .calls[0][0] as { where: Record<string, unknown> };
+    expect(findFirstArgs.where).toMatchObject({ memberId: adultA.id });
+    expect(findFirstArgs.where).not.toHaveProperty("role");
     expect(prisma.memberPartnerLink.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         status: "CONFIRMED",
@@ -335,8 +409,14 @@ describe("requestPartnerLink", () => {
     );
   });
 
-  it("refuses the one-step for a no-login member when the initiator is not their family-group admin", async () => {
-    mockMemberLookup([adultA, nonLoginAdultC]);
+  it("refuses the one-step for a no-login member when the initiator is NOT their recorded voucher (#2284 S4)", async () => {
+    // Cora's details were confirmed by someone else, so adultA is not entitled
+    // to declare the partnership in one step. The shared-group probe must never
+    // even run (the voucher check short-circuits).
+    mockMemberLookup([
+      adultA,
+      { ...nonLoginAdultC, detailsConfirmedByMemberId: "someone-else" },
+    ]);
     vi.mocked(prisma.familyGroupMember.findFirst).mockResolvedValue(null as never);
 
     const result = await requestPartnerLink({
@@ -345,6 +425,23 @@ describe("requestPartnerLink", () => {
     });
 
     expect(result).toMatchObject({ ok: false, status: 403 });
+    expect(prisma.familyGroupMember.findFirst).not.toHaveBeenCalled();
+    expect(prisma.memberPartnerLink.create).not.toHaveBeenCalled();
+  });
+
+  it("refuses the one-step when the recorded voucher no longer shares a family group with the target (#2284 S4)", async () => {
+    mockMemberLookup([adultA, nonLoginAdultC]);
+    // adultA IS the voucher, but the shared-group probe finds nothing — a stale
+    // voucher pointer left behind after the target left the group grants nothing.
+    vi.mocked(prisma.familyGroupMember.findFirst).mockResolvedValue(null as never);
+
+    const result = await requestPartnerLink({
+      initiatorMemberId: adultA.id,
+      targetMemberId: nonLoginAdultC.id,
+    });
+
+    expect(result).toMatchObject({ ok: false, status: 403 });
+    expect(prisma.familyGroupMember.findFirst).toHaveBeenCalled();
     expect(prisma.memberPartnerLink.create).not.toHaveBeenCalled();
   });
 
@@ -360,7 +457,7 @@ describe("requestPartnerLink", () => {
     });
 
     expect(result.ok && result.status).toBe("PENDING");
-    // The family-admin check is never consulted for login holders.
+    // The voucher/shared-group check is never consulted for login holders.
     expect(prisma.familyGroupMember.findFirst).not.toHaveBeenCalled();
   });
 

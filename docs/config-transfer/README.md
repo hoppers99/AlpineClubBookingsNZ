@@ -316,6 +316,13 @@ deeper reference for what each category contains and the import safety model.
   curate, or spot as a unit. The full per-lodge file set is always emitted
   (header-only when a collection is empty) so a folder captures the entire
   lodge config and the format is discoverable for hand-authoring.
+  `seasons.csv` carries the season windows plus the per-season **flat
+  whole-lodge night rate** (#2338):
+  `name, type, startDate, endDate, active, flatWholeLodgeNightCents` — the last
+  column is integer cents, and a blank cell means the season has no flat
+  whole-lodge rate (whole-lodge bookings then price per guest). A pre-#2338
+  bundle simply omits the column, which imports as "leave unset", so old bundles
+  still restore cleanly.
   `season-rates.csv` is keyed by membership type (#1930, E4):
   `seasonName, membershipTypeKey, ageTier, pricePerNightCents` — a blank
   `ageTier` is a flat type's single all-ages rate. Only rate-bearing types are

@@ -51,6 +51,9 @@ function sourceDb(): ReadDb {
           startDate: new Date("2026-06-01T00:00:00.000Z"),
           endDate: new Date("2026-09-01T00:00:00.000Z"),
           active: true,
+          // #2338: the per-season flat whole-lodge night rate rides in
+          // seasons.csv so a restore does not lose it.
+          flatWholeLodgeNightCents: 60000,
           lodge: { slug: "main" },
         },
       ]),
@@ -135,7 +138,13 @@ describe("config-transfer lodge-config (per-lodge folders)", () => {
     expect(beds.rows[0]).toMatchObject({ roomName: "Bunk A", name: "A1", bedType: "BUNK_TOP", bunkGroup: "A" });
 
     const seasons = parseCsv(strFromU8(files.get(SEASONS)!));
-    expect(seasons.rows[0]).toMatchObject({ name: "Winter", startDate: "2026-06-01" });
+    // #2338: the flat whole-lodge rate rides in seasons.csv (integer cents).
+    expect(seasons.headers).toContain("flatWholeLodgeNightCents");
+    expect(seasons.rows[0]).toMatchObject({
+      name: "Winter",
+      startDate: "2026-06-01",
+      flatWholeLodgeNightCents: "60000",
+    });
 
     const rates = parseCsv(strFromU8(files.get(RATES)!));
     expect(rates.headers).toContain("membershipTypeKey");

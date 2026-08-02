@@ -20,8 +20,8 @@ function renderGuestsStep(
 ) {
   return render(
     <GuestsStep
-      checkIn={new Date(2026, 6, 10)}
-      checkOut={new Date(2026, 6, 12)}
+      checkIn="2026-07-10"
+      checkOut="2026-07-12"
       nights={2}
       familyMembers={[]}
       guests={[]}
@@ -72,8 +72,8 @@ describe("GuestsStep", () => {
 
     render(
       <GuestsStep
-        checkIn={new Date(2026, 6, 10)}
-        checkOut={new Date(2026, 6, 12)}
+        checkIn="2026-07-10"
+        checkOut="2026-07-12"
         nights={2}
         familyMembers={familyMembers}
         guests={[]}

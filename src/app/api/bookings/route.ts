@@ -489,6 +489,42 @@ export async function POST(request: NextRequest) {
     }
   };
 
+  /**
+   * #2284 (S2): tell a FAMILY co-member (or the adults acting for them) that this
+   * create just put them on a booking — the missing half of #2250 self-removal.
+   *
+   * Runs regardless of the memberGuests module and independently of the
+   * member-guest dispatch above; the dispatcher itself filters to family scope,
+   * so a beyond-family member guest handled above is never double-notified. AWAITED
+   * and try/caught for the same reason as the member-guest dispatch: the booking
+   * is already committed, so a notification problem is logged, never surfaced.
+   */
+  const notifyFamilyAdds = async (created: {
+    id: string;
+    guests: Array<{ id: string; memberId: string | null }>;
+  }) => {
+    const addedMemberIds = created.guests
+      .map((guest) => guest.memberId)
+      .filter((memberId): memberId is string => Boolean(memberId));
+    if (addedMemberIds.length === 0) return;
+    const { sendFamilyMemberBookingAddNotifications } = await import(
+      "@/lib/family-booking-add-notifications"
+    );
+    try {
+      await sendFamilyMemberBookingAddNotifications({
+        bookingId: created.id,
+        bookerMemberId: effectiveMemberId,
+        actorMemberId: session.user.id,
+        addedMemberIds,
+      });
+    } catch (err) {
+      logger.error(
+        { err, bookingId: created.id },
+        "Failed to dispatch family booking-add notifications",
+      );
+    }
+  };
+
   // D-8: with a cross-family guest in the party this refuses NEUTRALLY rather
   // than returning the conflict body, because that body would name the nights a
   // member the caller may never have met is already booked for.
@@ -812,6 +848,7 @@ export async function POST(request: NextRequest) {
         lodgeId: parsed.data.lodgeId,
       });
       await notifyMemberGuestAdds(newBooking);
+      await notifyFamilyAdds(newBooking);
       return NextResponse.json(newBooking, { status: 201 });
     } catch (err) {
       if (err instanceof BookingGuestValidationError) {
@@ -978,6 +1015,7 @@ export async function POST(request: NextRequest) {
 
     if (outcome.type === "created") {
       await notifyMemberGuestAdds(outcome.booking);
+      await notifyFamilyAdds(outcome.booking);
       return NextResponse.json(outcome.booking, { status: 201 });
     }
 
@@ -1017,6 +1055,7 @@ export async function POST(request: NextRequest) {
         notifyMember: parsed.data.notifyMember,
       });
       await notifyMemberGuestAdds(waitlisted.booking);
+      await notifyFamilyAdds(waitlisted.booking);
       return NextResponse.json(waitlisted.booking, { status: 201 });
     } catch (waitlistErr) {
       if (waitlistErr instanceof BookingGuestValidationError) {
