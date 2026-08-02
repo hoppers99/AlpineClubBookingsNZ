@@ -3378,7 +3378,13 @@ export function waitlistOfferTemplate(
   priceCents: number,
   // Cross-lodge offer (ADR-004): names the alternate lodge; the member
   // confirms lodge and price explicitly. Null renders same-lodge offers.
-  crossLodgeOffer?: { lodgeName: string | null } | null
+  crossLodgeOffer?: { lodgeName: string | null } | null,
+  // #2543: why the Price row reads what it reads, when somebody on this booking
+  // is priced as a non-member for an unpaid season subscription. Rendered
+  // verbatim from the shared policy sentence — it names nobody and no amount, so
+  // it is safe in an email a family member may open. Null renders exactly as
+  // before.
+  subscriptionMemberRateNotice?: string | null
 ): string {
   const lodgeLabel = crossLodgeOffer?.lodgeName ?? "another of our lodges";
   return layout(`
@@ -3411,6 +3417,11 @@ export function waitlistOfferTemplate(
         ? paragraph(
             "This lodge's price differs from the one you originally waitlisted for, so nothing is booked until you review and confirm this price on your booking page."
           )
+        : ""
+    }
+    ${
+      subscriptionMemberRateNotice
+        ? paragraph(escapeHtml(subscriptionMemberRateNotice))
         : ""
     }
     ${alertBox("This offer expires on " + formatNZDateTime(expiresAt) + ". If you don't confirm in time, the spot will be offered to the next person in line.", "warning")}

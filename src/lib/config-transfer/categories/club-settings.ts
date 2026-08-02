@@ -19,6 +19,10 @@ import {
 import { DEFAULT_MEMBER_FIELDS_SETTINGS } from "@/config/member-fields";
 import { DEFAULT_LOGIN_SECURITY_POLICY } from "@/lib/password-policy";
 import {
+  isSubscriptionLockoutMode,
+  legacyEnabledForLockoutMode,
+} from "@/lib/membership-lockout-settings";
+import {
   CLUB_MODULE_SETTINGS_COLUMN_SELECT,
   DEFAULT_MODULE_SETTINGS,
 } from "@/config/modules";
@@ -116,6 +120,16 @@ interface SingletonSpec {
    * `DEFAULTS_INTENTIONALLY_PARTIAL` — not an oversight.
    */
   defaults: () => Record<string, unknown>;
+  /**
+   * Last chance to make a bundle's fields CONSISTENT WITH EACH OTHER before they
+   * are diffed and written (#2543).
+   *
+   * Needed only where two travelling columns encode one decision, so a bundle can
+   * carry a pair the app's own writer could never produce. Runs inside
+   * `parseSingleton`, i.e. on the one path both the dry-run and the apply use, so
+   * the plan can never promise something different from what lands.
+   */
+  reconcile?: (incoming: Record<string, unknown>) => Record<string, unknown>;
 }
 
 /**
@@ -507,14 +521,36 @@ export const SINGLETONS: SingletonSpec[] = [
     // #2543: `mode` supersedes `enabled`, and BOTH travel for the duration of the
     // expand/contract window. That is not redundancy — the pair is exactly what
     // makes bundles portable in both directions:
-    //   * a pre-#2543 bundle carries `enabled` only. `mode` imports as null and
-    //     `normalizeMembershipLockoutSettings` reads the boolean, so a club that
-    //     had the lockout OFF lands on NO_BLOCK rather than on the HARD_BLOCK
-    //     default;
+    //   * a pre-#2543 bundle carries `enabled` only, and the `reconcile` hook below
+    //     DERIVES `mode` from it, so a club that had the lockout OFF lands on
+    //     NO_BLOCK rather than on whatever the target happened to be storing;
     //   * a post-#2543 bundle carries both. `mode` wins at read time, and the
-    //     legacy boolean it restores alongside is the one an old colour would
-    //     read during a cutover.
+    //     legacy boolean is re-derived from it so the pair can never be stored
+    //     inconsistent — that boolean is what an old colour reads during a cutover.
     // `enabled` leaves this list with the contract release that drops the column.
+    //
+    // WHY A HOOK RATHER THAN TWO ORDINARY FIELDS. An absent-or-null `mode` is not
+    // "no opinion", it MEANS "resolve the policy from the legacy boolean"
+    // (`coerceLockoutMode`) — and the importer writes only fields physically
+    // present in the bundle, dropping null-valued ones altogether in the default
+    // merge mode. `enabled` is non-null so it always travelled; `mode` did not.
+    // The net effect, before this hook, was that the target KEPT ITS OWN `mode`
+    // and `mode` won at read time:
+    //   * a pre-#2543 bundle carrying `enabled: false` imported onto a club storing
+    //     NON_MEMBER_PRICING wrote only `enabled = false`. The dry-run said
+    //     "changed: enabled", so the operator believed the lockout was off, while
+    //     every unpaid member went on being repriced and refused — members
+    //     over-charged, silently, against a dry-run that said otherwise;
+    //   * a post-#2543 bundle from a club that had never opened the panel exports
+    //     `mode: null, enabled: false`; merge mode dropped the null and left the
+    //     target on `mode = NON_MEMBER_PRICING, enabled = false` — an inconsistent
+    //     pair no admin save can produce, and one that breaks the rollback
+    //     guarantee, because an old colour reads `enabled = false` and applies no
+    //     lockout at all. That is the single outcome
+    //     `legacyEnabledForLockoutMode` exists to prevent.
+    // Reconciling on import fixes both directions and needs no format-version bump:
+    // an old bundle now imports to the right policy rather than to a guess, so
+    // there is nothing for a version gate to refuse.
     fields: [
       "mode", "enabled", "financialYearEndMonthOverride", "textFallbackEnabled",
       "useFeeScheduleItemCodes",
@@ -533,6 +569,27 @@ export const SINGLETONS: SingletonSpec[] = [
       useFeeScheduleItemCodes: { required: true },
     },
     defaults: () => DEFAULT_MEMBERSHIP_LOCKOUT_SETTINGS,
+    // #2543 — see the note above `fields`. A recognised `mode` is authoritative and
+    // the legacy boolean is re-derived from it; otherwise the mode is derived from
+    // the boolean so it is WRITTEN rather than left at the target's stale value.
+    // An unrecognised `mode` string is treated as absent, exactly as
+    // `coerceLockoutMode` treats it, so a hand-edited bundle cannot invent a fourth
+    // policy or slip past this hook.
+    reconcile: (incoming) => {
+      if (isSubscriptionLockoutMode(incoming.mode)) {
+        return {
+          ...incoming,
+          enabled: legacyEnabledForLockoutMode(incoming.mode),
+        };
+      }
+      if (typeof incoming.enabled === "boolean") {
+        return {
+          ...incoming,
+          mode: incoming.enabled ? "HARD_BLOCK" : "NO_BLOCK",
+        };
+      }
+      return incoming;
+    },
   },
   {
     entity: "membership-cancellation-setting",
@@ -772,7 +829,8 @@ function parseSingleton(
       ok = false;
     }
   }
-  return ok ? record : null;
+  if (!ok) return null;
+  return spec.reconcile ? spec.reconcile(record) : record;
 }
 
 function delegateOf(db: ReadDb | TxDb, name: string): SingletonDelegate {
