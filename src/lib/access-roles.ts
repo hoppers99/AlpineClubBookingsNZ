@@ -269,7 +269,12 @@ export function isFullAdmin(input: AccessRoleInput) {
 // always fall under the Full-Admin gate. Scoped admins (e.g. a Membership
 // Officer with membership:edit) may still manage USER/ORG classification and
 // login flags, but must not be able to grant or revoke privileged roles.
-function isPrivilegedAccessRole(role: string) {
+//
+// Exported (#2548) so surfaces that LABEL a member's roles use the same
+// USER/ORG boundary as the gates: the Recipients grid explains why some alert
+// categories are unavailable, and listing the plain "User" classification row
+// next to "Booking Officer" reads as though it were one of the deciding roles.
+export function isPrivilegedAccessRole(role: string) {
   return role !== "USER" && role !== "ORG";
 }
 
