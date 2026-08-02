@@ -55,6 +55,17 @@ const GLOBAL_BOOKING_MONEY_LOCK_INVENTORY: Record<string, number> = {
   // so it excludes confirm-pending before deciding whether cancellation won.
   "src/lib/booking-cancel.ts": 5,
   "src/lib/booking-date-modification-service.ts": 2,
+  // #2525: the atomic approve-and-execute AND the terminal-release (reject /
+  // cancel / supersede) for booking-policy exception requests both mutate a
+  // provisional capacity reservation and (for a modification approval) compose
+  // the canonical modification's money/status transition, so they take the
+  // canonical global lock(1) FIRST, then the per-lodge capacity lock keyed on the
+  // frozen lodge, then let the tx-aware canonical service take the member-night /
+  // member-credit keys after that. One shared `acquireGlobalBookingLock` helper,
+  // so this file mints the global key exactly once. See
+  // docs/CONCURRENCY_AND_LOCKING.md -> "Provisional reservations for held
+  // policy-exception requests (#2365)".
+  "src/lib/booking-exception-execution.ts": 1,
   "src/lib/booking-guest-removal-service.ts": 1,
   "src/lib/booking-request.ts": 1,
   "src/lib/cron-group-settlement-reaper.ts": 2,

@@ -987,8 +987,50 @@ approve-and-execute:
   can still succeed.
 
 The live reservation writer, its `capacity.ts` integration and the transaction-
-aware canonical execution are the #2365 execution lane; this note records the
-contract they are held to so a reviewer can check the wiring against it.
+aware canonical execution are the #2365 execution lane, **built in #2525**. The
+wiring, checked against the contract above:
+
+- **Reservation store** — `PolicyExceptionReservationNight`
+  (`src/lib/booking-exception-reservations.ts`): one row per held
+  `(changeRequestId, night)`, carrying the denormalised `lodgeId` and bed count.
+  There is **no `active` flag**: a row exists IFF the request is currently holding
+  that night, so release is a `deleteMany` and the capacity read is a plain sum of
+  the rows that still exist. `reservePolicyExceptionCapacity` writes the footprint
+  (upsert per night, idempotent on the unique key);
+  `releasePolicyExceptionReservation` deletes it;
+  `buildLodgePolicyExceptionReservationCounter` is the per-night counter the four
+  capacity engines add to `occupiedBeds` **exactly as they add the custodian
+  counter** (`checkCapacity`, `checkCapacityForGuestRanges`,
+  `checkCapacityForPartnerSharedAdmission`, `getMonthAvailability`).
+- **Transaction-aware canonical services (#2525)** — `createConfirmedBooking`
+  (`booking-create.ts`) and `modifyBookingBatch`
+  (`booking-batch-modification-service.ts`) each now accept an optional caller
+  `tx` via `withOptionalTransaction` (`src/lib/db-transaction.ts`). Standalone
+  callers open a self-contained transaction and run their provider work inline,
+  exactly as before; a caller that supplies `tx` runs the DB work in that
+  transaction and receives a `deferredPostCommit` thunk so email / Xero / Stripe
+  work fires strictly AFTER the caller commits. This is what removes the
+  mark-approved-then-call-service gap.
+- **Atomic approve-and-execute + terminal release**
+  (`src/lib/booking-exception-execution.ts`): the approval pre-reads the immutable
+  frozen `lodgeId`, then takes global `lock(1)` (one shared
+  `acquireGlobalBookingLock` helper, so the advisory-lock inventory sees one site)
+  and `acquireLodgeCapacityLock` — the canonical service re-enters the lodge lock
+  and takes the member-night / member-credit keys after that, preserving
+  global → lodge → member order. It reauthorizes from fresh DB roles, re-reads the
+  request under the locks, runs the proposal-hash tamper gate and the
+  `classifyPolicyExceptionDrift` gate, rechecks capacity for a NO_HOLD aggregate,
+  claims `REQUESTED → APPROVED` with the integer `version` CAS, releases the
+  reservation, and invokes the tx-aware canonical service — all in one
+  transaction. A lost claim (stale version, or a losing `updateMany`) releases
+  nothing and runs no side effect. `resolvePolicyExceptionRequestTerminal` is the
+  reject/cancel/supersede sibling: the same global → lodge lock order and the same
+  guarded `version` CAS, releasing the reservation atomically with the terminal
+  status write.
+
+Both writers compose only the existing keys, so `advisory-lock-guard.test.ts`
+gains exactly one classified global-lock site
+(`src/lib/booking-exception-execution.ts`) and no new key family.
 
 ## Credit restoration: exactly-once is now STRUCTURAL (#1636)
 

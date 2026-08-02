@@ -110,6 +110,7 @@ import {
   resolveBookingDateEnvelope,
 } from "./booking-create-guests";
 import { recordAdultMemberHostingReviewForNewBooking } from "@/lib/adult-member-hosting-review";
+import { withOptionalTransaction } from "@/lib/db-transaction";
 
 // The helper types, errors, and pure functions that used to live here now live
 // in three cohesive sibling modules (types <- promo, types <- guests). Re-export
@@ -689,7 +690,15 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
 
   let booking: BookingWithGuests;
   try {
-    booking = await prisma.$transaction(async (tx) => {
+    // #2525: run in the caller's transaction when one is supplied (atomic
+    // approve-and-execute) so the booking is created in the SAME transaction that
+    // released the policy-exception reservation and claimed the request; open a
+    // self-contained transaction otherwise (every existing caller — behaviour
+    // unchanged). The caller that supplies `tx` has ALREADY taken global lock(1)
+    // and the per-lodge capacity lock; the `acquireLodgeCapacityLock` below then
+    // re-enters that same per-lodge key (a no-op) so the lock order holds either
+    // way.
+    booking = await withOptionalTransaction(input.tx, async (tx) => {
       const bookingLodgeId = await resolveBookingLodgeId(
         tx,
         lodgeId,
@@ -1235,45 +1244,14 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
     throw err;
   }
 
-  logAudit({
-    action: "booking.created",
-    memberId: sessionUserId,
-    targetId: booking.id,
-    subjectMemberId: effectiveMemberId,
-    entityType: "Booking",
-    entityId: booking.id,
-    category: "booking",
-    outcome: "success",
-    summary: "Booking created",
-    details: `Booking created with status ${booking.status}`,
-    metadata: {
-      status: booking.status,
-      onBehalf: isOnBehalf,
-      checkIn: checkIn.toISOString(),
-      checkOut: checkOut.toISOString(),
-      guestCount: primaryGuests.length,
-      hasNonMembers: primaryHasNonMembers,
-      finalPriceCents: booking.finalPriceCents,
-      zeroDollarConfirmed: isZeroDollarConfirmed,
-      paymentMethod,
-      split: splitBooking,
-      // Override audit fields (#1695/#1767), only when an override was in
-      // play — a normal create records nothing new. allowPastDates stays
-      // true exactly for the retroactive shape, so #1695 audits are
-      // byte-identical.
-      ...(retroactiveOverride || capacityOverridden
-        ? {
-            allowPastDates: retroactiveOverride,
-            confirmOverCapacity: input.confirmOverCapacity === true,
-            capacityOverridden,
-          }
-        : {}),
-    },
-  });
-
-  if (isOnBehalf) {
+  // #2525: post-commit provider work (audit, booking events, member emails,
+  // Xero invoice/credit queueing, admin alert). In standalone mode it runs
+  // immediately below, exactly as before. In tx-mode the caller owns the
+  // commit, so it is handed back as `deferredPostCommit` to run AFTER that
+  // commit — no provider call ever fires inside the still-open transaction.
+  const runPostCommit = async (): Promise<void> => {
     logAudit({
-      action: "booking.created_on_behalf",
+      action: "booking.created",
       memberId: sessionUserId,
       targetId: booking.id,
       subjectMemberId: effectiveMemberId,
@@ -1281,19 +1259,23 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
       entityId: booking.id,
       category: "booking",
       outcome: "success",
-      summary: "Booking created on behalf of member",
-      details: `Admin created booking on behalf of member ${effectiveMemberId}`,
+      summary: "Booking created",
+      details: `Booking created with status ${booking.status}`,
       metadata: {
         status: booking.status,
+        onBehalf: isOnBehalf,
         checkIn: checkIn.toISOString(),
         checkOut: checkOut.toISOString(),
         guestCount: primaryGuests.length,
         hasNonMembers: primaryHasNonMembers,
         finalPriceCents: booking.finalPriceCents,
+        zeroDollarConfirmed: isZeroDollarConfirmed,
         paymentMethod,
         split: splitBooking,
-        // The admin's email choice is recorded on every on-behalf create.
-        notifyMember,
+        // Override audit fields (#1695/#1767), only when an override was in
+        // play — a normal create records nothing new. allowPastDates stays
+        // true exactly for the retroactive shape, so #1695 audits are
+        // byte-identical.
         ...(retroactiveOverride || capacityOverridden
           ? {
               allowPastDates: retroactiveOverride,
@@ -1303,171 +1285,217 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
           : {}),
       },
     });
-  }
 
-  // Durable lifecycle events (issue #740): the booking was created, and the
-  // split non-member child (if any) was created in the same transaction.
-  await recordBookingEvent({
-    bookingId: booking.id,
-    type: BookingEventType.CREATED,
-    actorMemberId: sessionUserId,
-    amountCents: booking.finalPriceCents,
-  });
-  // `splitChild` is only assigned inside the transaction closure, which TS
-  // control-flow narrows away in this outer scope; cast back to its type.
-  const createdSplitChild = splitChild as
-    | { id: string; finalPriceCents: number }
-    | null;
-  if (createdSplitChild) {
-    await recordBookingEvent({
-      bookingId: createdSplitChild.id,
-      type: BookingEventType.CREATED,
-      actorMemberId: sessionUserId,
-      amountCents: createdSplitChild.finalPriceCents,
-    });
-  }
-  // A fully credit-covered or genuinely free booking is paid up front at $0.
-  if (isZeroDollarConfirmed) {
-    await recordBookingEvent({
-      bookingId: booking.id,
-      type: BookingEventType.MEMBER_PAID,
-      actorMemberId: sessionUserId,
-      amountCents: 0,
-    });
-  }
-
-  if (isZeroDollarConfirmed) {
-    try {
-      const fullBooking = await prisma.booking.findUnique({
-        where: { id: booking.id },
-        include: {
-          member: true,
-          guests: true,
-          promoRedemption: {
-            include: {
-              promoCode: { include: { workPartyEvent: { select: { name: true } } } },
-            },
-          },
+    if (isOnBehalf) {
+      logAudit({
+        action: "booking.created_on_behalf",
+        memberId: sessionUserId,
+        targetId: booking.id,
+        subjectMemberId: effectiveMemberId,
+        entityType: "Booking",
+        entityId: booking.id,
+        category: "booking",
+        outcome: "success",
+        summary: "Booking created on behalf of member",
+        details: `Admin created booking on behalf of member ${effectiveMemberId}`,
+        metadata: {
+          status: booking.status,
+          checkIn: checkIn.toISOString(),
+          checkOut: checkOut.toISOString(),
+          guestCount: primaryGuests.length,
+          hasNonMembers: primaryHasNonMembers,
+          finalPriceCents: booking.finalPriceCents,
+          paymentMethod,
+          split: splitBooking,
+          // The admin's email choice is recorded on every on-behalf create.
+          notifyMember,
+          ...(retroactiveOverride || capacityOverridden
+            ? {
+                allowPastDates: retroactiveOverride,
+                confirmOverCapacity: input.confirmOverCapacity === true,
+                capacityOverridden,
+              }
+            : {}),
         },
       });
-      if (fullBooking) {
-        // The member confirmation email is suppressed when an admin on-behalf
-        // create opts out (#1695); the Xero invoice below is still queued.
-        if (notifyMember) {
-          // Split-booking parent (#738/#1942): a zero-dollar/credit-covered
-          // parent can still carry a provisional non-member child. Describe it
-          // so the confirmation explains the separate later charge. Read-only;
-          // null on non-split bookings. (Only the email call site is touched
-          // here — the split engine above is untouched.)
-          const provisionalGuests = await getProvisionalNonMemberChildSummary({
-            id: fullBooking.id,
-            memberId: fullBooking.memberId,
-          });
-          sendBookingConfirmedEmail(
-            {
-              bookingId: fullBooking.id,
-              recipientMemberId: fullBooking.memberId,
-            },
-            fullBooking.member.email,
-            fullBooking.member.firstName,
-            fullBooking.checkIn,
-            fullBooking.checkOut,
-            fullBooking.guests.length,
-            fullBooking.finalPriceCents,
-            {
-              lodgeId: fullBooking.lodgeId,
-              ...(provisionalGuests ? { provisionalGuests } : {}),
-              ...(fullBooking.promoRedemption?.promoCode
-                ? {
-                    discountCents: fullBooking.discountCents,
-                    promoAdjustmentCents: fullBooking.promoAdjustmentCents,
-                    // Internal work-party promo codes are meaningless to
-                    // members; label the discount with the event name instead.
-                    promoCode:
-                      fullBooking.promoRedemption.promoCode.workPartyEvent?.name ??
-                      fullBooking.promoRedemption.promoCode.code,
-                  }
-                : {}),
-            },
-          ).catch((err) => logger.error({ err, bookingId: booking.id }, "Failed to send confirmation email for $0 booking"));
-        }
-
-        const effectiveModules = await loadEffectiveModuleFlags();
-        if (effectiveModules.xeroIntegration) {
-          void enqueueXeroBookingInvoiceOperation(booking.id, { createdByMemberId: sessionUserId })
-            .then(async (queuedInvoice) => {
-              if (!queuedInvoice.queueOperationId) return;
-              await kickQueuedXeroOutboxOperationsIfConnected({ limit: 1 });
-            })
-            .catch((err) =>
-              logger.error({ err, bookingId: booking.id }, "Failed to queue Xero invoice for $0 booking"),
-            );
-        }
-      }
-    } catch (err) {
-      logger.error({ err, bookingId: booking.id }, "Error in post-creation handling for $0 booking");
     }
-  }
 
-  if (
-    paymentMethod === "internet_banking" &&
-    booking.status === BookingStatus.PAYMENT_PENDING &&
-    !isZeroDollarConfirmed
-  ) {
-    try {
-      const queuedInvoice = await enqueueXeroBookingInvoiceOperation(booking.id, {
-        createdByMemberId: sessionUserId,
+    // Durable lifecycle events (issue #740): the booking was created, and the
+    // split non-member child (if any) was created in the same transaction.
+    await recordBookingEvent({
+      bookingId: booking.id,
+      type: BookingEventType.CREATED,
+      actorMemberId: sessionUserId,
+      amountCents: booking.finalPriceCents,
+    });
+    // `splitChild` is only assigned inside the transaction closure, which TS
+    // control-flow narrows away in this outer scope; cast back to its type.
+    const createdSplitChild = splitChild as
+      | { id: string; finalPriceCents: number }
+      | null;
+    if (createdSplitChild) {
+      await recordBookingEvent({
+        bookingId: createdSplitChild.id,
+        type: BookingEventType.CREATED,
+        actorMemberId: sessionUserId,
+        amountCents: createdSplitChild.finalPriceCents,
       });
-      // #1620 — allocate the member's existing floating credit notes against this
-      // invoice so they pay the effective (credit-reduced) amount. Enqueued after
-      // the invoice op (older createdAt → processed first). Skips itself when no
-      // credit was applied.
-      const queuedAllocation = await enqueueXeroAppliedCreditAllocationOperation(
-        booking.id,
-        { createdByMemberId: sessionUserId },
-      );
-      if (queuedInvoice.queueOperationId || queuedAllocation.queueOperationId) {
-        await kickQueuedXeroOutboxOperationsIfConnected({ limit: 2 });
+    }
+    // A fully credit-covered or genuinely free booking is paid up front at $0.
+    if (isZeroDollarConfirmed) {
+      await recordBookingEvent({
+        bookingId: booking.id,
+        type: BookingEventType.MEMBER_PAID,
+        actorMemberId: sessionUserId,
+        amountCents: 0,
+      });
+    }
+
+    if (isZeroDollarConfirmed) {
+      try {
+        const fullBooking = await prisma.booking.findUnique({
+          where: { id: booking.id },
+          include: {
+            member: true,
+            guests: true,
+            promoRedemption: {
+              include: {
+                promoCode: { include: { workPartyEvent: { select: { name: true } } } },
+              },
+            },
+          },
+        });
+        if (fullBooking) {
+          // The member confirmation email is suppressed when an admin on-behalf
+          // create opts out (#1695); the Xero invoice below is still queued.
+          if (notifyMember) {
+            // Split-booking parent (#738/#1942): a zero-dollar/credit-covered
+            // parent can still carry a provisional non-member child. Describe it
+            // so the confirmation explains the separate later charge. Read-only;
+            // null on non-split bookings. (Only the email call site is touched
+            // here — the split engine above is untouched.)
+            const provisionalGuests = await getProvisionalNonMemberChildSummary({
+              id: fullBooking.id,
+              memberId: fullBooking.memberId,
+            });
+            sendBookingConfirmedEmail(
+              {
+                bookingId: fullBooking.id,
+                recipientMemberId: fullBooking.memberId,
+              },
+              fullBooking.member.email,
+              fullBooking.member.firstName,
+              fullBooking.checkIn,
+              fullBooking.checkOut,
+              fullBooking.guests.length,
+              fullBooking.finalPriceCents,
+              {
+                lodgeId: fullBooking.lodgeId,
+                ...(provisionalGuests ? { provisionalGuests } : {}),
+                ...(fullBooking.promoRedemption?.promoCode
+                  ? {
+                      discountCents: fullBooking.discountCents,
+                      promoAdjustmentCents: fullBooking.promoAdjustmentCents,
+                      // Internal work-party promo codes are meaningless to
+                      // members; label the discount with the event name instead.
+                      promoCode:
+                        fullBooking.promoRedemption.promoCode.workPartyEvent?.name ??
+                        fullBooking.promoRedemption.promoCode.code,
+                    }
+                  : {}),
+              },
+            ).catch((err) => logger.error({ err, bookingId: booking.id }, "Failed to send confirmation email for $0 booking"));
+          }
+
+          const effectiveModules = await loadEffectiveModuleFlags();
+          if (effectiveModules.xeroIntegration) {
+            void enqueueXeroBookingInvoiceOperation(booking.id, { createdByMemberId: sessionUserId })
+              .then(async (queuedInvoice) => {
+                if (!queuedInvoice.queueOperationId) return;
+                await kickQueuedXeroOutboxOperationsIfConnected({ limit: 1 });
+              })
+              .catch((err) =>
+                logger.error({ err, bookingId: booking.id }, "Failed to queue Xero invoice for $0 booking"),
+              );
+          }
+        }
+      } catch (err) {
+        logger.error({ err, bookingId: booking.id }, "Error in post-creation handling for $0 booking");
       }
-    } catch (err) {
-      logger.error(
-        { err, bookingId: booking.id },
-        "Failed to queue Xero invoice for Internet Banking booking"
-      );
     }
-  }
 
-  if (booking.status === BookingStatus.PENDING && booking.nonMemberHoldUntil) {
-    const member = await prisma.member.findUnique({ where: { id: effectiveMemberId } });
-    // Suppressed when an admin on-behalf create opts out of member email (#1695).
-    if (member && notifyMember) {
-      sendBookingPendingEmail(
-        { bookingId: booking.id, recipientMemberId: effectiveMemberId },
-        member.email,
-        member.firstName,
-        booking.checkIn,
-        booking.checkOut,
-        booking.guests.length,
-        booking.nonMemberHoldUntil,
-        booking.lodgeId,
-      ).catch((err) => logger.error({ err }, "Failed to send pending booking email"));
+    if (
+      paymentMethod === "internet_banking" &&
+      booking.status === BookingStatus.PAYMENT_PENDING &&
+      !isZeroDollarConfirmed
+    ) {
+      try {
+        const queuedInvoice = await enqueueXeroBookingInvoiceOperation(booking.id, {
+          createdByMemberId: sessionUserId,
+        });
+        // #1620 — allocate the member's existing floating credit notes against this
+        // invoice so they pay the effective (credit-reduced) amount. Enqueued after
+        // the invoice op (older createdAt → processed first). Skips itself when no
+        // credit was applied.
+        const queuedAllocation = await enqueueXeroAppliedCreditAllocationOperation(
+          booking.id,
+          { createdByMemberId: sessionUserId },
+        );
+        if (queuedInvoice.queueOperationId || queuedAllocation.queueOperationId) {
+          await kickQueuedXeroOutboxOperationsIfConnected({ limit: 2 });
+        }
+      } catch (err) {
+        logger.error(
+          { err, bookingId: booking.id },
+          "Failed to queue Xero invoice for Internet Banking booking"
+        );
+      }
     }
+
+    if (booking.status === BookingStatus.PENDING && booking.nonMemberHoldUntil) {
+      const member = await prisma.member.findUnique({ where: { id: effectiveMemberId } });
+      // Suppressed when an admin on-behalf create opts out of member email (#1695).
+      if (member && notifyMember) {
+        sendBookingPendingEmail(
+          { bookingId: booking.id, recipientMemberId: effectiveMemberId },
+          member.email,
+          member.firstName,
+          booking.checkIn,
+          booking.checkOut,
+          booking.guests.length,
+          booking.nonMemberHoldUntil,
+          booking.lodgeId,
+        ).catch((err) => logger.error({ err }, "Failed to send pending booking email"));
+      }
+    }
+
+    const bookingMember = await prisma.member.findUnique({ where: { id: effectiveMemberId } });
+    if (bookingMember) {
+      sendAdminNewBookingAlert({
+        memberName: `${bookingMember.firstName} ${bookingMember.lastName}`,
+        checkIn: booking.checkIn,
+        checkOut: booking.checkOut,
+        guestCount: booking.guests.length,
+        totalCents: booking.finalPriceCents,
+        status: booking.status,
+        reviewReason: booking.adminReviewReason,
+        memberJustification: booking.memberReviewJustification,
+      }).catch((err) => logger.error({ err }, "Failed to send admin new booking alert"));
+    }
+
+  };
+
+  if (input.tx) {
+    return {
+      type: "created",
+      booking,
+      bumpedBookingIds: [],
+      isZeroDollarConfirmed,
+      deferredPostCommit: runPostCommit,
+    };
   }
 
-  const bookingMember = await prisma.member.findUnique({ where: { id: effectiveMemberId } });
-  if (bookingMember) {
-    sendAdminNewBookingAlert({
-      memberName: `${bookingMember.firstName} ${bookingMember.lastName}`,
-      checkIn: booking.checkIn,
-      checkOut: booking.checkOut,
-      guestCount: booking.guests.length,
-      totalCents: booking.finalPriceCents,
-      status: booking.status,
-      reviewReason: booking.adminReviewReason,
-      memberJustification: booking.memberReviewJustification,
-    }).catch((err) => logger.error({ err }, "Failed to send admin new booking alert"));
-  }
-
+  await runPostCommit();
   return { type: "created", booking, bumpedBookingIds: [], isZeroDollarConfirmed };
 }
 

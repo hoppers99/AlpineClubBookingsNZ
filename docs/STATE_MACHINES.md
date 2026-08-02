@@ -555,9 +555,29 @@ Every non-`REQUESTED` state is terminal (a guarded `updateMany` on
 transition, exactly the `BookingRequest.version` discipline, #1923). A held
 request does NOT change its live booking; a modification request reserves only
 the incremental per-night capacity beyond the unchanged live booking, and a
-new-booking request reserves the full proposal — the provisional-reservation
-capacity mechanism and the atomic approve-and-execute path are the #2365
-execution lane that consumes this store (see the follow-up issues on #2365).
+new-booking request reserves the full proposal.
+
+**The provisional-reservation and atomic approve-and-execute lane is built
+(#2525).** Each held request materialises its footprint as
+`PolicyExceptionReservationNight` rows that the canonical capacity calculation
+counts as occupancy, so a pending request cannot be oversold. The three
+releasing transitions — `REJECTED`, `CANCELLED`, `SUPERSEDED` — delete those rows
+in the SAME guarded transaction that writes the status
+(`resolvePolicyExceptionRequestTerminal`, `booking-exception-execution.ts`); a
+lost `version` CAS releases nothing. `REQUESTED -> APPROVED` is different: it does
+not "release then create". Inside ONE transaction the approval reauthorizes from
+fresh DB roles, re-reads under the global -> per-lodge locks, re-checks the
+proposal hash and `classifyPolicyExceptionDrift` (a disappeared reviewed rule
+executes WITHOUT an override; a materially-changed or new violation keeps the
+request `REQUESTED` for resubmission), rechecks capacity for a NO_HOLD aggregate
+(a conflict keeps it `REQUESTED` with a recorded reason rather than failing it),
+claims `REQUESTED -> APPROVED` with the `version` CAS, releases the reservation,
+and invokes the now transaction-aware canonical booking service
+(`createConfirmedBooking` / `modifyBookingBatch`) so the reserved beds become the
+executed booking's own beds with no mark-approved-then-call-service gap. Provider
+work and the member approval/rejection notice run after commit. See
+`docs/CONCURRENCY_AND_LOCKING.md` -> "Provisional reservations for held
+policy-exception requests".
 
 Edit-eligibility is governed by a date-window edit policy
 (`getBookingEditPolicy`), whose `mode` selects what a request may change:

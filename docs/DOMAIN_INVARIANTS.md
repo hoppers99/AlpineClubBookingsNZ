@@ -3060,8 +3060,12 @@ pure workflow logic (`src/lib/booking-exception-requests.ts`):
   (`max(0, proposed - live)` per night), because the live booking is a
   capacity-holding row that already holds its own footprint and #2365 forbids
   touching it before approval. A shrinking modification reserves nothing. (The
-  reservation math is `computeProposalReservation`; the live capacity integration
-  and the atomic reservation-to-booking handoff are the #2365 execution lane.)
+  reservation math is `computeProposalReservation`. Since #2525 the footprint is
+  durable as `PolicyExceptionReservationNight` rows that the canonical per-lodge
+  capacity calculation counts as occupancy — alongside capacity-holding bookings
+  and custodian holds — so a pending request cannot be oversold; a held request
+  never overbooks because its reservation is claimed under the same per-lodge
+  capacity lock the occupancy read takes.)
 - **Drift is set algebra over the frozen and current violations of the SAME
   proposal.** At approval the frozen proposal is re-evaluated against today's
   policy configuration. A reviewed rule that no longer trips (policy switched off
@@ -3079,6 +3083,16 @@ pure workflow logic (`src/lib/booking-exception-requests.ts`):
   effect (the `BookingRequest.version` discipline, #1923). `REJECTED`,
   `CANCELLED` and `SUPERSEDED` release the provisional reservation; `APPROVED`
   turns it into the executed booking's own beds inside the same transaction.
+- **Approval is atomic with execution (#2525).** `approveAndExecutePolicyExceptionRequest`
+  reauthorizes from fresh DB roles, re-reads under global -> per-lodge locks,
+  applies the drift rules above, claims `REQUESTED -> APPROVED` with the `version`
+  CAS, releases the reservation, and invokes the transaction-aware canonical
+  booking service (`createConfirmedBooking` / `modifyBookingBatch`, made
+  tx-accepting in #2525) — all in ONE transaction, so there is never a window in
+  which a request is `APPROVED` but its booking does not yet exist. A NO_HOLD
+  aggregate (nothing was reserved) re-checks capacity at approval and keeps the
+  request `REQUESTED` with a recorded reason on a conflict, rather than failing it.
+  Provider calls and the member approval/rejection notice run after commit.
 
 ### Chasing an outstanding additional payment (#2350)
 
