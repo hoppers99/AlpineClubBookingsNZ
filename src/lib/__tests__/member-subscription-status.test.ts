@@ -123,6 +123,34 @@ describe("GET /api/member/subscription-status", () => {
     );
   });
 
+  // #2533 endpoint guard: the notice keys off the same `status !== "PAID"` fact
+  // as the existing booking lockout. A paid-up member owes nothing, so they must
+  // never be told member rates are unavailable. This exercises the route's
+  // `status !== "PAID"` clause on the required-AND-paid path (which no other test
+  // hits); a mutation that surfaced the notice for any required member would
+  // wrongly warn a paid-up member and this assertion would fail.
+  it("does NOT tell a paid-up member their rates are unavailable", async () => {
+    mockAuth.mockResolvedValue({ user: { id: "member-1" } });
+    mockFindUnique.mockResolvedValue({
+      role: "MEMBER",
+      ageTier: "ADULT",
+      subscriptions: [{
+        status: "PAID",
+        xeroInvoiceId: "inv-1",
+        xeroInvoiceNumber: "INV-0042",
+        xeroOnlineInvoiceUrl: "https://pay.xero.com/invoice/inv-1",
+      }],
+    });
+
+    const res = await GET();
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.status).toBe("PAID");
+    expect(body.subscriptionRequired).toBe(true);
+    expect(body.memberRateNotice).toBeNull();
+  });
+
   it("keeps member subscription reads local even when the invoice URL is missing", async () => {
     mockAuth.mockResolvedValue({ user: { id: "member-1" } });
     mockFindUnique.mockResolvedValue({
