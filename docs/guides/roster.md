@@ -76,6 +76,7 @@ module is on.
 | "No chore assignments for this date" | The roster hasn't been generated yet | Click **Regenerate Roster** to auto-suggest |
 | A confirmed night still says some guests need chores | A staying booking has no chore on it | Click **Regenerate Roster** to include it, or **+ Add Person** on a chore |
 | A guest didn't get the email | They opted out of chore-roster emails, or delivery failed | Opted-out guests are skipped by design; check [Email Deliverability](email-deliverability.md) for failures |
+| The roster lists "Guest 1", "School Child 2" instead of people | The booking still carries the placeholder names it was created with — a school/organisation booking or a member whole-lodge booking where nobody has filled the party in yet | The booker is chased automatically as check-in approaches, and the count appears on [Stuck States](stuck-states.md) as **Bookings with unnamed guests**. You can also open the booking and edit the names yourself — the chore and bed assignments follow the rename, because it is the same guest row. **The roster still generates, and the stay is never held up over this** |
 
 ## Related links
 
