@@ -1,5 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+/** The shipped default: the memberGuests module off, consent required. */
+const MEMBER_GUEST_POLICY = {
+  wideningEnabled: false,
+  approvalRequired: true,
+  pendingHoldExpiryDays: 0,
+} as const;
+
 // The approval hooks compose the real capacity engine, the real canonical
 // booking services and the real hosting reconciler. Each is mocked here so the
 // tests assert the CONTRACT this module owes them — which arguments it passes,
@@ -33,7 +40,52 @@ vi.mock("@/lib/cancellation", () => ({
   getNonMemberHoldPolicy: (...args: unknown[]) => getNonMemberHoldPolicy(...args),
 }));
 
-vi.mock("@/lib/prisma", () => ({ prisma: {} }));
+// The new-booking executor now runs the member-guest authorisation pipeline
+// (#2526 review), so each of its three steps is mocked to assert WHICH arguments
+// it hands them and how it uses the answers.
+const resolveLinkedBookingMembersWithBoundary = vi.fn(async () => ({
+  members: new Map(),
+  boundary: { scopeByMemberId: new Map(), beyondFamilyMemberIds: [] },
+}));
+const assertLinkedBookingMembersCanBeBooked = vi.fn(async () => undefined);
+const normalizeBookingGuestInputs = vi.fn(
+  (guests: Array<Record<string, unknown>>) => guests,
+);
+vi.mock("@/lib/booking-guests", () => ({
+  resolveLinkedBookingMembersWithBoundary: (...args: unknown[]) =>
+    resolveLinkedBookingMembersWithBoundary(...(args as [])),
+  assertLinkedBookingMembersCanBeBooked: (...args: unknown[]) =>
+    assertLinkedBookingMembersCanBeBooked(...(args as [])),
+  normalizeBookingGuestInputs: (...args: unknown[]) =>
+    normalizeBookingGuestInputs(...(args as [Array<Record<string, unknown>>])),
+}));
+
+const planMemberGuestConsentWrites = vi.fn(
+  (params: { guests: Array<Record<string, unknown>> }) => ({
+    guests: params.guests,
+    entriesByMemberId: new Map(),
+  }),
+);
+const loadMemberGuestAddPolicy = vi.fn(async () => MEMBER_GUEST_POLICY);
+vi.mock("@/lib/member-guest-add-policy", () => ({
+  planMemberGuestConsentWrites: (...args: unknown[]) =>
+    planMemberGuestConsentWrites(
+      ...(args as [{ guests: Array<Record<string, unknown>> }]),
+    ),
+  loadMemberGuestAddPolicy: () => loadMemberGuestAddPolicy(),
+  matchMemberGuestNotificationRows: vi.fn(() => []),
+}));
+
+const sendBookingPolicyExceptionApprovedEmail = vi.fn(async () => undefined);
+vi.mock("@/lib/email", () => ({
+  sendBookingPolicyExceptionApprovedEmail: (...args: unknown[]) =>
+    sendBookingPolicyExceptionApprovedEmail(...(args as [])),
+}));
+
+const bookingFindUnique = vi.fn();
+vi.mock("@/lib/prisma", () => ({
+  prisma: { booking: { findUnique: (...a: unknown[]) => bookingFindUnique(...a) } },
+}));
 
 import {
   buildPolicyExceptionApprovalHooks,
@@ -65,6 +117,12 @@ const LIVE_GUEST = {
   memberId: "m-1",
   stayStart: new Date("2026-07-01T00:00:00.000Z"),
   stayEnd: new Date("2026-07-03T00:00:00.000Z"),
+  // The stored explicit night set (#713). The replay reads it, so a fixture
+  // without it would prove nothing about a sparse stay either way.
+  nights: [
+    { stayDate: new Date("2026-07-01T00:00:00.000Z") },
+    { stayDate: new Date("2026-07-02T00:00:00.000Z") },
+  ],
 };
 
 const DELTA = {
@@ -137,6 +195,21 @@ function makeTx(over: Record<string, unknown> = {}) {
   } as never;
 }
 
+/**
+ * A `makeTx()` handle whose model stubs are readable as mocks. `makeTx` returns
+ * `never` so the module under test accepts it as a Prisma transaction client;
+ * this narrows it back for assertions on what the executor wrote.
+ */
+function txMocks(tx: unknown) {
+  return tx as {
+    bookingChangeRequest: { updateMany: { mock: { calls: never[][] } } };
+    newBookingPolicyExceptionRequest: {
+      updateMany: { mock: { calls: Array<[{ data: Record<string, unknown> }]> };
+      };
+    };
+  };
+}
+
 function loadedRequest(overrides: Record<string, unknown> = {}) {
   return {
     id: "req-1",
@@ -174,11 +247,25 @@ beforeEach(() => {
   modifyBookingBatch.mockResolvedValue({ deferredPostCommit: vi.fn() });
   createConfirmedBooking.mockResolvedValue({
     type: "created",
-    booking: { id: "bk-new" },
+    // The guest rows the create service wrote, which the post-commit consent /
+    // family-add dispatch matches its plan against.
+    booking: { id: "bk-new", guests: [{ id: "bg-1", memberId: "m-1" }] },
     bumpedBookingIds: [],
     isZeroDollarConfirmed: false,
     deferredPostCommit: vi.fn(),
   });
+  // #2526: the member-guest authorisation pipeline's defaults — nothing beyond
+  // the requester's family, so the ordinary path is unaffected.
+  resolveLinkedBookingMembersWithBoundary.mockResolvedValue({
+    members: new Map(),
+    boundary: { scopeByMemberId: new Map(), beyondFamilyMemberIds: [] },
+  });
+  assertLinkedBookingMembersCanBeBooked.mockResolvedValue(undefined);
+  normalizeBookingGuestInputs.mockImplementation((guests) => guests);
+  planMemberGuestConsentWrites.mockImplementation((params) => ({
+    guests: params.guests,
+    entriesByMemberId: new Map(),
+  }));
   recordAdultMemberHostingReviewDecision.mockResolvedValue(true);
   getNonMemberHoldPolicy.mockResolvedValue({
     enabled: true,
@@ -345,7 +432,7 @@ describe("verifyLiveProposalIntegrity", () => {
     });
     await expect(
       hooks.verifyLiveProposalIntegrity?.(snapshot, makeTx()),
-    ).resolves.toBe(true);
+    ).resolves.toEqual({ intact: true });
   });
 
   it("FAILS when the live booking drifted since the request was made", async () => {
@@ -368,9 +455,9 @@ describe("verifyLiveProposalIntegrity", () => {
         })),
       },
     });
-    await expect(hooks.verifyLiveProposalIntegrity?.(snapshot, tx)).resolves.toBe(
-      false,
-    );
+    await expect(
+      hooks.verifyLiveProposalIntegrity?.(snapshot, tx),
+    ).resolves.toEqual({ intact: false, reason: "drift" });
   });
 
   it("FAILS when the stored delta was tampered with", async () => {
@@ -405,9 +492,9 @@ describe("verifyLiveProposalIntegrity", () => {
         updateMany: vi.fn(async () => ({ count: 1 })),
       },
     });
-    await expect(hooks.verifyLiveProposalIntegrity?.(snapshot, tx)).resolves.toBe(
-      false,
-    );
+    await expect(
+      hooks.verifyLiveProposalIntegrity?.(snapshot, tx),
+    ).resolves.toEqual({ intact: false, reason: "drift" });
   });
 
   it("FAILS when the request carries no replayable delta at all", async () => {
@@ -423,9 +510,13 @@ describe("verifyLiveProposalIntegrity", () => {
         updateMany: vi.fn(async () => ({ count: 1 })),
       },
     });
-    await expect(hooks.verifyLiveProposalIntegrity?.(snapshot, tx)).resolves.toBe(
-      false,
-    );
+    // #2526 review: NOT reported as drift. A row that predates the replayable
+    // delta format is unexecutable, but nothing about the booking moved, and
+    // telling the officer it did sends them looking for an edit that never
+    // happened.
+    await expect(
+      hooks.verifyLiveProposalIntegrity?.(snapshot, tx),
+    ).resolves.toEqual({ intact: false, reason: "unreplayable" });
   });
 
   it("FAILS when the live booking has vanished", async () => {
@@ -436,9 +527,9 @@ describe("verifyLiveProposalIntegrity", () => {
       ipAddress: "1.2.3.4",
     });
     const tx = makeTx({ booking: { findUnique: vi.fn(async () => null) } });
-    await expect(hooks.verifyLiveProposalIntegrity?.(snapshot, tx)).resolves.toBe(
-      false,
-    );
+    await expect(
+      hooks.verifyLiveProposalIntegrity?.(snapshot, tx),
+    ).resolves.toEqual({ intact: false, reason: "drift" });
   });
 
   it("passes a new-booking proposal through — it has no live base to drift", async () => {
@@ -449,7 +540,7 @@ describe("verifyLiveProposalIntegrity", () => {
     });
     await expect(
       hooks.verifyLiveProposalIntegrity?.(NEW_BOOKING_SNAPSHOT, makeTx()),
-    ).resolves.toBe(true);
+    ).resolves.toEqual({ intact: true });
   });
 });
 
@@ -552,6 +643,7 @@ describe("executeApprovedProposal — new booking", () => {
         shouldBePending: false,
         holdDays: 0,
         paymentMethod: "stripe",
+        memberGuestPolicy: MEMBER_GUEST_POLICY,
       },
     });
   }
@@ -573,16 +665,164 @@ describe("executeApprovedProposal — new booking", () => {
     expect(input.waitlistIntent).toBeUndefined();
     expect(input.tx).toBeDefined();
     // The frozen night set survives the round-trip explicitly (#713).
-    expect(input.guests[0].nights).toEqual([
-      { stayDate: "2026-07-01" },
-      { stayDate: "2026-07-02" },
-    ]);
+    expect(input.guests[0].nights).toEqual(["2026-07-01", "2026-07-02"]);
     expect(outcome.createdBookingId).toBe("bk-new");
     // The executed booking is linked back onto the request row in the same tx.
     expect(
-      tx.newBookingPolicyExceptionRequest.updateMany.mock.calls[0][0].data
-        .createdBookingId,
+      txMocks(tx).newBookingPolicyExceptionRequest.updateMany.mock.calls[0][0]
+        .data.createdBookingId,
     ).toBe("bk-new");
+  });
+
+  it("runs the member-guest authorisation pipeline as the REQUESTING MEMBER", async () => {
+    // #2526 review. `createConfirmedBooking` does NOT validate guest member links
+    // — every other caller runs this sequence itself first. Skipping it let a
+    // member name any active member's id in an exception request and have an
+    // approval attach them: no beyond-family refusal, no consent row, no
+    // profile/bookability gate, and the guest row keeping the REQUESTER's declared
+    // age tier and membership (which also priced them at the member rate).
+    const { hooks } = hooksFor();
+    await hooks.executeApprovedProposal({
+      tx: makeTx(),
+      request: loadedRequest({ bookingId: null, kind: null }),
+      snapshot: NEW_BOOKING_SNAPSHOT,
+      override: MIN_STAY_OVERRIDE,
+    });
+
+    // Resolved against the REQUESTER's family, with authorization ENFORCED — the
+    // officer reviewed minimum stay, not the family boundary.
+    const [, bookingMemberId, memberIds, options] =
+      resolveLinkedBookingMembersWithBoundary.mock.calls[0] as unknown as [
+        unknown,
+        string,
+        unknown[],
+        { skipAuthorization: boolean; memberGuestWideningEnabled: boolean },
+      ];
+    expect(bookingMemberId).toBe("m-1");
+    expect(memberIds).toEqual(["m-1"]);
+    expect(options.skipAuthorization).toBe(false);
+    expect(options.memberGuestWideningEnabled).toBe(false);
+
+    // The D-8 profile/bookability gate runs, judged as the member, never as an
+    // admin acting on behalf (which would return early and skip it).
+    const [, , currentUserId, context] =
+      assertLinkedBookingMembersCanBeBooked.mock.calls[0] as unknown as [
+        unknown,
+        unknown,
+        string,
+        { actorRole: string; onBehalfOfMemberId: string | null },
+      ];
+    expect(currentUserId).toBe("m-1");
+    expect(context.actorRole).toBe("MEMBER");
+    expect(context.onBehalfOfMemberId).toBeNull();
+
+    // Consent is planned with the MEMBER as actor, so a beyond-family add opens a
+    // PENDING consent request instead of being stamped consent-free by the admin.
+    const consentArgs = planMemberGuestConsentWrites.mock
+      .calls[0][0] as unknown as { actor: { kind: string } };
+    expect(consentArgs.actor.kind).toBe("MEMBER");
+
+    // The member record is authoritative for the guest's identity fields.
+    expect(normalizeBookingGuestInputs).toHaveBeenCalledTimes(1);
+  });
+
+  it("rolls the approval back when the pipeline refuses a member guest", async () => {
+    // With the memberGuests module off — the shipped default — a beyond-family
+    // member id is refused, exactly as the member's own booking path refuses it.
+    // The refusal has to abort the approval, not be swallowed.
+    resolveLinkedBookingMembersWithBoundary.mockRejectedValueOnce(
+      new Error("Invalid guest member reference"),
+    );
+    const { hooks, outcome } = hooksFor();
+    await expect(
+      hooks.executeApprovedProposal({
+        tx: makeTx(),
+        request: loadedRequest({ bookingId: null, kind: null }),
+        snapshot: NEW_BOOKING_SNAPSHOT,
+        override: MIN_STAY_OVERRIDE,
+      }),
+    ).rejects.toThrow(/Invalid guest member reference/);
+    // Nothing was created, and nothing was recorded as executed.
+    expect(createConfirmedBooking).not.toHaveBeenCalled();
+    expect(outcome.createdBookingId).toBeNull();
+  });
+
+  it("executes as a reviewed member proposal, so the supervision review is not auto-approved", async () => {
+    const { hooks } = hooksFor();
+    await hooks.executeApprovedProposal({
+      tx: makeTx(),
+      request: loadedRequest({ bookingId: null, kind: null }),
+      snapshot: NEW_BOOKING_SNAPSHOT,
+      override: MIN_STAY_OVERRIDE,
+    });
+    const input = createConfirmedBooking.mock.calls[0][0];
+    expect(input.reviewedMemberProposal).toBe(true);
+  });
+
+  it("carries the member's own words as the review justification", async () => {
+    const { hooks } = buildPolicyExceptionApprovalHooks({
+      requestId: "req-1",
+      actorMemberId: OFFICER,
+      ipAddress: "1.2.3.4",
+      memberMessage: "  My sister is bringing her kids and I will be there.  ",
+      newBookingExecution: {
+        status: "PAYMENT_PENDING" as never,
+        shouldBePending: false,
+        holdDays: 0,
+        paymentMethod: "stripe",
+        memberGuestPolicy: MEMBER_GUEST_POLICY,
+      },
+    });
+    await hooks.executeApprovedProposal({
+      tx: makeTx(),
+      request: loadedRequest({ bookingId: null, kind: null }),
+      snapshot: NEW_BOOKING_SNAPSHOT,
+      override: MIN_STAY_OVERRIDE,
+    });
+    expect(
+      createConfirmedBooking.mock.calls[0][0].memberReviewJustification,
+    ).toBe("My sister is bringing her kids and I will be there.");
+  });
+
+  it("dispatches the consent and family-add notices after the commit, not inside it", async () => {
+    // A consent row nobody is told about is a bed held for a member who was never
+    // asked, which only the nightly sweep clears (#2526 review).
+    const sendMemberGuestAddNotifications = vi.fn(async () => undefined);
+    const sendFamilyMemberBookingAddNotifications = vi.fn(async () => undefined);
+    vi.doMock("@/lib/member-guest-consent-notifications", () => ({
+      sendMemberGuestAddNotifications,
+    }));
+    vi.doMock("@/lib/family-booking-add-notifications", () => ({
+      sendFamilyMemberBookingAddNotifications,
+    }));
+
+    const { hooks } = hooksFor();
+    const executed = await hooks.executeApprovedProposal({
+      tx: makeTx(),
+      request: loadedRequest({ bookingId: null, kind: null }),
+      snapshot: NEW_BOOKING_SNAPSHOT,
+      override: MIN_STAY_OVERRIDE,
+    });
+    // Nothing has been dispatched yet: the caller still owns the commit.
+    expect(sendFamilyMemberBookingAddNotifications).not.toHaveBeenCalled();
+
+    await executed.deferredPostCommit();
+    // The created booking's member guest gets the family-add notice.
+    expect(sendFamilyMemberBookingAddNotifications).toHaveBeenCalledTimes(1);
+    const args = sendFamilyMemberBookingAddNotifications.mock
+      .calls[0][0] as unknown as {
+      bookingId: string;
+      bookerMemberId: string;
+      actorMemberId: string;
+      addedMemberIds: string[];
+    };
+    expect(args.bookingId).toBe("bk-new");
+    expect(args.bookerMemberId).toBe("m-1");
+    expect(args.actorMemberId).toBe(OFFICER);
+    expect(args.addedMemberIds).toEqual(["m-1"]);
+
+    vi.doUnmock("@/lib/member-guest-consent-notifications");
+    vi.doUnmock("@/lib/family-booking-add-notifications");
   });
 
   it("THROWS on capacityExceeded so the whole approval rolls back", async () => {
@@ -656,10 +896,7 @@ describe("proposalGuestToCreateInput", () => {
       memberId: "m-1",
       nights: ["2026-07-04", "2026-07-01"],
     });
-    expect(guest.nights).toEqual([
-      { stayDate: "2026-07-01" },
-      { stayDate: "2026-07-04" },
-    ]);
+    expect(guest.nights).toEqual(["2026-07-01", "2026-07-04"]);
     expect(guest.stayStart.toISOString().slice(0, 10)).toBe("2026-07-01");
     expect(guest.stayEnd.toISOString().slice(0, 10)).toBe("2026-07-05");
   });

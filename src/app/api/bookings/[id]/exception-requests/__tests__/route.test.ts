@@ -86,6 +86,14 @@ function makeBooking() {
         memberId: "m1",
         stayStart: new Date("2026-07-04T00:00:00Z"),
         stayEnd: new Date("2026-07-06T00:00:00Z"),
+        // The stored explicit night set (#713), which the route's own `include`
+        // loads (#2526) so the frozen proposal preserves a sparse stay instead of
+        // flattening it to its envelope. A fixture without it would let the route
+        // stop loading the relation without a test noticing.
+        nights: [
+          { stayDate: new Date("2026-07-04T00:00:00Z") },
+          { stayDate: new Date("2026-07-05T00:00:00Z") },
+        ],
       },
     ],
   };

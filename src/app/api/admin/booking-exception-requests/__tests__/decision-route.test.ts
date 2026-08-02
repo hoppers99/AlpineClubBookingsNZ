@@ -13,6 +13,8 @@ const mocks = vi.hoisted(() => ({
   resolveNewBookingParams: vi.fn(),
   bcrFindFirst: vi.fn(),
   nbFindUnique: vi.fn(),
+  fgmFindMany: vi.fn(async () => []),
+  memberFindMany: vi.fn(async () => []),
 }));
 
 vi.mock("@/lib/session-guards", () => ({ requireAdmin: mocks.requireAdmin }));
@@ -31,6 +33,10 @@ vi.mock("@/lib/prisma", () => ({
     newBookingPolicyExceptionRequest: {
       findUnique: (...a: unknown[]) => mocks.nbFindUnique(...a),
     },
+    // #2526: GET describes the proposed party, including whether each member
+    // guest is beyond the requester's family, which reads the family boundary.
+    familyGroupMember: { findMany: (...a: unknown[]) => mocks.fgmFindMany(...a) },
+    member: { findMany: (...a: unknown[]) => mocks.memberFindMany(...a) },
   },
 }));
 // Keep the real stores/parsers; swap only the two engine entry points.
@@ -358,6 +364,138 @@ describe("PATCH — approve", () => {
     const body = await res.json();
     expect(body.status).toBe("REQUESTED");
     expect(body.keptPending).toBe(true);
+  });
+
+  it("reports a post-commit failure as APPROVED with followUpFailed, never as pending", async () => {
+    // #2526 review. The engine's post-commit phase runs after the transaction has
+    // already committed, so a provider or audit failure there cannot mean the
+    // approval did not happen. Reporting "still pending" made the officer retry
+    // into a 409 that blamed a third party, or create the booking again by hand.
+    mocks.approve.mockResolvedValue({
+      outcome: "executed",
+      requestId: "req-1",
+      followUpFailed: true,
+    });
+    mocks.buildHooks.mockReturnValue({
+      hooks: {},
+      outcome: { createdBookingId: "bk-9", hostingDecisionRecorded: false },
+    });
+    const res = await PATCH(
+      patchRequest({
+        action: "approve",
+        source: "MODIFICATION",
+        expectedVersion: 3,
+        confirm: true,
+      }),
+      { params },
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.status).toBe("APPROVED");
+    expect(body.keptPending).toBeUndefined();
+    expect(body.followUpFailed).toBe(true);
+    // The approve audit row is still written, and records the follow-up failure.
+    expect(mocks.logAudit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "booking-policy-exception-request.approve",
+        outcome: "success",
+        metadata: expect.objectContaining({ followUpFailed: true }),
+      }),
+    );
+  });
+
+  it("asks the officer for the refund choice instead of calling it kept-pending", async () => {
+    // #2526 review. The archetypal minimum-stay exception is "let me shorten my
+    // stay", which reduces a paid booking's price and makes the canonical service
+    // demand a card/credit choice. Rendering that as "the request is still
+    // pending" named no action and the screen offered none, so the request was
+    // permanently un-approvable and could only be refused.
+    const { BookingModificationSettlementMethodRequiredError } = await import(
+      "@/lib/booking-modify-settlement"
+    );
+    mocks.approve.mockRejectedValue(
+      new BookingModificationSettlementMethodRequiredError(),
+    );
+    const res = await PATCH(
+      patchRequest({
+        action: "approve",
+        source: "MODIFICATION",
+        expectedVersion: 3,
+        confirm: true,
+      }),
+      { params },
+    );
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.status).toBe("REQUESTED");
+    expect(body.needsSettlementMethod).toBe(true);
+    // NOT kept-pending: nothing is waiting on capacity or on anybody else.
+    expect(body.keptPending).toBeUndefined();
+    expect(body.error).toMatch(/card or to account credit/i);
+  });
+
+  it("passes the officer's settlement choice through to the executor", async () => {
+    mocks.buildHooks.mockReturnValue({
+      hooks: {},
+      outcome: { createdBookingId: null, hostingDecisionRecorded: false },
+    });
+    await PATCH(
+      patchRequest({
+        action: "approve",
+        source: "MODIFICATION",
+        expectedVersion: 3,
+        confirm: true,
+        settlementMethod: "credit",
+      }),
+      { params },
+    );
+    expect(mocks.buildHooks.mock.calls[0][0]).toMatchObject({
+      settlementMethod: "credit",
+    });
+  });
+
+  it("hands the member's own message to the hooks for the supervision review", async () => {
+    // The officer never decides adult supervision (#2526 review), so the reason
+    // recorded against it has to be the MEMBER's.
+    mocks.buildHooks.mockReturnValue({
+      hooks: {},
+      outcome: { createdBookingId: null, hostingDecisionRecorded: false },
+    });
+    await PATCH(
+      patchRequest({
+        action: "approve",
+        source: "MODIFICATION",
+        expectedVersion: 3,
+        confirm: true,
+      }),
+      { params },
+    );
+    expect(mocks.buildHooks.mock.calls[0][0].memberMessage).toContain(
+      "one-night stay",
+    );
+  });
+
+  it("refuses a guest-authorisation failure with its own status, not as kept-pending", async () => {
+    const { BookingGuestValidationError } = await import("@/lib/booking-guests");
+    mocks.approve.mockRejectedValue(
+      new BookingGuestValidationError("Invalid guest member reference", 403, {
+        code: "GUEST_MEMBER_NOT_ALLOWED",
+      }),
+    );
+    const res = await PATCH(
+      patchRequest({
+        action: "approve",
+        source: "MODIFICATION",
+        expectedVersion: 3,
+        confirm: true,
+      }),
+      { params },
+    );
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.status).toBe("REQUESTED");
+    expect(body.keptPending).toBeUndefined();
+    expect(body.code).toBe("GUEST_MEMBER_NOT_ALLOWED");
   });
 
   it("409s a lost claim (the queue was stale)", async () => {
