@@ -7,13 +7,18 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   findMany: vi.fn(),
+  findUnique: vi.fn(),
   resolveTerminal: vi.fn(),
+  createAuditLog: vi.fn(),
+  sendExpiredEmail: vi.fn(),
+  logger: { error: vi.fn(), info: vi.fn(), warn: vi.fn() },
 }));
 
 vi.mock("@/lib/prisma", () => ({
   prisma: {
     bookingChangeRequest: {
       findMany: (...a: unknown[]) => mocks.findMany(...a),
+      findUnique: (...a: unknown[]) => mocks.findUnique(...a),
     },
   },
 }));
@@ -23,13 +28,26 @@ vi.mock("@/lib/booking-exception-execution", () => ({
     mocks.resolveTerminal(...a),
 }));
 
-vi.mock("@/lib/logger", () => ({
-  default: { error: vi.fn(), info: vi.fn(), warn: vi.fn() },
+vi.mock("@/lib/audit", () => ({
+  createAuditLog: (...a: unknown[]) => mocks.createAuditLog(...a),
 }));
 
-import { reapExpiredPolicyExceptionHolds } from "@/lib/cron-policy-exception-hold-reaper";
+vi.mock("@/lib/email/booking", () => ({
+  sendPolicyExceptionRequestExpiredEmail: (...a: unknown[]) =>
+    mocks.sendExpiredEmail(...a),
+}));
+
+vi.mock("@/lib/logger", () => ({
+  default: mocks.logger,
+}));
+
+import {
+  POLICY_EXCEPTION_EXPIRY_AUDIT_ACTION,
+  reapExpiredPolicyExceptionHolds,
+} from "@/lib/cron-policy-exception-hold-reaper";
 import {
   computePolicyExceptionHoldExpiry,
+  POLICY_EXCEPTION_HOLD_MIN_TTL_HOURS,
   POLICY_EXCEPTION_HOLD_TTL_DAYS,
 } from "@/lib/booking-exception-requests";
 
@@ -37,6 +55,7 @@ import {
 // every fixture below is written relative to that instant.
 const NOW = new Date("2026-07-01T00:00:00.000Z");
 const DAY_MS = 24 * 60 * 60 * 1000;
+const HOUR_MS = 60 * 60 * 1000;
 
 function candidate(
   over: Partial<{
@@ -44,6 +63,9 @@ function candidate(
     version: number;
     holdExpiresAt: Date | null;
     createdAt: Date;
+    bookingId: string;
+    requestedByMemberId: string;
+    reservationNights: { night: Date }[];
   }> = {},
 ) {
   return {
@@ -51,13 +73,53 @@ function candidate(
     version: 3,
     holdExpiresAt: new Date(NOW.getTime() - 60_000),
     createdAt: new Date(NOW.getTime() - 8 * DAY_MS),
+    bookingId: "bk-1",
+    requestedByMemberId: "mem-1",
+    // The scan carries the earliest held night (`@db.Date`, read back at UTC
+    // midnight) so the NULL-column fallback can apply the first-night cap.
+    reservationNights: [{ night: new Date("2026-08-01T00:00:00.000Z") }],
     ...over,
+  };
+}
+
+// The post-commit read that backs the member notice: who raised the request and
+// which stay it hangs off. Deliberately NOT part of the scan select — the reaper
+// reads an address only for a request it actually closed.
+function notificationContext(
+  over: Partial<{
+    firstName: string;
+    email: string;
+    inheritEmailFromId: string | null;
+    inheritEmailFrom: { email: string } | null;
+    booking: { checkIn: Date; checkOut: Date; lodgeId: string };
+  }> = {},
+) {
+  return {
+    requestedBy: {
+      firstName: over.firstName ?? "Aroha",
+      email: over.email ?? "aroha@example.org",
+      inheritEmailFromId: over.inheritEmailFromId ?? null,
+      inheritEmailFrom: over.inheritEmailFrom ?? null,
+    },
+    booking:
+      over.booking ?? {
+        checkIn: new Date("2026-08-01T00:00:00.000Z"),
+        checkOut: new Date("2026-08-03T00:00:00.000Z"),
+        lodgeId: "lodge-1",
+      },
   };
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.resolveTerminal.mockResolvedValue({ claimed: true, released: 2 });
+  mocks.createAuditLog.mockResolvedValue(undefined);
+  mocks.findUnique.mockResolvedValue(notificationContext());
+  mocks.sendExpiredEmail.mockResolvedValue({
+    status: "sent",
+    emailLogId: "log-1",
+    messageId: "msg-1",
+  });
 });
 
 describe("reapExpiredPolicyExceptionHolds", () => {
@@ -97,6 +159,7 @@ describe("reapExpiredPolicyExceptionHolds", () => {
       expired: 0,
       releasedNights: 0,
       failed: 0,
+      unresolvable: 0,
     });
   });
 
@@ -119,6 +182,7 @@ describe("reapExpiredPolicyExceptionHolds", () => {
       expired: 1,
       releasedNights: 2,
       failed: 0,
+      unresolvable: 0,
     });
   });
 
@@ -135,6 +199,7 @@ describe("reapExpiredPolicyExceptionHolds", () => {
       expired: 0,
       releasedNights: 0,
       failed: 0,
+      unresolvable: 0,
     });
   });
 
@@ -172,6 +237,250 @@ describe("reapExpiredPolicyExceptionHolds", () => {
     expect(mocks.resolveTerminal).not.toHaveBeenCalled();
   });
 
+  it("reads the earliest held night, so the NULL-column fallback can cap on it", async () => {
+    mocks.findMany.mockResolvedValue([]);
+
+    await reapExpiredPolicyExceptionHolds(NOW);
+
+    // One column of the relation the scan already correlates. Without it the
+    // fallback below cannot apply the first-night cap, and an undated hold would
+    // sit on beds through the whole stay.
+    expect(mocks.findMany.mock.calls[0][0].select.reservationNights).toEqual({
+      select: { night: true },
+      orderBy: { night: "asc" },
+      take: 1,
+    });
+  });
+
+  it("caps a NULL-column hold at its first held night, not just at createdAt + TTL", async () => {
+    // THE case the first-night cap exists for, and the one an uncapped fallback
+    // gets wrong. Raised two days ago for a stay that has already started: the
+    // 7-day TTL alone would keep the beds off the market until 8 Jul, four days
+    // into other members' view of a lodge that looks full. The stamped rule would
+    // have released them when the stay began, so the fallback must too.
+    const createdAt = new Date(NOW.getTime() - 2 * DAY_MS);
+    mocks.findMany.mockResolvedValue([
+      candidate({
+        holdExpiresAt: null,
+        createdAt,
+        // 2026-06-30 00:00 in Pacific/Auckland is 2026-06-29T12:00Z — before NOW.
+        reservationNights: [{ night: new Date("2026-06-30T00:00:00.000Z") }],
+      }),
+    ]);
+
+    const result = await reapExpiredPolicyExceptionHolds(NOW);
+
+    expect(result.expired).toBe(1);
+    // Pin that the pure rule agrees, and that the uncapped reading would NOT have
+    // expired this row — otherwise this test passes for the wrong reason.
+    expect(
+      computePolicyExceptionHoldExpiry({
+        createdAt,
+        firstHeldNight: "2026-06-30",
+      }).getTime(),
+      // The 24-hour floor still wins over the already-started night.
+    ).toBe(createdAt.getTime() + POLICY_EXCEPTION_HOLD_MIN_TTL_HOURS * HOUR_MS);
+    expect(
+      computePolicyExceptionHoldExpiry({ createdAt }).getTime(),
+    ).toBeGreaterThan(NOW.getTime());
+  });
+
+  it("counts and logs a due hold the shared transition REFUSES, instead of assuming a race", async () => {
+    // `claimed: false` has two very different meanings. A lost claim self-heals.
+    // A refusal — not a policy-exception row, or an unparsable proposalSnapshot —
+    // never does: every later run rescans the row, expires nothing, and would
+    // otherwise report a clean run while its beds stay stranded indefinitely.
+    mocks.findMany.mockResolvedValue([candidate()]);
+    mocks.resolveTerminal.mockResolvedValue({
+      claimed: false,
+      released: 0,
+      refused: "unreadable-proposal",
+    });
+
+    const result = await reapExpiredPolicyExceptionHolds(NOW);
+
+    expect(result).toEqual({
+      scanned: 1,
+      expired: 0,
+      releasedNights: 0,
+      failed: 0,
+      unresolvable: 1,
+    });
+    expect(mocks.logger.warn).toHaveBeenCalledTimes(1);
+    expect(mocks.logger.warn.mock.calls[0][0]).toMatchObject({
+      changeRequestId: "req-1",
+      reason: "unreadable-proposal",
+      job: "policy-exception-hold-reaper",
+    });
+    // Nothing was released, so nothing is claimed in the audit trail either —
+    // and nobody is told their request closed, because it did not.
+    expect(mocks.createAuditLog).not.toHaveBeenCalled();
+    expect(mocks.sendExpiredEmail).not.toHaveBeenCalled();
+  });
+
+  it("writes one audit row per expiry, naming the request, booking and beds released", async () => {
+    mocks.findMany.mockResolvedValue([candidate()]);
+
+    await reapExpiredPolicyExceptionHolds(NOW);
+
+    expect(mocks.createAuditLog).toHaveBeenCalledTimes(1);
+    expect(mocks.createAuditLog.mock.calls[0][0]).toMatchObject({
+      action: POLICY_EXCEPTION_EXPIRY_AUDIT_ACTION,
+      targetId: "bk-1",
+      // A cron has no actor member, so the lapsed request's member is the subject
+      // and the actor stays unset — this is the system closing their request.
+      subjectMemberId: "mem-1",
+      entityType: "BookingChangeRequest",
+      entityId: "req-1",
+      category: "booking",
+      outcome: "success",
+      metadata: {
+        bookingId: "bk-1",
+        requestId: "req-1",
+        releasedNights: 2,
+        deadlineSource: "stamped",
+      },
+    });
+    expect(mocks.createAuditLog.mock.calls[0][0].memberId).toBeUndefined();
+  });
+
+  it("records the fallback deadline as such, so an operator can tell the two apart", async () => {
+    mocks.findMany.mockResolvedValue([
+      candidate({
+        holdExpiresAt: null,
+        createdAt: new Date(NOW.getTime() - 8 * DAY_MS),
+      }),
+    ]);
+
+    await reapExpiredPolicyExceptionHolds(NOW);
+
+    expect(mocks.createAuditLog.mock.calls[0][0].metadata).toMatchObject({
+      deadlineSource: "created-at",
+    });
+  });
+
+  it("emails the member who raised the request, exactly once per expiry", async () => {
+    // Owner decision (2 Aug 2026): closing a member's request and taking their
+    // reserved beds back is not done silently. Once per expiry, to the member who
+    // RAISED it (not the booking's owner, who may be someone else), carrying the
+    // deadline that actually applied rather than "now".
+    const holdExpiresAt = new Date(NOW.getTime() - 60_000);
+    mocks.findMany.mockResolvedValue([candidate({ holdExpiresAt })]);
+
+    await reapExpiredPolicyExceptionHolds(NOW);
+
+    expect(mocks.sendExpiredEmail).toHaveBeenCalledTimes(1);
+    expect(mocks.sendExpiredEmail.mock.calls[0][0]).toEqual({
+      bookingId: "bk-1",
+      recipientMemberId: "mem-1",
+      email: "aroha@example.org",
+      firstName: "Aroha",
+      checkIn: new Date("2026-08-01T00:00:00.000Z"),
+      checkOut: new Date("2026-08-03T00:00:00.000Z"),
+      expiresAt: holdExpiresAt,
+      lodgeId: "lodge-1",
+    });
+    // The address is read for the request it CLOSED, not for every candidate it
+    // considered, so the read is keyed on that request.
+    expect(mocks.findUnique.mock.calls[0][0].where).toEqual({ id: "req-1" });
+  });
+
+  it("sends to the household address when the requester inherits their email", async () => {
+    mocks.findMany.mockResolvedValue([candidate()]);
+    mocks.findUnique.mockResolvedValue(
+      notificationContext({
+        email: "child@example.invalid",
+        inheritEmailFromId: "mem-parent",
+        inheritEmailFrom: { email: "parent@example.org" },
+      }),
+    );
+
+    await reapExpiredPolicyExceptionHolds(NOW);
+
+    expect(mocks.sendExpiredEmail.mock.calls[0][0].email).toBe(
+      "parent@example.org",
+    );
+  });
+
+  it("tells the member the DERIVED deadline for a pre-migration hold", async () => {
+    // A NULL-column row's deadline is computed, not stored, so the notice has to
+    // carry the computed one — telling a member "not decided by null" (or by the
+    // moment the cron happened to run) would be worse than saying nothing.
+    const createdAt = new Date(NOW.getTime() - 8 * DAY_MS);
+    mocks.findMany.mockResolvedValue([
+      candidate({ holdExpiresAt: null, createdAt }),
+    ]);
+
+    await reapExpiredPolicyExceptionHolds(NOW);
+
+    expect(mocks.sendExpiredEmail.mock.calls[0][0].expiresAt).toEqual(
+      computePolicyExceptionHoldExpiry({
+        createdAt,
+        firstHeldNight: "2026-08-01",
+      }),
+    );
+  });
+
+  it("still counts the expiry when the notice fails to send, and keeps going", async () => {
+    // THE property that makes a post-commit send safe. The beds are already back
+    // in the pool and the request is no longer REQUESTED, so a failed send has
+    // nothing to roll back and nothing to retry — a "retry" would be a second
+    // release. It must not be reported as a failed expiry, and it must not stop
+    // the run's other stranded holds being returned.
+    mocks.findMany.mockResolvedValue([
+      candidate({ id: "req-1" }),
+      candidate({ id: "req-2" }),
+    ]);
+    mocks.sendExpiredEmail.mockRejectedValueOnce(new Error("SES unavailable"));
+
+    const result = await reapExpiredPolicyExceptionHolds(NOW);
+
+    expect(result).toEqual({
+      scanned: 2,
+      expired: 2,
+      releasedNights: 4,
+      failed: 0,
+      unresolvable: 0,
+    });
+    expect(mocks.sendExpiredEmail).toHaveBeenCalledTimes(2);
+    expect(mocks.logger.error).toHaveBeenCalledTimes(1);
+    // Not re-driven: the second candidate got its own single send, and the failed
+    // one is not attempted again inside this run.
+    expect(mocks.resolveTerminal).toHaveBeenCalledTimes(2);
+  });
+
+  it("warns rather than throwing when the request row vanishes before the notice", async () => {
+    mocks.findMany.mockResolvedValue([candidate()]);
+    mocks.findUnique.mockResolvedValue(null);
+
+    const result = await reapExpiredPolicyExceptionHolds(NOW);
+
+    expect(result.expired).toBe(1);
+    expect(result.failed).toBe(0);
+    expect(mocks.sendExpiredEmail).not.toHaveBeenCalled();
+    // Not silent: somebody's request was closed and nobody could be told.
+    expect(mocks.logger.warn).toHaveBeenCalledTimes(1);
+  });
+
+  it("still counts an expiry when the audit write fails", async () => {
+    // The beds are already back in the pool and the request is no longer
+    // REQUESTED, so no retry could repeat the work. Reporting a failure here would
+    // send an operator chasing a release that actually happened.
+    mocks.findMany.mockResolvedValue([candidate()]);
+    mocks.createAuditLog.mockRejectedValue(new Error("audit table offline"));
+
+    const result = await reapExpiredPolicyExceptionHolds(NOW);
+
+    expect(result).toEqual({
+      scanned: 1,
+      expired: 1,
+      releasedNights: 2,
+      failed: 0,
+      unresolvable: 0,
+    });
+    expect(mocks.logger.error).toHaveBeenCalledTimes(1);
+  });
+
   it("reports nothing when the guarded claim is lost to a real decision", async () => {
     mocks.findMany.mockResolvedValue([candidate()]);
     mocks.resolveTerminal.mockResolvedValue({ claimed: false, released: 0 });
@@ -183,7 +492,14 @@ describe("reapExpiredPolicyExceptionHolds", () => {
       expired: 0,
       releasedNights: 0,
       failed: 0,
+      unresolvable: 0,
     });
+    // A lost claim is the ONE silent outcome: it self-heals, because the next
+    // scan re-reads the row's fresh version (or no longer sees it at all). The
+    // member hears nothing either — whoever won the race owns telling them.
+    expect(mocks.logger.warn).not.toHaveBeenCalled();
+    expect(mocks.createAuditLog).not.toHaveBeenCalled();
+    expect(mocks.sendExpiredEmail).not.toHaveBeenCalled();
   });
 
   it("is idempotent across reruns: an already-expired request is no longer scanned", async () => {
@@ -200,6 +516,7 @@ describe("reapExpiredPolicyExceptionHolds", () => {
       expired: 0,
       releasedNights: 0,
       failed: 0,
+      unresolvable: 0,
     });
     expect(mocks.resolveTerminal).toHaveBeenCalledTimes(1);
   });
@@ -258,6 +575,7 @@ describe("reapExpiredPolicyExceptionHolds", () => {
       expired: 1,
       releasedNights: 1,
       failed: 1,
+      unresolvable: 0,
     });
   });
 });

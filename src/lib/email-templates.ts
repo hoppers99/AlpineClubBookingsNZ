@@ -4545,3 +4545,44 @@ export function memberGuestConsentAnsweredTemplate(data: {
     ${paragraph(escapeHtml(data.answeredNote))}
   `);
 }
+
+/**
+ * "Your exception request has lapsed" — #2553.
+ *
+ * A bed-holding policy-exception request the club never decided is closed by the
+ * hold-reaper cron and its beds go back into the pool. Without this notice the
+ * member's only signal is a bare `Expired` badge they would have to go looking
+ * for, so their next act is a duplicate request raised in ignorance.
+ *
+ * THREE THINGS THIS SAYS AND ONE IT DOES NOT. It says the request lapsed, that
+ * the beds it held were released, and that the booking itself is untouched — that
+ * last one matters most, because "your request expired" reads to a member as
+ * though the STAY had lapsed. It does NOT apologise or assign blame: nobody did
+ * anything wrong, a deadline passed.
+ *
+ * NO MONEY, because none moved. A policy-exception request never charged
+ * anything; the released beds were provisional. The booking link is the core
+ * finalizer's optional canonical action, so it appears only where this recipient
+ * independently retains route authority.
+ */
+export function policyExceptionRequestExpiredTemplate(data: {
+  firstName: string;
+  lodgeName: string;
+  checkIn: Date;
+  checkOut: Date;
+  expiresAt: Date;
+}): string {
+  return layout(`
+    ${heading("Your exception request has lapsed")}
+    ${paragraph(
+      `Hi ${escapeHtml(data.firstName)}, the exception request you raised for your stay at ${escapeHtml(data.lodgeName)} was not decided by ${escapeHtml(formatNZDateTime(data.expiresAt))}, so it has lapsed and the beds it was holding have been released.`,
+    )}
+    ${infoTable([
+      { label: "Check-in", value: escapeHtml(formatNZDate(data.checkIn)) },
+      { label: "Check-out", value: escapeHtml(formatNZDate(data.checkOut)) },
+    ])}
+    ${paragraph("Your booking itself has not changed. Only the change you asked the club to allow has lapsed.")}
+    ${paragraph("If you still want that change, you can raise a fresh request from your booking.")}
+    ${supportContactSentence("If you have any questions, contact the club at ")}
+  `);
+}

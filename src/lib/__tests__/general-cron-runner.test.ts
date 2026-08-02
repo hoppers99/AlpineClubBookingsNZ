@@ -95,6 +95,7 @@ describe("general cron runner", () => {
           expired: 1,
           releasedNights: 3,
           failed: 0,
+          unresolvable: 0,
         })),
         sendPreArrivalReminders: vi.fn(async () => ({
           reminderDays: 3,
@@ -155,6 +156,7 @@ describe("general cron runner", () => {
       expired: 1,
       releasedNights: 3,
       failed: 0,
+      unresolvable: 0,
     });
     expect(result.schoolAttendeeConfirmations).toEqual({
       scanned: 0,

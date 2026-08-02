@@ -144,6 +144,15 @@ export const ALWAYS_BOOKING_SCOPED_TEMPLATE_NAMES: ReadonlySet<string> =
     // replay a legacy NULL-bookingId row under this name. Unlike the six above
     // it ALSO honours a personal preference, applied before the sender.
     "family-member-added",
+    // #2553: the hold-reaper's courtesy notice that a bed-holding
+    // policy-exception request lapsed. A POLICY_EXCEPTION modification request
+    // hangs off a required Booking FK, so a real bookingId always exists and
+    // "none" is never offered by its sender. Member-audience for the same
+    // load-bearing reason as the member-guest set: it is not gated on a personal
+    // notification preference, so this switch is the only thing that withholds
+    // it, and an admin-audience classification would let a silenced booking mail
+    // out.
+    "policy-exception-request-expired",
   ]);
 
 /**
