@@ -10,15 +10,19 @@
   school prompt (the **School Attendee Confirmation** timing under **Admin →
   Booking Policies → Public Requests**), the member is emailed a plain-English
   reminder asking who is coming, repeated on the same reminder interval and
-  escalating to once a day in the last two days before arrival. It stops the
-  moment every guest has a real name. School bookings keep their existing
-  tokenized confirmation email and cadence exactly as they were.
+  escalating to once a day from two days out, with a last reminder on the
+  morning they travel. It stops the moment every guest has a real name. School
+  bookings keep their existing tokenized confirmation email and cadence exactly
+  as they were.
 
   Alongside it, **Stuck States** gains a **Bookings with unnamed guests** row
   covering both kinds of booking, so an admin can see what is coming and fix it
-  from the booking. Renaming a guest keeps the same guest record, so chore and
-  bed assignments follow the new name, and it never changes anybody's age group
-  or what the stay costs.
+  from the booking. The row is honest about who is being chased: a school list
+  the contact already confirmed while leaving the placeholder names in place,
+  and a booking still held for approval, get no reminder, so they are there for
+  an admin to work through by hand. Renaming a guest keeps the same guest
+  record, so chore and bed assignments follow the new name, and it never changes
+  anybody's age group or what the stay costs.
 
   **This never holds anything up.** An unnamed party is chased and made visible,
   never blocked: the booking confirms, the roster generates, and the group

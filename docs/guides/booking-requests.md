@@ -169,8 +169,8 @@ The club chases this automatically. Starting **Attendee first prompt** days
 before check-in (the same **School Attendee Confirmation** timing on
 [Booking Policies](booking-policies.md) that drives the school prompt), the
 member is emailed a reminder asking them to name their party, repeated every
-**reminder** days and escalating to once a day in the last two days before
-arrival. It stops the moment every guest is named. School bookings keep their
+**reminder** days and escalating to once a day from two days out, with a last
+reminder on the morning they travel. It stops the moment every guest is named. School bookings keep their
 existing tokenized confirmation email and cadence, unchanged.
 
 Any booking still carrying placeholders inside that window — school or

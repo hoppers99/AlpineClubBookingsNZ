@@ -277,7 +277,7 @@ because there is nowhere to ask yet.
 | Show indicative pricing | Public Requests | Price shown on the public request form | off | — |
 | Quote response window | Public Requests | Days a quote link stays valid | 14 | 1–60 days |
 | Reminder lead time | Public Requests | Days before expiry to remind the requester | 3 | 0–30, must be shorter than the window |
-| Attendee first prompt / reminder | Public Requests | Timing for both guest-naming chases: the school attendee-confirmation prompt and the member whole-lodge "who is coming with you?" reminder (which escalates to daily in the last two days) | 14 / 3 days | Prompt 0–90 (0 = off, both chases); reminder 1–30 |
+| Attendee first prompt / reminder | Public Requests | Timing for both guest-naming chases: the school attendee-confirmation prompt and the member whole-lodge "who is coming with you?" reminder (which escalates to daily from two days out, with a last one on the arrival morning) | 14 / 3 days | Prompt 0–90 (0 = off, both chases); reminder 1–30 |
 
 ## Troubleshooting
 
