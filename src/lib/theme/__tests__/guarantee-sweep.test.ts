@@ -3,6 +3,7 @@ import {
   buildThemeSubstrate,
   buildKioskTheme,
   contrast,
+  oklch,
 } from "../theme-substrate";
 import {
   SEED_SETS,
@@ -39,7 +40,7 @@ function allThemes(): Array<{ theme: Built; lightN12: string; label: string }> {
   // The shipping default (golden-pinned) plus the synthetic bright-accent stress
   // palette — the two reference palettes the substrate must hold for. Neither is
   // a real club's brand (#2190 D15). The exact-grey neutral palette is swept
-  // separately below: it carries one KNOWN, pre-existing G5a shortfall.
+  // separately below: since #2491 it too clears every guarantee, both modes.
   const seeds: Array<[string, (typeof SEED_SETS)["default"]]> = [
     ...(Object.entries(SEED_SETS) as Array<[string, (typeof SEED_SETS)["default"]]>),
     ["synthetic", SYNTHETIC_SEEDS],
@@ -64,38 +65,44 @@ describe("theme guarantee sweep", () => {
   });
 
   /*
-   * The exact-grey neutral-character palette (#2303). A seed with r == g == b
-   * carries no hue, so the gray seed the substrate derives from it sits at the
-   * neutral-seed pin's chroma on hue ~355 — low enough that Radix's perfectly
-   * achromatic `gray` ramp becomes its closest reference ramp, which is the
-   * degenerate case `getScaleFromColor`'s chroma guard exists for. This sweep
-   * proves that ramp class is contrast-verified, not merely well-formed.
+   * The exact-grey neutral-character palette (#2303, #2491). A seed with
+   * r == g == b carries no hue, so `deriveGrayAndBg` derives its gray seed at the
+   * neutral-seed pin's lightness with chroma 0 (#2491) — Radix's perfectly
+   * achromatic `gray` ramp is its closest reference ramp, the degenerate case
+   * `getScaleFromColor`'s chroma guard exists for. This sweep proves that ramp
+   * class is contrast-verified, not merely well-formed.
    *
-   * It clears every guarantee EXCEPT one, which is pinned here rather than
-   * hidden: light-mode card/page separation lands just under the G5a floor
-   * (ΔL 0.011 vs 0.012, contrast 1.03 vs 1.04). That shortfall is PRE-EXISTING
-   * and has nothing to do with the colorjs bump — measured directly against
-   * colorjs.io 0.5.2 it fails identically, because it is a property of where
-   * that palette's neutral 1 and 2 land, not of how their chroma is computed.
-   * (The pre-fix form of the guard flattened the ramp to a pure grey, which
-   * happened to widen ΔL enough to pass — a false pass on a wrong ramp.)
-   *
-   * If this list ever changes, do not edit it to match: the grey-neutral
+   * It now clears EVERY guarantee, both modes. Before #2491 the pinned 0.008 seed
+   * chroma was applied to a missing hue that coalesces to 0, pointing the tint at
+   * an arbitrary hue-0 (red); on that worst-separating hue the light-mode card/
+   * page separation landed at ΔL 0.011 / contrast 1.03 — just under the G5a floor
+   * (0.012 / 1.04). That shortfall was PRE-EXISTING (it reproduced identically on
+   * colorjs.io 0.5.2), a property of where a hue-0-tinted neutral 1 and 2 land.
+   * Dropping the seed chroma to 0 for a hueless character makes the ramp honestly
+   * grey, and its card/page separation meets the floor by construction, landing on
+   * it exactly (round3 ΔL 0.012, round2 contrast 1.04) with the pinned J8 shadow
+   * the primary reinforcement — the same right-on-the-floor treatment a chromatic
+   * seed gets. If this ever regresses to a non-empty list, the grey-neutral
    * palette's compliance profile has genuinely moved and needs a look.
    */
-  it("exact-grey neutral palette: clears every guarantee but the known G5a card separation", () => {
+  it("exact-grey neutral palette: clears every guarantee incl. G5a card separation (#2491)", () => {
     const light = buildThemeSubstrate(ACHROMATIC_NEUTRAL_SEEDS, "light");
     const lightN12 = light.neutralHex[11];
     const failures = [
       ...sweepGuarantees(light, lightN12, "grey/light"),
       ...sweepGuarantees(buildThemeSubstrate(ACHROMATIC_NEUTRAL_SEEDS, "dark"), lightN12, "grey/dark"),
     ];
-    expect(failures).toEqual([
-      { guarantee: "G5a", cell: "grey/light/card-deltaL", ratio: 0.011, floor: G5A_CARD_SEPARATION.minDeltaL },
-      { guarantee: "G5a", cell: "grey/light/card-contrast", ratio: 1.03, floor: G5A_CARD_SEPARATION.minContrast },
-    ]);
-    // Everything else — G1/G2/G2b/G2c/G4/G5b, both modes — is clean.
-    expect(failures.filter((f) => f.guarantee !== "G5a")).toEqual([]);
+    // Zero failures — the grey palette is now compliant by construction like the
+    // reference seeds. The card/page separation is the guarantee this pins: it was
+    // the one known miss before #2491.
+    expect(failures).toEqual([]);
+    // Guard against a vacuous pass: the card/page cells must be measured and clear
+    // their floors, not skipped.
+    const n = light.neutralHex;
+    const dL = Math.round(Math.abs(oklch(n[0])[0] - oklch(n[1])[0]) * 1000) / 1000;
+    const c = Math.round(contrast(n[0], n[1]) * 100) / 100;
+    expect(dL, "grey/light card ΔL").toBeGreaterThanOrEqual(G5A_CARD_SEPARATION.minDeltaL);
+    expect(c, "grey/light card contrast").toBeGreaterThanOrEqual(G5A_CARD_SEPARATION.minContrast);
   });
 
   it("G2c: the SHIPPED derived --muted-foreground tone clears AA on neutral steps 1–4, both modes, both seeds", () => {
