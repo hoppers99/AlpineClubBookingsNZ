@@ -2291,9 +2291,13 @@ export function adminXeroReconciliationReportTemplate(report: XeroReconciliation
 
 /**
  * One booking whose BookingApp stamped applied credit does not match Xero's
- * live invoice allocation. `localCents` is BookingApp's known credit (the
- * stamped `BOOKING_APPLIED` sum), `xeroCents` is the invoice's live
- * `amountCredited`, and `deltaCents` is the exact (positive) drift between them.
+ * live invoice allocation. `localCents` is BookingApp's known credit (the net
+ * `BOOKING_APPLIED` sum), `xeroCents` is Xero's live allocation of the member's
+ * OWN stamped credit notes to the invoice (the sum of those notes'
+ * `appliedAmount` — NOT `invoice.amountCredited`, which folds in other
+ * credit-note classes such as modification reprice notes), and `deltaCents` is
+ * the exact (positive) drift between them. `notes` lists exactly those stamped
+ * member credit notes, so their applied amounts reconcile to `xeroCents`.
  */
 export interface CreditSyncDriftItemEmail {
   kind: "missing_in_xero" | "excess_in_xero" | "no_invoice";

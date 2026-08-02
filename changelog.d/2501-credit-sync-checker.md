@@ -19,5 +19,9 @@
   paper over it. It is careful not to cry wolf: a booking whose allocation is
   still being processed, or one it cannot read because Xero is briefly
   unavailable, is quietly skipped and rechecked next time rather than reported
-  as a mismatch. It also throttles itself to about once a day so it cannot use
-  up the club's daily Xero request budget.
+  as a mismatch. It compares only the member's own account-credit notes, so a
+  separate modification/reprice credit note on the same invoice (raised when a
+  booking is trimmed) is not mistaken for a mismatch; and if the club's record
+  changes while the check is reading Xero, it re-reads the record before warning
+  so an in-flight edit is never reported as drift. It also throttles itself to
+  about once a day so it cannot use up the club's daily Xero request budget.

@@ -15,19 +15,33 @@
  * BookingApp believes it has allocated credit onto a Xero invoice for. For each,
  * it compares
  *
- *   localCents        = |Σ ALL BOOKING_APPLIED rows| (net)      (BookingApp's known credit)
- *   xeroCreditedCents = round(invoice.amountCredited * 100)      (Xero's live allocation)
+ *   localCents  = |Σ ALL BOOKING_APPLIED rows| (net)   (BookingApp's known credit)
+ *   xeroCents   = Σ appliedAmount of the invoice's credit notes RESTRICTED to the
+ *                 ones BookingApp STAMPED for this booking (Xero's live member-
+ *                 account-credit allocation)
  *
  * and reports drift when they are not equal (a credit BookingApp thinks it
  * applied that Xero does not show allocated, or vice versa), naming the member,
  * booking, invoice and the EXACT integer-cent amount.
  *
- * The metric nets ALL BOOKING_APPLIED rows (not just the stamped ones): it is
- * the same figure `deriveBookingAppliedCreditCents` and the #2483 email use, and
- * netting is what lets a COMPLETED #1887 clamp deallocation reconcile — the clamp
- * appends an UNSTAMPED positive offset and deallocates the invoice, so the net
- * falls to match Xero. Summing stamped rows alone would read that settled state
- * as drift. The STAMPED filter is used only to SELECT the population.
+ * WHY PER-NOTE, NOT invoice.amountCredited (Finding #2501-1): a single invoice
+ * can carry credit notes of MORE THAN ONE class. Besides the member-account
+ * credit notes this checker owns, BookingApp allocates a downward-reprice
+ * MODIFICATION credit note (`createXeroCreditNoteForModification`) to the SAME
+ * invoice when a booking is trimmed. That note inflates `invoice.amountCredited`
+ * but is NOT a MemberCredit `BOOKING_APPLIED` row, so it never enters
+ * `localCents`. Comparing `localCents` against `amountCredited` would therefore
+ * report a permanent false `excess_in_xero` on every credit-using booking later
+ * repriced downward. Restricting the Xero side to the STAMPED member credit-note
+ * ids isolates the one allocation class both sides actually track.
+ *
+ * The local metric nets ALL BOOKING_APPLIED rows (not just the stamped ones): it
+ * is the same figure `deriveBookingAppliedCreditCents` and the #2483 email use,
+ * and netting is what lets a COMPLETED #1887 clamp deallocation reconcile — the
+ * clamp appends an UNSTAMPED positive offset and deallocates the invoice, so the
+ * net falls to match Xero. Summing stamped rows alone would read that settled
+ * state as drift. The STAMPED credit-note ids select the population AND scope the
+ * Xero-side comparison to the member-account allocation.
  *
  * DISCIPLINE (Critical — Xero + money):
  *  - READ-ONLY. It NEVER mutates financial state to "fix" drift: the owner asked
@@ -97,7 +111,9 @@ export interface CreditSyncInvoiceNote {
 /** Parsed live-invoice read used by the reconciliation. */
 export interface CreditSyncInvoiceRead {
   found: boolean;
-  /** round(invoice.amountCredited * 100), or null on a degraded payload. */
+  /** round(invoice.amountCredited * 100), or null on a degraded payload. Used
+   * ONLY as a degraded-payload guard (null => defer); the drift comparison sums
+   * the per-note `notes[].appliedCents` restricted to the stamped member notes. */
   amountCreditedCents: number | null;
   invoiceNumber: string | null;
   notes: CreditSyncInvoiceNote[];
@@ -145,10 +161,13 @@ function toFiniteCents(value: number | null | undefined): number | null {
 
 /**
  * Default live reader: fetch the invoice and read its credit-note allocation.
- * `amountCredited` is Xero's own total of credit-note value allocated to the
- * invoice; `creditNotes[].appliedAmount` is the per-note breakdown for the
- * detailed email. Pass `armTransientBreaker: false` so a read failure here never
- * arms the global breaker (this is a reconciliation read, not invoicing).
+ * `creditNotes[].appliedAmount` is the per-note breakdown the reconciliation
+ * compares against (restricted to the member-stamped notes — see the module
+ * docblock, Finding #2501-1). `amountCredited` is Xero's own total across ALL
+ * credit-note classes on the invoice; it is retained only as a degraded-payload
+ * signal (unreadable => defer), NOT as the comparison basis. Pass
+ * `armTransientBreaker: false` so a read failure here never arms the global
+ * breaker (this is a reconciliation read, not invoicing).
  */
 async function readInvoiceCreditAllocationLive(
   invoiceId: string
@@ -183,6 +202,52 @@ async function readInvoiceCreditAllocationLive(
     invoiceNumber: invoice.invoiceNumber ?? null,
     notes,
   };
+}
+
+/**
+ * Does this booking's payment have a Xero allocation op mid-flight? Both the
+ * allocate and deallocate ops share entityType ALLOCATION on the Payment, so a
+ * PENDING/RUNNING one means the local ledger and Xero are being reconciled RIGHT
+ * NOW — a transient window, not settled drift. Used twice: once as a fast
+ * pre-filter before the Xero read, and again after it to collapse the
+ * snapshot-skew window before warning (Finding #2501-2).
+ */
+async function hasInFlightAllocationOp(
+  db: typeof prisma,
+  paymentId: string
+): Promise<boolean> {
+  const inFlight = await db.xeroSyncOperation.findFirst({
+    where: {
+      localModel: "Payment",
+      localId: paymentId,
+      entityType: "ALLOCATION",
+      status: { in: ["PENDING", "RUNNING"] },
+    },
+    select: { id: true },
+  });
+  return inFlight !== null;
+}
+
+/**
+ * Re-read the LIVE net applied credit for one booking (Finding #2501-2). Same
+ * metric as the pre-loop bulk snapshot — the net over ALL BOOKING_APPLIED rows,
+ * clamped at zero so a completed #1887 clamp offset nets down rather than going
+ * negative — but read fresh, immediately alongside the Xero read, so a
+ * concurrent allocation/deallocation in the gap between the snapshot and the
+ * Xero read cannot make a settled ledger look drifted.
+ */
+async function readBookingNetAppliedCredit(
+  db: typeof prisma,
+  bookingId: string
+): Promise<number> {
+  const agg = await db.memberCredit.aggregate({
+    where: {
+      type: CreditType.BOOKING_APPLIED,
+      appliedToBookingId: bookingId,
+    },
+    _sum: { amountCents: true },
+  });
+  return Math.max(0, -(agg._sum.amountCents ?? 0));
 }
 
 function isCompletePassSummary(summary: unknown): boolean {
@@ -254,20 +319,34 @@ export async function reconcileXeroCreditSync(
   //     a Xero allocation is expected. Credit that was never stamped — card
   //     credit that reduces the charge rather than an invoice, or an allocation
   //     still pending — has no stamped row and is correctly out of scope.
-  const stampedGroups = await db.memberCredit.groupBy({
-    by: ["appliedToBookingId"],
+  //     The stamped Xero credit-note ids are RETAINED per booking (not just the
+  //     booking id): the reconciliation compares against ONLY the credit notes
+  //     BookingApp itself stamped as this booking's member-account credit, so a
+  //     different class of credit note allocated to the same invoice — most
+  //     notably a downward-reprice modification credit note
+  //     (createXeroCreditNoteForModification) — cannot masquerade as drift
+  //     (Finding #2501-1).
+  const stampedRows = await db.memberCredit.findMany({
     where: {
       type: CreditType.BOOKING_APPLIED,
       xeroCreditNoteId: { not: null },
       appliedToBookingId: { not: null },
     },
-    _count: { _all: true },
+    select: { appliedToBookingId: true, xeroCreditNoteId: true },
   });
 
-  const populationIds = stampedGroups
-    .map((group) => group.appliedToBookingId)
-    .filter((id): id is string => id !== null)
-    .sort(); // deterministic order
+  const stampedCreditNoteIdsByBooking = new Map<string, Set<string>>();
+  for (const row of stampedRows) {
+    if (!row.appliedToBookingId || !row.xeroCreditNoteId) continue;
+    let ids = stampedCreditNoteIdsByBooking.get(row.appliedToBookingId);
+    if (!ids) {
+      ids = new Set<string>();
+      stampedCreditNoteIdsByBooking.set(row.appliedToBookingId, ids);
+    }
+    ids.add(row.xeroCreditNoteId);
+  }
+
+  const populationIds = [...stampedCreditNoteIdsByBooking.keys()].sort(); // deterministic order
 
   if (populationIds.length === 0) {
     logger.info({ scannedBookings: 0 }, "Credit sync check: no stamped applied credit to reconcile");
@@ -364,22 +443,13 @@ export async function reconcileXeroCreditSync(
     }
 
     // Defer a booking whose allocation/deallocation is mid-flight — a transient
-    // window, not drift. Both ops share entityType ALLOCATION on the payment.
-    if (paymentId) {
-      const inFlight = await db.xeroSyncOperation.findFirst({
-        where: {
-          localModel: "Payment",
-          localId: paymentId,
-          entityType: "ALLOCATION",
-          status: { in: ["PENDING", "RUNNING"] },
-        },
-        select: { id: true },
-      });
-      if (inFlight) {
-        deferredBookings += 1;
-        completePass = false;
-        continue;
-      }
+    // window, not drift. Fast pre-filter to skip a Xero read for an obviously
+    // in-flight booking; the same guard is re-checked after the read to collapse
+    // the snapshot-skew window (Finding #2501-2).
+    if (paymentId && (await hasInFlightAllocationOp(db, paymentId))) {
+      deferredBookings += 1;
+      completePass = false;
+      continue;
     }
 
     // Read the live invoice. ANY failure (outage, rate-limit, degraded payload)
@@ -397,28 +467,64 @@ export async function reconcileXeroCreditSync(
       continue;
     }
 
+    // A degraded payload (`amountCredited` unreadable) defers: the per-note
+    // breakdown the comparison relies on cannot be trusted either.
     if (!read.found || read.amountCreditedCents === null) {
       deferredBookings += 1;
       completePass = false;
       continue;
     }
 
-    checkedBookings += 1;
-    const xeroCents = read.amountCreditedCents;
-    if (xeroCents !== localCents) {
-      drifts.push({
-        kind: xeroCents < localCents ? "missing_in_xero" : "excess_in_xero",
-        bookingId,
-        memberName,
-        invoiceId,
-        invoiceNumber: read.invoiceNumber,
-        invoiceUrl: buildXeroInvoiceUrl(invoiceId),
-        localCents,
-        xeroCents,
-        deltaCents: Math.abs(localCents - xeroCents),
-        notes: read.notes,
-      });
+    // Finding #2501-1: compare ONLY the member-account credit allocation. Xero's
+    // invoice.amountCredited is the total of EVERY credit note allocated to the
+    // invoice — including a downward-reprice modification credit note
+    // (createXeroCreditNoteForModification), which is NOT a MemberCredit
+    // BOOKING_APPLIED row and so never enters `localCents`. Comparing against it
+    // would report a permanent false `excess_in_xero` on every credit-using
+    // booking later trimmed downward. Instead, sum the per-note applied amounts
+    // RESTRICTED to the credit notes BookingApp itself stamped for this booking.
+    const stampedNoteIds = stampedCreditNoteIdsByBooking.get(bookingId);
+    const stampedNotes = read.notes.filter(
+      (note) => note.creditNoteId !== null && !!stampedNoteIds?.has(note.creditNoteId)
+    );
+    const xeroCents = stampedNotes.reduce((sum, note) => sum + note.appliedCents, 0);
+
+    if (xeroCents === localCents) {
+      checkedBookings += 1;
+      continue;
     }
+
+    // Potential drift. `localCents` came from the PRE-LOOP bulk snapshot while
+    // this Xero read is live; a concurrent allocation/deallocation in that gap
+    // would make a settled ledger look drifted (Finding #2501-2). Collapse that
+    // window to align with the in-flight guard before warning: re-check the
+    // in-flight op AND re-read the fresh local net, and warn only if a real
+    // settled mismatch against the FRESH net remains.
+    if (paymentId && (await hasInFlightAllocationOp(db, paymentId))) {
+      deferredBookings += 1;
+      completePass = false;
+      continue;
+    }
+    const freshLocalCents = await readBookingNetAppliedCredit(db, bookingId);
+    if (freshLocalCents === xeroCents) {
+      // Snapshot skew, not drift: the fresh local net now matches Xero.
+      checkedBookings += 1;
+      continue;
+    }
+
+    checkedBookings += 1;
+    drifts.push({
+      kind: xeroCents < freshLocalCents ? "missing_in_xero" : "excess_in_xero",
+      bookingId,
+      memberName,
+      invoiceId,
+      invoiceNumber: read.invoiceNumber,
+      invoiceUrl: buildXeroInvoiceUrl(invoiceId),
+      localCents: freshLocalCents,
+      xeroCents,
+      deltaCents: Math.abs(freshLocalCents - xeroCents),
+      notes: stampedNotes,
+    });
   }
 
   const driftBookings = drifts.length;
