@@ -103,6 +103,10 @@ x-app-service: &app-service
       # Stripe publishable key is delivered at runtime from the DB store (#2082),
       # not inlined at build time — no NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY arg.
       NEXT_PUBLIC_SENTRY_DSN: ${NEXT_PUBLIC_SENTRY_DSN:-}
+      # AID-3 (#2372): the deploy runner exports these so the in-builder
+      # knowledge-bundle generator stamps a verified, reproducible bundle.
+      GIT_COMMIT_SHA: ${GIT_COMMIT_SHA:-}
+      KNOWLEDGE_BUNDLE_OBSERVED_AT: ${KNOWLEDGE_BUNDLE_OBSERVED_AT:-}
   restart: unless-stopped
   logging:
     driver: json-file
@@ -259,6 +263,9 @@ services:
       target: builder
       args:
         NEXT_PUBLIC_SENTRY_DSN: ${NEXT_PUBLIC_SENTRY_DSN:-}
+        # AID-3 (#2372): mirror the app image's bundle build metadata.
+        GIT_COMMIT_SHA: ${GIT_COMMIT_SHA:-}
+        KNOWLEDGE_BUNDLE_OBSERVED_AT: ${KNOWLEDGE_BUNDLE_OBSERVED_AT:-}
     profiles: ["migrate"]
     depends_on:
       postgres:
