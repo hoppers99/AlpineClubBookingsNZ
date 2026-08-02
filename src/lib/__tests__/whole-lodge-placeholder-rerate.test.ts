@@ -38,6 +38,7 @@ vi.mock("@/lib/prisma", () => ({
 
 import {
   GUEST_MEMBER_LINK_ADMIN_ONLY_MESSAGE,
+  GUEST_MEMBER_LINK_ALREADY_ON_BOOKING_MESSAGE,
   GUEST_MEMBER_LINK_PLACEHOLDER_ONLY_MESSAGE,
   GUEST_MEMBER_LINK_WHOLE_LODGE_ONLY_MESSAGE,
   PAID_NAME_TYPO_ONLY_MESSAGE,
@@ -252,7 +253,7 @@ describe("#2337: the placeholder→member link gate (resolveGuestMemberLinks)", 
     ).toThrowError(/cannot be renamed and linked in the same change/);
   });
 
-  it("REFUSES linking the same member to two placeholders", () => {
+  it("REFUSES linking the same member to two placeholders IN ONE REQUEST", () => {
     const twoPlaceholders = wholeLodgeBooking() as unknown as {
       guests: Array<{ id: string; firstName: string; lastName: string; isMember: boolean; memberId: string | null }>;
     };
@@ -275,6 +276,27 @@ describe("#2337: the placeholder→member link gate (resolveGuestMemberLinks)", 
         role: "ADMIN",
       }),
     ).toThrowError(/same member cannot be linked to two guests/);
+  });
+
+  it("REFUSES linking a member who is ALREADY on the booking to another placeholder — the CROSS-REQUEST double-bill (#2337)", () => {
+    // `guest-member` already carries member-9 (a prior committed link, or a
+    // member guest placed at approval). Linking member-9 to a placeholder in a
+    // SEPARATE request would bill the member rate twice. The within-request
+    // `seenMemberIds` guard cannot see it, and the person-night conflict check
+    // excludes THIS booking, so only the existing-row guard catches it. On the
+    // apply path `booking.guests` is the post-lock re-read, so this same guard is
+    // the in-transaction re-check that closes a concurrent double-link.
+    expect(() =>
+      resolveGuestMemberLinks({
+        booking: wholeLodgeBooking(),
+        input: {
+          linkGuestToMember: [
+            { guestId: "guest-placeholder-1", memberId: "member-9" },
+          ],
+        },
+        role: "ADMIN",
+      }),
+    ).toThrowError(GUEST_MEMBER_LINK_ALREADY_ON_BOOKING_MESSAGE);
   });
 
   it("REFUSES a link to a guest that is not on the booking", () => {

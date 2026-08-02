@@ -81,6 +81,7 @@ import {
 } from "@/lib/booking-edit-policy";
 import {
   calculateModificationSettlementOptions,
+  GUEST_MEMBER_LINK_IN_PROGRESS_MESSAGE,
   lockedNightPricesForGuest,
   resolveGuestMemberLinks,
   resolveGuestNameUpdates,
@@ -838,6 +839,17 @@ export async function POST(
     if (newPromoCode || removePromoCode) {
       return NextResponse.json(
         { error: "Promo code changes are not available for in-progress bookings" },
+        { status: 400 }
+      );
+    }
+    // #2337: mirror the apply path's mid-stay link refusal exactly, so the
+    // preview shows the officer the refusal instead of a phantom $0 quote (a
+    // mid-stay link never reaches the in-progress pricing plan). The remove-and-
+    // re-add path settles correctly mid-stay; admin override is date-only and
+    // rejects links, so it is not the escape hatch.
+    if (linkGuestToMember?.length) {
+      return NextResponse.json(
+        { error: GUEST_MEMBER_LINK_IN_PROGRESS_MESSAGE },
         { status: 400 }
       );
     }

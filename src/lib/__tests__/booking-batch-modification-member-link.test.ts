@@ -72,6 +72,18 @@ const storedCheckOut = addDaysDateOnly(getTodayDateOnly(), 33);
 const LODGE = "lodge-1";
 const GUEST_PLAN_SENTINEL = new Error("reached-the-guest-plan");
 
+// #2337: an in-progress (mid-stay) variant — PAID and straddling NZ today — so
+// `resolveTargetDates` resolves the edit to the in-progress mode where a link
+// would price through the in-progress plan and silently settle $0.
+function inProgressBooking() {
+  return {
+    ...loadedBooking(),
+    status: "PAID",
+    checkIn: addDaysDateOnly(getTodayDateOnly(), -1),
+    checkOut: addDaysDateOnly(getTodayDateOnly(), 2),
+  };
+}
+
 function loadedBooking() {
   return {
     id: "booking-1",
@@ -159,6 +171,30 @@ describe("modifyBookingBatch member-link service gate (#2337)", () => {
     ).rejects.toThrow(GUEST_PLAN_SENTINEL);
 
     expect(h.prepareGuestPlan).toHaveBeenCalledTimes(1);
+  });
+
+  it("REFUSES a link on an IN-PROGRESS (mid-stay) booking BEFORE the guest plan — the silent-$0 re-rate (#2337 apply path)", async () => {
+    // Member-origin and quote-priced (harmless — a link-only request is exempt),
+    // so the request clears both service gates and reaches resolveTargetDates,
+    // which refuses the mid-stay link before any pricing or the guest plan.
+    h.isQuotePricedBooking.mockResolvedValue(true);
+    h.isMemberWholeLodgeBooking.mockResolvedValue(true);
+    h.bookingFindUnique
+      .mockReset()
+      .mockResolvedValueOnce({ lodgeId: LODGE })
+      .mockResolvedValueOnce(inProgressBooking());
+
+    await expect(
+      modifyBookingBatch({
+        bookingId: "booking-1",
+        actor: { id: "admin-9", role: "ADMIN" },
+        input: link,
+        ipAddress: "127.0.0.1",
+      }),
+    ).rejects.toThrow(/not available once a booking has started/);
+
+    // The refusal fires before the guest plan, so nothing is priced or settled.
+    expect(h.prepareGuestPlan).not.toHaveBeenCalled();
   });
 
   it("STILL blocks a link COMBINED with a date change on a quote-priced booking", async () => {

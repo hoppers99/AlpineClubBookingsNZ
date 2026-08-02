@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/lib/api-error";
 import {
+  GUEST_MEMBER_LINK_IN_PROGRESS_MESSAGE,
   resolveTargetDates,
   type BatchModifyInput,
   type LoadedBookingForModify,
@@ -143,5 +144,39 @@ describe("resolveTargetDates admin override (issue #1668)", () => {
     expect(() => resolveTargetDates({ booking, role: "USER", input })).toThrow(
       ApiError,
     );
+  });
+});
+
+describe("resolveTargetDates #2337: placeholder→member link on a mid-stay booking", () => {
+  it("REFUSES a link on an in-progress (mid-stay) booking — the silent-$0 re-rate the feature exists to prevent", () => {
+    vi.useFakeTimers();
+    // NZ today 2026-08-22 sits inside the PAID stay [2026-08-20, 2026-08-24), so
+    // the edit resolves to the in-progress mode where a link would price through
+    // buildInProgressGuestRangePlan (fed the ORIGINAL guests) and settle $0.
+    vi.setSystemTime(new Date("2026-08-22T12:00:00.000Z"));
+
+    const booking = makeBooking("PAID", "2026-08-20", "2026-08-24");
+    const input: BatchModifyInput = {
+      linkGuestToMember: [{ guestId: "g1", memberId: "member-9" }],
+    };
+
+    expect(() => resolveTargetDates({ booking, role: "ADMIN", input })).toThrow(
+      GUEST_MEMBER_LINK_IN_PROGRESS_MESSAGE,
+    );
+  });
+
+  it("does NOT fire the in-progress link refusal for a FUTURE (pre-stay) booking — that link re-rates correctly on the recalculate path", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-10T12:00:00.000Z"));
+
+    // Check-in is still in the future, so the edit is NOT in-progress; the link
+    // is allowed here and re-rates through the full recalculate pricing pass.
+    const booking = makeBooking("CONFIRMED", "2026-08-20", "2026-08-24");
+    const input: BatchModifyInput = {
+      linkGuestToMember: [{ guestId: "g1", memberId: "member-9" }],
+    };
+
+    const result = resolveTargetDates({ booking, role: "ADMIN", input });
+    expect(result.isInProgressEdit).toBe(false);
   });
 });

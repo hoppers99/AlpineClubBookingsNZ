@@ -117,6 +117,11 @@ type ProposedGuestPricingInput = {
   stayStart: Date;
   stayEnd: Date;
   nights?: Date[];
+  // #1036 / #2337: nights the guest already bought keep their booked price; the
+  // pricing pass reads this. A linked placeholder clears it to re-rate at the
+  // member season rate (see the carve-out where `proposedGuestRows` is built),
+  // so the field is part of this type rather than only present at runtime.
+  lockedNightPrices?: Array<{ stayDate: Date; priceCents: number }>;
 };
 
 type ProposedRemainingGuest = {
@@ -300,6 +305,8 @@ export const GUEST_MEMBER_LINK_WHOLE_LODGE_ONLY_MESSAGE =
   "A placeholder guest can only be linked to a member on a whole-lodge booking.";
 export const GUEST_MEMBER_LINK_PLACEHOLDER_ONLY_MESSAGE =
   "Only an unlinked placeholder guest can be linked to a member; a guest already linked to a member cannot be re-pointed.";
+export const GUEST_MEMBER_LINK_ALREADY_ON_BOOKING_MESSAGE =
+  "This member is already on the booking and cannot be linked to another guest.";
 
 /**
  * Resolve the #2337 placeholder→member links, enforcing the narrow gate that
@@ -348,6 +355,19 @@ export function resolveGuestMemberLinks({
     (input.guestUpdates ?? []).map((update) => update.guestId),
   );
   const guestsById = new Map(booking.guests.map((guest) => [guest.id, guest]));
+  // Members ALREADY on the booking — e.g. a prior committed link, or the booking
+  // owner and their family placed as member guests at approval. A second link to
+  // any of them would bill the member rate twice (#2337 double-billing), so it is
+  // refused below. On the apply path `booking.guests` is the post-lock re-read
+  // (`modifyBookingBatch` re-reads the full booking under the money + per-lodge
+  // locks and passes it straight to `prepareGuestPlan`), so this same check is
+  // the in-transaction re-check that closes a concurrent double-link — two racing
+  // requests serialise on the lock, and the second sees the first's committed row.
+  const existingBookingMemberIds = new Set(
+    booking.guests
+      .filter((guest) => guest.memberId)
+      .map((guest) => guest.memberId as string),
+  );
   const seenGuestIds = new Set<string>();
   const seenMemberIds = new Set<string>();
   const links: ResolvedGuestMemberLink[] = [];
@@ -367,6 +387,14 @@ export function resolveGuestMemberLinks({
       throw new ApiError("The same member cannot be linked to two guests", 400);
     }
     seenMemberIds.add(memberId);
+    // …and one already on the booking (a prior committed link, or a member guest
+    // added at approval) cannot be linked to ANOTHER placeholder row — that is the
+    // cross-request double-bill the within-request guard above cannot see. The
+    // person-night conflict check excludes this booking, so nothing else catches
+    // it (#2337).
+    if (existingBookingMemberIds.has(memberId)) {
+      throw new ApiError(GUEST_MEMBER_LINK_ALREADY_ON_BOOKING_MESSAGE, 400);
+    }
 
     if (removedGuestIds.has(link.guestId)) {
       throw new ApiError(
@@ -1889,6 +1917,15 @@ export async function applyGuestChanges(
           ? {
               isMember: true,
               memberId: link.memberId,
+              // #2337: display the member's canonical name, like an added member
+              // guest and like the in-progress branch above; keep the "Guest N"
+              // placeholder name only when the member record carries none. Without
+              // this the row stays "Guest N" while flagged as the member, and the
+              // post-commit Xero name-sync pushes the stale placeholder onto the
+              // invoice.
+              ...(link.firstName && link.lastName
+                ? { firstName: link.firstName, lastName: link.lastName }
+                : {}),
               ...(link.consentColumns ?? {}),
             }
           : {}),

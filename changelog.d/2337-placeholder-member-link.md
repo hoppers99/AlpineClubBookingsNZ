@@ -20,10 +20,16 @@
   school whole-lodge booking, whose negotiated price must not be disturbed), and
   only on a placeholder that is not already linked to a member — a guest already
   attached to a member cannot be quietly re-pointed to a different one, and an
-  ordinary rename still cannot change who a booking is for. Linking a member from
+  ordinary rename still cannot change who a booking is for. A member who is
+  already on the booking cannot be linked to a second placeholder, so the same
+  person can never be billed the member rate twice. Linking a member from
   outside the booker's family still asks that member's consent and holds their
   place exactly as adding them as a guest would. Every link is recorded on the
   booking's history so the change is never silent.
 
-  Removing the placeholder and adding the member back still works and settles
-  identically; the link is simply the one-click equivalent.
+  The one-step link is offered only before a stay begins. Once a booking is
+  in-progress (the guests have checked in), the panel asks the officer to remove
+  the placeholder and add the member back instead — that path settles the change
+  correctly mid-stay, whereas the in-place re-rate cannot. Removing the
+  placeholder and adding the member back also still works before check-in and
+  settles identically; the link is simply the one-click equivalent.

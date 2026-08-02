@@ -228,6 +228,31 @@ export type ResolvedTargetDates = {
   datesChanged: boolean;
 };
 
+/**
+ * #2337: the placeholder→member in-place re-rate is refused on a mid-stay
+ * (in-progress) edit. A mid-stay edit prices through
+ * `buildInProgressGuestRangePlan`, which is fed the ORIGINAL `booking.guests`
+ * rather than the link-modified `guestsForPricing`, so the cleared
+ * `lockedNightPrices` + member identity never reach pricing: the re-rate would
+ * silently settle $0 while stamping the member. Rather than thread the link
+ * through the in-progress plan (the riskier option b), the link is refused here
+ * and the officer is pointed at the remove-and-re-add path (issue #2337 OD-A),
+ * which DOES settle correctly mid-stay because the in-progress plan prices an
+ * added member guest at the member rate and refunds the removed placeholder.
+ *
+ * NB: admin override is NOT an escape hatch here — an override edit is date-only
+ * and rejects `linkGuestToMember` outright ("Admin override edits change dates
+ * only", see `modifyBookingBatch` and the quote route), so the working mid-stay
+ * route is remove-and-re-add, not override. Mid-stay in-place re-rate support
+ * (option b) is a possible future enhancement.
+ *
+ * Shared verbatim by the apply path (`resolveTargetDates` below) and the quote
+ * route so preview and save refuse identically — the officer sees the refusal,
+ * never a phantom $0 quote.
+ */
+export const GUEST_MEMBER_LINK_IN_PROGRESS_MESSAGE =
+  "Linking a placeholder guest to a member is not available once a booking has started. Remove the placeholder guest and add the member as a new guest to re-rate this stay.";
+
 export function resolveTargetDates({
   booking,
   role,
@@ -339,6 +364,15 @@ export function resolveTargetDates({
         "Promo code changes are not available for in-progress bookings",
         400,
       );
+    }
+    // #2337: a mid-stay re-rate silently settles $0 (the link never reaches the
+    // in-progress pricing plan), so refuse it here and point the officer at the
+    // remove-and-re-add path, which DOES settle correctly mid-stay. Mirrored on
+    // the quote route so preview and save agree — the officer sees the refusal,
+    // never $0. (Admin override is date-only and rejects links, so it is not the
+    // escape hatch — see GUEST_MEMBER_LINK_IN_PROGRESS_MESSAGE.)
+    if (input.linkGuestToMember?.length) {
+      throw new ApiError(GUEST_MEMBER_LINK_IN_PROGRESS_MESSAGE, 400);
     }
   } else if (
     role !== "ADMIN" &&
