@@ -68,6 +68,11 @@ import {
   startMemberGuestRefusalClock,
 } from "@/lib/member-guest-probe-guard";
 import { findUnpaidMemberGuestNames } from "@/lib/booking-member-guest-subscriptions";
+import { resolveSubscriptionLockoutMode } from "@/lib/member-subscription-eligibility";
+import {
+  buildPaidUpAdultRefusalBody,
+  evaluateNonMemberPricingRequirements,
+} from "@/lib/subscription-lockout-enforcement";
 import { nameField } from "@/lib/zod-helpers";
 import {
   BookingGuestStayRangeValidationError,
@@ -1108,6 +1113,10 @@ export async function POST(
     throw error;
   }
 
+  // #2543 — resolved once for this request; the member-guest refusal and the
+  // paid-up-adult requirement below must branch on the same answer.
+  const subscriptionLockoutMode = await resolveSubscriptionLockoutMode();
+
   if (!isAdmin) {
     // D-8: throws the neutral refusal for a cross-family guest rather than
     // previewing their name and subscription status.
@@ -1152,7 +1161,12 @@ export async function POST(
       throw error;
     }
 
-    if (unpaidMemberGuests.length > 0) {
+    // #2543: under NON_MEMBER_PRICING an unpaid member guest is repriced by the
+    // quote rather than refused by it — and the quote is exactly where the
+    // member SEES the higher price, which is what makes the notice below the
+    // honest place to tell them why. `findUnpaidMemberGuestNames` above still
+    // runs in that mode so the D-8 cross-family refusal is unaffected.
+    if (subscriptionLockoutMode === "HARD_BLOCK" && unpaidMemberGuests.length > 0) {
       return NextResponse.json(
         {
           error: `The following member guests have unpaid subscriptions: ${unpaidMemberGuests.join(", ")}. All member guests must have a paid subscription before booking.`,
@@ -1162,6 +1176,28 @@ export async function POST(
         { status: 403 }
       );
     }
+  }
+
+  // #2543 — the paid-up-adult requirement over the PROPOSED party (remaining +
+  // added guests), so the preview refuses exactly what the save would refuse.
+  // Skipped for admins, like every other eligibility gate on this route.
+  let subscriptionMemberRateNotice: string | null = null;
+  if (!isAdmin) {
+    const nonMemberPricing = await evaluateNonMemberPricingRequirements(prisma, {
+      mode: subscriptionLockoutMode,
+      lodgeId: bookingLodgeId,
+      seasonYear,
+      checkIn: newCheckIn,
+      checkOut: newCheckOut,
+      participants: guestsForPricing,
+    });
+    if (nonMemberPricing?.violation) {
+      return NextResponse.json(
+        buildPaidUpAdultRefusalBody(nonMemberPricing.violation),
+        { status: 409 },
+      );
+    }
+    subscriptionMemberRateNotice = nonMemberPricing?.memberRateNotice ?? null;
   }
 
   // Minimum stay policy validation (skip for admins). #2124: an in-progress
@@ -1772,6 +1808,11 @@ export async function POST(
     // live balance so the edit panel can offer credit against the new price.
     availableCreditCents,
     capacityAvailable: capacity.available,
+    // #2543 — "tell them why". Non-null only when this quote prices somebody at
+    // non-member rates because their season subscription is unpaid; the member
+    // is looking at the higher number on this very screen, so the explanation
+    // travels with it. Null in every other mode and for every paid-up party.
+    subscriptionMemberRateNotice,
     minimumStayValid: minimumStayViolations.length === 0,
     minimumStayViolations,
     exceptionReview,

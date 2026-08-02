@@ -50,8 +50,42 @@ function monthName(month: number | null): string {
   return MONTH_NAMES[month - 1];
 }
 
+/** #2543 — mirrors the Prisma `SubscriptionLockoutMode` enum. */
+type SubscriptionLockoutMode = "NO_BLOCK" | "HARD_BLOCK" | "NON_MEMBER_PRICING";
+
+/**
+ * Ordered least-strict to most-involved, with HARD_BLOCK in the middle because
+ * it is what every club already does. Wording is deliberately about CONSEQUENCE
+ * rather than about the setting: an admin picking between these needs to know
+ * what a member experiences, not what the column is called.
+ */
+const LOCKOUT_MODE_OPTIONS: ReadonlyArray<{
+  value: SubscriptionLockoutMode;
+  label: string;
+  description: string;
+}> = [
+  {
+    value: "NO_BLOCK",
+    label: "Let them book normally",
+    description:
+      "No subscription check at booking. Members book at member rates whether or not their subscription is paid, and the unpaid-subscription banner is hidden.",
+  },
+  {
+    value: "HARD_BLOCK",
+    label: "Stop them booking (default)",
+    description:
+      "A member whose subscription is not paid for the season cannot book at all, and sees an unpaid-subscription banner asking them to pay first.",
+  },
+  {
+    value: "NON_MEMBER_PRICING",
+    label: "Let them book, at non-member rates",
+    description:
+      "They may book, but their own nights are charged at the non-member rate until the subscription is paid, and the booking must include at least one adult member whose subscription is paid.",
+  },
+];
+
 interface LockoutSettings {
-  enabled: boolean;
+  mode: SubscriptionLockoutMode;
   financialYearEndMonthOverride: number | null;
   textFallbackEnabled: boolean;
   useFeeScheduleItemCodes: boolean;
@@ -232,7 +266,7 @@ export function SubscriptionLockoutSettingsPanel({
             headers: { "Content-Type": "application/json" },
             credentials: "same-origin",
             body: JSON.stringify({
-              enabled: settings.enabled,
+              mode: settings.mode,
               financialYearEndMonthOverride:
                 settings.financialYearEndMonthOverride,
               textFallbackEnabled: settings.textFallbackEnabled,
@@ -352,40 +386,62 @@ export function SubscriptionLockoutSettingsPanel({
         <CardHeader>
           <CardTitle>Booking lockout</CardTitle>
           <CardDescription>
-            Block members with an unpaid Annual Membership Fee from booking.
+            What happens when a member with an unpaid Annual Membership Fee tries
+            to book.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-5">
-          <label className="flex items-start gap-3">
-            <Checkbox
-              className="mt-0.5"
-              checked={settings.enabled}
-              disabled={!membershipCanEdit}
-              onCheckedChange={(checked) =>
-                update({ enabled: checked === true })
-              }
-            />
-            <span className="text-sm">
-              <span className="font-medium">Enforce the booking lockout</span>
-              <span className="block text-muted-foreground">
-                When on, members whose subscription is not paid for the current
-                season cannot book, and they see an unpaid-subscription banner.
-                When off, all members can book regardless of subscription, and
-                the banner is hidden.
-              </span>
-            </span>
-          </label>
+          {/* #2543 — three mutually exclusive answers, as radio buttons rather
+              than a dropdown: the choice moves MONEY, so all three consequences
+              should be readable at once instead of hidden behind a click. */}
+          <fieldset className="space-y-3">
+            <legend className="text-sm font-medium">
+              When a member&rsquo;s subscription is unpaid
+            </legend>
+            {LOCKOUT_MODE_OPTIONS.map((option) => (
+              <label key={option.value} className="flex items-start gap-3">
+                <input
+                  type="radio"
+                  className="mt-1"
+                  name="subscription-lockout-mode"
+                  value={option.value}
+                  checked={settings.mode === option.value}
+                  disabled={!membershipCanEdit}
+                  onChange={() => update({ mode: option.value })}
+                />
+                <span className="text-sm">
+                  <span className="font-medium">{option.label}</span>
+                  <span className="block text-muted-foreground">
+                    {option.description}
+                  </span>
+                </span>
+              </label>
+            ))}
+          </fieldset>
+
+          {settings.mode === "NON_MEMBER_PRICING" ? (
+            <div className="rounded-md border border-info-6 bg-info-3 p-3 text-sm text-info-11">
+              <span className="font-medium">What members will see:</span> anyone
+              whose subscription is unpaid is charged the non-member rate for
+              their own nights and is told why on the quote. Their booking must
+              still include at least one adult member whose subscription IS paid;
+              if it does not, the booking is refused and they can ask a Booking
+              Officer to allow it. The bed is held while that request is pending.
+              An unpaid member also stops counting as the adult member who hosts
+              non-member guests.
+            </div>
+          ) : null}
 
           {/* Xero connection status is finance-area; only shown to a finance
               viewer so we never assert "not connected" to someone who simply
               cannot see finance (the Xero fetches were skipped for them). */}
           {canFinance ? (
-            settings.enabled && !xeroConnected ? (
+            settings.mode !== "NO_BLOCK" && !xeroConnected ? (
               <div className="rounded-md border border-warning-6 bg-warning-3 p-3 text-sm text-warning-11">
                 <span className="font-medium">Heads up:</span> the lockout is on,
                 but Xero is not connected, so the system cannot read anyone&rsquo;s
                 paid status. While Xero is disconnected the lockout has no effect
-                and all members can book.{" "}
+                and all members can book at member rates.{" "}
                 <Link href="/admin/xero/setup" className="font-medium underline">
                   Connect Xero
                 </Link>{" "}

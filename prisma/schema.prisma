@@ -5878,10 +5878,38 @@ model MembershipNominationSettings {
 // (account code / item code) are NOT stored here; they remain in the
 // XeroAccountMapping "subscriptionIncome" row so there is a single source of
 // truth shared with the Xero mappings panel.
+// How a club treats a member whose season subscription is required but unpaid
+// when they try to book (#2543). Supersedes the old boolean `enabled` toggle:
+//   NO_BLOCK           - no subscription gate at all; they book at member rates.
+//   HARD_BLOCK         - the historical behaviour: 403 SUBSCRIPTION_REQUIRED /
+//                        GUEST_SUBSCRIPTION_REQUIRED. The effective default, so
+//                        every existing club is unchanged until an admin moves.
+//   NON_MEMBER_PRICING - they may book, but their own nights price at the
+//                        built-in NON_MEMBER rate and the booking must contain at
+//                        least one paid-up adult member (else it is refused with
+//                        an admin-override request path).
+enum SubscriptionLockoutMode {
+  NO_BLOCK
+  HARD_BLOCK
+  NON_MEMBER_PRICING
+}
+
 model MembershipLockoutSettings {
-  id                            String   @id @default("default")
-  // Master toggle. When false, no booking is blocked for an unpaid subscription.
-  enabled                       Boolean  @default(true)
+  id                            String                  @id @default("default")
+  // LEGACY, superseded by `mode` (#2543). Retained for the expand/contract
+  // window only: between `migrate` and cutover a draining old colour still reads
+  // this column, so it cannot be dropped in the same release that adds `mode`.
+  // The application keeps it in step with `mode` on every save
+  // (`legacyEnabledForLockoutMode`) so a rollback lands on the nearest
+  // equivalent behaviour. A later contract release drops it. Read `mode`.
+  enabled                       Boolean                 @default(true)
+  // Three-way lockout policy (#2543). NULLABLE on purpose: a null means "this
+  // club has not chosen a mode yet", and `normalizeMembershipLockoutSettings`
+  // then reads the legacy `enabled` boolean (true -> HARD_BLOCK,
+  // false -> NO_BLOCK) so no club's behaviour moved. Never read this column
+  // directly — go through `loadMembershipLockoutSettings`, which resolves the
+  // null.
+  mode                          SubscriptionLockoutMode?
   // Membership financial year-end month (1-12). Null = follow the connected
   // Xero organisation's accounting financial year. A value overrides it when the
   // membership subscription year differs from the accounting year.

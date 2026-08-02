@@ -7,6 +7,7 @@ import {
   requiresPaidSubscriptionForMemberForBooking,
   resolveMembershipTypePolicyForMember,
 } from "@/lib/membership-type-policy";
+import { resolveSubscriptionLockoutMode } from "@/lib/member-subscription-eligibility";
 import { formatUnpaidSubscriptionRateReason } from "@/lib/policies/subscription-lockout-pricing";
 
 export async function GET() {
@@ -55,6 +56,7 @@ export async function GET() {
     seasonYear,
     ageTier: member?.ageTier,
   });
+  const subscriptionLockoutMode = await resolveSubscriptionLockoutMode();
   const status = sub?.status ?? "NOT_INVOICED";
   const effectiveStatus = subscriptionRequired ? status : "NOT_REQUIRED";
   // "Told them why" (#2533). When the booking lockout applies to this member and
@@ -101,5 +103,13 @@ export async function GET() {
     membershipTypeSubscriptionBehavior:
       membershipTypePolicy?.subscriptionBehavior ?? null,
     memberRateNotice,
+    /**
+     * #2543 — the club's effective lockout policy, so the member surfaces can
+     * say the true thing. Under HARD_BLOCK the banner means "you cannot book";
+     * under NON_MEMBER_PRICING it means "you can book, at non-member rates, with
+     * a paid-up adult member along". Same underlying facts, different sentence,
+     * and the client has no other way to tell them apart.
+     */
+    subscriptionLockoutMode,
   });
 }

@@ -96,6 +96,32 @@ export interface HostingParticipant {
    */
   operationallyPresent?: boolean;
   /**
+   * Whether this member's season subscription is settled — PAID, or the season
+   * gate says one is not required for them (#2543).
+   *
+   * ABSENT MEANS SETTLED, and that default is load-bearing: under the two modes
+   * that are not `NON_MEMBER_PRICING` nobody is repriced, so nothing about
+   * hosting changes and every existing caller keeps its pre-#2543 answer without
+   * being touched. Only the booking-side loader that knows the club is in
+   * `NON_MEMBER_PRICING` populates it, and only then can it be `false`.
+   *
+   * WHY IT DISQUALIFIES A HOST (owner decision, 2 Aug 2026, #2543): under
+   * `NON_MEMBER_PRICING` an unpaid member is being CHARGED as a non-member, and
+   * the club's position is that somebody the club is charging as a non-member is
+   * not the responsible member the hosting rule asks for. Their non-member guests
+   * therefore need a genuinely paid-up adult member present.
+   *
+   * WHY IT DOES NOT MAKE THEM A GUEST NEEDING HOSTING: deliberately asymmetric,
+   * and narrower than the lapsed-member rule above. A lapsed membership is gone;
+   * an unpaid subscription is a membership in good standing with a bill
+   * outstanding. The owner's rule moves them on the money axis and on the
+   * "counts as the responsible adult" axis only. `participantIsNonMemberGuest`
+   * therefore does NOT read this field, so an unpaid member's own nights are not
+   * suddenly uncovered guest-nights needing admin review — the paid-up-adult
+   * requirement in `subscription-lockout-pricing.ts` is what covers the party.
+   */
+  subscriptionSettled?: boolean;
+  /**
    * True for somebody who is staying with this party but is carried on a
    * SIBLING booking row — they can host, but their own nights are not this
    * booking's responsibility.
@@ -259,12 +285,19 @@ function memberIsInGoodStanding(
  * responsible adult being present, and an organisation is not a person. Nor does
  * a row that is not operationally present (D-12) — an unaccepted member-guest
  * invite is not a responsible adult at the lodge, and the arrival roster,
- * the kiosk and bed allocation all already agree.
+ * the kiosk and bed allocation all already agree. Nor does a member the club is
+ * currently charging as a non-member because their subscription is unpaid
+ * (#2543) — see `HostingParticipant.subscriptionSettled`, which is absent (and
+ * so treated as settled) everywhere except under `NON_MEMBER_PRICING`.
  */
 export function participantQualifiesAsHost(
-  participant: Pick<HostingParticipant, "member" | "operationallyPresent">,
+  participant: Pick<
+    HostingParticipant,
+    "member" | "operationallyPresent" | "subscriptionSettled"
+  >,
 ): boolean {
   if (participant.operationallyPresent === false) return false;
+  if (participant.subscriptionSettled === false) return false;
   const member = participant.member;
   if (!memberIsInGoodStanding(member)) return false;
   return member.ageTier === AgeTier.ADULT;

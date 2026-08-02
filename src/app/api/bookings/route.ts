@@ -23,6 +23,11 @@ import {
   MembershipTypeBookingPolicyError,
   requiresPaidSubscriptionForMemberForBooking,
 } from "@/lib/membership-type-policy";
+import { resolveSubscriptionLockoutMode } from "@/lib/member-subscription-eligibility";
+import {
+  buildPaidUpAdultRefusalBody,
+  evaluateNonMemberPricingRequirements,
+} from "@/lib/subscription-lockout-enforcement";
 import {
   assertLinkedBookingMembersCanBeBooked,
   BookingGuestValidationError,
@@ -667,9 +672,18 @@ export async function POST(request: NextRequest) {
     throw err;
   }
 
+  // #2543 — the club's three-way subscription-lockout policy, resolved ONCE for
+  // this request so the owner gate, the member-guest gate and the paid-up-adult
+  // requirement below cannot branch on different answers if an admin saves the
+  // setting mid-request.
+  const subscriptionLockoutMode = await resolveSubscriptionLockoutMode();
+
   // Subscription gate for the booking owner. Bypassed when the Xero module
-  // is effectively off, because subscriptions are invoiced through Xero.
+  // is effectively off, because subscriptions are invoiced through Xero, and
+  // (#2543) when the club has chosen NON_MEMBER_PRICING — there the unpaid owner
+  // books and is repriced by `resolveGuestRateMembershipTypes` instead.
   if (
+    subscriptionLockoutMode === "HARD_BLOCK" &&
     !isAuthorizedOnBehalf &&
     await requiresPaidSubscriptionForMemberForBooking(prisma, {
       memberId: effectiveMemberId,
@@ -731,7 +745,12 @@ export async function POST(request: NextRequest) {
       throw error;
     }
 
-    if (unpaidMemberGuests.length > 0) {
+    // #2543: under NON_MEMBER_PRICING an unpaid member guest is repriced, not
+    // refused. `findUnpaidMemberGuests` above still RUNS in that mode, and
+    // deliberately: it is what raises the D-8 neutral refusal for an unpaid
+    // member guest from beyond the booker's family, and that privacy boundary is
+    // not the lockout policy's to relax. Only the refusal below is mode-gated.
+    if (subscriptionLockoutMode === "HARD_BLOCK" && unpaidMemberGuests.length > 0) {
       const unpaidMemberNames = unpaidMemberGuests.map((member) => member.name);
       return NextResponse.json(
         {
@@ -747,6 +766,32 @@ export async function POST(request: NextRequest) {
           })),
         },
         { status: 403 }
+      );
+    }
+  }
+
+  // #2543 — under NON_MEMBER_PRICING the booking must contain at least one
+  // paid-up adult member. Refused when it does not, but refused with a door: the
+  // response carries the frozen, exception-eligible violation, so the member can
+  // ask a Booking Officer to allow it through the #2365 request workflow, and
+  // the HOLD capacity mode keeps their beds while that decision is pending.
+  //
+  // Skipped for an authorized on-behalf booking, exactly like the two gates
+  // above (#1442) and for the same reason as the hosting rule's D-R4: the person
+  // who would approve the override is the person making the booking.
+  if (!isAuthorizedOnBehalf) {
+    const nonMemberPricing = await evaluateNonMemberPricingRequirements(prisma, {
+      mode: subscriptionLockoutMode,
+      lodgeId: bookingLodgeId,
+      seasonYear: getSeasonYear(checkIn),
+      checkIn,
+      checkOut,
+      participants: guestInputs,
+    });
+    if (nonMemberPricing?.violation) {
+      return NextResponse.json(
+        buildPaidUpAdultRefusalBody(nonMemberPricing.violation),
+        { status: 409 },
       );
     }
   }

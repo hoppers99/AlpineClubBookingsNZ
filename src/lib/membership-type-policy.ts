@@ -14,7 +14,16 @@ import {
   MEMBER_GUEST_NOT_ADDABLE_CODE,
 } from "@/lib/member-guest-refusal";
 import { BUILT_IN_MEMBERSHIP_TYPES, defaultMembershipTypeKeyForRole } from "@/lib/membership-types";
-import { requiresPaidSubscriptionForBooking } from "@/lib/member-subscription-eligibility";
+import type { SubscriptionLockoutMode } from "@/lib/membership-lockout-settings";
+import {
+  peekSubscriptionLockoutMode,
+  requiresPaidSubscriptionForBooking,
+} from "@/lib/member-subscription-eligibility";
+import { memberUnpaidSubscriptionForcesNonMemberRate } from "@/lib/policies/subscription-lockout-pricing";
+import {
+  loadMemberSubscriptionSettlements,
+  type SubscriptionSettlementDb,
+} from "@/lib/subscription-lockout-facts";
 import {
   calculateBookingPrice,
   type GroupDiscountConfig,
@@ -624,6 +633,98 @@ export type GuestRateResolution = {
   rateSource: RateSource;
 };
 
+/** The db shape the #2543 reprice read needs on top of the policy resolver's. */
+type UnpaidSubscriptionRepriceDb = MembershipTypePolicyDb & SubscriptionSettlementDb;
+
+function canReadUnpaidSubscriptionFacts(
+  db: unknown,
+): db is UnpaidSubscriptionRepriceDb {
+  const candidate = db as Partial<UnpaidSubscriptionRepriceDb> | null | undefined;
+  return Boolean(
+    candidate?.member?.findMany && candidate.memberSubscription?.findMany,
+  );
+}
+
+/**
+ * Which member-linked guests must price at the NON_MEMBER rate because their
+ * season subscription is required but unpaid (#2543).
+ *
+ * EMPTY UNLESS THE CLUB IS IN `NON_MEMBER_PRICING`. Under `HARD_BLOCK` (the
+ * default) and `NO_BLOCK` this returns before touching the database and pricing
+ * is byte-identical to pre-#2543, which is what makes the mode switch the only
+ * thing that can move a club's money.
+ *
+ * UNREADABLE INPUTS YIELD NO REPRICE, matching the structural seam its neighbour
+ * `resolveMembershipTypePoliciesForMembers` already uses: a `db` that is not a
+ * real client (a narrow test double) returns an empty result rather than
+ * throwing, because this function's contract is "resolve rates from what the
+ * client can see". Every production call site passes `prisma` or a
+ * `Prisma.TransactionClient`, both of which carry every delegate, so the branch
+ * is not reachable in production.
+ *
+ * Be clear about the direction of the risk rather than calling it fail-safe: if
+ * it WERE reached under `NON_MEMBER_PRICING`, the unpaid member would be charged
+ * MEMBER rates and the booking would still succeed — the route gate does not
+ * refuse in that mode, so nothing else would catch it. That is why the reprice is
+ * covered by a test that drives it through a client carrying every delegate
+ * (`membership-type-policy-subscription-reprice.test.ts`), instead of relying on
+ * the empty-set branch being the safe one.
+ */
+async function resolveUnpaidSubscriptionRepricedMemberIds(
+  db: unknown,
+  params: {
+    seasonYear: number;
+    memberIds: ReadonlyArray<string | null | undefined>;
+    policies: ReadonlyMap<string, ResolvedMembershipTypePolicy>;
+  },
+): Promise<ReadonlySet<string>> {
+  const empty: ReadonlySet<string> = new Set<string>();
+  const candidateIds = [
+    ...new Set(
+      params.memberIds
+        .map((id) => id?.trim())
+        .filter((id): id is string => Boolean(id)),
+    ),
+  ];
+  if (candidateIds.length === 0) return empty;
+  if (!canReadUnpaidSubscriptionFacts(db)) return empty;
+
+  let mode: SubscriptionLockoutMode;
+  try {
+    mode = await peekSubscriptionLockoutMode();
+  } catch {
+    return empty;
+  }
+  if (mode !== "NON_MEMBER_PRICING") return empty;
+
+  const behaviorByMember = new Map(
+    [...params.policies].map(([memberId, policy]) => [
+      memberId,
+      policy.subscriptionBehavior,
+    ]),
+  );
+  const settlements = await loadMemberSubscriptionSettlements(db, {
+    memberIds: candidateIds,
+    seasonYear: params.seasonYear,
+    subscriptionBehaviorByMember: behaviorByMember,
+  });
+
+  const repriced = new Set<string>();
+  for (const memberId of candidateIds) {
+    if (
+      memberUnpaidSubscriptionForcesNonMemberRate({
+        isMember: true,
+        subscriptionRequired:
+          settlements.get(memberId)?.subscriptionRequired ?? false,
+        subscriptionPaid: settlements.get(memberId)?.subscriptionPaid ?? false,
+      })
+    ) {
+      repriced.add(memberId);
+    }
+  }
+  return repriced;
+}
+
 /**
  * Resolve every guest's rate membership type + rateSource (#1930, E4, D3).
  * This REPLACES the old `applyMembershipTypeRatePolicyToGuests` boolean flip:
@@ -634,6 +735,25 @@ export type GuestRateResolution = {
  * The result is persisted as the BookingGuest.rateMembershipTypeId snapshot and
  * fed straight into calculateBookingPrice. Extends (does not fork) the shared
  * `resolveMembershipTypePoliciesForMembers` effective-type helper.
+ *
+ * #2543 ADDS ONE MORE WAY TO REACH TYPE_POLICY_FORCED: under a club whose
+ * subscription-lockout mode is `NON_MEMBER_PRICING`, a member whose season
+ * subscription is required but unpaid prices at the same built-in NON_MEMBER
+ * type — the SAME rate rows and the SAME Xero item code as any other non-member,
+ * so Xero narrates it as ordinary non-member pricing and no new money path is
+ * introduced.
+ *
+ * WHY HERE AND NOT AT THE FIVE BOOKING WRITE PATHS. The issue's requirement is
+ * that the reprice is consistent across every write path. There are ~25 places
+ * that price a booking (create, confirm, quote, modify preview, modify apply,
+ * guest add, guest removal, group join, waitlist promotion, cross-lodge
+ * promotion, booking requests, school requests, promo validation…), and a rule
+ * threaded through each of them by hand is a rule that will be missing from the
+ * twenty-sixth. This function is the ONE gate every one of them already passes
+ * through, so putting the reprice here makes "consistent across all paths" a
+ * structural property rather than a review checklist. The cost is one settings
+ * read per pricing call, which returns before any further query in the two modes
+ * that are not `NON_MEMBER_PRICING`.
  */
 export async function resolveGuestRateMembershipTypes<
   Guest extends { isMember: boolean; memberId?: string | null },
@@ -648,6 +768,21 @@ export async function resolveGuestRateMembershipTypes<
     memberIds: params.guests.map((guest) => guest.memberId),
     seasonYear: params.seasonYear,
   });
+
+  // #2543. Only the ids of guests flagged as members are offered: a row whose
+  // `isMember` snapshot is false already prices at the non-member rate, so
+  // asking about their subscription would be a pointless query and a pointless
+  // disclosure.
+  const unpaidRepricedMemberIds = await resolveUnpaidSubscriptionRepricedMemberIds(
+    db,
+    {
+      seasonYear: params.seasonYear,
+      memberIds: params.guests
+        .filter((guest) => guest.isMember)
+        .map((guest) => guest.memberId),
+      policies,
+    },
+  );
 
   // Built-in type ids: the NON_MEMBER default target, plus a key->id map that
   // backfills any built-in fallback policy whose membershipType.id is null.
@@ -689,6 +824,18 @@ export async function resolveGuestRateMembershipTypes<
         ...guest,
         rateMembershipTypeId: nonMemberTypeId(),
         rateSource: "NON_MEMBER_DEFAULT" as const,
+      };
+    }
+    // #2543: an unpaid subscription forces the non-member rate BEFORE the
+    // member's own type is consulted, so it overrides MEMBER_RATE. Placed first
+    // deliberately — a member whose type says MEMBER_RATE is exactly the member
+    // this rule is about, and reading the type first would leave the rule with
+    // no effect on anyone.
+    if (guest.memberId && unpaidRepricedMemberIds.has(guest.memberId)) {
+      return {
+        ...guest,
+        rateMembershipTypeId: nonMemberTypeId(),
+        rateSource: "TYPE_POLICY_FORCED" as const,
       };
     }
     const policy = guest.memberId ? policies.get(guest.memberId) : undefined;

@@ -459,11 +459,21 @@ export function violationFingerprint(violation: PolicyExceptionViolation): strin
     const req = violation.requirements;
     return `${head}|min=${req.minimumNights}|act=${req.actualNights}|days=${req.triggerDays.join(",")}`;
   }
+  if (violation.reasonCode === "ADULT_MEMBER_HOSTING_REQUIRED") {
+    const req = violation.requirements;
+    const uncovered = req.uncovered
+      .map((row) => `${row.night} ${row.guestRef}`)
+      .join(";");
+    return `${head}|uncovered=${uncovered}`;
+  }
+  // PAID_UP_ADULT_MEMBER_REQUIRED (#2543). The tail is the two counts, and
+  // deliberately NOT the identity of who is unpaid: the hazard an admin reviewed
+  // is "this party has nobody paid-up on it", and it is the SAME hazard whether
+  // the unpaid member is Alice or Bob. Fingerprinting the identities would
+  // reopen a decided review every time the party was re-saved with the same
+  // shape, which is exactly what the fingerprint exists to prevent.
   const req = violation.requirements;
-  const uncovered = req.uncovered
-    .map((row) => `${row.night} ${row.guestRef}`)
-    .join(";");
-  return `${head}|uncovered=${uncovered}`;
+  return `${head}|repriced=${req.repricedUnpaidMemberCount}|party=${req.participantCount}`;
 }
 
 /** Identity (reason + policy) of a violation, ignoring content — for reporting. */

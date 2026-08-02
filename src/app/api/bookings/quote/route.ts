@@ -19,6 +19,8 @@ import {
   priceBookingGuestsWithMembershipTypePolicy,
 } from "@/lib/membership-type-policy";
 import { getMemberCreditBalance } from "@/lib/member-credit";
+import { evaluateNonMemberPricingRequirements } from "@/lib/subscription-lockout-enforcement";
+import { getSeasonYear } from "@/lib/utils";
 import { applyRateLimit, rateLimiters } from "@/lib/rate-limit";
 import { z } from "zod";
 import { bookableAgeTierEnum } from "@/lib/age-tier-schema";
@@ -362,11 +364,35 @@ export async function POST(request: NextRequest) {
       holdEnabled: holdPolicy.enabled,
     });
 
+    // #2543 — "tell them why". The quote is the screen on which the member sees
+    // the number, so it is the screen that owes them the explanation for it.
+    // Null unless the club runs NON_MEMBER_PRICING and somebody on this party is
+    // being repriced; the quote is otherwise untouched. Read-only: the
+    // evaluation performs no writes and, because it also reports whether a
+    // paid-up adult is present, the quote can warn BEFORE the member fills in
+    // the rest of the wizard and gets refused at the end.
+    const nonMemberPricing = await evaluateNonMemberPricingRequirements(prisma, {
+      lodgeId: quoteLodgeId,
+      seasonYear: getSeasonYear(checkIn),
+      checkIn,
+      checkOut,
+      participants: guests,
+    });
+
     return NextResponse.json({
       ...price,
       availableCreditCents,
       deferredGuestPortionCents,
       groupDiscountApplied,
+      subscriptionMemberRateNotice: nonMemberPricing?.memberRateNotice ?? null,
+      /**
+       * True when saving this party WOULD be refused for having no paid-up adult
+       * member on it. Derived from the same violation the write paths refuse on,
+       * not from `hasPaidUpAdultMember` alone — a party nobody is being repriced
+       * on does not owe a paid-up adult at all, and warning about one would be
+       * both wrong and alarming.
+       */
+      paidUpAdultMemberMissing: nonMemberPricing?.violation != null,
       nonMemberHoldDecision: {
         enabled: holdPolicy.enabled,
         holdDays: holdPolicy.holdDays,

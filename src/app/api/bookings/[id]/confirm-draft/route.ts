@@ -25,6 +25,12 @@ import {
   MembershipTypeBookingPolicyError,
   requiresPaidSubscriptionForMemberForBooking,
 } from "@/lib/membership-type-policy";
+import { resolveSubscriptionLockoutMode } from "@/lib/member-subscription-eligibility";
+import {
+  buildPaidUpAdultRefusalBody,
+  evaluateNonMemberPricingRequirements,
+  toSubscriptionLockoutParticipants,
+} from "@/lib/subscription-lockout-enforcement";
 import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
 import { hasAdminAccess } from "@/lib/access-roles";
 
@@ -123,9 +129,15 @@ export async function POST(
     throw err;
   }
 
+  // #2543 — the club's three-way subscription-lockout policy, resolved once so
+  // the refusal below and the paid-up-adult requirement after it agree.
+  const subscriptionLockoutMode = await resolveSubscriptionLockoutMode();
+
   // Subscription check (non-admins only; bypassed when the Xero module is
-  // effectively off, because subscriptions are invoiced through Xero)
+  // effectively off, because subscriptions are invoiced through Xero, and under
+  // NON_MEMBER_PRICING, where the unpaid member confirms and is repriced)
   if (
+    subscriptionLockoutMode === "HARD_BLOCK" &&
     !isAdmin &&
     await requiresPaidSubscriptionForMemberForBooking(prisma, {
       memberId: booking.memberId,
@@ -143,6 +155,28 @@ export async function POST(
           error: `Your membership subscription for the ${seasonDisplay} season is not paid. Please contact the club to arrange payment before booking.`,
         },
         { status: 403 }
+      );
+    }
+  }
+
+  // #2543 — the paid-up-adult requirement, on the same terms as the create path:
+  // non-admins only, refused with the exception-eligible violation so the member
+  // can ask a Booking Officer, and a no-op unless the club chose
+  // NON_MEMBER_PRICING. Confirming a draft is a booking write like any other, so
+  // a draft saved before the club switched policy is judged by today's rule.
+  if (!isAdmin) {
+    const nonMemberPricing = await evaluateNonMemberPricingRequirements(prisma, {
+      mode: subscriptionLockoutMode,
+      lodgeId: booking.lodgeId ?? (await getDefaultLodgeId(prisma)),
+      seasonYear,
+      checkIn: booking.checkIn,
+      checkOut: booking.checkOut,
+      participants: toSubscriptionLockoutParticipants(booking.guests),
+    });
+    if (nonMemberPricing?.violation) {
+      return NextResponse.json(
+        buildPaidUpAdultRefusalBody(nonMemberPricing.violation),
+        { status: 409 },
       );
     }
   }

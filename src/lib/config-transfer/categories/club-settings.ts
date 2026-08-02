@@ -504,16 +504,28 @@ export const SINGLETONS: SingletonSpec[] = [
     // per-club billing preference exactly like `enabled`/`textFallbackEnabled`.
     // It was added after this list was written and had silently never travelled;
     // added here per the #2178 audit (should-travel).
+    // #2543: `mode` supersedes `enabled`, and BOTH travel for the duration of the
+    // expand/contract window. That is not redundancy — the pair is exactly what
+    // makes bundles portable in both directions:
+    //   * a pre-#2543 bundle carries `enabled` only. `mode` imports as null and
+    //     `normalizeMembershipLockoutSettings` reads the boolean, so a club that
+    //     had the lockout OFF lands on NO_BLOCK rather than on the HARD_BLOCK
+    //     default;
+    //   * a post-#2543 bundle carries both. `mode` wins at read time, and the
+    //     legacy boolean it restores alongside is the one an old colour would
+    //     read during a cutover.
+    // `enabled` leaves this list with the contract release that drops the column.
     fields: [
-      "enabled", "financialYearEndMonthOverride", "textFallbackEnabled",
+      "mode", "enabled", "financialYearEndMonthOverride", "textFallbackEnabled",
       "useFeeScheduleItemCodes",
     ],
     // financialYearEndMonthOverride is nullable (Int?) — null (= follow Xero's
     // accounting year) is a legitimate value, so it carries no `required`; its
     // 1–12 month bound still applies when a value is present, mirroring the admin
     // route (membership-lockout-settings): z.number().int().min(1).max(12)
-    // .nullable(). The three booleans are non-null (@default) and fail on a
-    // present null (#2200).
+    // .nullable(). `mode` is likewise nullable (#2543 — null means "resolve from
+    // the legacy boolean"), so it too carries no `required`. The three booleans
+    // are non-null (@default) and fail on a present null (#2200).
     constraints: {
       enabled: { required: true },
       financialYearEndMonthOverride: { min: 1, max: 12 },

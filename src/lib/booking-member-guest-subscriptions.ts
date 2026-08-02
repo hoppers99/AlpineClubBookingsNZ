@@ -1,11 +1,12 @@
 import type { AgeTier, SubscriptionStatus } from "@prisma/client";
 import { getAgeTierSettings } from "@/lib/age-tier";
 import { memberGuestCrossFamilyRefusal } from "@/lib/booking-guests";
-import {
-  isSubscriptionEnforcementActive,
-  requiresPaidSubscriptionForAgeTier,
-} from "@/lib/member-subscription-eligibility";
+import { isSubscriptionEnforcementActive } from "@/lib/member-subscription-eligibility";
 import { resolveMembershipTypePoliciesForMembers } from "@/lib/membership-type-policy";
+import {
+  resolveMemberSubscriptionSettlement,
+  subscriptionIsUnpaid,
+} from "@/lib/subscription-lockout-facts";
 import { getSeasonYear } from "@/lib/utils";
 
 interface BookingGuestLike {
@@ -115,33 +116,21 @@ export async function findUnpaidMemberGuests(
   });
 
   const memberById = new Map(linkedMembers.map((member) => [member.id, member]));
-  const billableUnpaidMemberIds = uniqueIds.filter(
-    (id) => {
-      const policy = membershipTypePolicies.get(id);
-      if (policy?.subscriptionBehavior === "NOT_REQUIRED") {
-        return false;
-      }
-      const subscription = subscriptionById.get(id);
-      // BASED_ON_AGE_TIER (issue #2041): a NOT_REQUIRED season row is
-      // authoritative for a tier-exempt member and dominates their stored
-      // ageTier, so a member who was exempt at season start stays not-billable
-      // even if their stored tier is promoted mid-season (decision Q4). Scoped
-      // to BASED_ON_AGE_TIER so REQUIRED types are byte-unchanged.
-      if (
-        policy?.subscriptionBehavior === "BASED_ON_AGE_TIER" &&
-        subscription?.status === "NOT_REQUIRED"
-      ) {
-        return false;
-      }
-      // BASED_ON_AGE_TIER otherwise defers to the same per-age-tier flag as
-      // REQUIRED (decision Q2), so both fall through to this age-tier check.
-      return subscription?.status !== "PAID"
-        && (!memberById.has(id)
-          || requiresPaidSubscriptionForAgeTier(
-            memberById.get(id)!.ageTier,
-            ageTierSettings
-          ));
-    }
+  // #2543: the RULE itself now lives in `resolveMemberSubscriptionSettlement`,
+  // shared verbatim with the booking-owner gate and the pricing reprice. This
+  // function keeps its own queries (and so its own call shape) but no longer
+  // keeps its own copy of the decision — the three used to be three
+  // hand-maintained branches of the same logic, and once one of them decides a
+  // PRICE they cannot be allowed to drift.
+  const billableUnpaidMemberIds = uniqueIds.filter((id) =>
+    subscriptionIsUnpaid(
+      resolveMemberSubscriptionSettlement({
+        subscriptionBehavior: membershipTypePolicies.get(id)?.subscriptionBehavior,
+        subscriptionStatus: subscriptionById.get(id)?.status,
+        ageTier: memberById.get(id)?.ageTier ?? null,
+        ageTierSettings,
+      }),
+    ),
   );
 
   if (billableUnpaidMemberIds.length === 0) {

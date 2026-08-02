@@ -5,6 +5,7 @@ import { parseDateOnly, formatDateOnly } from "@/lib/date-only";
 import { getStayNights } from "@/lib/policies/pricing";
 import { validateMinimumStay } from "@/lib/booking-policies";
 import { evaluateProposedAdultMemberHosting } from "@/lib/adult-member-hosting-review";
+import { evaluateProposedPaidUpAdultPresence } from "@/lib/subscription-lockout-enforcement";
 import { acquireLodgeCapacityLock, checkCapacityForGuestRanges } from "@/lib/capacity";
 import {
   releasePolicyExceptionReservation,
@@ -375,6 +376,23 @@ export async function evaluateProposalPartyViolations(
   });
   if (hosting) {
     violations.push(hosting);
+  }
+
+  // #2543 — the paid-up-adult requirement. Registering it HERE is what turns
+  // the booking refusal into an actual door: the member re-submits the same
+  // party to `POST /api/bookings/exception-requests`, this re-evaluation
+  // (server-side, never the client's claim) reproduces the violation, and the
+  // #2365 machinery freezes it, HOLDs the beds and queues it for a Booking
+  // Officer. Without this line the refusal would name a workflow the member
+  // could not enter.
+  const paidUpAdult = await evaluateProposedPaidUpAdultPresence(db, {
+    lodgeId,
+    checkIn,
+    checkOut,
+    guests: party.guests,
+  });
+  if (paidUpAdult) {
+    violations.push(paidUpAdult);
   }
 
   return violations;

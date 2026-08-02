@@ -69,11 +69,16 @@ import {
   type BookingGuestInput,
 } from "@/lib/booking-guests";
 import { findUnpaidMemberGuests } from "@/lib/booking-member-guest-subscriptions";
+import { resolveSubscriptionLockoutMode } from "@/lib/member-subscription-eligibility";
 import {
   assertMembershipTypeBookingAllowed,
   priceBookingGuestsWithMembershipTypePolicy,
   requiresPaidSubscriptionForMemberForBooking,
 } from "@/lib/membership-type-policy";
+import {
+  buildPaidUpAdultRefusalBody,
+  evaluateNonMemberPricingRequirements,
+} from "@/lib/subscription-lockout-enforcement";
 import {
   calculateBookingHoldDecision,
   toGroupDiscountConfig,
@@ -700,14 +705,20 @@ export async function joinGroupBookingAsMember(
     seasonYear,
   });
 
+  // #2543 — the club's three-way lockout policy, resolved once for this join so
+  // the owner refusal, the member-guest refusal and the paid-up-adult
+  // requirement all branch on the same answer.
+  const subscriptionLockoutMode = await resolveSubscriptionLockoutMode();
+
   // Same eligibility gates as POST /api/bookings (skipped for admins).
   if (sessionRole !== "ADMIN") {
     if (
-      await requiresPaidSubscriptionForMemberForBooking(prisma, {
+      subscriptionLockoutMode === "HARD_BLOCK" &&
+      (await requiresPaidSubscriptionForMemberForBooking(prisma, {
         memberId: sessionUserId,
         seasonYear,
         ageTier: joiner.ageTier,
-      })
+      }))
     ) {
       const paidSub = await prisma.memberSubscription.findFirst({
         where: { memberId: sessionUserId, seasonYear, status: "PAID" },
@@ -727,7 +738,12 @@ export async function joinGroupBookingAsMember(
       checkIn,
       guests,
     });
-    if (unpaidMemberGuests.length > 0) {
+    // #2543: mode-gated like the four sibling paths — the call above still runs
+    // under NON_MEMBER_PRICING so the D-8 cross-family refusal is unaffected.
+    if (
+      subscriptionLockoutMode === "HARD_BLOCK" &&
+      unpaidMemberGuests.length > 0
+    ) {
       throw new GroupBookingError(
         `The following member guests have unpaid subscriptions: ${unpaidMemberGuests
           .map((m) => m.name)
@@ -735,6 +751,29 @@ export async function joinGroupBookingAsMember(
         403,
         { code: "GUEST_SUBSCRIPTION_REQUIRED", details: unpaidMemberGuests }
       );
+    }
+
+    // #2543 — the paid-up-adult requirement over the JOINER's own booking. A
+    // group joiner creates their own booking under their own name, so "at least
+    // one paid-up adult member on the booking" is judged over their party alone:
+    // the organiser's adults are on a different booking and deliberately do not
+    // count, exactly as they do not count for the #2364 hosting rule.
+    const nonMemberPricing = await evaluateNonMemberPricingRequirements(prisma, {
+      mode: subscriptionLockoutMode,
+      lodgeId: groupLodgeId,
+      seasonYear,
+      checkIn,
+      checkOut,
+      participants: guests,
+    });
+    if (nonMemberPricing?.violation) {
+      const refusal = buildPaidUpAdultRefusalBody(nonMemberPricing.violation);
+      throw new GroupBookingError(nonMemberPricing.violation.message, 409, {
+        code: refusal.code,
+        details: refusal.details,
+        violations: refusal.exceptionReview.violations,
+        exceptionReview: refusal.exceptionReview,
+      });
     }
 
     const { validateMinimumStay, formatViolationsDetail } = await import(

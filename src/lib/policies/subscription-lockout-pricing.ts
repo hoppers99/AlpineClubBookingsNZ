@@ -1,7 +1,10 @@
+import type {
+  PaidUpAdultMemberPolicyExceptionViolation,
+  ResolvedPolicyScope,
+} from "@/lib/booking-policy-exceptions";
 import {
   participantQualifiesAsHost,
   type HostingMemberFacts,
-  type HostingParticipant,
 } from "@/lib/policies/adult-member-hosting";
 
 /**
@@ -31,15 +34,20 @@ import {
  * re-derived, so the standing/adult/operationally-present half can never drift;
  * #2533 only ANDs the subscription-settled fact on top.
  *
- * ENFORCEMENT IS A SEPARATE, OWNER-GATED DECISION. Today an unpaid required
- * member is HARD-BLOCKED from booking (a 403 on the create, confirm-draft,
- * group-join and modify paths), not repriced. Turning that block into the soft
- * "reprice + require a paid-up adult" behaviour above is a Critical money-regime
- * change with coupled decisions (opt-in vs. replace, capacity, Xero narration)
- * that only the owner can settle. This module is the pure, reviewed foundation
- * those paths will consume once the rollout is decided; it moves no money and
- * changes no path on its own. See `docs/DOMAIN_INVARIANTS.md` →
- * "Subscription-lockout booking pricing (#2533)".
+ * ENFORCEMENT IS NOW WIRED (#2543), UNDER ONE CLUB SETTING. The club's
+ * `MembershipLockoutSettings.mode` picks between three regimes:
+ *
+ *  - `NO_BLOCK` — no subscription gate at all;
+ *  - `HARD_BLOCK` — the historical 403 on the create, confirm-draft, group-join,
+ *    guest-add and modify paths. The migration-safe DEFAULT, so no club moved;
+ *  - `NON_MEMBER_PRICING` — this module's rule: the unpaid member is repriced,
+ *    told why, and the booking must contain a paid-up adult member.
+ *
+ * This module stays PURE. It decides, it does not enforce: the mode is resolved
+ * by `member-subscription-eligibility.ts`, the facts are loaded by
+ * `subscription-lockout-facts.ts`, and `subscription-lockout-enforcement.ts` is
+ * the one place the five booking write paths call. See
+ * `docs/DOMAIN_INVARIANTS.md` → "Subscription-lockout booking pricing (#2533)".
  */
 
 // ---------------------------------------------------------------------------
@@ -192,6 +200,82 @@ export function formatMissingPaidUpAdultRefusal(): string {
     "Renew a subscription, or add an adult member whose subscription is paid, " +
     "and try again."
   );
+}
+
+// ---------------------------------------------------------------------------
+// Requirement 3b — the refusal is exception-eligible (#2543 + #2363/#2365).
+// ---------------------------------------------------------------------------
+
+/**
+ * Frozen onto the violation so a snapshot names the rule it came from.
+ *
+ * The subscription lockout is ONE club-wide singleton row with no per-lodge
+ * override and no version column, so — unlike the minimum-stay and hosting
+ * policies, which are versioned rows — the identity here is a constant. That is
+ * honest rather than lazy: there is genuinely one policy, and inventing a
+ * synthetic version from `updatedAt` would make two evaluations of unchanged
+ * settings produce different snapshots and reopen reviews for no reason.
+ * `PAID_UP_ADULT_MEMBER_POLICY_VERSION` versions the RULE SHAPE, so it moves
+ * only if the rule itself is redefined.
+ */
+export const PAID_UP_ADULT_MEMBER_POLICY_ID = "membership-lockout-settings:default";
+export const PAID_UP_ADULT_MEMBER_POLICY_VERSION = 1;
+export const PAID_UP_ADULT_MEMBER_POLICY_NAME =
+  "Paid-up adult member required (subscription lockout)";
+
+/**
+ * A pending admin override HOLDS the bed (owner decision 4, 2 Aug 2026).
+ *
+ * Not configurable, and deliberately so. The member is being refused for a
+ * reason they may have no way to fix before the beds go — the club chose to
+ * charge them non-member rates rather than turn them away — so making them race
+ * for capacity while an admin reads their request would refuse them twice for
+ * one problem. An approved override then consumes the held beds like any other
+ * booking, so the club never oversells.
+ */
+export const PAID_UP_ADULT_MEMBER_CAPACITY_MODE = "HOLD" as const;
+
+/**
+ * Build the frozen #2363 violation for a party with no paid-up adult member.
+ *
+ * Pure: every field is a function of the arguments, so two evaluations of the
+ * same party are byte-identical and the #2365 request machinery can freeze,
+ * hash and re-evaluate it. `affectedNights` must already be canonical (sorted,
+ * unique, NZ date-only `YYYY-MM-DD`) — `canonicalAffectedNights` is the shared
+ * way to get there.
+ */
+export function buildPaidUpAdultMemberViolation(params: {
+  /** Canonical, sorted, unique NZ lodge nights the party covers. */
+  affectedNights: readonly string[];
+  /** The lodge this club-wide rule was resolved for. */
+  effectiveLodgeId: string;
+  /** How many participants are being repriced as unpaid non-members. */
+  repricedUnpaidMemberCount: number;
+  /** Party size. */
+  participantCount: number;
+}): PaidUpAdultMemberPolicyExceptionViolation {
+  const resolvedScope: ResolvedPolicyScope = {
+    kind: "CLUB_WIDE",
+    lodgeId: null,
+    effectiveLodgeId: params.effectiveLodgeId,
+  };
+  return {
+    reasonCode: "PAID_UP_ADULT_MEMBER_REQUIRED",
+    policyId: PAID_UP_ADULT_MEMBER_POLICY_ID,
+    policyVersion: PAID_UP_ADULT_MEMBER_POLICY_VERSION,
+    policyName: PAID_UP_ADULT_MEMBER_POLICY_NAME,
+    resolvedScope,
+    affectedNights: [...params.affectedNights],
+    requirements: {
+      kind: "PAID_UP_ADULT_MEMBER",
+      requiredPaidUpAdultMembers: 1,
+      repricedUnpaidMemberCount: params.repricedUnpaidMemberCount,
+      participantCount: params.participantCount,
+    },
+    exceptionEligible: true,
+    capacityMode: PAID_UP_ADULT_MEMBER_CAPACITY_MODE,
+    message: formatMissingPaidUpAdultRefusal(),
+  };
 }
 
 /** Re-export so consumers can name the reused #2364 shapes from one import. */
