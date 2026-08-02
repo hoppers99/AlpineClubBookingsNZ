@@ -116,10 +116,7 @@ async function seatedWizard(conflictBody: Record<string, unknown>) {
   await waitFor(() => expect(result.current.guests).toHaveLength(1));
 
   act(() => {
-    result.current.handleDateSelect(
-      new Date("2026-06-11T00:00:00.000Z"),
-      new Date("2026-06-12T00:00:00.000Z"),
-    );
+    result.current.handleDateSelect("2026-06-11", "2026-06-12");
   });
   await act(async () => {
     await result.current.handleGuestsDone();

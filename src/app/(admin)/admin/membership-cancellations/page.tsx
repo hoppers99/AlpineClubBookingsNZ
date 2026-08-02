@@ -118,6 +118,10 @@ type CancellationParticipant = {
   // approval-time Full-Admin guard's own predicate.
   holdsPrivilegedAccess: boolean;
   accountType: "user" | "organisation" | "admin" | "lodge";
+  // #2284 (S1): true when this is a non-login member somebody else put on the
+  // request, so the "Confirmed" stamp was recorded on their behalf. Surfaced as
+  // an explicit note by the row.
+  includedWithoutOwnOrSecondAdultConfirmation: boolean;
 };
 
 type CancellationRequest = {
@@ -1022,6 +1026,23 @@ export default function MembershipCancellationsPage() {
                                   </span>
                                 )}
                               </div>
+                              {/*
+                                #2284 (S1): a non-login member somebody else put
+                                on this request has no login to confirm with, and
+                                there is no second-adult signature step — so the
+                                "Confirmed" stamp above was made on their behalf.
+                                Say so explicitly, so an auto-stamped confirmation
+                                is never mistaken for a personally-given one, and
+                                the reviewer applies judgement.
+                              */}
+                              {participant.includedWithoutOwnOrSecondAdultConfirmation && (
+                                <p className="rounded-md border border-warning-6 bg-warning-3 px-2 py-1 text-xs text-warning-11">
+                                  Included without their own or a second adult&apos;s
+                                  confirmation — this member has no login of their
+                                  own, so the confirmation above was recorded on
+                                  their behalf.
+                                </p>
+                              )}
                               {participant.adminNote && (
                                 <p className="text-sm text-muted-foreground">
                                   <span className="font-medium">Admin note:</span>{" "}

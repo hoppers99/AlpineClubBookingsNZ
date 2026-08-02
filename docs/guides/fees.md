@@ -38,6 +38,16 @@ date-only.
    membership type and age tier, then **Create Season** / **Update Season**. Season
    *windows* can also be adjusted on the [Seasons](seasons.md) page.
 
+3. Optionally set a **Flat whole-lodge night rate** for the season — a single
+   price per night for the whole building, regardless of how many people come.
+   Leave it blank to keep pricing whole-lodge bookings per guest. When it is set,
+   a booking officer approving a member's whole-lodge request can choose, on that
+   one approval, to **price as whole lodge**: the booking is charged this rate per
+   night instead of per guest (a stay that crosses a season boundary is charged
+   each night at that night's season rate). The officer's manual total override
+   still wins over both, and the toggle only appears when a flat rate covers the
+   stay. See [Booking requests](booking-requests.md) for the approval flow.
+
 ### Set joining fees
 
 1. In **Joining fees**, click **Edit**, then add a row per membership type and age
@@ -78,7 +88,7 @@ date-only.
 
 | Section | Key fields | Notes / constraints |
 | --- | --- | --- |
-| Hut fees | Season Name, Type, Start/End Date, per-type/per-tier nightly rate, Active | Bookings edit; rates entered in dollars, stored as cents; NZ date-only |
+| Hut fees | Season Name, Type, Start/End Date, per-type/per-tier nightly rate, flat whole-lodge night rate (optional), Active | Bookings edit; rates entered in dollars, stored as cents; NZ date-only; a blank flat whole-lodge rate keeps whole-lodge bookings priced per guest |
 | Joining fees | Membership type, Age tier (or Flat), Amount, Effective from/to | Finance edit; per membership type + age tier |
 | Annual membership fees | Annual amount, Billing basis, Proration, Effective from/to, invoice-line components | Finance edit; GST-inclusive integer cents; components must sum to the total; effective ranges may not overlap for one type |
 | Family billing members | Billing member per family | Finance edit; only in "bill families via a billing member" mode; recipient never inferred |

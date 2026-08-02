@@ -301,6 +301,10 @@ module boundaries, data model, integrations, cron jobs, and the mermaid maps.
 - [`SECURITY-ATTACK-SURFACE.md`](SECURITY-ATTACK-SURFACE.md) and
   [`SECURITY.md`](SECURITY.md) — the attack-surface map and security notes
   (see also [`../SECURITY.md`](../SECURITY.md) for the disclosure policy).
+- [`diagnostics/KNOWLEDGE_BUNDLE.md`](diagnostics/KNOWLEDGE_BUNDLE.md) — the
+  deterministic, fail-closed deployed-code knowledge bundle (AID-3, #2372) that
+  lets AI Diagnostics answer code/docs/schema questions from the running
+  artifact, with cited-evidence retrieval and the deployment-owned overlay.
 - [`ONGOING_DEVELOPMENT_WORKFLOW.md`](ONGOING_DEVELOPMENT_WORKFLOW.md) — how
   generic public changes and private deployment-fork changes flow.
 - [`STYLE_GUIDE.md`](STYLE_GUIDE.md) — documentation style, the operator-guide

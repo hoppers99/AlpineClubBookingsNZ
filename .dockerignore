@@ -2,12 +2,17 @@
 .gitignore
 node_modules
 .next
+.artifacts
 .env
 .env.*
 !.env.example
 coverage
-*.md
-docs
+# NOTE: `docs/` and root `*.md` are intentionally NOT excluded from the build
+# context. The builder generates the deployed-code knowledge bundle (AID-3,
+# #2372) with `npm run diagnostics:bundle`, which reads the allowlisted docs and
+# schema. They are consumed only in the throwaway builder stage — the runtime
+# image still excludes raw docs, copying only the curated
+# .artifacts/diagnostics/knowledge-bundle.json to the runner.
 .claude
 e2e
 playwright.config.ts

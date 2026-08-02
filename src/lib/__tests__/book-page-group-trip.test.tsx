@@ -33,13 +33,9 @@ vi.mock("@/components/booking-calendar", () => ({
   BookingCalendar: ({
     onDateSelect,
   }: {
-    onDateSelect: (ci: Date, co: Date) => void;
+    onDateSelect: (ci: string, co: string) => void;
   }) => (
-    <button
-      onClick={() =>
-        onDateSelect(new Date(2026, 6, 10), new Date(2026, 6, 12))
-      }
-    >
+    <button onClick={() => onDateSelect("2026-07-10", "2026-07-12")}>
       pick test dates
     </button>
   ),

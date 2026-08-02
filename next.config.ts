@@ -12,6 +12,21 @@ const nextConfig: NextConfig = {
     root: process.cwd(),
   },
   /**
+   * Trace the deployed-code knowledge bundle (AID-3, #2372) into
+   * `.next/standalone` so it ships inside the running artifact. The bundle is
+   * generated in the Docker builder by `npm run diagnostics:bundle` (before
+   * `next build`), written to this path, and read at runtime by
+   * `src/lib/diagnostics/knowledge/load.ts`. Path literal kept in lockstep with
+   * `KNOWLEDGE_BUNDLE_RELATIVE_PATH`; not imported because Next's config loader
+   * does not apply the tsconfig path mapping (see the rewrites note below). The
+   * Dockerfile also copies `.artifacts/` into the runner as a guaranteed
+   * placement; this trace is the framework-native mechanism the diagnostics
+   * route (#2378) will key to directly.
+   */
+  outputFileTracingIncludes: {
+    "/**": [".artifacts/diagnostics/knowledge-bundle.json"],
+  },
+  /**
    * Static-asset URLs nothing serves are answered without a document (#2404).
    * The rules, why NEITHER of them may match an `/api` URL (#2405's module-state
    * parity holds on the response headers only while no rewrite runs on `/api` at

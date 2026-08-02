@@ -17,9 +17,11 @@ import { cancelOwnPartnerInviteToken } from "@/lib/partner-invite-token";
  * GET /api/members/partner-link (#1742)
  * The signed-in member's partner-link state: their confirmed link (at most
  * one), pending requests they sent and received, the no-login family members
- * they may declare in one step (family-group admins only — computed
- * server-side so the UI renders policy rather than re-implementing it), and
- * any outstanding partner-invite token minted with createPartnerLink.
+ * they may declare in one step (those they are the recorded details voucher for
+ * and still share a family group with — #2284 (S4) replaced the old
+ * family-group-admin gate; computed server-side so the UI renders policy rather
+ * than re-implementing it), and any outstanding partner-invite token minted with
+ * createPartnerLink.
  */
 export async function GET() {
   const guard = await requireActiveSession();
