@@ -195,4 +195,4 @@ export function formatMissingPaidUpAdultRefusal(): string {
 }
 
 /** Re-export so consumers can name the reused #2364 shapes from one import. */
-export type { HostingMemberFacts, HostingParticipant };
+export type { HostingMemberFacts };
