@@ -3234,6 +3234,77 @@ hold in addition to every #2365 invariant above:
   Officer alert is fire-and-forget after the request commits; an alert failure is
   logged and never fails the member's request.
 
+### Officer decision on a policy exception (#2526)
+
+The DECISION half of the flow above: `src/lib/booking-exception-approval.ts` (the
+real #2525 hooks) and `PATCH /api/admin/booking-exception-requests/[id]`. These
+invariants hold in addition to every #2365/#2524/#2525 invariant above:
+
+- **Approving executes; it is never a status flip.** The officer's approval hands
+  #2525's engine the real hooks, and the engine claims the request AND runs the
+  canonical booking service (`modifyBookingBatch` / `createConfirmedBooking`) in
+  ONE transaction. There is no mark-approved-then-call-service gap, so a request
+  can never end up APPROVED with nothing behind it.
+- **The capacity recheck checks the FULL proposed party and EXCLUDES the live
+  booking.** For a modification this makes the full-party check exactly an
+  incremental-headroom check against a capacity-holding base, and the correct
+  full-footprint check against a non-holding one. Counting the live base and
+  then checking only the delta would double-count it and FALSE-KEEP-PENDING an
+  approval that should execute (safe direction, wrong answer). A new-booking
+  proposal excludes nothing.
+- **Capacity stays a hard refusal.** The approval never passes
+  `confirmOverCapacity` and never sets `adminOverride`; an approving officer is
+  not a capacity-override actor. `createConfirmedBooking`'s non-throwing
+  `capacityExceeded` outcome is THROWN
+  (`PolicyExceptionExecutionCapacityError`) so the whole approval rolls back.
+- **Never a false keep-pending.** Every "still pending" answer the route gives is
+  true at the moment it is given: the engine's kept-pending outcomes are returned
+  before the claim (NO_HOLD) or via a rollback signal (HOLD), and an execution
+  refusal aborts the transaction — undoing the claim, the reservation release and
+  every row the canonical service wrote. Equally, once execution has committed
+  the request is reported APPROVED and never as pending.
+- **The live proposal is verified by replay, not by trust.** A modification
+  request freezes the raw member delta beside the proposal
+  (`requestedChanges.delta`). `verifyLiveProposalIntegrity` replays that delta
+  against the LIVE booking and requires the resulting base+proposed pair to hash
+  to the frozen `proposalHash`. One equality proves both halves: the live booking
+  has not drifted, and the delta still produces the proposal that was reviewed. A
+  missing, malformed or tampered delta fails closed as proposal drift.
+- **Only the reviewed rules are overridden.** Minimum stay is overridden by
+  running the canonical modification as an ADMIN actor (the service enforces the
+  rule only for non-admins), which is safe ONLY because #2525's drift gate has
+  already proved the frozen proposal trips exactly the reviewed violations — a
+  newly-tripping rule is `newViolations` and never reaches execution. A reviewed
+  rule that has since CLEARED is not overridden at all; the resolution is
+  recorded instead.
+- **An approved hosting exception is recorded as decided.** The canonical
+  modification reconciles the hosting hazard from the rows it just wrote and
+  deliberately opens it PENDING (an unrelated edit must never auto-approve one).
+  When the approval reviewed that rule and it still trips, the officer's decision
+  is written in the same transaction (`recordAdultMemberHostingReviewDecision`,
+  guarded PENDING → APPROVED with an attributable reason, D-R4) so an approved
+  request never leaves a pending hosting review nobody will action. The
+  reason-agnostic check-in block (#1422) is untouched: any pending admin review
+  still gates check-in, and this workflow adds no exemption to it.
+- **Reauthorization is from fresh database roles.** The session guard decides
+  whether the officer may open the screen; the engine re-reads the officer's
+  CURRENT roles inside the approval transaction and requires `bookings: edit`,
+  an active login-capable account, and no forced password change. Access revoked
+  between opening the queue and clicking Approve refuses with no write.
+- **A decision is explicit, attributable and single-flight.** Approve requires
+  `confirm: true`; overriding adult-member hosting and every refusal require a
+  written reason; both carry the `expectedVersion` the officer's screen showed,
+  so a decision made against a stale queue loses the guarded CAS instead of
+  deciding a request that changed underneath it.
+- **Both request tables are decided by the same algorithm.** The engine takes a
+  `PolicyExceptionRequestStore` (modification = `POLICY_EXCEPTION`
+  `BookingChangeRequest`, new booking = `NewBookingPolicyExceptionRequest`);
+  the lock order, reauthorization, guarded CAS, drift gate, capacity recheck and
+  post-commit ordering are shared, so the two flavours cannot drift apart. A
+  new-booking request holds no provisional reservation, so its release is a
+  no-op — its safety comes from the approval's own capacity recheck plus the
+  canonical create's hard refusal.
+
 ### Chasing an outstanding additional payment (#2350)
 
 Until #2350 nothing chased the member for an uncollected upward change and no

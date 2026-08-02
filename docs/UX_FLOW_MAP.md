@@ -42,6 +42,36 @@ durable request, approval, and reservation behavior belong to #2365. Capacity,
 date, authentication, subscription/membership, duplicate member-night,
 payment, privacy, and data-integrity failures never become exception choices.
 
+## Deciding a booking-policy exception (#2526)
+
+A Booking Officer opens **Admin -> Booking Requests -> Policy Exceptions**. The
+tab carries a count of everything waiting, and each card answers the four
+questions a decision actually needs: who asked and **how long ago** (in plain
+English — "3 days ago", not a timestamp the officer has to subtract), what they
+proposed (dates, party size, the change requested), which rules it breaks at the
+exact policy revision that was reviewed, and whether the request is holding beds
+while it waits. A request that has already been kept pending on capacity shows
+the last conflict and when it happened, so nobody re-clicks Approve wondering
+why nothing happened.
+
+Deciding is deliberately two steps: **Decide this request** opens a reason box
+and a confirmation checkbox, and only then do Approve and Refuse become
+available. Approving an adult-member hosting exception, and every refusal, need
+the reason written down — the member reads a refusal, and an approved hosting
+exception is recorded against the booking with the officer's name on it.
+
+The screen is honest about what Approve does: it applies the exact proposal
+shown — creating the booking, or changing the live one — in one step, and it
+overrides only the rules listed on that card. Capacity, payment, membership and
+privacy rules all still apply. If the lodge has filled since the request was
+made, the officer is told the request **stays pending** and nothing is created;
+they can approve it later if space frees up, or refuse it with a reason. A
+booking still waiting on any admin review remains blocked from lodge check-in;
+approving a policy exception is not a way around that.
+
+A view-only admin sees the same queue with the controls disabled and a banner
+saying bookings edit access is required.
+
 ## Adult-member hosting (#2364)
 
 An operator opens **Booking Policies → Adult Member Hosting** and chooses, per

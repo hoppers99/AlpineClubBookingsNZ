@@ -182,7 +182,7 @@ These flows are the "Public quote requester" and "School contact" journeys in
 | Nights | NZ date-only lodge nights; the season sets the per-night rate |
 | Capacity | A **Full** night cannot be booked — join the waitlist instead |
 | One booking per member per night | You cannot hold two overlapping bookings for the same member night |
-| Minimum stay | Some periods enforce a minimum number of nights (a club policy) |
+| Minimum stay | Some periods enforce a minimum number of nights (a club policy). If your dates fall short you can ask a Booking Officer to allow it — see below |
 | Non-member guests (Members First) | Held provisionally, charged around the hold deadline, bumped if no bed remains |
 | Non-member guests (First Paid, First In) | Booked and paid with the rest of the party |
 | Group trip | Each joiner holds their own bed; you choose each-pays-own or you pay one bill |
@@ -191,6 +191,29 @@ Prices are shown in dollars (formatted from the cents the club stores). The
 policies behind minimum stay, group discount, and cancellation are set by the
 club — see the operator [Booking Policies](../guides/booking-policies.md) guide
 and [`DOMAIN_INVARIANTS.md`](../DOMAIN_INVARIANTS.md#booking-dates-and-capacity).
+
+### Asking to be let past a booking rule
+
+Two club rules can be waived, one booking at a time, by a Booking Officer: a
+**minimum stay**, and the requirement that an **adult member is present** for
+non-member guests. When one of those stops you, the club can offer you a
+**Request admin approval** step instead of a flat no. You explain why in your
+own words (up to 1,000 characters) and an officer decides.
+
+While you wait:
+
+- **Nothing is booked and nothing is charged.** If the request is on an existing
+  booking, that booking is untouched until an officer says yes.
+- Depending on how the club has set the rule up, your request may **hold the
+  beds** it needs while it waits, or it may not. If it does not, the lodge can
+  fill up before a decision — the officer will tell you if that happens, and
+  your request stays open in case space frees up.
+- You can **withdraw** the request, or replace it with a different proposal, at
+  any time before it is decided.
+
+When an officer approves, the thing you asked for happens straight away: the
+booking is created, or the change is applied, and you get the usual confirmation
+email with what to pay next. If they refuse, they write you a reason.
 
 ## Troubleshooting
 

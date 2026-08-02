@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   approveAndExecutePolicyExceptionRequest,
   PolicyExceptionIntegrityHookMissingError,
+  newBookingExceptionRequestStore,
   resolvePolicyExceptionRequestTerminal,
   type PolicyExceptionApprovalHooks,
 } from "@/lib/booking-exception-execution";
@@ -584,5 +585,176 @@ describe("resolvePolicyExceptionRequestTerminal", () => {
     });
     expect(result).toEqual({ claimed: true, released: 1 });
     expect(updateMany.mock.calls[0][0].data.supersededByRequestId).toBe("req-2");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2526: the NEW_BOOKING request store
+// ---------------------------------------------------------------------------
+
+/**
+ * A fake transaction whose new-booking table behaves like the real one. The
+ * point of these tests is that the SAME approval algorithm — same lock order,
+ * same guarded CAS, same drift gate, same post-commit ordering — decides a
+ * request that lives in the other table, with only the five store operations
+ * differing.
+ */
+function makeNewBookingDb(opts: {
+  row: Record<string, unknown> | null;
+  claimCount?: number;
+}) {
+  const order: string[] = [];
+  const updateMany = vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+    order.push(`claim-${String(data.status ?? "conflict").toLowerCase()}`);
+    return { count: opts.claimCount ?? 1 };
+  });
+  const deleteMany = vi.fn(async () => {
+    order.push("release");
+    return { count: 0 };
+  });
+  const tx = {
+    $executeRaw: vi.fn(async (strings: TemplateStringsArray) => {
+      const sql = strings.join("?");
+      order.push(sql.includes("hashtextextended") ? "lodge-lock" : "global-lock");
+      return 1;
+    }),
+    newBookingPolicyExceptionRequest: {
+      findUnique: vi.fn(async () => opts.row),
+      updateMany,
+    },
+    // Present but never used by the new-booking store: a new-booking request
+    // holds no reservation rows, so the release must not touch this ledger.
+    policyExceptionReservationNight: { deleteMany },
+  };
+  const db = {
+    $transaction: vi.fn(async (fn: (t: typeof tx) => Promise<unknown>) => {
+      const result = await fn(tx);
+      order.push("commit");
+      return result;
+    }),
+  };
+  return { db, tx, order, updateMany, deleteMany };
+}
+
+function newBookingRow(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "nb-1",
+    status: "REQUESTED",
+    version: 1,
+    requestedByMemberId: "m-1",
+    proposalSnapshot: SNAPSHOT,
+    proposalHash: HASH,
+    frozenEvidence: EVIDENCE,
+    aggregateCapacityMode: "HOLD",
+    ...overrides,
+  };
+}
+
+describe("newBookingExceptionRequestStore", () => {
+  it("approves a new-booking request through the same algorithm and lock order", async () => {
+    const { db, order, updateMany, deleteMany } = makeNewBookingDb({
+      row: newBookingRow(),
+    });
+    const hooks = makeHooks({}, order);
+    const result = await approveAndExecutePolicyExceptionRequest({
+      requestId: "nb-1",
+      expectedVersion: 1,
+      actorMemberId: "officer-1",
+      hooks,
+      store: newBookingExceptionRequestStore,
+      db: db as never,
+    });
+
+    expect(result).toEqual({ outcome: "executed", requestId: "nb-1" });
+    expect(order).toEqual([
+      "global-lock",
+      "lodge-lock",
+      "claim-approved",
+      "execute",
+      "commit",
+      "deferred",
+      "notify",
+    ]);
+    // The one-open-request slot is freed on approval here too, or the member
+    // could never submit the same proposal again.
+    expect(updateMany.mock.calls[0][0].data.openStateKey).toBeNull();
+    // Nothing to release: the reservation ledger is modification-keyed.
+    expect(deleteMany).not.toHaveBeenCalled();
+  });
+
+  it("a lost version CAS runs no execution at all", async () => {
+    const { db } = makeNewBookingDb({ row: newBookingRow(), claimCount: 0 });
+    const hooks = makeHooks();
+    const result = await approveAndExecutePolicyExceptionRequest({
+      requestId: "nb-1",
+      expectedVersion: 1,
+      actorMemberId: "officer-1",
+      hooks,
+      store: newBookingExceptionRequestStore,
+      db: db as never,
+    });
+    expect(result).toEqual({ outcome: "claimLost" });
+    expect(hooks.executeApprovedProposal).not.toHaveBeenCalled();
+  });
+
+  it("reports notFound for an id that is not in the new-booking table", async () => {
+    const { db } = makeNewBookingDb({ row: null });
+    const result = await approveAndExecutePolicyExceptionRequest({
+      requestId: "nb-1",
+      expectedVersion: 1,
+      actorMemberId: "officer-1",
+      hooks: makeHooks(),
+      store: newBookingExceptionRequestStore,
+      db: db as never,
+    });
+    expect(result).toEqual({ outcome: "notFound" });
+  });
+
+  it("refuses a new-booking request whose stored snapshot was tampered with", async () => {
+    const { db } = makeNewBookingDb({
+      row: newBookingRow({ proposalHash: "not-the-hash" }),
+    });
+    const result = await approveAndExecutePolicyExceptionRequest({
+      requestId: "nb-1",
+      expectedVersion: 1,
+      actorMemberId: "officer-1",
+      hooks: makeHooks(),
+      store: newBookingExceptionRequestStore,
+      db: db as never,
+    });
+    expect(result).toMatchObject({ outcome: "proposalDrift" });
+  });
+
+  it("refuses a new-booking request whose officer lost access mid-flight", async () => {
+    const { db, updateMany } = makeNewBookingDb({ row: newBookingRow() });
+    const result = await approveAndExecutePolicyExceptionRequest({
+      requestId: "nb-1",
+      expectedVersion: 1,
+      actorMemberId: "officer-1",
+      hooks: makeHooks({ reauthorizeBookingOfficer: vi.fn(async () => false) }),
+      store: newBookingExceptionRequestStore,
+      db: db as never,
+    });
+    expect(result).toEqual({ outcome: "notAuthorized" });
+    expect(updateMany).not.toHaveBeenCalled();
+  });
+
+  it("rejects a new-booking request terminally and frees its open slot", async () => {
+    const { db, updateMany, order } = makeNewBookingDb({ row: newBookingRow() });
+    const result = await resolvePolicyExceptionRequestTerminal({
+      requestId: "nb-1",
+      expectedVersion: 1,
+      to: "REJECTED",
+      actorMemberId: "officer-1",
+      adminNotes: "Not this weekend.",
+      store: newBookingExceptionRequestStore,
+      db: db as never,
+    });
+    expect(result).toEqual({ claimed: true, released: 0 });
+    expect(order).toEqual(["global-lock", "lodge-lock", "claim-rejected", "commit"]);
+    const data = updateMany.mock.calls[0][0].data;
+    expect(data.openStateKey).toBeNull();
+    expect(data.reviewedByMemberId).toBe("officer-1");
+    expect(data.adminNotes).toBe("Not this weekend.");
   });
 });

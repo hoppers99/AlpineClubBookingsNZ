@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   adminCreditAdjustmentRequestCount: vi.fn(),
   bookingCount: vi.fn(),
   bookingChangeRequestCount: vi.fn(),
+  newBookingPolicyExceptionRequestCount: vi.fn(),
   bookingRequestCount: vi.fn(),
   deletionRequestCount: vi.fn(),
   issueReportCount: vi.fn(),
@@ -29,6 +30,9 @@ vi.mock("@/lib/prisma", () => ({
     },
     booking: { count: mocks.bookingCount },
     bookingChangeRequest: { count: mocks.bookingChangeRequestCount },
+    newBookingPolicyExceptionRequest: {
+      count: mocks.newBookingPolicyExceptionRequestCount,
+    },
     bookingRequest: { count: mocks.bookingRequestCount },
     deletionRequest: { count: mocks.deletionRequestCount },
     issueReport: { count: mocks.issueReportCount },
@@ -76,6 +80,7 @@ describe("getAdminPendingCounts", () => {
       },
     );
     mocks.bookingChangeRequestCount.mockResolvedValue(6);
+    mocks.newBookingPolicyExceptionRequestCount.mockResolvedValue(16);
     mocks.bookingRequestCount.mockResolvedValue(7);
     mocks.getPendingMembershipCancellationReviewCount.mockResolvedValue(8);
     mocks.getPendingMemberArchiveReviewCount.mockResolvedValue(9);
@@ -97,6 +102,7 @@ describe("getAdminPendingCounts", () => {
       creditApprovals: 4,
       bookingReviews: 5,
       bookingChangeRequests: 6,
+      newBookingPolicyExceptionRequests: 16,
       publicBookingRequests: 7,
       unpaidFinishedStays: 12,
       unsettledAdditionalFinishedStays: 13,

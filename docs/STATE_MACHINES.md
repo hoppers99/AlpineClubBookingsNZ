@@ -607,6 +607,30 @@ and supersede are the guarded single transitions above; a supersede that loses
 its `REQUESTED -> SUPERSEDED` claim creates NO replacement. The Booking Officer
 queue read merges both stores into one age-ordered view.
 
+**The officer decision is wired (#2526).** The Booking Officer's queue is a
+dedicated *Policy Exceptions* tab on Booking Requests, and
+`PATCH /api/admin/booking-exception-requests/[id]` is the decision. Approving is
+NOT a status flip: the route assembles the real #2525 hooks
+(`src/lib/booking-exception-approval.ts`) and the engine claims the request AND
+runs the canonical booking service in the same transaction, so the request
+becomes APPROVED only if the booking was really created or really changed. Every
+other outcome leaves the row exactly as it was and is reported as such — a
+capacity conflict answers "still pending", never "approved". Because the engine
+now takes a `PolicyExceptionRequestStore`, the SAME algorithm decides both
+tables; the new-booking store's reservation release is a no-op, since a
+new-booking request holds no beds while it waits.
+
+```text
+officer decision (both stores)
+  approve + confirm -> executed            (booking created / change applied)
+                    -> claimLost           (409: the queue was stale)
+                    -> notAuthorized       (403: fresh-DB roles refuse)
+                    -> proposalDrift       (409: live booking or delta moved)
+                    -> policyDrift         (409: a reviewed rule materially changed)
+                    -> keptPendingCapacity (409: still REQUESTED, conflict recorded)
+  refuse + reason   -> REJECTED            (reservation released atomically)
+```
+
 Edit-eligibility is governed by a date-window edit policy
 (`getBookingEditPolicy`), whose `mode` selects what a request may change:
 

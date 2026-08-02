@@ -23,6 +23,14 @@ export type AdminPendingCounts = {
   creditApprovals: number;
   bookingReviews: number;
   bookingChangeRequests: number;
+  /**
+   * #2526: NEW-booking policy-exception requests awaiting a Booking Officer.
+   * Counted separately because they live in their own table — a MODIFICATION
+   * exception request is a `BookingChangeRequest` and is already inside
+   * `bookingChangeRequests` above. The sidebar sums the two, so a member waiting
+   * on either kind raises the same badge.
+   */
+  newBookingPolicyExceptionRequests: number;
   publicBookingRequests: number;
   unpaidFinishedStays: number;
   unsettledAdditionalFinishedStays: number;
@@ -46,6 +54,7 @@ export type AdminPendingCounts = {
  * (family-groups/requests, member-applications, refund-requests,
  * manual refund tasks (#2262, the cash hand-back queue),
  * credit-approvals, booking-reviews, booking-change-requests,
+ * new-booking policy-exception requests (#2526),
  * booking-requests, unpaid-finished-stays and unsettled stay
  * additions, both finished and still-upcoming (shared helpers with the
  * dashboard cards, #1709/#1731/#1723/#2350),
@@ -64,6 +73,7 @@ export async function getAdminPendingCounts(): Promise<AdminPendingCounts> {
     creditApprovals,
     bookingReviews,
     bookingChangeRequests,
+    newBookingPolicyExceptionRequests,
     publicBookingRequests,
     unpaidFinishedStays,
     unsettledAdditionalFinishedStays,
@@ -86,6 +96,9 @@ export async function getAdminPendingCounts(): Promise<AdminPendingCounts> {
       where: { deletedAt: null, adminReviewStatus: "PENDING" },
     }),
     prisma.bookingChangeRequest.count({ where: { status: "REQUESTED" } }),
+    prisma.newBookingPolicyExceptionRequest.count({
+      where: { status: "REQUESTED" },
+    }),
     prisma.bookingRequest.count({
       where: buildBookingRequestListWhere("QUEUE"),
     }),
@@ -114,6 +127,7 @@ export async function getAdminPendingCounts(): Promise<AdminPendingCounts> {
     creditApprovals,
     bookingReviews,
     bookingChangeRequests,
+    newBookingPolicyExceptionRequests,
     publicBookingRequests,
     unpaidFinishedStays,
     unsettledAdditionalFinishedStays,
