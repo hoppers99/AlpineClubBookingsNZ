@@ -4177,10 +4177,14 @@ and active; consent is required from the other member unless (a) an admin
 assigns the link directly (`assignedByAdminId` recorded, CONFIRMED
 immediately; both members are then emailed unless the assigning admin chose
 not to notify — the suppression is audited `notifyMember: false`, #1769a),
-(b) the target has **no login** and the initiator is a
-family-group ADMIN of a group containing the target ("one login manages the
-family" — a login-holding target always consents personally, and the no-login
-target's address is emailed that the link was recorded), or (c) the link
+(b) the target has **no login** and the initiator is the adult currently
+recorded as the target's details voucher (`detailsConfirmedByMemberId`) in a
+group containing the target ("one login manages the family" — #2284 (S4)
+replaced the old family-group-ADMIN gate; that voucher is self-assignable by any
+adult login co-member sharing the group, so this one-step path is open to every
+adult in the group, not a designated one. A login-holding target always consents
+personally, and the no-login target's address is emailed that the link was
+recorded), or (c) the link
 forms on a `PartnerInviteToken` claim minted with `createPartnerLink` — the
 claim itself is the consent, so the claim page discloses the partnership
 before the claimer accepts, and both parties' eligibility (including the
@@ -4281,9 +4285,10 @@ adult with a login, and none of those checks reads the parent columns —
 | Being billed | `billingFamilyGroupId` — group-based; no billing path reads a parent link |
 
 Every row of that table lands on the same gate — family-group co-membership plus
-an active adult with a login — and **#2284 is the open question of whether that
-gate is too broad** (today every adult in a family group has identical powers
-over every non-login member in it). Nothing here pre-empts it: this issue moved
+an active adult with a login — and **#2284 asked whether that gate is too broad**
+(today every adult in a family group has identical powers over every non-login
+member in it) and **decided it deliberately** — see *The family group is the
+authorisation boundary* below. Nothing in #2282 pre-empted that: this issue moved
 no power onto the group gate, it only recorded that the powers were already
 there rather than on the parent link.
 
@@ -4315,6 +4320,86 @@ an organisation. `isOrganisationMember` (the ORG access token, or the legacy
 classification, on the write routes and in the search's SQL alike. This is a
 restoration of what the ADULT clause excluded by accident, not a narrowing of
 "any age": every real age tier, INFANT included, may be recorded as a parent.
+
+**The family group is the authorisation boundary, and every login-holding adult
+in it is equal** (#2284, owner decisions 2 Aug 2026). When the system asks "may
+this person act on that person?", the question it answers is *do they share a
+family group, and does the actor hold a login* — never *which* adult is acting,
+whether they are the target's parent, or whether the target agreed. The parent
+link is a label, not a permission (the #2282 table above). This is now a recorded
+decision rather than an accident of implementation: for a club of small,
+mutually-trusting families it is the intended model, and the four protections
+below are where it is deliberately softened for the members who cannot speak for
+themselves — those with **no login of their own**, who since #2255 can sit up to
+four generations from the adult acting for them. The investigation's original
+"can see every co-member's data including parents' emails" power is **not**
+restated here: #2424 (above) has since closed the parent-email exposure, so the
+family read is now a whitelist, not an open book.
+
+**The dividing line is `canLogin`, not age, and that is deliberate.** The age-up
+job withholds a login from any member whose email is inherited from someone else
+(`src/lib/cron-age-up.ts`), so an ADULT can remain a non-login member
+indefinitely — and every gate here keys on `canLogin`, so such an adult stays
+subject to the same powers a child is, and is exactly who the one-step partner
+declaration below can target. Nothing changes *at* 18; the protections below
+apply to every non-login member whatever their age.
+
+The four powers over a non-login member, and how #2284 settled each:
+
+- **Requesting cancellation of their membership (S1, owner decision: flag, not a
+  second signature).** A non-login member is written already-confirmed on a
+  cancellation request because they have no login to confirm with
+  (`requiresOwnConfirmation` in `src/lib/membership-cancellation-requests.ts` is
+  true only for a login-holder acting on someone else). Rather than add a
+  second-adult signature, the admin reviewer is shown an explicit **"included
+  without their own or a second adult's confirmation"** flag on any such
+  participant (`includedWithoutOwnOrSecondAdultConfirmation` in
+  `src/lib/membership-cancellation-admin.ts`), so an auto-stamped confirmation is
+  never mistaken for a personally-given one and the judgement moves to the admin.
+  Candidate eligibility is read through `isMembershipHolderRecord`, not
+  re-derived. The request still executes only on admin approval.
+- **Adding them to a booking (S2, owner decision: notify, module-independent).**
+  A family-scope add now tells the added member — directly if they hold a login,
+  otherwise the group's login-holding adults — reusing
+  `familyAdultDelegateResolver.resolveNotificationRecipients`
+  (`src/lib/member-guest-delegate.ts`), the same rule MG2 already ships. It is
+  the missing half of #2250 self-removal: you can only take yourself off a
+  booking you find out about. This is **general family behaviour, sent regardless
+  of the `memberGuests` module switch**, registered with the booking
+  `EmailBookingContext` so the #2258 per-booking "No emails" switch withholds it,
+  and it carries a personal opt-out in `NotificationPreference` (it is an FYI, not
+  a consent request).
+- **Editing their details (S3, owner decision: read-only provenance).** A
+  delegated edit was audited but never shown to the family. A read-only
+  **"Details last confirmed by X on date"** line now renders on the member's
+  family/onboarding cards from the already-stamped `detailsConfirmedByMemberId` /
+  `detailsConfirmedAt` (`src/lib/member-family-service.ts`), added to the
+  member-facing payload by the same deliberate whitelist the #2424 rule uses —
+  the confirmer's NAME only, and they are already a listed family adult.
+- **The one-step partner declaration (S4, owner decision: retire the role
+  reliance) — formerly the one role-differentiated power, now aligned with the
+  equal-adults boundary.** Declaring a CONFIRMED partner link over a non-login
+  adult co-member in one step was the *only* thing that ever read
+  `FamilyGroupMember.role` (it required the actor to hold `role: "ADMIN"`), and
+  who held ADMIN was an accident of which flow created the group. It is now
+  re-anchored onto `Member.detailsConfirmedByMemberId` — the adult recorded as
+  having vouched for that member's details — plus a still-shared family group
+  (`src/lib/member-partner-link.ts`). **That voucher pointer is self-assignable
+  by any adult login co-member sharing the group**: `PUT
+  /api/members/family/[memberId]/details` stamps it to whoever confirms the
+  member's details, gated only on being an active adult login co-member with a
+  complete profile (no admin or group-lead requirement) and overwriting any prior
+  voucher. So the one-step power is **not** a lone designated "responsible
+  adult" — it is available to every adult login co-member, which is exactly the
+  "every login-holding adult in the group is equal" boundary above, and
+  deliberately so; no code may treat `detailsConfirmedByMemberId` as naming a
+  single, lead-appointed responsible adult. With the role reader gone,
+  **`FamilyGroupMember.role` no longer gates authorisation anywhere**; its
+  misleading schema comment is corrected and the column is retained pending a
+  dedicated removal migration. Relatedly, the family-group join request no longer
+  materialises a group around a consentless target as `ADMIN` — it seeds `MEMBER`
+  (`src/app/api/members/family/request-join/route.ts`). Member-merge's
+  `maxFamilyRole` upgrade is now vestigial rather than load-bearing.
 
 **What one MEMBER may see about another member's parent** (#2424, owner decision
 2026-08-01). `GET /api/members/family` and `GET /api/member/onboarding` both

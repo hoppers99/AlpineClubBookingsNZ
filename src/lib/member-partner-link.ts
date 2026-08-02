@@ -51,6 +51,15 @@ const PARTNER_MEMBER_SELECT = {
   active: true,
   canLogin: true,
   ageTier: true,
+  // #2284 (S4): the `detailsConfirmedByMemberId` voucher the one-step partner
+  // declaration is now gated on, replacing the free-text FamilyGroupMember.role.
+  // This pointer is SELF-ASSIGNABLE by any adult login co-member sharing the
+  // family group (PUT .../family/[memberId]/details stamps it to the requester),
+  // so the one-step power is not a single designated adult's — it is open to
+  // every adult login co-member, matching #2284's "all adults in a family group
+  // are equal" boundary. The gate is real (voucher + shared group); it is only
+  // the *framing* of a lone "responsible adult" that would be false.
+  detailsConfirmedByMemberId: true,
 } as const;
 
 type PartnerMemberRecord = Prisma.MemberGetPayload<{
@@ -294,46 +303,55 @@ export async function getPartnerLinkState(memberId: string): Promise<PartnerLink
 
 /**
  * One-step declaration candidates for a member: active no-login ADULT
- * members of family groups where the caller holds the ADMIN role (the same
- * condition requestPartnerLink's one-step path enforces), minus anyone who
- * already has a CONFIRMED partner. Computed server-side so the profile UI
- * renders policy instead of re-implementing it.
+ * co-members this member is the RECORDED VOUCHER for
+ * (`detailsConfirmedByMemberId`), minus anyone who already has a CONFIRMED
+ * partner. Computed server-side so the profile UI renders policy instead of
+ * re-implementing it.
+ *
+ * #2284 (S4): re-anchored off the free-text `FamilyGroupMember.role` ADMIN
+ * value — which was an accident of which flow created the group — onto the
+ * `detailsConfirmedByMemberId` voucher pointer, the same condition
+ * `requestPartnerLink`'s one-step path now enforces. Because that pointer is
+ * self-assignable by any adult login co-member sharing the group (the
+ * delegated-details route stamps it to whoever confirms the member's details),
+ * this candidate list is not one designated adult's privilege — any adult login
+ * co-member can become the voucher and see the same candidates, consistent with
+ * #2284's "all adults are equal" boundary. The shared-family-group conjunct is
+ * retained so a stale voucher pointer left behind after a member leaves the
+ * group grants nothing.
  */
 export async function listOneStepPartnerCandidates(
   memberId: string
 ): Promise<PartnerLinkMemberView[]> {
-  const adminMemberships = await prisma.familyGroupMember.findMany({
-    where: { memberId, role: "ADMIN" },
-    select: {
-      familyGroup: {
-        select: {
-          memberships: {
-            select: { member: { select: PARTNER_MEMBER_SELECT } },
-          },
-        },
-      },
+  const groupLinks = await prisma.familyGroupMember.findMany({
+    where: { memberId },
+    select: { familyGroupId: true },
+  });
+  const groupIds = [...new Set(groupLinks.map((link) => link.familyGroupId))];
+  if (groupIds.length === 0) {
+    return [];
+  }
+
+  const voucheredMembers = await prisma.member.findMany({
+    where: {
+      canLogin: false,
+      active: true,
+      ageTier: "ADULT",
+      detailsConfirmedByMemberId: memberId,
+      id: { not: memberId },
+      familyGroupMemberships: { some: { familyGroupId: { in: groupIds } } },
     },
+    select: PARTNER_MEMBER_SELECT,
   });
 
   const candidates = new Map<string, PartnerLinkMemberView>();
-  for (const membership of adminMemberships) {
-    for (const groupMember of membership.familyGroup.memberships) {
-      const member = groupMember.member;
-      if (
-        member.id === memberId ||
-        member.canLogin ||
-        !member.active ||
-        member.ageTier !== "ADULT"
-      ) {
-        continue;
-      }
-      candidates.set(member.id, {
-        id: member.id,
-        firstName: member.firstName,
-        lastName: member.lastName,
-        canLogin: member.canLogin,
-      });
-    }
+  for (const member of voucheredMembers) {
+    candidates.set(member.id, {
+      id: member.id,
+      firstName: member.firstName,
+      lastName: member.lastName,
+      canLogin: member.canLogin,
+    });
   }
   if (candidates.size === 0) {
     return [];
@@ -414,9 +432,15 @@ function checkPartnerEligibility(
  *   ADULT_INVITE consent flow).
  * - targetMemberId: a member of the initiator's own family group. If the
  *   target has a login this still creates a PENDING link (they must consent
- *   themselves). If the target has NO login, the initiator must be a
- *   family-group ADMIN of a group containing the target — the "one login
- *   manages the family" case — and the link is created CONFIRMED in one step.
+ *   themselves). If the target has NO login, the initiator must be the adult
+ *   currently recorded as the target's details voucher
+ *   (`detailsConfirmedByMemberId`) AND still share a family group with them —
+ *   the "one login manages the family" case — and the link is created CONFIRMED
+ *   in one step. That voucher pointer is self-assignable by any adult login
+ *   co-member (see the delegated-details route), so this one-step path is open
+ *   to EVERY adult login co-member, not a designated group admin: #2284 (S4)
+ *   retired the old `FamilyGroupMember.role` ADMIN gate in favour of the equal
+ *   "all adults in a family group" boundary.
  */
 export async function requestPartnerLink(params: {
   initiatorMemberId: string;
@@ -469,25 +493,40 @@ export async function requestPartnerLink(params: {
   if (targetIneligible) return { ok: false, ...targetIneligible };
 
   // One-step "one login manages the family": only when the target has no
-  // login of their own to consent with AND the initiator is a family-group
-  // ADMIN of a group the target belongs to. A login-holding target always
-  // consents personally, whatever the initiator's family role.
+  // login of their own to consent with AND the initiator is the adult currently
+  // recorded as having vouched for the target's details
+  // (`detailsConfirmedByMemberId`) AND still shares a family group with them. A
+  // login-holding target always consents personally.
+  //
+  // #2284 (S4): re-anchored off the free-text `FamilyGroupMember.role` ADMIN
+  // value, which was distributed by accident of which flow created the group,
+  // onto `detailsConfirmedByMemberId`. Note this is NOT a lone designated
+  // "responsible adult": that pointer is self-assignable by ANY adult login
+  // co-member sharing the group (the delegated-details route stamps it to
+  // whoever confirms the member's details), so every adult login co-member can
+  // reach this gate — the equal "all adults in a family group" boundary #2284
+  // recorded, not a role privilege. `initiator.id !== target.id` is already
+  // enforced above, so a self-confirmed target
+  // (`detailsConfirmedByMemberId === target.id`) can never satisfy this gate.
   let oneStep = false;
   if (!target.canLogin) {
-    const adminMembership = await prisma.familyGroupMember.findFirst({
-      where: {
-        memberId: initiator.id,
-        role: "ADMIN",
-        familyGroup: { memberships: { some: { memberId: target.id } } },
-      },
-      select: { familyGroupId: true },
-    });
-    if (!adminMembership) {
+    const isRecordedVoucher =
+      target.detailsConfirmedByMemberId === initiator.id;
+    const sharedGroup = isRecordedVoucher
+      ? await prisma.familyGroupMember.findFirst({
+          where: {
+            memberId: initiator.id,
+            familyGroup: { memberships: { some: { memberId: target.id } } },
+          },
+          select: { familyGroupId: true },
+        })
+      : null;
+    if (!isRecordedVoucher || !sharedGroup) {
       return {
         ok: false,
         status: 403,
         error:
-          "This member has no login to confirm the request. Only the admin of their family group can declare this partnership directly; otherwise ask an admin.",
+          "This member has no login to confirm the request. Only the adult who confirmed this member's details can declare this partnership directly; otherwise ask an admin.",
       };
     }
     oneStep = true;
@@ -623,7 +662,7 @@ export async function requestPartnerLink(params: {
     category: "family",
     outcome: "success",
     summary: oneStep
-      ? "Partner link declared one-step by family-group admin"
+      ? "Partner link declared one-step by the recorded details voucher"
       : "Partner link requested",
     details: JSON.stringify({
       initiatorMemberId: initiator.id,
