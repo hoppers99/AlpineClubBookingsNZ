@@ -20,9 +20,19 @@
  * references (`process.env.X`, dotted paths, dictionary words) do not trip it.
  *
  * The patterns match secret SHAPES only; no real secret appears in this file or
- * its tests. A documented placeholder (`sk_test_placeholder`, `AKIAEXAMPLE…`,
+ * its tests. A documented placeholder (`AKIAEXAMPLE…`, `your-secret-here`,
  * `...redacted...`) is NOT a leak — the allowlist below mirrors the gitleaks
  * placeholder allowance so docs that SHOW a token shape stay buildable.
+ *
+ * ONE class is deliberately STRICTER than that allowance: a Stripe token shape
+ * (`sk_(test|live|prod)_…`, `rk_…`, `whsec_…`) fails closed EVEN when it carries
+ * a placeholder marker. Trivy's `stripe-secret-token` rule (the image
+ * `docker-image-security` gate) has NO placeholder exemption and flags such a
+ * shape wherever it appears in the shipped bundle — including a doc "example"
+ * that gitleaks waves through because gitleaks ignores test keys. So the rules
+ * that mirror Trivy's own no-exemption shapes carry `ignorePlaceholder` and
+ * refuse to bundle the file rather than ship a string the image scan will fail
+ * on (regression guard for the `sk_test_placeholder` doc example, #2531).
  */
 
 export interface SecretFinding {
@@ -49,6 +59,17 @@ interface SecretRule {
    * match still applies FIRST, so `confirm` only ever narrows, never widens.
    */
   confirm?: (match: RegExpExecArray) => boolean;
+  /**
+   * When true, the universal placeholder screen does NOT exempt this rule — a
+   * documented-placeholder marker inside the match is ignored and the shape
+   * still fails closed. Set ONLY for shapes a downstream image secret scanner
+   * (Trivy) flags with no placeholder allowance of its own (Stripe
+   * `sk_/rk_/whsec_`), so a doc "example" of that shape can never be bundled and
+   * then trip `docker-image-security`. Left unset for shapes whose Trivy/gitleaks
+   * counterparts DO allow an example marker (AWS `…EXAMPLE`), and for the generic
+   * assignment/URL rules, so ordinary docs stay buildable.
+   */
+  ignorePlaceholder?: boolean;
 }
 
 /**
@@ -187,8 +208,23 @@ const SECRET_RULES: SecretRule[] = [
   },
   // AWS access key ids (long-term AKIA / temporary ASIA).
   { id: "aws-access-key-id", pattern: /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/ },
-  // Stripe live secret / restricted keys (test keys are ignored on purpose).
-  { id: "stripe-live-secret-key", pattern: /\b(?:sk|rk)_live_[0-9a-zA-Z]{16,}\b/ },
+  // Stripe secret / restricted keys — ALL environments, TEST included. Trivy's
+  // `stripe-secret-token` rule matches `(sk|rk)_(test|live|prod)_[0-9a-zA-Z]{10,}`
+  // with NO placeholder allowance, so even a doc "example" of this shape trips the
+  // image `docker-image-security` gate once bundled. `ignorePlaceholder` makes the
+  // bundle gate fail closed on the identical shape so the string never ships.
+  {
+    id: "stripe-secret-key",
+    pattern: /\b(?:sk|rk)_(?:test|live|prod)_[0-9a-zA-Z]{10,}\b/,
+    ignorePlaceholder: true,
+  },
+  // Stripe webhook signing secret. Same rationale — a shipped `whsec_…` shape is
+  // a credential-shaped string a downstream image scan will flag.
+  {
+    id: "stripe-webhook-secret",
+    pattern: /\bwhsec_[0-9a-zA-Z]{10,}\b/,
+    ignorePlaceholder: true,
+  },
   // Anthropic API keys.
   { id: "anthropic-api-key", pattern: /\bsk-ant-[0-9A-Za-z_-]{20,}\b/ },
   // Google API keys.
@@ -247,7 +283,11 @@ export function scanForSecrets(content: string): SecretFinding[] {
       if (!match) continue;
       // Universal placeholder screen FIRST (documented shapes never leak), then
       // the rule's own confirmation (entropy/placeholder on a captured group).
-      if (isPlaceholder(match[0])) continue;
+      // Rules flagged `ignorePlaceholder` opt OUT of the screen: their shape is
+      // one a downstream image scanner (Trivy) flags with no example allowance,
+      // so even a documented placeholder of that shape must fail closed rather
+      // than ship in the bundle.
+      if (!rule.ignorePlaceholder && isPlaceholder(match[0])) continue;
       if (rule.confirm && !rule.confirm(match)) continue;
       findings.push({
         rule: rule.id,

@@ -54,12 +54,21 @@ protect what ships:
   private-key material, the private deployment overlay paths (kept in lockstep
   with `.gitignore` — `config/club.json`, `config/features.json`, `seeds/**`,
   branding and uploads), build output, dependencies, `.git`, and generated code.
-- **A secret scan** over every included file. If a credential shape is detected
-  (and it is not a documented placeholder such as `sk_test_placeholder` or an
-  `…EXAMPLE…` token), generation **fails closed** — the whole build stops rather
-  than shipping the bundle with the offending file quietly dropped. This is a
-  second, independent line to the repo's gitleaks gates: gitleaks guards what is
-  committed; this guards what is *extracted into a shipped artifact*.
+- **A secret scan** over every included file. A **provider token shape** — a
+  Stripe `sk_…` / `rk_…` / `whsec_…` key, an AWS `AKIA…` id, a GitHub token, a
+  private-key block, and the like — makes generation **fail closed
+  unconditionally**, even when the token is an obvious "example". The shape trips
+  the runtime image's own secret scan (Trivy, the `docker-image-security` gate)
+  the moment it is bundled, so an allowlisted docs file must never embed a
+  literal one — write it broken (`sk_test_…`, an `…EXAMPLE…` marker) instead. The
+  **generic** `secret = "…"` / connection-string rules additionally exempt a
+  documented placeholder (`your-secret-here`, `***`, an `…EXAMPLE…` marker) so
+  ordinary prose stays buildable. Either way the whole build stops rather than
+  shipping the bundle with the offending file quietly dropped. This is a second,
+  independent line to the repo's gitleaks gates: gitleaks guards what is
+  committed; this guards what is *extracted into a shipped artifact* — and it is
+  deliberately **stricter on provider shapes** than gitleaks, which ignores the
+  Stripe *test*-key shapes that a downstream image scanner still flags.
 
 ### Default allowlist scope (owner decision, #2370)
 

@@ -34,7 +34,7 @@ describe("scanForSecrets", () => {
       "anthropic-api-key",
     );
     expect(scanForSecrets(`x=${fakeStripeLive}`)[0]?.rule).toBe(
-      "stripe-live-secret-key",
+      "stripe-secret-key",
     );
     expect(scanForSecrets(`x=${fakeGithubToken}`)[0]?.rule).toBe("github-token");
   });
@@ -101,9 +101,6 @@ describe("scanForSecrets", () => {
     expect(
       scanForSecrets(`const secret = "your-${"secret-goes-here"}";`),
     ).toEqual([]);
-    expect(
-      scanForSecrets(`stripe = "sk_${"test"}_placeholder";`),
-    ).toEqual([]);
     // A mock fixture value is not a live secret.
     expect(
       scanForSecrets(`access_token: "mock-access-token",`),
@@ -117,6 +114,34 @@ describe("scanForSecrets", () => {
     expect(scanForSecrets(line).map((f) => f.rule)).toContain(
       "aws-access-key-id",
     );
+  });
+
+  it("fails closed on a Stripe TEST/restricted/webhook shape EVEN as a placeholder", () => {
+    // Regression for #2531: Trivy's `stripe-secret-token` rule flags
+    // `(sk|rk)_(test|live|prod)_[10+ alnum]` with NO placeholder allowance, so a
+    // doc "example" of that shape (`sk_test_placeholder`) shipped in the bundle
+    // and failed `docker-image-security`. The bundle gate must therefore refuse
+    // the identical shape regardless of any placeholder marker, or it re-ships.
+    // Shapes assembled from fragments so no contiguous token is committed.
+    const stripeTest = `sk_${"test"}_${"0123456789abcABCD"}`;
+    expect(scanForSecrets(`x=${stripeTest}`).map((f) => f.rule)).toContain(
+      "stripe-secret-key",
+    );
+    // The exact literal that tripped Trivy — a placeholder marker MUST NOT exempt it.
+    expect(
+      scanForSecrets(`a documented placeholder such as \`sk_${"test"}_placeholder\``).map(
+        (f) => f.rule,
+      ),
+    ).toContain("stripe-secret-key");
+    // Restricted test key + webhook signing secret, both fail closed too.
+    expect(
+      scanForSecrets(`x=rk_${"test"}_${"exampleKey0123456"}`).map((f) => f.rule),
+    ).toContain("stripe-secret-key");
+    expect(
+      scanForSecrets(`STRIPE_WEBHOOK_SECRET=whsec_${"example0123456789"}`).map(
+        (f) => f.rule,
+      ),
+    ).toContain("stripe-webhook-secret");
   });
 
   it("reports the correct 1-based line for a multi-line file", () => {
