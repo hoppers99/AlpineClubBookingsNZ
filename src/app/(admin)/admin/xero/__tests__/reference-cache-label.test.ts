@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { formatReferenceCacheLabel } from "../_components/shared";
+import { captureHostTimeZone } from "@/lib/__tests__/helpers/timezone";
 
 // #2256: this label was built from bare `toLocaleString()` calls, so the Xero
 // account/item cache stamps rendered in the admin's own browser locale and zone
@@ -12,11 +13,10 @@ describe("formatReferenceCacheLabel (#2256)", () => {
     lastRefreshedAt: "2026-04-15T23:30:00.000Z",
     expiresAt: "2026-04-16T11:30:00.000Z",
   };
-  const RUNTIME_TZ = process.env.TZ;
+  const hostTimeZone = captureHostTimeZone();
 
   afterEach(() => {
-    if (RUNTIME_TZ === undefined) delete process.env.TZ;
-    else process.env.TZ = RUNTIME_TZ;
+    hostTimeZone.restore();
   });
 
   it("renders both stamps as NZ date-times regardless of the runtime zone", () => {

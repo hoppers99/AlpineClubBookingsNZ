@@ -139,36 +139,39 @@ describe("the achromatic reference ramp (#2303)", () => {
     }
   });
 
-  it("keep the substrate's own neutral tint on an exact-grey seed", () => {
+  it("derive a TRUE grey ramp for an exact-grey seed (#2491)", () => {
     /*
-     * The ramp an exact grey derives is NOT itself grey, and never was. The
-     * substrate does not feed the seed to the generator: `deriveGrayAndBg`
-     * rebuilds a gray seed at the pinned `PINS.neutralSeed` chroma (0.008) on
-     * the seed's hue, and an achromatic seed's hue coalesces to 0. So the ramp
-     * carries a faint warm cast by construction — the pin's doing, not a
-     * rounding artefact. These are the hexes colorjs 0.5.2 shipped (steps 1, 2,
-     * 3, 5, 8 and 10 byte-identical; the rest within a few 1/255ths, because
-     * 0.5.2's per-step values were derived from float noise and cannot be
-     * reproduced exactly).
+     * An exact-grey neutral character has no hue for the ramp to tint toward.
+     * The substrate does not feed the seed to the generator: `deriveGrayAndBg`
+     * rebuilds a gray seed at the pinned `PINS.neutralSeed` lightness on the
+     * seed's hue — and an achromatic seed's hue coalesces to 0. Until #2491 the
+     * pinned 0.008 seed chroma was applied there too, so the tint pointed at an
+     * ARBITRARY hue-0 (red) and the ramp shipped a faint pink cast — which, on
+     * that worst-separating hue, dropped the light-mode card(neutral-1)/
+     * page(neutral-2) separation to ΔL 0.011 / contrast 1.03, just under the
+     * signed-off G5a floor (0.012 / 1.04).
+     *
+     * #2491 drops the seed chroma to 0 for a hueless character, so an exact grey
+     * now derives an HONESTLY grey ramp (every step r == g == b, chroma 0), and
+     * its card/page separation meets the G5a floor by construction. The
+     * guarantee sweep pins that pass; here we pin the ramp itself.
      */
     const expected = [
-      "#fef4f7", "#fbf0f3", "#f1e6ea", "#e9dee2", "#e1d7da", "#d9ced2",
-      "#cec4c7", "#bab0b4", "#8d8386", "#82797c", "#645b5e", "#251e20",
+      "#f7f7f7", "#f3f3f3", "#e9e9e9", "#e1e1e1", "#dadada", "#d2d2d2",
+      "#c7c7c7", "#b3b3b3", "#868686", "#7b7b7b", "#5e5e5e", "#202020",
     ];
     for (const neutralSource of GREY_SEEDS) {
       const ramp = buildNeutralRamp(SEEDS({ neutralSource }), "light");
       expect(ramp, neutralSource).toEqual(expected);
       for (const step of ramp) {
-        const [, chroma] = oklch(step);
-        // Tinted, but only just: the pin is 0.008, capped at 1.5x = 0.012.
-        expect(chroma, `${neutralSource} ${step} chroma`).toBeGreaterThan(0.005);
-        expect(chroma, `${neutralSource} ${step} chroma`).toBeLessThan(0.02);
+        // Genuinely grey now: no tint, so every step's chroma is 0.
+        expect(oklch(step)[1], `${neutralSource} ${step} chroma`).toBeLessThan(1e-9);
       }
     }
-    // Dark mode reaches the same branch and is likewise unchanged from 0.5.2.
+    // Dark mode reaches the same branch and is likewise a true grey.
     expect(buildNeutralRamp(SEEDS({ neutralSource: "#808080" }), "dark")).toEqual([
-      "#171616", "#1e1c1d", "#262525", "#2d2a2b", "#343132", "#3d3a3b",
-      "#4b4748", "#645e60", "#736c6f", "#807a7c", "#b8b2b4", "#efeeee",
+      "#161616", "#1d1d1d", "#252525", "#2b2b2b", "#323232", "#3b3b3b",
+      "#484848", "#606060", "#6e6e6e", "#7b7b7b", "#b4b4b4", "#eee",
     ]);
   });
 
