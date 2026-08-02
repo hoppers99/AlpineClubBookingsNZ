@@ -64,6 +64,11 @@ const ADMIN_SYSTEM_TEMPLATE_NAMES = new Set<EmailAuditTemplateName>([
   "admin-xero-sync-error",
   "admin-xero-repeated-failure",
   "admin-xero-reconciliation-report",
+  // #2501: the credit-sync checker's drift warning. Ships via sendToAdmins, so
+  // admin audience. NOT delivery-locked (an operator nudge — the drift is
+  // durable in the ledger and re-detected each pass, so muting loses no money),
+  // and content-only by default so it only mails when a real drift exists.
+  "admin-credit-sync-drift",
   "admin-refund-request",
   "admin-booking-change-request",
   "admin-issue-report",
@@ -125,6 +130,8 @@ const LOCKED_DELIVERY_TEMPLATE_NAMES = new Set<EmailAuditTemplateName>([
 const CONTENT_ONLY_DEFAULT_TEMPLATE_NAMES = new Set<EmailAuditTemplateName>([
   "admin-daily-digest",
   "admin-xero-reconciliation-report",
+  // #2501: only mail when a drift was actually detected.
+  "admin-credit-sync-drift",
 ]);
 
 const GLOBAL_EMAIL_TEMPLATE_TOKENS = [
@@ -524,6 +531,11 @@ const TEMPLATE_TRIGGER_METADATA: Partial<
   "admin-xero-reconciliation-report": {
     triggerSummary: "Scheduled Xero reconciliation report",
     frequency: "When the Xero reconciliation cron runs",
+  },
+  "admin-credit-sync-drift": {
+    triggerSummary:
+      "BookingApp's stamped applied credit drifted from Xero's live invoice allocation",
+    frequency: "When the Xero credit-sync checker runs (throttled to ~daily)",
   },
   "admin-email-failure": {
     triggerSummary: "Exhausted retry alert",

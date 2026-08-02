@@ -207,7 +207,8 @@ this (#1208). Shared JSON-guard micro-helpers (`asRecord`/`readString`/
 | `xero-booking-repair` | Booking-vs-Xero audit and self-repair (see Flow 3). CLI entry: `scripts/xero-booking-repair.ts`. Split into cohesive `xero-booking-repair-*` sub-modules (#1208 item 2, entry re-exports the public surface); see refactor item 2 for the module map. |
 | `xero-hardening` | Historical `XeroObjectLink` backfill, stale canonical-link cleanup, the emailed reconciliation report, repeated-failure alerting. Split into cohesive `xero-hardening-*` sub-modules (#1208 item 5, entry re-exports the public surface); see refactor item 5 for the module map. |
 | `xero-invoice-rounding-audit` | Read-only diagnostic that replays the pre-#1231 line maths in integer cents to flag issued invoices that would have carried the #1163 rounding drift, across **both** builder callers — per-booking invoices (`Payment.xeroInvoiceId`) and group-settlement invoices (`GroupBookingSettlement.xeroInvoiceId`). Makes **no** live-provider calls and mutates nothing (only `booking.findMany` + `groupBookingSettlement.findMany`). CLI entry: `scripts/audit-xero-invoice-rounding.ts`. See "Historical rounding-drift audit" below. |
-| `xero-cron-runner` | Maps the 7 cron tasks to the workers above, records `CronJobRun` rows, gates on module + connection. |
+| `xero-credit-sync-checker` | #2501 detect-and-warn reconciliation of **applied account credit**: compares each booking's stamped `BOOKING_APPLIED` sum (BookingApp's known credit, the same figure the #2483 email nets from) against its live Xero invoice `amountCredited`, and warns admins on drift with the exact per-booking amount. Read-only, idempotent, fail-safe. See "Credit-sync drift checker" below. |
+| `xero-cron-runner` | Maps the 8 cron tasks to the workers above, records `CronJobRun` rows, gates on module + connection. |
 | `xero-admin-failures`, `xero-admin-health`, `xero-record-activity`, `xero-admin-cache` | Admin overviews: failed-operation triage states, missing-invoice/missing-credit-note health snapshot, per-record activity timeline, cached chart-of-accounts/items. |
 
 ### HTTP surface
@@ -222,11 +223,13 @@ this (#1208). Shared JSON-guard micro-helpers (`asRecord`/`readString`/
   ITR marker newer than a server-issued verify-start AND matching the currently
   stored key's fingerprint (so a stale marker or one under a replaced key never
   satisfies a new verify). Any admin may read; the key write is Full-Admin-only.
-- `POST /api/cron/xero?task=memberships|outbox|retries|inbound|backfill|link-cleanup|report|all`
+- `POST /api/cron/xero?task=memberships|outbox|retries|inbound|backfill|link-cleanup|report|credit-sync|all`
   — `CRON_SECRET`-gated; `all` runs the tasks in that order; `backfill` also
   runs `link-cleanup` by default. Tasks needing a connection are skipped (and
   recorded as SKIPPED) when Xero is disconnected or the `xeroIntegration`
-  module is off.
+  module is off. `credit-sync` (#2501) additionally self-throttles: a completed
+  pass suppresses further Xero reads for ~20h, so bundling it into a frequent
+  `all` cannot burn the daily Xero quota.
 - ~38 admin routes under `/api/admin/xero/**` and `/api/admin/members/[id]/xero-*`
   — OAuth connect/callback/disconnect, status/health/usage, operations list +
   retry/requeue/resolve/mark-non-replayable/reset-stale-running, inbound-events
@@ -469,6 +472,74 @@ redacted raw view would mask, and money is formatted only through the shared
 first). Unknown or unmapped shapes return `null`, and the panel falls back to
 the redacted raw request/response JSON exactly as before. A per-row **Show raw
 JSON** toggle reveals the same redacted `<pre>` blocks for any mapped row.
+
+### Credit-sync drift checker (#2501, read-only, detect-and-warn)
+
+The owner's #2483 decision split the unpaid-confirmation credit problem in two:
+the member-facing email nets applied account credit from **BookingApp's own
+ledger** with no wait on Xero (delivered under #2483), and a **separate checker**
+keeps that local ledger and Xero's live invoice allocations in sync, warning
+admins whenever they drift. That split is what makes the local computation safe —
+a manual Xero-side edit that diverges from the local ledger surfaces to an admin
+instead of the two silently disagreeing. This checker is that separate half.
+
+**Module:** `xero-credit-sync-checker` (`reconcileXeroCreditSync`).
+**Cron task:** `credit-sync` (`xero-cron-runner`), recorded as
+`xero-credit-sync-check`; scheduled in-process daily at 02:45 NZT (and runnable
+via `POST /api/cron/xero?task=credit-sync`).
+
+**What it reconciles, per booking (integer cents throughout):**
+
+- `localStampedCents = |Σ stamped BOOKING_APPLIED rows|` — the applied credit
+  BookingApp believes it has already allocated onto the club's Xero invoice
+  (the rows whose `xeroCreditNoteId` is set). This is BookingApp's *known
+  credit*, the same quantity `deriveBookingAppliedCreditCents` gives the #2483
+  email.
+- `xeroCreditedCents = round(invoice.amountCredited * 100)` — the credit Xero's
+  live invoice actually shows allocated (read via `getInvoice`).
+
+The scan universe is exactly the stamped-credit population — the only bookings
+for which a Xero-invoice allocation is provably expected. Applied credit that
+was never stamped (e.g. card-netted credit that reduces the charge rather than a
+Xero invoice) is deliberately out of scope, because separating it from a stalled
+IB allocation needs the payment source, and the stalled/failed-op class is
+already covered by the reconciliation `report` task.
+
+**Drift-warning contract (`admin-credit-sync-drift`, content-only, gated by the
+"Xero sync errors" preference):**
+
+| Finding | Fires when | Reported amount |
+| --- | --- | --- |
+| `missing_in_xero` | `xeroCreditedCents < localStampedCents` | shortfall = `localStampedCents − xeroCreditedCents` |
+| `excess_in_xero` | `xeroCreditedCents > localStampedCents` | excess = `xeroCreditedCents − localStampedCents` |
+| `no_invoice` | stamped credit but the payment has no linked Xero invoice | the whole stamped amount |
+
+The email names the member, booking, invoice (deep-linked, org-stamped at send
+time per #2314) and the exact per-note breakdown, and states plainly that
+nothing was changed — it is a warning, never an auto-correct (the owner asked
+for a warning; auto-correcting would risk masking the very regression the
+checker exists to surface, cf. the #1547 alert-only rule).
+
+**Safety posture (Critical — Xero + money):**
+
+- **Read-only.** Mutates no financial state.
+- **Fail-safe.** A Xero read failure (outage, rate-limit, degraded payload)
+  **defers** that booking — it never emits a false-drift warning; a booking with
+  an in-flight allocation/deallocation op (`entityType ALLOCATION`, PENDING or
+  RUNNING) is deferred too (a transient window, not drift). Only a settled
+  mismatch warns.
+- **Breaker-friendly.** The `getInvoice` read passes `armTransientBreaker:
+  false` (#2394/#2423): a reconciliation read must not arm the process-global
+  transient-outage breaker and take invoicing/sync/webhooks down. It still
+  *respects* a breaker armed elsewhere (`withXeroRetry` refuses up front), which
+  simply defers every booking that run.
+- **Idempotent + quota-safe.** Re-running produces the same findings. A
+  *complete* pass (every scanned booking checked, none deferred, not truncated)
+  throttles real Xero work for ~20h off the `CronJobRun` history — no schema and
+  no per-booking state — so a persisting drift warns at most ~once/day and a
+  frequent `all` schedule cannot exhaust the daily Xero quota. A pass that was
+  truncated or deferred is **not** complete, so it does not throttle and the next
+  run retries.
 
 ### Historical rounding-drift audit (#1318, read-only)
 
