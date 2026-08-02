@@ -472,6 +472,19 @@ function redactTruncateErrorMessage(message?: string | null): string | null {
  * through the observability bridge AND trips the metering circuit breaker; on
  * success the breaker resets.
  *
+ * CONCURRENCY: the transaction's FIRST statement takes the SAME per-month
+ * advisory lock as `reserveDiagnosticsBudget`
+ * (`pg_advisory_xact_lock(hashtext('diagnostics-budget-reserve'), hashtext(<month>))`),
+ * so a settle's reservation-release + `settledCents` increment can never commit
+ * BETWEEN a concurrent reserve's two reads (settled spend vs. live reservations).
+ * Without it a settle that landed mid-reserve could be counted in NEITHER term —
+ * its reservation already deleted, its settled increment not yet in the reserve's
+ * READ COMMITTED snapshot — undercounting committed spend and admitting an
+ * over-budget roundtrip. Reserve and settle are now mutually exclusive per month.
+ * This is the ONLY lock settle takes — the same single key as reserve — so no
+ * lock-ordering deadlock is possible, and the provider call has already happened
+ * OUTSIDE this transaction. Different months do not contend.
+ *
  * NO raw prompt/answer/tool arg/result/provider payload is written — only the
  * approved metadata on the input.
  */
@@ -500,13 +513,24 @@ export async function settleDiagnosticsRoundtrip(
   }
 
   try {
-    await prisma.$transaction([
-      prisma.diagnosticsBudgetReservation.deleteMany({
+    await prisma.$transaction(async (tx) => {
+      // Take the SAME per-month advisory lock as reserveDiagnosticsBudget as the
+      // FIRST statement so this settle's reservation-release + settledCents
+      // increment cannot commit BETWEEN a concurrent reserve's settled-vs-live
+      // reservation reads (which would let the reserve under-count committed
+      // spend and admit an over-budget roundtrip). Reserve and settle are thus
+      // mutually exclusive per month. This is the ONLY lock settle takes (same
+      // single key as reserve) — no lock-ordering deadlock — and the provider
+      // call already happened OUTSIDE this transaction. Different months do not
+      // contend; the lock releases on commit.
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('diagnostics-budget-reserve'), hashtext(${month}))`;
+
+      await tx.diagnosticsBudgetReservation.deleteMany({
         // A null reservation matches nothing (sentinel id); a real one is
         // released. Either way the settled cost below still lands.
         where: { id: input.reservationId ?? "__no_reservation__" },
-      }),
-      prisma.diagnosticsUsageEvent.create({
+      });
+      await tx.diagnosticsUsageEvent.create({
         data: {
           month,
           adminMemberId: input.adminMemberId ?? null,
@@ -525,8 +549,8 @@ export async function settleDiagnosticsRoundtrip(
           errorMessage: redactTruncateErrorMessage(input.errorMessage),
           createdAt: now,
         },
-      }),
-      prisma.diagnosticsUsageMonthly.upsert({
+      });
+      await tx.diagnosticsUsageMonthly.upsert({
         where: { month },
         create: {
           month,
@@ -549,8 +573,8 @@ export async function settleDiagnosticsRoundtrip(
           cacheReadTokens: { increment: usage.cacheReadTokens },
           settledCents: { increment: costCents },
         },
-      }),
-    ]);
+      });
+    });
     // A successful write clears the breaker.
     consecutiveMeteringFailures = 0;
   } catch (err) {

@@ -127,8 +127,11 @@ reclaims expired reservations, sums live reservations + settled spend, and
 inserts a reservation only if the total stays within budget — all atomic against
 concurrent reservers, so a burst cannot overspend the budget. The provider call
 runs outside the transaction; `settleDiagnosticsRoundtrip` releases the
-reservation and books the real cost afterwards; `expiresAt` reclaims a leaked
-reservation from a crashed call.
+reservation and books the real cost afterwards, taking the **same** per-month
+lock as its first statement so its reservation-delete + settled increment cannot
+commit mid-reserve and under-count committed spend (reserve and settle mutually
+exclude per month; each takes only this one key, so there is no lock-ordering
+cycle); `expiresAt` reclaims a leaked reservation from a crashed call.
 
 ## Fail-closed points
 

@@ -117,7 +117,7 @@ are the literal `1`.
 | **Authoritative fee schedule** | `hashtext("fee-schedule:<domain>:<key>")` | `lockFeeSchedule` (`authoritative-fees.ts`) | — | Serialises effective-dated membership or entrance-fee schedule changes for one configured key. |
 | **Member partner link** | sorted `hashtext("member-partner-link:<memberId>")` keys | `lockPartnerMembers` (`member-partner-link.ts`) | — | Serialises partner-link invariants across every member touched by a link; same-family keys are sorted. |
 | **Xero member contact link (legacy key)** | `hashtext(<memberId>)` | short local-link transactions (`xero-contacts.ts`) | — | First-writer-wins local `Member.xeroContactId` linking after provider work. This legacy unnamespaced key is shared by both Xero contact-link writers; do not copy it for new domains. |
-| **Diagnostics budget reserve (per month)** | `hashtext("diagnostics-budget-reserve"), hashtext(<month>)` | `reserveDiagnosticsBudget` (`ai-diagnostics-usage.ts`, AID-2 #2371) | — | Serialises every AI Diagnostics budget RESERVE for one billing month so the read-check-insert (sum live reservations + settled spend, compare to budget, insert reservation) is atomic against concurrent reservers. A burst of paid diagnostics roundtrips therefore cannot push `settled + reserved` over the monthly budget; a lost claim (over budget) inserts nothing and denies the paid call. Different months do not contend. Held only for the milliseconds of that short reserve transaction; the provider call runs entirely OUTSIDE it. Single-domain lock; composes with no other family. See "Composition: diagnostics budget reserve" below. |
+| **Diagnostics budget reserve (per month)** | `hashtext("diagnostics-budget-reserve"), hashtext(<month>)` | `reserveDiagnosticsBudget` **and** `settleDiagnosticsRoundtrip` (`ai-diagnostics-usage.ts`, AID-2 #2371) | — | Serialises every AI Diagnostics budget RESERVE **and** SETTLE for one billing month so the reserve's read-check-insert (sum live reservations + settled spend, compare to budget, insert reservation) is atomic against concurrent reservers AND against a settle's reservation-delete + `settledCents` increment. A burst of paid diagnostics roundtrips therefore cannot push `settled + reserved` over the monthly budget, and a settle can never commit mid-reserve to under-count committed spend; a lost claim (over budget) inserts nothing and denies the paid call. Different months do not contend. Held only for the milliseconds of each short transaction; the provider call runs entirely OUTSIDE both. Both take ONLY this key (no second lock), so no ordering cycle is possible. See "Composition: diagnostics budget reserve" below. |
 | **Backup run claim** | `hashtext("backup:run-lock")` | `claimBackupRun` (`backup-run.ts`, #2095) | — | Single-flights managed database backups across containers (nightly cron vs admin run-now). Held only for the milliseconds of the reap-stale → active-check → insert-RUNNING claim transaction; the `pg_dump`/upload pipeline runs entirely outside any transaction, so a crashed run can never wedge the lock (a dead RUNNING row is reaped by heartbeat age on the next claim). Single-lock holder; composes with no other family. The config-transfer pre-apply safety backup deliberately bypasses this claim (it must run inline; concurrent dumps are independent snapshots writing uniquely-named files). |
 
 ### Composition: minimum-stay policy set (#2363)
@@ -364,10 +364,20 @@ status-guarded `updateMany` claims elsewhere in this document.
 
 The provider call runs entirely OUTSIDE this transaction (the lock releases on
 commit). Afterwards `settleDiagnosticsRoundtrip` deletes the reservation and
-books the actual cost into `settledCents` in a second short transaction; the
-reservation's `expiresAt` is a crash-safety backstop so a process that dies
-between reserve and settle cannot pin worst-case budget for the rest of the
-month — the next reserve for that month sweeps it. The multi-tool loop is bounded
+books the actual cost into `settledCents` in a second short transaction that
+takes the **same** per-month advisory lock as its first statement. This is
+load-bearing: without it a settle's reservation-delete + `settledCents` increment
+could commit BETWEEN a concurrent reserve's two READ COMMITTED reads (settled
+spend vs. live reservations), so the just-settled roundtrip would be counted in
+NEITHER term — its reservation already gone, its settled increment not yet in the
+reserve's snapshot — under-counting committed spend and admitting an over-budget
+reservation. Sharing the lock makes reserve and settle mutually exclusive per
+month, so every reserve sees a consistent `settled + reserved` sum. Settle takes
+only this one key (never a second lock), so it cannot form a lock-ordering cycle
+with the reserve or anything else. The reservation's `expiresAt` is a
+crash-safety backstop so a process that dies between reserve and settle cannot
+pin worst-case budget for the rest of the month — the next reserve for that month
+sweeps it. The multi-tool loop is bounded
 by `DIAGNOSTICS_MAX_TOOL_ROUNDS`, so one session's worst-case is
 rounds x worst-case-roundtrip and the monthly budget bounds the sum across
 sessions. This is a single-domain lock keyed per month; it composes with no

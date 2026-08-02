@@ -432,6 +432,82 @@ describe("settleDiagnosticsRoundtrip — release reservation, book cost, meter",
   });
 });
 
+describe("settle serialises against reserve on the per-month lock (money-safety invariant)", () => {
+  // The overspend hole this pins: reserveDiagnosticsBudget reads settled spend
+  // and live reservations as two READ COMMITTED statements. If a settle could
+  // commit its (delete-reservation + settledCents increment) BETWEEN those reads,
+  // the just-settled roundtrip would be counted in NEITHER term — reservation
+  // already gone, settled increment not yet in the reserve's snapshot — so the
+  // reserve under-counts committed spend and can admit an over-budget roundtrip.
+  // The fix makes settle take the SAME per-month advisory lock as reserve as its
+  // first statement, so the two mutually exclude for the month. The real-DB,
+  // multi-connection proof of the interleaving is CI-owned (opt-in race harness,
+  // follow-up #2532); here we pin the mechanism the proof rests on: settle takes
+  // the identical lock key, first, before any budget mutation.
+  const settleInput = {
+    reservationId: "resv_1",
+    surface: "diagnostics",
+    model: "claude-opus-5",
+    roundIndex: 0,
+    success: true,
+    usage: {
+      inputTokens: 1000,
+      outputTokens: 200,
+      cacheWriteTokens: 0,
+      cacheReadTokens: 0,
+    },
+  };
+
+  it("takes the per-month advisory lock as its FIRST statement, before release/event/rollup", async () => {
+    const now = new Date("2026-08-15T00:00:00Z");
+    const month = diagnosticsUsageMonthKey(now);
+
+    await settleDiagnosticsRoundtrip({ ...settleInput, now });
+
+    // The advisory lock ran exactly once, keyed to this billing month. (A mutant
+    // that removes the lock from settle makes this 0 — reddening the assertion.)
+    expect(mocks.execRaw).toHaveBeenCalledTimes(1);
+    const lockSql = String(mocks.execRaw.mock.calls[0][0]);
+    expect(lockSql).toContain("pg_advisory_xact_lock");
+    expect(lockSql).toContain("diagnostics-budget-reserve");
+    expect(mocks.execRaw.mock.calls[0][1]).toBe(month);
+
+    // ...and it is the FIRST statement — strictly before the reservation release,
+    // the event write, and the monthly rollup. Removing the lock leaves these
+    // invocationCallOrder look-ups undefined, so the ordering assertions fail too.
+    const lockOrder = mocks.execRaw.mock.invocationCallOrder[0];
+    expect(lockOrder).toBeLessThan(mocks.resvDeleteMany.mock.invocationCallOrder[0]);
+    expect(lockOrder).toBeLessThan(mocks.eventCreate.mock.invocationCallOrder[0]);
+    expect(lockOrder).toBeLessThan(mocks.monthlyUpsert.mock.invocationCallOrder[0]);
+  });
+
+  it("acquires the IDENTICAL lock key as reserve for the same month (mutual exclusion)", async () => {
+    const now = new Date("2026-08-15T00:00:00Z");
+    const month = diagnosticsUsageMonthKey(now);
+
+    await reserveDiagnosticsBudget({ reserveCents: 40, now });
+    await settleDiagnosticsRoundtrip({ ...settleInput, now });
+
+    // Reserve locked once (call 0), settle locked once (call 1). Same SQL
+    // template and same month argument ⇒ the SAME PostgreSQL advisory lock ⇒ a
+    // reserve and a settle for the month serialise on it. A mutant dropping the
+    // settle lock leaves only one execRaw call and fails the count assertion.
+    expect(mocks.execRaw).toHaveBeenCalledTimes(2);
+    const reserveLock = String(mocks.execRaw.mock.calls[0][0]);
+    const settleLock = String(mocks.execRaw.mock.calls[1][0]);
+    expect(settleLock).toBe(reserveLock);
+    expect(mocks.execRaw.mock.calls[0][1]).toBe(month);
+    expect(mocks.execRaw.mock.calls[1][1]).toBe(month);
+  });
+
+  it("takes ONLY the one month lock (no second lock ⇒ no lock-ordering deadlock)", async () => {
+    const now = new Date("2026-08-15T00:00:00Z");
+    await settleDiagnosticsRoundtrip({ ...settleInput, now });
+    // Exactly one advisory-lock statement in the whole settle transaction.
+    expect(mocks.execRaw).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("fail-closed defaults", () => {
   it("ships with a NZ$0 budget (no spend until an admin sets one)", () => {
     expect(DIAGNOSTICS_DEFAULT_MONTHLY_BUDGET_CENTS).toBe(0);
