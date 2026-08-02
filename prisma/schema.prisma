@@ -4518,10 +4518,11 @@ model BookingChangeRequest {
 // SUPERSEDED) or a successful approval DELETES every row for the request in the
 // SAME transaction that writes the outcome, so the canonical per-lodge capacity
 // calculation (capacity.ts) counts "held reservations" simply by summing the
-// rows that still exist. A held new-booking request reserves the FULL proposal's
-// per-night beds; a held modification reserves only the INCREMENTAL beds beyond
-// the unchanged live booking (`computeProposalReservation`,
-// booking-exception-requests.ts). See docs/CONCURRENCY_AND_LOCKING.md →
+// rows that still exist. Today only the MODIFICATION path writes these rows: a
+// held modification reserves the INCREMENTAL beds beyond a capacity-holding live
+// booking (or the FULL proposed footprint when the base holds no capacity)
+// (`computeProposalReservation`, booking-exception-requests.ts). New-booking
+// reservation writes are DEFERRED to #2526. See docs/CONCURRENCY_AND_LOCKING.md →
 // "Provisional reservations for held policy-exception requests (#2365)".
 //
 // The table carries NO Member FK by design: the owning BookingChangeRequest

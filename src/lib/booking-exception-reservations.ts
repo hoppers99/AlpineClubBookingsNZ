@@ -13,10 +13,12 @@ import {
  * canonical capacity calculation.
  *
  * The reservation MATH is the foundation's (`computeProposalReservation`,
- * booking-exception-requests.ts): a new-booking request reserves the FULL
- * proposal's per-night beds, a modification reserves only the INCREMENTAL beds
- * beyond the unchanged live booking. This module is the durable, transaction-
- * aware side of it:
+ * booking-exception-requests.ts). Today only the MODIFICATION path reserves: a
+ * held modification reserves the INCREMENTAL beds beyond a capacity-holding live
+ * booking (or the FULL proposed footprint when the base holds no capacity). A
+ * new-booking request does NOT yet write a reservation — that is DEFERRED to
+ * #2526; the full-proposal math the counter would use is already in place here.
+ * This module is the durable, transaction-aware side of it:
  *
  *  - {@link reservePolicyExceptionCapacity} writes one `PolicyExceptionReservationNight`
  *    row per reserved night when a request is HELD (called by the request-hold

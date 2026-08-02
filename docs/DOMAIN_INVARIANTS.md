@@ -3146,18 +3146,27 @@ pure workflow logic (`src/lib/booking-exception-requests.ts`):
   per-policy capacity mode — plus the HOLD-if-any-HOLD aggregate. An approval may
   override ONLY these reviewed violations, and nothing that is not on the #2363
   allowlist can be stored (`freezePolicyExceptionEvidence` refuses it).
-- **A held request's provisional reservation is per-night and directional.** A
-  new-booking request reserves the FULL proposal's per-night beds; a modification
-  request reserves ONLY the incremental beds beyond the unchanged live booking
-  (`max(0, proposed - live)` per night), because the live booking is a
-  capacity-holding row that already holds its own footprint and #2365 forbids
-  touching it before approval. A shrinking modification reserves nothing. (The
-  reservation math is `computeProposalReservation`. Since #2525 the footprint is
-  durable as `PolicyExceptionReservationNight` rows that the canonical per-lodge
-  capacity calculation counts as occupancy — alongside capacity-holding bookings
-  and custodian holds — so a pending request cannot be oversold; a held request
-  never overbooks because its reservation is claimed under the same per-lodge
-  capacity lock the occupancy read takes.)
+- **A held request's provisional reservation is per-night and directional.**
+  Today only the MODIFICATION path writes a reservation; a modification request
+  reserves ONLY the incremental beds beyond a capacity-holding live booking
+  (`max(0, proposed - live)` per night, because that live booking already holds
+  its own footprint and #2365 forbids touching it before approval), OR the FULL
+  proposed footprint when the live base is **not** capacity-holding (a
+  DRAFT / generic PENDING / un-held PAYMENT_PENDING / WAITLISTED / BUMPED booking,
+  which contributes nothing to occupancy for a delta to sit atop). A shrinking
+  modification reserves nothing. New-booking requests do **not** yet write a
+  reservation — that hold is DEFERRED to #2526, and their approval-time NO_HOLD
+  capacity recheck is what prevents overbooking until then; the full-proposal math
+  `computeProposalReservation` already returns for a `NEW_BOOKING` snapshot makes
+  wiring that later purely additive. A held modification is never written larger
+  than the lodge's real headroom — the create path admission-checks under the
+  lodge lock and refuses an over-capacity hold. (The reservation math is
+  `computeProposalReservation`. Since #2525 the footprint is durable as
+  `PolicyExceptionReservationNight` rows that the canonical per-lodge capacity
+  calculation counts as occupancy — alongside capacity-holding bookings and
+  custodian holds — so a pending request cannot be oversold; a held request never
+  overbooks because its reservation is claimed under the same per-lodge capacity
+  lock the occupancy read takes.)
 - **Drift is set algebra over the frozen and current violations of the SAME
   proposal.** At approval the frozen proposal is re-evaluated against today's
   policy configuration. A reviewed rule that no longer trips (policy switched off

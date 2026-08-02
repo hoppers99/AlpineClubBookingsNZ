@@ -957,9 +957,16 @@ capacity reason.
 
 A held `POLICY_EXCEPTION` `BookingChangeRequest` (see `docs/STATE_MACHINES.md` →
 "Booking-policy exception requests") reserves capacity so an eventual approval is
-guaranteed to fit: it reserves only the incremental beds beyond the unchanged
-live booking (`computeProposalReservation`,
-`src/lib/booking-exception-requests.ts`). The reservation ledger keys to a
+guaranteed to fit: it reserves the incremental beds beyond the unchanged live
+booking when that booking is capacity-holding, or the FULL proposed footprint
+when the base is **not** capacity-holding (a DRAFT / generic PENDING / un-held
+PAYMENT_PENDING / WAITLISTED / BUMPED booking — all editable per
+`getBookingEditPolicy` yet outside `capacityHoldingBookingFilter`, so their beds
+are not counted for a delta to sit atop) (`computeProposalReservation`,
+`src/lib/booking-exception-requests.ts`). It never writes a hold larger than the
+lodge's real headroom — the create path runs an admission check under the lodge
+lock and refuses an over-capacity hold rather than parking phantom beds. The
+reservation ledger keys to a
 `BookingChangeRequest` (`PolicyExceptionReservationNight.changeRequestId`), so it
 holds **modification** requests. New-booking requests live in the separate
 `NewBookingPolicyExceptionRequest` table (#2524's dedicated-table decision) and
@@ -997,9 +1004,24 @@ writer follows:
   invoked transaction-aware so there is no mark-approved-then-call gap.
 - **NO_HOLD approval rechecks capacity and keeps pending on conflict.** When the
   frozen aggregate is `NO_HOLD` (nothing was reserved), the approval rechecks
-  capacity under the per-lodge lock; a conflict keeps the request `REQUESTED`
-  with a recorded `lastConflictReason` (it does not fail it), so a later retry
-  can still succeed.
+  capacity under the per-lodge lock BEFORE the claim; a conflict keeps the request
+  `REQUESTED` with a recorded `lastConflictReason` (it does not fail it), so a
+  later retry can still succeed.
+- **HOLD approval also rechecks capacity — after releasing its own hold.** A HOLD
+  request holds its own beds, so the engine cannot recheck it before the claim
+  (its own reservation would count against it). Instead it claims, releases the
+  reservation, then rechecks under the same lock; if the lodge no longer fits, it
+  throws an internal rollback signal that undoes the whole approval (claim +
+  release) and surfaces `keptPendingCapacity`, leaving the request `REQUESTED` and
+  pending rather than executing an overbooking. The engine asserts capacity itself
+  and never relies on the executor seam being a hard refusal.
+- **A MODIFICATION approval fails closed without a live-integrity check.** The
+  optional `verifyLiveProposalIntegrity` hook is the ONLY gate comparing a
+  modification's frozen `base` against the live booking; the tamper hash covers
+  only the frozen snapshot. If a `MODIFICATION` reaches the engine without that
+  hook it throws `PolicyExceptionIntegrityHookMissingError` (a wiring bug, fail
+  loud) rather than executing against a possibly-stale base. New-booking snapshots
+  have no live base to drift and legitimately run without it.
 
 The live reservation writer, its `capacity.ts` integration and the transaction-
 aware canonical execution are the #2365 execution lane, **built in #2525**. The

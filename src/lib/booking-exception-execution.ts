@@ -154,6 +154,38 @@ export type ApprovePolicyExceptionResult =
 type ApprovalDb = Pick<typeof prisma, "$transaction">;
 
 /**
+ * A MODIFICATION approval reached the engine without a
+ * {@link PolicyExceptionApprovalHooks.verifyLiveProposalIntegrity} hook. That
+ * hook is the ONLY gate comparing a modification's frozen `base` party against
+ * the live booking, so its absence for a MODIFICATION is a wiring bug that must
+ * FAIL CLOSED and LOUD — never silently execute against a possibly-stale base.
+ */
+export class PolicyExceptionIntegrityHookMissingError extends Error {
+  constructor() {
+    super(
+      "A modification policy-exception approval requires a live-proposal integrity check, but none was configured.",
+    );
+    this.name = "PolicyExceptionIntegrityHookMissingError";
+  }
+}
+
+/**
+ * Internal rollback signal for a HOLD approval whose post-release capacity
+ * recheck found the lodge can no longer fit the proposal. Thrown inside the
+ * approval transaction so Prisma ROLLS THE WHOLE APPROVAL BACK (undoing the
+ * claim and the reservation release), leaving the request REQUESTED and pending
+ * — then caught by the caller and surfaced as a graceful `keptPendingCapacity`
+ * outcome instead of an executed overbook. Not exported: it never escapes this
+ * module.
+ */
+class KeptPendingCapacitySignal extends Error {
+  constructor(readonly capacityMessage: string) {
+    super("kept-pending-capacity");
+    this.name = "KeptPendingCapacitySignal";
+  }
+}
+
+/**
  * Parse a stored `proposalSnapshot` JSON without trusting it. Returns null on
  * anything that is not a well-formed new-booking / modification snapshot, which
  * fails the approval closed rather than executing against nonsense.
@@ -231,7 +263,9 @@ export async function approveAndExecutePolicyExceptionRequest(params: {
   let canonicalDeferred: (() => Promise<void>) | null = null;
   let approvedRequest: LoadedPolicyExceptionRequest | null = null;
 
-  const result = await db.$transaction(
+  let result: ApprovePolicyExceptionResult;
+  try {
+    result = await db.$transaction(
     async (tx): Promise<ApprovePolicyExceptionResult> => {
       // (1) Pre-read the immutable frozen lodge, then lock global -> per-lodge.
       const preRead = await tx.bookingChangeRequest.findUnique({
@@ -298,6 +332,15 @@ export async function approveAndExecutePolicyExceptionRequest(params: {
         if (!intact) {
           return { outcome: "proposalDrift", message: PROPOSAL_DRIFT_MESSAGE };
         }
+      } else if (snapshot.kind === "MODIFICATION") {
+        // FAIL CLOSED (#2525): for a MODIFICATION the live booking may have
+        // drifted from the frozen `base` since the request was made, and this
+        // hook is the ONLY gate comparing frozen base vs live. Absent, we cannot
+        // prove the live footprint still matches — so refuse LOUDLY rather than
+        // execute against a possibly-stale base (which the tamper hash, computed
+        // over the FROZEN snapshot alone, cannot catch). New-booking snapshots
+        // have no live base to drift and legitimately run without this hook.
+        throw new PolicyExceptionIntegrityHookMissingError();
       }
 
       // (5) Policy drift: evaluate current violations of the frozen proposal.
@@ -318,6 +361,9 @@ export async function approveAndExecutePolicyExceptionRequest(params: {
       }
 
       // (6) NO_HOLD capacity recheck. A conflict keeps it PENDING (does not fail).
+      // A HOLD request holds its own beds, so it CANNOT be rechecked here (its own
+      // reservation would count against it); it is rechecked at (8b) below, after
+      // the release frees those beds.
       if (row.aggregateCapacityMode === "NO_HOLD") {
         const capacity = await hooks.recheckCapacity(snapshot, tx);
         if (!capacity.ok) {
@@ -349,6 +395,13 @@ export async function approveAndExecutePolicyExceptionRequest(params: {
           version: { increment: 1 },
           reviewedByMemberId: actorMemberId,
           reviewedAt: new Date(),
+          // Free the #2524 one-open-request slot on APPROVAL too. APPROVED is a
+          // terminal status, so leaving `openStateKey` non-null would PERMANENTLY
+          // block the member from ever opening another policy-exception request on
+          // this booking — createModification's NULL-distinct unique index would
+          // reject it with P2002. The terminal-release path nulls it; the approve
+          // path must mirror that or the member is locked out for good.
+          openStateKey: null,
         },
       });
       if (claim.count !== 1) return { outcome: "claimLost" };
@@ -357,6 +410,23 @@ export async function approveAndExecutePolicyExceptionRequest(params: {
       // HOLD request the freed beds are immediately re-taken by the executed
       // booking below; for NO_HOLD nothing was reserved (count 0).
       await releasePolicyExceptionReservation(tx, requestId);
+
+      // (8b) HOLD capacity recheck (#2525). NO_HOLD was rechecked at (6) before
+      // the claim; a HOLD request holds its own beds, so it is rechecked HERE —
+      // after (8) just freed them — so its own reservation never counts against
+      // itself. If the lodge genuinely no longer fits the proposal, roll the whole
+      // approval back (undoing the claim and the release) via a signal the caller
+      // turns into a graceful `keptPendingCapacity`, leaving the request REQUESTED
+      // and pending exactly like the NO_HOLD conflict. The engine asserts capacity
+      // itself rather than trusting the executor seam to be a hard refusal.
+      if (row.aggregateCapacityMode !== "NO_HOLD") {
+        const capacity = await hooks.recheckCapacity(snapshot, tx);
+        if (!capacity.ok) {
+          throw new KeptPendingCapacitySignal(
+            capacity.message ?? CAPACITY_CONFLICT_MESSAGE,
+          );
+        }
+      }
 
       // (9) Execute the reviewed proposal on THIS transaction (tx-aware canonical
       // service). The override is exactly the reviewed violations that still
@@ -374,7 +444,16 @@ export async function approveAndExecutePolicyExceptionRequest(params: {
       approvedRequest = request;
       return { outcome: "executed", requestId };
     },
-  );
+    );
+  } catch (error) {
+    // The HOLD post-release recheck (8b) rolled the whole approval back because
+    // the lodge no longer fits the proposal. Surface it as the graceful
+    // pending outcome; the request is untouched (still REQUESTED at its version).
+    if (error instanceof KeptPendingCapacitySignal) {
+      return { outcome: "keptPendingCapacity", message: error.capacityMessage };
+    }
+    throw error;
+  }
 
   // (10) Post-commit provider work + member notification, only on execution.
   if (result.outcome === "executed") {

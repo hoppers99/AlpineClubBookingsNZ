@@ -21,6 +21,8 @@ const mocks = vi.hoisted(() => ({
   execRaw: vi.fn(),
   validateMinimumStay: vi.fn(),
   evaluateHosting: vi.fn(),
+  // #2525 FIX 4: the admission check the hold path runs before reserving.
+  checkCapacity: vi.fn(),
 }));
 
 vi.mock("@/lib/prisma", () => {
@@ -66,6 +68,17 @@ vi.mock("@/lib/prisma", () => {
   };
 });
 
+// #2525 FIX 4: override checkCapacityForGuestRanges, but keep the REAL
+// acquireLodgeCapacityLock (it runs through the mocked tx.$executeRaw, so the
+// advisory-lock accounting and the "two raw statements" assertion stay honest).
+vi.mock("@/lib/capacity", async (importActual) => {
+  const actual = await importActual<typeof import("@/lib/capacity")>();
+  return {
+    ...actual,
+    checkCapacityForGuestRanges: (...a: unknown[]) => mocks.checkCapacity(...a),
+  };
+});
+
 vi.mock("@/lib/booking-policies", () => ({
   validateMinimumStay: (...a: unknown[]) => mocks.validateMinimumStay(...a),
 }));
@@ -85,6 +98,7 @@ import {
   LostSupersedeClaimError,
   NoEligiblePolicyExceptionError,
   OpenExceptionRequestConflictError,
+  PolicyExceptionCapacityUnavailableError,
   readUnifiedExceptionQueue,
   type ExceptionRequestGuestInput,
 } from "@/lib/booking-exception-request-service";
@@ -144,6 +158,12 @@ beforeEach(() => {
   mocks.peUpsert.mockResolvedValue({});
   mocks.peDeleteMany.mockResolvedValue({ count: 0 });
   mocks.execRaw.mockResolvedValue(undefined);
+  // Default: the lodge has room, so the hold path proceeds to reserve.
+  mocks.checkCapacity.mockResolvedValue({
+    available: true,
+    minAvailable: 10,
+    nightDetails: [],
+  });
 });
 
 describe("createNewBookingExceptionRequest", () => {
@@ -268,6 +288,7 @@ describe("createModificationExceptionRequest", () => {
       proposed: base,
       memberMessage: "please allow",
       requestedSummary: "check-out to 2026-07-05",
+      baseHoldsCapacity: true,
     });
 
     expect(result.reasonCodes).toEqual(["MINIMUM_STAY"]);
@@ -291,6 +312,7 @@ describe("createModificationExceptionRequest", () => {
         memberMessage: "please allow",
         requestedSummary: "x",
         supersedeRequestId: "old-9",
+        baseHoldsCapacity: true,
       }),
     ).rejects.toBeInstanceOf(LostSupersedeClaimError);
     expect(mocks.bcrCreate).not.toHaveBeenCalled();
@@ -319,6 +341,7 @@ describe("createModificationExceptionRequest", () => {
       proposed,
       memberMessage: "please allow",
       requestedSummary: "add Grace",
+      baseHoldsCapacity: true,
     });
 
     // Global lock(1) + per-lodge lock were taken (two raw statements at least).
@@ -348,6 +371,7 @@ describe("createModificationExceptionRequest", () => {
       proposed: base,
       memberMessage: "please allow",
       requestedSummary: "no-op footprint",
+      baseHoldsCapacity: true,
     });
     expect(mocks.bcrCreate).toHaveBeenCalledTimes(1);
     expect(mocks.peUpsert).not.toHaveBeenCalled();
@@ -372,6 +396,7 @@ describe("createModificationExceptionRequest", () => {
       memberMessage: "please allow",
       requestedSummary: "resubmit",
       supersedeRequestId: "old-9",
+      baseHoldsCapacity: true,
     });
 
     // The old request's provisional reservation is released atomically...
@@ -381,6 +406,98 @@ describe("createModificationExceptionRequest", () => {
     // ...and the replacement takes its own incremental hold.
     expect(mocks.peUpsert).toHaveBeenCalledTimes(1);
     expect(mocks.peUpsert.mock.calls[0][0].create.changeRequestId).toBe("bcr-1");
+  });
+
+  it("FIX 6: the supersede claim is SCOPED to the same bookingId", async () => {
+    // #2525 FIX 6: the supersede runs under only the NEW request's lodge lock, so
+    // it must only ever release a prior request on the SAME booking/lodge. The
+    // guarded claim is scoped to bookingId; a request on another booking claims 0
+    // rows (a lost claim) and is never cross-released under the wrong lock.
+    const supersedeClaim = mocks.bcrUpdateMany;
+    await createModificationExceptionRequest({
+      requestedByMemberId: "m1",
+      bookingId: "booking-1",
+      lodgeId: "lodge_1",
+      base,
+      proposed: base,
+      memberMessage: "please allow",
+      requestedSummary: "resubmit",
+      supersedeRequestId: "old-9",
+      baseHoldsCapacity: true,
+    });
+    // The FIRST updateMany is the supersede claim; its where must scope bookingId.
+    expect(supersedeClaim.mock.calls[0][0].where).toMatchObject({
+      id: "old-9",
+      bookingId: "booking-1",
+      requestedByMemberId: "m1",
+      kind: "POLICY_EXCEPTION",
+      status: "REQUESTED",
+    });
+  });
+
+  it("FIX 4: an over-capacity hold is REFUSED and never written", async () => {
+    // #2525 FIX 4: the lodge is full for the incremental beds. The request must be
+    // refused with a typed capacity error, and NOTHING may be written — no request
+    // row, no reservation.
+    mocks.checkCapacity.mockResolvedValue({
+      available: false,
+      minAvailable: -1,
+      nightDetails: [],
+    });
+    const proposed = {
+      checkIn: "2026-07-04",
+      checkOut: "2026-07-05",
+      guests: [
+        { firstName: "Ada", lastName: "Lovelace", ageTier: "ADULT", isMember: true, memberId: "m1", nights: ["2026-07-04"] },
+        { firstName: "Grace", lastName: "Hopper", ageTier: "ADULT", isMember: false, memberId: null, nights: ["2026-07-04"] },
+      ],
+    };
+    await expect(
+      createModificationExceptionRequest({
+        requestedByMemberId: "m1",
+        bookingId: "booking-1",
+        lodgeId: "lodge_1",
+        base,
+        proposed,
+        memberMessage: "please allow",
+        requestedSummary: "add Grace",
+        baseHoldsCapacity: true,
+      }),
+    ).rejects.toBeInstanceOf(PolicyExceptionCapacityUnavailableError);
+    // Mutation guard: without the admission check the row is created and the
+    // over-capacity beds are reserved — both must be absent here.
+    expect(mocks.bcrCreate).not.toHaveBeenCalled();
+    expect(mocks.peUpsert).not.toHaveBeenCalled();
+    // The admission check ran under the lock (excluding the live booking).
+    expect(mocks.checkCapacity).toHaveBeenCalledTimes(1);
+    expect(mocks.checkCapacity.mock.calls[0][0]).toBe("lodge_1");
+    expect(mocks.checkCapacity.mock.calls[0][4]).toBe("booking-1"); // excludeBookingId
+  });
+
+  it("FIX 7: a NON-capacity-holding base reserves the FULL proposed footprint", async () => {
+    // #2525 FIX 7: a DRAFT / generic-PENDING / un-held base holds no beds of its
+    // own, so the request must reserve the FULL proposed footprint — not the delta
+    // over a base that reserves nothing. Here base === proposed (one guest, one
+    // night): with a holding base the incremental hold is empty, but with a
+    // NON-holding base the full one bed must be reserved.
+    await createModificationExceptionRequest({
+      requestedByMemberId: "m1",
+      bookingId: "booking-1",
+      lodgeId: "lodge_1",
+      base,
+      proposed: base,
+      memberMessage: "please allow",
+      requestedSummary: "draft edit",
+      baseHoldsCapacity: false,
+    });
+    // Mutation guard: revert the baseHoldsCapacity:false branch and this reserves
+    // nothing (incremental of base===proposed is empty) → the assertion reddens.
+    expect(mocks.peUpsert).toHaveBeenCalledTimes(1);
+    expect(mocks.peUpsert.mock.calls[0][0].create).toMatchObject({
+      changeRequestId: "bcr-1",
+      lodgeId: "lodge_1",
+      beds: 1,
+    });
   });
 });
 

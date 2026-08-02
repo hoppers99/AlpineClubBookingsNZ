@@ -1,12 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   approveAndExecutePolicyExceptionRequest,
+  PolicyExceptionIntegrityHookMissingError,
   resolvePolicyExceptionRequestTerminal,
   type PolicyExceptionApprovalHooks,
 } from "@/lib/booking-exception-execution";
 import {
   computeProposalHash,
   freezePolicyExceptionEvidence,
+  type ModificationProposalSnapshot,
   type NewBookingProposalSnapshot,
 } from "@/lib/booking-exception-requests";
 import type { MinimumStayPolicyExceptionViolation } from "@/lib/booking-policy-exceptions";
@@ -31,6 +33,51 @@ const SNAPSHOT: NewBookingProposalSnapshot = {
     ],
   },
 };
+
+// A MODIFICATION snapshot: its frozen `base` party can drift from the live
+// booking, so the live-integrity hook is the only gate that catches that drift.
+const MOD_SNAPSHOT: ModificationProposalSnapshot = {
+  kind: "MODIFICATION",
+  lodgeId: LODGE,
+  bookingId: "bk-1",
+  base: {
+    checkIn: "2026-07-01",
+    checkOut: "2026-07-03",
+    guests: [
+      {
+        firstName: "Ada",
+        lastName: "Lovelace",
+        ageTier: "ADULT",
+        isMember: true,
+        memberId: "m-1",
+        nights: ["2026-07-01", "2026-07-02"],
+      },
+    ],
+  },
+  proposed: {
+    checkIn: "2026-07-01",
+    checkOut: "2026-07-03",
+    guests: [
+      {
+        firstName: "Ada",
+        lastName: "Lovelace",
+        ageTier: "ADULT",
+        isMember: true,
+        memberId: "m-1",
+        nights: ["2026-07-01", "2026-07-02"],
+      },
+      {
+        firstName: "Grace",
+        lastName: "Hopper",
+        ageTier: "ADULT",
+        isMember: false,
+        memberId: null,
+        nights: ["2026-07-01", "2026-07-02"],
+      },
+    ],
+  },
+};
+const MOD_HASH = computeProposalHash(MOD_SNAPSHOT);
 
 function minStay(
   policyId = "pol-1",
@@ -375,6 +422,117 @@ describe("approveAndExecutePolicyExceptionRequest", () => {
     expect(result).toEqual({ outcome: "notFound" });
     expect(order).toEqual(["commit"]); // pre-read only, then the tx returns
     expect(hooks.reauthorizeBookingOfficer).not.toHaveBeenCalled();
+  });
+
+  it("APPROVE frees the one-open-request slot: the CAS claim nulls openStateKey", async () => {
+    // #2525 FIX 1: APPROVED is terminal, so if the approve claim did not null
+    // openStateKey the member could never open another policy-exception request
+    // on this booking (createModification would P2002 on the unique slot index).
+    const { db, updateMany } = makeDb({ row: baseRow() });
+    const hooks = makeHooks();
+    const result = await approveAndExecutePolicyExceptionRequest({
+      requestId: "req-1",
+      expectedVersion: 1,
+      actorMemberId: "admin-1",
+      hooks,
+      db: db as never,
+    });
+    expect(result).toEqual({ outcome: "executed", requestId: "req-1" });
+    const approveClaim = updateMany.mock.calls.find(
+      (c) => (c[0] as { data: { status?: string } }).data.status === "APPROVED",
+    );
+    expect(approveClaim).toBeDefined();
+    // Mutation guard: revert `openStateKey: null` on the approve claim and this
+    // reddens (the field becomes undefined).
+    expect((approveClaim![0] as { data: { openStateKey?: unknown } }).data.openStateKey).toBeNull();
+  });
+
+  it("HOLD capacity no longer fits: post-release recheck keeps it pending, never executes", async () => {
+    // #2525 FIX 2: a HOLD approval releases its own hold then rechecks real
+    // capacity; if the lodge is now full it rolls back to keptPendingCapacity
+    // instead of executing an overbooking. Its own beds must not count against it,
+    // which is why the recheck runs AFTER the release.
+    const { db, order, deleteMany } = makeDb({ row: baseRow() }); // HOLD by default
+    const hooks = makeHooks(
+      { recheckCapacity: vi.fn(async () => ({ ok: false, message: "No room now." })) },
+      order,
+    );
+    const result = await approveAndExecutePolicyExceptionRequest({
+      requestId: "req-1",
+      expectedVersion: 1,
+      actorMemberId: "admin-1",
+      hooks,
+      db: db as never,
+    });
+    expect(result).toEqual({
+      outcome: "keptPendingCapacity",
+      message: "No room now.",
+    });
+    // The recheck ran, and it ran AFTER the release freed the request's own beds.
+    expect(hooks.recheckCapacity).toHaveBeenCalledTimes(1);
+    expect(deleteMany).toHaveBeenCalledTimes(1);
+    // Nothing executed and the transaction did NOT commit (rolled back).
+    expect(hooks.executeApprovedProposal).not.toHaveBeenCalled();
+    expect(order).not.toContain("execute");
+    expect(order).not.toContain("commit");
+    // Claim + release happened (then rolled back); execute did not.
+    expect(order).toContain("claim-approved");
+    expect(order).toContain("release");
+  });
+
+  it("HOLD capacity still fits: post-release recheck passes and it executes", async () => {
+    const { db } = makeDb({ row: baseRow() });
+    const hooks = makeHooks(); // recheckCapacity defaults to ok:true
+    const result = await approveAndExecutePolicyExceptionRequest({
+      requestId: "req-1",
+      expectedVersion: 1,
+      actorMemberId: "admin-1",
+      hooks,
+      db: db as never,
+    });
+    expect(result.outcome).toBe("executed");
+    // HOLD now rechecks capacity too (previously only NO_HOLD did).
+    expect(hooks.recheckCapacity).toHaveBeenCalledTimes(1);
+    expect(hooks.executeApprovedProposal).toHaveBeenCalledTimes(1);
+  });
+
+  it("MODIFICATION with NO live-integrity hook FAILS CLOSED (never executes)", async () => {
+    // #2525 FIX 3: for a MODIFICATION the frozen base may have drifted from the
+    // live booking; the integrity hook is the only gate for that. Absent, refuse
+    // loudly rather than execute against a possibly-stale base.
+    const modRow = baseRow({ proposalHash: MOD_HASH });
+    modRow.proposalSnapshot = MOD_SNAPSHOT as never;
+    const { db } = makeDb({ row: modRow });
+    const hooks = makeHooks(); // no verifyLiveProposalIntegrity provided
+    await expect(
+      approveAndExecutePolicyExceptionRequest({
+        requestId: "req-1",
+        expectedVersion: 1,
+        actorMemberId: "admin-1",
+        hooks,
+        db: db as never,
+      }),
+    ).rejects.toBeInstanceOf(PolicyExceptionIntegrityHookMissingError);
+    // Mutation guard: without the fail-closed branch this instead executes.
+    expect(hooks.executeApprovedProposal).not.toHaveBeenCalled();
+  });
+
+  it("MODIFICATION WITH a passing live-integrity hook executes normally", async () => {
+    const modRow = baseRow({ proposalHash: MOD_HASH });
+    modRow.proposalSnapshot = MOD_SNAPSHOT as never;
+    const { db } = makeDb({ row: modRow });
+    const hooks = makeHooks({
+      verifyLiveProposalIntegrity: vi.fn(async () => true),
+    });
+    const result = await approveAndExecutePolicyExceptionRequest({
+      requestId: "req-1",
+      expectedVersion: 1,
+      actorMemberId: "admin-1",
+      hooks,
+      db: db as never,
+    });
+    expect(result.outcome).toBe("executed");
+    expect(hooks.verifyLiveProposalIntegrity).toHaveBeenCalledTimes(1);
   });
 });
 

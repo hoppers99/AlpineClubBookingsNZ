@@ -5,11 +5,12 @@ import { parseDateOnly, formatDateOnly } from "@/lib/date-only";
 import { getStayNights } from "@/lib/policies/pricing";
 import { validateMinimumStay } from "@/lib/booking-policies";
 import { evaluateProposedAdultMemberHosting } from "@/lib/adult-member-hosting-review";
-import { acquireLodgeCapacityLock } from "@/lib/capacity";
+import { acquireLodgeCapacityLock, checkCapacityForGuestRanges } from "@/lib/capacity";
 import {
   releasePolicyExceptionReservation,
   reservePolicyExceptionCapacity,
 } from "@/lib/booking-exception-reservations";
+import type { GuestStayRange } from "@/lib/booking-guest-stay-ranges";
 import type { PrismaTransactionClient } from "@/lib/db-transaction";
 import {
   type PolicyExceptionCapacityMode,
@@ -20,12 +21,14 @@ import {
   canonicalizeProposalParty,
   canonicalizeProposalSnapshot,
   computeProposalHash,
+  computeProposalReservation,
   freezePolicyExceptionEvidence,
   modificationExceptionOpenStateKey,
   newBookingExceptionOpenStateKey,
   normalizeMemberMessage,
   type ModificationProposalSnapshot,
   type NewBookingProposalSnapshot,
+  type NightReservation,
   type ProposalGuest,
   type ProposalParty,
 } from "@/lib/booking-exception-requests";
@@ -106,6 +109,27 @@ export class LostSupersedeClaimError extends Error {
   }
 }
 
+/**
+ * A HELD (HOLD-mode) modification request would need to RESERVE beds the lodge
+ * does not currently have (#2525 FIX 4). We refuse it rather than write an
+ * over-capacity provisional hold — an over-capacity hold is never an oversell
+ * (the live booking still holds only its own beds) but it would phantom-block
+ * other members' admissions and is a griefing vector. The member can resubmit
+ * once capacity frees up. This mirrors the request service's existing "signal a
+ * couldn't-proceed by a typed error the HTTP layer maps to a 4xx" contract
+ * (NoEligible/OpenConflict/LostSupersede) — the smallest, most consistent choice,
+ * and it keeps the invariant "a REQUESTED HOLD request always holds exactly its
+ * reserved beds" intact (no `mode=HOLD but nothing reserved` ghost rows).
+ */
+export class PolicyExceptionCapacityUnavailableError extends Error {
+  constructor() {
+    super(
+      "The lodge does not currently have room to hold this change. Please try again once space frees up.",
+    );
+    this.name = "PolicyExceptionCapacityUnavailableError";
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Inputs
 // ---------------------------------------------------------------------------
@@ -144,6 +168,17 @@ export interface CreateModificationExceptionRequestInput {
   /** A short human summary rendered in the officer queue. */
   requestedSummary: string;
   supersedeRequestId?: string | null;
+  /**
+   * Whether the LIVE booking being modified currently holds lodge capacity
+   * (`bookingHoldsCapacity`, #1254). Required because a modification exception
+   * request may be raised against any booking `getBookingEditPolicy` deems
+   * editable — including DRAFT / generic PENDING / un-held PAYMENT_PENDING /
+   * WAITLISTED / BUMPED bookings, none of which hold capacity. When the base
+   * holds capacity the provisional reservation is the INCREMENTAL footprint;
+   * when it does not, it is the FULL proposed footprint (#2525 FIX 7), because a
+   * non-holding base contributes nothing to occupancy for the delta to sit atop.
+   */
+  baseHoldsCapacity: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -582,13 +617,33 @@ export async function createModificationExceptionRequest(
     input.requestedByMemberId,
   );
 
-  // A HELD modification reserves its INCREMENTAL per-night beds while pending
+  // A HELD (HOLD-mode) modification reserves per-night beds while pending
   // (#2525); a supersede releases the prior request's hold. Either makes this a
   // capacity change, so the transaction takes the house global -> per-lodge locks
   // before touching the reservation ledger. A NO_HOLD, non-supersede create is a
   // pure row insert and needs neither.
   const holdsCapacity = frozen.aggregateCapacityMode === "HOLD";
-  const mutatesReservation = holdsCapacity || Boolean(input.supersedeRequestId);
+
+  // The exact footprint this HOLD request will reserve: INCREMENTAL beds over a
+  // capacity-holding base, or the FULL proposed footprint over a non-holding base
+  // (#2525 FIX 7). Computed once (pure) so the admission check below guards
+  // EXACTLY the beds we are about to write.
+  const reservationFootprint: NightReservation[] = holdsCapacity
+    ? computeProposalReservation(frozen.snapshot, {
+        baseHoldsCapacity: input.baseHoldsCapacity,
+      })
+    : [];
+  const reservesBeds = reservationFootprint.length > 0;
+  const mutatesReservation = reservesBeds || Boolean(input.supersedeRequestId);
+
+  // The full proposed party as capacity-engine guest ranges (explicit per-night
+  // sets), for the pre-reservation admission check (#2525 FIX 4).
+  const proposedParty = (frozen.snapshot as ModificationProposalSnapshot).proposed;
+  const proposedCheckIn = parseDateOnly(proposedParty.checkIn);
+  const proposedCheckOut = parseDateOnly(proposedParty.checkOut);
+  const proposedGuestRanges: GuestStayRange[] = proposedParty.guests.map(
+    (guest) => ({ nights: guest.nights }),
+  );
 
   try {
     const created = await prisma.$transaction(async (tx) => {
@@ -601,6 +656,14 @@ export async function createModificationExceptionRequest(
         const claim = await tx.bookingChangeRequest.updateMany({
           where: {
             id: input.supersedeRequestId,
+            // Scope the supersede to THIS booking (#2525 FIX 6). A supersede
+            // replaces the member's open request on the SAME booking, and we hold
+            // only THIS booking's lodge lock here — so releasing a request that
+            // lived on a DIFFERENT booking/lodge would delete its reservation
+            // without serialising against that lodge's occupancy readers. Scoping
+            // to `bookingId` makes a cross-booking supersede claim 0 rows (a lost
+            // claim) rather than an unserialised cross-lodge release.
+            bookingId: input.bookingId,
             requestedByMemberId: input.requestedByMemberId,
             kind: "POLICY_EXCEPTION",
             status: "REQUESTED",
@@ -617,9 +680,31 @@ export async function createModificationExceptionRequest(
         }
         // The superseded request no longer holds beds — release its provisional
         // reservation atomically with the SUPERSEDED claim (under the same locks),
-        // so the incremental hold the replacement takes below cannot double-count
-        // the beds the old proposal held.
+        // so the hold the replacement takes below cannot double-count the beds the
+        // old proposal held.
         await releasePolicyExceptionReservation(tx, input.supersedeRequestId);
+      }
+
+      // (#2525 FIX 4) Admission control BEFORE writing an over-capacity hold. Run
+      // it under the per-lodge lock already held, AFTER any supersede release (so
+      // a resubmit's own freed beds do not count against it). Excluding the live
+      // booking makes the full-proposed check equivalent to an incremental-headroom
+      // check for a capacity-holding base, and the correct full-footprint check for
+      // a non-holding base (its id is simply absent from the occupancy population,
+      // so the exclusion is a harmless no-op). A shortfall refuses the request
+      // rather than persisting a phantom-bed hold that would block other members.
+      if (reservesBeds) {
+        const capacity = await checkCapacityForGuestRanges(
+          input.lodgeId,
+          proposedCheckIn,
+          proposedCheckOut,
+          proposedGuestRanges,
+          input.bookingId,
+          tx,
+        );
+        if (!capacity.available) {
+          throw new PolicyExceptionCapacityUnavailableError();
+        }
       }
 
       const request = await tx.bookingChangeRequest.create({
@@ -646,14 +731,15 @@ export async function createModificationExceptionRequest(
         select: { id: true, status: true },
       });
 
-      // Reserve the incremental capacity a HELD request holds while pending, keyed
-      // on the new request id, under the per-lodge lock taken above. NO_HOLD
-      // proposals reserve nothing (the approval rechecks capacity instead).
-      if (holdsCapacity) {
+      // Reserve the capacity a HELD request holds while pending, keyed on the new
+      // request id, under the per-lodge lock taken above — EXACTLY the footprint
+      // the admission check just cleared. NO_HOLD proposals (and pure shrinks)
+      // reserve nothing; the approval rechecks capacity instead.
+      if (reservesBeds) {
         await reservePolicyExceptionCapacity(tx, {
           changeRequestId: request.id,
           lodgeId: input.lodgeId,
-          snapshot: frozen.snapshot,
+          reservation: reservationFootprint,
         });
       }
 
