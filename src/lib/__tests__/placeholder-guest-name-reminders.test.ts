@@ -251,6 +251,58 @@ describe("sendPlaceholderGuestNameReminders (#2550)", () => {
     expect(args.where.convertedBooking.checkIn.gte).toEqual(TODAY);
   });
 
+  it("counts only the guests who will actually be at the lodge (D-12)", async () => {
+    // The headcount the email publishes must describe who is operationally
+    // present. A PENDING member guest holds a bed and nothing else, and a
+    // DECLINED row that survived its removal attempt is not an occupant — so
+    // the QUERY has to filter them out, and the query is the only place it can
+    // happen. The NULL trap D-12's tests exist to catch is asserted directly:
+    // the filter must be the explicit OR, never `{ not: "PENDING" }`, because
+    // every placeholder and every ordinary guest carries a NULL consentStatus
+    // and `<> 'PENDING'` is UNKNOWN for NULL.
+    mocks.requestFindMany.mockResolvedValue([wholeLodgeRequest()]);
+
+    await sendPlaceholderGuestNameReminders(NOW);
+
+    const [args] = mocks.requestFindMany.mock.calls[0] as [
+      {
+        select: {
+          convertedBooking: {
+            select: { guests: { where: unknown } };
+          };
+        };
+      },
+    ];
+    expect(args.select.convertedBooking.select.guests.where).toEqual({
+      OR: [{ consentStatus: null }, { consentStatus: "CONFIRMED" }],
+    });
+  });
+
+  it("keeps every NULL-consent placeholder in the unnamed count", async () => {
+    // The behavioural half of the case above: the database returns the filtered
+    // party (a CONFIRMED member guest plus two NULL-consent placeholders; the
+    // PENDING row the booking also carries never comes back), so the published
+    // headcount is 3 rather than 4 and every placeholder is still chased.
+    mocks.requestFindMany.mockResolvedValue([
+      wholeLodgeRequest({
+        booking: {
+          guests: [
+            { ...namedGuest("g-m", "Ana", "Ngata"), isMember: true, memberId: "m-2" },
+            placeholderGuest(1),
+            placeholderGuest(2),
+          ],
+        },
+      }),
+    ]);
+
+    const result = await sendPlaceholderGuestNameReminders(NOW);
+
+    expect(result.sent).toBe(1);
+    expect(mocks.sendReminderEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ guestCount: 3, unnamedGuestCount: 2 }),
+    );
+  });
+
   it("does nothing when a concurrent run already claimed the stamp", async () => {
     mocks.requestFindMany.mockResolvedValue([wholeLodgeRequest()]);
     mocks.requestUpdateMany.mockResolvedValue({ count: 0 });

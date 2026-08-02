@@ -8,6 +8,7 @@ import {
 } from "@/lib/date-only";
 import { sendWholeLodgeGuestNamesReminderEmail } from "@/lib/email";
 import logger from "@/lib/logger";
+import { OPERATIONALLY_PRESENT_GUEST_WHERE } from "@/lib/member-guest-consent";
 import {
   countPlaceholderGuestNames,
   PLACEHOLDER_GUEST_NAME_PREFIXES,
@@ -167,7 +168,18 @@ export async function sendPlaceholderGuestNameReminders(
           checkOut: true,
           lodgeId: true,
           member: { select: { email: true, firstName: true } },
-          guests: { select: PLACEHOLDER_GUEST_SELECT },
+          // D-12 (#2307): this email PUBLISHES a headcount ("Guests: 6"), so it
+          // may only count the people who will actually be at the lodge. A
+          // member guest whose consent is still PENDING holds a bed and nothing
+          // else, and a DECLINED/EXPIRED row that survived its removal attempt
+          // is not an occupant either — counting them would tell the booker
+          // something untrue, exactly as `cron-pre-arrival-reminders.ts` says.
+          // Placeholders always carry `consentStatus: null`, so the filter keeps
+          // every one of them and the unnamed count is unchanged.
+          guests: {
+            where: { ...OPERATIONALLY_PRESENT_GUEST_WHERE },
+            select: PLACEHOLDER_GUEST_SELECT,
+          },
         },
       },
     },
