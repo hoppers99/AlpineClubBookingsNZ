@@ -94,9 +94,26 @@ export async function PUT(request: Request) {
     );
   }
 
-  // A category outside the target's areas is never delivered to them, so
-  // storing a value for it would only bank a preference that silently takes
-  // effect the day someone widens their role. Refuse it instead.
+  // A category outside the target's areas is not offered on the grid and is
+  // masked off at send time, so the API refuses one rather than accept a write
+  // the UI can never make and the resolver would ignore.
+  //
+  // To be clear about what this guard does NOT do: it does not stop out-of-area
+  // `true`s being STORED. The fifteen `admin*` columns are NOT NULL with a
+  // database default of `true` (prisma/schema.prisma), so every member with a
+  // NotificationPreference row already stores fifteen `true`s they never chose,
+  // and the upsert's create branch below banks more of them — it writes only the
+  // submitted keys, so unticking one booking key for a Booking Officer creates
+  // their row with the finance and membership keys defaulted to `true`. Those
+  // stored values are harmless because resolveEffectiveAdminNotificationPreferences
+  // masks by area on every read and every send.
+  //
+  // The consequence, recorded deliberately (#2548, review finding 4): because a
+  // stored `true` is indistinguishable from "never chosen", there is no way to
+  // record an EXPLICIT out-of-area choice without a schema change, so an
+  // out-of-area alert cannot be enabled for one named person from this grid.
+  // Widening someone's alerts means widening their access role. The guide and
+  // the release note say so.
   const unavailableKeys = ADMIN_NOTIFICATION_PREFERENCE_KEYS.filter(
     (key) =>
       parsed.data.preferences[key] !== undefined &&

@@ -34,6 +34,17 @@ interface AdminNotificationUser {
   preferences: AdminNotificationPreferences;
 }
 
+const DEFAULT_SAVE_ERROR = "Failed to update notification preferences";
+
+/** Per-admin save outcome, so one card's failure never reverts another's. */
+type SaveSuccess = {
+  memberId: string;
+  ok: true;
+  preferences: AdminNotificationPreferences;
+};
+type SaveFailure = { memberId: string; ok: false; error: string };
+type SaveOutcome = SaveSuccess | SaveFailure;
+
 export function AdminNotificationSettings({
   initialAdmins,
 }: {
@@ -106,40 +117,81 @@ export function AdminNotificationSettings({
     }
 
     try {
-      // Save each changed admin's preferences
+      /*
+        One request per changed admin, and each outcome is kept separately so a
+        failure on one card cannot discard the others. The whole batch used to
+        share a single try/catch that reverted every card, so one stale-page
+        rejection (a category the target's role no longer covers, say) threw away
+        unrelated edits the operator had just made.
+      */
       const results = await Promise.all(
-        changes.map(async ({ memberId, preferences }) => {
-          const response = await fetch("/api/admin/notifications", {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ memberId, preferences }),
-          });
-          const data = await response.json().catch(() => null);
-          if (!response.ok) {
-            if (response.status === 403) {
-              throw new Error(ADMIN_FORBIDDEN_SAVE_REASON);
+        changes.map(async ({ memberId, preferences }): Promise<SaveOutcome> => {
+          try {
+            const response = await fetch("/api/admin/notifications", {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ memberId, preferences }),
+            });
+            const data = await response.json().catch(() => null);
+            if (!response.ok) {
+              return {
+                memberId,
+                ok: false,
+                error:
+                  response.status === 403
+                    ? ADMIN_FORBIDDEN_SAVE_REASON
+                    : (data?.error ?? DEFAULT_SAVE_ERROR),
+              };
             }
-            throw new Error(data?.error ?? "Failed to update notification preferences");
+            return {
+              memberId,
+              ok: true,
+              preferences: data.preferences as AdminNotificationPreferences,
+            };
+          } catch {
+            return { memberId, ok: false, error: DEFAULT_SAVE_ERROR };
           }
-          return { memberId, preferences: data.preferences as AdminNotificationPreferences };
         })
       );
 
-      // Update both admins and savedAdmins with server response
+      const failures = results.filter(
+        (result): result is SaveFailure => !result.ok
+      );
+
+      // Saved cards take the server's effective values; failed cards go back to
+      // what the server last confirmed. Untouched cards are left alone.
       const updatedAdmins = admins.map((admin) => {
         const result = results.find((r) => r.memberId === admin.id);
-        return result ? { ...admin, preferences: result.preferences } : admin;
+        if (!result) return admin;
+        if (result.ok) return { ...admin, preferences: result.preferences };
+        const saved = savedAdmins.find((s) => s.id === admin.id);
+        return saved
+          ? { ...admin, preferences: { ...saved.preferences } }
+          : admin;
       });
       setAdmins(updatedAdmins);
-      setSavedAdmins(updatedAdmins.map((a) => ({ ...a, preferences: { ...a.preferences } })));
-      setEditing(false);
-    } catch (error) {
-      // Revert on error
-      setAdmins(savedAdmins.map((a) => ({ ...a, preferences: { ...a.preferences } })));
+      setSavedAdmins(
+        updatedAdmins.map((a) => ({ ...a, preferences: { ...a.preferences } }))
+      );
+
+      if (failures.length === 0) {
+        setEditing(false);
+        return;
+      }
+
+      // Stay in edit mode so the operator can see and retry what did not save.
+      const detail = failures
+        .map((failure) => {
+          const name =
+            admins.find((admin) => admin.id === failure.memberId)?.name ??
+            "An admin";
+          return `${name}: ${failure.error}`;
+        })
+        .join("; ");
       toast.error(
-        error instanceof Error
-          ? error.message
-          : "Failed to update notification preferences"
+        failures.length === changes.length
+          ? detail
+          : `Saved ${changes.length - failures.length} of ${changes.length} admins. Not saved — ${detail}`
       );
     } finally {
       setSaving(false);
@@ -260,8 +312,9 @@ export function AdminNotificationSettings({
                       </p>
                       {locked ? (
                         <p className="text-xs leading-5 text-muted-foreground">
-                          Not available: this alert belongs to an area their
-                          role cannot edit.
+                          Not available: this alert belongs to an area their role
+                          cannot edit. It cannot be switched on here — give their
+                          access role edit access to that area instead.
                         </p>
                       ) : null}
                     </div>
