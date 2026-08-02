@@ -1,0 +1,156 @@
+/**
+ * Tool authorization is deliberately a thin verdict over AID-4's fresh matrix
+ * reader, so these tests are about the verdict and the freshness, not about
+ * re-testing the reader: that a role read happens on EVERY call, that a database
+ * fault and a missing member stay distinct, and that a cross-area tool needs
+ * every area rather than any of them.
+ */
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import {
+  ADMIN_PERMISSION_AREAS,
+  type AdminPermissionLevel,
+  type AdminPermissionMatrix,
+} from "@/lib/admin-permissions";
+
+import { readFreshAdminPermissionMatrix } from "../../page-context/authorize";
+import { authorizeDiagnosticsToolCall } from "../authorize";
+
+vi.mock("../../page-context/authorize", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../../page-context/authorize")>();
+  return {
+    // The AND/missing-area predicates stay REAL — mocking them would be mocking
+    // the thing under test. Only the database read is stubbed.
+    ...actual,
+    readFreshAdminPermissionMatrix: vi.fn(),
+  };
+});
+
+const readMock = vi.mocked(readFreshAdminPermissionMatrix);
+
+function matrix(
+  overrides: Partial<Record<keyof AdminPermissionMatrix, AdminPermissionLevel>> = {},
+): AdminPermissionMatrix {
+  const base = Object.fromEntries(
+    ADMIN_PERMISSION_AREAS.map((area) => [area.key, "none"]),
+  ) as AdminPermissionMatrix;
+  return { ...base, ...overrides };
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+});
+
+describe("authorizeDiagnosticsToolCall (#2374, ADR-002 §2/§3)", () => {
+  it("allows a caller holding view on the single required area", async () => {
+    readMock.mockResolvedValue({ ok: true, matrix: matrix({ support: "view" }) });
+    const result = await authorizeDiagnosticsToolCall({
+      actingMemberId: "member-1",
+      requiredAreas: ["support"],
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  it("allows at `edit` too — `view` is a floor", async () => {
+    readMock.mockResolvedValue({ ok: true, matrix: matrix({ support: "edit" }) });
+    const result = await authorizeDiagnosticsToolCall({
+      actingMemberId: "member-1",
+      requiredAreas: ["support"],
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  it("re-reads the roles on EVERY call — there is no memo", async () => {
+    readMock.mockResolvedValue({ ok: true, matrix: matrix({ support: "view" }) });
+    await authorizeDiagnosticsToolCall({
+      actingMemberId: "member-1",
+      requiredAreas: ["support"],
+    });
+    await authorizeDiagnosticsToolCall({
+      actingMemberId: "member-1",
+      requiredAreas: ["support"],
+    });
+    expect(readMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("honours a role revoked between two calls in the same session", async () => {
+    readMock
+      .mockResolvedValueOnce({ ok: true, matrix: matrix({ support: "view" }) })
+      .mockResolvedValueOnce({ ok: true, matrix: matrix() });
+
+    const first = await authorizeDiagnosticsToolCall({
+      actingMemberId: "member-1",
+      requiredAreas: ["support"],
+    });
+    const second = await authorizeDiagnosticsToolCall({
+      actingMemberId: "member-1",
+      requiredAreas: ["support"],
+    });
+    expect(first.ok).toBe(true);
+    expect(second.ok).toBe(false);
+  });
+
+  it("requires EVERY area of a cross-area tool, not any", async () => {
+    readMock.mockResolvedValue({
+      ok: true,
+      matrix: matrix({ bookings: "view" }),
+    });
+    const result = await authorizeDiagnosticsToolCall({
+      actingMemberId: "member-1",
+      requiredAreas: ["bookings", "finance"],
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe("permission_denied");
+    expect(result.missingAreas).toEqual(["finance"]);
+  });
+
+  it("lists every missing area, in the tool's declared order", async () => {
+    readMock.mockResolvedValue({ ok: true, matrix: matrix() });
+    const result = await authorizeDiagnosticsToolCall({
+      actingMemberId: "member-1",
+      requiredAreas: ["bookings", "membership", "finance"],
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.missingAreas).toEqual(["bookings", "membership", "finance"]);
+    }
+  });
+
+  it("DENIES a tool that declares no area at all", async () => {
+    // A tool requiring nothing would be a tool anyone may run. The registry
+    // contract forbids it; this refuses to implement it as a fallback.
+    readMock.mockResolvedValue({ ok: true, matrix: matrix({ support: "edit" }) });
+    const result = await authorizeDiagnosticsToolCall({
+      actingMemberId: "member-1",
+      requiredAreas: [],
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("permission_denied");
+  });
+
+  it("keeps a missing member and a failed read as DIFFERENT outcomes", async () => {
+    readMock.mockResolvedValueOnce({ ok: false, failure: "member_not_found" });
+    const missing = await authorizeDiagnosticsToolCall({
+      actingMemberId: "ghost",
+      requiredAreas: ["support"],
+    });
+    expect(missing).toEqual({
+      ok: false,
+      reason: "actor_unresolved",
+      missingAreas: [],
+    });
+
+    readMock.mockResolvedValueOnce({ ok: false, failure: "read_failed" });
+    const faulted = await authorizeDiagnosticsToolCall({
+      actingMemberId: "member-1",
+      requiredAreas: ["support"],
+    });
+    expect(faulted).toEqual({
+      ok: false,
+      reason: "actor_read_failed",
+      missingAreas: [],
+    });
+  });
+});
