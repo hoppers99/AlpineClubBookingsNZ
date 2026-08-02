@@ -9,11 +9,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // removal attempt (it goes to the admin exception list instead) is not an
 // occupant either.
 //
-// Fourteen call sites across nine surfaces enforce that. This file covers the
+// Fifteen call sites across ten surfaces enforce that. This file covers the
 // route-and-cron surfaces that share one prisma-mock harness; the rest are
 // pinned in the test file that already owns their surface:
 //   * lodge-display-state.test.ts        — the wall, plus the privacy threshold
 //   * cron-pre-arrival-reminders.test.ts — the headcount in the reminder
+//   * placeholder-guest-name-reminders.test.ts — the headcount in the #2550
+//     whole-lodge guest-name reminder
 //   * notification-preference-gating.test.ts — the names in the check-in reminder
 //   * double-bed-sharing.test.ts         — both halves of the candidate sweep
 //   * bed-allocation-lifecycle.test.ts / admin-bed-allocation.test.ts — beds
