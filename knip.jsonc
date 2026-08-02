@@ -83,16 +83,6 @@
     // lanes land.
     "src/lib/integration-credentials.ts": ["exports", "types"],
     "src/lib/integration-crypto.ts": ["types"],
-    // #2080 reusable guided-provider setup wizard shell: the file's own header
-    // comment declares its entire export list a "PROVIDER-AGNOSTIC public
-    // surface" for future integrations (C4/C5 already build on it) to import
-    // and supply their own context/steps. useWizardCursor,
-    // isWizardStepOptional, getWizardStepSkipCopy, DEFAULT_WIZARD_SKIP_LABEL,
-    // IntegrationWizardProps, and WizardStepOptionalConfig aren't consumed by
-    // any current provider (they only reach the flagged step-skip helpers
-    // internally via ./types, not through this barrel) — kept per the
-    // documented intent rather than deleted; owner-judgment flag in #2502.
-    "src/components/admin/integration-wizard/index.ts": ["exports", "types"],
     // #1138 booking-modify split: this file's header comment states it is
     // "now a pure barrel" so "everything importable from @/lib/booking-modify
     // is unchanged" — a deliberate backward-compat contract. Several flagged
