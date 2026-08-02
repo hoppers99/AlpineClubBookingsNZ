@@ -15,6 +15,26 @@
  * budgeted number of reservations win and the live-reservation sum never exceeds
  * the budget.
  *
+ * ## The proof is FORCED, not raced (#2532)
+ *
+ * The first test does not hope the interleaving happens. A third connection
+ * takes the SAME per-month advisory lock and holds it open; the two reservers
+ * are then started and the test waits on a BARRIER — `pg_locks` reporting both
+ * of them blocked on exactly that advisory key — before asserting that NEITHER
+ * has been able to insert a reservation. Only then is the holder released. No
+ * `setTimeout` stands in for the interleaving, so the test neither flakes when
+ * CI is slow nor passes vacuously when it is fast.
+ *
+ * That barrier is what makes the suite a real regression gate. Both ways of
+ * losing the protection were reproduced against a throwaway PostgreSQL (three
+ * runs each, no flaky pass) before this was committed:
+ *   - DELETE the `pg_advisory_xact_lock` line from `reserveDiagnosticsBudget`
+ *     and the reservers never queue, so the barrier times out with a named
+ *     diagnostic naming the lock and the invariant it protects.
+ *   - MOVE it to after the budget reads and the barrier is satisfied (they do
+ *     queue) but both reservers then win — 2 x 40c admitted against a 50c
+ *     budget, caught by the one-winner assertion.
+ *
  * Like `concurrency-lock-races.realdb.test.ts`, it is OFF by default and a no-op
  * in ordinary CI/local runs:
  *   - The race describe runs ONLY when `RUN_CONCURRENCY_RACE_TESTS=1`; otherwise
@@ -30,10 +50,43 @@
  *   CONCURRENCY_RACE_DATABASE_URL=postgresql://user:pass@127.0.0.1:55442/concurrency_race_1881 \
  *   npx vitest run src/lib/__tests__/ai-diagnostics-budget-race.realdb.test.ts
  */
+import type { PrismaClient } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+
+import { realElapsedMs } from "@/lib/__tests__/helpers/clock";
 
 const RUN = process.env.RUN_CONCURRENCY_RACE_TESTS === "1";
 const RACE_DB_URL = process.env.CONCURRENCY_RACE_DATABASE_URL ?? "";
+
+/**
+ * The first advisory-lock key `reserveDiagnosticsBudget` (and
+ * `settleDiagnosticsRoundtrip`) hashes, per docs/CONCURRENCY_AND_LOCKING.md.
+ * The second key is the billing month, so different months never contend.
+ * Kept as a constant because the barrier below has to look for THIS key in
+ * `pg_locks` — a lock taken on some other key would not serialise reservers.
+ */
+const BUDGET_LOCK_NAME = "diagnostics-budget-reserve";
+
+/**
+ * How long the lock barrier waits for the reservers to queue before giving up
+ * with its own named diagnostic — far more useful than Vitest's generic test
+ * timeout, and comfortably inside Prisma's 5s interactive-transaction timeout
+ * so the barrier reports the failure rather than the reservers timing out first.
+ *
+ * Measured with `process.hrtime.bigint()` via `realElapsedMs`, never
+ * `Date.now()`: since #2481 every test file runs with `Date` frozen, so a
+ * `Date.now()` deadline can never expire and the poller would spin until the
+ * test was killed with no lock named.
+ */
+const LOCK_POLL_TIMEOUT_MS = 4_000;
+
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
 
 /**
  * Guard: never run against a default/production Postgres. Require the dedicated
@@ -72,6 +125,18 @@ export function assertSafeDiagnosticsRaceDbUrl(url: string): void {
 let prisma: typeof import("@/lib/prisma")["prisma"];
 let reserveDiagnosticsBudget: typeof import("@/lib/ai-diagnostics-usage")["reserveDiagnosticsBudget"];
 let diagnosticsUsageMonthKey: typeof import("@/lib/ai-diagnostics-usage")["diagnosticsUsageMonthKey"];
+/**
+ * Two SEPARATE single-connection clients, each on its own PostgreSQL backend
+ * (the same idiom as `concurrency-lock-races.realdb.test.ts`):
+ *
+ * - `lockHolderClient` holds the per-month advisory lock open inside a real
+ *   transaction, which is what pins the reservers in a known state.
+ * - `observerClient` polls `pg_locks`. It is deliberately NOT the application
+ *   singleton: the two blocked reservers are holding singleton pool
+ *   connections, and the barrier must never be able to starve behind them.
+ */
+let lockHolderClient: PrismaClient;
+let observerClient: PrismaClient;
 
 // A fixed, far-future instant keeps the whole suite in one isolated billing
 // month ("2099-03") that no other harness or real data touches. Passing it as
@@ -128,6 +193,63 @@ describe("diagnostics budget race DB safety guard (#2532)", () => {
       return agg._sum.reservedCents ?? 0;
     }
 
+    /** Every reservation row for the test month, live or expired. */
+    async function reservationRowCount(): Promise<number> {
+      return prisma.diagnosticsBudgetReservation.count({ where: { month } });
+    }
+
+    /**
+     * How many sessions are currently WAITING (granted = false) for the
+     * per-month diagnostics budget advisory lock.
+     *
+     * `pg_advisory_xact_lock(int4, int4)` stores its two keys in `pg_locks` as
+     * `classid`/`objid`, with `objsubid = 2` marking the two-key form. Those
+     * columns are `oid` (unsigned) while `hashtext()` is a signed `int4` that is
+     * routinely negative, so both sides are compared as UNSIGNED 32-bit
+     * `bigint`s. Comparing them raw would silently match nothing and the barrier
+     * would time out even with a perfectly correct lock.
+     */
+    async function pendingBudgetLockWaiters(): Promise<number> {
+      const rows = await observerClient.$queryRaw<Array<{ count: number }>>`
+        SELECT COUNT(*)::int AS "count"
+        FROM pg_locks
+        WHERE locktype = 'advisory'
+          AND objsubid = 2
+          AND granted = false
+          AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+          AND classid::bigint =
+            ((hashtext(${BUDGET_LOCK_NAME})::bigint + 4294967296) % 4294967296)
+          AND objid::bigint =
+            ((hashtext(${month})::bigint + 4294967296) % 4294967296)
+      `;
+      return rows[0]?.count ?? 0;
+    }
+
+    /**
+     * The BARRIER. Blocks until PostgreSQL itself reports `expected` sessions
+     * queued on the per-month budget key — the only honest signal that the
+     * reservers really reached the lock and really could not proceed. Polling
+     * `pg_locks` is not "sleep-based racing": nothing here stands in for the
+     * interleaving, the interleaving is held open by `lockHolderClient` and this
+     * only detects when it is fully established.
+     */
+    async function waitForBudgetLockWaiters(expected: number): Promise<void> {
+      const startedAt = process.hrtime.bigint();
+      let seen = 0;
+      while (realElapsedMs(startedAt) < LOCK_POLL_TIMEOUT_MS) {
+        seen = await pendingBudgetLockWaiters();
+        if (seen >= expected) return;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      throw new Error(
+        `Timed out waiting for ${expected} reserver(s) to queue on ` +
+          `pg_advisory_xact_lock(hashtext('${BUDGET_LOCK_NAME}'), hashtext('${month}')) — saw ${seen}. ` +
+          "reserveDiagnosticsBudget no longer serialises on the per-month budget lock, " +
+          "so concurrent reservers can read the same under-budget snapshot and overspend " +
+          "the monthly budget (docs/CONCURRENCY_AND_LOCKING.md).",
+      );
+    }
+
     beforeAll(async () => {
       // Guard the dedicated URL BEFORE importing Prisma or the metering module,
       // then point the app singleton at it — mirroring the sibling harness so
@@ -139,10 +261,33 @@ describe("diagnostics budget race DB safety guard (#2532)", () => {
         "@/lib/ai-diagnostics-usage"
       ));
       month = diagnosticsUsageMonthKey(RACE_NOW);
+
+      const [{ PrismaClient: SeparatePrismaClient }, { createPrismaPgAdapter }] =
+        await Promise.all([
+          import("@prisma/client"),
+          import("@/lib/prisma-adapter"),
+        ]);
+      const createSeparateClient = (applicationName: string) => {
+        const url = new URL(RACE_DB_URL);
+        url.searchParams.set("connection_limit", "1");
+        url.searchParams.set("application_name", applicationName);
+        return new SeparatePrismaClient({
+          adapter: createPrismaPgAdapter(url.toString()),
+        });
+      };
+      lockHolderClient = createSeparateClient("race-2532-lock-holder");
+      observerClient = createSeparateClient("race-2532-observer");
+      await Promise.all([lockHolderClient.$connect(), observerClient.$connect()]);
+
       await clearMonth();
     }, 60_000);
 
     afterAll(async () => {
+      await Promise.all(
+        [lockHolderClient, observerClient].map((client) =>
+          client ? client.$disconnect().catch(() => {}) : Promise.resolve(),
+        ),
+      );
       if (typeof prisma !== "undefined") {
         await prisma.diagnosticsBudgetReservation
           .deleteMany({ where: { month } })
@@ -156,6 +301,54 @@ describe("diagnostics budget race DB safety guard (#2532)", () => {
         await prisma.$disconnect().catch(() => {});
       }
     }, 60_000);
+
+    it("FORCES the overspend interleaving: two reservers queue on the per-month lock, neither can insert while it is held, and exactly one claims the budget", async () => {
+      // 50c budget, two 40c reserves: either alone fits, both together do not.
+      const reserveCents = 40;
+      const budgetCents = 50;
+      await setBudget(budgetCents);
+      await clearMonth();
+
+      const lockHeld = deferred();
+      const releaseLock = deferred();
+
+      // A THIRD connection takes the production lock's exact key and parks on
+      // it. Reserve is now guaranteed to block, whatever the machine's timing.
+      const holder = lockHolderClient.$transaction(
+        async (tx) => {
+          await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${BUDGET_LOCK_NAME}), hashtext(${month}))`;
+          lockHeld.resolve();
+          await releaseLock.promise;
+        },
+        { maxWait: 20_000, timeout: 30_000 },
+      );
+      await lockHeld.promise;
+
+      // Start both reservers. Neither can get past its first statement.
+      const reserveA = reserveDiagnosticsBudget({ reserveCents, now: RACE_NOW });
+      const reserveB = reserveDiagnosticsBudget({ reserveCents, now: RACE_NOW });
+
+      await waitForBudgetLockWaiters(2);
+
+      // THE load-bearing assertion. Both reservers are inside their
+      // transactions and both are stopped dead at the lock, so neither has run
+      // its read-check-insert. Remove the `pg_advisory_xact_lock` line from
+      // `reserveDiagnosticsBudget` and this is 2 — 80c reserved against a 50c
+      // budget — with the barrier above having already failed first.
+      expect(await reservationRowCount()).toBe(0);
+
+      releaseLock.resolve();
+      await holder;
+
+      // Released together, they serialise: the first inserts 40c, the second
+      // re-reads it as a live reservation and is denied.
+      const [a, b] = await Promise.all([reserveA, reserveB]);
+      expect([a, b].filter((result) => result.ok)).toHaveLength(1);
+      const loser = [a, b].find((result) => !result.ok);
+      expect(loser?.ok === false && loser.reason).toBe("over_budget");
+      expect(await liveReservedCents()).toBe(reserveCents);
+      expect(await liveReservedCents()).toBeLessThanOrEqual(budgetCents);
+    });
 
     it("admits exactly one of two concurrent reserves that individually fit but together exceed the budget", async () => {
       // Budget fits exactly ONE 40c reserve; two would be 80c > 50c. Under the
