@@ -41,6 +41,11 @@ export const BOOKING_URL_TEMPLATE_NAMES: ReadonlySet<string> = new Set([
   "member-guest-consent-answered",
   "member-guest-request-withdrawn",
   "member-guest-consent-expired",
+  // #2284 (S2): booking-scoped and registered, so it is classified here like the
+  // member-guest set — the canonical `bookingUrl` replaces the legacy
+  // {{BASE_URL}}/bookings line in the editable default, resolved to the
+  // recipient-authorized detail link at send time.
+  "family-member-added",
 ]);
 
 export interface BookingUrlTemplateContractFinding {

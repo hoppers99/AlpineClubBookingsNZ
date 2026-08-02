@@ -369,6 +369,25 @@ enum BookingChangeRequestStatus {
   REQUESTED
   APPROVED
   REJECTED
+  // #2365 policy-exception outcomes. Only ever written onto a POLICY_EXCEPTION
+  // kind request (a locked-period change never reaches them), so a draining old
+  // colour — whose pending queue selects `status: REQUESTED` — never reads one.
+  // CANCELLED: the member withdrew the proposal before an admin decided.
+  // SUPERSEDED: a newer proposal (or live-booking drift) replaced this one.
+  CANCELLED
+  SUPERSEDED
+}
+
+// #2365: which flavour of admin-reviewed change a BookingChangeRequest carries.
+// LOCKED_PERIOD is the original today/past-night edit that needs admin hands to
+// apply; POLICY_EXCEPTION is a member request to override an eligible SOFT
+// booking-policy failure (minimum stay, adult-member hosting) on the frozen
+// proposal the row stores. The two share the queue and the row but never the
+// evidence columns: a locked-period row leaves every policy-exception column
+// null, and a policy-exception row carries the frozen structured evidence.
+enum BookingChangeRequestKind {
+  LOCKED_PERIOD
+  POLICY_EXCEPTION
 }
 
 enum BookingRequestType {
@@ -4394,12 +4413,56 @@ model BookingChangeRequest {
   bookingId            String
   requestedByMemberId  String
   status               BookingChangeRequestStatus @default(REQUESTED)
+  // #2365: LOCKED_PERIOD (the original today/past-night edit) or POLICY_EXCEPTION
+  // (a member request to override an eligible soft booking-policy failure). The
+  // default keeps every pre-#2365 row and every locked-period writer unchanged.
+  kind                 BookingChangeRequestKind   @default(LOCKED_PERIOD)
   requestedChanges     Json
   reason               String?                    @db.VarChar(2000)
   adminNotes           String?                    @db.VarChar(2000)
   reviewedByMemberId   String?
   reviewedAt           DateTime?
   linkedModificationId String?
+  // --- #2365 policy-exception evidence (all null on a LOCKED_PERIOD row) ---
+  // The complete, IMMUTABLE proposal the member is asking an admin to allow —
+  // the full proposed booking snapshot (new-booking shape) or the full
+  // proposed-vs-live delta (modification shape). Frozen at submit time; never
+  // rewritten. `proposalHash` is the canonical SHA-256 over that snapshot plus
+  // the base facts, so approval can detect that what it is about to execute is
+  // byte-for-byte what was reviewed (proposal drift).
+  proposalSnapshot     Json?
+  proposalHash         String?                    @db.VarChar(64)
+  // The frozen AggregatedPolicyExceptions: every covered structured violation
+  // (reason code, policy id/version, resolved scope, affected NZ nights,
+  // requirements, per-policy capacity mode) plus the HOLD-if-any-HOLD aggregate.
+  // Authoritative for what an approval may override — and for nothing else.
+  frozenEvidence       Json?
+  // Denormalised HOLD-if-any-HOLD aggregate so the queue and the capacity path
+  // filter without parsing `frozenEvidence`. Null on a locked-period row.
+  aggregateCapacityMode PolicyExceptionCapacityMode?
+  // Required, trimmed, <=1000 chars on a policy-exception request; the member's
+  // case to the Booking Officers. Never on a locked-period row (which uses
+  // `reason`).
+  memberMessage        String?                    @db.VarChar(1000)
+  // Attempt/conflict metadata. `attemptCount` counts submissions of this logical
+  // proposal (a resubmission after a NO_HOLD capacity conflict bumps it); the
+  // conflict fields record the most recent kept-pending capacity conflict so the
+  // queue can explain why an otherwise-approvable request has not executed.
+  attemptCount         Int                        @default(1)
+  conflictCount        Int                        @default(0)
+  lastConflictAt       DateTime?
+  lastConflictReason   String?                    @db.VarChar(500)
+  // Soft same-table pointer (never a FK: these rows are not deleted, the target
+  // is always the same booking, and a self-relation would widen the member-merge
+  // DMMF surface for no integrity gain). Set when a newer proposal SUPERSEDES
+  // this one.
+  supersededByRequestId String?
+  cancelledAt          DateTime?
+  // Optimistic-concurrency token for the guarded approval claim, app-managed and
+  // bumped on every mutating write — exactly the BookingRequest.version pattern
+  // (#1923), and for the same reason: updatedAt is millisecond-precision and two
+  // writes in one millisecond would silently defeat an updatedAt CAS.
+  version              Int                        @default(1)
   createdAt            DateTime                   @default(now())
   updatedAt            DateTime                   @updatedAt
 
@@ -4411,6 +4474,9 @@ model BookingChangeRequest {
   @@index([bookingId, status, createdAt])
   @@index([requestedByMemberId, status, createdAt])
   @@index([status, createdAt])
+  // The #2365 policy-exception queue: pending requests of one kind, oldest
+  // first, so the officer view can show request age without a table scan.
+  @@index([kind, status, createdAt])
   @@index([reviewedByMemberId, reviewedAt])
   @@index([linkedModificationId])
 }
@@ -4776,7 +4842,15 @@ model FamilyGroupMember {
   id            String   @id @default(cuid())
   familyGroupId String
   memberId      String
-  role          String   @default("MEMBER") // ADMIN or MEMBER (group admin can manage the group)
+  // #2284 (S4): NOT consulted for authorisation anywhere. The one power it ever
+  // gated — the one-step partner declaration (member-partner-link.ts) — was
+  // re-anchored onto Member.detailsConfirmedByMemberId, so this column now
+  // records nothing that grants anything. Written "ADMIN" or "MEMBER" by a
+  // scatter of flows (see the #2284 census); merge upgrades toward "ADMIN"
+  // (member-merge.ts maxFamilyRole) but nothing reads the result. Retained for
+  // now rather than dropped in the same PR as the re-anchor; scheduled for
+  // removal in a dedicated migration (see #2284 close-out / follow-up).
+  role          String   @default("MEMBER")
   joinedAt      DateTime @default(now())
 
   familyGroup FamilyGroup @relation(fields: [familyGroupId], references: [id], onDelete: Cascade)
@@ -4902,6 +4976,10 @@ model NotificationPreference {
   bookingBumped              Boolean  @default(true)
   bookingCancelled           Boolean  @default(true)
   bookingWaitlist            Boolean  @default(true)
+  // #2284 (S2): FYI when a family co-member adds you (or someone you are the
+  // login-holding adult for) to a booking. General family behaviour, sent
+  // regardless of the memberGuests module; default on, personally opt-outable.
+  bookingAddedByFamily       Boolean  @default(true)
   choreRoster                Boolean  @default(true)
   marketingEmails            Boolean  @default(false)
   adminNewBooking            Boolean  @default(true)

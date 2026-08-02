@@ -17,6 +17,7 @@ vi.mock("@/lib/prisma", () => ({
       findUnique: vi.fn(),
       findFirst: vi.fn(),
       count: vi.fn(),
+      create: vi.fn(),
       createMany: vi.fn(),
       deleteMany: vi.fn(),
       upsert: vi.fn(),
@@ -996,6 +997,52 @@ describe("POST /api/members/family/request-join", () => {
     expect(res.status).toBe(201);
     const body = await res.json();
     expect(body.requestId).toBe("req-1");
+  });
+
+  it("seeds a group-less target as MEMBER, never ADMIN, before they consent (#2284 S4)", async () => {
+    mockedAuth.mockResolvedValue(memberSession);
+    mockedPrisma.member.findUnique.mockResolvedValue({
+      id: "member-1",
+      firstName: "John",
+      lastName: "Smith",
+      email: "john@test.com",
+      canLogin: true,
+      active: true,
+    } as any);
+    mockedPrisma.familyGroupJoinRequest.findFirst.mockResolvedValue(null);
+    mockedPrisma.member.findFirst.mockResolvedValue({
+      id: "member-2",
+      firstName: "Jane",
+      lastName: "Doe",
+      familyGroupMemberships: [], // no existing group — one is materialised
+    } as any);
+    mockedPrisma.$transaction.mockImplementation((async (fn: any) =>
+      fn(mockedPrisma)) as any);
+    mockedPrisma.familyGroup.create.mockResolvedValue({ id: "new-group" } as any);
+    mockedPrisma.familyGroupMember.create.mockResolvedValue({} as any);
+    mockedPrisma.familyGroupJoinRequest.create.mockResolvedValue({
+      id: "req-2",
+      familyGroupId: "new-group",
+    } as any);
+    mockedPrisma.familyGroup.findUnique.mockResolvedValue({
+      name: "Doe Family",
+    } as any);
+
+    const { POST } = await import("@/app/api/members/family/request-join/route");
+    const res = await POST(
+      makeReq("/api/members/family/request-join", "POST", {
+        targetEmail: "jane@test.com",
+      })
+    );
+    expect(res.status).toBe(201);
+    // The target never consented to this group; they must not be seeded ADMIN.
+    expect(mockedPrisma.familyGroupMember.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        familyGroupId: "new-group",
+        memberId: "member-2",
+        role: "MEMBER",
+      }),
+    });
   });
 
   it("rejects duplicate pending request", async () => {
