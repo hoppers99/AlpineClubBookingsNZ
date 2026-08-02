@@ -100,6 +100,10 @@ export const ALWAYS_BOOKING_SCOPED_TEMPLATE_NAMES: ReadonlySet<string> =
     "split-guest-payment-link",
     "booking-request-payment-expired",
     "school-attendee-confirmation",
+    // #2550: the whole-lodge guest-name reminder. Always about one converted
+    // booking (the cron reads it off `BookingRequest.convertedBooking`), so the
+    // per-booking "No emails" switch withholds it like every other reminder.
+    "whole-lodge-guest-names-reminder",
     "group-settlement-receipt",
     "group-join-settled",
     "group-settlement-expired",

@@ -4246,6 +4246,44 @@ export function schoolAttendeeConfirmationTemplate(data: {
 }
 
 /**
+ * #2550 — member-facing reminder that a whole-lodge booking's party is still
+ * "Guest 1..N".
+ *
+ * The member renames their own guests through the ordinary booking-guest edit
+ * path, so this message carries NO token and no public page: the canonical
+ * authenticated booking link is appended centrally for every booking-scoped
+ * send (`finalizeBookingEmailHtml`).
+ *
+ * `urgencyNote` arrives ALREADY COMPOSED from
+ * `wholeLodgeGuestNamesUrgencyNote`, and the sender hands the identical string
+ * to the `{{namingUrgencyNote}}` token, so the HTML and the admin-editable flat
+ * body cannot drift.
+ */
+export function wholeLodgeGuestNamesReminderTemplate(data: {
+  firstName: string;
+  checkIn: Date;
+  checkOut: Date;
+  guestCount: number;
+  unnamedGuestCount: number;
+  isFinal: boolean;
+  urgencyNote: string;
+}): string {
+  return layout(`
+    ${heading(data.isFinal ? "Last Chance: Who Is Coming With You?" : "Who Is Coming With You?")}
+    ${paragraph("Hi " + escapeHtml(data.firstName) + ", your whole-lodge booking at " + escapeHtml(CLUB_NAME) + "'s lodge is coming up and some of your party are still listed as placeholders rather than by name.")}
+    ${infoTable([
+      { label: "Check-in", value: formatNZDate(data.checkIn) },
+      { label: "Check-out", value: formatNZDate(data.checkOut) },
+      { label: "Guests", value: String(data.guestCount) },
+      { label: "Still unnamed", value: String(data.unnamedGuestCount) },
+    ])}
+    ${paragraph(escapeHtml(data.urgencyNote))}
+    ${muted("You can update the names yourself from your booking. Changing a name does not change anybody's age group or what the stay costs — to change how many people are coming, or their age groups, contact the club.")}
+    ${supportContactSentence("If you have any questions, contact the club at ")}
+  `);
+}
+
+/**
  * #2260 — member-facing receipt for a membership subscription payment an admin
  * recorded by hand (cash, cheque, internet banking), sent only when the admin
  * chooses to email on mark-paid. Manual mark-paid only exists for subscriptions

@@ -832,6 +832,15 @@ describe("consent columns have exactly one writer", () => {
       // message for the same event.
       "src/app/api/bookings/[id]/guests/[guestId]/route.ts":
         "the guest-removal route reads the removed row's consent state to decide who is owed a withdrawal notice",
+      // --- #2550's naming-reminder sweep. A READER through the shared D-12
+      // predicate only: the emailed headcount filters the party on
+      // `OPERATIONALLY_PRESENT_GUEST_WHERE` so a pending or lapsed member-guest
+      // invite is not announced as attending, and its one comment names
+      // `consentStatus` to record that placeholders always carry null and so
+      // survive the filter. It composes no consent shape and writes no consent
+      // column; its only write is the cadence stamp on BookingRequest.
+      "src/lib/placeholder-guest-name-reminders.ts":
+        "the naming-reminder sweep reads presence through the shared D-12 filter so the emailed headcount tells the truth",
       // --- #2364's adult-member hosting evaluator. A READER, and a pure one:
       // it selects `consentStatus` and passes it through the shared
       // `isOperationallyPresentConsent` predicate to decide whether an adult

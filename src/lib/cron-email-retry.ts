@@ -441,14 +441,15 @@ export async function retryFailedEmails(): Promise<{
         emailLog.templateName !== RETRY_FAILURE_ALERT_TEMPLATE
       ) {
         try {
-          const { sendEmail } = await import("./email");
-          const admins = await prisma.member.findMany({
-            where: { role: "ADMIN", active: true },
-            select: { email: true },
-          });
-          for (const admin of admins) {
+          const { sendEmail, getAdminEmails } = await import("./email");
+          // #2548: the shared resolver, so this system-failure alert reaches
+          // the same audience as every other one — access-role resolved, with
+          // definition-backed custom roles included — instead of re-deriving it
+          // from the legacy `role: "ADMIN"` scalar.
+          const admins = await getAdminEmails();
+          for (const adminEmail of admins) {
             await sendEmail({
-              to: admin.email,
+              to: adminEmail,
               subject: "Email delivery permanently failed",
               html: `<p>Email to ${emailLog.to} (template: ${emailLog.templateName}) has failed after ${newAttempts} attempts and will not be retried.</p>`,
               // Admin failure alert: never withheld by a booking flag (#2258).

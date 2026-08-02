@@ -70,6 +70,26 @@ vi.mock("@/lib/logger", () => ({
   default: mockLogger,
 }));
 
+/**
+ * #2548: admin alert audiences are resolved from the access-role permission
+ * matrix, not the legacy `Member.role` scalar, so a candidate row has to carry
+ * the access-role assignments the resolver selects. These fixtures are Full
+ * Admins, which is who these tests have always been about.
+ */
+function adminRecipient(
+  email: string,
+  notificationPreference: Record<string, boolean> | null = null,
+) {
+  return {
+    email,
+    canLogin: true,
+    accessRoles: [
+      { role: "ADMIN", roleDefinitionId: null, roleDefinition: null },
+    ],
+    notificationPreference,
+  };
+}
+
 // ============================================================================
 // N-10: EmailLog tracking in sendEmail
 // ============================================================================
@@ -539,7 +559,7 @@ describe("N-10: EmailLog tracking", () => {
     const origEnv = process.env.NODE_ENV;
     (process.env as Record<string, string>).NODE_ENV = "production";
     mockPrisma.member.findMany.mockResolvedValue([
-      { email: "support@example.org", notificationPreference: null },
+      adminRecipient("support@example.org"),
     ]);
 
     const { sendAdminIssueReportAlert } = await import("../email");
@@ -582,17 +602,20 @@ describe("N-02: getAdminEmails", () => {
 
   it("queries active admin members", async () => {
     mockPrisma.member.findMany.mockResolvedValue([
-      { email: "admin1@tac.org.nz" },
-      { email: "admin2@tac.org.nz" },
+      adminRecipient("admin1@tac.org.nz"),
+      adminRecipient("admin2@tac.org.nz"),
     ]);
 
     const { getAdminEmails } = await import("../email");
     const emails = await getAdminEmails();
 
     expect(emails).toEqual(["admin1@tac.org.nz", "admin2@tac.org.nz"]);
+    // #2548: candidates are active, login-capable access-role holders, then
+    // filtered through the permission matrix (Support & System editors here).
+    // The legacy `role: "ADMIN"` scalar is no longer consulted.
     expect(mockPrisma.member.findMany).toHaveBeenCalledWith({
-      where: { role: "ADMIN", active: true },
-      select: { email: true },
+      where: expect.objectContaining({ active: true, canLogin: true }),
+      select: expect.objectContaining({ email: true, canLogin: true }),
     });
   });
 });
@@ -601,7 +624,9 @@ describe("N-02: sendAdminNewBookingAlert", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.resetModules();
-    mockPrisma.member.findMany.mockResolvedValue([{ email: "support@example.org" }]);
+    mockPrisma.member.findMany.mockResolvedValue([
+      adminRecipient("support@example.org"),
+    ]);
     mockPrisma.emailLog.create.mockResolvedValue({ id: "log-1" });
     mockPrisma.emailLog.update.mockResolvedValue({});
     mockPrisma.emailSuppression.findFirst.mockResolvedValue(null);
@@ -630,18 +655,9 @@ describe("N-02: sendAdminNewBookingAlert", () => {
 
   it("skips admins who disable new booking alerts", async () => {
     mockPrisma.member.findMany.mockResolvedValue([
-      {
-        email: "enabled@example.org",
-        notificationPreference: { adminNewBooking: true },
-      },
-      {
-        email: "disabled@example.org",
-        notificationPreference: { adminNewBooking: false },
-      },
-      {
-        email: "default@example.org",
-        notificationPreference: null,
-      },
+      adminRecipient("enabled@example.org", { adminNewBooking: true }),
+      adminRecipient("disabled@example.org", { adminNewBooking: false }),
+      adminRecipient("default@example.org"),
     ]);
 
     const { sendAdminNewBookingAlert } = await import("../email");
@@ -665,14 +681,8 @@ describe("N-02: sendAdminNewBookingAlert", () => {
 
   it("records a critical audit escalation when no admin alert recipient receives the alert", async () => {
     mockPrisma.member.findMany.mockResolvedValue([
-      {
-        email: "suppressed@example.org",
-        notificationPreference: null,
-      },
-      {
-        email: "failed@example.org",
-        notificationPreference: null,
-      },
+      adminRecipient("suppressed@example.org"),
+      adminRecipient("failed@example.org"),
     ]);
     mockPrisma.emailSuppression.findFirst.mockImplementation(async (args) => {
       const email = (args as { where: { email: string } }).where.email;
@@ -729,7 +739,9 @@ describe("F20 / #1377: sendAdminOwnerSubstitutionAlert", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.resetModules();
-    mockPrisma.member.findMany.mockResolvedValue([{ email: "finance@example.org" }]);
+    mockPrisma.member.findMany.mockResolvedValue([
+      adminRecipient("finance@example.org"),
+    ]);
     mockPrisma.emailLog.create.mockResolvedValue({ id: "log-1" });
     mockPrisma.emailLog.update.mockResolvedValue({});
     mockPrisma.emailSuppression.findFirst.mockResolvedValue(null);
@@ -777,18 +789,9 @@ describe("F20 / #1377: sendAdminOwnerSubstitutionAlert", () => {
 
   it("is gated by the Xero-sync-error admin preference", async () => {
     mockPrisma.member.findMany.mockResolvedValue([
-      {
-        email: "enabled@example.org",
-        notificationPreference: { adminXeroSyncError: true },
-      },
-      {
-        email: "disabled@example.org",
-        notificationPreference: { adminXeroSyncError: false },
-      },
-      {
-        email: "default@example.org",
-        notificationPreference: null,
-      },
+      adminRecipient("enabled@example.org", { adminXeroSyncError: true }),
+      adminRecipient("disabled@example.org", { adminXeroSyncError: false }),
+      adminRecipient("default@example.org"),
     ]);
 
     const { sendAdminOwnerSubstitutionAlert } = await import("../email");
@@ -814,18 +817,9 @@ describe("Admin member request alerts", () => {
 
   it("respects the shared member request preference for membership application alerts", async () => {
     mockPrisma.member.findMany.mockResolvedValue([
-      {
-        email: "enabled@example.org",
-        notificationPreference: { adminFamilyGroupRequest: true },
-      },
-      {
-        email: "disabled@example.org",
-        notificationPreference: { adminFamilyGroupRequest: false },
-      },
-      {
-        email: "default@example.org",
-        notificationPreference: null,
-      },
+      adminRecipient("enabled@example.org", { adminFamilyGroupRequest: true }),
+      adminRecipient("disabled@example.org", { adminFamilyGroupRequest: false }),
+      adminRecipient("default@example.org"),
     ]);
 
     const { sendAdminMembershipApplicationPendingEmail } = await import("../email");
@@ -949,7 +943,9 @@ describe("N-04: sendAdminPaymentFailureAlert", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.resetModules();
-    mockPrisma.member.findMany.mockResolvedValue([{ email: "support@example.org" }]);
+    mockPrisma.member.findMany.mockResolvedValue([
+      adminRecipient("support@example.org"),
+    ]);
     mockPrisma.emailLog.create.mockResolvedValue({ id: "log-1" });
     mockPrisma.emailLog.update.mockResolvedValue({});
   });
@@ -981,7 +977,9 @@ describe("N-06: checkPendingDeadlines", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.resetModules();
-    mockPrisma.member.findMany.mockResolvedValue([{ email: "support@example.org" }]);
+    mockPrisma.member.findMany.mockResolvedValue([
+      adminRecipient("support@example.org"),
+    ]);
     mockPrisma.emailLog.create.mockResolvedValue({ id: "log-1" });
     mockPrisma.emailLog.update.mockResolvedValue({});
   });
@@ -1027,7 +1025,9 @@ describe("N-07: sendAdminBookingBumpedAlert", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.resetModules();
-    mockPrisma.member.findMany.mockResolvedValue([{ email: "support@example.org" }]);
+    mockPrisma.member.findMany.mockResolvedValue([
+      adminRecipient("support@example.org"),
+    ]);
     mockPrisma.emailLog.create.mockResolvedValue({ id: "log-1" });
     mockPrisma.emailLog.update.mockResolvedValue({});
   });

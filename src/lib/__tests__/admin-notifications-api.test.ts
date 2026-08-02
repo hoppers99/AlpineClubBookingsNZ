@@ -180,4 +180,114 @@ describe("Admin notifications API", () => {
       })
     );
   });
+
+  // #2548: recipients are every admin-portal user, not only Full Admins, and a
+  // category outside the target's areas is refused rather than banked.
+  function bookingOfficerTarget() {
+    return {
+      ...memberFactory({
+        id: "officer-1",
+        firstName: "Bea",
+        lastName: "Officer",
+        email: "officer@example.org",
+        role: "USER",
+      }),
+      accessRoles: [
+        {
+          role: "ADMIN_BOOKINGS",
+          roleDefinitionId: null,
+          roleDefinition: null,
+        },
+      ],
+      notificationPreference: null,
+    } as never;
+  }
+
+  it("updates a scoped Booking Officer's own-area preference", async () => {
+    mockedAuth.mockResolvedValue(adminSession({ id: "admin-1" }));
+    vi.mocked(prisma.member.findUnique).mockResolvedValue(bookingOfficerTarget());
+    vi.mocked(prisma.notificationPreference.upsert).mockResolvedValue({
+      ...fullAdminPreferences,
+      adminBookingChangeRequest: false,
+    } as never);
+
+    const res = await PUT(
+      notificationsRequest({
+        memberId: "officer-1",
+        preferences: { adminBookingChangeRequest: false },
+      })
+    );
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.preferences.adminBookingChangeRequest).toBe(false);
+    // Other booking categories stay on; finance categories are masked off
+    // because the officer's role cannot edit finance.
+    expect(body.preferences.adminNewBooking).toBe(true);
+    expect(body.preferences.adminPaymentFailure).toBe(false);
+    expect(body.preferences.adminDailyDigest).toBe(false);
+  });
+
+  it("refuses a category the target's role cannot receive", async () => {
+    mockedAuth.mockResolvedValue(adminSession({ id: "admin-1" }));
+    vi.mocked(prisma.member.findUnique).mockResolvedValue(bookingOfficerTarget());
+
+    const res = await PUT(
+      notificationsRequest({
+        memberId: "officer-1",
+        preferences: { adminRefundRequest: true },
+      })
+    );
+
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toContain("Refund requests");
+    expect(prisma.notificationPreference.upsert).not.toHaveBeenCalled();
+  });
+
+  it("accepts a definition-backed custom role that owns the area", async () => {
+    mockedAuth.mockResolvedValue(adminSession({ id: "admin-1" }));
+    vi.mocked(prisma.member.findUnique).mockResolvedValue({
+      ...memberFactory({
+        id: "custom-1",
+        firstName: "Cass",
+        lastName: "Custom",
+        email: "custom@example.org",
+        role: "USER",
+      }),
+      accessRoles: [
+        {
+          role: null,
+          roleDefinitionId: "ardef_custom",
+          roleDefinition: {
+            id: "ardef_custom",
+            overviewLevel: "VIEW",
+            bookingsLevel: "NONE",
+            membershipLevel: "EDIT",
+            financeLevel: "NONE",
+            lodgeLevel: "NONE",
+            contentLevel: "NONE",
+            supportLevel: "NONE",
+          },
+        },
+      ],
+      notificationPreference: null,
+    } as never);
+    vi.mocked(prisma.notificationPreference.upsert).mockResolvedValue({
+      ...fullAdminPreferences,
+      adminFamilyGroupRequest: false,
+    } as never);
+
+    const res = await PUT(
+      notificationsRequest({
+        memberId: "custom-1",
+        preferences: { adminFamilyGroupRequest: false },
+      })
+    );
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.preferences.adminFamilyGroupRequest).toBe(false);
+    expect(body.preferences.adminMemberDeleteRequest).toBe(true);
+    expect(body.preferences.adminNewBooking).toBe(false);
+  });
 });

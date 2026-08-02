@@ -10,6 +10,7 @@ import { getAdminAlertDeliveryEscalations } from "@/lib/email-admin-alert-escala
 import { getExhaustedEmailFailureReviewQueue } from "@/lib/email-failure-review";
 import { getEmailDeliverabilityTelemetry } from "@/lib/email-suppression";
 import { getUnassignedHutLeaderDates } from "@/lib/hut-leader-coverage";
+import { countBookingsWithUnnamedPlaceholderGuests } from "@/lib/placeholder-guest-name-reminders";
 import { countUnconfirmedSchoolAttendeeLists } from "@/lib/school-attendee-confirmation";
 import { loadHutLeaderLookaheadDays } from "@/lib/lodge-settings";
 import { loadEffectiveModuleFlags } from "@/lib/module-settings";
@@ -119,6 +120,7 @@ export interface StuckStateDashboardDependencies {
   getTokenEmailRecoveryQueue: typeof getTokenEmailRecoveryQueue;
   getWaitlistOfferEmailDeliveries: typeof getWaitlistOfferEmailDeliveries;
   countUnconfirmedSchoolAttendeeLists: typeof countUnconfirmedSchoolAttendeeLists;
+  countBookingsWithUnnamedPlaceholderGuests: typeof countBookingsWithUnnamedPlaceholderGuests;
   getBedAllocationDashboard: typeof getBedAllocationDashboard;
   getUnassignedHutLeaderDates: typeof getUnassignedHutLeaderDates;
   loadHutLeaderLookaheadDays: typeof loadHutLeaderLookaheadDays;
@@ -160,6 +162,7 @@ const defaultDependencies: StuckStateDashboardDependencies = {
   getTokenEmailRecoveryQueue,
   getWaitlistOfferEmailDeliveries,
   countUnconfirmedSchoolAttendeeLists,
+  countBookingsWithUnnamedPlaceholderGuests,
   getBedAllocationDashboard,
   getUnassignedHutLeaderDates,
   loadHutLeaderLookaheadDays,
@@ -876,6 +879,40 @@ export async function getStuckStateDashboard(input?: {
     )} inside the attendee-confirmation window still ${
       unconfirmedSchoolAttendeeLists === 1 ? "needs" : "need"
     } the school contact to confirm who is attending.`,
+  });
+
+  // #2550: bookings arriving soon whose party is STILL literally unnamed —
+  // "School Child 1", "Guest 2" — read off the guest rows themselves, so it
+  // covers school/organisation and member whole-lodge bookings alike. A
+  // deliberate sibling of the school tile above rather than a replacement: that
+  // one asks whether the school signed the list off, this one asks what the
+  // chore roster will actually print at the lodge. Both are visibility only —
+  // nothing here withholds a check-in, a confirmation, or a roster.
+  //
+  // The summary deliberately does NOT promise that every row is being chased.
+  // Because this count reads guest rows rather than a request type, it also
+  // catches parties no sweep will email: a school list the contact CONFIRMED
+  // while leaving the generated names in place (`applySchoolAttendeeConfirmation`
+  // accepts `confirm: true` with no `guestUpdates`, and the school sweep filters
+  // `attendeesConfirmedAt: null`), and a booking still held for approval, which
+  // has no `convertedBookingId` for either sweep to find. Those are precisely
+  // the rows an admin must fix by hand, so the copy has to say so.
+  const unnamedPlaceholderBookings =
+    await deps.countBookingsWithUnnamedPlaceholderGuests(now);
+  addItem(items, {
+    id: "booking-unnamed-placeholder-guests",
+    domain: "booking",
+    title: "Bookings with unnamed guests",
+    severity: "warning",
+    owner: "Admin",
+    count: unnamedPlaceholderBookings,
+    href: "/admin/bookings",
+    summary: `${unnamedPlaceholderBookings} upcoming ${plural(
+      unnamedPlaceholderBookings,
+      "booking",
+    )} still ${
+      unnamedPlaceholderBookings === 1 ? "lists" : "list"
+    } placeholder guest names ("Guest 2", "School Child 5"), so the chore list and arrival roster would show those instead of real people. Most bookers are chased automatically, but some rows are not — a school list already confirmed with its placeholder names, or a booking still held for approval — so treat this as a list to work through: open the booking and edit the names, which an admin or Booking Officer can always do. The stay is never held up over this.`,
   });
 
   await addEmailItems(items, deps);

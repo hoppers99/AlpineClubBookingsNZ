@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   sendMail: vi.fn(),
   resolveEmailDeliveryConfig: vi.fn(),
   sendEmail: vi.fn(),
+  getAdminEmails: vi.fn(),
   getActiveEmailSuppression: vi.fn(),
 }));
 
@@ -62,6 +63,9 @@ vi.mock("@/lib/logger", () => ({
 
 vi.mock("@/lib/email", () => ({
   sendEmail: mocks.sendEmail,
+  // #2548: the retry-exhausted alert resolves its audience through the shared
+  // access-role-aware helper instead of querying the legacy ADMIN scalar here.
+  getAdminEmails: mocks.getAdminEmails,
 }));
 
 import { retryFailedEmails } from "@/lib/cron-email-retry";
@@ -96,6 +100,7 @@ describe("retryFailedEmails (issue #820)", () => {
     mocks.update.mockResolvedValue({});
     mocks.updateMany.mockResolvedValue({ count: 1 });
     mocks.memberFindMany.mockResolvedValue([]);
+    mocks.getAdminEmails.mockResolvedValue([]);
     mocks.getActiveEmailSuppression.mockResolvedValue(null);
     mocks.bookingFindUnique.mockImplementation(
       async (args: { select?: { noEmails?: boolean } }) =>
@@ -240,7 +245,7 @@ describe("retryFailedEmails (issue #820)", () => {
   it("alerts admins when an email exhausts its retries", async () => {
     mocks.findMany.mockResolvedValue([failedEmail({ attempts: 2 })]);
     mocks.sendMail.mockRejectedValue(new Error("smtp 550"));
-    mocks.memberFindMany.mockResolvedValue([{ email: "admin@example.test" }]);
+    mocks.getAdminEmails.mockResolvedValue(["admin@example.test"]);
 
     const result = await retryFailedEmails();
 
@@ -287,6 +292,7 @@ describe('retryFailedEmails and the per-booking "No emails" switch (#2258)', () 
     mocks.update.mockResolvedValue({});
     mocks.updateMany.mockResolvedValue({ count: 1 });
     mocks.memberFindMany.mockResolvedValue([]);
+    mocks.getAdminEmails.mockResolvedValue([]);
     mocks.getActiveEmailSuppression.mockResolvedValue(null);
     mocks.bookingFindUnique.mockImplementation(
       async (args: { select?: { noEmails?: boolean } }) =>

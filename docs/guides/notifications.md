@@ -34,8 +34,9 @@ but not save.
 
    - **Delivery Rules** — control which admin and system emails are sent when
      jobs or alerts run. See [Delivery Rules](notification-rules.md).
-   - **Recipients** — choose which system alerts each active admin receives. See
-     [Recipients](notification-recipients.md).
+   - **Recipients** — choose which system alerts each admin user receives.
+     Every admin user is listed, and the alerts on offer follow the areas their
+     access role can edit. See [Recipients](notification-recipients.md).
    - **Email Messages** — edit shared email variables and the wording of audited
      email templates. See [Email Messages](email-messages.md).
    - **Booking Messages** — edit the member-facing booking, payment,
@@ -52,7 +53,7 @@ The hub has no settings of its own. Each card links to a tool that does:
 | Card | Route | What it controls | Guide |
 | --- | --- | --- | --- |
 | Delivery Rules | `/admin/notification-rules` | Per-template send policy (always / only-when-content / off) | [Delivery Rules](notification-rules.md) |
-| Recipients | `/admin/notification-recipients` | Per-admin toggles for each system alert | [Recipients](notification-recipients.md) |
+| Recipients | `/admin/notification-recipients` | Per-admin toggles for each system alert, scoped to the areas their role can edit | [Recipients](notification-recipients.md) |
 | Email Messages | `/admin/email-messages` | Shared email variables + audited template subject/body | [Email Messages](email-messages.md) |
 | Booking Messages | `/admin/booking-messages` | Member-facing booking/payment/cancellation copy | [Booking Messages](booking-messages.md) |
 | Membership Cancellation | `/admin/membership-cancellation` | Cancellation copy + Xero handling | [Cancellation Requests](membership-cancellations.md) |

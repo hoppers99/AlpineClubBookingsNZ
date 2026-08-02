@@ -23,8 +23,27 @@ interface AdminNotificationUser {
   id: string;
   name: string;
   email: string;
+  /** Access-role labels, shown so the unavailable categories make sense. */
+  roleLabels?: string[];
+  /**
+   * Alert categories this admin's permission areas cover (#2548). Categories
+   * outside the list are never sent to them, so they render locked rather than
+   * pretending a tick would do something.
+   */
+  availableKeys?: AdminNotificationPreferenceKey[];
   preferences: AdminNotificationPreferences;
 }
+
+const DEFAULT_SAVE_ERROR = "Failed to update notification preferences";
+
+/** Per-admin save outcome, so one card's failure never reverts another's. */
+type SaveSuccess = {
+  memberId: string;
+  ok: true;
+  preferences: AdminNotificationPreferences;
+};
+type SaveFailure = { memberId: string; ok: false; error: string };
+type SaveOutcome = SaveSuccess | SaveFailure;
 
 export function AdminNotificationSettings({
   initialAdmins,
@@ -46,6 +65,15 @@ export function AdminNotificationSettings({
   function handleCancel() {
     setAdmins(savedAdmins.map((a) => ({ ...a, preferences: { ...a.preferences } })));
     setEditing(false);
+  }
+
+  /**
+   * Categories this admin can actually be sent (#2548). Older callers that do
+   * not supply the list fall back to every category, matching the previous
+   * Full-Admin-only grid.
+   */
+  function availableKeysFor(admin: AdminNotificationUser) {
+    return admin.availableKeys ?? ADMIN_NOTIFICATION_PREFERENCE_KEYS;
   }
 
   function togglePreference(memberId: string, key: AdminNotificationPreferenceKey) {
@@ -70,7 +98,9 @@ export function AdminNotificationSettings({
       const saved = savedAdmins.find((s) => s.id === admin.id);
       if (!saved) continue;
       const diff: Partial<AdminNotificationPreferences> = {};
-      for (const key of ADMIN_NOTIFICATION_PREFERENCE_KEYS) {
+      // Locked categories can never be toggled, and the PUT route rejects them
+      // outright — never send one, even if state drifted.
+      for (const key of availableKeysFor(admin)) {
         if (admin.preferences[key] !== saved.preferences[key]) {
           diff[key] = admin.preferences[key];
         }
@@ -87,40 +117,85 @@ export function AdminNotificationSettings({
     }
 
     try {
-      // Save each changed admin's preferences
+      /*
+        One request per changed admin, and each outcome is kept separately so a
+        failure on one card cannot discard the others. The whole batch used to
+        share a single try/catch that reverted every card, so one stale-page
+        rejection (a category the target's role no longer covers, say) threw away
+        unrelated edits the operator had just made.
+      */
       const results = await Promise.all(
-        changes.map(async ({ memberId, preferences }) => {
-          const response = await fetch("/api/admin/notifications", {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ memberId, preferences }),
-          });
-          const data = await response.json().catch(() => null);
-          if (!response.ok) {
-            if (response.status === 403) {
-              throw new Error(ADMIN_FORBIDDEN_SAVE_REASON);
+        changes.map(async ({ memberId, preferences }): Promise<SaveOutcome> => {
+          try {
+            const response = await fetch("/api/admin/notifications", {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ memberId, preferences }),
+            });
+            const data = await response.json().catch(() => null);
+            if (!response.ok) {
+              return {
+                memberId,
+                ok: false,
+                error:
+                  response.status === 403
+                    ? ADMIN_FORBIDDEN_SAVE_REASON
+                    : (data?.error ?? DEFAULT_SAVE_ERROR),
+              };
             }
-            throw new Error(data?.error ?? "Failed to update notification preferences");
+            return {
+              memberId,
+              ok: true,
+              preferences: data.preferences as AdminNotificationPreferences,
+            };
+          } catch {
+            return { memberId, ok: false, error: DEFAULT_SAVE_ERROR };
           }
-          return { memberId, preferences: data.preferences as AdminNotificationPreferences };
         })
       );
 
-      // Update both admins and savedAdmins with server response
+      const failures = results.filter(
+        (result): result is SaveFailure => !result.ok
+      );
+
+      // Saved cards take the server's effective values; failed cards go back to
+      // what the server last confirmed. Cards outside this save are left alone,
+      // and the checkboxes are disabled while the save is in flight, so no
+      // in-flight edit can be silently overwritten by this re-baseline.
       const updatedAdmins = admins.map((admin) => {
         const result = results.find((r) => r.memberId === admin.id);
-        return result ? { ...admin, preferences: result.preferences } : admin;
+        if (!result) return admin;
+        if (result.ok) return { ...admin, preferences: result.preferences };
+        const saved = savedAdmins.find((s) => s.id === admin.id);
+        return saved
+          ? { ...admin, preferences: { ...saved.preferences } }
+          : admin;
       });
       setAdmins(updatedAdmins);
-      setSavedAdmins(updatedAdmins.map((a) => ({ ...a, preferences: { ...a.preferences } })));
-      setEditing(false);
-    } catch (error) {
-      // Revert on error
-      setAdmins(savedAdmins.map((a) => ({ ...a, preferences: { ...a.preferences } })));
+      setSavedAdmins(
+        updatedAdmins.map((a) => ({ ...a, preferences: { ...a.preferences } }))
+      );
+
+      if (failures.length === 0) {
+        setEditing(false);
+        return;
+      }
+
+      // Stay in edit mode. The refused card has rolled back to its last saved
+      // values, so the operator redoes that card's ticks and saves again; the
+      // toast below names exactly which card needs it.
+      const detail = failures
+        .map((failure) => {
+          const name =
+            admins.find((admin) => admin.id === failure.memberId)?.name ??
+            "An admin";
+          return `${name}: ${failure.error}`;
+        })
+        .join("; ");
       toast.error(
-        error instanceof Error
-          ? error.message
-          : "Failed to update notification preferences"
+        failures.length === changes.length
+          ? detail
+          : `Saved ${changes.length - failures.length} of ${changes.length} admins. Not saved — ${detail}`
       );
     } finally {
       setSaving(false);
@@ -184,29 +259,56 @@ export function AdminNotificationSettings({
       </div>
 
       <div className="grid gap-4 xl:grid-cols-2">
-        {admins.map((admin) => (
+        {admins.map((admin) => {
+          const available = availableKeysFor(admin);
+
+          return (
           <Card key={admin.id} className="border-border shadow-sm">
             <CardHeader className="pb-4">
               <CardTitle className="text-base">{admin.name}</CardTitle>
               <CardDescription>
                 <span>{admin.email}</span>
+                {admin.roleLabels && admin.roleLabels.length > 0 ? (
+                  <span className="mt-1 block text-xs">
+                    {admin.roleLabels.join(", ")}
+                  </span>
+                ) : null}
               </CardDescription>
             </CardHeader>
             <CardContent className="grid gap-3 sm:grid-cols-2">
+              {available.length === 0 ? (
+                <p className="text-sm text-muted-foreground sm:col-span-2">
+                  This admin&apos;s role cannot edit any area that owns an alert,
+                  so there are no alerts to send them. Give their role edit
+                  access to an area — bookings, membership, finance or support —
+                  to make its alerts available.
+                </p>
+              ) : null}
               {ADMIN_NOTIFICATION_PREFERENCE_KEYS.map((key) => {
                 const meta = ADMIN_NOTIFICATION_PREFERENCE_META[key];
                 const controlId = `${admin.id}-${key}`;
+                // #2548: an alert outside this admin's areas is never sent, so
+                // the box stays locked and unticked instead of implying a tick
+                // would subscribe them.
+                const locked = !available.includes(key);
 
                 return (
                   <div
                     key={key}
-                    className="flex items-start gap-3 rounded-lg border border-border p-3"
+                    className={`flex items-start gap-3 rounded-lg border border-border p-3${
+                      locked ? " opacity-60" : ""
+                    }`}
                   >
                     <Checkbox
                       id={controlId}
                       checked={admin.preferences[key]}
-                      disabled={!editing}
-                      onCheckedChange={() => editing && togglePreference(admin.id, key)}
+                      disabled={!editing || locked || saving}
+                      onCheckedChange={() =>
+                        editing &&
+                        !locked &&
+                        !saving &&
+                        togglePreference(admin.id, key)
+                      }
                     />
                     <div className="space-y-1">
                       <Label htmlFor={controlId} className="cursor-pointer text-sm font-medium">
@@ -215,13 +317,21 @@ export function AdminNotificationSettings({
                       <p className="text-xs leading-5 text-muted-foreground">
                         {meta.description}
                       </p>
+                      {locked ? (
+                        <p className="text-xs leading-5 text-muted-foreground">
+                          Not available: this alert belongs to an area their role
+                          cannot edit. It cannot be switched on here — give their
+                          access role edit access to that area instead.
+                        </p>
+                      ) : null}
                     </div>
                   </div>
                 );
               })}
             </CardContent>
           </Card>
-        ))}
+          );
+        })}
       </div>
       </div>
     </div>
