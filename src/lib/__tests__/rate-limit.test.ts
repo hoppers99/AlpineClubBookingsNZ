@@ -374,6 +374,14 @@ describe("degraded-mode policy for auth-sensitive limiters (#1142)", () => {
       "aiChatMember",
       "aiChatIp",
       "aiChatGlobal",
+      // AI Diagnostics (AID-2, #2371): a SEPARATE admin-only paid product with
+      // its own dedicated credential and budget. Its per-admin/per-IP/global
+      // limiters guard paid model spend, so — like the aiChat trio above — a
+      // degraded shared-store fallback must TIGHTEN (never multiply) the paid-call
+      // budget across replicas.
+      "aiDiagnosticsAdmin",
+      "aiDiagnosticsIp",
+      "aiDiagnosticsGlobal",
       // Member-guest consent answers (#2307): the endpoint returns one uniform
       // 403 for every failure, so volume is the only probe — a degraded
       // shared-store fallback must not multiply that allowance.

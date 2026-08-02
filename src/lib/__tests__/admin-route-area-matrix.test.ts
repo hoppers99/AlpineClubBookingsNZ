@@ -105,6 +105,11 @@ const EXPECTED_ROUTE_AREAS: Record<string, AdminPermissionArea> = {
   "/api/admin/age-tier-settings": "bookings",
   "/api/admin/ai-assistant/settings": "support",
   "/api/admin/ai-assistant/usage": "support",
+  // AI Diagnostics (AID-2, #2371): a separate admin-only paid capability. Its
+  // budget-settings and readiness routes sit in "support" alongside the sibling
+  // ai-assistant config routes above.
+  "/api/admin/ai-diagnostics/readiness": "support",
+  "/api/admin/ai-diagnostics/settings": "support",
   "/api/admin/audit-log": "support",
   "/api/admin/backups/config": "support",
   "/api/admin/backups/run": "support",

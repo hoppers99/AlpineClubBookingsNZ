@@ -240,6 +240,7 @@ describe("featureFlagsSchema", () => {
         lobbyDisplay: false,
         aiAssistant: false,
         memberGuests: false,
+        aiDiagnostics: false,
       }),
     ).toBeDefined();
   });

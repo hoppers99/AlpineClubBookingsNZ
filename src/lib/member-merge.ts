@@ -412,6 +412,12 @@ export const MEMBER_MERGE_SNAPSHOT_SCALAR_COLUMNS: readonly string[] = [
   // the admin session. It is an actor column like the rest; only its name says
   // otherwise.
   "IntegrationCredential.updatedByUserId",
+  // Who ran an AI Diagnostics roundtrip (AID-2, #2371). `adminMemberId` is the
+  // acting admin, a bare FK-less String (approved-metadata-only audit table, no
+  // FKs by design). Its name appears nowhere in the schema as a Member FK, so the
+  // detector cannot see it — documented here by hand. Like every actor column
+  // above it keeps the loser's id as immutable history on merge.
+  "DiagnosticsUsageEvent.adminMemberId",
   //
   // A NINTH column found by the same sweep is deliberately NOT here, because it
   // is not a snapshot at all: `BookingRequest.convertedMemberId` is the identity
@@ -453,6 +459,12 @@ export const MEMBER_MERGE_SNAPSHOT_SCALAR_COLUMNS: readonly string[] = [
   "CalendarEventSeries.createdById",
   "ClubIdentitySettings.updatedByMemberId",
   "ClubModuleSettings.updatedByMemberId",
+  // AI Diagnostics settings singleton (AID-2, #2371): records WHO last set the
+  // deployment-local Diagnostics spend cap, a bare FK-less String exactly like
+  // every other `*.updatedByMemberId` audit column here. Keeps the loser's id as
+  // immutable history on merge. (Detectable: `updatedByMemberId` is a Member FK
+  // column name elsewhere in the schema.)
+  "DiagnosticsSettings.updatedByMemberId",
   "EmailMessageSetting.updatedByMemberId",
   "EmailTemplateOverride.updatedByMemberId",
   "FinanceSyncRun.requestedByMemberId",

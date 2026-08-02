@@ -126,6 +126,20 @@ const SCOPED_ADVISORY_LOCK_INVENTORY: Record<string, number> = {
   // booking or capacity path ever takes it, so the keyspaces are disjoint.
   // Counterpart analysis in docs/CONCURRENCY_AND_LOCKING.md.
   "src/lib/adult-member-hosting-policy-set.ts": 1,
+  // AI Diagnostics budget reserve (AID-2, #2371). Both writers take the SAME
+  // per-month key `pg_advisory_xact_lock(hashtext('diagnostics-budget-reserve'),
+  // hashtext(<month>))`: `reserveDiagnosticsBudget` (the guarded spend claim) and
+  // `settleDiagnosticsRoundtrip` (books the actual cost), so reserve and settle
+  // are mutually exclusive per month and every reserve sees a consistent
+  // settled+reserved sum. It is a NEW, isolated keyspace: keyed by calendar month
+  // only, taken by no other writer, and each site takes only this one key (never
+  // a second lock), so it forms no lock-ordering cycle and has no interaction with
+  // the global booking/money lock(1), the per-lodge capacity key, or any other
+  // scoped key above — the keyspaces are disjoint. Provider calls run OUTSIDE the
+  // locked transaction. Counterpart analysis and compatibility evidence in
+  // docs/CONCURRENCY_AND_LOCKING.md → "Composition: diagnostics budget reserve
+  // (AID-2, #2371)".
+  "src/lib/ai-diagnostics-usage.ts": 2,
   "src/lib/authoritative-fees.ts": 1,
   // #2095: claimBackupRun takes the singleton backup:run-lock key for the
   // milliseconds of the reap/check/insert claim transaction only (the dump

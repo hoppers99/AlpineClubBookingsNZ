@@ -363,6 +363,14 @@ const ROUTE_AREA_PREFIXES: Array<{
       // page /admin/ai-assistant, if added by C4, resolves here too.)
       "/admin/ai-assistant",
       "/api/admin/ai-assistant",
+      // AI Diagnostics (AID-2, #2371) — a SEPARATE admin-only paid product.
+      // Registered under support so its budget + readiness API never falls back
+      // to the overview catch-all: support view = readiness/status, support edit
+      // = budget change. The DEDICATED Anthropic key WRITE stays Full Admin on the
+      // shared credentials route regardless of area level. (The Diagnostics UI
+      // page /admin/ai-diagnostics arrives in AID-8 #2378 and resolves here too.)
+      "/admin/ai-diagnostics",
+      "/api/admin/ai-diagnostics",
     ],
   },
   {

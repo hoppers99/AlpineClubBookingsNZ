@@ -196,6 +196,35 @@ export const FEATURE_ROUTE_RULES: FeatureRouteRule[] = [
     prefixes: ["/admin/ai-assistant", "/api/admin/ai-assistant"],
   },
   {
+    // AI Diagnostics (AID-2, #2371) — a SEPARATE admin-only paid product from the
+    // page-help aiAssistant above. Its budget + readiness admin API hard-gates on
+    // the module flag, exactly like /api/admin/ai-assistant/*: a module-off
+    // deployment 404s them rather than exposing a spend surface for a product it
+    // has not opted into.
+    //
+    // The whole "module-off configuration reachability" decision (AID-2) is
+    // DELIBERATE and has three parts:
+    //  * the DEDICATED Anthropic credential is written/read on the shared
+    //    /api/admin/integrations/credentials route (provider
+    //    "anthropic-diagnostics"), which is ungated — so the highest-privilege
+    //    secret can be entered before the module is turned on;
+    //  * the READINESS endpoint is EXEMPT (exact-match, same mechanism as the
+    //    lobbyDisplay setup wizard), so an admin can see what is missing —
+    //    "module off", "no dedicated key", "no budget" — and set it up before
+    //    enabling the paid product. It renders only status; it spends nothing;
+    //  * the operational SETTINGS route (the monthly budget) stays GATED, exactly
+    //    like /api/admin/ai-assistant/settings: a spend budget is meaningful only
+    //    once the club has opted into the product by enabling the module, and
+    //    enabling it alone authorises no spend (fail-closed readiness gates every
+    //    paid call).
+    // No /admin/ai-diagnostics PAGE prefix is listed yet — the Diagnostics UI
+    // (AID-8, #2378) adds the page and its gate; listing a page prefix now would
+    // fail admin-route-map-drift.test.ts (a prefix that matches no file).
+    flag: "aiDiagnostics",
+    prefixes: ["/api/admin/ai-diagnostics"],
+    exemptPaths: ["/api/admin/ai-diagnostics/readiness"],
+  },
+  {
     // "+ Add Member Guest" (epic #2305). The two member-facing surfaces stop
     // existing when a club has the module off: the delegate's answer page, and
     // the consent endpoint both the target and the delegate answer through.

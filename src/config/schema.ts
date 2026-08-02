@@ -150,6 +150,7 @@ export const featureFlagsSchema = z
     lobbyDisplay: z.boolean(),
     aiAssistant: z.boolean(),
     memberGuests: z.boolean(),
+    aiDiagnostics: z.boolean(),
   })
   .strict();
 

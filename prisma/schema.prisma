@@ -3887,6 +3887,112 @@ model AiAssistantSettings {
 }
 
 // ---------------------------------------------------------------------------
+// AI Diagnostics — SEPARATE admin-only capability (AID-2, #2371, epic #2369)
+// ---------------------------------------------------------------------------
+//
+// A distinct paid product from the page-help AI assistant above: it has its own
+// module flag (ClubModuleSettings.aiDiagnostics), its own DEDICATED Anthropic
+// credential (IntegrationCredential provider "anthropic-diagnostics" — NEVER the
+// page-help "anthropic" key), its own deployment-local budget, and its own
+// concurrency-safe metering. NONE of these tables is shared with the page-help
+// AiAssistant* tables. All money is NZD integer cents.
+
+// Deployment-local Diagnostics spend control singleton (id="default"). The
+// monthly budget is a HARD cutoff in NZD integer cents and defaults to 0 =
+// hard-off: no paid diagnostics call can be reserved until an admin sets a
+// positive budget (fail-closed, deliberate opt-in for a paid product). This
+// singleton deliberately does NOT travel in config-transfer bundles (mirrors
+// AiAssistantSettings; see src/lib/config-transfer/categories/club-settings.ts).
+// updatedByMemberId is a PLAIN STRING with NO foreign key (audit-only).
+model DiagnosticsSettings {
+  id                 String   @id @default("default")
+  monthlyBudgetCents Int      @default(0)
+  updatedAt          DateTime @updatedAt
+  updatedByMemberId  String?
+}
+
+// Per-month rolled-up SETTLED Diagnostics usage (actual metered spend). Mirrors
+// AiAssistantUsageMonthly/XeroApiUsageDaily: atomic upsert-with-increments on
+// settlement. settledCents is the actual charged cost; in-flight worst-case
+// RESERVATIONS live in DiagnosticsBudgetReservation, so a burst of paid calls
+// cannot overspend the monthly budget (the budget gate sums live reservations +
+// settledCents under an advisory lock before it inserts a reservation). All
+// token counts are integers; settledCents is NZD integer cents (never floats).
+model DiagnosticsUsageMonthly {
+  id               String   @id @default(cuid())
+  // Calendar month in Pacific/Auckland, "YYYY-MM".
+  month            String   @unique
+  requestCount     Int      @default(0)
+  // Provider roundtrips settled this month (a multi-tool session settles once
+  // per roundtrip), distinct from requestCount (diagnostics sessions).
+  roundtripCount   Int      @default(0)
+  failedCount      Int      @default(0)
+  inputTokens      Int      @default(0)
+  outputTokens     Int      @default(0)
+  cacheWriteTokens Int      @default(0)
+  cacheReadTokens  Int      @default(0)
+  settledCents     Int      @default(0)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+}
+
+// Live per-roundtrip budget RESERVATIONS. Each paid provider roundtrip reserves
+// its worst-case cost here BEFORE the provider call and converts the reservation
+// to settled cost afterwards (DiagnosticsBudgetReservation is deleted, its cost
+// booked into DiagnosticsUsageMonthly.settledCents). expiresAt is a crash-safety
+// backstop: a reservation whose settle never lands (process death mid-call) is
+// reclaimed by the reserve path's opportunistic sweep once expired, so a leaked
+// worst-case reservation cannot wedge the monthly budget forever. No foreign
+// key — this metering table must never block a Member change.
+model DiagnosticsBudgetReservation {
+  id           String   @id @default(cuid())
+  // Calendar month in Pacific/Auckland, "YYYY-MM" — the budget scope this
+  // reservation counts against.
+  month        String
+  reservedCents Int
+  createdAt    DateTime @default(now())
+  // Crash-safety expiry: reservations older than this are reclaimed by the
+  // next reserve for the same month.
+  expiresAt    DateTime
+
+  @@index([month, expiresAt])
+  @@index([expiresAt])
+}
+
+// One row per settled Diagnostics provider roundtrip (success OR failure).
+// APPROVED METADATA ONLY (epic #2369 frozen boundary): NO raw prompts, answers,
+// tool args/results, provider payloads, credentials, or unrestricted
+// identifiers. adminMemberId is the acting admin (accountability) as a PLAIN
+// STRING with NO foreign key. errorMessage is redacted + truncated. This table
+// exists so an operator can see what diagnostics cost and which calls failed,
+// never what was asked or answered.
+model DiagnosticsUsageEvent {
+  id               String   @id @default(cuid())
+  month            String
+  adminMemberId    String?
+  surface          String
+  model            String
+  // 0-based provider roundtrip index within a diagnostics session (bounds the
+  // multi-tool loop; never larger than DIAGNOSTICS_MAX_TOOL_ROUNDS).
+  roundIndex       Int?
+  success          Boolean
+  errorCode        String?
+  statusCode       Int?
+  durationMs       Int?
+  inputTokens      Int      @default(0)
+  outputTokens     Int      @default(0)
+  cacheWriteTokens Int      @default(0)
+  cacheReadTokens  Int      @default(0)
+  costCents        Int      @default(0)
+  // Redacted + truncated (~500 chars) provider error message, when present.
+  errorMessage     String?
+  createdAt        DateTime @default(now())
+
+  @@index([month])
+  @@index([createdAt])
+}
+
+// ---------------------------------------------------------------------------
 // Club Module Settings (admin-level activation for optional modules)
 // ---------------------------------------------------------------------------
 
@@ -3941,6 +4047,16 @@ model ClubModuleSettings {
   // "Not available yet" rather than "Enabled" (D-17). The behaviour arrives in
   // MG2 (#2307).
   memberGuests            Boolean  @default(false)
+  // AI Diagnostics (AID-2, #2371, epic #2369). Default OFF: a separate admin-only
+  // paid product from the page-help aiAssistant above. Safe to add as a defaulted
+  // column because every read narrows to CLUB_MODULE_SETTINGS_COLUMN_SELECT, so a
+  // previously deployed client never names it. Turning it on does NOT by itself
+  // enable any spend — the deployment must also configure a DEDICATED Anthropic
+  // API key and a positive monthly budget (fail-closed readiness). This flag
+  // deliberately does NOT travel in config-transfer bundles (see the `excluded`
+  // note in config-transfer/categories/club-settings.ts) — enabling a paid,
+  // separately-keyed product is a per-deployment decision like magicLink/googleLogin.
+  aiDiagnostics           Boolean  @default(false)
   updatedByMemberId       String?
   createdAt               DateTime @default(now())
   updatedAt               DateTime @default(now()) @updatedAt
