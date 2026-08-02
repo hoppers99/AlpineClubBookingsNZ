@@ -9,6 +9,7 @@
 export const BOOKING_URL_TEMPLATE_NAMES: ReadonlySet<string> = new Set([
   "booking-confirmed",
   "booking-pending",
+  "booking-policy-exception-approved",
   "booking-bumped",
   "booking-guests-cancelled",
   "booking-cancelled",

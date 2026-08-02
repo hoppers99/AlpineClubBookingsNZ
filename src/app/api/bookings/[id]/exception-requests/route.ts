@@ -83,7 +83,10 @@ export async function POST(
   const booking = await prisma.booking.findUnique({
     where: { id: bookingId },
     include: {
-      guests: true,
+      // #2526: guests carry their stored explicit night set so the frozen
+      // proposal preserves a sparse stay exactly as the canonical planner will,
+      // instead of flattening it to its envelope and claiming beds nobody books.
+      guests: { include: { nights: { select: { stayDate: true } } } },
       member: true,
       // Whether the live booking holds capacity decides the reservation footprint
       // (#2525 FIX 7); `originBookingRequest` is the #1254 converted-quote signal
@@ -160,6 +163,9 @@ export async function POST(
     memberId: g.memberId,
     stayStart: normalizeDateOnlyForTimeZone(g.stayStart),
     stayEnd: normalizeDateOnlyForTimeZone(g.stayEnd),
+    nights: g.nights.map((night) => ({
+      stayDate: normalizeDateOnlyForTimeZone(night.stayDate),
+    })),
   }));
 
   const { base, proposed } = buildModificationProposalParties({

@@ -1,12 +1,31 @@
 import type { AgeTier, BookingStatus } from "@prisma/client";
 
-import { parseDateOnly, normalizeDateOnlyForTimeZone } from "@/lib/date-only";
+import {
+  addDaysDateOnly,
+  parseDateOnly,
+  normalizeDateOnlyForTimeZone,
+} from "@/lib/date-only";
 import { checkCapacityForGuestRanges } from "@/lib/capacity";
 import { hasAdminAreaAccess } from "@/lib/admin-permissions";
 import { MEMBER_ACCESS_ROLE_SELECT } from "@/lib/access-role-definitions";
 import { recordAdultMemberHostingReviewDecision } from "@/lib/adult-member-hosting-review";
 import { createConfirmedBooking } from "@/lib/booking-create";
 import { modifyBookingBatch } from "@/lib/booking-batch-modification-service";
+import {
+  assertLinkedBookingMembersCanBeBooked,
+  normalizeBookingGuestInputs,
+  resolveLinkedBookingMembersWithBoundary,
+} from "@/lib/booking-guests";
+import {
+  loadMemberGuestAddPolicy,
+  matchMemberGuestNotificationRows,
+  planMemberGuestConsentWrites,
+  type MemberGuestAddPolicy,
+  type MemberGuestConsentWritePlanEntry,
+} from "@/lib/member-guest-add-policy";
+import logger from "@/lib/logger";
+import { prisma } from "@/lib/prisma";
+import { sendBookingPolicyExceptionApprovedEmail } from "@/lib/email";
 import { BOOKABLE_AGE_TIER_VALUES } from "@/lib/age-tier-schema";
 import { getNonMemberHoldPolicy } from "@/lib/cancellation";
 import { calculateBookingHoldDecision } from "@/lib/policies/booking-route-decisions";
@@ -54,9 +73,12 @@ import type { PolicyExceptionViolation } from "@/lib/booking-policy-exceptions";
  * supplies, under the global lock(1) + per-lodge capacity lock the engine has
  * already taken — so nothing in this file may reach for the module Prisma client
  * (a second pool connection beneath those locks is the shape
- * docs/CONCURRENCY_AND_LOCKING.md forbids). The one read that genuinely needs
- * the module client, the club's hold policy, is resolved BEFORE the transaction
- * by {@link resolveNewBookingExecutionParams} and handed in.
+ * docs/CONCURRENCY_AND_LOCKING.md forbids). The two reads that genuinely need
+ * the module client are both OUTSIDE it: the club's hold policy and the
+ * member-guest policy, resolved BEFORE the transaction by
+ * {@link resolveNewBookingExecutionParams} and handed in; and the created
+ * booking `notifyApproved` reads, which the engine calls only AFTER its commit,
+ * with every lock already released.
  *
  * The three contracts #2525's reviews pinned, and where they live here:
  *
@@ -133,6 +155,34 @@ function partyEnvelope(party: ProposalParty): { checkIn: Date; checkOut: Date } 
   return {
     checkIn: parseDateOnly(party.checkIn),
     checkOut: parseDateOnly(party.checkOut),
+  };
+}
+
+/**
+ * The window a capacity check must cover for a frozen party: the UNION of the
+ * stored envelope and every frozen guest night.
+ *
+ * `checkCapacityForGuestRanges` only iterates nights inside the window it is
+ * given, so deriving it from the stored envelope alone silently skipped any
+ * frozen guest night outside that envelope (#2526 review). A freeze now expands
+ * the envelope to cover its guests, so in practice the two agree — but a stored
+ * snapshot is DATA, and the engine's stated contract is that it asserts capacity
+ * itself rather than trusting the executor seam, so it must not depend on the
+ * freeze having been well-formed. Widening can only ever make the check stricter.
+ */
+function partyCapacityWindow(party: ProposalParty): {
+  checkIn: Date;
+  checkOut: Date;
+} {
+  const envelope = partyEnvelope(party);
+  const nights = party.guests.flatMap((guest) => guest.nights);
+  if (nights.length === 0) return envelope;
+  const sorted = [...new Set(nights)].sort();
+  const firstNight = parseDateOnly(sorted[0]);
+  const afterLastNight = addDaysDateOnly(parseDateOnly(sorted[sorted.length - 1]), 1);
+  return {
+    checkIn: firstNight < envelope.checkIn ? firstNight : envelope.checkIn,
+    checkOut: afterLastNight > envelope.checkOut ? afterLastNight : envelope.checkOut,
   };
 }
 
@@ -231,6 +281,10 @@ async function loadLiveBookingForIntegrity(
           memberId: true,
           stayStart: true,
           stayEnd: true,
+          // The stored explicit night set (#713). Without it the replay flattens
+          // a sparse stay to its envelope and can never reproduce the frozen
+          // hash for such a booking (#2526 review).
+          nights: { select: { stayDate: true } },
         },
       },
     },
@@ -248,6 +302,9 @@ async function loadLiveBookingForIntegrity(
       memberId: guest.memberId,
       stayStart: normalizeDateOnlyForTimeZone(guest.stayStart),
       stayEnd: normalizeDateOnlyForTimeZone(guest.stayEnd),
+      nights: guest.nights.map((night) => ({
+        stayDate: normalizeDateOnlyForTimeZone(night.stayDate),
+      })),
     })),
   };
 }
@@ -282,7 +339,10 @@ export function proposalGuestToCreateInput(guest: ProposalGuest) {
     ...(guest.memberId ? { memberId: guest.memberId } : {}),
     stayStart,
     stayEnd,
-    nights: nights.map((night) => ({ stayDate: night })),
+    // Plain `yyyy-mm-dd` strings rather than `{ stayDate }` rows: both are valid
+    // `GuestNightInput`s, and the flat form is also what the member-guest
+    // authorisation pipeline's own guest type accepts, so one shape serves both.
+    nights,
   };
 }
 
@@ -307,6 +367,13 @@ export interface PolicyExceptionApprovalContext {
    */
   settlementMethod?: BookingModificationSettlementMethod;
   /**
+   * The member's own words from the request. Carried through as the booking's
+   * `memberReviewJustification` so an adult-supervision review this approval
+   * opens (see `reviewedMemberProposal`) records why the MEMBER says they are
+   * doing it, rather than nothing at all.
+   */
+  memberMessage?: string | null;
+  /**
    * NEW-booking execution parameters resolved BEFORE the transaction opened by
    * {@link resolveNewBookingExecutionParams}. Required for a new-booking
    * approval; ignored for a modification.
@@ -316,6 +383,13 @@ export interface PolicyExceptionApprovalContext {
     shouldBePending: boolean;
     holdDays: number;
     paymentMethod: BookingPaymentMethod;
+    /**
+     * The "+ Add Member Guest" policy (epic #2305), read on the module client
+     * before the transaction opened — the ordering rule in
+     * `member-guest-add-policy.ts`. The new-booking executor needs it to run the
+     * same member-guest authorisation the member's own create route runs.
+     */
+    memberGuestPolicy: MemberGuestAddPolicy;
   };
 }
 
@@ -373,7 +447,7 @@ export function buildPolicyExceptionApprovalHooks(
       // The request's OWN provisional reservation is not excluded and does not
       // need to be: #2525 calls this AFTER releasing it (HOLD) or when there
       // never was one (NO_HOLD).
-      const { checkIn, checkOut } = partyEnvelope(snapshot.proposed);
+      const { checkIn, checkOut } = partyCapacityWindow(snapshot.proposed);
       const capacity = await checkCapacityForGuestRanges(
         snapshot.lodgeId,
         checkIn,
@@ -390,21 +464,25 @@ export function buildPolicyExceptionApprovalHooks(
     async verifyLiveProposalIntegrity(snapshot, tx) {
       // A new-booking proposal has no live base to drift against; the engine's
       // tamper hash over the frozen snapshot is the whole integrity story.
-      if (snapshot.kind !== "MODIFICATION") return true;
+      if (snapshot.kind !== "MODIFICATION") return { intact: true };
 
       const row = await tx.bookingChangeRequest.findUnique({
         where: { id: context.requestId },
         select: { requestedChanges: true },
       });
       const delta = parseStoredExceptionDelta(row?.requestedChanges);
-      // A request stored before the delta existed, or one whose delta was
-      // hand-edited into nonsense, cannot be executed against the canonical
-      // service. Fail closed: the member resubmits and gets a fresh, replayable
-      // proposal.
-      if (!delta) return false;
+      // A request stored before the delta existed (#2524 shipped ahead of #2526,
+      // so in-flight rows exist), or one whose delta was hand-edited into
+      // nonsense, cannot be executed against the canonical service. Fail closed
+      // — but say WHY: "the live booking has changed" is untrue for a row that
+      // simply predates the format, and it sends the officer looking for an edit
+      // that never happened (#2526 review).
+      if (!delta) {
+        return { intact: false, reason: "unreplayable" };
+      }
 
       const live = await loadLiveBookingForIntegrity(tx, snapshot.bookingId);
-      if (!live) return false;
+      if (!live) return { intact: false, reason: "drift" };
 
       // Replay the stored delta against the LIVE booking and require the result
       // to hash to the frozen proposal. This one equality proves both halves at
@@ -425,10 +503,62 @@ export function buildPolicyExceptionApprovalHooks(
         proposed: replayed.proposed,
       };
       if (computeProposalHash(replayedSnapshot) !== computeProposalHash(snapshot)) {
-        return false;
+        return { intact: false, reason: "drift" };
       }
       verifiedDelta = delta;
-      return true;
+      return { intact: true };
+    },
+
+    /**
+     * Tell the member their NEW-booking request was approved, AFTER the commit.
+     *
+     * The canonical create service emails only a $0 confirmation or a non-member
+     * hold notice, so an approved exception landing on PAYMENT_PENDING told the
+     * member nothing at all — and PAYMENT_PENDING holds no beds, so the stay
+     * could be filled or reaped while they had no idea they had one (#2526
+     * review). A MODIFICATION needs nothing here: `modifyBookingBatch` sends the
+     * canonical "your booking was changed" email itself, and a second notice
+     * would compete with it.
+     */
+    async notifyApproved(request) {
+      const bookingId = outcome.createdBookingId;
+      if (!bookingId) return;
+      const booking = await prisma.booking.findUnique({
+        where: { id: bookingId },
+        select: {
+          id: true,
+          checkIn: true,
+          checkOut: true,
+          finalPriceCents: true,
+          lodgeId: true,
+          status: true,
+          member: { select: { id: true, email: true, firstName: true } },
+          guests: { select: { id: true } },
+          payment: { select: { status: true } },
+        },
+      });
+      if (!booking?.member?.email) return;
+      // What is still owed: the whole price unless the create already settled it
+      // ($0 / fully credit-covered bookings reach PAID or CONFIRMED and send
+      // their own confirmation).
+      const settled =
+        booking.status === "PAID" ||
+        booking.status === "CONFIRMED" ||
+        booking.payment?.status === "SUCCEEDED";
+      await sendBookingPolicyExceptionApprovedEmail(
+        { bookingId: booking.id, recipientMemberId: booking.member.id },
+        booking.member.email,
+        {
+          firstName: booking.member.firstName,
+          checkIn: booking.checkIn,
+          checkOut: booking.checkOut,
+          guestCount: booking.guests.length,
+          amountDueCents: settled ? 0 : booking.finalPriceCents,
+          adminNotes: context.adminNotes ?? null,
+          lodgeId: booking.lodgeId,
+        },
+      );
+      void request;
     },
 
     async executeApprovedProposal({ tx, request, snapshot, override }) {
@@ -500,6 +630,19 @@ async function executeApprovedModification(args: {
     bookingId: snapshot.bookingId,
     actor: { id: context.actorMemberId, role: "ADMIN" },
     input: {
+      // #2526 review: ADMIN is borrowed for ONE thing — the reviewed minimum-stay
+      // override. This flag hands back every rule that was NOT reviewed: the
+      // beyond-family member-guest refusal, the consent step, the D-8
+      // profile/bookability gate, the cross-family marker, the member-guest
+      // subscription check, and the adult-supervision review. Without it an
+      // approval labelled "Minimum stay" could attach an unrelated member to
+      // somebody else's booking with no consent and un-park a child-safety review
+      // in the officer's name. See `BatchModifyInput.reviewedMemberProposal`.
+      reviewedMemberProposal: true,
+      // The member's own words, for a supervision review this approval opens.
+      ...(context.memberMessage?.trim()
+        ? { memberReviewJustification: context.memberMessage.trim() }
+        : {}),
       checkIn: delta.checkIn ?? undefined,
       checkOut: delta.checkOut ?? undefined,
       addGuests: delta.addGuests?.map((guest) => ({
@@ -570,12 +713,89 @@ async function executeApprovedNewBooking(args: {
   }
 
   const { checkIn, checkOut } = partyEnvelope(snapshot.proposed);
-  const guests = snapshot.proposed.guests.map(proposalGuestToCreateInput);
+  const frozenGuests = snapshot.proposed.guests.map(proposalGuestToCreateInput);
+
+  // THE GUEST-AUTHORISATION PIPELINE (#2526 review). `createConfirmedBooking`
+  // does NOT validate guest member links — every other caller runs this sequence
+  // itself before creating (the member/on-behalf create route, and even
+  // `admin-booking-copy`). Skipping it let a member name any active member's id
+  // in an exception request and have an approval attach them: no beyond-family
+  // refusal, no consent request, no profile/bookability gate, and the guest row
+  // keeping the REQUESTER's declared age tier and membership instead of the
+  // member record's — which also priced them at the member rate.
+  //
+  // It runs with MEMBER semantics (`skipAuthorization: false`), because the
+  // requester is the member and the officer reviewed minimum stay / hosting, not
+  // the membership and privacy rules the queue promises still apply. A refusal
+  // throws `BookingGuestValidationError`, which rolls the whole approval back and
+  // the route reports with that error's own status.
+  const { members: linkedMembers, boundary } =
+    await resolveLinkedBookingMembersWithBoundary(
+      tx,
+      request.requestedByMemberId,
+      frozenGuests.map((guest) => guest.memberId),
+      {
+        skipAuthorization: false,
+        memberGuestWideningEnabled: execution.memberGuestPolicy.wideningEnabled,
+      },
+    );
+  await assertLinkedBookingMembersCanBeBooked(
+    tx,
+    linkedMembers,
+    request.requestedByMemberId,
+    {
+      actorRole: "MEMBER",
+      onBehalfOfMemberId: null,
+      // D-8: a blocked cross-family member is refused neutrally.
+      crossFamilyMemberIds: boundary.beyondFamilyMemberIds,
+    },
+  );
+  // The member record is authoritative for a linked guest's name, age tier and
+  // membership — the frozen party carries what the REQUESTER declared, and
+  // pricing reads these fields.
+  const normalizedGuests = normalizeBookingGuestInputs(frozenGuests, linkedMembers);
+  const consentPlan = planMemberGuestConsentWrites({
+    guests: normalizedGuests,
+    boundary,
+    actor: { kind: "MEMBER" },
+    now: new Date(),
+    bookingCheckIn: checkIn,
+    policy: execution.memberGuestPolicy,
+  });
+  // Rebuilt field by field onto the create-service input shape: the
+  // authorisation helpers are generic over a looser guest type (dates as strings
+  // are legal there), so spreading their output back would widen `stayStart` /
+  // `nights` out of the create contract.
+  const guests = frozenGuests.map((guest, index) => {
+    const normalized = normalizedGuests[index];
+    const planned = consentPlan.guests[index];
+    return {
+      ...guest,
+      firstName: normalized.firstName,
+      lastName: normalized.lastName,
+      ageTier: normalized.ageTier,
+      isMember: normalized.isMember,
+      ...(normalized.memberId ? { memberId: normalized.memberId } : {}),
+      ...(planned?.memberGuestConsent
+        ? { memberGuestConsent: planned.memberGuestConsent }
+        : {}),
+      ...(planned?.crossFamilyMemberGuest !== undefined
+        ? { crossFamilyMemberGuest: planned.crossFamilyMemberGuest }
+        : {}),
+    };
+  });
+  const memberGuestEntries = consentPlan.entriesByMemberId;
 
   const created = await createConfirmedBooking({
     effectiveMemberId: request.requestedByMemberId,
     // An officer executing a member's reviewed proposal IS an on-behalf create.
     isOnBehalf: true,
+    // ...but only the REVIEWED rules are theirs to decide, so the
+    // adult-supervision review keeps member semantics (#2526 review).
+    reviewedMemberProposal: true,
+    ...(context.memberMessage?.trim()
+      ? { memberReviewJustification: context.memberMessage.trim() }
+      : {}),
     sessionUserId: context.actorMemberId,
     checkIn,
     checkOut,
@@ -620,7 +840,86 @@ async function executeApprovedNewBooking(args: {
     },
   });
 
-  return { deferredPostCommit: created.deferredPostCommit ?? (async () => {}) };
+  const canonicalDeferred = created.deferredPostCommit;
+  const createdBooking = created.booking;
+  return {
+    deferredPostCommit: async () => {
+      if (canonicalDeferred) await canonicalDeferred();
+      // The consent requests and family-add notices the member's own create route
+      // dispatches after ITS commit (#2526 review). Without them a beyond-family
+      // member guest was linked with a PENDING consent row nobody was ever told
+      // about — a bed held for someone who was never asked, which only the
+      // nightly sweep clears.
+      await dispatchNewBookingMemberGuestNotifications({
+        booking: createdBooking,
+        bookerMemberId: request.requestedByMemberId,
+        actorMemberId: context.actorMemberId,
+        memberGuestEntries,
+      });
+    },
+  };
+}
+
+/**
+ * Dispatch the member-guest consent requests and family-add notices for a
+ * booking an approval just created. Mirrors the member create route's own
+ * post-commit pair, including its "log, never surface" discipline: the booking is
+ * already committed, so a notification problem must never be reported as an
+ * approval failure.
+ */
+async function dispatchNewBookingMemberGuestNotifications(args: {
+  booking: { id: string; guests: Array<{ id: string; memberId: string | null }> };
+  bookerMemberId: string;
+  actorMemberId: string;
+  memberGuestEntries: Map<string, MemberGuestConsentWritePlanEntry>;
+}): Promise<void> {
+  const { booking, bookerMemberId, actorMemberId, memberGuestEntries } = args;
+
+  if (memberGuestEntries.size > 0) {
+    const rows = matchMemberGuestNotificationRows({
+      createdGuests: booking.guests,
+      entriesByMemberId: memberGuestEntries,
+    });
+    if (rows.length > 0) {
+      try {
+        const { sendMemberGuestAddNotifications } = await import(
+          "@/lib/member-guest-consent-notifications"
+        );
+        await sendMemberGuestAddNotifications({
+          bookingId: booking.id,
+          rows,
+          // The member asked; the officer only let the reviewed rule through.
+          actor: { kind: "MEMBER" },
+        });
+      } catch (err) {
+        logger.error(
+          { err, bookingId: booking.id },
+          "Failed to dispatch member-guest add notifications for an approved policy exception",
+        );
+      }
+    }
+  }
+
+  const addedMemberIds = booking.guests
+    .map((guest) => guest.memberId)
+    .filter((memberId): memberId is string => Boolean(memberId));
+  if (addedMemberIds.length === 0) return;
+  try {
+    const { sendFamilyMemberBookingAddNotifications } = await import(
+      "@/lib/family-booking-add-notifications"
+    );
+    await sendFamilyMemberBookingAddNotifications({
+      bookingId: booking.id,
+      bookerMemberId,
+      actorMemberId,
+      addedMemberIds,
+    });
+  } catch (err) {
+    logger.error(
+      { err, bookingId: booking.id },
+      "Failed to dispatch family booking-add notifications for an approved policy exception",
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -658,5 +957,9 @@ export async function resolveNewBookingExecutionParams(
     shouldBePending: decision.shouldBePending,
     holdDays: holdPolicy.holdDays,
     paymentMethod: DEFAULT_BOOKING_PAYMENT_METHOD,
+    // Read here for the same reason the hold policy is: the module flag + policy
+    // singleton must not be queried on a second pool connection beneath the
+    // approval's locks (`member-guest-add-policy.ts`).
+    memberGuestPolicy: await loadMemberGuestAddPolicy(),
   };
 }

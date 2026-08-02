@@ -25,6 +25,12 @@ import {
   BookingGuestStayRangeValidationError,
   normalizeGuestStayRange,
 } from "@/lib/booking-guest-stay-range-input";
+import {
+  resolveModificationStayRanges,
+  type LiveGuestStayRow,
+  type ResolvedModificationStayRanges,
+  type StayRangeDeltaInput,
+} from "@/lib/booking-modification-stay-ranges";
 import { hasCapturedPayment } from "@/lib/booking-payment-state";
 import {
   formatDateOnly,
@@ -98,6 +104,40 @@ export type BatchModifyInput = {
   // of a shared double with their CONFIRMED partner, routing capacity through
   // the #1745 reserved-slot admission check. Rejected for non-admin actors.
   partnerSharedGuests?: Array<{ memberId: string; partnerMemberId: string }>;
+  /**
+   * This ADMIN call is EXECUTING A MEMBER'S ALREADY-REVIEWED PROPOSAL, so judge
+   * every rule that was NOT reviewed as if the booking's own member were acting
+   * (#2526).
+   *
+   * WHY THIS EXISTS. `role === "ADMIN"` is overloaded: the policy-exception
+   * approval borrows it for one narrow purpose — the canonical service enforces
+   * minimum stay only for non-admin actors, so ADMIN is the mechanism that
+   * applies the reviewed override. But the same condition ALSO grants
+   * `skipAuthorization` (which drops the beyond-family member-guest refusal),
+   * makes a member-guest add consent-free and always-notify, skips the D-8
+   * profile/bookability gate, skips the cross-family marker, and skips the
+   * member-guest unpaid-subscription check. None of those rules was reviewed, and
+   * the officer queue promises in so many words that "membership and privacy
+   * rules all still apply".
+   *
+   * The same overload auto-APPROVES the adult-supervision (child-safety) review
+   * in the officer's name (`resolveModifyReviewUpdate`), un-parking a booking of
+   * minors with no adult on a card that only ever said "minimum stay" — a
+   * different rule from either policy-exception reason code, so the drift gate
+   * cannot see it either.
+   *
+   * So the approval sets this flag: it keeps the reviewed minimum-stay override
+   * and gives back every rule the requesting member would have faced. A
+   * beyond-family member guest is refused (module off) or opens a PENDING consent
+   * request (module on) exactly as on the member's own path, and a newly-tripped
+   * adult-supervision hazard opens PENDING for a human rather than being stamped
+   * approved by the officer who was never shown it.
+   *
+   * NOT a general admin restraint: an ordinary admin edit leaves it unset and
+   * behaves exactly as before. It is also not an escape hatch in the other
+   * direction — it can only ever make the guest rules STRICTER.
+   */
+  reviewedMemberProposal?: boolean;
 };
 
 export type BookingModificationSettlementMethod = "card" | "credit";
@@ -146,18 +186,32 @@ export function normalizeRangeOrApiError(
   }
 }
 
+/**
+ * The shared canonical stay-range resolution (#2526), with range-validation
+ * errors mapped to the modify path's own `ApiError` 400. Both `resolveTargetDates`
+ * and `prepareGuestPlan` go through this, so the envelope they compute and the
+ * ranges they write can never disagree.
+ */
+export function resolveStayRangesOrApiError<Guest extends LiveGuestStayRow>(args: {
+  booking: { checkIn: Date; checkOut: Date };
+  guests: ReadonlyArray<Guest>;
+  input: StayRangeDeltaInput;
+  requested?: { checkIn: Date; checkOut: Date };
+}): ResolvedModificationStayRanges<Guest> {
+  try {
+    return resolveModificationStayRanges(args);
+  } catch (error) {
+    if (error instanceof BookingGuestStayRangeValidationError) {
+      throw new ApiError(error.message, 400);
+    }
+    throw error;
+  }
+}
+
 export function getGuestStayRangeInputMap(input: BatchModifyInput) {
   return new Map(
     (input.guestStayRanges ?? []).map((range) => [range.guestId, range])
   );
-}
-
-function minDate(values: Date[]): Date {
-  return values.reduce((earliest, value) => (value < earliest ? value : earliest));
-}
-
-function maxDate(values: Date[]): Date {
-  return values.reduce((latest, value) => (value > latest ? value : latest));
 }
 
 export type LoadedPromoRedemption = PromoRedemption & {
@@ -292,52 +346,20 @@ export function resolveTargetDates({
     throw new ApiError("Invalid booking dates", 400);
   }
 
-  let finalRequestedCheckIn = requestedCheckIn;
-  let finalRequestedCheckOut = requestedCheckOut;
-  if (hasGuestStayRangeInputs(input)) {
-    const removeSet = new Set(input.removeGuestIds ?? []);
-    const existingRangeInputs = getGuestStayRangeInputMap(input);
-    const proposedRanges: Array<{ stayStart: Date; stayEnd: Date }> = [];
-    const envelope = {
-      checkIn: requestedCheckIn < booking.checkIn ? requestedCheckIn : booking.checkIn,
-      checkOut: requestedCheckOut > booking.checkOut ? requestedCheckOut : booking.checkOut,
-    };
-
-    for (const guest of booking.guests) {
-      if (removeSet.has(guest.id)) {
-        continue;
-      }
-      const rangeInput = existingRangeInputs.get(guest.id);
-      if (rangeInput && hasStayRangeInput(rangeInput)) {
-        proposedRanges.push(
-          normalizeRangeOrApiError(rangeInput, envelope, proposedRanges.length)
-        );
-      } else {
-        proposedRanges.push({
-          stayStart: normalizeDateOnlyForTimeZone(guest.stayStart ?? booking.checkIn),
-          stayEnd: normalizeDateOnlyForTimeZone(guest.stayEnd ?? booking.checkOut),
-        });
-      }
-    }
-
-    for (const addGuest of input.addGuests ?? []) {
-      if (hasStayRangeInput(addGuest)) {
-        proposedRanges.push(
-          normalizeRangeOrApiError(addGuest, envelope, proposedRanges.length)
-        );
-      } else {
-        proposedRanges.push({
-          stayStart: normalizeDateOnlyForTimeZone(requestedCheckIn),
-          stayEnd: normalizeDateOnlyForTimeZone(requestedCheckOut),
-        });
-      }
-    }
-
-    if (proposedRanges.length > 0) {
-      finalRequestedCheckIn = minDate(proposedRanges.map((range) => range.stayStart));
-      finalRequestedCheckOut = maxDate(proposedRanges.map((range) => range.stayEnd));
-    }
-  }
+  // The effective envelope after any guest-range-driven expansion (#713), and
+  // the per-guest ranges that produced it. Resolved by the SHARED canonical
+  // helper (#2526) so every surface that has to predict what this planner will
+  // do — most importantly the policy-exception workflow, which freezes a
+  // proposed party for an officer to review and then executes the delta —
+  // computes the same answer rather than a lookalike.
+  const resolvedRanges = resolveStayRangesOrApiError({
+    booking: { checkIn: booking.checkIn, checkOut: booking.checkOut },
+    guests: booking.guests,
+    input,
+    requested: { checkIn: requestedCheckIn, checkOut: requestedCheckOut },
+  });
+  const finalRequestedCheckIn = resolvedRanges.checkIn;
+  const finalRequestedCheckOut = resolvedRanges.checkOut;
 
   const isInProgressEdit = editPolicy.mode === "in-progress";
   const editableFrom = editPolicy.editableFrom;

@@ -1,3 +1,4 @@
+import logger from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
 import { acquireLodgeCapacityLock } from "@/lib/capacity";
 import { releasePolicyExceptionReservation } from "@/lib/booking-exception-reservations";
@@ -125,6 +126,19 @@ export interface StoredPolicyExceptionRequestRow {
 export interface PolicyExceptionRequestStore {
   /** Which table this store reads. */
   readonly source: "MODIFICATION" | "NEW_BOOKING";
+  /**
+   * Whether a HELD request in this store actually reserves beds while pending.
+   *
+   * The whole reason the HOLD capacity recheck happens AFTER the claim is that a
+   * holding request's own reservation would otherwise count against itself. A
+   * store that reserves nothing has no such problem, so it is rechecked BEFORE
+   * the claim like a NO_HOLD request — which is what lets a conflict be RECORDED
+   * (conflictCount / lastConflictAt / lastConflictReason) and committed, instead
+   * of being thrown away with the rolled-back transaction (#2526 review). The
+   * officer card and the member's own list read exactly those fields to explain
+   * why a request is still pending.
+   */
+  readonly holdsReservation: boolean;
   /** Immutable pre-read used only to resolve the lodge for the lock. */
   preRead(
     tx: PrismaTransactionClient,
@@ -176,6 +190,7 @@ export interface PolicyExceptionRequestStore {
  */
 export const modificationExceptionRequestStore: PolicyExceptionRequestStore = {
   source: "MODIFICATION",
+  holdsReservation: true,
 
   async preRead(tx, requestId) {
     const row = await tx.bookingChangeRequest.findUnique({
@@ -303,6 +318,9 @@ export const modificationExceptionRequestStore: PolicyExceptionRequestStore = {
  */
 export const newBookingExceptionRequestStore: PolicyExceptionRequestStore = {
   source: "NEW_BOOKING",
+  // Nothing is reserved, so nothing can count against itself: this store's
+  // capacity recheck runs BEFORE the claim and records its conflict.
+  holdsReservation: false,
 
   async preRead(tx, requestId) {
     const row = await tx.newBookingPolicyExceptionRequest.findUnique({
@@ -407,6 +425,21 @@ export interface ConfirmedOverride {
   clearedReviewed: PolicyExceptionDriftResult["clearedReviewed"];
 }
 
+/**
+ * What a live-integrity check answers. `true` / `false` keep the original boolean
+ * contract; the object form names the failure so the caller can report it
+ * truthfully.
+ *
+ *  - `drift` — the live booking (or the replayed delta) no longer reproduces the
+ *    reviewed proposal. Resubmission is the remedy AND the reason is true.
+ *  - `unreplayable` — the request carries no replayable delta at all (a row
+ *    written before the format existed, or one hand-edited into nonsense).
+ *    Resubmission is still the remedy, but nothing about the booking moved.
+ */
+export type PolicyExceptionIntegrityResult =
+  | boolean
+  | { intact: boolean; reason?: "drift" | "unreplayable" };
+
 export interface PolicyExceptionApprovalHooks {
   /** Re-read the actor's CURRENT roles/permissions from the DB (never the
    * session snapshot) and return whether they may approve. Runs inside the
@@ -439,17 +472,31 @@ export interface PolicyExceptionApprovalHooks {
   /** Optional live-proposal integrity check beyond the tamper hash — for a
    * MODIFICATION, prove the live booking's base footprint still matches the
    * frozen `base` party (#2524 owns the booking->party mapping). Absent => the
-   * tamper hash is the only integrity gate. */
+   * tamper hash is the only integrity gate.
+   *
+   * A bare `false` is still accepted (it means "drift"); returning the richer
+   * result lets the hook say WHICH kind of failure it was, so a request that
+   * simply predates the replayable-delta format is not reported to the officer
+   * and the member as a live booking that changed (#2526 review). */
   verifyLiveProposalIntegrity?(
     snapshot: ExceptionProposalSnapshot,
     tx: PrismaTransactionClient,
-  ): Promise<boolean>;
+  ): Promise<PolicyExceptionIntegrityResult>;
   /** Post-commit member notification of the approval outcome. Optional. */
   notifyApproved?(request: LoadedPolicyExceptionRequest): Promise<void>;
 }
 
 export type ApprovePolicyExceptionResult =
-  | { outcome: "executed"; requestId: string }
+  | {
+      outcome: "executed";
+      requestId: string;
+      /**
+       * The transaction committed, but the post-commit provider/notification
+       * work threw. The approval IS done; only the follow-ups failed (#2526
+       * review). Never a reason to report the request as still pending.
+       */
+      followUpFailed?: boolean;
+    }
   | { outcome: "notFound" }
   | { outcome: "notAuthorized" }
   | { outcome: "claimLost" }
@@ -629,9 +676,19 @@ export async function approveAndExecutePolicyExceptionRequest(params: {
         return { outcome: "proposalDrift", message: PROPOSAL_TAMPERED_MESSAGE };
       }
       if (hooks.verifyLiveProposalIntegrity) {
-        const intact = await hooks.verifyLiveProposalIntegrity(snapshot, tx);
+        const integrity = await hooks.verifyLiveProposalIntegrity(snapshot, tx);
+        const intact =
+          typeof integrity === "boolean" ? integrity : integrity.intact;
         if (!intact) {
-          return { outcome: "proposalDrift", message: PROPOSAL_DRIFT_MESSAGE };
+          const reason =
+            typeof integrity === "boolean" ? "drift" : integrity.reason ?? "drift";
+          return {
+            outcome: "proposalDrift",
+            message:
+              reason === "unreplayable"
+                ? PROPOSAL_UNREPLAYABLE_MESSAGE
+                : PROPOSAL_DRIFT_MESSAGE,
+          };
         }
       } else if (snapshot.kind === "MODIFICATION") {
         // FAIL CLOSED (#2525): for a MODIFICATION the live booking may have
@@ -661,11 +718,17 @@ export async function approveAndExecutePolicyExceptionRequest(params: {
         };
       }
 
-      // (6) NO_HOLD capacity recheck. A conflict keeps it PENDING (does not fail).
-      // A HOLD request holds its own beds, so it CANNOT be rechecked here (its own
-      // reservation would count against it); it is rechecked at (8b) below, after
-      // the release frees those beds.
-      if (row.aggregateCapacityMode === "NO_HOLD") {
+      // (6) Pre-claim capacity recheck. A conflict keeps it PENDING (does not
+      // fail) and RECORDS the reason, which is only possible before the claim —
+      // the post-claim path at (8b) signals by rolling the transaction back, and
+      // a rollback discards any conflict row written inside it.
+      //
+      // Reached whenever this request holds no beds of its own: a NO_HOLD
+      // aggregate, or ANY request in a store that reserves nothing (a new-booking
+      // request, whose reservation ledger does not exist — #2526 review). Only a
+      // request that genuinely holds beds has to wait for (8b), because only its
+      // own reservation could count against it.
+      if (row.aggregateCapacityMode === "NO_HOLD" || !store.holdsReservation) {
         const capacity = await hooks.recheckCapacity(snapshot, tx);
         if (!capacity.ok) {
           const message = capacity.message ?? CAPACITY_CONFLICT_MESSAGE;
@@ -700,7 +763,7 @@ export async function approveAndExecutePolicyExceptionRequest(params: {
       // turns into a graceful `keptPendingCapacity`, leaving the request REQUESTED
       // and pending exactly like the NO_HOLD conflict. The engine asserts capacity
       // itself rather than trusting the executor seam to be a hard refusal.
-      if (row.aggregateCapacityMode !== "NO_HOLD") {
+      if (row.aggregateCapacityMode !== "NO_HOLD" && store.holdsReservation) {
         const capacity = await hooks.recheckCapacity(snapshot, tx);
         if (!capacity.ok) {
           throw new KeptPendingCapacitySignal(
@@ -731,18 +794,63 @@ export async function approveAndExecutePolicyExceptionRequest(params: {
     // the lodge no longer fits the proposal. Surface it as the graceful
     // pending outcome; the request is untouched (still REQUESTED at its version).
     if (error instanceof KeptPendingCapacitySignal) {
+      // The rollback undid the claim and the release — and it would also have
+      // undone a conflict row written inside that transaction, which is why the
+      // conflict is recorded HERE, in its own committed transaction (#2526
+      // review). Guarded on the same `expectedVersion`, so it is a no-op if the
+      // row has since moved; a failure to record must never turn an honest
+      // kept-pending answer into an error, so it is logged and swallowed.
+      try {
+        await db.$transaction((tx) =>
+          store.recordConflict(tx, {
+            requestId,
+            expectedVersion,
+            message: error.capacityMessage,
+          }),
+        );
+      } catch (recordError) {
+        logger.error(
+          { err: recordError, requestId },
+          "Failed to record a kept-pending capacity conflict after rollback",
+        );
+      }
       return { outcome: "keptPendingCapacity", message: error.capacityMessage };
     }
     throw error;
   }
 
   // (10) Post-commit provider work + member notification, only on execution.
+  //
+  // THE TRANSACTION HAS ALREADY COMMITTED. The request is APPROVED and the
+  // booking exists, so a failure here can never mean "the approval did not
+  // happen" — and reporting it as one is exactly the false keep-pending this
+  // workflow exists to make impossible (#2526 review). The canonical services'
+  // post-commit thunks await unguarded provider/audit calls, so a transient
+  // failure is a real possibility. Contain it: the outcome stays `executed` and
+  // carries `followUpFailed`, which the route reports as "approved, but some
+  // follow-up work failed".
   if (result.outcome === "executed") {
+    const followUpErrors: unknown[] = [];
     if (canonicalDeferred) {
-      await (canonicalDeferred as () => Promise<void>)();
+      try {
+        await (canonicalDeferred as () => Promise<void>)();
+      } catch (error) {
+        followUpErrors.push(error);
+      }
     }
     if (hooks.notifyApproved && approvedRequest) {
-      await hooks.notifyApproved(approvedRequest);
+      try {
+        await hooks.notifyApproved(approvedRequest);
+      } catch (error) {
+        followUpErrors.push(error);
+      }
+    }
+    if (followUpErrors.length > 0) {
+      logger.error(
+        { errs: followUpErrors, requestId },
+        "Booking-policy exception approval committed, but post-commit follow-up work failed",
+      );
+      return { ...result, followUpFailed: true };
     }
   }
   return result;
@@ -831,6 +939,14 @@ export const PROPOSAL_TAMPERED_MESSAGE =
   "This request's stored proposal no longer matches its signature. Please resubmit the request.";
 export const PROPOSAL_DRIFT_MESSAGE =
   "The live booking has changed since this request was made. Please resubmit the request.";
+/**
+ * The request carries no replayable proposal at all — a row written before the
+ * replayable-delta format existed, or one edited into nonsense. The remedy is the
+ * same resubmission, but nothing about the booking moved, so saying so would send
+ * an officer looking for an edit that never happened (#2526 review).
+ */
+export const PROPOSAL_UNREPLAYABLE_MESSAGE =
+  "This request was made before the current approval format and cannot be applied. Ask the member to resubmit it; nothing about the booking has changed.";
 export const POLICY_DRIFT_MESSAGE =
   "The booking policies have changed since this request was reviewed. Please resubmit the request so an admin can review the current situation.";
 export const CAPACITY_CONFLICT_MESSAGE =

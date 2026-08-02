@@ -541,6 +541,7 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
     internetBankingSettings,
     memberReviewJustification,
     adultMemberHostingReason,
+    reviewedMemberProposal,
     parentBookingId,
     organiserSettled,
     lodgeId,
@@ -605,6 +606,9 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
     isOnBehalf,
     sessionUserId,
     memberReviewJustification,
+    // #2526: a policy-exception approval reviewed minimum stay / hosting, never
+    // adult supervision, so the supervision review keeps member semantics.
+    reviewedMemberProposal,
   });
 
   // Split-booking decision (#738). A mixed member/non-member party that is not

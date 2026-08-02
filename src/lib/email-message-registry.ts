@@ -185,6 +185,10 @@ export const EXTRA_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, strin
   "admin-refund-request": ["requestedAmount"],
   "admin-booking-change-request": ["reason"],
   "booking-request-declined": ["reason"],
+  // #2526: the raw values behind the two pre-composed lines, so an override may
+  // reference either form. `paymentNote` renders nothing for a booking that owes
+  // nothing; `adminNotesLine` renders nothing when the officer left no note.
+  "booking-policy-exception-approved": ["amountDue", "adminNotes"],
   "booking-review-approved": ["adminNotes"],
   "booking-review-rejected": ["adminNotes"],
   "split-guest-portion-cancelled": ["bookingReference"],
@@ -453,6 +457,10 @@ const REQUIRED_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, string[]>
   // #2012: member-facing terminal notice. No bearer token (so NOT
   // sensitive-log); firstName + the stay dates are the load-bearing content.
   "booking-request-payment-expired": ["firstName", "checkIn", "checkOut"],
+  // #2526: the stay this approval created is the load-bearing content — an
+  // override that drops the dates leaves the member with "approved" and nothing
+  // to act on. No bearer token, so NOT sensitive-log.
+  "booking-policy-exception-approved": ["firstName", "checkIn", "checkOut"],
   // #1992/#2007: memberName identifies the affected member and reviewUrl is the
   // admin action link (the payments board), mirroring the other admin alerts.
   "admin-duplicate-capture-refund": ["memberName", "reviewUrl"],
@@ -675,6 +683,12 @@ const TEMPLATE_TRIGGER_METADATA: Partial<
       "A booking change increased the total and the extra amount is still uncollected",
     frequency:
       "Twice per outstanding amount at most — a few days after the change, and once more shortly before check-in — plus any manual re-send an admin triggers from the booking page. The chase stops when the money arrives or the stay ends",
+  },
+  "booking-policy-exception-approved": {
+    triggerSummary:
+      "An admin approved a booking-policy exception request and the booking was created",
+    frequency:
+      "Once per approved NEW-booking exception request. A change to an existing booking is announced by the ordinary booking-modified email instead, so this never doubles up",
   },
   "booking-request-verification": {
     triggerSummary: "Public booking request submitted",

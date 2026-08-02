@@ -3,8 +3,10 @@ import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   requireAdmin: vi.fn(),
-  logAudit: vi.fn(),
-  getClientIp: vi.fn(() => "1.2.3.4"),
+  // Typed with a rest signature so the `vi.mock` factories below can forward
+  // their arguments through with a spread.
+  logAudit: vi.fn<(...args: unknown[]) => void>(),
+  getClientIp: vi.fn<(...args: unknown[]) => string>(() => "1.2.3.4"),
   approve: vi.fn(),
   resolveTerminal: vi.fn(),
   buildHooks: vi.fn(),
@@ -14,7 +16,9 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@/lib/session-guards", () => ({ requireAdmin: mocks.requireAdmin }));
-vi.mock("@/lib/audit", () => ({ logAudit: (...a: unknown[]) => mocks.logAudit(...a) }));
+vi.mock("@/lib/audit", () => ({
+  logAudit: (...a: unknown[]) => mocks.logAudit(...a),
+}));
 vi.mock("@/lib/rate-limit", () => ({
   getClientIp: (...a: unknown[]) => mocks.getClientIp(...a),
 }));
@@ -128,8 +132,11 @@ const HOSTING: AdultMemberHostingPolicyExceptionViolation = {
   capacityMode: "NO_HOLD",
   message: "An adult member must be present.",
   requirements: {
-    kind: "ADULT_MEMBER_HOSTING_REQUIRED",
-    uncovered: [{ night: "2026-07-01", guestRef: "g-1" }],
+    kind: "ADULT_MEMBER_HOSTING",
+    requiredAdultMemberParticipantsPerGuestNight: 1,
+    uncoveredNonMemberGuestNights: 1,
+    uncovered: [{ night: "2026-07-01", guestRef: "g-1", guestName: "Bob Smith" }],
+    qualifyingHostsByNight: [{ night: "2026-07-01", memberIds: [] }],
   },
 };
 

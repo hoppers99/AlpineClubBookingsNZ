@@ -21,6 +21,11 @@ import {
   PolicyExceptionExecutionCapacityError,
 } from "@/lib/booking-exception-approval";
 import { parseFrozenEvidence } from "@/lib/booking-exception-requests";
+import { BookingModificationSettlementMethodRequiredError } from "@/lib/booking-modify-settlement";
+import {
+  BookingGuestValidationError,
+  computeMemberGuestBoundary,
+} from "@/lib/booking-guests";
 
 /**
  * #2526 — the Booking Officer's DECISION endpoint for a booking-policy exception
@@ -110,6 +115,60 @@ async function loadRequestDetail(id: string) {
   return null;
 }
 
+/** One proposed guest, as the officer needs to see them before deciding. */
+interface ProposedPartyGuest {
+  firstName: string;
+  lastName: string;
+  ageTier: string;
+  isMember: boolean;
+  nights: string[];
+  /** True when this guest is a MEMBER being attached to the booking. */
+  isMemberGuest: boolean;
+  /**
+   * True when that member is OUTSIDE the requester's family group — the case the
+   * member's own booking path either refuses outright or turns into a consent
+   * request. Null when there is no member id to judge.
+   */
+  beyondFamily: boolean | null;
+}
+
+/**
+ * Describe the exact party an approval would create or leave behind, including
+ * whether each member guest sits outside the requester's family.
+ *
+ * Read-only and best-effort: a snapshot that will not parse yields an empty list
+ * rather than failing the read, because the PATCH path refuses such a request
+ * with its own message and the officer still needs to see the rest of the card.
+ */
+async function describeProposedParty(
+  snapshot: ReturnType<typeof parseProposalSnapshot>,
+  requestedByMemberId: string,
+): Promise<ProposedPartyGuest[]> {
+  if (!snapshot) return [];
+  const guests = snapshot.proposed.guests;
+  const memberIds = [
+    ...new Set(
+      guests
+        .map((guest) => guest.memberId)
+        .filter((memberId): memberId is string => Boolean(memberId)),
+    ),
+  ];
+  const boundary =
+    memberIds.length > 0
+      ? await computeMemberGuestBoundary(prisma, requestedByMemberId, memberIds)
+      : null;
+  const beyondFamily = new Set(boundary?.beyondFamilyMemberIds ?? []);
+  return guests.map((guest) => ({
+    firstName: guest.firstName,
+    lastName: guest.lastName,
+    ageTier: guest.ageTier,
+    isMember: guest.isMember,
+    nights: [...guest.nights],
+    isMemberGuest: Boolean(guest.memberId),
+    beyondFamily: guest.memberId ? beyondFamily.has(guest.memberId) : null,
+  }));
+}
+
 export async function GET(
   _req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
@@ -131,6 +190,16 @@ export async function GET(
   const { source, row } = found;
   const snapshot = parseProposalSnapshot(row.proposalSnapshot);
   const evidence = parseFrozenEvidence(row.frozenEvidence);
+  // WHO the approval would put on the booking (#2526 review). Approving executes
+  // this party for real, so an officer who is only shown "Guests: 2" is being
+  // asked to take responsibility for a decision they had no way to make — an
+  // unrelated member attached to somebody else's stay, or a party of minors with
+  // no adult, are both invisible behind a count. `beyondFamily` is resolved from
+  // the LIVE family boundary, because that is what the execution will apply.
+  const proposedGuests = await describeProposedParty(
+    snapshot,
+    row.requestedByMemberId,
+  );
   return NextResponse.json({
     source,
     id: row.id,
@@ -152,6 +221,7 @@ export async function GET(
     lastConflictReason: row.lastConflictReason,
     supersededByRequestId: row.supersededByRequestId,
     proposal: snapshot,
+    proposedGuests,
     evidence,
     booking: source === "MODIFICATION" ? row.booking : null,
     lodge: source === "NEW_BOOKING" ? row.lodge : null,
@@ -297,6 +367,10 @@ export async function PATCH(
     ipAddress,
     adminNotes,
     settlementMethod,
+    // The member's own words, carried onto any adult-supervision review this
+    // approval opens — the officer never decides that rule (#2526 review), so the
+    // reason on the record has to be the member's.
+    memberMessage: found.row.memberMessage,
     // The hold decision reads booking periods on the module client, so it is
     // resolved here rather than inside the approval transaction.
     newBookingExecution:
@@ -341,9 +415,37 @@ export async function PATCH(
         { status: 409 },
       );
     }
+    if (error instanceof BookingModificationSettlementMethodRequiredError) {
+      // NOT a kept-pending answer: nothing is waiting on capacity or on anybody
+      // else — the officer simply has to say where the refund goes, and the queue
+      // can ask them (#2526 review). Reporting it as "still pending" made the
+      // archetypal shorten-the-stay exception permanently un-approvable, because
+      // the message named no action and the screen offered none.
+      return NextResponse.json(
+        {
+          id,
+          status: "REQUESTED",
+          needsSettlementMethod: true,
+          error:
+            "This change reduces the price, so choose whether the refund goes back to the card or to account credit, then approve again.",
+        },
+        { status: 400 },
+      );
+    }
+    if (error instanceof BookingGuestValidationError) {
+      // A guest-authorisation refusal from the new-booking executor's pipeline
+      // (#2526 review): a member id the requester may not book, an incomplete
+      // member profile, a beyond-family member with the module off. The
+      // transaction rolled back, so the request is untouched — and this is not a
+      // capacity wait, so it is not reported as kept pending.
+      return NextResponse.json(
+        { id, status: "REQUESTED", error: error.message, code: error.code },
+        { status: error.status },
+      );
+    }
     if (error instanceof ApiError) {
-      // A canonical-service refusal (capacity, settlement choice, an edit rule).
-      // The transaction rolled back with it, so the request is untouched.
+      // A canonical-service refusal (capacity, an edit rule). The transaction
+      // rolled back with it, so the request is untouched.
       return NextResponse.json(
         { id, status: "REQUESTED", keptPending: true, error: error.message },
         { status: error.status },
@@ -388,6 +490,7 @@ export async function PATCH(
           reasonCodes: reviewedReasonCodes,
           createdBookingId: outcome.createdBookingId,
           hostingDecisionRecorded: outcome.hostingDecisionRecorded,
+          followUpFailed: result.followUpFailed === true,
           proposalHash: found.row.proposalHash,
         },
         ipAddress,
@@ -396,6 +499,13 @@ export async function PATCH(
         id,
         status: "APPROVED",
         createdBookingId: outcome.createdBookingId,
+        // The approval COMMITTED; only the post-commit follow-ups (member email,
+        // Xero queueing, audit events) threw. Saying "still pending" here was a
+        // false keep-pending after the fact — the officer would retry, get a 409
+        // blaming a third party, or create the booking again by hand (#2526
+        // review). Report the truth: it is done, and something afterwards needs
+        // a look.
+        ...(result.followUpFailed ? { followUpFailed: true } : {}),
       });
 
     case "notFound":

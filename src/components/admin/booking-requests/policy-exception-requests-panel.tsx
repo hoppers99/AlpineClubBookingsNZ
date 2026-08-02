@@ -62,6 +62,17 @@ interface PolicyRef {
   capacityMode: string;
 }
 
+/** One proposed guest as the detail endpoint describes them. */
+interface ProposedPartyGuest {
+  firstName: string;
+  lastName: string;
+  ageTier: string;
+  isMember: boolean;
+  nights: string[];
+  isMemberGuest: boolean;
+  beyondFamily: boolean | null;
+}
+
 interface QueueItem {
   source: "NEW_BOOKING" | "MODIFICATION";
   id: string;
@@ -106,6 +117,11 @@ function reasonLabel(code: string) {
   return REASON_LABELS[code] ?? code;
 }
 
+/** "ADULT" -> "Adult", so an age tier reads as words on the decision card. */
+function ageTierLabel(tier: string) {
+  return tier.charAt(0) + tier.slice(1).toLowerCase().replace(/_/g, " ");
+}
+
 function statusBadgeClass(status: string) {
   if (status === "REQUESTED") return "border-warning-6 bg-warning-3 text-warning-11";
   if (status === "APPROVED") return "border-success-6 bg-success-3 text-success-11";
@@ -135,6 +151,19 @@ export function PolicyExceptionRequestsPanel({
   const [notes, setNotes] = useState("");
   const [confirmed, setConfirmed] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
+  // How a refund arising from an approved CHANGE is settled. Not part of the
+  // reviewed proposal (the proposal decides WHAT changes; this decides how the
+  // money moves), so it lives on the decision form rather than the request.
+  const [settlementMethod, setSettlementMethod] = useState<"" | "card" | "credit">(
+    "",
+  );
+  // The full proposed party, fetched on demand from the detail endpoint. Approving
+  // executes this party for real, so the officer has to be able to see WHO is on
+  // it — a guest count cannot show an unrelated member being attached to somebody
+  // else's stay, or a party of minors with no adult.
+  const [partyById, setPartyById] = useState<
+    Record<string, ProposedPartyGuest[] | "loading" | "error">
+  >({});
   // Re-rendered on a timer so the plain-English age on an open queue stays true
   // instead of freezing at whatever it was when the page loaded.
   const [now, setNow] = useState(() => Date.now());
@@ -173,7 +202,26 @@ export function PolicyExceptionRequestsPanel({
     setOpenId(null);
     setNotes("");
     setConfirmed(false);
+    setSettlementMethod("");
   }
+
+  /** Load the proposed party for one request, once. */
+  const loadParty = useCallback(async (id: string) => {
+    setPartyById((current) =>
+      current[id] && current[id] !== "error" ? current : { ...current, [id]: "loading" },
+    );
+    try {
+      const response = await fetch(`/api/admin/booking-exception-requests/${id}`);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data?.error || "Failed to load the proposal");
+      setPartyById((current) => ({
+        ...current,
+        [id]: Array.isArray(data?.proposedGuests) ? data.proposedGuests : [],
+      }));
+    } catch {
+      setPartyById((current) => ({ ...current, [id]: "error" }));
+    }
+  }, []);
 
   async function decide(item: QueueItem, action: "approve" | "reject") {
     setBusyId(item.id);
@@ -190,11 +238,21 @@ export function PolicyExceptionRequestsPanel({
             expectedVersion: item.version,
             adminNotes: notes.trim() || undefined,
             ...(action === "approve" ? { confirm: true } : {}),
+            ...(action === "approve" && settlementMethod
+              ? { settlementMethod }
+              : {}),
           }),
         },
       );
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
+        // Any refusal may have moved the row's `version` — a kept-pending capacity
+        // conflict always does — so re-read the queue before the officer tries
+        // again. Without this their next click lost the guarded compare and was
+        // told the request "changed while you were reviewing it", which blamed a
+        // third party for their own previous attempt and left the guide's remedy
+        // ("approve it again once beds free up") unreachable without a reload.
+        await fetchItems();
         // A kept-pending answer is NOT a failure of the officer's intent: the
         // request is still open and can be approved once beds free up. Say that
         // in those words rather than showing a bare error.
@@ -206,10 +264,16 @@ export function PolicyExceptionRequestsPanel({
       }
       toast.success(
         action === "approve"
-          ? data.createdBookingId
-            ? "Approved — the booking has been created."
-            : "Approved — the change has been applied to the booking."
-          : "Request refused. The member keeps their existing booking.",
+          ? data.followUpFailed
+            ? data.createdBookingId
+              ? "Approved and the booking was created, but some follow-up work failed — check the booking and the member's email."
+              : "Approved and the change was applied, but some follow-up work failed — check the booking and the member's email."
+            : data.createdBookingId
+              ? "Approved — the booking has been created."
+              : "Approved — the change has been applied to the booking."
+          : item.source === "NEW_BOOKING"
+            ? "Request refused. Nothing was booked."
+            : "Request refused. The member keeps their existing booking.",
       );
       resetDecisionForm();
       await fetchItems();
@@ -247,7 +311,10 @@ export function PolicyExceptionRequestsPanel({
           or applies the change, in one step. It overrides only the rules listed
           on the card, and nothing else: lodge capacity, payment, membership and
           privacy rules all still apply, and a booking that is waiting on any
-          admin review still cannot check in until that review is cleared.
+          admin review still cannot check in until that review is cleared. Open
+          the guest list before you decide: a member guest from outside the
+          requester&apos;s family still has to be asked, and a party of minors with
+          no adult still goes to a child-safety review.
         </p>
 
         {error && (
@@ -320,7 +387,15 @@ export function PolicyExceptionRequestsPanel({
                           {item.status}
                         </Badge>
                         <Badge variant="outline">
-                          {item.aggregateCapacityMode === "HOLD"
+                          {/* A NEW-booking request reserves nothing whatever the
+                              policy's capacity mode says — the reservation ledger
+                              is keyed on an existing booking, and there is no
+                              booking yet. Showing "Holding beds" told the officer
+                              the request could not be beaten to the beds, which
+                              was the opposite of the truth and invited them to
+                              deprioritise it. */}
+                          {item.source === "MODIFICATION" &&
+                          item.aggregateCapacityMode === "HOLD"
                             ? "Holding beds"
                             : "No beds held"}
                         </Badge>
@@ -383,6 +458,63 @@ export function PolicyExceptionRequestsPanel({
                           Requested change: {item.summary}
                         </p>
                       ) : null}
+                    </div>
+
+                    <div className="rounded-md border border-border p-3 text-sm">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <p className="font-medium text-foreground">
+                          Who this would put on the booking
+                        </p>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => loadParty(item.id)}
+                          disabled={partyById[item.id] === "loading"}
+                        >
+                          {partyById[item.id] === "loading"
+                            ? "Loading..."
+                            : Array.isArray(partyById[item.id])
+                              ? "Reload"
+                              : "Show the guests"}
+                        </Button>
+                      </div>
+                      {partyById[item.id] === "error" ? (
+                        <p className="mt-2 text-destructive">
+                          The proposal could not be loaded. Try again before
+                          deciding.
+                        </p>
+                      ) : Array.isArray(partyById[item.id]) ? (
+                        (partyById[item.id] as ProposedPartyGuest[]).length ===
+                        0 ? (
+                          <p className="mt-2 text-muted-foreground">
+                            No guests could be read from the stored proposal. Do
+                            not approve it — ask the member to resubmit.
+                          </p>
+                        ) : (
+                          <ul className="mt-2 space-y-1 text-muted-foreground">
+                            {(partyById[item.id] as ProposedPartyGuest[]).map(
+                              (guest, index) => (
+                                <li key={`${guest.firstName}-${guest.lastName}-${index}`}>
+                                  {guest.firstName} {guest.lastName} —{" "}
+                                  {ageTierLabel(guest.ageTier)}
+                                  {guest.isMemberGuest ? ", member" : ""}
+                                  {guest.beyondFamily === true
+                                    ? " (outside the requester's family — they will be asked to consent, or the add will be refused)"
+                                    : ""}
+                                  {guest.nights.length > 0
+                                    ? ` · ${guest.nights.length} night(s)`
+                                    : ""}
+                                </li>
+                              ),
+                            )}
+                          </ul>
+                        )
+                      ) : (
+                        <p className="mt-2 text-muted-foreground">
+                          Approving executes this exact party. Open it before you
+                          decide.
+                        </p>
+                      )}
                     </div>
 
                     {item.memberMessage ? (
@@ -475,9 +607,39 @@ export function PolicyExceptionRequestsPanel({
                                 }
                                 onChange={(event) => setNotes(event.target.value)}
                                 maxLength={2000}
-                                placeholder="What you decided and why. The member sees this on a refusal, and it is kept on the booking's record."
+                                placeholder="What you decided and why. The member sees this on ANY decision — approval or refusal — and it is kept on the booking's record."
                               />
                             </div>
+                            {item.source === "MODIFICATION" ? (
+                              <div className="space-y-1">
+                                <Label htmlFor={`exception-settlement-${item.id}`}>
+                                  If this change reduces the price, where does the
+                                  refund go?
+                                </Label>
+                                <select
+                                  id={`exception-settlement-${item.id}`}
+                                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                                  value={settlementMethod}
+                                  disabled={!canEdit}
+                                  onChange={(event) =>
+                                    setSettlementMethod(
+                                      event.target.value as "" | "card" | "credit",
+                                    )
+                                  }
+                                >
+                                  <option value="">
+                                    Not needed (the price does not drop)
+                                  </option>
+                                  <option value="card">Refund to the card</option>
+                                  <option value="credit">Account credit</option>
+                                </select>
+                                <p className="text-xs text-muted-foreground">
+                                  Only used when the change actually reduces a paid
+                                  booking&apos;s price. Leave it as-is and the
+                                  approval will tell you if a choice is needed.
+                                </p>
+                              </div>
+                            ) : null}
                             <label className="flex items-start gap-2 text-sm">
                               <input
                                 type="checkbox"

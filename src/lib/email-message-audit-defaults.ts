@@ -51,6 +51,10 @@ const EMAIL_AUDIT_DEFAULTS_BASE = {
     "defaultSubject": "Booking Cancelled - {{CLUB_LODGE_NAME}}",
     "defaultBody": "Booking Cancelled\n\nHi {{firstName}}, your lodge booking has been cancelled.\n\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\n\n{{refundMessage}}\n\n{{creditRestoredMessage}}\n\nYou can make a new booking at any time from your account.\n\nMake a New Booking: {{BASE_URL}}/book"
   },
+  "booking-policy-exception-approved": {
+    "defaultSubject": "Your Request Was Approved - {{CLUB_LODGE_NAME}}",
+    "defaultBody": "Your Request Was Approved\n\nHi {{firstName}}, an administrator has approved your request and your booking is now in place.\n\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nGuests: {{guestCount}}\n\n{{paymentNote}}\n\n{{adminNotesLine}}\n\nView Booking: {{BASE_URL}}/bookings"
+  },
   "booking-modified": {
     "defaultSubject": "Booking Modified - {{CLUB_LODGE_NAME}}",
     "defaultBody": "Booking Modified\n\nHi {{firstName}}, your booking has been updated.\n\n{{modificationTypeLabel}}\n\n{{changeSummary}}\n{{paymentNote}}\n\nYou can view your updated booking details from your account.\n\nView Booking: {{BASE_URL}}/bookings"
