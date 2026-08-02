@@ -196,6 +196,13 @@ export const MEMBER_MERGE_RELATION_SPECS: readonly MemberMergeRelationSpec[] = [
   spec("BedAllocation", "approvedBy", "approvedByMemberId", "move"),
   spec("BookingChangeRequest", "requestedBy", "requestedByMemberId", "move"),
   spec("BookingChangeRequest", "reviewedBy", "reviewedByMemberId", "move"),
+  // #2524: the new-booking policy-exception request twin of the two above. Same
+  // shapes — a required Restrict `requestedBy` (the member owns the request and
+  // may cancel/supersede it, so it moves to the surviving member) and a nullable
+  // SetNull `reviewedBy` actor back-ref — so both `move`, exactly like
+  // BookingChangeRequest.
+  spec("NewBookingPolicyExceptionRequest", "requestedBy", "requestedByMemberId", "move"),
+  spec("NewBookingPolicyExceptionRequest", "reviewedBy", "reviewedByMemberId", "move"),
   // #2263: who submitted an authenticated whole-lodge booking request. A
   // nullable SetNull attribution column with no member unique constraint —
   // the same shape as BookingChangeRequest.requestedByMemberId above — so it

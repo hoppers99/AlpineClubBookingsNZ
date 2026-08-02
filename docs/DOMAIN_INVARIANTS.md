@@ -3080,6 +3080,45 @@ pure workflow logic (`src/lib/booking-exception-requests.ts`):
   `CANCELLED` and `SUPERSEDED` release the provisional reservation; `APPROVED`
   turns it into the executed booking's own beds inside the same transaction.
 
+### Member request surfaces for policy exceptions (#2524)
+
+The request-CREATION half of the flow above (`booking-exception-request-service.ts`
+and its routes). Reservation, approval and execution are the #2525 seam
+(`booking-exception-execution.ts`); nothing here crosses it. These invariants
+hold in addition to every #2365 invariant above:
+
+- **A new booking has its own store.** A `BookingChangeRequest.bookingId` is a
+  required FK, so a NEW-booking proposal cannot live there. New-booking requests
+  are stored in the dedicated `NewBookingPolicyExceptionRequest` table; a
+  MODIFICATION request stays on the `POLICY_EXCEPTION` `BookingChangeRequest`.
+  Both freeze the identical immutable proposal + `proposalHash`, `frozenEvidence`
+  + `aggregateCapacityMode`, required `memberMessage`, attempt/conflict metadata
+  and integer `version` claim token.
+- **The violations are re-evaluated server-side, never trusted from the client.**
+  A request stores exactly the violations `evaluateProposalPartyViolations`
+  re-derives from current policy for the proposed party (minimum stay + adult
+  member hosting); a proposal that trips none is refused (nothing to review), and
+  a non-allowlisted code can never be stored (`freezePolicyExceptionEvidence`).
+- **At most one open request per subject, enforced by the database.** A
+  `REQUESTED` row holds a deterministic `openStateKey`
+  (`nbpe:{requestedByMemberId}:{proposalHash}` for a new booking,
+  `pe:{bookingId}:{requestedByMemberId}` for a modification) under a NULL-distinct
+  unique index; every terminal transition NULLs it. A concurrent duplicate races
+  into a unique violation (409), never a second open row, and a `LOCKED_PERIOD`
+  row (slot always NULL) is untouched.
+- **Creation never changes a live booking.** A new-booking request creates no
+  booking; a modification request writes only its request row and leaves the live
+  booking's dates, guests, pricing and payment exactly as they were. The live
+  change is #2525's approve-and-execute.
+- **Cancel/supersede are guarded and side-effect-safe.** Member cancel and
+  supersede are guarded single `updateMany` transitions on `status = REQUESTED`
+  (scoped to the owner, and to `POLICY_EXCEPTION` on the shared table); a lost
+  claim runs no side effect — no status change, no notification, no replacement
+  request.
+- **The officer is notified after commit, never in-band.** The on-request Booking
+  Officer alert is fire-and-forget after the request commits; an alert failure is
+  logged and never fails the member's request.
+
 ### Chasing an outstanding additional payment (#2350)
 
 Until #2350 nothing chased the member for an uncollected upward change and no

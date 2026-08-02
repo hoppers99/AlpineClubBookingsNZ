@@ -118,6 +118,43 @@ export function normalizeMemberMessage(raw: string | null | undefined): string {
 }
 
 // ---------------------------------------------------------------------------
+// One-open-request slot keys (#2524)
+// ---------------------------------------------------------------------------
+
+/**
+ * The DB-enforced one-open-request slot value a HELD request writes into its
+ * `openStateKey` column, and every terminal transition NULLs. A NULL-distinct
+ * unique index on that column then caps the subject at ONE open request
+ * race-safely — a losing concurrent create races into a unique violation, never
+ * a second open row. The value is deterministic so the same subject always maps
+ * to the same slot, and namespaced so the two request tables can never collide
+ * even though the modification slot lives on the shared BookingChangeRequest
+ * table alongside locked-period rows (which never set it).
+ *
+ * New-booking slot: one open request per (member, identical proposal). Two
+ * genuinely different proposals are two subjects; the SAME proposal resubmitted
+ * while one is open is the collision the slot refuses.
+ */
+export function newBookingExceptionOpenStateKey(
+  requestedByMemberId: string,
+  proposalHash: string,
+): string {
+  return `nbpe:${requestedByMemberId}:${proposalHash}`;
+}
+
+/**
+ * Modification slot: one open POLICY_EXCEPTION request per (booking, member).
+ * Distinct namespace from both the new-booking slot above and the locked-period
+ * rows on the same table, which leave `openStateKey` NULL.
+ */
+export function modificationExceptionOpenStateKey(
+  bookingId: string,
+  requestedByMemberId: string,
+): string {
+  return `pe:${bookingId}:${requestedByMemberId}`;
+}
+
+// ---------------------------------------------------------------------------
 // The immutable proposal snapshot
 // ---------------------------------------------------------------------------
 

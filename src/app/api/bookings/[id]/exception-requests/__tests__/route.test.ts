@@ -1,0 +1,190 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { NextRequest } from "next/server";
+
+const mocks = vi.hoisted(() => ({
+  auth: vi.fn(),
+  requireActiveSessionUser: vi.fn().mockResolvedValue(null),
+  checkRateLimit: vi.fn(),
+  getClientIp: vi.fn(),
+  logAudit: vi.fn(),
+  sendAlert: vi.fn(),
+  getDefaultLodgeId: vi.fn(),
+  authzRole: vi.fn(),
+  editPolicy: vi.fn(),
+  bookingFindUnique: vi.fn(),
+  createMod: vi.fn(),
+  cancelMod: vi.fn(),
+}));
+
+vi.mock("@/lib/auth", () => ({ auth: mocks.auth }));
+vi.mock("@/lib/session-guards", () => ({
+  requireActiveSessionUser: mocks.requireActiveSessionUser,
+}));
+vi.mock("@/lib/rate-limit", () => ({
+  checkRateLimit: (...a: unknown[]) => mocks.checkRateLimit(...a),
+  getClientIp: (...a: unknown[]) => mocks.getClientIp(...a),
+  rateLimiters: { bookingChangeRequest: { id: "bcr", limit: 5, windowSeconds: 86400 } },
+}));
+vi.mock("@/lib/audit", () => ({ logAudit: (...a: unknown[]) => mocks.logAudit(...a) }));
+vi.mock("@/lib/logger", () => ({
+  default: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
+}));
+vi.mock("@/lib/email", () => ({
+  sendAdminBookingChangeRequestAlert: (...a: unknown[]) => mocks.sendAlert(...a),
+}));
+vi.mock("@/lib/lodges", () => ({
+  getDefaultLodgeId: (...a: unknown[]) => mocks.getDefaultLodgeId(...a),
+}));
+vi.mock("@/lib/admin-permissions", () => ({
+  bookingManagementAuthorizationRole: (...a: unknown[]) => mocks.authzRole(...a),
+}));
+vi.mock("@/lib/booking-edit-policy", () => ({
+  getBookingEditPolicy: (...a: unknown[]) => mocks.editPolicy(...a),
+}));
+vi.mock("@/lib/prisma", () => ({
+  prisma: {
+    booking: { findUnique: (...a: unknown[]) => mocks.bookingFindUnique(...a) },
+  },
+}));
+vi.mock("@/lib/booking-exception-request-service", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/booking-exception-request-service")>();
+  return {
+    ...actual,
+    createModificationExceptionRequest: (...a: unknown[]) => mocks.createMod(...a),
+    cancelModificationExceptionRequest: (...a: unknown[]) => mocks.cancelMod(...a),
+  };
+});
+
+import { POST } from "@/app/api/bookings/[id]/exception-requests/route";
+import { PATCH } from "@/app/api/bookings/[id]/exception-requests/[requestId]/route";
+import { NoEligiblePolicyExceptionError } from "@/lib/booking-exception-request-service";
+
+const CREATED = {
+  id: "bcr-1",
+  status: "REQUESTED",
+  proposalHash: "b".repeat(64),
+  reasonCodes: ["MINIMUM_STAY"],
+  aggregateCapacityMode: "HOLD",
+};
+
+function makeBooking() {
+  return {
+    id: "booking-1",
+    memberId: "m1",
+    status: "CONFIRMED",
+    checkIn: new Date("2026-07-04T00:00:00Z"),
+    checkOut: new Date("2026-07-06T00:00:00Z"),
+    lodgeId: "lodge_1",
+    member: { firstName: "Ada", lastName: "Lovelace", email: "a@x.nz" },
+    guests: [
+      {
+        id: "g1",
+        firstName: "Ada",
+        lastName: "Lovelace",
+        ageTier: "ADULT",
+        isMember: true,
+        memberId: "m1",
+        stayStart: new Date("2026-07-04T00:00:00Z"),
+        stayEnd: new Date("2026-07-06T00:00:00Z"),
+      },
+    ],
+  };
+}
+
+function postReq(body: Record<string, unknown>) {
+  return new NextRequest("http://localhost/api/bookings/booking-1/exception-requests", {
+    method: "POST",
+    body: JSON.stringify(body),
+    headers: { "content-type": "application/json" },
+  });
+}
+
+const params = { params: Promise.resolve({ id: "booking-1" }) };
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  mocks.auth.mockResolvedValue({ user: { id: "m1", email: "a@x.nz", name: "Ada", role: "member" } });
+  mocks.requireActiveSessionUser.mockResolvedValue(null);
+  mocks.checkRateLimit.mockResolvedValue({ success: true, resetAt: Date.now() + 1000 });
+  mocks.getClientIp.mockReturnValue("0.0.0.0");
+  mocks.getDefaultLodgeId.mockResolvedValue("lodge_1");
+  mocks.authzRole.mockReturnValue("USER");
+  mocks.editPolicy.mockReturnValue({ canModify: true, today: new Date(), editableFrom: null, mode: "future" });
+  mocks.bookingFindUnique.mockResolvedValue(makeBooking());
+  mocks.createMod.mockResolvedValue(CREATED);
+  mocks.sendAlert.mockResolvedValue(undefined);
+});
+
+describe("POST /api/bookings/[id]/exception-requests", () => {
+  it("creates a modification request (201), audits, notifies", async () => {
+    const res = await POST(postReq({ checkOut: "2026-07-05", memberMessage: "please" }), params);
+    expect(res.status).toBe(201);
+    expect(mocks.createMod).toHaveBeenCalledTimes(1);
+    expect(mocks.logAudit).toHaveBeenCalledTimes(1);
+    expect(mocks.sendAlert).toHaveBeenCalledTimes(1);
+  });
+
+  it("notify-post-commit-never-throws: a rejected alert still returns 201", async () => {
+    mocks.sendAlert.mockRejectedValue(new Error("smtp down"));
+    const res = await POST(postReq({ checkOut: "2026-07-05", memberMessage: "please" }), params);
+    expect(res.status).toBe(201);
+    await Promise.resolve();
+  });
+
+  it("refuses an un-modifiable booking (400) before creating anything", async () => {
+    mocks.editPolicy.mockReturnValue({ canModify: false, reason: "Locked", today: new Date(), editableFrom: null, mode: "past" });
+    const res = await POST(postReq({ checkOut: "2026-07-05", memberMessage: "please" }), params);
+    expect(res.status).toBe(400);
+    expect(mocks.createMod).not.toHaveBeenCalled();
+  });
+
+  it("forbids a non-owner non-admin (403)", async () => {
+    mocks.auth.mockResolvedValue({ user: { id: "other", email: "o@x.nz", name: "Other", role: "member" } });
+    const res = await POST(postReq({ checkOut: "2026-07-05", memberMessage: "please" }), params);
+    expect(res.status).toBe(403);
+    expect(mocks.createMod).not.toHaveBeenCalled();
+  });
+
+  it("maps NoEligiblePolicyExceptionError to 400", async () => {
+    mocks.createMod.mockRejectedValue(new NoEligiblePolicyExceptionError());
+    const res = await POST(postReq({ checkOut: "2026-07-05", memberMessage: "please" }), params);
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects removing a guest not on the booking (400)", async () => {
+    const res = await POST(
+      postReq({ removeGuestIds: ["ghost"], memberMessage: "please" }),
+      params,
+    );
+    expect(res.status).toBe(400);
+    expect(mocks.createMod).not.toHaveBeenCalled();
+  });
+});
+
+describe("PATCH /api/bookings/[id]/exception-requests/[requestId] (cancel)", () => {
+  function patchReq() {
+    return new NextRequest(
+      "http://localhost/api/bookings/booking-1/exception-requests/bcr-1",
+      {
+        method: "PATCH",
+        body: JSON.stringify({ action: "cancel" }),
+        headers: { "content-type": "application/json" },
+      },
+    );
+  }
+  const cancelParams = { params: Promise.resolve({ id: "booking-1", requestId: "bcr-1" }) };
+
+  it("cancels an open request (200) and audits", async () => {
+    mocks.cancelMod.mockResolvedValue(true);
+    const res = await PATCH(patchReq(), cancelParams);
+    expect(res.status).toBe(200);
+    expect(mocks.logAudit).toHaveBeenCalledTimes(1);
+  });
+
+  it("lost-claim-no-side-effect: nothing to cancel is 409 and never audits", async () => {
+    mocks.cancelMod.mockResolvedValue(false);
+    const res = await PATCH(patchReq(), cancelParams);
+    expect(res.status).toBe(409);
+    expect(mocks.logAudit).not.toHaveBeenCalled();
+  });
+});

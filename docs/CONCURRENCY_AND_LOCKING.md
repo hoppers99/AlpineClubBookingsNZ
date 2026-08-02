@@ -990,6 +990,36 @@ The live reservation writer, its `capacity.ts` integration and the transaction-
 aware canonical execution are the #2365 execution lane; this note records the
 contract they are held to so a reviewer can check the wiring against it.
 
+### One-open-request slot for exception requests (#2524)
+
+The request-CREATION lane (`booking-exception-request-service.ts`) enforces "at
+most one open request per subject" **without any advisory lock** — it adds
+nothing to the `advisory-lock-guard.test.ts` inventories. The mechanism is a
+DB-enforced NULL-distinct unique column, `openStateKey`, present on both the new
+`NewBookingPolicyExceptionRequest` table and the shared `BookingChangeRequest`:
+
+- A `REQUESTED` row holds a deterministic slot value
+  (`nbpe:{requestedByMemberId}:{proposalHash}` for a new booking,
+  `pe:{bookingId}:{requestedByMemberId}` for a modification); every terminal
+  transition NULLs it. PostgreSQL treats NULLs as distinct, so the unique index
+  caps the subject at one open row and lets any number of terminal rows — and
+  every `LOCKED_PERIOD` row, which never sets the slot — coexist. A losing
+  concurrent create raises a `P2002` unique violation, which the service maps to
+  a 409; it can never produce a second open row. This is the durable backstop
+  behind the application-level open-request check, not a substitute for it.
+- **Creation is transactional; the terminal transitions are guarded.** A create
+  that supersedes an open request runs in one transaction: it first claims the
+  old row `REQUESTED -> SUPERSEDED` (NULLing its slot) with a guarded
+  `updateMany`, and only then inserts the replacement — so the new slot value is
+  free and a lost claim (`count = 0`) creates NOTHING. Member cancel is the same
+  guarded single transition on `status = REQUESTED`, scoped to the owner (and to
+  `POLICY_EXCEPTION` on the shared table), with the integer `version` token
+  bumped; a lost claim runs no side effect. No live booking is read or written on
+  any of these paths.
+- **The on-request notification is post-commit and fire-and-forget** — it is
+  never awaited inside the request path and its failure is logged, so an alert
+  outage cannot fail or roll back a member's request.
+
 ## Credit restoration: exactly-once is now STRUCTURAL (#1636)
 
 `restoreCreditFromBooking` (`member-credit.ts`) restores a cancelled booking's
