@@ -4,6 +4,7 @@ import {
   INDUCTION_STATUS_LABELS,
   formatInductionDate,
 } from "@/lib/induction-display";
+import { captureHostTimeZone } from "@/lib/__tests__/helpers/timezone";
 
 // #2256: formatInductionDate passed "en-NZ" but no `timeZone`, so an induction
 // sign-off rendered in the *runtime's* zone — the viewer's browser on
@@ -14,13 +15,13 @@ describe("formatInductionDate (#2256)", () => {
   // 2026-04-15T23:30:00Z is 2026-04-16 11:30 in Pacific/Auckland: the NZ
   // calendar date and the UTC one disagree at this instant.
   const INSTANT = "2026-04-15T23:30:00.000Z";
-  const RUNTIME_TZ = process.env.TZ;
+  const hostTimeZone = captureHostTimeZone();
 
   afterEach(() => {
-    // Node re-reads process.env.TZ, so an unrestored value would leak into
-    // every later test in this worker.
-    if (RUNTIME_TZ === undefined) delete process.env.TZ;
-    else process.env.TZ = RUNTIME_TZ;
+    // A bare `delete process.env.TZ` does not invalidate Node's cached zone
+    // (#2485); `hostTimeZone.restore()` assigns the real host zone back
+    // first, so it can't leak into a later test in this worker.
+    hostTimeZone.restore();
   });
 
   it("renders the NZ calendar date in the induction record's long format", () => {

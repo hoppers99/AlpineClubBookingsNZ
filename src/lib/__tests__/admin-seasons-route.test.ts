@@ -177,6 +177,91 @@ describe("admin season routes (multi-lodge phase 7)", () => {
     expect(mocks.revalidatePublicPageContent).toHaveBeenCalledOnce();
   });
 
+  it("persists the flat whole-lodge night rate on create when supplied (#2338)", async () => {
+    const res = await POST(
+      jsonRequest("http://localhost/api/admin/seasons", "POST", {
+        name: "Winter 2026",
+        type: "WINTER",
+        startDate: "2026-06-01",
+        endDate: "2026-09-30",
+        membershipTypeRates: validRates,
+        flatWholeLodgeNightCents: 60000,
+      }),
+    );
+
+    expect(res.status).toBe(201);
+    expect(mocks.seasonCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ flatWholeLodgeNightCents: 60000 }),
+      }),
+    );
+  });
+
+  it("defaults the flat whole-lodge night rate to null on create when omitted (#2338)", async () => {
+    const res = await POST(
+      jsonRequest("http://localhost/api/admin/seasons", "POST", {
+        name: "Winter 2026",
+        type: "WINTER",
+        startDate: "2026-06-01",
+        endDate: "2026-09-30",
+        membershipTypeRates: validRates,
+      }),
+    );
+
+    expect(res.status).toBe(201);
+    expect(mocks.seasonCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ flatWholeLodgeNightCents: null }),
+      }),
+    );
+  });
+
+  it("updates the flat whole-lodge night rate through PUT, and clears it with null (#2338)", async () => {
+    mocks.seasonFindUnique.mockResolvedValue({
+      id: "season-1",
+      lodgeId: "lodge-1",
+      startDate: new Date("2026-06-01T00:00:00.000Z"),
+      endDate: new Date("2026-09-30T00:00:00.000Z"),
+      membershipTypeRates: [],
+    });
+
+    const res = await PUT(
+      jsonRequest("http://localhost/api/admin/seasons/season-1", "PUT", {
+        flatWholeLodgeNightCents: null,
+      }),
+      { params: Promise.resolve({ id: "season-1" }) },
+    );
+
+    expect(res.status).toBe(200);
+    expect(mocks.seasonUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ flatWholeLodgeNightCents: null }),
+      }),
+    );
+  });
+
+  it("leaves the flat whole-lodge night rate untouched on a windows-only PUT (#2338)", async () => {
+    mocks.seasonFindUnique.mockResolvedValue({
+      id: "season-1",
+      lodgeId: "lodge-1",
+      startDate: new Date("2026-06-01T00:00:00.000Z"),
+      endDate: new Date("2026-09-30T00:00:00.000Z"),
+      membershipTypeRates: [],
+    });
+
+    const res = await PUT(
+      jsonRequest("http://localhost/api/admin/seasons/season-1", "PUT", {
+        // A windows-only edit (the /admin/seasons page) never sends the flat rate.
+        name: "Winter (renamed)",
+      }),
+      { params: Promise.resolve({ id: "season-1" }) },
+    );
+
+    expect(res.status).toBe(200);
+    const updateData = mocks.seasonUpdate.mock.calls[0][0].data as Record<string, unknown>;
+    expect(updateData).not.toHaveProperty("flatWholeLodgeNightCents");
+  });
+
   it("rejects a season at an unknown or inactive lodge", async () => {
     mocks.lodgeFindUnique.mockResolvedValue({ id: "lodge-2", active: false });
 

@@ -4,7 +4,12 @@ import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { useClubIdentity } from "@/components/club-identity-provider";
 import { APP_LOCALE, APP_TIME_ZONE } from "@/config/operational";
-import { formatLocalDateOnly, localCalendarDayToDateOnly } from "@/lib/date-only";
+import {
+  addDaysDateOnly,
+  formatCalendarDayOnly,
+  formatDateOnly,
+  parseDateOnly,
+} from "@/lib/date-only";
 import { formatNZMonthYear } from "@/lib/nzst-date";
 
 // Not one of the shared `nzst-date` helpers (#2264): a day button's accessible
@@ -20,9 +25,10 @@ const DAY_BUTTON_DATE_LABEL = new Intl.DateTimeFormat(APP_LOCALE, {
   year: "numeric",
 });
 
-// #2264: the cells below are abstract calendar days encoded at the BROWSER's
-// midnight, so they are re-encoded before a club-pinned formatter sees them —
-// see `localCalendarDayToDateOnly` for why.
+// #2474: the cells below are abstract calendar days (lodge nights), carried as
+// NZ date-only strings end-to-end — never a local-midnight `Date`. A club-pinned
+// formatter reads one via `parseDateOnly` (UTC midnight → club midday → the same
+// calendar day in every browser zone).
 
 interface SeasonInfo {
   name: string;
@@ -30,9 +36,11 @@ interface SeasonInfo {
 }
 
 interface BookingCalendarProps {
-  onDateSelect: (checkIn: Date, checkOut: Date) => void;
-  selectedCheckIn?: Date | null;
-  selectedCheckOut?: Date | null;
+  // A selected lodge night is a date-only `yyyy-MM-dd` string (#2474), not a
+  // local-midnight `Date`.
+  onDateSelect: (checkIn: string, checkOut: string) => void;
+  selectedCheckIn?: string | null;
+  selectedCheckOut?: string | null;
   // Lodge whose availability and seasons the calendar shows (multi-lodge
   // phase 8). Omitted/null = the club's default lodge.
   lodgeId?: string | null;
@@ -59,8 +67,8 @@ export function BookingCalendar({ onDateSelect, selectedCheckIn, selectedCheckOu
   const [availability, setAvailability] = useState<Record<string, number>>({});
   const [seasons, setSeasons] = useState<Record<string, SeasonInfo>>({});
   const [selecting, setSelecting] = useState<"checkIn" | "checkOut">("checkIn");
-  const [checkIn, setCheckIn] = useState<Date | null>(selectedCheckIn || null);
-  const [checkOut, setCheckOut] = useState<Date | null>(selectedCheckOut || null);
+  const [checkIn, setCheckIn] = useState<string | null>(selectedCheckIn ?? null);
+  const [checkOut, setCheckOut] = useState<string | null>(selectedCheckOut ?? null);
 
   useEffect(() => {
     let cancelled = false;
@@ -94,33 +102,40 @@ export function BookingCalendar({ onDateSelect, selectedCheckIn, selectedCheckOu
   // Adjust for Monday start (0=Mon, 6=Sun)
   const startOffset = firstDay === 0 ? 6 : firstDay - 1;
 
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
+  // "Today" as the browser's own calendar day, encoded as a date-only string so
+  // every selectability comparison is a lexicographic (== chronological) compare
+  // of `yyyy-MM-dd` values rather than instant arithmetic.
+  const nowLocal = new Date();
+  const todayStr = formatCalendarDayOnly(
+    nowLocal.getFullYear(),
+    nowLocal.getMonth(),
+    nowLocal.getDate(),
+  );
   // Earliest clickable day. Under the retroactive flag this drops 365 days back
-  // (local-date math, consistent with `today`); otherwise it is today.
-  const minSelectable = new Date(today);
-  if (allowPastDates) {
-    minSelectable.setDate(minSelectable.getDate() - RETROACTIVE_LOOKBACK_DAYS);
-  }
+  // (UTC date-only arithmetic, DST-immune); otherwise it is today.
+  const minSelectableStr = allowPastDates
+    ? formatDateOnly(
+        addDaysDateOnly(parseDateOnly(todayStr), -RETROACTIVE_LOOKBACK_DAYS),
+      )
+    : todayStr;
 
   function handleDayClick(day: number) {
-    const date = new Date(currentMonth.year, currentMonth.month, day);
-    date.setHours(0, 0, 0, 0);
+    const dateStr = formatCalendarDayOnly(currentMonth.year, currentMonth.month, day);
 
-    if (date < minSelectable) return;
+    if (dateStr < minSelectableStr) return;
 
     if (selecting === "checkIn") {
-      setCheckIn(date);
+      setCheckIn(dateStr);
       setCheckOut(null);
       setSelecting("checkOut");
     } else {
-      if (checkIn && date > checkIn) {
-        setCheckOut(date);
+      if (checkIn && dateStr > checkIn) {
+        setCheckOut(dateStr);
         setSelecting("checkIn");
-        onDateSelect(checkIn, date);
+        onDateSelect(checkIn, dateStr);
       } else {
         // If selected date is before checkIn, treat as new checkIn
-        setCheckIn(date);
+        setCheckIn(dateStr);
         setCheckOut(null);
         setSelecting("checkOut");
       }
@@ -128,9 +143,6 @@ export function BookingCalendar({ onDateSelect, selectedCheckIn, selectedCheckOu
   }
 
   function getDayClass(day: number, available: number, isPast: boolean, isRetroPast: boolean, dateStr: string) {
-    const date = new Date(currentMonth.year, currentMonth.month, day);
-    date.setHours(0, 0, 0, 0);
-
     const season = seasons[dateStr];
 
     let classes = "relative flex h-12 w-10 flex-col items-center justify-center rounded-md text-sm font-medium transition-colors ";
@@ -174,11 +186,11 @@ export function BookingCalendar({ onDateSelect, selectedCheckIn, selectedCheckOu
 
     // Selected range uses the brand-gold accent, deliberately distinct from the
     // availability heat so the two never read as the same signal.
-    if (checkIn && date.getTime() === checkIn.getTime()) {
+    if (checkIn && dateStr === checkIn) {
       classes += "!border-4 !border-double !border-brand-gold !bg-brand-gold !text-brand-charcoal ";
-    } else if (checkOut && date.getTime() === checkOut.getTime()) {
+    } else if (checkOut && dateStr === checkOut) {
       classes += "!border-4 !border-double !border-brand-gold !bg-brand-gold !text-brand-charcoal ";
-    } else if (checkIn && checkOut && date > checkIn && date < checkOut) {
+    } else if (checkIn && checkOut && dateStr > checkIn && dateStr < checkOut) {
       classes += "!border-2 !border-dashed !border-brand-gold !bg-muted !text-foreground ";
     }
 
@@ -234,25 +246,19 @@ export function BookingCalendar({ onDateSelect, selectedCheckIn, selectedCheckOu
         ))}
 
         {Array.from({ length: daysInMonth }, (_, i) => i + 1).map((day) => {
-          const date = new Date(currentMonth.year, currentMonth.month, day);
-          date.setHours(0, 0, 0, 0);
-          const dateStr = formatLocalDateOnly(date);
+          const dateStr = formatCalendarDayOnly(currentMonth.year, currentMonth.month, day);
           const occupied = availability[dateStr] ?? 0;
           const available = lodgeCapacity - occupied;
           const season = seasons[dateStr];
           // A day before the earliest selectable day stays disabled; a past day
           // still inside the retroactive window is clickable but muted (#1695).
-          const isPast = date < minSelectable;
-          const isRetroPast = allowPastDates && !isPast && date < today;
-          const dateLabel = DAY_BUTTON_DATE_LABEL.format(localCalendarDayToDateOnly(date));
-          const isCheckIn = Boolean(
-            checkIn && date.getTime() === checkIn.getTime(),
-          );
-          const isCheckOut = Boolean(
-            checkOut && date.getTime() === checkOut.getTime(),
-          );
+          const isPast = dateStr < minSelectableStr;
+          const isRetroPast = allowPastDates && !isPast && dateStr < todayStr;
+          const dateLabel = DAY_BUTTON_DATE_LABEL.format(parseDateOnly(dateStr));
+          const isCheckIn = Boolean(checkIn && dateStr === checkIn);
+          const isCheckOut = Boolean(checkOut && dateStr === checkOut);
           const inRange = Boolean(
-            checkIn && checkOut && date > checkIn && date < checkOut,
+            checkIn && checkOut && dateStr > checkIn && dateStr < checkOut,
           );
           // Convey the visual selection highlight to screen readers, which
           // otherwise only hear the availability label and can't tell which day
