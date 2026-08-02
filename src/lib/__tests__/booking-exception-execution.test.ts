@@ -382,7 +382,7 @@ describe("resolvePolicyExceptionRequestTerminal", () => {
   beforeEach(() => vi.clearAllMocks());
 
   it("REJECTED: guarded claim + atomic release, in global→lodge lock order", async () => {
-    const { db, order } = makeDb({ row: baseRow(), releaseCount: 2 });
+    const { db, order, updateMany } = makeDb({ row: baseRow(), releaseCount: 2 });
     const result = await resolvePolicyExceptionRequestTerminal({
       requestId: "req-1",
       expectedVersion: 1,
@@ -398,6 +398,9 @@ describe("resolvePolicyExceptionRequestTerminal", () => {
       "release",
       "commit",
     ]);
+    // #2524 one-open-slot: every terminal transition frees openStateKey so the
+    // member may open a fresh proposal after a rejection.
+    expect(updateMany.mock.calls[0][0].data.openStateKey).toBeNull();
   });
 
   it("LOST CLAIM: no release when the guarded updateMany matches nothing", async () => {

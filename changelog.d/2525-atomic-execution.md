@@ -1,11 +1,13 @@
-- **Held booking-policy exception requests now reserve capacity and are approved
-  in one atomic step (#2525).** While a member's exception request waits for a
-  Booking Officer, the beds it needs are now held: a new-booking request holds its
-  whole party, a modification holds only the extra beds beyond the unchanged live
-  booking, and those held beds count as occupied everywhere the club reads
-  availability — so the lodge cannot be oversold out from under a pending request.
-  Rejecting, withdrawing, superseding, or approving a request frees the hold in the
-  very same step that records the outcome.
+- **Held booking-policy change requests now reserve capacity and are approved
+  in one atomic step (#2525).** While a member's request to change an existing
+  booking waits for a Booking Officer, the extra beds it needs are now held — only
+  the beds beyond the unchanged live booking — and those held beds count as
+  occupied everywhere the club reads availability, so the lodge cannot be oversold
+  out from under a pending request. Withdrawing, superseding, rejecting, or
+  approving a request frees the hold in the very same step that records the
+  outcome. (New-booking exception requests are approved through the same atomic
+  engine; their up-front bed hold arrives with the Booking Officer approval
+  screen.)
 
   Approval is now genuinely all-or-nothing. When a Booking Officer approves a
   request the club re-checks their permission from live data, re-confirms the exact

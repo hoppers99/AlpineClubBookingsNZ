@@ -5,6 +5,12 @@ import { parseDateOnly, formatDateOnly } from "@/lib/date-only";
 import { getStayNights } from "@/lib/policies/pricing";
 import { validateMinimumStay } from "@/lib/booking-policies";
 import { evaluateProposedAdultMemberHosting } from "@/lib/adult-member-hosting-review";
+import { acquireLodgeCapacityLock } from "@/lib/capacity";
+import {
+  releasePolicyExceptionReservation,
+  reservePolicyExceptionCapacity,
+} from "@/lib/booking-exception-reservations";
+import type { PrismaTransactionClient } from "@/lib/db-transaction";
 import {
   type PolicyExceptionCapacityMode,
   type PolicyExceptionReasonCode,
@@ -23,6 +29,27 @@ import {
   type ProposalGuest,
   type ProposalParty,
 } from "@/lib/booking-exception-requests";
+
+/**
+ * The canonical global booking/money lock(1). A HELD modification request now
+ * holds a PROVISIONAL capacity reservation (#2525), so creating one (which
+ * reserves), superseding one (which releases the prior hold and reserves the
+ * new) and cancelling one (which releases) are all capacity changes. They
+ * compose the EXISTING keys in the house order — global lock(1) FIRST, then the
+ * per-lodge capacity lock keyed on the frozen lodge — exactly as
+ * `resolvePolicyExceptionRequestTerminal` and the approve-and-execute engine do
+ * (`booking-exception-execution.ts`), so the reservation write/delete serialises
+ * against every occupancy read and claim at that lodge and cannot deadlock with
+ * the sibling execution paths. Kept in ONE helper so `advisory-lock-guard.test.ts`
+ * counts a single `pg_advisory_xact_lock(1)` site for this file. See
+ * docs/CONCURRENCY_AND_LOCKING.md -> "Provisional reservations for held
+ * policy-exception requests (#2365)".
+ */
+async function acquireGlobalBookingLock(
+  tx: Pick<PrismaTransactionClient, "$executeRaw">,
+): Promise<void> {
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
+}
 
 /**
  * #2524: the request-CREATION service for eligible SOFT booking-policy failures.
@@ -555,8 +582,21 @@ export async function createModificationExceptionRequest(
     input.requestedByMemberId,
   );
 
+  // A HELD modification reserves its INCREMENTAL per-night beds while pending
+  // (#2525); a supersede releases the prior request's hold. Either makes this a
+  // capacity change, so the transaction takes the house global -> per-lodge locks
+  // before touching the reservation ledger. A NO_HOLD, non-supersede create is a
+  // pure row insert and needs neither.
+  const holdsCapacity = frozen.aggregateCapacityMode === "HOLD";
+  const mutatesReservation = holdsCapacity || Boolean(input.supersedeRequestId);
+
   try {
     const created = await prisma.$transaction(async (tx) => {
+      if (mutatesReservation) {
+        await acquireGlobalBookingLock(tx);
+        await acquireLodgeCapacityLock(tx, input.lodgeId);
+      }
+
       if (input.supersedeRequestId) {
         const claim = await tx.bookingChangeRequest.updateMany({
           where: {
@@ -575,6 +615,11 @@ export async function createModificationExceptionRequest(
         if (claim.count === 0) {
           throw new LostSupersedeClaimError();
         }
+        // The superseded request no longer holds beds — release its provisional
+        // reservation atomically with the SUPERSEDED claim (under the same locks),
+        // so the incremental hold the replacement takes below cannot double-count
+        // the beds the old proposal held.
+        await releasePolicyExceptionReservation(tx, input.supersedeRequestId);
       }
 
       const request = await tx.bookingChangeRequest.create({
@@ -600,6 +645,17 @@ export async function createModificationExceptionRequest(
         },
         select: { id: true, status: true },
       });
+
+      // Reserve the incremental capacity a HELD request holds while pending, keyed
+      // on the new request id, under the per-lodge lock taken above. NO_HOLD
+      // proposals reserve nothing (the approval rechecks capacity instead).
+      if (holdsCapacity) {
+        await reservePolicyExceptionCapacity(tx, {
+          changeRequestId: request.id,
+          lodgeId: input.lodgeId,
+          snapshot: frozen.snapshot,
+        });
+      }
 
       if (input.supersedeRequestId) {
         await tx.bookingChangeRequest.updateMany({
@@ -644,22 +700,47 @@ export async function cancelModificationExceptionRequest(input: {
   bookingId: string;
   requestedByMemberId: string;
 }): Promise<boolean> {
-  const claim = await prisma.bookingChangeRequest.updateMany({
-    where: {
-      id: input.id,
-      bookingId: input.bookingId,
-      requestedByMemberId: input.requestedByMemberId,
-      kind: "POLICY_EXCEPTION",
-      status: "REQUESTED",
-    },
-    data: {
-      status: "CANCELLED",
-      openStateKey: null,
-      cancelledAt: new Date(),
-      version: { increment: 1 },
-    },
+  return prisma.$transaction(async (tx) => {
+    // A cancel RELEASES any provisional reservation the held request holds
+    // (#2525), which is a capacity change, so it takes the house global ->
+    // per-lodge locks keyed on the frozen lodge before the guarded claim — the
+    // same discipline as `resolvePolicyExceptionRequestTerminal`. The pre-read
+    // resolves only the immutable frozen lodge for the lock; authorization and
+    // the single-flight stay in the member/booking-scoped guarded claim below, so
+    // a lost claim (wrong owner, wrong booking, or already terminal) releases
+    // nothing.
+    const pre = await tx.bookingChangeRequest.findUnique({
+      where: { id: input.id },
+      select: { proposalSnapshot: true, kind: true },
+    });
+    if (!pre || pre.kind !== "POLICY_EXCEPTION") return false;
+    const snapshot = pre.proposalSnapshot as { lodgeId?: unknown } | null;
+    const lodgeId =
+      snapshot && typeof snapshot.lodgeId === "string" ? snapshot.lodgeId : null;
+
+    await acquireGlobalBookingLock(tx);
+    if (lodgeId) await acquireLodgeCapacityLock(tx, lodgeId);
+
+    const claim = await tx.bookingChangeRequest.updateMany({
+      where: {
+        id: input.id,
+        bookingId: input.bookingId,
+        requestedByMemberId: input.requestedByMemberId,
+        kind: "POLICY_EXCEPTION",
+        status: "REQUESTED",
+      },
+      data: {
+        status: "CANCELLED",
+        openStateKey: null,
+        cancelledAt: new Date(),
+        version: { increment: 1 },
+      },
+    });
+    if (claim.count !== 1) return false;
+
+    await releasePolicyExceptionReservation(tx, input.id);
+    return true;
   });
-  return claim.count === 1;
 }
 
 // ---------------------------------------------------------------------------

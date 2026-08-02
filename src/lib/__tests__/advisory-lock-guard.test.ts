@@ -66,6 +66,17 @@ const GLOBAL_BOOKING_MONEY_LOCK_INVENTORY: Record<string, number> = {
   // docs/CONCURRENCY_AND_LOCKING.md -> "Provisional reservations for held
   // policy-exception requests (#2365)".
   "src/lib/booking-exception-execution.ts": 1,
+  // #2525 integration: the request-CREATION service now holds a provisional
+  // capacity reservation for a HELD modification request (and releases it on
+  // member cancel / supersede), so createModificationExceptionRequest and
+  // cancelModificationExceptionRequest are capacity changes. They compose the
+  // canonical global lock(1) FIRST, then the per-lodge capacity lock keyed on the
+  // frozen lodge, matching booking-exception-execution.ts's approve/terminal
+  // paths so the reservation write/delete serialises with every occupancy read.
+  // One shared `acquireGlobalBookingLock` helper mints the global key exactly
+  // once in this file. See docs/CONCURRENCY_AND_LOCKING.md -> "Provisional
+  // reservations for held policy-exception requests (#2365)".
+  "src/lib/booking-exception-request-service.ts": 1,
   "src/lib/booking-guest-removal-service.ts": 1,
   "src/lib/booking-request.ts": 1,
   "src/lib/cron-group-settlement-reaper.ts": 2,

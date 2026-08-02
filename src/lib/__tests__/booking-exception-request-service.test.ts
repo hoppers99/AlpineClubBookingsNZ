@@ -11,15 +11,23 @@ const mocks = vi.hoisted(() => ({
   bcrCreate: vi.fn(),
   bcrUpdateMany: vi.fn(),
   bcrFindMany: vi.fn(),
+  bcrFindUnique: vi.fn(),
   bookingUpdate: vi.fn(),
   bookingCreate: vi.fn(),
   bookingUpdateMany: vi.fn(),
+  // #2525 reservation ledger + advisory-lock raw statements.
+  peUpsert: vi.fn(),
+  peDeleteMany: vi.fn(),
+  execRaw: vi.fn(),
   validateMinimumStay: vi.fn(),
   evaluateHosting: vi.fn(),
 }));
 
 vi.mock("@/lib/prisma", () => {
   const tx = {
+    // #2525: the global lock(1) and the per-lodge capacity lock both run through
+    // tx.$executeRaw; a no-op mock lets the real lock helpers execute.
+    $executeRaw: (...a: unknown[]) => mocks.execRaw(...a),
     newBookingPolicyExceptionRequest: {
       create: (...a: unknown[]) => mocks.nbCreate(...a),
       updateMany: (...a: unknown[]) => mocks.nbUpdateMany(...a),
@@ -27,6 +35,11 @@ vi.mock("@/lib/prisma", () => {
     bookingChangeRequest: {
       create: (...a: unknown[]) => mocks.bcrCreate(...a),
       updateMany: (...a: unknown[]) => mocks.bcrUpdateMany(...a),
+      findUnique: (...a: unknown[]) => mocks.bcrFindUnique(...a),
+    },
+    policyExceptionReservationNight: {
+      upsert: (...a: unknown[]) => mocks.peUpsert(...a),
+      deleteMany: (...a: unknown[]) => mocks.peDeleteMany(...a),
     },
     booking: {
       update: (...a: unknown[]) => mocks.bookingUpdate(...a),
@@ -46,6 +59,7 @@ vi.mock("@/lib/prisma", () => {
         create: (...a: unknown[]) => mocks.bcrCreate(...a),
         updateMany: (...a: unknown[]) => mocks.bcrUpdateMany(...a),
         findMany: (...a: unknown[]) => mocks.bcrFindMany(...a),
+        findUnique: (...a: unknown[]) => mocks.bcrFindUnique(...a),
       },
       $transaction: (fn: (t: typeof tx) => unknown) => fn(tx),
     },
@@ -122,6 +136,14 @@ beforeEach(() => {
   mocks.nbUpdateMany.mockResolvedValue({ count: 1 });
   mocks.bcrCreate.mockResolvedValue({ id: "bcr-1", status: "REQUESTED" });
   mocks.bcrUpdateMany.mockResolvedValue({ count: 1 });
+  // Cancel pre-reads the request to resolve its frozen lodge for the lock.
+  mocks.bcrFindUnique.mockResolvedValue({
+    proposalSnapshot: { lodgeId: "lodge_1" },
+    kind: "POLICY_EXCEPTION",
+  });
+  mocks.peUpsert.mockResolvedValue({});
+  mocks.peDeleteMany.mockResolvedValue({ count: 0 });
+  mocks.execRaw.mockResolvedValue(undefined);
 });
 
 describe("createNewBookingExceptionRequest", () => {
@@ -272,6 +294,93 @@ describe("createModificationExceptionRequest", () => {
       }),
     ).rejects.toBeInstanceOf(LostSupersedeClaimError);
     expect(mocks.bcrCreate).not.toHaveBeenCalled();
+    // A lost supersede claim releases nothing and reserves nothing.
+    expect(mocks.peDeleteMany).not.toHaveBeenCalled();
+    expect(mocks.peUpsert).not.toHaveBeenCalled();
+  });
+
+  it("held modification reserves ONLY the incremental beds, under the global -> lodge lock", async () => {
+    // proposed adds a second guest on the same night, so the incremental hold is
+    // one bed on 2026-07-04 (the base guest already holds its own).
+    const proposed = {
+      checkIn: "2026-07-04",
+      checkOut: "2026-07-05",
+      guests: [
+        { firstName: "Ada", lastName: "Lovelace", ageTier: "ADULT", isMember: true, memberId: "m1", nights: ["2026-07-04"] },
+        { firstName: "Grace", lastName: "Hopper", ageTier: "ADULT", isMember: false, memberId: null, nights: ["2026-07-04"] },
+      ],
+    };
+
+    await createModificationExceptionRequest({
+      requestedByMemberId: "m1",
+      bookingId: "booking-1",
+      lodgeId: "lodge_1",
+      base,
+      proposed,
+      memberMessage: "please allow",
+      requestedSummary: "add Grace",
+    });
+
+    // Global lock(1) + per-lodge lock were taken (two raw statements at least).
+    expect(mocks.execRaw.mock.calls.length).toBeGreaterThanOrEqual(2);
+    // Exactly the incremental night is reserved, keyed on the new request id.
+    expect(mocks.peUpsert).toHaveBeenCalledTimes(1);
+    const upsert = mocks.peUpsert.mock.calls[0][0];
+    expect(upsert.where.changeRequestId_night.changeRequestId).toBe("bcr-1");
+    expect(upsert.create).toMatchObject({
+      changeRequestId: "bcr-1",
+      lodgeId: "lodge_1",
+      beds: 1,
+    });
+    // The live booking is never touched.
+    expect(mocks.bookingUpdate).not.toHaveBeenCalled();
+    expect(mocks.bookingUpdateMany).not.toHaveBeenCalled();
+  });
+
+  it("a HOLD modification with no added beds reserves NOTHING (only shrinks/holds)", async () => {
+    // base === proposed: the live booking already holds every bed, so the
+    // incremental reservation is empty even though the aggregate mode is HOLD.
+    await createModificationExceptionRequest({
+      requestedByMemberId: "m1",
+      bookingId: "booking-1",
+      lodgeId: "lodge_1",
+      base,
+      proposed: base,
+      memberMessage: "please allow",
+      requestedSummary: "no-op footprint",
+    });
+    expect(mocks.bcrCreate).toHaveBeenCalledTimes(1);
+    expect(mocks.peUpsert).not.toHaveBeenCalled();
+  });
+
+  it("supersede RELEASES the prior request's hold before reserving the replacement", async () => {
+    const proposed = {
+      checkIn: "2026-07-04",
+      checkOut: "2026-07-05",
+      guests: [
+        { firstName: "Ada", lastName: "Lovelace", ageTier: "ADULT", isMember: true, memberId: "m1", nights: ["2026-07-04"] },
+        { firstName: "Grace", lastName: "Hopper", ageTier: "ADULT", isMember: false, memberId: null, nights: ["2026-07-04"] },
+      ],
+    };
+
+    await createModificationExceptionRequest({
+      requestedByMemberId: "m1",
+      bookingId: "booking-1",
+      lodgeId: "lodge_1",
+      base,
+      proposed,
+      memberMessage: "please allow",
+      requestedSummary: "resubmit",
+      supersedeRequestId: "old-9",
+    });
+
+    // The old request's provisional reservation is released atomically...
+    expect(mocks.peDeleteMany).toHaveBeenCalledWith({
+      where: { changeRequestId: "old-9" },
+    });
+    // ...and the replacement takes its own incremental hold.
+    expect(mocks.peUpsert).toHaveBeenCalledTimes(1);
+    expect(mocks.peUpsert.mock.calls[0][0].create.changeRequestId).toBe("bcr-1");
   });
 });
 
@@ -297,6 +406,12 @@ describe("cancelModificationExceptionRequest (guarded transition)", () => {
       status: "REQUESTED",
     });
     expect(call.data).toMatchObject({ status: "CANCELLED", openStateKey: null });
+    // #2525: a landed cancel RELEASES the request's provisional reservation
+    // atomically, under the global lock(1) taken first.
+    expect(mocks.execRaw).toHaveBeenCalled();
+    expect(mocks.peDeleteMany).toHaveBeenCalledWith({
+      where: { changeRequestId: "bcr-1" },
+    });
   });
 
   it("returns false (lost claim) when the URL bookingId does not match the request's booking", async () => {
@@ -310,6 +425,8 @@ describe("cancelModificationExceptionRequest (guarded transition)", () => {
       requestedByMemberId: "m1",
     });
     expect(ok).toBe(false);
+    // #2525 mutation guard: a lost claim releases NOTHING.
+    expect(mocks.peDeleteMany).not.toHaveBeenCalled();
   });
 });
 

@@ -553,18 +553,23 @@ POLICY_EXCEPTION request -> REQUESTED
 Every non-`REQUESTED` state is terminal (a guarded `updateMany` on
 `status = REQUESTED` plus the integer `version` token enforces the single
 transition, exactly the `BookingRequest.version` discipline, #1923). A held
-request does NOT change its live booking; a modification request reserves only
-the incremental per-night capacity beyond the unchanged live booking, and a
-new-booking request reserves the full proposal.
+request does NOT change its live booking; a held modification request reserves
+only the incremental per-night capacity beyond the unchanged live booking. The
+reservation ledger keys to a `BookingChangeRequest`, so new-booking requests (the
+separate `NewBookingPolicyExceptionRequest` store) do not yet hold a provisional
+reservation — their approval rechecks capacity instead — until the new-booking
+hold lands with the Booking Officer approval screen (#2526).
 
 **The provisional-reservation and atomic approve-and-execute lane is built
 (#2525).** Each held request materialises its footprint as
 `PolicyExceptionReservationNight` rows that the canonical capacity calculation
 counts as occupancy, so a pending request cannot be oversold. The three
 releasing transitions — `REJECTED`, `CANCELLED`, `SUPERSEDED` — delete those rows
-in the SAME guarded transaction that writes the status
-(`resolvePolicyExceptionRequestTerminal`, `booking-exception-execution.ts`); a
-lost `version` CAS releases nothing. `REQUESTED -> APPROVED` is different: it does
+in the SAME guarded transaction that writes the status, under the
+global -> per-lodge lock order: the member-owned CANCELLED and SUPERSEDED in
+`booking-exception-request-service.ts`, and the officer REJECTED in
+`resolvePolicyExceptionRequestTerminal` (`booking-exception-execution.ts`). A lost
+claim releases nothing. `REQUESTED -> APPROVED` is different: it does
 not "release then create". Inside ONE transaction the approval reauthorizes from
 fresh DB roles, re-reads under the global -> per-lodge locks, re-checks the
 proposal hash and `classifyPolicyExceptionDrift` (a disappeared reviewed rule
@@ -579,10 +584,13 @@ work and the member approval/rejection notice run after commit. See
 `docs/CONCURRENCY_AND_LOCKING.md` -> "Provisional reservations for held
 policy-exception requests".
 
-**Member request surfaces (#2524).** #2524 builds the request-CREATION half of
-that flow (creation, member cancel, member supersede, the officer queue read and
-the on-request notification), stopping cleanly before any reservation or
-execution (`booking-exception-execution.ts` declares the #2525 seam). Because a
+**Member request surfaces (#2524, wired to #2525).** #2524 builds the
+request-CREATION half of that flow (creation, member cancel, member supersede, the
+officer queue read and the on-request notification). Integrated with #2525, that
+same service now HOLDS the incremental provisional reservation for a held
+modification and RELEASES it atomically on member cancel / supersede; the officer
+approval + reject half is the #2525 execution engine, assembled behind the Booking
+Officer approval route (#2526). Because a
 `BookingChangeRequest.bookingId` is a required FK, a NEW booking has no row to
 attach to, so new-booking proposals get their own dedicated store,
 `NewBookingPolicyExceptionRequest`, sharing the same `BookingChangeRequestStatus`

@@ -461,6 +461,10 @@ export async function resolvePolicyExceptionRequestTerminal(params: {
       data: {
         status: to,
         version: { increment: 1 },
+        // Free the #2524 one-open-request slot: a terminal request no longer
+        // holds it, so the member may open a fresh proposal. Matches the request
+        // service's own member cancel/supersede claims, which NULL it too.
+        openStateKey: null,
         ...(to === "REJECTED"
           ? { reviewedByMemberId: actorMemberId ?? null, reviewedAt: now }
           : {}),
