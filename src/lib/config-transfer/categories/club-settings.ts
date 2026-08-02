@@ -567,7 +567,7 @@ export const SINGLETONS: SingletonSpec[] = [
     // embed gates plus whether the public "Book Now" button is shown. The
     // Book-Now DESTINATION does not travel: bookNowTarget/bookNowPageId reference
     // a specific install's PageContent id (instance-local, like the phase-7
-    // lodgeId / rateMembershipTypeId FK exclusions), and getBookNowConfig fails
+    // lodgeId / rateMembershipTypeId FK exclusions), and getBookNowVariants fails
     // open to the booking flow when the target page is absent — so a target keeps
     // its own destination and the button is never dead.
     entity: "public-content-settings",
@@ -599,7 +599,7 @@ export const SINGLETONS: SingletonSpec[] = [
         "bookNowPageId, which names a specific install's PageContent row",
       bookNowPageId:
         "FK to a PageContent row; an instance-local id that need not resolve on " +
-        "the target — getBookNowConfig fails open to the booking flow without it",
+        "the target — getBookNowVariants fails open to the booking flow without it",
       contactCommitteeRoleKey:
         "soft reference to a CommitteeRole.key selecting the Contact page Club " +
         "Details role; instance-local like the Book-Now exclusions — a key need " +

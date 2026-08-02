@@ -1,4 +1,3 @@
-import { auth } from "@/lib/auth";
 import { headers } from "next/headers";
 import { AppProviders } from "@/components/app-providers";
 import { AnalyticsConsent } from "@/components/analytics-consent";
@@ -16,14 +15,42 @@ import {
   getCachedWebsiteThemeRenderState,
 } from "@/lib/public-layout-config";
 
+/**
+ * Every `(public)` route stays per-request, declared here for the whole group
+ * (#2352 slice 1). MEASURED, not tidiness: without this line `npm run build`
+ * fails.
+ *
+ * This group is out of #2352's scope by decision — `/login` permanently (D7), and
+ * the rest are token-bearing screens (`/pay/[token]`, `/chores/[token]`, the
+ * booking-request and school-booking confirmations) that must never be stored. It
+ * used to be dynamic by ACCIDENT: the `auth()` call this layout no longer makes was
+ * a dynamic API read, and removing it left the group's build-time behaviour resting
+ * on the `headers()` read below — which happens only AFTER the layout's five
+ * database reads have resolved. During `docker build` there is no database
+ * (`Dockerfile` points `DATABASE_URL` at an unreachable host), so a page's own
+ * unguarded query rejected before the bailout was reached, and the build stopped on
+ * "Error occurred prerendering page /booking-requests".
+ *
+ * Declaring it on the LAYOUT covers every route in the group, including any added
+ * later, which is what a per-page line would not. The `(website)` group states its
+ * modes per route instead, because there exactly one of them is deliberately
+ * different — see `scripts/ci/check-website-render-modes.mjs`.
+ */
+export const dynamic = "force-dynamic";
+
 export default async function PublicLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
-  const [session, lodgeCapacity, siteBanners, modules, theme, clubIdentity] =
+  // No `auth()` here since #2352: the only thing it fed was the shared public
+  // header's one signed-in boolean, and the header now ships both forms of its
+  // CTA pair and lets the browser pick from the non-secret marker cookie (D2).
+  // These routes are still rendered per request — see the `force-dynamic` above,
+  // which is now what says so — so nothing about their freshness changes; they
+  // simply no longer resolve a session to decide a link label.
+  const [lodgeCapacity, siteBanners, modules, theme, clubIdentity] =
     await Promise.all([
-      auth(),
       // Default lodge: public-site identity copy (per-lodge figures come
       // from the {{lodge-capacity:slug}} content token).
       getCachedDefaultLodgeCapacity(),
@@ -35,7 +62,6 @@ export default async function PublicLayout({
   const liveClubIdentity = { ...clubIdentity, lodgeCapacity };
   const requestHeaders = await headers();
   const nonce = requestHeaders.get(CSP_NONCE_HEADER) ?? undefined;
-  const pageSlug = requestHeaders.get("x-page-slug") ?? "home";
 
   return (
     <AppProviders clubIdentity={liveClubIdentity} nonce={nonce}>
@@ -54,7 +80,6 @@ export default async function PublicLayout({
         </a>
         <SiteBanners banners={siteBanners} />
         <WebsiteHeader
-          isAuthenticated={!!session?.user}
           logoUrl={theme.logoUrl}
           logoDataUrl={theme.logoDataUrl}
         />
@@ -69,7 +94,6 @@ export default async function PublicLayout({
         <WebsiteFooter
           logoUrl={theme.logoUrl}
           logoDataUrl={theme.logoDataUrl}
-          pageSlug={pageSlug}
         />
         <AnalyticsConsent
           enabled={modules.analytics}

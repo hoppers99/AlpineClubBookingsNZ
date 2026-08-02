@@ -1,5 +1,3 @@
-import { auth } from "@/lib/auth";
-import { headers } from "next/headers";
 import { AnalyticsConsent } from "@/components/analytics-consent";
 import { HelpWidgetPublic } from "@/components/help-widget/help-widget-public";
 import { SiteBanners } from "@/components/site-banners";
@@ -7,43 +5,64 @@ import { WebsiteHeader } from "@/components/website-header";
 import { WebsiteFooter } from "@/components/website-footer";
 import { loadEmailMessageSettings } from "@/lib/email-message-settings";
 import { clubThemeFontVariableClassName } from "@/lib/club-theme-fonts";
-import { CSP_NONCE_HEADER } from "@/lib/csp";
 import { loadEffectiveModuleFlags } from "@/lib/module-settings";
 import {
   getCachedClubIdentity,
   getCachedWebsiteThemeRenderState,
 } from "@/lib/public-layout-config";
+import { getPublicWebsiteNonce } from "@/lib/release-nonce";
 import { getCurrentSiteBanners } from "@/lib/site-banners";
 import { SETUP_IN_PROGRESS_COPY } from "@/lib/setup-in-progress-screen";
 
-function resolvePageSlug(requestHeaders: Headers) {
-  return requestHeaders.get("x-page-slug") ?? "home";
-}
-
+/**
+ * Reads NEITHER the session nor the request headers, and that is the whole point
+ * of #2352.
+ *
+ * Those were the two lines that made every public page a full server render on
+ * every visit — `auth()` and `headers()`, in this file, shared by every route in
+ * the group. A production build prerendered ZERO pages because of them. With both
+ * gone, `[...slug]` (the admin-authored CMS pages) can be served from full-route
+ * ISR; the fixed routes in this group are still rendered per request, but each one
+ * now says so for itself with `export const dynamic = "force-dynamic"` rather than
+ * inheriting it as a side effect of this layout.
+ *
+ * What replaced each read:
+ *  • `auth()` — the header rendered ONE boolean from it (the account button's label
+ *    and target, the same pair in the mobile drawer, and the Book Now
+ *    destination; no member name, email or role has ever appeared here). Both
+ *    forms now ship in the page and the browser picks from a non-secret marker
+ *    cookie (D2, `src/lib/signed-in-hint.ts`).
+ *  • `headers()` — supplied the CSP nonce and the footer's page slug. The nonce is
+ *    now the fixed per-release value (D1, `src/lib/release-nonce.ts`), which is
+ *    what makes a STORED page's inline scripts still match the policy on a later
+ *    response. The slug comes from `usePathname()` in the footer's own shell.
+ *
+ * Adding either call back — here or in any component this layout renders — silently
+ * un-does the whole change: Next opts the route out of static rendering and the
+ * only symptom is the CPU bill. `scripts/ci/check-website-render-modes.mjs` fails
+ * the build on the structural half of that, and the ISR route's own test asserts
+ * `generateStaticParams` still returns `[]`.
+ */
 export default async function WebsiteLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
-  const [session, theme, requestHeaders, siteBanners, modules] =
-    await Promise.all([
-      auth(),
-      // Tagged cache wrapper, matching (public)/layout.tsx (#2322): this layout
-      // previously re-read ClubTheme from the database on every request. The
-      // `public-layout:theme` tag is revalidated on theme save by the
-      // admin/site-style PUT.
-      getCachedWebsiteThemeRenderState(),
-      headers(),
-      getCurrentSiteBanners(),
-      loadEffectiveModuleFlags(),
-      // NOTE: the club identity is NOT fetched here. It is used only by the
-      // pre-setup branch below, which since #2420 is a rare fallback rather than
-      // the pre-setup norm, so it is resolved inside that branch — the same
-      // treatment loadEmailMessageSettings() already gets, and for the same
-      // reason: keep the hot path's read set to what it actually renders.
-    ]);
-  const pageSlug = resolvePageSlug(requestHeaders);
-  const nonce = requestHeaders.get(CSP_NONCE_HEADER) ?? undefined;
+  const [theme, siteBanners, modules, nonce] = await Promise.all([
+    // Tagged cache wrapper, matching (public)/layout.tsx (#2322): this layout
+    // previously re-read ClubTheme from the database on every request. The
+    // `public-layout:theme` tag is revalidated on theme save by the
+    // admin/site-style PUT.
+    getCachedWebsiteThemeRenderState(),
+    getCurrentSiteBanners(),
+    loadEffectiveModuleFlags(),
+    getPublicWebsiteNonce(),
+    // NOTE: the club identity is NOT fetched here. It is used only by the
+    // pre-setup branch below, which since #2420 is a rare fallback rather than
+    // the pre-setup norm, so it is resolved inside that branch — the same
+    // treatment loadEmailMessageSettings() already gets, and for the same
+    // reason: keep the hot path's read set to what it actually renders.
+  ]);
   const themeStyle = (
     <style
       dangerouslySetInnerHTML={{ __html: theme.css }}
@@ -134,7 +153,6 @@ export default async function WebsiteLayout({
       </a>
       <SiteBanners banners={siteBanners} />
       <WebsiteHeader
-        isAuthenticated={!!session?.user}
         logoUrl={theme.logoUrl}
         logoDataUrl={theme.logoDataUrl}
       />
@@ -142,7 +160,6 @@ export default async function WebsiteLayout({
       <WebsiteFooter
         logoUrl={theme.logoUrl}
         logoDataUrl={theme.logoDataUrl}
-        pageSlug={pageSlug}
       />
       <AnalyticsConsent
         enabled={modules.analytics}

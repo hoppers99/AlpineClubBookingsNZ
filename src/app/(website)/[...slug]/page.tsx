@@ -17,6 +17,56 @@ type DynamicPageProps = {
   }>;
 };
 
+/**
+ * The admin-authored CMS pages are served from FULL-ROUTE ISR (#2352 slice 1,
+ * owner decision D4): rendered once on the first request for a path, stored, and
+ * handed out to every later visitor until the content changes.
+ *
+ * ## Returning `[]` is deliberate and load-bearing
+ *
+ * There is no database during `docker build` (`Dockerfile` points `DATABASE_URL`
+ * at an unreachable host so the build cannot depend on one), so the page list
+ * cannot be enumerated at build time. `[]` plus the default `dynamicParams: true`
+ * means: prerender NOTHING at build, generate each path on its first real request,
+ * then store it.
+ *
+ * That also happens to be what makes this slice safe to ship first (#2352
+ * reconciliation, F2). `scripts/ci/check-prerendered-script-nonces.mjs` fails any
+ * route that emits build-time HTML, because a build-time render has no request and
+ * therefore no CSP nonce, and the nonce-only policy then blocks every inline
+ * script on it. This route emits no build-time HTML at all, so the guard stays
+ * green — and a later change that started prerendering paths here would trip it
+ * rather than ship a page that never hydrates. `[...slug]/__tests__` asserts this
+ * still returns an empty list.
+ *
+ * ## Why a stored copy is not a leak
+ *
+ * Nothing in this render or in `(website)/layout.tsx` reads the session, the
+ * cookies or the headers — that is the whole of slice 1 — so there is no
+ * per-visitor content to freeze. The public header's one signed-in boolean is
+ * resolved in the browser from a non-secret marker cookie (D2). Any component that
+ * DID call `auth()`/`cookies()`/`headers()` would opt this route out of static
+ * rendering automatically, so the failure mode of getting that wrong is a silent
+ * performance regression, not a disclosure.
+ */
+export function generateStaticParams(): { slug: string[] }[] {
+  return [];
+}
+
+/**
+ * The freshness backstop (#2352 D3, owner decision 31 Jul 2026): 300 seconds.
+ *
+ * An admin EDIT still appears immediately — `revalidatePublicSite()` fires on
+ * every page-content write and clears this route's stored entries outright. This
+ * number only covers what changes with no write behind it: a site banner whose
+ * start date simply arrives, or a lodge capacity token whose underlying row moved
+ * without going through an admin save. That window is the one genuine regression
+ * in the design; it was ~15 seconds before (the tagged config caches) and the owner
+ * chose 300 over 60 so a busy site does not pay a background re-render every
+ * minute.
+ */
+export const revalidate = 300;
+
 // Resolves the catch-all segments to a PageContent path. Static routes
 // always win over this catch-all, so code-backed pages are unaffected.
 // Reserved names are rejected in every segment position so database pages
@@ -91,10 +141,16 @@ function pageSlugFromPath(path: string) {
  *    with no page, so a miss cannot emit a `<title>` describing a page that
  *    does not exist.
  *
- * It is NOT a substitute for a segment-level guard. If the static/ISR slices in
- * #2352 land, or a `loading.tsx` is added here, the 404 decision has to move
- * somewhere that runs before the segment is rendered at all — this line will not
- * cover it.
+ * It is NOT a substitute for a segment-level guard, and #2352 slice 1 answered the
+ * question that used to be left open here rather than moving the decision. The
+ * decision STAYS in this render, and what makes that safe is enforcement rather
+ * than hope: `scripts/ci/check-website-render-modes.mjs` fails the build if a
+ * `loading.tsx`, `template.tsx`, `default.tsx` or a Partial Prerendering flag ever
+ * appears under `(website)`, which is the only way a boundary could commit a 200
+ * ahead of this decision. Full-route ISR does not change it — Next stores the
+ * `notFound()` outcome as a 404 cache entry, so a miss answers 404 on the request
+ * that GENERATES it and on every request served from the store afterwards, and the
+ * Playwright unpublish case asserts both.
  *
  * `loadPublishedPage()` memoises the lookup for the request, so the component's
  * own `getPageForParams()` call below reuses this result rather than repeating

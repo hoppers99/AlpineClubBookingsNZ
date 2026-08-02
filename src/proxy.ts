@@ -16,7 +16,14 @@ import {
   REQUEST_METHOD_HEADER,
   REQUEST_PATH_HEADER,
 } from "./lib/internal-return-path";
-import { getSetupInProgressResponse } from "./lib/setup-gate";
+import { getPublicWebsiteNonce } from "./lib/release-nonce";
+import { getSetupInProgressResponse, isPublicWebsitePath } from "./lib/setup-gate";
+import {
+  hasSignedInHint,
+  SIGNED_IN_HINT_COOKIE,
+  SIGNED_IN_HINT_MAX_AGE_SECONDS,
+  SIGNED_IN_HINT_VALUE,
+} from "./lib/signed-in-hint";
 
 /**
  * Public pages a shared cache may store for anonymous visitors (#2322).
@@ -33,6 +40,13 @@ import { getSetupInProgressResponse } from "./lib/setup-gate";
  *  - the `(website)` `[...slug]` CMS catch-all — middleware cannot tell a CMS
  *    path from an application path without a database read, so it stays
  *    uncached even though it renders the same heavy layout.
+ *
+ * This list is about the BROWSER cache only, and #2352 did not change it. The
+ * catch-all is now served from Next's own full-route ISR cache — a server-side
+ * store the proxy neither reads nor advertises — so it still sends no
+ * `Cache-Control` of ours while no longer paying a full render per visit. Adding
+ * it here would be a separate decision about the browser, not a consequence of
+ * that one.
  */
 const CACHEABLE_ANONYMOUS_PATHS = new Set(["/"]);
 
@@ -80,8 +94,12 @@ const CACHEABLE_ANONYMOUS_PATHS = new Set(["/"]);
  * with `private`: one browser profile can hold sessions in sequence, and the
  * anonymous render paints the header logged-out.
  *
- * The per-request CSP nonce is likewise no longer replayed to anyone else: with
- * `private` the stored copy never leaves the one browser that fetched it.
+ * The CSP nonce is no longer a reason to care either way, and the reason changed
+ * with #2352. It used to be that `private` kept a per-request nonce from being
+ * replayed to anyone else. On `/` — a `(website)` address — the nonce is now the
+ * FIXED per-release value every visitor is served, so there is nothing left to
+ * replay. `private` still earns its place for the other reason above: the
+ * anonymous render paints the header signed-out.
  */
 const ANONYMOUS_PAGE_CACHE_CONTROL =
   "private, max-age=60, stale-while-revalidate=300";
@@ -104,6 +122,67 @@ function normalisePathname(pathname: string) {
   return pathname.length > 1 && pathname.endsWith("/")
     ? pathname.slice(0, -1)
     : pathname;
+}
+
+/** Does this request carry a next-auth session cookie of any supported shape? */
+function hasSessionCookie(request: NextRequest): boolean {
+  return request.cookies
+    .getAll()
+    .some((cookie) => SESSION_COOKIE_PATTERN.test(cookie.name));
+}
+
+/**
+ * Keeps the non-secret sign-in marker cookie (#2352 D2) in step with the observed
+ * session cookie, and writes NOTHING when the two already agree.
+ *
+ * Scoped to GET on a non-`/api` path on purpose. A JSON client has no header to
+ * correct, and answering an API call with a `Set-Cookie` it did not ask for is
+ * noise a caller might reasonably treat as a session change. Restricting it also
+ * keeps the header off responses whose whole contract is "indistinguishable from
+ * the module being switched on" (#2405).
+ *
+ * `SIGNED_IN_HINT_COOKIE` never appears in the request headers passed THROUGH to
+ * the app, so no server render can come to depend on it — the hint exists for the
+ * browser only, which is what keeps it a display hint rather than a second,
+ * weaker session.
+ */
+function syncSignedInHint(
+  request: NextRequest,
+  response: NextResponse,
+  signedIn: boolean,
+): void {
+  if (request.method !== "GET") return;
+  if (request.nextUrl.pathname.startsWith("/api/")) return;
+
+  const hintPresent = hasSignedInHint(request.headers.get("cookie"));
+
+  if (hintPresent === signedIn) return;
+
+  if (signedIn) {
+    response.cookies.set({
+      name: SIGNED_IN_HINT_COOKIE,
+      value: SIGNED_IN_HINT_VALUE,
+      path: "/",
+      sameSite: "lax",
+      httpOnly: false,
+      secure: process.env.NODE_ENV === "production",
+      maxAge: SIGNED_IN_HINT_MAX_AGE_SECONDS,
+    });
+    return;
+  }
+
+  // Expire rather than delete(): an explicit past-dated overwrite carries the
+  // same attributes the value was written with, so a browser that scoped the
+  // original to `/` cannot be left holding it.
+  response.cookies.set({
+    name: SIGNED_IN_HINT_COOKIE,
+    value: "",
+    path: "/",
+    sameSite: "lax",
+    httpOnly: false,
+    secure: process.env.NODE_ENV === "production",
+    maxAge: 0,
+  });
 }
 
 /**
@@ -129,11 +208,7 @@ export function getAnonymousPageCacheControl(
   // would be dead code that reads like a guarantee. The `private` directive
   // above is what makes a flight body harmless — see its docblock.
 
-  const hasSessionCookie = request.cookies
-    .getAll()
-    .some((cookie) => SESSION_COOKIE_PATTERN.test(cookie.name));
-
-  return hasSessionCookie ? null : ANONYMOUS_PAGE_CACHE_CONTROL;
+  return hasSessionCookie(request) ? null : ANONYMOUS_PAGE_CACHE_CONTROL;
 }
 
 /**
@@ -206,13 +281,39 @@ async function getEffectiveModuleBlockResponse(
 }
 
 export async function proxy(request: NextRequest) {
-  const nonce = createCspNonce();
   const pathname = request.nextUrl.pathname;
+  // #2352 D1. Every `(website)` address gets the ONE fixed nonce of this release;
+  // everything else keeps a freshly minted per-request value. The predicate is
+  // `isPublicWebsitePath()` — the same one the #2420 setup gate uses to decide
+  // "is this the public website?" — rather than a second list, because a second
+  // list is a second thing to keep in step, and its filesystem-backed
+  // exhaustiveness test (`setup-gate.test.ts`) then covers this split too.
+  //
+  // The whole GROUP, not D1's five named pages, and the reason is structural:
+  // `(website)/layout.tsx` is one shared layout, it renders the analytics
+  // `<Script nonce>` for every route under it, and it can no longer read the
+  // request (that read is exactly what forced a full render on every visit). So
+  // the nonce it stamps has to be the same one the proxy publishes for every
+  // address the layout serves — including `/hut-leader-instructions`,
+  // `/join/[code]` and `/join/verify/[token]`, which stay per-request RENDERS
+  // (`force-dynamic`) but share the group's policy. Splitting the layout in two
+  // was the alternative and was rejected: it duplicates the shared chrome
+  // permanently to buy a difference that slices 2 and 3 remove anyway.
+  const publicWebsite = isPublicWebsitePath(pathname);
+  const nonce = publicWebsite
+    ? await getPublicWebsiteNonce()
+    : createCspNonce();
   const csp = buildContentSecurityPolicy(nonce, {
     pathname,
     selfOrigin: request.nextUrl.origin,
+    publicWebsite,
   });
-  const pageSlug = pathname === "/" ? "home" : pathname.replace(/^\//, "");
+  // NOTE: no `x-page-slug` request header any more (#2352). It existed so the two
+  // public layouts could stamp `data-page-slug` on the footer, and reading it
+  // meant a `headers()` call in the layout — the second of the two lines that
+  // forced a full render on every public page view. The footer derives the slug
+  // from `usePathname()` instead, which needs no request. Do not reintroduce a
+  // request header for a value the URL already carries.
 
   // Ahead of the module gate on purpose (#2420). Until site setup is complete
   // the whole public website answers "not ready yet", and that outranks "this
@@ -254,7 +355,6 @@ export async function proxy(request: NextRequest) {
     `${request.nextUrl.pathname}${request.nextUrl.search}`
   );
   requestHeaders.set(REQUEST_METHOD_HEADER, request.method);
-  requestHeaders.set("x-page-slug", pageSlug);
 
   const response = NextResponse.next({
     request: {
@@ -264,6 +364,7 @@ export async function proxy(request: NextRequest) {
 
   response.headers.set(CSP_HEADER, csp);
   setSecurityHeaders(response.headers, pathname);
+  syncSignedInHint(request, response, hasSessionCookie(request));
 
   const anonymousCacheControl = getAnonymousPageCacheControl(request);
 

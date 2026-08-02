@@ -27,6 +27,26 @@ export interface CspOptions {
    * still reach /api/display/state.
    */
   selfOrigin?: string;
+  /**
+   * Is this a public-website (`(website)` route group) page? (#2352, D1.)
+   *
+   * Decided by the CALLER rather than re-derived here, because the authoritative
+   * predicate is `isPublicWebsitePath()` in `src/lib/setup-gate.ts` — the same
+   * one the #2420 setup gate uses — and importing that module here would drag
+   * the database-backed setup state into a file every layout imports.
+   * `src/proxy.ts` is the only caller that builds a page policy, and
+   * `csp-proxy.test.ts` pins the mapping by driving the real proxy over a URL
+   * matrix rather than trusting the flag.
+   *
+   * TWO consequences, and they are a pair rather than a coincidence:
+   *  • the `nonce` handed in is the FIXED per-release value
+   *    (`src/lib/release-nonce.ts`), because a stored page can carry only one;
+   *  • Stripe is dropped from `script-src`, which is the tightening bundled with
+   *    that trade — Stripe.js is never loaded on a public information page, so
+   *    allowing it there was surplus reach for an attacker who has just been
+   *    handed a readable nonce.
+   */
+  publicWebsite?: boolean;
 }
 
 /**
@@ -110,7 +130,7 @@ export const TIGHT_IMG_SRC_PATHS: readonly string[] = [
 
 export function buildContentSecurityPolicy(nonce: string, options: CspOptions = {}) {
   const isDev = process.env.NODE_ENV === "development";
-  const { pathname, selfOrigin } = options;
+  const { pathname, selfOrigin, publicWebsite = false } = options;
 
   // Scoped relaxations for the sandboxed display preview (LTV-036, ADR-004 §7):
   //  • /display: frame-ancestors 'self' so our own admin preview surfaces can
@@ -148,7 +168,12 @@ export function buildContentSecurityPolicy(nonce: string, options: CspOptions = 
       "'self'",
       `'nonce-${nonce}'`,
       ...(isDev ? ["'unsafe-eval'"] : []),
-      "https://js.stripe.com",
+      // Dropped on the public website (#2352 D1): Stripe.js is loaded from the
+      // member payment surfaces only, never from a public information page, so
+      // this entry bought an attacker reach and the club nothing. Google Tag
+      // Manager stays — the analytics module loads gtag from it on exactly these
+      // pages when an admin has switched analytics on.
+      ...(publicWebsite ? [] : ["https://js.stripe.com"]),
       "https://www.googletagmanager.com",
     ].join(" "),
     // Keep inline styles during the script nonce rollout; Tailwind/Radix and

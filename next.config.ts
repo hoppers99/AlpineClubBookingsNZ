@@ -8,6 +8,46 @@ const nextConfig: NextConfig = {
   },
   output: "standalone",
   poweredByHeader: false,
+  /**
+   * The full-route (ISR) cache lives in memory, not on disk (#2352 slice 1).
+   *
+   * Read against the vendored next@16.2.12 rather than assumed, because the
+   * default would not have worked here at all:
+   * `FileSystemCache.getFilePath()` puts an `APP_PAGE` entry under
+   * `<distDir>/server/app/…` — the SAME directory as the compiled route modules,
+   * not under `.next/cache`. The production container runs with
+   * `read_only: true` and a tmpfs on `/app/.next/cache` only
+   * (`docker-compose.yml`), so every store would have failed with `EROFS`. It
+   * would not have crashed — `IncrementalCache.set()` wraps the handler in a
+   * try/catch and only warns — but it would have logged a warning on every page
+   * generation while quietly caching in memory anyway, because
+   * `FileSystemCache.set()` writes to its memory LRU BEFORE it consults
+   * `flushToDisk`. Turning the disk half off makes the real behaviour the
+   * configured one. Mounting a tmpfs over `server/app` was the alternative and is
+   * not available: it would hide the compiled route modules that ship there.
+   *
+   * The memory store is better suited to this design in two ways beyond that:
+   *  • it is bounded by an LRU rather than by free space, so the enumeration risk
+   *    the planning pass raised — a crawler walking nonsense catch-all paths,
+   *    each one storing a 404 entry — evicts instead of filling something up;
+   *  • it is per-process and dies with the process, which is the property the
+   *    per-release CSP nonce already relies on (`src/lib/release-nonce.ts`).
+   *
+   * `revalidatePath()`/`revalidateTag()` still clear it: the tag-expiry check in
+   * `FileSystemCache.get()` runs on the entry whichever store it came from.
+   */
+  experimental: {
+    isrFlushToDisk: false,
+  },
+  /**
+   * The ceiling on the in-memory cache the line above makes authoritative,
+   * stated here rather than inherited from Next's 50MB default so the number is
+   * reviewable next to the container's `mem_limit: 1g`. Shared with the fetch
+   * cache, which is what it was sized for before this; a stored CMS page is tens
+   * of kilobytes of HTML plus its RSC payload, so 64MB holds a club's whole site
+   * many times over and still leaves the LRU room to evict a crawler's noise.
+   */
+  cacheMaxMemorySize: 64 * 1024 * 1024,
   turbopack: {
     root: process.cwd(),
   },

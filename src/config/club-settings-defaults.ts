@@ -133,7 +133,7 @@ export const DEFAULT_MEMBERSHIP_LOCKOUT_SETTINGS = {
  * OFF on a miss (`isPublicContentEnabled` returns `settings?.[gate] === true`,
  * `src/lib/public-page-content-tokens.ts`) and, since #2430, so is the public
  * "Book Now" button: a fresh install advertises no public booking CTA until an
- * admin ticks it on (`getBookNowConfig`, `src/lib/book-now-config.ts`). Absence
+ * admin ticks it on (`getBookNowVariants`, `src/lib/book-now-config.ts`). Absence
  * is the ONLY thing this constant governs — at read time a stored row always
  * wins, saved-true and saved-false alike. What switched EXISTING clubs off is
  * the one-off backfill in

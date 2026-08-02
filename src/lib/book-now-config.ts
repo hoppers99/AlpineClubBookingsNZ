@@ -45,15 +45,36 @@ export const MEMBER_BOOK_NOW_LABEL = "Book Now";
  */
 export const ANONYMOUS_BOOK_NOW_LABEL = "Member booking";
 
-export async function getBookNowConfig(
+/**
+ * The parts of the resolved button that do NOT depend on the visitor: whether the
+ * admin shows it at all, and the content-page target if they chose one.
+ *
+ * Split out for #2352 D2. The public header is now one stored copy served to
+ * everyone, so it needs BOTH the signed-out and signed-in forms of the button —
+ * and it must not pay two database reads to get them. Everything session-specific
+ * is a pure function of this plus one boolean (see `bookNowVariant`), so the two
+ * forms can never disagree about the admin's choice.
+ */
+interface BookNowChoice {
+  show: boolean;
+  /** The admin's PAGE target, or null for the default booking flow. */
+  pageHref: string | null;
+}
+
+function bookNowVariant(
   isAuthenticated: boolean,
-): Promise<BookNowConfig> {
+  { pageHref }: BookNowChoice,
+): Omit<BookNowConfig, "show"> {
   // Default flow: a logged-in member books directly; a guest goes via login.
   const defaultHref = isAuthenticated ? "/book" : buildBookingLoginPath();
-  const label = isAuthenticated
-    ? MEMBER_BOOK_NOW_LABEL
-    : ANONYMOUS_BOOK_NOW_LABEL;
 
+  return {
+    href: pageHref ?? defaultHref,
+    label: isAuthenticated ? MEMBER_BOOK_NOW_LABEL : ANONYMOUS_BOOK_NOW_LABEL,
+  };
+}
+
+async function resolveBookNowChoice(): Promise<BookNowChoice> {
   try {
     const settings = await prisma.publicContentSettings.findUnique({
       where: { id: "default" },
@@ -76,22 +97,21 @@ export async function getBookNowConfig(
     if (!settings)
       return {
         show: DEFAULT_PUBLIC_CONTENT_SETTINGS.showBookNow,
-        href: defaultHref,
-        label,
+        pageHref: null,
       };
 
-    if (!settings.showBookNow) return { show: false, href: defaultHref, label };
+    if (!settings.showBookNow) return { show: false, pageHref: null };
 
     if (
       settings.bookNowTarget === "PAGE" &&
       settings.bookNowPage?.published &&
       settings.bookNowPage.path
     ) {
-      return { show: true, href: settings.bookNowPage.path, label };
+      return { show: true, pageHref: settings.bookNowPage.path };
     }
 
     // BOOKING_FLOW, or a PAGE target whose page is missing/unpublished: fail open.
-    return { show: true, href: defaultHref, label };
+    return { show: true, pageHref: null };
   } catch {
     // Deliberately still FAIL-OPEN, and deliberately out of step with the
     // no-row branch above, which fails closed since #2430: a database error is
@@ -99,6 +119,27 @@ export async function getBookNowConfig(
     // contract this line implements. So a club whose button is off can, for the
     // life of a database outage, show it — narrow the contract only with the
     // owner's decision on #1929, not as a side effect of a default flip.
-    return { show: true, href: defaultHref, label };
+    return { show: true, pageHref: null };
   }
+}
+
+/**
+ * Both forms of the button from ONE read, for the public header (#2352 D2).
+ *
+ * `show` is deliberately shared: whether the button exists is the admin's choice
+ * and never the visitor's, so it is settled on the server and cannot flicker in
+ * the browser.
+ */
+export async function getBookNowVariants(): Promise<{
+  show: boolean;
+  anonymous: Omit<BookNowConfig, "show">;
+  member: Omit<BookNowConfig, "show">;
+}> {
+  const choice = await resolveBookNowChoice();
+
+  return {
+    show: choice.show,
+    anonymous: bookNowVariant(false, choice),
+    member: bookNowVariant(true, choice),
+  };
 }

@@ -16,10 +16,8 @@ import {
   serializeAdminSiteBanner,
   siteBannerAuditSnapshot,
 } from "@/lib/site-banners";
-import {
-  invalidatePublicLayoutConfig,
-  PUBLIC_LAYOUT_CACHE_TAGS,
-} from "@/lib/public-layout-cache";
+import { PUBLIC_LAYOUT_CACHE_TAGS } from "@/lib/public-layout-cache";
+import { revalidatePublicSite } from "@/lib/public-content-revalidation";
 
 const dateOnlyString = z.string().refine(isDateOnlyString, {
   message: "Date must be YYYY-MM-DD",
@@ -116,7 +114,10 @@ export async function POST(request: Request) {
     return created;
   });
 
-  invalidatePublicLayoutConfig(PUBLIC_LAYOUT_CACHE_TAGS.banners);
+  // Full-route clear as well as the tag clear (#2352 F3): banners render INTO the
+  // public layout, so under full-route ISR a tag-only invalidation changed nothing
+  // a visitor could see.
+  revalidatePublicSite(PUBLIC_LAYOUT_CACHE_TAGS.banners);
 
   return NextResponse.json(
     { banner: serializeAdminSiteBanner(banner) },

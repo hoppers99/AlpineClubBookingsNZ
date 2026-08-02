@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { WebsiteFooterShell } from "@/components/website-footer-shell";
 import { WebsiteLogo } from "@/components/website-logo";
 import { getCachedClubIdentity } from "@/lib/public-layout-config";
 import { getSiteFooterContent } from "@/lib/site-content";
@@ -35,11 +36,9 @@ const GRID_COLUMNS_CLASS: Record<number, string> = {
 export async function WebsiteFooter({
   logoUrl,
   logoDataUrl,
-  pageSlug,
 }: {
   logoUrl?: string | null;
   logoDataUrl?: string | null;
-  pageSlug: string;
 }) {
   const [raw, clubIdentity] = await Promise.all([
     getSiteFooterContent(),
@@ -57,10 +56,10 @@ export async function WebsiteFooter({
     1 + (quickLinksHtml ? 1 : 0) + (affiliationsHtml ? 1 : 0);
 
   return (
-    <footer
-      className="border-t border-brand-gold/15 bg-brand-charcoal text-brand-snow/90"
-      data-page-slug={pageSlug}
-    >
+    // The <footer> element itself is a client shell so its data-page-slug comes
+    // from the URL rather than a request header (#2352) — see
+    // website-footer-shell.tsx. Everything inside stays server-rendered.
+    <WebsiteFooterShell className="border-t border-brand-gold/15 bg-brand-charcoal text-brand-snow/90">
       <div className="mx-auto max-w-7xl px-4 py-12 sm:px-6 lg:px-8">
         <div
           className={`grid grid-cols-1 gap-8 ${GRID_COLUMNS_CLASS[columnCount]}`}
@@ -127,6 +126,6 @@ export async function WebsiteFooter({
           </p>
         </div>
       </div>
-    </footer>
+    </WebsiteFooterShell>
   );
 }

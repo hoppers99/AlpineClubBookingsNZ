@@ -11,6 +11,16 @@ export const metadata: Metadata = {
   robots: { index: false, follow: false },
 };
 
+/**
+ * Permanently per-request (#2352): this page branches on `auth()` to show a member
+ * the join panel, so it is dynamic already. The line is here because it is a
+ * DYNAMIC SEGMENT, and a dynamic segment with no `generateStaticParams` that stops
+ * reading the session would be generated on demand and then STORED — freezing one
+ * visitor's view of a group-booking code for whoever asked next. Stating it removes
+ * that possibility instead of relying on the `auth()` call staying put.
+ */
+export const dynamic = "force-dynamic";
+
 export default async function GroupJoinPage({
   params,
 }: {
