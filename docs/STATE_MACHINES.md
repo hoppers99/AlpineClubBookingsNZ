@@ -53,6 +53,47 @@ membership refusal, duplicate member-night, authentication, payment, privacy,
 invalid-date, and data-integrity failures remain hard stops with no transition
 into review.
 
+### Adult-member hosting review (#2364)
+
+An adult-member hosting hazard causes **no booking-state transition**. The
+booking is made, held, paid and completed exactly as it would have been; what
+changes is a review that lives beside the lifecycle, in its own columns, with its
+own small state machine:
+
+```
+(none) -> PENDING            a hazard appears on a booking that had none
+(none) -> APPROVED           create only, and only with an explicit admin
+                             on-behalf reason recorded against it (D-R4)
+PENDING|APPROVED|REJECTED -> (none)
+                             current facts cover every affected night, or the
+                             policy stops applying to this booking
+PENDING|APPROVED|REJECTED -> PENDING
+                             a MATERIALLY different hazard replaced the recorded
+                             one (a different uncovered guest-night set, or a
+                             different policy revision); the previous decision is
+                             dropped with it
+```
+
+Two of those edges are the whole point. Clearing is automatic and needs no admin:
+adding an adult member to the booking, removing the last uncovered guest, moving
+the nights, reinstating a cancelled member, switching the policy off, or moving
+the booking to a lodge that never had the rule all end the hazard the next time
+any booking path touches it. Reopening is deliberately NARROW: a renamed guest,
+or an extra host on an already-covered night, is the same hazard and does not
+re-prompt an admin who has already decided.
+
+"Touches it" includes touching its #738 SPLIT SIBLING. The child borrows its
+parent's adults, so the parent's own nights and guests move the child's answer;
+every mutation path therefore re-derives both halves in one transaction. A
+sibling always enters at PENDING — the `(none) -> APPROVED` edge needs an
+explicit reason from the admin who was asked, and nobody was asked about a
+booking they only reached through another one.
+
+There is no transition into the shared `AWAITING_REVIEW` booking status and no
+check-in block, unlike the minors-only rule (#1372/#1422). Capacity is not
+reserved from the frozen `HOLD` value; that, the member request state and the
+approval/revalidation edges belong to #2365.
+
 `DRAFT -> PAYMENT_PENDING` is also where a stored account-credit election is
 spent (#2265). A draft carries the member's election on
 `Booking.creditElectionCents` and consumes no credit while it may still be
@@ -476,7 +517,8 @@ linking directly to the filtered audit record.
 
 ## Booking Modification Lifecycle
 
-Known change request statuses: `REQUESTED`, `APPROVED`, `REJECTED`.
+Known change request statuses: `REQUESTED`, `APPROVED`, `REJECTED`, and — for a
+`POLICY_EXCEPTION`-kind request only (#2365) — `CANCELLED` and `SUPERSEDED`.
 
 ```text
 member/admin starts edit -> quoted delta -> local booking mutation
@@ -486,6 +528,36 @@ uncollected additional payment -> reminder at +3 days, reminder 2 days before
 negative delta -> Stripe refund or source-linked member credit
 admin review path -> REQUESTED -> APPROVED or REJECTED
 ```
+
+**Booking-policy exception requests (#2365).** A `BookingChangeRequest` now
+carries a `kind`: the original today/past-night edit is `LOCKED_PERIOD`, and a
+member request to override an eligible *soft* booking-policy failure (a
+minimum-stay rule or the adult-member hosting requirement — the #2363 allowlist,
+never a hard limit) is `POLICY_EXCEPTION`. A policy-exception row freezes the
+complete immutable proposal (`proposalSnapshot` + its SHA-256 `proposalHash`),
+the structured evidence it asks an admin to allow (`frozenEvidence`, the #2363
+HOLD-if-any-HOLD aggregate) plus the denormalised `aggregateCapacityMode`, a
+required `memberMessage` (trimmed, <=1000 chars), and attempt/conflict metadata
+(`attemptCount`, `conflictCount`, `lastConflictAt`, `lastConflictReason`). Its
+lifecycle adds two terminal outcomes to the shared enum:
+
+```text
+POLICY_EXCEPTION request -> REQUESTED
+  REQUESTED -> APPROVED   (Booking Officer allows the exact reviewed proposal;
+                           atomic canonical execution — see the follow-up lane)
+  REQUESTED -> REJECTED   (declined)
+  REQUESTED -> CANCELLED  (member withdrew the proposal before a decision)
+  REQUESTED -> SUPERSEDED (a newer proposal, or live-booking drift, replaced it)
+```
+
+Every non-`REQUESTED` state is terminal (a guarded `updateMany` on
+`status = REQUESTED` plus the integer `version` token enforces the single
+transition, exactly the `BookingRequest.version` discipline, #1923). A held
+request does NOT change its live booking; a modification request reserves only
+the incremental per-night capacity beyond the unchanged live booking, and a
+new-booking request reserves the full proposal — the provisional-reservation
+capacity mechanism and the atomic approve-and-execute path are the #2365
+execution lane that consumes this store (see the follow-up issues on #2365).
 
 Edit-eligibility is governed by a date-window edit policy
 (`getBookingEditPolicy`), whose `mode` selects what a request may change:

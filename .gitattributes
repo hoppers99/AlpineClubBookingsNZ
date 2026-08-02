@@ -68,6 +68,16 @@ prisma/schema.prisma text eol=lf
 # are already LF, so this only stops Windows re-materialising them as CRLF.
 *.sh text eol=lf
 
+# The blue/green migration-safety ledger is the fifth instance of the same
+# class, and the one where byte-level trust matters most: every row is parsed by
+# `scripts/check-migration-safety-coverage.sh` and hand-audited, and its whole
+# value is that its bytes can be trusted across the public repo and its forks. It
+# was the last tracked text class left without an `eol=lf` pin, so it rode on
+# `core.autocrlf` and git warned on every Windows touch (flagged in #2431's fix
+# round). Same fix and same zero churn as the migration SQL and shell scripts —
+# the stored blob is already LF; this only stops Windows re-materialising CRLF.
+docs/BLUE_GREEN_MIGRATION_SAFETY.tsv text eol=lf
+
 # CHANGELOG.md: every concurrent lane prepends its entry to `## Unreleased`,
 # so plain three-way merge conflicts on nearly every rebase and every
 # update-from-main — all session long, on every agent stream. `union` keeps

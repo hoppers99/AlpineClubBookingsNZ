@@ -112,6 +112,7 @@ are the literal `1`.
 | **Roster generation** | `hashtext("roster:<date>")` | inline (`admin-roster-service.ts`) | — | Roster generation for one calendar date. |
 | **Config-transfer import** | `hashtext("config-transfer-import")` | `acquireConfigImportLock(tx)` (`config-transfer/apply.ts`) | — | Single-flights configuration-bundle apply. |
 | **Minimum-stay policy set** | `hashtext("minimum-stay-policy-set")` | `lockMinimumStayPolicySet(tx)` (`minimum-stay-policy-set.ts`) plus the migration's `MinimumStayPolicy_lock_set` statement trigger | policy config | Serialises every live CRUD and config-transfer replacement across the small club/lodge policy set. The database trigger puts draining old-colour DML behind the exact same key before any tuple lock. |
+| **Adult-member hosting policy set** | `hashtext("adult-member-hosting-policy-set")` | `lockAdultMemberHostingPolicySet(tx)` (`adult-member-hosting-policy-set.ts`) plus the migration's `AdultMemberHostingPolicy_lock_set` statement trigger | policy config | Serialises the admin write route and the config-transfer replacement over the one club row plus one row per lodge (#2364). Unlike its minimum-stay sibling the trigger is NOT a blue/green drain boundary — the table did not exist before its own migration, so no old colour writes it — it is there so advisory-before-tuple order holds for every writer, operator psql included. |
 | **Membership subscription billing** | `hashtext("membership-subscription-billing:<seasonYear>")` | `confirmSubscriptionBillingPreview`, `reconcileSubscriptionBillingExceptions` (`membership-subscription-billing.ts`) | — | Annual/approval charge snapshot creation for one membership year; the #2148 refresh-reconciliation holds the same key so exception auto-resolution serialises with confirm and never resolves rows a concurrent confirm is regenerating. The #2161 operator family-marker writers (MARK/UNMARK on the subscription-billing route) deliberately take **no** advisory lock: they only insert/release a `FamilyGroupSeasonInvoiceMarker` row (single-active enforced by a partial unique index, so a concurrent double-mark is a benign no-op), and confirm re-derives suppression from the live marker rows under this same lock inside its transaction, so a mark landing mid-confirm either is seen by the in-tx re-preview or shifts the confirmation token — never a torn snapshot. |
 | **Authoritative fee schedule** | `hashtext("fee-schedule:<domain>:<key>")` | `lockFeeSchedule` (`authoritative-fees.ts`) | — | Serialises effective-dated membership or entrance-fee schedule changes for one configured key. |
 | **Member partner link** | sorted `hashtext("member-partner-link:<memberId>")` keys | `lockPartnerMembers` (`member-partner-link.ts`) | — | Serialises partner-link invariants across every member touched by a link; same-family keys are sorted. |
@@ -176,6 +177,54 @@ key, so the two keyspaces are disjoint and cannot deadlock in either order.
 `booking-date-modification-minimum-stay.test.ts` each pin their call site to the
 transaction client so a future edit cannot silently reintroduce the second
 connection.
+
+### Composition: adult-member hosting policy set (#2364)
+
+`PUT /api/admin/booking-policies/adult-member-hosting` calls
+`lockAdultMemberHostingPolicySet(tx)` before its first policy or lodge read, then
+compare-and-swaps on the revision it read inside the same transaction. The set is
+one club row plus at most one row per lodge, so a single global configuration key
+is deliberately preferred to per-scope concurrency.
+
+Configuration transfer composes three global configuration keys in one fixed
+order: `config-transfer-import`, then `minimum-stay-policy-set`, then
+`adult-member-hosting-policy-set`, all before the booking-policy category
+re-fingerprints or replaces any row. Live CRUD takes exactly one of the last two
+and never both, and no writer takes them in another order, so the three cannot
+form a cycle.
+
+The `AdultMemberHostingPolicy_lock_set` `BEFORE STATEMENT` trigger takes the same
+key ahead of any tuple lock. Its purpose differs from the #2363 one it copies:
+that trigger exists because a draining old colour already wrote
+`MinimumStayPolicy` and could not call the TypeScript helper, whereas this table
+was created by its own migration and has no old-colour writer at all. It is kept
+so the ordering holds unconditionally — for operator psql and for any future
+colour — rather than only for the code paths that exist today. A separate `BEFORE
+ROW` trigger manages the revision after the statement lock is held, and is
+stricter than its sibling: a material update must present `OLD + 1`, and a
+non-material one keeps the token so a no-op cannot invalidate somebody's open
+editor.
+
+#### Which client reads the hosting policy
+
+`loadAdultMemberHostingPolicy` (`adult-member-hosting-review.ts`) takes the same
+optional trailing `db` as `validateMinimumStay`, under the same one-line rule: **a
+caller already inside `prisma.$transaction` MUST pass its own `tx`.** Every
+enforcement site is in that position, because the hosting review is reconciled
+inside the booking write itself — booking create (all three services plus the
+split child), `modifyBookingBatch`, `modifyBookingDates`, `adminShiftBookingDates`,
+the guest-add route, the guest-removal service and the waitlist confirm — and all
+of them hold `pg_advisory_xact_lock(1)` and/or a per-lodge capacity lock while
+they do it. Reaching for the module client there would check out a second pool
+connection underneath both locks, which is the pool-starvation shape the ordering
+rule at the top of `member-guest-add-policy.ts` forbids.
+
+The one caller that keeps the default is the booking-create route's
+pre-transaction check for an admin on-behalf confirmation, which runs before any
+transaction is opened. This is a pool argument, not a lock-order one: no hosting
+policy writer takes a per-lodge capacity lock and no booking path takes the
+policy-set key, so the keyspaces are disjoint and cannot deadlock in either
+order.
 
 ### Composition: application-approval mapping (E10, #1936)
 
@@ -898,6 +947,48 @@ serialising against a claim is a momentarily conservative capacity view that
 self-corrects — but a release that also flips booking status or moves money
 (cancel, hold-expiry) takes `lock(1)` for the status/money reason, not the
 capacity reason.
+
+### Provisional reservations for held policy-exception requests (#2365)
+
+A held `POLICY_EXCEPTION` `BookingChangeRequest` (see `docs/STATE_MACHINES.md` →
+"Booking-policy exception requests") reserves capacity so an eventual approval is
+guaranteed to fit: a new-booking request reserves the full proposal's per-night
+beds, a modification request reserves only the incremental beds beyond the
+unchanged live booking (`computeProposalReservation`,
+`src/lib/booking-exception-requests.ts`). The binding lock contract the #2365
+execution lane MUST follow when it wires the live reservation and the atomic
+approve-and-execute:
+
+- **No new advisory-lock family.** A reservation write or release, and the
+  approval that turns a reservation into the executed booking, is a capacity and
+  (for a modification) money/status transition on a booking, so it composes the
+  EXISTING keys in the house order — global `lock(1)` first, then
+  `acquireLodgeCapacityLock(tx, lodgeId)`, then the member-night guard's
+  per-member key and `lockMemberCreditLedger(memberId, tx)` when credit is
+  composed. It introduces no `pg_advisory_xact_lock` key of its own, so nothing
+  new is added to the `advisory-lock-guard.test.ts` inventories.
+- **Reservations count as occupancy under the per-lodge lock.** The canonical
+  per-night capacity calculation (`capacity.ts`) must count a held request's
+  active reservation alongside `capacityHoldingBookingFilter()` bookings, read
+  under the per-lodge capacity lock on the booking's own lodge (read-key → lock →
+  re-read). A held request never overbooks because the reservation is claimed
+  under that same lock.
+- **Release is atomic with the terminal transition.** `REJECTED`, `CANCELLED`
+  and `SUPERSEDED` release the reservation in the SAME guarded transaction that
+  writes the status; a lost `updateMany` claim on `status = REQUESTED` (with the
+  integer `version` token) runs no release and no side effect. An `APPROVED`
+  request does not "release then create" — the reservation becomes the executed
+  booking's own beds inside one transaction, with the canonical booking service
+  invoked transaction-aware so there is no mark-approved-then-call gap.
+- **NO_HOLD approval rechecks capacity and keeps pending on conflict.** When the
+  frozen aggregate is `NO_HOLD` (nothing was reserved), the approval rechecks
+  capacity under the per-lodge lock; a conflict keeps the request `REQUESTED`
+  with a recorded `lastConflictReason` (it does not fail it), so a later retry
+  can still succeed.
+
+The live reservation writer, its `capacity.ts` integration and the transaction-
+aware canonical execution are the #2365 execution lane; this note records the
+contract they are held to so a reviewer can check the wiring against it.
 
 ## Credit restoration: exactly-once is now STRUCTURAL (#1636)
 

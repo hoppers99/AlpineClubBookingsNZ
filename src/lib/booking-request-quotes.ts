@@ -13,6 +13,7 @@ import {
 } from "@prisma/client";
 import { z } from "zod";
 import { hashActionToken, issueActionToken } from "@/lib/action-tokens";
+import { reconcileAdultMemberHostingReviewWithSiblings } from "@/lib/adult-member-hosting-review";
 import { logAudit } from "@/lib/audit";
 import {
   approveBookingRequest,
@@ -1522,6 +1523,16 @@ export async function holdBookingRequestSlots(input: {
         // this is the only moment they exist in hand.
         select: { id: true, guests: { select: { id: true, memberId: true } } },
       });
+
+      // #2364. The hold is a capacity-holding booking carrying the requested
+      // party — every guest a non-member, owned by a non-login contact — so it
+      // is a hazard from the moment it exists, on the same terms as a
+      // WAITLISTED booking (`booking-create.ts`). Recorded here rather than
+      // deferred to the accept: an officer looking at the board should not have
+      // to wait for the requester to pay before the club's own rule is visible.
+      // The accept re-reconciles after it rewrites the guest list, so nothing
+      // recorded here can go stale.
+      await reconcileAdultMemberHostingReviewWithSiblings(held.id, tx);
 
       await tx.bookingRequest.update({
         where: { id: request.id },

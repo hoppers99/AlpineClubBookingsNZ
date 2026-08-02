@@ -23,8 +23,18 @@ import { z } from "zod";
  * means DELETE, so this is an incompatible capability boundary. This repo's
  * existing exact-version import contract rejects both older and newer bundles;
  * operators re-export from the current app instead of silently losing policy.
+ *
+ * v4 (#2364): the `booking-policies` category gained a SECOND required file,
+ * `booking-policies/adult-member-hosting.csv`. Both directions are unsafe, which
+ * is why the number moves rather than the file being made optional. A v3 bundle
+ * lacks the file, so a v4 reader would have to guess whether an absent file
+ * means "clear every hosting policy" or "leave them alone" — and a v3 reader
+ * handed a v4 bundle is worse: it would silently ignore the file while reporting
+ * that it had replaced the club's complete booking-policy set, leaving the
+ * source and target quietly disagreeing about a rule that governs who may bring
+ * guests. Re-exporting from the current app costs an operator one click.
  */
-export const CONFIG_TRANSFER_FORMAT_VERSION = 3;
+export const CONFIG_TRANSFER_FORMAT_VERSION = 4;
 
 /**
  * Top-level categories a bundle can carry. Order is the dependency-safe apply

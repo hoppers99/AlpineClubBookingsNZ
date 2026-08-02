@@ -124,6 +124,21 @@ export default function AdminBookPage() {
     { date: string; availableBeds: number }[] | null
   >(null);
   const [pendingNotifyMember, setPendingNotifyMember] = useState(true);
+  // Adult-member hosting warn-and-confirm (#2364, epic decision D-R4). The
+  // server refuses an ON-BEHALF create that trips the club's hosting rule until
+  // the admin states a reason, which is then stored against the booking's
+  // APPROVED hosting review — that refusal is the whole point (an admin must
+  // not accept a hosting exception by accident), so this panel is the half that
+  // makes it answerable. `pendingHostingAction` remembers whether it was the
+  // confirm or the draft that was refused, because the check runs BEFORE the
+  // draft/confirmed fork and so blocks both.
+  const [hostingConfirmMessage, setHostingConfirmMessage] = useState<string | null>(
+    null,
+  );
+  const [pendingHostingAction, setPendingHostingAction] = useState<
+    "confirm" | "draft"
+  >("confirm");
+  const [adultMemberHostingReason, setAdultMemberHostingReason] = useState("");
 
   // A retroactive booking is one whose check-in is genuinely in the past (local
   // date), with the flag on. Drives the guest-cap relaxation and the POST body.
@@ -298,6 +313,10 @@ export default function AdminBookPage() {
     // warning banner above the guest list flags the shortfall. A confirm
     // panel from a previous 409 belongs to the previous party — clear it.
     setOverCapacityNights(null);
+    // Same for the hosting reason (#2364): it was written about the previous
+    // party's uncovered nights, and this party's may be entirely different.
+    setHostingConfirmMessage(null);
+    setAdultMemberHostingReason("");
     setError("");
     setPriceLoading(true);
     const checkInStr = formatLocalDateOnly(checkIn!);
@@ -369,6 +388,7 @@ export default function AdminBookPage() {
   async function submitBooking(opts: {
     notifyMember: boolean;
     confirmOverCapacity?: boolean;
+    hostingReason?: string;
   }) {
     setSubmitting(true);
     setError("");
@@ -402,6 +422,9 @@ export default function AdminBookPage() {
         // server rejects the flag with a future check-in.
         ...(isRetroactive ? { allowPastDates: true } : {}),
         ...(opts.confirmOverCapacity ? { confirmOverCapacity: true } : {}),
+        ...(opts.hostingReason
+          ? { adultMemberHostingReason: opts.hostingReason }
+          : {}),
       }),
     });
 
@@ -422,6 +445,22 @@ export default function AdminBookPage() {
       setSubmitting(false);
       return;
     }
+    // Adult-member hosting (#2364 D-R4): the same warn-and-confirm shape, but
+    // what the admin supplies is a REASON rather than a tick — it is stored
+    // against the booking as the record of who accepted the hazard and why.
+    if (data.code === "ADULT_MEMBER_HOSTING_CONFIRM_REQUIRED") {
+      setHostingConfirmMessage(
+        typeof data.details === "string" && data.details
+          ? data.details
+          : typeof data.error === "string"
+            ? data.error
+            : "This booking has non-member guests on nights when no adult member is staying.",
+      );
+      setPendingHostingAction("confirm");
+      setPendingNotifyMember(opts.notifyMember);
+      setSubmitting(false);
+      return;
+    }
     // XERO_PERIOD_LOCKED / XERO_LOCK_DATE_CHECK_FAILED and every other error
     // surface verbatim in the existing banner. A reconnect-required lock-date
     // check failure additionally offers a link to the Xero setup page (#2105).
@@ -430,7 +469,7 @@ export default function AdminBookPage() {
     setSubmitting(false);
   }
 
-  async function handleSaveAsDraft() {
+  async function handleSaveAsDraft(opts: { hostingReason?: string } = {}) {
     setSavingDraft(true);
     setError("");
     const checkInStr = formatLocalDateOnly(checkIn!);
@@ -454,17 +493,35 @@ export default function AdminBookPage() {
         memberReviewJustification: requiresAdminReviewLocal
           ? memberReviewJustification.trim() || undefined
           : undefined,
+        ...(opts.hostingReason
+          ? { adultMemberHostingReason: opts.hostingReason }
+          : {}),
       }),
     });
 
     if (res.ok) {
       const data = await res.json();
       router.push(`/bookings/${data.id}`);
-    } else {
-      const data = await res.json();
-      setError(data.error || "Failed to save draft");
-      setSavingDraft(false);
+      return;
     }
+
+    const data = await res.json();
+    // The hosting check runs before the draft/confirmed fork, so a draft trips
+    // it on exactly the same parties a confirm does (#2364).
+    if (data.code === "ADULT_MEMBER_HOSTING_CONFIRM_REQUIRED") {
+      setHostingConfirmMessage(
+        typeof data.details === "string" && data.details
+          ? data.details
+          : typeof data.error === "string"
+            ? data.error
+            : "This booking has non-member guests on nights when no adult member is staying.",
+      );
+      setPendingHostingAction("draft");
+      setSavingDraft(false);
+      return;
+    }
+    setError(data.error || "Failed to save draft");
+    setSavingDraft(false);
   }
 
   const nights =
@@ -1022,6 +1079,61 @@ export default function AdminBookPage() {
             </div>
           )}
 
+          {hostingConfirmMessage && (
+            <div className="rounded-md border border-warning-6 bg-warning-3 p-4 text-sm text-warning-11">
+              <p className="font-medium">
+                No adult member is staying with these guests
+              </p>
+              <p className="mt-2">{hostingConfirmMessage}</p>
+              <p className="mt-2">
+                You can still make this booking. Say why it is alright — your
+                reason and your name are recorded against the booking, so the
+                club can see later who accepted it.
+              </p>
+              <Label
+                htmlFor="adult-member-hosting-reason"
+                className="mt-3 block"
+              >
+                Reason
+              </Label>
+              <Textarea
+                id="adult-member-hosting-reason"
+                className="mt-1 bg-card"
+                rows={3}
+                maxLength={500}
+                value={adultMemberHostingReason}
+                onChange={(e) => setAdultMemberHostingReason(e.target.value)}
+                placeholder="e.g. Long-standing family friends of the club, known to the committee"
+              />
+              <ViewOnlyActionButton
+                canEdit={canEditBookings}
+                describeReason={false}
+                className="mt-3"
+                disabled={
+                  submitting ||
+                  savingDraft ||
+                  adultMemberHostingReason.trim().length === 0
+                }
+                onClick={() => {
+                  const reason = adultMemberHostingReason.trim();
+                  if (!reason) return;
+                  if (pendingHostingAction === "draft") {
+                    void handleSaveAsDraft({ hostingReason: reason });
+                    return;
+                  }
+                  void submitBooking({
+                    notifyMember: pendingNotifyMember,
+                    hostingReason: reason,
+                  });
+                }}
+              >
+                {pendingHostingAction === "draft"
+                  ? "Record the reason and save the draft"
+                  : "Record the reason and create"}
+              </ViewOnlyActionButton>
+            </div>
+          )}
+
           <div className="flex justify-between">
             <Button variant="outline" onClick={() => setStep("guests")}>
               Back
@@ -1031,7 +1143,7 @@ export default function AdminBookPage() {
                 canEdit={canEditBookings}
                 describeReason={false}
                 variant="outline"
-                onClick={handleSaveAsDraft}
+                onClick={() => void handleSaveAsDraft()}
                 disabled={
                   savingDraft ||
                   submitting ||

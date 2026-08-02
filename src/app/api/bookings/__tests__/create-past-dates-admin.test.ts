@@ -30,6 +30,11 @@ const h = vi.hoisted(() => ({
   getEffectiveXeroLockDate: vi.fn(),
   memberFindUnique: vi.fn(),
   groupDiscountFindUnique: vi.fn(),
+  // #2284 (S2): the route's family-add FYI dispatcher, spied so the wiring on
+  // the confirmed and waitlisted create paths can be asserted here — the unit
+  // suite in family-booking-add-notifications.test.ts exercises only the
+  // dispatcher in isolation and cannot see whether the route ever calls it.
+  sendFamilyAddNotifications: vi.fn(),
 }));
 
 vi.mock("@/lib/auth", () => ({ auth: h.auth }));
@@ -66,6 +71,9 @@ vi.mock("@/lib/prisma", () => ({
     groupDiscountSetting: { findUnique: h.groupDiscountFindUnique },
     // Member self-books (no admin bypass) run the minimum-stay policy check.
     minimumStayPolicy: { findMany: vi.fn().mockResolvedValue([]) },
+    // #2364: an on-behalf create evaluates the hosting policy over the submitted
+    // party before the transaction. No rows configured, so it never trips.
+    adultMemberHostingPolicy: { findMany: vi.fn().mockResolvedValue([]) },
   },
 }));
 vi.mock("@/lib/booking-guests", () => ({
@@ -173,6 +181,13 @@ vi.mock("@/lib/booking-create", async () => {
   };
 });
 
+// #2284 (S2): intercept the lazily-imported family-add dispatcher. The route
+// `await import(...)`s this module inside `notifyFamilyAdds`; the mock captures
+// that dynamic import too.
+vi.mock("@/lib/family-booking-add-notifications", () => ({
+  sendFamilyMemberBookingAddNotifications: h.sendFamilyAddNotifications,
+}));
+
 import { POST } from "@/app/api/bookings/route";
 
 function makeRequest(body: Record<string, unknown>) {
@@ -223,9 +238,19 @@ beforeEach(() => {
   h.groupDiscountFindUnique.mockResolvedValue(null);
   h.isXeroConnected.mockResolvedValue(false);
   h.getEffectiveXeroLockDate.mockReturnValue(null);
+  // A real `createConfirmedBooking` returns `BookingWithGuests`, so `guests` is
+  // always present; the S2 family-add wiring reads it, so the fixture must carry
+  // it. Empty here — these retroactive-gating cases add no family co-member — so
+  // `notifyFamilyAdds` no-ops and never reaches the dispatcher.
   h.createConfirmedBooking.mockResolvedValue({
     type: "created",
-    booking: { id: "b-new", status: "PAID" },
+    booking: { id: "b-new", status: "PAID", guests: [] },
+  });
+  h.sendFamilyAddNotifications.mockResolvedValue({
+    notifiedTargetMemberIds: [],
+    failedTargetMemberIds: [],
+    unreachableTargetMemberIds: [],
+    suppressedByPreferenceMemberIds: [],
   });
 });
 
@@ -593,7 +618,7 @@ describe("POST /api/bookings retroactive create gating (#1695)", () => {
       fullNights: [daysFromTodayStr(31)],
     });
     h.createWaitlistedBooking.mockResolvedValue({
-      booking: { id: "wl-1", status: "WAITLISTED" },
+      booking: { id: "wl-1", status: "WAITLISTED", guests: [] },
     });
 
     const res = await POST(
@@ -612,5 +637,82 @@ describe("POST /api/bookings retroactive create gating (#1695)", () => {
     expect(h.createWaitlistedBooking.mock.calls[0][0]).toMatchObject({
       notifyMember: false,
     });
+  });
+});
+
+// #2284 (S2): the family-add FYI must fire on EVERY persisting create path, not
+// just the draft branch. It shipped wired into `if (draft)` only, so a confirmed
+// or waitlisted create that put a family co-member on a booking sent nothing —
+// the dominant member flow. These are route-level tests on purpose: the unit
+// suite (family-booking-add-notifications.test.ts) drives only the dispatcher and
+// is structurally blind to whether the route ever calls it. A family co-member is
+// added by returning a guest row carrying their `memberId`; the dispatcher itself
+// is stubbed (it is proven in isolation elsewhere), so these assert only that the
+// route hands it the added member on each path.
+describe("POST /api/bookings — S2 family-add notification wiring (#2284)", () => {
+  const FAMILY_CHILD = "fam-child-m2";
+
+  it("fires the family-add FYI on the CONFIRMED create path", async () => {
+    h.createConfirmedBooking.mockResolvedValue({
+      type: "created",
+      booking: {
+        id: "b-confirmed",
+        status: "PAID",
+        guests: [{ id: "bg-1", memberId: FAMILY_CHILD }],
+      },
+    });
+
+    const res = await POST(makeRequest(futurePayload()));
+
+    expect(res.status).toBe(201);
+    expect(h.createConfirmedBooking).toHaveBeenCalledTimes(1);
+    // The wiring under test: the confirmed branch must reach the dispatcher.
+    expect(h.sendFamilyAddNotifications).toHaveBeenCalledTimes(1);
+    expect(h.sendFamilyAddNotifications).toHaveBeenCalledWith(
+      expect.objectContaining({
+        bookingId: "b-confirmed",
+        actorMemberId: "admin1",
+        addedMemberIds: [FAMILY_CHILD],
+      }),
+    );
+  });
+
+  it("fires the family-add FYI on the WAITLISTED create path", async () => {
+    // Capacity is exceeded, and the caller opted into the waitlist, so the create
+    // falls through to createWaitlistedBooking — the second omitted branch.
+    h.createConfirmedBooking.mockResolvedValue({
+      type: "capacityExceeded",
+      fullNights: [daysFromTodayStr(31)],
+    });
+    h.createWaitlistedBooking.mockResolvedValue({
+      booking: {
+        id: "b-waitlisted",
+        status: "WAITLISTED",
+        guests: [{ id: "bg-2", memberId: FAMILY_CHILD }],
+      },
+      position: 1,
+    });
+
+    const res = await POST(makeRequest(futurePayload({ waitlist: true })));
+
+    expect(res.status).toBe(201);
+    expect(h.createWaitlistedBooking).toHaveBeenCalledTimes(1);
+    expect(h.sendFamilyAddNotifications).toHaveBeenCalledTimes(1);
+    expect(h.sendFamilyAddNotifications).toHaveBeenCalledWith(
+      expect.objectContaining({
+        bookingId: "b-waitlisted",
+        actorMemberId: "admin1",
+        addedMemberIds: [FAMILY_CHILD],
+      }),
+    );
+  });
+
+  it("no family co-member on the party means no FYI (guard against a spurious send)", async () => {
+    // The default fixture returns an empty guest list; the confirmed path still
+    // no-ops rather than calling the dispatcher with nobody.
+    const res = await POST(makeRequest(futurePayload()));
+
+    expect(res.status).toBe(201);
+    expect(h.sendFamilyAddNotifications).not.toHaveBeenCalled();
   });
 });

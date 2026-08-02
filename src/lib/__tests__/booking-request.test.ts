@@ -37,9 +37,15 @@ vi.mock("@/lib/prisma", () => ({
         { id: "type-nonmember", key: "NON_MEMBER" },
       ]),
     },
+    // #2364: the hosting review is reconciled inside the approving/holding
+    // transaction, so every prisma/tx double a booking-writing path runs
+    // against needs this client. `findUnique` answering undefined is the
+    // "booking not found" branch, which writes nothing.
+    adultMemberHostingPolicy: { findMany: vi.fn().mockResolvedValue([]) },
     booking: {
       create: vi.fn(),
       findUnique: vi.fn(),
+      findMany: vi.fn().mockResolvedValue([]),
       update: vi.fn(),
       updateMany: vi.fn(),
     },
@@ -1492,6 +1498,79 @@ describe("approveBookingRequest", () => {
     );
   });
 
+  it("records the adult-member hosting review on the approved booking, in the approving transaction (#2364)", async () => {
+    // The purest form of the party this rule exists for: every guest a
+    // non-member, the owner a non-login contact, nobody who can host. Before
+    // this the booking committed with all five hosting columns NULL and the
+    // hazard only materialised months later, on the first unrelated edit.
+    mockedFindUnique.mockResolvedValue(
+      baseRequest({ status: BookingRequestStatus.PRICED, priceCents: 12000 }) as never
+    );
+    mockedUpdateMany.mockResolvedValue({ count: 1 } as never);
+    mockedCheckCapacity.mockResolvedValue({
+      available: true,
+      minAvailable: 5,
+      nightDetails: [],
+    } as never);
+    vi.mocked(prisma.member.create).mockResolvedValue({ id: "member-1" } as never);
+    vi.mocked(prisma.booking.create).mockResolvedValue({ id: "booking-1" } as never);
+    vi.mocked(prisma.payment.create).mockResolvedValue({} as never);
+    vi.mocked(prisma.paymentLink.create).mockResolvedValue({} as never);
+    vi.mocked(prisma.bookingRequest.update).mockResolvedValue({} as never);
+    vi.mocked(prisma.adultMemberHostingPolicy.findMany).mockResolvedValue([
+      {
+        id: "policy-club",
+        scopeKey: "club-wide",
+        lodgeId: null,
+        mode: "ADMIN_REVIEW_REQUIRED",
+        capacityMode: "NO_HOLD",
+        version: 2,
+      },
+    ] as never);
+    vi.mocked(prisma.booking.findUnique).mockResolvedValue({
+      id: "booking-1",
+      memberId: "member-1",
+      parentBookingId: null,
+      lodgeId: "lodge-1",
+      checkIn: new Date("2026-08-01T00:00:00.000Z"),
+      checkOut: new Date("2026-08-02T00:00:00.000Z"),
+      adultMemberHostingReview: null,
+      adultMemberHostingReviewStatus: null,
+      guests: [
+        {
+          id: "guest-1",
+          firstName: "Non",
+          lastName: "Member",
+          stayStart: new Date("2026-08-01T00:00:00.000Z"),
+          stayEnd: new Date("2026-08-02T00:00:00.000Z"),
+          consentStatus: null,
+          nights: [{ stayDate: new Date("2026-08-01T00:00:00.000Z") }],
+          member: null,
+        },
+      ],
+    } as never);
+
+    await approveBookingRequest({ requestId: "req-1", adminMemberId: "admin-1" });
+
+    const hostingWrite = vi
+      .mocked(prisma.booking.update)
+      .mock.calls.find(
+        (call) =>
+          (call[0].data as Record<string, unknown>)
+            .adultMemberHostingReviewStatus !== undefined,
+      );
+    expect(hostingWrite).toBeDefined();
+    const data = hostingWrite![0].data as Record<string, unknown>;
+    // PENDING, never APPROVED: approving the REQUEST is not the explicit,
+    // reasoned acceptance of a hosting exception that D-R4 requires.
+    expect(data.adultMemberHostingReviewStatus).toBe("PENDING");
+    expect(data.adultMemberHostingReviewReason).toBeNull();
+    expect(data.adultMemberHostingReviewedById).toBeNull();
+    expect(
+      (data.adultMemberHostingReview as Record<string, unknown>).affectedNights,
+    ).toEqual(["2026-08-01"]);
+  });
+
   it("creates the booking at the request's lodge instead of the default lodge", async () => {
     mockedFindUnique.mockResolvedValue(
       baseRequest({
@@ -1910,6 +1989,13 @@ describe("approveBookingRequest", () => {
       lodgeId: "lodge-1",
       memberId: "held-member",
       status: BookingStatus.AWAITING_REVIEW,
+      // #2364: the accept reconciles the held booking's hosting review from
+      // the guest rows it just rewrote. This double models the CONVERSION, not
+      // the guest list, so an empty party is the honest answer here — the
+      // review-writing behaviour is pinned by its own test above.
+      guests: [],
+      adultMemberHostingReview: null,
+      adultMemberHostingReviewStatus: null,
     } as never);
     vi.mocked(prisma.member.findUnique).mockResolvedValue({
       id: "held-member",
@@ -1970,6 +2056,13 @@ describe("approveBookingRequest", () => {
       lodgeId: "lodge-1",
       memberId: "held-member",
       status: BookingStatus.AWAITING_REVIEW,
+      // #2364: the accept reconciles the held booking's hosting review from
+      // the guest rows it just rewrote. This double models the CONVERSION, not
+      // the guest list, so an empty party is the honest answer here — the
+      // review-writing behaviour is pinned by its own test above.
+      guests: [],
+      adultMemberHostingReview: null,
+      adultMemberHostingReviewStatus: null,
     } as never);
     // Held owner is re-validated at conversion (#1255 decision 1); still valid,
     // so it is reused unchanged.
@@ -2027,6 +2120,13 @@ describe("approveBookingRequest", () => {
       lodgeId: "lodge-1",
       memberId: "held-member",
       status: BookingStatus.AWAITING_REVIEW,
+      // #2364: the accept reconciles the held booking's hosting review from
+      // the guest rows it just rewrote. This double models the CONVERSION, not
+      // the guest list, so an empty party is the honest answer here — the
+      // review-writing behaviour is pinned by its own test above.
+      guests: [],
+      adultMemberHostingReview: null,
+      adultMemberHostingReviewStatus: null,
     } as never);
     // Re-validation of the held owner: still a valid non-login contact.
     vi.mocked(prisma.member.findUnique).mockResolvedValue({
@@ -2082,6 +2182,13 @@ describe("approveBookingRequest", () => {
       lodgeId: "lodge-1",
       memberId: "held-invalid",
       status: BookingStatus.AWAITING_REVIEW,
+      // #2364: the accept reconciles the held booking's hosting review from
+      // the guest rows it just rewrote. This double models the CONVERSION, not
+      // the guest list, so an empty party is the honest answer here — the
+      // review-writing behaviour is pinned by its own test above.
+      guests: [],
+      adultMemberHostingReview: null,
+      adultMemberHostingReviewStatus: null,
     } as never);
     // The held owner became login-capable → guard rejects it.
     vi.mocked(prisma.member.findUnique).mockResolvedValue({

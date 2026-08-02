@@ -31,6 +31,7 @@ import {
 } from "@prisma/client";
 import { z } from "zod";
 import { hashActionToken, issueActionToken } from "@/lib/action-tokens";
+import { reconcileAdultMemberHostingReviewWithSiblings } from "@/lib/adult-member-hosting-review";
 import { logAudit } from "@/lib/audit";
 import { cancelBooking } from "@/lib/booking-cancel";
 import { recordBookingEvent } from "@/lib/booking-events";
@@ -2218,6 +2219,22 @@ export async function approveBookingRequest(input: {
                 entriesByMemberId: consentPlan.entriesByMemberId,
               });
       }
+
+      // #2364. An approved request is the purest form of the party the hosting
+      // rule exists for: every guest is a non-member and the owner is a
+      // non-login contact, so nobody on the booking can host. Recorded here, in
+      // the approving transaction, and covering BOTH branches above — the fresh
+      // create and the held-booking conversion, whose guest list was just
+      // rewritten wholesale. Without it the hazard would sit unrecorded until
+      // some unrelated later edit (an admin date shift, say) materialised it out
+      // of nowhere, months after the decision it belongs to.
+      //
+      // The review opens PENDING, never APPROVED: the admin approved the
+      // REQUEST, which is not the same act as accepting a hosting exception with
+      // a reason attached (D-R4). Approval is not blocked — hosting is a review,
+      // not a refusal — so the requester gets their booking and the club gets
+      // the review.
+      await reconcileAdultMemberHostingReviewWithSiblings(booking.id, tx);
 
       await tx.payment.create({
         data: {

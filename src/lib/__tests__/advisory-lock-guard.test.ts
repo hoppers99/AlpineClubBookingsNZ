@@ -95,6 +95,15 @@ const SCOPED_ADVISORY_LOCK_INVENTORY: Record<string, number> = {
   // in docs/CONCURRENCY_AND_LOCKING.md.
   "src/lib/admin-family-group-requests-service.ts": 2,
   "src/lib/admin-roster-service.ts": 1,
+  // #2364: lockAdultMemberHostingPolicySet takes the single global
+  // adult-member-hosting-policy-set key before any read by an admin CRUD write
+  // or a configuration import, and the migration's BEFORE STATEMENT trigger
+  // takes the same key ahead of any tuple lock so operator DML joins the same
+  // order. It composes with exactly one other key, in one fixed direction —
+  // config-transfer-import, then minimum-stay-policy-set, then this — and no
+  // booking or capacity path ever takes it, so the keyspaces are disjoint.
+  // Counterpart analysis in docs/CONCURRENCY_AND_LOCKING.md.
+  "src/lib/adult-member-hosting-policy-set.ts": 1,
   "src/lib/authoritative-fees.ts": 1,
   // #2095: claimBackupRun takes the singleton backup:run-lock key for the
   // milliseconds of the reap/check/insert claim transaction only (the dump

@@ -10,6 +10,18 @@ ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS="${ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS:-0}
 BLUE_GREEN_MIGRATION_OVERRIDE_REASON="${BLUE_GREEN_MIGRATION_OVERRIDE_REASON:-}"
 MIGRATION_SAFETY_LEDGER="${MIGRATION_SAFETY_LEDGER:-docs/BLUE_GREEN_MIGRATION_SAFETY.tsv}"
 
+# Whole-statement splitter, shared with scripts/check-data-migration-verification.sh
+# (#2418) so the two gates can never disagree about what PostgreSQL will run.
+# Resolved from this script's own location, not the caller's cwd, because the
+# production deploy invokes it as ./scripts/validate-blue-green-migrations.sh
+# from the repository root while the contract tests invoke it from elsewhere.
+SQL_STATEMENT_SPLITTER="${SQL_STATEMENT_SPLITTER:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/split-sql-statements.awk}"
+
+if [ ! -f "$SQL_STATEMENT_SPLITTER" ]; then
+  echo "validate-blue-green-migrations: SQL statement splitter not found at ${SQL_STATEMENT_SPLITTER}" >&2
+  exit 1
+fi
+
 # Baseline for the session-clock DML gate below (#1656 / #1627): migrations whose
 # timestamp-prefixed name sorts at or after this value are checked for
 # CURRENT_TIMESTAMP/now() inside INSERT/UPDATE payloads; older migrations predate
@@ -194,29 +206,14 @@ sql_lines() {
 #
 # Statement-level detection is required: an INSERT's CURRENT_TIMESTAMP commonly
 # sits many lines below its INSERT keyword, so a per-line scan cannot tell the
-# two apart. The awk splitter tracks single-, double-, and dollar-quote state
-# and strips "--" line comments (same quote-parity approach as
-# strip_sql_comment), splitting only on a ";" seen outside every quote.
+# two apart. Splitting is delegated to scripts/lib/split-sql-statements.awk,
+# which is shared with the #2418 data-rewrite classifier and documents its own
+# quote/dollar-quote handling and limitations.
 #
-# Dollar-quote awareness (#2038): the splitter recognises ARBITRARY dollar-quote
-# tags — $$, $cms$, $previous$, $do$, etc. — not just the empty $$ tag. A ";"
-# inside a $tag$...$tag$ body is NOT a split point, so a payload such as the
-# starter PageContent HTML (whose &mdash;/&ndash; entities embed literal ";")
-# stays a single statement and its CURRENT_TIMESTAMP is evaluated against the
-# whole INSERT/UPDATE instead of leaking out of a mid-body fragment. Tag matching
-# follows Postgres rules: a tag is empty or [A-Za-z_][A-Za-z0-9_]* and cannot
-# contain "$"; once a body opens with $a$ only a matching $a$ closes it (an inner
-# $b$ is literal body text). Quotes inside a dollar body are literal (an
-# apostrophe in "Stripe's" no longer toggles string state). An UNTERMINATED
-# dollar-quote (no closing tag before EOF) fails LOUDLY: awk exits non-zero and
-# the caller records a hard failure rather than silently passing an unparsed file.
-#
-# Limitations (documented, consistent with strip_sql_comment): C-style /* */
-# comments and a literal 'CURRENT_TIMESTAMP'/'now()' inside a quoted string are
-# not modelled; a WITH ... INSERT/UPDATE CTE is not anchored (its leading
-# keyword is WITH). Dollar-quoted bodies are treated as opaque, so an
-# INSERT/UPDATE nested inside a DO-block or function body is NOT surfaced (the
-# enclosing statement starts with DO/CREATE, not INSERT/UPDATE) — a deliberate
+# Limitations that matter here: a WITH ... INSERT/UPDATE CTE is not anchored
+# (its leading keyword is WITH), and dollar-quoted bodies stay inside their
+# enclosing statement, so an INSERT/UPDATE nested in a DO-block or function body
+# is NOT surfaced (the enclosing statement starts with DO/CREATE) — a deliberate
 # trade that avoids false positives from PL/pgSQL bodies. This repo writes such
 # payloads with explicit UTC (timezone('UTC', statement_timestamp())), so a
 # future DO-block using now()/CURRENT_TIMESTAMP in a payload is a known uncaught
@@ -229,77 +226,8 @@ sql_lines() {
 session_clock_dml_violations() {
   local file="$1" statements
 
-  statements="$(awk -v sq="'" -v dq='"' '
-    # If s[i] == "$", return the full "$...$" opening delimiter when a valid
-    # dollar-quote tag begins here, else "" (a bare literal "$", e.g. "$5.00",
-    # or a "$" that runs to end-of-line without a closing "$").
-    function dollar_open(s, i,   n, j, c, first) {
-      n = length(s)
-      j = i + 1
-      first = 1
-      while (j <= n) {
-        c = substr(s, j, 1)
-        if (c == "$") return substr(s, i, j - i + 1)
-        if (first) {
-          if (c ~ /[A-Za-z_]/) { first = 0; j++; continue }
-          return ""
-        }
-        if (c ~ /[A-Za-z0-9_]/) { j++; continue }
-        return ""
-      }
-      return ""
-    }
-    function flush() {
-      if (stmt ~ /[^[:space:]]/) print stmt
-      stmt = ""
-    }
-    {
-      line = $0
-      n = length(line)
-      i = 1
-      while (i <= n) {
-        if (in_dollar) {
-          tlen = length(dollar_tag)
-          if (substr(line, i, tlen) == dollar_tag) {
-            stmt = stmt dollar_tag; in_dollar = 0; i += tlen; continue
-          }
-          stmt = stmt substr(line, i, 1); i++; continue
-        }
-        c = substr(line, i, 1)
-        if (in_s) {
-          stmt = stmt c
-          if (c == sq) in_s = 0
-          i++; continue
-        }
-        if (in_d) {
-          stmt = stmt c
-          if (c == dq) in_d = 0
-          i++; continue
-        }
-        if (c == "$") {
-          dt = dollar_open(line, i)
-          if (dt != "") {
-            stmt = stmt dt; in_dollar = 1; dollar_tag = dt; i += length(dt); continue
-          }
-          stmt = stmt c; i++; continue
-        }
-        if (c == sq) { in_s = 1; stmt = stmt c; i++; continue }
-        if (c == dq) { in_d = 1; stmt = stmt c; i++; continue }
-        if (c == "-" && substr(line, i + 1, 1) == "-") { break }
-        if (c == ";") { flush(); i++; continue }
-        stmt = stmt c
-        i++
-      }
-      stmt = stmt " "
-    }
-    END {
-      if (in_dollar) {
-        printf "validate-blue-green-migrations: unterminated dollar-quoted string %s in %s\n", dollar_tag, FILENAME > "/dev/stderr"
-        exit 2
-      }
-      flush()
-    }
-  ' "$file")" || return 2
+  statements="$(awk -v tool="validate-blue-green-migrations" \
+    -f "$SQL_STATEMENT_SPLITTER" "$file")" || return 2
 
   printf '%s\n' "$statements" |
     grep -Ei '^[[:space:]]*(INSERT|UPDATE)([[:space:]]|$)' |

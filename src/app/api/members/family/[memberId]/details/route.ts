@@ -103,6 +103,16 @@ function serializeStatus(member: Parameters<typeof evaluateMemberProfileComplete
 /**
  * PUT /api/members/family/[memberId]/details
  * Complete and confirm details for a non-login member in a shared family group.
+ *
+ * AUTHORIZATION (#2284): this is NOT admin- or group-lead-gated. Any ACTIVE,
+ * ADULT, login-holding member with a complete profile who shares a family group
+ * with the (non-login) target may confirm here — the equal "all adults in a
+ * family group" boundary, not a designated responsible adult. The write stamps
+ * `detailsConfirmedByMemberId` to the requester, overwriting any prior voucher;
+ * because that same pointer is what the one-step partner declaration keys on
+ * (`src/lib/member-partner-link.ts`), any such adult can, in effect, become the
+ * voucher. That is intended under #2284's invariant — but it is why no code may
+ * treat this pointer as identifying a single, lead-appointed responsible adult.
  */
 export async function PUT(
   req: NextRequest,

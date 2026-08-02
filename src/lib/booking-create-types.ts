@@ -63,6 +63,19 @@ interface BaseInput {
   cancelIfGuestsBumped?: boolean;
   groupDiscount?: GroupDiscountConfig;
   memberReviewJustification?: string;
+  /**
+   * The explicit reason an ADMIN gave for booking a party the adult-member
+   * hosting policy would otherwise send to review (#2364, epic decision D-R4).
+   *
+   * Absent on every member-created booking: the reconciler then opens the
+   * hosting review as PENDING, which is the whole point — a member cannot
+   * approve their own exception. Present only when an admin acting on somebody's
+   * behalf has confirmed, in words, that they are accepting it, and it is
+   * persisted with the admin's id so "who let this through, and why" is
+   * answerable later. An admin who supplies nothing is REFUSED rather than
+   * silently auto-approved, which is what D-R4 forbids.
+   */
+  adultMemberHostingReason?: string;
   // Group booking (shareable join code): when set, the created (primary)
   // booking is linked to the organiser's booking via parentBookingId, so a
   // joiner's stay is grouped with the event. Existing callers leave this

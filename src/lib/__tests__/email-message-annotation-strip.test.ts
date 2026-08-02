@@ -32,6 +32,17 @@ import {
  * those; the audit assertions read the INSERT itself, because deleting the
  * whole audit half of the migration used to leave every test in this file
  * passing.
+ *
+ * WHAT THE PARITY HALF PROVES, AND WHAT IT DOES NOT (#2418). Lifting the
+ * patterns out and re-running them in JavaScript proves the SQL and the
+ * TypeScript agree about the patterns. It does NOT prove PostgreSQL executes
+ * them the same way: the two regex dialects are close cousins, not twins, and
+ * differ on greediness, on whether a character class matches a newline, and on
+ * what a backslash means inside brackets. Only the PostgreSQL block at the
+ * bottom of this file settles that, which is why it must stay wired in CI.
+ * Migrations written after #2418 make that half a fixture under
+ * prisma/migration-verification/ instead, so a missing one fails the build
+ * rather than depending on a reviewer noticing an absent CI step.
  */
 
 const MIGRATION_SQL_PATH = path.join(

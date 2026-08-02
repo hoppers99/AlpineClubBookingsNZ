@@ -189,6 +189,12 @@ Each PR should include:
 - a `changelog.d/` fragment, or the no-entry marker in the PR body
 - validation commands and results
 - migration notes, if schema or data behaviour changes
+- a verification fixture for any migration that **rewrites existing data** (a
+  backfill, repair, or value transform), under `prisma/migration-verification/`.
+  CI runs those against a real PostgreSQL holding realistic pre-state, and fails
+  the build naming the migration when one ships without a fixture. See
+  [`docs/BLUE_GREEN_MIGRATION_POLICY.md`](docs/BLUE_GREEN_MIGRATION_POLICY.md)
+  → "Data-migration verification"
 - deployment or configuration notes, if environment variables or external
   service settings change
 

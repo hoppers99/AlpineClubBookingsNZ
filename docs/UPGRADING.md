@@ -96,6 +96,28 @@ as a red flag and check the release notes before deploying.
 
 ## Unreleased
 
+### Re-export configuration bundles for format version 4 (#2364)
+
+Configuration bundles now require exact **format version 4**. Version 4 adds a
+second required file to the `booking-policies` category,
+`booking-policies/adult-member-hosting.csv`, carrying the adult-member hosting
+setting for each scope under the same replace-set rules as its sibling: a scope
+omitted from the file is deleted after appearing in the dry-run.
+
+The number moves rather than the file being optional because both directions are
+unsafe. A version 3 bundle has no such file, so a version 4 reader would have to
+guess whether that means "clear every hosting policy" or "leave them alone"; a
+version 3 reader handed a version 4 bundle is worse, because it would ignore the
+file while reporting that it had replaced the club's complete booking-policy set,
+leaving source and target quietly disagreeing about who may bring guests.
+
+Re-export any configuration bundle you rely on from the upgraded source app
+before importing it. Do not hand-edit `manifest.json` and do not expect **Reseal
+edited bundle** to upgrade an old bundle's meaning: a valid v4 export contains
+BOTH `booking-policies/minimum-stay.csv` and
+`booking-policies/adult-member-hosting.csv` with the complete intended sets (or
+their exact headers alone when clearing is intentional).
+
 ### Re-export configuration bundles for format version 3 (#2363)
 
 Configuration bundles now require exact **format version 3** compatibility. The
@@ -285,6 +307,15 @@ flow) or cloning one runs the migrations first and imports the bundle
 second time. Export a fresh bundle once you have upgraded, replace any archived
 one you would restore from, and load your front page after any import. The two
 cleanups above can come back the same way; see issue #2511.
+
+Since #2511 the import path also guards this **mechanically**: when a bundle's
+value byte-matches one of these three removed literals (this hero, the footer
+affiliations, or the lodge address), the importer **skips writing that field**,
+leaves the cleaned value in place, and shows a warning row in the import preview.
+The unattended rebuild-from-bundle path has no preview, so it writes that same
+warning to the **boot log** instead (a `WARN` naming the skipped literal). So a
+stale bundle can no longer silently put the old value back on either path — but
+re-exporting after upgrading is still the right habit, and clears the warning.
 
 **A hero you edited yourself is never touched.** The cleanup matches that one
 exact sentence and nothing else, so a club that has written its own front-page

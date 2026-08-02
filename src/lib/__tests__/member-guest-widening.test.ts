@@ -804,6 +804,17 @@ describe("consent columns have exactly one writer", () => {
       // message for the same event.
       "src/app/api/bookings/[id]/guests/[guestId]/route.ts":
         "the guest-removal route reads the removed row's consent state to decide who is owed a withdrawal notice",
+      // --- #2364's adult-member hosting evaluator. A READER, and a pure one:
+      // it selects `consentStatus` and passes it through the shared
+      // `isOperationallyPresentConsent` predicate to decide whether an adult
+      // member guest counts as a host. Same D-12 rule the kiosk, the roster,
+      // bed allocation and the arrival emails apply — an unaccepted invite is
+      // not a responsible adult at the lodge — so the hosting review is not
+      // suppressed by somebody who never agreed to come. It composes no consent
+      // shape and writes no consent column; its only writes are the five
+      // `adultMemberHosting*` columns on Booking.
+      "src/lib/adult-member-hosting-review.ts":
+        "the hosting evaluator reads consent to decide whether a member guest is present enough to host",
     };
 
     const mentions = productionFilesUnder("src")

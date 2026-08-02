@@ -2387,6 +2387,154 @@ Config transfer is the one replace-set exception: it takes the config-import
 lock then the shared policy-set lock, re-plans, and may delete omitted policies
 only after they appeared in Preview. Existing policies migrate to `HOLD`.
 
+### Adult-member hosting (#2364, epic decisions D-R3 / D-R4)
+
+A club may optionally ask that every non-member guest-night overlaps an adult
+member who is actually staying on the same booking. It is the second consumer of
+the #2363 exception foundation and the second allowlisted reason code,
+`ADULT_MEMBER_HOSTING_REQUIRED`.
+
+**Configuration.** One `AdultMemberHostingPolicy` row per scope: a club-wide row
+(`Disabled` / `Admin review required`) plus, per lodge, an override that may also
+say `Inherit`. Scope identity is pinned in the database — `scopeKey` is held to
+`COALESCE(lodgeId, 'club-wide')` by a CHECK and carries a unique index, so a
+second club-wide row cannot exist and resolution is deterministic. A club-wide
+`INHERIT` is refused by a second CHECK, because it would have nothing to inherit
+from. `capacityMode` has **no** database default (D-R6): the table is created
+empty and every API and UI write states it. Every write is versioned and
+compare-and-swaps on the revision the editor loaded, under the
+`adult-member-hosting-policy-set` advisory key.
+
+**Resolution.** A lodge row whose mode is not `INHERIT` replaces the club default
+for that lodge; an `INHERIT` row, or no row at all, falls through to the club
+row; a club with no row resolves `DISABLED`. A scope that cannot be identified is
+REFUSED (`UnknownAdultMemberHostingScopeError`), never quietly answered
+"disabled" — the caller must not be able to confuse "the club has not turned this
+on" with "we could not tell which lodge this is".
+
+**Who may host.** An active, uncancelled, unarchived **ADULT** `Member` who is
+linked to a guest row on that exact night. Three consequences, each deliberate:
+
+- **Booking ownership never proves attendance.** The owner counts only through a
+  participant row linked to them, and only on the nights that row covers. The
+  evaluator is never given `Booking.memberId`, so it cannot be credited by
+  accident.
+- **The member LINK is authoritative, not the guest row's `isMember` flag**,
+  which is a pricing-time snapshot. A row whose member cannot be resolved is
+  treated as a non-member guest — the safe direction, since that means it needs
+  hosting rather than provides it.
+- **Child, youth, infant and NOT_APPLICABLE (organisation) members cannot
+  host.** They are still members in good standing, so their OWN nights never
+  need covering: the minors rule (`requiresAdminReview`) owns children, and this
+  rule is about non-member guest-nights only.
+- **A membership that has lapsed is not a membership.** An inactive, cancelled
+  or archived member cannot host AND their own nights need hosting: the safe
+  direction above is applied to a member who is resolvable but no longer in good
+  standing, because for this rule they are functionally a non-member (D-R3). The
+  standing test is the single predicate both sides are built from, so a
+  participant cannot fall between them and escape the rule entirely — which is
+  what happened before the #2364 review. It is keyed off standing only, never
+  `ageTier`, so an active organisation member is unchanged.
+- **An unaccepted member-guest invite cannot host.** `consentStatus: PENDING` is
+  not operationally present (D-12) — the kiosk, the arrival roster, bed
+  allocation and the arrival emails all leave that row out — so counting it as a
+  host would let a member suppress the review with an adult who never agreed to
+  come, and the lodge would then receive the non-member guests unaccompanied.
+  The review clears by itself the moment the invite is accepted.
+
+Nights come from the sparse `BookingGuestNight` rows (#713), so a non-contiguous
+stay is judged night by night. Rows predating #713 fall back to the GUEST's own
+`stayStart..stayEnd` envelope, never the booking's.
+
+**Split bookings (#738).** A mixed party awaiting payment is stored as a member
+booking plus a linked non-member child. Judged alone the child contains no member
+at all, so the evaluation borrows the direct parent's (or child's) adults as
+host-only participants whenever that sibling belongs to the SAME member and is
+live. Uncovered guest-nights still come only from the booking's own rows, so one
+party yields one hazard rather than two. Group bookings are explicitly NOT
+affected: a joiner's booking belongs to a different member, so an organiser's
+adults never host somebody else's guests and "the same booking" keeps meaning
+what it says.
+
+That borrowing makes the dependency **symmetric**, and reconciliation has to
+match it: shortening the member's own stay on the parent takes a host away from
+the child, and extending it gives one back, without a single row on the child
+changing. Every mutation path therefore reconciles the mutated booking AND the
+live same-member siblings the borrow reads, inside the same transaction
+(`reconcileAdultMemberHostingReviewWithSiblings`). The fan-out is one level and
+that is exact rather than a safety margin — the relation is direct-parent /
+direct-child, so expanding from a sibling could only lead back. A sibling always
+opens PENDING: an admin's on-behalf reason belongs to the booking they were
+making, never to a row reached through it.
+
+**Consequence.** Hosting is a REVIEW, not a refusal — the club chose "admin
+review required", and D-R4 makes it always administratively overridable. A
+member's booking is made and an admin decides afterwards. The hosting review
+lives in its OWN `Booking` columns (`adultMemberHostingReview*`) rather than the
+shared `requiresAdminReview` / `adminReviewStatus` pair, because several booking
+paths wipe those the moment the minors-only rule stops applying, and an unrelated
+guest edit must not silently discard an admin's hosting decision. The two hazards
+are reported together as structured codes at read time
+(`bookingReviewReasonCodes`), which is what "without overloading the legacy single
+review string" means here. A pending hosting review deliberately does NOT block
+lodge check-in: the minors gate is a child-safety stop, whereas the fix for a
+hosting hazard — an adult member joining the booking — is not something anybody at
+the door can do.
+
+**Admin exemption.** Stated per path, like minimum stay's:
+
+- **Booking create** refuses an authorised **on-behalf** booking that trips the
+  rule with HTTP 409 `ADULT_MEMBER_HOSTING_CONFIRM_REQUIRED` until the admin
+  supplies a reason, which is then persisted with their id against an APPROVED
+  review. Role alone buys nothing: a dual-hat admin booking for themselves is a
+  member here, exactly as #1442 decided for minimum stay. `/admin/book` answers
+  that 409 with a reason panel on both submit paths — confirm and save-as-draft,
+  since the check runs before the draft fork — mirroring the over-capacity
+  warn-and-confirm beside it. A `*_CONFIRM_REQUIRED` refusal no surface can
+  satisfy is a permanent block, so the contract test pins that every such code
+  the create route can return has a client that branches on it.
+- **The reviewer is a real foreign key.** `adultMemberHostingReviewedById`
+  carries a `SetNull` relation to `Member` and a `member-merge.ts` spec, like
+  every other actor-attribution column on `Booking`. Member merge repoints it and
+  member deletion nulls it; a bare id would be invisible to the DMMF
+  completeness guard and D-R4's "who let this through" would rot into a dangling
+  id the database never surfaces.
+- **Every other path opens the review PENDING for everybody, admin included.**
+  Accepting a hosting exception is a deliberate act with a reason attached, not a
+  side effect of an unrelated edit, so a modification, a guest change or a
+  waitlist confirm never auto-approves a hazard it just created.
+
+**Re-evaluation.** The reconciler derives everything from live rows and is
+idempotent, so it runs at the end of every booking path that can change the
+party: create (draft, confirmed, waitlisted, and the split child), batch modify,
+date modify, admin date shift, guest add, guest removal and waitlist confirm —
+each inside its own transaction, with the caller's `tx`. It also runs on every
+path that CREATES a whole party without going through `booking-create.ts`: the
+public booking-request approval and its held-booking conversion, the
+quote-time hold, both school/member whole-lodge approvals, and the verified
+non-member group joiner. Those are the parties the rule most obviously targets —
+every guest a non-member, the owner a non-login contact — and leaving them
+unrecorded meant the hazard was present but invisible until some unrelated later
+edit materialised it months on. They all open PENDING and none of them is
+blocked: approving a REQUEST is not the reasoned acceptance of a hosting
+exception that D-R4 asks for. `adult-member-hosting-review.test.ts` enforces this
+structurally — every module in `src/` containing a `booking.create(` must reach a
+hosting recorder, and no module outside the review service may call the
+single-booking reconciler. A hazard **clears**
+whenever current facts cover every night, for any reason: an adult member was
+added, a guest left, the nights moved, the member was reinstated, the policy was
+switched off, or the booking moved to a lodge that never had the rule. It
+**reopens** as PENDING, dropping the previous decision, only when the uncovered
+guest-night set or the policy revision materially differs — a renamed guest or an
+extra host on an already-covered night does not re-prompt an admin who has
+already decided.
+
+**Scope boundary.** #2364 stops at configuration, the evaluator and these
+integration seams. The member request surface, the admin execution UI, durable
+proposal state and capacity reservation from `HOLD` all belong to #2365; the
+capacity mode is frozen onto the snapshot and aggregated here, and reserves
+nothing.
+
 Issue #1668 adds an **admin-only override** (`adminOverride`, honoured solely when
 `bookingManagementAuthorizationRole(session.user) === "ADMIN"`, i.e. Full Admin
 or Booking Officer) that lifts those date-window locks so an admin can move the
@@ -2881,6 +3029,56 @@ helpers so the surfaces can never drift):
   sum, both deep-linking to `/admin/bookings?additionalOwed=owed` - the whole
   queue, with no date bound, because the bookings list has no upcoming-only
   filter to point at.
+
+### Booking-policy exception requests (#2365, epic decision D-R5)
+
+The durable member-request + admin-decision flow for eligible SOFT policy
+failures. It NEVER covers a hard failure — whole-lodge capacity, invalid/past
+dates, authentication, subscription/membership eligibility, duplicate
+member-night, payment, privacy or data-integrity — which stay firm refusals
+(the #2363 allowlist is the only thing that can enter review). These invariants
+hold over the store (`BookingChangeRequest`, `kind = POLICY_EXCEPTION`) and the
+pure workflow logic (`src/lib/booking-exception-requests.ts`):
+
+- **The proposal is immutable and self-proving.** A request freezes the complete
+  proposal — the whole proposed booking for a new-booking request, the live base
+  footprint AND the full proposed result for a modification — and a SHA-256
+  `proposalHash` over its canonicalised form (recursively key-sorted JSON, sorted
+  and de-duplicated per-guest nights, content-ordered guests). The hash is
+  order-independent, so re-freezing the same facts is byte-identical, and it
+  changes if any night, guest or — for a modification — the live base drifts. An
+  approval recomputes it to prove it is executing exactly what was reviewed.
+- **The evidence is frozen and authoritative.** `frozenEvidence` is the #2363
+  aggregate — every covered structured violation with its reason code, policy
+  id/version, resolved scope, exact affected NZ nights, requirements and frozen
+  per-policy capacity mode — plus the HOLD-if-any-HOLD aggregate. An approval may
+  override ONLY these reviewed violations, and nothing that is not on the #2363
+  allowlist can be stored (`freezePolicyExceptionEvidence` refuses it).
+- **A held request's provisional reservation is per-night and directional.** A
+  new-booking request reserves the FULL proposal's per-night beds; a modification
+  request reserves ONLY the incremental beds beyond the unchanged live booking
+  (`max(0, proposed - live)` per night), because the live booking is a
+  capacity-holding row that already holds its own footprint and #2365 forbids
+  touching it before approval. A shrinking modification reserves nothing. (The
+  reservation math is `computeProposalReservation`; the live capacity integration
+  and the atomic reservation-to-booking handoff are the #2365 execution lane.)
+- **Drift is set algebra over the frozen and current violations of the SAME
+  proposal.** At approval the frozen proposal is re-evaluated against today's
+  policy configuration. A reviewed rule that no longer trips (policy switched off
+  or relaxed) is executed WITHOUT an override and the resolution is recorded; a
+  reviewed rule that still trips at a different revision or with different content
+  (`violationFingerprint`), or any brand-new violation, is a materially different
+  question the member must resubmit — it is never silently overridden. Only
+  reviewed violations that still trip unchanged are overridable.
+- **The message is required.** `memberMessage` is trimmed, non-empty and at most
+  1000 characters, normalised once at the request boundary so every later surface
+  renders exactly the stored value.
+- **Every transition is guarded and single.** Only a `REQUESTED` request may move,
+  and only to `APPROVED`/`REJECTED`/`CANCELLED`/`SUPERSEDED`; the guarded
+  `updateMany` plus the integer `version` token make a lost claim run no side
+  effect (the `BookingRequest.version` discipline, #1923). `REJECTED`,
+  `CANCELLED` and `SUPERSEDED` release the provisional reservation; `APPROVED`
+  turns it into the executed booking's own beds inside the same transaction.
 
 ### Chasing an outstanding additional payment (#2350)
 
@@ -3979,10 +4177,14 @@ and active; consent is required from the other member unless (a) an admin
 assigns the link directly (`assignedByAdminId` recorded, CONFIRMED
 immediately; both members are then emailed unless the assigning admin chose
 not to notify — the suppression is audited `notifyMember: false`, #1769a),
-(b) the target has **no login** and the initiator is a
-family-group ADMIN of a group containing the target ("one login manages the
-family" — a login-holding target always consents personally, and the no-login
-target's address is emailed that the link was recorded), or (c) the link
+(b) the target has **no login** and the initiator is the adult currently
+recorded as the target's details voucher (`detailsConfirmedByMemberId`) in a
+group containing the target ("one login manages the family" — #2284 (S4)
+replaced the old family-group-ADMIN gate; that voucher is self-assignable by any
+adult login co-member sharing the group, so this one-step path is open to every
+adult in the group, not a designated one. A login-holding target always consents
+personally, and the no-login target's address is emailed that the link was
+recorded), or (c) the link
 forms on a `PartnerInviteToken` claim minted with `createPartnerLink` — the
 claim itself is the consent, so the claim page discloses the partnership
 before the claimer accepts, and both parties' eligibility (including the
@@ -4083,9 +4285,10 @@ adult with a login, and none of those checks reads the parent columns —
 | Being billed | `billingFamilyGroupId` — group-based; no billing path reads a parent link |
 
 Every row of that table lands on the same gate — family-group co-membership plus
-an active adult with a login — and **#2284 is the open question of whether that
-gate is too broad** (today every adult in a family group has identical powers
-over every non-login member in it). Nothing here pre-empts it: this issue moved
+an active adult with a login — and **#2284 asked whether that gate is too broad**
+(today every adult in a family group has identical powers over every non-login
+member in it) and **decided it deliberately** — see *The family group is the
+authorisation boundary* below. Nothing in #2282 pre-empted that: this issue moved
 no power onto the group gate, it only recorded that the powers were already
 there rather than on the parent link.
 
@@ -4117,6 +4320,86 @@ an organisation. `isOrganisationMember` (the ORG access token, or the legacy
 classification, on the write routes and in the search's SQL alike. This is a
 restoration of what the ADULT clause excluded by accident, not a narrowing of
 "any age": every real age tier, INFANT included, may be recorded as a parent.
+
+**The family group is the authorisation boundary, and every login-holding adult
+in it is equal** (#2284, owner decisions 2 Aug 2026). When the system asks "may
+this person act on that person?", the question it answers is *do they share a
+family group, and does the actor hold a login* — never *which* adult is acting,
+whether they are the target's parent, or whether the target agreed. The parent
+link is a label, not a permission (the #2282 table above). This is now a recorded
+decision rather than an accident of implementation: for a club of small,
+mutually-trusting families it is the intended model, and the four protections
+below are where it is deliberately softened for the members who cannot speak for
+themselves — those with **no login of their own**, who since #2255 can sit up to
+four generations from the adult acting for them. The investigation's original
+"can see every co-member's data including parents' emails" power is **not**
+restated here: #2424 (above) has since closed the parent-email exposure, so the
+family read is now a whitelist, not an open book.
+
+**The dividing line is `canLogin`, not age, and that is deliberate.** The age-up
+job withholds a login from any member whose email is inherited from someone else
+(`src/lib/cron-age-up.ts`), so an ADULT can remain a non-login member
+indefinitely — and every gate here keys on `canLogin`, so such an adult stays
+subject to the same powers a child is, and is exactly who the one-step partner
+declaration below can target. Nothing changes *at* 18; the protections below
+apply to every non-login member whatever their age.
+
+The four powers over a non-login member, and how #2284 settled each:
+
+- **Requesting cancellation of their membership (S1, owner decision: flag, not a
+  second signature).** A non-login member is written already-confirmed on a
+  cancellation request because they have no login to confirm with
+  (`requiresOwnConfirmation` in `src/lib/membership-cancellation-requests.ts` is
+  true only for a login-holder acting on someone else). Rather than add a
+  second-adult signature, the admin reviewer is shown an explicit **"included
+  without their own or a second adult's confirmation"** flag on any such
+  participant (`includedWithoutOwnOrSecondAdultConfirmation` in
+  `src/lib/membership-cancellation-admin.ts`), so an auto-stamped confirmation is
+  never mistaken for a personally-given one and the judgement moves to the admin.
+  Candidate eligibility is read through `isMembershipHolderRecord`, not
+  re-derived. The request still executes only on admin approval.
+- **Adding them to a booking (S2, owner decision: notify, module-independent).**
+  A family-scope add now tells the added member — directly if they hold a login,
+  otherwise the group's login-holding adults — reusing
+  `familyAdultDelegateResolver.resolveNotificationRecipients`
+  (`src/lib/member-guest-delegate.ts`), the same rule MG2 already ships. It is
+  the missing half of #2250 self-removal: you can only take yourself off a
+  booking you find out about. This is **general family behaviour, sent regardless
+  of the `memberGuests` module switch**, registered with the booking
+  `EmailBookingContext` so the #2258 per-booking "No emails" switch withholds it,
+  and it carries a personal opt-out in `NotificationPreference` (it is an FYI, not
+  a consent request).
+- **Editing their details (S3, owner decision: read-only provenance).** A
+  delegated edit was audited but never shown to the family. A read-only
+  **"Details last confirmed by X on date"** line now renders on the member's
+  family/onboarding cards from the already-stamped `detailsConfirmedByMemberId` /
+  `detailsConfirmedAt` (`src/lib/member-family-service.ts`), added to the
+  member-facing payload by the same deliberate whitelist the #2424 rule uses —
+  the confirmer's NAME only, and they are already a listed family adult.
+- **The one-step partner declaration (S4, owner decision: retire the role
+  reliance) — formerly the one role-differentiated power, now aligned with the
+  equal-adults boundary.** Declaring a CONFIRMED partner link over a non-login
+  adult co-member in one step was the *only* thing that ever read
+  `FamilyGroupMember.role` (it required the actor to hold `role: "ADMIN"`), and
+  who held ADMIN was an accident of which flow created the group. It is now
+  re-anchored onto `Member.detailsConfirmedByMemberId` — the adult recorded as
+  having vouched for that member's details — plus a still-shared family group
+  (`src/lib/member-partner-link.ts`). **That voucher pointer is self-assignable
+  by any adult login co-member sharing the group**: `PUT
+  /api/members/family/[memberId]/details` stamps it to whoever confirms the
+  member's details, gated only on being an active adult login co-member with a
+  complete profile (no admin or group-lead requirement) and overwriting any prior
+  voucher. So the one-step power is **not** a lone designated "responsible
+  adult" — it is available to every adult login co-member, which is exactly the
+  "every login-holding adult in the group is equal" boundary above, and
+  deliberately so; no code may treat `detailsConfirmedByMemberId` as naming a
+  single, lead-appointed responsible adult. With the role reader gone,
+  **`FamilyGroupMember.role` no longer gates authorisation anywhere**; its
+  misleading schema comment is corrected and the column is retained pending a
+  dedicated removal migration. Relatedly, the family-group join request no longer
+  materialises a group around a consentless target as `ADMIN` — it seeds `MEMBER`
+  (`src/app/api/members/family/request-join/route.ts`). Member-merge's
+  `maxFamilyRole` upgrade is now vestigial rather than load-bearing.
 
 **What one MEMBER may see about another member's parent** (#2424, owner decision
 2026-08-01). `GET /api/members/family` and `GET /api/member/onboarding` both
