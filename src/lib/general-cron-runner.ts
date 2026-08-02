@@ -6,6 +6,7 @@ import {
   type RecordCronJobRunInput,
 } from "@/lib/cron-job-run";
 import { reapStaleGroupSettlements } from "@/lib/cron-group-settlement-reaper";
+import { sendPlaceholderGuestNameReminders } from "@/lib/placeholder-guest-name-reminders";
 import { sendPreArrivalReminders } from "@/lib/cron-pre-arrival-reminders";
 import { sendQuoteExpiryReminders } from "@/lib/cron-quote-expiry-reminders";
 import { sendSchoolAttendeeConfirmationPrompts } from "@/lib/school-attendee-confirmation";
@@ -15,6 +16,7 @@ const GENERAL_CRON_JOB_NAMES = [
   "additional-payment-reminders",
   "confirm-pending",
   "group-settlement-reaper",
+  "placeholder-guest-name-reminders",
   "pre-arrival-reminders",
   "purge-booking-requests",
   "quote-expiry-reminders",
@@ -29,6 +31,9 @@ export interface GeneralCronCycleResult {
   > | null;
   confirmPending: Awaited<ReturnType<typeof confirmPendingBookings>> | null;
   groupSettlementReap: Awaited<ReturnType<typeof reapStaleGroupSettlements>> | null;
+  placeholderGuestNameReminders: Awaited<
+    ReturnType<typeof sendPlaceholderGuestNameReminders>
+  > | null;
   preArrivalReminders: Awaited<ReturnType<typeof sendPreArrivalReminders>> | null;
   bookingRequestPurge: Awaited<ReturnType<typeof purgeExpiredBookingRequests>> | null;
   quoteExpiryReminders: Awaited<ReturnType<typeof sendQuoteExpiryReminders>> | null;
@@ -52,6 +57,7 @@ export interface GeneralCronRunnerDependencies {
     sendAdditionalPaymentReminders: typeof sendAdditionalPaymentReminders;
     confirmPendingBookings: typeof confirmPendingBookings;
     reapStaleGroupSettlements: typeof reapStaleGroupSettlements;
+    sendPlaceholderGuestNameReminders: typeof sendPlaceholderGuestNameReminders;
     sendPreArrivalReminders: typeof sendPreArrivalReminders;
     purgeExpiredBookingRequests: typeof purgeExpiredBookingRequests;
     sendQuoteExpiryReminders: typeof sendQuoteExpiryReminders;
@@ -131,6 +137,7 @@ export async function runGeneralCronCycle(
     additionalPaymentReminders: null,
     confirmPending: null,
     groupSettlementReap: null,
+    placeholderGuestNameReminders: null,
     preArrivalReminders: null,
     bookingRequestPurge: null,
     quoteExpiryReminders: null,
@@ -161,6 +168,14 @@ export async function runGeneralCronCycle(
       work:
         taskDependencies.reapStaleGroupSettlements ??
         reapStaleGroupSettlements,
+    },
+    {
+      jobName: "placeholder-guest-name-reminders",
+      resultKey: "placeholderGuestNameReminders",
+      failureMessage: "Placeholder guest-name reminder cron error",
+      work:
+        taskDependencies.sendPlaceholderGuestNameReminders ??
+        sendPlaceholderGuestNameReminders,
     },
     {
       jobName: "pre-arrival-reminders",

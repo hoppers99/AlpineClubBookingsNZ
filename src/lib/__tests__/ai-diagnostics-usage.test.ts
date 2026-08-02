@@ -1,3 +1,6 @@
+import { readFileSync } from "fs";
+import path from "path";
+
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // A flexible prisma mock: interactive $transaction(fn) calls fn(db); array-form
@@ -511,5 +514,78 @@ describe("settle serialises against reserve on the per-month lock (money-safety 
 describe("fail-closed defaults", () => {
   it("ships with a NZ$0 budget (no spend until an admin sets one)", () => {
     expect(DIAGNOSTICS_DEFAULT_MONTHLY_BUDGET_CENTS).toBe(0);
+  });
+});
+
+describe("real-Postgres over-budget race proof stays wired into CI (#2532)", () => {
+  // The race suite is `describe.skip` unless RUN_CONCURRENCY_RACE_TESTS=1, and
+  // it reaches CI ONLY because `concurrency-lock-races.realdb.test.ts` imports
+  // it — that harness file is what the workflow's race step actually runs.
+  // Delete the import and the money-safety proof silently stops executing while
+  // every suite still reports green. Same guard shape as the #2363 trigger
+  // proof in `booking-policy-exception-foundation.test.ts`.
+  const raceTestPath = "src/lib/__tests__/ai-diagnostics-budget-race.realdb.test.ts";
+
+  function repoFile(relativePath: string) {
+    // Test helper: reads a fixed repo file under process.cwd(); the path is
+    // test-controlled, not user input.
+    // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
+    return readFileSync(path.resolve(process.cwd(), relativePath), "utf8");
+  }
+
+  it("is imported by the guarded hosted-PostgreSQL harness the CI step runs", () => {
+    const harness = repoFile("src/lib/__tests__/concurrency-lock-races.realdb.test.ts");
+    expect(harness).toContain('import "./ai-diagnostics-budget-race.realdb.test";');
+
+    const workflow = repoFile(".github/workflows/ci.yml");
+    expect(workflow).toContain(
+      "npx vitest run src/lib/__tests__/concurrency-lock-races.realdb.test.ts",
+    );
+    expect(workflow).toContain('RUN_CONCURRENCY_RACE_TESTS: "1"');
+  });
+
+  it("keeps its opt-in + dedicated-loopback-database guards and its forced barrier", () => {
+    const raceTest = repoFile(raceTestPath);
+    // Opt-in only, dedicated database only — ordinary `npm test` must never
+    // need a live PostgreSQL.
+    expect(raceTest).toContain('process.env.RUN_CONCURRENCY_RACE_TESTS === "1"');
+    expect(raceTest).toContain("CONCURRENCY_RACE_DATABASE_URL");
+    expect(raceTest).toContain("concurrency_race_1881");
+    // The interleaving is FORCED by a held advisory lock plus a pg_locks
+    // barrier, never by a sleep. A rewrite back to hopeful racing would make
+    // the suite flaky in CI and vacuous on a fast machine.
+    expect(raceTest).toContain("pg_advisory_xact_lock(hashtext(${BUDGET_LOCK_NAME})");
+    expect(raceTest).toContain("FROM pg_locks");
+    expect(raceTest).toContain("waitForBudgetLockWaiters(2)");
+    // `backend_xid IS NULL` is the clause that makes the barrier discriminating
+    // rather than decorative: a cross-connection row count cannot see an
+    // uncommitted insert under READ COMMITTED, but a backend that has written
+    // already holds a transaction id. Drop this and "took the lock after the
+    // insert" stops being detectable.
+    expect(raceTest).toContain("backend_xid IS NULL");
+  });
+
+  it("keeps the barrier as the first clock to expire on the failure path", () => {
+    const raceTest = repoFile(raceTestPath);
+    const readMs = (name: string) => {
+      const match = new RegExp(`const ${name} = ([\\d_]+);`).exec(raceTest);
+      expect(match, `${name} must stay a literal millisecond constant`).not.toBe(
+        null,
+      );
+      return Number(match![1].replaceAll("_", ""));
+    };
+    const barrierMs = readMs("LOCK_POLL_TIMEOUT_MS");
+    const suiteMs = readMs("RACE_TEST_TIMEOUT_MS");
+
+    // Each reserver runs on Prisma's default 5s interactive-transaction
+    // timeout, and the time it spends blocked on the advisory lock counts
+    // against that. A barrier budget close to 5s means a loaded runner reports
+    // "0 winners" from two P2028 timeouts instead of naming the missing lock.
+    expect(barrierMs).toBeLessThanOrEqual(2_500);
+    // Vitest's per-test default is 5000ms (vitest.config.ts sets none), so the
+    // race describe must declare its own, comfortably above the barrier, or a
+    // generic "Test timed out" pre-empts the named diagnostic.
+    expect(suiteMs).toBeGreaterThanOrEqual(barrierMs * 4);
+    expect(raceTest).toContain("{ timeout: RACE_TEST_TIMEOUT_MS },");
   });
 });

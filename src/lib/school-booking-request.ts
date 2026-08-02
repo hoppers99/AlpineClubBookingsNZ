@@ -110,6 +110,7 @@ import {
   enqueueXeroBookingInvoiceOperation,
   kickQueuedXeroOutboxOperationsIfConnected,
 } from "@/lib/xero-operation-outbox";
+import { SCHOOL_CHILD_NAME_PREFIX } from "@/lib/placeholder-guest-names";
 import { nameField } from "@/lib/zod-helpers";
 
 /** Age tiers a school can request counts for. Teachers are always ADULT. */
@@ -118,9 +119,6 @@ const SCHOOL_CHILD_TIERS = [
   AgeTier.CHILD,
   AgeTier.YOUTH,
 ] as const;
-
-/** Display name prefix for the generated bulk child guests. */
-const SCHOOL_CHILD_NAME_PREFIX = "School Child";
 
 // ---------------------------------------------------------------------------
 // Input shapes

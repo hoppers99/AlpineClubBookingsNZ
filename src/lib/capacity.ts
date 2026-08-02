@@ -20,6 +20,7 @@ import {
   type GuestStayRange,
 } from "@/lib/booking-guest-stay-ranges";
 import { buildLodgeCustodianNightCounter } from "@/lib/custodian-occupancy";
+import { buildLodgePolicyExceptionReservationCounter } from "@/lib/booking-exception-reservations";
 
 type PrismaClient = typeof prisma;
 type TransactionClient = Omit<PrismaClient, "$connect" | "$disconnect" | "$on" | "$transaction" | "$use" | "$extends">;
@@ -465,10 +466,23 @@ export async function checkCapacity(
     nights,
     db,
   });
+  // Provisional policy-exception reservations (#2525) count as occupancy exactly
+  // like a custodian hold: a HELD request's reserved beds are unavailable until
+  // the request is rejected/cancelled/superseded (rows deleted) or approved (rows
+  // deleted, beds re-taken by the executed booking). Read under the same per-lodge
+  // capacity lock the claim is written under, so a held request never oversells.
+  const reservationCount = await buildLodgePolicyExceptionReservationCounter({
+    lodgeId,
+    from: start,
+    toExclusive: exclusiveEnd,
+    nights,
+    db,
+  });
   const nightDetails: NightAvailability[] = nights.map((night) => {
     const occupiedBeds =
       getOccupiedBedsForNightFromIndex(night, occupancyIndex) +
-      custodianCount(night);
+      custodianCount(night) +
+      reservationCount(night);
     const wholeLodgeHeld = isNightWholeLodgeHeld(night, holdIndex);
 
     return {
@@ -561,10 +575,22 @@ export async function checkCapacityForGuestRanges(
     nights,
     db,
   });
+  // Provisional policy-exception reservations (#2525) counted as occupancy, same
+  // as the custodian term — so every admission path that reaches this engine
+  // (booking create, modify, waitlist confirm, payment) refuses to sell a bed a
+  // held request has reserved. See docs/CONCURRENCY_AND_LOCKING.md.
+  const reservationCount = await buildLodgePolicyExceptionReservationCounter({
+    lodgeId,
+    from: start,
+    toExclusive: exclusiveEnd,
+    nights,
+    db,
+  });
   const nightDetails: NightAvailability[] = nights.map((night) => {
     const occupiedBeds =
       getOccupiedBedsForNightFromIndex(night, occupancyIndex) +
-      custodianCount(night);
+      custodianCount(night) +
+      reservationCount(night);
     const proposedBeds = countActiveGuestsForNight(guests, night, {
       checkIn: start,
       checkOut: exclusiveEnd,
@@ -828,12 +854,23 @@ export async function checkCapacityForPartnerSharedAdmission(
     nights,
     db,
   });
+  // Provisional policy-exception reservations (#2525) counted as base occupancy
+  // here too, so an admin-initiated shared admission cannot admit into a bed a
+  // held request has reserved.
+  const reservationCount = await buildLodgePolicyExceptionReservationCounter({
+    lodgeId,
+    from: start,
+    toExclusive: exclusiveEnd,
+    nights,
+    db,
+  });
   let reason: string | null = null;
   const nightDetails: PartnerSharedNightDetail[] = nights.map((night) => {
     const nightKey = formatDateOnly(night);
     const occupied =
       getOccupiedBedsForNightFromIndex(night, occupancyIndex) +
-      custodianCount(night);
+      custodianCount(night) +
+      reservationCount(night);
     const ordinary = countActiveGuestsForNight(ordinaryGuests, night, envelope);
     const wholeLodgeHeld = isNightWholeLodgeHeld(night, holdIndex);
     if (wholeLodgeHeld) {
@@ -962,6 +999,15 @@ export async function getMonthAvailability(
     toExclusive: endDate,
     nights,
   });
+  // Provisional policy-exception reservations (#2525) counted as occupancy on the
+  // calendar too, so a held request's beds show as taken (indistinguishable from
+  // any other occupied bed — no identity leak) rather than bookable.
+  const reservationCount = await buildLodgePolicyExceptionReservationCounter({
+    lodgeId,
+    from: startDate,
+    toExclusive: endDate,
+    nights,
+  });
 
   for (const night of nights) {
     // A whole-lodge-held night (ADR-001, issue #118) must be indistinguishable
@@ -972,7 +1018,8 @@ export async function getMonthAvailability(
     const occupiedBeds = isNightWholeLodgeHeld(night, holdIndex)
       ? lodgeCapacity
       : getOccupiedBedsForNightFromIndex(night, occupancyIndex) +
-        custodianCount(night);
+        custodianCount(night) +
+        reservationCount(night);
 
     const key = formatDateOnly(night);
     availability.set(key, occupiedBeds);

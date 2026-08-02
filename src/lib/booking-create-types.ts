@@ -12,6 +12,7 @@ import type { BookingPaymentMethod } from "@/lib/booking-payment-methods";
 import type { InternetBankingPaymentSettingsValues } from "@/lib/internet-banking-settings";
 import type { GuestNightInput } from "@/lib/booking-guest-stay-ranges";
 import type { MemberGuestConsentGuestFields } from "@/lib/member-guest-add-policy";
+import type { PrismaTransactionClient } from "@/lib/db-transaction";
 
 export type BookingWithGuests = Booking & { guests: BookingGuest[] };
 
@@ -173,6 +174,18 @@ export interface ConfirmedBookingInput extends BaseInput {
    * guest and must not count against the booking replacing it.
    */
   duplicateStayGuard?: { excludeBookingId: string };
+  /**
+   * Caller-supplied transaction (#2525). When present, the service runs its
+   * DB work inside this transaction instead of opening its own, so an atomic
+   * approve-and-execute can release a policy-exception reservation, claim the
+   * request status, and create the booking in ONE transaction — no
+   * mark-approved-then-call-service gap. Post-commit provider work (email, Xero)
+   * is NOT fired inline in this mode; the service returns a `deferredPostCommit`
+   * thunk on the "created" outcome for the caller to run after ITS commit.
+   * Absent for every existing caller, which keeps the self-contained-transaction
+   * behaviour byte-identical.
+   */
+  tx?: PrismaTransactionClient;
 }
 
 /**
@@ -202,7 +215,20 @@ export class DuplicateStayConflictError extends Error {
 }
 
 export type ConfirmedBookingOutcome =
-  | { type: "created"; booking: BookingWithGuests; bumpedBookingIds: string[]; isZeroDollarConfirmed: boolean }
+  | {
+      type: "created";
+      booking: BookingWithGuests;
+      bumpedBookingIds: string[];
+      isZeroDollarConfirmed: boolean;
+      /**
+       * Present ONLY in tx-mode (#2525): the post-commit provider work (member
+       * emails, Xero invoice/credit queueing, booking events, admin alert) the
+       * service deferred because the caller owns the commit. The caller MUST run
+       * it after committing. Absent in standalone mode, where the service already
+       * ran those effects itself before returning.
+       */
+      deferredPostCommit?: () => Promise<void>;
+    }
   | { type: "capacityExceeded"; fullNights: string[] };
 
 export type WaitlistedBookingInput = BaseInput & {

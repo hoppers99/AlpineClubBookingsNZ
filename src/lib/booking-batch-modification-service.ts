@@ -62,6 +62,10 @@ import {
 import type { PromoCoverageNotice } from "@/lib/promo-cap-coverage";
 import { hasCapturedPayment } from "@/lib/booking-payment-state";
 import { prisma } from "@/lib/prisma";
+import {
+  withOptionalTransaction,
+  type PrismaTransactionClient,
+} from "@/lib/db-transaction";
 import { queueXeroBookingEditSettlement } from "@/lib/xero-booking-edit-settlement";
 import {
   assertProposedCheckInClearsXeroLockDate,
@@ -151,6 +155,16 @@ export type BatchModificationResponse = {
   // #2266: the stored credit election (#2265) after this edit, so the panel
   // can confirm what was remembered without a second fetch.
   creditElectionCents: number | null;
+  /**
+   * Present ONLY in tx-mode (#2525): the post-commit provider work (Stripe
+   * refund, additional PaymentIntent, member/notification emails, Xero
+   * settlement, superseded-intent drain, change-request linkage, audit) the
+   * service deferred because the caller owns the commit. The atomic
+   * approve-and-execute path MUST run it after committing. Absent in standalone
+   * mode, where the service already ran those effects and the provider-derived
+   * fields (`stripeRefundId`, `additionalPaymentClientSecret`) are populated.
+   */
+  deferredPostCommit?: () => Promise<void>;
 };
 
 /**
@@ -188,11 +202,24 @@ export async function modifyBookingBatch({
   actor,
   input,
   ipAddress,
+  tx: callerTx,
 }: {
   bookingId: string;
   actor: { id: string; role: Role };
   input: BatchModifyInput;
   ipAddress: string;
+  /**
+   * Caller-supplied transaction (#2525). When present, the modification runs
+   * inside it — so an atomic approve-and-execute can release a policy-exception
+   * reservation, claim the request status, and apply the modification in ONE
+   * transaction with no mark-approved-then-call gap — and the provider work is
+   * returned as `deferredPostCommit` instead of firing inline. Absent for every
+   * existing caller (route + on-behalf), which keeps behaviour byte-identical.
+   * The supplier has ALREADY taken global lock(1) and the per-lodge lock; the
+   * two `pg_advisory_xact_lock(1)` / `acquireLodgeCapacityLock` acquisitions
+   * below re-enter those same keys (no-ops), preserving the global→lodge order.
+   */
+  tx?: PrismaTransactionClient;
 }): Promise<BatchModificationResponse> {
   // Issue #1668: admin-only date override. The route also rejects non-admins,
   // but keep the service guard so the invariant holds however it is called.
@@ -294,7 +321,7 @@ export async function modifyBookingBatch({
       ? { kind: "ADMIN", adminMemberId: actor.id }
       : { kind: "MEMBER" };
 
-  const result = await prisma.$transaction(async (tx) => {
+  const result = await withOptionalTransaction(callerTx, async (tx) => {
     // Two-tier lock protocol (#1881). A batch modification moves money (reduction
     // refunds / additional charges, credit allocation) AND re-checks/claims
     // capacity, so it takes BOTH locks: the global lock(1) FIRST so it mutually
@@ -957,123 +984,161 @@ export async function modifyBookingBatch({
     } satisfies BatchModificationTransactionResult;
   });
 
-  // AFTER the commit, and before the settlement work below, so a cross-family
-  // guest is asked as promptly as the booking-modified email is sent. Awaited: an
-  // unsent consent request leaves a bed held (D-4) for a member nobody asked.
-  if (result.memberGuestNotificationRows.length > 0) {
-    // Loaded lazily on purpose: the sender pulls in the whole email/template
-    // graph, and only a booking that actually added a cross-family member guest
-    // needs it. A club with the module off never loads the mailer through this
-    // path at all.
-    const { sendMemberGuestAddNotifications } = await import(
-      "@/lib/member-guest-consent-notifications"
-    );
-    // Belt and braces around a function that is documented never to reject: the
-    // booking is ALREADY COMMITTED at this point, so an unexpected throw here
-    // would hand the member an error for a booking that exists and was paid for.
-    // A notification problem is logged, never surfaced as a booking failure.
-    try {
-      await sendMemberGuestAddNotifications({
-        bookingId,
-        rows: result.memberGuestNotificationRows,
-        actor: memberGuestActor,
-      });
-    } catch (err) {
-      logger.error(
-        { err, bookingId },
-        "Failed to dispatch member-guest add notifications",
+  // #2525: post-commit provider work (superseded-intent drain, Stripe refund,
+  // additional PaymentIntent, member/notification emails, Xero settlement,
+  // change-request linkage, audit) plus building the response. In standalone
+  // mode it runs immediately below, exactly as before. In tx-mode the caller
+  // owns the commit, so it is handed back as `deferredPostCommit` — no provider
+  // call fires inside the still-open approval transaction.
+  const runPostCommit = async (): Promise<BatchModificationResponse> => {
+    // AFTER the commit, and before the settlement work below, so a cross-family
+    // guest is asked as promptly as the booking-modified email is sent. Awaited: an
+    // unsent consent request leaves a bed held (D-4) for a member nobody asked.
+    if (result.memberGuestNotificationRows.length > 0) {
+      // Loaded lazily on purpose: the sender pulls in the whole email/template
+      // graph, and only a booking that actually added a cross-family member guest
+      // needs it. A club with the module off never loads the mailer through this
+      // path at all.
+      const { sendMemberGuestAddNotifications } = await import(
+        "@/lib/member-guest-consent-notifications"
       );
-    }
-  }
-
-  // MG4 (#2309): and the other direction, on the same rules — after the commit,
-  // lazily imported, never allowed to fail an already-committed edit.
-  if (result.withdrawnMemberGuests.length > 0) {
-    const { sendMemberGuestWithdrawnNotifications } = await import(
-      "@/lib/member-guest-consent-notifications"
-    );
-    try {
-      // Grouped by context so each reader gets the sentence that matches what
-      // actually happened to them, rather than one message covering both.
-      for (const context of ["REQUEST_CANCELLED", "TAKEN_OFF"] as const) {
-        const targetMemberIds = result.withdrawnMemberGuests
-          .filter((entry) => entry.context === context)
-          .map((entry) => entry.targetMemberId);
-        if (targetMemberIds.length === 0) continue;
-        await sendMemberGuestWithdrawnNotifications({
+      // Belt and braces around a function that is documented never to reject: the
+      // booking is ALREADY COMMITTED at this point, so an unexpected throw here
+      // would hand the member an error for a booking that exists and was paid for.
+      // A notification problem is logged, never surfaced as a booking failure.
+      try {
+        await sendMemberGuestAddNotifications({
           bookingId,
-          targetMemberIds,
-          context,
+          rows: result.memberGuestNotificationRows,
+          actor: memberGuestActor,
         });
+      } catch (err) {
+        logger.error(
+          { err, bookingId },
+          "Failed to dispatch member-guest add notifications",
+        );
       }
-    } catch (err) {
-      logger.error(
-        { err, bookingId },
-        "Failed to dispatch member-guest withdrawal notifications",
-      );
     }
-  }
 
-  await drainSupersededPrimaryIntents({
-    bookingId,
-    supersededPrimaryPaymentIntents: result.supersededPrimaryPaymentIntents,
-  });
+    // MG4 (#2309): and the other direction, on the same rules — after the commit,
+    // lazily imported, never allowed to fail an already-committed edit.
+    if (result.withdrawnMemberGuests.length > 0) {
+      const { sendMemberGuestWithdrawnNotifications } = await import(
+        "@/lib/member-guest-consent-notifications"
+      );
+      try {
+        // Grouped by context so each reader gets the sentence that matches what
+        // actually happened to them, rather than one message covering both.
+        for (const context of ["REQUEST_CANCELLED", "TAKEN_OFF"] as const) {
+          const targetMemberIds = result.withdrawnMemberGuests
+            .filter((entry) => entry.context === context)
+            .map((entry) => entry.targetMemberId);
+          if (targetMemberIds.length === 0) continue;
+          await sendMemberGuestWithdrawnNotifications({
+            bookingId,
+            targetMemberIds,
+            context,
+          });
+        }
+      } catch (err) {
+        logger.error(
+          { err, bookingId },
+          "Failed to dispatch member-guest withdrawal notifications",
+        );
+      }
+    }
 
-  const stripeRefundId = await executeBookingModificationRefund({
-    bookingId,
-    result,
-    metadataReason: "batch_modification",
-    idempotencyKeyPrefix: `mod_batch_refund_${bookingId}`,
-    failureMessage: "Stripe refund failed after batch modification - enqueueing recovery",
-    recoveryFailureMessage:
-      "Failed to enqueue payment recovery for Stripe refund failure after batch modification",
-  });
-
-  const { additionalPaymentClientSecret, additionalPaymentIntentId } =
-    await createModificationAdditionalPaymentIntent({
+    await drainSupersededPrimaryIntents({
       bookingId,
-      result,
-      reason: "batch_modify_price_increase",
-      idempotencyKey: `mod_batch_${bookingId}_${result.bookingModificationId}`,
-      failureMessage: "Failed to create additional PaymentIntent for batch modification",
+      supersededPrimaryPaymentIntents: result.supersededPrimaryPaymentIntents,
     });
 
-  // Issue #1668: under an admin override, link this modification to the
-  // booking's most recent approved-unlinked change request. Best-effort.
-  const linkedChangeRequestId = result.adminOverride
-    ? await linkModificationToOutstandingChangeRequest(prisma, {
+    const stripeRefundId = await executeBookingModificationRefund({
+      bookingId,
+      result,
+      metadataReason: "batch_modification",
+      idempotencyKeyPrefix: `mod_batch_refund_${bookingId}`,
+      failureMessage: "Stripe refund failed after batch modification - enqueueing recovery",
+      recoveryFailureMessage:
+        "Failed to enqueue payment recovery for Stripe refund failure after batch modification",
+    });
+
+    const { additionalPaymentClientSecret, additionalPaymentIntentId } =
+      await createModificationAdditionalPaymentIntent({
         bookingId,
-        modificationId: result.bookingModificationId,
-        appliedCheckIn: result.booking.checkIn,
-        appliedCheckOut: result.booking.checkOut,
-      })
-    : null;
+        result,
+        reason: "batch_modify_price_increase",
+        idempotencyKey: `mod_batch_${bookingId}_${result.bookingModificationId}`,
+        failureMessage: "Failed to create additional PaymentIntent for batch modification",
+      });
 
-  await dispatchBatchPostTransactionSideEffects({
-    bookingId,
-    actorMemberId: actor.id,
-    ipAddress,
-    result,
-    additionalPaymentIntentId,
-    linkedChangeRequestId,
-  });
+    // Issue #1668: under an admin override, link this modification to the
+    // booking's most recent approved-unlinked change request. Best-effort.
+    const linkedChangeRequestId = result.adminOverride
+      ? await linkModificationToOutstandingChangeRequest(prisma, {
+          bookingId,
+          modificationId: result.bookingModificationId,
+          appliedCheckIn: result.booking.checkIn,
+          appliedCheckOut: result.booking.checkOut,
+        })
+      : null;
 
-  return {
-    booking: result.booking,
-    priceDiffCents: result.priceDiffCents,
-    changeFeeCents: result.changeFeeCents,
-    refundAmountCents: result.refundAmountCents,
-    accountCreditAmountCents: result.accountCreditAmountCents,
-    additionalAmountCents: result.additionalAmountCents,
-    settlementMethod: result.settlementMethod,
-    additionalPaymentClientSecret: additionalPaymentClientSecret ?? null,
-    stripeRefundId: stripeRefundId ?? null,
-    promoRemoved: result.promoRemoved,
-    promoChanged: result.promoChanged,
-    promoCoverage: result.promoCoverage,
-    choreWarnings: result.choreWarnings,
-    creditElectionCents: result.creditElectionCents,
+    await dispatchBatchPostTransactionSideEffects({
+      bookingId,
+      actorMemberId: actor.id,
+      ipAddress,
+      result,
+      additionalPaymentIntentId,
+      linkedChangeRequestId,
+    });
+
+    return {
+      booking: result.booking,
+      priceDiffCents: result.priceDiffCents,
+      changeFeeCents: result.changeFeeCents,
+      refundAmountCents: result.refundAmountCents,
+      accountCreditAmountCents: result.accountCreditAmountCents,
+      additionalAmountCents: result.additionalAmountCents,
+      settlementMethod: result.settlementMethod,
+      additionalPaymentClientSecret: additionalPaymentClientSecret ?? null,
+      stripeRefundId: stripeRefundId ?? null,
+      promoRemoved: result.promoRemoved,
+      promoChanged: result.promoChanged,
+      promoCoverage: result.promoCoverage,
+      choreWarnings: result.choreWarnings,
+      creditElectionCents: result.creditElectionCents,
+    };
   };
+
+  if (callerTx) {
+    // tx-mode (atomic approve-and-execute): the caller owns the commit. The
+    // modification is already applied in the caller's transaction; provider
+    // work runs after commit via deferredPostCommit. Provider-derived fields
+    // (stripeRefundId / additionalPaymentClientSecret) are null here — they
+    // become available only when the deferred work runs, and the approval does
+    // not surface them.
+    return {
+      booking: result.booking,
+      priceDiffCents: result.priceDiffCents,
+      changeFeeCents: result.changeFeeCents,
+      refundAmountCents: result.refundAmountCents,
+      accountCreditAmountCents: result.accountCreditAmountCents,
+      additionalAmountCents: result.additionalAmountCents,
+      settlementMethod: result.settlementMethod,
+      additionalPaymentClientSecret: null,
+      stripeRefundId: null,
+      promoRemoved: result.promoRemoved,
+      promoChanged: result.promoChanged,
+      promoCoverage: result.promoCoverage,
+      choreWarnings: result.choreWarnings,
+      creditElectionCents: result.creditElectionCents,
+      deferredPostCommit: async () => {
+        await runPostCommit();
+      },
+    };
+  }
+
+  return await runPostCommit();
 }
 
 async function dispatchBatchPostTransactionSideEffects({

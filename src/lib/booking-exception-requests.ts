@@ -320,21 +320,37 @@ function demandToReservations(demand: Map<string, number>): NightReservation[] {
 }
 
 /**
- * The provisional reservation a HELD request holds while pending.
+ * The provisional reservation a HELD request WOULD hold while pending — the pure
+ * per-night bed math. (Whether a NEW_BOOKING request actually WRITES this
+ * reservation is deferred to #2526; today only the MODIFICATION path in
+ * `booking-exception-request-service.ts` persists a reservation. This function is
+ * the shared math both paths compute against.)
  *
- *  - NEW_BOOKING reserves the FULL proposal: there is no live booking holding
- *    any of these beds, so every proposed guest-night must be held.
- *  - MODIFICATION reserves ONLY the incremental beds beyond the unchanged live
- *    booking — `max(0, proposed - live)` per night — because the live booking is
- *    a capacity-holding row that already holds its own footprint, and #2365
- *    forbids touching it before approval. Nights where the proposal shrinks the
- *    party reserve nothing; the live booking keeps holding those until the
- *    modification actually applies.
+ *  - NEW_BOOKING computes the FULL proposal: there is no live booking holding any
+ *    of these beds, so every proposed guest-night must be held.
+ *  - MODIFICATION computes ONLY the incremental beds beyond the unchanged live
+ *    booking — `max(0, proposed - live)` per night — WHEN the live booking is
+ *    capacity-holding (it already holds its own footprint, and #2365 forbids
+ *    touching it before approval). Nights where the proposal shrinks the party
+ *    hold nothing; the live booking keeps holding those until the modification
+ *    actually applies.
+ *  - MODIFICATION with `baseHoldsCapacity: false` computes the FULL proposed
+ *    footprint instead: a non-capacity-holding base (e.g. a DRAFT, a generic
+ *    PENDING, an un-held PAYMENT_PENDING, or a WAITLISTED/BUMPED booking — all
+ *    editable per `getBookingEditPolicy` yet outside `capacityHoldingBookingFilter`)
+ *    contributes NOTHING to occupancy, so subtracting its beds would UNDER-reserve
+ *    and let others take beds the proposal needs (#2525 FIX 7).
  */
 export function computeProposalReservation(
   snapshot: ExceptionProposalSnapshot,
+  opts?: { baseHoldsCapacity?: boolean },
 ): NightReservation[] {
   if (snapshot.kind === "NEW_BOOKING") {
+    return demandToReservations(perNightBedDemand(snapshot.proposed));
+  }
+  // A non-holding base holds no beds of its own, so the request must hold the
+  // FULL proposed footprint, not just the delta above a base that reserves nothing.
+  if (opts?.baseHoldsCapacity === false) {
     return demandToReservations(perNightBedDemand(snapshot.proposed));
   }
   const proposed = perNightBedDemand(snapshot.proposed);

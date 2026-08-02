@@ -304,14 +304,46 @@ The money-safety invariant — that no burst of concurrent reservers can push
 - **Wiring:** `ai-diagnostics-usage.test.ts` proves the reserve path takes the
   advisory lock FIRST, then reads live reservations + settled spend, then makes a
   guarded insert, and inserts nothing on a lost claim.
-- **Real PostgreSQL race:** `ai-diagnostics-budget-race.realdb.test.ts` drives
-  the production `reserveDiagnosticsBudget` from two/three genuinely concurrent
-  callers against a real Postgres and asserts exactly the budgeted number of
-  reservations win and the live-reservation sum never exceeds the budget. It is
-  off by default and runs in CI's `Migration drift check` job via the guarded
-  `concurrency-lock-races.realdb.test.ts` harness (opt-in
+- **Real PostgreSQL race (#2532):** `ai-diagnostics-budget-race.realdb.test.ts`
+  drives the production `reserveDiagnosticsBudget` from two to five genuinely
+  concurrent callers against a real Postgres and asserts exactly the budgeted
+  number of reservations win and the live-reservation sum never exceeds the
+  budget. It is off by default and runs in CI's `Migration drift check` job via
+  the guarded `concurrency-lock-races.realdb.test.ts` harness (opt-in
   `RUN_CONCURRENCY_RACE_TESTS=1`, dedicated loopback database), so ordinary
   `npm test` never needs a live database.
+
+  The lead test does not *hope* for the dangerous interleaving, it **forces**
+  it. A third connection takes the same per-month advisory lock and holds it
+  open; the two reservers are started and the test then waits on a barrier —
+  PostgreSQL's own `pg_locks` reporting both of them queued on exactly that
+  advisory key, and `pg_stat_activity` reporting that neither has yet been
+  assigned a transaction id, i.e. that both reached the lock *before* writing
+  anything. Only then is the holder released, and exactly one reserver claims
+  the budget. There is no `setTimeout` standing in for the race, so the proof
+  neither flakes when CI is slow nor passes vacuously when it is fast.
+
+  The `backend_xid IS NULL` half of that barrier is the part that carries the
+  weight, and it is worth knowing why the obvious alternative does not. Counting
+  reservation rows from a separate connection while the lock is held proves
+  nothing: under READ COMMITTED an uncommitted insert made by a blocked reserver
+  is invisible to every other backend, so the count is zero whether the lock
+  comes first or last. PostgreSQL assigns a transaction id lazily at a backend's
+  first write, so "queued *and* still xid-less" is the signal that actually
+  distinguishes the correct ordering from a lock taken too late.
+
+  Verified to actually catch the regression it exists for, against a throwaway
+  Postgres: **deleting** the `pg_advisory_xact_lock` line fails the barrier with
+  a named diagnostic (the reservers never queue); **moving** it to after the
+  budget reads passes the queue check but then admits two 40c reservations
+  against a 50c budget; and **moving** it to after the guarded insert is
+  rejected by the xid clause with a diagnostic naming the write-before-lock
+  ordering. Each was reproduced three times, with no flaky pass.
+
+  `ai-diagnostics-usage.test.ts` additionally pins the wiring itself: the
+  harness import, the CI step that runs it, and the barrier — because the race
+  suite skips itself without the opt-in flag, so an unnoticed unwiring would
+  leave every suite green with the money-safety proof no longer running.
 
 ## Maintenance rules
 
