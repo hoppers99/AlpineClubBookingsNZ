@@ -63,6 +63,7 @@ vi.mock("@/lib/adult-member-hosting-review", () => ({
 
 import {
   buildModificationProposalParties,
+  cancelModificationExceptionRequest,
   cancelNewBookingExceptionRequest,
   createModificationExceptionRequest,
   createNewBookingExceptionRequest,
@@ -271,6 +272,44 @@ describe("createModificationExceptionRequest", () => {
       }),
     ).rejects.toBeInstanceOf(LostSupersedeClaimError);
     expect(mocks.bcrCreate).not.toHaveBeenCalled();
+  });
+});
+
+describe("cancelModificationExceptionRequest (guarded transition)", () => {
+  it("claims REQUESTED->CANCELLED scoped to owner + booking + POLICY_EXCEPTION, returns true", async () => {
+    mocks.bcrUpdateMany.mockResolvedValue({ count: 1 });
+    const ok = await cancelModificationExceptionRequest({
+      id: "bcr-1",
+      bookingId: "booking-1",
+      requestedByMemberId: "m1",
+    });
+    expect(ok).toBe(true);
+
+    const call = mocks.bcrUpdateMany.mock.calls[0][0];
+    // Mutation guard: the transition MUST also be gated on the request's own
+    // bookingId, so a request reached via the wrong booking URL cannot be
+    // claimed (and its audit cannot be mislabelled with that URL's booking).
+    expect(call.where).toMatchObject({
+      id: "bcr-1",
+      bookingId: "booking-1",
+      requestedByMemberId: "m1",
+      kind: "POLICY_EXCEPTION",
+      status: "REQUESTED",
+    });
+    expect(call.data).toMatchObject({ status: "CANCELLED", openStateKey: null });
+  });
+
+  it("returns false (lost claim) when the URL bookingId does not match the request's booking", async () => {
+    // A real DB claim scoped by bookingId matches 0 rows when request R (booking
+    // B1) is reached via /bookings/B2/... -> false, so the route runs NO side
+    // effect (no CANCELLED write, no mislabelled audit).
+    mocks.bcrUpdateMany.mockResolvedValue({ count: 0 });
+    const ok = await cancelModificationExceptionRequest({
+      id: "bcr-1",
+      bookingId: "booking-2",
+      requestedByMemberId: "m1",
+    });
+    expect(ok).toBe(false);
   });
 });
 

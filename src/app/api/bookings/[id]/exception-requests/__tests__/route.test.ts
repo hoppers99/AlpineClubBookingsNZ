@@ -174,10 +174,15 @@ describe("PATCH /api/bookings/[id]/exception-requests/[requestId] (cancel)", () 
   }
   const cancelParams = { params: Promise.resolve({ id: "booking-1", requestId: "bcr-1" }) };
 
-  it("cancels an open request (200) and audits", async () => {
+  it("cancels an open request (200), threads the URL bookingId into the claim, and audits", async () => {
     mocks.cancelMod.mockResolvedValue(true);
     const res = await PATCH(patchReq(), cancelParams);
     expect(res.status).toBe(200);
+    // The route must thread the URL bookingId into the guarded claim so the
+    // service can scope the request to its own booking.
+    expect(mocks.cancelMod).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "bcr-1", bookingId: "booking-1", requestedByMemberId: "m1" }),
+    );
     expect(mocks.logAudit).toHaveBeenCalledTimes(1);
   });
 
@@ -185,6 +190,30 @@ describe("PATCH /api/bookings/[id]/exception-requests/[requestId] (cancel)", () 
     mocks.cancelMod.mockResolvedValue(false);
     const res = await PATCH(patchReq(), cancelParams);
     expect(res.status).toBe(409);
+    expect(mocks.logAudit).not.toHaveBeenCalled();
+  });
+
+  it("mismatched bookingId: reaching a request via the wrong booking URL is 409 and writes no audit", async () => {
+    // Request bcr-1 belongs to booking-1; reaching it via /bookings/booking-2/...
+    // forwards booking-2 to the bookingId-scoped claim, which the service loses
+    // (count 0 -> false). The route returns 409 and writes NO audit row — so the
+    // success-path audit can never record booking-2 for a booking-1 request.
+    mocks.cancelMod.mockResolvedValue(false);
+    const req = new NextRequest(
+      "http://localhost/api/bookings/booking-2/exception-requests/bcr-1",
+      {
+        method: "PATCH",
+        body: JSON.stringify({ action: "cancel" }),
+        headers: { "content-type": "application/json" },
+      },
+    );
+    const res = await PATCH(req, {
+      params: Promise.resolve({ id: "booking-2", requestId: "bcr-1" }),
+    });
+    expect(res.status).toBe(409);
+    expect(mocks.cancelMod).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "bcr-1", bookingId: "booking-2", requestedByMemberId: "m1" }),
+    );
     expect(mocks.logAudit).not.toHaveBeenCalled();
   });
 });

@@ -15,4 +15,7 @@
   The Booking Officer approval-and-execute action and the held-capacity handling
   arrive in the follow-up work (#2525). Hard limits — whole-lodge capacity,
   payment, membership, past dates — are never part of this and remain firm
-  refusals.
+  refusals. The legacy locked-period change-request queue stays scoped to
+  locked-period rows, so these new policy-exception requests only ever appear in
+  the shared exception queue, and withdrawing a request is scoped to the booking
+  it belongs to so the audit trail always records the correct booking.

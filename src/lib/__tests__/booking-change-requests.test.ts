@@ -377,10 +377,38 @@ describe("booking change requests", () => {
     expect(body.total).toBe(1);
     expect(mocks.bookingChangeRequestFindMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { status: "REQUESTED" },
+        // #2524: the legacy locked-period queue now also filters kind, so
+        // POLICY_EXCEPTION rows (decided via #2525) never appear here.
+        where: { kind: "LOCKED_PERIOD", status: "REQUESTED" },
         take: 25,
       })
     );
+  });
+
+  it("excludes POLICY_EXCEPTION rows from the legacy locked-period list AND its count (#2524)", async () => {
+    // Both the page query and its total must be scoped to LOCKED_PERIOD so a
+    // POLICY_EXCEPTION row can never leak into this legacy queue (which would
+    // inflate the REQUESTED count and 409 on a legacy Approve). status=ALL
+    // exercises the branch that previously used an unscoped `{}` where.
+    mocks.auth.mockResolvedValue({ user: { id: "admin-1", role: "ADMIN", accessRoles: [{ role: "ADMIN" }] } });
+    mocks.bookingChangeRequestFindMany.mockResolvedValue([{ id: "locked-1" }]);
+    mocks.bookingChangeRequestCount.mockResolvedValue(1);
+
+    const request = new NextRequest(
+      "http://localhost/api/admin/booking-change-requests?status=ALL"
+    );
+    const response = await getAdminBookingChangeRequests(request);
+    await response.json();
+
+    expect(response.status).toBe(200);
+    expect(mocks.bookingChangeRequestFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ kind: "LOCKED_PERIOD" }),
+      })
+    );
+    expect(mocks.bookingChangeRequestCount).toHaveBeenCalledWith({
+      where: expect.objectContaining({ kind: "LOCKED_PERIOD" }),
+    });
   });
 
   it("marks a requested change approved with audit context", async () => {

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/session-guards";
 import { z } from "zod";
@@ -22,7 +23,16 @@ export async function GET(req: NextRequest) {
   }
 
   const { status, page, pageSize } = parsed.data;
-  const where = status === "ALL" ? {} : { status };
+  // #2524: POLICY_EXCEPTION rows share this table but are decided through the
+  // booking-policy exception workflow (#2525) and surface only in the unified
+  // queue. Scope this legacy locked-period queue to LOCKED_PERIOD so those rows
+  // never inflate the list or its count — the symmetric exclusion to the
+  // unified queue's kind:"POLICY_EXCEPTION" filter. Both findMany and count
+  // reuse this `where`, so the guard applies to the total as well as the page.
+  const where: Prisma.BookingChangeRequestWhereInput =
+    status === "ALL"
+      ? { kind: "LOCKED_PERIOD" }
+      : { kind: "LOCKED_PERIOD", status };
   const [requests, total] = await Promise.all([
     prisma.bookingChangeRequest.findMany({
       where,

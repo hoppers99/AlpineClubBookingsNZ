@@ -633,15 +633,21 @@ export async function createModificationExceptionRequest(
 /**
  * Member cancels their own OPEN modification policy-exception request. Guarded
  * single transition, frees the slot, returns false (no side effect) on a lost
- * claim. Scoped to POLICY_EXCEPTION so it can never touch a locked-period row.
+ * claim. Scoped to POLICY_EXCEPTION so it can never touch a locked-period row,
+ * and to the request's own `bookingId` so a request reached via the wrong
+ * booking URL cannot be claimed (which would mislabel the success-path audit
+ * with the URL's booking rather than the request's real one) — a mismatched
+ * pair claims 0 rows and returns false.
  */
 export async function cancelModificationExceptionRequest(input: {
   id: string;
+  bookingId: string;
   requestedByMemberId: string;
 }): Promise<boolean> {
   const claim = await prisma.bookingChangeRequest.updateMany({
     where: {
       id: input.id,
+      bookingId: input.bookingId,
       requestedByMemberId: input.requestedByMemberId,
       kind: "POLICY_EXCEPTION",
       status: "REQUESTED",

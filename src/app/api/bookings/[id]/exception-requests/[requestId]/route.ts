@@ -39,9 +39,13 @@ export async function PATCH(
   // Guarded single transition REQUESTED -> CANCELLED, scoped to the member's own
   // POLICY_EXCEPTION request. A lost claim runs NO side effect: plain 409, no
   // audit-success, no notification. Scoped to POLICY_EXCEPTION so it can never
-  // touch a locked-period change request sharing the table.
+  // touch a locked-period change request sharing the table, and to `bookingId`
+  // so the request must actually belong to the booking in the URL — otherwise
+  // the success-path audit below (which records the URL's bookingId verbatim)
+  // could mislabel a cancel of a request that belongs to a different booking.
   const cancelled = await cancelModificationExceptionRequest({
     id: requestId,
+    bookingId,
     requestedByMemberId: session.user.id,
   });
 
