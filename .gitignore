@@ -20,6 +20,11 @@
 /.next/
 /out/
 
+# Generated build artifacts (AID-3 deployed-code knowledge bundle, #2372).
+# Regenerated deterministically pre-build by `npm run diagnostics:bundle`; never
+# committed (a source-excerpt bundle would conflict on every source PR).
+/.artifacts/
+
 # production
 /build
 
@@ -58,6 +63,10 @@ review-fixes.log
 # Private deployment overlay
 /config/club.json
 /config/features.json
+# Optional AID-3 diagnostics knowledge overlay (#2372): a deployment-owned file
+# that WIDENS/narrows the bundle allowlist for a private fork. Generic contract —
+# public code never mandates its contents. See docs/diagnostics/KNOWLEDGE_BUNDLE.md.
+/config/diagnostics-knowledge.json
 /public/branding/favicon.ico
 /public/branding/favicon.png
 /public/branding/logo.png
