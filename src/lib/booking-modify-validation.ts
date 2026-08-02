@@ -59,6 +59,15 @@ export type BatchModifyInput = {
     firstName: string;
     lastName: string;
   }>;
+  // #2337: link an unnamed placeholder guest on a MEMBER whole-lodge booking to a
+  // real member, re-rating that guest at the member rate in place. A first-class
+  // sibling of `guestUpdates` — NOT a loosened rename: a rename can never touch
+  // isMember/memberId/rateMembershipTypeId (booking-modify-plan.ts:250-252 stays
+  // intact), whereas this deliberately does, for the one narrow case the owner
+  // sanctioned (option 2, quote-first, 1 Aug 2026). Gated hard by
+  // `resolveGuestMemberLinks` (admin-only, whole-lodge-only, placeholder-only) and
+  // by the member-origin check on the apply/quote paths.
+  linkGuestToMember?: Array<{ guestId: string; memberId: string }>;
   promoCode?: string;
   // #2266 (MED-4): a guest-targeted promo's beneficiaries. EXISTING guests are
   // bound by bookingGuestId — a positional index would be re-bound to whatever
@@ -219,6 +228,31 @@ export type ResolvedTargetDates = {
   datesChanged: boolean;
 };
 
+/**
+ * #2337: the placeholder→member in-place re-rate is refused on a mid-stay
+ * (in-progress) edit. A mid-stay edit prices through
+ * `buildInProgressGuestRangePlan`, which is fed the ORIGINAL `booking.guests`
+ * rather than the link-modified `guestsForPricing`, so the cleared
+ * `lockedNightPrices` + member identity never reach pricing: the re-rate would
+ * silently settle $0 while stamping the member. Rather than thread the link
+ * through the in-progress plan (the riskier option b), the link is refused here
+ * and the officer is pointed at the remove-and-re-add path (issue #2337 OD-A),
+ * which DOES settle correctly mid-stay because the in-progress plan prices an
+ * added member guest at the member rate and refunds the removed placeholder.
+ *
+ * NB: admin override is NOT an escape hatch here — an override edit is date-only
+ * and rejects `linkGuestToMember` outright ("Admin override edits change dates
+ * only", see `modifyBookingBatch` and the quote route), so the working mid-stay
+ * route is remove-and-re-add, not override. Mid-stay in-place re-rate support
+ * (option b) is a possible future enhancement.
+ *
+ * Shared verbatim by the apply path (`resolveTargetDates` below) and the quote
+ * route so preview and save refuse identically — the officer sees the refusal,
+ * never a phantom $0 quote.
+ */
+export const GUEST_MEMBER_LINK_IN_PROGRESS_MESSAGE =
+  "Linking a placeholder guest to a member is not available once a booking has started. Remove the placeholder guest and add the member as a new guest to re-rate this stay.";
+
 export function resolveTargetDates({
   booking,
   role,
@@ -331,6 +365,15 @@ export function resolveTargetDates({
         400,
       );
     }
+    // #2337: a mid-stay re-rate silently settles $0 (the link never reaches the
+    // in-progress pricing plan), so refuse it here and point the officer at the
+    // remove-and-re-add path, which DOES settle correctly mid-stay. Mirrored on
+    // the quote route so preview and save agree — the officer sees the refusal,
+    // never $0. (Admin override is date-only and rejects links, so it is not the
+    // escape hatch — see GUEST_MEMBER_LINK_IN_PROGRESS_MESSAGE.)
+    if (input.linkGuestToMember?.length) {
+      throw new ApiError(GUEST_MEMBER_LINK_IN_PROGRESS_MESSAGE, 400);
+    }
   } else if (
     role !== "ADMIN" &&
     normalizeDateOnlyForTimeZone(finalRequestedCheckIn) <= editPolicy.today
@@ -430,6 +473,40 @@ export async function isQuotePricedBooking(
 
 export const QUOTE_PRICED_EDIT_BLOCK_MESSAGE =
   "This booking keeps a negotiated booking-request price, so standard edits are disabled — they would reprice every guest at season rates. Re-price or issue a revised quote from its booking request instead.";
+
+/**
+ * True when this booking was created from an authenticated member whole-lodge
+ * request (#2263) — `requestedByMemberId` set and `exclusivityRequested` — as
+ * opposed to a public or SCHOOL booking request. Mirrors
+ * `isMemberWholeLodgeRequest` at the booking level.
+ *
+ * The #2337 placeholder→member link keys on this, NOT on `Booking.wholeLodgeHold`
+ * alone: a school whole-lodge booking ALSO carries `wholeLodgeHold` (the admin
+ * capacity action), and its non-member student rows would pass the placeholder
+ * gate — so re-rating one at a member rate would silently corrupt the school's
+ * flat-split negotiated price. Member-origin is the fence that keeps the re-rate
+ * to the one booking class whose placeholders were always meant to re-rate.
+ *
+ * Every member whole-lodge booking is also "quote-priced" (its placeholders were
+ * flat-split at approval), so `isQuotePricedBooking` returns true for it and the
+ * standard structural-edit block would refuse the link; the apply/quote paths
+ * exempt a member-whole-lodge link-only request from that block for exactly this
+ * reason.
+ */
+export async function isMemberWholeLodgeBooking(
+  db: Prisma.TransactionClient,
+  bookingId: string,
+): Promise<boolean> {
+  const request = await db.bookingRequest.findFirst({
+    where: {
+      OR: [{ convertedBookingId: bookingId }, { heldBookingId: bookingId }],
+      requestedByMemberId: { not: null },
+      exclusivityRequested: true,
+    },
+    select: { id: true },
+  });
+  return Boolean(request);
+}
 
 export async function assertBookingNotQuotePriced(
   db: Prisma.TransactionClient,

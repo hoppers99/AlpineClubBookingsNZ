@@ -9,10 +9,13 @@ import { loadMembershipCancellationInvoiceBlockersByMemberId } from "@/lib/membe
 import type { MembershipCancellationSubscriptionCreditPlan } from "@/lib/membership-cancellation-subscription-credit";
 import { prisma } from "@/lib/prisma";
 
-export type {
-  MembershipCancellationBlocker,
-  MembershipCancellationBookingBlocker,
-};
+// MembershipCancellationBookingBlocker used to be re-exported here too, but
+// every consumer already imports it straight from
+// @/lib/membership-cancellation-blocker-messages, the module that actually
+// declares it — knip 6.29+ correctly flagged the re-export specifier as dead
+// (#2502). It stays imported above since loadBookingBlockersByMemberId below
+// still uses it internally.
+export type { MembershipCancellationBlocker };
 
 export type MembershipCancellationBlockerClient =
   | typeof prisma

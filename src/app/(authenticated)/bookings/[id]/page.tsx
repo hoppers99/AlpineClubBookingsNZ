@@ -72,7 +72,10 @@ import {
   deriveBookingAppliedCreditCents,
   getMemberCreditBalance,
 } from "@/lib/member-credit";
-import { isBookingFullyPaidForGuestNameEdits } from "@/lib/booking-modify";
+import {
+  isBookingFullyPaidForGuestNameEdits,
+  isMemberWholeLodgeBooking,
+} from "@/lib/booking-modify";
 import { resolveCreditElectionNoticeAudience } from "@/lib/booking-credit-election";
 import {
   bookingHoldsCapacity,
@@ -924,6 +927,14 @@ export default async function BookingDetailPage({
             approvalRequired: memberGuestSettings.approvalRequired,
           },
         }
+      : {}),
+    // #2337: offer the placeholder→member link only to an admin/officer viewing a
+    // genuine MEMBER whole-lodge booking — the exact fence the save path enforces
+    // (isMemberWholeLodgeBooking, admin-only). Computed server-side so the panel
+    // never shows a control the save would refuse. Absent for every other booking.
+    ...(viewerAuthorizationRole === "ADMIN" &&
+    (await isMemberWholeLodgeBooking(prisma, booking.id))
+      ? { memberWholeLodge: true }
       : {}),
     // #2104: an already-flagged/reviewed booking must not re-prompt the member
     // for a justification when the guest list shuffles — the edit panel keys the

@@ -81,8 +81,11 @@ import {
 } from "@/lib/booking-edit-policy";
 import {
   calculateModificationSettlementOptions,
+  GUEST_MEMBER_LINK_IN_PROGRESS_MESSAGE,
   lockedNightPricesForGuest,
+  resolveGuestMemberLinks,
   resolveGuestNameUpdates,
+  isMemberWholeLodgeBooking,
   isQuotePricedBooking,
   QUOTE_PRICED_EDIT_BLOCK_MESSAGE,
   resolvePartnerSharedCapacity,
@@ -145,6 +148,17 @@ const modifyQuoteSchema = z.object({
       })
     )
     .optional(),
+  // #2337: mirror of the apply route's placeholder→member link so the preview
+  // shows the same re-rate delta the save will settle. Gated identically.
+  linkGuestToMember: z
+    .array(
+      z.object({
+        guestId: z.string().min(1),
+        memberId: z.string().min(1),
+      })
+    )
+    .max(60)
+    .optional(),
   promoCode: z.string().optional(),
   // #2266 (MED-4): beneficiaries for guest-targeted promo codes, mirroring the
   // apply route — EXISTING guests bind by bookingGuestId (a stale id refuses
@@ -181,6 +195,8 @@ const OVERRIDE_DATE_ONLY_QUOTE_FIELDS = [
   "removeGuestIds",
   "guestStayRanges",
   "guestUpdates",
+  // #2337: a placeholder→member link is a guest change, never a date override.
+  "linkGuestToMember",
   "promoCode",
   "promoGuestIds",
   "promoAddedGuestIndexes",
@@ -354,6 +370,7 @@ export async function POST(
     removeGuestIds,
     guestStayRanges,
     guestUpdates,
+    linkGuestToMember,
     promoCode: newPromoCode,
     promoGuestIds,
     promoAddedGuestIndexes,
@@ -495,6 +512,9 @@ export async function POST(
       addGuests?.length ||
       removeGuestIds?.length ||
       guestStayRanges?.length ||
+      // #2337: a link re-rates a guest — structural, so the preview prices it
+      // rather than echoing the stored totals.
+      linkGuestToMember?.length ||
       newPromoCode ||
       removePromoCode,
   );
@@ -509,13 +529,69 @@ export async function POST(
     !requestedStructuralChange &&
     !guestUpdates?.length &&
     applyCreditCents !== undefined;
+  // #2337: mirror the apply path's member-link gate exactly. The member-ORIGIN
+  // fence keeps a SCHOOL whole-lodge booking's students out of the re-rate, and a
+  // member-whole-lodge link-only request is exempt from the quote-priced block
+  // (its placeholders were flat-split at approval — the link is the sanctioned
+  // re-rate). Preview and apply must agree on every gate or the panel shows a
+  // quote the save then refuses.
+  const hasLinks = Boolean(linkGuestToMember?.length);
+  const memberWholeLodgeForLink = hasLinks
+    ? await isMemberWholeLodgeBooking(prisma, bookingId)
+    : false;
+  if (hasLinks && !memberWholeLodgeForLink) {
+    return NextResponse.json(
+      {
+        error:
+          "Linking a placeholder to a member is only available on member whole-lodge bookings.",
+      },
+      { status: 400 },
+    );
+  }
+  const requestIsMemberLinkExempt =
+    hasLinks &&
+    memberWholeLodgeForLink &&
+    !(
+      newCheckInStr ||
+      newCheckOutStr ||
+      addGuests?.length ||
+      removeGuestIds?.length ||
+      guestStayRanges?.length ||
+      newPromoCode ||
+      removePromoCode
+    );
   const quotePriced = await isQuotePricedBooking(prisma, bookingId);
-  if (!requestIsIdentityOnly && !requestIsCreditElectionOnly && quotePriced) {
+  if (
+    !requestIsIdentityOnly &&
+    !requestIsCreditElectionOnly &&
+    !requestIsMemberLinkExempt &&
+    quotePriced
+  ) {
     return NextResponse.json(
       { error: QUOTE_PRICED_EDIT_BLOCK_MESSAGE },
       { status: 400 },
     );
   }
+
+  // #2337: the synchronous narrow gate (admin, whole-lodge, placeholder-only). It
+  // shares the resolver the apply path uses, so a bad link is refused with the
+  // same message before pricing runs.
+  let guestMemberLinks: ReturnType<typeof resolveGuestMemberLinks> = [];
+  try {
+    guestMemberLinks = resolveGuestMemberLinks({
+      booking,
+      input: { linkGuestToMember, removeGuestIds, guestUpdates },
+      role: actorRole,
+    });
+  } catch (error) {
+    if (error instanceof ApiError) {
+      return NextResponse.json({ error: error.message }, { status: error.status });
+    }
+    throw error;
+  }
+  const linkByGuestId = new Map(
+    guestMemberLinks.map((link) => [link.guestId, link]),
+  );
 
   // #2266: the member's live credit balance rides every non-shift preview, the
   // same field the create-flow quote returns (api/bookings/quote/route.ts) —
@@ -591,7 +667,13 @@ export async function POST(
       await resolveLinkedBookingMembersWithBoundary(
         prisma,
         booking.memberId,
-        (addGuests ?? []).map((guest) => guest.memberId),
+        [
+          ...(addGuests ?? []).map((guest) => guest.memberId),
+          // #2337: linked members resolve through the same eligibility/boundary
+          // path as an added member guest, so the preview refuses an ineligible
+          // link exactly as the save will.
+          ...guestMemberLinks.map((link) => link.memberId),
+        ],
         {
           skipAuthorization: isAdmin,
           memberGuestWideningEnabled: memberGuestPolicy.wideningEnabled,
@@ -760,6 +842,17 @@ export async function POST(
         { status: 400 }
       );
     }
+    // #2337: mirror the apply path's mid-stay link refusal exactly, so the
+    // preview shows the officer the refusal instead of a phantom $0 quote (a
+    // mid-stay link never reaches the in-progress pricing plan). The remove-and-
+    // re-add path settles correctly mid-stay; admin override is date-only and
+    // rejects links, so it is not the escape hatch.
+    if (linkGuestToMember?.length) {
+      return NextResponse.json(
+        { error: GUEST_MEMBER_LINK_IN_PROGRESS_MESSAGE },
+        { status: 400 }
+      );
+    }
   } else if (
     !isAdmin &&
     normalizeDateOnlyForTimeZone(finalRequestedCheckIn) <= editPolicy.today
@@ -852,18 +945,24 @@ export async function POST(
   }
 
   const proposedGuestRows = [
-    ...proposedRemainingGuests.map((entry) => ({
-      bookingGuestId: entry.guest.id,
-      ageTier: entry.guest.ageTier as AgeTier,
-      isMember: entry.guest.isMember,
-      memberId: entry.guest.memberId ?? null,
-      stayStart: entry.stayStart,
-      stayEnd: entry.stayEnd,
-      nights: entry.nights,
-      // Preview with the same locked booked-night prices the mutating
-      // endpoints charge (#1036).
-      lockedNightPrices: lockedNightPricesForGuest(entry.guest),
-    })),
+    ...proposedRemainingGuests.map((entry) => {
+      const link = linkByGuestId.get(entry.guest.id);
+      return {
+        bookingGuestId: entry.guest.id,
+        ageTier: entry.guest.ageTier as AgeTier,
+        // #2337: preview the linked placeholder with the MEMBER identity so the
+        // quote prices it at the member rate — matching what the save writes.
+        isMember: link ? true : entry.guest.isMember,
+        memberId: link ? link.memberId : (entry.guest.memberId ?? null),
+        stayStart: entry.stayStart,
+        stayEnd: entry.stayEnd,
+        nights: entry.nights,
+        // Preview with the same locked booked-night prices the mutating
+        // endpoints charge (#1036) — but a linked placeholder CLEARS them, exactly
+        // as the apply path does, so the preview's re-rate delta equals the save's.
+        lockedNightPrices: link ? [] : lockedNightPricesForGuest(entry.guest),
+      };
+    }),
     ...(normalizedAddGuestsWithRanges ?? []).map((g) => ({
       bookingGuestId: null,
       ageTier: g.ageTier as AgeTier,
@@ -1291,6 +1390,28 @@ export async function POST(
           : "Guest name updates",
       amountCents: 0,
     });
+  }
+
+  // #2337: a per-link re-rate line so the officer sees the money each link moves
+  // BEFORE committing (quote-first). The linked guest is a remaining guest, so its
+  // new member-rate price sits at its position in priceBreakdown; the delta is
+  // that minus the stored (non-member) price the placeholder was booked at. This
+  // mirrors the apply path EXACTLY (same repriced value, same stored old value),
+  // so preview and settlement can never disagree.
+  if (guestMemberLinks.length > 0 && priceBreakdown) {
+    const indexByGuestId = new Map(
+      proposedRemainingGuests.map((entry, index) => [entry.guest.id, index]),
+    );
+    for (const link of guestMemberLinks) {
+      const index = indexByGuestId.get(link.guestId);
+      const guest = remainingGuests.find((g) => g.id === link.guestId);
+      if (index === undefined || !guest) continue;
+      const newPriceCents = priceBreakdown.guests[index]?.priceCents ?? 0;
+      itemizedChanges.push({
+        label: `Linked ${link.previousFirstName} ${link.previousLastName} to member (re-rated)`,
+        amountCents: newPriceCents - guest.priceCents,
+      });
+    }
   }
 
   const oldNights = getStayNights(booking.checkIn, booking.checkOut).length;

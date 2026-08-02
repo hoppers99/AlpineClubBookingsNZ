@@ -30,16 +30,18 @@ import {
   type ApplicationFamilyMember,
 } from "@/lib/nomination";
 
+// personDecisionsSchema, personDecisionSchema, refKey, resolvePersonDecisions,
+// PersonDecisionInput, and DecisionResolution used to be re-exported here too,
+// but every real consumer (nomination.ts, the approval-preview route, tests)
+// already imports them straight from @/lib/member-application-decisions, the
+// module that actually declares them — knip 6.29+ correctly flagged those six
+// re-export specifiers as dead (#2502). PersonRef/PersonDecisions/
+// NormalizedPersonDecision stay re-exported below since this module also uses
+// them internally.
 export {
-  personDecisionsSchema,
-  personDecisionSchema,
-  refKey,
-  resolvePersonDecisions,
   type PersonRef,
-  type PersonDecisionInput,
   type PersonDecisions,
   type NormalizedPersonDecision,
-  type DecisionResolution,
 } from "@/lib/member-application-decisions";
 
 // ---------------------------------------------------------------------------
