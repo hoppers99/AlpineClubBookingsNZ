@@ -5,6 +5,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import KioskPage from "../page";
 import { frozenTestNow } from "@/lib/__tests__/helpers/clock";
+import { captureHostTimeZone } from "@/lib/__tests__/helpers/timezone";
 import {
   buildWeekDateKeys,
   type KioskWeekDaySummary,
@@ -166,10 +167,10 @@ describe("KioskPage week view", () => {
 
 // Restoring the host zone is not `delete process.env.TZ`: Node applies a zone
 // when TZ is ASSIGNED and keeps it once the variable is removed, so deleting
-// alone would strand the whole worker on whichever zone this file set last.
-// Assign the resolved starting zone first, then remove the variable.
-const ORIGINAL_TZ_ENV = process.env.TZ;
-const ORIGINAL_HOST_ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone;
+// alone would strand the whole worker on whichever zone this file set last
+// (#2485). `captureHostTimeZone` assigns the resolved starting zone back
+// first, then removes the variable.
+const hostTimeZone = captureHostTimeZone();
 
 /** Every day of the served week open, so any of them can be drilled into. */
 function buildOpenWeekDays(start: string): KioskWeekDaySummary[] {
@@ -276,12 +277,7 @@ describe("KioskPage club-time dates (#2474)", () => {
     // harness instant back explicitly rather than leaking a pin into the next
     // file-level test (docs/TESTING.md, rule 4).
     vi.setSystemTime(frozenTestNow());
-    if (ORIGINAL_TZ_ENV === undefined) {
-      process.env.TZ = ORIGINAL_HOST_ZONE;
-      delete process.env.TZ;
-    } else {
-      process.env.TZ = ORIGINAL_TZ_ENV;
-    }
+    hostTimeZone.restore();
   });
 
   it("opens on the club's day, not the display device's, after the NZ rollover", async () => {

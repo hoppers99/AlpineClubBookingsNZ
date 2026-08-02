@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { nextRequest, routeParams } from "@/lib/__tests__/helpers/requests";
+import { withTimeZoneAsync as withHostTimeZone } from "@/lib/__tests__/helpers/timezone";
 
 /**
  * #2478 — ONE calendar-day contract, and ONE lodge, for the printed chore
@@ -169,30 +170,10 @@ beforeEach(() => {
   });
 });
 
-// Restoring the host zone is not `delete process.env.TZ`: Node applies a zone
-// when TZ is ASSIGNED and keeps it when the variable is removed, so deleting
-// would leave the whole worker on whichever zone this file set last. Assigning
-// the resolved starting zone first, then removing the variable, puts both the
-// zone and the environment back exactly as they were found.
-const ORIGINAL_TZ_ENV = process.env.TZ;
-const ORIGINAL_HOST_ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone;
-
-async function withHostTimeZone<T>(
-  timeZone: string,
-  run: () => Promise<T>,
-): Promise<T> {
-  process.env.TZ = timeZone;
-  try {
-    return await run();
-  } finally {
-    if (ORIGINAL_TZ_ENV === undefined) {
-      process.env.TZ = ORIGINAL_HOST_ZONE;
-      delete process.env.TZ;
-    } else {
-      process.env.TZ = ORIGINAL_TZ_ENV;
-    }
-  }
-}
+// `withHostTimeZone` (aliased from the shared `withTimeZoneAsync` helper)
+// restores the host zone by ASSIGNING it back, not by deleting
+// `process.env.TZ` — a bare delete does not invalidate Node's cached zone and
+// would leave the whole worker on whichever zone this file set last (#2485).
 
 async function printRoster(date = ROSTER_NIGHT, query = "") {
   // Re-import so the route is evaluated under the host zone now in force.

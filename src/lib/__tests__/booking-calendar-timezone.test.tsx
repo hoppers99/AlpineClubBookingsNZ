@@ -8,6 +8,7 @@ vi.mock("@/components/club-identity-provider", () => ({
 }));
 
 import { BookingCalendar } from "@/components/booking-calendar";
+import { captureHostTimeZone } from "@/lib/__tests__/helpers/timezone";
 
 // #2474 — a lodge night is an abstract calendar day, and its identity (the value
 // SUBMITTED and the club-pinned label DISPLAYED) must be the same for a booker in
@@ -23,15 +24,15 @@ import { BookingCalendar } from "@/components/booking-calendar";
 const DST_NIGHT = "2026-09-27";
 const NEXT_NIGHT = "2026-09-28";
 
-const HOST_TZ = process.env.TZ;
+const hostTimeZone = captureHostTimeZone();
 
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
-  // Restore the host zone properly (guard against the #2485 hazard: a bare
-  // `delete process.env.TZ` would strand a host that had one set).
-  if (HOST_TZ === undefined) delete process.env.TZ;
-  else process.env.TZ = HOST_TZ;
+  // Restore the host zone properly (the #2485 hazard: a bare
+  // `delete process.env.TZ` does not invalidate Node's cached zone, whether
+  // or not the host originally had one set).
+  hostTimeZone.restore();
 });
 
 function stubEmptyAvailability() {

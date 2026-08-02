@@ -28,6 +28,7 @@ import {
   contrastRatio,
   deriveBrandShims,
 } from "../club-theme-schema";
+import { captureHostTimeZone } from "@/lib/__tests__/helpers/timezone";
 
 describe("email-templates", () => {
   describe("adminDailyDigestTemplate", () => {
@@ -526,10 +527,9 @@ describe("email-templates", () => {
   });
 
   describe("setupIntentFailedTemplate (#2256)", () => {
-    const RUNTIME_TZ = process.env.TZ;
+    const hostTimeZone = captureHostTimeZone();
     afterEach(() => {
-      if (RUNTIME_TZ === undefined) delete process.env.TZ;
-      else process.env.TZ = RUNTIME_TZ;
+      hostTimeZone.restore();
     });
 
     it("renders a @db.Date stay as that same NZ calendar day", () => {
