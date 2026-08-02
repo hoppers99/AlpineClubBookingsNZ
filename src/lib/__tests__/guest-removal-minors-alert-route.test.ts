@@ -53,13 +53,21 @@ vi.mock("@/lib/booking-edit-policy", () => ({
   getBookingEditPolicy: () => ({ canModify: true, mode: "future", reason: null }),
   usesActiveBookingEditLifecycle: () => true,
 }));
-vi.mock("@/lib/booking-modify", () => ({
-  assertBookingNotQuotePriced: mocks.assertBookingNotQuotePriced,
-  applyLifecycleTransitions: mocks.applyLifecycleTransitions,
-  applyPaymentAdjustments: mocks.applyPaymentAdjustments,
-  calculateModificationSettlementOptions: mocks.calculateModificationSettlementOptions,
-  lockedNightPricesForGuest: mocks.lockedNightPricesForGuest,
-}));
+vi.mock("@/lib/booking-modify", async (importActual) => {
+  // #2543: `rateSnapshotUpdateForRepricedGuest` is a PURE decision about whether a
+  // repriced guest keeps its stored rate snapshot, so the real one is pulled through
+  // rather than stubbed — a stub here would make the removal path's coding behaviour
+  // untested on the very route that exercises it.
+  const actual = await importActual<typeof import("@/lib/booking-modify")>();
+  return {
+    assertBookingNotQuotePriced: mocks.assertBookingNotQuotePriced,
+    applyLifecycleTransitions: mocks.applyLifecycleTransitions,
+    applyPaymentAdjustments: mocks.applyPaymentAdjustments,
+    calculateModificationSettlementOptions: mocks.calculateModificationSettlementOptions,
+    lockedNightPricesForGuest: mocks.lockedNightPricesForGuest,
+    rateSnapshotUpdateForRepricedGuest: actual.rateSnapshotUpdateForRepricedGuest,
+  };
+});
 vi.mock("@/lib/membership-type-policy", () => ({
   priceBookingGuestsWithMembershipTypePolicy:
     mocks.priceBookingGuestsWithMembershipTypePolicy,

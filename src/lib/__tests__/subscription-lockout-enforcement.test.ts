@@ -567,17 +567,179 @@ describe("loadUnpaidSubscriptionMemberIds — the hosting bridge (#2543 <-> #236
 });
 
 describe("toSubscriptionLockoutParticipants", () => {
-  it("treats a PENDING member-guest invite as not operationally present", async () => {
-    const participants = toSubscriptionLockoutParticipants([
-      { isMember: true, memberId: "adult-paid", memberGuestConsentStatus: "PENDING" },
-      { isMember: true, memberId: "adult-paid-2", memberGuestConsentStatus: "CONFIRMED" },
-      // A pre-persist party has no consent facts yet; absent means present.
-      { isMember: true, memberId: "adult-paid-3" },
-    ]);
+  /**
+   * THE COLUMN NAME IS THE GUARD. This suite used to construct its rows with an
+   * invented field, `memberGuestConsentStatus`, which exists nowhere in the schema
+   * — the Prisma column is `BookingGuest.consentStatus`. Because the helper's
+   * generic constraint made it optional, `BookingGuest[]` type-checked, every
+   * persisted row read `undefined`, `isOperationallyPresentConsent(undefined)`
+   * returned true, and the D-12 half of the paid-up-adult test never ran on a real
+   * party — while this suite stayed green. So the fixtures below are shaped like
+   * REAL rows, and the first case feeds a realistic persisted row rather than a
+   * hand-made object with a convenient key.
+   */
+  it("treats a PENDING member-guest invite on a PERSISTED row as not operationally present", async () => {
+    const persistedRows = [
+      {
+        id: "bg-1",
+        bookingId: "bk-1",
+        isMember: true,
+        memberId: "adult-paid",
+        firstName: "Ada",
+        lastName: "Paid",
+        ageTier: "ADULT" as const,
+        stayStart: new Date("2026-08-01T00:00:00.000Z"),
+        stayEnd: new Date("2026-08-03T00:00:00.000Z"),
+        priceCents: 2000,
+        consentStatus: "PENDING" as const,
+      },
+      {
+        id: "bg-2",
+        bookingId: "bk-1",
+        isMember: true,
+        memberId: "adult-paid-2",
+        firstName: "Bo",
+        lastName: "Paid",
+        ageTier: "ADULT" as const,
+        stayStart: new Date("2026-08-01T00:00:00.000Z"),
+        stayEnd: new Date("2026-08-03T00:00:00.000Z"),
+        priceCents: 2000,
+        consentStatus: "CONFIRMED" as const,
+      },
+      {
+        // A family-scope guest: consent-FREE, not consent-given. NULL means
+        // present, exactly as #2364 has it.
+        id: "bg-3",
+        bookingId: "bk-1",
+        isMember: true,
+        memberId: "adult-paid-3",
+        firstName: "Cy",
+        lastName: "Paid",
+        ageTier: "ADULT" as const,
+        stayStart: new Date("2026-08-01T00:00:00.000Z"),
+        stayEnd: new Date("2026-08-03T00:00:00.000Z"),
+        priceCents: 2000,
+        consentStatus: null,
+      },
+    ];
+
+    const participants = toSubscriptionLockoutParticipants(persistedRows);
+
     expect(participants.map((p) => p.operationallyPresent)).toEqual([
       false,
       true,
       true,
     ]);
+  });
+
+  it("reads the PLANNED consent status of a pre-persist row (the create path)", async () => {
+    // `guestInputs` on the create path is `consentPlan.guests`, so a cross-family
+    // member guest already carries the PENDING columns the write is about to make.
+    // Without this the requirement was trivially satisfiable: name any paid-up
+    // adult member from beyond your family, and the invite need never be accepted.
+    const participants = toSubscriptionLockoutParticipants([
+      {
+        isMember: true,
+        memberId: "adult-cross-family",
+        memberGuestConsent: { consentStatus: "PENDING" as const },
+      },
+      {
+        isMember: true,
+        memberId: "adult-notify-only",
+        memberGuestConsent: { consentStatus: "CONFIRMED" as const },
+      },
+      // Family scope: nothing attached at all.
+      { isMember: true, memberId: "adult-family" },
+    ]);
+
+    expect(participants.map((p) => p.operationallyPresent)).toEqual([
+      false,
+      true,
+      true,
+    ]);
+  });
+
+  it("carries per-guest nights through, so a refusal names the right lodge nights", async () => {
+    const participants = toSubscriptionLockoutParticipants([
+      {
+        isMember: true,
+        memberId: "adult-paid",
+        nights: [{ stayDate: new Date("2026-08-02T00:00:00.000Z") }],
+      },
+    ]);
+    expect(participants[0].nights).toEqual([
+      { stayDate: new Date("2026-08-02T00:00:00.000Z") },
+    ]);
+  });
+});
+
+describe("the proposed-party evaluator honours D-12 presence (#2543)", () => {
+  /**
+   * THIS IS THE OVERRIDE DOOR. A booking path refuses a party because its only
+   * paid-up adult member is a cross-family member guest whose invite is still
+   * PENDING. The member submits the SAME party to the exception-request machinery.
+   * If this evaluator counts that PENDING adult as present it finds no violation,
+   * the machinery refuses to create a request there is nothing to review, and the
+   * 409's promised door leads nowhere.
+   */
+  beforeEach(() => {
+    mocks.peekSubscriptionLockoutMode.mockResolvedValue("NON_MEMBER_PRICING");
+  });
+
+  const party = [
+    { isMember: true, memberId: UNPAID_ADULT.id, nights: ["2026-07-04"] },
+    { isMember: true, memberId: PAID_ADULT.id, nights: ["2026-07-04"] },
+  ];
+
+  it("reproduces the violation when the only paid-up adult is not yet present", async () => {
+    const violation = await evaluateProposedPaidUpAdultPresence(
+      makeDb([UNPAID_ADULT, PAID_ADULT]),
+      {
+        lodgeId: "lodge-1",
+        checkIn: CHECK_IN,
+        checkOut: CHECK_OUT,
+        guests: party.map((guest) =>
+          guest.memberId === PAID_ADULT.id
+            ? { ...guest, operationallyPresent: false }
+            : guest,
+        ),
+      },
+    );
+
+    expect(violation?.reasonCode).toBe("PAID_UP_ADULT_MEMBER_REQUIRED");
+    // HOLD, so asking for the override does not cost the member their beds.
+    expect(violation?.capacityMode).toBe("HOLD");
+  });
+
+  it("finds nothing to review when that adult IS present", async () => {
+    const violation = await evaluateProposedPaidUpAdultPresence(
+      makeDb([UNPAID_ADULT, PAID_ADULT]),
+      {
+        lodgeId: "lodge-1",
+        checkIn: CHECK_IN,
+        checkOut: CHECK_OUT,
+        guests: party.map((guest) =>
+          guest.memberId === PAID_ADULT.id
+            ? { ...guest, operationallyPresent: true }
+            : guest,
+        ),
+      },
+    );
+
+    expect(violation).toBeNull();
+  });
+
+  it("absent means present, so a caller supplying nothing is unchanged", async () => {
+    const violation = await evaluateProposedPaidUpAdultPresence(
+      makeDb([UNPAID_ADULT, PAID_ADULT]),
+      {
+        lodgeId: "lodge-1",
+        checkIn: CHECK_IN,
+        checkOut: CHECK_OUT,
+        guests: party,
+      },
+    );
+
+    expect(violation).toBeNull();
   });
 });

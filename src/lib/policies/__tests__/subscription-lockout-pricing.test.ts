@@ -183,6 +183,24 @@ describe("member-facing reasons (#2533 requirement 2)", () => {
     expect(reason).toMatch(/renew/i);
   });
 
+  it("is PARTY-scoped, not second-person, so it cannot misinform the reader", () => {
+    // The notice is emitted whenever ANYONE on the party is repriced, and it renders
+    // to whoever is reading the quote — very often not that person. A paid-up adult
+    // member booking for their adult son, whose subscription is unpaid, was told
+    // "Your 2026/2027 membership subscription isn't paid" about an account in perfect
+    // standing. The plausible response is to pay a subscription they do not owe, or
+    // to ring the club about a debt that is not theirs.
+    //
+    // "Names nobody" and "asserts it is the reader" are different things. The privacy
+    // constraint still holds — no name, no amount — but the sentence is now about the
+    // booking.
+    const reason = formatUnpaidSubscriptionRateReason("2026/2027");
+    expect(reason).toMatch(/on this booking/i);
+    expect(reason).not.toMatch(/\byour\b/i);
+    expect(reason).not.toMatch(/\bto you\b/i);
+    expect(reason).not.toMatch(/\$/);
+  });
+
   it("names neither a person nor an amount in the paid-up-adult refusal", () => {
     const reason = formatMissingPaidUpAdultRefusal();
     expect(reason).toMatch(/at least one paid-up adult member/i);

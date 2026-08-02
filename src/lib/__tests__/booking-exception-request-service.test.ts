@@ -23,6 +23,10 @@ const mocks = vi.hoisted(() => ({
   evaluateHosting: vi.fn(),
   // #2525 FIX 4: the admission check the hold path runs before reserving.
   checkCapacity: vi.fn(),
+  // #2543: the two reads the D-12 presence derivation makes — the requester's
+  // family boundary, and the live rows' stored consent status on a modification.
+  familyGroupMemberFindMany: vi.fn(async () => []),
+  bookingGuestFindMany: vi.fn(async () => []),
 }));
 
 vi.mock("@/lib/prisma", () => {
@@ -47,6 +51,16 @@ vi.mock("@/lib/prisma", () => {
       update: (...a: unknown[]) => mocks.bookingUpdate(...a),
       create: (...a: unknown[]) => mocks.bookingCreate(...a),
       updateMany: (...a: unknown[]) => mocks.bookingUpdateMany(...a),
+    },
+    // #2543 — the D-12 presence derivation resolves the requester's family
+    // boundary and, for a modification, reads the live rows' consent status. Both
+    // are ordinary reads on the same client; stubbing them keeps the suite honest
+    // about what the service really touches.
+    familyGroupMember: {
+      findMany: () => mocks.familyGroupMemberFindMany(),
+    },
+    bookingGuest: {
+      findMany: () => mocks.bookingGuestFindMany(),
     },
   };
   return {
@@ -144,6 +158,10 @@ function newBookingInput(overrides: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // #2543: a requester with no family links, and no live rows, is the neutral
+  // default — every existing case in this file predates the derivation.
+  mocks.familyGroupMemberFindMany.mockResolvedValue([]);
+  mocks.bookingGuestFindMany.mockResolvedValue([]);
   mocks.validateMinimumStay.mockResolvedValue({ valid: false, violations: [minStayViolation()] });
   mocks.evaluateHosting.mockResolvedValue(null);
   mocks.nbCreate.mockResolvedValue({ id: "req-1", status: "REQUESTED" });

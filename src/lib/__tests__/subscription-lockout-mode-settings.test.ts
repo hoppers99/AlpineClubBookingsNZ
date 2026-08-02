@@ -195,15 +195,39 @@ describe("resolveSubscriptionLockoutMode (#2543)", () => {
     expect(mocks.findUnique).not.toHaveBeenCalled();
   });
 
-  it("reseeds the financial-year cache only when the gate can bite", async () => {
-    mocks.findUnique.mockResolvedValue({
-      ...unmigratedRow(true),
-      mode: "HARD_BLOCK",
-    });
-    await resolveSubscriptionLockoutMode();
-    expect(mocks.refreshFinancialYearConfig).toHaveBeenCalledTimes(1);
+  /**
+   * THE RESEED IS GATED ON THE XERO MODULE, NOT ON THE MODE, and that is the
+   * pre-#2543 condition restored. Every request-path reseeder in the tree routes
+   * through this function (the booking write paths, `findUnpaidMemberGuests`, the
+   * member notice builder), so gating it on `mode !== "NO_BLOCK"` left a club that
+   * has deliberately switched the lockout OFF — with Xero still on — without a
+   * request-path reseed at all. After a container restart, `getSeasonYear` and
+   * `computeAgeTier` then resolve against the module-level March default instead of
+   * the club's real year-end month, and the rate resolved for a booking can differ
+   * from the correct one. `NO_BLOCK` is exactly what an existing club with
+   * `enabled = false` resolves to through the legacy fallback, so this is the
+   * ordinary case, not an exotic one.
+   */
+  it.each(["HARD_BLOCK", "NON_MEMBER_PRICING", "NO_BLOCK"] as const)(
+    "reseeds the financial-year cache with Xero on, in %s",
+    async (mode) => {
+      mocks.findUnique.mockResolvedValue({ ...unmigratedRow(true), mode });
+      await resolveSubscriptionLockoutMode();
+      expect(mocks.refreshFinancialYearConfig).toHaveBeenCalledTimes(1);
+    },
+  );
 
-    vi.clearAllMocks();
+  it("reseeds for a club whose LEGACY boolean resolves NO_BLOCK", async () => {
+    // The un-backfilled row every existing club has on this release: mode null,
+    // enabled false. This is the case the narrowed gate silently dropped.
+    mocks.findUnique.mockResolvedValue(unmigratedRow(false));
+    await expect(resolveSubscriptionLockoutMode()).resolves.toBe("NO_BLOCK");
+    expect(mocks.refreshFinancialYearConfig).toHaveBeenCalledTimes(1);
+  });
+
+  it("does NOT reseed when the Xero module is off", async () => {
+    // Nothing to reseed from: the financial year follows the connected Xero org
+    // unless an admin overrides it, and with the module off there is no gate either.
     mocks.loadEffectiveModuleFlags.mockResolvedValue({ xeroIntegration: false });
     await resolveSubscriptionLockoutMode();
     expect(mocks.refreshFinancialYearConfig).not.toHaveBeenCalled();

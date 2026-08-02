@@ -1377,3 +1377,155 @@ describe("#2200 singleton dry-run validation (bounds, required, enum)", () => {
     );
   });
 });
+
+describe("membership-lockout (mode, enabled) is reconciled on import (#2543)", () => {
+  /**
+   * An absent-or-null `mode` is not "no opinion" — it MEANS "resolve the policy
+   * from the legacy `enabled` boolean". The importer writes only fields physically
+   * present in the bundle and, in the default merge mode, drops any whose value is
+   * null. `enabled` is non-null so it always travelled; `mode` did not. The net
+   * effect was that the target KEPT ITS OWN `mode`, and `mode` wins at read time.
+   */
+  function lockoutBundle(
+    row: Record<string, unknown>,
+    appVersion = "0.13.2",
+  ) {
+    return buildBundle({
+      entries: [
+        {
+          path: "club-settings/membership-lockout-settings.json",
+          category: "club-settings",
+          rowCount: 1,
+          bytes: strToU8(JSON.stringify(row)),
+        },
+      ],
+      appVersion,
+      prismaMigration: null,
+      includedCategories: ["club-settings"],
+      doorCodesIncluded: false,
+      generatedAt: "2026-07-08T00:00:00.000Z",
+    });
+  }
+
+  const targetOnNonMemberPricing = {
+    ...DEFAULT_MEMBERSHIP_LOCKOUT_SETTINGS,
+    mode: "NON_MEMBER_PRICING",
+    enabled: true,
+  };
+
+  it.each(["merge", "overwrite"] as const)(
+    "a PRE-#2543 bundle (enabled only) writes the derived mode — %s mode",
+    async (mode) => {
+      // Before the reconcile hook: `enabled = false` was written, the dry-run said
+      // "changed: enabled", the operator believed the lockout was off, and every
+      // unpaid member went on being repriced and refused. Members over-charged,
+      // silently, against a dry-run that said otherwise.
+      const zip = lockoutBundle(
+        {
+          enabled: false,
+          financialYearEndMonthOverride: null,
+          textFallbackEnabled: true,
+          useFeeScheduleItemCodes: false,
+        },
+        "0.13.1",
+      );
+
+      const plan = await buildImportPlan(
+        stubDb({ membershipLockoutSettings: targetOnNonMemberPricing }),
+        zip,
+        { mode },
+      );
+      const item = plan.categories[0].items.find(
+        (i) => i.entity === "membership-lockout-settings",
+      );
+      expect(item?.action).toBe("update");
+      // The dry-run now TELLS the operator the policy is moving, not just a boolean.
+      expect(item?.changedFields).toContain("mode");
+      expect(item?.changedFields).toContain("enabled");
+
+      const { files } = readBundle(zip);
+      const { tx, delegates } = stubTx({
+        membershipLockoutSettings: targetOnNonMemberPricing,
+      });
+      await clubSettingsImporter.apply(applyCtx(tx, files, mode));
+      expect(delegates.membershipLockoutSettings.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          update: expect.objectContaining({ mode: "NO_BLOCK", enabled: false }),
+        }),
+      );
+    },
+  );
+
+  it("a null mode in MERGE mode still writes a mode derived from the boolean", async () => {
+    // The inconsistent-pair path: a source club that upgraded but never opened the
+    // panel exports `mode: null, enabled: false`. Merge mode drops the null, so the
+    // target was left on `mode = NON_MEMBER_PRICING, enabled = false` — a pair no
+    // admin save can produce, and one that breaks the rollback guarantee, because an
+    // old colour reads `enabled = false` and applies no lockout at all.
+    const zip = lockoutBundle({
+      mode: null,
+      enabled: false,
+      financialYearEndMonthOverride: null,
+      textFallbackEnabled: true,
+      useFeeScheduleItemCodes: false,
+    });
+
+    const { files } = readBundle(zip);
+    const { tx, delegates } = stubTx({
+      membershipLockoutSettings: targetOnNonMemberPricing,
+    });
+    await clubSettingsImporter.apply(applyCtx(tx, files, "merge"));
+    expect(delegates.membershipLockoutSettings.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({ mode: "NO_BLOCK", enabled: false }),
+      }),
+    );
+  });
+
+  it("a recognised mode is authoritative and re-derives the legacy boolean", async () => {
+    // The pair can never be stored inconsistent, whichever half the bundle got
+    // right. NON_MEMBER_PRICING maps to enabled=true deliberately: a rollback onto
+    // old code then REFUSES an unpaid member rather than charging them member rates.
+    const zip = lockoutBundle({
+      mode: "NON_MEMBER_PRICING",
+      enabled: false,
+      financialYearEndMonthOverride: null,
+      textFallbackEnabled: true,
+      useFeeScheduleItemCodes: false,
+    });
+
+    const { files } = readBundle(zip);
+    const { tx, delegates } = stubTx({
+      membershipLockoutSettings: {
+        ...DEFAULT_MEMBERSHIP_LOCKOUT_SETTINGS,
+        mode: "NO_BLOCK",
+        enabled: false,
+      },
+    });
+    await clubSettingsImporter.apply(applyCtx(tx, files, "merge"));
+    expect(delegates.membershipLockoutSettings.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({
+          mode: "NON_MEMBER_PRICING",
+          enabled: true,
+        }),
+      }),
+    );
+  });
+
+  it("an UNRECOGNISED mode string is refused by the dry-run, not silently trusted", async () => {
+    const zip = lockoutBundle({
+      mode: "CHARGE_DOUBLE",
+      enabled: true,
+      financialYearEndMonthOverride: null,
+      textFallbackEnabled: true,
+      useFeeScheduleItemCodes: false,
+    });
+    const plan = await buildImportPlan(
+      stubDb({ membershipLockoutSettings: targetOnNonMemberPricing }),
+      zip,
+      { mode: "merge" },
+    );
+    expect(plan.categories[0].errors.join(" ")).toContain("mode");
+  });
+});
