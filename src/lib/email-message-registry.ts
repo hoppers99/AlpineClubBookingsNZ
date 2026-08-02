@@ -473,6 +473,14 @@ const REQUIRED_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, string[]>
   "booking-review-approved": [],
   "induction-sign-off-request": ["inductionUrl"],
   "school-attendee-confirmation": ["token"],
+  // #2550: the whole point of the message is the ask and the count it is about,
+  // and the one sentence whose urgency escalates as check-in approaches. An
+  // override that drops any of the three leaves a member with a nudge that does
+  // not say what to do or how much of their party is still unnamed.
+  "whole-lodge-guest-names-reminder": [
+    "unnamedGuestCount",
+    "namingUrgencyNote",
+  ],
   "group-booking-join-verification": ["token"],
   // #2260: who it is for and which season it covers are the load-bearing
   // content of a manual-payment receipt. The amount is deliberately NOT
@@ -757,6 +765,12 @@ const TEMPLATE_TRIGGER_METADATA: Partial<
       "School contact prompted to confirm placeholder attendees (cron sweep or admin resend)",
     frequency:
       "Per send to the school contact; flagged a reminder after the first, token rotated each send",
+  },
+  "whole-lodge-guest-names-reminder": {
+    triggerSummary:
+      "A member whole-lodge booking is approaching check-in with its party still listed as placeholder 'Guest 1..N' names (#2550)",
+    frequency:
+      "Every attendeeConfirmationReminderDays inside the lead window, escalating to daily in the last two days, until every guest is named or the stay starts; it never blocks the stay",
   },
   "admin-school-manual-invoice": {
     triggerSummary:
@@ -1391,6 +1405,11 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "message",
   "modificationTypeLabel",
   "name",
+  // #2550: the one escalating sentence of the whole-lodge guest-name reminder,
+  // composed by the sender (wholeLodgeGuestNamesUrgencyNote) so the hand-built
+  // HTML and an admin override cannot say different things about how urgent it
+  // is. Never empty — every stage has a sentence.
+  "namingUrgencyNote",
   "newCheckIn",
   "newCheckOut",
   "newEmail",
@@ -1552,6 +1571,8 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "paymentDueNote",
   "totalPaid",
   "triggeringMemberName",
+  // #2550: how many of the party still carry a generated placeholder name.
+  "unnamedGuestCount",
   "verifyUrl",
   "windowHours",
   // MG4 (#2309): the withdrawal notice's two composed blocks — what happened,

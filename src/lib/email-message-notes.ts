@@ -285,6 +285,33 @@ export function splitGuestPortionOwnBookingLine(
     : "This only affects your guests' provisional place — your own linked booking has not been changed by this cancellation.";
 }
 
+/**
+ * #2550 — the one escalating sentence of the whole-lodge guest-name reminder,
+ * shared by the hand-built HTML (`wholeLodgeGuestNamesReminderTemplate`) and the
+ * `{{namingUrgencyNote}}` token the admin-editable body renders.
+ *
+ * Composed rather than written into the flat default because the urgency is the
+ * only thing that changes between the first nudge and the last one, and because
+ * this is precisely the shape that used to ship as an `[only when …]`
+ * annotation. It is NEVER empty — every stage has a sentence — so it needs no
+ * `OPTIONAL_TEMPLATE_TOKENS` declaration.
+ *
+ * Every variant is careful to stay a request, not a threat: #2550's owner
+ * decision is that an unnamed party is chased by visibility only, and the stay,
+ * check-in and roster are never withheld. No wording here may imply otherwise.
+ */
+export function wholeLodgeGuestNamesUrgencyNote(
+  stage: "first" | "reminder" | "final",
+): string {
+  if (stage === "final") {
+    return "Your stay is about to start and the lodge roster is printed from these names, so please add them now if you can. If you cannot, come anyway and tell the lodge on arrival — your booking and your beds are confirmed either way, and nobody will be turned away over a name.";
+  }
+  if (stage === "reminder") {
+    return "We asked about this once already, so this is a nudge rather than anything to worry about. Adding the names now means the chore list and roster name real people instead of Guest 1 and Guest 2.";
+  }
+  return "Adding the names now means the chore list and the arrival roster at the lodge name real people instead of Guest 1 and Guest 2. It takes a minute and you can change them again later.";
+}
+
 /** A labelled link in an email: the button caption and the site-relative path. */
 export interface EmailLinkAction {
   label: string;
