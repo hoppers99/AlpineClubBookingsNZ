@@ -888,6 +888,15 @@ export async function getStuckStateDashboard(input?: {
   // one asks whether the school signed the list off, this one asks what the
   // chore roster will actually print at the lodge. Both are visibility only —
   // nothing here withholds a check-in, a confirmation, or a roster.
+  //
+  // The summary deliberately does NOT promise that every row is being chased.
+  // Because this count reads guest rows rather than a request type, it also
+  // catches parties no sweep will email: a school list the contact CONFIRMED
+  // while leaving the generated names in place (`applySchoolAttendeeConfirmation`
+  // accepts `confirm: true` with no `guestUpdates`, and the school sweep filters
+  // `attendeesConfirmedAt: null`), and a booking still held for approval, which
+  // has no `convertedBookingId` for either sweep to find. Those are precisely
+  // the rows an admin must fix by hand, so the copy has to say so.
   const unnamedPlaceholderBookings =
     await deps.countBookingsWithUnnamedPlaceholderGuests(now);
   addItem(items, {
@@ -903,7 +912,7 @@ export async function getStuckStateDashboard(input?: {
       "booking",
     )} still ${
       unnamedPlaceholderBookings === 1 ? "lists" : "list"
-    } placeholder guest names ("Guest 2", "School Child 5"), so the chore list and arrival roster would show those instead of real people. The booker is reminded automatically, and an admin or Booking Officer can edit the names too. The stay is never held up over this.`,
+    } placeholder guest names ("Guest 2", "School Child 5"), so the chore list and arrival roster would show those instead of real people. Most bookers are chased automatically, but some rows are not — a school list already confirmed with its placeholder names, or a booking still held for approval — so treat this as a list to work through: open the booking and edit the names, which an admin or Booking Officer can always do. The stay is never held up over this.`,
   });
 
   await addEmailItems(items, deps);

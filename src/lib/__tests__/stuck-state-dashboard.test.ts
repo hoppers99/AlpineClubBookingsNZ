@@ -365,6 +365,89 @@ describe("getStuckStateDashboard", () => {
     });
   });
 
+  // #2550: the admin-dashboard half of the placeholder-naming feature. Both
+  // cases below are acceptance criteria, not incidental coverage — the tile is
+  // what an admin sees, and "naming all guests clears the flag" is the whole
+  // point of the zero case.
+  it("flags upcoming bookings that still carry placeholder guest names (#2550)", async () => {
+    const deps = buildDeps({
+      countBookingsWithUnnamedPlaceholderGuests: vi.fn().mockResolvedValue(3),
+    });
+    vi.mocked(deps.db.paymentRecoveryOperation.count)
+      .mockResolvedValueOnce(0)
+      .mockResolvedValueOnce(0)
+      .mockResolvedValueOnce(0);
+    const now = new Date("2026-06-22T00:00:00.000Z");
+
+    const dashboard = await getStuckStateDashboard({ deps, now });
+
+    expect(deps.countBookingsWithUnnamedPlaceholderGuests).toHaveBeenCalledWith(
+      now,
+    );
+    const item = dashboard.items.find(
+      (candidate) => candidate.id === "booking-unnamed-placeholder-guests",
+    );
+    expect(item).toMatchObject({
+      domain: "booking",
+      title: "Bookings with unnamed guests",
+      // Visibility only — the owner decision on #2550 is that an unnamed party
+      // is never blocked, so this may never escalate to critical.
+      severity: "warning",
+      owner: "Admin",
+      count: 3,
+      href: "/admin/bookings",
+    });
+    expect(item?.summary).toContain("3 upcoming bookings still list");
+    // The copy must not promise a chase for every row: a school list confirmed
+    // with its placeholder names, and a booking still held for approval, are
+    // both counted here and emailed by nobody.
+    expect(item?.summary).not.toMatch(/The booker is reminded automatically/);
+    expect(item?.summary).toContain("some rows are not");
+    expect(item?.summary).toContain("never held up");
+  });
+
+  it("clears the unnamed-guest flag once every guest has a real name (#2550)", async () => {
+    const deps = buildDeps({
+      countBookingsWithUnnamedPlaceholderGuests: vi.fn().mockResolvedValue(0),
+    });
+    vi.mocked(deps.db.paymentRecoveryOperation.count)
+      .mockResolvedValueOnce(0)
+      .mockResolvedValueOnce(0)
+      .mockResolvedValueOnce(0);
+
+    const dashboard = await getStuckStateDashboard({
+      deps,
+      now: new Date("2026-06-22T00:00:00.000Z"),
+    });
+
+    expect(
+      dashboard.items.find(
+        (candidate) => candidate.id === "booking-unnamed-placeholder-guests",
+      ),
+    ).toBeUndefined();
+  });
+
+  it("uses the singular voice for a single unnamed-guest booking (#2550)", async () => {
+    const deps = buildDeps({
+      countBookingsWithUnnamedPlaceholderGuests: vi.fn().mockResolvedValue(1),
+    });
+    vi.mocked(deps.db.paymentRecoveryOperation.count)
+      .mockResolvedValueOnce(0)
+      .mockResolvedValueOnce(0)
+      .mockResolvedValueOnce(0);
+
+    const dashboard = await getStuckStateDashboard({
+      deps,
+      now: new Date("2026-06-22T00:00:00.000Z"),
+    });
+
+    expect(
+      dashboard.items.find(
+        (candidate) => candidate.id === "booking-unnamed-placeholder-guests",
+      )?.summary,
+    ).toContain("1 upcoming booking still lists");
+  });
+
   it("does not query disabled module-specific surfaces", async () => {
     const deps = buildDeps({
       loadEffectiveModuleFlags: vi.fn().mockResolvedValue({
