@@ -11,7 +11,7 @@
  * push spend over the budget can only be proven against a real PostgreSQL — an
  * in-process fake cannot reproduce `pg_advisory_xact_lock` mutual exclusion or a
  * READ COMMITTED snapshot. This suite drives the PRODUCTION function (not a
- * re-implementation) from two/three concurrent callers and asserts exactly the
+ * re-implementation) from two to five concurrent callers and asserts exactly the
  * budgeted number of reservations win and the live-reservation sum never exceeds
  * the budget.
  *
@@ -20,12 +20,12 @@
  * The first test does not hope the interleaving happens. A third connection
  * takes the SAME per-month advisory lock and holds it open; the two reservers
  * are then started and the test waits on a BARRIER — `pg_locks` reporting both
- * of them blocked on exactly that advisory key — before asserting that NEITHER
- * has been able to insert a reservation. Only then is the holder released. No
- * `setTimeout` stands in for the interleaving, so the test neither flakes when
- * CI is slow nor passes vacuously when it is fast.
+ * of them blocked on exactly that advisory key AND (via `pg_stat_activity`) not
+ * yet holding a transaction id, i.e. blocked BEFORE writing anything. Only then
+ * is the holder released. No `setTimeout` stands in for the interleaving, so
+ * the test neither flakes when CI is slow nor passes vacuously when it is fast.
  *
- * That barrier is what makes the suite a real regression gate. Both ways of
+ * That barrier is what makes the suite a real regression gate. Three ways of
  * losing the protection were reproduced against a throwaway PostgreSQL (three
  * runs each, no flaky pass) before this was committed:
  *   - DELETE the `pg_advisory_xact_lock` line from `reserveDiagnosticsBudget`
@@ -34,6 +34,21 @@
  *   - MOVE it to after the budget reads and the barrier is satisfied (they do
  *     queue) but both reservers then win — 2 x 40c admitted against a 50c
  *     budget, caught by the one-winner assertion.
+ *   - MOVE it to after the guarded insert and the reservers queue holding a
+ *     transaction id, which the barrier's `backend_xid IS NULL` clause rejects
+ *     with a diagnostic naming the write-before-lock ordering.
+ *
+ * ## What this file does NOT claim
+ *
+ * There is deliberately no "neither reserver has inserted a row yet" count
+ * taken across a separate connection while the lock is held: under READ
+ * COMMITTED an uncommitted insert made by a blocked reserver is invisible to
+ * any other backend, so such a count is 0 whether the production code is
+ * correct or not. The honest in-flight evidence is (a) the barrier's
+ * `backend_xid IS NULL` clause, which is what actually distinguishes
+ * lock-before-write from lock-after-write, and (b) the in-process settled flags
+ * asserted below, which catch a reserver that returned early (e.g. fail-closed
+ * `metering_unavailable`) while two unrelated sessions happened to be queued.
  *
  * Like `concurrency-lock-races.realdb.test.ts`, it is OFF by default and a no-op
  * in ordinary CI/local runs:
@@ -70,15 +85,35 @@ const BUDGET_LOCK_NAME = "diagnostics-budget-reserve";
 /**
  * How long the lock barrier waits for the reservers to queue before giving up
  * with its own named diagnostic — far more useful than Vitest's generic test
- * timeout, and comfortably inside Prisma's 5s interactive-transaction timeout
- * so the barrier reports the failure rather than the reservers timing out first.
+ * timeout, so it has to be the FIRST clock to expire on the failure path.
+ *
+ * Two clocks it must beat, with the arithmetic spelled out rather than assumed:
+ *   - `reserveDiagnosticsBudget` calls `prisma.$transaction(fn)` with no options
+ *     (`src/lib/ai-diagnostics-usage.ts`), so each reserver runs on Prisma's
+ *     default 5s interactive-transaction timeout, and the time it spends blocked
+ *     on `pg_advisory_xact_lock` counts against that 5s. At 2s the barrier
+ *     leaves ~3s of headroom; at 4s it left under 1s, and a loaded runner could
+ *     make both reservers die with P2028 → `metering_unavailable` and report the
+ *     useless "0 winners" instead of naming the lock.
+ *   - Vitest's own per-test timeout, which defaults to 5000ms because
+ *     `vitest.config.ts` sets none. The race `describe` below therefore declares
+ *     an explicit 20s timeout (the sibling harness does the same at
+ *     `concurrency-lock-races.realdb.test.ts`), so the barrier's named
+ *     diagnostic is never pre-empted by a generic "Test timed out in 5000ms".
  *
  * Measured with `process.hrtime.bigint()` via `realElapsedMs`, never
  * `Date.now()`: since #2481 every test file runs with `Date` frozen, so a
  * `Date.now()` deadline can never expire and the poller would spin until the
  * test was killed with no lock named.
  */
-const LOCK_POLL_TIMEOUT_MS = 4_000;
+const LOCK_POLL_TIMEOUT_MS = 2_000;
+
+/**
+ * Ceiling for the forced-barrier test. Generous next to the 2s barrier so that
+ * a slow runner never converts "the lock is gone" into "Test timed out in
+ * 5000ms", but still bounded so a genuinely wedged lock fails the job.
+ */
+const RACE_TEST_TIMEOUT_MS = 20_000;
 
 function deferred() {
   let resolve!: () => void;
@@ -168,6 +203,7 @@ describe("diagnostics budget race DB safety guard (#2532)", () => {
 // imports Prisma or connects to a database.
 (RUN ? describe : describe.skip)(
   "diagnostics budget over-budget race — real PostgreSQL (#2371 / #2532)",
+  { timeout: RACE_TEST_TIMEOUT_MS },
   () => {
     let month: string;
 
@@ -200,7 +236,8 @@ describe("diagnostics budget race DB safety guard (#2532)", () => {
 
     /**
      * How many sessions are currently WAITING (granted = false) for the
-     * per-month diagnostics budget advisory lock.
+     * per-month diagnostics budget advisory lock, split by whether they have
+     * already written anything inside their transaction.
      *
      * `pg_advisory_xact_lock(int4, int4)` stores its two keys in `pg_locks` as
      * `classid`/`objid`, with `objsubid = 2` marking the two-key form. Those
@@ -208,42 +245,79 @@ describe("diagnostics budget race DB safety guard (#2532)", () => {
      * routinely negative, so both sides are compared as UNSIGNED 32-bit
      * `bigint`s. Comparing them raw would silently match nothing and the barrier
      * would time out even with a perfectly correct lock.
+     *
+     * `pg_stat_activity.backend_xid` is the discriminating column and the reason
+     * this barrier is not merely decorative. PostgreSQL assigns a transaction id
+     * lazily, at a backend's FIRST heap write — so a reserver that took the lock
+     * as its first statement (the correct order) is queued with `backend_xid IS
+     * NULL`, while one that inserted its reservation and only then reached the
+     * lock is queued holding a real xid. A cross-connection row count cannot see
+     * that difference at all: under READ COMMITTED the uncommitted insert is
+     * invisible to every other backend.
      */
-    async function pendingBudgetLockWaiters(): Promise<number> {
-      const rows = await observerClient.$queryRaw<Array<{ count: number }>>`
-        SELECT COUNT(*)::int AS "count"
-        FROM pg_locks
-        WHERE locktype = 'advisory'
-          AND objsubid = 2
-          AND granted = false
-          AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
-          AND classid::bigint =
+    async function pendingBudgetLockWaiters(): Promise<{
+      waiting: number;
+      waitingBeforeAnyWrite: number;
+    }> {
+      const rows = await observerClient.$queryRaw<
+        Array<{ waiting: number; waitingBeforeAnyWrite: number }>
+      >`
+        SELECT
+          COUNT(*)::int AS "waiting",
+          (COUNT(*) FILTER (WHERE a.backend_xid IS NULL))::int
+            AS "waitingBeforeAnyWrite"
+        FROM pg_locks l
+        JOIN pg_stat_activity a ON a.pid = l.pid
+        WHERE l.locktype = 'advisory'
+          AND l.objsubid = 2
+          AND l.granted = false
+          AND l.database = (SELECT oid FROM pg_database WHERE datname = current_database())
+          AND l.classid::bigint =
             ((hashtext(${BUDGET_LOCK_NAME})::bigint + 4294967296) % 4294967296)
-          AND objid::bigint =
+          AND l.objid::bigint =
             ((hashtext(${month})::bigint + 4294967296) % 4294967296)
       `;
-      return rows[0]?.count ?? 0;
+      return {
+        waiting: rows[0]?.waiting ?? 0,
+        waitingBeforeAnyWrite: rows[0]?.waitingBeforeAnyWrite ?? 0,
+      };
     }
 
     /**
      * The BARRIER. Blocks until PostgreSQL itself reports `expected` sessions
-     * queued on the per-month budget key — the only honest signal that the
-     * reservers really reached the lock and really could not proceed. Polling
-     * `pg_locks` is not "sleep-based racing": nothing here stands in for the
-     * interleaving, the interleaving is held open by `lockHolderClient` and this
-     * only detects when it is fully established.
+     * queued on the per-month budget key HAVING WRITTEN NOTHING YET — the only
+     * honest signal that the reservers really reached the lock first and really
+     * could not proceed. Polling `pg_locks` is not "sleep-based racing": nothing
+     * here stands in for the interleaving, the interleaving is held open by
+     * `lockHolderClient` and this only detects when it is fully established.
+     *
+     * The two failure messages are deliberately different, because they name
+     * different regressions: nobody queued means the lock is gone; queued but
+     * already holding a transaction id means the lock was taken AFTER the
+     * read-check-insert, which serialises nothing that matters.
      */
     async function waitForBudgetLockWaiters(expected: number): Promise<void> {
       const startedAt = process.hrtime.bigint();
-      let seen = 0;
+      let seen = { waiting: 0, waitingBeforeAnyWrite: 0 };
       while (realElapsedMs(startedAt) < LOCK_POLL_TIMEOUT_MS) {
         seen = await pendingBudgetLockWaiters();
-        if (seen >= expected) return;
+        if (seen.waitingBeforeAnyWrite >= expected) return;
         await new Promise((resolve) => setTimeout(resolve, 10));
       }
+      const lockKey =
+        `pg_advisory_xact_lock(hashtext('${BUDGET_LOCK_NAME}'), hashtext('${month}'))`;
+      if (seen.waiting >= expected) {
+        throw new Error(
+          `${expected} reserver(s) queued on ${lockKey}, but ${seen.waiting - seen.waitingBeforeAnyWrite} ` +
+            "of them already hold a transaction id — reserveDiagnosticsBudget writes " +
+            "(sweeps or inserts) BEFORE taking the per-month budget lock, so the lock no " +
+            "longer makes the read-check-insert atomic and concurrent reservers can " +
+            "overspend the monthly budget (docs/CONCURRENCY_AND_LOCKING.md).",
+        );
+      }
       throw new Error(
-        `Timed out waiting for ${expected} reserver(s) to queue on ` +
-          `pg_advisory_xact_lock(hashtext('${BUDGET_LOCK_NAME}'), hashtext('${month}')) — saw ${seen}. ` +
+        `Timed out waiting for ${expected} reserver(s) to queue on ${lockKey} — ` +
+          `saw ${seen.waiting}. ` +
           "reserveDiagnosticsBudget no longer serialises on the per-month budget lock, " +
           "so concurrent reservers can read the same under-budget snapshot and overspend " +
           "the monthly budget (docs/CONCURRENCY_AND_LOCKING.md).",
@@ -314,40 +388,94 @@ describe("diagnostics budget race DB safety guard (#2532)", () => {
 
       // A THIRD connection takes the production lock's exact key and parks on
       // it. Reserve is now guaranteed to block, whatever the machine's timing.
-      const holder = lockHolderClient.$transaction(
-        async (tx) => {
-          await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${BUDGET_LOCK_NAME}), hashtext(${month}))`;
+      // Its transaction timeout stays BELOW this suite's per-test timeout so
+      // that even a test killed by Vitest cannot leave the advisory key pinned
+      // for the tests that follow.
+      let holderError: unknown;
+      const holder = lockHolderClient
+        .$transaction(
+          async (tx) => {
+            await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${BUDGET_LOCK_NAME}), hashtext(${month}))`;
+            lockHeld.resolve();
+            await releaseLock.promise;
+          },
+          { maxWait: 5_000, timeout: 10_000 },
+        )
+        .catch((error: unknown) => {
+          // Never leave the test parked on `lockHeld` if the holder itself
+          // failed: unblock it and let the assertion below name the cause.
+          holderError = error;
           lockHeld.resolve();
-          await releaseLock.promise;
-        },
-        { maxWait: 20_000, timeout: 30_000 },
-      );
+        });
       await lockHeld.promise;
+      if (holderError) {
+        throw new Error(
+          `The lock-holder connection could not hold ${BUDGET_LOCK_NAME}/${month}: ${String(holderError)}`,
+        );
+      }
 
-      // Start both reservers. Neither can get past its first statement.
-      const reserveA = reserveDiagnosticsBudget({ reserveCents, now: RACE_NOW });
-      const reserveB = reserveDiagnosticsBudget({ reserveCents, now: RACE_NOW });
+      // Start both reservers. Neither can get past its first statement. The
+      // settled flags are the in-process half of the evidence: a reserver that
+      // bailed out early (fail-closed `metering_unavailable`, say) while two
+      // unrelated sessions happened to be queued would satisfy the pg_locks
+      // barrier but not this.
+      let aSettled = false;
+      let bSettled = false;
+      const reserveA = reserveDiagnosticsBudget({
+        reserveCents,
+        now: RACE_NOW,
+      }).finally(() => {
+        aSettled = true;
+      });
+      const reserveB = reserveDiagnosticsBudget({
+        reserveCents,
+        now: RACE_NOW,
+      }).finally(() => {
+        bSettled = true;
+      });
 
-      await waitForBudgetLockWaiters(2);
+      // Everything observed while the lock is held goes in a try/finally: if an
+      // observation fails (which is EXACTLY what happens when the production
+      // lock is removed) the holder must still be released, or its transaction
+      // sits on the advisory key until its own 10s timeout and the three tests
+      // below fail with unrelated P2028 → `metering_unavailable` noise instead
+      // of this test's named diagnostic.
+      let observationError: unknown;
+      try {
+        await waitForBudgetLockWaiters(2);
+        expect(aSettled || bSettled).toBe(false);
+      } catch (error) {
+        observationError = error;
+      } finally {
+        releaseLock.resolve();
+      }
 
-      // THE load-bearing assertion. Both reservers are inside their
-      // transactions and both are stopped dead at the lock, so neither has run
-      // its read-check-insert. Remove the `pg_advisory_xact_lock` line from
-      // `reserveDiagnosticsBudget` and this is 2 — 80c reserved against a 50c
-      // budget — with the barrier above having already failed first.
-      expect(await reservationRowCount()).toBe(0);
+      const [, a, b] = await Promise.all([holder, reserveA, reserveB]);
+      if (observationError) throw observationError;
+      if (holderError) {
+        throw new Error(
+          `The lock-holder connection dropped ${BUDGET_LOCK_NAME}/${month} early: ${String(holderError)}`,
+        );
+      }
 
-      releaseLock.resolve();
-      await holder;
+      // A reserver that died on Prisma's 5s transaction timeout returns
+      // `metering_unavailable`; surfacing that as itself beats letting it show
+      // up as a miscounted winner tally with no mention of the timeout.
+      for (const result of [a, b]) {
+        expect(result.ok === false && result.reason).not.toBe(
+          "metering_unavailable",
+        );
+      }
 
       // Released together, they serialise: the first inserts 40c, the second
       // re-reads it as a live reservation and is denied.
-      const [a, b] = await Promise.all([reserveA, reserveB]);
       expect([a, b].filter((result) => result.ok)).toHaveLength(1);
       const loser = [a, b].find((result) => !result.ok);
       expect(loser?.ok === false && loser.reason).toBe("over_budget");
+      // Exactly one row was ever written for the month — the loser inserted
+      // nothing, not even a row it later rolled back to under the budget.
+      expect(await reservationRowCount()).toBe(1);
       expect(await liveReservedCents()).toBe(reserveCents);
-      expect(await liveReservedCents()).toBeLessThanOrEqual(budgetCents);
     });
 
     it("admits exactly one of two concurrent reserves that individually fit but together exceed the budget", async () => {
