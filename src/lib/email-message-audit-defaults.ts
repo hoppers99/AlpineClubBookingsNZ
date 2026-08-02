@@ -295,6 +295,10 @@ const EMAIL_AUDIT_DEFAULTS_BASE = {
     "defaultSubject": "Xero Reconciliation Report - {{issueTotalCount}} item{{s}}",
     "defaultBody": "Xero Reconciliation Report\n\nNo open reconciliation gaps were detected in this report window."
   },
+  "admin-credit-sync-drift": {
+    "defaultSubject": "Xero Credit Sync Drift — {{CLUB_BOOKINGS_NAME}}",
+    "defaultBody": "Xero Credit Sync Drift\n\nBookingApp's known applied credit does not match Xero's live invoice allocation for one or more bookings. Each drift names the member, booking, invoice and the exact amount. Nothing has been changed automatically — review and reconcile in Xero."
+  },
   "admin-refund-request": {
     "defaultSubject": "Refund Appeal: {{memberName}}",
     "defaultBody": "Refund Appeal Submitted\n\n{{memberName}} has submitted a refund appeal.\n\nMember: {{memberName}}\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nPaid: {{paidAmount}}\nAlready Refunded: {{refundedAmount}}\nRemaining: {{remainingAmount}}\n{{requestedAmountNote}}\n{{reason}}\n\nReview Appeal: {{BASE_URL}}/admin/refund-requests"

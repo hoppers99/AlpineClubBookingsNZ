@@ -2571,6 +2571,62 @@ proposal state and capacity reservation from `HOLD` all belong to #2365; the
 capacity mode is frozen onto the snapshot and aggregated here, and reserves
 nothing.
 
+### Subscription-lockout booking pricing (#2533)
+
+**Owner decision (2 Aug 2026), extending the #2364 lapsed-member framing.** The
+same idea #2364 applies to a lapsed member — "not a member in good standing is,
+for this rule, a non-member" — is extended to the money axis for an unpaid
+subscription:
+
+> A subscription-locked member can still book for others in their family, but if
+> that individual's subscription is not paid they get charged **non-member
+> rates** (and are **told why**), and there still has to be **at least one
+> paid-up adult member on the booking**.
+
+**Three rules, one predicate reused.** The pure evaluator lives in
+`policies/subscription-lockout-pricing.ts` and mirrors the hosting evaluator's
+shape (facts in, decisions and member-facing sentences out, no I/O):
+
+- **Unpaid member → non-member rate.** A member (`isMember`) for whom the
+  booking-time gate says a subscription is *required* this season
+  (`requiresPaidSubscriptionForMemberForBooking`, which already folds in the
+  Xero-off bypass, membership-type opt-outs and the per-age-tier rule) and whose
+  subscription is *not* PAID prices at the built-in NON_MEMBER rate. This is the
+  existing `rateSource: "TYPE_POLICY_FORCED"` resolution
+  (`resolveGuestRateMembershipTypes`), so it routes the correct non-member Xero
+  item code with no new pricing or invoicing path — the same route a
+  `NON_MEMBER_RATE` membership type already takes.
+- **At least one paid-up adult member present.** A qualifying participant is a
+  #2364 host (active, uncancelled, unarchived, ADULT, operationally present) whose
+  subscription is ALSO settled (PAID, or not required for them).
+  `participantQualifiesAsHost` is reused verbatim and the subscription fact ANDed
+  on top, so the standing half can never drift from the hosting rule — a lapsed
+  adult with a paid subscription fails on standing, a paid-up-membership adult
+  with an unpaid *subscription* fails on money, and only somebody clear on both
+  counts satisfies the requirement. An empty party fails.
+- **Told why.** Two member-facing sentences name neither a person nor an amount:
+  the rate reason states that member rates are unavailable while the subscription
+  is unpaid and how to restore them; the refusal names the two escape routes
+  (renew, or add a paid-up adult). The rate reason is surfaced today, read-only,
+  on `GET /api/member/subscription-status` (`memberRateNotice`), worded to be true
+  under BOTH the current hard-block lockout and the decided non-member-rate
+  direction so it never over-promises a booking.
+
+**Enforcement is a separate, owner-gated rollout (NOT yet wired).** Today an
+unpaid required member is **hard-blocked** from booking — a 403 on the create,
+confirm-draft, group-join and modify paths — not repriced. Turning that block
+into "reprice + require a paid-up adult" is a Critical money-regime change with
+coupled decisions the owner must settle: whether to soften the block at all,
+opt-in per club vs. replace the block outright, whether an unpaid member's nights
+consume capacity, and the Xero invoice narration for a member billed at
+non-member rates. The pure evaluator is the reviewed foundation those paths will
+consume once the rollout is decided; on its own it moves no money and changes no
+booking path. **Reversal:** if the club's position is that an unpaid subscription
+should keep hard-blocking, the reversal is to not wire the evaluator into the
+booking paths — the block already stands. The paid-up-adult half keys off the
+same standing predicate as #2364, so its reversal is #2364's reversal (drop the
+standing clauses from `participantQualifiesAsHost`), never a narrower one here.
+
 Issue #1668 adds an **admin-only override** (`adminOverride`, honoured solely when
 `bookingManagementAuthorizationRole(session.user) === "ADMIN"`, i.e. Full Admin
 or Booking Officer) that lifts those date-window locks so an admin can move the
@@ -3129,6 +3185,45 @@ pure workflow logic (`src/lib/booking-exception-requests.ts`):
   aggregate (nothing was reserved) re-checks capacity at approval and keeps the
   request `REQUESTED` with a recorded reason on a conflict, rather than failing it.
   Provider calls and the member approval/rejection notice run after commit.
+
+### Member request surfaces for policy exceptions (#2524)
+
+The request-CREATION half of the flow above (`booking-exception-request-service.ts`
+and its routes). Reservation, approval and execution are the #2525 seam
+(`booking-exception-execution.ts`); nothing here crosses it. These invariants
+hold in addition to every #2365 invariant above:
+
+- **A new booking has its own store.** A `BookingChangeRequest.bookingId` is a
+  required FK, so a NEW-booking proposal cannot live there. New-booking requests
+  are stored in the dedicated `NewBookingPolicyExceptionRequest` table; a
+  MODIFICATION request stays on the `POLICY_EXCEPTION` `BookingChangeRequest`.
+  Both freeze the identical immutable proposal + `proposalHash`, `frozenEvidence`
+  + `aggregateCapacityMode`, required `memberMessage`, attempt/conflict metadata
+  and integer `version` claim token.
+- **The violations are re-evaluated server-side, never trusted from the client.**
+  A request stores exactly the violations `evaluateProposalPartyViolations`
+  re-derives from current policy for the proposed party (minimum stay + adult
+  member hosting); a proposal that trips none is refused (nothing to review), and
+  a non-allowlisted code can never be stored (`freezePolicyExceptionEvidence`).
+- **At most one open request per subject, enforced by the database.** A
+  `REQUESTED` row holds a deterministic `openStateKey`
+  (`nbpe:{requestedByMemberId}:{proposalHash}` for a new booking,
+  `pe:{bookingId}:{requestedByMemberId}` for a modification) under a NULL-distinct
+  unique index; every terminal transition NULLs it. A concurrent duplicate races
+  into a unique violation (409), never a second open row, and a `LOCKED_PERIOD`
+  row (slot always NULL) is untouched.
+- **Creation never changes a live booking.** A new-booking request creates no
+  booking; a modification request writes only its request row and leaves the live
+  booking's dates, guests, pricing and payment exactly as they were. The live
+  change is #2525's approve-and-execute.
+- **Cancel/supersede are guarded and side-effect-safe.** Member cancel and
+  supersede are guarded single `updateMany` transitions on `status = REQUESTED`
+  (scoped to the owner, and to `POLICY_EXCEPTION` on the shared table); a lost
+  claim runs no side effect — no status change, no notification, no replacement
+  request.
+- **The officer is notified after commit, never in-band.** The on-request Booking
+  Officer alert is fire-and-forget after the request commits; an alert failure is
+  logged and never fails the member's request.
 
 ### Chasing an outstanding additional payment (#2350)
 
@@ -5000,6 +5095,18 @@ and is hard-deleted at the end. The merge is **additive and master-wins**:
   that lands during it; that residual window is closed by the second patch
   derivation above, which 409s on any disagreement — so a committed merge never
   carries drift, and there is no drift field in the audit to read.
+- **Refused attempts are audited too (#2498).** Every refusal — self-merge,
+  missing member, `merge_blocked`, wrong confirmation phrase, `preview_drift`,
+  and the `merge_drift_in_transaction` field/family-link arms — throws from
+  inside the transaction and rolls it (and the `MEMBER_MERGED` audit) back. A
+  single boundary in `executeMemberMerge` then writes one best-effort
+  `MEMBER_MERGE_REFUSED` audit (category `admin`, outcome `blocked`) on the base
+  client, outside the rolled-back transaction, recording the actor, both member
+  ids, the refusal code/status, and a non-PII structural summary of what drifted
+  or blocked (field/column names and guard codes only — never member values,
+  names or emails). The write is best-effort: a failed audit is logged and
+  swallowed, so it can never turn a clean 4xx/409 refusal into a 500, and one
+  refusal produces at most one row.
 
 ## Integrations
 

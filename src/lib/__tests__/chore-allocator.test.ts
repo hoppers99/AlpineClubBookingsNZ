@@ -10,22 +10,18 @@ import {
   GuestInput,
   ChoreHistoryEntry,
 } from "../chore-allocator";
+import { captureHostTimeZone } from "@/lib/__tests__/helpers/timezone";
 
 // Restoring the host zone is not `delete process.env.TZ`: Node applies a zone
 // when TZ is ASSIGNED and keeps it when the variable is removed, so deleting
-// would leave the whole worker on whichever zone this file set last. Assigning
-// the resolved starting zone first, then removing the variable, puts both the
-// zone and the environment back exactly as they were found.
-const ORIGINAL_TZ_ENV = process.env.TZ;
-const ORIGINAL_HOST_ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone;
+// would leave the whole worker on whichever zone this file set last (#2485).
+// `captureHostTimeZone` assigns the resolved starting zone back first, then
+// removes the variable, so both the zone and the environment end up exactly
+// as they were found.
+const hostTimeZone = captureHostTimeZone();
 
 function restoreHostTimeZone() {
-  if (ORIGINAL_TZ_ENV === undefined) {
-    process.env.TZ = ORIGINAL_HOST_ZONE;
-    delete process.env.TZ;
-  } else {
-    process.env.TZ = ORIGINAL_TZ_ENV;
-  }
+  hostTimeZone.restore();
 }
 
 // ---------------------------------------------------------------------------

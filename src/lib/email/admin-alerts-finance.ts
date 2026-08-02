@@ -6,8 +6,10 @@ import {
   adminXeroSyncErrorTemplate,
   adminXeroRepeatedFailureTemplate,
   adminXeroReconciliationReportTemplate,
+  adminCreditSyncDriftTemplate,
   adminRefundRequestTemplate,
   type XeroReconciliationReportEmail,
+  type CreditSyncDriftReportEmail,
 } from "../email-templates";
 import {
   composeOptionalEmailLine,
@@ -355,6 +357,46 @@ export async function sendAdminXeroReconciliationReportAlert(
       issueCategoryCount: report.summary.issueCategoryCount,
       issueTotalCount: report.summary.issueTotalCount,
       count: report.summary.issueTotalCount,
+    },
+    preferenceKey: "adminXeroSyncError",
+  });
+}
+
+/**
+ * #2501: warn admins that BookingApp's stamped applied credit and Xero's live
+ * invoice allocation have drifted, with the exact per-booking amount. The
+ * checker (xero-credit-sync-checker.ts) only calls this when at least one drift
+ * was found, so the content-only delivery default never suppresses a real
+ * warning. The invoice deep links are org-agnostic, so stamp the club's Xero
+ * organisation on at send time (#2314), one confirmed read for the whole report.
+ */
+export async function sendAdminCreditSyncDriftAlert(
+  report: CreditSyncDriftReportEmail,
+) {
+  const shortCode = await getXeroOrgShortCode({ confirmLive: true });
+  const stampedReport: CreditSyncDriftReportEmail = {
+    ...report,
+    drifts: report.drifts.map((drift) => ({
+      ...drift,
+      invoiceUrl: applyXeroOrgShortCode(drift.invoiceUrl, { shortCode }),
+    })),
+  };
+
+  const driftCount = stampedReport.drifts.length;
+  const subject = `Xero Credit Sync Drift — ${driftCount} booking${driftCount === 1 ? "" : "s"}, ${formatMoneyCents(stampedReport.totalDriftCents)} — ${CLUB_BOOKINGS_NAME}`;
+
+  await sendToAdmins({
+    subject,
+    html: adminCreditSyncDriftTemplate(stampedReport),
+    templateName: "admin-credit-sync-drift",
+    templateData: {
+      generatedAt: stampedReport.generatedAt.toISOString(),
+      scannedBookings: String(stampedReport.scannedBookings),
+      checkedBookings: String(stampedReport.checkedBookings),
+      deferredBookings: String(stampedReport.deferredBookings),
+      driftCount: String(driftCount),
+      totalDrift: formatMoneyCents(stampedReport.totalDriftCents),
+      count: String(driftCount),
     },
     preferenceKey: "adminXeroSyncError",
   });

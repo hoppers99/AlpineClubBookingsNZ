@@ -579,6 +579,26 @@ work and the member approval/rejection notice run after commit. See
 `docs/CONCURRENCY_AND_LOCKING.md` -> "Provisional reservations for held
 policy-exception requests".
 
+**Member request surfaces (#2524).** #2524 builds the request-CREATION half of
+that flow (creation, member cancel, member supersede, the officer queue read and
+the on-request notification), stopping cleanly before any reservation or
+execution (`booking-exception-execution.ts` declares the #2525 seam). Because a
+`BookingChangeRequest.bookingId` is a required FK, a NEW booking has no row to
+attach to, so new-booking proposals get their own dedicated store,
+`NewBookingPolicyExceptionRequest`, sharing the same `BookingChangeRequestStatus`
+lifecycle, the same immutable proposal/hash + frozen-evidence + `memberMessage`
+discipline, and the same integer `version` claim token. A MODIFICATION request
+stays on the `POLICY_EXCEPTION` `BookingChangeRequest` above. Both enforce a
+**one-open-request rule race-safely at the database**: a `REQUESTED` row holds a
+deterministic `openStateKey` slot (`nbpe:{memberId}:{proposalHash}` for a new
+booking, `pe:{bookingId}:{memberId}` for a modification) under a NULL-distinct
+unique index, and every terminal transition NULLs it — so a losing concurrent
+create races into a unique violation (mapped to 409) rather than a second open
+row, and a `LOCKED_PERIOD` row (which never sets the slot) is unaffected. Cancel
+and supersede are the guarded single transitions above; a supersede that loses
+its `REQUESTED -> SUPERSEDED` claim creates NO replacement. The Booking Officer
+queue read merges both stores into one age-ordered view.
+
 Edit-eligibility is governed by a date-window edit policy
 (`getBookingEditPolicy`), whose `mode` selects what a request may change:
 

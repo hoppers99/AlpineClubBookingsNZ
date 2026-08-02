@@ -642,6 +642,8 @@ model Member {
   guestAppearances                           BookingGuest[]
   bookingChangeRequestsRequested             BookingChangeRequest[]                     @relation("BookingChangeRequestsRequested")
   bookingChangeRequestsReviewed              BookingChangeRequest[]                     @relation("BookingChangeRequestsReviewed")
+  newBookingPolicyExceptionRequestsRequested NewBookingPolicyExceptionRequest[]         @relation("NewBookingPolicyExceptionRequestsRequested")
+  newBookingPolicyExceptionRequestsReviewed  NewBookingPolicyExceptionRequest[]         @relation("NewBookingPolicyExceptionRequestsReviewed")
   promoRedemptions                           PromoRedemption[]
   promoRedemptionAllocations                 PromoRedemptionAllocation[]
   promoCodeAssignments                       PromoCodeAssignment[]
@@ -4023,6 +4025,7 @@ model Lodge {
   // change requests at this lodge. RESTRICT (below), so a lodge with live
   // reservations cannot be deleted out from under the capacity view.
   policyExceptionReservationNights PolicyExceptionReservationNight[] @relation("PolicyExceptionReservationLodge")
+  newBookingPolicyExceptionRequests NewBookingPolicyExceptionRequest[]
 }
 
 model LodgeSettings {
@@ -4474,6 +4477,16 @@ model BookingChangeRequest {
   // (#1923), and for the same reason: updatedAt is millisecond-precision and two
   // writes in one millisecond would silently defeat an updatedAt CAS.
   version              Int                        @default(1)
+  // #2524: the DB-enforced one-open-request slot for a POLICY_EXCEPTION request.
+  // Set to `pe:{bookingId}:{requestedByMemberId}` while a policy-exception
+  // request is REQUESTED, and NULLed by every terminal transition (approve /
+  // reject / cancel / supersede). PostgreSQL treats NULLs as distinct, so the
+  // @unique index caps a member at ONE open policy-exception request per booking
+  // race-safely, while leaving LOCKED_PERIOD rows (which never set it) and every
+  // terminal row unconstrained. This is the durable backstop behind the
+  // application open-request check; a lost create races into a unique violation,
+  // never a second open row.
+  openStateKey         String?                    @unique
   createdAt            DateTime                   @default(now())
   updatedAt            DateTime                   @updatedAt
 
@@ -4532,6 +4545,87 @@ model PolicyExceptionReservationNight {
   @@unique([changeRequestId, night])
   // The canonical capacity read: sum beds for one lodge across a night window.
   @@index([lodgeId, night])
+}
+
+// #2524: NEW-booking policy-exception requests. The #2365 BookingChangeRequest
+// store cannot hold these — its `bookingId` is a required FK and a new booking
+// has no row yet — so new-booking proposals get their own fully-constrained
+// table (owner decision). A MODIFICATION request still lives on
+// BookingChangeRequest (kind=POLICY_EXCEPTION); this is its new-booking twin,
+// sharing the same status lifecycle (BookingChangeRequestStatus), the same
+// frozen-evidence / proposal-hash / member-message discipline, the same
+// app-managed `version` claim token and the same one-open-request `openStateKey`
+// guard. The unified officer queue read (booking-exception-request-service.ts)
+// merges both sources. This table is written ONLY by the request-creation and
+// member cancel/supersede paths; the provisional-capacity reservation and the
+// atomic approve-and-execute path are #2525 and touch no live booking here.
+model NewBookingPolicyExceptionRequest {
+  id                    String                     @id @default(cuid())
+  // The lodge the proposed booking is for. RESTRICT mirrors every other
+  // Lodge-owning table: a pending proposal must always resolve to a real lodge.
+  lodgeId               String
+  requestedByMemberId   String
+  status                BookingChangeRequestStatus @default(REQUESTED)
+  // The complete, IMMUTABLE NewBookingProposalSnapshot the member asks an admin
+  // to allow — the full proposed party (dates + per-guest sparse nights). Frozen
+  // at submit time; never rewritten. `proposalHash` is the canonical,
+  // order-independent SHA-256 over it (src/lib/booking-exception-requests.ts),
+  // so #2525's approval can prove what it executes is byte-for-byte what was
+  // reviewed.
+  proposalSnapshot      Json
+  proposalHash          String                     @db.VarChar(64)
+  // The frozen #2363 AggregatedPolicyExceptions (every covered structured
+  // violation + the HOLD-if-any-HOLD aggregate) plus the denormalised aggregate
+  // capacity mode the queue/capacity path filters on. Authoritative for what an
+  // approval may override — and for nothing else.
+  frozenEvidence        Json
+  aggregateCapacityMode PolicyExceptionCapacityMode
+  // Required, trimmed, <=1000-char member case to the Booking Officers.
+  memberMessage         String                     @db.VarChar(1000)
+  // Review outcome metadata (#2525 fills reviewedBy/reviewedAt/adminNotes on the
+  // approve/reject decision).
+  reviewedByMemberId    String?
+  reviewedAt            DateTime?
+  adminNotes            String?                    @db.VarChar(2000)
+  // Attempt/conflict metadata, mirroring BookingChangeRequest: attemptCount
+  // counts submissions of this logical proposal; the conflict fields record the
+  // most recent kept-pending NO_HOLD capacity conflict (#2525) so the queue can
+  // explain a not-yet-executed request.
+  attemptCount          Int                        @default(1)
+  conflictCount         Int                        @default(0)
+  lastConflictAt        DateTime?
+  lastConflictReason    String?                    @db.VarChar(500)
+  // Soft same-table supersede pointer (never an FK: these rows are not deleted
+  // and a self-relation would widen the member-merge DMMF surface for no gain).
+  supersededByRequestId String?
+  cancelledAt           DateTime?
+  // Set by #2525's approve-and-execute seam to the Booking it created. A soft
+  // pointer (not an FK) so #2525 owns the execution-linkage design; NULL until
+  // executed.
+  createdBookingId      String?
+  // Optimistic-concurrency claim token, app-managed and bumped on every mutating
+  // write — the BookingChangeRequest / BookingRequest.version pattern (#1923):
+  // updatedAt is millisecond-precision and two writes in one millisecond would
+  // silently defeat an updatedAt CAS.
+  version               Int                        @default(1)
+  // DB-enforced one-open-request slot: `nbpe:{requestedByMemberId}:{proposalHash}`
+  // while REQUESTED, NULLed by every terminal transition (approve / reject /
+  // cancel / supersede). PostgreSQL treats NULLs as distinct, so the @unique
+  // index caps a member at ONE open request per identical proposal race-safely —
+  // the durable backstop behind the application open-request check.
+  openStateKey          String?                    @unique
+  createdAt             DateTime                   @default(now())
+  updatedAt             DateTime                   @updatedAt
+
+  lodge       Lodge   @relation(fields: [lodgeId], references: [id], onDelete: Restrict)
+  requestedBy Member  @relation("NewBookingPolicyExceptionRequestsRequested", fields: [requestedByMemberId], references: [id], onDelete: Restrict)
+  reviewedBy  Member? @relation("NewBookingPolicyExceptionRequestsReviewed", fields: [reviewedByMemberId], references: [id], onDelete: SetNull)
+
+  // Officer queue: pending requests, oldest first, to show request age without a
+  // table scan; plus the member's own list and a per-lodge slice.
+  @@index([status, createdAt])
+  @@index([requestedByMemberId, status, createdAt])
+  @@index([lodgeId, status, createdAt])
 }
 
 // ---------------------------------------------------------------------------

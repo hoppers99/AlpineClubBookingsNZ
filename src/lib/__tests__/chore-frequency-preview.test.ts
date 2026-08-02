@@ -4,6 +4,7 @@ import {
   computeFrequencyInfo,
   type ChoreFrequencyPreviewInput,
 } from "../chore-frequency-preview";
+import { withTimeZone as withHostTimeZone } from "@/lib/__tests__/helpers/timezone";
 
 /**
  * #2478 — the lodge kiosk's "is this chore due tonight?" preview.
@@ -18,27 +19,10 @@ import {
  * that was due tonight was held back as "next due in 1 day".
  */
 
-// Restoring the host zone is not `delete process.env.TZ`: Node applies a zone
-// when TZ is ASSIGNED and keeps it when the variable is removed, so deleting
-// would leave the whole worker on whichever zone this file set last. Assigning
-// the resolved starting zone first, then removing the variable, puts both the
-// zone and the environment back exactly as they were found.
-const ORIGINAL_TZ_ENV = process.env.TZ;
-const ORIGINAL_HOST_ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone;
-
-function withHostTimeZone<T>(timeZone: string, run: () => T): T {
-  process.env.TZ = timeZone;
-  try {
-    return run();
-  } finally {
-    if (ORIGINAL_TZ_ENV === undefined) {
-      process.env.TZ = ORIGINAL_HOST_ZONE;
-      delete process.env.TZ;
-    } else {
-      process.env.TZ = ORIGINAL_TZ_ENV;
-    }
-  }
-}
+// `withHostTimeZone` (aliased from the shared `withTimeZone` helper) restores
+// the host zone by ASSIGNING it back, not by deleting `process.env.TZ` — a
+// bare delete does not invalidate Node's cached zone and would leave the
+// whole worker on whichever zone this file set last (#2485).
 
 function makeChore(
   overrides: Partial<ChoreFrequencyPreviewInput> = {},

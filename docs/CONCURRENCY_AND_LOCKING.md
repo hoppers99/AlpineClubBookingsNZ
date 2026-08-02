@@ -654,12 +654,17 @@ mispricing a booking.
   constraint). Interleavings after the re-check cannot reopen the hole: both
   member rows are FOR UPDATE-locked, and an inbound FK write referencing the
   loser from another row blocks on its KEY SHARE lock against that FOR UPDATE
-  and then fails loudly on the FK once the hard-delete commits. The refusal
-  itself writes **no audit row** — the 409 rolls the transaction back whole,
-  exactly like the #2243/#2445 field-drift refusal and the other merge
-  refusals (`merge_blocked`, `preview_drift`); recording refused merge
-  attempts (outside the transaction) would be a deliberate new convention
-  across all of those arms, and is an owner decision not taken on #2437.
+  and then fails loudly on the FK once the hard-delete commits. The 409 rolls
+  the transaction back whole, so the in-transaction `MEMBER_MERGED` audit never
+  lands — but the refused attempt is **not** silent: since #2498 a single
+  boundary in `executeMemberMerge` writes one best-effort `MEMBER_MERGE_REFUSED`
+  audit on the base client, OUTSIDE the rolled-back transaction, for this arm and
+  every other merge refusal (`merge_blocked`, `preview_drift`, the field-drift
+  arm, self-merge, missing member, confirmation mismatch). It records the actor,
+  both member ids, the refusal code/status, and a non-PII structural summary of
+  what drifted or blocked; the write is best-effort so it can never turn a clean
+  409 into a 500, and one refusal yields at most one row (owner decision on
+  #2498, 2 Aug 2026, taking the convention #2437 deliberately left open).
 
   **One new row lock, no new lock family.** Immediately before that fresh read
   the merge takes `SELECT 1 FROM "Member" WHERE "id" IN (…) ORDER BY "id" FOR
@@ -1031,6 +1036,36 @@ wiring, checked against the contract above:
 Both writers compose only the existing keys, so `advisory-lock-guard.test.ts`
 gains exactly one classified global-lock site
 (`src/lib/booking-exception-execution.ts`) and no new key family.
+
+### One-open-request slot for exception requests (#2524)
+
+The request-CREATION lane (`booking-exception-request-service.ts`) enforces "at
+most one open request per subject" **without any advisory lock** — it adds
+nothing to the `advisory-lock-guard.test.ts` inventories. The mechanism is a
+DB-enforced NULL-distinct unique column, `openStateKey`, present on both the new
+`NewBookingPolicyExceptionRequest` table and the shared `BookingChangeRequest`:
+
+- A `REQUESTED` row holds a deterministic slot value
+  (`nbpe:{requestedByMemberId}:{proposalHash}` for a new booking,
+  `pe:{bookingId}:{requestedByMemberId}` for a modification); every terminal
+  transition NULLs it. PostgreSQL treats NULLs as distinct, so the unique index
+  caps the subject at one open row and lets any number of terminal rows — and
+  every `LOCKED_PERIOD` row, which never sets the slot — coexist. A losing
+  concurrent create raises a `P2002` unique violation, which the service maps to
+  a 409; it can never produce a second open row. This is the durable backstop
+  behind the application-level open-request check, not a substitute for it.
+- **Creation is transactional; the terminal transitions are guarded.** A create
+  that supersedes an open request runs in one transaction: it first claims the
+  old row `REQUESTED -> SUPERSEDED` (NULLing its slot) with a guarded
+  `updateMany`, and only then inserts the replacement — so the new slot value is
+  free and a lost claim (`count = 0`) creates NOTHING. Member cancel is the same
+  guarded single transition on `status = REQUESTED`, scoped to the owner (and to
+  `POLICY_EXCEPTION` on the shared table), with the integer `version` token
+  bumped; a lost claim runs no side effect. No live booking is read or written on
+  any of these paths.
+- **The on-request notification is post-commit and fire-and-forget** — it is
+  never awaited inside the request path and its failure is logged, so an alert
+  outage cannot fail or roll back a member's request.
 
 ## Credit restoration: exactly-once is now STRUCTURAL (#1636)
 
