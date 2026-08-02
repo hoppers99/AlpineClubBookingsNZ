@@ -3047,6 +3047,56 @@ helpers so the surfaces can never drift):
   queue, with no date bound, because the bookings list has no upcoming-only
   filter to point at.
 
+### Booking-policy exception requests (#2365, epic decision D-R5)
+
+The durable member-request + admin-decision flow for eligible SOFT policy
+failures. It NEVER covers a hard failure — whole-lodge capacity, invalid/past
+dates, authentication, subscription/membership eligibility, duplicate
+member-night, payment, privacy or data-integrity — which stay firm refusals
+(the #2363 allowlist is the only thing that can enter review). These invariants
+hold over the store (`BookingChangeRequest`, `kind = POLICY_EXCEPTION`) and the
+pure workflow logic (`src/lib/booking-exception-requests.ts`):
+
+- **The proposal is immutable and self-proving.** A request freezes the complete
+  proposal — the whole proposed booking for a new-booking request, the live base
+  footprint AND the full proposed result for a modification — and a SHA-256
+  `proposalHash` over its canonicalised form (recursively key-sorted JSON, sorted
+  and de-duplicated per-guest nights, content-ordered guests). The hash is
+  order-independent, so re-freezing the same facts is byte-identical, and it
+  changes if any night, guest or — for a modification — the live base drifts. An
+  approval recomputes it to prove it is executing exactly what was reviewed.
+- **The evidence is frozen and authoritative.** `frozenEvidence` is the #2363
+  aggregate — every covered structured violation with its reason code, policy
+  id/version, resolved scope, exact affected NZ nights, requirements and frozen
+  per-policy capacity mode — plus the HOLD-if-any-HOLD aggregate. An approval may
+  override ONLY these reviewed violations, and nothing that is not on the #2363
+  allowlist can be stored (`freezePolicyExceptionEvidence` refuses it).
+- **A held request's provisional reservation is per-night and directional.** A
+  new-booking request reserves the FULL proposal's per-night beds; a modification
+  request reserves ONLY the incremental beds beyond the unchanged live booking
+  (`max(0, proposed - live)` per night), because the live booking is a
+  capacity-holding row that already holds its own footprint and #2365 forbids
+  touching it before approval. A shrinking modification reserves nothing. (The
+  reservation math is `computeProposalReservation`; the live capacity integration
+  and the atomic reservation-to-booking handoff are the #2365 execution lane.)
+- **Drift is set algebra over the frozen and current violations of the SAME
+  proposal.** At approval the frozen proposal is re-evaluated against today's
+  policy configuration. A reviewed rule that no longer trips (policy switched off
+  or relaxed) is executed WITHOUT an override and the resolution is recorded; a
+  reviewed rule that still trips at a different revision or with different content
+  (`violationFingerprint`), or any brand-new violation, is a materially different
+  question the member must resubmit — it is never silently overridden. Only
+  reviewed violations that still trip unchanged are overridable.
+- **The message is required.** `memberMessage` is trimmed, non-empty and at most
+  1000 characters, normalised once at the request boundary so every later surface
+  renders exactly the stored value.
+- **Every transition is guarded and single.** Only a `REQUESTED` request may move,
+  and only to `APPROVED`/`REJECTED`/`CANCELLED`/`SUPERSEDED`; the guarded
+  `updateMany` plus the integer `version` token make a lost claim run no side
+  effect (the `BookingRequest.version` discipline, #1923). `REJECTED`,
+  `CANCELLED` and `SUPERSEDED` release the provisional reservation; `APPROVED`
+  turns it into the executed booking's own beds inside the same transaction.
+
 ### Chasing an outstanding additional payment (#2350)
 
 Until #2350 nothing chased the member for an uncollected upward change and no
