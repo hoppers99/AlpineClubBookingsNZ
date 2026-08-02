@@ -1653,7 +1653,7 @@ member requests partner by email (registered login adult) -> PENDING + email to 
 target confirms from profile -> CONFIRMED (one-confirmed-partner invariant re-checked under advisory lock; other PENDING requests involving either member pruned)
 target declines -> row hard-deleted (no email), initiator may re-request
 initiator withdraws own PENDING -> row hard-deleted
-family-group ADMIN declares a NO-LOGIN adult member of their group -> CONFIRMED in one step (no consent round-trip; "one login manages the family")
+the adult recorded as having confirmed a NO-LOGIN adult co-member's details declares them -> CONFIRMED in one step (no consent round-trip; "one login manages the family"). Gated on Member.detailsConfirmedByMemberId naming the initiator AND the pair still sharing a family group (#2284 re-anchored this off the retired FamilyGroupMember.role ADMIN value, which #2520 finished retiring); the voucher pointer is self-assignable by any adult login co-member, so this is an equal-adults gate, not a group-lead privilege
 admin assigns directly (admin member-detail card) -> CONFIRMED immediately, assignedByAdminId recorded; an existing PENDING for the pair is promoted; both members emailed unless the admin chose not to notify (#1769a)
 unregistered partner claims a createPartnerLink invite token -> CONFIRMED inside the claim transaction (claim = consent)
 either CONFIRMED partner removes the link -> row hard-deleted, other partner emailed

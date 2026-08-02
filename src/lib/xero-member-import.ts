@@ -802,8 +802,12 @@ export async function importMembersFromXeroGroups(
                 data: {
                   familyGroupId: existingGroup.familyGroupId,
                   memberId: newFamilyMember.id,
-                  role: "MEMBER",
                 },
+                // Result discarded — narrow the implicit RETURNING (#2130 house
+                // rule). Doubly worth it here: the `.catch(() => {})` below
+                // swallows the error, so an unnarrowed write naming a dropped
+                // column would silently lose the family link rather than fail.
+                select: { id: true },
               })
               .catch(() => {});
           } else {
@@ -812,16 +816,8 @@ export async function importMembersFromXeroGroups(
             });
             await prisma.familyGroupMember.createMany({
               data: [
-                {
-                  familyGroupId: group.id,
-                  memberId: existingPrimary.id,
-                  role: "ADMIN",
-                },
-                {
-                  familyGroupId: group.id,
-                  memberId: newFamilyMember.id,
-                  role: "MEMBER",
-                },
+                { familyGroupId: group.id, memberId: existingPrimary.id },
+                { familyGroupId: group.id, memberId: newFamilyMember.id },
               ],
               skipDuplicates: true,
             });

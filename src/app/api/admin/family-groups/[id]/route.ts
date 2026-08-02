@@ -26,7 +26,10 @@ export async function GET(
     include: {
       memberships: {
         where: { member: { archivedAt: null } },
-        include: {
+        // #2520: `select`, not `include` — an `include` on the join table
+        // projects every FamilyGroupMember scalar, naming the retired `role`
+        // column in the SQL. Only the member is read from these rows.
+        select: {
           member: {
             select: {
               id: true,
@@ -67,11 +70,12 @@ export async function GET(
 
   return NextResponse.json({
     ...group,
+    // #2520: no per-membership `role` in the payload — the column is retired and
+    // nothing in the admin UI read it out of this response.
     members: group.memberships.map((m) => {
       const { passwordHash, passwordChangedAt, lastLoginAt, ...member } = m.member;
       return {
         ...member,
-        role: m.role,
         hasPassword: Boolean(passwordHash) && hasMemberCompletedAccountSetup({
           passwordChangedAt,
           lastLoginAt,
@@ -161,7 +165,7 @@ export async function PUT(
       }
       if (toAdd.length > 0) {
         await tx.familyGroupMember.createMany({
-          data: toAdd.map((mid) => ({ familyGroupId: id, memberId: mid, role: "MEMBER" })),
+          data: toAdd.map((mid) => ({ familyGroupId: id, memberId: mid })),
           skipDuplicates: true,
         });
       }
@@ -174,7 +178,8 @@ export async function PUT(
     where: { id },
     include: {
       memberships: {
-        include: {
+        // #2520: `select`, not `include` — see the GET handler above.
+        select: {
           member: {
             select: { id: true, firstName: true, lastName: true, email: true, ageTier: true },
           },
@@ -193,7 +198,7 @@ export async function PUT(
 
   return NextResponse.json({
     ...updated,
-    members: updated?.memberships.map((m) => ({ ...m.member, role: m.role })) ?? [],
+    members: updated?.memberships.map((m) => m.member) ?? [],
   });
 }
 

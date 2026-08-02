@@ -41,9 +41,23 @@ const SCAN_ROOTS = ["src", "prisma", "scripts"].map((dir) =>
   path.join(process.cwd(), dir),
 );
 
-// Named for what the guard enforces NOW (narrow selects on these two models),
-// not for the three columns it originally protected — those are dropped.
-const NARROW_SELECT_MODELS = ["xeroItemCodeMapping", "ageTierSetting"];
+// Named for what the guard enforces NOW (narrow selects on these models), not
+// for the three columns it originally protected — those are dropped.
+//
+// `familyGroupMember` was added by #2520, which is the case the "KEPT
+// DELIBERATELY" note above anticipated: the next contraction wanted this guard
+// already in place. FamilyGroupMember.role is retired and awaiting a CONTRACT
+// `DROP COLUMN`, so until that lands no read or write on the join table may
+// project the model's scalars unnarrowed. Registering it here rather than
+// re-implementing the same scan under a new name is deliberate: this guard
+// already walks scripts/ as well as src/ and prisma/, and its
+// PROJECTING_METHODS already include the four mutations whose implicit
+// RETURNING is the hazard.
+const NARROW_SELECT_MODELS = [
+  "xeroItemCodeMapping",
+  "ageTierSetting",
+  "familyGroupMember",
+];
 
 const PROJECTING_METHODS = [
   "findUnique",

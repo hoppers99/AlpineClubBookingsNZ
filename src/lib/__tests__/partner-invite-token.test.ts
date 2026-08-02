@@ -218,7 +218,8 @@ describe("claimPartnerInviteToken", () => {
     });
     expect(txMemberUpsert).toHaveBeenCalledWith(
       expect.objectContaining({
-        create: { familyGroupId: "fg1", memberId: "member1", role: "MEMBER" },
+        // #2520: membership only — the retired `role` is not written.
+        create: { familyGroupId: "fg1", memberId: "member1" },
       })
     );
     expect(txRequestCreate).toHaveBeenCalledWith({

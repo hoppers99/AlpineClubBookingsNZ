@@ -15,7 +15,6 @@ function snapshot(overrides: Partial<AuditSnapshot> = {}): AuditSnapshot {
     seasonalAssignments: {},
     xeroRulesByMode: {},
     xeroRulesByAgeTier: {},
-    familyGroupRoles: {},
     metrics: {},
     ...overrides,
   };
@@ -81,10 +80,8 @@ describe("evaluateAuditSnapshots", () => {
         ASSOCIATE: 1,
         RESERVE: 1,
       },
-      familyGroupRoles: {
-        ADMIN: 1,
-        MEMBER: 1,
-      },
+      // familyGroupRoles removed with its check (#2520) — it counted
+      // FamilyGroupMember."role", dropped by the follow-on contract migration.
       metrics: {
         acceptedAgeTierGroups: 2,
         familyGroupMemberRows: 2,
@@ -128,10 +125,7 @@ describe("evaluateAuditSnapshots", () => {
         // age-tier rules backfilled" check, so no check consumes it any more.
         ACCEPTED: 2,
       },
-      familyGroupRoles: {
-        ADMIN: 1,
-        MEMBER: 1,
-      },
+      // familyGroupRoles removed with its check (#2520), as above.
       metrics: {
         familyGroupMemberRows: 2,
         legacyNonMemberSourceDetailRows: 3,
@@ -148,7 +142,15 @@ describe("evaluateAuditSnapshots", () => {
     // over a shrinking list, so without this a future deletion of a
     // conservation check (as #2130 did to "Managed Xero age-tier rules
     // backfilled") would silently keep this test green.
-    expect(evaluation.checks).toHaveLength(24);
+    //
+    // 24 -> 23 in #2520, which removed "FamilyGroupMember group-local MEMBER
+    // labels preserved" along with the familyGroupRoles snapshot it read, so the
+    // retired script stops naming a column the CONTRACT migration drops. The
+    // "Family-group join rows preserved" check is retained and is the one that
+    // matters — it counts the join ROWS, the fact the cleanup could damage. This
+    // pin working as designed is why the deletion had to be justified rather
+    // than absorbed silently.
+    expect(evaluation.checks).toHaveLength(23);
     expect(evaluation.checks.every((check) => check.ok)).toBe(true);
     expect(evaluation.warnings).toEqual([
       expect.stringContaining("Both RESERVE and ASSOCIATE"),
