@@ -6,6 +6,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, beforeAll } from "vitest";
+import { captureHostTimeZone } from "@/lib/__tests__/helpers/timezone";
 
 // Pay the module-graph transform cost once, outside any single test's 5s
 // budget: every test dynamic-imports @/lib/waitlist (for mock ordering), and
@@ -1263,7 +1264,7 @@ describe("processWaitlistCron", () => {
   it("auto-cancels a stay checking out on today's NZ date, not a day late (F32, #1888)", async () => {
     const { processWaitlistCron } = await import("@/lib/cron-waitlist");
 
-    const originalTz = process.env.TZ;
+    const hostTimeZone = captureHostTimeZone();
     process.env.TZ = "Pacific/Auckland";
     vi.useFakeTimers();
     // NZ 2026-07-16 08:00 (NZST +12); the UTC day (Jul 15) trails the NZ day.
@@ -1314,11 +1315,7 @@ describe("processWaitlistCron", () => {
       expect(cutoff.toISOString()).toBe("2026-07-16T00:00:00.000Z");
     } finally {
       vi.useRealTimers();
-      if (originalTz === undefined) {
-        delete process.env.TZ;
-      } else {
-        process.env.TZ = originalTz;
-      }
+      hostTimeZone.restore();
     }
   });
 });

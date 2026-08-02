@@ -155,6 +155,30 @@ generalised.
    also moves the *club* zone to UTC, so a timezone bug can silently pass. To
    reproduce a UTC runner with an NZ club, force
    `timeZone = "Pacific/Auckland"` explicitly as well.
+7. **Restoring `process.env.TZ` is never a bare `delete` (#2485).** Node only
+   re-derives its resolved timezone when `process.env.TZ` is *assigned*;
+   deleting the variable removes it from the environment but leaves the
+   last-assigned zone cached, so a suite that pins a zone and deletes it on the
+   way out leaks that zone into whichever suite the runner schedules next in
+   the same worker. Use the shared helper instead of ad-hoc save/restore code:
+
+   ```ts
+   import { captureHostTimeZone } from "@/lib/__tests__/helpers/timezone";
+
+   const hostTimeZone = captureHostTimeZone();
+
+   afterEach(() => {
+     hostTimeZone.restore();
+   });
+   ```
+
+   For a single pinned call, `withTimeZone`/`withTimeZoneAsync` (same module)
+   wrap the capture-set-run-restore sequence. `captureHostTimeZone()` must run
+   BEFORE anything in the file assigns `process.env.TZ` — module top level, or
+   the top of a `describe` block, both of which run before any hook or test
+   body. See `src/lib/__tests__/helpers/timezone.ts` for the full mechanism and
+   `src/lib/__tests__/helpers/timezone.test.ts` for a proof the leak is real
+   and that the helper closes it.
 
 ## Opting a file out
 
