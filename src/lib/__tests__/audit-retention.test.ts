@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
   deleteMany: vi.fn(),
   findMany: vi.fn(),
   loggerInfo: vi.fn(),
+  loggerWarn: vi.fn(),
   loggerError: vi.fn(),
 }));
 
@@ -21,6 +22,7 @@ vi.mock("@/lib/prisma", () => ({
 vi.mock("@/lib/logger", () => ({
   default: {
     info: mocks.loggerInfo,
+    warn: mocks.loggerWarn,
     error: mocks.loggerError,
   },
 }));
@@ -83,6 +85,73 @@ function archiveRow(overrides: Record<string, unknown> = {}) {
     archivedAt: null,
     incidentPreserved: false,
     ...overrides,
+  };
+}
+
+// #2506: a tiny in-memory evaluator for the subset of Prisma `where` predicates
+// `pruneExpiredAuditLogs` uses, so a prune test can assert WHICH rows actually
+// survive — not merely the query shape. Removing the archive gate then reddens a
+// test by showing an unarchived row genuinely deleted (the data loss the gate
+// exists to prevent).
+type PruneRow = {
+  id: string;
+  retentionClass: string | null;
+  severity?: string | null;
+  createdAt: Date;
+  expiresAt: Date | null;
+  archivedAt: Date | null;
+};
+
+function matchScalarCond(cond: unknown, value: unknown): boolean {
+  if (cond === null) {
+    return value === null || value === undefined;
+  }
+  if (typeof cond === "object") {
+    const c = cond as Record<string, unknown>;
+    if ("in" in c) {
+      return (c.in as unknown[]).includes(value);
+    }
+    if ("lt" in c) {
+      return value != null && (value as Date) < (c.lt as Date);
+    }
+    if ("not" in c) {
+      return c.not === null ? value != null : value !== c.not;
+    }
+  }
+  return value === cond;
+}
+
+function matchWhere(where: Record<string, unknown>, row: PruneRow): boolean {
+  if (Array.isArray(where.OR)) {
+    return (where.OR as Record<string, unknown>[]).some((clause) =>
+      matchWhere(clause, row)
+    );
+  }
+  return Object.entries(where).every(([key, cond]) => {
+    if (key === "NOT") {
+      return !matchWhere(cond as Record<string, unknown>, row);
+    }
+    return matchScalarCond(cond, (row as Record<string, unknown>)[key]);
+  });
+}
+
+function makeFakeAuditDb(rows: PruneRow[]) {
+  const state = [...rows];
+  return {
+    db: {
+      auditLog: {
+        updateMany: async () => ({ count: 0 }),
+        findMany: async () => [],
+        deleteMany: async ({ where }: { where: Record<string, unknown> }) => {
+          const doomed = state.filter((row) => matchWhere(where, row));
+          for (const row of doomed) {
+            state.splice(state.indexOf(row), 1);
+          }
+          return { count: doomed.length };
+        },
+      },
+    },
+    remainingIds: () => state.map((row) => row.id),
   };
 }
 
@@ -316,5 +385,195 @@ describe("audit retention lifecycle", () => {
     expect(pruneQuery.values).toEqual([
       new Date("2019-05-10T00:00:00.000Z"),
     ]);
+  });
+
+  // -------------------------------------------------------------------------
+  // #2506 — prune must NEVER outrun archival. The archive captures 500 rows a
+  // night; a sustained high-volume club could otherwise have an expired-but-
+  // unarchived row deleted before the archive ever received it.
+  // -------------------------------------------------------------------------
+  describe("prune archive gate", () => {
+    const now = new Date("2026-05-10T00:00:00.000Z");
+
+    // sensitive_access expires at createdAt + 24 months; a row created in early
+    // 2023 is both archive-eligible (>12 months old) and expired by `now`, so it
+    // is exactly the row a 500/night archive backlog can strand.
+    function unarchivedExpiredSensitive(overrides: Partial<PruneRow> = {}): PruneRow {
+      return {
+        id: "sensitive-unarchived",
+        retentionClass: "sensitive_access",
+        severity: "info",
+        createdAt: new Date("2023-01-01T00:00:00.000Z"),
+        expiresAt: new Date("2025-01-01T00:00:00.000Z"),
+        archivedAt: null,
+        ...overrides,
+      };
+    }
+
+    it("retains an expired but unarchived archivable row while the archive is active", async () => {
+      const fake = makeFakeAuditDb([unarchivedExpiredSensitive()]);
+
+      const result = await pruneExpiredAuditLogs(fake.db as never, now, {
+        archiveActive: true,
+      });
+
+      // The row is expired, but not yet archived: prune must leave it alone.
+      // Delete the `archivedAt: { not: null }` gate in pruneExpiredAuditLogs and
+      // this reddens with the unarchived row pruned — i.e. silent data loss.
+      expect(result.deleted).toBe(0);
+      expect(fake.remainingIds()).toEqual(["sensitive-unarchived"]);
+    });
+
+    it("prunes the same archivable row once it is provably archived", async () => {
+      const fake = makeFakeAuditDb([
+        unarchivedExpiredSensitive({
+          id: "sensitive-archived",
+          archivedAt: new Date("2024-02-01T00:00:00.000Z"),
+        }),
+      ]);
+
+      const result = await pruneExpiredAuditLogs(fake.db as never, now, {
+        archiveActive: true,
+      });
+
+      // Proves the gate keys on the durable `archivedAt` marker, not a blanket
+      // class exclusion: an archived copy exists, so the source row may go.
+      expect(result.deleted).toBe(1);
+      expect(fake.remainingIds()).toEqual([]);
+    });
+
+    it("prunes an expired unarchived archivable row by expiry when NO archive is configured", async () => {
+      const fake = makeFakeAuditDb([unarchivedExpiredSensitive()]);
+
+      const result = await pruneExpiredAuditLogs(fake.db as never, now, {
+        archiveActive: false,
+      });
+
+      // No archive to protect the row and nowhere for the data to go, so data
+      // minimisation still deletes it at expiry. A gate applied unconditionally
+      // would over-retain forever and redden here.
+      expect(result.deleted).toBe(1);
+      expect(fake.remainingIds()).toEqual([]);
+    });
+
+    it("always prunes expired diagnostic_high_volume and unclassified rows even with the archive active", async () => {
+      const fake = makeFakeAuditDb([
+        {
+          id: "diagnostic",
+          retentionClass: "diagnostic_high_volume",
+          severity: "info",
+          createdAt: new Date("2025-01-01T00:00:00.000Z"),
+          expiresAt: new Date("2025-04-01T00:00:00.000Z"),
+          archivedAt: null,
+        },
+        {
+          id: "legacy-null",
+          retentionClass: null,
+          severity: "info",
+          createdAt: new Date("2024-01-01T00:00:00.000Z"),
+          expiresAt: new Date("2025-01-01T00:00:00.000Z"),
+          archivedAt: null,
+        },
+        unarchivedExpiredSensitive(),
+      ]);
+
+      const result = await pruneExpiredAuditLogs(fake.db as never, now, {
+        archiveActive: true,
+      });
+
+      // The gate is scoped to the archivable classes only: never-archived rows
+      // still prune on expiry, while the unarchived archivable row survives.
+      expect(result.deleted).toBe(2);
+      expect(fake.remainingIds()).toEqual(["sensitive-unarchived"]);
+    });
+
+    it("gates the job's main prune on archival when an archive DB is configured", async () => {
+      const archiveDb = mockArchiveDb();
+
+      const result = await runAuditLogRetentionJob({
+        db: mockDb() as never,
+        archiveDb,
+        now,
+      });
+
+      expect(result.archive.configured).toBe(true);
+      // findMany returns [] this run, so the archive step deletes nothing and the
+      // only deleteMany is the main prune — assert it carries the archive gate.
+      expect(mocks.deleteMany).toHaveBeenCalledTimes(1);
+      expect(mocks.deleteMany).toHaveBeenCalledWith({
+        where: {
+          OR: expect.arrayContaining([
+            {
+              retentionClass: { in: ["sensitive_access", "standard"] },
+              expiresAt: { lt: now },
+              archivedAt: { not: null },
+            },
+          ]),
+        },
+      });
+    });
+
+    it("leaves the job's main prune ungated when no archive DB is configured", async () => {
+      const result = await runAuditLogRetentionJob({
+        db: mockDb() as never,
+        archiveDatabaseUrl: null,
+        now,
+      });
+
+      expect(result.archive.configured).toBe(false);
+      // Without an archive, the archivable clause carries no archivedAt gate.
+      expect(mocks.deleteMany).toHaveBeenCalledWith({
+        where: {
+          OR: expect.arrayContaining([
+            {
+              retentionClass: { in: ["sensitive_access", "standard"] },
+              expiresAt: { lt: now },
+            },
+          ]),
+        },
+      });
+    });
+
+    it("keeps the nightly archive batch bounded at 500 rows by default", async () => {
+      const archiveDb = mockArchiveDb();
+
+      await archiveEligibleAuditLogs(mockDb() as never, archiveDb, now);
+
+      // The bounded batch is what makes the gate necessary; assert it stays 500.
+      expect(mocks.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ take: 500 })
+      );
+    });
+
+    it("warns of an archive backlog when the nightly batch comes back full", async () => {
+      // A full batch means more archivable rows remain unarchived this run. Since
+      // the #2506 gate now retains their expired members past the retention
+      // window, that over-retention would otherwise be silent — assert the warn.
+      mocks.findMany.mockResolvedValueOnce([
+        archiveRow(),
+        archiveRow({ id: "audit-2" }),
+      ]);
+      const archiveDb = mockArchiveDb();
+
+      await archiveEligibleAuditLogs(mockDb() as never, archiveDb, now, 2);
+
+      // Drop the `rows.length === batchSize` warn and this reddens — the drift
+      // signal disappears.
+      expect(mocks.loggerWarn).toHaveBeenCalledWith(
+        expect.objectContaining({ reason: "archive-backlog", batchSize: 2 }),
+        expect.stringContaining("Audit archive batch was full")
+      );
+    });
+
+    it("stays silent when the nightly batch is not full (archive is keeping up)", async () => {
+      mocks.findMany.mockResolvedValueOnce([archiveRow()]);
+      const archiveDb = mockArchiveDb();
+
+      await archiveEligibleAuditLogs(mockDb() as never, archiveDb, now, 2);
+
+      // One row against a batch cap of two: no backlog, so no spurious warning.
+      // A warn keyed on anything looser than a full batch would redden here.
+      expect(mocks.loggerWarn).not.toHaveBeenCalled();
+    });
   });
 });
