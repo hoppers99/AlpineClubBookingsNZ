@@ -1,8 +1,13 @@
 import {
   ADMIN_NOTIFICATION_PREFERENCE_SELECT,
   type AdminNotificationPreferenceKey,
-  resolveAdminNotificationPreferences,
+  resolveEffectiveAdminNotificationPreferences,
 } from "../admin-notification-preferences";
+import {
+  ADMIN_CAPABLE_MEMBER_WHERE,
+  MEMBER_ACCESS_ROLE_SELECT,
+} from "@/lib/access-role-definitions";
+import { hasAdminAreaAccess } from "@/lib/admin-permissions";
 import logger from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
 import { type EmailTemplateData } from "@/lib/email-message-renderer";
@@ -16,23 +21,59 @@ import {
 import { sendEmail } from "./core";
 import { type EmailAttachment } from "./internal";
 
+/**
+ * Candidate rows for any admin-audience email (#2548). The audience is decided
+ * from the access-role permission matrix, so every candidate must arrive with
+ * its assignment rows AND their joined definitions — a definition-backed custom
+ * role has `role: null` and resolves to nothing without them, which is exactly
+ * how those roles used to be dropped from every alert.
+ *
+ * `canLogin` is filtered in SQL (see ADMIN_CAPABLE_MEMBER_WHERE) and re-checked
+ * in the matrix — a `canLogin: false` member resolves to the empty matrix — so
+ * a deactivated or login-disabled account can never be mailed an operator
+ * alert.
+ */
+const ADMIN_AUDIENCE_CANDIDATE_SELECT = {
+  email: true,
+  canLogin: true,
+  accessRoles: { select: MEMBER_ACCESS_ROLE_SELECT },
+} as const;
+
 // test seam
-/** Get all active admin emails */
+/**
+ * Recipients for the system-level email-infrastructure alerts that are sent
+ * directly rather than through a preference category — today the fail-closed
+ * withhold alert in `email/core.ts`. Support & System editors own that surface
+ * (`/admin/health`, `/admin/email-deliverability`), and a Full Admin holds
+ * `support: edit`, so this is a superset of the Full Admins it used to resolve
+ * from the legacy `role: "ADMIN"` scalar (#2548).
+ */
 export async function getAdminEmails(): Promise<string[]> {
   const admins = await prisma.member.findMany({
-    where: { role: "ADMIN", active: true },
-    select: { email: true },
+    where: ADMIN_CAPABLE_MEMBER_WHERE,
+    select: ADMIN_AUDIENCE_CANDIDATE_SELECT,
   });
-  return admins.map((a) => a.email);
+  return admins
+    .filter((admin) =>
+      hasAdminAreaAccess(admin, { area: "support", level: "edit" }),
+    )
+    .map((a) => a.email);
 }
 
+/**
+ * Recipients of one alert category: everyone whose access-role matrix covers
+ * the category's area and who has not switched that category off (#2548).
+ * Categories outside a member's areas are masked off regardless of the stored
+ * row, so widening the audience beyond Full Admins never leaks another area's
+ * alerts to a scoped officer.
+ */
 async function getAdminAlertEmails(
   preferenceKey: AdminNotificationPreferenceKey,
 ): Promise<string[]> {
   const admins = await prisma.member.findMany({
-    where: { role: "ADMIN", active: true },
+    where: ADMIN_CAPABLE_MEMBER_WHERE,
     select: {
-      email: true,
+      ...ADMIN_AUDIENCE_CANDIDATE_SELECT,
       notificationPreference: {
         select: ADMIN_NOTIFICATION_PREFERENCE_SELECT,
       },
@@ -42,9 +83,10 @@ async function getAdminAlertEmails(
   return admins
     .filter(
       (admin) =>
-        resolveAdminNotificationPreferences(admin.notificationPreference)[
-          preferenceKey
-        ],
+        resolveEffectiveAdminNotificationPreferences(
+          admin,
+          admin.notificationPreference,
+        )[preferenceKey],
     )
     .map((admin) => admin.email);
 }
