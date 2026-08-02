@@ -23,6 +23,10 @@ function readInstrumentationRecordedJobNames(): string[] {
     "src/instrumentation.node.ts",
     "src/lib/general-cron-runner.ts",
     "src/lib/xero-cron-runner.ts",
+    // #2501: the credit-sync checker owns its recorded job-name constant
+    // (XERO_CREDIT_SYNC_JOB_NAME), which the Xero cron runner maps to and
+    // records under; scan it so the contract discovers that job name.
+    "src/lib/xero-credit-sync-checker.ts",
     "src/lib/finance-sync-cron-config.ts",
   ].map((filePath) =>
     fs.readFileSync(path.join(process.cwd(), filePath), "utf8")

@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { AlertTriangle, CheckCircle, XCircle } from "lucide-react";
 import { APP_LOCALE, APP_TIME_ZONE } from "@/config/operational";
+import { formatCents } from "@/lib/utils";
 
 export function StatusBadge({ status }: { status: string }) {
   const colors: Record<string, string> = {
@@ -101,6 +102,29 @@ export function CronResultSummary({ summary }: { summary: Record<string, unknown
   const sizeBytes = typeof summary.sizeBytes === "number" ? summary.sizeBytes : null;
   const minSizeBytes = typeof summary.minSizeBytes === "number" ? summary.minSizeBytes : null;
   const reason = typeof summary.reason === "string" ? summary.reason : null;
+
+  // #2501 credit-sync check: a completed pass records `driftBookings` /
+  // `totalDriftCents` in its result summary. Without an explicit indicator here
+  // a drift-finding run still shows a green SUCCESS row (the run itself did not
+  // fail — it found and reported drift), so an admin scanning the dashboard
+  // would see nothing. Surface the drift count + amount as a warning so the
+  // dashboard indicator named in issue #2501's scope is actually present.
+  const driftBookings =
+    typeof summary.driftBookings === "number" ? summary.driftBookings : null;
+  if (driftBookings !== null) {
+    const totalDriftCents =
+      typeof summary.totalDriftCents === "number" ? summary.totalDriftCents : 0;
+    if (driftBookings > 0) {
+      return (
+        <span className="text-xs font-medium text-danger-11">
+          {driftBookings} credit drift ({formatCents(totalDriftCents)})
+        </span>
+      );
+    }
+    return (
+      <span className="text-xs text-muted-foreground">Credits in sync</span>
+    );
+  }
 
   if (healthSignal || sizeBytes !== null) {
     return (

@@ -130,6 +130,9 @@ const EXPECTED_ROUTE_AREAS: Record<string, AdminPermissionArea> = {
   "/api/admin/bed-allocation/settings": "bookings",
   "/api/admin/booking-change-requests": "bookings",
   "/api/admin/booking-change-requests/[id]": "bookings",
+  // Unified officer exception-request queue (#2524): same class of officer
+  // surface as booking-change-requests above, so it shares the bookings area.
+  "/api/admin/booking-exception-requests": "bookings",
   "/api/admin/booking-messages": "support",
   "/api/admin/booking-messages/preview": "support",
   "/api/admin/booking-messages/reset": "support",

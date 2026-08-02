@@ -2389,7 +2389,7 @@ flowchart TD
     Leader --> Q15["Every 15 min<br/>payment-recovery, xero-outbox,<br/>xero-operation-replay, xero-inbound-reconcile"]
     Leader --> Q30["Every 30 min<br/>waitlist-processor, email-retry"]
     Leader --> Q3h["Every 3 h<br/>additional-payment-reminders, confirm-pending,<br/>pre-arrival-reminders, purge-booking-requests,<br/>quote-expiry-reminders, school-attendee-confirmations,<br/>group-settlement-reaper"]
-    Leader --> Daily["Daily<br/>complete-bookings, data-pruning, draft-cleanup,<br/>age-up, capacity-warnings, admin-digest,<br/>credit-reconciliation, hut-leader-auto-assign,<br/>checkin-reminders, pending-deadline-alerts,<br/>member-guest-consent-expiry,<br/>nomination-reminders, finance-daily-sync,<br/>xero-membership-refresh, xero-link-backfill,<br/>xero-link-cleanup, xero-reconciliation-report"]
+    Leader --> Daily["Daily<br/>complete-bookings, data-pruning, draft-cleanup,<br/>age-up, capacity-warnings, admin-digest,<br/>credit-reconciliation, hut-leader-auto-assign,<br/>checkin-reminders, pending-deadline-alerts,<br/>member-guest-consent-expiry,<br/>nomination-reminders, finance-daily-sync,<br/>xero-membership-refresh, xero-link-backfill,<br/>xero-link-cleanup, xero-reconciliation-report,<br/>xero-credit-sync-check"]
     Leader --> Cfg["Configurable<br/>backup"]
 ```
 
@@ -2413,6 +2413,7 @@ flowchart TD
 | `xero-link-backfill` | Daily | Backfill canonical Xero object links into the ledger |
 | `xero-link-cleanup` | Daily | Clean stale canonical Xero object links |
 | `xero-reconciliation-report` | Daily | Send the Xero reconciliation report |
+| `xero-credit-sync-check` | Daily | Reconcile BookingApp's stamped applied credit against Xero's live invoice allocations and warn admins on drift with the exact amount (#2501); read-only, self-throttled |
 | `finance-daily-sync` | Daily when the finance dashboard module is enabled | Refresh finance report/invoice/balance snapshots from the operational Xero connection |
 | `data-pruning` | Daily | Prune expired tokens/logs and run audit retention |
 | `draft-cleanup` | Daily | Delete expired draft bookings |

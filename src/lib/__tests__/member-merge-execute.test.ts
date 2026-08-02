@@ -115,9 +115,24 @@ function makeClient(overrides: Record<string, unknown> = {}) {
     },
   );
 
-  const client = {
-    $transaction: (cb: (tx: unknown) => unknown) => cb(tx),
-  };
+  // The real Prisma client exposes BOTH `$transaction` and the model delegates
+  // (`auditLog`, `member`, …). The refused-member-merge audit (#2498) is written
+  // on this base client OUTSIDE the rolled-back transaction, so the mock must
+  // serve `client.auditLog` from the SAME shared cache as `tx.auditLog` for a
+  // test to observe it.
+  const client = new Proxy(
+    { $transaction: (cb: (tx: unknown) => unknown) => cb(tx) },
+    {
+      get(target, prop: string) {
+        if (prop === "$transaction") {
+          return (target as { $transaction: unknown }).$transaction;
+        }
+        if (prop in overrides) return overrides[prop as keyof typeof overrides];
+        if (!cache.has(prop)) cache.set(prop, defaultDelegate());
+        return cache.get(prop);
+      },
+    },
+  );
 
   return {
     client,
@@ -126,6 +141,40 @@ function makeClient(overrides: Record<string, unknown> = {}) {
     member: cache.get("member"),
     auditLog: cache.get("auditLog"),
   };
+}
+
+type AuditCreateSpy = ReturnType<typeof vi.fn>;
+
+/** MEMBER_MERGE_REFUSED audit rows written by the refusal boundary (#2498). */
+function refusalAuditCalls(create: AuditCreateSpy) {
+  return create.mock.calls.filter(
+    ([arg]) =>
+      (arg as { data?: { action?: string } })?.data?.action ===
+      "MEMBER_MERGE_REFUSED",
+  );
+}
+
+/** MEMBER_MERGED audit rows — written ONLY by a completed merge, never a refusal. */
+function successAuditCalls(create: AuditCreateSpy) {
+  return create.mock.calls.filter(
+    ([arg]) =>
+      (arg as { data?: { action?: string } })?.data?.action === "MEMBER_MERGED",
+  );
+}
+
+/**
+ * Assert a refusal was audited (#2498): at least one MEMBER_MERGE_REFUSED row
+ * carrying the given reason code, and NO MEMBER_MERGED row claiming the merge
+ * completed. Removing the refusal-audit call reddens every test that uses this.
+ */
+function expectRefusedAudit(create: AuditCreateSpy, code: string) {
+  const refusals = refusalAuditCalls(create);
+  expect(refusals.length).toBeGreaterThanOrEqual(1);
+  const metadata = (
+    refusals[0][0] as { data: { metadata: { reasonCode?: string } } }
+  ).data.metadata;
+  expect(metadata.reasonCode).toBe(code);
+  expect(successAuditCalls(create)).toHaveLength(0);
 }
 
 describe("executeMemberMerge", () => {
@@ -987,15 +1036,16 @@ describe("member-photo reconciliation at execute time (MP1, #189)", () => {
       /changed while the merge was running: photoImageId/,
     );
 
-    // Nothing was written to the master, the loser survives, and no audit claims
-    // a merge happened. (The real transaction rolls back; the mock has none, so
-    // assert the merge never got that far.)
+    // Nothing was written to the master, the loser survives, and no SUCCESS
+    // audit claims a merge happened — but the refusal itself is now recorded
+    // (#2498). (The real transaction rolls back; the mock has none, so assert
+    // the merge never got that far.)
     const masterPatches = first.race.memberDelegate.update.mock.calls
       .map(([arg]) => arg as { where: { id: string } })
       .filter((call) => call.where.id === MASTER_ID);
     expect(masterPatches).toHaveLength(0);
     expect(first.race.memberDelegate.delete).not.toHaveBeenCalled();
-    expect(first.auditLog.create).not.toHaveBeenCalled();
+    expectRefusedAudit(first.auditLog.create, "merge_drift_in_transaction");
   });
 
   it("does NOT 409 an ordinary uncontended merge (#2243 negative control)", async () => {
@@ -1372,9 +1422,11 @@ describe("family-link drift under the lock (#2437)", () => {
     // nothing, the merge never got further, and the admin's link is intact.
     expect(store.get(MASTER_ID)!.inheritEmailFromId).toBe("real-holder-9");
     expect(store.has(LOSER_ID)).toBe(true);
-    expect(
+    // #2498: the refusal is now audited (no success audit still claims a merge).
+    expectRefusedAudit(
       (auditLog as { create: ReturnType<typeof vi.fn> }).create,
-    ).not.toHaveBeenCalled();
+      "merge_drift_in_transaction",
+    );
   });
 
   it("REFUSES (409) a dependants link that lands between the token capture and the moves — never absorbs it unvetted (#2437)", async () => {
@@ -1425,9 +1477,11 @@ describe("family-link drift under the lock (#2437)", () => {
     // bound forbids), the duplicate was not deleted, and nothing was audited.
     expect(store.get("late-joiner")!.parentMemberId).toBe(LOSER_ID);
     expect(store.has(LOSER_ID)).toBe(true);
-    expect(
+    // #2498: the refusal is now audited (no success audit still claims a merge).
+    expectRefusedAudit(
       (auditLog as { create: ReturnType<typeof vi.fn> }).create,
-    ).not.toHaveBeenCalled();
+      "merge_drift_in_transaction",
+    );
   });
 
   it.each(SELF_RELATION_COLUMNS)(
@@ -1472,9 +1526,11 @@ describe("family-link drift under the lock (#2437)", () => {
         .filter((call) => call.where.id === MASTER_ID);
       expect(masterPatches).toHaveLength(0);
       expect(race.memberDelegate.delete).not.toHaveBeenCalled();
-      expect(
+      // #2498: the refusal is now audited (no success audit still claims a merge).
+      expectRefusedAudit(
         (auditLog as { create: ReturnType<typeof vi.fn> }).create,
-      ).not.toHaveBeenCalled();
+        "merge_drift_in_transaction",
+      );
     },
   );
 
@@ -1533,9 +1589,11 @@ describe("family-link drift under the lock (#2437)", () => {
       },
     });
     expect(race.memberDelegate.delete).not.toHaveBeenCalled();
-    expect(
+    // #2498: the refusal is now audited (no success audit still claims a merge).
+    expectRefusedAudit(
       (auditLog as { create: ReturnType<typeof vi.fn> }).create,
-    ).not.toHaveBeenCalled();
+      "merge_drift_in_transaction",
+    );
   });
 
   it("REFUSES (409) an inbound link from a third member still pointing at the duplicate after the moves", async () => {
@@ -1585,9 +1643,12 @@ describe("family-link drift under the lock (#2437)", () => {
       /parent \(another member now links to the duplicate\)/,
     );
     expect(memberDelegate.delete).not.toHaveBeenCalled();
-    expect(
+    // #2498: each refused attempt is audited (this test refuses twice); no
+    // success audit ever claims the merge completed.
+    expectRefusedAudit(
       (auditLog as { create: ReturnType<typeof vi.fn> }).create,
-    ).not.toHaveBeenCalled();
+      "merge_drift_in_transaction",
+    );
   });
 
   it("does NOT refuse the merge's own rewrites: a snapshot self-cycle nulled at step 1 reads clean at step 5", async () => {
@@ -1951,6 +2012,194 @@ describe("a merge and the consent columns it carries with it (#2307)", () => {
       schema.indexOf("enum MemberGuestConsentStatus"),
     );
     expect(model).not.toMatch(/@@unique\(\[bookingId,\s*memberId\]\)/);
+  });
+});
+
+describe("refused member merges are audited (#2498)", () => {
+  // Every refusal throws a MemberMergeError from inside the transaction, which
+  // rolls the transaction (and the success audit written there) back. Owner
+  // decision, 2 Aug 2026: record the refused attempt too — once, best-effort,
+  // on the base client OUTSIDE the rolled-back transaction, and never in a way
+  // that turns a clean 4xx/409 refusal into a 500.
+
+  it("audits a self-merge refusal, before a transaction is opened (same_member)", async () => {
+    const { client, auditLog } = makeClient();
+    await expect(
+      executeMemberMerge({
+        masterId: MASTER_ID,
+        loserId: MASTER_ID,
+        actorMemberId: ACTOR_ID,
+        previewToken: "x",
+        confirmationText: "x",
+        db: client as never,
+      }),
+    ).rejects.toMatchObject({ statusCode: 400, code: "same_member" });
+    expectRefusedAudit(
+      (auditLog as { create: ReturnType<typeof vi.fn> }).create,
+      "same_member",
+    );
+  });
+
+  it("audits a missing-member refusal (member_missing)", async () => {
+    const { client, auditLog } = makeClient();
+    await expect(
+      executeMemberMerge({
+        masterId: MASTER_ID,
+        loserId: "ghost-member",
+        actorMemberId: ACTOR_ID,
+        previewToken: validToken(),
+        confirmationText: "MERGE Dup Person",
+        db: client as never,
+      }),
+    ).rejects.toMatchObject({ statusCode: 404, code: "member_missing" });
+    expectRefusedAudit(
+      (auditLog as { create: ReturnType<typeof vi.fn> }).create,
+      "member_missing",
+    );
+  });
+
+  it("audits a blocked refusal with actor + both ids + blocker codes, and no member PII (merge_blocked)", async () => {
+    const nonAdminMember = {
+      ...defaultDelegate(),
+      findUnique: vi.fn(({ where }: { where: { id: string } }) =>
+        Promise.resolve(
+          where.id === MASTER_ID ? master : where.id === LOSER_ID ? loser : null,
+        ),
+      ),
+      count: vi.fn().mockResolvedValue(0), // actor not a full admin
+      delete: vi.fn().mockResolvedValue({}),
+    };
+    const { client, auditLog } = makeClient({ member: nonAdminMember });
+
+    await expect(
+      executeMemberMerge({
+        masterId: MASTER_ID,
+        loserId: LOSER_ID,
+        actorMemberId: ACTOR_ID,
+        previewToken: validToken(),
+        confirmationText: "MERGE Dup Person",
+        db: client as never,
+      }),
+    ).rejects.toMatchObject({ statusCode: 409, code: "merge_blocked" });
+
+    const create = (auditLog as { create: ReturnType<typeof vi.fn> }).create;
+    expectRefusedAudit(create, "merge_blocked");
+    const data = (
+      refusalAuditCalls(create)[0][0] as {
+        data: {
+          action: string;
+          actorMemberId: string;
+          outcome: string;
+          metadata: Record<string, unknown>;
+        };
+      }
+    ).data;
+    expect(data.action).toBe("MEMBER_MERGE_REFUSED");
+    expect(data.actorMemberId).toBe(ACTOR_ID);
+    expect(data.outcome).toBe("blocked");
+    expect(data.metadata.masterId).toBe(MASTER_ID);
+    expect(data.metadata.loserId).toBe(LOSER_ID);
+    const refusal = data.metadata.refusal as { blockerCodes?: string[] };
+    expect(refusal.blockerCodes?.length ?? 0).toBeGreaterThanOrEqual(1);
+    // Strictly a non-PII subset of the success audit: no loser snapshot, no
+    // member names or email addresses ever reach a refusal row.
+    expect(data.metadata).not.toHaveProperty("loserSnapshot");
+    expect(JSON.stringify(data.metadata)).not.toContain("@example.com");
+  });
+
+  it("audits a preview-drift refusal (preview_drift)", async () => {
+    const { client, auditLog } = makeClient();
+    await expect(
+      executeMemberMerge({
+        masterId: MASTER_ID,
+        loserId: LOSER_ID,
+        actorMemberId: ACTOR_ID,
+        previewToken: "stale-token",
+        confirmationText: "MERGE Dup Person",
+        db: client as never,
+      }),
+    ).rejects.toMatchObject({ statusCode: 409, code: "preview_drift" });
+    expectRefusedAudit(
+      (auditLog as { create: ReturnType<typeof vi.fn> }).create,
+      "preview_drift",
+    );
+  });
+
+  it("audits a confirmation-mismatch refusal (confirmation_mismatch)", async () => {
+    const { client, auditLog } = makeClient();
+    await expect(
+      executeMemberMerge({
+        masterId: MASTER_ID,
+        loserId: LOSER_ID,
+        actorMemberId: ACTOR_ID,
+        previewToken: validToken(),
+        confirmationText: "MERGE Wrong Name",
+        db: client as never,
+      }),
+    ).rejects.toMatchObject({ statusCode: 422, code: "confirmation_mismatch" });
+    expectRefusedAudit(
+      (auditLog as { create: ReturnType<typeof vi.fn> }).create,
+      "confirmation_mismatch",
+    );
+  });
+
+  it("writes exactly ONE refusal audit per refused attempt (idempotent)", async () => {
+    const { client, auditLog } = makeClient();
+    await expect(
+      executeMemberMerge({
+        masterId: MASTER_ID,
+        loserId: LOSER_ID,
+        actorMemberId: ACTOR_ID,
+        previewToken: "stale-token",
+        confirmationText: "MERGE Dup Person",
+        db: client as never,
+      }),
+    ).rejects.toMatchObject({ code: "preview_drift" });
+    expect(
+      refusalAuditCalls((auditLog as { create: ReturnType<typeof vi.fn> }).create),
+    ).toHaveLength(1);
+  });
+
+  it("a completed merge writes the success audit and NO refusal audit", async () => {
+    const { client, auditLog } = makeClient();
+    await executeMemberMerge({
+      masterId: MASTER_ID,
+      loserId: LOSER_ID,
+      actorMemberId: ACTOR_ID,
+      previewToken: validToken(),
+      confirmationText: "MERGE Dup Person",
+      db: client as never,
+    });
+    const create = (auditLog as { create: ReturnType<typeof vi.fn> }).create;
+    expect(successAuditCalls(create)).toHaveLength(1);
+    expect(refusalAuditCalls(create)).toHaveLength(0);
+  });
+
+  it("is best-effort: a failing refusal audit never turns the refusal into a 500", async () => {
+    // The audit sink itself throws. The original refusal (preview_drift) must
+    // still surface unchanged — recording the attempt can never mask, escalate,
+    // or replace the refusal the operator receives.
+    const auditLog = {
+      create: vi.fn().mockRejectedValue(new Error("audit sink down")),
+    };
+    const { client, member } = makeClient({ auditLog });
+
+    await expect(
+      executeMemberMerge({
+        masterId: MASTER_ID,
+        loserId: LOSER_ID,
+        actorMemberId: ACTOR_ID,
+        previewToken: "stale-token",
+        confirmationText: "MERGE Dup Person",
+        db: client as never,
+      }),
+    ).rejects.toMatchObject({ statusCode: 409, code: "preview_drift" });
+
+    // The audit was attempted once (and its failure swallowed); nothing merged.
+    expect(auditLog.create).toHaveBeenCalledTimes(1);
+    expect(
+      (member as { delete: ReturnType<typeof vi.fn> }).delete,
+    ).not.toHaveBeenCalled();
   });
 });
 

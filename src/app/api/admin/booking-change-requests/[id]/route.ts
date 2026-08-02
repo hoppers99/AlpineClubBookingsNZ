@@ -116,6 +116,22 @@ export async function PATCH(
     );
   }
 
+  // #2524: this route only ever decides LOCKED_PERIOD requests. A POLICY_EXCEPTION
+  // request is decided through the booking-policy exception approve-and-execute
+  // workflow (#2525), which revalidates hard constraints, executes the canonical
+  // booking service atomically and frees the request's open-slot. Marking one
+  // APPROVED here would neither execute the booking nor release the slot, so it is
+  // refused outright.
+  if (existing.kind === "POLICY_EXCEPTION") {
+    return NextResponse.json(
+      {
+        error:
+          "Policy-exception requests are reviewed through the booking-policy exception workflow, not this queue.",
+      },
+      { status: 409 }
+    );
+  }
+
   if (parsed.data.linkedModificationId) {
     const modification = await prisma.bookingModification.findUnique({
       where: { id: parsed.data.linkedModificationId },
@@ -137,7 +153,9 @@ export async function PATCH(
 
   const reviewedAt = new Date();
   const claim = await prisma.bookingChangeRequest.updateMany({
-    where: { id, status: "REQUESTED" },
+    // kind guard is defence-in-depth behind the POLICY_EXCEPTION refusal above:
+    // this claim can only ever transition a LOCKED_PERIOD row.
+    where: { id, status: "REQUESTED", kind: "LOCKED_PERIOD" },
     data: {
       status: parsed.data.status,
       adminNotes: parsed.data.adminNotes?.trim() || null,

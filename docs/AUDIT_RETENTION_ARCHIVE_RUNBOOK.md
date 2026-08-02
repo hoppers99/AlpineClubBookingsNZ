@@ -17,6 +17,21 @@ This runbook covers the production audit-log retention job and the optional arch
 - `diagnostic_high_volume` audit logs are pruned from the main database when their `expiresAt` passes and are not moved to the archive database.
 - Archive rows older than 7 years are pruned from the archive database.
 
+## Hard invariant: prune never outruns archival (#2506)
+
+**Prune may never delete an audit row that is destined for the archive but has not yet been archived.** The archive step copies at most a bounded 500 rows per night (oldest first), while pruning acts on `expiresAt`. Left ungated, a club sustaining more than 500 archive-eligible rows/day could accumulate a backlog large enough that an archivable row (`sensitive_access`, `standard`) reaches its `expiresAt` — 24 months for `sensitive_access`, 7 years for `standard` — while still sitting unarchived in the main table. Pruning it then would permanently delete a row the archive never received. The archive copy is the only surviving record once the source row is gone, so that loss is unrecoverable.
+
+Two guards enforce the invariant, in depth (`src/lib/audit-retention.ts`):
+
+1. **Cross-step guard.** If the archive step *throws* (most plausibly an archive schema drifted behind the `AuditLog` model), the whole retention job aborts before either prune runs. See "Adding a column to AuditLog", step 3.
+2. **In-prune archive gate.** Even when the archive step *succeeds but is behind*, `pruneExpiredAuditLogs` refuses to delete an archivable-class row unless it is provably archived. When an archive is configured, the prune keys the archivable classes on the durable per-row `archivedAt` marker: a row is prune-eligible only once archival has captured it. Archival writes the row to the archive database and then removes it from the main table, so an archivable row still present in the main table is by definition unarchived and is retained — the prune waits, rather than deleting, until archival catches up. The gate lives inside the single `DELETE … WHERE` predicate, so PostgreSQL evaluates it atomically against committed rows and no stale watermark can be read even if an archive run is committing concurrently.
+
+The accepted cost of this gate is that an expired archivable row can outlive its documented `expiresAt` while a backlog drains — a recoverable data-minimisation delay that resolves as archival catches up. Unrecoverable loss loses to recoverable delay.
+
+Because that over-retention is otherwise invisible, the archive step emits a nightly **backlog warning** so drift does not go unnoticed: whenever a run's archive batch comes back full (the bounded 500 rows), more archivable rows remain unarchived, so the job logs `reason: "archive-backlog"` at `warn` level. A one-off warning is normal after a busy day and clears the first night the batch is not full; a warning that **persists** night after night means archival is falling behind — expired rows are being retained past their window — and archive throughput (or the batch size) should be investigated.
+
+When **no** archive database is configured there is no archive to outrun and nowhere for the data to go, so archivable rows are pruned on `expiresAt` as normal; the gate applies only to the archive-active case. `diagnostic_high_volume` and the unclassified/`critical` classes are never archived, so they always prune on their own expiry regardless of archive state.
+
 ## Archive Database Env Vars
 
 Set one of these on the cron-enabled production app instance:
@@ -27,7 +42,7 @@ AUDIT_ARCHIVE_DATABASE_URL=postgresql://...
 AUDIT_LOG_ARCHIVE_DATABASE_URL=postgresql://...
 ```
 
-`AUDIT_ARCHIVE_DATABASE_URL` is preferred. If neither variable is set, the retention job logs `archive-db-not-configured`, still anonymizes request data, and still prunes expired main-database audit rows. That applies only when no archive is *configured*. A configured archive that **fails** stops the pruning too — see "Adding a column to AuditLog", step 3.
+`AUDIT_ARCHIVE_DATABASE_URL` is preferred. If neither variable is set, the retention job logs `archive-db-not-configured`, still anonymizes request data, and still prunes expired main-database audit rows on `expiresAt`. That applies only when no archive is *configured*. When an archive **is** configured, pruning of the archivable classes is gated on archival — a configured archive that **fails** stops the pruning entirely ("Adding a column to AuditLog", step 3), and a configured archive that merely **lags** retains the not-yet-archived rows ("Hard invariant: prune never outruns archival").
 
 The archive database can be a separate PostgreSQL database. The job creates and maintains the `AuditLogArchive` table and supporting indexes automatically. Do not point the archive URL at the primary `DATABASE_URL`; archive movement deletes copied eligible rows from the main audit table.
 

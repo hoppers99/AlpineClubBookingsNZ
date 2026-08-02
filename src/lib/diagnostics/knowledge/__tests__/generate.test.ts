@@ -172,6 +172,25 @@ describe("buildKnowledgeBundle — fail closed", () => {
     expect(() => build([docFile, leaky])).toThrow(KnowledgeBundleSecretError);
   });
 
+  it("THROWS on a Stripe TEST-key shape even when it is a documented placeholder (#2531)", () => {
+    // A docs file whose PROSE shows a Stripe test-key placeholder — exactly the
+    // `sk_test_placeholder` example that shipped in the bundle and failed the
+    // image `docker-image-security` (Trivy) gate. The bundle gate must now refuse
+    // it, since Trivy's `stripe-secret-token` rule has no placeholder allowance.
+    const leaky: KnowledgeSourceFile = {
+      path: "docs/diagnostics/KNOWLEDGE_BUNDLE.md",
+      content: `A documented placeholder such as \`sk_${"test"}_placeholder\` is fine.\n`,
+    };
+    expect(() => build([docFile, leaky])).toThrow(KnowledgeBundleSecretError);
+    try {
+      build([docFile, leaky]);
+    } catch (err) {
+      expect((err as KnowledgeBundleSecretError).findings[0].finding.rule).toBe(
+        "stripe-secret-key",
+      );
+    }
+  });
+
   it("does NOT throw on a placeholder connection string in a doc", () => {
     const ok: KnowledgeSourceFile = {
       path: "docs/LOCAL.md",

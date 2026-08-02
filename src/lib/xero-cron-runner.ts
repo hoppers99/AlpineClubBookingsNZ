@@ -12,6 +12,10 @@ import {
   sendXeroReconciliationReport,
 } from "@/lib/xero-hardening";
 import { runXeroInboundReconciliationCycle } from "@/lib/xero-inbound-reconciliation";
+import {
+  reconcileXeroCreditSync,
+  XERO_CREDIT_SYNC_JOB_NAME,
+} from "@/lib/xero-credit-sync-checker";
 import { processQueuedXeroOutboxOperations } from "@/lib/xero-operation-outbox";
 import { processQueuedXeroOperationRetries } from "@/lib/xero-operation-queue";
 import { refreshAllMembershipStatuses } from "@/lib/xero-membership-sync";
@@ -25,6 +29,7 @@ const XERO_CRON_TASKS = [
   "backfill",
   "link-cleanup",
   "report",
+  "credit-sync",
 ] as const;
 
 export type XeroCronTask = (typeof XERO_CRON_TASKS)[number];
@@ -38,6 +43,7 @@ const XERO_CRON_JOB_NAMES: Record<XeroCronTask, string> = {
   backfill: "xero-link-backfill",
   "link-cleanup": "xero-link-cleanup",
   report: "xero-reconciliation-report",
+  "credit-sync": XERO_CREDIT_SYNC_JOB_NAME,
 };
 
 export interface XeroCronRunnerPayload {
@@ -51,6 +57,7 @@ export interface XeroCronRunnerPayload {
   linkBackfill: unknown | null;
   linkCleanup: unknown | null;
   reconciliationReport: unknown | null;
+  creditSyncCheck: unknown | null;
 }
 
 export interface XeroCronRunnerDependencies {
@@ -67,6 +74,7 @@ export interface XeroCronRunnerDependencies {
     backfillHistoricalXeroObjectLinks: typeof backfillHistoricalXeroObjectLinks;
     cleanupStaleCanonicalXeroObjectLinks: typeof cleanupStaleCanonicalXeroObjectLinks;
     sendXeroReconciliationReport: typeof sendXeroReconciliationReport;
+    reconcileXeroCreditSync: typeof reconcileXeroCreditSync;
   }>;
   includeLinkCleanupForBackfill?: boolean;
 }
@@ -189,6 +197,7 @@ function emptyPayload(task: string, connected = false): XeroCronRunnerPayload {
     linkBackfill: null,
     linkCleanup: null,
     reconciliationReport: null,
+    creditSyncCheck: null,
   };
 }
 
@@ -198,6 +207,8 @@ function messageForTask(task: string) {
       return "Xero cron tasks completed";
     case "report":
       return "Xero reconciliation report completed";
+    case "credit-sync":
+      return "Xero credit-sync check completed";
     case "backfill":
       return "Historical Xero link maintenance completed";
     case "link-cleanup":
@@ -313,13 +324,27 @@ export async function runXeroCronTaskList(
             taskDependencies.cleanupStaleCanonicalXeroObjectLinks ??
             cleanupStaleCanonicalXeroObjectLinks,
         });
-      } else {
+      } else if (task === "report") {
         payload.reconciliationReport = await runRecordedXeroTask({
           task,
           recordCronRun,
           work:
             taskDependencies.sendXeroReconciliationReport ??
             sendXeroReconciliationReport,
+        });
+      } else {
+        // credit-sync (#2501): reconcile stamped applied credit against Xero's
+        // live invoice allocations and warn admins on drift. A Xero read failure
+        // defers rather than throwing, so a disconnected/unavailable Xero yields
+        // a skipped result here rather than a task failure.
+        payload.creditSyncCheck = await runRecordedXeroTask({
+          task,
+          recordCronRun,
+          work: async () =>
+            connected
+              ? await (taskDependencies.reconcileXeroCreditSync ??
+                  reconcileXeroCreditSync)()
+              : { skipped: true, reason: "Xero not connected" },
         });
       }
     } catch (error) {

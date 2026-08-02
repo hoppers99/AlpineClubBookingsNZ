@@ -528,6 +528,29 @@ export async function archiveEligibleAuditLogs(
     deletedFromMain = count;
   }
 
+  // #2506: surface an archive backlog. The batch is bounded to `batchSize`
+  // (500/night), and the #2506 prune gate now RETAINS expired archivable rows
+  // that are not yet archived — so when the archive falls behind, over-retention
+  // becomes silent. A full batch means more archivable rows remain unarchived
+  // this run, so warn: it is the cheap nightly signal that archival is drifting
+  // and expired rows are being held past their retention window until it catches
+  // up. It self-clears the first night the batch is not full.
+  if (rows.length === batchSize) {
+    logger.warn(
+      {
+        job: "audit-retention",
+        reason: "archive-backlog",
+        batchSize,
+        archived: archivedIds.length,
+      },
+      "Audit archive batch was full: archivable rows remain unarchived after " +
+        "this run. Per #2506, any expired rows among them are retained in the " +
+        "main database past their retention window until archival catches up. " +
+        "If this persists, the archive is falling behind — investigate archive " +
+        "throughput or raise the batch size."
+    );
+  }
+
   return {
     configured: true,
     skipped: false,
@@ -540,23 +563,65 @@ export async function archiveEligibleAuditLogs(
 
 // test seam
 //
-// Deletes purely on `expiresAt` (plus the retention class and, for critical
-// rows, `createdAt`). It deliberately does NOT filter on `archivedAt`, because
-// the retention policy is about how long a row may be kept, not about where a
-// copy of it lives. That is why `runAuditLogRetentionJob` refuses to run this
-// step when archiving failed — see the reasoning comment there. The archive
-// step's `orderBy: { createdAt: "asc" }` keeps the two in step in normal
-// operation by always taking the oldest, most prune-exposed rows first.
+// HARD INVARIANT (#2506): prune may NEVER delete an audit row that is destined
+// for the archive but has not yet been archived.
+//
+// The archivable retention classes (`sensitive_access`, `standard`) are copied
+// to the archive database and then deleted from the main table by
+// `archiveEligibleAuditLogs`, which is bounded to 500 rows/night. Pruning
+// deletes on `expiresAt` and knows nothing about whether a row was archived, so
+// a club sustaining >500 archive-eligible rows/day could otherwise have an
+// expired-but-unarchived row deleted here before the archive ever received it —
+// silent, unrecoverable data loss (the archive copy is the only surviving
+// record once the source row is gone).
+//
+// The gate: when an archive is configured (`archiveActive`), an archivable-class
+// row is prune-eligible ONLY once it is provably archived, keyed on the durable
+// per-row `archivedAt` marker. Archival writes the row to the archive DB and
+// then removes it from the main table, so an archivable row still present in the
+// main table has `archivedAt = null` and is retained here — the prune waits,
+// rather than deleting an unarchived row, until archival catches up. Because the
+// gate lives inside the single `deleteMany` predicate, PostgreSQL evaluates it
+// atomically against committed rows: even if an archive run is committing
+// concurrently, prune can only ever act on a row whose `archivedAt` state it
+// reads under that statement, so there is no stale-watermark race to lose a row
+// through. This is stricter than the cross-step guard in
+// `runAuditLogRetentionJob` (which stops the whole job when archiving *throws*):
+// this holds even when archiving *succeeds but is behind*.
+//
+// When NO archive is configured (`archiveActive` false), there is no archive to
+// outrun and nowhere for the data to go, so archivable rows are pruned on
+// `expiresAt` exactly as before — retaining them forever would break data
+// minimisation. `diagnostic_high_volume` and the unclassified/`critical` classes
+// are never archived, so they are always pruned purely on their own expiry.
 export async function pruneExpiredAuditLogs(
   db: AuditRetentionDbClient = prisma,
-  now = new Date()
+  now = new Date(),
+  options: { archiveActive?: boolean } = {}
 ): Promise<{ cutoff: Date; deleted: number }> {
   const { criticalMain: cutoff } = getAuditLogRetentionCutoffs(now);
+
+  // Archivable-class rows: gated on the archive marker only when an archive is
+  // active. `ARCHIVABLE_RETENTION_CLASSES` is the single source of which classes
+  // the archive is responsible for, shared with `archiveEligibleAuditLogs`.
+  const archivableExpiredClause: Prisma.AuditLogWhereInput = options.archiveActive
+    ? {
+        retentionClass: { in: ARCHIVABLE_RETENTION_CLASSES },
+        expiresAt: { lt: now },
+        archivedAt: { not: null },
+      }
+    : {
+        retentionClass: { in: ARCHIVABLE_RETENTION_CLASSES },
+        expiresAt: { lt: now },
+      };
+
   const { count } = await db.auditLog.deleteMany({
     where: {
       OR: [
+        archivableExpiredClause,
         {
-          retentionClass: { in: ["sensitive_access", "diagnostic_high_volume", "standard"] },
+          // Never archived — pruned purely on its own 90-day expiry.
+          retentionClass: "diagnostic_high_volume",
           expiresAt: { lt: now },
         },
         {
@@ -632,15 +697,26 @@ export async function runAuditLogRetentionJob(
     // and it is the opposite of the per-step isolation the cron applies at
     // `src/instrumentation.node.ts` around independent cleanups.
     //
-    // These steps are NOT independent. `pruneExpiredAuditLogs` deletes purely
-    // by `expiresAt` — it never looks at `archivedAt` — and the two eligibility
-    // sets overlap. A `sensitive_access` row is archive-eligible from 12 months
+    // These steps are NOT independent, and the eligibility sets overlap. A
+    // `sensitive_access` row is archive-eligible from 12 months
     // (ARCHIVE_AFTER_MONTHS) and prune-eligible from 24 months
     // (`getAuditRetentionExpiresAt` in src/lib/audit.ts); a `standard` row is
-    // archive-eligible from 12 months and prune-eligible at 7 years. So letting
-    // the prune run while archiving is stalled would permanently DELETE rows
-    // the archive never received — precisely the loss the archive exists to
-    // prevent, and unrecoverable.
+    // archive-eligible from 12 months and prune-eligible at 7 years. Two guards,
+    // in depth, keep the prune from ever outrunning the archive:
+    //
+    //   1. This cross-step guard: a THROW from the archive step (most plausibly
+    //      an archive schema drifted behind the AuditLog model) aborts the whole
+    //      job, so neither prune runs — the opposite of the per-step isolation
+    //      the cron applies at `src/instrumentation.node.ts`. Letting a prune run
+    //      while archiving is broken would permanently DELETE rows the archive
+    //      never received — unrecoverable.
+    //
+    //   2. The in-prune archive gate (#2506): even when the archive step
+    //      SUCCEEDS but is BEHIND (a club sustaining >500 archive-eligible rows a
+    //      day drains the 500/night batch slowly), `pruneExpiredAuditLogs`
+    //      refuses to delete an archivable-class row that is not yet provably
+    //      archived — see its `archiveActive` gate. Guard 1 alone cannot catch
+    //      this case because nothing threw.
     //
     // Stopping everything over-retains expired rows instead: a data-
     // minimisation delay that reverses the moment the archive schema is fixed.
@@ -671,7 +747,15 @@ export async function runAuditLogRetentionJob(
         { cause: error }
       );
     }
-    const mainPrune = await pruneExpiredAuditLogs(db, now);
+    // #2506: gate the main prune on archival. `archive.configured` is true only
+    // when an archive DB is configured AND the archive step completed this run
+    // (a configured archive that throws aborts the job above, before prune). So
+    // it is a reliable "archive is active" signal: when true, prune retains
+    // archivable rows until they are provably archived; when false (no archive
+    // configured), prune falls back to expiry-only deletion.
+    const mainPrune = await pruneExpiredAuditLogs(db, now, {
+      archiveActive: archive.configured,
+    });
     const archivePrune = await pruneAuditArchive(createdArchiveDb, now);
 
     logger.info(

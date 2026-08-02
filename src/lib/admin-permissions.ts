@@ -191,6 +191,10 @@ const ROUTE_AREA_PREFIXES: Array<{
       "/api/admin/booking-requests",
       "/api/admin/booking-reviews",
       "/api/admin/booking-change-requests",
+      // Unified officer exception-request queue (#2524): same class of
+      // officer surface as booking-change-requests above, so it shares the
+      // bookings area rather than falling through to the overview catch-all.
+      "/api/admin/booking-exception-requests",
       "/api/admin/bed-allocation",
       "/api/admin/occupancy",
       "/api/admin/waitlist",

@@ -15,6 +15,7 @@ import {
 import { deleteOwnedMemberPhotoBlobs } from "@/lib/member-photo";
 import { memberDisplayName } from "@/lib/member-serialization";
 import { prisma } from "@/lib/prisma";
+import logger from "@/lib/logger";
 
 /**
  * E11 (#1937) — additive, master-wins member profile merge.
@@ -196,6 +197,13 @@ export const MEMBER_MERGE_RELATION_SPECS: readonly MemberMergeRelationSpec[] = [
   spec("BedAllocation", "approvedBy", "approvedByMemberId", "move"),
   spec("BookingChangeRequest", "requestedBy", "requestedByMemberId", "move"),
   spec("BookingChangeRequest", "reviewedBy", "reviewedByMemberId", "move"),
+  // #2524: the new-booking policy-exception request twin of the two above. Same
+  // shapes — a required Restrict `requestedBy` (the member owns the request and
+  // may cancel/supersede it, so it moves to the surviving member) and a nullable
+  // SetNull `reviewedBy` actor back-ref — so both `move`, exactly like
+  // BookingChangeRequest.
+  spec("NewBookingPolicyExceptionRequest", "requestedBy", "requestedByMemberId", "move"),
+  spec("NewBookingPolicyExceptionRequest", "reviewedBy", "reviewedByMemberId", "move"),
   // #2263: who submitted an authenticated whole-lodge booking request. A
   // nullable SetNull attribution column with no member unique constraint —
   // the same shape as BookingChangeRequest.requestedByMemberId above — so it
@@ -1961,6 +1969,122 @@ export type MemberMergeResult = {
   fieldsChanged: string[];
 };
 
+/**
+ * #2498 — the non-PII, STRUCTURAL slice of a refusal's `details` worth keeping
+ * in the refusal audit: which member fields or family links drifted, and which
+ * guard codes blocked. It carries field/column NAMES and guard CODES only —
+ * never member values, names, emails or identifiers — so it is a strict subset
+ * of what a successful merge already records (that audit stores the loser
+ * snapshot AND the field VALUES that were merged). Unknown detail shapes yield
+ * `undefined` rather than echoing arbitrary payloads into the audit.
+ */
+function extractRefusalContext(
+  details: unknown,
+): Record<string, unknown> | undefined {
+  if (!details || typeof details !== "object") return undefined;
+  const source = details as Record<string, unknown>;
+  const context: Record<string, unknown> = {};
+
+  if (Array.isArray(source.driftFields)) {
+    context.driftFields = source.driftFields.filter(
+      (field): field is string => typeof field === "string",
+    );
+  }
+  if (Array.isArray(source.driftFamilyLinks)) {
+    context.driftFamilyLinks = source.driftFamilyLinks
+      .filter(
+        (link): link is Record<string, unknown> =>
+          Boolean(link) && typeof link === "object",
+      )
+      .map((link) => ({ column: link.column, where: link.where }));
+  }
+  if (Array.isArray(source.blockers)) {
+    context.blockerCodes = source.blockers
+      .map((blocker) =>
+        blocker && typeof blocker === "object"
+          ? (blocker as Record<string, unknown>).code
+          : undefined,
+      )
+      .filter((code): code is string => typeof code === "string");
+  }
+
+  return Object.keys(context).length > 0 ? context : undefined;
+}
+
+/**
+ * #2498 — best-effort audit of a REFUSED member merge (owner decision, 2 Aug
+ * 2026: record refused attempts too, not only completed merges, so an admin
+ * repeatedly attempting a merge that keeps drifting or keeps hitting a guard
+ * becomes visible in the audit trail).
+ *
+ * Every refusal throws a `MemberMergeError` from INSIDE the transaction, which
+ * rolls the whole transaction back — so the success audit written there never
+ * lands, and a refused attempt used to leave no audit row at all. This is
+ * called from the single refusal path in `executeMemberMerge` on the BASE
+ * client (never the rolled-back `tx`), so at most ONE row lands per refusal.
+ *
+ * BEST-EFFORT: any failure to write is logged and swallowed, so recording a
+ * refusal can never turn a clean 4xx/409 refusal into a 500. Metadata is a
+ * strict, non-PII subset of the success audit — actor, both member ids, the
+ * refusal code/status, and the structural drift/guard context.
+ */
+async function auditRefusedMemberMerge(args: {
+  db: MergeDbClient;
+  masterId: string;
+  loserId: string;
+  actorMemberId: string;
+  error: MemberMergeError;
+  request?: Request;
+}): Promise<void> {
+  try {
+    await args.db.auditLog.create(
+      buildStructuredAuditLogCreateArgs({
+        action: "MEMBER_MERGE_REFUSED",
+        actor: { memberId: args.actorMemberId },
+        subject: { memberId: args.masterId },
+        entity: { type: "Member", id: args.masterId },
+        category: "admin",
+        severity: "important",
+        outcome: "blocked",
+        summary: `Member merge refused (${args.error.code ?? "unknown"})`,
+        metadata: {
+          masterId: args.masterId,
+          loserId: args.loserId,
+          reasonCode: args.error.code ?? null,
+          statusCode: args.error.statusCode,
+          refusal: extractRefusalContext(args.error.details),
+        },
+        request: args.request ? getRequestContext(args.request) : undefined,
+      }),
+    );
+  } catch (err) {
+    logger.error({ err }, "Failed to write refused-member-merge audit");
+  }
+}
+
+/**
+ * #2498 — the single refusal boundary. On a `MemberMergeError` it writes one
+ * best-effort refusal audit and re-throws the ORIGINAL error unchanged; any
+ * other (unexpected) fault is a 500, not a refusal, so it is re-thrown
+ * un-audited and left to the logs. Always rejects — the merge outcome is never
+ * altered by auditing.
+ */
+async function refuseMergeOrRethrow(
+  db: MergeDbClient,
+  context: {
+    masterId: string;
+    loserId: string;
+    actorMemberId: string;
+    request?: Request;
+  },
+  error: unknown,
+): Promise<never> {
+  if (error instanceof MemberMergeError) {
+    await auditRefusedMemberMerge({ db, ...context, error });
+  }
+  throw error;
+}
+
 export async function executeMemberMerge(params: {
   masterId: string;
   loserId: string;
@@ -1972,9 +2096,21 @@ export async function executeMemberMerge(params: {
 }): Promise<MemberMergeResult> {
   const client = params.db ?? prisma;
   const { masterId, loserId, actorMemberId } = params;
+  const refusalContext = {
+    masterId,
+    loserId,
+    actorMemberId,
+    request: params.request,
+  };
 
   if (masterId === loserId) {
-    throw new MemberMergeError("A member cannot be merged into itself.", 400, "same_member");
+    // Refused before a transaction is opened, so it has no rollback to audit
+    // outside of — audit it here directly, then throw the same error.
+    await refuseMergeOrRethrow(
+      client,
+      refusalContext,
+      new MemberMergeError("A member cannot be merged into itself.", 400, "same_member"),
+    );
   }
 
   return client.$transaction(async (tx) => {
@@ -2348,7 +2484,7 @@ export async function executeMemberMerge(params: {
     // stale values and the #2243 fix would silently stop working (#2243).
     timeout: 120_000,
     maxWait: 10_000,
-  });
+  }).catch((error) => refuseMergeOrRethrow(client, refusalContext, error));
 }
 
 function getRequestContext(request: Request) {
