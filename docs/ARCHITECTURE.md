@@ -2556,8 +2556,12 @@ Identifying fields are **opt-in per record**; without the opt-in the record
 resolves to non-identifying state plus an explicit "personal detail omitted"
 notice. A registry row can never be gated below the admin route lattice's own
 requirement for its path — a contract test resolves each registered pathname
-through `getAdminRouteRequirement` and asserts it. Full reference:
-[`ai-diagnostics/page-context.md`](ai-diagnostics/page-context.md).
+**and each of its allowlisted step sub-paths** through `getAdminRouteRequirement`
+and asserts it, which is what keeps a support-gated row from allowlisting a
+sub-page gated on finance. The same fresh read also refuses an account the rest of
+the admin surface refuses (deactivated, or under a forced password change), so a
+session still holding a cookie cannot outlive its own lock-out here. Full
+reference: [`ai-diagnostics/page-context.md`](ai-diagnostics/page-context.md).
 
 ## Security and Privacy Boundaries
 
