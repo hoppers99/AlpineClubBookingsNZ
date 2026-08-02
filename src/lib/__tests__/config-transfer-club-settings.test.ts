@@ -539,6 +539,10 @@ describe("club-settings exports effective defaults for an unsaved singleton (#21
 
     // A nullable column whose default IS null still exports as null.
     expect(readJson(files, "membership-lockout-settings")).toEqual({
+      // #2543: the three-way `mode` supersedes the boolean `enabled`, and both
+      // travel while the legacy column exists — so both must appear here with
+      // their effective values, HARD_BLOCK and its legacy equivalent `true`.
+      mode: DEFAULT_MEMBERSHIP_LOCKOUT_SETTINGS.mode,
       enabled: DEFAULT_MEMBERSHIP_LOCKOUT_SETTINGS.enabled,
       financialYearEndMonthOverride: null,
       textFallbackEnabled:
