@@ -1,0 +1,38 @@
+import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
+
+import { requireAdmin } from "@/lib/session-guards";
+import { readUnifiedExceptionQueue } from "@/lib/booking-exception-request-service";
+
+const querySchema = z.object({
+  status: z
+    .enum(["REQUESTED", "APPROVED", "REJECTED", "CANCELLED", "SUPERSEDED", "ALL"])
+    .optional()
+    .default("REQUESTED"),
+  page: z.coerce.number().int().min(1).optional().default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).optional().default(25),
+});
+
+/**
+ * The unified Booking Officer queue: every policy-exception request, merged from
+ * the new-booking table and the POLICY_EXCEPTION BookingChangeRequest rows into
+ * one age-ordered `{ data, page, pageSize, total }` view. Same guard and
+ * envelope as the existing booking-change-request queue.
+ */
+export async function GET(req: NextRequest) {
+  const guard = await requireAdmin();
+  if (!guard.ok) return guard.response;
+
+  const parsed = querySchema.safeParse(
+    Object.fromEntries(req.nextUrl.searchParams),
+  );
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: "Invalid query parameters", details: parsed.error.flatten() },
+      { status: 400 },
+    );
+  }
+
+  const result = await readUnifiedExceptionQueue(parsed.data);
+  return NextResponse.json(result);
+}
