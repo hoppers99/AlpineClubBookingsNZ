@@ -25,7 +25,8 @@ you always know you are on a stay somebody else arranged. If you have your own
 login the email comes to you; if you do not (a child, or an adult on a household
 login) the adults in your family group are told on your behalf. This is a
 courtesy notice, not a consent request — nothing is held up waiting for a reply,
-and you can still take yourself off future stays the same way as above. It is
+and you can take yourself off future stays where the booking rules still allow it
+(the situations where only the club can remove you are listed above). It is
 sent whether or not the club uses the member-guest feature, and you can switch it
 off under **Notification preferences** in your profile if you would rather not
 get it.
