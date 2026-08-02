@@ -25,3 +25,8 @@
   changes while the check is reading Xero, it re-reads the record before warning
   so an in-flight edit is never reported as drift. It also throttles itself to
   about once a day so it cannot use up the club's daily Xero request budget.
+
+  The admin health dashboard's Cron Jobs list now shows this check's result at a
+  glance: a run that found drift is flagged with the number of affected bookings
+  and the total amount, and a clean run reads "Credits in sync" — so the email
+  is not the only place a mismatch surfaces.
