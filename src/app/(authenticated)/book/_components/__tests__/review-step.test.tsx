@@ -8,6 +8,7 @@ import { ReviewStep } from "@/app/(authenticated)/book/_components/review-step";
 import type { PriceQuote } from "@/app/(authenticated)/book/_components/types";
 import type { GuestData } from "@/components/guest-form";
 import { sumDeferredGuestPortionCents } from "@/lib/deferred-guest-portion";
+import { formatMissingPaidUpAdultRefusal } from "@/lib/policies/subscription-lockout-pricing";
 
 vi.mock("@/components/time-picker", () => ({
   TimePicker: () => <div data-testid="time-picker" />,
@@ -358,5 +359,125 @@ describe("ReviewStep split provisional copy (#1942)", () => {
     expect(
       screen.getByText(/held provisionally until closer to check-in/i),
     ).toBeInTheDocument();
+  });
+});
+
+// The server's sentence, deliberately NOT the real wording: the review step must
+// render whatever the quote hands it, verbatim, so a fixture that could not have
+// been produced client-side proves the component is not rebuilding the copy.
+const SERVER_RATE_NOTICE =
+  "One person on this booking has an unpaid 2026/2027 membership subscription, so member rates aren't available for their nights.";
+
+describe("ReviewStep subscription-lockout notices (#2543)", () => {
+  function quoteWith(extra: Partial<PriceQuote>): PriceQuote {
+    return { ...buildQuote([memberGuest]), ...extra };
+  }
+
+  it("renders the server's member-rate notice verbatim when the quote carries one", () => {
+    const priceQuote = quoteWith({
+      subscriptionMemberRateNotice: SERVER_RATE_NOTICE,
+    });
+    renderReview([memberGuest], undefined, { priceQuote });
+
+    const notice = screen.getByTestId("subscription-member-rate-notice");
+    expect(notice).toHaveTextContent(SERVER_RATE_NOTICE);
+  });
+
+  it("renders no member-rate notice when the quote returns null", () => {
+    const priceQuote = quoteWith({ subscriptionMemberRateNotice: null });
+    renderReview([memberGuest], undefined, { priceQuote });
+
+    expect(
+      screen.queryByTestId("subscription-member-rate-notice"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("renders no member-rate notice on an older cached quote that omits the field", () => {
+    // Absent must behave exactly as null — a response predating the field must
+    // not fall through to some other rendering.
+    renderReview([memberGuest], undefined, { priceQuote: quoteWith({}) });
+
+    expect(
+      screen.queryByTestId("subscription-member-rate-notice"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("warns with the server's own refusal sentence when no paid-up adult member is on the party", () => {
+    const priceQuote = quoteWith({ paidUpAdultMemberMissing: true });
+    renderReview([memberGuest], undefined, { priceQuote });
+
+    const warning = screen.getByTestId("paid-up-adult-missing-notice");
+    // Identical to the sentence the write paths refuse with, so the warning and
+    // the refusal can never say different things.
+    expect(warning).toHaveTextContent(formatMissingPaidUpAdultRefusal());
+    // It names both escape routes rather than only stating the problem.
+    expect(warning).toHaveTextContent(/Renew a subscription/i);
+    expect(warning).toHaveTextContent(
+      /add an adult member whose subscription is paid/i,
+    );
+  });
+
+  it("shows the warning without a disclosure: it is in the document on first render", () => {
+    // The whole point is warning BEFORE the rest of the wizard is filled in, so
+    // it must never be hidden behind a "show details" affordance.
+    const priceQuote = quoteWith({ paidUpAdultMemberMissing: true });
+    renderReview([memberGuest], undefined, { priceQuote });
+
+    const warning = screen.getByTestId("paid-up-adult-missing-notice");
+    expect(warning).toBeVisible();
+    // Announced assertively (the shared Alert's warning variant), not silently.
+    expect(warning).toHaveAttribute("role", "alert");
+  });
+
+  it("renders no paid-up-adult warning when the flag is false", () => {
+    const priceQuote = quoteWith({ paidUpAdultMemberMissing: false });
+    renderReview([memberGuest], undefined, { priceQuote });
+
+    expect(
+      screen.queryByTestId("paid-up-adult-missing-notice"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("renders no paid-up-adult warning on an older cached quote that omits the field", () => {
+    renderReview([memberGuest], undefined, { priceQuote: quoteWith({}) });
+
+    expect(
+      screen.queryByTestId("paid-up-adult-missing-notice"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("does NOT gate the submit or draft affordances on the paid-up-adult warning", () => {
+    // Pinned deliberately. The server owns this refusal and a Booking Officer can
+    // approve an override (the violation is exception-eligible and HOLDs the
+    // beds), so a stale or missing quote must never be what decides the outcome.
+    // Anybody later "helpfully" disabling the button should fail here.
+    const priceQuote = quoteWith({
+      paidUpAdultMemberMissing: true,
+      subscriptionMemberRateNotice: SERVER_RATE_NOTICE,
+    });
+    renderReview([memberGuest], undefined, { priceQuote });
+
+    expect(
+      screen.getByRole("button", { name: "Continue to Payment" }),
+    ).not.toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "Save as Draft" }),
+    ).not.toBeDisabled();
+  });
+
+  it("puts both notices above the totals, because they explain the figures below them", () => {
+    const priceQuote = quoteWith({
+      paidUpAdultMemberMissing: true,
+      subscriptionMemberRateNotice: SERVER_RATE_NOTICE,
+    });
+    renderReview([memberGuest], undefined, { priceQuote });
+
+    const warning = screen.getByTestId("paid-up-adult-missing-notice");
+    const notice = screen.getByTestId("subscription-member-rate-notice");
+    const total = screen.getByText("Total");
+
+    // Node.compareDocumentPosition: DOCUMENT_POSITION_FOLLOWING === 4.
+    expect(warning.compareDocumentPosition(notice) & 4).toBe(4);
+    expect(notice.compareDocumentPosition(total) & 4).toBe(4);
   });
 });

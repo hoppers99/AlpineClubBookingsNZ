@@ -17,7 +17,10 @@ import { DatesStep } from "./_components/dates-step";
 import { GuestsStep } from "./_components/guests-step";
 import { ReviewStep } from "./_components/review-step";
 import { PayStep } from "./_components/pay-step";
-import { PROFILE_FAMILY_GROUP_RETURN_TO_BOOK } from "./_components/types";
+import {
+  PROFILE_FAMILY_GROUP_RETURN_TO_BOOK,
+  readSubscriptionLockoutView,
+} from "./_components/types";
 import { useBookingWizard } from "./_hooks/use-booking-wizard";
 
 const PROFILE_RETURN_TO_BOOK = buildProfilePathWithReturnTo("/book");
@@ -135,6 +138,14 @@ export default function BookPage() {
   // ("dates" | "guests" | "review" | "pay").
   useHelpWidgetHint({ group: step });
 
+  // #2543 — the same unpaid subscription means three different things depending
+  // on the club's lockout mode, so the banner below cannot keep saying "pay it
+  // before booking": that is only true under HARD_BLOCK. An absent or
+  // unrecognised mode resolves to HARD_BLOCK, today's copy, so an older cached
+  // subscription-status response cannot silently drop a warning that still
+  // holds. See `readSubscriptionLockoutView`.
+  const subscriptionLockout = readSubscriptionLockoutView(subscriptionStatus);
+
   return (
     <div className="max-w-3xl space-y-6">
       <div className="space-y-1">
@@ -166,27 +177,61 @@ export default function BookPage() {
         </CardContent>
       </Card>
 
-      {/* Subscription warning banner */}
+      {/* Subscription warning banner.
+
+          #2543 made this mode-aware. "Pay it before booking" / "contact the club
+          before booking" is only TRUE under HARD_BLOCK. Under
+          NON_MEMBER_PRICING the member may book — they are simply charged
+          non-member rates — and under NO_BLOCK the subscription does not gate
+          booking at all, so instructing them to settle it first is wrong in both.
+
+          The first sentence is unchanged and stays true in all three modes: the
+          subscription IS unpaid. Only the instruction after it is mode-gated,
+          and the HARD_BLOCK branch is deliberately byte-identical to the
+          pre-#2543 copy so no club whose mode did not move sees new wording.
+
+          The NON_MEMBER_PRICING explanation is the SERVER's own sentence
+          (`memberRateNotice`, built by `formatUnpaidSubscriptionRateReason` in
+          the subscription-status route), rendered verbatim so the wizard and the
+          quote cannot describe the same repricing two ways. When it is missing —
+          an older cached response — the banner says nothing extra rather than
+          inventing a replacement; the payment affordance below still stands.
+
+          NO_BLOCK downgrades to the neutral `info` variant (and so to a polite
+          `role="status"`): nothing is at stake for this booking, so an assertive
+          alert would be noise. The payment affordance stays in every mode — a
+          member who wants to settle an unpaid subscription always may. */}
       {!subscriptionLoading && subscriptionUnpaid && (
-        <Alert variant="warning">
+        <Alert
+          variant={subscriptionLockout.mode === "NO_BLOCK" ? "info" : "warning"}
+          data-testid="subscription-unpaid-banner"
+        >
           <p>
             <strong>Subscription unpaid:</strong> Your subscription for the{" "}
             {subscriptionStatus!.seasonDisplay} season is unpaid.{" "}
-            {subscriptionInvoiceUrl ? (
-              <>Use the payment link below to pay it before booking.</>
-            ) : (
-              <>
-                Please{" "}
-                <Link
-                  href={PROFILE_RETURN_TO_BOOK}
-                  className="underline font-medium"
-                >
-                  contact the club
-                </Link>{" "}
-                before booking.
-              </>
-            )}
+            {subscriptionLockout.mode === "HARD_BLOCK" ? (
+              subscriptionInvoiceUrl ? (
+                <>Use the payment link below to pay it before booking.</>
+              ) : (
+                <>
+                  Please{" "}
+                  <Link
+                    href={PROFILE_RETURN_TO_BOOK}
+                    className="underline font-medium"
+                  >
+                    contact the club
+                  </Link>{" "}
+                  before booking.
+                </>
+              )
+            ) : null}
           </p>
+          {subscriptionLockout.mode === "NON_MEMBER_PRICING" &&
+          subscriptionLockout.memberRateNotice ? (
+            <p data-testid="subscription-non-member-pricing-notice">
+              {subscriptionLockout.memberRateNotice}
+            </p>
+          ) : null}
           {subscriptionInvoiceUrl ? (
             <Button asChild className="mt-3">
               <a

@@ -454,6 +454,20 @@ interface QuoteResult {
   minimumStayValid?: boolean;
   minimumStayViolations?: MinimumStayViolation[];
   exceptionReview?: AggregatedPolicyExceptions;
+  // #2543: the server's own member-facing sentence saying that a membership
+  // subscription on this booking is unpaid, so member rates are not available
+  // for those nights. Rendered VERBATIM beside the repriced totals — never
+  // re-worded here. Null whenever nobody on the party is being repriced; absent
+  // only on an old cached response predating the field, which renders as null.
+  // Read straight off `quote`, never copied into its own state, so a fresh quote
+  // that returns null cannot leave a stale notice on screen.
+  //
+  // There is deliberately no `paidUpAdultMemberMissing` counterpart here: this
+  // path does not warn about the paid-up-adult rule, it is REFUSED by it —
+  // modify-quote answers 409 `PAID_UP_ADULT_MEMBER_REQUIRED` instead of a quote,
+  // so the refusal already lands in the quote-error slot via
+  // `quoteRefusalMessage`, and there is no quote body to carry a flag on.
+  subscriptionMemberRateNotice?: string | null;
 }
 
 function previousDateOnly(dateString: string | null) {
@@ -2885,6 +2899,30 @@ export function EditBookingPanel({
                 </ul>
               </div>
             )}
+
+            {/* #2543 "tell them why": under the club's NON_MEMBER_PRICING mode a
+                member on this booking has an unpaid subscription, so their
+                nights are re-rated at non-member rates. Said here, above the
+                totals, because the New price below is the repriced figure and a
+                member who sees it move without explanation reads it as a bug.
+
+                The sentence is the SERVER's, rendered verbatim, and is read
+                straight off `quote` rather than copied into its own state — so a
+                later quote that returns null (the subscription was paid, or the
+                repriced guest was removed from the edit) drops the notice with
+                the quote it came from, and a refused or failed quote clears it
+                along with everything else via `setQuote(null)`. Gated only on
+                `quote`, like the minimum-stay warning beside it, so it survives a
+                render where capacity hides the money summary. */}
+            {quote?.subscriptionMemberRateNotice ? (
+              <div
+                className="rounded-md bg-warning-3 p-3 text-sm text-warning-11"
+                role="status"
+                data-testid="subscription-member-rate-notice"
+              >
+                {quote.subscriptionMemberRateNotice}
+              </div>
+            ) : null}
 
             {overCapacityConfirmActive && (
               <div className="space-y-2 rounded-md bg-warning-3 p-3 text-sm text-warning-11">
