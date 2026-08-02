@@ -7,6 +7,7 @@ import {
   requiresPaidSubscriptionForMemberForBooking,
   resolveMembershipTypePolicyForMember,
 } from "@/lib/membership-type-policy";
+import { formatUnpaidSubscriptionRateReason } from "@/lib/policies/subscription-lockout-pricing";
 
 export async function GET() {
   const session = await auth();
@@ -56,6 +57,18 @@ export async function GET() {
   });
   const status = sub?.status ?? "NOT_INVOICED";
   const effectiveStatus = subscriptionRequired ? status : "NOT_REQUIRED";
+  // "Told them why" (#2533). When the booking lockout applies to this member and
+  // their subscription is not paid, surface a plain-English sentence the booking
+  // wizard can show — member rates are unavailable while the subscription is
+  // unpaid. Null the moment a subscription is not required (lockout off, Xero
+  // off, opted-out type, exempt tier) or once it is paid, so it never appears for
+  // a member the rule does not touch. The reason is intentionally worded to be
+  // true under today's hard-block lockout as well as the decided non-member-rate
+  // direction (#2533), so it can be shown now without over-promising a booking.
+  const memberRateNotice =
+    subscriptionRequired && status !== "PAID"
+      ? formatUnpaidSubscriptionRateReason(seasonDisplay)
+      : null;
   const effectiveStatusReason = subscriptionRequired
     ? "REQUIRED"
     : // #2149: role carries no subscription exemption. A bare ADMIN/LODGE account
@@ -87,5 +100,6 @@ export async function GET() {
     membershipTypeName: membershipTypePolicy?.membershipType.name ?? null,
     membershipTypeSubscriptionBehavior:
       membershipTypePolicy?.subscriptionBehavior ?? null,
+    memberRateNotice,
   });
 }

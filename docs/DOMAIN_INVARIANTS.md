@@ -2571,6 +2571,62 @@ proposal state and capacity reservation from `HOLD` all belong to #2365; the
 capacity mode is frozen onto the snapshot and aggregated here, and reserves
 nothing.
 
+### Subscription-lockout booking pricing (#2533)
+
+**Owner decision (2 Aug 2026), extending the #2364 lapsed-member framing.** The
+same idea #2364 applies to a lapsed member — "not a member in good standing is,
+for this rule, a non-member" — is extended to the money axis for an unpaid
+subscription:
+
+> A subscription-locked member can still book for others in their family, but if
+> that individual's subscription is not paid they get charged **non-member
+> rates** (and are **told why**), and there still has to be **at least one
+> paid-up adult member on the booking**.
+
+**Three rules, one predicate reused.** The pure evaluator lives in
+`policies/subscription-lockout-pricing.ts` and mirrors the hosting evaluator's
+shape (facts in, decisions and member-facing sentences out, no I/O):
+
+- **Unpaid member → non-member rate.** A member (`isMember`) for whom the
+  booking-time gate says a subscription is *required* this season
+  (`requiresPaidSubscriptionForMemberForBooking`, which already folds in the
+  Xero-off bypass, membership-type opt-outs and the per-age-tier rule) and whose
+  subscription is *not* PAID prices at the built-in NON_MEMBER rate. This is the
+  existing `rateSource: "TYPE_POLICY_FORCED"` resolution
+  (`resolveGuestRateMembershipTypes`), so it routes the correct non-member Xero
+  item code with no new pricing or invoicing path — the same route a
+  `NON_MEMBER_RATE` membership type already takes.
+- **At least one paid-up adult member present.** A qualifying participant is a
+  #2364 host (active, uncancelled, unarchived, ADULT, operationally present) whose
+  subscription is ALSO settled (PAID, or not required for them).
+  `participantQualifiesAsHost` is reused verbatim and the subscription fact ANDed
+  on top, so the standing half can never drift from the hosting rule — a lapsed
+  adult with a paid subscription fails on standing, a paid-up-membership adult
+  with an unpaid *subscription* fails on money, and only somebody clear on both
+  counts satisfies the requirement. An empty party fails.
+- **Told why.** Two member-facing sentences name neither a person nor an amount:
+  the rate reason states that member rates are unavailable while the subscription
+  is unpaid and how to restore them; the refusal names the two escape routes
+  (renew, or add a paid-up adult). The rate reason is surfaced today, read-only,
+  on `GET /api/member/subscription-status` (`memberRateNotice`), worded to be true
+  under BOTH the current hard-block lockout and the decided non-member-rate
+  direction so it never over-promises a booking.
+
+**Enforcement is a separate, owner-gated rollout (NOT yet wired).** Today an
+unpaid required member is **hard-blocked** from booking — a 403 on the create,
+confirm-draft, group-join and modify paths — not repriced. Turning that block
+into "reprice + require a paid-up adult" is a Critical money-regime change with
+coupled decisions the owner must settle: whether to soften the block at all,
+opt-in per club vs. replace the block outright, whether an unpaid member's nights
+consume capacity, and the Xero invoice narration for a member billed at
+non-member rates. The pure evaluator is the reviewed foundation those paths will
+consume once the rollout is decided; on its own it moves no money and changes no
+booking path. **Reversal:** if the club's position is that an unpaid subscription
+should keep hard-blocking, the reversal is to not wire the evaluator into the
+booking paths — the block already stands. The paid-up-adult half keys off the
+same standing predicate as #2364, so its reversal is #2364's reversal (drop the
+standing clauses from `participantQualifiesAsHost`), never a narrower one here.
+
 Issue #1668 adds an **admin-only override** (`adminOverride`, honoured solely when
 `bookingManagementAuthorizationRole(session.user) === "ADMIN"`, i.e. Full Admin
 or Booking Officer) that lifts those date-window locks so an admin can move the
