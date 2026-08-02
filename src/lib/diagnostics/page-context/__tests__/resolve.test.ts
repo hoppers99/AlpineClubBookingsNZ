@@ -34,14 +34,16 @@ const OBSERVED_AT = new Date("2026-07-01T00:00:00.000Z");
 const ACTOR = "cactor1";
 
 /**
- * The acting admin's own row, shaped exactly like `MEMBER_ACCESS_ROLE_SELECT`
- * returns it — a custom role whose joined definition carries the per-area level
- * columns. These tests therefore exercise the REAL matrix derivation in
- * `getAdminPermissionMatrix`, not a stubbed matrix.
+ * The acting admin's own row, shaped exactly like the authorization gate selects
+ * it: the account-state columns plus a custom role whose joined definition carries
+ * the per-area level columns. These tests therefore exercise the REAL matrix
+ * derivation in `getAdminPermissionMatrix`, not a stubbed matrix.
  */
 function actorWith(levels: Partial<Record<string, "NONE" | "VIEW" | "EDIT">>) {
   return {
+    active: true,
     canLogin: true,
+    forcePasswordChange: false,
     accessRoles: [
       {
         role: "ADMIN_READONLY",
@@ -148,6 +150,41 @@ describe("fail-closed inputs", () => {
     expect(result.status).toBe("unavailable");
     expect(result.reason).toBe("unknown_route");
     expect(result.route).toBeNull();
+    // No route was ever established, so there is none to audit either.
+    expect(result.audit.routeKey).toBeNull();
+    expect(result.audit.areasChecked).toEqual([]);
+  });
+
+  it("audits the ROUTE of a rejected selector that named a registered page", async () => {
+    // Regression (attribution): a selector whose routeKey resolved cleanly but
+    // whose token failed that route's allowlist used to audit `routeKey: null`,
+    // making an allowlist-probing sweep indistinguishable from junk aimed at no
+    // page — while the same sweep using a valid token and bad record ids was fully
+    // attributable. Nothing is echoed to the MODEL; only the audit row gains it.
+    const result = await resolve({
+      routeKey: "admin.member-detail",
+      tab: "not-a-tab",
+    });
+    expect(result.status).toBe("unavailable");
+    expect(result.reason).toBe("invalid_selector");
+    expect(result.route).toBeNull();
+    expect(result.audit.routeKey).toBe("admin.member-detail");
+    expect(result.audit.areasChecked).toEqual(["membership"]);
+    expect(result.audit.authOutcome).toBe("denied");
+    // Still no reads: the selector never got past parsing.
+    expect(mocks.memberFindUnique).not.toHaveBeenCalled();
+    // And the rejected value itself is never echoed anywhere.
+    expect(JSON.stringify(result)).not.toContain("not-a-tab");
+  });
+
+  it("audits no route for a STRUCTURALLY malformed selector", async () => {
+    // The complement: a reserved key or an unknown field is refused before any
+    // route lookup happens, so there is genuinely no surface to attribute.
+    const result = await resolve(
+      JSON.parse('{"routeKey":"admin.bookings","filters":{"__proto__":"x"}}'),
+    );
+    expect(result.reason).toBe("invalid_selector");
+    expect(result.audit.routeKey).toBeNull();
   });
 
   it("denies when the acting member cannot be resolved", async () => {
@@ -221,7 +258,11 @@ describe("fresh, fail-closed authorization (ADR-002)", () => {
     await resolve({ routeKey: "admin.bookings" });
     const select = mocks.memberFindUnique.mock.calls[0][0].select;
     expect(select).toHaveProperty("accessRoles");
+    // The account-state columns every other admin surface refuses on, read from
+    // the same fresh row rather than taken on the caller's word.
+    expect(select).toHaveProperty("active");
     expect(select).toHaveProperty("canLogin");
+    expect(select).toHaveProperty("forcePasswordChange");
     expect(select).not.toHaveProperty("adminPermissionMatrix");
   });
 
@@ -237,13 +278,53 @@ describe("fresh, fail-closed authorization (ADR-002)", () => {
     expect(second.record).toBeNull();
   });
 
-  it("denies a deactivated account even while its roles still exist", async () => {
+  it("refuses a DEACTIVATED account even while its roles still exist", async () => {
+    // Regression, and the reason this test is worded so carefully: the members
+    // screen's deactivate action writes `active: false` and leaves `canLogin`
+    // untouched, and `getAdminPermissionMatrix` has no notion of `active` at all.
+    // A gate that read only `canLogin` therefore returned a FULL matrix for an
+    // admin every other surface answers 403 "Account is deactivated". The previous
+    // version of this test set `canLogin: false` — not what deactivation writes —
+    // so it read as covering this and did not.
+    mocks.memberFindUnique.mockResolvedValue({ ...FULL_ADMIN, active: false });
+    const result = await resolve({
+      routeKey: "admin.bookings",
+      recordId: "cbk1",
+    });
+    expect(result.status).toBe("unavailable");
+    expect(result.reason).toBe("actor_blocked");
+    expect(result.record).toBeNull();
+    expect(result.route).toBeNull();
+    // No projection was read for them at all.
+    expect(mocks.bookingFindUnique).not.toHaveBeenCalled();
+    // The surface they hit is still auditable, as with every other actor failure.
+    expect(result.audit.routeKey).toBe("admin.bookings");
+    expect(result.audit.authOutcome).toBe("denied");
+  });
+
+  it("refuses an account under a forced password change", async () => {
+    // `requireAdmin` refuses this too, so an account that cannot open an admin
+    // page cannot re-read one through page context either.
+    mocks.memberFindUnique.mockResolvedValue({
+      ...FULL_ADMIN,
+      forcePasswordChange: true,
+    });
+    const result = await resolve({ routeKey: "admin.bookings" });
+    expect(result.status).toBe("unavailable");
+    expect(result.reason).toBe("actor_blocked");
+  });
+
+  it("still empties the matrix for an account that cannot log in", async () => {
+    // A separate lever from `active`: archive and membership cancellation clear
+    // `canLogin`, and `getAdminPermissionMatrix` empties the matrix for it — so
+    // this one arrives as an ordinary permission denial rather than an actor exit.
     mocks.memberFindUnique.mockResolvedValue({
       ...FULL_ADMIN,
       canLogin: false,
     });
     const result = await resolve({ routeKey: "admin.bookings" });
     expect(result.status).toBe("denied");
+    expect(result.reason).toBe("permission_denied");
   });
 
   it("requires EVERY area on a cross-area page (AND, never OR)", async () => {
@@ -479,6 +560,89 @@ describe("redaction and logging discipline (ADR-004 §2/§4)", () => {
         DIAGNOSTICS_PAGE_CONTEXT_BOUNDS.factValueMaxChars,
       );
     }
+  });
+
+  it("redacts a secret-SHAPED value handed to the closed-vocabulary constructor", async () => {
+    // Regression: the closed-vocabulary shape check used to be one permissive
+    // character class (letters, digits, space, `_`, `.`, `:`, `+`, `-`), which
+    // admits `sk_live_…`, `whsec_…` and `Bearer …` — so a later reader who used
+    // `derivedFact` for a free-text column would have shipped a secret VERBATIM,
+    // exactly the failure the constructor's own comment says cannot happen. The
+    // previous regression test used a 9000-character value, which failed the length
+    // bound instead and so never exercised a short value inside the class.
+    // The Stripe-shaped value deliberately follows the obviously-fake fixture
+    // convention already used by audit.test.ts and email-message-admin-api
+    // (`sk_live_ABCDEF1234567890`), not a realistic key: GitHub push
+    // protection and gitleaks both block a docs-realistic sk_live literal.
+    for (const secret of [
+      "sk_live_ABCDEF1234567890",
+      "whsec_abc123def456",
+      "Bearer eyJhbGciOiJIUzI1NiJ9.abc",
+    ]) {
+      mocks.bookingFindUnique.mockResolvedValue({
+        ...BOOKING_ROW,
+        // `status` is a Prisma enum in reality; feeding it a secret here is how a
+        // misused constructor would behave.
+        status: secret,
+      });
+      const result = await resolve({
+        routeKey: "admin.bookings",
+        recordId: "cbk1",
+      });
+      const status = result.record?.facts.find(
+        (f) => f.key === "booking.status",
+      );
+      // `[REDACTED]` may keep a harmless prefix the redactor preserves (it
+      // rewrites the token after `Bearer `, not the word itself); what matters is
+      // that the secret material is gone.
+      expect(status?.value).toContain("[REDACTED]");
+      expect(JSON.stringify(result)).not.toContain(secret);
+    }
+  });
+
+  it("passes only server-CONSTRUCTED shapes through unredacted", async () => {
+    // The positive half, so the guard cannot be "fixed" by redacting everything:
+    // enum tokens, yes/no, counts, integer cents, an NZ date-only day and an ISO
+    // instant all travel exactly as the server built them.
+    mocks.bookingFindUnique.mockResolvedValue({
+      ...BOOKING_ROW,
+      status: "PAYMENT_PENDING",
+      adminReviewStatus: "PENDING",
+      requiresAdminReview: true,
+    });
+    const result = await resolve({
+      routeKey: "admin.bookings",
+      recordId: "cbk1",
+    });
+    const byKey = Object.fromEntries(
+      (result.record?.facts ?? []).map((f) => [f.key, f.value]),
+    );
+    expect(byKey["booking.status"]).toBe("PAYMENT_PENDING");
+    expect(byKey["booking.admin-review-status"]).toBe("PENDING");
+    expect(byKey["booking.requires-admin-review"]).toBe("yes");
+    expect(byKey["booking.deleted"]).toBe("no");
+    expect(byKey["booking.nights"]).toBe("3");
+    expect(byKey["booking.check-in"]).toBe("2026-08-01");
+    expect(byKey["booking.created-at"]).toBe("2026-06-01T02:03:04.000Z");
+  });
+
+  it("refuses a derived value carrying a control character", async () => {
+    // The property, whoever implements it: a value with a newline in it never
+    // travels the raw path, because that is the value which would try to fake a new
+    // line inside the rendered evidence block. Today the closed character classes
+    // and strict anchors of the shapes deliver it; this fails the moment a looser
+    // shape is added.
+    mocks.bookingFindUnique.mockResolvedValue({
+      ...BOOKING_ROW,
+      status: `CONFIRMED${String.fromCharCode(10)}`,
+    });
+    const result = await resolve({
+      routeKey: "admin.bookings",
+      recordId: "cbk1",
+    });
+    const status = result.record?.facts.find((f) => f.key === "booking.status");
+    // Took the redact-and-bound path, which trims it, rather than travelling raw.
+    expect(status?.value).toBe("CONFIRMED");
   });
 
   it("never rewrites integer cents as a redacted value", async () => {

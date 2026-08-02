@@ -10,10 +10,35 @@
 
 import { describe, expect, it } from "vitest";
 
+import * as parseModule from "../parse";
 import { parseDiagnosticsPageSelector } from "../parse";
+import * as typesModule from "../types";
 import { DIAGNOSTICS_PAGE_CONTEXT_BOUNDS } from "../types";
 
 const VALID = { routeKey: "admin.bookings" } as const;
+
+describe("there is exactly one door", () => {
+  // A strict zod object is NOT total on its own: a `JSON.parse`-created
+  // `__proto__` own property is accepted and silently stripped, reported as no
+  // unknown key at all. So the selector schema must not be reachable beside
+  // `parseDiagnosticsPageSelector`, whose layer-0 scan refuses reserved keys on the
+  // RAW input — an exported schema is a second door that repairs what this module
+  // is contractually required to refuse.
+  it("exports no selector schema a caller could use instead of the parser", () => {
+    for (const surface of [parseModule, typesModule]) {
+      for (const [name, value] of Object.entries(surface)) {
+        const looksLikeASchema =
+          typeof value === "object" &&
+          value !== null &&
+          typeof (value as { safeParse?: unknown }).safeParse === "function";
+        expect(
+          looksLikeASchema,
+          `${name} exposes a parseable schema; keep it module-private`,
+        ).toBe(false);
+      }
+    }
+  });
+});
 
 describe("structural validation", () => {
   it("accepts a minimal selector and returns its registry route", () => {
@@ -109,14 +134,22 @@ describe("route-scoped allowlists", () => {
         routeKey: "admin.health",
         recordId: "cbk1",
       }),
-    ).toEqual({ ok: false, issues: ["record_not_allowed"] });
+    ).toEqual({
+      ok: false,
+      issues: ["record_not_allowed"],
+      route: expect.objectContaining({ key: "admin.health" }),
+    });
   });
 
   it("refuses a tab on a route whose tab allowlist is empty", () => {
     // Empty allowlist means "this field is not supported here", never "anything".
     expect(
       parseDiagnosticsPageSelector({ ...VALID, tab: "bookings" }),
-    ).toEqual({ ok: false, issues: ["tab_not_allowed"] });
+    ).toEqual({
+      ok: false,
+      issues: ["tab_not_allowed"],
+      route: expect.objectContaining({ key: "admin.bookings" }),
+    });
   });
 
   it("accepts a tab that the route does declare", () => {
@@ -133,7 +166,11 @@ describe("route-scoped allowlists", () => {
         routeKey: "admin.member-detail",
         tab: "credits",
       }),
-    ).toEqual({ ok: false, issues: ["tab_not_allowed"] });
+    ).toEqual({
+      ok: false,
+      issues: ["tab_not_allowed"],
+      route: expect.objectContaining({ key: "admin.member-detail" }),
+    });
   });
 
   it("refuses a status from a DIFFERENT route's vocabulary", () => {
@@ -141,13 +178,21 @@ describe("route-scoped allowlists", () => {
     // token is well-formed somewhere else in the registry.
     expect(
       parseDiagnosticsPageSelector({ ...VALID, status: "succeeded" }),
-    ).toEqual({ ok: false, issues: ["status_not_allowed"] });
+    ).toEqual({
+      ok: false,
+      issues: ["status_not_allowed"],
+      route: expect.objectContaining({ key: "admin.bookings" }),
+    });
   });
 
   it("refuses an unregistered error code and accepts a registered one", () => {
     expect(
       parseDiagnosticsPageSelector({ ...VALID, errorCode: "kernel-panic" }),
-    ).toEqual({ ok: false, issues: ["error_code_not_allowed"] });
+    ).toEqual({
+      ok: false,
+      issues: ["error_code_not_allowed"],
+      route: expect.objectContaining({ key: "admin.bookings" }),
+    });
     expect(
       parseDiagnosticsPageSelector({ ...VALID, errorCode: "forbidden" }).ok,
     ).toBe(true);
@@ -156,10 +201,31 @@ describe("route-scoped allowlists", () => {
   it("refuses a step on a route with no steps, and accepts one on the wizard", () => {
     expect(
       parseDiagnosticsPageSelector({ ...VALID, step: "finance" }),
-    ).toEqual({ ok: false, issues: ["step_not_allowed"] });
+    ).toEqual({
+      ok: false,
+      issues: ["step_not_allowed"],
+      route: expect.objectContaining({ key: "admin.bookings" }),
+    });
     expect(
-      parseDiagnosticsPageSelector({ routeKey: "admin.setup", step: "finance" })
-        .ok,
+      parseDiagnosticsPageSelector({
+        routeKey: "admin.setup",
+        step: "foundations",
+      }).ok,
+    ).toBe(true);
+  });
+
+  it("refuses the finance step on the wizard row, which is gated elsewhere", () => {
+    // `/admin/setup/finance` is its own admin page requiring `finance`, so it is
+    // NOT a step of the support-gated wizard row — it has its own registry key.
+    expect(
+      parseDiagnosticsPageSelector({ routeKey: "admin.setup", step: "finance" }),
+    ).toEqual({
+      ok: false,
+      issues: ["step_not_allowed"],
+      route: expect.objectContaining({ key: "admin.setup" }),
+    });
+    expect(
+      parseDiagnosticsPageSelector({ routeKey: "admin.setup-finance" }).ok,
     ).toBe(true);
   });
 });
@@ -179,16 +245,43 @@ describe("filters", () => {
         ...VALID,
         filters: { passwordHash: "x" },
       }),
-    ).toEqual({ ok: false, issues: ["filter_not_allowed"] });
+    ).toEqual({
+      ok: false,
+      issues: ["filter_not_allowed"],
+      route: expect.objectContaining({ key: "admin.bookings" }),
+    });
   });
 
-  it("refuses more filters than the bound allows", () => {
+  it("refuses more filters than the bound allows, on the COUNT not the allowlist", () => {
+    // Regression: this used to assert only `ok === false`, which the allowlist
+    // check satisfies all by itself — so deleting the count bound left the test
+    // green. Asserting the exact issue is what makes it non-vacuous: the count
+    // bound lives in the structural schema, so exceeding it reports `malformed`,
+    // whereas an unlisted key reports `filter_not_allowed`. Remove the bound and
+    // this same input comes back `filter_not_allowed` instead, and the test fails.
     const filters: Record<string, string> = {};
     for (let i = 0; i <= DIAGNOSTICS_PAGE_CONTEXT_BOUNDS.maxFilters; i += 1) {
       filters[`k${i}`] = "v";
     }
-    const result = parseDiagnosticsPageSelector({ ...VALID, filters });
-    expect(result.ok).toBe(false);
+    expect(parseDiagnosticsPageSelector({ ...VALID, filters })).toEqual({
+      ok: false,
+      issues: ["malformed"],
+    });
+  });
+
+  it("accepts exactly maxFilters structurally, so the bound is where it says", () => {
+    // The complement of the case above, pinning the bound at maxFilters rather
+    // than one either side: this many filters clears the structural count check
+    // and is then refused only by the route's allowlist.
+    const filters: Record<string, string> = {};
+    for (let i = 0; i < DIAGNOSTICS_PAGE_CONTEXT_BOUNDS.maxFilters; i += 1) {
+      filters[`k${i}`] = "v";
+    }
+    expect(parseDiagnosticsPageSelector({ ...VALID, filters })).toEqual({
+      ok: false,
+      issues: ["filter_not_allowed"],
+      route: expect.objectContaining({ key: "admin.bookings" }),
+    });
   });
 
   it("refuses an overlong filter value rather than truncating it", () => {
