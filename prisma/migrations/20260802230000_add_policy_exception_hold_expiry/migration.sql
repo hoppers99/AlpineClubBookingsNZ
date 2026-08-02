@@ -3,31 +3,62 @@
 -- cron writes when that hold runs out.
 --
 -- Purely additive EXPAND. Nothing is dropped, rewritten or backfilled: one new
--- enum value that only the new colour can write, and one nullable column with no
--- default, which PostgreSQL adds by catalog update with no heap rewrite.
--- BookingChangeRequest is a low-write admin-review table (absent from
--- HOT_TABLE_SQL_REGEX), so the brief ACCESS EXCLUSIVE lock of the ALTER never
--- contends with a hot path.
+-- enum value and one nullable column with no default, which PostgreSQL adds by
+-- catalog update with no heap rewrite. BookingChangeRequest is a low-write
+-- admin-review table (absent from HOT_TABLE_SQL_REGEX), so the brief ACCESS
+-- EXCLUSIVE lock of the ALTER never contends with a hot path.
 
--- The reaper's terminal outcome. Like CANCELLED and SUPERSEDED before it
--- (20260802190000), it is only ever written onto a POLICY_EXCEPTION-kind row the
--- new colour created, so the draining old colour — whose pending-review queue
--- selects `status = 'REQUESTED'` — never reads one. IF NOT EXISTS keeps the
--- migration idempotent, the same guard every enum-add in this tree uses. The
--- value is NOT used anywhere in this migration, so adding it inside the
--- migration transaction is safe (PostgreSQL only forbids USING a newly added
--- value of an existing type in the same transaction).
+-- The reaper's terminal outcome. IF NOT EXISTS keeps the migration idempotent,
+-- the same guard every enum-add in this tree uses. The value is NOT used anywhere
+-- in this migration, so adding it inside the migration transaction is safe
+-- (PostgreSQL only forbids USING a newly added value of an existing type in the
+-- same transaction).
+--
+-- OLD-COLOUR EXPOSURE, stated honestly, because the obvious reassurance is FALSE.
+-- It is NOT true that only new-colour rows can carry EXPIRED: the reaper's
+-- NULL-column fallback (src/lib/cron-policy-exception-hold-reaper.ts) exists
+-- exactly so a bed-holding request written BEFORE this migration, or by a draining
+-- old colour, can be expired too. Nor is the old colour's read narrowed to
+-- `status = 'REQUESTED'`: GET /api/bookings/[id]/change-requests and the member
+-- booking page both select every change request for a booking with no status or
+-- kind filter, and the officer queue's ALL filter reads every status. A Prisma
+-- client throws on an unknown enum value in a result, so an old-colour read of a
+-- row carrying EXPIRED errors.
+--
+-- What actually bounds the exposure is the TTL FLOOR plus the deploy window, not
+-- the writer or the reader:
+--   * the cron leader is refreshed on the new image at step 15/19 of
+--     scripts/run-production-blue-green-deploy.sh — BEFORE the step 16 cutover —
+--     so the three-hourly cycle ("0 */3 * * *") can fire while Caddy still points
+--     at the old colour. That window is the whole exposure, and it is minutes.
+--   * no STAMPED row can come due inside it: every stamped deadline is at least
+--     POLICY_EXCEPTION_HOLD_MIN_TTL_HOURS (24h) after creation.
+--   * a NULL-column row can only come due if it has been holding beds since
+--     before this migration, which needs #2525 to have shipped in an EARLIER
+--     release than #2553.
+-- Ship #2525 and #2553 in the SAME release and the exposure is provably nil. Ship
+-- them apart and the bounded case above applies; it is recorded in
+-- docs/BLUE_GREEN_MIGRATION_SAFETY.tsv for the operator, including the rollback
+-- note that EXPIRED rows written before a colour-switch rollback are PERMANENT
+-- (PostgreSQL cannot drop an enum value and an expiry is not reversible).
 ALTER TYPE "BookingChangeRequestStatus" ADD VALUE IF NOT EXISTS 'EXPIRED';
 
--- When the request's provisional hold runs out. Nullable with no default: NULL
--- is exactly "no TTL applies" — a LOCKED_PERIOD row, a NO_HOLD policy-exception
--- request, or a HOLD request whose incremental footprint came out empty. None of
--- those reserve beds, so none strands capacity. Deliberately NOT backfilled:
--- every existing row is either
--- LOCKED_PERIOD or a policy-exception request created within hours of this
--- migration, and the reaper derives a conservative fallback deadline from
--- `createdAt` for a HOLD-aggregate row whose column is still NULL (the
--- migrate -> cutover drain window), so no hold can outlive the TTL even without
--- a data rewrite here.
+-- When the request's provisional hold runs out. Nullable with no default, and
+-- deliberately NOT backfilled.
+--
+-- NULL means "no TTL is STAMPED on this row", which is two populations, not one:
+--   1. no capacity is at stake — a LOCKED_PERIOD row, a NO_HOLD policy-exception
+--      request, or a HOLD request whose incremental footprint came out empty (a
+--      pure shrink). None of these reserve beds, so the reaper's scan never sees
+--      them (it requires live PolicyExceptionReservationNight rows).
+--   2. the row PREDATES this column and IS holding beds — written before the
+--      migration, or by a draining old colour. Because there is no backfill, this
+--      case is real, and the reaper ages it out from `createdAt` under exactly the
+--      same rule (7-day TTL, capped at the start of its first held night, floored
+--      at 24 hours), so no hold outlives the TTL without a data rewrite here.
+-- So "holding beds" does NOT imply a non-NULL holdExpiresAt. Never write
+-- `holdExpiresAt IS NOT NULL` as a proxy for "this request is holding capacity";
+-- the reservation rows are the only reliable test. Same caveat in
+-- prisma/schema.prisma and docs/DOMAIN_INVARIANTS.md.
 ALTER TABLE "BookingChangeRequest"
     ADD COLUMN "holdExpiresAt" TIMESTAMP(3);

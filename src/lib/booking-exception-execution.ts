@@ -480,11 +480,31 @@ export type PolicyExceptionTerminalStatus =
   // release path.
   | "EXPIRED";
 
+/**
+ * Why this helper refused a row BEFORE it ever reached the guarded claim. A
+ * refusal is PERMANENT for that row — retrying changes nothing — which is exactly
+ * what separates it from an ordinary lost claim, where the next read sees the
+ * fresh version and succeeds. An unattended caller (the #2553 reaper) has to be
+ * able to tell the two apart, or a row it can never resolve looks like a race it
+ * lost and its stranded beds stay invisible behind a green cron-health row.
+ */
+export type ResolveTerminalRefusal =
+  /** Missing row, or a row that is not a POLICY_EXCEPTION request. */
+  | "not-policy-exception"
+  /** `proposalSnapshot` does not parse, so there is no lodge to lock. */
+  | "unreadable-proposal";
+
 export interface ResolveTerminalResult {
   /** Whether the guarded claim moved the row (a lost claim runs no release). */
   claimed: boolean;
   /** How many reservation night rows were released (0 for a NO_HOLD request). */
   released: number;
+  /**
+   * Set only when `claimed` is false AND the refusal is permanent (see
+   * {@link ResolveTerminalRefusal}). Absent means the ordinary optimistic-claim
+   * loss: somebody else moved the row first and already dealt with its beds.
+   */
+  refused?: ResolveTerminalRefusal;
 }
 
 /**
@@ -499,6 +519,12 @@ export interface ResolveTerminalResult {
  * per-lodge capacity lock keyed on the frozen lodge — because the release is a
  * capacity change and must serialise against every occupancy read/claim at that
  * lodge. Provider notifications are the caller's post-commit concern.
+ *
+ * Two pre-claim checks can refuse the row outright — it is not a
+ * POLICY_EXCEPTION request, or its `proposalSnapshot` does not parse (so there is
+ * no lodge to lock). Those cases return `claimed: false` WITH a `refused` reason,
+ * because unlike a lost claim they never resolve on a retry; the reaper counts and
+ * logs them rather than assuming a decision won the race.
  */
 export async function resolvePolicyExceptionRequestTerminal(params: {
   requestId: string;
@@ -525,10 +551,12 @@ export async function resolvePolicyExceptionRequestTerminal(params: {
       select: { proposalSnapshot: true, kind: true },
     });
     if (!preRead || preRead.kind !== "POLICY_EXCEPTION") {
-      return { claimed: false, released: 0 };
+      return { claimed: false, released: 0, refused: "not-policy-exception" };
     }
     const snapshot = parseProposalSnapshot(preRead.proposalSnapshot);
-    if (!snapshot) return { claimed: false, released: 0 };
+    if (!snapshot) {
+      return { claimed: false, released: 0, refused: "unreadable-proposal" };
+    }
 
     await acquireGlobalBookingLock(tx);
     await acquireLodgeCapacityLock(tx, snapshot.lodgeId);

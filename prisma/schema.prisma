@@ -4598,11 +4598,17 @@ model BookingChangeRequest {
   // a HOLD frozen aggregate WITH a non-empty incremental footprint (#2525) — and
   // never rewritten afterwards, so the reaper's deadline is a stable, immutable
   // fact rather than something a later write can move under a member. NULL means
-  // "no TTL applies": a LOCKED_PERIOD row, a NO_HOLD policy-exception request, or
-  // a HOLD request whose footprint came out empty (a pure shrink). None of those
-  // strand capacity, so none is the reaper's business. The reaper releases the
-  // hold and moves the request to EXPIRED once `now >= holdExpiresAt`; see
-  // src/lib/cron-policy-exception-hold-reaper.ts.
+  // "no TTL is STAMPED here", which is two populations: (a) nothing is at stake —
+  // a LOCKED_PERIOD row, a NO_HOLD policy-exception request, or a HOLD request
+  // whose footprint came out empty (a pure shrink); and (b) the row PREDATES this
+  // column and IS holding beds, because the migration deliberately did not
+  // backfill — written before it, or by a draining old colour. So NULL is NOT a
+  // safe proxy for "holds no capacity": never filter a capacity question on
+  // `holdExpiresAt IS NOT NULL`; the PolicyExceptionReservationNight rows are the
+  // only reliable test. The reaper handles both — it releases the hold and moves
+  // the request to EXPIRED once `now >= holdExpiresAt`, and for population (b) it
+  // derives the same deadline from `createdAt` and the request's first held night;
+  // see src/lib/cron-policy-exception-hold-reaper.ts.
   holdExpiresAt        DateTime?
   // Optimistic-concurrency token for the guarded approval claim, app-managed and
   // bumped on every mutating write — exactly the BookingRequest.version pattern

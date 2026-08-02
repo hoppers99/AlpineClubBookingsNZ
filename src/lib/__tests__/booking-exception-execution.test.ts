@@ -117,6 +117,9 @@ type RowOverrides = Partial<{
   kind: string;
   proposalHash: string | null;
   aggregateCapacityMode: string | null;
+  // #2553: the refusal tests need a snapshot the parser rejects, so the shape is
+  // deliberately open here rather than the parsed snapshot type.
+  proposalSnapshot: unknown;
 }>;
 
 function baseRow(overrides: RowOverrides = {}) {
@@ -624,7 +627,72 @@ describe("resolvePolicyExceptionRequestTerminal", () => {
       to: "EXPIRED",
       db: db as never,
     });
+    // No `refused` reason: this is the ordinary race, which the next scan re-reads
+    // and either claims or finds already closed. The reaper stays silent for it.
     expect(result).toEqual({ claimed: false, released: 0 });
+    expect(deleteMany).not.toHaveBeenCalled();
+  });
+
+  // #2553: the two PRE-claim refusals are reported distinctly from a lost claim,
+  // because they are permanent for that row. An unattended caller that cannot tell
+  // them apart treats "I can never resolve this" as "somebody beat me to it" and
+  // its stranded beds never surface.
+  it("REFUSED: a missing or non-policy-exception row says so, and locks nothing", async () => {
+    const { db, order, deleteMany } = makeDb({
+      row: baseRow({ kind: "LOCKED_PERIOD" }),
+    });
+    const result = await resolvePolicyExceptionRequestTerminal({
+      requestId: "req-1",
+      expectedVersion: 1,
+      to: "EXPIRED",
+      db: db as never,
+    });
+    expect(result).toEqual({
+      claimed: false,
+      released: 0,
+      refused: "not-policy-exception",
+    });
+    // Refused before any lock is taken, so a bad row cannot serialise the lodge.
+    expect(order).toEqual(["commit"]);
+    expect(deleteMany).not.toHaveBeenCalled();
+
+    const missing = makeDb({ row: null });
+    expect(
+      await resolvePolicyExceptionRequestTerminal({
+        requestId: "req-1",
+        expectedVersion: 1,
+        to: "EXPIRED",
+        db: missing.db as never,
+      }),
+    ).toEqual({ claimed: false, released: 0, refused: "not-policy-exception" });
+  });
+
+  it("REFUSED: an unparsable proposalSnapshot says so rather than looking like a race", async () => {
+    const { db, order, deleteMany } = makeDb({
+      // A MODIFICATION snapshot whose lodgeId is not a string: there is no lodge
+      // to lock, so no retry can ever resolve this row.
+      row: baseRow({
+        proposalSnapshot: {
+          kind: "MODIFICATION",
+          lodgeId: 42,
+          bookingId: "bk-1",
+          base: {},
+          proposed: {},
+        },
+      }),
+    });
+    const result = await resolvePolicyExceptionRequestTerminal({
+      requestId: "req-1",
+      expectedVersion: 1,
+      to: "EXPIRED",
+      db: db as never,
+    });
+    expect(result).toEqual({
+      claimed: false,
+      released: 0,
+      refused: "unreadable-proposal",
+    });
+    expect(order).toEqual(["commit"]);
     expect(deleteMany).not.toHaveBeenCalled();
   });
 

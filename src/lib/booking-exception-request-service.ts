@@ -865,8 +865,9 @@ export type ExceptionQueueStatusFilter =
   | "REJECTED"
   | "CANCELLED"
   | "SUPERSEDED"
-  // #2553: a request the hold reaper closed. Reachable through the ALL filter
-  // today; the officer queue route's own filter list is #2526's surface.
+  // #2553: a request the hold reaper closed. Accepted by the admin queue route's
+  // own filter too, so the type and the route agree; the officer SCREEN that
+  // surfaces an "Expired" tab is #2526.
   | "EXPIRED"
   | "ALL";
 
