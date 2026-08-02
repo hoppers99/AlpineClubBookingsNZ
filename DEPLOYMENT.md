@@ -227,6 +227,13 @@ Minimum production categories:
   config-transfer bundle applied non-interactively on boot **only** when the
   database is empty of non-seed configuration. See "Config Bundle Auto-Import On
   Boot (DR / clone)".
+- AI Diagnostics (optional module, default off): `AI_DIAGNOSTICS_DATABASE_URL` —
+  a **dedicated non-superuser, SELECT-only** database role for the diagnostics
+  tool substrate, provisioned with `npm run diagnostics:provision-role`. It is
+  never the app's `DATABASE_URL` (the Compose app role is a superuser), and the
+  app verifies the role's privileges with the server before every read. Required
+  before the module can be used. See
+  [`docs/ai-diagnostics/deployment.md`](docs/ai-diagnostics/deployment.md).
 - Admin health: optional `CRON_LEADER_RUNTIME_STATUS_URL` when the cron leader
   is not reachable from web containers at
   `http://app:3000/api/deploy/runtime-status`

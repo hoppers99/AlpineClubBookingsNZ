@@ -25,7 +25,11 @@ the capability, configuration, metering, and rate-limit foundation described in
 below. **AID-4 (#2373) has since landed the
 [typed structured page context](page-context.md)** — the typed selector,
 route registry, permission-checked server re-fetch, and evidence render for the
-page an admin is looking at.
+page an admin is looking at. **AID-5 (#2374) has since landed the
+[SELECT-only tool substrate](tools.md)** — the server-owned typed tool registry and
+the dedicated least-privilege database credential it reads through, with its
+operator setup in [deployment.md](deployment.md). It ships **no domain tool**: the
+tool packs are AID-6A/B/C (#2375–#2377).
 
 ## Governance: these contracts are binding
 
@@ -106,10 +110,11 @@ child; the existing repository-wide documents they extend are linked.
 
 | Area | Planned subsystem doc (owner) | Existing docs it extends |
 | --- | --- | --- |
-| **Architecture** | `docs/ai-diagnostics/architecture.md` — runtime shape, the tool substrate, the deployed-knowledge bundle, and data flows (AID-2 #2371 / AID-5 #2374) | [`ARCHITECTURE.md`](../ARCHITECTURE.md), [`DOMAIN_INVARIANTS.md`](../DOMAIN_INVARIANTS.md) |
+| **Architecture** | `docs/ai-diagnostics/architecture.md` — runtime shape, the deployed-knowledge bundle, and end-to-end data flows (AID-2 #2371). The tool substrate's own shape is now documented in [`tools.md`](tools.md) | [`ARCHITECTURE.md`](../ARCHITECTURE.md), [`DOMAIN_INVARIANTS.md`](../DOMAIN_INVARIANTS.md) |
+| **Tool substrate** | [`tools.md`](tools.md) — the server-owned typed registry, the ten fail-closed gates, per-invocation authorization, bounds, untrusted-evidence render, approved audit metadata, and the rules for adding a tool (AID-5 #2374, **delivered**) | [ADR-001](decisions/ADR-001-separate-admin-only-diagnostics-product.md), [ADR-002](decisions/ADR-002-admission-and-per-tool-authorization-lattice.md), [ADR-004](decisions/ADR-004-sensitive-context-retention-redaction-audit-metadata.md), [ADR-007](decisions/ADR-007-least-privilege-select-only-database-credential.md) |
 | **Page context** | [`page-context.md`](page-context.md) — the typed selector, the route registry, the permission-checked server re-fetch, the personal-detail opt-in, and the evidence block (AID-4 #2373, **delivered**) | [ADR-002](decisions/ADR-002-admission-and-per-tool-authorization-lattice.md), [ADR-003](decisions/ADR-003-untrusted-evidence-classes.md), [ADR-004](decisions/ADR-004-sensitive-context-retention-redaction-audit-metadata.md) |
 | **Security / privacy** | This hub's [threat model](threat-model.md) and [ADRs](decisions/) (AID-1, this issue); release hardening notes (AID-8 #2379) | [`SECURITY.md`](../SECURITY.md), [`SECURITY-ATTACK-SURFACE.md`](../SECURITY-ATTACK-SURFACE.md), [`agents/PROMPT_INJECTION_GUIDE.md`](../agents/PROMPT_INJECTION_GUIDE.md) |
-| **Deployment / operator** | `docs/ai-diagnostics/deployment.md` — enabling the module, the SELECT-only DB role, the credential, budget/limits, disclosure and zero-retention, the private overlay (AID-2 #2371 / AID-5 #2374 / AID-8 #2379) | [`../../DEPLOYMENT.md`](../../DEPLOYMENT.md), [`ONGOING_DEVELOPMENT_WORKFLOW.md`](../ONGOING_DEVELOPMENT_WORKFLOW.md) |
+| **Deployment / operator** | [`deployment.md`](deployment.md) — setup order, provisioning and rotating the SELECT-only DB role, the credential, budget/limits, and reading readiness (AID-2 #2371 / AID-5 #2374, **delivered**); provider disclosure, zero-retention, and the private overlay still to come (AID-8 #2379) | [`../../DEPLOYMENT.md`](../../DEPLOYMENT.md), [`ONGOING_DEVELOPMENT_WORKFLOW.md`](../ONGOING_DEVELOPMENT_WORKFLOW.md) |
 | **UX** | `docs/ai-diagnostics/ux.md` — the Diagnostics shell, inert-text answer render + strict CSP (ADR-008), evidence citations, permission-scoped answers, fallbacks (AID-7 #2378) | [`UX_FLOW_MAP.md`](../UX_FLOW_MAP.md) |
 | **E2E test matrix** | `docs/ai-diagnostics/e2e-matrix.md` — admission, per-tool auth, injection inertness, output-channel egress (inert render + CSP, ADR-008), budget/limit fail-closed, redaction (AID-8 #2379) | [`END_TO_END_TEST_MATRIX.md`](../END_TO_END_TEST_MATRIX.md) |
 | **Operator help** | Operator guidance for the Diagnostics surface (AID-7 #2378 / AID-8 #2379) | [`guides/ai-help.md`](../guides/ai-help.md) |
@@ -313,6 +318,67 @@ The money-safety invariant — that no burst of concurrent reservers can push
   `RUN_CONCURRENCY_RACE_TESTS=1`, dedicated loopback database), so ordinary
   `npm test` never needs a live database.
 
+## Delivered capability: the SELECT-only tool substrate (AID-5, #2374)
+
+AID-5 builds the **typed, server-owned, read-only tool substrate** and the
+dedicated least-privilege database identity it reads through. Full reference:
+[`tools.md`](tools.md). Operator setup: [`deployment.md`](deployment.md).
+
+The headline is a negative capability: **the model never supplies SQL.** A tool is a
+server-owned record pairing a fixed statement, a fixed parameter binding, a fixed
+projection, fixed row/byte ceilings and a fixed permission requirement. The model
+chooses an entry by id and supplies arguments a `.strict()` schema has already
+accepted; those become positional parameters and nothing else.
+
+- **A separate database identity, verified not assumed.** Reads run as
+  `AI_DIAGNOSTICS_DATABASE_URL` — a non-superuser role with an empty `SELECT`
+  allowlist today — inside `BEGIN READ ONLY` under a statement timeout. The
+  application asks the **server** what privileges the role holds and refuses every
+  tool call unless superuser, `CREATEDB`, `CREATEROLE`, `REPLICATION`, `BYPASSRLS`,
+  database `TEMPORARY`/`CREATE`, schema `CREATE`, `pg_read_file` execute, and every
+  privilege-escalating predefined role are all absent. There is no fallback to
+  `DATABASE_URL`, and a URL naming the application's own role is refused outright.
+- **Ten ordered fail-closed gates**, every one returning no rows: registry, loop
+  budget, fresh authorization, arguments, metering, credential, read, projection,
+  size, audit. Authorization runs **before** argument parsing so the difference
+  between "invalid arguments" and "permission denied" cannot be used as an oracle,
+  and the audit row is written **before** any evidence is returned.
+- **Authorization is per invocation, and withholding is not authorization.** Tool
+  definitions are hidden from the model when the caller lacks the area — a usability
+  courtesy — while the server re-reads the caller's matrix from the database and
+  denies on every invocation regardless.
+- **Bounded everywhere:** the executor imposes its own outermost SQL `LIMIT`, an
+  over-size result is a refusal rather than a silent trim, and per-round and
+  per-session tool-call counters live on an explicit per-question session object
+  whose limits can only be clamped downwards.
+- **Approved audit metadata only:** one `AuditLog` row per invocation carrying tool
+  id, areas checked, auth outcome, failure reason, non-reversible hashes of the
+  accepted arguments and of the result, and row/byte/timing counts — never raw
+  arguments or raw results.
+- **No domain tool.** The single registered entry reads no relation: it is a
+  readiness probe that reports whether the transaction is read-only and what
+  timeout is in force. AID-6A/B/C (#2375–#2377) add the tool packs, each with its
+  own permission review and its own table grant.
+- **Readiness now verifies the role.** `GET /api/admin/ai-diagnostics/readiness`
+  reports a `databaseState` of `not_configured`, `misconfigured`, `unverified`,
+  `over_privileged`, or `verified`, and anything but `verified` blocks readiness.
+  It never returns the connection string, the password, or the role name.
+
+### Privilege proof
+
+ADR-007's claims are claims about PostgreSQL's own behaviour, so a mock cannot
+establish any of them. `ai-diagnostics-select-only-role.realdb.test.ts` provisions
+the role by running the **shipped** statements from `provision-role.ts`, connects as
+that role against a real PostgreSQL, and proves that `INSERT`/`UPDATE`/`DELETE`/
+`TRUNCATE`, nine forms of DDL including `CREATE TEMP TABLE` and
+`ALTER ROLE … SUPERUSER`, reads of `IntegrationCredential` and every un-granted
+table, and self-granting all fail; that a granted `INSERT` is still refused by the
+read-only transaction; that the runtime self-check **refuses a real superuser
+credential**; and that a long query is cancelled at the statement timeout. It is
+off by default (opt-in `RUN_CONCURRENCY_RACE_TESTS=1`, loopback-only high-port
+dedicated database) and its CI step, environment, and ordering are pinned by
+`review-findings-contracts.test.ts` so the proof cannot be silently unplugged.
+
 ## Maintenance rules
 
 - Do not point Diagnostics tools at the application's `DATABASE_URL`; update
@@ -331,5 +397,13 @@ The money-safety invariant — that no burst of concurrent reservers can push
   admin route lattice's own requirement for that path, and do not widen a
   route's token allowlists without a reason — see
   [page context](page-context.md); `registry.test.ts` enforces the first.
+- A new diagnostics tool ships its `GRANT SELECT` in `provision-role.ts` in the
+  **same** pull request, never a blanket `ALL TABLES IN SCHEMA` grant, and the
+  release note tells operators to re-run `npm run diagnostics:provision-role` —
+  see [tool substrate](tools.md).
+- Do not add a runtime seam that lets a caller inject an authorizer, an auditor, or
+  SQL into `invokeDiagnosticsTool`, and do not relax the privilege self-check in
+  `database.ts` into a configuration-only check; ADR-007 requires the server to be
+  asked.
 - When a child ships a subsystem document from the plan above, replace its
   `code-font` placeholder with a real link in the same PR.
