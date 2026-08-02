@@ -28,6 +28,11 @@ export const BOOKING_URL_TEMPLATE_NAMES: ReadonlySet<string> = new Set([
   "split-guest-payment-link",
   "booking-request-payment-expired",
   "school-attendee-confirmation",
+  // #2550: booking-scoped and registered, so it is classified here like its
+  // siblings — the reminder's whole call to action is "open your booking and
+  // name your party", and the canonical authorized detail link is what carries
+  // the member there.
+  "whole-lodge-guest-names-reminder",
   "group-settlement-receipt",
   "group-join-settled",
   "group-settlement-expired",

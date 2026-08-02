@@ -24,6 +24,10 @@ vi.mock("@/lib/cron-pre-arrival-reminders", () => ({
   sendPreArrivalReminders: vi.fn(),
 }));
 
+vi.mock("@/lib/placeholder-guest-name-reminders", () => ({
+  sendPlaceholderGuestNameReminders: vi.fn(),
+}));
+
 vi.mock("@/lib/cron-quote-expiry-reminders", () => ({
   sendQuoteExpiryReminders: vi.fn(),
 }));
@@ -110,6 +114,13 @@ describe("general cron runner", () => {
           sent: 0,
           failed: 0,
         })),
+        // #2550: the whole-lodge placeholder guest-name chase.
+        sendPlaceholderGuestNameReminders: vi.fn(async () => ({
+          scanned: 2,
+          sent: 1,
+          skipped: 1,
+          failed: 0,
+        })),
       },
     });
 
@@ -144,7 +155,13 @@ describe("general cron runner", () => {
       sent: 0,
       failed: 0,
     });
-    expect(recordCronRun).toHaveBeenCalledTimes(7);
+    expect(result.placeholderGuestNameReminders).toEqual({
+      scanned: 2,
+      sent: 1,
+      skipped: 1,
+      failed: 0,
+    });
+    expect(recordCronRun).toHaveBeenCalledTimes(8);
     expect(recordCronRun).toHaveBeenCalledWith(
       expect.objectContaining({
         jobName: "additional-payment-reminders",
@@ -187,6 +204,13 @@ describe("general cron runner", () => {
         status: "SUCCESS",
       })
     );
+    // #2550
+    expect(recordCronRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        jobName: "placeholder-guest-name-reminders",
+        status: "SUCCESS",
+      })
+    );
   });
 
   it("continues through independent jobs and reports failures after recording each outcome", async () => {
@@ -223,6 +247,12 @@ describe("general cron runner", () => {
       sent: 0,
       failed: 0,
     }));
+    const sendPlaceholderGuestNameReminders = vi.fn(async () => ({
+      scanned: 0,
+      sent: 0,
+      skipped: 0,
+      failed: 0,
+    }));
     const sendAdditionalPaymentReminders = vi.fn(async () => ({
       reminderDays: 3,
       finalReminderDaysBeforeCheckIn: 2,
@@ -247,6 +277,7 @@ describe("general cron runner", () => {
           purgeExpiredBookingRequests,
           sendQuoteExpiryReminders,
           sendSchoolAttendeeConfirmationPrompts,
+          sendPlaceholderGuestNameReminders,
         },
       })
     ).rejects.toMatchObject({
@@ -261,6 +292,7 @@ describe("general cron runner", () => {
     expect(purgeExpiredBookingRequests).toHaveBeenCalled();
     expect(sendQuoteExpiryReminders).toHaveBeenCalled();
     expect(sendSchoolAttendeeConfirmationPrompts).toHaveBeenCalled();
+    expect(sendPlaceholderGuestNameReminders).toHaveBeenCalled();
     expect(recordCronRun).toHaveBeenCalledWith(
       expect.objectContaining({
         jobName: "confirm-pending",

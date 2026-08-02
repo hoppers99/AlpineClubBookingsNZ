@@ -200,6 +200,19 @@ export function getAdminCronJobDefinitions(
     ),
     defineCronJob(
       {
+        // #2550: chases the unnamed "Guest 1..N" party on a member whole-lodge
+        // booking before check-in. Visibility only — it never withholds a stay.
+        jobName: "placeholder-guest-name-reminders",
+        label: "Placeholder guest-name reminders",
+        schedule: "0 */3 * * *",
+        timezone: nzTimezone,
+        expectedLocalTime: "Every 3 hours at minute 0 in Pacific/Auckland",
+        staleAfterMinutes: THREE_HOURLY_STALE_AFTER_MINUTES,
+      },
+      globalDisabledReason
+    ),
+    defineCronJob(
+      {
         jobName: "school-attendee-confirmations",
         label: "School attendee confirmations",
         schedule: "0 */3 * * *",

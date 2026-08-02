@@ -27,6 +27,8 @@ export async function POST(request: NextRequest) {
       bookingRequestPurge: result.bookingRequestPurge,
       quoteExpiryReminders: result.quoteExpiryReminders,
       schoolAttendeeConfirmations: result.schoolAttendeeConfirmations,
+      // #2550: the whole-lodge placeholder guest-name chase.
+      placeholderGuestNameReminders: result.placeholderGuestNameReminders,
     });
   } catch (err) {
     if (err instanceof GeneralCronCycleError) {
