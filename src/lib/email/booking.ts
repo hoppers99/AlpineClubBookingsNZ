@@ -25,6 +25,7 @@ import {
   bookingModificationTypeLabel,
   bookingModificationSummaryRows,
   policyExceptionRequestExpiredTemplate,
+  wholeLodgeGuestNamesReminderTemplate,
 } from "../email-templates";
 import {
   bookingBumpedRebookAction,
@@ -32,6 +33,7 @@ import {
   composeChoreLine,
   composeOptionalEmailLine,
   splitGuestPortionOwnBookingLine,
+  wholeLodgeGuestNamesUrgencyNote,
 } from "../email-message-notes";
 import { CLUB_NAME } from "@/config/club-identity";
 import { EMAIL_DEFAULT_LODGE_NAME } from "@/lib/email-message-settings";
@@ -878,6 +880,67 @@ export async function sendPreArrivalReminderEmail(params: {
           : "",
     },
     lodgeId: params.lodgeId,
+  });
+}
+
+/**
+ * #2550 — escalating reminder that a member whole-lodge booking's party is
+ * still listed as "Guest 1..N".
+ *
+ * Sent by the `placeholder-guest-name-reminders` cron only. There is no token
+ * and no public page: the member edits their own guests behind their login, and
+ * the canonical authenticated booking link is appended centrally for every
+ * booking-scoped send.
+ *
+ * The escalation is a change of TONE and FREQUENCY, never of consequence — the
+ * stay, check-in and roster are never withheld over an unnamed guest (owner
+ * decision, #2550). `{{namingUrgencyNote}}` is the one sentence that changes,
+ * composed once here and handed to both the HTML and the flat body so an admin
+ * override and the built-in message cannot say different things.
+ */
+export async function sendWholeLodgeGuestNamesReminderEmail(params: {
+  bookingId: string;
+  recipientMemberId: string;
+  email: string;
+  firstName: string;
+  checkIn: Date;
+  checkOut: Date;
+  guestCount: number;
+  unnamedGuestCount: number;
+  stage: "first" | "reminder" | "final";
+  lodgeId?: string | null;
+}) {
+  const urgencyNote = wholeLodgeGuestNamesUrgencyNote(params.stage);
+  const isFinal = params.stage === "final";
+
+  return sendEmail({
+    to: params.email,
+    lodgeId: params.lodgeId,
+    subject: isFinal
+      ? `Last chance: tell us who is coming — ${CLUB_NAME}`
+      : `Who is coming with you? — ${CLUB_NAME}`,
+    html: wholeLodgeGuestNamesReminderTemplate({
+      firstName: params.firstName,
+      checkIn: params.checkIn,
+      checkOut: params.checkOut,
+      guestCount: params.guestCount,
+      unnamedGuestCount: params.unnamedGuestCount,
+      isFinal,
+      urgencyNote,
+    }),
+    bookingContext: bookingOwnerEmailContext(
+      params.bookingId,
+      params.recipientMemberId,
+    ),
+    templateName: "whole-lodge-guest-names-reminder",
+    templateData: {
+      firstName: params.firstName,
+      checkIn: formatNZDate(params.checkIn),
+      checkOut: formatNZDate(params.checkOut),
+      guestCount: params.guestCount,
+      unnamedGuestCount: params.unnamedGuestCount,
+      namingUrgencyNote: urgencyNote,
+    },
   });
 }
 

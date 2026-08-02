@@ -159,6 +159,32 @@ that link is now recorded and the member is told:
 With the module off, none of this happens and a linked guest row behaves exactly
 as it did before.
 
+**After you approve: the party is still "Guest 1..N".** A member whole-lodge
+request only asks for an approximate headcount, so the converted booking starts
+with placeholder guests named `Guest 1`, `Guest 2` and so on — exactly as a
+school booking starts with `School Child 1..N`. Left alone, those are the names
+the chore list and arrival roster print at the lodge.
+
+The club chases this automatically. Starting **Attendee first prompt** days
+before check-in (the same **School Attendee Confirmation** timing on
+[Booking Policies](booking-policies.md) that drives the school prompt), the
+member is emailed a reminder asking them to name their party, repeated every
+**reminder** days and escalating to once a day from two days out, with a last
+reminder on the morning they travel. It stops the moment every guest is named. School bookings keep their
+existing tokenized confirmation email and cadence, unchanged.
+
+Any booking still carrying placeholders inside that window — school or
+whole-lodge — is counted on [Stuck States](stuck-states.md) as **Bookings with
+unnamed guests**, so you can see them coming. You or a Booking Officer can also
+edit the names yourself from the booking; a rename keeps the same guest row, so
+chore and bed assignments follow it, and it never changes anybody's age group or
+the price.
+
+**None of this blocks anything.** An unnamed party is chased and made visible,
+never held up: the booking confirms, the roster generates, and the group checks
+in exactly as normal whether or not the names ever arrive. A last-minute
+substitution must never be stranded at the lodge over a name.
+
 ## Settings reference
 
 This is a work queue. The controls per tab:

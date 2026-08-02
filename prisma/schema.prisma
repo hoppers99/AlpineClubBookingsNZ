@@ -2219,6 +2219,14 @@ model BookingRequest {
   // School attendee confirmation (#1101, SCHOOL requests with a converted
   // booking). SHA-256 hash only; the raw token is emailed and rotated on
   // each reminder. Confirmation is the school contact's explicit action.
+  //
+  // #2550 additionally reuses attendeeConfirmationLastSentAt — and only that
+  // column — as the send-cadence stamp for the member whole-lodge guest-name
+  // reminder. The two uses cannot collide: the school sweep filters
+  // `type: SCHOOL` and the whole-lodge sweep filters it out, so a given row is
+  // only ever stamped by one of them. The token columns and attendeesConfirmedAt
+  // stay school-only; the whole-lodge reminder carries no token and needs no
+  // explicit confirmation (it stops as soon as the guests are named).
   attendeeConfirmationTokenHash      String?   @unique
   attendeeConfirmationTokenExpiresAt DateTime?
   attendeeConfirmationLastSentAt     DateTime?

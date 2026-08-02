@@ -9,6 +9,7 @@ import {
   bookingPaymentDueNote,
   duplicateCaptureRefundOutcomeParagraph,
   splitGuestPortionOwnBookingLine,
+  wholeLodgeGuestNamesUrgencyNote,
 } from "@/lib/email-message-notes";
 import { FALLBACK_LODGE_CAPACITY } from "@/lib/lodge-capacity";
 import { BOOKING_URL_TEMPLATE_NAMES } from "@/lib/booking-email-template-contract";
@@ -473,6 +474,14 @@ const REQUIRED_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, string[]>
   "booking-review-approved": [],
   "induction-sign-off-request": ["inductionUrl"],
   "school-attendee-confirmation": ["token"],
+  // #2550: the whole point of the message is the ask and the count it is about,
+  // and the one sentence whose urgency escalates as check-in approaches. An
+  // override that drops any of the three leaves a member with a nudge that does
+  // not say what to do or how much of their party is still unnamed.
+  "whole-lodge-guest-names-reminder": [
+    "unnamedGuestCount",
+    "namingUrgencyNote",
+  ],
   "group-booking-join-verification": ["token"],
   // #2260: who it is for and which season it covers are the load-bearing
   // content of a manual-payment receipt. The amount is deliberately NOT
@@ -763,6 +772,12 @@ const TEMPLATE_TRIGGER_METADATA: Partial<
       "School contact prompted to confirm placeholder attendees (cron sweep or admin resend)",
     frequency:
       "Per send to the school contact; flagged a reminder after the first, token rotated each send",
+  },
+  "whole-lodge-guest-names-reminder": {
+    triggerSummary:
+      "A member whole-lodge booking is approaching check-in with its party still listed as placeholder 'Guest 1..N' names (#2550)",
+    frequency:
+      "Every attendeeConfirmationReminderDays inside the lead window, escalating to daily from two days before check-in, until every guest is named; the final reminder still goes out on the arrival morning and never blocks the stay",
   },
   "admin-school-manual-invoice": {
     triggerSummary:
@@ -1113,6 +1128,17 @@ export function sampleValue(token: string): string {
       invoiceEmailed: true,
     });
   }
+  // #2550: the whole-lodge guest-name reminder's one escalating sentence,
+  // composed by the very function the send uses so the preview cannot drift
+  // from the message. Without this it fell through to the bottom of this
+  // function and previewed as the bare word "namingUrgencyNote", in breach of
+  // the pre-composed-token rule stated above. The FIRST stage is the sample:
+  // it is the one every chased member receives, and previewing the "last
+  // chance" wording as though it were the norm would mislead an admin writing
+  // surrounding copy.
+  if (token === "namingUrgencyNote") {
+    return wholeLodgeGuestNamesUrgencyNote("first");
+  }
   // #2444: the internet-banking reference an unpaid member must quote. It fell
   // through to the literal word "paymentReference", which contradicted the
   // composed paragraph above (and previewed the admin manual-invoice alert's
@@ -1403,6 +1429,11 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "message",
   "modificationTypeLabel",
   "name",
+  // #2550: the one escalating sentence of the whole-lodge guest-name reminder,
+  // composed by the sender (wholeLodgeGuestNamesUrgencyNote) so the hand-built
+  // HTML and an admin override cannot say different things about how urgent it
+  // is. Never empty — every stage has a sentence.
+  "namingUrgencyNote",
   "newCheckIn",
   "newCheckOut",
   "newEmail",
@@ -1564,6 +1595,8 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "paymentDueNote",
   "totalPaid",
   "triggeringMemberName",
+  // #2550: how many of the party still carry a generated placeholder name.
+  "unnamedGuestCount",
   "verifyUrl",
   "windowHours",
   // MG4 (#2309): the withdrawal notice's two composed blocks — what happened,

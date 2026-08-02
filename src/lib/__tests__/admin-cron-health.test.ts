@@ -157,6 +157,9 @@ describe("admin cron health", () => {
 
     for (const jobName of [
       "confirm-pending",
+      // #2550: the whole-lodge placeholder guest-name chase rides the same
+      // three-hourly general cycle as its siblings.
+      "placeholder-guest-name-reminders",
       // #2553: the abandoned policy-exception capacity-hold reaper rides the same
       // three-hourly general cycle, so it must share its freshness threshold —
       // otherwise an operator cannot tell a silent reaper from a healthy one.
