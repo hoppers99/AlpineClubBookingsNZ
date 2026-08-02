@@ -181,15 +181,16 @@ Every trigger produces a structured, non-spending, non-mutating fallback
 | SELECT-only query error / would-mutate | Fail the tool; never fall back to a wider role. |
 | Answer contains an image, hyperlink, or active markup | Render inert text only; strip/neutralise the markup (never best-effort render it); strict CSP blocks any egress regardless (ADR-008). |
 
-## Residual risks and open owner decisions
+## Residual risks and owner-ratified decisions
 
 - **Credential isolation shape** (physically distinct Anthropic key vs shared key
-  + separate budget) — recommended: distinct credential slot (ADR-001 §4). Owner
-  decision on #2370.
+  + separate budget) — **ratified by the owner on 2 August 2026 (#2370): a
+  distinct credential slot** (ADR-001 §4).
 - **Config travel** (whether any Diagnostics config travels in a bundle) —
-  recommended: none travels (ADR-006 §6). Owner decision on #2370.
+  **ratified by the owner on 2 August 2026 (#2370): none travels** (ADR-006 §6).
 - **Admission breadth** (include finance-only accounts in shell admission) —
-  recommended: include them; the shell carries no data (ADR-002 §1).
+  **ratified by the owner on 2 August 2026 (#2370): include them; the shell
+  carries no data** (ADR-002 §1).
 - **Soft-cap overshoot.** Like Page help, the budget gate is read-then-spend, so
   concurrent in-flight round-trips can overshoot the cap by cents; bounded by the
   per-round-trip reserve and the rate limiters, with the provider console spend
@@ -201,5 +202,8 @@ Every trigger produces a structured, non-spending, non-mutating fallback
   disclosed posture.
 
 Per the working agreement, residual risks are resolved in the delivering PR where
-possible; the two credential/config items above are genuine owner decisions and
-are carried on issue #2370 with recommended defaults, not left as silent to-dos.
+possible; the three credential/config/admission items above were carried on issue
+#2370 with recommended defaults and have now been ratified by the owner (2 August
+2026) at those defaults — not left as silent to-dos. The remaining soft-cap and
+provider-side-processing items are inherent, disclosed properties of the design,
+accepted by any owner who enables Diagnostics.

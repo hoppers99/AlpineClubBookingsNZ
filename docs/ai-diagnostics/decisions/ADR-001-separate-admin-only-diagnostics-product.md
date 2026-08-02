@@ -2,9 +2,11 @@
 
 ## Status
 
-Proposed — foundation decision for epic #2369 (AI Diagnostics), pending owner
-approval on issue #2370. To be marked Accepted when this ADR's pull request
-merges.
+Accepted — 2 August 2026. Foundation decision for epic #2369 (AI Diagnostics).
+The owner ratified the credential-posture default in §4 on issue #2370: a
+dedicated Anthropic credential slot for Diagnostics, isolated from Page help,
+with independent rotation/revocation and a separate spend cap (AID-2 #2371 is
+already built to this default).
 
 **Governance:** no implementation child (#2371–#2379) may weaken the contract in
 this ADR without an owner decision recorded on-repo (a comment or a superseding
@@ -113,15 +115,14 @@ The credential and budget surface are **isolated** from Page help so that a
 Diagnostics incident (a leaked key, a runaway spend, a forced disable) cannot
 take down member-facing Page help, and vice versa.
 
-> **Open owner decision (recommended default).** Whether isolation means a
-> *physically distinct Anthropic API key* (a separate `IntegrationCredential`
-> slot, so the two products can be keyed, rotated, and revoked independently) or
-> the *same key with a separate budget/metering ledger*. **Recommended: a
-> distinct credential slot.** It is the only option that lets an operator revoke
-> Diagnostics without disabling Page help, contains a Diagnostics key
-> compromise, and keeps the two spend caps genuinely independent; the cost is one
-> extra key to enter and rotate. Recorded for the owner on #2370; AID-2 (#2371)
-> implements whichever is chosen.
+> **Owner-ratified (2 August 2026, #2370): a physically distinct Anthropic API
+> key.** Isolation means a separate `IntegrationCredential` slot, so the two
+> products can be keyed, rotated, and revoked independently — not the same key
+> with only a separate budget/metering ledger. It is the only option that lets an
+> operator revoke Diagnostics without disabling Page help, contains a Diagnostics
+> key compromise, and keeps the two spend caps genuinely independent; the cost is
+> one extra key to enter and rotate. AID-2 (#2371) is already built to this
+> default.
 
 ## Consequences
 

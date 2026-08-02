@@ -2,9 +2,11 @@
 
 ## Status
 
-Proposed — foundation decision for epic #2369 (AI Diagnostics), pending owner
-approval on issue #2370. To be marked Accepted when this ADR's pull request
-merges.
+Accepted — 2 August 2026. Foundation decision for epic #2369 (AI Diagnostics).
+The owner ratified the config-travel default in §6 on issue #2370: no
+Diagnostics configuration travels between deployments — every fork/deployment
+configures its own Diagnostics locally (AID-2 #2371 is already built to this
+non-travelling default).
 
 **Governance:** no implementation child (#2371–#2379) may weaken the contract in
 this ADR without an owner decision recorded on-repo.
@@ -77,10 +79,10 @@ Page help).
 
 ### 6. Diagnostics config does not travel between deployments
 
-> **Open owner decision (recommended default).** Whether Diagnostics
-> configuration transfers between deployments via the config-transfer bundle.
-> **Recommended: it does NOT travel — Diagnostics config is deployment-local and
-> non-travelling.** Its credential is already excluded (credentials never travel),
+> **Owner-ratified (2 August 2026, #2370): Diagnostics config does NOT travel.**
+> No Diagnostics configuration transfers between deployments via the
+> config-transfer bundle — it is deployment-local and non-travelling.
+> Its credential is already excluded (credentials never travel),
 > and its budget, enablement, rate limits, and provider/residency posture are
 > environment- and governance-specific decisions that should be made explicitly
 > per deployment, not inherited from whichever instance produced a bundle. A

@@ -2,9 +2,11 @@
 
 ## Status
 
-Proposed — foundation decision for epic #2369 (AI Diagnostics), pending owner
-approval on issue #2370. To be marked Accepted when this ADR's pull request
-merges.
+Accepted — 2 August 2026. Foundation decision for epic #2369 (AI Diagnostics).
+The owner ratified the admission-breadth default in §1 on issue #2370: any admin
+account (finance-only accounts included) may open the Diagnostics shell, because
+the shell carries no data and every tool still freshly re-checks its own
+`area:view` at call time.
 
 **Governance:** no implementation child (#2371–#2379) may weaken the contract in
 this ADR without an owner decision recorded on-repo.
@@ -42,14 +44,14 @@ own help text, and *attempt* a question. It grants **no evidence whatsoever**.
 No tool result, page-context field, or knowledge excerpt is returned on the
 strength of admission alone.
 
-> **Recommended default (owner-confirmable).** Admission counts *all seven*
-> areas, `finance` included — a treasurer holding only `finance:view` may open
-> the shell, because the shell exposes nothing and their finance-scoped tools
-> still gate independently. This is deliberately *wider* than
-> `hasAdminPortalAccess` (`admin-permissions.ts:556-561`), which excludes a
-> finance-only account from the *admin portal*; the shell is not the admin
-> portal and carries no data. If the owner prefers to exclude finance-only
-> accounts, that narrows admission without affecting any tool's own gate.
+> **Owner-ratified (2 August 2026, #2370): admission counts *all seven* areas,
+> `finance` included** — a treasurer holding only `finance:view` may open the
+> shell, because the shell exposes nothing and their finance-scoped tools still
+> gate independently. This is deliberately *wider* than `hasAdminPortalAccess`
+> (`admin-permissions.ts:556-561`), which excludes a finance-only account from
+> the *admin portal*; the shell is not the admin portal and carries no data.
+> Narrowing admission later (to exclude finance-only accounts) remains possible
+> without affecting any tool's own gate, but requires a fresh owner decision.
 
 ### 2. Every tool freshly re-checks its own `area:view` at call time
 
