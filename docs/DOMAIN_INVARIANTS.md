@@ -4548,12 +4548,45 @@ The four powers over a non-login member, and how #2284 settled each:
   "every login-holding adult in the group is equal" boundary above, and
   deliberately so; no code may treat `detailsConfirmedByMemberId` as naming a
   single, lead-appointed responsible adult. With the role reader gone,
-  **`FamilyGroupMember.role` no longer gates authorisation anywhere**; its
-  misleading schema comment is corrected and the column is retained pending a
-  dedicated removal migration. Relatedly, the family-group join request no longer
-  materialises a group around a consentless target as `ADMIN` — it seeds `MEMBER`
-  (`src/app/api/members/family/request-join/route.ts`). Member-merge's
-  `maxFamilyRole` upgrade is now vestigial rather than load-bearing.
+  **`FamilyGroupMember.role` no longer gates authorisation anywhere** — and #2520
+  finished the job: **no code reads, writes or projects the column.** Every
+  writer is gone (the group-creating flows, the join/invite/nomination/partner
+  and Xero-import paths, and the demo seed), member-merge's vestigial
+  `maxFamilyRole` upgrade is gone, and every `FamilyGroupMember` query is
+  narrowed with an explicit `select` so no SQL names the column at all.
+  `src/lib/__tests__/family-group-role-retirement.test.ts` enforces all three
+  rules by reading the source, because until the column is physically dropped
+  nothing at runtime can fail when a writer or an unnarrowed read comes back.
+
+  Worth recording precisely, because the #2284 close-out is easy to misread:
+  what #2284 removed was the last **authorisation** reader. Four **payload**
+  readers outlived it and were found by #2520 — `GET`/`POST /api/admin/family-groups`
+  and `GET`/`PUT /api/admin/family-groups/[id]` returned a per-member `role`, and
+  `GET /api/member/onboarding` selected the column explicitly and returned it to
+  the member-facing onboarding wizard as `groupRole`. None was rendered (the
+  wizard declared `groupRole` in its type and never used it; the admin pages never
+  referenced it), so removing them changes no screen — but "the column has no
+  reader" was not true of the deployed release until now, and the blue/green
+  precondition below depends on it being true.
+  No code may treat family-group membership as carrying a rank: **membership in a
+  group is the only fact the join table records**, and every adult login
+  co-member of a group is equal (the boundary above). Relatedly, the family-group
+  join request no longer materialises a group around a consentless target with any
+  role at all (`src/app/api/members/family/request-join/route.ts`).
+
+  The column itself survives one more release. Removing the Prisma field requires
+  the `DROP COLUMN` migration in the same pull request — the migration-drift gate
+  compares `prisma/migrations/` against `prisma/schema.prisma` — and that DROP is
+  only old-code compatible once the release described above is the *draining*
+  colour, because a Prisma client that still carries the field names it in every
+  unnarrowed read and every mutation's `RETURNING`. Shipping the drop in the same
+  release as the writer removal would break the previous colour between migrate
+  and cutover, i.e. force a maintenance window. So the retirement is deliberately
+  two-step, per `docs/BLUE_GREEN_MIGRATION_POLICY.md`: this RUNTIME release stops
+  depending on the column, and the CONTRACT release drops it, removes the field,
+  deletes the guard test, and adds the ledger row naming this release as its
+  `previous_expand_release`. Until then, the stored values are frozen at whatever
+  the last writing release left behind and mean nothing.
 
 **What one MEMBER may see about another member's parent** (#2424, owner decision
 2026-08-01). `GET /api/members/family` and `GET /api/member/onboarding` both
@@ -5037,8 +5070,9 @@ and is hard-deleted at the end. The merge is **additive and master-wins**:
     `MembershipCancellationRequestParticipant`, `GroupBookingJoin`,
     `NotificationPreference` (1-1), `MemberInductionSignOff` (earliest sign-off
     wins), `MemberInductionAssignedSigner`, `FamilyGroupMember` (keep the
-    master's row, upgrade its role to `MAX(ADMIN > MEMBER)`, and re-point the
-    family's billing membership), and `MemberPartnerLink` (canonical
+    master's row and re-point the family's billing membership at it; #2520
+    removed the old `MAX(ADMIN > MEMBER)` role upgrade along with the retired
+    column it wrote), and `MemberPartnerLink` (canonical
     `memberAId < memberBId` pair, self-pairs and duplicates deleted, and at most
     one CONFIRMED partner kept for the master).
   - **cascade** — the loser's auth identity and ephemeral tokens

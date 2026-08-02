@@ -686,9 +686,11 @@ async function main() {
   // Family group + join requests.
   // -------------------------------------------------------------------------
   const smithGroup = await prisma.familyGroup.create({ data: { name: "The Powell Family" } });
-  await prisma.familyGroupMember.create({ data: { familyGroupId: smithGroup.id, memberId: pat.id, role: "ADMIN" } });
-  await prisma.familyGroupMember.create({ data: { familyGroupId: smithGroup.id, memberId: alice.id, role: "MEMBER" } });
-  await prisma.familyGroupMember.create({ data: { familyGroupId: smithGroup.id, memberId: sam.id, role: "MEMBER" } });
+  // #2520: no `role` is written — the column grants nothing and is retired
+  // pending its CONTRACT drop.
+  await prisma.familyGroupMember.create({ data: { familyGroupId: smithGroup.id, memberId: pat.id } });
+  await prisma.familyGroupMember.create({ data: { familyGroupId: smithGroup.id, memberId: alice.id } });
+  await prisma.familyGroupMember.create({ data: { familyGroupId: smithGroup.id, memberId: sam.id } });
   await prisma.familyGroupJoinRequest.create({ data: { familyGroupId: smithGroup.id, requesterId: pat.id, type: "ADULT_INVITE", status: "PENDING", invitedMemberId: bob.id } });
   await prisma.familyGroupJoinRequest.create({ data: { familyGroupId: smithGroup.id, requesterId: pat.id, type: "CHILD_REQUEST", status: "PENDING", childFirstName: "Lily", childLastName: "Powell", childDateOfBirth: d("2019-01-15") } });
   await prisma.familyGroupJoinRequest.create({ data: { familyGroupId: smithGroup.id, requesterId: carol.id, type: "JOIN_REQUEST", status: "APPROVED", reviewedBy: admin.id, reviewedAt: d("2026-04-01") } });

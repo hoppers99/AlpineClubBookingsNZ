@@ -22,7 +22,10 @@ export async function GET() {
     include: {
       memberships: {
         where: { member: { archivedAt: null } },
-        include: {
+        // #2520: `select`, not `include` — an `include` on the join table
+        // projects every FamilyGroupMember scalar, naming the retired `role`
+        // column in the SQL. Only the member is read from these rows.
+        select: {
           member: {
             select: {
               id: true,
@@ -56,8 +59,10 @@ export async function GET() {
   });
 
   const result = groups.map((g) => {
-    const allMembers = g.memberships
-      .map((m) => ({ ...m.member, role: m.role }));
+    // #2520: the payload no longer carries a per-membership `role`. The column
+    // is retired (#2284 removed the last authorisation reader) and nothing in
+    // the admin UI ever read the value out of this response.
+    const allMembers = g.memberships.map((m) => m.member);
     const inactiveCount = allMembers.filter((m) => !m.active).length;
     return {
       id: g.id,
@@ -125,7 +130,6 @@ export async function POST(req: NextRequest) {
       data: uniqueIds.map((mid) => ({
         familyGroupId: created.id,
         memberId: mid,
-        role: "MEMBER",
       })),
       skipDuplicates: true,
     });
@@ -134,7 +138,8 @@ export async function POST(req: NextRequest) {
       where: { id: created.id },
       include: {
         memberships: {
-          include: {
+          // #2520: `select`, not `include` — see the GET handler above.
+          select: {
             member: {
               select: { id: true, firstName: true, lastName: true, email: true, ageTier: true },
             },
@@ -156,7 +161,7 @@ export async function POST(req: NextRequest) {
   const response = group
     ? {
         ...group,
-        members: group.memberships.map((m) => ({ ...m.member, role: m.role })),
+        members: group.memberships.map((m) => m.member),
       }
     : group;
 

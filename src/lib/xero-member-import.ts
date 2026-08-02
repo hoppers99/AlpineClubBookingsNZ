@@ -802,7 +802,6 @@ export async function importMembersFromXeroGroups(
                 data: {
                   familyGroupId: existingGroup.familyGroupId,
                   memberId: newFamilyMember.id,
-                  role: "MEMBER",
                 },
               })
               .catch(() => {});
@@ -812,16 +811,8 @@ export async function importMembersFromXeroGroups(
             });
             await prisma.familyGroupMember.createMany({
               data: [
-                {
-                  familyGroupId: group.id,
-                  memberId: existingPrimary.id,
-                  role: "ADMIN",
-                },
-                {
-                  familyGroupId: group.id,
-                  memberId: newFamilyMember.id,
-                  role: "MEMBER",
-                },
+                { familyGroupId: group.id, memberId: existingPrimary.id },
+                { familyGroupId: group.id, memberId: newFamilyMember.id },
               ],
               skipDuplicates: true,
             });

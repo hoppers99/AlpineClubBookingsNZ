@@ -103,7 +103,6 @@ export async function PUT(req: NextRequest) {
         create: {
           familyGroupId: invitation.familyGroupId,
           memberId: session.user.id,
-          role: "MEMBER",
         },
         update: {},
       });

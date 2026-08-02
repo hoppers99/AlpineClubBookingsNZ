@@ -3,13 +3,13 @@
  *
  * Covered here (service-level, mirroring the family-groups.test.ts mock-prisma
  * patterns):
- *   - approve creates the requester's membership with role ADMIN (never the
- *     generic role-MEMBER upsert)
+ *   - approve creates the requester's membership (and, since #2520, writes no
+ *     `role` — the column was retired, so there is no rank to seed)
  *   - approve auto-files the partner ADULT_INVITE + invitation email
  *   - approve skips the invite (audited) when the partner became ineligible
  *   - approve 422s when the requester joined another group meanwhile
  *   - CHILD_REQUEST approval 422s while the group is memberless and succeeds
- *     once the GROUP_CREATE approval has created the ADMIN membership
+ *     once the GROUP_CREATE approval has created the membership
  *   - reject cascade-rejects sibling pending CHILD_REQUESTs and keeps the
  *     memberless FamilyGroup row
  *   - ADULT_INVITE remains 422 on admin review
@@ -156,7 +156,7 @@ describe("reviewAdminFamilyGroupRequest — GROUP_CREATE", () => {
     expect(REVIEWED_REQUEST_TYPES).toContain("GROUP_CREATE");
   });
 
-  it("approve creates the requester's membership with role ADMIN", async () => {
+  it("approve creates the requester's membership and writes no role (#2520)", async () => {
     mockedPrisma.familyGroupJoinRequest.findUnique.mockResolvedValue(
       groupCreateRequest() as any
     );
@@ -177,11 +177,12 @@ describe("reviewAdminFamilyGroupRequest — GROUP_CREATE", () => {
     expect(txExecuteRaw.mock.calls[0].flat().join(" ")).toContain(
       "member-lifecycle:member-1"
     );
+    // #2520: exactly these two columns. The retired `role` is not written —
+    // asserted by the exact-shape match, so re-adding it reddens this test.
     expect(txMembershipCreate).toHaveBeenCalledWith({
       data: {
         familyGroupId: "fg-new",
         memberId: "member-1",
-        role: "ADMIN",
       },
     });
     expect(txRequestUpdate).toHaveBeenCalledWith({
@@ -221,7 +222,7 @@ describe("reviewAdminFamilyGroupRequest — GROUP_CREATE", () => {
 
     expect(result.body).toEqual({ success: true, action: "approve" });
     expect(txMembershipCreate).toHaveBeenCalledWith({
-      data: expect.objectContaining({ role: "ADMIN" }),
+      data: { familyGroupId: "fg-new", memberId: "member-1" },
     });
     // The auto-filed invite is anchored on the ORIGINAL requester.
     expect(txRequestCreate).toHaveBeenCalledWith({
@@ -537,7 +538,7 @@ describe("reviewAdminFamilyGroupRequest — GROUP_CREATE", () => {
     expect(result.body).toEqual({ success: true, action: "approve" });
     // Group/membership state change is still applied.
     expect(txMembershipCreate).toHaveBeenCalledWith({
-      data: expect.objectContaining({ role: "ADMIN" }),
+      data: { familyGroupId: "fg-new", memberId: "member-1" },
     });
     expect(txRequestCreate).toHaveBeenCalled();
     // Requester notice suppressed...
@@ -781,7 +782,8 @@ describe("reviewAdminFamilyGroupRequest — CHILD_REQUEST memberless-group guard
     );
     expect(txUpsert).toHaveBeenCalledWith(
       expect.objectContaining({
-        create: expect.objectContaining({ memberId: "child-1", role: "MEMBER" }),
+        // #2520: membership only — no `role` is written any more.
+        create: { familyGroupId: "fg-new", memberId: "child-1" },
       })
     );
   });

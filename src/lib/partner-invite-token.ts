@@ -224,7 +224,6 @@ export async function claimPartnerInviteToken(params: {
       create: {
         familyGroupId: token.familyGroupId,
         memberId: member.id,
-        role: "MEMBER",
       },
       update: {},
     });

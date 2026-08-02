@@ -314,10 +314,10 @@ describe("GET /api/admin/family-groups/[id]", () => {
       name: "Test",
       createdAt: new Date(),
       updatedAt: new Date(),
+      // #2520: the route selects `member` only — no `role` is read or returned.
       memberships: [
         {
           member: { id: "m1", firstName: "A", lastName: "B", email: "a@b.com", ageTier: "ADULT", active: true, canLogin: true },
-          role: "ADMIN",
         },
       ],
       joinRequests: [],
@@ -329,7 +329,9 @@ describe("GET /api/admin/family-groups/[id]", () => {
 
     expect(res.status).toBe(200);
     expect(data.members).toHaveLength(1);
-    expect(data.members[0].role).toBe("ADMIN");
+    expect(data.members[0].id).toBe("m1");
+    // The retired FamilyGroupMember.role no longer appears in the payload (#2520).
+    expect(data.members[0]).not.toHaveProperty("role");
   });
 
   it("returns 404 for missing group", async () => {

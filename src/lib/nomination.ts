@@ -1697,7 +1697,6 @@ export async function approveMemberApplication(
         data: {
           familyGroupId,
           memberId: applicantMember.id,
-          role: "ADMIN",
         },
       });
     }
@@ -1848,7 +1847,6 @@ export async function approveMemberApplication(
             create: {
               familyGroupId,
               memberId: target.id,
-              role: "MEMBER",
             },
             update: {},
           });
@@ -1938,7 +1936,6 @@ export async function approveMemberApplication(
           data: {
             familyGroupId,
             memberId: dependent.id,
-            role: "MEMBER",
           },
         });
       }
