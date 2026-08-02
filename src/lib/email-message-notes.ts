@@ -307,7 +307,13 @@ export function wholeLodgeGuestNamesUrgencyNote(
     return "Your stay is about to start and the lodge roster is printed from these names, so please add them now if you can. If you cannot, come anyway and tell the lodge on arrival — your booking and your beds are confirmed either way, and nobody will be turned away over a name.";
   }
   if (stage === "reminder") {
-    return "We asked about this once already, so this is a nudge rather than anything to worry about. Adding the names now means the chore list and roster name real people instead of Guest 1 and Guest 2.";
+    // Deliberately says nothing about a previous email. The cadence stamp is
+    // claimed BEFORE the send and kept when the send fails (see
+    // `placeholder-guest-name-reminders.ts`), so the stage a member reaches is
+    // proof of a reminder ATTEMPT, never of a delivery — a first email lost to
+    // a bounce or an SES outage would otherwise open by reminding them of a
+    // message they never received.
+    return "This is a nudge rather than anything to worry about. Adding the names now means the chore list and roster name real people instead of Guest 1 and Guest 2.";
   }
   return "Adding the names now means the chore list and the arrival roster at the lodge name real people instead of Guest 1 and Guest 2. It takes a minute and you can change them again later.";
 }

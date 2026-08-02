@@ -111,7 +111,28 @@ describe("whole-lodge guest-name reminder email (#2550)", () => {
         /will be cancelled|cannot check in|will not be able|refused|held until/i,
       );
       expect(note.length).toBeGreaterThan(0);
+      // No stage may assert a previous DELIVERY. The cadence stamp is claimed
+      // before the send and kept when the send fails, so the "reminder" stage
+      // proves an attempt, not an arrival: a member whose first reminder
+      // bounced would otherwise be told the club had already asked them.
+      expect(note).not.toMatch(
+        /asked (?:you )?(?:about this )?(?:once )?already|previous(?:ly)? (?:email|reminder)|we (?:have )?emailed you/i,
+      );
     }
+  });
+
+  it("previews the composed urgency sentence instead of the bare token name", () => {
+    // The admin editor's preview is the only picture an admin has of what a
+    // member reads. Left to the registry's fallthrough, a pre-composed token
+    // previews as the literal word "namingUrgencyNote".
+    const definition = getEmailTemplateDefinition(TEMPLATE);
+
+    expect(definition?.sampleData.namingUrgencyNote).toBe(
+      wholeLodgeGuestNamesUrgencyNote("first"),
+    );
+    expect(definition?.sampleData.namingUrgencyNote).not.toBe(
+      "namingUrgencyNote",
+    );
   });
 
   it("uses a last-chance subject only on the final stage", async () => {
