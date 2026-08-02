@@ -896,6 +896,8 @@ export async function reviewAdminFamilyGroupRequest(params: {
               memberId: affectedMemberId,
             },
             update: {},
+            // Result discarded — narrow the implicit RETURNING (#2130 house rule).
+            select: { id: true },
           });
         }
 
@@ -1219,6 +1221,8 @@ async function reviewGroupCreateRequest(params: {
             familyGroupId: request.familyGroupId,
             memberId: request.requesterId,
           },
+          // Result discarded — narrow the implicit RETURNING (#2130 house rule).
+          select: { id: true },
         });
 
         await tx.familyGroupJoinRequest.update({

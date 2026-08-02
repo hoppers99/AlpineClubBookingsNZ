@@ -105,6 +105,11 @@ export async function PUT(req: NextRequest) {
           memberId: session.user.id,
         },
         update: {},
+        // The result is discarded, so narrow the implicit RETURNING to the id
+        // (house rule from #2130): an unnarrowed write names every scalar of
+        // the model, which is how a draining old colour hits Postgres 42703 on
+        // a column a contract migration has just dropped.
+        select: { id: true },
       });
 
       await tx.familyGroupJoinRequest.update({

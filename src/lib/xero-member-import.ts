@@ -803,6 +803,11 @@ export async function importMembersFromXeroGroups(
                   familyGroupId: existingGroup.familyGroupId,
                   memberId: newFamilyMember.id,
                 },
+                // Result discarded — narrow the implicit RETURNING (#2130 house
+                // rule). Doubly worth it here: the `.catch(() => {})` below
+                // swallows the error, so an unnarrowed write naming a dropped
+                // column would silently lose the family link rather than fail.
+                select: { id: true },
               })
               .catch(() => {});
           } else {

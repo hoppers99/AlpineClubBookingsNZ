@@ -1038,8 +1038,10 @@ describe("POST /api/members/family/request-join", () => {
     // The target never consented to this group. #2284 stopped seeding them
     // "ADMIN"; #2520 removed the column entirely, so the row now records
     // membership and nothing else. Exact shape, so a re-added rank reddens here.
+    // `select` narrows the write's implicit RETURNING (#2130 house rule).
     expect(mockedPrisma.familyGroupMember.create).toHaveBeenCalledWith({
       data: { familyGroupId: "new-group", memberId: "member-2" },
+      select: { id: true },
     });
   });
 
@@ -1456,12 +1458,14 @@ describe("Admin Family Group Join Requests", () => {
             memberId: "child-1",
           },
         },
-        // #2520: membership only — the retired `role` is not written.
+        // #2520: membership only — the retired `role` is not written. `select`
+        // narrows the write's implicit RETURNING (#2130 house rule).
         create: {
           familyGroupId: "fg1",
           memberId: "child-1",
         },
         update: {},
+        select: { id: true },
       });
       expect(txUpdate).toHaveBeenCalledWith({
         where: { id: "req-child-1" },
@@ -1745,12 +1749,14 @@ describe("Admin Family Group Join Requests", () => {
             memberId: "child-created",
           },
         },
-        // #2520: membership only — the retired `role` is not written.
+        // #2520: membership only — the retired `role` is not written. `select`
+        // narrows the write's implicit RETURNING (#2130 house rule).
         create: {
           familyGroupId: "fg1",
           memberId: "child-created",
         },
         update: {},
+        select: { id: true },
       });
       expect(txUpdate).toHaveBeenCalledWith({
         where: { id: "req-child-create" },

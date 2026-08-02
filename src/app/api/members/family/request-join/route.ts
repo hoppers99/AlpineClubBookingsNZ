@@ -139,6 +139,8 @@ export async function POST(req: NextRequest) {
           familyGroupId: group.id,
           memberId: target.id,
         },
+        // Result discarded — narrow the implicit RETURNING (#2130 house rule).
+        select: { id: true },
       });
       return group;
     });

@@ -362,6 +362,8 @@ export async function POST(
               memberId: target.id,
             },
             update: {},
+            // Result discarded — narrow the implicit RETURNING (#2130 house rule).
+            select: { id: true },
           })
         )
       );

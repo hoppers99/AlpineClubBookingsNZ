@@ -23,7 +23,11 @@ export type AuditSnapshot = {
   seasonalAssignments: Record<string, number>;
   xeroRulesByMode: Record<string, number>;
   xeroRulesByAgeTier: Record<string, number>;
-  familyGroupRoles: Record<string, number>;
+  // `familyGroupRoles` was REMOVED by #2520, for the same reason and by the same
+  // pattern as #2130's `managedAgeTierSettings` (see the note in collectSnapshot's
+  // `metrics` block): this script is retired and never executes, so the snapshot
+  // loses no live coverage, and dropping it stops dead code naming
+  // FamilyGroupMember."role" before the CONTRACT migration drops that column.
   metrics: Record<string, number>;
 };
 
@@ -249,12 +253,16 @@ export function evaluateAuditSnapshots(
     asCount(before.metrics.familyGroupMemberRows),
     asCount(after.metrics.familyGroupMemberRows),
   );
-  addCheck(
-    checks,
-    "FamilyGroupMember group-local MEMBER labels preserved",
-    asCount(before.familyGroupRoles.MEMBER),
-    asCount(after.familyGroupRoles.MEMBER),
-  );
+  // The "FamilyGroupMember group-local MEMBER labels preserved" check was
+  // REMOVED by #2520, exactly as #2130 removed the "Managed Xero age-tier rules
+  // backfilled" check above and for the same reasons. The script is retired and
+  // unreachable outside its unit test (main() returns immediately once the
+  // 20260720120000 contraction migration exists, shipped in v0.12.2), so no live
+  // audit coverage is lost; removing it stops the retired script's SQL naming
+  // FamilyGroupMember."role" ahead of the CONTRACT migration that drops it. The
+  // "Family-group join rows preserved" check above is the one that mattered —
+  // it counts the join ROWS, which is the fact the cleanup could have damaged.
+  // The role labels never carried a grant at all (#2284).
 
   if (
     asCount(before.seasonalAssignments.RESERVE) > 0 &&
@@ -684,29 +692,40 @@ function buildRepresentativeSeedSql(): string {
     VALUES ('audit-family-group', 'Audit Family Group', CURRENT_TIMESTAMP)
     ON CONFLICT ("id") DO NOTHING;
 
+    -- #2520 runtime-prep: this fixture no longer seeds the retired role column
+    -- (deliberately named here without SQL quoting, so the retirement guard's
+    -- raw-SQL scan does not read this comment as a live reference), mirroring
+    -- the #2130 cleanup of the AgeTierSetting fixture above.
+    -- Nothing forced the removal — this replay database never receives the
+    -- CONTRACT drop migration (main() applies only migrations < 20260629160000
+    -- plus two named ones), so the column survives here regardless. The real
+    -- reason is that the script is already RETIRED and never runs: main()
+    -- returns immediately because the 20260720120000 contraction migration
+    -- shipped in v0.12.2. This is defensive cleanup so the dead fixture SQL
+    -- stops naming a column the CONTRACT migration drops. The paired
+    -- "FamilyGroupMember group-local MEMBER labels preserved" check and the
+    -- familyGroupRoles snapshot metric went with it (see evaluateAuditSnapshots
+    -- and collectSnapshot). The column keeps its NOT NULL DEFAULT 'MEMBER', so
+    -- the two rows below still store 'MEMBER' without naming it.
     INSERT INTO "FamilyGroupMember" (
       "id",
       "familyGroupId",
       "memberId",
-      "role",
       "joinedAt"
     ) VALUES
       (
         'audit-family-group-admin',
         'audit-family-group',
         'audit-full-member',
-        'ADMIN',
         CURRENT_TIMESTAMP
       ),
       (
         'audit-family-group-child',
         'audit-family-group',
         'audit-family-child',
-        'MEMBER',
         CURRENT_TIMESTAMP
       )
-    ON CONFLICT ("familyGroupId", "memberId") DO UPDATE
-    SET "role" = EXCLUDED."role";
+    ON CONFLICT ("familyGroupId", "memberId") DO NOTHING;
 
     WITH current_membership_season AS (
       SELECT
@@ -822,10 +841,13 @@ function collectSnapshot(databaseUrl: string): AuditSnapshot {
           `,
         )
       : {},
-    familyGroupRoles: queryCounts(
-      databaseUrl,
-      'SELECT "role", COUNT(*) FROM "FamilyGroupMember" GROUP BY 1 ORDER BY 1;',
-    ),
+    // familyGroupRoles was dropped by #2520 along with its check and its two
+    // report lines, the same way #2130 dropped managedAgeTierSettings below.
+    // This script is retired and never executes, so removing the snapshot read
+    // loses no live coverage; it just stops dead code naming
+    // FamilyGroupMember."role" before the CONTRACT migration drops it. The
+    // metrics.familyGroupMemberRows count below is the one that mattered, and it
+    // names no retired column.
     metrics: {
       schoolLoginMembers: queryNumber(
         databaseUrl,
@@ -939,7 +961,6 @@ function renderAuditReport(
     ...renderCountMap("financeAccessLevel", before.financeAccessLevels),
     ...renderCountMap("MembershipType", before.membershipTypes),
     ...renderCountMap("SeasonalMembershipAssignment by type", before.seasonalAssignments),
-    ...renderCountMap("FamilyGroupMember.role", before.familyGroupRoles),
     "",
     "## After cleanup",
     ...renderCountMap("Member.role", after.memberRoles),
@@ -948,7 +969,6 @@ function renderAuditReport(
     ...renderCountMap("SeasonalMembershipAssignment by type", after.seasonalAssignments),
     ...renderCountMap("XeroContactGroupRule by mode", after.xeroRulesByMode),
     ...renderCountMap("XeroContactGroupRule by age tier", after.xeroRulesByAgeTier),
-    ...renderCountMap("FamilyGroupMember.role", after.familyGroupRoles),
     "",
     "## Checks",
     ...evaluation.checks.map(

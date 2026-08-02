@@ -178,12 +178,14 @@ describe("reviewAdminFamilyGroupRequest — GROUP_CREATE", () => {
       "member-lifecycle:member-1"
     );
     // #2520: exactly these two columns. The retired `role` is not written —
-    // asserted by the exact-shape match, so re-adding it reddens this test.
+    // asserted by the exact-shape match, so re-adding it reddens this test. The
+    // `select` narrows the write's implicit RETURNING (#2130 house rule).
     expect(txMembershipCreate).toHaveBeenCalledWith({
       data: {
         familyGroupId: "fg-new",
         memberId: "member-1",
       },
+      select: { id: true },
     });
     expect(txRequestUpdate).toHaveBeenCalledWith({
       where: { id: "req-gc" },
@@ -223,6 +225,7 @@ describe("reviewAdminFamilyGroupRequest — GROUP_CREATE", () => {
     expect(result.body).toEqual({ success: true, action: "approve" });
     expect(txMembershipCreate).toHaveBeenCalledWith({
       data: { familyGroupId: "fg-new", memberId: "member-1" },
+      select: { id: true },
     });
     // The auto-filed invite is anchored on the ORIGINAL requester.
     expect(txRequestCreate).toHaveBeenCalledWith({
@@ -539,6 +542,7 @@ describe("reviewAdminFamilyGroupRequest — GROUP_CREATE", () => {
     // Group/membership state change is still applied.
     expect(txMembershipCreate).toHaveBeenCalledWith({
       data: { familyGroupId: "fg-new", memberId: "member-1" },
+      select: { id: true },
     });
     expect(txRequestCreate).toHaveBeenCalled();
     // Requester notice suppressed...
