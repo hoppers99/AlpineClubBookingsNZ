@@ -102,35 +102,31 @@ export function formatDateOnly(date: Date): string {
   return date.toISOString().slice(0, 10);
 }
 
-export function formatLocalDateOnly(date: Date): string {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-
 /**
- * Re-encode a `Date` that carries an ABSTRACT CALENDAR DAY at the browser's
- * local midnight as the UTC-midnight instant the rest of the system uses for a
- * date-only value.
+ * The NZ date-only key (`yyyy-MM-dd`) for a calendar day given as parts;
+ * `monthIndex` is 0-based, matching `Date.getMonth()`.
  *
- * #2264. A date picker hands back `new Date(year, month, day)` — midnight where
- * the BROWSER is — and the value it submits is read back out with local getters
- * by `formatLocalDateOnly`, so that round trip is exact wherever the member
- * sits. A club-pinned display formatter is not part of that round trip: given
- * the raw instant it renders the day as Auckland sees it, and local midnight on
- * 1 April is still 31 March in Auckland for anyone at UTC+13. The screen would
- * then name a different night than the one being booked.
- *
- * Passing the picker's `Date` through here first removes that whole class of
- * mismatch: New Zealand is UTC+12/+13, so a UTC-midnight instant always renders
- * as midday the SAME calendar day in club time.
- *
- * Use this ONLY for a Date that encodes a calendar day. A real instant (a
- * `createdAt`, a payment time) must be formatted as it is.
+ * This is the CANONICAL client-side encoding of a lodge night (#2474). A lodge
+ * night is an abstract calendar day, not an instant, so it is built straight
+ * from its parts and never routed through `new Date(year, month, day)` — that
+ * construction is midnight in the BROWSER's zone, and the moment such a value
+ * reaches an instant-based API (a club-pinned `Intl` formatter, a UTC
+ * serialiser, or day arithmetic across a DST boundary) it is off by a day for a
+ * viewer whose zone sits far enough from New Zealand. This replaced the #2264
+ * `localCalendarDayToDateOnly` bridge, which patched the display half of that
+ * hazard while the fragile local-midnight encoding still existed; carrying the
+ * string end-to-end removes the encoding itself. A consumer that genuinely needs
+ * a `Date` calls `parseDateOnly` at the boundary, which pins the day to UTC
+ * midnight — rendered as club midday, so the same calendar day in every zone.
  */
-export function localCalendarDayToDateOnly(date: Date): Date {
-  return parseDateOnly(formatLocalDateOnly(date));
+export function formatCalendarDayOnly(
+  year: number,
+  monthIndex: number,
+  day: number,
+): string {
+  const month = String(monthIndex + 1).padStart(2, "0");
+  const dayOfMonth = String(day).padStart(2, "0");
+  return `${year}-${month}-${dayOfMonth}`;
 }
 
 // Intl.DateTimeFormat construction costs ~0.1ms; the capacity, pricing, and
