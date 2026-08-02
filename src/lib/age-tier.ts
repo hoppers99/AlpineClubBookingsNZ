@@ -18,11 +18,12 @@ export {
   normalizeAgeTierSettings,
   validateAgeTierPartition,
 } from "./policies/age-tier";
-export type {
-  AgeTierSettingData,
-  AgeTierPartitionRow,
-  AgeTierPartitionResult,
-} from "./policies/age-tier";
+export type { AgeTierSettingData } from "./policies/age-tier";
+// AgeTierPartitionRow and AgeTierPartitionResult used to be re-exported here
+// too, but every consumer (config-transfer/categories/age-tier.ts,
+// induction-baseline.ts) already imports them straight from
+// ./policies/age-tier, the module that actually declares them — knip 6.29+
+// correctly flagged those two re-export specifiers as dead (#2502).
 
 let _cachedSettings: AgeTierSettingData[] | null = null;
 let _cacheExpiry = 0;

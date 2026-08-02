@@ -26,11 +26,9 @@ import {
 } from "./verify";
 
 // Convenience re-export so a consumer of `loadKnowledgeBundle` can name its
-// result type from one import site.
-export type {
-  KnowledgeBundleLoadFailure,
-  KnowledgeBundleLoadResult,
-} from "./verify";
+// result type from one import site. (The `KnowledgeBundleLoadFailure` reason
+// type is named directly from `./verify` by the one consumer that needs it.)
+export type { KnowledgeBundleLoadResult } from "./verify";
 
 /**
  * Resolve the on-disk bundle path. Defaults to the traced runtime path under

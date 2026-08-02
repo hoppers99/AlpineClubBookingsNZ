@@ -4,10 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { DisplayState } from "@/lib/lodge-display-state";
 import type { DisplayTemplateDefinition } from "@/lib/lodge-display/template-registry";
 import type { LayoutRenderPayload } from "@/lib/lodge-display/layout-registry";
-import {
-  clampPollSeconds,
-  DISPLAY_DEFAULT_POLL_SECONDS,
-} from "@/lib/lodge-display/poll-interval";
+import { clampPollSeconds } from "@/lib/lodge-display/poll-interval";
 
 // Client lifecycle for the lobby display page (fork issues #32/#52):
 //
@@ -24,10 +21,10 @@ import {
 // (issue #32 AC5); a 401 on a real device drops back to pairing within one
 // poll (AC6).
 
-// The default active-board cadence, used before the first good payload arrives.
-// Once a payload lands, its server-clamped `pollSeconds` drives the tick instead
-// (LTV-039). The claim poll is a fixed, faster pairing cadence — unaffected.
-export const DISPLAY_POLL_SECONDS = DISPLAY_DEFAULT_POLL_SECONDS;
+// The active-board cadence falls back to clampPollSeconds's own default
+// before the first good payload arrives; once a payload lands, its
+// server-clamped `pollSeconds` drives the tick instead (LTV-039). The claim
+// poll below is a fixed, faster pairing cadence — unaffected.
 export const DISPLAY_CLAIM_POLL_SECONDS = 4;
 
 // The active-board tick and its staleness threshold both scale with the device's
