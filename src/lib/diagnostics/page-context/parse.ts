@@ -6,11 +6,18 @@
  *  0. RESERVED KEYS — `__proto__` and friends, refused here because zod's
  *     `record` cannot see them (it drops them silently, which is a partial
  *     rejection and therefore a contract breach — see `RESERVED_KEYS`).
- *  1. STRUCTURAL — `diagnosticsPageSelectorSchema` (strict zod): known keys
- *     only, bounded lengths, tight character classes, no control characters.
- *  2. ROUTE-SCOPED — this module: the route must be registered, and every token
- *     must be in THAT route's allowlist. An empty allowlist refuses the field
- *     outright, so a page that declares no tabs can never be sent one.
+ *  1. STRUCTURAL — `selectorSchema` (strict zod): known keys only, bounded
+ *     lengths and counts, tight character classes, no control characters.
+ *  2. ROUTE-SCOPED — the route must be registered, and every token must be in
+ *     THAT route's allowlist. An empty allowlist refuses the field outright, so a
+ *     page that declares no tabs can never be sent one.
+ *
+ * THE SCHEMA IS MODULE-PRIVATE, and that is a security property rather than
+ * tidiness. A strict object schema is not total on its own: zod accepts a
+ * `JSON.parse`-created `__proto__` own property and silently strips it, reporting
+ * no unknown key. Exporting the schema would therefore offer callers a second door
+ * that repairs a selector this module is contractually required to refuse. Only
+ * `parseDiagnosticsPageSelector` and the `DiagnosticsPageSelector` type leave here.
  *
  * Rejection is total, never partial. A selector carrying one bad token does not
  * quietly lose that token and proceed — it is refused, and the caller reports
@@ -22,15 +29,143 @@
  * (into a log, an audit row, or an operator's screen).
  */
 
-import {
-  DIAGNOSTICS_PAGE_CONTEXT_BOUNDS,
-  diagnosticsPageSelectorSchema,
-  type DiagnosticsPageSelector,
-} from "./types";
+import { z } from "zod";
+
+import { DIAGNOSTICS_PAGE_CONTEXT_BOUNDS } from "./types";
 import {
   getDiagnosticsPageContextRoute,
   type DiagnosticsPageContextRoute,
 } from "./registry";
+
+/**
+ * A registry route key: lowercase dotted/hyphenated segments only. Deliberately
+ * NOT a pathname — a pathname is attacker-shaped input that invites prefix
+ * tricks; a key is looked up in a closed server-side table or rejected.
+ */
+const ROUTE_KEY_PATTERN = /^[a-z0-9]+(?:[.-][a-z0-9]+)*$/;
+
+/**
+ * An opaque record id. Alphanumeric plus `_`/`-` only, so it can never carry a
+ * wrapper delimiter, whitespace, a path separator, or a quote into anything
+ * downstream.
+ */
+const RECORD_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
+
+/** A view token (tab, step, status, error code). Lowercase and punctuation-poor. */
+const TOKEN_PATTERN = /^[a-z0-9][a-z0-9._-]*$/;
+
+/** A filter key. Same alphabet as a token, plus camelCase (`lodgeId`). */
+const FILTER_KEY_PATTERN = /^[A-Za-z][A-Za-z0-9_-]*$/;
+
+/**
+ * Reject control characters on EVERY string field. Two reasons, and the second
+ * is the load-bearing one:
+ *
+ *  1. A control character in a selector means the selector is malformed, and
+ *     silently repairing malformed input is how a bypass gets built.
+ *  2. `filterValueSchema` below carries NO character class at all — a filter value
+ *     is genuinely free text — so this scan is the only thing keeping a newline or
+ *     a tab out of the one selector field that has none, and that is exactly the
+ *     value which would otherwise try to fake a new line or a new section inside a
+ *     rendered evidence block. On the pattern-bearing fields it is belt and braces
+ *     that does not depend on a future edit keeping a class tight. (Note the
+ *     anchors themselves are strict here: unlike Perl and Python, a JavaScript `$`
+ *     without the `m` flag does NOT match before a final line terminator.)
+ *
+ * Written as an explicit scan rather than a regex so no escape sequence has to
+ * survive a future edit intact.
+ */
+function noControlCharacters(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code < 0x20 || code === 0x7f) return false;
+  }
+  return true;
+}
+
+const CONTROL_CHARACTER_MESSAGE = "must not contain control characters";
+
+const routeKeySchema = z
+  .string()
+  .min(1)
+  .max(DIAGNOSTICS_PAGE_CONTEXT_BOUNDS.routeKeyMaxChars)
+  .regex(ROUTE_KEY_PATTERN)
+  .refine(noControlCharacters, { message: CONTROL_CHARACTER_MESSAGE });
+
+const recordIdSchema = z
+  .string()
+  .min(1)
+  .max(DIAGNOSTICS_PAGE_CONTEXT_BOUNDS.recordIdMaxChars)
+  .regex(RECORD_ID_PATTERN)
+  .refine(noControlCharacters, { message: CONTROL_CHARACTER_MESSAGE });
+
+const tokenSchema = z
+  .string()
+  .min(1)
+  .max(DIAGNOSTICS_PAGE_CONTEXT_BOUNDS.tokenMaxChars)
+  .regex(TOKEN_PATTERN)
+  .refine(noControlCharacters, { message: CONTROL_CHARACTER_MESSAGE });
+
+const filterKeySchema = z
+  .string()
+  .min(1)
+  .max(DIAGNOSTICS_PAGE_CONTEXT_BOUNDS.filterKeyMaxChars)
+  .regex(FILTER_KEY_PATTERN)
+  .refine(noControlCharacters, { message: CONTROL_CHARACTER_MESSAGE });
+
+/**
+ * A filter value is the ONLY genuinely free-text field in the selector, so it is
+ * bounded hard here and redacted + delimiter-neutralised again on the way out.
+ */
+const filterValueSchema = z
+  .string()
+  .min(1)
+  .max(DIAGNOSTICS_PAGE_CONTEXT_BOUNDS.filterValueMaxChars)
+  .refine(noControlCharacters, { message: CONTROL_CHARACTER_MESSAGE });
+
+/**
+ * The untrusted, client-supplied selector. `.strict()` is load-bearing: an
+ * unknown key is a REJECTION, not something to ignore, so no future client can
+ * quietly open a second serialization channel through this object.
+ */
+const selectorSchema = z
+  .object({
+    routeKey: routeKeySchema,
+    recordId: recordIdSchema.optional(),
+    tab: tokenSchema.optional(),
+    step: tokenSchema.optional(),
+    status: tokenSchema.optional(),
+    errorCode: tokenSchema.optional(),
+    /**
+     * NOTE: a `record` cannot refuse every key by itself — zod never surfaces
+     * `__proto__` to the key schema, and it vanishes rather than being rejected.
+     * Layer 0 below refuses reserved keys on the RAW input before this schema
+     * runs, which is why the schema is never exported for use on its own.
+     *
+     * This refine is the ONE owner of the filter-count bound: it fires before any
+     * route allowlisting, so an oversized `filters` object is a structural
+     * rejection and never reaches the allowlist check.
+     */
+    filters: z
+      .record(filterKeySchema, filterValueSchema)
+      .refine(
+        (value) =>
+          Object.keys(value).length <=
+          DIAGNOSTICS_PAGE_CONTEXT_BOUNDS.maxFilters,
+        { message: "too many filters" },
+      )
+      .optional(),
+    /**
+     * ADR-004 §1 opt-in. Absent or `false` means identifying fields are withheld
+     * and an explicit omission notice is returned instead. There is deliberately
+     * no "include everything" mode and no server-side default that flips this on.
+     */
+    includeSensitiveRecord: z.boolean().optional(),
+  })
+  .strict();
+
+/** The shape that survives the structural layer. Never a trusted set of facts. */
+export type DiagnosticsPageSelector = z.infer<typeof selectorSchema>;
 
 /**
  * Machine codes for a rejected selector. `<field>_not_allowed` means the value
@@ -53,7 +188,19 @@ export type ParsedDiagnosticsPageSelector =
       selector: DiagnosticsPageSelector;
       route: DiagnosticsPageContextRoute;
     }
-  | { ok: false; issues: DiagnosticsSelectorIssue[] };
+  | {
+      ok: false;
+      issues: DiagnosticsSelectorIssue[];
+      /**
+       * The route the rejected selector named, when it named a registered one.
+       * NOT for the evidence — a refused selector yields no page context at all —
+       * but for the caller's AUDIT row, so a sweep probing a route's token
+       * allowlists is attributable to the surface it targeted instead of reading
+       * like junk aimed at no page. Absent for a reserved-key, structural or
+       * unknown-route rejection, where no route was ever established.
+       */
+      route?: DiagnosticsPageContextRoute;
+    };
 
 /**
  * Keys that must never travel, in the selector or in `filters`. `__proto__` is
@@ -112,7 +259,7 @@ export function parseDiagnosticsPageSelector(
   // outcome as any other structural failure, and no value is echoed.
   if (hasReservedKey(input)) return { ok: false, issues: ["malformed"] };
 
-  const structural = diagnosticsPageSelectorSchema.safeParse(input);
+  const structural = selectorSchema.safeParse(input);
   if (!structural.success) return { ok: false, issues: ["malformed"] };
 
   const selector = structural.data;
@@ -137,14 +284,19 @@ export function parseDiagnosticsPageSelector(
     issues.push("error_code_not_allowed");
   }
 
-  const filterKeys = Object.keys(selector.filters ?? {});
+  // The COUNT bound belongs to the schema above (an oversized `filters` object
+  // never gets here); this is purely the route's allowlist.
   if (
-    filterKeys.length > DIAGNOSTICS_PAGE_CONTEXT_BOUNDS.maxFilters ||
-    filterKeys.some((key) => !route.filterKeys.includes(key))
+    Object.keys(selector.filters ?? {}).some(
+      (key) => !route.filterKeys.includes(key),
+    )
   ) {
     issues.push("filter_not_allowed");
   }
 
-  if (issues.length > 0) return { ok: false, issues };
+  // The route travels with the rejection for the audit trail only — the caller
+  // still withholds it from the evidence, because a refused selector resolves to
+  // no page context at all.
+  if (issues.length > 0) return { ok: false, issues, route };
   return { ok: true, selector, route };
 }

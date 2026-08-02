@@ -1,6 +1,13 @@
 /**
- * AI Diagnostics — typed structured page context: shared types, bounds, and the
- * UNTRUSTED client selector schema (AID-4, epic #2369, issue #2373).
+ * AI Diagnostics — typed structured page context: shared types and bounds (AID-4,
+ * epic #2369, issue #2373).
+ *
+ * The UNTRUSTED client selector's zod schema deliberately does NOT live here. It
+ * is module-private to `parse.ts`, because a strict object schema is not total on
+ * its own — zod silently strips `__proto__` rather than refusing it — so exporting
+ * it would offer a second, non-total door around the reserved-key refusal that
+ * `parseDiagnosticsPageSelector` performs on the raw input. One door, and the type
+ * of what comes through it (`DiagnosticsPageSelector`) is exported from there.
  *
  * WHAT THIS REPLACES (for Diagnostics only). Page help ships a flat, free-text
  * `pageContext` string that the client composes and the server forwards verbatim
@@ -21,7 +28,7 @@
  * SECURITY POSTURE (do not weaken without an owner decision on #2370):
  *  - ADR-001: no DOM scrape, no screenshot, no hidden form, no arbitrary
  *    serialization channel. The selector is a closed, bounded, typed shape; a
- *    field that is not in this schema cannot travel at all (`.strict()`).
+ *    field that is not in the schema cannot travel at all (`.strict()`).
  *  - ADR-002: the route's declared admin areas are re-checked at `view`, fresh
  *    from the database-joined access roles, on EVERY resolution — never from a
  *    session/JWT snapshot, and never cached across calls. Cross-area routes need
@@ -34,8 +41,6 @@
  *    notice. Audit metadata carries a hash of the record reference, never the
  *    raw id, and never any field value.
  */
-
-import { z } from "zod";
 
 import type { AdminPermissionArea } from "@/lib/admin-permissions";
 
@@ -71,130 +76,6 @@ export const DIAGNOSTICS_PAGE_CONTEXT_BOUNDS = {
   renderedBlockMaxChars: 4000,
 } as const;
 
-/**
- * A registry route key: lowercase dotted/hyphenated segments only. Deliberately
- * NOT a pathname — a pathname is attacker-shaped input that invites prefix
- * tricks; a key is looked up in a closed server-side table or rejected.
- */
-const ROUTE_KEY_PATTERN = /^[a-z0-9]+(?:[.-][a-z0-9]+)*$/;
-
-/**
- * An opaque record id. Alphanumeric plus `_`/`-` only, so it can never carry a
- * wrapper delimiter, whitespace, a path separator, or a quote into anything
- * downstream.
- */
-const RECORD_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
-
-/** A view token (tab, step, status, error code). Lowercase and punctuation-poor. */
-const TOKEN_PATTERN = /^[a-z0-9][a-z0-9._-]*$/;
-
-/** A filter key. Same alphabet as a token, plus camelCase (`lodgeId`). */
-const FILTER_KEY_PATTERN = /^[A-Za-z][A-Za-z0-9_-]*$/;
-
-/**
- * Reject control characters on EVERY string field. Two reasons, and the second
- * is the load-bearing one:
- *
- *  1. A control character in a selector means the selector is malformed, and
- *     silently repairing malformed input is how a bypass gets built.
- *  2. It closes a real hole in the anchors above. In JavaScript `$` ALSO matches
- *     immediately before a final line terminator, so a pattern like
- *     `/^[a-z]+$/` accepts a value with a trailing newline. A record id or route
- *     key allowed to carry one is exactly the value that later fakes a new line
- *     inside a rendered evidence block. This check refuses it whatever the
- *     anchor does. Written as an explicit scan rather than a regex so no escape
- *     sequence has to survive a future edit intact.
- */
-function noControlCharacters(value: string): boolean {
-  for (let index = 0; index < value.length; index += 1) {
-    const code = value.charCodeAt(index);
-    if (code < 0x20 || code === 0x7f) return false;
-  }
-  return true;
-}
-
-const CONTROL_CHARACTER_MESSAGE = "must not contain control characters";
-
-const routeKeySchema = z
-  .string()
-  .min(1)
-  .max(DIAGNOSTICS_PAGE_CONTEXT_BOUNDS.routeKeyMaxChars)
-  .regex(ROUTE_KEY_PATTERN)
-  .refine(noControlCharacters, { message: CONTROL_CHARACTER_MESSAGE });
-
-const recordIdSchema = z
-  .string()
-  .min(1)
-  .max(DIAGNOSTICS_PAGE_CONTEXT_BOUNDS.recordIdMaxChars)
-  .regex(RECORD_ID_PATTERN)
-  .refine(noControlCharacters, { message: CONTROL_CHARACTER_MESSAGE });
-
-const tokenSchema = z
-  .string()
-  .min(1)
-  .max(DIAGNOSTICS_PAGE_CONTEXT_BOUNDS.tokenMaxChars)
-  .regex(TOKEN_PATTERN)
-  .refine(noControlCharacters, { message: CONTROL_CHARACTER_MESSAGE });
-
-const filterKeySchema = z
-  .string()
-  .min(1)
-  .max(DIAGNOSTICS_PAGE_CONTEXT_BOUNDS.filterKeyMaxChars)
-  .regex(FILTER_KEY_PATTERN)
-  .refine(noControlCharacters, { message: CONTROL_CHARACTER_MESSAGE });
-
-/**
- * A filter value is the ONLY genuinely free-text field in the selector, so it is
- * bounded hard here and redacted + delimiter-neutralised again on the way out.
- */
-const filterValueSchema = z
-  .string()
-  .min(1)
-  .max(DIAGNOSTICS_PAGE_CONTEXT_BOUNDS.filterValueMaxChars)
-  .refine(noControlCharacters, { message: CONTROL_CHARACTER_MESSAGE });
-
-/**
- * The untrusted, client-supplied selector. `.strict()` is load-bearing: an
- * unknown key is a REJECTION, not something to ignore, so no future client can
- * quietly open a second serialization channel through this object.
- */
-export const diagnosticsPageSelectorSchema = z
-  .object({
-    routeKey: routeKeySchema,
-    recordId: recordIdSchema.optional(),
-    tab: tokenSchema.optional(),
-    step: tokenSchema.optional(),
-    status: tokenSchema.optional(),
-    errorCode: tokenSchema.optional(),
-    /**
-     * NOTE: a `record` cannot refuse every key by itself — zod never surfaces
-     * `__proto__` to the key schema, and it vanishes rather than being rejected.
-     * `parse.ts` refuses reserved keys on the RAW input before this schema runs,
-     * so a selector must go through `parseDiagnosticsPageSelector` and never
-     * through this schema alone.
-     */
-    filters: z
-      .record(filterKeySchema, filterValueSchema)
-      .refine(
-        (value) =>
-          Object.keys(value).length <=
-          DIAGNOSTICS_PAGE_CONTEXT_BOUNDS.maxFilters,
-        { message: "too many filters" },
-      )
-      .optional(),
-    /**
-     * ADR-004 §1 opt-in. Absent or `false` means identifying fields are withheld
-     * and an explicit omission notice is returned instead. There is deliberately
-     * no "include everything" mode and no server-side default that flips this on.
-     */
-    includeSensitiveRecord: z.boolean().optional(),
-  })
-  .strict();
-
-export type DiagnosticsPageSelector = z.infer<
-  typeof diagnosticsPageSelectorSchema
->;
-
 /** The record kinds a page-context re-fetch may read. Closed set, server-owned. */
 export const DIAGNOSTICS_RECORD_KINDS = [
   "booking",
@@ -214,6 +95,14 @@ export type DiagnosticsPageContextReason =
   | "unknown_route"
   /** The acting member row does not exist (a stale or forged acting member id). */
   | "actor_unresolved"
+  /**
+   * The acting member exists but their account is locked out of the admin surface
+   * — deactivated, or under a forced password change. Grouped with the other
+   * `actor_*` exits rather than with `permission_denied` on purpose: this is not a
+   * per-area permission outcome, it is "there is no authorized actor here", so it
+   * echoes nothing about the page to the model either.
+   */
+  | "actor_blocked"
   /**
    * The role read itself failed. Kept distinct from `actor_unresolved` so a
    * database fault and an authorization anomaly are not the same audit row —
@@ -290,7 +179,14 @@ export interface DiagnosticsPageContextAudit {
    */
   recordRefHash: string | null;
   factCount: number;
-  /** UTF-8 byte length of the rendered evidence block. */
+  /**
+   * ADR-004 §4's "size of the excerpt returned": the UTF-8 byte length of the
+   * resolved selection plus facts PAYLOAD — deliberately not the rendered block,
+   * which carries a fixed header and whatever wrapper a caller later chooses, and
+   * is hard-capped besides. Zero on every evidence-free exit, which still renders
+   * a block; a consumer that needs the transmitted size of a specific rendering
+   * must measure that rendering itself.
+   */
   byteCount: number;
   observedAt: string;
 }
@@ -321,8 +217,8 @@ export interface DiagnosticsPageSelection {
  *                  facts (possibly none) are current as at `observedAt`.
  *  - `denied`    — authorization failed; NO page facts are present.
  *  - `unavailable` — the selector was malformed, the route unknown, the acting
- *                  member unresolvable (absent, or their roles unreadable), or
- *                  the projection read failed.
+ *                  member unusable (absent, locked out of the admin surface, or
+ *                  their roles unreadable), or the projection read failed.
  */
 export interface DiagnosticsPageContext {
   schemaVersion: typeof DIAGNOSTICS_PAGE_CONTEXT_SCHEMA_VERSION;
