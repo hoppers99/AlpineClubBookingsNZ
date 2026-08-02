@@ -91,6 +91,25 @@ rather than the pre-void **Unpaid** (locked out), and becomes re-billable in the
 invoice only when you intend to re-bill or clear the obligation — the member can
 book again until a new invoice is raised.
 
+### Decided direction: non-member rates instead of a hard block (#2533)
+
+Today the lockout is a **hard block**: an unpaid member whose subscription is
+required cannot book at all, and a booking that includes an unpaid member guest
+is refused. The owner has decided a softer rule for the future — a
+subscription-locked member will still be able to book for their family, but any
+individual on the booking whose subscription is not paid is charged **non-member
+rates** (and told why), and the booking must include **at least one paid-up adult
+member**.
+
+That change is **not yet in effect** — it is a money-regime change that needs an
+owner decision on how to roll it out (turn it on for all clubs or make it opt-in,
+how unpaid members count toward capacity, and how a member billed at non-member
+rates is described on their Xero invoice). What has landed is the reviewed rule
+itself and one member-facing part of it: a member whose subscription is unpaid is
+now told, in plain English, that member rates are unavailable until it is paid
+(shown by the booking wizard from the member's subscription status). Until the
+rollout is decided, the hard block above still applies unchanged.
+
 ### Review the age-tier rule
 
 1. The **Age tiers** card shows which age tiers require a paid subscription and

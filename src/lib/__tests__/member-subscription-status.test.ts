@@ -99,6 +99,10 @@ describe("GET /api/member/subscription-status", () => {
       membershipTypeName: null,
       membershipTypeSubscriptionBehavior: null,
     }));
+    // #2533: an unpaid member owed a subscription is told, in plain English, that
+    // member rates are unavailable while the subscription is unpaid.
+    expect(body.memberRateNotice).toMatch(/2026\/2027/);
+    expect(body.memberRateNotice).toMatch(/member rates aren't available/i);
     expect(mockFindUnique).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { id: "member-1" },
@@ -156,6 +160,8 @@ describe("GET /api/member/subscription-status", () => {
     expect(body.subscriptionRequired).toBe(false);
     expect(body.rawStatus).toBe("NOT_INVOICED");
     expect(body.invoiceUrl).toBeNull();
+    // #2533: no member-rate notice for a member the lockout does not apply to.
+    expect(body.memberRateNotice).toBeNull();
   });
 
   it("reports MEMBERSHIP_TYPE_AGE_TIER_NOT_REQUIRED for a BASED_ON_AGE_TIER type on an exempt tier (#2041)", async () => {
@@ -225,6 +231,9 @@ describe("GET /api/member/subscription-status", () => {
     expect(body.invoiceNumber).toBeNull();
     expect(body.rawInvoiceUrl).toBe("https://pay.xero.com/invoice/inv-1");
     expect(body.rawInvoiceNumber).toBe("INV-0042");
+    // #2533: raw status is UNPAID but the lockout does not apply (Xero off), so
+    // the member is not told member rates are unavailable — they are not.
+    expect(body.memberRateNotice).toBeNull();
   });
 
   it("returns 401 when unauthenticated", async () => {
