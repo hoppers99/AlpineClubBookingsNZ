@@ -37,6 +37,64 @@ const identityInvalidators = [
   "src/app/api/admin/lodges/[id]/route.ts",
 ];
 
+/**
+ * #2352 F3. These three writes used to clear ONLY the 15-second tagged data
+ * caches. That was enough while every public page was re-rendered on every visit;
+ * with the CMS pages served from the full-route ISR store it changed nothing a
+ * visitor could see, because what they are served is a stored render of the layout
+ * — banners, module flags, theme CSS and all — rather than a fresh one.
+ *
+ * Each must now go through `revalidatePublicSite()`, which clears both.
+ */
+const fullRouteAndTagWriters = [
+  ["src/app/api/admin/modules/route.ts", "PUBLIC_LAYOUT_CACHE_TAGS.modules"],
+  ["src/app/api/admin/site-banners/route.ts", "PUBLIC_LAYOUT_CACHE_TAGS.banners"],
+  ["src/app/api/admin/site-banners/[id]/route.ts", "PUBLIC_LAYOUT_CACHE_TAGS.banners"],
+  ["src/app/api/admin/site-style/route.ts", "PUBLIC_LAYOUT_CACHE_TAGS.theme"],
+] as const;
+
+describe("public site full-route invalidation contract (#2352 F3)", () => {
+  it.each(fullRouteAndTagWriters)(
+    "clears the stored public pages as well as the tag in %s",
+    (relativePath, tag) => {
+      const source = fs.readFileSync(path.join(process.cwd(), relativePath), "utf8");
+
+      expect(source).toContain(`revalidatePublicSite(${tag})`);
+      // The half-wired form: a tag clear with no full-route clear beside it.
+      expect(source).not.toMatch(/^\s*invalidatePublicLayoutConfig\(/m);
+    },
+  );
+
+  it("keeps ONE shared entry point, so a new write cannot pick the wrong half", () => {
+    const helper = fs.readFileSync(
+      path.join(process.cwd(), "src/lib/public-content-revalidation.ts"),
+      "utf8",
+    );
+
+    // Both clears, in one function.
+    expect(helper).toContain('revalidatePath("/", "layout")');
+    expect(helper).toContain("invalidatePublicLayoutConfig(");
+    // And the older name is now a one-line alias over it rather than a second
+    // implementation that could drift.
+    expect(helper).toMatch(
+      /export function revalidatePublicPageContent\(\): void \{\s*revalidatePublicSite\(\);\s*\}/,
+    );
+  });
+
+  it("does not use the route-group revalidatePath form for the public site", () => {
+    // `revalidatePath("/(website)", "layout")` was never verified against the
+    // full-route store, and one form used everywhere is one thing to verify.
+    const siteStyle = fs.readFileSync(
+      path.join(process.cwd(), "src/app/api/admin/site-style/route.ts"),
+      "utf8",
+    );
+
+    // Line-anchored, because the route's own comment NAMES the form it stopped
+    // using — a substring check would fail on the explanation rather than on a call.
+    expect(siteStyle).not.toMatch(/^\s*revalidatePath\("\/\(website\)"/m);
+  });
+});
+
 describe("public content authority invalidation contract", () => {
   it.each(helperWriters)("invalidates after successful writes in %s", (relativePath, expectedCalls) => {
     const source = fs.readFileSync(path.join(process.cwd(), relativePath), "utf8");

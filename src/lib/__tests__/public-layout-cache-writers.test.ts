@@ -9,8 +9,12 @@ describe("public layout cache writer invalidation", () => {
   it("invalidates modules and derived capacity after module writes", () => {
     const route = source("src/app/api/admin/modules/route.ts");
     expect(route).toContain("PUBLIC_LAYOUT_CACHE_TAGS.modules");
-    expect(route).toContain("PUBLIC_LAYOUT_CACHE_TAGS.capacity");
-    expect(route.indexOf("invalidatePublicLayoutConfig(")).toBeGreaterThan(
+    // #2352 F3: the capacity tag now comes from revalidatePublicSite() itself,
+    // which also clears the full-route ISR store — a module flag is rendered INTO
+    // the public layout, so a tag-only clear left every stored page showing the
+    // old switch position.
+    expect(route).toContain("revalidatePublicSite(");
+    expect(route.indexOf("revalidatePublicSite(")).toBeGreaterThan(
       route.indexOf("await write"),
     );
   });

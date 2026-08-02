@@ -13,7 +13,12 @@ import {
   setSecurityHeaders,
 } from "@/lib/csp";
 import { REQUEST_PATH_HEADER } from "@/lib/internal-return-path";
+import { getPublicWebsiteNonce } from "@/lib/release-nonce";
 import { isPublicWebsitePath } from "@/lib/setup-gate";
+import {
+  SIGNED_IN_HINT_COOKIE,
+  SIGNED_IN_HINT_VALUE,
+} from "@/lib/signed-in-hint";
 import { FEATURE_ROUTE_RULES } from "@/config/feature-routes";
 import { MODULE_KEYS } from "@/config/modules";
 import proxy, {
@@ -31,6 +36,13 @@ import type { FeatureFlags } from "@/config/schema";
 vi.mock("@/lib/club-theme", () => ({
   getWebsiteThemeRenderState: async () => ({ isComplete: true, css: "" }),
 }));
+
+// #2352 D1: the public website's script nonce is derived from the release
+// identifier baked into the image. Pinned here so the website-path cases below
+// assert a genuinely FIXED value rather than the per-process fallback — which is
+// also stable inside one test process, and would therefore have passed for the
+// wrong reason.
+process.env.RELEASE_ID = "csp-proxy-test-release-identifier";
 
 const allFeaturesOn = Object.fromEntries(
   MODULE_KEYS.map((key) => [key, true]),
@@ -57,6 +69,24 @@ function expectStrictScriptSrc(policy: string) {
   expect(scriptSrc).toContain("https://js.stripe.com");
   expect(scriptSrc).toContain("https://www.googletagmanager.com");
   expect(scriptSrc).not.toContain("https://api-nz.addysolutions.com");
+  expect(scriptSrc).not.toContain("'unsafe-inline'");
+  expect(nonceFromScriptSrc(policy)).toMatch(/^[A-Za-z0-9+/=]+$/);
+}
+
+/**
+ * The public website's script-src (#2352 D1): the fixed per-release nonce, Stripe
+ * dropped, and — the half that is easy to forget — everything else exactly as
+ * strict as before. `unsafe-inline` in particular was the option the owner
+ * REJECTED, so its absence here is the trade being kept to its terms.
+ */
+function expectPublicWebsiteScriptSrc(policy: string) {
+  const scriptSrc = directive(policy, "script-src");
+
+  expect(scriptSrc).toContain("'self'");
+  expect(scriptSrc).not.toContain("https://js.stripe.com");
+  // Google Tag Manager stays: the analytics module loads gtag from it on exactly
+  // these pages when an admin has switched analytics on.
+  expect(scriptSrc).toContain("https://www.googletagmanager.com");
   expect(scriptSrc).not.toContain("'unsafe-inline'");
   expect(nonceFromScriptSrc(policy)).toMatch(/^[A-Za-z0-9+/=]+$/);
 }
@@ -384,8 +414,11 @@ describe("CSP proxy", () => {
     ).toHaveLength(1);
   });
 
+  // `/dashboard` rather than `/`: since #2352 D1 the whole `(website)` group —
+  // including `/` — carries the FIXED per-release nonce, so a per-request-nonce
+  // case has to be asserted on a route outside it.
   it("emits a single enforced CSP header with a per-request nonce and no report-only header", async () => {
-    const response = await proxy(new NextRequest("https://example.org/"));
+    const response = await proxy(new NextRequest("https://example.org/dashboard"));
     const enforcedPolicy = response.headers.get(CSP_HEADER);
 
     expect(enforcedPolicy).toBeTruthy();
@@ -458,9 +491,9 @@ describe("CSP proxy", () => {
     ).toBe("/dashboard?tab=bookings");
   });
 
-  it("generates a different nonce per request", async () => {
-    const a = await proxy(new NextRequest("https://example.org/"));
-    const b = await proxy(new NextRequest("https://example.org/"));
+  it("generates a different nonce per request outside the public website", async () => {
+    const a = await proxy(new NextRequest("https://example.org/dashboard"));
+    const b = await proxy(new NextRequest("https://example.org/dashboard"));
     const nonceA = nonceFromScriptSrc(a.headers.get(CSP_HEADER) as string);
     const nonceB = nonceFromScriptSrc(b.headers.get(CSP_HEADER) as string);
 
@@ -654,6 +687,256 @@ describe("CSP proxy", () => {
         `middleware matcher must run for ${url} (gated API route)`,
       ).toBe(true);
     }
+  });
+});
+
+describe("public website fixed release nonce (#2352 D1)", () => {
+  /**
+   * The URL matrix, driven through the REAL proxy rather than through
+   * `buildContentSecurityPolicy()` directly.
+   *
+   * That distinction is the whole value of this block. `csp.ts` takes a
+   * `publicWebsite` boolean from its caller, so a test of the builder alone would
+   * only prove that the flag does what it says. What has to hold is that the proxy
+   * sets it for exactly the addresses the `(website)` route group serves — and the
+   * authority on that question is `isPublicWebsitePath()`, the same predicate the
+   * #2420 setup gate uses. Asserting against the predicate rather than against a
+   * second hand-written list is what stops the two drifting.
+   */
+  const urls = [
+    // (website): the CMS catch-all's territory and its fixed routes.
+    "/",
+    "/about",
+    "/about/history",
+    "/contact",
+    "/join",
+    "/join/apply",
+    "/join/ABC123",
+    "/join/verify/token-xyz",
+    "/hut-leader-instructions",
+    "/definitely-missing",
+    "/wp-admin/setup-config.php",
+    // Not the website: every other group, plus the shapes the gate refuses.
+    "/login",
+    "/register",
+    "/dashboard",
+    "/book",
+    "/admin",
+    "/admin/site-style",
+    "/finance",
+    "/lodge",
+    "/display",
+    "/robots.txt",
+    "/sitemap.xml",
+    "/gallery.png",
+    "/asset-not-found",
+  ] as const;
+
+  it.each(urls)(
+    "carries the fixed nonce iff isPublicWebsitePath() claims %s",
+    async (url) => {
+      const releaseNonce = await getPublicWebsiteNonce();
+      const response = await proxy(new NextRequest(`https://example.org${url}`));
+      const policy = response.headers.get(CSP_HEADER) as string;
+      const nonce = nonceFromScriptSrc(policy);
+
+      if (isPublicWebsitePath(url)) {
+        expect(nonce, `${url} is a public website page`).toBe(releaseNonce);
+        expectPublicWebsiteScriptSrc(policy);
+      } else {
+        expect(nonce, `${url} must keep a fresh per-request nonce`).not.toBe(
+          releaseNonce,
+        );
+        expectStrictScriptSrc(policy);
+      }
+
+      // Either way, when the request is passed THROUGH to a render, the nonce the
+      // render is handed is the nonce in the policy — a mismatch would block every
+      // inline script on the page. Some of these URLs are answered by the proxy
+      // itself instead (a module gate's 404), and those carry no request headers
+      // by construction; `x-middleware-next` is how `NextResponse.next()` marks
+      // the difference.
+      if (response.headers.get("x-middleware-next")) {
+        expect(
+          response.headers.get(`x-middleware-request-${CSP_NONCE_HEADER}`),
+        ).toBe(nonce);
+      }
+    },
+  );
+
+  it("is asserting the real release-derived nonce, not the fallback", async () => {
+    // Without this the whole block would pass on the per-process fallback, which
+    // is also stable inside one test process — the classic "green for the wrong
+    // reason". `resolvePublicWebsiteNonce()` reports where the value came from.
+    const { resolvePublicWebsiteNonce } = await import("@/lib/release-nonce");
+
+    expect((await resolvePublicWebsiteNonce()).source).toBe("release-id");
+  });
+
+  it("serves the SAME nonce on two requests for a website page", async () => {
+    // The property a stored page depends on: the policy on the response that
+    // SERVES a cached page still names the nonce frozen into its inline scripts.
+    const a = await proxy(new NextRequest("https://example.org/about"));
+    const b = await proxy(new NextRequest("https://example.org/about"));
+
+    expect(nonceFromScriptSrc(a.headers.get(CSP_HEADER) as string)).toBe(
+      nonceFromScriptSrc(b.headers.get(CSP_HEADER) as string),
+    );
+  });
+
+  /**
+   * F1, at the unit level (#2352 reconciliation, highest severity).
+   *
+   * #2404 deleted the matcher's prefetch exemption, and the matrix above pins that
+   * no header combination takes a URL outside the proxy. This adds the half #2352
+   * needs: a prefetch-shaped request must also come out with the SAME policy as an
+   * ordinary one. Under full-route ISR a prefetch that reached the render without a
+   * CSP header would generate and store a page with NO nonce stamped into it, and
+   * every later visitor would then be served a page whose every inline script the
+   * nonce-only policy blocks — the page would never hydrate. The Playwright gate
+   * makes the same assertion against a real server.
+   */
+  const prefetchShapes: ReadonlyArray<readonly [string, Record<string, string>]> = [
+    ["Purpose: prefetch", { purpose: "prefetch" }],
+    ["Next-Router-Prefetch", { "next-router-prefetch": "1" }],
+    ["Sec-Purpose: prefetch", { "sec-purpose": "prefetch" }],
+    ["a flight prefetch", { purpose: "prefetch", rsc: "1" }],
+    ["prefetch + RSC: 2", { purpose: "prefetch", rsc: "2" }],
+  ];
+
+  it.each(prefetchShapes)(
+    "answers a %s request for a website page with the same fixed nonce",
+    async (_label, headers) => {
+      const releaseNonce = await getPublicWebsiteNonce();
+      const response = await proxy(
+        new NextRequest("https://example.org/about", { headers }),
+      );
+      const policy = response.headers.get(CSP_HEADER) as string;
+
+      expect(nonceFromScriptSrc(policy)).toBe(releaseNonce);
+      expectPublicWebsiteScriptSrc(policy);
+      expect(
+        response.headers.get(`x-middleware-request-${CSP_HEADER.toLowerCase()}`),
+        "the render must see a CSP header, or it stamps no nonce at all",
+      ).toBe(policy);
+    },
+  );
+
+  it("leaves every directive other than script-src untouched", async () => {
+    // The trade is one entry in one directive. Anything else changing here would
+    // be a relaxation nobody decided.
+    const website = await proxy(new NextRequest("https://example.org/about"));
+    const member = await proxy(new NextRequest("https://example.org/dashboard"));
+    const websitePolicy = website.headers.get(CSP_HEADER) as string;
+    const memberPolicy = member.headers.get(CSP_HEADER) as string;
+
+    for (const name of [
+      "default-src",
+      "style-src",
+      "img-src",
+      "font-src",
+      "connect-src",
+      "frame-src",
+      "worker-src",
+      "object-src",
+      "frame-ancestors",
+      "base-uri",
+      "form-action",
+    ]) {
+      expect(directive(websitePolicy, name), name).toBe(
+        directive(memberPolicy, name),
+      );
+    }
+  });
+});
+
+describe("sign-in marker cookie (#2352 D2)", () => {
+  const SESSION = "authjs.session-token=abc";
+
+  function setCookieHeaders(response: Awaited<ReturnType<typeof proxy>>) {
+    return response.headers.getSetCookie();
+  }
+
+  it("sets the hint when a session cookie is present and the hint is not", async () => {
+    const response = await proxy(
+      new NextRequest("https://example.org/dashboard", {
+        headers: { cookie: SESSION },
+      }),
+    );
+    const cookies = setCookieHeaders(response);
+
+    expect(cookies.some((c) => c.startsWith(`${SIGNED_IN_HINT_COOKIE}=${SIGNED_IN_HINT_VALUE}`))).toBe(
+      true,
+    );
+    // Readable by the browser on purpose — that is the whole mechanism — and
+    // scoped to the whole site so any public page can read it.
+    const hint = cookies.find((c) => c.startsWith(SIGNED_IN_HINT_COOKIE));
+    expect(hint).not.toContain("HttpOnly");
+    expect(hint).toContain("Path=/");
+    expect(hint?.toLowerCase()).toContain("samesite=lax");
+  });
+
+  it("clears the hint when the session cookie has gone", async () => {
+    const response = await proxy(
+      new NextRequest("https://example.org/about", {
+        headers: { cookie: `${SIGNED_IN_HINT_COOKIE}=${SIGNED_IN_HINT_VALUE}` },
+      }),
+    );
+
+    const hint = setCookieHeaders(response).find((c) =>
+      c.startsWith(SIGNED_IN_HINT_COOKIE),
+    );
+    expect(hint).toBeDefined();
+    expect(hint).toContain("Max-Age=0");
+  });
+
+  it("writes NOTHING when the hint already agrees with the session", async () => {
+    const signedIn = await proxy(
+      new NextRequest("https://example.org/dashboard", {
+        headers: {
+          cookie: `${SESSION}; ${SIGNED_IN_HINT_COOKIE}=${SIGNED_IN_HINT_VALUE}`,
+        },
+      }),
+    );
+    const anonymous = await proxy(new NextRequest("https://example.org/about"));
+
+    expect(setCookieHeaders(signedIn)).toEqual([]);
+    expect(setCookieHeaders(anonymous)).toEqual([]);
+  });
+
+  it("never touches the hint on an /api path or a non-GET request", async () => {
+    // A JSON client has no header to correct, and a Set-Cookie it did not ask for
+    // is noise a caller could reasonably read as a session change. #2405's
+    // module-state parity also lives on these responses' headers.
+    const api = await proxy(
+      new NextRequest("https://example.org/api/admin/waitlist", {
+        headers: { cookie: SESSION },
+      }),
+    );
+    const post = await proxy(
+      new NextRequest("https://example.org/dashboard", {
+        method: "POST",
+        headers: { cookie: SESSION },
+      }),
+    );
+
+    expect(setCookieHeaders(api)).toEqual([]);
+    expect(setCookieHeaders(post)).toEqual([]);
+  });
+
+  it("does not forward the hint to the render, so no server code can depend on it", async () => {
+    // It is a DISPLAY hint for the browser. If a server render could read it, the
+    // next person to reach for "is this visitor signed in?" would find a forgeable
+    // answer sitting right there.
+    const response = await proxy(
+      new NextRequest("https://example.org/about", {
+        headers: { cookie: `${SIGNED_IN_HINT_COOKIE}=${SIGNED_IN_HINT_VALUE}` },
+      }),
+    );
+
+    expect(
+      response.headers.get(`x-middleware-request-${SIGNED_IN_HINT_COOKIE}`),
+    ).toBeNull();
   });
 });
 
