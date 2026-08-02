@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   backfillHistoricalXeroObjectLinks: vi.fn(),
   cleanupStaleCanonicalXeroObjectLinks: vi.fn(),
   sendXeroReconciliationReport: vi.fn(),
+  reconcileXeroCreditSync: vi.fn(),
   isEffectiveModuleEnabled: vi.fn(),
   recordCronJobRunSafe: vi.fn(),
 }));
@@ -40,6 +41,11 @@ vi.mock("@/lib/xero-hardening", () => ({
   backfillHistoricalXeroObjectLinks: mocks.backfillHistoricalXeroObjectLinks,
   cleanupStaleCanonicalXeroObjectLinks: mocks.cleanupStaleCanonicalXeroObjectLinks,
   sendXeroReconciliationReport: mocks.sendXeroReconciliationReport,
+}));
+
+vi.mock("@/lib/xero-credit-sync-checker", () => ({
+  reconcileXeroCreditSync: mocks.reconcileXeroCreditSync,
+  XERO_CREDIT_SYNC_JOB_NAME: "xero-credit-sync-check",
 }));
 
 vi.mock("@/lib/logger", () => ({
@@ -98,10 +104,11 @@ describe("POST /api/cron/xero", () => {
       linkBackfill: null,
       linkCleanup: null,
       reconciliationReport: null,
+      creditSyncCheck: null,
     });
     expect(mocks.isXeroConnected).not.toHaveBeenCalled();
     expect(mocks.refreshAllMembershipStatuses).not.toHaveBeenCalled();
-    expect(mocks.recordCronJobRunSafe).toHaveBeenCalledTimes(7);
+    expect(mocks.recordCronJobRunSafe).toHaveBeenCalledTimes(8);
     expect(mocks.recordCronJobRunSafe).toHaveBeenCalledWith(
       expect.objectContaining({
         jobName: "xero-outbox",
@@ -225,6 +232,16 @@ describe("POST /api/cron/xero", () => {
         },
       },
     });
+    mocks.reconcileXeroCreditSync.mockResolvedValue({
+      skipped: false,
+      scannedBookings: 3,
+      checkedBookings: 3,
+      deferredBookings: 0,
+      driftBookings: 1,
+      totalDriftCents: 1200,
+      completePass: true,
+      emailSent: true,
+    });
 
     const response = await POST(makeRequest("all"));
     const body = await response.json();
@@ -305,6 +322,23 @@ describe("POST /api/cron/xero", () => {
         },
       },
     });
+    expect(body.creditSyncCheck).toEqual({
+      skipped: false,
+      scannedBookings: 3,
+      checkedBookings: 3,
+      deferredBookings: 0,
+      driftBookings: 1,
+      totalDriftCents: 1200,
+      completePass: true,
+      emailSent: true,
+    });
+    expect(mocks.reconcileXeroCreditSync).toHaveBeenCalled();
+    expect(mocks.recordCronJobRunSafe).toHaveBeenCalledWith(
+      expect.objectContaining({
+        jobName: "xero-credit-sync-check",
+        status: "SUCCESS",
+      })
+    );
     expect(mocks.recordCronJobRunSafe).toHaveBeenCalledWith(
       expect.objectContaining({
         jobName: "xero-outbox",

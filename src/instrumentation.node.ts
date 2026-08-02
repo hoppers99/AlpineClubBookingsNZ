@@ -173,6 +173,7 @@ export async function register() {
     let isXeroReportCronRunning = false;
     let isXeroReplayCronRunning = false;
     let isXeroInboundCronRunning = false;
+    let isXeroCreditSyncCronRunning = false;
     let isPaymentRecoveryCronRunning = false;
     let isWaitlistCronRunning = false;
 
@@ -447,6 +448,46 @@ export async function register() {
       logger.info(
         { job: "xero-reconciliation-report" },
         "Scheduled Xero reconciliation report (daily at 2:35 AM NZST)"
+      );
+
+      // #2501: Xero credit-sync checker (daily at 2:45 AM NZST). Reconciles
+      // BookingApp's stamped applied credit against Xero's live invoice
+      // allocations and warns admins on drift. Read-only, fail-safe, and
+      // internally throttled to ~daily, so a mid-cycle overlap simply skips.
+      cron.default.schedule("45 2 * * *", async () => {
+        if (isXeroCreditSyncCronRunning) {
+          logger.info({ job: "xero-credit-sync-check" }, "Already running, skipping");
+          return;
+        }
+        isXeroCreditSyncCronRunning = true;
+        logger.info({ job: "xero-credit-sync-check" }, "Reconciling BookingApp credit against Xero allocations");
+
+        const checkInId = Sentry.captureCheckIn(
+          { monitorSlug: "xero-credit-sync-check", status: "in_progress" },
+          sentryCronMonitorConfig("45 2 * * *", { checkinMargin: 10, maxRuntime: 30 })
+        );
+
+        try {
+          const { runXeroCronTasks } = await import(
+            "./lib/xero-cron-runner"
+          );
+          const result = await runXeroCronTasks("credit-sync");
+          logger.info(
+            { job: "xero-credit-sync-check", result: result.creditSyncCheck },
+            "Xero credit-sync check complete"
+          );
+          Sentry.captureCheckIn({ checkInId, monitorSlug: "xero-credit-sync-check", status: "ok" });
+        } catch (err) {
+          reportCronError({ tag: "xero-credit-sync-check", err, message: "Error reconciling Xero credit sync" });
+          Sentry.captureCheckIn({ checkInId, monitorSlug: "xero-credit-sync-check", status: "error" });
+        } finally {
+          isXeroCreditSyncCronRunning = false;
+        }
+      }, { timezone: CRON_TIMEZONE });
+
+      logger.info(
+        { job: "xero-credit-sync-check" },
+        "Scheduled Xero credit-sync check (daily at 2:45 AM NZST)"
       );
 
       // Xero outbox and replay workers (every 15 minutes)

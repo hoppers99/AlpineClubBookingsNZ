@@ -2287,6 +2287,115 @@ export function adminXeroReconciliationReportTemplate(report: XeroReconciliation
   `);
 }
 
+// ---- #2501: Admin Alert — Xero credit-sync drift ----
+
+/**
+ * One booking whose BookingApp stamped applied credit does not match Xero's
+ * live invoice allocation. `localCents` is BookingApp's known credit (the
+ * stamped `BOOKING_APPLIED` sum), `xeroCents` is the invoice's live
+ * `amountCredited`, and `deltaCents` is the exact (positive) drift between them.
+ */
+export interface CreditSyncDriftItemEmail {
+  kind: "missing_in_xero" | "excess_in_xero" | "no_invoice";
+  bookingId: string;
+  memberName: string;
+  invoiceId: string | null;
+  invoiceNumber: string | null;
+  /** Org-agnostic Xero invoice URL (the sender stamps the club org onto it). */
+  invoiceUrl: string | null;
+  localCents: number;
+  xeroCents: number;
+  deltaCents: number;
+  notes: Array<{
+    creditNoteId: string | null;
+    creditNoteNumber: string | null;
+    appliedCents: number;
+  }>;
+}
+
+export interface CreditSyncDriftReportEmail {
+  generatedAt: Date;
+  scannedBookings: number;
+  checkedBookings: number;
+  deferredBookings: number;
+  totalDriftCents: number;
+  drifts: CreditSyncDriftItemEmail[];
+}
+
+function creditSyncDriftDirectionLabel(kind: CreditSyncDriftItemEmail["kind"]): string {
+  switch (kind) {
+    case "missing_in_xero":
+      return "Applied in BookingApp, not fully allocated in Xero";
+    case "excess_in_xero":
+      return "Xero has more credit allocated than BookingApp recorded";
+    case "no_invoice":
+      return "Applied credit stamped, but no linked Xero invoice";
+  }
+}
+
+export function adminCreditSyncDriftTemplate(report: CreditSyncDriftReportEmail): string {
+  const p = emailPalette();
+  const driftCount = report.drifts.length;
+
+  const summaryRows = [
+    { label: "Generated", value: formatNZDateTime(report.generatedAt) },
+    { label: "Bookings scanned", value: String(report.scannedBookings) },
+    { label: "Bookings checked", value: String(report.checkedBookings) },
+    { label: "Bookings deferred", value: String(report.deferredBookings) },
+    { label: "Bookings with drift", value: String(driftCount) },
+    { label: "Total drift", value: formatMoneyCents(report.totalDriftCents) },
+  ];
+
+  const driftRows = report.drifts
+    .map((drift) => {
+      const noteDetail =
+        drift.notes.length > 0
+          ? drift.notes
+              .map(
+                (note) =>
+                  `${escapeHtml(note.creditNoteNumber ?? "credit note")}: ${formatMoneyCents(note.appliedCents)}`
+              )
+              .join("; ")
+          : "None allocated";
+      const invoiceCell = drift.invoiceUrl
+        ? `<a href="${escapeHtml(drift.invoiceUrl)}" style="color: ${p.gold}; text-decoration: underline;">${escapeHtml(drift.invoiceNumber ?? "Invoice")}</a>`
+        : escapeHtml(drift.invoiceNumber ?? "No invoice");
+      return `
+      <tr>
+        <td style="padding: 8px 12px; font-size: 13px; border-bottom: 1px solid ${p.mist}; color: ${p.deep};">${escapeHtml(drift.memberName)}</td>
+        <td style="padding: 8px 12px; font-size: 13px; border-bottom: 1px solid ${p.mist}; color: ${p.deep};">${escapeHtml(drift.bookingId.slice(0, 8))}</td>
+        <td style="padding: 8px 12px; font-size: 13px; border-bottom: 1px solid ${p.mist}; color: ${p.deep};">${escapeHtml(creditSyncDriftDirectionLabel(drift.kind))}</td>
+        <td style="padding: 8px 12px; font-size: 13px; border-bottom: 1px solid ${p.mist}; color: ${p.deep};">${formatMoneyCents(drift.localCents)}</td>
+        <td style="padding: 8px 12px; font-size: 13px; border-bottom: 1px solid ${p.mist}; color: ${p.deep};">${formatMoneyCents(drift.xeroCents)}</td>
+        <td style="padding: 8px 12px; font-size: 13px; font-weight: 700; border-bottom: 1px solid ${p.mist}; color: #dc2626;">${formatMoneyCents(drift.deltaCents)}</td>
+        <td style="padding: 8px 12px; font-size: 13px; border-bottom: 1px solid ${p.mist}; color: ${p.deep};">${invoiceCell}<br><span style="color: ${p.ridge}; font-size: 12px;">${noteDetail}</span></td>
+      </tr>`;
+    })
+    .join("");
+
+  return layout(`
+    ${heading("Xero Credit Sync Drift")}
+    ${alertBox(
+      `${driftCount} booking${driftCount === 1 ? "" : "s"} have applied account credit that does not match Xero's live invoice allocation (total drift ${formatMoneyCents(report.totalDriftCents)}). BookingApp uses its own known credit to net member emails (#2483); each row below shows exactly where its ledger and Xero disagree. Nothing has been changed — review and reconcile in Xero.`,
+      "warning"
+    )}
+    ${infoTable(summaryRows)}
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border: 1px solid ${p.mist}; border-radius: 6px; border-collapse: collapse; margin: 16px 0;">
+      <tr>
+        <th style="padding: 8px 12px; font-size: 13px; text-align: left; background-color: ${p.mist}; color: ${p.deep}; border-bottom: 2px solid ${p.mist};">Member</th>
+        <th style="padding: 8px 12px; font-size: 13px; text-align: left; background-color: ${p.mist}; color: ${p.deep}; border-bottom: 2px solid ${p.mist};">Booking</th>
+        <th style="padding: 8px 12px; font-size: 13px; text-align: left; background-color: ${p.mist}; color: ${p.deep}; border-bottom: 2px solid ${p.mist};">Drift type</th>
+        <th style="padding: 8px 12px; font-size: 13px; text-align: left; background-color: ${p.mist}; color: ${p.deep}; border-bottom: 2px solid ${p.mist};">BookingApp credit</th>
+        <th style="padding: 8px 12px; font-size: 13px; text-align: left; background-color: ${p.mist}; color: ${p.deep}; border-bottom: 2px solid ${p.mist};">Xero credit</th>
+        <th style="padding: 8px 12px; font-size: 13px; text-align: left; background-color: ${p.mist}; color: ${p.deep}; border-bottom: 2px solid ${p.mist};">Drift</th>
+        <th style="padding: 8px 12px; font-size: 13px; text-align: left; background-color: ${p.mist}; color: ${p.deep}; border-bottom: 2px solid ${p.mist};">Invoice / Xero notes</th>
+      </tr>
+      ${driftRows}
+    </table>
+    ${button("Open Xero Admin", BASE_URL + "/admin/xero")}
+  `);
+}
+
 /**
  * #2267: the single source of truth for WHICH change rows a booking-modified
  * email shows — shared by the hand-built HTML email (bookingModifiedTemplate)

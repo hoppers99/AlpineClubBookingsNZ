@@ -291,6 +291,17 @@ export function getAdminCronJobDefinitions(
     ),
     defineCronJob(
       {
+        jobName: "xero-credit-sync-check",
+        label: "Xero credit-sync check",
+        schedule: "45 2 * * *",
+        timezone: nzTimezone,
+        expectedLocalTime: "02:45 NZT/NZDT daily",
+        staleAfterMinutes: DAILY_STALE_AFTER_MINUTES,
+      },
+      globalDisabledReason
+    ),
+    defineCronJob(
+      {
         jobName: "xero-outbox",
         label: "Xero outbox processing",
         schedule: "*/15 * * * *",
