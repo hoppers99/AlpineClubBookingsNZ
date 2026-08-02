@@ -33,6 +33,23 @@ Future reviews and issues should cite this file when proposing changes.
   (the composition heuristic is removed). Fee changes affect future resolution
   only.
 - Do not introduce floating point money arithmetic.
+- **Member whole-lodge approval pricing has a fixed precedence (#2338, owner
+  decision 1 Aug 2026).** A season may carry an optional flat whole-lodge night
+  rate (`Season.flatWholeLodgeNightCents`, integer cents, nullable = not set).
+  When the approving officer prices a member whole-lodge request
+  (`approveMemberWholeLodgeRequest`), the total is chosen in this order and no
+  other: (1) the officer's manual total override, if given, wins over everything;
+  (2) else, if the officer ticked "price as whole lodge" AND a flat rate covers
+  **every** night of the stay, the total is the sum of each night's covering
+  season's flat rate, and **headcount is ignored for price** (it still drives the
+  guest rows and the capacity check); (3) else per-guest pricing, exactly as
+  before. The flat branch is never automatic — it is the officer's per-approval
+  choice, defaulting to per-guest so nothing changes silently — and a stay only
+  ever falls out of it when a night has no flat rate, in which case it reverts to
+  per-guest rather than charging zero. A stay spanning a season boundary is
+  charged each night at that night's season flat rate. The pure per-night math is
+  `priceWholeLodgeFlat` (`src/lib/policies/pricing.ts`); the same figure is
+  previewed in the admin queue and computed authoritatively at approval time.
 - **A promo "use" means the member actually got something (#2299).** A
   `PromoRedemptionAllocation` row exists only where the application delivered a
   benefit — `discountCents > 0`, `priceAdjustmentCents ≠ 0`, or

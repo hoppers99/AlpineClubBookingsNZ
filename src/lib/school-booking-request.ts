@@ -96,6 +96,7 @@ import {
   toGroupDiscountConfig,
   toSeasonRateData,
 } from "@/lib/policies/booking-route-decisions";
+import { priceWholeLodgeFlat } from "@/lib/policies/pricing";
 import type { PriceBreakdown } from "@/lib/policies/pricing";
 import {
   resolveGroupDiscountRateType,
@@ -299,6 +300,102 @@ async function calculateSchoolIndicativePriceCents(input: {
 }): Promise<number | null> {
   const price = await priceSchoolGuests(input);
   return price ? price.totalPriceCents : null;
+}
+
+/**
+ * The flat whole-lodge price for a stay (#2338), or null when it cannot be flat
+ * priced (no active season covers a night, or a covering season has no flat
+ * rate set). Mirrors `priceSchoolGuests`' season lookup — same active +
+ * date-overlap + null-tolerant lodge scope — but selects only the per-season
+ * flat rate and hands the night-by-night arithmetic to `priceWholeLodgeFlat`,
+ * which charges each night at its own covering season's rate and ignores
+ * headcount. Exported so the admin queue can preview the same figure the
+ * approval will compute.
+ */
+export async function resolveWholeLodgeFlatPriceCents(input: {
+  checkIn: Date;
+  checkOut: Date;
+  lodgeId?: string | null;
+}): Promise<number | null> {
+  const requestLodgeId = input.lodgeId ?? (await getDefaultLodgeId(prisma));
+  const seasons = await prisma.season.findMany({
+    where: {
+      active: true,
+      startDate: { lte: input.checkOut },
+      endDate: { gte: input.checkIn },
+      ...lodgeNullTolerantScope(requestLodgeId),
+    },
+    // Deterministic order so, should a night ever be covered by two active
+    // seasons (normally impossible — overlaps are rejected on create/update —
+    // but a null-lodgeId expand-release artifact could co-exist with a real
+    // season), the first-match this and the batched preview pick is identical.
+    orderBy: [{ startDate: "asc" }, { id: "asc" }],
+    select: {
+      startDate: true,
+      endDate: true,
+      flatWholeLodgeNightCents: true,
+    },
+  });
+  return priceWholeLodgeFlat(input.checkIn, input.checkOut, seasons);
+}
+
+/**
+ * Preview the flat whole-lodge price (#2338) for a batch of member whole-lodge
+ * requests, so the admin queue can offer the "price as whole lodge" toggle only
+ * where a flat rate actually covers the stay — and show the officer the figure
+ * the approval will charge. Returns request id -> flat total cents, or null when
+ * the stay cannot be flat priced (no flat rate covers some night). Fetches
+ * active seasons ONCE per distinct lodge, never once per request; the night-by-
+ * night arithmetic (which ignores every non-covering season) is pure and shared
+ * with the authoritative approve path, so the preview and the approval agree.
+ */
+export async function resolveWholeLodgeFlatPricesForRequests(
+  requests: Array<{
+    id: string;
+    checkIn: Date;
+    checkOut: Date;
+    lodgeId: string | null;
+  }>
+): Promise<Map<string, number | null>> {
+  const result = new Map<string, number | null>();
+  if (requests.length === 0) return result;
+
+  const defaultLodgeId = await getDefaultLodgeId(prisma);
+  const scopedLodgeId = (lodgeId: string | null) => lodgeId ?? defaultLodgeId;
+  const distinctLodgeIds = Array.from(
+    new Set(requests.map((request) => scopedLodgeId(request.lodgeId)))
+  );
+  const seasonsByLodgeId = new Map(
+    await Promise.all(
+      distinctLodgeIds.map(
+        async (lodgeId) =>
+          [
+            lodgeId,
+            await prisma.season.findMany({
+              where: { active: true, ...lodgeNullTolerantScope(lodgeId) },
+              // Same deterministic order as the authoritative approve-time query
+              // (resolveWholeLodgeFlatPriceCents) so the queue preview and the
+              // charge can never first-match different seasons for a night.
+              orderBy: [{ startDate: "asc" }, { id: "asc" }],
+              select: {
+                startDate: true,
+                endDate: true,
+                flatWholeLodgeNightCents: true,
+              },
+            }),
+          ] as const
+      )
+    )
+  );
+
+  for (const request of requests) {
+    const seasons = seasonsByLodgeId.get(scopedLodgeId(request.lodgeId)) ?? [];
+    result.set(
+      request.id,
+      priceWholeLodgeFlat(request.checkIn, request.checkOut, seasons)
+    );
+  }
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -1505,6 +1602,16 @@ export const memberWholeLodgeApprovalSchema = z.object({
    * Split across the guest rows by splitPriceAcrossGuests.
    */
   priceOverrideCents: z.number().int().min(0).max(100_000_000).optional(),
+  /**
+   * The officer's per-approval pricing choice (#2338). When true and a flat
+   * whole-lodge rate is set for every night's covering season, the stay prices
+   * `nights x flat rate` and headcount is ignored; otherwise it falls back to
+   * per-guest pricing (owner decision 1 Aug 2026: the officer chooses per
+   * approval, it is NOT automatic on every whole-lodge booking). Omitted/false
+   * keeps today's per-guest behaviour so nothing changes silently. The manual
+   * `priceOverrideCents` still wins over both.
+   */
+  priceAsWholeLodge: z.boolean().optional(),
 });
 
 export type MemberWholeLodgeApprovalOverride = z.infer<
@@ -1726,12 +1833,36 @@ export async function approveMemberWholeLodgeRequest(input: {
   });
 
   const priceOverrideCents = input.override?.priceOverrideCents;
+  // #2338 (owner decision 1 Aug 2026): the officer chooses per approval whether
+  // to charge the flat whole-lodge rate. The flat branch is only reached when
+  // the officer ticked "price as whole lodge" AND no manual override is given;
+  // it then charges `nights x the covering season's flat rate` and ignores
+  // headcount. `resolveWholeLodgeFlatPriceCents` returns null when no flat rate
+  // covers the stay, so an officer who ticked the box on a season with no flat
+  // rate falls through to per-guest exactly as before — nothing to price from
+  // is never silently charged as zero.
+  const flatWholeLodgeCents =
+    input.override?.priceAsWholeLodge && priceOverrideCents == null
+      ? await resolveWholeLodgeFlatPriceCents({
+          checkIn: request.checkIn,
+          checkOut: request.checkOut,
+          lodgeId: approvalLodgeId,
+        })
+      : null;
+
   let totalPriceCents: number;
   let guestPriceCents: number[];
   if (priceOverrideCents != null) {
-    // Officer's manual total wins, split in integer cents with the remainder on
-    // the first guest (splitPriceAcrossGuests) — no bespoke arithmetic.
+    // Officer's manual total wins over BOTH flat and per-guest, split in integer
+    // cents with the remainder on the first guest (splitPriceAcrossGuests) — no
+    // bespoke arithmetic.
     totalPriceCents = priceOverrideCents;
+    guestPriceCents = splitPriceAcrossGuests(totalPriceCents, guests.length);
+  } else if (flatWholeLodgeCents != null) {
+    // Officer chose whole-lodge pricing and a flat rate covers every night:
+    // `nights x flat rate`, headcount ignored. Split across the guest rows so
+    // each carries a share and the rows still sum EXACTLY to the total.
+    totalPriceCents = flatWholeLodgeCents;
     guestPriceCents = splitPriceAcrossGuests(totalPriceCents, guests.length);
   } else if (price && price.guests.length === guests.length) {
     totalPriceCents = price.totalPriceCents;
@@ -2090,7 +2221,15 @@ export async function approveMemberWholeLodgeRequest(input: {
         bookingId: conversion.bookingId,
         memberId: conversion.memberId,
         priceCents: totalPriceCents,
-        priceSource: priceOverrideCents != null ? "admin_override" : "season_rates",
+        // #2338: distinguish the flat whole-lodge branch from ordinary
+        // per-guest season pricing so the audit trail names the money decision
+        // (override > flat > per-guest, mirroring the pricing precedence above).
+        priceSource:
+          priceOverrideCents != null
+            ? "admin_override"
+            : flatWholeLodgeCents != null
+              ? "whole_lodge_flat"
+              : "season_rates",
         guestCount: guests.length,
         submittedGuestCount: submittedGuests.length,
         checkIn: request.checkIn.toISOString(),

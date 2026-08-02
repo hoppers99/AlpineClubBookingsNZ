@@ -49,6 +49,7 @@ export async function POST(
     ownerContactMemberId?: unknown;
     pricedHeadcount?: unknown;
     priceOverrideCents?: unknown;
+    priceAsWholeLodge?: unknown;
   };
 
   // The map target is an existing non-login Organisation/School contact id. The
@@ -82,6 +83,10 @@ export async function POST(
           : {}),
         ...(body.priceOverrideCents !== undefined
           ? { priceOverrideCents: body.priceOverrideCents }
+          : {}),
+        // #2338: the officer's per-approval "price as whole lodge" toggle.
+        ...(body.priceAsWholeLodge !== undefined
+          ? { priceAsWholeLodge: body.priceAsWholeLodge }
           : {}),
       });
       if (!parsedOverride.success) {
