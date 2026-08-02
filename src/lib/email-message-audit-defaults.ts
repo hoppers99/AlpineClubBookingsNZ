@@ -439,6 +439,10 @@ const EMAIL_AUDIT_DEFAULTS_BASE = {
     "defaultSubject": "{{addedHeading}} - {{CLUB_LODGE_NAME}}",
     "defaultBody": "{{addedHeading}}\n\nHi {{firstName}}, {{addedContextNote}}\n\nLodge: {{CLUB_LODGE_NAME}}\nStay: {{checkIn}} - {{checkOut}}\nNights: {{guestNightsLabel}}\n\n{{partyListNote}}\n\n{{removalNote}}\n\nView this booking: {{BASE_URL}}/bookings"
   },
+  "family-member-added": {
+    "defaultSubject": "{{addedHeading}} - {{CLUB_LODGE_NAME}}",
+    "defaultBody": "{{addedHeading}}\n\nHi {{firstName}}, {{addedContextNote}}\n\nLodge: {{CLUB_LODGE_NAME}}\nStay: {{checkIn}} - {{checkOut}}\n\n{{removalNote}}\n\nView this booking: {{BASE_URL}}/bookings"
+  },
   "member-guest-consent-outcome": {
     "defaultSubject": "{{outcomeHeading}} - {{CLUB_LODGE_NAME}}",
     "defaultBody": "{{outcomeHeading}}\n\nHi {{firstName}}, {{outcomeSentence}}\n\n{{consequenceNote}}\n\nView this booking: {{BASE_URL}}/bookings/{{bookingId}}"

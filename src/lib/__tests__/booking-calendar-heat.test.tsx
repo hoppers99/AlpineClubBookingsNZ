@@ -102,8 +102,7 @@ describe("BookingCalendar token-driven availability heat (#1814)", () => {
 
   it("marks the selected check-in with the brand-gold accent, not a heat colour", async () => {
     stubAvailability(2);
-    const checkIn = new Date(now.getFullYear(), now.getMonth(), targetDay);
-    render(<BookingCalendar onDateSelect={() => {}} selectedCheckIn={checkIn} />);
+    render(<BookingCalendar onDateSelect={() => {}} selectedCheckIn={targetIso} />);
 
     const button = await targetButton();
     expect(button.className).toContain("!bg-brand-gold");

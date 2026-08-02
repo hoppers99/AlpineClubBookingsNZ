@@ -13,6 +13,7 @@ const updateSchema = z.object({
   bookingReminder: z.boolean().optional(),
   bookingBumped: z.boolean().optional(),
   bookingCancelled: z.boolean().optional(),
+  bookingAddedByFamily: z.boolean().optional(),
   choreRoster: z.boolean().optional(),
   marketingEmails: z.boolean().optional(),
 });
@@ -22,6 +23,8 @@ const MEMBER_NOTIFICATION_PREFERENCE_KEYS = [
   "bookingReminder",
   "bookingBumped",
   "bookingCancelled",
+  // #2284 (S2): the family-scope "you were added to a booking" FYI opt-out.
+  "bookingAddedByFamily",
   "choreRoster",
   "marketingEmails",
 ] as const;
@@ -42,6 +45,7 @@ function resolveMemberNotificationPreferences(
     bookingReminder: preferences?.bookingReminder ?? true,
     bookingBumped: preferences?.bookingBumped ?? true,
     bookingCancelled: preferences?.bookingCancelled ?? true,
+    bookingAddedByFamily: preferences?.bookingAddedByFamily ?? true,
     choreRoster: preferences?.choreRoster ?? true,
     marketingEmails: preferences?.marketingEmails ?? false,
   };
@@ -73,6 +77,7 @@ export async function GET() {
     bookingReminder: prefs.bookingReminder,
     bookingBumped: prefs.bookingBumped,
     bookingCancelled: prefs.bookingCancelled,
+    bookingAddedByFamily: prefs.bookingAddedByFamily,
     choreRoster: prefs.choreRoster,
     marketingEmails: prefs.marketingEmails,
   });
@@ -152,6 +157,7 @@ export async function PUT(request: Request) {
     bookingReminder: prefs.bookingReminder,
     bookingBumped: prefs.bookingBumped,
     bookingCancelled: prefs.bookingCancelled,
+    bookingAddedByFamily: prefs.bookingAddedByFamily,
     choreRoster: prefs.choreRoster,
     marketingEmails: prefs.marketingEmails,
   });

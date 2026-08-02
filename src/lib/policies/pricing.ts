@@ -409,6 +409,58 @@ export function calculateBookingPrice(
   };
 }
 
+/**
+ * One season's flat whole-lodge nightly rate window (#2338). `startDate`/
+ * `endDate` are the season's inclusive @db.Date bounds; `flatWholeLodgeNightCents`
+ * is the per-night whole-lodge charge in integer cents, or null when the season
+ * has no flat rate set.
+ */
+export interface WholeLodgeFlatSeason {
+  startDate: Date;
+  endDate: Date;
+  flatWholeLodgeNightCents: number | null;
+}
+
+/**
+ * Price a whole-lodge stay at the per-season flat nightly rate, ignoring
+ * headcount entirely (#2338, D1 deferral of #2263). Each night is charged its
+ * OWN covering season's flat rate, so a stay that crosses a season boundary
+ * sums winter nights at the winter flat rate and summer nights at the summer
+ * one.
+ *
+ * Returns null — meaning "cannot flat-price this stay, fall back to per-guest" —
+ * when the stay has no nights, when no active season covers some night, or when
+ * a covering season carries no flat rate. The all-or-nothing rule is deliberate:
+ * a partially-covered stay has no single defensible whole-lodge figure, so the
+ * caller reverts to per-guest pricing (which itself falls back to the officer's
+ * mandatory manual override) rather than silently charging for only some nights.
+ */
+export function priceWholeLodgeFlat(
+  checkIn: Date,
+  checkOut: Date,
+  seasons: WholeLodgeFlatSeason[]
+): number | null {
+  const nights = getStayNights(checkIn, checkOut);
+  if (nights.length === 0) return null;
+
+  let total = 0;
+  for (const night of nights) {
+    const dateKey = getBookingDateKey(night);
+    let rate: number | null = null;
+    for (const season of seasons) {
+      const startKey = getBookingDateKey(season.startDate);
+      const endKey = getBookingDateKey(season.endDate);
+      if (dateKey >= startKey && dateKey <= endKey) {
+        rate = season.flatWholeLodgeNightCents;
+        break;
+      }
+    }
+    if (rate == null) return null;
+    total += rate;
+  }
+  return total;
+}
+
 export interface PromoDiscountResult {
   discountCents: number;
   priceAdjustmentCents: number;

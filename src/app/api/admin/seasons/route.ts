@@ -27,6 +27,10 @@ const seasonSchema = z.object({
   endDate: dateOnlyString,
   active: z.boolean().default(true),
   membershipTypeRates: membershipTypeSeasonRateInputSchema,
+  // Flat whole-lodge night rate for this season, in integer cents (#2338).
+  // Nullable/optional: null or omitted means "no flat rate", so a whole-lodge
+  // approval prices per guest as before.
+  flatWholeLodgeNightCents: z.number().int().min(0).nullable().optional(),
   lodgeId: z.string().min(1).optional(),
 })
 
@@ -63,7 +67,15 @@ export async function POST(req: NextRequest) {
     )
   }
 
-  const { name, type, startDate, endDate, active, membershipTypeRates } = parsed.data
+  const {
+    name,
+    type,
+    startDate,
+    endDate,
+    active,
+    membershipTypeRates,
+    flatWholeLodgeNightCents,
+  } = parsed.data
 
   const parsedStartDate = parseDateOnly(startDate)
   const parsedEndDate = parseDateOnly(endDate)
@@ -116,6 +128,8 @@ export async function POST(req: NextRequest) {
         startDate: parsedStartDate,
         endDate: parsedEndDate,
         active,
+        // #2338: null when omitted (no flat whole-lodge rate for this season).
+        flatWholeLodgeNightCents: flatWholeLodgeNightCents ?? null,
         lodgeId,
         membershipTypeRates: {
           create: membershipTypeRates.map((rate) => ({

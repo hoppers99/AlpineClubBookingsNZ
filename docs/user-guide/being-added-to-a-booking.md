@@ -19,6 +19,18 @@ off the booking if you would rather not go — but not in every case, and the
 email tells you which it is. *How to come off it, honestly*, further down this
 page, lists the situations where only the club can take you off.
 
+**Being added by your own family.** When someone in your *own* family group adds
+you to a booking — a parent booking a bed for you, say — you are simply told, so
+you always know you are on a stay somebody else arranged. If you have your own
+login the email comes to you; if you do not (a child, or an adult on a household
+login) the adults in your family group are told on your behalf. This is a
+courtesy notice, not a consent request — nothing is held up waiting for a reply,
+and you can take yourself off future stays where the booking rules still allow it
+(the situations where only the club can remove you are listed above). It is
+sent whether or not the club uses the member-guest feature, and you can switch it
+off under **Notification preferences** in your profile if you would rather not
+get it.
+
 ## When you'd use it
 
 - You got an email saying another member would like to add you to a lodge

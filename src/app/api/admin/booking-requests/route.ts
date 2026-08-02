@@ -6,6 +6,7 @@ import {
   serializeBookingRequestForAdmin,
 } from "@/lib/booking-request";
 import { readBookingRequestQuoteOptionsForDisplay } from "@/lib/booking-request-quotes";
+import { resolveWholeLodgeFlatPricesForRequests } from "@/lib/school-booking-request";
 import { loadSchoolGroupSoftCap } from "@/lib/lodge-settings";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/session-guards";
@@ -102,6 +103,23 @@ export async function GET(req: NextRequest) {
     )
   );
 
+  // #2338: for member whole-lodge requests, preview the per-season flat
+  // whole-lodge price so the approve panel can offer the "price as whole lodge"
+  // toggle only when a flat rate actually covers the stay, and show the officer
+  // the figure the approval will charge. Null (no flat rate covers the stay) =>
+  // no toggle, per-guest pricing as before. Batched: one season query per
+  // distinct lodge, and only for the whole-lodge subset of the page.
+  const wholeLodgeFlatByRequestId = await resolveWholeLodgeFlatPricesForRequests(
+    requests
+      .filter((request) => request.requestedByMemberId && request.exclusivityRequested)
+      .map((request) => ({
+        id: request.id,
+        checkIn: request.checkIn,
+        checkOut: request.checkOut,
+        lodgeId: request.lodgeId,
+      }))
+  );
+
   const data = requests.map((request) => {
     const quote = latestQuoteByRequestId.get(request.id) ?? null;
     // #2342: the third stored blob this page parses per row, and — once the
@@ -143,6 +161,11 @@ export async function GET(req: NextRequest) {
       // Emitted only when THIS blob failed, alongside the serialiser's own
       // per-blob guest/link flags, so the panel states exactly what is wrong.
       ...(quoteDisplay?.needsAttention ? { quoteDataNeedsAttention: true } : {}),
+      // #2338: the flat whole-lodge price for a member whole-lodge request, or
+      // null when none is configured for the covering season(s). The panel only
+      // offers the "price as whole lodge" toggle when this is non-null.
+      wholeLodgeFlatTotalCents:
+        wholeLodgeFlatByRequestId.get(request.id) ?? null,
     };
   });
 

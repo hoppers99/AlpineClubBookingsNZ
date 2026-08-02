@@ -26,6 +26,26 @@ ENV DATABASE_URL=postgresql://tac:password@postgres:5432/tacbookings
 ARG NEXT_PUBLIC_SENTRY_DSN
 ENV NEXT_PUBLIC_SENTRY_DSN=$NEXT_PUBLIC_SENTRY_DSN
 
+# Deployed-code knowledge bundle (AID-3, #2372). Generated here in the builder,
+# where the dependencies exist (a plain `docker compose build` on a club's
+# server has no host Node/npm toolchain, so generation cannot run outside the
+# image). The commit SHA is INJECTED at build time via GIT_COMMIT_SHA because
+# `.git` is absent from the build context; KNOWLEDGE_BUNDLE_OBSERVED_AT pins the
+# observed-at for a byte-reproducible artifact. Both are passed by CI / the
+# deploy runner (see .github/workflows/ci.yml and
+# scripts/run-production-blue-green-deploy.sh). When GIT_COMMIT_SHA is absent
+# (a bare `docker build`), the generator writes a placeholder-SHA bundle that the
+# runtime loader treats as UNVERIFIED and fail-closes on — the image still
+# builds and runs, with diagnostics code answers disabled. Generation FAILS
+# CLOSED on any detected secret, stopping the build rather than shipping a leak.
+# `docs/` is available to this stage (see the .dockerignore note); the runtime
+# image still excludes raw docs — only the curated bundle is copied to the runner.
+ARG GIT_COMMIT_SHA=""
+ENV GIT_COMMIT_SHA=$GIT_COMMIT_SHA
+ARG KNOWLEDGE_BUNDLE_OBSERVED_AT=""
+ENV KNOWLEDGE_BUNDLE_OBSERVED_AT=$KNOWLEDGE_BUNDLE_OBSERVED_AT
+RUN npm run diagnostics:bundle
+
 RUN npx prisma generate
 RUN npm run build
 
@@ -50,6 +70,14 @@ COPY --from=builder /app/.next/static/ ./.next/static/
 COPY --from=builder /app/prisma ./prisma
 COPY --from=builder /app/prisma.config.ts ./prisma.config.ts
 COPY --from=builder /app/node_modules ./node_modules
+# Guaranteed placement of the deployed-code knowledge bundle (AID-3, #2372)
+# alongside the standalone trace, so the runtime loader
+# (src/lib/diagnostics/knowledge/load.ts) finds it at
+# /app/.artifacts/diagnostics/knowledge-bundle.json regardless of tracing. The
+# builder's `npm run diagnostics:bundle` step above always writes this path (a
+# real bundle, or a placeholder-SHA one the loader fail-closes on), so this COPY
+# never fails.
+COPY --from=builder /app/.artifacts ./.artifacts
 
 RUN mkdir -p .next/cache && chown nextjs:nodejs .next/cache
 

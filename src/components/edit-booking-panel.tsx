@@ -2549,8 +2549,8 @@ export function EditBookingPanel({
                 </div>
               )}
               <PromoCodeInput
-                checkIn={new Date(`${checkIn}T00:00:00`)}
-                checkOut={new Date(`${checkOut}T00:00:00`)}
+                checkIn={checkIn}
+                checkOut={checkOut}
                 guests={[
                   ...remainingGuests.map((g) => ({
                     firstName: g.firstName,

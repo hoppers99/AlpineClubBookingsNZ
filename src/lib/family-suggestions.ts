@@ -282,7 +282,12 @@ export async function createFamilyGroupFromSuggestion(
       data: members.map((m) => ({
         familyGroupId: newGroup.id,
         memberId: m.id,
-        role: m.id === lead.id ? "ADMIN" : "USER",
+        // #2284 (S4): only the two documented values are written. The lead
+        // keeps "ADMIN" for continuity with the other group-creating flows;
+        // everyone else is "MEMBER", not the undocumented "USER" this used to
+        // write (which merge silently coerced to MEMBER anyway). The field no
+        // longer gates authorisation, so this is purely cosmetic consistency.
+        role: m.id === lead.id ? "ADMIN" : "MEMBER",
       })),
       skipDuplicates: true,
     });

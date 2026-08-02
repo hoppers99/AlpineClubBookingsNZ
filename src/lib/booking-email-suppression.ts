@@ -137,6 +137,13 @@ export const ALWAYS_BOOKING_SCOPED_TEMPLATE_NAMES: ReadonlySet<string> =
     // withheld-banner record, so an operator can see that somebody was never
     // told, rather than the send quietly escaping the switch.
     "member-guest-request-withdrawn",
+    // #2284 (S2): the family-scope "you were added to a booking" FYI. Named here
+    // for the same reason as the member-guest set — it is member-audience and
+    // always carries a real bookingId, so the per-booking "No emails" switch is
+    // one of the things that withholds it, and the retry cron must refuse to
+    // replay a legacy NULL-bookingId row under this name. Unlike the six above
+    // it ALSO honours a personal preference, applied before the sender.
+    "family-member-added",
   ]);
 
 /**
