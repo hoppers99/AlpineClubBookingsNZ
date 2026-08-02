@@ -3179,11 +3179,34 @@ pure workflow logic (`src/lib/booking-exception-requests.ts`):
   1000 characters, normalised once at the request boundary so every later surface
   renders exactly the stored value.
 - **Every transition is guarded and single.** Only a `REQUESTED` request may move,
-  and only to `APPROVED`/`REJECTED`/`CANCELLED`/`SUPERSEDED`; the guarded
+  and only to `APPROVED`/`REJECTED`/`CANCELLED`/`SUPERSEDED`/`EXPIRED`; the guarded
   `updateMany` plus the integer `version` token make a lost claim run no side
   effect (the `BookingRequest.version` discipline, #1923). `REJECTED`,
-  `CANCELLED` and `SUPERSEDED` release the provisional reservation; `APPROVED`
-  turns it into the executed booking's own beds inside the same transaction.
+  `CANCELLED`, `SUPERSEDED` and `EXPIRED` release the provisional reservation;
+  `APPROVED` turns it into the executed booking's own beds inside the same
+  transaction.
+- **A held bed always has a deadline, and only a held bed has one (#2553).** A
+  request that actually reserves beds is stamped at creation with an immutable
+  `holdExpiresAt` — `POLICY_EXCEPTION_HOLD_TTL_DAYS` (7) from creation, capped at
+  the start of the first night it holds, floored at
+  `POLICY_EXCEPTION_HOLD_MIN_TTL_HOURS` (24) so a late request still gets a real
+  review window. It is written once and never rewritten, so a member's expiry
+  cannot move under them and the reaper's clock is an auditable fact of the
+  request rather than a live setting. The `policy-exception-hold-reaper` cron then
+  moves each past-deadline request `REQUESTED -> EXPIRED` through
+  `resolvePolicyExceptionRequestTerminal`, the SAME guarded-claim-plus-atomic-
+  release path the other terminal outcomes take, so beds are returned under the
+  global -> per-lodge locks exactly once and no forked release exists to drift.
+  The converse matters as much: `holdExpiresAt` is NULL, and the reaper's scan
+  never sees the row, whenever no capacity is at stake — a `LOCKED_PERIOD` row, a
+  `NO_HOLD` aggregate, or a HOLD aggregate whose incremental footprint came out
+  empty (a pure shrink). A cron may release stranded beds; it may never close a
+  live request that costs the club nothing to leave open. Concurrency safety comes
+  from the `version` CAS rather than a job-level lock: a decision landing between
+  the scan and the claim wins, and overlapping cron cycles produce exactly one
+  expiry and one release. No email or provider call is made — the `EXPIRED` status
+  is the durable fact — and the one-open-request slot is freed so a lapse never
+  locks the member out of resubmitting.
 - **Approval is atomic with execution (#2525).** `approveAndExecutePolicyExceptionRequest`
   reauthorizes from fresh DB roles, re-reads under global -> per-lodge locks,
   applies the drift rules above, claims `REQUESTED -> APPROVED` with the `version`

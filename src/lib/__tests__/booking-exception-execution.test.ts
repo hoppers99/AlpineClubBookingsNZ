@@ -143,7 +143,15 @@ function makeDb(opts: {
   releaseCount?: number;
 }) {
   const order: string[] = [];
-  const updateMany = vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+  // #2553: `where` is part of the recorded call shape too — the EXPIRED test
+  // asserts the guarded claim is scoped to REQUESTED + the exact version, so the
+  // mock's parameter type has to admit it.
+  const updateMany = vi.fn(async ({
+    data,
+  }: {
+    where?: Record<string, unknown>;
+    data: Record<string, unknown>;
+  }) => {
     if (data.status === "APPROVED") {
       order.push("claim-approved");
       return { count: opts.claimCount ?? 1 };
@@ -151,7 +159,8 @@ function makeDb(opts: {
     if (
       data.status === "REJECTED" ||
       data.status === "CANCELLED" ||
-      data.status === "SUPERSEDED"
+      data.status === "SUPERSEDED" ||
+      data.status === "EXPIRED"
     ) {
       order.push(`claim-${String(data.status).toLowerCase()}`);
       return { count: opts.claimCount ?? 1 };
@@ -567,6 +576,52 @@ describe("resolvePolicyExceptionRequestTerminal", () => {
       requestId: "req-1",
       expectedVersion: 1,
       to: "CANCELLED",
+      db: db as never,
+    });
+    expect(result).toEqual({ claimed: false, released: 0 });
+    expect(deleteMany).not.toHaveBeenCalled();
+  });
+
+  // #2553: the hold reaper closes an abandoned request through this SAME helper,
+  // so it inherits the lock order, the guarded claim and the atomic release
+  // rather than forking a second release path.
+  it("EXPIRED: same guarded claim + atomic release, in global→lodge lock order", async () => {
+    const { db, order, updateMany } = makeDb({ row: baseRow(), releaseCount: 3 });
+    const result = await resolvePolicyExceptionRequestTerminal({
+      requestId: "req-1",
+      expectedVersion: 1,
+      to: "EXPIRED",
+      db: db as never,
+    });
+    expect(result).toEqual({ claimed: true, released: 3 });
+    expect(order).toEqual([
+      "global-lock",
+      "lodge-lock",
+      "claim-expired",
+      "release",
+      "commit",
+    ]);
+    const claim = updateMany.mock.calls[0][0];
+    // Guarded on REQUESTED + the exact version, like every other transition.
+    expect(claim.where).toMatchObject({
+      status: "REQUESTED",
+      version: 1,
+      kind: "POLICY_EXCEPTION",
+    });
+    // The one-open-request slot is freed, so a lapse never locks the member out
+    // of raising a fresh proposal.
+    expect(claim.data.openStateKey).toBeNull();
+    // An expiry is nobody's decision: it stamps no reviewer and no cancelledAt.
+    expect(claim.data.reviewedByMemberId).toBeUndefined();
+    expect(claim.data.cancelledAt).toBeUndefined();
+  });
+
+  it("EXPIRED: a lost version claim releases nothing (a decision won the race)", async () => {
+    const { db, deleteMany } = makeDb({ row: baseRow(), claimCount: 0 });
+    const result = await resolvePolicyExceptionRequestTerminal({
+      requestId: "req-1",
+      expectedVersion: 1,
+      to: "EXPIRED",
       db: db as never,
     });
     expect(result).toEqual({ claimed: false, released: 0 });

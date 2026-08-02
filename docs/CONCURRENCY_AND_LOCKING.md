@@ -1098,6 +1098,21 @@ wiring, checked against the contract above:
   supersede branch of `createModificationExceptionRequest` (releases the prior
   request's hold before reserving the replacement). A lost claim releases and
   reserves nothing.
+- **Abandoned-hold reaper (#2553)** — `reapExpiredPolicyExceptionHolds`
+  (`src/lib/cron-policy-exception-hold-reaper.ts`, in the three-hourly general
+  cycle) mints **no lock of its own**: it scans candidates outside any
+  transaction, then calls `resolvePolicyExceptionRequestTerminal` with
+  `to: "EXPIRED"` per request, which takes global `lock(1)` → per-lodge lock and
+  makes the guarded `version` claim exactly as the reject/cancel/supersede paths
+  do. That is deliberate — a second release implementation, or a job-level lock
+  layered on top, would be a new way for the release to drift from the three that
+  already work. Concurrency safety therefore rests on the same `version` CAS every
+  other transition uses: a decision landing between the scan and the claim wins,
+  the reaper's claim matches 0 rows, and it releases nothing. Two overlapping cron
+  cycles over the same request produce exactly one expiry and one release, so beds
+  can never be credited back twice. The scan is additionally narrowed to requests
+  that still have live `PolicyExceptionReservationNight` rows, so the cron's only
+  possible effect is returning beds that are genuinely stranded.
 - **Transaction-aware canonical services (#2525)** — `createConfirmedBooking`
   (`booking-create.ts`) and `modifyBookingBatch`
   (`booking-batch-modification-service.ts`) each now accept an optional caller

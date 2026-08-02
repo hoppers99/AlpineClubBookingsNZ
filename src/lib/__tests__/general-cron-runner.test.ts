@@ -20,6 +20,10 @@ vi.mock("@/lib/cron-job-run", () => ({
   recordCronJobRunSafe: vi.fn(),
 }));
 
+vi.mock("@/lib/cron-policy-exception-hold-reaper", () => ({
+  reapExpiredPolicyExceptionHolds: vi.fn(),
+}));
+
 vi.mock("@/lib/cron-pre-arrival-reminders", () => ({
   sendPreArrivalReminders: vi.fn(),
 }));
@@ -85,6 +89,13 @@ describe("general cron runner", () => {
           scannedInterruptedCancels: 0,
           resumedInterruptedCancels: 0,
         })),
+        // #2553: the abandoned policy-exception capacity-hold reaper.
+        reapExpiredPolicyExceptionHolds: vi.fn(async () => ({
+          scanned: 2,
+          expired: 1,
+          releasedNights: 3,
+          failed: 0,
+        })),
         sendPreArrivalReminders: vi.fn(async () => ({
           reminderDays: 3,
           windowStart: "2026-06-28",
@@ -139,12 +150,18 @@ describe("general cron runner", () => {
       scannedInterruptedCancels: 0,
       resumedInterruptedCancels: 0,
     });
+    expect(result.policyExceptionHoldReap).toEqual({
+      scanned: 2,
+      expired: 1,
+      releasedNights: 3,
+      failed: 0,
+    });
     expect(result.schoolAttendeeConfirmations).toEqual({
       scanned: 0,
       sent: 0,
       failed: 0,
     });
-    expect(recordCronRun).toHaveBeenCalledTimes(7);
+    expect(recordCronRun).toHaveBeenCalledTimes(8);
     expect(recordCronRun).toHaveBeenCalledWith(
       expect.objectContaining({
         jobName: "additional-payment-reminders",
@@ -160,6 +177,12 @@ describe("general cron runner", () => {
     expect(recordCronRun).toHaveBeenCalledWith(
       expect.objectContaining({
         jobName: "confirm-pending",
+        status: "SUCCESS",
+      })
+    );
+    expect(recordCronRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        jobName: "policy-exception-hold-reaper",
         status: "SUCCESS",
       })
     );

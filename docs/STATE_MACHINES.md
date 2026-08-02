@@ -548,6 +548,8 @@ POLICY_EXCEPTION request -> REQUESTED
   REQUESTED -> REJECTED   (declined)
   REQUESTED -> CANCELLED  (member withdrew the proposal before a decision)
   REQUESTED -> SUPERSEDED (a newer proposal, or live-booking drift, replaced it)
+  REQUESTED -> EXPIRED    (#2553: nobody decided it before its capacity hold's
+                           deadline, so the reaper cron released the beds)
 ```
 
 Every non-`REQUESTED` state is terminal (a guarded `updateMany` on
@@ -563,13 +565,14 @@ hold lands with the Booking Officer approval screen (#2526).
 **The provisional-reservation and atomic approve-and-execute lane is built
 (#2525).** Each held request materialises its footprint as
 `PolicyExceptionReservationNight` rows that the canonical capacity calculation
-counts as occupancy, so a pending request cannot be oversold. The three
-releasing transitions — `REJECTED`, `CANCELLED`, `SUPERSEDED` — delete those rows
-in the SAME guarded transaction that writes the status, under the
+counts as occupancy, so a pending request cannot be oversold. The four
+releasing transitions — `REJECTED`, `CANCELLED`, `SUPERSEDED`, `EXPIRED` — delete
+those rows in the SAME guarded transaction that writes the status, under the
 global -> per-lodge lock order: the member-owned CANCELLED and SUPERSEDED in
-`booking-exception-request-service.ts`, and the officer REJECTED in
-`resolvePolicyExceptionRequestTerminal` (`booking-exception-execution.ts`). A lost
-claim releases nothing. `REQUESTED -> APPROVED` is different: it does
+`booking-exception-request-service.ts`, and the officer REJECTED plus the reaper's
+EXPIRED in `resolvePolicyExceptionRequestTerminal`
+(`booking-exception-execution.ts`). A lost claim releases nothing.
+`REQUESTED -> APPROVED` is different: it does
 not "release then create". Inside ONE transaction the approval reauthorizes from
 fresh DB roles, re-reads under the global -> per-lodge locks, re-checks the
 proposal hash and `classifyPolicyExceptionDrift` (a disappeared reviewed rule
@@ -583,6 +586,28 @@ executed booking's own beds with no mark-approved-then-call-service gap. Provide
 work and the member approval/rejection notice run after commit. See
 `docs/CONCURRENCY_AND_LOCKING.md` -> "Provisional reservations for held
 policy-exception requests".
+
+**An abandoned hold expires (#2553).** A request nobody ever decides used to hold
+its beds forever. Every request that actually reserves beds is therefore stamped
+at creation with an immutable `holdExpiresAt`: seven days
+(`POLICY_EXCEPTION_HOLD_TTL_DAYS`), never past the start of the first night it is
+holding, and never less than 24 hours
+(`POLICY_EXCEPTION_HOLD_MIN_TTL_HOURS`) so a late request still gets a real
+review window. The deadline is stamped once and never rewritten, so a member's
+expiry date cannot move under them. The `policy-exception-hold-reaper` cron
+(`src/lib/cron-policy-exception-hold-reaper.ts`, every 3 hours in the general
+cycle) then closes each past-deadline hold through
+`resolvePolicyExceptionRequestTerminal` with `to: "EXPIRED"` — the SAME guarded
+claim and atomic release the other three terminal outcomes use, so there is no
+second release implementation to drift. Three things bound it: it only scans
+`REQUESTED` + `POLICY_EXCEPTION` + `HOLD`-aggregate rows that still have live
+`PolicyExceptionReservationNight` rows, so a request stranding no capacity (a
+`NO_HOLD` aggregate, or a HOLD aggregate whose incremental footprint came out
+empty) is never closed by a cron; the `version` CAS means a decision landing in
+the same window wins and the reaper releases nothing; and no email or provider
+call is made, so the `EXPIRED` status on the request is the durable fact the
+member and officer surfaces read. The member's one-open-request slot is freed, so
+a lapse never locks them out of raising a fresh proposal.
 
 **Member request surfaces (#2524, wired to #2525).** #2524 builds the
 request-CREATION half of that flow (creation, member cancel, member supersede, the

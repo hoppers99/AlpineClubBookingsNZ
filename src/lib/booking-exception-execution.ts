@@ -474,7 +474,11 @@ export async function approveAndExecutePolicyExceptionRequest(params: {
 export type PolicyExceptionTerminalStatus =
   | "REJECTED"
   | "CANCELLED"
-  | "SUPERSEDED";
+  | "SUPERSEDED"
+  // #2553: the provisional hold ran out before anybody decided the request, so
+  // the reaper cron closes it here — through this SAME helper, never a forked
+  // release path.
+  | "EXPIRED";
 
 export interface ResolveTerminalResult {
   /** Whether the guarded claim moved the row (a lost claim runs no release). */
@@ -486,8 +490,8 @@ export interface ResolveTerminalResult {
 /**
  * Atomically move a HELD policy-exception request to a terminal RELEASING status
  * (REJECTED by an officer, CANCELLED by the member, SUPERSEDED by a newer
- * proposal) and release its provisional reservation in the SAME guarded
- * transaction.
+ * proposal, or EXPIRED by the #2553 hold reaper) and release its provisional
+ * reservation in the SAME guarded transaction.
  *
  * The guarded `version` CAS is the single-flight: a lost claim (someone already
  * moved the row, or the version advanced) releases NOTHING and runs no side
