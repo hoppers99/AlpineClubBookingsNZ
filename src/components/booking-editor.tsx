@@ -128,6 +128,10 @@ export interface BookingEditorData {
     openSearchEnabled: boolean;
     approvalRequired: boolean;
   };
+  // #2337: true for an admin/officer viewing a MEMBER whole-lodge booking — the
+  // audience and booking class the placeholder→member link is fenced to.
+  // Server-computed on the booking page and threaded through unchanged.
+  memberWholeLodge?: boolean;
 }
 
 
@@ -176,6 +180,7 @@ export function BookingEditor({
           memberId: booking.memberId,
           lodgeId: booking.lodgeId,
           memberGuest: booking.memberGuest,
+          memberWholeLodge: booking.memberWholeLodge,
         }}
         canAdminOverride={canAdminOverride}
         onDone={() => setEditing(false)}
