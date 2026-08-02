@@ -654,12 +654,17 @@ mispricing a booking.
   constraint). Interleavings after the re-check cannot reopen the hole: both
   member rows are FOR UPDATE-locked, and an inbound FK write referencing the
   loser from another row blocks on its KEY SHARE lock against that FOR UPDATE
-  and then fails loudly on the FK once the hard-delete commits. The refusal
-  itself writes **no audit row** — the 409 rolls the transaction back whole,
-  exactly like the #2243/#2445 field-drift refusal and the other merge
-  refusals (`merge_blocked`, `preview_drift`); recording refused merge
-  attempts (outside the transaction) would be a deliberate new convention
-  across all of those arms, and is an owner decision not taken on #2437.
+  and then fails loudly on the FK once the hard-delete commits. The 409 rolls
+  the transaction back whole, so the in-transaction `MEMBER_MERGED` audit never
+  lands — but the refused attempt is **not** silent: since #2498 a single
+  boundary in `executeMemberMerge` writes one best-effort `MEMBER_MERGE_REFUSED`
+  audit on the base client, OUTSIDE the rolled-back transaction, for this arm and
+  every other merge refusal (`merge_blocked`, `preview_drift`, the field-drift
+  arm, self-merge, missing member, confirmation mismatch). It records the actor,
+  both member ids, the refusal code/status, and a non-PII structural summary of
+  what drifted or blocked; the write is best-effort so it can never turn a clean
+  409 into a 500, and one refusal yields at most one row (owner decision on
+  #2498, 2 Aug 2026, taking the convention #2437 deliberately left open).
 
   **One new row lock, no new lock family.** Immediately before that fresh read
   the merge takes `SELECT 1 FROM "Member" WHERE "id" IN (…) ORDER BY "id" FOR

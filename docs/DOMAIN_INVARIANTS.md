@@ -4986,6 +4986,18 @@ and is hard-deleted at the end. The merge is **additive and master-wins**:
   that lands during it; that residual window is closed by the second patch
   derivation above, which 409s on any disagreement — so a committed merge never
   carries drift, and there is no drift field in the audit to read.
+- **Refused attempts are audited too (#2498).** Every refusal — self-merge,
+  missing member, `merge_blocked`, wrong confirmation phrase, `preview_drift`,
+  and the `merge_drift_in_transaction` field/family-link arms — throws from
+  inside the transaction and rolls it (and the `MEMBER_MERGED` audit) back. A
+  single boundary in `executeMemberMerge` then writes one best-effort
+  `MEMBER_MERGE_REFUSED` audit (category `admin`, outcome `blocked`) on the base
+  client, outside the rolled-back transaction, recording the actor, both member
+  ids, the refusal code/status, and a non-PII structural summary of what drifted
+  or blocked (field/column names and guard codes only — never member values,
+  names or emails). The write is best-effort: a failed audit is logged and
+  swallowed, so it can never turn a clean 4xx/409 refusal into a 500, and one
+  refusal produces at most one row.
 
 ## Integrations
 
