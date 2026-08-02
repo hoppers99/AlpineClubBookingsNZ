@@ -28,8 +28,10 @@
   booking's history so the change is never silent.
 
   The one-step link is offered only before a stay begins. Once a booking is
-  in-progress (the guests have checked in), the panel asks the officer to remove
-  the placeholder and add the member back instead — that path settles the change
-  correctly mid-stay, whereas the in-place re-rate cannot. Removing the
-  placeholder and adding the member back also still works before check-in and
-  settles identically; the link is simply the one-click equivalent.
+  in-progress (the guests have checked in), the "Link to member" control is not
+  shown at all, and the save path refuses the link even if one is attempted —
+  the officer removes the placeholder and adds the member back instead, which
+  settles the change correctly mid-stay, whereas the in-place re-rate cannot.
+  Removing the placeholder and adding the member back also still works before
+  check-in and settles identically; the link is simply the one-click
+  equivalent.

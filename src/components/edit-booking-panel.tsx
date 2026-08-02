@@ -662,11 +662,21 @@ export function EditBookingPanel({
   const [linkFinderGuestId, setLinkFinderGuestId] = useState<string | null>(null);
   // The link control is fenced to exactly the audience + booking class the save
   // path honours, and requires the member finder (the reused member search).
+  // #2534: it is also hidden on an in-progress (mid-stay) edit, because the save
+  // path REFUSES a placeholder→member link mid-stay (the in-progress pricing
+  // path re-rates the original rows, not the link-modified ones, so an in-place
+  // re-rate would silently no-op — see the modify-quote in-progress guard). The
+  // officer is pointed to remove-and-re-add, which settles correctly mid-stay,
+  // rather than being offered a control that only ever returns a quote-time
+  // refusal. `booking.editPolicy.mode === "in-progress"` is the same signal
+  // `isInProgressEdit` derives from below (declared after this line); using it
+  // directly keeps the fence self-contained here.
   const memberLinkEnabled =
     Boolean(booking.memberWholeLodge) &&
     booking.viewerRole === "ADMIN" &&
     Boolean(booking.memberGuest?.enabled) &&
-    !overrideEnabled;
+    !overrideEnabled &&
+    booking.editPolicy.mode !== "in-progress";
 
   // Add guest form
   const [showAddForm, setShowAddForm] = useState(false);
