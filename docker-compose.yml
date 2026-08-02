@@ -107,6 +107,12 @@ x-app-service: &app-service
       # knowledge-bundle generator stamps a verified, reproducible bundle.
       GIT_COMMIT_SHA: ${GIT_COMMIT_SHA:-}
       KNOWLEDGE_BUNDLE_OBSERVED_AT: ${KNOWLEDGE_BUNDLE_OBSERVED_AT:-}
+      # #2352 D1: the release identifier the per-release public-website CSP nonce
+      # is derived from. A BUILD arg, not a runtime env var, deliberately — the
+      # value has to be fixed for the life of the image so a page stored by one
+      # process still hydrates when another process of the same release serves it.
+      # The deploy runner exports it alongside GIT_COMMIT_SHA.
+      RELEASE_ID: ${RELEASE_ID:-${GIT_COMMIT_SHA:-}}
   restart: unless-stopped
   logging:
     driver: json-file
@@ -119,7 +125,19 @@ x-app-service: &app-service
   read_only: true
   tmpfs:
     - /tmp
-    - /app/.next/cache:uid=1001,gid=1001,mode=0755
+    # Explicit size cap (#2352). Without one, a tmpfs defaults to HALF THE HOST'S
+    # RAM, and anything written here counts against this container's `mem_limit`
+    # below — so an unbounded mount is a memory limit that can be reached by
+    # writing files. What writes here is Next's fetch cache and the image
+    # optimiser's output, both of which grow with use and neither of which prunes
+    # itself. 64m is generous for both and small enough that filling it cannot
+    # threaten the 1g limit.
+    #
+    # NOT the full-route (ISR) page cache, despite the path suggesting otherwise:
+    # Next stores those under `.next/server/app`, which is read-only here, so
+    # `next.config.ts` keeps them in a bounded in-memory LRU instead. That file
+    # explains the whole decision — read it before changing either side.
+    - /app/.next/cache:uid=1001,gid=1001,mode=0755,size=64m
   # Image Manager uploads. A named volume shared by all app replicas keeps
   # uploads persistent across redeploys and visible to every instance (the
   # read-only root filesystem above otherwise has no writable path here). The

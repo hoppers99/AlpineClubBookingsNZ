@@ -935,7 +935,13 @@ prepare_application_images() {
   # ff-only main checkout this deploy is building.
   GIT_COMMIT_SHA="$(git rev-parse HEAD)"
   KNOWLEDGE_BUNDLE_OBSERVED_AT="$(git show -s --format=%cI HEAD)"
-  export GIT_COMMIT_SHA KNOWLEDGE_BUNDLE_OBSERVED_AT
+  # #2352 D1: the same commit, as the release identifier the public website's
+  # fixed CSP nonce is derived from. Baked into the image as a build arg rather
+  # than passed at runtime, so every process of this release computes the same
+  # nonce and a page one of them stored still hydrates when another serves it.
+  # The nonce is a digest of this value, so the SHA itself is never published.
+  RELEASE_ID="$GIT_COMMIT_SHA"
+  export GIT_COMMIT_SHA KNOWLEDGE_BUNDLE_OBSERVED_AT RELEASE_ID
   info "Stamping deployed-code knowledge bundle with commit $(git rev-parse --short=12 HEAD)."
 
   if [ "$FORCE_NO_CACHE" = "1" ]; then

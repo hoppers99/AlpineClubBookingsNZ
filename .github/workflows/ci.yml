@@ -216,6 +216,14 @@ jobs:
       - name: Test
         run: npm test
 
+      # #2352: the public website's render modes are load-bearing and nothing else
+      # notices when one changes — a route that quietly stops being per-request
+      # gets prerendered at build with no database and no CSP nonce, and a route
+      # that quietly starts being per-request just costs CPU. Source-only, so it
+      # runs before the build rather than after it.
+      - name: Check public website render modes
+        run: node scripts/ci/check-website-render-modes.mjs
+
       - name: Build
         run: npm run build
 
@@ -226,6 +234,14 @@ jobs:
       # if that output is missing rather than passing on an empty scan.
       - name: Check prerendered pages carry script nonces
         run: node scripts/ci/check-prerendered-script-nonces.mjs
+
+      # Also after the build, and for the half the source check above cannot see
+      # (#2352): whether Next AGREED. A component under (website) that reads
+      # auth()/cookies()/headers() opts the CMS catch-all out of the full-route
+      # cache silently — build green, tests green, and the only symptom is the CPU
+      # cost coming back. The manifest is where the answer is written down.
+      - name: Check the build's cached-route set
+        run: node scripts/ci/check-website-prerender-manifest.mjs
 
   migration-drift:
     name: Migration drift check
@@ -471,8 +487,25 @@ jobs:
             --build-arg NEXT_PUBLIC_SENTRY_DSN="${NEXT_PUBLIC_SENTRY_DSN}" \
             --build-arg GIT_COMMIT_SHA="${GIT_COMMIT_SHA}" \
             --build-arg KNOWLEDGE_BUNDLE_OBSERVED_AT="${KNOWLEDGE_BUNDLE_OBSERVED_AT}" \
+            --build-arg RELEASE_ID="${GIT_COMMIT_SHA}" \
             --tag "${IMAGE_REF}" \
             .
+
+      # #2352 D1: the public website's CSP nonce is derived from RELEASE_ID at
+      # RUNTIME, so the build arg has to survive into the finished image's own
+      # environment. The Dockerfile warns during the build; this fails the job,
+      # because a silent fallback to a per-process nonce would mean a page stored
+      # by one process never hydrating when another one serves it. Reads the value
+      # exactly the way src/lib/release-nonce.ts does.
+      - name: Assert the release identifier is readable in the image
+        run: |
+          actual="$(docker run --rm --entrypoint node "${IMAGE_REF}" -e 'process.stdout.write((process.env.RELEASE_ID ?? "").trim())')"
+          if [ "${actual}" != "${GIT_COMMIT_SHA}" ]; then
+            echo "RELEASE_ID in the image is '${actual}', expected '${GIT_COMMIT_SHA}'." >&2
+            echo "The build arg did not reach the runtime ENV — see the RELEASE_ID block in Dockerfile." >&2
+            exit 1
+          fi
+          echo "RELEASE_ID is readable in the image and matches the built commit."
 
       - name: Fail on CRITICAL image vulnerabilities
         uses: aquasecurity/trivy-action@v0.36.0

@@ -46,6 +46,17 @@ ARG KNOWLEDGE_BUNDLE_OBSERVED_AT=""
 ENV KNOWLEDGE_BUNDLE_OBSERVED_AT=$KNOWLEDGE_BUNDLE_OBSERVED_AT
 RUN npm run diagnostics:bundle
 
+# Release identifier for the per-release public-website CSP nonce (#2352 D1).
+# Declared in the BUILDER as well as the runner on purpose: a bundle that inlines
+# `process.env` at build time captures this value, a runtime read sees the runner's,
+# and setting both from the one ARG is what stops the two disagreeing. CI and
+# scripts/run-production-blue-green-deploy.sh pass the commit SHA. Absent (a bare
+# `docker build`), src/lib/release-nonce.ts falls back to GIT_COMMIT_SHA and then to
+# one random value per process, logging an error — see that file for why a
+# multi-reader deployment must not rely on the fallback.
+ARG RELEASE_ID=""
+ENV RELEASE_ID=$RELEASE_ID
+
 RUN npx prisma generate
 RUN npm run build
 
@@ -80,6 +91,17 @@ COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/.artifacts ./.artifacts
 
 RUN mkdir -p .next/cache && chown nextjs:nodejs .next/cache
+
+# Per-release public-website CSP nonce (#2352 D1). The value has to be readable
+# from the FINISHED image's own environment, because that is where
+# src/lib/release-nonce.ts reads it. Repeating the ARG here is what promotes the
+# build argument into a runtime ENV; the check below is what proves it, so a
+# Dockerfile that passed the ARG but forgot the ENV — or a compose file that never
+# forwarded it — fails visibly at build instead of falling back silently at
+# runtime. Empty is tolerated (a bare `docker build` has no release), and says so.
+ARG RELEASE_ID=""
+ENV RELEASE_ID=$RELEASE_ID
+RUN node -e "const id=(process.env.RELEASE_ID??'').trim(); if(id===''){console.warn('WARNING: RELEASE_ID is empty in the runtime image. Public website pages will use a per-process CSP nonce, which is unsafe if more than one process serves this release (#2352).');}else{console.log('RELEASE_ID is readable in the runtime image ('+id.length+' characters).');}"
 
 # Image Manager uploads are written here at runtime. Create the directory owned
 # by the app user so that a freshly-mounted named volume (docker-compose:

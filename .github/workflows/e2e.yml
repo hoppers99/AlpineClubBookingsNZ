@@ -112,8 +112,14 @@ jobs:
           load: true
           push: false
           tags: tacbookings-e2e-app:ci
+          # RELEASE_ID (#2352 D1) gives the staging stack a real per-release CSP
+          # nonce, so the static-CMS spec asserts the same nonce on two requests
+          # rather than passing on the per-process fallback. Stated here rather
+          # than inside the block below: every line of that block is passed to
+          # the builder verbatim, so a `#` comment there becomes a build arg.
           build-args: |
             NEXT_PUBLIC_SENTRY_DSN=
+            RELEASE_ID=${{ github.sha }}
           cache-from: |
             type=gha,scope=alpineclubbookingsnz-app
             type=gha,scope=alpineclubbookingsnz-e2e
@@ -253,8 +259,14 @@ jobs:
           load: true
           push: false
           tags: tacbookings-e2e-app:ci
+          # RELEASE_ID (#2352 D1) gives the staging stack a real per-release CSP
+          # nonce, so the static-CMS spec asserts the same nonce on two requests
+          # rather than passing on the per-process fallback. Stated here rather
+          # than inside the block below: every line of that block is passed to
+          # the builder verbatim, so a `#` comment there becomes a build arg.
           build-args: |
             NEXT_PUBLIC_SENTRY_DSN=
+            RELEASE_ID=${{ github.sha }}
           cache-from: |
             type=gha,scope=alpineclubbookingsnz-app
             type=gha,scope=alpineclubbookingsnz-e2e
