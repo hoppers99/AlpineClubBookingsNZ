@@ -12,6 +12,7 @@ import { sendAdminBookingChangeRequestAlert } from "@/lib/email";
 import { bookableAgeTierEnum } from "@/lib/age-tier-schema";
 import { nameField } from "@/lib/zod-helpers";
 import { getBookingEditPolicy } from "@/lib/booking-edit-policy";
+import { bookingHoldsCapacity } from "@/lib/booking-status";
 import { bookingManagementAuthorizationRole } from "@/lib/admin-permissions";
 import logger from "@/lib/logger";
 import {
@@ -81,7 +82,14 @@ export async function POST(
   const { id: bookingId } = await params;
   const booking = await prisma.booking.findUnique({
     where: { id: bookingId },
-    include: { guests: true, member: true },
+    include: {
+      guests: true,
+      member: true,
+      // Whether the live booking holds capacity decides the reservation footprint
+      // (#2525 FIX 7); `originBookingRequest` is the #1254 converted-quote signal
+      // that `bookingHoldsCapacity` reads for a PENDING booking.
+      originBookingRequest: { select: { id: true } },
+    },
   });
   if (!booking) {
     return NextResponse.json({ error: "Booking not found" }, { status: 404 });
@@ -189,6 +197,14 @@ export async function POST(
       memberMessage,
       requestedSummary,
       supersedeRequestId: supersedeRequestId ?? null,
+      // Drives the provisional reservation footprint (#2525 FIX 7): a non-holding
+      // base (DRAFT / generic PENDING / un-held PAYMENT_PENDING / WAITLISTED /
+      // BUMPED) reserves the FULL proposed footprint, a holding base only the delta.
+      baseHoldsCapacity: bookingHoldsCapacity({
+        status: booking.status,
+        isRequestConverted: Boolean(booking.originBookingRequest),
+        hasAdminCapacityHold: booking.adminCapacityHoldAt != null,
+      }),
     });
 
     logAudit({

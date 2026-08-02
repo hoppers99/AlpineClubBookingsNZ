@@ -4137,6 +4137,10 @@ model Lodge {
   bookingRequests          BookingRequest[]
   displayDevices           LodgeDisplayDevice[]
   noticeAudiences          NoticeAudience[]
+  // #2525: provisional per-night bed reservations held by HELD policy-exception
+  // change requests at this lodge. RESTRICT (below), so a lodge with live
+  // reservations cannot be deleted out from under the capacity view.
+  policyExceptionReservationNights PolicyExceptionReservationNight[] @relation("PolicyExceptionReservationLodge")
   newBookingPolicyExceptionRequests NewBookingPolicyExceptionRequest[]
 }
 
@@ -4606,6 +4610,11 @@ model BookingChangeRequest {
   requestedBy        Member               @relation("BookingChangeRequestsRequested", fields: [requestedByMemberId], references: [id], onDelete: Restrict)
   reviewedBy         Member?              @relation("BookingChangeRequestsReviewed", fields: [reviewedByMemberId], references: [id], onDelete: SetNull)
   linkedModification BookingModification? @relation("BookingChangeRequestLinkedModification", fields: [linkedModificationId], references: [id], onDelete: SetNull)
+  // #2525: the provisional capacity reservation this request holds while pending.
+  // Cascade, so a (never-in-practice) request delete cannot strand orphan rows;
+  // in normal operation every row is deleted by the terminal transition or the
+  // successful approval, in the SAME transaction that writes the outcome.
+  reservationNights  PolicyExceptionReservationNight[] @relation("PolicyExceptionReservationRequest")
 
   @@index([bookingId, status, createdAt])
   @@index([requestedByMemberId, status, createdAt])
@@ -4615,6 +4624,44 @@ model BookingChangeRequest {
   @@index([kind, status, createdAt])
   @@index([reviewedByMemberId, reviewedAt])
   @@index([linkedModificationId])
+}
+
+// #2525: a provisional per-night bed reservation held by a HELD policy-exception
+// BookingChangeRequest.
+//
+// A row exists IFF the request is CURRENTLY holding that night's beds. There is
+// deliberately NO "active" flag: a terminal transition (REJECTED / CANCELLED /
+// SUPERSEDED) or a successful approval DELETES every row for the request in the
+// SAME transaction that writes the outcome, so the canonical per-lodge capacity
+// calculation (capacity.ts) counts "held reservations" simply by summing the
+// rows that still exist. Today only the MODIFICATION path writes these rows: a
+// held modification reserves the INCREMENTAL beds beyond a capacity-holding live
+// booking (or the FULL proposed footprint when the base holds no capacity)
+// (`computeProposalReservation`, booking-exception-requests.ts). New-booking
+// reservation writes are DEFERRED to #2526. See docs/CONCURRENCY_AND_LOCKING.md →
+// "Provisional reservations for held policy-exception requests (#2365)".
+//
+// The table carries NO Member FK by design: the owning BookingChangeRequest
+// already links the member (`requestedByMemberId`), the rows are transient
+// working capacity state, and member merge repoints the request rather than each
+// reservation row — so nothing is added to the member-merge relation inventory.
+model PolicyExceptionReservationNight {
+  id              String   @id @default(cuid())
+  changeRequestId String
+  lodgeId         String
+  // NZ lodge night (date-only), matching Booking.checkIn/checkOut day semantics.
+  night           DateTime @db.Date
+  // Beds this request holds on this night (always >= 1 in a written row).
+  beds            Int
+  createdAt       DateTime @default(now())
+
+  changeRequest BookingChangeRequest @relation("PolicyExceptionReservationRequest", fields: [changeRequestId], references: [id], onDelete: Cascade)
+  lodge         Lodge                @relation("PolicyExceptionReservationLodge", fields: [lodgeId], references: [id], onDelete: Restrict)
+
+  // One row per (request, night): the reservation footprint is a set of nights.
+  @@unique([changeRequestId, night])
+  // The canonical capacity read: sum beds for one lodge across a night window.
+  @@index([lodgeId, night])
 }
 
 // #2524: NEW-booking policy-exception requests. The #2365 BookingChangeRequest

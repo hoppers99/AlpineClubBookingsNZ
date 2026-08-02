@@ -274,7 +274,10 @@ describe("no policy read inside a booking transaction", () => {
     {
       name: "booking-batch-modification-service.ts",
       file: "src/lib/booking-batch-modification-service.ts",
-      transactionMarker: "await prisma.$transaction(",
+      // #2525 made this service transaction-aware: it enters its transaction
+      // through withOptionalTransaction (caller tx or a fresh one), so that is
+      // the boundary the policy read must precede.
+      transactionMarker: "await withOptionalTransaction(",
     },
   ];
 
