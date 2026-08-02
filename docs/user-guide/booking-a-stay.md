@@ -196,24 +196,34 @@ and [`DOMAIN_INVARIANTS.md`](../DOMAIN_INVARIANTS.md#booking-dates-and-capacity)
 
 Two club rules can be waived, one booking at a time, by a Booking Officer: a
 **minimum stay**, and the requirement that an **adult member is present** for
-non-member guests. When one of those stops you, the club can offer you a
-**Request admin approval** step instead of a flat no. You explain why in your
-own words (up to 1,000 characters) and an officer decides.
+non-member guests. When one of those stops you, the wizard and the edit screen
+explain which rule it is and which nights it affects, rather than giving you a
+bare refusal.
+
+**Asking is not yet something you can do yourself.** The request, and the officer
+queue that decides it, are built and working — but there is no button on your side
+of the screen yet, so for now **contact the club** and they will raise the request
+for you. The self-service **Request admin approval** step is still to come; until
+it does, treat the rest of this section as what happens once a request exists.
 
 While you wait:
 
 - **Nothing is booked and nothing is charged.** If the request is on an existing
   booking, that booking is untouched until an officer says yes.
 - Depending on how the club has set the rule up, your request may **hold the
-  beds** it needs while it waits, or it may not. If it does not, the lodge can
-  fill up before a decision — the officer will tell you if that happens, and
-  your request stays open in case space frees up.
-- You can **withdraw** the request, or replace it with a different proposal, at
-  any time before it is decided.
+  beds** it needs while it waits, or it may not. A request for a booking you have
+  not made yet never holds beds. If nothing is held, the lodge can fill up before
+  a decision — the officer will tell you if that happens, and your request stays
+  open in case space frees up.
+- A request can be **withdrawn**, or replaced with a different proposal, at any
+  time before it is decided. Ask the club to do it for you.
 
 When an officer approves, the thing you asked for happens straight away: the
-booking is created, or the change is applied, and you get the usual confirmation
-email with what to pay next. If they refuse, they write you a reason.
+booking is created, or the change is applied. If it was a new booking, you get an
+email telling you it was approved and what is left to pay — pay it from your
+account, because the beds are not held until you do. If it was a change to a
+booking you already had, you get the usual "your booking was changed" email. Either
+way the officer's note comes with the decision, whether they said yes or no.
 
 ## Troubleshooting
 

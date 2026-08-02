@@ -3252,6 +3252,16 @@ invariants hold in addition to every #2365/#2524/#2525 invariant above:
   then checking only the delta would double-count it and FALSE-KEEP-PENDING an
   approval that should execute (safe direction, wrong answer). A new-booking
   proposal excludes nothing.
+- **The recheck window covers every frozen guest night.** The window is the union
+  of the frozen party's envelope AND every night its guests hold, not the
+  envelope alone. A stored snapshot is DATA: a guest night outside its own
+  envelope would otherwise never be capacity-checked by the engine at all, even
+  though `createConfirmedBooking` expands the envelope to cover it and books it —
+  so the engine's "it asserts capacity itself rather than trusting the executor
+  seam" would not be true for those nights. Widening can only make the check
+  stricter. Freezing closes the same gap from the other end, expanding the
+  proposed envelope to cover every guest night, so the officer's card and the
+  engine's window describe the same stay.
 - **Capacity stays a hard refusal.** The approval never passes
   `confirmOverCapacity` and never sets `adminOverride`; an approving officer is
   not a capacity-override actor. `createConfirmedBooking`'s non-throwing
@@ -3262,21 +3272,78 @@ invariants hold in addition to every #2365/#2524/#2525 invariant above:
   before the claim (NO_HOLD) or via a rollback signal (HOLD), and an execution
   refusal aborts the transaction — undoing the claim, the reservation release and
   every row the canonical service wrote. Equally, once execution has committed
-  the request is reported APPROVED and never as pending.
+  the request is reported APPROVED and never as pending. **The post-commit phase
+  cannot contradict that.** The canonical services' deferred thunks run AFTER the
+  commit and await unguarded provider, audit and notification work; the engine
+  contains a throw there and returns `executed` with `followUpFailed: true`, so
+  the officer reads "approved, but some follow-up work failed" instead of being
+  told nothing happened about a booking that now exists — which sent them either
+  to a 409 blaming a third party, or to creating the booking a second time by
+  hand. A failure in one deferred phase never skips the other.
+- **A kept-pending capacity conflict is always recorded.** `conflictCount`,
+  `lastConflictAt` and `lastConflictReason` are what the officer's card and the
+  member's own request list read to tell "the lodge is full" apart from "nobody
+  has looked yet", so the record must survive the rollback that carries the HOLD
+  signal. A store whose held requests reserve nothing (`holdsReservation: false`
+  — the new-booking store, whose reservation ledger is keyed to an existing
+  booking) is rechecked BEFORE the claim, so its conflict commits in the one
+  transaction that commits. A store that genuinely holds beds is still rechecked
+  after the release, and its conflict is written in its own transaction after the
+  rollback.
 - **The live proposal is verified by replay, not by trust.** A modification
   request freezes the raw member delta beside the proposal
   (`requestedChanges.delta`). `verifyLiveProposalIntegrity` replays that delta
   against the LIVE booking and requires the resulting base+proposed pair to hash
   to the frozen `proposalHash`. One equality proves both halves: the live booking
   has not drifted, and the delta still produces the proposal that was reviewed. A
-  missing, malformed or tampered delta fails closed as proposal drift.
-- **Only the reviewed rules are overridden.** Minimum stay is overridden by
-  running the canonical modification as an ADMIN actor (the service enforces the
-  rule only for non-admins), which is safe ONLY because #2525's drift gate has
-  already proved the frozen proposal trips exactly the reviewed violations — a
-  newly-tripping rule is `newViolations` and never reaches execution. A reviewed
-  rule that has since CLEARED is not overridden at all; the resolution is
-  recorded instead.
+  missing, malformed or tampered delta fails closed — but not with the same
+  explanation. Drift and tampering are reported as proposal drift; a row carrying
+  no replayable delta at all (one created before the delta was frozen) gets its
+  OWN message, because it is unexecutable while nothing about the booking has
+  moved, and blaming a live edit sends the officer and the member looking for an
+  edit that never happened.
+- **"What the delta produces" is computed by ONE implementation.** The replay is
+  proof only while the frozen party is what the canonical planner will really
+  build, so the two are the same arithmetic rather than two that agree by
+  inspection: `resolveModificationStayRanges`
+  (`src/lib/booking-modification-stay-ranges.ts`) is called by
+  `resolveTargetDates`, by `prepareGuestPlan`, and by the freeze. It owns the
+  planner's real semantics — the range-input flag is GLOBAL (ANY range anywhere
+  switches the whole request into a mode where every guest without their own
+  entry keeps their STORED range and night set, and the dates-moved reset never
+  runs), and a stored sparse night set (#713) survives instead of being flattened
+  to its envelope. A per-guest lookalike of that rule froze, hashed and
+  capacity-checked a party the execution never created: a date change plus a
+  partial `guestStayRanges` had an officer review three guests on three nights
+  and committed 3 + 2 + 2 — a different party, a different price, and a
+  minimum-stay/hosting judgement made on a party that never existed.
+- **Only the reviewed rules are overridden, and ADMIN is not borrowed for
+  anything else.** Minimum stay is overridden by running the canonical
+  modification as an ADMIN actor (the service enforces the rule only for
+  non-admins), which is safe ONLY because #2525's drift gate has already proved
+  the frozen proposal trips exactly the reviewed violations — a newly-tripping
+  rule is `newViolations` and never reaches execution. A reviewed rule that has
+  since CLEARED is not overridden at all; the resolution is recorded instead.
+
+  But `role === "ADMIN"` is overloaded. The same condition also grants
+  `skipAuthorization` (dropping the beyond-family member-guest refusal), makes a
+  member-guest add consent-free and always-notify, skips the D-8
+  profile/bookability gate, skips the cross-family marker, skips the member-guest
+  unpaid-subscription check, and auto-approves the adult-supervision review. The
+  drift gate cannot cover any of them: `evaluateProposalPartyViolations` evaluates
+  minimum stay and adult-member hosting only, so those rules sit outside the
+  "exactly the reviewed violations" proof entirely. Borrowing ADMIN for them would
+  let a member attach an unrelated member to a booking, consent-free, on a card
+  that only ever said "minimum stay".
+
+  So the approval passes `reviewedMemberProposal: true`, and every
+  guest-authorisation question in `prepareGuestPlan` is decided from ONE derived
+  flag (`guestAuthorizationIsAdmin`) that the input turns off — the plan and the
+  pricing pass read the same answer, so they can never disagree about whether the
+  family boundary applied. The reviewed minimum-stay override still keys on
+  `role`, so it is untouched. The flag can only ever make the guest rules
+  STRICTER, and an ordinary admin edit leaves it unset and behaves exactly as
+  before.
 - **An approved hosting exception is recorded as decided.** The canonical
   modification reconciles the hosting hazard from the rows it just wrote and
   deliberately opens it PENDING (an unrelated edit must never auto-approve one).
@@ -3286,6 +3353,14 @@ invariants hold in addition to every #2365/#2524/#2525 invariant above:
   request never leaves a pending hosting review nobody will action. The
   reason-agnostic check-in block (#1422) is untouched: any pending admin review
   still gates check-in, and this workflow adds no exemption to it.
+- **The adult-supervision review is never decided by proxy.** A party with a minor
+  and no adult (#1372, `requiresAdultSupervisionReview`) is a different rule from
+  either policy-exception reason code: the drift gate cannot evaluate it, the
+  officer's card never mentions it, and a minimum-stay-only approval requires no
+  written reason at all. An approval therefore opens it PENDING and BLOCKED, with
+  the MEMBER's own words as the justification — exact member parity — rather than
+  stamping it APPROVED in the name of an officer who was never shown the hazard.
+  The child-safety check-in block stays armed until a human looks.
 - **Reauthorization is from fresh database roles.** The session guard decides
   whether the officer may open the screen; the engine re-reads the officer's
   CURRENT roles inside the approval transaction and requires `bookings: edit`,
@@ -3295,14 +3370,49 @@ invariants hold in addition to every #2365/#2524/#2525 invariant above:
   `confirm: true`; overriding adult-member hosting and every refusal require a
   written reason; both carry the `expectedVersion` the officer's screen showed,
   so a decision made against a stale queue loses the guarded CAS instead of
-  deciding a request that changed underneath it.
+  deciding a request that changed underneath it. A failed attempt of the officer's
+  own can move that version (a NO_HOLD conflict bumps it), so the queue re-reads
+  itself on every failure — otherwise their next click lost the CAS and they were
+  told the request "changed while you were reviewing it", which blamed a third
+  party for their own previous attempt and made "approve it again once beds free
+  up" unreachable without a manual reload.
+- **The officer decides a party they were shown.** Approving executes the frozen
+  party for real, so `GET /api/admin/booking-exception-requests/[id]` describes
+  it — each guest's name, age tier, whether they are a member guest, whether they
+  are outside the requester's family (resolved from the LIVE boundary), and how
+  many nights they hold — and the queue card loads it on demand before the
+  decision. A guest count cannot show an unrelated member being attached to
+  somebody else's stay, or a party of minors with no adult, and without the party
+  on screen the audit record attributes to the officer a decision they had no way
+  to make.
+- **The money question is asked, not discovered.** A change that reduces a settled
+  booking's price makes the canonical service demand a card-or-credit choice. That
+  choice is not part of the reviewed proposal (the proposal decides WHAT changes;
+  this decides how the money moves), so it lives on the decision form, and the
+  route answers a missing one with `needsSettlementMethod` and its own actionable
+  message. It is never reported as "still pending": that named no action, the
+  screen offered none, and it made the archetypal shorten-my-paid-stay
+  minimum-stay exception permanently un-approvable through the queue.
 - **The member can read the decision.** Their own request list returns the
   officer's note (so a refusal comes with its reason rather than a bare
   `REJECTED`), the last capacity conflict (so a request still sitting at
   `REQUESTED` can be told apart from one nobody has looked at), and the booking
-  an approval created. The approval itself is announced by the canonical booking
-  service's own member email — the confirmation or change notice it already
-  sends after commit — rather than a second, competing notice.
+  an approval created. The note is returned on EVERY status, not only refusals,
+  and the officer's own field says so — the same text is reused as the audit-grade
+  override reason on the booking, so it must never be written believing it is an
+  internal aside.
+- **An approved request is announced.** A MODIFICATION is announced by the
+  canonical service's own change notice. A NEW booking is not: a members-only
+  party resolves to `PAYMENT_PENDING` on the default payment method, for which
+  `createConfirmedBooking` deliberately sends nothing — a member normally learns
+  what to pay because they are standing in the wizard being redirected to
+  checkout, and an approved exception request happens while they are elsewhere.
+  `PAYMENT_PENDING` holds no beds, so silence meant the lodge could fill, or the
+  booking be reaped, with the member none the wiser that they had one. The
+  new-booking executor therefore sends a dedicated approval email after commit
+  (`sendBookingPolicyExceptionApprovedEmail`) naming the stay, what is owed, and
+  the officer's note. The two never double up — only the new-booking flavour uses
+  it.
 - **Both request tables are decided by the same algorithm.** The engine takes a
   `PolicyExceptionRequestStore` (modification = `POLICY_EXCEPTION`
   `BookingChangeRequest`, new booking = `NewBookingPolicyExceptionRequest`);
@@ -3311,6 +3421,28 @@ invariants hold in addition to every #2365/#2524/#2525 invariant above:
   new-booking request holds no provisional reservation, so its release is a
   no-op — its safety comes from the approval's own capacity recheck plus the
   canonical create's hard refusal.
+- **A new booking is authorised, not merely created.** `createConfirmedBooking`
+  validates guest member links not at all: every other caller runs
+  `resolveLinkedBookingMembersWithBoundary` →
+  `assertLinkedBookingMembersCanBeBooked` → `normalizeBookingGuestInputs` →
+  `planMemberGuestConsentWrites` itself, first. The new-booking executor runs that
+  same sequence — as the REQUESTING MEMBER, per the reviewed-rules invariant above
+  — and dispatches the consent and family-add notices after its commit. Without it
+  a member could name any active member's id in an exception request and have an
+  approval attach them: no beyond-family refusal, no consent row and no
+  notification (on any club, module on or off), no profile/bookability gate, and a
+  guest row keeping the REQUESTER's declared age tier and membership, which also
+  priced them at the member rate.
+
+  Request CREATION runs the boundary resolution too, so a party naming a member
+  the requester may not book is refused at submission and no officer ever reviews
+  a party that cannot be executed. That is a usability gate, not the security
+  boundary: the approval's own pass is judged against the LIVE boundary at
+  approval time and fails the whole approval closed.
+- **Attempts count.** A supersede carries the predecessor's `attemptCount` forward
+  + 1, so the card's "Attempts" is the number of times the member has actually
+  asked. Every replacement starting again at 1 told an officer that a request
+  resubmitted three times was a first ask.
 
 ### Chasing an outstanding additional payment (#2350)
 
