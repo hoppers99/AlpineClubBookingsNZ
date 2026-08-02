@@ -36,9 +36,9 @@ Recipients are edited under the **support** ("Support & System") permission
 area: support **edit** can change them; a view-only support role sees the grid
 but cannot edit. Because the grid lists every admin user's name, email address
 and access role, seeing the grid at all also needs **Membership view** access or
-Support & System **edit** access — every built-in admin role has one or the
-other, so this only affects a custom role you have built with support view on its
-own. Within an admin's own areas, new alert types default to **enabled**, so they
+Support & System **edit** access — every built-in admin role that can open this
+page has one or the other, so this only affects a custom role you have built with
+support view on its own. Within an admin's own areas, new alert types default to **enabled**, so they
 receive everything for their areas until someone trims the list.
 
 Delivery Rules sit **upstream** of everything on this page. If

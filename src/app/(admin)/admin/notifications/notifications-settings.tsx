@@ -159,7 +159,9 @@ export function AdminNotificationSettings({
       );
 
       // Saved cards take the server's effective values; failed cards go back to
-      // what the server last confirmed. Untouched cards are left alone.
+      // what the server last confirmed. Cards outside this save are left alone,
+      // and the checkboxes are disabled while the save is in flight, so no
+      // in-flight edit can be silently overwritten by this re-baseline.
       const updatedAdmins = admins.map((admin) => {
         const result = results.find((r) => r.memberId === admin.id);
         if (!result) return admin;
@@ -179,7 +181,9 @@ export function AdminNotificationSettings({
         return;
       }
 
-      // Stay in edit mode so the operator can see and retry what did not save.
+      // Stay in edit mode. The refused card has rolled back to its last saved
+      // values, so the operator redoes that card's ticks and saves again; the
+      // toast below names exactly which card needs it.
       const detail = failures
         .map((failure) => {
           const name =
@@ -298,9 +302,12 @@ export function AdminNotificationSettings({
                     <Checkbox
                       id={controlId}
                       checked={admin.preferences[key]}
-                      disabled={!editing || locked}
+                      disabled={!editing || locked || saving}
                       onCheckedChange={() =>
-                        editing && !locked && togglePreference(admin.id, key)
+                        editing &&
+                        !locked &&
+                        !saving &&
+                        togglePreference(admin.id, key)
                       }
                     />
                     <div className="space-y-1">

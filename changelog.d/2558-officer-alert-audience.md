@@ -24,8 +24,9 @@
   Two other details worth knowing. Seeing the Recipients grid now needs
   Membership view access or Support & System edit access as well as the page's
   own Support & System view, because the grid lists every admin's name, email
-  address and role; every built-in admin role already has one of those, so this
-  only affects a custom role built with support view on its own. And the two
+  address and role; every built-in admin role that can open the page already has
+  one of those, so this only affects a custom role built with support view on its
+  own. And the two
   locked email-failure alerts ("an email to a member could not be sent",
   "email delivery permanently failed") are sent outside the grid to everyone with
   Support & System edit access and cannot be muted from it — the Recipients guide
