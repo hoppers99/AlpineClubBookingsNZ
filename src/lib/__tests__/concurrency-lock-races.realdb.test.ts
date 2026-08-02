@@ -37,6 +37,12 @@ import "./minimum-stay-policy-trigger.realdb.test";
 // import adds the over-budget race proof to the explicit CI race command without
 // making ordinary `npm test` depend on a database.
 import "./ai-diagnostics-budget-race.realdb.test";
+// #2374 (AID-5) deliberately is NOT imported here, unlike the two suites above.
+// `ai-diagnostics-select-only-role.realdb.test.ts` provisions and drops a cluster
+// ROLE and revokes `TEMPORARY ... FROM PUBLIC` on the shared throwaway database
+// for the duration of its run, so it gets its OWN named CI step and its own
+// vitest process rather than interleaving with these lock races on the same
+// database. That step is pinned by `review-findings-contracts.test.ts`.
 import {
   afterAll,
   beforeAll,
