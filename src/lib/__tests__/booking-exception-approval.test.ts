@@ -787,8 +787,14 @@ describe("executeApprovedProposal — new booking", () => {
   it("dispatches the consent and family-add notices after the commit, not inside it", async () => {
     // A consent row nobody is told about is a bed held for a member who was never
     // asked, which only the nightly sweep clears (#2526 review).
-    const sendMemberGuestAddNotifications = vi.fn(async () => undefined);
-    const sendFamilyMemberBookingAddNotifications = vi.fn(async () => undefined);
+    // Typed as taking their one argument object, so the assertions below can read
+    // it (a zero-arg `vi.fn` gives `.mock.calls[0]` the empty-tuple type).
+    const sendMemberGuestAddNotifications = vi.fn(
+      async (_args: Record<string, unknown>) => undefined,
+    );
+    const sendFamilyMemberBookingAddNotifications = vi.fn(
+      async (_args: Record<string, unknown>) => undefined,
+    );
     vi.doMock("@/lib/member-guest-consent-notifications", () => ({
       sendMemberGuestAddNotifications,
     }));

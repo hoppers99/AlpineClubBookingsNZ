@@ -13,8 +13,10 @@ const mocks = vi.hoisted(() => ({
   resolveNewBookingParams: vi.fn(),
   bcrFindFirst: vi.fn(),
   nbFindUnique: vi.fn(),
-  fgmFindMany: vi.fn(async () => []),
-  memberFindMany: vi.fn(async () => []),
+  // Rest-typed like every other model stub here, so the `(...a) => mock(...a)`
+  // forwarding below typechecks under `tsconfig.test.json`.
+  fgmFindMany: vi.fn(async (..._args: unknown[]) => []),
+  memberFindMany: vi.fn(async (..._args: unknown[]) => []),
 }));
 
 vi.mock("@/lib/session-guards", () => ({ requireAdmin: mocks.requireAdmin }));
