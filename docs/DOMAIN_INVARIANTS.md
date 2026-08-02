@@ -2138,13 +2138,54 @@ flips a boolean: it substitutes `GroupDiscountSetting.rateMembershipTypeId`
 their own type's rate and `TYPE_POLICY_FORCED` members are excluded — the two
 load-bearing behaviours the old flip preserved.
 
+A fourth way to reach `NON_MEMBER_DEFAULT` arrived with #2543: under
+`NON_MEMBER_PRICING`, a member whose season subscription is required but unpaid.
+That class resolves `NON_MEMBER_DEFAULT` **and not** `TYPE_POLICY_FORCED`, so the
+group discount treats them exactly like a real non-member. The distinction is
+money, not taxonomy: `TYPE_POLICY_FORCED` is excluded from the substitution, so
+labelling the reprice that way charged the repriced member the raw `NON_MEMBER`
+rate on every discounted night while the genuine non-member beside them paid the
+substituted (`FULL`) rate — 2400 c/night against 1000 c/night on the seeded
+fixture, i.e. 2.4x the rate the club actually charges non-members on that booking,
+and an outcome where the member is better off if the club deletes their membership
+record. The owner's rule is "priced at non-member rates", so they are priced at the
+rate a non-member pays. `TYPE_POLICY_FORCED` itself is untouched — a membership
+type the club deliberately configured onto non-member rates stays outside the
+discount, exactly as #1930 decided.
+
+**Membership, not the subscription, gates member-only promotions.** A repriced
+member keeps `isMember = true`, and `selectPromoDiscountGuests` filters
+`memberGuestsOnly` promotions on that flag, so a repriced member remains eligible
+for a member-only promo and can therefore pay LESS than the non-member beside them.
+That is deliberate and stated rather than incidental: their MEMBERSHIP is intact and
+in good standing — only the subscription is unpaid — and the owner's rule speaks to
+rates, not to member benefits. A club that wants the promotion withheld too should
+say so; the change would be to gate the predicate on `rateSource` rather than
+`isMember`, which is a separate decision about member benefits and not part of the
+repricing rule. Pinned by a test, so the behaviour cannot drift silently either way.
+
 Every priced guest stores a `BookingGuest.rateMembershipTypeId` snapshot — the
 type whose rows priced it (the resolved type, never the per-night discount
 substitution). Xero line building reads the snapshot to pick the hut-fee item
 code. The snapshot is **not** write-once: modify/reprice flows (waitlist offer
 reprice, date change, guest add/removal) recompute and overwrite it for
-repriced guests alongside `priceCents`; a locked night keeps both its price and
-its stale snapshot untouched. A `NULL` snapshot (pre-refactor booking) falls
+repriced guests alongside `priceCents`; a guest who **keeps any locked night** keeps
+both its price and their stale snapshot untouched
+(`rateSnapshotUpdateForRepricedGuest`, applied on the batch-modify, date-change and
+single-guest-removal writes). That guard is what makes the promise true rather than
+aspirational: the snapshot is per GUEST, the locked prices are per NIGHT
+(`BookingGuestNight` has no rate-type column), and Xero resolves ONE item code per
+guest and applies it to every night run of that guest even though runs are split by
+price change. So overwriting the snapshot on a stay that mixes locked and
+newly-priced nights posts the locked MEMBER-rate nights under the newly resolved
+NON_MEMBER item code. Pre-#2543 the trigger was a mid-booking membership-type
+change, i.e. rare; #2543 made it the ordinary case for any unpaid member editing a
+booking in a `NON_MEMBER_PRICING` club. The residual, stated plainly, is that such a
+guest keeps the OLD item code for the newly priced nights too — the same direction
+the locked price itself takes, and the only per-guest answer available until an item
+code can be resolved per night run. A guest whose locked prices were deliberately
+CLEARED (the #2337 placeholder→member link, which reprices the whole stay) has no
+kept locked night and is correctly re-snapshotted. A `NULL` snapshot (pre-refactor booking) falls
 back `isMember → FULL / NON_MEMBER` forever. Because the day-one fan-out
 backfill copied the old member rows/codes to every `MEMBER_RATE` type and the
 non-member rows/codes to `NON_MEMBER`, existing bookings and invoices resolve
@@ -2635,20 +2676,122 @@ the same release — the application writes both columns on every save
 (`legacyEnabledForLockoutMode`) so a draining blue/green colour keeps reading a
 truthful value; a later contract release drops it.
 
-**The mode is resolved once per request and passed down.** Every consumer reads it
-through `member-subscription-eligibility.ts`: `resolveSubscriptionLockoutMode()`
-outside transactions (it reseeds the financial-year cache, which can reach Xero),
-and `peekSubscriptionLockoutMode()` for the pricing gate, which runs *inside*
-booking transactions holding the per-lodge capacity lock and therefore must not be
-able to make a provider call. Each of the five write paths resolves the mode once
-and hands it to `evaluateNonMemberPricingRequirements`, so the HARD_BLOCK gate and
-the paid-up-adult requirement cannot branch on different answers if an admin saves
-the setting mid-request.
+**The mode is resolved once per request and passed down - to the money as well as
+to the gates.** Every consumer reads it through `member-subscription-eligibility.ts`:
+`resolveSubscriptionLockoutMode()` outside transactions (it reseeds the
+financial-year cache, which can reach Xero), and `peekSubscriptionLockoutMode()` as
+the FALLBACK for a caller that holds none. Each write path resolves the mode once and
+hands it to `evaluateNonMemberPricingRequirements` **and** to
+`resolveGuestRateMembershipTypes` / `priceBookingGuestsWithMembershipTypePolicy`
+(`subscriptionLockoutMode`); `prepareGuestPlan`, `calculateModifiedPricing`, the
+waitlist sweep and `removeBookingGuestInTransaction` take it as a value their
+in-transaction code cannot reach for the database to obtain. Two reasons, both
+correctness rather than speed:
+
+- **Consistency.** An independent read per pricing call let an admin's mid-request
+  save have the route gate branch on one regime and the price be computed under the
+  other - the "priced as a member here, refused there" drift #2543 exists to remove.
+  `modify-quote` performs seven or more pricing passes in one request and differences
+  two of them into the member's settlement delta, so a save landing between those two
+  made the delta wrong by the whole member/non-member spread on every remaining guest.
+- **Connections.** The pricing gate runs inside booking transactions that hold the
+  per-lodge capacity lock. Reading the two (uncached) settings rows through the module
+  client there checks out a SECOND pool connection underneath the lock, which
+  `docs/CONCURRENCY_AND_LOCKING.md` names as the pool-starvation shape and forbids
+  twice by name for `validateMinimumStay` and `loadAdultMemberHostingPolicy`. Being
+  handed the mode removes that read entirely, in every mode, for every club.
+
+**A failed mode read fails the request; it never quietly charges member rates.** The
+reprice resolver does not swallow errors from the mode read - an empty reprice set
+means "member rates", so a transient pool timeout would have undercharged an unpaid
+member permanently and invisibly (the rate is snapshotted per guest row) on a booking
+the route gate had already waved through. One leniency remains, and it is inherited
+rather than introduced: `loadEffectiveModuleFlags` swallows its own database errors and
+returns every module DISABLED (logging at error level), which resolves to `NO_BLOCK`.
+`main` has the identical outcome through `isSubscriptionEnforcementActive` - a failed
+flags read there skips the hard block and the unpaid member books at member rates just
+the same - so #2543 neither widens nor narrows it.
+
+**The financial-year reseed is gated on the Xero module, not on the mode.** A club that
+has deliberately switched the lockout off resolves `NO_BLOCK` through the legacy boolean
+with Xero still on, and every request-path reseeder in the tree routes through
+`resolveSubscriptionLockoutMode` (the booking write paths, `findUnpaidMemberGuests`, the
+member notice builder). Gating the reseed on `mode !== "NO_BLOCK"` therefore left such a
+club with no request-path reseed at all: after a container restart `getSeasonYear` and
+`computeAgeTier` would resolve against the March default instead of the club's real
+year-end month, and the rate resolved for a booking can differ from the correct one. The
+reseed runs before the mode is consulted, restoring the pre-#2543 condition.
 
 **Only the refusals are mode-gated, never the lookups.** `findUnpaidMemberGuests`
 / `findUnpaidMemberGuestNames` still run under `NON_MEMBER_PRICING`: they are what
 raise the D-8 neutral refusal for an unpaid member guest from beyond the booker's
 family, and that privacy boundary is not the lockout policy's to relax.
+
+**There are SIX mode-gated refusal sites, not five.** The five route-level gates
+(create, confirm-draft, modify-quote, guest-add, group-join) plus `prepareGuestPlan` in
+`booking-modify-plan.ts` - the APPLY half of the edit flow whose preview is
+`modify-quote`, reached from `modifyBookingBatch` and therefore from
+`POST/PUT /api/bookings/[id]/modify`. Ungated, it hard-blocked an unpaid member guest in
+every regime, so a member was quoted the non-member price with an explanation and then
+refused on save with the pre-#2543 403: an edit that could never complete.
+
+**The paid-up-adult requirement is evaluated on REMOVALS too, not only on additive
+writes.** Otherwise any party reached the forbidden state in two requests: book with a
+paid-up adult member (allowed - the unpaid member repriced on the strength of their
+presence), then remove that adult, with nothing to re-evaluate and no review raised. It
+is now evaluated over the whole PROPOSED party on the apply path (`prepareGuestPlan`,
+which covers adds, removals and date changes in one place) and over what is LEFT on
+`DELETE .../guests/[guestId]`. A **consent DECLINE or EXPIRY is exempt** and always
+allowed through: D-14 requires that a member who has declined can be taken off, and
+refusing it would trap them on a booking they have refused. An ADMIN is skipped as on
+every other #2543 gate. What stays gated is the case the rule is about - the booking
+owner, or a member self-removing, choosing to take the party's last paid-up adult member
+off it.
+
+**The waitlist is the sixth money path and now carries both halves.** The offer sweep
+prices through the same gate, so it inherits the reprice, and it passes NO locked night
+prices - the whole stay re-bases at current rates and the result is WRITTEN to the
+stored booking. Both safeguards now reach it: the offer email states the repriced figure
+**and** the reason for it (`subscriptionMemberRateNotice`, rendered from the shared
+sentence), and `confirmWaitlistOffer` re-checks the paid-up-adult requirement before the
+claiming transaction - outside it, like the minimum-stay check beside it - failing closed
+WITHOUT consuming the offer, so the member keeps their place and can fix the party or ask
+a Booking Officer instead of the offer being burnt. That refusal answers 409 with the
+shared refusal body, not a bare message.
+
+**D-12 is applied on every path, and from the real column.** A member guest whose invite
+is still PENDING is not operationally present and therefore cannot be the party's paid-up
+adult - otherwise the requirement is trivially satisfiable, since the invite need never be
+accepted, and the D-4 sweep later removes the row, leaving a confirmed booking with no
+paid-up adult member on it. The Prisma column is `BookingGuest.consentStatus`;
+`toSubscriptionLockoutParticipants` reads that for a persisted row and the planned
+`memberGuestConsent.consentStatus` for a pre-persist one, so the create path (whose
+`guestInputs` already carry the PENDING columns `planMemberGuestConsentWrites` is about to
+write) and the guest-add path share one mapping instead of each inventing their own. The
+two PREVIEW surfaces hold no consent row, so they derive the same answer from the three
+facts the writer would use - a cross-family member guest lands PENDING exactly when the
+module is on, the club requires approval, and the actor is a member rather than an admin
+acting for them - which is what stops a quote staying silent about a party the save then
+refuses. The exception-request re-evaluation takes an explicit `operationallyPresent` per
+proposed guest for the same reason: without it a member refused on a booking path could
+not reproduce the violation, the request machinery would find nothing to review, and the
+409's promised override path would lead nowhere.
+
+**Xero narrates the rate, not the membership flag.** The hut-fee line's
+`(TIER, Member|Non-member)` label is derived from `BookingGuest.rateMembershipTypeId`
+(`describeGuestRateMembershipLabel`), the same field `resolveHutFeeItemCode` keys on, so
+the words on the line agree with the item code the line is coded to. A repriced member
+therefore reads as an ordinary non-member line (owner decision, 2 Aug 2026), instead of
+"(ADULT, Member)" at the non-member amount inside the non-member item - a contradiction
+both the treasurer reconciling member against non-member hut-fee income and the member
+receiving the invoice could see. `BookingGuest.isMember` is deliberately NOT moved by the
+reprice; it stays load-bearing elsewhere. Known and accepted consequence: the
+pre-existing `TYPE_POLICY_FORCED` class flips to ", Non-member" too, because no persisted
+marker distinguishes the two reasons for pricing on `NON_MEMBER` rows - and the new
+wording is the honest one for that class as well, whose line has always been coded to the
+non-member item at the non-member amount. Narration only: no amount, item code, account
+code or idempotency key changes, and a guest with a NULL snapshot still falls back to
+`isMember`.
 
 **The reprice happens at the single pricing gate**, not at the five write paths.
 `resolveGuestRateMembershipTypes` is the one function all ~25 booking-pricing call
@@ -2689,9 +2832,50 @@ the field, so an unpaid member's own nights do not become uncovered guest-nights
 needing admin review. A lapsed membership is gone; an unpaid subscription is a
 membership in good standing with a bill outstanding.
 
+**`NON_MEMBER_PRICING` is a relaxation, with two narrow exceptions - stated because
+the blanket claim is not true.** It removes hard refusals rather than adding them, and
+the paid-up-adult requirement only bites on a party somebody is being repriced on. But
+that requirement is evaluated over the WHOLE party, while the pre-#2543 gates looked
+only at the guests a request was ADDING, so two parties that pass today can land on the
+new 409:
+
+1. **confirm-draft** has no member-guest subscription gate on `main` at all, so a draft
+   owned by a paid-up Youth member containing an unfinancial member guest confirms today
+   and is refused under `NON_MEMBER_PRICING`.
+2. **modify-quote and `.../guests`** gate added guests only, so a member already on the
+   booking with an unpaid subscription can trip the requirement on an edit that has
+   nothing to do with them.
+
+Both land on a 409 with an override door and a HOLD on the beds - not a wall - and
+neither is closed by adding a new HARD_BLOCK gate, which would change today's behaviour
+for clubs that have not adopted the mode. The honest claim is: no HARD_BLOCK refusal
+becomes stricter, and these two cases become reviewable rather than impossible.
+
+**Config-transfer reconciles the (mode, enabled) pair on import.** An absent-or-null
+`mode` MEANS "resolve from the legacy boolean", and the importer writes only fields
+physically present in a bundle (dropping null-valued ones altogether in the default
+merge mode) - so `enabled`, being non-null, always travelled and `mode` did not, leaving
+the target's own stale `mode` in place to win at read time. Two silent failures followed:
+a pre-#2543 bundle carrying `enabled: false` imported onto a club storing
+`NON_MEMBER_PRICING` reported "changed: enabled" in the dry-run while every unpaid member
+went on being repriced and refused; and a post-#2543 bundle from a club that had never
+opened the panel (`mode: null, enabled: false`) left the target on
+`mode = NON_MEMBER_PRICING, enabled = false`, an inconsistent pair no admin save can
+produce and one that breaks the rollback guarantee, because an old colour reads
+`enabled = false` and applies no lockout at all. The singleton spec's `reconcile` hook now
+derives the legacy boolean from a recognised `mode`, and derives `mode` from the boolean
+when no recognised mode is present, on the one code path both the dry-run and the apply
+use. No format-version bump is needed: an old bundle now imports to the right policy
+rather than to a guess, so there is nothing for a version gate to refuse.
+
 **Reversal:** set the mode back to `HARD_BLOCK` (or `NO_BLOCK`) in Admin →
 Subscription lockout. No migration, no code change, and no already-taken booking is
-re-priced — the rate is snapshotted per guest row as it always was. The
+re-priced — the rate is snapshotted per guest row as it always was, and a guest who
+keeps a locked night keeps their snapshot too. Two stored-money exceptions, both
+pre-existing behaviours the mode inherits rather than introduces: the waitlist offer
+sweep re-bases a WAITLISTED entry's stored price at current rates before the member
+confirms (which is why the offer email now states the reason as well as the figure),
+and any edit the member themselves makes prices its NEW nights at today's rates. The
 paid-up-adult half keys off the same standing predicate as #2364, so a reversal of
 *that* half is #2364's reversal (drop the standing clauses from
 `participantQualifiesAsHost`), never a narrower one here.

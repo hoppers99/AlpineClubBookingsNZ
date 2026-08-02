@@ -129,6 +129,30 @@ booking" before switching a live club, and tell your treasurer first. Reversing 
 is a settings change, not a migration, and does not re-price bookings already
 taken.
 
+**Three things to tell people before you switch a live club to the third option.**
+
+1. **Two narrow cases start being refused that go through today**, because the
+   paid-up-adult requirement is judged over the WHOLE party while the pre-existing
+   subscription checks looked only at the guests a request was adding: confirming a
+   draft that carries an unfinancial member guest (confirm-draft has no member-guest
+   subscription check today at all), and editing a booking that already carries an
+   unfinancial member. Both answer 409 with the Booking-Officer override path and a
+   hold on the bed, so they are reviewable rather than blocked - but they are new
+   refusals, and the plain claim "this only ever relaxes things" is not true of them.
+   No previously-blocking refusal becomes stricter.
+2. **Invoice wording changes for two classes of guest.** A hut-fee line's
+   "(ADULT, Member)" label now follows the RATE the guest was charged rather than the
+   membership flag, so a repriced member reads as "Non-member" - which is the point,
+   since the line has always been coded to the non-member item at the non-member
+   amount. The same change applies to any membership type your club has deliberately
+   configured onto non-member rates. Wording only: no amount, item code, account code
+   or Xero idempotency key moves, so nothing re-syncs and no reconciliation breaks.
+3. **Re-export your configuration bundles after upgrading, before importing one into
+   an upgraded club.** A bundle exported before this release carries only the old
+   on/off boolean. The importer now derives the new three-way setting from it, so such
+   a bundle imports to the right policy - but a bundle exported from an upgraded club
+   carries both fields and is unambiguous. There is no format-version bump for this.
+
 ### Re-export configuration bundles for format version 4 (#2364)
 
 Configuration bundles now require exact **format version 4**. Version 4 adds a

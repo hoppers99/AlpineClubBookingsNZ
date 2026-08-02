@@ -68,10 +68,18 @@ This option moves money, so it is worth reading before you pick it.
   accountant.
 - **Everyone else on the booking is unaffected.** Only the person whose
   subscription is unpaid is repriced.
-- **They are told why.** The quote screen shows a plain sentence explaining that
-  member rates are not available while the subscription is unpaid, and that
-  renewing restores them. It names nobody and no amount, so it is safe on a
-  screen a family member may be reading.
+- **They are told why**, on every screen that shows them the number: the quote
+  step of the booking wizard, the edit-booking panel, and the waitlist offer email.
+  The sentence explains that member rates are not available while the subscription
+  is unpaid and that renewing restores them. It names nobody and no amount, so it
+  is safe on a screen a family member may be reading — and it is worded about the
+  booking rather than about the reader, so a paid-up member booking for an
+  unfinancial relative is never told their own subscription is in arrears.
+- **The invoice line says Non-member.** The hut-fee line for that member reads
+  "(ADULT, Non-member)", matching the non-member amount and the non-member item
+  code. If your club also uses a membership type deliberately configured onto
+  non-member rates, those members' lines change the same way. It is wording only:
+  no amount, item code or account code moves.
 - **The booking still needs a paid-up adult member on it.** If nobody staying on
   the booking is an adult member whose subscription *is* paid, the booking is
   refused — but the member can **ask a Booking Officer to allow it**, which goes
@@ -84,9 +92,23 @@ This option moves money, so it is worth reading before you pick it.
   their non-member guests need a genuinely paid-up adult member present.
 - **The requirement only applies to bookings this repricing touches.** A booking
   with nobody unpaid on it is judged exactly as before.
+- **It is re-checked when somebody is removed, and when a waitlist offer is
+  confirmed** — not only when guests are added. Otherwise a booking could be
+  allowed because a paid-up adult was on it, and that adult taken off a moment
+  later. A member who declines a member-guest invite can always still be taken off
+  a booking; that is never blocked.
+- **Two things start being refused that go through today.** Because this
+  requirement looks at the whole booking while the old subscription checks looked
+  only at guests being added, confirming a draft that carries an unfinancial member
+  guest, and editing a booking that already carries an unfinancial member, can now
+  be refused. Both offer the Booking-Officer override and hold the bed, so they are
+  reviewable rather than dead ends — but they are new refusals, and worth telling
+  your Booking Officers about before you switch.
 
 To reverse it, pick a different answer and save. No already-taken booking is
-re-priced — each guest's rate was recorded when the booking was made.
+re-priced — each guest's rate was recorded when the booking was made, and a night
+somebody has already bought keeps both its price and its invoice coding even when a
+later edit re-prices the rest of the stay.
 
 ### Set the financial year
 
