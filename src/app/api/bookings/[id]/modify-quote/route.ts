@@ -59,6 +59,7 @@ import {
   markCrossFamilyMemberGuests,
   type MemberGuestConsentGuestFields,
 } from "@/lib/member-guest-add-policy";
+import { isOperationallyPresentConsent } from "@/lib/member-guest-consent";
 import {
   applyMemberGuestPartyProbeThrottle,
   createMemberGuestAddThrottleLedger,
@@ -1183,13 +1184,41 @@ export async function POST(
   // Skipped for admins, like every other eligibility gate on this route.
   let subscriptionMemberRateNotice: string | null = null;
   if (!isAdmin) {
+    // The stored D-12 fact for every row already on this booking, read from the
+    // rows this route already loaded (no extra query).
+    const consentStatusByGuestId = new Map(
+      booking.guests.map((guest) => [guest.id, guest.consentStatus]),
+    );
     const nonMemberPricing = await evaluateNonMemberPricingRequirements(prisma, {
       mode: subscriptionLockoutMode,
       lodgeId: bookingLodgeId,
       seasonYear,
       checkIn: newCheckIn,
       checkOut: newCheckOut,
-      participants: guestsForPricing,
+      // D-12. `proposedGuestRows` is rebuilt field by field and deliberately
+      // carries no consent column, so passing it raw made a PENDING cross-family
+      // adult count as the party's paid-up adult HERE while the guest-add path
+      // correctly excluded them on the same booking — the two disagreed about the
+      // same party. A row already on the booking is judged by its STORED
+      // consentStatus; a row this preview would ADD is judged by whether it is a
+      // cross-family member guest, which is exactly the add that lands PENDING.
+      participants: guestsForPricing.map((guest) => ({
+        isMember: guest.isMember,
+        memberId: guest.memberId ?? null,
+        stayStart: guest.stayStart,
+        stayEnd: guest.stayEnd,
+        nights: guest.nights,
+        operationallyPresent: guest.bookingGuestId
+          ? isOperationallyPresentConsent(
+              consentStatusByGuestId.get(guest.bookingGuestId) ?? null,
+            )
+          : !(
+              guest.crossFamilyMemberGuest === true &&
+              memberGuestPolicy.wideningEnabled &&
+              memberGuestPolicy.approvalRequired &&
+              !isAdmin
+            ),
+      })),
     });
     if (nonMemberPricing?.violation) {
       return NextResponse.json(
@@ -1256,11 +1285,18 @@ export async function POST(
   const policyAdjustedGuestsForPricing = await resolveGuestRateMembershipTypes(prisma, {
     seasonYear,
     guests: guestsForPricing,
+    // #2543: this route performs SEVEN or more pricing passes in one request and
+    // differences two of them into the member's settlement delta, so every pass
+    // is handed the one mode resolved above. Left to peek independently, an admin
+    // save landing between two passes made the delta wrong by the entire
+    // member/non-member spread on every remaining guest.
+    subscriptionLockoutMode,
   });
   const policyAdjustedAddGuests = normalizedAddGuestsWithRanges
     ? await resolveGuestRateMembershipTypes(prisma, {
         seasonYear,
         guests: normalizedAddGuestsWithRanges,
+        subscriptionLockoutMode,
       })
     : undefined;
   const policyAdjustedExistingGuests = await resolveGuestRateMembershipTypes(prisma, {
@@ -1269,6 +1305,7 @@ export async function POST(
       ...guest,
       ageTier: guest.ageTier as AgeTier,
     })),
+    subscriptionLockoutMode,
   });
 
   let inProgressPlan: BookingEditGuestRangePlan | null = null;
@@ -1384,6 +1421,7 @@ export async function POST(
         seasons: seasonRateData,
         groupDiscount,
         seasonYear,
+        subscriptionLockoutMode,
       });
       newTotalPriceCents = priceBreakdown.totalPriceCents;
     }
@@ -1501,6 +1539,7 @@ export async function POST(
         guests: oldRemainingForPricing,
         seasons: seasonRateData,
         groupDiscount,
+        subscriptionLockoutMode,
       });
       const newPriceForRemaining = await priceBookingGuestsWithMembershipTypePolicy(prisma, {
         ownerMemberId: booking.memberId,
@@ -1510,6 +1549,7 @@ export async function POST(
         seasons: seasonRateData,
         groupDiscount,
         seasonYear,
+        subscriptionLockoutMode,
       });
       const dateChangeCost =
         newPriceForRemaining.totalPriceCents -
@@ -1591,6 +1631,7 @@ export async function POST(
           seasons: seasonRateData,
           groupDiscount,
           seasonYear,
+          subscriptionLockoutMode,
         });
         const tierLabel = guest.ageTier.charAt(0) + guest.ageTier.slice(1).toLowerCase();
         const memberLabel = guest.isMember ? "Member" : "Non-member";

@@ -19,6 +19,7 @@ import {
   priceBookingGuestsWithMembershipTypePolicy,
 } from "@/lib/membership-type-policy";
 import { getMemberCreditBalance } from "@/lib/member-credit";
+import { resolveSubscriptionLockoutMode } from "@/lib/member-subscription-eligibility";
 import { evaluateNonMemberPricingRequirements } from "@/lib/subscription-lockout-enforcement";
 import { getSeasonYear } from "@/lib/utils";
 import { applyRateLimit, rateLimiters } from "@/lib/rate-limit";
@@ -316,6 +317,12 @@ export async function POST(request: NextRequest) {
   const gds = await prisma.groupDiscountSetting.findUnique({ where: { id: "default" } });
   const groupDiscount = toGroupDiscountConfig(gds);
 
+  // #2543 — resolved ONCE for this request. The quote prices the party and then
+  // explains the price; both must be judged against the same mode, or an admin
+  // saving the panel between the two calls makes the notice describe a regime the
+  // number was not computed under.
+  const subscriptionLockoutMode = await resolveSubscriptionLockoutMode();
+
   try {
     const price = await priceBookingGuestsWithMembershipTypePolicy(prisma, {
       // Finding 2 (privacy re-review of MG3 #2308).
@@ -326,6 +333,7 @@ export async function POST(request: NextRequest) {
       guests,
       seasons: seasonData,
       groupDiscount,
+      subscriptionLockoutMode,
     });
     // Deferred non-member "guest portion" (#2003): when a split creates a
     // provisional non-member child, its charge is the non-member SUBSET priced
@@ -372,11 +380,32 @@ export async function POST(request: NextRequest) {
     // paid-up adult is present, the quote can warn BEFORE the member fills in
     // the rest of the wizard and gets refused at the end.
     const nonMemberPricing = await evaluateNonMemberPricingRequirements(prisma, {
+      mode: subscriptionLockoutMode,
       lodgeId: quoteLodgeId,
       seasonYear: getSeasonYear(checkIn),
       checkIn,
       checkOut,
-      participants: guests,
+      // D-12 on a party that persists NOTHING. This route plans no consent
+      // columns, so operational presence is derived from the same three facts
+      // `buildMemberGuestConsentWrite` would use on save: a cross-family member
+      // guest lands PENDING exactly when the module is on, the club requires
+      // approval, and the actor is a member rather than an admin acting on their
+      // behalf. Without this the preview would stay silent about a party the
+      // create path then refuses — which is precisely the late surprise the
+      // early warning exists to prevent.
+      participants: guests.map((guest) => ({
+        isMember: guest.isMember,
+        memberId: guest.memberId ?? null,
+        stayStart: guest.stayStart ?? null,
+        stayEnd: guest.stayEnd ?? null,
+        nights: guest.nights ?? null,
+        operationallyPresent: !(
+          guest.crossFamilyMemberGuest === true &&
+          memberGuestPolicy.wideningEnabled &&
+          memberGuestPolicy.approvalRequired &&
+          !isAuthorizedOnBehalf
+        ),
+      })),
     });
 
     return NextResponse.json({

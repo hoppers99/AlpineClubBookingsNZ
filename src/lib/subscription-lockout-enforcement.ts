@@ -195,16 +195,38 @@ export function buildPaidUpAdultRefusalBody(
  * PENDING is NOT operationally present (D-12), so they cannot be the party's
  * paid-up adult — the kiosk, the arrival roster and bed allocation all already
  * leave them out, and a "responsible adult" who may never turn up is not one.
- * A pre-persist party (the create path) has no consent facts yet and passes its
- * inputs straight through, where absent means present, exactly as #2364 does.
+ *
+ * THE COLUMN IS `consentStatus`, and naming it correctly is the whole guard.
+ * This helper originally read `memberGuestConsentStatus`, a name that exists
+ * nowhere in the schema (the Prisma column is `BookingGuest.consentStatus`, and
+ * every other consumer reads that — `adult-member-hosting-review.ts`,
+ * `admin-bed-allocation.ts`, `double-bed-sharing.ts`). Because the constraint
+ * property was optional, `BookingGuest[]` still type-checked, every persisted row
+ * read `undefined`, `isOperationallyPresentConsent(undefined)` returned true, and
+ * the D-12 half of the paid-up-adult test never ran on a real party: a PENDING
+ * cross-family invite could satisfy the requirement and then expire, leaving a
+ * confirmed booking with no paid-up adult member on it and nothing to re-check.
+ *
+ * A PRE-PERSIST PARTY carries the same fact under a different name. The create
+ * and guest-add paths hold `memberGuestConsent` — the write
+ * `planMemberGuestConsentWrites` is about to make, carrying the PENDING status it
+ * will store — so both shapes are read here rather than left to five callers to
+ * remember. Absent under BOTH names means present, exactly as #2364 does: a
+ * family-scope guest legitimately has no consent row.
  */
 export function toSubscriptionLockoutParticipants<
   Guest extends {
     isMember: boolean;
     memberId?: string | null;
-    stayStart?: Date | null;
-    stayEnd?: Date | null;
-    memberGuestConsentStatus?: MemberGuestConsentStatus | null;
+    // A string is accepted because the create path carries the member's raw
+    // request values this far; `participantNights` parses either.
+    stayStart?: Date | string | null;
+    stayEnd?: Date | string | null;
+    consentStatus?: MemberGuestConsentStatus | null;
+    memberGuestConsent?: {
+      consentStatus?: MemberGuestConsentStatus | null;
+    } | null;
+    nights?: ReadonlyArray<string | Date | { stayDate: string | Date }> | null;
   },
 >(guests: ReadonlyArray<Guest>): SubscriptionLockoutParticipant[] {
   return guests.map((guest) => ({
@@ -212,8 +234,9 @@ export function toSubscriptionLockoutParticipants<
     memberId: guest.memberId ?? null,
     stayStart: guest.stayStart ?? null,
     stayEnd: guest.stayEnd ?? null,
+    nights: guest.nights ?? null,
     operationallyPresent: isOperationallyPresentConsent(
-      guest.memberGuestConsentStatus,
+      guest.consentStatus ?? guest.memberGuestConsent?.consentStatus ?? null,
     ),
   }));
 }
@@ -410,6 +433,18 @@ export async function evaluateProposedPaidUpAdultPresence(
       isMember: boolean;
       memberId?: string | null;
       nights?: ReadonlyArray<string | Date | { stayDate: string | Date }> | null;
+      /**
+       * D-12 operational presence, resolved by the caller (absent means present).
+       *
+       * Load-bearing for the door this function exists to open. A member refused
+       * by a booking path — where a PENDING cross-family invite is correctly
+       * excluded — must reproduce the SAME violation here, or the request
+       * machinery finds nothing to review, refuses to create a request, and the
+       * 409's promised override path leads nowhere. The caller resolves it
+       * because only the caller knows whether a proposed guest is a live
+       * CONFIRMED row or somebody who would be invited PENDING.
+       */
+      operationallyPresent?: boolean;
     }>;
   },
 ): Promise<PaidUpAdultMemberPolicyExceptionViolation | null> {
@@ -422,6 +457,7 @@ export async function evaluateProposedPaidUpAdultPresence(
       isMember: guest.isMember,
       memberId: guest.memberId ?? null,
       nights: guest.nights ?? null,
+      operationallyPresent: guest.operationallyPresent,
     })),
   });
   return requirements?.violation ?? null;

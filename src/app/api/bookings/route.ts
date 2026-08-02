@@ -27,6 +27,7 @@ import { resolveSubscriptionLockoutMode } from "@/lib/member-subscription-eligib
 import {
   buildPaidUpAdultRefusalBody,
   evaluateNonMemberPricingRequirements,
+  toSubscriptionLockoutParticipants,
 } from "@/lib/subscription-lockout-enforcement";
 import {
   assertLinkedBookingMembersCanBeBooked,
@@ -786,7 +787,18 @@ export async function POST(request: NextRequest) {
       seasonYear: getSeasonYear(checkIn),
       checkIn,
       checkOut,
-      participants: guestInputs,
+      // D-12 on a PRE-PERSIST party. `guestInputs` is `consentPlan.guests`, so
+      // every cross-family member guest already carries the `memberGuestConsent`
+      // columns this request is about to write — including the PENDING status.
+      // Passing the raw list read `operationallyPresent` as absent, i.e. present,
+      // and made the requirement trivially satisfiable: name any paid-up adult
+      // member from beyond your family, and the invite need never be accepted.
+      // The D-4 sweep then removes the row and the booking stands with no
+      // paid-up adult member on it, with nothing to re-evaluate it. This
+      // evaluation is the only enforcement on the create path, so unlike #2364 —
+      // whose create-time answer is later re-derived by a reconciler that does
+      // apply consent — nothing would ever correct it.
+      participants: toSubscriptionLockoutParticipants(guestInputs),
     });
     if (nonMemberPricing?.violation) {
       return NextResponse.json(
@@ -888,6 +900,9 @@ export async function POST(request: NextRequest) {
         // objects diverge on a money-bearing field again.
         applyCreditCents: parsed.data.applyCreditCents,
         groupDiscount,
+        // #2543 — the mode resolved once above, handed to pricing so no path in
+        // this request can price under a regime the gates did not branch on.
+        subscriptionLockoutMode,
         memberReviewJustification,
         adultMemberHostingReason,
         lodgeId: parsed.data.lodgeId,
@@ -1044,6 +1059,8 @@ export async function POST(request: NextRequest) {
       cancelIfGuestsBumped,
       applyCreditCents: parsed.data.applyCreditCents,
       groupDiscount,
+      // #2543 — see the draft branch above.
+      subscriptionLockoutMode,
       status,
       shouldBePending,
       holdDays: holdPolicy.holdDays,
@@ -1093,6 +1110,8 @@ export async function POST(request: NextRequest) {
         expectedArrivalTime,
         requestedRoomId,
         groupDiscount,
+        // #2543 — see the draft branch above.
+        subscriptionLockoutMode,
         memberReviewJustification,
         adultMemberHostingReason,
         lodgeId: parsed.data.lodgeId,

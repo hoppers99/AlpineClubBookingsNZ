@@ -127,6 +127,14 @@ export class GroupBookingError extends Error {
   /** Frozen soft-policy facts; present only on the still-blocking 400 path. */
   violations?: PolicyExceptionViolation[];
   exceptionReview?: AggregatedPolicyExceptions;
+  /**
+   * Where the member goes to ask for an override (#2543). Carried through the
+   * error so the join route serialises the same field the other four refusal
+   * paths return: "you were refused but you may ask" is useless advice if the
+   * caller cannot find the door, and a client written against the shared refusal
+   * body would otherwise render no link on this path alone.
+   */
+  exceptionRequestPath?: string;
 
   constructor(
     message: string,
@@ -136,6 +144,7 @@ export class GroupBookingError extends Error {
       details?: unknown;
       violations?: PolicyExceptionViolation[];
       exceptionReview?: AggregatedPolicyExceptions;
+      exceptionRequestPath?: string;
     }
   ) {
     super(message);
@@ -145,6 +154,7 @@ export class GroupBookingError extends Error {
     this.details = options?.details;
     this.violations = options?.violations;
     this.exceptionReview = options?.exceptionReview;
+    this.exceptionRequestPath = options?.exceptionRequestPath;
   }
 }
 
@@ -773,6 +783,8 @@ export async function joinGroupBookingAsMember(
         details: refusal.details,
         violations: refusal.exceptionReview.violations,
         exceptionReview: refusal.exceptionReview,
+        // The one field the other four paths return and this one used to drop.
+        exceptionRequestPath: refusal.exceptionRequestPath,
       });
     }
 

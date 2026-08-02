@@ -67,10 +67,7 @@ import {
   handleMemberGuestAddRefusal,
   startMemberGuestRefusalClock,
 } from "@/lib/member-guest-probe-guard";
-import {
-  isOperationallyPresentConsent,
-  type MemberGuestAddActor,
-} from "@/lib/member-guest-consent";
+import type { MemberGuestAddActor } from "@/lib/member-guest-consent";
 import { findUnpaidMemberGuestNames } from "@/lib/booking-member-guest-subscriptions";
 import { resolveSubscriptionLockoutMode } from "@/lib/member-subscription-eligibility";
 import {
@@ -443,27 +440,22 @@ export async function POST(
           seasonYear,
           checkIn: booking.checkIn,
           checkOut: booking.checkOut,
-          participants: [
-            ...toSubscriptionLockoutParticipants(booking.guests),
-            ...normalizedNewGuests.map((guest) => ({
-              isMember: guest.isMember,
-              memberId: guest.memberId ?? null,
-              // This route's guest schema carries no per-guest stay range, so an
-              // added guest takes the booking envelope.
-              stayStart: booking.checkIn,
-              stayEnd: booking.checkOut,
-              // D-12, on the rows this add is about to CREATE. A cross-family
-              // member guest is added PENDING — they have not accepted yet — so
-              // they must not be the paid-up adult who satisfies the requirement.
-              // Without this the rule would be trivially satisfiable: add any
-              // paid-up adult member as a guest and the invite need never be
-              // accepted. A family-scope add carries no consent columns at all,
-              // and absent means present, exactly as #2364 has it.
-              operationallyPresent: isOperationallyPresentConsent(
-                guest.memberGuestConsent?.consentStatus,
-              ),
-            })),
-          ],
+          // D-12 over the whole post-add party. `toSubscriptionLockoutParticipants`
+          // reads a persisted row's `consentStatus` and a pre-persist row's planned
+          // `memberGuestConsent.consentStatus`, which is exactly the two shapes
+          // here, so both lists go through the one helper rather than each
+          // inventing its own mapping. A cross-family member guest is added PENDING
+          // — they have not accepted yet — so they must not be the paid-up adult
+          // who satisfies the requirement; otherwise the rule is trivially
+          // satisfiable, since the invite need never be accepted. A family-scope
+          // add carries no consent columns at all, and absent means present,
+          // exactly as #2364 has it. An added guest carries no per-guest stay range
+          // on this route, so a null envelope falls back to the booking's, which is
+          // what the participant mapper does.
+          participants: toSubscriptionLockoutParticipants([
+            ...booking.guests,
+            ...normalizedNewGuests,
+          ]),
         });
         if (nonMemberPricing?.violation) {
           throw new PaidUpAdultMemberRequiredError(nonMemberPricing.violation);
@@ -561,6 +553,10 @@ export async function POST(
           seasons: seasonRateData,
           groupDiscount: toGroupDiscountConfig(groupDiscountSetting),
           seasonYear,
+          // #2543 — the mode this request already resolved. This call runs inside
+          // the transaction holding the per-lodge capacity lock, so being handed
+          // the mode also removes a second pooled connection from under the lock.
+          subscriptionLockoutMode,
           // Finding 2 (privacy re-review of MG3 #2308).
           skipAuthorization: isAdmin,
         });
