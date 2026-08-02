@@ -6,11 +6,13 @@
   against a real database and watches what happens.
 
   That test now exists and runs on every pull request. It deliberately holds the
-  two requests still at the exact moment they would collide, confirms that
-  neither one has been allowed to claim any of the budget yet, then lets them go
-  and checks that exactly one of them gets it. It was proved to work by breaking
-  the protection on purpose in two different ways — removing it, and applying it
-  a moment too late — and confirming the test caught both, every time.
+  two requests still at the exact moment they would collide, confirms with the
+  database's own records that both are stopped and waiting their turn before
+  either has written anything, then lets them go and checks that exactly one of
+  them gets the budget. It was proved to work by breaking the protection on
+  purpose in three different ways — removing it, applying it a moment too late,
+  and applying it after the spend was already recorded — and confirming the test
+  caught all three, every time.
 
   Nothing an administrator sees or sets has changed — the budget, the warnings,
   and the spend figures all behave exactly as before. This is assurance that the

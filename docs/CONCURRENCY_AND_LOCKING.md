@@ -390,11 +390,12 @@ The mutual exclusion this rests on is proven against a real PostgreSQL by
 `ai-diagnostics-budget-race.realdb.test.ts` (#2532), which runs from the same
 opt-in harness as the rest of this document's race proofs. Its lead test FORCES
 the overspend interleaving rather than racing for it: a third connection holds
-the per-month key open, both reservers are then observed queued on that exact
-key in `pg_locks`, and neither is allowed to have inserted before the holder is
-released — so removing the lock, or taking it after the budget reads, fails
-deterministically instead of flaking. See `docs/ai-diagnostics/README.md`
-("Concurrency proof").
+the per-month key open, and both reservers are then observed queued on that
+exact key in `pg_locks` while `pg_stat_activity` still shows them with no
+transaction id — i.e. blocked before either wrote anything — before the holder
+is released. So removing the lock, taking it after the budget reads, or taking
+it after the guarded insert each fail deterministically instead of flaking. See
+`docs/ai-diagnostics/README.md` ("Concurrency proof").
 
 The first four are the **booking / capacity / credit cluster** — they interact,
 and are where the ordering discipline matters. The remaining rows are
