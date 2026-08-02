@@ -531,7 +531,7 @@ export async function sendBookingPolicyExceptionApprovedEmail(
       adminNotesLine,
       // Raw values behind the two composed lines, so an admin override written
       // against either form keeps rendering.
-      amountDue,
+      amount: amountDue,
       adminNotes: args.adminNotes ?? "",
     },
     lodgeId: args.lodgeId,

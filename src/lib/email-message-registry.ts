@@ -188,7 +188,7 @@ export const EXTRA_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, strin
   // #2526: the raw values behind the two pre-composed lines, so an override may
   // reference either form. `paymentNote` renders nothing for a booking that owes
   // nothing; `adminNotesLine` renders nothing when the officer left no note.
-  "booking-policy-exception-approved": ["amountDue", "adminNotes"],
+  "booking-policy-exception-approved": ["amount", "adminNotes"],
   "booking-review-approved": ["adminNotes"],
   "booking-review-rejected": ["adminNotes"],
   "split-guest-portion-cancelled": ["bookingReference"],
