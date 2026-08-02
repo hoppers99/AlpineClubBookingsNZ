@@ -182,11 +182,23 @@ export function evaluatePaidUpAdultPresence(
  * the decided soft regime (they are charged non-member rates), so it can be
  * surfaced today without misdescribing behaviour: it never promises a booking,
  * only states that member rates are unavailable and how to restore them.
+ *
+ * PARTY-SCOPED, NOT SECOND-PERSON, and that distinction is the whole point. The
+ * notice is emitted whenever ANYONE on the party is being repriced, and it is
+ * rendered to whoever is reading the quote — which is very often not that person.
+ * A paid-up adult member booking for their adult son, whose subscription is
+ * unpaid, would otherwise be told "Your subscription isn't paid" about an account
+ * in perfect standing, and the plausible response is to pay a subscription they
+ * do not owe or to ring the club about a debt that is not theirs.
+ *
+ * The privacy constraint still holds: it names nobody, because it cannot know who
+ * is reading. "Names nobody" and "asserts it is the reader" are different things,
+ * and this wording is the first without being the second.
  */
 export function formatUnpaidSubscriptionRateReason(seasonDisplay: string): string {
   return (
-    `Your ${seasonDisplay} membership subscription isn't paid, so member rates ` +
-    `aren't available to you — renew your subscription to restore member rates.`
+    `A membership subscription on this booking isn't paid for ${seasonDisplay}, ` +
+    `so member rates aren't available for those nights — renewing it restores them.`
   );
 }
 

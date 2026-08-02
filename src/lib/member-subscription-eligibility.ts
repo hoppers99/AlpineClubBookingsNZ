@@ -43,14 +43,47 @@ export async function requiresPaidSubscriptionForAgeTierFromSettings(
  * inconsistency #2543 exists to remove.
  */
 export async function resolveSubscriptionLockoutMode(): Promise<SubscriptionLockoutMode> {
-  const mode = await peekSubscriptionLockoutMode();
-  if (mode !== "NO_BLOCK") {
+  const policy = await readSubscriptionLockoutPolicy();
+  if (policy.xeroModuleEnabled) {
     // Reseed the in-process financial-year cache (cheap; uses cached Xero value).
-    // Reached on exactly the same condition as before #2543 — the Xero module is
-    // on — because `NO_BLOCK` is returned unconditionally when it is off.
+    //
+    // BEFORE THE MODE IS CONSULTED, and gated on the Xero module rather than on
+    // the resolved mode. Pre-#2543 this reseed ran on exactly one condition — the
+    // Xero module is on — and gating it on `mode !== "NO_BLOCK"` instead silently
+    // narrowed it, because a club that has deliberately switched the lockout off
+    // resolves to `NO_BLOCK` through the legacy `enabled` fallback with the Xero
+    // module still on. Every request-path reseeder in the tree routes through
+    // this function (the five booking write paths, `findUnpaidMemberGuests` and
+    // the member notice builder), so narrowing it left such a club with no
+    // request-path reseed at all: after a container restart, `getSeasonYear` and
+    // `computeAgeTier` would resolve against the March default instead of the
+    // club's real year-end month, and the rate resolved for a booking can differ
+    // from the correct one. Restored to the pre-#2543 condition.
     await refreshFinancialYearConfig();
   }
-  return mode;
+  return policy.mode;
+}
+
+/**
+ * The stored policy plus the one fact `resolveSubscriptionLockoutMode` needs that
+ * the mode alone cannot carry: whether the Xero module is on.
+ *
+ * `NO_BLOCK` is returned both for "Xero is off" and for "the club chose
+ * NO_BLOCK", so a caller reading only the mode cannot tell them apart — which is
+ * precisely the conflation that broke the financial-year reseed above.
+ */
+async function readSubscriptionLockoutPolicy(): Promise<{
+  xeroModuleEnabled: boolean;
+  mode: SubscriptionLockoutMode;
+}> {
+  const flags = await loadEffectiveModuleFlags();
+  if (!flags.xeroIntegration) {
+    return { xeroModuleEnabled: false, mode: "NO_BLOCK" };
+  }
+  return {
+    xeroModuleEnabled: true,
+    mode: (await loadMembershipLockoutSettings()).mode,
+  };
 }
 
 /**
@@ -64,11 +97,17 @@ export async function resolveSubscriptionLockoutMode(): Promise<SubscriptionLock
  * transactions that hold the per-lodge capacity lock. A provider call in there
  * is the one thing the booking rules forbid outright, so the in-transaction
  * reader must not be able to make one.
+ *
+ * THIS IS THE FALLBACK, NOT THE PREFERRED READ. A caller inside a booking
+ * transaction should be HANDED the mode its request already resolved (see
+ * `resolveGuestRateMembershipTypes`'s `subscriptionLockoutMode`), for two
+ * reasons: two independent reads in one request can disagree if an admin saves
+ * the panel mid-request, and each read here checks out a second pool connection
+ * underneath the per-lodge capacity lock, which is the pool-starvation shape
+ * `docs/CONCURRENCY_AND_LOCKING.md` forbids.
  */
 export async function peekSubscriptionLockoutMode(): Promise<SubscriptionLockoutMode> {
-  const flags = await loadEffectiveModuleFlags();
-  if (!flags.xeroIntegration) return "NO_BLOCK";
-  return (await loadMembershipLockoutSettings()).mode;
+  return (await readSubscriptionLockoutPolicy()).mode;
 }
 
 /**
