@@ -157,6 +157,9 @@ describe("admin cron health", () => {
 
     for (const jobName of [
       "confirm-pending",
+      // #2550: the whole-lodge placeholder guest-name chase rides the same
+      // three-hourly general cycle as its siblings.
+      "placeholder-guest-name-reminders",
       "pre-arrival-reminders",
       "purge-booking-requests",
       "quote-expiry-reminders",
