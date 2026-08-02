@@ -10,6 +10,7 @@ import {
   type FamilyGroupMemberRow,
   type FamilyGroupRequest,
 } from "@/lib/admin-family-group-ui-helpers";
+import { captureHostTimeZone } from "@/lib/__tests__/helpers/timezone";
 
 const baseRequest: FamilyGroupRequest = {
   id: "request-1",
@@ -218,13 +219,13 @@ describe("formatFamilyGroupDate (#2256)", () => {
   // 2026-04-15T23:30:00Z is 2026-04-16 11:30 in Pacific/Auckland, so the NZ
   // calendar date differs from the UTC one at this instant.
   const INSTANT = "2026-04-15T23:30:00.000Z";
-  const RUNTIME_TZ = process.env.TZ;
+  const hostTimeZone = captureHostTimeZone();
 
   afterEach(() => {
-    // Node re-reads process.env.TZ, so leaving it set would leak the fake zone
-    // into every later test in this worker.
-    if (RUNTIME_TZ === undefined) delete process.env.TZ;
-    else process.env.TZ = RUNTIME_TZ;
+    // A bare `delete process.env.TZ` does not invalidate Node's cached zone
+    // (#2485) — `hostTimeZone.restore()` assigns the real host zone back
+    // first, so it can't leak the fake one into a later test in this worker.
+    hostTimeZone.restore();
   });
 
   it("renders the NZ calendar date in the app's standard medium format", () => {

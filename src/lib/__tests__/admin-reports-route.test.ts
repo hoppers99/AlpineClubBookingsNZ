@@ -17,6 +17,7 @@ import {
 } from "@prisma/client";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { captureHostTimeZone } from "@/lib/__tests__/helpers/timezone";
 
 const EXPECTED_REPORT_STATUS_VALUES = [
   "PENDING",
@@ -110,18 +111,14 @@ function zeroMemberQueries() {
 }
 
 describe("admin reports route", () => {
-  const originalTimeZone = process.env.TZ;
+  const hostTimeZone = captureHostTimeZone();
 
   beforeAll(() => {
     process.env.TZ = "Pacific/Auckland";
   });
 
   afterAll(() => {
-    if (originalTimeZone === undefined) {
-      delete process.env.TZ;
-    } else {
-      process.env.TZ = originalTimeZone;
-    }
+    hostTimeZone.restore();
   });
 
   beforeEach(() => {
