@@ -3185,7 +3185,7 @@ pure workflow logic (`src/lib/booking-exception-requests.ts`):
   `CANCELLED`, `SUPERSEDED` and `EXPIRED` release the provisional reservation;
   `APPROVED` turns it into the executed booking's own beds inside the same
   transaction.
-- **A held bed always has a deadline, and only a held bed has one (#2553).** A
+- **Every held bed is on a deadline, and only a held bed is (#2553).** A
   request that actually reserves beds is stamped at creation with an immutable
   `holdExpiresAt` — `POLICY_EXCEPTION_HOLD_TTL_DAYS` (7) from creation, capped at
   the start of the first night it holds, floored at
@@ -3197,16 +3197,37 @@ pure workflow logic (`src/lib/booking-exception-requests.ts`):
   `resolvePolicyExceptionRequestTerminal`, the SAME guarded-claim-plus-atomic-
   release path the other terminal outcomes take, so beds are returned under the
   global -> per-lodge locks exactly once and no forked release exists to drift.
-  The converse matters as much: `holdExpiresAt` is NULL, and the reaper's scan
-  never sees the row, whenever no capacity is at stake — a `LOCKED_PERIOD` row, a
-  `NO_HOLD` aggregate, or a HOLD aggregate whose incremental footprint came out
-  empty (a pure shrink). A cron may release stranded beds; it may never close a
-  live request that costs the club nothing to leave open. Concurrency safety comes
-  from the `version` CAS rather than a job-level lock: a decision landing between
-  the scan and the claim wins, and overlapping cron cycles produce exactly one
-  expiry and one release. No email or provider call is made — the `EXPIRED` status
-  is the durable fact — and the one-open-request slot is freed so a lapse never
-  locks the member out of resubmitting.
+  The converse holds for every row the current code STAMPS: `holdExpiresAt` is
+  NULL, and the reaper's scan never sees the row, whenever no capacity is at stake
+  — a `LOCKED_PERIOD` row, a `NO_HOLD` aggregate, or a HOLD aggregate whose
+  incremental footprint came out empty (a pure shrink). A cron may release stranded
+  beds; it may never close a live request that costs the club nothing to leave open.
+  **The one stated exception, because the #2553 migration deliberately does not
+  backfill:** a row written before that migration (or by a draining old colour) can
+  be holding beds *with* `holdExpiresAt` NULL, and the reaper ages that row out from
+  `createdAt` plus its own earliest held night under the identical rule. So NULL is
+  never a safe proxy for "this request holds no capacity" — a scan or predicate that
+  tests `holdExpiresAt IS NOT NULL` would silently skip exactly the stranded holds
+  this invariant exists to catch. The live `PolicyExceptionReservationNight` rows are
+  the only reliable test, which is why the reaper's scan filters on them.
+  Concurrency safety comes from the `version` CAS rather than a job-level lock: a
+  decision landing between the scan and the claim wins, and overlapping cron cycles
+  produce exactly one expiry and one release. A lost claim is silent; a past-deadline
+  row the shared transition REFUSES outright (not a policy-exception row, or an
+  unparsable `proposalSnapshot`) can never self-heal, so it is counted as
+  `unresolvable` in `CronJobRun.resultSummary` and logged at warn rather than
+  reported as a clean run. **An expiry is never silent, and never inside the release
+  transaction (owner decision, 2 Aug 2026).** Three records, in this order: the
+  `EXPIRED` status the member already sees on their booking's Change Requests card;
+  a `booking-policy-exception-request.expired` AuditLog row, so the request's audit
+  timeline reads created -> expired; and a `policy-exception-request-expired`
+  courtesy email to the member who raised it, telling them the request lapsed and
+  its held beds were released. The audit write and the send both happen AFTER
+  `resolvePolicyExceptionRequestTerminal` returns a claimed outcome, and both are
+  logged-and-swallowed on failure: a bounced notice can neither roll back a
+  capacity release, nor cause one to be re-run, nor stop the reaper closing the
+  run's other stranded holds. The one-open-request slot is freed too, so a lapse
+  never locks the member out of resubmitting.
 - **Approval is atomic with execution (#2525).** `approveAndExecutePolicyExceptionRequest`
   reauthorizes from fresh DB roles, re-reads under global -> per-lodge locks,
   applies the drift rules above, claims `REQUESTED -> APPROVED` with the `version`

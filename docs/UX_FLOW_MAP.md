@@ -21,10 +21,19 @@ worker cannot see new-version booking retry bodies.
 ## Minimum-stay exception foundation (#2363)
 
 An operator creating or editing a minimum-stay rule must choose whether a later
-exception request will **hold requested capacity during review** or **not hold
+exception request will **hold requested capacity while it waits** or **not hold
 capacity until approval**. The row displays that choice, and a stale update is
 refused and reloaded if another admin or config import saved first. Public pages
 using `{{booking-policies}}` show the configured choice in plain language.
+
+A hold is not open-ended (#2553). The option label, the field hint, the saved-rule
+summary and the published sentence all say so: it lasts until the request is
+decided or its deadline passes — 7 days from when the request is raised, never
+past the start of the first night held, and never less than 24 hours — after
+which the hold-reaper cron returns the beds, marks the request **Expired**, and
+emails the member who raised it. An operator choosing HOLD to protect capacity
+while they consult the committee needs to see that deadline in the setting itself,
+which is why the copy carries it rather than only the docs.
 
 For members, this release deliberately keeps the existing journey: create,
 group join, and date-change mutations stop on minimum stay; quote/policy-check

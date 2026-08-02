@@ -518,7 +518,9 @@ linking directly to the filtered audit record.
 ## Booking Modification Lifecycle
 
 Known change request statuses: `REQUESTED`, `APPROVED`, `REJECTED`, and — for a
-`POLICY_EXCEPTION`-kind request only (#2365) — `CANCELLED` and `SUPERSEDED`.
+`POLICY_EXCEPTION`-kind request only — `CANCELLED` and `SUPERSEDED` (#2365) plus
+`EXPIRED` (#2553, written by the hold-reaper cron). This sentence is the status
+census: a narrowed type or filter list copied from it must carry all six.
 
 ```text
 member/admin starts edit -> quoted delta -> local booking mutation
@@ -539,7 +541,8 @@ the structured evidence it asks an admin to allow (`frozenEvidence`, the #2363
 HOLD-if-any-HOLD aggregate) plus the denormalised `aggregateCapacityMode`, a
 required `memberMessage` (trimmed, <=1000 chars), and attempt/conflict metadata
 (`attemptCount`, `conflictCount`, `lastConflictAt`, `lastConflictReason`). Its
-lifecycle adds two terminal outcomes to the shared enum:
+lifecycle adds three terminal outcomes to the shared enum (`CANCELLED` and
+`SUPERSEDED` with #2365, `EXPIRED` with #2553):
 
 ```text
 POLICY_EXCEPTION request -> REQUESTED
@@ -604,10 +607,18 @@ second release implementation to drift. Three things bound it: it only scans
 `PolicyExceptionReservationNight` rows, so a request stranding no capacity (a
 `NO_HOLD` aggregate, or a HOLD aggregate whose incremental footprint came out
 empty) is never closed by a cron; the `version` CAS means a decision landing in
-the same window wins and the reaper releases nothing; and no email or provider
-call is made, so the `EXPIRED` status on the request is the durable fact the
-member and officer surfaces read. The member's one-open-request slot is freed, so
-a lapse never locks them out of raising a fresh proposal.
+the same window wins and the reaper releases nothing; and a past-deadline row the
+shared transition refuses outright (not a policy-exception row, or an unparsable
+`proposalSnapshot`) is counted as `unresolvable` and logged at warn, because
+unlike a lost claim it can never self-heal. Each expiry leaves three records: the
+`EXPIRED` status the member and officer surfaces read, a
+`booking-policy-exception-request.expired` audit row, and a
+`policy-exception-request-expired` courtesy email to the member who raised it.
+Both side effects run strictly AFTER the release commits and neither can affect
+it — a failed audit write or a bounced email is logged and swallowed, so it can
+never roll back a release, re-run one, or stop the reaper closing the run's other
+holds. The member's one-open-request slot is freed, so a lapse never locks them
+out of raising a fresh proposal.
 
 **Member request surfaces (#2524, wired to #2525).** #2524 builds the
 request-CREATION half of that flow (creation, member cancel, member supersede, the
