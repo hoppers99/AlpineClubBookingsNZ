@@ -34,6 +34,9 @@
     // Documented read-only diagnostic CLI (docs/guides/calendar.md; invoked via
     // `npx tsx`, never imported). Explains a member's calendar edit access.
     "scripts/diagnose-calendar-access.ts"
+    // NOTE: scripts/diagnostics/generate-knowledge-bundle.ts (AID-3, #2372) does
+    // NOT need an entry — knip's package.json plugin already reaches it through
+    // the `diagnostics:bundle` npm script.
     // `src/instrumentation.node.ts` deliberately has NO entry here. It used to
     // (#1178), partly justified by an `onRequestError` export that Next never
     // reads from this file — that hook now lives on `src/instrumentation.ts`,

@@ -44,6 +44,7 @@
     "load:contention": "k6 run load/scenarios/booking-contention.js",
     "load:dashboard": "k6 run load/scenarios/member-dashboard.js",
     "quality:report": "tsx scripts/quality-report.ts",
+    "diagnostics:bundle": "tsx scripts/diagnostics/generate-knowledge-bundle.ts",
     "setup:check": "tsx scripts/setup.ts check",
     "setup:wizard": "tsx scripts/setup.ts wizard",
     "review:staging:a11y": "bash scripts/run-staging-accessibility-checks.sh",
