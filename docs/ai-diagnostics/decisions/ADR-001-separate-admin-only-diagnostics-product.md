@@ -150,4 +150,5 @@ take down member-facing Page help, and vice versa.
 - ADR-005 (budget, rate limits, tool-loop bounds, fail-closed control plane)
 - ADR-006 (deployment, provider disclosure, private overlay, config non-travel)
 - ADR-007 (least-privilege SELECT-only database credential)
+- ADR-008 (answer output channel: inert render, strict CSP, untrusted output)
 - [Threat model](../threat-model.md)

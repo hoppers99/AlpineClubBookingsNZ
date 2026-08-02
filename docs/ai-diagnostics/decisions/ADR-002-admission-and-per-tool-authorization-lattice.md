@@ -131,5 +131,7 @@ not belong in Diagnostics.
 - ADR-003 (untrusted evidence classes)
 - ADR-005 (fail-closed control plane; bounded tool loop)
 - ADR-007 (SELECT-only DB credential; the substrate that runs the gated tools)
+- ADR-008 (evidence can steer the *answer* even when it cannot authorize a tool;
+  the output channel closes that in-scope path)
 - [Threat model](../threat-model.md) — see the "Elevation of privilege" and
   "authorization" rows.

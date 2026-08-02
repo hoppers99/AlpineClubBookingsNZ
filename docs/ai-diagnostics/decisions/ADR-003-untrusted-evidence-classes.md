@@ -112,6 +112,8 @@ that cannot cite retrieved evidence for a factual claim is a defect.
 - ADR-002 (evidence never authorizes a tool; permissions do)
 - ADR-004 (redaction, retention, and the approved audit metadata set)
 - ADR-005 (bounded tool loop; the loop bound is not evidence-controllable)
+- ADR-008 (the output-channel counterpart: the model's *answer* is untrusted
+  output, rendered inert under a strict CSP)
 - [Threat model](../threat-model.md) — the "Tampering / prompt injection" and
   "Information disclosure" rows.
 - [`docs/agents/PROMPT_INJECTION_GUIDE.md`](../../agents/PROMPT_INJECTION_GUIDE.md)
