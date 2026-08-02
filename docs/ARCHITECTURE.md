@@ -2531,6 +2531,32 @@ Private/fork knowledge uses a generic, deployment-owned overlay
 any club's paths. Full reference:
 [`diagnostics/KNOWLEDGE_BUNDLE.md`](diagnostics/KNOWLEDGE_BUNDLE.md).
 
+## AI Diagnostics typed page context
+
+The same product also needs to know **which admin page** the operator is looking
+at. It does not scrape the DOM, take a screenshot, or accept a free-text blob
+(the member-facing Page help assistant's flat `pageContext` string is deliberately
+left alone and never reused here). Instead the browser sends a strictly typed
+**selector** — a key in a server-side route registry, at most one opaque record
+id, and a handful of route-allowlisted view tokens — and the server re-derives
+every fact itself (#2373, `src/lib/diagnostics/page-context/`).
+
+**A client value selects; it never asserts.** Resolution runs four gates:
+parse (strict schema, then the route's own allowlists, rejecting wholesale
+rather than dropping a bad token), authorize (the caller's permission matrix
+re-read from the database-joined access roles on **every** resolution — never a
+JWT or a cache — and AND across every area the route declares), re-fetch (a
+fixed, typed, column-allowlisted read of the one record, whose **kind comes from
+the registry, never the client**), then bound (redact, cap, stamp observed-at,
+attach approved audit metadata only).
+
+Identifying fields are **opt-in per record**; without the opt-in the record
+resolves to non-identifying state plus an explicit "personal detail omitted"
+notice. A registry row can never be gated below the admin route lattice's own
+requirement for its path — a contract test resolves each registered pathname
+through `getAdminRouteRequirement` and asserts it. Full reference:
+[`ai-diagnostics/page-context.md`](ai-diagnostics/page-context.md).
+
 ## Security and Privacy Boundaries
 
 - Auth uses credentials sessions with explicit admin, admin-area, and finance

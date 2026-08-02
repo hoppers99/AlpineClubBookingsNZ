@@ -305,6 +305,10 @@ module boundaries, data model, integrations, cron jobs, and the mermaid maps.
   deterministic, fail-closed deployed-code knowledge bundle (AID-3, #2372) that
   lets AI Diagnostics answer code/docs/schema questions from the running
   artifact, with cited-evidence retrieval and the deployment-owned overlay.
+- [`ai-diagnostics/page-context.md`](ai-diagnostics/page-context.md) — the typed
+  structured page context (AID-4, #2373): the untrusted selector, the route
+  registry, the fresh permission-checked server re-fetch, the personal-detail
+  opt-in, and the untrusted-evidence render.
 - [`ONGOING_DEVELOPMENT_WORKFLOW.md`](ONGOING_DEVELOPMENT_WORKFLOW.md) — how
   generic public changes and private deployment-fork changes flow.
 - [`STYLE_GUIDE.md`](STYLE_GUIDE.md) — documentation style, the operator-guide
