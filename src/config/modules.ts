@@ -27,6 +27,7 @@ export const MODULE_KEYS = [
   "lobbyDisplay",
   "aiAssistant",
   "memberGuests",
+  "aiDiagnostics",
 ] as const;
 
 export type ModuleKey = (typeof MODULE_KEYS)[number];
@@ -84,6 +85,7 @@ export const DEFAULT_MODULE_SETTINGS: ModuleSettingsValues = {
   lobbyDisplay: false,
   aiAssistant: false,
   memberGuests: false,
+  aiDiagnostics: false,
 };
 
 export interface ModuleDefinition {
@@ -322,6 +324,19 @@ export const MODULE_DEFINITIONS: Record<ModuleKey, ModuleDefinition> = {
       "A member who has been asked but has not answered yet holds a bed, and is deliberately left off the kiosk arrivals list, the chore roster and the arrival emails until they accept.",
       "Finding another member is by exact email address unless you switch on name search — which makes your membership list browsable to any member. It ships off.",
       "It also covers what YOUR staff do: adding a member guest on somebody's booking, copying a booking, and approving a booking request with a member linked to a place all email that member to say so. Those emails are not optional, and nobody is asked first on an admin path.",
+    ],
+  },
+  aiDiagnostics: {
+    key: "aiDiagnostics",
+    label: "AI Diagnostics",
+    description:
+      "A separate admin-only assistant that can explain the deployed code and retrieve bounded, permission-scoped operational evidence. Distinct from the AI help assistant: it has its own paid credential, spend budget, and security model.",
+    dependencies: [
+      // Stated because turning the switch on does NOT by itself enable anything
+      // that spends money — the two setup steps below, and a passing readiness
+      // check, are what make the product usable.
+      "Enter a DEDICATED Anthropic API key under Admin → Integrations (a separate key from the AI help assistant — the keys are never shared).",
+      "Set a monthly spend budget on the AI Diagnostics settings. It ships at NZ$0, which hard-stops every paid diagnostics call until you raise it.",
     ],
   },
 };

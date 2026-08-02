@@ -139,6 +139,34 @@ describe("feature route map", () => {
     expect(getRequiredFeaturesForPath("/api/help/chat")).toEqual([]);
   });
 
+  it("gates the AI Diagnostics budget settings but keeps readiness reachable module-off (AID-2)", () => {
+    // The operational budget settings hard-gate on the module flag, exactly like
+    // the page-help settings route above.
+    expect(
+      getRequiredFeaturesForPath("/api/admin/ai-diagnostics/settings"),
+    ).toEqual(["aiDiagnostics"]);
+    expect(
+      getDisabledFeatureForPath("/api/admin/ai-diagnostics/settings", {
+        ...allOn,
+        aiDiagnostics: false,
+      }),
+    ).toBe("aiDiagnostics");
+    // The readiness endpoint is EXEMPT so setup can be guided before enabling —
+    // it must stay reachable with the module OFF, in every spelling.
+    expect(
+      getRequiredFeaturesForPath("/api/admin/ai-diagnostics/readiness"),
+    ).toEqual([]);
+    expect(
+      getDisabledFeatureForPath("/api/admin/ai-diagnostics/readiness", {
+        ...allOn,
+        aiDiagnostics: false,
+      }),
+    ).toBeNull();
+    expect(
+      getRequiredFeaturesForPath("/api/admin/ai-diagnostics/readiness.rsc"),
+    ).toEqual([]);
+  });
+
   it("never gates the lodge admin surface behind a feature flag", () => {
     // Multi-lodge is core (ADR-005): the lodge admin page and its API are
     // always reachable (still admin-gated by the layout), so no feature flag

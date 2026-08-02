@@ -86,6 +86,12 @@ export const MODEL_LEVEL_EXCLUSIONS: Record<string, string> = {
     "deployment-specific AI monthly spend cap (NZD integer cents); an operational " +
     "spend control a source club must never silently reset on a target — a fresh " +
     "import keeps the target's own cap (#2211) — instance-local",
+  DiagnosticsSettings:
+    "deployment-local AI Diagnostics monthly spend cap (NZD integer cents) for a " +
+    "SEPARATE admin-only paid product (AID-2, #2371); like AiAssistantSettings it " +
+    "is an operational spend control a source club must never silently reset on a " +
+    "target — enabling paid diagnostics is a per-deployment decision, so a fresh " +
+    "import keeps the target's own cap — instance-local",
 };
 
 /**

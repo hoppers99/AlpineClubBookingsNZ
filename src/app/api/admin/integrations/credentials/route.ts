@@ -31,6 +31,10 @@ import {
   ANTHROPIC_PROVIDER,
   ANTHROPIC_WRITABLE_CREDENTIAL_KEYS,
 } from "@/lib/ai-assistant-config";
+import {
+  DIAGNOSTICS_PROVIDER,
+  DIAGNOSTICS_WRITABLE_CREDENTIAL_KEYS,
+} from "@/lib/ai-diagnostics-config";
 import { prisma } from "@/lib/prisma";
 import logger from "@/lib/logger";
 
@@ -67,6 +71,15 @@ const WRITABLE_CREDENTIALS: Record<string, readonly string[]> = {
   // verified marker to drop (the verify-ping endpoint was cut per plan); the
   // key's own needs-reentry state is derived live from the encrypted store.
   [ANTHROPIC_PROVIDER]: [...ANTHROPIC_WRITABLE_CREDENTIAL_KEYS],
+  // AI Diagnostics DEDICATED Anthropic API key (AID-2, #2371): a SEPARATE
+  // write-only secret under its own provider namespace ("anthropic-diagnostics"),
+  // Full Admin. Deliberately distinct from the page-help ANTHROPIC_PROVIDER key
+  // above so the two are never shared or confused — a diagnostics deployment can
+  // point at a separate Anthropic workspace/key. Same shape as the page-help key:
+  // no verify-reset marker; the needs-reentry state is derived live from the
+  // encrypted store. Reachable whether or not the aiDiagnostics module is on, so
+  // the credential can be entered before the module is enabled.
+  [DIAGNOSTICS_PROVIDER]: [...DIAGNOSTICS_WRITABLE_CREDENTIAL_KEYS],
 };
 
 // GET /api/admin/integrations/credentials?provider=xero — METADATA-ONLY status.
