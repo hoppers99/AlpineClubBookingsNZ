@@ -106,6 +106,32 @@ are listed on the booking for you to relay.
    (school groups) to convert it into a booking. Use **Decline** with an
    optional reason to turn it down.
 
+#### Member whole-lodge requests
+
+A signed-in member can ask to book the **whole lodge** for their party. These
+requests appear in the same **Public Requests** queue with a **Member** and a
+**Whole lodge requested** badge. Approving one holds the whole lodge for the
+group. Before you approve you set:
+
+- **Headcount to book and price** — confirm the real number with the member; the
+  member's figure is only an estimate.
+- **Total price override (optional)** — a manual total. It is required when no
+  season covers the dates (there is no separate quote step on this path), and it
+  always wins over every other pricing method.
+
+If the covering season has a **flat whole-lodge night rate** set (see
+[Fees](fees.md)), you also get a **How to price this whole-lodge booking**
+choice on that one approval:
+
+- **Price per guest** (the default) — each guest at the season rate, as usual.
+- **Price as whole lodge** — the season's flat rate per night for the whole
+  building, regardless of headcount. The panel shows the total; a stay that
+  crosses a season boundary is charged each night at that night's season rate.
+
+The choice is yours per approval — it is never automatic. A total price override
+still overrides whichever method you pick. Then click **Approve & hold the whole
+lodge**.
+
 **If you link a guest row to a real member account** (#2309). A request's guest
 list is free-text names, but you can attach a place to an actual member so it
 prices at member rates. With the **Add another member as a guest** module on,

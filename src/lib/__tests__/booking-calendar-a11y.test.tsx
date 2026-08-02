@@ -18,6 +18,11 @@ const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
 const targetDay = Math.min(now.getDate() + 1, lastDay);
 const targetIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(targetDay).padStart(2, "0")}`;
 
+// Lodge nights are date-only `yyyy-MM-dd` strings (#2474), so tests pass the key
+// the calendar itself would build for a calendar day rather than a `Date`.
+const toDateKey = (d: Date) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
 describe("BookingCalendar accessibility", () => {
   beforeEach(() => {
     // 6 beds occupied on the target day -> 14 of 20 free.
@@ -62,7 +67,7 @@ describe("BookingCalendar accessibility", () => {
 
   it("exposes the selected check-in to screen readers", async () => {
     const date = new Date(now.getFullYear(), now.getMonth(), targetDay);
-    render(<BookingCalendar onDateSelect={() => {}} selectedCheckIn={date} />);
+    render(<BookingCalendar onDateSelect={() => {}} selectedCheckIn={targetIso} />);
 
     const dateLabel = date.toLocaleDateString(APP_LOCALE, {
       weekday: "long",
@@ -87,8 +92,8 @@ describe("BookingCalendar accessibility", () => {
     render(
       <BookingCalendar
         onDateSelect={() => {}}
-        selectedCheckIn={checkIn}
-        selectedCheckOut={checkOut}
+        selectedCheckIn={toDateKey(checkIn)}
+        selectedCheckOut={toDateKey(checkOut)}
       />,
     );
     fireEvent.click(screen.getByRole("button", { name: /Next/ }));

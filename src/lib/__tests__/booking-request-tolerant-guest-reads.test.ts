@@ -58,6 +58,11 @@ vi.mock("@/lib/capacity", () => ({
 vi.mock("@/lib/lodge-capacity", () => ({
   getLodgeCapacity: vi.fn().mockResolvedValue(20),
   getDefaultLodgeCapacity: vi.fn().mockResolvedValue(20),
+  // Completes the mock: `club-identity.ts` imports this constant (reached
+  // transitively via `xero-invoice-payments`), and an incomplete factory throws
+  // "No FALLBACK_LODGE_CAPACITY export" once a schema change perturbs the
+  // module-eval order enough to load club-identity under this mock.
+  FALLBACK_LODGE_CAPACITY: 20,
 }));
 vi.mock("@/lib/lodge-settings", () => ({
   loadSchoolGroupSoftCap: vi.fn().mockResolvedValue(25),

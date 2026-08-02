@@ -35,6 +35,7 @@ import { useLodgeOptions } from "@/components/lodge-select";
 import { useClubIdentity } from "@/components/club-identity-provider";
 import { buildHrefWithReturnTo } from "@/lib/internal-return-path";
 import { formatNZDate, formatNZDateTime } from "@/lib/nzst-date";
+import { countNightsDateOnly } from "@/lib/date-only";
 import { formatCents } from "@/lib/utils";
 import {
   BookingRequestContactPicker,
@@ -204,6 +205,11 @@ interface PublicBookingRequestData {
   message: string | null;
   indicativePriceCents: number | null;
   priceCents: number | null;
+  // #2338: the flat whole-lodge total for a member whole-lodge request (nights x
+  // the covering season's flat rate), or null when no flat rate covers the stay.
+  // Present only for member whole-lodge requests; the approve panel offers the
+  // "price as whole lodge" toggle only when this is non-null.
+  wholeLodgeFlatTotalCents?: number | null;
   verifiedAt: string | null;
   pricedAt: string | null;
   pricedByMemberId: string | null;
@@ -294,6 +300,12 @@ function isMemberWholeLodgeRequest(request: PublicBookingRequestData) {
 
 function formatDate(value: string) {
   return formatNZDate(new Date(value));
+}
+
+// #2338: nights in a check-in/check-out range, for the whole-lodge flat-price
+// caption. Both endpoints are parsed identically, so the span is exact.
+function nightsBetween(checkIn: string, checkOut: string): number {
+  return countNightsDateOnly(new Date(checkIn), new Date(checkOut));
 }
 
 function formatDateTime(value: string | null) {
@@ -413,6 +425,13 @@ export function PublicBookingRequestsPanel({
   const [wholeLodgePrices, setWholeLodgePrices] = useState<Record<string, string>>(
     {},
   );
+  // #2338: the officer's per-approval pricing choice for a member whole-lodge
+  // request. Absent/"per-guest" (the default) keeps today's per-guest pricing so
+  // nothing changes silently; "whole-lodge" charges the season's flat rate.
+  // Offered only when the request carries a non-null wholeLodgeFlatTotalCents.
+  const [wholeLodgePricingModes, setWholeLodgePricingModes] = useState<
+    Record<string, "per-guest" | "whole-lodge">
+  >({});
   // Per-request owner-contact decision (issue #1255): default is to create a new
   // non-login contact; the admin may instead map to an existing one.
   const [ownerChoices, setOwnerChoices] = useState<Record<string, OwnerContactChoice>>({});
@@ -920,6 +939,16 @@ export function PublicBookingRequestsPanel({
             throw new Error("Enter the price override as a dollar amount");
           }
           payload.priceOverrideCents = cents;
+        }
+        // #2338: the officer's per-approval pricing choice. Only meaningful (and
+        // only offered) when a flat whole-lodge rate covers the stay; sent as
+        // true only when the officer actively picked "price as whole lodge". A
+        // manual price override, sent above, still wins over it server-side.
+        if (
+          request.wholeLodgeFlatTotalCents != null &&
+          wholeLodgePricingModes[request.id] === "whole-lodge"
+        ) {
+          payload.priceAsWholeLodge = true;
         }
       }
       const hasBody = Object.keys(payload).length > 0;
@@ -1728,6 +1757,19 @@ export function PublicBookingRequestsPanel({
                             setWholeLodgePrices((prev) => ({
                               ...prev,
                               [request.id]: value,
+                            }))
+                          }
+                          flatWholeLodgeTotalCents={
+                            request.wholeLodgeFlatTotalCents ?? null
+                          }
+                          nights={nightsBetween(request.checkIn, request.checkOut)}
+                          pricingMode={
+                            wholeLodgePricingModes[request.id] ?? "per-guest"
+                          }
+                          onPricingModeChange={(mode) =>
+                            setWholeLodgePricingModes((prev) => ({
+                              ...prev,
+                              [request.id]: mode,
                             }))
                           }
                           disabled={actionsBlocked}

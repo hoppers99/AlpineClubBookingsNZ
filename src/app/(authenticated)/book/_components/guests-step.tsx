@@ -6,7 +6,7 @@ import { MemberGuestFindPanel } from "@/components/book/member-guest-find-panel"
 import { GuestForm, type GuestData } from "@/components/guest-form";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { formatLocalDateOnly, localCalendarDayToDateOnly } from "@/lib/date-only";
+import { parseDateOnly } from "@/lib/date-only";
 import {
   getFamilyMemberBookingActionLabel,
   getFamilyMemberBookingBlockMessage,
@@ -26,8 +26,9 @@ import {
 } from "./types";
 
 interface GuestsStepProps {
-  checkIn: Date | null;
-  checkOut: Date | null;
+  // NZ date-only lodge nights (#2474).
+  checkIn: string | null;
+  checkOut: string | null;
   nights: number;
   familyMembers: FamilyMember[];
   guests: GuestData[];
@@ -206,8 +207,8 @@ export function GuestsStep({
           Add Guests
           {checkIn && checkOut && (
             <span className="ml-2 text-sm font-normal text-muted-foreground">
-              {formatNZDate(localCalendarDayToDateOnly(checkIn))} -{" "}
-              {formatNZDate(localCalendarDayToDateOnly(checkOut))} ({nights} night{nights !== 1 ? "s" : ""})
+              {formatNZDate(parseDateOnly(checkIn))} -{" "}
+              {formatNZDate(parseDateOnly(checkOut))} ({nights} night{nights !== 1 ? "s" : ""})
             </span>
           )}
         </CardTitle>
@@ -350,8 +351,8 @@ export function GuestsStep({
               </span>
             );
           }}
-          bookingCheckIn={checkIn ? formatLocalDateOnly(checkIn) : undefined}
-          bookingCheckOut={checkOut ? formatLocalDateOnly(checkOut) : undefined}
+          bookingCheckIn={checkIn ?? undefined}
+          bookingCheckOut={checkOut ?? undefined}
           perGuestDatesEnabled={perGuestDatesEnabled}
           onPerGuestDatesEnabledChange={handlePerGuestDatesEnabledChange}
           multiDateRangesEnabled={multiDateRangesEnabled}

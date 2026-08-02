@@ -4,7 +4,6 @@ import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { formatLocalDateOnly } from "@/lib/date-only";
 
 export interface PromoResult {
   // Null when the discount comes from a work party event's internal promo
@@ -23,8 +22,10 @@ export interface PromoResult {
 }
 
 interface PromoCodeInputProps {
-  checkIn: Date;
-  checkOut: Date;
+  // NZ date-only lodge nights (`yyyy-MM-dd`), #2474 — never a local-midnight
+  // `Date` re-serialised here.
+  checkIn: string;
+  checkOut: string;
   guests: {
     firstName?: string;
     lastName?: string;
@@ -91,8 +92,8 @@ export function PromoCodeInput({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           code: code.trim(),
-          checkIn: formatLocalDateOnly(checkIn),
-          checkOut: formatLocalDateOnly(checkOut),
+          checkIn,
+          checkOut,
           guests: guests.map((g) => ({
             ageTier: g.ageTier,
             isMember: g.isMember,
