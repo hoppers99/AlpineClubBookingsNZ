@@ -1,31 +1,32 @@
 import { describe, expect, it, vi } from "vitest";
 
 /*
-  #2263 (owner decision OD-A, as corrected in ADR-001's dated entry) — HOW a
-  placeholder guest on an approved member whole-lodge booking becomes a
-  member-rated guest.
+  #2263 (owner decision OD-A) / #2337 — HOW a placeholder guest on an approved
+  member whole-lodge booking becomes a member-rated guest.
 
-  OD-A was ticked on the understanding that guests "re-rate per-guest as names
-  and links are edited in". Review proved that path does not exist, and this file
-  is the pin for what does. Two assertions, and they are load-bearing in opposite
-  directions:
+  This file used to pin "There is NO in-place re-link" as intended behaviour. That
+  is no longer true: the owner chose (1 Aug 2026, quote-first) to build a
+  first-class placeholder→member link that re-rates in place (#2337). So the file
+  now pins the two halves of the CURRENT contract, and they are load-bearing in
+  opposite directions:
 
-    1. There is NO in-place re-link. The guest-edit engine accepts name changes
-       only, and refuses outright the moment an update targets a guest that is
-       member-linked. That refusal is deliberate — a rename must never be able to
-       quietly transfer who a booking is for (#1386's paid-name lock is the same
-       instinct) — so it is pinned as intended behaviour, not worked around.
+    1. A RENAME still cannot re-rate. `resolveGuestNameUpdates` accepts name
+       changes only, and refuses outright the moment an update targets a
+       member-linked guest (`booking-modify-plan.ts:250-252`). That refusal is
+       deliberate and UNTOUCHED by #2337 — a rename must never be able to quietly
+       transfer who a booking is for (#1386's paid-name lock is the same instinct),
+       and a rename is structurally incapable of reaching the rate class. The
+       re-rate lives in a SEPARATE, narrowly gated operation, not in a loosened
+       rename.
 
-    2. A rename ALONE cannot re-rate. The resolved update carries names and only
-       names, so nothing in it can reach the rate class. That is correct: a
-       spelling fix does not change who the person is for pricing purposes.
+    2. The link is a first-class, narrowly gated sibling. `resolveGuestMemberLinks`
+       admits a link ONLY when the actor is an admin/officer, the booking is a
+       whole-lodge booking, and the target is an UNLINKED placeholder — never
+       member→member. Loosen any one of those and an ineligible link would be
+       admitted; each is pinned below.
 
-  Together those two mean the only working route to a member rate is REMOVE the
-  placeholder and ADD the real member as a guest, which prices the added guest at
-  their own rate and settles the difference through the ordinary
-  BookingModification refund/re-charge path. If somebody later adds a first-class
-  link-and-re-rate path, assertion 1 fails and this file is the reviewable place
-  the decision gets revisited.
+  Together these mean the modify engine's member-guest refusal is reversed for the
+  one narrow case the owner sanctioned, and for nothing else.
 */
 
 vi.mock("@/lib/prisma", () => ({
@@ -36,19 +37,26 @@ vi.mock("@/lib/prisma", () => ({
 }));
 
 import {
+  GUEST_MEMBER_LINK_ADMIN_ONLY_MESSAGE,
+  GUEST_MEMBER_LINK_ALREADY_ON_BOOKING_MESSAGE,
+  GUEST_MEMBER_LINK_PLACEHOLDER_ONLY_MESSAGE,
+  GUEST_MEMBER_LINK_WHOLE_LODGE_ONLY_MESSAGE,
   PAID_NAME_TYPO_ONLY_MESSAGE,
+  resolveGuestMemberLinks,
   resolveGuestNameUpdates,
 } from "@/lib/booking-modify-plan";
 
 /**
  * The shape an approved member whole-lodge booking has right after approval: a
  * party of unnamed, unlinked placeholders priced at non-member rates, plus (for
- * the refusal case) one guest who IS member-linked.
+ * the refusal case) one guest who IS member-linked. `wholeLodgeHold` is set,
+ * because #2337's link is fenced to exactly this booking class.
  */
 function wholeLodgeBooking() {
   return {
     status: "CONFIRMED",
     finalPriceCents: 30000,
+    wholeLodgeHold: true,
     // A PENDING internet-banking receivable — nothing paid, so the fully-paid
     // name lock is not what any of these assertions are about.
     payment: {
@@ -75,8 +83,8 @@ function wholeLodgeBooking() {
   } as never;
 }
 
-describe("OD-A: turning a whole-lodge placeholder into a member-rated guest (#2263)", () => {
-  it("refuses any guest update that targets a member-linked guest — there is no in-place re-link", () => {
+describe("OD-A: a rename still cannot re-rate a whole-lodge placeholder (#2263, #1386)", () => {
+  it("refuses any guest NAME update that targets a member-linked guest — :250-252 stays intact", () => {
     expect(() =>
       resolveGuestNameUpdates({
         booking: wholeLodgeBooking(),
@@ -107,7 +115,7 @@ describe("OD-A: turning a whole-lodge placeholder into a member-rated guest (#22
     // The resolved update's ENTIRE field set is names (plus the previous names,
     // for the audit). There is no memberId, no isMember, no rate class, no
     // price: a rename is structurally incapable of re-rating the guest, which is
-    // why remove-and-re-add is the mechanism and not an inconvenience.
+    // why #2337's re-rate is a separate operation and not a loosened rename.
     expect(Object.keys(updates[0]).sort()).toEqual(
       [
         "firstName",
@@ -126,33 +134,7 @@ describe("OD-A: turning a whole-lodge placeholder into a member-rated guest (#22
     });
   });
 
-  it("refuses to rename and remove the same guest in one change, so remove-and-re-add stays an explicit two-part edit", () => {
-    // The officer's working route is remove + add. This guard means they cannot
-    // half-express it as "rename this one and also delete it", which would leave
-    // the audit trail ambiguous about whether a person was replaced or renamed.
-    expect(() =>
-      resolveGuestNameUpdates({
-        booking: wholeLodgeBooking(),
-        input: {
-          guestUpdates: [
-            {
-              guestId: "guest-placeholder-1",
-              firstName: "Grace",
-              lastName: "Hopper",
-            },
-          ],
-          removeGuestIds: ["guest-placeholder-1"],
-        },
-      }),
-    ).toThrowError(/cannot be renamed and removed in the same change/);
-  });
-
   it("still refuses a free-text rename once the whole-lodge booking is fully paid", () => {
-    // Once the member has paid the internet-banking invoice, the same lock every
-    // other member booking has applies: only an identity-preserving typo fix.
-    // So the money-moving route (remove-and-re-add) is also the only route to
-    // change who is coming after payment, and it settles rather than silently
-    // transferring the stay.
     const paid = wholeLodgeBooking() as unknown as {
       payment: { status: string; amountCents: number };
     };
@@ -173,5 +155,159 @@ describe("OD-A: turning a whole-lodge placeholder into a member-rated guest (#22
         allowTypoFixWhenFullyPaid: true,
       }),
     ).toThrowError(PAID_NAME_TYPO_ONLY_MESSAGE);
+  });
+});
+
+describe("#2337: the placeholder→member link gate (resolveGuestMemberLinks)", () => {
+  const link = [{ guestId: "guest-placeholder-1", memberId: "member-42" }];
+
+  it("resolves a valid admin link on a whole-lodge booking to the placeholder's identity", () => {
+    const links = resolveGuestMemberLinks({
+      booking: wholeLodgeBooking(),
+      input: { linkGuestToMember: link },
+      role: "ADMIN",
+    });
+    expect(links).toEqual([
+      {
+        guestId: "guest-placeholder-1",
+        memberId: "member-42",
+        previousFirstName: "Guest",
+        previousLastName: "1",
+      },
+    ]);
+  });
+
+  it("returns nothing when no link is requested — the resolver is inert on every other edit", () => {
+    expect(
+      resolveGuestMemberLinks({
+        booking: wholeLodgeBooking(),
+        input: {},
+        role: "ADMIN",
+      }),
+    ).toEqual([]);
+  });
+
+  it("REFUSES a member-initiated link — the reversal is admin-only", () => {
+    expect(() =>
+      resolveGuestMemberLinks({
+        booking: wholeLodgeBooking(),
+        input: { linkGuestToMember: link },
+        role: "USER",
+      }),
+    ).toThrowError(GUEST_MEMBER_LINK_ADMIN_ONLY_MESSAGE);
+  });
+
+  it("REFUSES a link on a booking that is not a whole-lodge hold — the narrow fence", () => {
+    const ordinary = wholeLodgeBooking() as unknown as { wholeLodgeHold: boolean };
+    ordinary.wholeLodgeHold = false;
+    expect(() =>
+      resolveGuestMemberLinks({
+        booking: ordinary as never,
+        input: { linkGuestToMember: link },
+        role: "ADMIN",
+      }),
+    ).toThrowError(GUEST_MEMBER_LINK_WHOLE_LODGE_ONLY_MESSAGE);
+  });
+
+  it("REFUSES linking a guest that is ALREADY member-linked — never member→member", () => {
+    expect(() =>
+      resolveGuestMemberLinks({
+        booking: wholeLodgeBooking(),
+        input: {
+          linkGuestToMember: [{ guestId: "guest-member", memberId: "member-42" }],
+        },
+        role: "ADMIN",
+      }),
+    ).toThrowError(GUEST_MEMBER_LINK_PLACEHOLDER_ONLY_MESSAGE);
+  });
+
+  it("REFUSES linking a guest that is also being removed in the same change", () => {
+    expect(() =>
+      resolveGuestMemberLinks({
+        booking: wholeLodgeBooking(),
+        input: {
+          linkGuestToMember: link,
+          removeGuestIds: ["guest-placeholder-1"],
+        },
+        role: "ADMIN",
+      }),
+    ).toThrowError(/cannot be linked and removed in the same change/);
+  });
+
+  it("REFUSES linking a guest that is also being renamed in the same change", () => {
+    expect(() =>
+      resolveGuestMemberLinks({
+        booking: wholeLodgeBooking(),
+        input: {
+          linkGuestToMember: link,
+          guestUpdates: [
+            {
+              guestId: "guest-placeholder-1",
+              firstName: "Grace",
+              lastName: "Hopper",
+            },
+          ],
+        },
+        role: "ADMIN",
+      }),
+    ).toThrowError(/cannot be renamed and linked in the same change/);
+  });
+
+  it("REFUSES linking the same member to two placeholders IN ONE REQUEST", () => {
+    const twoPlaceholders = wholeLodgeBooking() as unknown as {
+      guests: Array<{ id: string; firstName: string; lastName: string; isMember: boolean; memberId: string | null }>;
+    };
+    twoPlaceholders.guests.push({
+      id: "guest-placeholder-2",
+      firstName: "Guest",
+      lastName: "2",
+      isMember: false,
+      memberId: null,
+    });
+    expect(() =>
+      resolveGuestMemberLinks({
+        booking: twoPlaceholders as never,
+        input: {
+          linkGuestToMember: [
+            { guestId: "guest-placeholder-1", memberId: "member-42" },
+            { guestId: "guest-placeholder-2", memberId: "member-42" },
+          ],
+        },
+        role: "ADMIN",
+      }),
+    ).toThrowError(/same member cannot be linked to two guests/);
+  });
+
+  it("REFUSES linking a member who is ALREADY on the booking to another placeholder — the CROSS-REQUEST double-bill (#2337)", () => {
+    // `guest-member` already carries member-9 (a prior committed link, or a
+    // member guest placed at approval). Linking member-9 to a placeholder in a
+    // SEPARATE request would bill the member rate twice. The within-request
+    // `seenMemberIds` guard cannot see it, and the person-night conflict check
+    // excludes THIS booking, so only the existing-row guard catches it. On the
+    // apply path `booking.guests` is the post-lock re-read, so this same guard is
+    // the in-transaction re-check that closes a concurrent double-link.
+    expect(() =>
+      resolveGuestMemberLinks({
+        booking: wholeLodgeBooking(),
+        input: {
+          linkGuestToMember: [
+            { guestId: "guest-placeholder-1", memberId: "member-9" },
+          ],
+        },
+        role: "ADMIN",
+      }),
+    ).toThrowError(GUEST_MEMBER_LINK_ALREADY_ON_BOOKING_MESSAGE);
+  });
+
+  it("REFUSES a link to a guest that is not on the booking", () => {
+    expect(() =>
+      resolveGuestMemberLinks({
+        booking: wholeLodgeBooking(),
+        input: {
+          linkGuestToMember: [{ guestId: "ghost", memberId: "member-42" }],
+        },
+        role: "ADMIN",
+      }),
+    ).toThrowError(/guest not found on this booking/);
   });
 });
