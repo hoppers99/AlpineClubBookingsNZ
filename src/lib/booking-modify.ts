@@ -37,6 +37,7 @@ export {
   lockedNightPricesForGuest,
   PAID_NAME_TYPO_ONLY_MESSAGE,
   prepareGuestPlan,
+  rateSnapshotUpdateForRepricedGuest,
   resolveGuestMemberLinks,
   resolveGuestNameUpdates,
   resolvePartnerSharedCapacity,

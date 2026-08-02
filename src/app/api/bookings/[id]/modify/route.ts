@@ -20,6 +20,10 @@ import { modifyBookingBatch } from "@/lib/booking-batch-modification-service";
 import { adminShiftBookingDates } from "@/lib/booking-date-modification-service";
 import { BookingModifyReviewJustificationRequiredError } from "@/lib/booking-modify-validation";
 import { MinimumStayPolicyViolationError } from "@/lib/booking-policy-exceptions";
+import {
+  buildPaidUpAdultRefusalBody,
+  PaidUpAdultMemberRequiredError,
+} from "@/lib/subscription-lockout-enforcement";
 import { OverCapacityConfirmationRequiredError } from "@/lib/over-capacity-confirmation";
 import { isBookingEnvelopeInvariantViolation } from "@/lib/booking-envelope-invariants";
 import {
@@ -360,6 +364,16 @@ export async function PUT(
         },
         { status: err.status },
       );
+    }
+    // #2543 — the paid-up-adult refusal on the SAVE path. Above the generic
+    // ApiError branch for exactly the reason the minimum-stay one is: it extends
+    // ApiError, and the generic branch would strip the code, the frozen
+    // violation, the HOLD promise and the path to ask a Booking Officer, leaving
+    // the member with a bare 409 and no way to act on it.
+    if (err instanceof PaidUpAdultMemberRequiredError) {
+      return NextResponse.json(buildPaidUpAdultRefusalBody(err.violation), {
+        status: err.status,
+      });
     }
     if (err instanceof ApiError) {
       return NextResponse.json({ error: err.message }, { status: err.status });

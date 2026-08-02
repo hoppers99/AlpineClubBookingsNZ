@@ -78,6 +78,7 @@ import {
   type MemberGuestAddNotificationRow,
 } from "@/lib/member-guest-add-policy";
 import type { MemberGuestAddActor } from "@/lib/member-guest-consent";
+import { resolveSubscriptionLockoutMode } from "@/lib/member-subscription-eligibility";
 
 type ModifiedBooking = Booking & {
   guests: BookingGuest[];
@@ -313,6 +314,12 @@ export async function modifyBookingBatch({
   // `member-guest-add-policy.ts`. `prepareGuestPlan` takes the answer as a value,
   // so there is no way for it to reach for the database itself.
   const memberGuestPolicy = await loadMemberGuestAddPolicy();
+  // #2543 — the club's subscription-lockout mode, resolved here for exactly the
+  // same reason and passed the same way: as a value the in-transaction planner
+  // cannot reach for the database to obtain. `resolveSubscriptionLockoutMode` may
+  // refresh the financial-year cache from Xero, which must never happen inside the
+  // transaction below.
+  const subscriptionLockoutMode = await resolveSubscriptionLockoutMode();
   // MG4-D-a, brought forward: an ADMIN actor is the one that passes
   // `skipAuthorization`, so its cross-family adds are consent-free and
   // always-notify, stamped with the acting admin.
@@ -505,6 +512,11 @@ export async function modifyBookingBatch({
       newCheckIn: dates.newCheckIn,
       newCheckOut: dates.newCheckOut,
       memberGuestPolicy,
+      // #2543 — read before the transaction opened (like `memberGuestPolicy`), so
+      // the planner's refusals and the paid-up-adult requirement branch on the
+      // same mode `modify-quote` previewed, and no settings read happens under
+      // the global + per-lodge locks this transaction holds.
+      subscriptionLockoutMode,
     });
     const guestNameUpdates = resolveGuestNameUpdates({
       booking,
@@ -565,6 +577,8 @@ export async function modifyBookingBatch({
           normalizedAddGuests: guestPlan.normalizedAddGuests,
           removeGuestIds: input.removeGuestIds,
           guestsForPricing: guestPlan.guestsForPricing,
+          // #2543 — see the `prepareGuestPlan` call above.
+          subscriptionLockoutMode,
           // Finding 2 (privacy re-review of MG3 #2308).
           skipAuthorization: actor.role === "ADMIN",
           skipBookingLifecycleRules: dates.skipBookingLifecycleRules,

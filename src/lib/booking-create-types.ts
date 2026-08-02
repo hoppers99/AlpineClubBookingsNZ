@@ -13,6 +13,7 @@ import type { InternetBankingPaymentSettingsValues } from "@/lib/internet-bankin
 import type { GuestNightInput } from "@/lib/booking-guest-stay-ranges";
 import type { MemberGuestConsentGuestFields } from "@/lib/member-guest-add-policy";
 import type { PrismaTransactionClient } from "@/lib/db-transaction";
+import type { SubscriptionLockoutMode } from "@/lib/membership-lockout-settings";
 
 export type BookingWithGuests = Booking & { guests: BookingGuest[] };
 
@@ -63,6 +64,22 @@ interface BaseInput {
   // default partial bump when non-member guests lose capacity.
   cancelIfGuestsBumped?: boolean;
   groupDiscount?: GroupDiscountConfig;
+  /**
+   * The club's subscription-lockout mode, as this REQUEST already resolved it
+   * (#2543).
+   *
+   * Declared on the shared base for the same reason `appliedCreditCents` is: all
+   * three create services price, so all three need it, and a field that exists on
+   * only one of them is a field one call site silently stops passing. The route
+   * resolves the mode once to decide whether to run its HARD_BLOCK refusal and
+   * the paid-up-adult requirement; handing the same value to pricing is what
+   * stops an admin's mid-request save from letting the gate branch on one regime
+   * and the price be computed under the other, and it removes a settings read
+   * from inside the transaction that holds the per-lodge capacity lock. Omitted,
+   * the pricing gate falls back to reading it, which is correct but neither of
+   * those things.
+   */
+  subscriptionLockoutMode?: SubscriptionLockoutMode;
   memberReviewJustification?: string;
   /**
    * The explicit reason an ADMIN gave for booking a party the adult-member

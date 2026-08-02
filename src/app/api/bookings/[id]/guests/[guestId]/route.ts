@@ -19,6 +19,11 @@ import {
   getMembershipTypeBookingPolicyErrorBody,
   MembershipTypeBookingPolicyError,
 } from "@/lib/membership-type-policy";
+import { resolveSubscriptionLockoutMode } from "@/lib/member-subscription-eligibility";
+import {
+  buildPaidUpAdultRefusalBody,
+  PaidUpAdultMemberRequiredError,
+} from "@/lib/subscription-lockout-enforcement";
 import {
   createModificationAdditionalPaymentIntent,
   drainSupersededPrimaryIntents,
@@ -94,6 +99,12 @@ export async function DELETE(
   const notifyMember =
     managementRole !== "ADMIN" ? true : rawNotifyMember !== false;
 
+  // #2543 — read BEFORE the transaction opens: the removal re-evaluates the
+  // paid-up-adult requirement over what is left, and resolving the mode inside
+  // the transaction would both take a second pooled connection under its locks
+  // and let the financial-year refresh reach Xero from there.
+  const subscriptionLockoutMode = await resolveSubscriptionLockoutMode();
+
   try {
     const result = await prisma.$transaction((tx) =>
       removeBookingGuestInTransaction({
@@ -103,6 +114,7 @@ export async function DELETE(
         actorMemberId: session.user.id,
         actorRole: authorizationRoleFromAccessRoles(session.user),
         settlementMethod,
+        subscriptionLockoutMode,
       })
     );
 
@@ -386,6 +398,15 @@ export async function DELETE(
     }
     if (err instanceof BookingGuestRemovalError) {
       return NextResponse.json({ error: err.message }, { status: err.status });
+    }
+    // #2543 — handled BEFORE the generic `ApiError` branch below, which would
+    // otherwise reduce this refusal to a bare message and drop the frozen
+    // violation, the HOLD promise and the path to ask a Booking Officer. Same
+    // body as the other five paths.
+    if (err instanceof PaidUpAdultMemberRequiredError) {
+      return NextResponse.json(buildPaidUpAdultRefusalBody(err.violation), {
+        status: err.status,
+      });
     }
     // Shared-lib domain errors (e.g. the #1032 quote-priced edit block from
     // assertBookingNotQuotePriced) carry intentional user-facing messages.

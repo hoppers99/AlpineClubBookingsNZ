@@ -66,6 +66,11 @@ import {
   type PromoCoverageNotice,
 } from "@/lib/promo-cap-coverage";
 import { findUnpaidMemberGuestNames } from "@/lib/booking-member-guest-subscriptions";
+import type { SubscriptionLockoutMode } from "@/lib/membership-lockout-settings";
+import {
+  evaluateNonMemberPricingRequirements,
+  PaidUpAdultMemberRequiredError,
+} from "@/lib/subscription-lockout-enforcement";
 import { isLikelyTypoCorrection } from "@/lib/guest-name-similarity";
 import {
   assertLinkedBookingMembersCanBeBooked,
@@ -80,9 +85,10 @@ import {
   type MemberGuestConsentGuestFields,
   type MemberGuestConsentWritePlanEntry,
 } from "@/lib/member-guest-add-policy";
-import type {
-  MemberGuestAddActor,
-  MemberGuestConsentColumns,
+import {
+  isOperationallyPresentConsent,
+  type MemberGuestAddActor,
+  type MemberGuestConsentColumns,
 } from "@/lib/member-guest-consent";
 import {
   BookingGuestStayRangeValidationError,
@@ -91,6 +97,7 @@ import {
 import {
   addDaysDateOnly,
   eachDateOnlyInRange,
+  formatDateOnly,
   normalizeDateOnlyForTimeZone,
 } from "@/lib/date-only";
 import { getLodgeCapacity } from "@/lib/lodge-capacity";
@@ -158,6 +165,65 @@ export function lockedNightPricesForGuest(guest: {
       ? [{ stayDate: night.stayDate, priceCents: night.priceCents }]
       : [],
   );
+}
+
+/**
+ * The `rateMembershipTypeId` value to WRITE for a repriced guest — or `undefined`
+ * to leave the stored snapshot alone (#2543, D5).
+ *
+ * THE SNAPSHOT IS PER GUEST; THE LOCKED PRICES ARE PER NIGHT, and that mismatch is
+ * the whole reason this exists. `BookingGuestNight` carries no rate-type column
+ * (`prisma/schema.prisma`), and Xero resolves ONE item code per guest and applies
+ * it to every night run of that guest, even though runs are split by price change.
+ * So on an edit where SOME of a guest's nights keep their locked booked price and
+ * others price fresh, overwriting the guest's snapshot posts the member-rate nights
+ * under the newly resolved (non-member) item code.
+ *
+ * Worked example, and the reason this became ordinary rather than rare: a club in
+ * NO_BLOCK has a member with an unpaid subscription holding a PAID 3-night booking
+ * at the member rate (snapshot FULL, 3 x 1000 c). The club switches to
+ * NON_MEMBER_PRICING. The member extends by one night. The 3 original nights keep
+ * 1000 c each; the new night prices at 2400 c; the guest snapshot would flip to
+ * NON_MEMBER, and the invoice would post 3000 c of MEMBER-rate hut-fee revenue to
+ * the non-member item. Pre-#2543 the trigger was a mid-booking membership-type
+ * change, i.e. rare; #2543 made it the ordinary case for any unpaid member editing
+ * a booking.
+ *
+ * KEEPING THE STALE SNAPSHOT IS WHAT THE INVARIANT ALREADY PROMISES:
+ * `docs/DOMAIN_INVARIANTS.md` states that "a locked night keeps both its price and
+ * its stale snapshot untouched". The price was protected; the snapshot was not.
+ * Owner direction, 2 Aug 2026: honour the promise. The residual, stated plainly, is
+ * that a guest whose stay mixes locked and newly-priced nights keeps the OLD item
+ * code for all of them — the same direction the locked price itself takes, and the
+ * only per-guest answer available until an item code can be resolved per night run.
+ *
+ * A guest whose locked prices were deliberately CLEARED (the #2337 placeholder→member
+ * link, which reprices the whole stay so the member actually gets the member rate)
+ * has no kept locked night and is therefore correctly re-snapshotted.
+ */
+export function rateSnapshotUpdateForRepricedGuest(
+  pricedGuest:
+    | { rateMembershipTypeId?: string | null; nightDates?: Date[] }
+    | undefined,
+  lockedNightPrices:
+    | ReadonlyArray<{ stayDate: Date | string }>
+    | null
+    | undefined,
+): string | null | undefined {
+  const locked = new Set(
+    (lockedNightPrices ?? []).map((entry) =>
+      typeof entry.stayDate === "string"
+        ? entry.stayDate.slice(0, 10)
+        : formatDateOnly(entry.stayDate),
+    ),
+  );
+  if (locked.size > 0) {
+    const keepsLockedNight = (pricedGuest?.nightDates ?? []).some((night) =>
+      locked.has(formatDateOnly(night)),
+    );
+    if (keepsLockedNight) return undefined;
+  }
+  return pricedGuest?.rateMembershipTypeId;
 }
 
 export type ResolvedGuestNameUpdate = {
@@ -513,6 +579,7 @@ export async function prepareGuestPlan(
     newCheckIn,
     newCheckOut,
     memberGuestPolicy,
+    subscriptionLockoutMode,
     now = new Date(),
   }: {
     booking: LoadedBookingForModify;
@@ -530,6 +597,20 @@ export async function prepareGuestPlan(
      * behaviour, which is a refusal, not a silent consent-free add.
      */
     memberGuestPolicy?: MemberGuestAddPolicy;
+    /**
+     * The club's subscription-lockout mode (#2543), resolved by the caller before
+     * it opened this transaction.
+     *
+     * This planner is the SIXTH enforcement site — the apply half of the edit flow
+     * whose preview is `modify-quote` — and it was the one the issue's anchor list
+     * missed. Without the mode it hard-blocked an unpaid member guest in EVERY
+     * regime, so under NON_MEMBER_PRICING a member was quoted the non-member price
+     * with an explanation and then refused on save with the pre-#2543 403: an edit
+     * that could never complete. Optional, and a missing value is read as
+     * HARD_BLOCK, which is the pre-#2543 behaviour and the safe direction for the
+     * planner's own unit tests.
+     */
+    subscriptionLockoutMode?: SubscriptionLockoutMode;
     now?: Date;
   },
 ): Promise<GuestPlan> {
@@ -796,17 +877,83 @@ export async function prepareGuestPlan(
     memberReviewJustification: input.memberReviewJustification,
   });
 
+  // D-12 facts for the two kinds of row in the proposed party (#2543): the stored
+  // status for a row already on the booking, and the status
+  // `planMemberGuestConsentWrites` has just decided for a row being added. Built
+  // from data already in hand — no extra query.
+  const consentStatusByGuestId = new Map(
+    booking.guests.map((guest) => [guest.id, guest.consentStatus ?? null]),
+  );
+  const addedConsentByMemberId = new Map(
+    (normalizedAddGuestsWithRanges ?? [])
+      .filter((guest) => guest.memberId)
+      .map((guest) => [
+        guest.memberId as string,
+        guest.memberGuestConsent?.consentStatus ?? null,
+      ]),
+  );
+
   if (role !== "ADMIN") {
     const unpaidMemberGuests = await findUnpaidMemberGuestNames(tx, {
       bookingMemberId: booking.memberId,
       checkIn: isInProgressEdit && editableFrom ? editableFrom : newCheckIn,
       guests: normalizedAddGuests ?? [],
     });
-    if (unpaidMemberGuests.length > 0) {
+    // #2543: mode-gated like the five sibling refusal sites. The lookup above
+    // still RUNS under NON_MEMBER_PRICING, deliberately — it is what raises the
+    // D-8 neutral refusal for an unpaid member guest from beyond the booker's
+    // family, and that privacy boundary is not the lockout policy's to relax.
+    // Only the refusal is gated. A missing mode reads as HARD_BLOCK.
+    if (
+      (subscriptionLockoutMode ?? "HARD_BLOCK") === "HARD_BLOCK" &&
+      unpaidMemberGuests.length > 0
+    ) {
       throw new ApiError(
         `The following member guests have unpaid subscriptions: ${unpaidMemberGuests.join(", ")}. All member guests must have a paid subscription before booking.`,
         403,
       );
+    }
+
+    // #2543 — the paid-up-adult requirement on the APPLY path, over the whole
+    // post-modification party.
+    //
+    // TWO holes closed by putting it here rather than only on the preview.
+    // First, `PUT /api/bookings/[id]/modify` is directly reachable without ever
+    // calling `modify-quote`, so a requirement enforced only on the preview was
+    // bypassable by a client that skips it. Second — and this is the one no add
+    // gate could catch — the requirement was evaluated on ADDITIVE writes only,
+    // so `removeGuestIds` could take the party's last paid-up adult member off a
+    // booking that the add path had just approved on the strength of their
+    // presence. Two requests, and the party reaches the state the club configured
+    // the rule to refuse, with no review raised. Evaluating the PROPOSED party
+    // (remaining + added, which is what `guestsForPricing` is) covers adds,
+    // removals and date changes in one place instead of one gate per shape.
+    const nonMemberPricing = await evaluateNonMemberPricingRequirements(tx, {
+      mode: subscriptionLockoutMode,
+      lodgeId: bookingLodgeId,
+      seasonYear: getSeasonYear(newCheckIn),
+      checkIn: newCheckIn,
+      checkOut: newCheckOut,
+      participants: guestsForPricing.map((guest) => ({
+        isMember: guest.isMember,
+        memberId: guest.memberId ?? null,
+        stayStart: guest.stayStart,
+        stayEnd: guest.stayEnd,
+        nights: guest.nights,
+        // D-12: a row already on the booking is judged by its stored
+        // consentStatus; a row this modification ADDS is judged by the consent
+        // columns `planMemberGuestConsentWrites` has just decided for it.
+        operationallyPresent: guest.bookingGuestId
+          ? isOperationallyPresentConsent(
+              consentStatusByGuestId.get(guest.bookingGuestId) ?? null,
+            )
+          : isOperationallyPresentConsent(
+              addedConsentByMemberId.get(guest.memberId ?? "") ?? null,
+            ),
+      })),
+    });
+    if (nonMemberPricing?.violation) {
+      throw new PaidUpAdultMemberRequiredError(nonMemberPricing.violation);
     }
   }
 
@@ -1065,6 +1212,7 @@ export async function calculateModifiedPricing(
     normalizedAddGuests,
     removeGuestIds,
     guestsForPricing,
+    subscriptionLockoutMode,
     skipBookingLifecycleRules,
     seasonRateData,
     adminOverride = false,
@@ -1116,6 +1264,12 @@ export async function calculateModifiedPricing(
      * for a beyond-family target.
      */
     skipAuthorization?: boolean;
+    /**
+     * #2543 — the mode this request resolved, forwarded to every rate resolution
+     * and to the price call below, so all four agree and none of them reads the
+     * settings from inside the transaction holding the capacity lock.
+     */
+    subscriptionLockoutMode?: SubscriptionLockoutMode;
   },
 ): Promise<PricingResult> {
   const seasonYear = getSeasonYear(newCheckIn);
@@ -1129,11 +1283,13 @@ export async function calculateModifiedPricing(
   const policyAdjustedGuestsForPricing = await resolveGuestRateMembershipTypes(tx, {
     seasonYear,
     guests: guestsForPricing,
+    subscriptionLockoutMode,
   });
   const policyAdjustedAddGuests = normalizedAddGuests
     ? await resolveGuestRateMembershipTypes(tx, {
         seasonYear,
         guests: normalizedAddGuests,
+        subscriptionLockoutMode,
       })
     : undefined;
   const policyAdjustedExistingGuests = await resolveGuestRateMembershipTypes(tx, {
@@ -1142,6 +1298,7 @@ export async function calculateModifiedPricing(
       ...guest,
       ageTier: guest.ageTier as AgeTier,
     })),
+    subscriptionLockoutMode,
   });
 
   let inProgressPlan: BookingEditGuestRangePlan | null = null;
@@ -1273,6 +1430,7 @@ export async function calculateModifiedPricing(
           ),
           seasonYear,
           skipAuthorization,
+          subscriptionLockoutMode,
         });
   } catch (error) {
     if (error instanceof MembershipTypeBookingPolicyError) {
@@ -1933,12 +2091,18 @@ export async function applyGuestChanges(
         stayEnd: envelope.stayEnd,
         priceCents: priceBreakdown.guests[i].priceCents,
         // Overwrite the rate-type snapshot on the full-reprice path (#1930,
-        // E4). The in-progress-edit path builds guests without a snapshot, so
-        // this is undefined there and Prisma leaves the stored snapshot
-        // untouched — matching D5's "locked nights keep their stale snapshot".
-        rateMembershipTypeId: (
-          priceBreakdown.guests[i] as { rateMembershipTypeId?: string | null }
-        ).rateMembershipTypeId,
+        // E4) — but ONLY when this guest kept no locked night, or the newly
+        // resolved code would be posted over member-rate nights too (#2543).
+        // The in-progress-edit path builds guests without a snapshot, so this is
+        // undefined there as well and Prisma leaves the stored snapshot
+        // untouched. See `rateSnapshotUpdateForRepricedGuest`.
+        rateMembershipTypeId: rateSnapshotUpdateForRepricedGuest(
+          priceBreakdown.guests[i] as {
+            rateMembershipTypeId?: string | null;
+            nightDates?: Date[];
+          },
+          link ? [] : lockedNightPricesForGuest(proposedRange?.guest ?? {}),
+        ),
       },
     });
   }
