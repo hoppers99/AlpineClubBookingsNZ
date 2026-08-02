@@ -1980,6 +1980,65 @@ one per alternation branch — and that map is itself asserted, in both
 directions, to be exactly the set of live patterns, so a new pattern rule with no
 sample fails the suite rather than slipping past it.
 
+### Public website render modes and the fixed CSP nonce (#2352 slice 1)
+
+`src/app/(website)/layout.tsx` reads **neither the session nor the request
+headers**, and that is a deliberate, enforced property rather than a coincidence of
+its current contents. Those two calls — `auth()` and `headers()` — were the only
+things forcing every public page to be rendered from scratch on every visit, and a
+production build prerendered zero pages because of them.
+
+With them gone, each route in the group states its own mode:
+
+- `(website)/[...slug]` — the admin-authored CMS pages — is served from
+  **full-route ISR**: `generateStaticParams()` returns `[]` (nothing is prerendered
+  at build, because a Docker build has no database), each path is generated on its
+  first request and stored, and `revalidate = 300` is the freshness backstop. An
+  admin edit clears the store outright through `revalidatePublicSite()`.
+- Every other route in the group declares `export const dynamic = "force-dynamic"`.
+  For `/`, `/join`, `/contact` and `/join/apply` that is a hold pending #2352
+  slices 2 and 3; for `/hut-leader-instructions`, `/join/[code]` and
+  `/join/verify/[token]` it is permanent — a per-assignment PIN-gated page and two
+  token-bearing screens must never be stored.
+
+Two things replaced the layout's request reads. The CSP nonce is now **one fixed
+value per release** on every `(website)` address, derived in
+`src/lib/release-nonce.ts` from the `RELEASE_ID` build arg — a stored page can carry
+only one nonce, and Next stamps it at render time from the request's own CSP
+header. The public header's one signed-in boolean is resolved in the browser from a
+non-secret marker cookie (`src/lib/signed-in-hint.ts`), and the footer's page slug
+comes from `usePathname()` instead of an `x-page-slug` request header, which was
+removed. The full security reasoning, the rejected alternatives and the scope of
+the nonce trade are in `docs/SECURITY-ATTACK-SURFACE.md` → "The Public Website's
+Fixed CSP Nonce"; the operator view is in `DEPLOYMENT.md` → "Public website page
+cache".
+
+`src/app/(public)/layout.tsx` declares `export const dynamic = "force-dynamic"` for
+its whole group, and that line is measured rather than tidy: the `auth()` call it no
+longer makes was what kept those routes out of build-time prerendering, and without
+a replacement `npm run build` fails on `Error occurred prerendering page
+/booking-requests` — a build has no database, and the layout's `headers()` read
+happens only after its own database reads have resolved, too late to bail out first.
+Login is out of scope permanently (D7) and the rest are token-bearing screens, so a
+group-level declaration is the right shape there; `(website)` states its modes per
+route because exactly one of them is deliberately different.
+
+Two CI gates keep all of this from drifting, and they answer different questions.
+`scripts/ci/check-website-render-modes.mjs` reads the source: every `(website)`
+route declares its mode, the catch-all keeps `generateStaticParams() => []` plus its
+`revalidate`, and no `loading.tsx`, `template.tsx`, `default.tsx` or Partial
+Prerendering appears in the group — each of those introduces a boundary that could
+commit a 200 before the catch-all decides an address is a 404, and under ISR that
+soft 404 would then be stored.
+`scripts/ci/check-website-prerender-manifest.mjs` runs after the build and reads
+`.next/prerender-manifest.json`, which is the only place the framework's own answer
+is written down: the catch-all must still be listed as an on-demand-generated
+route, the held-back and token-bearing routes must appear in neither list, and no
+new route may be prerendered at build time. That second gate exists because the
+failure it catches is silent — any component under `(website)` that calls `auth()`,
+`cookies()` or `headers()` opts the catch-all out of the cache with a green build, a
+green test suite, and no symptom but the returning CPU cost.
+
 The rules read a **canonicalised** pathname (`normaliseForRules` in
 `src/config/feature-routes.ts`): one trailing slash and one Next data suffix
 (`.rsc`/`.json`) are stripped first, because the proxy runs before Next's

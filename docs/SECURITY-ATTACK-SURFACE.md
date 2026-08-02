@@ -2141,6 +2141,170 @@ above.
 - `scripts/ci/check-prerendered-script-nonces.mjs` is unchanged and still covers the
   build-output half of the class.
 
+## The Public Website's Fixed CSP Nonce - 2026-08-02
+
+Issue #2352 slice 1. Recorded here explicitly, in the owner's words from decision
+D1, rather than slipped in as an implementation detail: **the public website now
+carries one fixed script nonce per release instead of a fresh one per request.**
+
+### What changed, and why it could not be avoided
+
+The admin-authored CMS pages (`(website)/[...slug]`) are served from Next's
+full-route ISR cache: rendered once for a path, stored, and handed to every later
+visitor until the content changes. A stored page can carry only ONE nonce value,
+because Next stamps the nonce into its own inline bootstrap and RSC scripts at
+render time, reading it from the request's own `Content-Security-Policy` header
+(`next/dist/server/app-render/app-render.js`). If the policy on a later response
+named a different value, every inline script on the stored page would be blocked
+and the page would never hydrate.
+
+Two alternatives were evaluated and are not available:
+
+- **Injecting a nonce at the edge.** Next's proxy layer and Caddy can change
+  response HEADERS, not response BODIES. Rewriting the stored HTML on the way out
+  is not something either can do.
+- **Hash-based CSP.** The inline scripts needing hashes are Next's RSC payload
+  scripts, whose contents literally contain the rendered page — so any build-time
+  hash list is stale the moment an admin edits a page.
+
+The remaining options were a fixed-per-release nonce, `unsafe-inline`, or not going
+static at all. The owner chose the fixed nonce and explicitly rejected
+`unsafe-inline`.
+
+### What the trade costs
+
+On `(website)` pages the nonce is readable in the page source, so it no longer
+stops a FULLY INJECTED `<script>` tag. It still stops the commoner injection
+shapes — `onclick=` and other `on*` handlers, `javascript:` URLs — because those
+cannot carry a nonce at all. Everything else is unchanged: no `unsafe-inline`,
+`object-src 'none'`, `base-uri 'self'`, `form-action 'self'`,
+`frame-ancestors 'none'`.
+
+The first line of defence is what makes this a second line rather than the only
+one: the only untrusted content on these pages is admin-authored CMS HTML, which
+is allowlist-sanitised on write AND again on read, permitting no `script` element
+and no `on*` attribute.
+
+Bundled tightening, per D1: **Stripe is dropped from `script-src` on these pages.**
+Stripe.js is loaded only from the member payment surfaces, so allowing it on a
+public information page was reach for an attacker and nothing for the club.
+
+### Scope — and one deliberate widening of D1, flagged for the owner
+
+D1 named five pages (`/`, the CMS catch-all, `/join`, `/contact`, `/join/apply`).
+The implementation applies the fixed nonce to the **whole `(website)` route
+group**, which adds three: `/hut-leader-instructions`, `/join/[code]` and
+`/join/verify/[token]`.
+
+That is structural rather than a preference. `(website)/layout.tsx` is ONE shared
+layout; it renders the analytics `<Script nonce>` for every route beneath it, and
+it can no longer read the request — that read is precisely what forced a full
+render on every public page view. So the nonce it stamps must be the one the proxy
+publishes for every address it serves. Splitting the layout in two was the
+alternative and was rejected: it duplicates the shared chrome permanently to buy a
+difference that slices 2 and 3 remove anyway.
+
+The three added pages are still rendered PER REQUEST (`force-dynamic`) — none of
+them is stored — so what they gain is the group's policy, not a cache entry. They
+handle no payment and hold no privileged content: PIN-gated lodge instructions and
+two group-join screens whose secret is the token in the URL, not the page.
+
+Login, registration, the member area, admin, finance, lodge and `/display` keep a
+freshly minted per-request nonce, exactly as before. `/login` is out of scope
+permanently (D7).
+
+### The mechanism
+
+- `src/lib/release-nonce.ts` derives the value as a SHA-256 digest of a namespaced
+  string plus the release identifier, so **the release identifier is not
+  recoverable from the page source**.
+- The identifier is `RELEASE_ID`, a Docker build ARG promoted to an ENV in both the
+  builder and the runner stage (`Dockerfile`). CI and
+  `scripts/run-production-blue-green-deploy.sh` pass the commit SHA. Deriving from
+  something baked into the IMAGE is what makes every process of one release agree
+  without coordination — a per-process value would break a page one process stored
+  when another served it.
+- The image asserts the value is readable in its own environment, and CI fails the
+  `docker-image-security` job if it is not.
+- With no identifier readable at all (a bare `docker build`, or local `next start`)
+  the module falls back to one random value per process and logs an error. That is
+  safe only for a single-process deployment; it is not the production path.
+- `src/lib/csp.ts` takes the public-website decision from its caller;
+  `src/proxy.ts` makes it with `isPublicWebsitePath()` — the same predicate the
+  #2420 setup gate uses, so there is no second list to keep in step.
+
+### The sign-in marker cookie (D2)
+
+`signed-in-hint`, value `"1"`, `Path=/`, `SameSite=Lax`, not `HttpOnly`.
+
+It is **not authentication and must never be treated as such.** It carries one bit
+and no name, email, role, identifier or token. Forging it changes three things,
+all of them link text or link targets: the desktop account CTA, the same CTA in
+the mobile drawer, and the Book Now destination. Every page behind those links is
+still guarded server-side.
+
+Two properties are worth stating because they are what keep it a display hint:
+
+- `src/proxy.ts` sets and clears it from the OBSERVED presence of a next-auth
+  session cookie, so it is self-healing — sign-out through any path, an expired
+  session or a cleared cookie jar all converge on the next request.
+- It is deliberately NOT forwarded to the render, so no server code can come to
+  depend on a forgeable answer to "is this visitor signed in?".
+
+The public header never exposed any personal data — the #2352 planning pass
+enumerated it as exactly one boolean — which is what makes serving one stored copy
+to everyone acceptable.
+
+### The prefetch-header finding (F1)
+
+The reconciliation's highest-severity finding, and the reason #2404 had to land
+first. The proxy matcher used to skip any request carrying `next-router-prefetch`
+or `Purpose: prefetch` — ordinary headers anyone can set. On a dynamic response
+that only skipped the per-request CSP. Under full-route ISR, a prefetch-shaped
+request that missed the cache would **generate and store a page with no nonce at
+all**, and that copy would then be served to every visitor under the nonce-only
+policy: zero inline scripts execute, the page never hydrates. Invisible to the
+build-time prerender guard, because nothing was prerendered.
+
+#2404 deleted the exemption outright. `csp-proxy.test.ts` pins the whole
+prefetch/`RSC` matrix, and `e2e/static-cms-pages.spec.ts` asserts on a real server
+that a `Purpose: prefetch` request stores a fully nonced page.
+
+### Multi-tenant fork warning
+
+Next's page cache is keyed by PATH with no tenant dimension. That is correct for
+this template, which serves one club per deployment. **A fork serving several clubs
+from one process would serve club A's home page to club B.** See `CONFIGURATION.md`
+and `DEPLOYMENT.md`.
+
+### Guards
+
+- `scripts/ci/check-website-render-modes.mjs` — every `(website)` route declares
+  its render mode; the CMS catch-all keeps `generateStaticParams() => []` plus its
+  `revalidate`; no `loading.tsx`/`template.tsx`/`default.tsx` and no Partial
+  Prerendering anywhere in the group. The boundary ban is the enforceable form of
+  the #2434 streaming warning: a boundary could commit a 200 before the catch-all
+  decides a URL is a 404, and under ISR that soft 404 would then be stored.
+- `scripts/ci/check-prerendered-script-nonces.mjs` — unchanged, and still green
+  because `generateStaticParams()` returning `[]` emits no build-time HTML. That
+  property is why slice 1 was safe to ship before the build-time-nonce question
+  (#2352 F2) is answered, and it is asserted directly by the route's own test.
+  Verified on a real container build of this branch: two prerendered artefacts,
+  both of them Next's own error shell, both already documented exceptions.
+- `scripts/ci/check-website-prerender-manifest.mjs` — the same class from the
+  build's own records, and the security half is the closed allowlist of routes
+  allowed to be prerendered at build time. A new build-time route is a page whose
+  inline scripts carry no nonce (nothing stamps one without a request), so it must
+  be argued for in that list rather than arriving with a passing build. The same
+  check refuses a token-bearing `(website)` route that has become storable.
+- `src/lib/__tests__/csp-proxy.test.ts` — the fixed nonce appears on exactly the
+  addresses `isPublicWebsitePath()` claims and nowhere else; every other directive
+  is byte-identical to a member page's; the marker cookie is set, cleared, left
+  alone when it already agrees, and never forwarded to the render.
+- `src/lib/__tests__/isr-page-cache-behaviour.test.ts` — executes Next's own cache
+  to observe that a store which cannot be written degrades to a warning and a
+  re-render rather than a 500.
+
 ## Follow-Up Mapping
 
 - #613 - Standardize route guards: route metadata and shared active-session and

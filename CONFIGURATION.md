@@ -597,6 +597,27 @@ menu.
   slashes between segments (`trip-reports`, `trips/2026`). Application
   route names (`admin`, `api`, `book`, `dashboard`, `login`, and similar)
   are reserved and rejected in every segment position.
+- **Catch-all pages are cached whole (#2352).** Since slice 1 of #2352 the
+  admin-authored pages served by the catch-all are built once and then handed to
+  every visitor from a cache, instead of being rebuilt from scratch on every
+  visit. What this means in practice:
+  - **An edit appears immediately.** Saving in Admin > Page Content clears the
+    cached copy, exactly as before. So do the Hide/Publish toggle, a theme or
+    logo change, a site banner change and a module switch.
+  - **Anything that changes without a save appears within five minutes.** A site
+    banner whose start date simply arrives is the usual example. That window used
+    to be about fifteen seconds; five minutes is the owner's decision (#2352 D3),
+    taken so a busy site does not pay a background rebuild every minute.
+  - **The cached copy is the same for everyone.** No member name or other
+    personal detail has ever appeared on these pages, and the "Log In" /
+    "Dashboard" button corrects itself in the browser. If you are adding
+    something to a public page, do not make it depend on who is looking.
+  - **The cache is emptied by a restart and by every deploy**, so it never holds
+    stale content across a release.
+  - **Multi-tenant forks: read this.** The cache is keyed by web address with no
+    club dimension. That is correct for this template, which runs one club per
+    deployment. A fork that served several clubs from one process would serve
+    club A's pages to club B.
 - Page HTML supports embed tokens that render interactive sections across
   PageContent-backed public routes, including code-backed starter routes.
   Supported tokens are `{{committee-members-cards}}`,
@@ -715,7 +736,7 @@ Admin > Page Content panel (`PublicContentSettings`):
   a guest is sent through login) or a chosen **published content page**.
 - A page target that becomes unpublished or is deleted **fails open** to the
   booking flow, so the button is never dead. So does a database error reading
-  the settings row: `getBookNowConfig`'s catch shows the button (#1929's
+  the settings row: `getBookNowVariants`'s catch shows the button (#1929's
   contract, deliberately unchanged by #2430 — the no-row branch fails closed
   because that is a club's absent choice, whereas an outage is not). The
   authenticated dashboard's own Book Now action is unaffected — a signed-in
@@ -725,8 +746,12 @@ Admin > Page Content panel (`PublicContentSettings`):
   booking-flow target the button sends them to the member login, and with a page
   target it sends them to a content page — neither is a booking they can make.
   A signed-in member sees **Book Now**. Both surfaces (desktop header and mobile
-  drawer) take the label from `getBookNowConfig`, so they cannot disagree. The
-  label is not configurable, and it does not change when you change the target.
+  drawer) take both labels from one `getBookNowVariants` read, so they cannot
+  disagree. Since #2352 the choice between them is made in the browser, from the
+  sign-in marker cookie, because the public pages are one stored copy served to
+  everyone — a member may see the signed-out label for a moment before it
+  corrects itself. The label is not configurable, and it does not change when you
+  change the target.
 
 ## Website Site Content
 
@@ -2339,6 +2364,7 @@ rate-limited, or temporarily unavailable.
 | `ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS` | Explicit migration safety override.                                   |
 | `BLUE_GREEN_MIGRATION_OVERRIDE_REASON` | Required explanation when allowing a breaking migration.              |
 | `MIGRATION_SAFETY_LEDGER`              | Path to the migration safety ledger.                                  |
+| `RELEASE_ID`                           | Docker **build** arg, not a runtime setting. Identifies the release, and the public website's fixed CSP script nonce is derived from it (#2352). CI and `scripts/run-production-blue-green-deploy.sh` set it to the deployed commit SHA automatically; `docker-compose.yml` falls back to `GIT_COMMIT_SHA`. Leave it alone unless you build images by hand — see "Public website page caching" below. |
 | `CONFIG_BUNDLE_IMPORT_PATH`            | Optional. Path to a config-transfer bundle applied non-interactively on boot **only** when the database is empty of non-seed configuration (DR / clone provisioning, ADR-003). Fails closed on a non-empty target, a bad bundle, or an unreadable path, and never blocks startup. See "Config Bundle Auto-Import On Boot (DR / clone)" in `DEPLOYMENT.md`. |
 
 ## Staging And Accessibility

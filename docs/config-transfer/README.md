@@ -161,7 +161,7 @@ deeper reference for what each category contains and the import safety model.
       **not** travel: `bookNowTarget` / `bookNowPageId` reference a specific
       install's `PageContent` id (instance-local, excluded like the phase-7
       `lodgeId` and `GroupDiscountSetting.rateMembershipTypeId` FKs), and
-      `getBookNowConfig` fails open to the booking flow when the page is absent,
+      `getBookNowVariants` fails open to the booking flow when the page is absent,
       so a target keeps its own destination and the button is never dead.
     - `MembershipSubscriptionBillingSettings` — the invoice due-days window and
       the club family-billing model. Neither embeds a Xero/provider or tenant

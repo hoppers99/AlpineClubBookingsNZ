@@ -90,6 +90,15 @@ The app containers ship with **no CPU control at all** in `docker-compose.yml`
 — no `cpus` cap, and deliberately no explicit `cpu_shares` weight either
 (#2351). The reasons, and how scheduling then behaves:
 
+> **Partly addressed since #2352 slice 1.** The admin-authored CMS pages are now
+> served from a cache rather than re-rendered per visit, so they no longer pay the
+> cold-render cost described below on every visit — only on the first visit per
+> path per container, and after a five-minute backstop or an admin edit. Everything
+> below still holds for `/`, `/join`, `/contact`, `/join/apply` and every
+> member/admin page, which remain fully dynamic. The keep-warm pinger and the
+> uncapped CPU default stay in place as belt and braces either way. See "Public
+> website page cache" below.
+
 Page renders are fully dynamic (nothing is prerendered — every page reads the
 per-request CSP nonce and session), and the JavaScript engine throws away a
 route's optimised code once that route sits idle briefly. The next request to
@@ -134,6 +143,36 @@ a keep-warm pinger (curl the key public routes on each app container every
 the structural fix tracked in #2352 (static/ISR public pages). Changing the
 app CPU arrangement also changes the load-testing baseline profile — see the
 note in `docs/LOAD_TESTING.md`.
+
+## Public website page cache
+
+Slice 1 of #2352. The admin-authored CMS pages (`/privacy`, `/faq`, `/rules`,
+`/committee`, `/terms` and every page an admin adds) are rendered once per path
+and then served from a cache. Four operational facts:
+
+- **The cache is IN MEMORY, per container, and bounded.** Next writes runtime
+  full-route entries under `.next/server/app`, which is read-only in this
+  container, so `next.config.ts` sets `experimental.isrFlushToDisk: false` and
+  `cacheMaxMemorySize: 64MB`. The bound is a least-recently-used eviction, which
+  is deliberate: it means a crawler walking nonsense addresses evicts old entries
+  instead of filling something up. The `/app/.next/cache` tmpfs (Next's fetch and
+  image caches) now carries an explicit `size=64m` for the same reason — an
+  uncapped tmpfs defaults to half the host's RAM and counts against the
+  container's 1 GiB `mem_limit`.
+- **It is emptied by every restart and every deploy**, so a stored page can never
+  outlive its release. That matters beyond freshness: the CSP nonce on these pages
+  is fixed per release (see `docs/SECURITY-ATTACK-SURFACE.md` → "The Public
+  Website's Fixed CSP Nonce"), and a page from an older release would not hydrate.
+- **`RELEASE_ID` must reach the image.** It is a build ARG carrying the deployed
+  commit SHA; the fixed nonce is derived from it. `scripts/run-production-blue-green-deploy.sh`
+  and CI both pass it, and the image asserts it is readable in its own environment.
+  If you build an image by hand without it, the app logs an error and falls back to
+  one nonce per process — fine for a single process, not safe for replicas.
+- **Warming the new colour before cutover is not implemented yet.** The owner
+  approved it (#2352 D6) and the blue/green script has the slot for it between the
+  target-health step and the Caddy switch; it lands with slice 2, when `/` becomes
+  static and there is a fixed list of addresses worth warming. Until then the first
+  visitor to each CMS page after a deploy pays one cold render.
 
 ## Prerequisites
 
