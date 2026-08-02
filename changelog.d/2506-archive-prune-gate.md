@@ -2,4 +2,4 @@
 
   Pruning is now gated on archival: when an archive database is configured, an archivable record is only ever deleted from the main database once it has been captured in the archive. If archival is running behind, those records are retained until it catches up rather than being deleted early. Nothing changes for clubs without an archive database configured, and records that are never archived (short-lived diagnostic entries and the 7-year critical trail) still prune on their own schedule.
 
-  The only visible effect is that, while an archive backlog drains, a small number of expired audit records can briefly live past their usual retention window — a safe, self-correcting delay rather than permanent loss.
+  The only visible effect is that, while an archive backlog drains, a small number of expired audit records can briefly live past their usual retention window — a safe, self-correcting delay rather than permanent loss. So that this over-retention is never silent, the nightly job now logs a backlog warning whenever the archive batch comes back full, giving operators an early signal that archival is falling behind.

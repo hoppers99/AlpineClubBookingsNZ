@@ -528,6 +528,29 @@ export async function archiveEligibleAuditLogs(
     deletedFromMain = count;
   }
 
+  // #2506: surface an archive backlog. The batch is bounded to `batchSize`
+  // (500/night), and the #2506 prune gate now RETAINS expired archivable rows
+  // that are not yet archived — so when the archive falls behind, over-retention
+  // becomes silent. A full batch means more archivable rows remain unarchived
+  // this run, so warn: it is the cheap nightly signal that archival is drifting
+  // and expired rows are being held past their retention window until it catches
+  // up. It self-clears the first night the batch is not full.
+  if (rows.length === batchSize) {
+    logger.warn(
+      {
+        job: "audit-retention",
+        reason: "archive-backlog",
+        batchSize,
+        archived: archivedIds.length,
+      },
+      "Audit archive batch was full: archivable rows remain unarchived after " +
+        "this run. Per #2506, any expired rows among them are retained in the " +
+        "main database past their retention window until archival catches up. " +
+        "If this persists, the archive is falling behind — investigate archive " +
+        "throughput or raise the batch size."
+    );
+  }
+
   return {
     configured: true,
     skipped: false,

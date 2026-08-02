@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
   deleteMany: vi.fn(),
   findMany: vi.fn(),
   loggerInfo: vi.fn(),
+  loggerWarn: vi.fn(),
   loggerError: vi.fn(),
 }));
 
@@ -21,6 +22,7 @@ vi.mock("@/lib/prisma", () => ({
 vi.mock("@/lib/logger", () => ({
   default: {
     info: mocks.loggerInfo,
+    warn: mocks.loggerWarn,
     error: mocks.loggerError,
   },
 }));
@@ -541,6 +543,37 @@ describe("audit retention lifecycle", () => {
       expect(mocks.findMany).toHaveBeenCalledWith(
         expect.objectContaining({ take: 500 })
       );
+    });
+
+    it("warns of an archive backlog when the nightly batch comes back full", async () => {
+      // A full batch means more archivable rows remain unarchived this run. Since
+      // the #2506 gate now retains their expired members past the retention
+      // window, that over-retention would otherwise be silent — assert the warn.
+      mocks.findMany.mockResolvedValueOnce([
+        archiveRow(),
+        archiveRow({ id: "audit-2" }),
+      ]);
+      const archiveDb = mockArchiveDb();
+
+      await archiveEligibleAuditLogs(mockDb() as never, archiveDb, now, 2);
+
+      // Drop the `rows.length === batchSize` warn and this reddens — the drift
+      // signal disappears.
+      expect(mocks.loggerWarn).toHaveBeenCalledWith(
+        expect.objectContaining({ reason: "archive-backlog", batchSize: 2 }),
+        expect.stringContaining("Audit archive batch was full")
+      );
+    });
+
+    it("stays silent when the nightly batch is not full (archive is keeping up)", async () => {
+      mocks.findMany.mockResolvedValueOnce([archiveRow()]);
+      const archiveDb = mockArchiveDb();
+
+      await archiveEligibleAuditLogs(mockDb() as never, archiveDb, now, 2);
+
+      // One row against a batch cap of two: no backlog, so no spurious warning.
+      // A warn keyed on anything looser than a full batch would redden here.
+      expect(mocks.loggerWarn).not.toHaveBeenCalled();
     });
   });
 });

@@ -28,6 +28,8 @@ Two guards enforce the invariant, in depth (`src/lib/audit-retention.ts`):
 
 The accepted cost of this gate is that an expired archivable row can outlive its documented `expiresAt` while a backlog drains — a recoverable data-minimisation delay that resolves as archival catches up. Unrecoverable loss loses to recoverable delay.
 
+Because that over-retention is otherwise invisible, the archive step emits a nightly **backlog warning** so drift does not go unnoticed: whenever a run's archive batch comes back full (the bounded 500 rows), more archivable rows remain unarchived, so the job logs `reason: "archive-backlog"` at `warn` level. A one-off warning is normal after a busy day and clears the first night the batch is not full; a warning that **persists** night after night means archival is falling behind — expired rows are being retained past their window — and archive throughput (or the batch size) should be investigated.
+
 When **no** archive database is configured there is no archive to outrun and nowhere for the data to go, so archivable rows are pruned on `expiresAt` as normal; the gate applies only to the archive-active case. `diagnostic_high_volume` and the unclassified/`critical` classes are never archived, so they always prune on their own expiry regardless of archive state.
 
 ## Archive Database Env Vars
