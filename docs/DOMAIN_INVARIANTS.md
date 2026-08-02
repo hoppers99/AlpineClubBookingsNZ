@@ -3296,6 +3296,13 @@ invariants hold in addition to every #2365/#2524/#2525 invariant above:
   written reason; both carry the `expectedVersion` the officer's screen showed,
   so a decision made against a stale queue loses the guarded CAS instead of
   deciding a request that changed underneath it.
+- **The member can read the decision.** Their own request list returns the
+  officer's note (so a refusal comes with its reason rather than a bare
+  `REJECTED`), the last capacity conflict (so a request still sitting at
+  `REQUESTED` can be told apart from one nobody has looked at), and the booking
+  an approval created. The approval itself is announced by the canonical booking
+  service's own member email — the confirmation or change notice it already
+  sends after commit — rather than a second, competing notice.
 - **Both request tables are decided by the same algorithm.** The engine takes a
   `PolicyExceptionRequestStore` (modification = `POLICY_EXCEPTION`
   `BookingChangeRequest`, new booking = `NewBookingPolicyExceptionRequest`);
