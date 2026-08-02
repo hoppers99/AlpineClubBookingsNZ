@@ -78,6 +78,21 @@ function hashRecordRef(kind: DiagnosticsRecordKind, id: string): string {
   return createHash("sha256").update(`${kind}:${id}`, "utf8").digest("hex");
 }
 
+/**
+ * The record this resolution ATTEMPTED to read — the server-chosen kind plus the
+ * validated id — decided before the read runs and independent of whether it hit.
+ *
+ * The audit is derived from THIS, never from the result. A miss that audited as
+ * "no record requested" would make an id-enumeration sweep invisible, because
+ * almost every probe in such a sweep is a miss and only the rare hit would leave
+ * a hash. ADR-004 §4 explicitly permits a non-reversible hash of a record
+ * reference, so the attempt is recorded without storing any identifier.
+ */
+interface AttemptedRecordRef {
+  kind: DiagnosticsRecordKind;
+  id: string;
+}
+
 function boundedRedacted(value: string): string {
   const redacted = redactSensitiveText(value).trim();
   const max = DIAGNOSTICS_PAGE_CONTEXT_BOUNDS.factValueMaxChars;
@@ -150,11 +165,15 @@ function audit(input: {
  * `route` is echoed on a DENIAL (the operator already knows which page they are
  * on; telling the model "they are on Payments but lack finance access" is what
  * stops it inventing an answer) and withheld when the selector never named a
- * valid route at all.
+ * valid route at all — or when the ACTOR could not be established, where nothing
+ * should be echoed to the model before we know who is asking. What the EVIDENCE
+ * withholds and what the AUDIT records are separate decisions, which is why they
+ * are separate arguments.
  */
 function emptyResult(input: {
   status: "denied" | "unavailable";
   reason: DiagnosticsPageContextReason;
+  /** Echoed into the evidence. Null renders "page: not identified". */
   route: DiagnosticsPageContextRoute | null;
   omissions: DiagnosticsPageContextOmission[];
   observedAt: string;
@@ -165,7 +184,18 @@ function emptyResult(input: {
    * that never happened.
    */
   authOutcome?: "allowed" | "denied";
+  /**
+   * The route to AUDIT. Defaults to the evidence route; pass it explicitly on an
+   * exit that withholds the route from the model but HAD validated one, so the
+   * row can still be correlated to a surface.
+   */
+  auditRoute?: DiagnosticsPageContextRoute | null;
+  /** The record reference that was attempted, if the selector named one. */
+  attemptedRecord?: AttemptedRecordRef | null;
 }): DiagnosticsPageContext {
+  const auditRoute =
+    input.auditRoute === undefined ? input.route : input.auditRoute;
+  const attempted = input.attemptedRecord ?? null;
   return {
     schemaVersion: DIAGNOSTICS_PAGE_CONTEXT_SCHEMA_VERSION,
     status: input.status,
@@ -182,11 +212,13 @@ function emptyResult(input: {
     omissions: input.omissions,
     observedAt: input.observedAt,
     audit: audit({
-      routeKey: input.route?.key ?? null,
-      areasChecked: input.route?.requiredAreas ?? [],
+      routeKey: auditRoute?.key ?? null,
+      areasChecked: auditRoute?.requiredAreas ?? [],
       authOutcome: input.authOutcome ?? "denied",
-      recordKind: null,
-      recordRefHash: null,
+      recordKind: attempted?.kind ?? null,
+      recordRefHash: attempted
+        ? hashRecordRef(attempted.kind, attempted.id)
+        : null,
       factCount: 0,
       byteCount: 0,
       observedAt: input.observedAt,
@@ -235,17 +267,37 @@ export async function resolveDiagnosticsPageContext(
   }
   const { selector, route } = parsed;
 
+  // Fixed here, before any read: the SERVER's record kind for this route plus the
+  // validated id. Every audit row below derives from this attempt, not from what
+  // the read happened to return.
+  const attemptedRecord: AttemptedRecordRef | null =
+    route.recordKind && selector.recordId
+      ? { kind: route.recordKind, id: selector.recordId }
+      : null;
+
   // 2. Authorize, fresh, on every call (ADR-002 §2). No cache, no session copy.
-  const matrix = await readFreshAdminPermissionMatrix(input.actingMemberId);
-  if (!matrix) {
+  const actor = await readFreshAdminPermissionMatrix(input.actingMemberId);
+  if (!actor.ok) {
     return emptyResult({
       status: "unavailable",
-      reason: "actor_unresolved",
+      // A missing member and an unreadable role graph both deny, but they are
+      // different incidents and the trail says which.
+      reason:
+        actor.failure === "read_failed"
+          ? "actor_read_failed"
+          : "actor_unresolved",
+      // Nothing is echoed to the model before the actor is established...
       route: null,
+      // ...but the route WAS validated, so the audit keeps it: a burst of actor
+      // failures is the signature of a database fault or of requests carrying a
+      // stale/forged member id, and it can only be triaged against a surface.
+      auditRoute: route,
+      attemptedRecord,
       omissions: [],
       observedAt,
     });
   }
+  const matrix = actor.matrix;
 
   // `hasAllAreaViews` is the gate (it also refuses an empty area list);
   // `missingAreaViews` only explains the refusal.
@@ -254,6 +306,7 @@ export async function resolveDiagnosticsPageContext(
       status: "denied",
       reason: "permission_denied",
       route,
+      attemptedRecord,
       omissions: missingAreaViews(matrix, route.requiredAreas).map((area) => ({
         code: "permission_denied" as const,
         message: AREA_DENIAL_MESSAGE[area],
@@ -270,21 +323,23 @@ export async function resolveDiagnosticsPageContext(
   //    kind and the operator named an id for it.
   let record: DiagnosticsPageContext["record"] = null;
   let facts: DiagnosticsPageContextFact[] = [];
-  if (route.recordKind && selector.recordId) {
+  if (attemptedRecord) {
     const includeSensitive = selector.includeSensitiveRecord === true;
     let projection;
     try {
-      projection = await readRecordProjection(route.recordKind, {
-        id: selector.recordId,
+      projection = await readRecordProjection(attemptedRecord.kind, {
+        id: attemptedRecord.id,
         includeSensitive,
       });
     } catch {
       // A failed read must never look like "this record has nothing to show".
-      // The permission check DID pass, so the audit row says so.
+      // The permission check DID pass, so the audit row says so — and the read
+      // WAS attempted, so the row carries the attempted reference.
       return emptyResult({
         status: "unavailable",
         reason: "lookup_failed",
         route,
+        attemptedRecord,
         omissions: [],
         observedAt,
         authOutcome: "allowed",
@@ -300,8 +355,8 @@ export async function resolveDiagnosticsPageContext(
     } else {
       facts = projection;
       record = {
-        kind: route.recordKind,
-        id: selector.recordId,
+        kind: attemptedRecord.kind,
+        id: attemptedRecord.id,
         sensitiveIncluded: includeSensitive,
         facts,
         observedAt,
@@ -328,8 +383,13 @@ export async function resolveDiagnosticsPageContext(
       routeKey: route.key,
       areasChecked: route.requiredAreas,
       authOutcome: "allowed",
-      recordKind: record ? record.kind : null,
-      recordRefHash: record ? hashRecordRef(record.kind, record.id) : null,
+      // The ATTEMPT, not the hit: a miss audits identically to a hit apart from
+      // its fact count, so a sweep of non-existent ids is as visible as a real
+      // read (see `AttemptedRecordRef`).
+      recordKind: attemptedRecord ? attemptedRecord.kind : null,
+      recordRefHash: attemptedRecord
+        ? hashRecordRef(attemptedRecord.kind, attemptedRecord.id)
+        : null,
       factCount: facts.length,
       byteCount: evidenceByteCount(selection, facts),
       observedAt,

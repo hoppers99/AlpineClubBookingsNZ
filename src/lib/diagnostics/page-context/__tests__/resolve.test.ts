@@ -23,8 +23,12 @@ vi.mock("@/lib/prisma", () => ({
   },
 }));
 
+import { renderPageContextEvidenceBlock } from "../render";
 import { resolveDiagnosticsPageContext } from "../resolve";
-import { DIAGNOSTICS_SENSITIVE_INCLUSION_COPY } from "../types";
+import {
+  DIAGNOSTICS_PAGE_CONTEXT_BOUNDS,
+  DIAGNOSTICS_SENSITIVE_INCLUSION_COPY,
+} from "../types";
 
 const OBSERVED_AT = new Date("2026-07-01T00:00:00.000Z");
 const ACTOR = "cactor1";
@@ -88,6 +92,19 @@ const BOOKING_ROW = {
   _count: { guests: 2 },
 };
 
+const PAYMENT_ROW = {
+  status: "SUCCEEDED",
+  source: "STRIPE",
+  // Eight digits of integer cents ($123,456.78). Long enough to look like a
+  // phone number to the redactor's digit-run heuristic, which is why money is
+  // never routed through redaction.
+  amountCents: 12_345_678,
+  refundedAmountCents: 0,
+  creditAppliedCents: 0,
+  createdAt: new Date("2026-06-02T03:04:05.000Z"),
+  booking: { member: { firstName: "Ada", lastName: "Lovelace" } },
+};
+
 const MEMBER_ROW = {
   active: true,
   canLogin: true,
@@ -145,7 +162,30 @@ describe("fail-closed inputs", () => {
     mocks.memberFindUnique.mockRejectedValue(new Error("db down"));
     const result = await resolve({ routeKey: "admin.bookings" });
     expect(result.status).toBe("unavailable");
-    expect(result.reason).toBe("actor_unresolved");
+    // A database fault and a missing/forged actor are different incidents, so
+    // they carry different reasons rather than one indistinguishable code.
+    expect(result.reason).toBe("actor_read_failed");
+    expect(result.record).toBeNull();
+  });
+
+  it("keeps the validated route in the AUDIT of an actor failure while withholding it from the evidence", async () => {
+    // The route was parsed and validated before the actor read ran, so the row
+    // can be correlated to a surface — a burst of these is the signature of a
+    // database fault or of requests carrying a stale/forged member id. The model
+    // is still told nothing, because we do not know who is asking.
+    mocks.memberFindUnique.mockResolvedValue(null);
+    const result = await resolve({
+      routeKey: "admin.bookings",
+      recordId: "cbk1",
+    });
+    expect(result.route).toBeNull();
+    expect(result.record).toBeNull();
+    expect(result.audit.routeKey).toBe("admin.bookings");
+    expect(result.audit.areasChecked).toEqual(["bookings"]);
+    expect(result.audit.authOutcome).toBe("denied");
+    expect(result.audit.recordKind).toBe("booking");
+    expect(result.audit.recordRefHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(JSON.stringify(result.audit)).not.toContain("cbk1");
   });
 
   it("returns unavailable/lookup_failed — not an empty record — when the projection throws", async () => {
@@ -161,6 +201,9 @@ describe("fail-closed inputs", () => {
     // denial would invent a permission incident that never happened.
     expect(result.audit.authOutcome).toBe("allowed");
     expect(result.audit.routeKey).toBe("admin.bookings");
+    // The read WAS attempted, so the row says which record it was attempted for.
+    expect(result.audit.recordKind).toBe("booking");
+    expect(result.audit.recordRefHash).toMatch(/^[0-9a-f]{64}$/);
   });
 });
 
@@ -269,7 +312,6 @@ describe("IDOR and record-kind substitution", () => {
     expect(result.omissions).toEqual([
       expect.objectContaining({ code: "record_not_found" }),
     ]);
-    expect(result.audit.recordRefHash).toBeNull();
   });
 
   it("reads a restricted projection — never the whole row", async () => {
@@ -395,6 +437,67 @@ describe("redaction and logging discipline (ADR-004 §2/§4)", () => {
     expect(notes?.value.length).toBeLessThanOrEqual(200);
   });
 
+  it("redacts and bounds a NON-identifying free-text column too", async () => {
+    // Regression: `Lodge.name` is a plain, unbounded `String` an admin types, and
+    // the non-sensitive fact constructor used to return it raw — no redaction, no
+    // cap — even though the module header and the docs said otherwise.
+    mocks.bookingFindUnique.mockResolvedValue({
+      ...BOOKING_ROW,
+      lodge: { name: `${"L".repeat(3000)} admin@example.com` },
+    });
+    const result = await resolve({
+      routeKey: "admin.bookings",
+      recordId: "cbk1",
+    });
+    const lodge = result.record?.facts.find((f) => f.key === "booking.lodge");
+    expect(lodge?.sensitive).toBe(false);
+    expect(lodge?.value.length).toBeLessThanOrEqual(
+      DIAGNOSTICS_PAGE_CONTEXT_BOUNDS.factValueMaxChars,
+    );
+    expect(JSON.stringify(result)).not.toContain("admin@example.com");
+  });
+
+  it("bounds EVERY fact, so no single column can consume the evidence budget", async () => {
+    // The status is a closed enum in reality; feeding it an unbounded value here
+    // exercises the belt-and-braces guard on the closed-vocabulary constructor —
+    // a value that is not enum-shaped falls back to redact-and-bound rather than
+    // travelling raw, so misusing that constructor for free text cannot reopen
+    // this hole.
+    mocks.bookingFindUnique.mockResolvedValue({
+      ...BOOKING_ROW,
+      status: "S".repeat(9000),
+      lodge: { name: "L".repeat(9000) },
+      notes: "n".repeat(9000),
+    });
+    const result = await resolve({
+      routeKey: "admin.bookings",
+      recordId: "cbk1",
+      includeSensitiveRecord: true,
+    });
+    for (const item of result.record?.facts ?? []) {
+      expect(item.value.length).toBeLessThanOrEqual(
+        DIAGNOSTICS_PAGE_CONTEXT_BOUNDS.factValueMaxChars,
+      );
+    }
+  });
+
+  it("never rewrites integer cents as a redacted value", async () => {
+    // Redaction treats a standalone run of 8+ digits as phone-like. Money must
+    // therefore never travel that path, or a large payment would read as
+    // "[REDACTED]" to the model.
+    mocks.paymentFindUnique.mockResolvedValue(PAYMENT_ROW);
+    const result = await resolve({
+      routeKey: "admin.payments",
+      recordId: "cpay1",
+    });
+    const byKey = Object.fromEntries(
+      (result.record?.facts ?? []).map((f) => [f.key, f.value]),
+    );
+    expect(byKey["payment.amount-cents"]).toBe("12345678");
+    expect(byKey["payment.created-at"]).toBe("2026-06-02T03:04:05.000Z");
+    expect(JSON.stringify(result)).not.toContain("REDACTED");
+  });
+
   it("redacts a token pasted into a filter value", async () => {
     const result = await resolve({
       routeKey: "admin.bookings",
@@ -428,6 +531,52 @@ describe("redaction and logging discipline (ADR-004 §2/§4)", () => {
     expect(auditJson).not.toContain("Alpine Lodge");
     expect(result.audit.factCount).toBe(result.record?.facts.length);
     expect(result.audit.byteCount).toBeGreaterThan(0);
+  });
+
+  it("audits the ATTEMPTED lookup, so a miss is as attributable as a hit", async () => {
+    // Regression (id-enumeration oracle): the audit used to derive its record
+    // kind and hash from the RESULT, so a probe that missed produced a row
+    // indistinguishable from a question that named no record at all. Almost every
+    // probe in an enumeration sweep is a miss, so the sweep left no trail.
+    const hit = await resolve({
+      routeKey: "admin.bookings",
+      recordId: "probe-id-9999",
+    });
+    mocks.bookingFindUnique.mockResolvedValue(null);
+    const miss = await resolve({
+      routeKey: "admin.bookings",
+      recordId: "probe-id-9999",
+    });
+
+    expect(miss.record).toBeNull();
+    expect(miss.audit.recordKind).toBe("booking");
+    expect(miss.audit.recordRefHash).toMatch(/^[0-9a-f]{64}$/);
+    // Same attempted reference, same hash — the trail correlates the probe to the
+    // successful read of the same id, which is what makes a sweep visible.
+    expect(miss.audit.recordRefHash).toBe(hit.audit.recordRefHash);
+    // Only the volume of evidence differs.
+    expect(miss.audit.factCount).toBe(0);
+    expect(hit.audit.factCount).toBeGreaterThan(0);
+    // And it is still a hash, never the id.
+    expect(JSON.stringify(miss.audit)).not.toContain("probe-id-9999");
+  });
+
+  it("audits the attempted reference on a permission denial too", async () => {
+    mocks.memberFindUnique.mockResolvedValue(BOOKINGS_ONLY);
+    const result = await resolve({
+      routeKey: "admin.member-detail",
+      recordId: "cmember1",
+    });
+    expect(result.status).toBe("denied");
+    expect(result.audit.recordKind).toBe("member");
+    expect(result.audit.recordRefHash).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("records no reference when the resolution named no record at all", async () => {
+    const result = await resolve({ routeKey: "admin.bookings" });
+    expect(result.audit.recordKind).toBeNull();
+    expect(result.audit.recordRefHash).toBeNull();
+    expect(mocks.bookingFindUnique).not.toHaveBeenCalled();
   });
 
   it("hashes the record reference with the KIND, so ids cannot collide across kinds", async () => {
@@ -465,6 +614,54 @@ describe("observed-at and citation (ADR-003 §3)", () => {
       pathname: "/admin/bookings",
       label: "Bookings list",
     });
+  });
+});
+
+describe("the rendered evidence survives hostile database content", () => {
+  it("keeps the ADR-004 opt-out notice and every fact for a worst-case page", async () => {
+    // Regression, end to end: an unbounded lodge name used to reach the renderer
+    // raw, push the block to its 4000-char cap, and truncate the TAIL — which was
+    // the notices section, so the "personal detail omitted" notice the model needs
+    // in order not to guess a name was the first thing lost. Facts are now capped
+    // and notices render before the evidence, so neither can be pushed out.
+    mocks.bookingFindUnique.mockResolvedValue({
+      ...BOOKING_ROW,
+      lodge: { name: "L".repeat(3000) },
+      adminReviewStatus: "PENDING",
+      requiresAdminReview: true,
+    });
+    const result = await resolve({
+      routeKey: "admin.bookings",
+      recordId: "cbk1",
+      status: "confirmed",
+      filters: {
+        lodgeId: "x".repeat(120),
+        status: "y".repeat(120),
+        from: "z".repeat(120),
+        to: "w".repeat(120),
+        search: "v".repeat(120),
+      },
+    });
+    expect(result.status).toBe("resolved");
+
+    const text = renderPageContextEvidenceBlock(result);
+    expect(text.length).toBeLessThanOrEqual(
+      DIAGNOSTICS_PAGE_CONTEXT_BOUNDS.renderedBlockMaxChars,
+    );
+    expect(text).not.toContain("page context truncated");
+    expect(text).toContain(
+      DIAGNOSTICS_SENSITIVE_INCLUSION_COPY.omittedNotice.slice(0, 40),
+    );
+    // Every server-verified fact still made it, in particular the tail ones.
+    for (const key of [
+      "booking.lodge",
+      "booking.deleted",
+      "booking.requires-admin-review",
+      "booking.created-at",
+      "booking.admin-review-status",
+    ]) {
+      expect(text).toContain(`- ${key}: `);
+    }
   });
 });
 

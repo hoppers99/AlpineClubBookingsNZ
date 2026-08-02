@@ -52,22 +52,38 @@ client opening a second serialization channel through this object.
 runs four gates, in this order, and never throws for an input or permission
 problem — every failure is a structured, evidence-free result.
 
-1. **Parse** (`parse.ts`) — structural schema first, then the route's own
-   allowlists. Rejection is **total**: a selector with one bad token is refused
-   outright rather than having that token silently dropped, and the failure
-   codes name the *field*, never the value, so a rejected selector cannot use the
-   error path as an output channel.
+1. **Parse** (`parse.ts`) — reserved keys, then the structural schema, then the
+   route's own allowlists. Rejection is **total**: a selector with one bad token
+   is refused outright rather than having that token silently dropped, and the
+   failure codes name the *field*, never the value, so a rejected selector cannot
+   use the error path as an output channel. `__proto__` is refused explicitly on
+   the raw input, because zod's `record` cannot see it and would drop it rather
+   than reject it — a silent drop is the partial rejection this layer forbids.
 2. **Authorize** (`authorize.ts`) — the caller's effective permission matrix is
    re-read **from the database-joined access roles on every single resolution**,
    exactly as `/api/help/chat` does for its surface downgrade. Never the JWT,
    never a session copy, never a cache. A route that declares two areas needs
-   `view` on **both** (AND, never OR). Any fault reading the roles denies.
+   `view` on **both** (AND, never OR). Any fault reading the roles denies, and a
+   missing member (`actor_unresolved`) is reported separately from an unreadable
+   role graph (`actor_read_failed`) so a database outage and an authorization
+   anomaly are not the same audit row.
 3. **Re-fetch** (`projections.ts`) — a fixed, typed, column-allowlisted read of
    the one record, by id. No dynamic columns, no caller-influenced filter, no
    model-authored SQL.
-4. **Bound** — free text is redacted (`redactSensitiveText`) and hard-capped,
-   the whole result is stamped with an observed-at instant, and the approved
-   audit metadata is attached.
+4. **Bound** — **every** fact is hard-capped, free text is redacted
+   (`redactSensitiveText`) first, the whole result is stamped with an observed-at
+   instant, and the approved audit metadata is attached.
+
+There are exactly three fact constructors in `projections.ts` and no fourth way
+to add one: `derivedFact` for closed-vocabulary server values (enum, boolean,
+count, integer cents, date), `textFact` for non-identifying free text such as a
+lodge name, and `sensitiveFact` for identifying free text. The two free-text
+constructors share one redact-then-cap path. `derivedFact` deliberately skips
+redaction — the redactor treats a standalone run of eight or more digits as
+phone-like, which would rewrite a large integer-cents amount to `[REDACTED]` —
+so it **verifies** the closed-vocabulary shape instead and falls back to the
+redact-and-cap path for anything else. Using it for a free-text column therefore
+yields a redacted fact, never an unbounded one.
 
 ## The route registry
 
@@ -119,9 +135,14 @@ fail to find a booking; it can never resolve a member.
 
 | Kind | Always (non-identifying) | Only with the operator's opt-in |
 | --- | --- | --- |
-| `booking` | status, check-in / check-out (NZ date-only), nights, guest count, lodge name, deleted, requires-admin-review, admin review status, created-at | member name, notes (redacted, ≤200 chars) |
+| `booking` | status, check-in / check-out (NZ date-only), nights, guest count, lodge name, deleted, requires-admin-review, admin review status, created-at | member name, notes |
 | `member` | active, can-login, email-verified, age tier, created-at | name |
 | `payment` | status, source, amount / refunded / credit-applied in **integer cents**, created-at | payer name |
+
+Every value in either column is capped at 200 characters, and the free-text ones
+(lodge name, notes, names) are redacted first — `Lodge.name` is a plain,
+unbounded `String` an admin types, so it gets the same treatment as a note even
+though it identifies nobody.
 
 Deliberately **not** projected at any level: money on a booking (a finance
 question belongs to the finance tools, AID-6C #2377), member contact details
@@ -163,7 +184,10 @@ the model. It is the page-context counterpart of the knowledge bundle's
   untrusted span, the wrapper token itself is defused, and newlines are
   collapsed so a value cannot fake a new line or a new section.
 - **Bounded and deterministic.** No clock, no randomness, a hard character cap,
-  and the closing tag is never the thing that gets cut.
+  and the closing tag is never the thing that gets cut. The cap takes the tail,
+  so section order is itself a safety property: framing, page identity and the
+  omission notices render **before** the evidence. A large database column can
+  therefore only ever cost facts — never the notice saying what was withheld.
 
 A denial and an unavailable result still render: "there is no page context and
 here is why" is the answer that stops the model inventing one.
@@ -178,6 +202,16 @@ context carries a separate `audit` object holding only the approved metadata of
 instant. No fact values, no names, no prompt, no answer. It is a separate object
 precisely so a caller that persists an audit row cannot accidentally persist a
 field value.
+
+**The audit describes the attempt, not the result.** The record kind and hash
+come from the lookup that was *attempted* — the server-chosen kind plus the
+validated id — so a lookup that missed or failed records the same reference a
+successful one would, differing only in its fact count. Deriving them from the
+result instead would make id enumeration through this path unattributable,
+because almost every probe in such a sweep is a miss. For the same reason the
+route key and areas checked survive an exit that withholds the route from the
+*evidence*: an actor that could not be established is told nothing, but the row
+still says which surface was hit.
 
 ## Known limits
 

@@ -26,7 +26,11 @@
  *
  *  4. DETERMINISTIC AND BOUNDED. No clock and no randomness — the observed-at
  *     comes from the resolved context — and the whole block is hard-capped, with
- *     an explicit in-block notice when it had to be cut.
+ *     an explicit in-block notice when it had to be cut. Because the cut takes
+ *     the TAIL, the order of the sections is itself a safety property: framing,
+ *     page identity and the omission notices are rendered before the evidence, so
+ *     a large database value can only ever cost facts — never the notice that
+ *     tells the model what was withheld.
  */
 
 import {
@@ -97,6 +101,19 @@ export function renderPageContextEvidenceBlock(
     );
   }
 
+  // NOTICES COME BEFORE THE EVIDENCE, on purpose. Truncation cuts the tail (see
+  // the cap below), and these are the lines the model must never lose: the
+  // ADR-004 §1 "personal detail omitted" notice is what stops it guessing a name,
+  // and a permission omission is what stops it reporting a partial view as whole.
+  // A long database value can push the block to its cap; it must not be able to
+  // push a notice out of it.
+  if (context.omissions.length > 0) {
+    lines.push("", "notices:");
+    for (const omission of context.omissions) {
+      lines.push(`- ${neutralize(omission.message)}`);
+    }
+  }
+
   const selectionLines: string[] = [];
   const { tab, step, status, errorCode, filters } = context.selection;
   if (tab) selectionLines.push(`- tab: ${neutralize(tab)}`);
@@ -121,13 +138,6 @@ export function renderPageContextEvidenceBlock(
     );
     for (const item of context.record.facts) {
       lines.push(`- ${neutralize(item.key)}: ${neutralize(item.value)}`);
-    }
-  }
-
-  if (context.omissions.length > 0) {
-    lines.push("", "notices:");
-    for (const omission of context.omissions) {
-      lines.push(`- ${neutralize(omission.message)}`);
     }
   }
 

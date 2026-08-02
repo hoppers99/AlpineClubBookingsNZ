@@ -1,8 +1,11 @@
 /**
  * AI Diagnostics — selector parsing and route-scoped allowlisting (AID-4, #2373).
  *
- * Two layers, both fail-closed:
+ * Three layers, all fail-closed:
  *
+ *  0. RESERVED KEYS — `__proto__` and friends, refused here because zod's
+ *     `record` cannot see them (it drops them silently, which is a partial
+ *     rejection and therefore a contract breach — see `RESERVED_KEYS`).
  *  1. STRUCTURAL — `diagnosticsPageSelectorSchema` (strict zod): known keys
  *     only, bounded lengths, tight character classes, no control characters.
  *  2. ROUTE-SCOPED — this module: the route must be registered, and every token
@@ -53,6 +56,40 @@ export type ParsedDiagnosticsPageSelector =
   | { ok: false; issues: DiagnosticsSelectorIssue[] };
 
 /**
+ * Keys that must never travel, in the selector or in `filters`. `__proto__` is
+ * the load-bearing one: zod's `record` never surfaces it to the key schema, and
+ * assigning it onto the fresh output object is a setter no-op, so it DISAPPEARS
+ * instead of being refused — the one filter key a client could send to a route
+ * that allowlists no filters at all and still be accepted. There is no
+ * prototype pollution today (values are strings and nothing reads the
+ * prototype), but "rejection is total, never partial" is the contract this
+ * module exists to hold, so the key is refused explicitly rather than lost.
+ */
+const RESERVED_KEYS: readonly string[] = [
+  "__proto__",
+  "constructor",
+  "prototype",
+];
+
+/**
+ * Own-property scan of the RAW input, before the schema runs — the only place
+ * `__proto__` is still visible. `Object.getOwnPropertyNames` is deliberate:
+ * `JSON.parse` defines `__proto__` as an ordinary own property, and this must see
+ * it whether or not it is enumerable.
+ */
+function hasReservedKey(input: unknown): boolean {
+  if (typeof input !== "object" || input === null) return false;
+  if (Object.getOwnPropertyNames(input).some((k) => RESERVED_KEYS.includes(k))) {
+    return true;
+  }
+  const filters = (input as { filters?: unknown }).filters;
+  if (typeof filters !== "object" || filters === null) return false;
+  return Object.getOwnPropertyNames(filters).some((k) =>
+    RESERVED_KEYS.includes(k),
+  );
+}
+
+/**
  * A token is accepted only when the route's allowlist for that field contains
  * it. An EMPTY allowlist accepts nothing — the field is not supported on this
  * page, which is a rejection rather than a pass-through.
@@ -71,6 +108,10 @@ function allows(allowlist: readonly string[], value: string | undefined) {
 export function parseDiagnosticsPageSelector(
   input: unknown,
 ): ParsedDiagnosticsPageSelector {
+  // Layer 0: the keys the schema structurally cannot refuse for itself. Same
+  // outcome as any other structural failure, and no value is echoed.
+  if (hasReservedKey(input)) return { ok: false, issues: ["malformed"] };
+
   const structural = diagnosticsPageSelectorSchema.safeParse(input);
   if (!structural.success) return { ok: false, issues: ["malformed"] };
 

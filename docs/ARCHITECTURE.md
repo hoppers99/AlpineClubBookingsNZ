@@ -2547,8 +2547,10 @@ rather than dropping a bad token), authorize (the caller's permission matrix
 re-read from the database-joined access roles on **every** resolution — never a
 JWT or a cache — and AND across every area the route declares), re-fetch (a
 fixed, typed, column-allowlisted read of the one record, whose **kind comes from
-the registry, never the client**), then bound (redact, cap, stamp observed-at,
-attach approved audit metadata only).
+the registry, never the client**), then bound (redact free text, cap every fact,
+stamp observed-at, attach approved audit metadata only). That metadata describes
+the **attempt** — a hashed record reference is recorded whether the lookup hit or
+missed, so id probing through this path cannot audit as "no record requested".
 
 Identifying fields are **opt-in per record**; without the opt-in the record
 resolves to non-identifying state plus an explicit "personal detail omitted"

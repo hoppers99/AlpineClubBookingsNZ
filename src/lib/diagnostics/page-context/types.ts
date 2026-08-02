@@ -166,6 +166,13 @@ export const diagnosticsPageSelectorSchema = z
     step: tokenSchema.optional(),
     status: tokenSchema.optional(),
     errorCode: tokenSchema.optional(),
+    /**
+     * NOTE: a `record` cannot refuse every key by itself — zod never surfaces
+     * `__proto__` to the key schema, and it vanishes rather than being rejected.
+     * `parse.ts` refuses reserved keys on the RAW input before this schema runs,
+     * so a selector must go through `parseDiagnosticsPageSelector` and never
+     * through this schema alone.
+     */
     filters: z
       .record(filterKeySchema, filterValueSchema)
       .refine(
@@ -205,7 +212,14 @@ export type DiagnosticsRecordKind = (typeof DIAGNOSTICS_RECORD_KINDS)[number];
 export type DiagnosticsPageContextReason =
   | "invalid_selector"
   | "unknown_route"
+  /** The acting member row does not exist (a stale or forged acting member id). */
   | "actor_unresolved"
+  /**
+   * The role read itself failed. Kept distinct from `actor_unresolved` so a
+   * database fault and an authorization anomaly are not the same audit row —
+   * both still deny, and neither ever produces an empty-matrix pass.
+   */
+  | "actor_read_failed"
   | "permission_denied"
   | "record_not_found"
   | "lookup_failed";
@@ -254,11 +268,26 @@ export interface DiagnosticsPageContextRecord {
  * derived from, a field's contents.
  */
 export interface DiagnosticsPageContextAudit {
+  /**
+   * The route that was VALIDATED, even on an exit that withheld it from the
+   * evidence — a burst of actor failures is only triageable if the surface they
+   * hit is recorded. Null only when no valid route was ever established.
+   */
   routeKey: string | null;
   areasChecked: AdminPermissionArea[];
   authOutcome: "allowed" | "denied";
+  /**
+   * The record kind that was ATTEMPTED, not the one that was found. A lookup
+   * that missed still records its kind and hash: an audit row that looked like
+   * "no record was requested" would make id enumeration through this path
+   * unattributable, because almost every probe in a sweep is a miss.
+   */
   recordKind: DiagnosticsRecordKind | null;
-  /** sha256 of `${kind}:${id}` — never the raw id. Null when no record. */
+  /**
+   * sha256 of `${kind}:${id}` for the ATTEMPTED reference — never the raw id,
+   * and never omitted merely because the record was not found. Null only when
+   * the resolution named no record at all.
+   */
   recordRefHash: string | null;
   factCount: number;
   /** UTF-8 byte length of the rendered evidence block. */
@@ -292,7 +321,8 @@ export interface DiagnosticsPageSelection {
  *                  facts (possibly none) are current as at `observedAt`.
  *  - `denied`    — authorization failed; NO page facts are present.
  *  - `unavailable` — the selector was malformed, the route unknown, the acting
- *                  member unresolvable, or the projection read failed.
+ *                  member unresolvable (absent, or their roles unreadable), or
+ *                  the projection read failed.
  */
 export interface DiagnosticsPageContext {
   schemaVersion: typeof DIAGNOSTICS_PAGE_CONTEXT_SCHEMA_VERSION;

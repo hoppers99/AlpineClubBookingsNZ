@@ -260,6 +260,36 @@ describe("bounded output", () => {
     expect(text).toContain("page context truncated to its size limit");
   });
 
+  it("keeps the notices when it has to cut — they render before the evidence", () => {
+    // Regression: truncation takes the TAIL, and the notices used to be last, so
+    // an oversized fact list silently removed the ADR-004 "personal detail
+    // omitted" notice — the very line that stops the model guessing a name.
+    const facts = Array.from({ length: 500 }, (_, i) => ({
+      key: `booking.filler-${i}`,
+      value: "x".repeat(60),
+      sensitive: false,
+    }));
+    const text = renderPageContextEvidenceBlock(
+      context({
+        record: {
+          kind: "booking",
+          id: "cbk1",
+          sensitiveIncluded: false,
+          observedAt: OBSERVED_AT,
+          facts,
+        },
+        omissions: [
+          { code: "sensitive_opt_out", message: "Personal detail omitted." },
+        ],
+      }),
+    );
+    expect(text).toContain("page context truncated to its size limit");
+    expect(text).toContain("Personal detail omitted.");
+    expect(text.indexOf("notices:")).toBeLessThan(
+      text.indexOf("server-verified facts"),
+    );
+  });
+
   it("is deterministic — the same context renders byte-identically", () => {
     const input = context({
       selection: { status: "confirmed" },

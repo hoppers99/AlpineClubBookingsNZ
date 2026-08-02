@@ -227,6 +227,52 @@ describe("filters", () => {
   });
 });
 
+describe("reserved keys are refused, never dropped", () => {
+  // Regression: zod's `record` never surfaces `__proto__` to the key schema and
+  // assigning it onto the output object is a no-op, so the key USED TO vanish and
+  // the selector was then accepted — even on `admin.health`, which allowlists no
+  // filters at all. A silently dropped key is exactly the partial rejection this
+  // module's contract forbids.
+  it("refuses a __proto__ filter key on a route that allows no filters", () => {
+    const input = JSON.parse(
+      '{"routeKey":"admin.health","filters":{"__proto__":"x"}}',
+    );
+    expect(parseDiagnosticsPageSelector(input)).toEqual({
+      ok: false,
+      issues: ["malformed"],
+    });
+  });
+
+  it("refuses a __proto__ filter key even beside an allowlisted one", () => {
+    const input = JSON.parse(
+      '{"routeKey":"admin.bookings","filters":{"search":"smith","__proto__":"x"}}',
+    );
+    const result = parseDiagnosticsPageSelector(input);
+    expect(result).toEqual({ ok: false, issues: ["malformed"] });
+  });
+
+  it("refuses a reserved key at the top level of the selector", () => {
+    for (const raw of [
+      '{"routeKey":"admin.bookings","__proto__":{"routeKey":"admin.health"}}',
+      '{"routeKey":"admin.bookings","constructor":"x"}',
+      '{"routeKey":"admin.bookings","filters":{"prototype":"x"}}',
+    ]) {
+      expect(parseDiagnosticsPageSelector(JSON.parse(raw))).toEqual({
+        ok: false,
+        issues: ["malformed"],
+      });
+    }
+  });
+
+  it("does not pollute Object.prototype on the way to that rejection", () => {
+    parseDiagnosticsPageSelector(
+      JSON.parse('{"routeKey":"admin.bookings","filters":{"__proto__":"x"}}'),
+    );
+    expect(({} as Record<string, unknown>).search).toBeUndefined();
+    expect(Object.prototype).not.toHaveProperty("polluted");
+  });
+});
+
 describe("rejection is total", () => {
   it("reports every failing field and resolves nothing", () => {
     const result = parseDiagnosticsPageSelector({

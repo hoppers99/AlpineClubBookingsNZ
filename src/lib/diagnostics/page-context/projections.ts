@@ -14,9 +14,14 @@
  * identifying fields are not merely hidden from the output — they are never
  * assembled, and the caller adds an explicit omission notice instead.
  *
- * REDACTION. Every free-text value passes `redactSensitiveText` and is then hard
- * -bounded, so an API key pasted into a booking note cannot ride out on the
- * evidence channel (ADR-004 §2).
+ * REDACTION AND BOUNDS. EVERY value, sensitive or not, is hard-bounded, and
+ * every free-text value also passes `redactSensitiveText` first — so an API key
+ * pasted into a booking note cannot ride out on the evidence channel (ADR-004
+ * §2), and an unbounded admin-editable column (a lodge name is a plain `String`)
+ * cannot swell the projection until the rendered evidence has to be truncated.
+ * There are exactly three constructors and no fourth way to add a fact:
+ * `derivedFact` (closed-vocabulary server values), `textFact` (non-identifying
+ * free text) and `sensitiveFact` (identifying free text, opt-in only).
  *
  * DATABASE ROLE. These reads currently run on the application's Prisma client.
  * ADR-007's dedicated SELECT-only role is the substrate AID-5 (#2374) builds;
@@ -46,26 +51,58 @@ export interface RecordProjectionInput {
   includeSensitive: boolean;
 }
 
-function fact(key: string, value: string): DiagnosticsPageContextFact {
-  return { key, value, sensitive: false };
+/**
+ * The ONE path every free-text value takes: redact, then hard-bound. Truncation
+ * is marked so the model cannot read a cut-off value as a whole one.
+ */
+function boundedRedacted(value: string): string {
+  const redacted = redactSensitiveText(value).trim();
+  const max = DIAGNOSTICS_PAGE_CONTEXT_BOUNDS.factValueMaxChars;
+  return redacted.length > max ? `${redacted.slice(0, max - 1)}…` : redacted;
 }
 
 /**
- * A fact carrying identifying/personal content. Redacted then hard-bounded —
- * truncation is marked so the model cannot read a cut-off value as a whole one.
+ * The shape a server-DERIVED value may have: a Prisma enum token, `yes`/`no`, a
+ * count, an integer-cents amount, an NZ date-only day, or an ISO instant. Short
+ * and punctuation-poor by construction, so it is already bounded and carries no
+ * free text to redact.
  */
+const DERIVED_VALUE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9 _.:+-]{0,63}$/;
+
+/**
+ * A fact whose value comes from a CLOSED vocabulary the server owns (enum,
+ * boolean, count, integer cents, date). Deliberately not passed through
+ * `redactSensitiveText`: its phone-like digit-run heuristic would rewrite an
+ * eight-digit integer-cents amount to `[REDACTED]`, corrupting money.
+ *
+ * The shape is therefore VERIFIED rather than trusted. A value that is not
+ * closed-vocabulary shaped — i.e. someone used this constructor for a free-text
+ * column — falls back to the redact-and-bound path instead of travelling raw, so
+ * the failure mode of that mistake is a redacted fact, never an unbounded one.
+ */
+function derivedFact(key: string, value: string): DiagnosticsPageContextFact {
+  return {
+    key,
+    value: DERIVED_VALUE_PATTERN.test(value) ? value : boundedRedacted(value),
+    sensitive: false,
+  };
+}
+
+/**
+ * A NON-identifying free-text column (a lodge name). Redacted and bounded on the
+ * same path as a sensitive fact — the opt-in split governs WHICH fields are
+ * assembled, never whether a free-text value is cleaned up.
+ */
+function textFact(key: string, value: string): DiagnosticsPageContextFact {
+  return { key, value: boundedRedacted(value), sensitive: false };
+}
+
+/** A fact carrying identifying/personal content. Redacted then hard-bounded. */
 function sensitiveFact(
   key: string,
   value: string,
 ): DiagnosticsPageContextFact {
-  const redacted = redactSensitiveText(value).trim();
-  const max = DIAGNOSTICS_PAGE_CONTEXT_BOUNDS.factValueMaxChars;
-  return {
-    key,
-    value:
-      redacted.length > max ? `${redacted.slice(0, max - 1)}…` : redacted,
-    sensitive: true,
-  };
+  return { key, value: boundedRedacted(value), sensitive: true };
 }
 
 function yesNo(value: boolean): string {
@@ -114,21 +151,28 @@ async function readBooking({
   if (!booking) return null;
 
   const facts: DiagnosticsPageContextFact[] = [
-    fact("booking.status", booking.status),
-    fact("booking.check-in", formatDateOnly(booking.checkIn)),
-    fact("booking.check-out", formatDateOnly(booking.checkOut)),
-    fact(
+    derivedFact("booking.status", booking.status),
+    derivedFact("booking.check-in", formatDateOnly(booking.checkIn)),
+    derivedFact("booking.check-out", formatDateOnly(booking.checkOut)),
+    derivedFact(
       "booking.nights",
       String(nightsBetween(booking.checkIn, booking.checkOut)),
     ),
-    fact("booking.guest-count", String(booking._count.guests)),
-    fact("booking.lodge", booking.lodge.name),
-    fact("booking.deleted", yesNo(booking.deletedAt !== null)),
-    fact("booking.requires-admin-review", yesNo(booking.requiresAdminReview)),
-    fact("booking.created-at", booking.createdAt.toISOString()),
+    derivedFact("booking.guest-count", String(booking._count.guests)),
+    // `Lodge.name` is a plain `String` an admin types, so it is free text even
+    // though it identifies nobody.
+    textFact("booking.lodge", booking.lodge.name),
+    derivedFact("booking.deleted", yesNo(booking.deletedAt !== null)),
+    derivedFact(
+      "booking.requires-admin-review",
+      yesNo(booking.requiresAdminReview),
+    ),
+    derivedFact("booking.created-at", booking.createdAt.toISOString()),
   ];
   if (booking.adminReviewStatus) {
-    facts.push(fact("booking.admin-review-status", booking.adminReviewStatus));
+    facts.push(
+      derivedFact("booking.admin-review-status", booking.adminReviewStatus),
+    );
   }
 
   if (includeSensitive) {
@@ -160,11 +204,11 @@ async function readMember({
   if (!member) return null;
 
   const facts: DiagnosticsPageContextFact[] = [
-    fact("member.active", yesNo(member.active)),
-    fact("member.can-login", yesNo(member.canLogin)),
-    fact("member.email-verified", yesNo(member.emailVerified)),
-    fact("member.age-tier", member.ageTier),
-    fact("member.created-at", member.createdAt.toISOString()),
+    derivedFact("member.active", yesNo(member.active)),
+    derivedFact("member.can-login", yesNo(member.canLogin)),
+    derivedFact("member.email-verified", yesNo(member.emailVerified)),
+    derivedFact("member.age-tier", member.ageTier),
+    derivedFact("member.created-at", member.createdAt.toISOString()),
   ];
 
   // Contact details (email, phone, addresses) are deliberately NOT projected at
@@ -201,12 +245,15 @@ async function readPayment({
   // Money stays integer cents end to end; the unit is in the fact KEY so the
   // model can never read a cent value as dollars.
   const facts: DiagnosticsPageContextFact[] = [
-    fact("payment.status", payment.status),
-    fact("payment.source", payment.source),
-    fact("payment.amount-cents", String(payment.amountCents)),
-    fact("payment.refunded-cents", String(payment.refundedAmountCents)),
-    fact("payment.credit-applied-cents", String(payment.creditAppliedCents)),
-    fact("payment.created-at", payment.createdAt.toISOString()),
+    derivedFact("payment.status", payment.status),
+    derivedFact("payment.source", payment.source),
+    derivedFact("payment.amount-cents", String(payment.amountCents)),
+    derivedFact("payment.refunded-cents", String(payment.refundedAmountCents)),
+    derivedFact(
+      "payment.credit-applied-cents",
+      String(payment.creditAppliedCents),
+    ),
+    derivedFact("payment.created-at", payment.createdAt.toISOString()),
   ];
 
   if (includeSensitive) {

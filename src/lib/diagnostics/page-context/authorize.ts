@@ -52,10 +52,23 @@ export function missingAreaViews(
 }
 
 /**
+ * Why a fresh matrix read produced no matrix. Both deny, and neither is ever an
+ * empty matrix the caller can reason about — but they are DIFFERENT operational
+ * events, and an audit trail that conflates them makes a database outage and an
+ * authorization anomaly (a stale or forged acting member id) look identical.
+ */
+export type FreshAdminPermissionMatrixFailure =
+  | "member_not_found"
+  | "read_failed";
+
+export type FreshAdminPermissionMatrixResult =
+  | { ok: true; matrix: AdminPermissionMatrix }
+  | { ok: false; failure: FreshAdminPermissionMatrixFailure };
+
+/**
  * Re-read the acting admin's effective permission matrix from the database.
- * Returns `null` when the member does not exist or the read fails — both of
- * which the caller must treat as a denial, not as an empty matrix it can
- * reason about.
+ * Never throws: a missing member and a failed read both come back as a typed
+ * refusal the caller must treat as a denial.
  *
  * `canLogin` is selected because `getAdminPermissionMatrix` empties the matrix
  * for a member who cannot log in; omitting it would silently keep a deactivated
@@ -63,7 +76,7 @@ export function missingAreaViews(
  */
 export async function readFreshAdminPermissionMatrix(
   memberId: string,
-): Promise<AdminPermissionMatrix | null> {
+): Promise<FreshAdminPermissionMatrixResult> {
   try {
     const member = await prisma.member.findUnique({
       where: { id: memberId },
@@ -72,16 +85,19 @@ export async function readFreshAdminPermissionMatrix(
         accessRoles: { select: MEMBER_ACCESS_ROLE_SELECT },
       },
     });
-    if (!member) return null;
+    if (!member) return { ok: false, failure: "member_not_found" };
 
     // Built WITHOUT an `adminPermissionMatrix` key on purpose: its presence
     // short-circuits derivation to the embedded (session-carried) matrix, which
     // is precisely the stale snapshot ADR-002 forbids here.
-    return getAdminPermissionMatrix({
-      canLogin: member.canLogin,
-      accessRoles: member.accessRoles,
-    });
+    return {
+      ok: true,
+      matrix: getAdminPermissionMatrix({
+        canLogin: member.canLogin,
+        accessRoles: member.accessRoles,
+      }),
+    };
   } catch {
-    return null;
+    return { ok: false, failure: "read_failed" };
   }
 }
