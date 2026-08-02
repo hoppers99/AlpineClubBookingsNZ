@@ -5,6 +5,7 @@ import {
   ADMIN_NOTIFICATION_PREFERENCE_REQUIREMENT,
   adminNotificationKeysForMember,
   canReceiveAdminNotification,
+  canViewAdminNotificationRoster,
   isAdminNotificationRecipient,
   resolveEffectiveAdminNotificationPreferences,
 } from "@/lib/admin-notification-preferences";
@@ -243,5 +244,53 @@ describe("Recipients grid eligibility (#2548)", () => {
     expect([...adminNotificationKeysForMember(financeOnly)].sort()).toEqual(
       [...FINANCE_KEYS].sort(),
     );
+  });
+});
+
+/**
+ * #2548 review finding 1: the grid now discloses every privileged user's name,
+ * email and access role, so reading it needs the same level `/api/admin/members`
+ * needs for the same data (membership view) — or support edit, the capability
+ * the page exists to exercise. The route area that ADMITS a visitor is still the
+ * weaker `support: view`, hence a separate gate.
+ */
+describe("Recipients roster read gate (#2548)", () => {
+  it("admits every built-in admin role that can open the page", () => {
+    expect(canViewAdminNotificationRoster(member("ADMIN"))).toBe(true);
+    expect(canViewAdminNotificationRoster(member("ADMIN_READONLY"))).toBe(true);
+    expect(canViewAdminNotificationRoster(member("ADMIN_BOOKINGS"))).toBe(true);
+    expect(canViewAdminNotificationRoster(member("ADMIN_MEMBERSHIP"))).toBe(true);
+    expect(canViewAdminNotificationRoster(member("FINANCE_ADMIN"))).toBe(true);
+  });
+
+  it("withholds the roster from a custom role holding support view alone", () => {
+    // The gap this closes: support view admits to the page, but it is not the
+    // level at which this club exposes member names, emails and role tokens.
+    const supportViewOnly = customRole({ supportLevel: "VIEW" });
+    expect(canViewAdminNotificationRoster(supportViewOnly)).toBe(false);
+  });
+
+  it("admits a support-edit custom role with no membership access", () => {
+    // It can already PUT preferences for anyone, so locking it out of the
+    // roster would break its own tool without withholding anything.
+    expect(
+      canViewAdminNotificationRoster(customRole({ supportLevel: "EDIT" })),
+    ).toBe(true);
+  });
+
+  it("admits a membership-view custom role with no support access", () => {
+    expect(
+      canViewAdminNotificationRoster(customRole({ membershipLevel: "VIEW" })),
+    ).toBe(true);
+  });
+
+  it("withholds the roster from plain members and disabled logins", () => {
+    expect(canViewAdminNotificationRoster(member("USER"))).toBe(false);
+    expect(
+      canViewAdminNotificationRoster({
+        accessRoles: [{ role: "ADMIN" }],
+        canLogin: false,
+      }),
+    ).toBe(false);
   });
 });

@@ -245,3 +245,34 @@ export function isAdminNotificationRecipient(
     )
   );
 }
+
+/**
+ * Who may READ the Recipients roster (#2548, review finding 1).
+ *
+ * `/admin/notification-recipients` resolves to `support: view` in
+ * ROUTE_AREA_PREFIXES, and that is still what admits a visitor to the page. But
+ * the roster itself is member identity data — every privileged user's name,
+ * email address and access-role labels, i.e. a complete "who holds which admin
+ * role" census — and while the grid only listed Full Admins that was a handful
+ * of already-published committee addresses. Now that it lists every admin-level
+ * user, the disclosure matches what `/api/admin/members` returns (each member's
+ * email plus their resolved access-role tokens), and that route is gated at
+ * `membership: view`. So the roster is gated at the same level here rather than
+ * at the weaker route area.
+ *
+ * `support: edit` is accepted as well because it is the capability this page
+ * exists to exercise — the PUT route already requires it — so a club-built
+ * "system support" role must not be locked out of its own tool. Every seeded
+ * bundle that carries `support: view` (Full Admin, Read-only Admin, Booking
+ * Officer, Membership Officer, Treasurer) also carries `membership: view`, so no
+ * seeded role loses access; the case this closes is a custom role holding
+ * support view alone.
+ */
+export function canViewAdminNotificationRoster(
+  input: AdminPermissionInput,
+): boolean {
+  return (
+    hasAdminAreaAccess(input, { area: "membership", level: "view" }) ||
+    hasAdminAreaAccess(input, { area: "support", level: "edit" })
+  );
+}
