@@ -83,6 +83,36 @@ export function isPolicyExceptionTransitionAllowed(
 }
 
 // ---------------------------------------------------------------------------
+// Request age (officer queue)
+// ---------------------------------------------------------------------------
+
+/**
+ * How long a request has been waiting, in plain English (#2526 acceptance:
+ * "queue shows request age").
+ *
+ * Age, not a timestamp, because the decision the officer is making is partly
+ * "how long has this member been waiting?" — a date makes them do the
+ * subtraction. Pure and clock-injected so it is unit-testable and renders
+ * identically on the server and the client.
+ */
+export function formatPolicyExceptionRequestAge(
+  createdAt: Date,
+  now: Date = new Date(),
+): string {
+  const minutes = Math.floor((now.getTime() - createdAt.getTime()) / 60_000);
+  // A clock skew (or a row created a moment ago) reads as "just now" rather
+  // than a negative age.
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return hours === 1 ? "1 hour ago" : `${hours} hours ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 14) return days === 1 ? "1 day ago" : `${days} days ago`;
+  const weeks = Math.floor(days / 7);
+  return weeks === 1 ? "1 week ago" : `${weeks} weeks ago`;
+}
+
+// ---------------------------------------------------------------------------
 // Member message
 // ---------------------------------------------------------------------------
 

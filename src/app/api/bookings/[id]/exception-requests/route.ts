@@ -196,6 +196,16 @@ export async function POST(
       proposed,
       memberMessage,
       requestedSummary,
+      // #2526: freeze the RAW delta alongside the proposal so the approval can
+      // replay it against the canonical modification service. It is re-verified
+      // against the proposal hash at approval time, never trusted as stored.
+      delta: {
+        checkIn,
+        checkOut,
+        addGuests,
+        removeGuestIds,
+        guestStayRanges,
+      },
       supersedeRequestId: supersedeRequestId ?? null,
       // Drives the provisional reservation footprint (#2525 FIX 7): a non-holding
       // base (DRAFT / generic PENDING / un-held PAYMENT_PENDING / WAITLISTED /

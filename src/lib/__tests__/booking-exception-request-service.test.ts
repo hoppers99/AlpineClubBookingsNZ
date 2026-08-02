@@ -288,6 +288,7 @@ describe("createModificationExceptionRequest", () => {
       proposed: base,
       memberMessage: "please allow",
       requestedSummary: "check-out to 2026-07-05",
+      delta: { checkOut: "2026-07-05" },
       baseHoldsCapacity: true,
     });
 
@@ -312,7 +313,8 @@ describe("createModificationExceptionRequest", () => {
         memberMessage: "please allow",
         requestedSummary: "x",
         supersedeRequestId: "old-9",
-        baseHoldsCapacity: true,
+        delta: { checkOut: "2026-07-05" },
+      baseHoldsCapacity: true,
       }),
     ).rejects.toBeInstanceOf(LostSupersedeClaimError);
     expect(mocks.bcrCreate).not.toHaveBeenCalled();
@@ -341,6 +343,7 @@ describe("createModificationExceptionRequest", () => {
       proposed,
       memberMessage: "please allow",
       requestedSummary: "add Grace",
+      delta: { checkOut: "2026-07-05" },
       baseHoldsCapacity: true,
     });
 
@@ -371,6 +374,7 @@ describe("createModificationExceptionRequest", () => {
       proposed: base,
       memberMessage: "please allow",
       requestedSummary: "no-op footprint",
+      delta: { checkOut: "2026-07-05" },
       baseHoldsCapacity: true,
     });
     expect(mocks.bcrCreate).toHaveBeenCalledTimes(1);
@@ -396,6 +400,7 @@ describe("createModificationExceptionRequest", () => {
       memberMessage: "please allow",
       requestedSummary: "resubmit",
       supersedeRequestId: "old-9",
+      delta: { checkOut: "2026-07-05" },
       baseHoldsCapacity: true,
     });
 
@@ -423,6 +428,7 @@ describe("createModificationExceptionRequest", () => {
       memberMessage: "please allow",
       requestedSummary: "resubmit",
       supersedeRequestId: "old-9",
+      delta: { checkOut: "2026-07-05" },
       baseHoldsCapacity: true,
     });
     // The FIRST updateMany is the supersede claim; its where must scope bookingId.
@@ -461,7 +467,8 @@ describe("createModificationExceptionRequest", () => {
         proposed,
         memberMessage: "please allow",
         requestedSummary: "add Grace",
-        baseHoldsCapacity: true,
+        delta: { checkOut: "2026-07-05" },
+      baseHoldsCapacity: true,
       }),
     ).rejects.toBeInstanceOf(PolicyExceptionCapacityUnavailableError);
     // Mutation guard: without the admission check the row is created and the
@@ -488,6 +495,7 @@ describe("createModificationExceptionRequest", () => {
       proposed: base,
       memberMessage: "please allow",
       requestedSummary: "draft edit",
+      delta: { checkOut: "2026-07-05" },
       baseHoldsCapacity: false,
     });
     // Mutation guard: revert the baseHoldsCapacity:false branch and this reserves
