@@ -21,10 +21,7 @@ import {
   canModifyBookingStatusForRole,
   usesActiveBookingEditLifecycle,
 } from "@/lib/booking-edit-policy";
-import {
-  BookingGuestStayRangeValidationError,
-  normalizeGuestStayRange,
-} from "@/lib/booking-guest-stay-range-input";
+import { BookingGuestStayRangeValidationError } from "@/lib/booking-guest-stay-range-input";
 import {
   resolveModificationStayRanges,
   type LiveGuestStayRow,
@@ -142,49 +139,16 @@ export type BatchModifyInput = {
 
 export type BookingModificationSettlementMethod = "card" | "credit";
 
-type StayRangeInput = {
-  stayStart?: string | null;
-  stayEnd?: string | null;
-  nights?: ReadonlyArray<string | Date> | null;
-};
-
-function hasStayRangeValue(value: string | null | undefined): boolean {
-  return typeof value === "string" ? value.trim() !== "" : value !== null && value !== undefined;
-}
-
-export function hasStayRangeInput(input: StayRangeInput): boolean {
-  return (
-    hasStayRangeValue(input.stayStart) ||
-    hasStayRangeValue(input.stayEnd) ||
-    (input.nights != null && input.nights.length > 0)
-  );
-}
-
-export function hasGuestStayRangeInputs(input: BatchModifyInput): boolean {
-  return (
-    (input.guestStayRanges?.some(hasStayRangeInput) ?? false) ||
-    (input.addGuests?.some(hasStayRangeInput) ?? false)
-  );
-}
-
-export function normalizeRangeOrApiError(
-  input: {
-    stayStart?: string | Date | null;
-    stayEnd?: string | Date | null;
-    nights?: ReadonlyArray<string | Date> | null;
-  },
-  booking: { checkIn: Date; checkOut: Date },
-  index: number
-) {
-  try {
-    return normalizeGuestStayRange(input, booking, index);
-  } catch (error) {
-    if (error instanceof BookingGuestStayRangeValidationError) {
-      throw new ApiError(error.message, 400);
-    }
-    throw error;
-  }
-}
+/*
+  Four helpers used to live here — `hasStayRangeInput`, `hasGuestStayRangeInputs`,
+  `normalizeRangeOrApiError` and `getGuestStayRangeInputMap`. They were the pieces
+  `resolveTargetDates` and `prepareGuestPlan` each assembled into their OWN copy of
+  the stay-range resolution, and two copies of one rule is exactly what let the
+  policy-exception workflow freeze a party the planner never built (#2526). Both
+  call `resolveStayRangesOrApiError` below now, so the pieces are gone; the global
+  range-input predicate lives with the resolution it switches, as
+  `deltaHasStayRangeInputs` in `@/lib/booking-modification-stay-ranges`.
+*/
 
 /**
  * The shared canonical stay-range resolution (#2526), with range-validation
@@ -206,12 +170,6 @@ export function resolveStayRangesOrApiError<Guest extends LiveGuestStayRow>(args
     }
     throw error;
   }
-}
-
-export function getGuestStayRangeInputMap(input: BatchModifyInput) {
-  return new Map(
-    (input.guestStayRanges ?? []).map((range) => [range.guestId, range])
-  );
 }
 
 export type LoadedPromoRedemption = PromoRedemption & {

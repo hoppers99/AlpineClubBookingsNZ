@@ -261,6 +261,26 @@ function selectedIndexesForStoredGuestTargets(
     .filter((index) => index >= 0);
 }
 
+/*
+  A LOCAL COPY of the stay-range resolution, kept in step with the apply path by
+  inspection. #2526 extracted the canonical version to
+  `src/lib/booking-modification-stay-ranges.ts`
+  (`resolveModificationStayRanges` / `deltaHasStayRangeInputs`), which
+  `resolveTargetDates` and `prepareGuestPlan` now BOTH call, so the party a
+  modification writes and the party a policy-exception request freezes are one
+  answer computed once.
+
+  This preview route still assembles its own — it was not part of that lane's
+  diff, it is money-adjacent (a wrong resolution here quotes the wrong price),
+  and folding it in needs its own review pass. Today the three agree: the
+  envelope pass below and the per-guest pass further down are the same rules the
+  shared resolver implements, and the two suites `modify-quote-*` plus
+  `booking-edit-guest-ranges` pin preview against apply.
+
+  The invariant is that preview and save resolve ranges identically (see
+  `GUEST_MEMBER_LINK_IN_PROGRESS_MESSAGE` on the same theme). If you touch either
+  side, touch both — or better, finish the job: #2563.
+*/
 function hasStayRangeValue(value: string | null | undefined): boolean {
   return typeof value === "string" ? value.trim() !== "" : value !== null && value !== undefined;
 }
