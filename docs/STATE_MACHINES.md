@@ -517,7 +517,8 @@ linking directly to the filtered audit record.
 
 ## Booking Modification Lifecycle
 
-Known change request statuses: `REQUESTED`, `APPROVED`, `REJECTED`.
+Known change request statuses: `REQUESTED`, `APPROVED`, `REJECTED`, and — for a
+`POLICY_EXCEPTION`-kind request only (#2365) — `CANCELLED` and `SUPERSEDED`.
 
 ```text
 member/admin starts edit -> quoted delta -> local booking mutation
@@ -527,6 +528,36 @@ uncollected additional payment -> reminder at +3 days, reminder 2 days before
 negative delta -> Stripe refund or source-linked member credit
 admin review path -> REQUESTED -> APPROVED or REJECTED
 ```
+
+**Booking-policy exception requests (#2365).** A `BookingChangeRequest` now
+carries a `kind`: the original today/past-night edit is `LOCKED_PERIOD`, and a
+member request to override an eligible *soft* booking-policy failure (a
+minimum-stay rule or the adult-member hosting requirement — the #2363 allowlist,
+never a hard limit) is `POLICY_EXCEPTION`. A policy-exception row freezes the
+complete immutable proposal (`proposalSnapshot` + its SHA-256 `proposalHash`),
+the structured evidence it asks an admin to allow (`frozenEvidence`, the #2363
+HOLD-if-any-HOLD aggregate) plus the denormalised `aggregateCapacityMode`, a
+required `memberMessage` (trimmed, <=1000 chars), and attempt/conflict metadata
+(`attemptCount`, `conflictCount`, `lastConflictAt`, `lastConflictReason`). Its
+lifecycle adds two terminal outcomes to the shared enum:
+
+```text
+POLICY_EXCEPTION request -> REQUESTED
+  REQUESTED -> APPROVED   (Booking Officer allows the exact reviewed proposal;
+                           atomic canonical execution — see the follow-up lane)
+  REQUESTED -> REJECTED   (declined)
+  REQUESTED -> CANCELLED  (member withdrew the proposal before a decision)
+  REQUESTED -> SUPERSEDED (a newer proposal, or live-booking drift, replaced it)
+```
+
+Every non-`REQUESTED` state is terminal (a guarded `updateMany` on
+`status = REQUESTED` plus the integer `version` token enforces the single
+transition, exactly the `BookingRequest.version` discipline, #1923). A held
+request does NOT change its live booking; a modification request reserves only
+the incremental per-night capacity beyond the unchanged live booking, and a
+new-booking request reserves the full proposal — the provisional-reservation
+capacity mechanism and the atomic approve-and-execute path are the #2365
+execution lane that consumes this store (see the follow-up issues on #2365).
 
 Edit-eligibility is governed by a date-window edit policy
 (`getBookingEditPolicy`), whose `mode` selects what a request may change:

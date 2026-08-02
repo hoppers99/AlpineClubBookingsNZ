@@ -131,7 +131,14 @@ export async function POST(req: NextRequest) {
         data: {
           familyGroupId: group.id,
           memberId: target.id,
-          role: "ADMIN",
+          // #2284 (S4): seed the target as an ordinary MEMBER, never ADMIN.
+          // This group is materialised around a member who has not yet
+          // consented to the join (the requester's JOIN_REQUEST is still
+          // pending admin review), so they must not be seeded into a role that
+          // carries any grant. `FamilyGroupMember.role` no longer gates
+          // authorisation anywhere (the one-step partner declaration was
+          // re-anchored off it), so MEMBER is purely nominal here.
+          role: "MEMBER",
         },
       });
       return group;
