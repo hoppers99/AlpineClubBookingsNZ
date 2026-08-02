@@ -300,14 +300,34 @@ The money-safety invariant — that no burst of concurrent reservers can push
 - **Wiring:** `ai-diagnostics-usage.test.ts` proves the reserve path takes the
   advisory lock FIRST, then reads live reservations + settled spend, then makes a
   guarded insert, and inserts nothing on a lost claim.
-- **Real PostgreSQL race:** `ai-diagnostics-budget-race.realdb.test.ts` drives
-  the production `reserveDiagnosticsBudget` from two/three genuinely concurrent
-  callers against a real Postgres and asserts exactly the budgeted number of
-  reservations win and the live-reservation sum never exceeds the budget. It is
-  off by default and runs in CI's `Migration drift check` job via the guarded
-  `concurrency-lock-races.realdb.test.ts` harness (opt-in
+- **Real PostgreSQL race (#2532):** `ai-diagnostics-budget-race.realdb.test.ts`
+  drives the production `reserveDiagnosticsBudget` from two/three genuinely
+  concurrent callers against a real Postgres and asserts exactly the budgeted
+  number of reservations win and the live-reservation sum never exceeds the
+  budget. It is off by default and runs in CI's `Migration drift check` job via
+  the guarded `concurrency-lock-races.realdb.test.ts` harness (opt-in
   `RUN_CONCURRENCY_RACE_TESTS=1`, dedicated loopback database), so ordinary
   `npm test` never needs a live database.
+
+  The lead test does not *hope* for the dangerous interleaving, it **forces**
+  it. A third connection takes the same per-month advisory lock and holds it
+  open; the two reservers are started and the test then waits on a barrier —
+  PostgreSQL's own `pg_locks` reporting both of them queued on exactly that
+  advisory key — before asserting that neither has been able to insert a
+  reservation. Only then is the holder released, and exactly one reserver
+  claims the budget. There is no `setTimeout` standing in for the race, so the
+  proof neither flakes when CI is slow nor passes vacuously when it is fast.
+
+  Verified to actually catch the regression it exists for, against a throwaway
+  Postgres: **deleting** the `pg_advisory_xact_lock` line fails the barrier with
+  a named diagnostic (the reservers never queue), and **moving** it to after the
+  budget reads passes the barrier but then admits two 40c reservations against a
+  50c budget. Both were reproduced three times each, with no flaky pass.
+
+  `ai-diagnostics-usage.test.ts` additionally pins the wiring itself: the
+  harness import, the CI step that runs it, and the barrier — because the race
+  suite skips itself without the opt-in flag, so an unnoticed unwiring would
+  leave every suite green with the money-safety proof no longer running.
 
 ## Maintenance rules
 
