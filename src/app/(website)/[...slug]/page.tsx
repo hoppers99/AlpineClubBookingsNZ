@@ -10,6 +10,7 @@ import {
 } from "@/lib/page-content-html";
 import { isReservedPageSlug, isValidPageSlug } from "@/lib/page-content";
 import { buildEmbeddedBody } from "@/lib/page-content-embeds";
+import { isCmsServablePageSlug } from "@/lib/public-website-paths";
 
 type DynamicPageProps = {
   params: Promise<{
@@ -56,14 +57,34 @@ export function generateStaticParams(): { slug: string[] }[] {
 /**
  * The freshness backstop (#2352 D3, owner decision 31 Jul 2026): 300 seconds.
  *
- * An admin EDIT still appears immediately — `revalidatePublicSite()` fires on
- * every page-content write and clears this route's stored entries outright. This
- * number only covers what changes with no write behind it: a site banner whose
- * start date simply arrives, or a lodge capacity token whose underlying row moved
- * without going through an admin save. That window is the one genuine regression
- * in the design; it was ~15 seconds before (the tagged config caches) and the owner
- * chose 300 over 60 so a busy site does not pay a background re-render every
- * minute.
+ * An admin EDIT still appears immediately — `revalidatePublicSite()` fires on every
+ * page-content write and clears this route's stored entries outright. Since the
+ * slice-1 review that also covers the writes that change what the page BODY renders
+ * server-side: lodge capacity (`{{lodge-capacity}}`) and the images tree
+ * (`{{photo-gallery}}`), which used to clear a tag the stored page did not carry, or
+ * nothing at all.
+ *
+ * **This number is NOT a bound on how stale a visitor's page can be, and calling it
+ * one was wrong.** Read against the vendored next@16.2.12:
+ * `IncrementalCache.get()` marks an entry stale once `revalidateAfter` has passed,
+ * and `ResponseCache.handleGet()` then RESOLVES THAT STALE ENTRY to the requester
+ * before starting the background regeneration
+ * (`response-cache/index.js` — `resolve(previousIncrementalCacheEntry)` runs first).
+ * So a change with no write behind it — a site banner whose start time simply
+ * arrives — is still absent for the first visitor after the window lapses, and
+ * appears from the request after that one. On a quiet weekend that second request
+ * can be hours later, so the observed staleness is unbounded in wall-clock terms
+ * rather than capped at five minutes. A Link prefetch is worse again: with
+ * `isPrefetch` set, revalidation is skipped entirely, so it is served stale and does
+ * not even trip the rebuild.
+ *
+ * What IS bounded is the admin path, and by a different mechanism: only a TAG
+ * EXPIRY (what `revalidatePath` produces) makes the cache return null and force a
+ * blocking regeneration. That is why an edit is genuinely instant and why the
+ * Playwright unpublish case can assert a 404 on the very next request.
+ *
+ * The owner chose 300 over 60 so a busy site does not pay a background re-render
+ * every minute; the previous behaviour was ~15 seconds (the tagged config caches).
  */
 export const revalidate = 300;
 
@@ -89,6 +110,33 @@ export const revalidate = 300;
 // public route hides drafts the same way.
 const loadPublishedPage = cache(async (slug: string) => {
   if (!isValidPageSlug(slug) || isReservedPageSlug(slug)) {
+    return null;
+  }
+
+  // The nonce boundary, and it has to be checked HERE as well as on the admin
+  // write (#2352 slice-1 review, F1).
+  //
+  // This route is the one that fills the full-route store, and it claims every
+  // URL no other route claims — a strictly WIDER set than the addresses
+  // `isPublicWebsitePath()` calls the public website, which is the set the proxy
+  // gives the fixed per-release nonce to. A page served in the difference is
+  // rendered with whatever per-request nonce its generating request carried,
+  // stored with that value frozen into its inline scripts, and then handed to
+  // every later visitor under a policy naming a different one: nothing on the
+  // page executes and it never hydrates.
+  //
+  // `pay` was the live example — a legal slug (`RESERVED_PAGE_SLUGS` held only
+  // nine names), a root segment in `NON_WEBSITE_ROOT_SEGMENTS`, and no bare
+  // `(public)/pay` route to claim it, so `/pay` reached this catch-all. So do
+  // every deeper form under a member-area segment (`/calendar/2026`,
+  // `/notices/summer`, `/profile/help`).
+  //
+  // `isReservedPageSlug()` now refuses these at the admin write, so a new page
+  // cannot be created here at all; this guard is what covers a row created
+  // before that rule existed. 404 rather than serve it: a plain miss is a better
+  // answer than a page whose every script the browser refuses, and the admin is
+  // told why at save time.
+  if (!isCmsServablePageSlug(slug)) {
     return null;
   }
 

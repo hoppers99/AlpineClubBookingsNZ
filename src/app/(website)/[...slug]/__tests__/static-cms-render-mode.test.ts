@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 // The page module pulls in the whole public-content read path; none of it is
@@ -37,6 +39,22 @@ describe("CMS catch-all route configuration (#2352 slice 1)", () => {
 
   it("carries the owner's 300-second freshness backstop (D3)", () => {
     expect(revalidate).toBe(300);
+  });
+
+  it("refuses a path outside the fixed-nonce set before it can be stored", () => {
+    // #2352 slice-1 review, F1. This route claims every URL no other route claims,
+    // which is wider than the set the proxy gives the fixed per-release nonce to —
+    // and a page stored outside that set carries a nonce no later response names.
+    // Asserted on the source because the loader is module-private and the property
+    // is "the guard is wired", not "the predicate works" (that is
+    // cms-page-nonce-territory.test.ts). The e2e spec proves the 404 on the wire.
+    const source = readFileSync(
+      resolve(process.cwd(), "src/app/(website)/[...slug]/page.tsx"),
+      "utf8",
+    );
+
+    expect(source).toContain("isCmsServablePageSlug");
+    expect(source).toMatch(/if \(!isCmsServablePageSlug\(slug\)\) \{\s*return null;/);
   });
 
   it("does not force per-request rendering", async () => {

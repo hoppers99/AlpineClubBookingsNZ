@@ -1,3 +1,5 @@
+import { isCmsServablePageSlug } from "@/lib/public-website-paths";
+
 export type EditablePageRecord = {
   id: string;
   slug: string;
@@ -140,8 +142,38 @@ export function isValidPageSlug(value: string): boolean {
   return PAGE_SLUG_PATTERN.test(value);
 }
 
+/**
+ * Is this slug refused for an admin-created page?
+ *
+ * Two rules, and the second one arrived with #2352 slice 1:
+ *
+ *  1. {@link RESERVED_PAGE_SLUGS} in ANY segment — the long-standing rule that
+ *     stops a database page shadowing or sitting underneath a real route.
+ *  2. A FIRST segment that belongs to another route group
+ *     (`NON_WEBSITE_ROOT_SEGMENTS`). Rule 1 held only nine names, so `pay`,
+ *     `chores`, `calendar`, `notices`, `profile`, `lodge`, `finance` and the rest
+ *     were all accepted — and a page at `/pay` really was reachable, because
+ *     `(public)/pay` contains only `[token]/`, so nothing claimed the bare path
+ *     and the `(website)` catch-all served it.
+ *
+ *     Since slice 1 that catch-all fills the full-route ISR store, and the proxy
+ *     gives the FIXED per-release CSP nonce to exactly the addresses
+ *     `isPublicWebsitePath()` claims. A page outside that set is stored carrying
+ *     the per-request nonce of whichever request generated it, and every later
+ *     response names a different one — so the browser refuses every inline script
+ *     on it and the page never becomes interactive. Refusing the slug is what
+ *     keeps "stored by the catch-all" inside "carries the fixed nonce".
+ *
+ * Only the FIRST segment, because that is the only one the classifier looks at:
+ * `/trips/pay` has root segment `trips`, is a public-website address, and is
+ * served and stored normally.
+ */
 export function isReservedPageSlug(value: string): boolean {
-  return value.split("/").some((segment) => RESERVED_PAGE_SLUGS.has(segment));
+  if (value.split("/").some((segment) => RESERVED_PAGE_SLUGS.has(segment))) {
+    return true;
+  }
+
+  return !isCmsServablePageSlug(value);
 }
 
 export function toPagePath(slug: string): string {
