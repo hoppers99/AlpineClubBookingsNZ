@@ -86,12 +86,23 @@ This option moves money, so it is worth reading before you pick it.
   into the same exception-request queue as the other soft booking policies (see
   [Booking Policies](booking-policies.md)). **The bed is held while that request
   is pending**, so they are not made to race for capacity while you decide.
+- **That applies to the person booking, too, even if they are not staying.** A
+  member whose own subscription is unpaid cannot use this option to book beds for
+  other people with no paid-up adult member among them. Without that, letting a
+  subscription lapse would cost nothing so long as you booked for others — which is
+  the one thing "stop them booking" reliably prevents, and it would have been
+  quietly given away by choosing the softer option. It is still gentler than
+  stopping them: today that member cannot book at all, and here they get the
+  Booking-Officer override path with the bed held. If a paid-up adult member is on
+  the booking — a financial spouse or parent, say — it simply books.
 - **An unpaid member stops counting as the adult member who hosts non-member
   guests.** If you also run the adult-member hosting rule, somebody the club is
   charging as a non-member is not the responsible member that rule asks for, so
   their non-member guests need a genuinely paid-up adult member present.
-- **The requirement only applies to bookings this repricing touches.** A booking
-  with nobody unpaid on it is judged exactly as before.
+- **The requirement only applies where an unpaid subscription is involved.** A
+  booking with nobody unpaid on it, made by a member who is paid up, is judged
+  exactly as before: an all-non-member group, a family whose only member row is a
+  child, and a paid-up youth member booking their own bed are all untouched.
 - **It is re-checked when somebody is removed, and when a waitlist offer is
   confirmed** — not only when guests are added. Otherwise a booking could be
   allowed because a paid-up adult was on it, and that adult taken off a moment
@@ -103,7 +114,9 @@ This option moves money, so it is worth reading before you pick it.
   guest, and editing a booking that already carries an unfinancial member, can now
   be refused. Both offer the Booking-Officer override and hold the bed, so they are
   reviewable rather than dead ends — but they are new refusals, and worth telling
-  your Booking Officers about before you switch.
+  your Booking Officers about before you switch. The member booking for other
+  people while their own subscription is unpaid is not a third case: today they
+  cannot book at all.
 
 To reverse it, pick a different answer and save. No already-taken booking is
 re-priced — each guest's rate was recorded when the booking was made, and a night
@@ -157,24 +170,20 @@ rather than the pre-void **Unpaid** (locked out), and becomes re-billable in the
 invoice only when you intend to re-bill or clear the obligation — the member can
 book again until a new invoice is raised.
 
-### Decided direction: non-member rates instead of a hard block (#2533)
+### Where the non-member-rates rule came from (#2533)
 
-Today the lockout is a **hard block**: an unpaid member whose subscription is
-required cannot book at all, and a booking that includes an unpaid member guest
-is refused. The owner has decided a softer rule for the future — a
-subscription-locked member will still be able to book for their family, but any
-individual on the booking whose subscription is not paid is charged **non-member
-rates** (and told why), and the booking must include **at least one paid-up adult
-member**.
+The softer rule described above began as an owner decision to replace the hard
+block: a subscription-locked member should still be able to book for their family,
+but any individual on the booking whose subscription is not paid is charged
+**non-member rates** (and told why), and the booking must include **at least one
+paid-up adult member**.
 
-That change is **not yet in effect** — it is a money-regime change that needs an
-owner decision on how to roll it out (turn it on for all clubs or make it opt-in,
-how unpaid members count toward capacity, and how a member billed at non-member
-rates is described on their Xero invoice). What has landed is the reviewed rule
-itself and one member-facing part of it: a member whose subscription is unpaid is
-now told, in plain English, that member rates are unavailable until it is paid
-(shown by the booking wizard from the member's subscription status). Until the
-rollout is decided, the hard block above still applies unchanged.
+It is now **in effect as the third option** of the Booking lockout setting rather
+than as a change to every club: the rollout question was answered opt-in, and
+**your club keeps the hard block until an admin picks the new answer**. The
+requirement was then widened once, by owner decision on 3 Aug 2026, to cover the
+member doing the booking as well as the members staying — see "The booking still
+needs a paid-up adult member on it" above.
 
 ### Review the age-tier rule
 

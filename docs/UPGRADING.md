@@ -123,7 +123,12 @@ member book, at non-member rates*. Choosing it charges that member's own nights 
 the club's existing non-member rate (the same rate rows and the same Xero item
 code as any other non-member — no new invoice type), tells them why on the quote,
 and requires a paid-up adult member on the booking, refusing with a
-Booking-Officer override path (which holds the bed) when there is none. Read
+Booking-Officer override path (which holds the bed) when there is none. That
+requirement applies to any booking where somebody is being repriced, **and to any
+booking made by a member whose own subscription is unpaid, whether or not they are
+staying on it** — otherwise the softer option would let a member who has let their
+subscription lapse go on booking beds for other people with no friction at all,
+which is the one thing today's hard block reliably stops. Read
 `docs/guides/subscription-lockout.md` → "What 'non-member rates' does to a
 booking" before switching a live club, and tell your treasurer first. Reversing it
 is a settings change, not a migration, and does not re-price bookings already
@@ -139,7 +144,10 @@ taken.
    unfinancial member. Both answer 409 with the Booking-Officer override path and a
    hold on the bed, so they are reviewable rather than blocked - but they are new
    refusals, and the plain claim "this only ever relaxes things" is not true of them.
-   No previously-blocking refusal becomes stricter.
+   No previously-blocking refusal becomes stricter. The member booking for other
+   people while their own subscription is unpaid is NOT a third case: they are
+   refused outright today, and under the new option get the same 409 with the
+   override path and the bed held.
 2. **Invoice wording changes for two classes of guest.** A hut-fee line's
    "(ADULT, Member)" label now follows the RATE the guest was charged rather than the
    membership flag, so a repriced member reads as "Non-member" - which is the point,

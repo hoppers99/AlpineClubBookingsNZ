@@ -42,8 +42,19 @@
   **is** paid. If it does not, the booking is refused — but the member can ask a
   Booking Officer to allow it, and **the bed is held while that request is
   pending**, so they are not made to race for capacity while the club decides.
-  That requirement only applies to bookings this repricing actually touches: a
-  party with nobody unpaid on it is judged exactly as before. Relatedly, if the
+
+  **That requirement follows the unpaid subscription, not just the bed.** It applies
+  when somebody staying on the booking is being repriced, and also when the person
+  who **made** the booking has an unpaid subscription, whether or not they are
+  staying on it. Otherwise the softer option would quietly hand back the one thing
+  "stop them booking" reliably prevents: a member could let their subscription lapse
+  and go on booking beds for other people with no friction at all. It is still
+  gentler than stopping them — today that member cannot book at all, and here they
+  get the Booking-Officer override with the bed held — and if a paid-up adult member
+  is on the booking, a financial spouse or parent say, it simply books. A booking
+  with nobody unpaid on it, made by a member who is paid up, is judged exactly as
+  before: an all-non-member group, a family whose only member row is a child and a
+  paid-up youth member booking their own bed are all untouched. Relatedly, if the
   club also runs the adult-member hosting rule, a member being charged non-member
   rates no longer counts as the responsible adult member who hosts non-member
   guests — their guests need a genuinely paid-up adult member present.
@@ -63,7 +74,9 @@
   being added, a draft confirmed by a paid-up youth member with an unfinancial member
   guest on it, and an edit to a booking that already carries an unfinancial member,
   can now be refused — with the Booking-Officer override path and the bed held, not a
-  dead end. No previously-blocking refusal becomes stricter.
+  dead end. No previously-blocking refusal becomes stricter, and the member booking
+  for other people while their own subscription is unpaid is not a third case: they
+  are refused outright today.
 
   Reversing the choice is a settings change: pick a different answer and save.
   Bookings already taken keep the rate they were given, and a night somebody has

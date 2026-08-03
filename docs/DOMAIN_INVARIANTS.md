@@ -2798,15 +2798,55 @@ code or idempotency key changes, and a guest with a NULL snapshot still falls ba
 sites already pass through, so "consistent across every write path" is a
 structural property rather than a review checklist.
 
-**The paid-up-adult requirement is conditional on a reprice.** It applies only to
-a party that actually contains somebody being repriced for an unpaid
-subscription. `NON_MEMBER_PRICING` is a *relaxation* of the hard block; applied
-unconditionally the requirement would newly refuse bookings that are legal today
-and have nothing to do with subscriptions (a paid-up Youth member booking their
-own bed, a family whose only member row is a child, an all-non-member party).
-"Is a responsible adult member present?" in the general case is
-`ADULT_MEMBER_HOSTING_REQUIRED`'s question (#2364), configured separately; the two
+**The paid-up-adult requirement has two triggers, and is still not
+unconditional** (second trigger: owner decision, 3 Aug 2026). It applies when
+
+- somebody STAYING on the party is being repriced for an unpaid subscription, or
+- the **booking owner** is an unfinancial member — whether or not they stay.
+
+Both are judged by the one owing test (`resolveMemberSubscriptionSettlement`, via
+the single settlement batch in `evaluateNonMemberPricingRequirements`), so the
+owner cannot be judged by a different rule than the party. The owner joins the
+FACTS batch only, never `repricedMemberIds`: an owner who is not staying holds no
+nights, so counting them as repriced would inflate the violation's count and emit
+a rate notice about a charge nobody received.
+
+**Why the second trigger.** `HARD_BLOCK` refuses an unfinancial member *as a
+person* — they cannot book at all, even for a party of non-members they will not
+join. Keyed only on who stays, `NON_MEMBER_PRICING` let exactly that booking
+through with no reprice, no requirement and no notice, so switching a club to the
+softer rule quietly opened the one case the strict rule most reliably closed, and
+lapsing cost a member nothing so long as they booked for others. In that case the
+new trigger is still **gentler than `HARD_BLOCK`, not stricter**: a flat 403
+becomes a 409 with an override door and the beds held. An unfinancial owner can
+never satisfy their own requirement (they fail the money half of
+`participantIsPaidUpAdultMember`), and a paid-up adult member in the party
+satisfies it exactly as before — which is what keeps the intended family case
+booking.
+
+**Still not unconditional, and that scoping remains load-bearing.** Applied to
+every booking in the mode, the requirement would newly refuse bookings that are
+legal today and have nothing to do with subscriptions: a paid-up Youth member
+booking their own bed, a family whose only member row is a child, an
+all-non-member party booked by a financial member. None is touched by either
+trigger. "Is a responsible adult member present?" in the general case is
+`ADULT_MEMBER_HOSTING_REQUIRED`'s question (#2364), configured per lodge; the two
 compose, and a party can trip both.
+
+**`memberRateNotice` follows the reprice, not the requirement**, now that the two
+are different questions. An unfinancial owner who is not staying triggers the
+requirement with nobody repriced, and the notice claims member rates "aren't
+available for those nights" — a statement about a price nobody was charged. That
+party gets the refusal (or the quote's early warning) and no rate notice.
+
+**Every write path passes the owner**, because the requirement is a property of a
+set of call sites rather than of behaviour: a path that forgets it silently
+enforces the old repriced-only rule while every other path's tests stay green.
+`subscription-lockout-call-sites.test.ts` counts the owner argument against the
+evaluation calls, file by file. The exception-request re-evaluation resolves the
+owner **server-side** — a modification reads the live booking's own `memberId`
+rather than trusting the requester to be it — so a refusal that keys on the booker
+reproduces there and the 409's door actually opens.
 
 **The refusal is a door, not a wall.** A missing paid-up adult raises
 `PAID_UP_ADULT_MEMBER_REQUIRED` — **409, not 403**, deliberately outside
@@ -2819,6 +2859,20 @@ rendered back to the refused member, and naming who is unpaid would turn a booki
 refusal into a financial-status oracle. The fingerprint follows: it hashes the
 hazard ("this party has nobody paid-up on it"), not who, so re-saving the same
 party shape does not reopen a decided review.
+
+**The violation shape is unchanged by the owner trigger**, and that is the privacy
+decision rather than an omission. An owner-triggered refusal reads
+`repricedUnpaidMemberCount: 0`, which discloses only that the trigger was not a
+member of the party — and under that trigger the unfinancial member IS the person
+receiving the refusal (an admin acting on their behalf is exempt from the check
+entirely, as on every other #2543 gate). The fingerprint therefore separates the
+two hazards without naming anybody, and no frozen snapshot's shape moves.
+
+**A violation must name the nights it holds.** When the owner arm fires on a party
+that yields no nights of its own, `affectedNights` falls back to the booking
+envelope: a `HOLD` over zero nights would reserve nothing while promising the
+member their beds. Unreachable on the reprice trigger, which implies a member
+participant.
 
 **A repriced member stops counting as a host** (owner decision 3). Under
 `NON_MEMBER_PRICING` the booking-side loader stamps
@@ -2833,11 +2887,10 @@ needing admin review. A lapsed membership is gone; an unpaid subscription is a
 membership in good standing with a bill outstanding.
 
 **`NON_MEMBER_PRICING` is a relaxation, with two narrow exceptions - stated because
-the blanket claim is not true.** It removes hard refusals rather than adding them, and
-the paid-up-adult requirement only bites on a party somebody is being repriced on. But
-that requirement is evaluated over the WHOLE party, while the pre-#2543 gates looked
-only at the guests a request was ADDING, so two parties that pass today can land on the
-new 409:
+the blanket claim is not true.** It removes hard refusals rather than adding them. But
+the paid-up-adult requirement is evaluated over the WHOLE party, while the pre-#2543
+gates looked only at the guests a request was ADDING, so two parties that pass today can
+land on the new 409:
 
 1. **confirm-draft** has no member-guest subscription gate on `main` at all, so a draft
    owned by a paid-up Youth member containing an unfinancial member guest confirms today
@@ -2850,6 +2903,15 @@ Both land on a 409 with an override door and a HOLD on the beds - not a wall - a
 neither is closed by adding a new HARD_BLOCK gate, which would change today's behaviour
 for clubs that have not adopted the mode. The honest claim is: no HARD_BLOCK refusal
 becomes stricter, and these two cases become reviewable rather than impossible.
+
+**The owner trigger adds no third exception**, and the arithmetic is worth stating
+because it looks like it should. An unfinancial member booking beds for others is
+refused OUTRIGHT under `HARD_BLOCK` today (403 `SUBSCRIPTION_REQUIRED`, keyed on the
+booker as a person). Under `NON_MEMBER_PRICING` they now get a 409 with the override
+door and the beds held. That is strictly gentler than the behaviour it replaces, so the
+list above stays at two. What the trigger IS stricter than is the interim repriced-only
+build of #2543, which never shipped: the gap was closed by owner decision before the
+mode reached a club.
 
 **Config-transfer reconciles the (mode, enabled) pair on import.** An absent-or-null
 `mode` MEANS "resolve from the legacy boolean", and the importer writes only fields
