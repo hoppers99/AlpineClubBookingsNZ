@@ -1,8 +1,62 @@
+import { randomUUID } from "node:crypto";
 import type { NextConfig } from "next";
 import { withSentryConfig } from "@sentry/nextjs";
 import { ASSET_NOT_FOUND_REWRITES } from "./src/lib/asset-url-404";
+import { PUBLIC_WEBSITE_NONCE_SEED_ENV_VAR } from "./src/lib/release-nonce-seed";
+
+/**
+ * The last-resort seed for the public website's fixed CSP nonce (#2352 slice-1
+ * review, F3/F9).
+ *
+ * `src/lib/release-nonce.ts` is imported by TWO bundles — the proxy/middleware
+ * entry and the app-server graph — and Next compiles those separately, so its
+ * module-level memo exists twice in one process. With a release identifier both
+ * copies digest the same value and agree. With NEITHER `RELEASE_ID` nor
+ * `GIT_COMMIT_SHA` readable, each copy used to mint its own random value, and the
+ * two then disagreed: the proxy published one nonce in the policy while
+ * `(website)/layout.tsx` stamped another onto the analytics `<Script nonce>`, so
+ * with the analytics module on, GA was refused on every public page. The docblock
+ * claimed the fallback "keeps a single-process deployment self-consistent", which
+ * was simply not true — there is no single instance to be consistent with.
+ *
+ * `env` in this file is the fix, because Next applies it through the DefinePlugin
+ * defines that every compiler shares (`next/dist/build/define-env.js` spreads
+ * `getNextConfigEnv(config)` into the base defines). So the literal below is
+ * substituted into both bundles at build time and the two agree by construction,
+ * with no environment variable to forget.
+ *
+ * **Measured, not assumed.** On a `docker build` of this branch with neither
+ * `RELEASE_ID` nor `GIT_COMMIT_SHA` passed, both server chunks came out carrying
+ * the SAME literal and no surviving `process.env` read:
+ * `.next/server/chunks/[root-of-the-server]__*.js` (which holds the proxy — it
+ * contains `isPublicWebsitePath`) and `.next/server/chunks/ssr/[root-of-the-server]__*.js`
+ * (the app graph) both contained
+ * `let r = "build:c98caf18-…".trim(); return r ? { … source: "build-seed" }`.
+ * Re-run that grep if this file's `env` block is ever touched.
+ *
+ * One artefact of the same measurement, recorded so nobody reads it as a bug: Next
+ * evaluates this config MORE THAN ONCE per build, so `.next/required-server-files.json`
+ * carries a different seed from the one substituted into the code. Nothing reads it
+ * — the substitution leaves no runtime lookup behind — and if a future Next did read
+ * it, both bundles would read the same one. It is only ever a red herring when
+ * grepping the build output.
+ *
+ * Random rather than a constant on purpose: a hard-coded seed would make the nonce
+ * publicly known, which is the `unsafe-inline`-in-all-but-name outcome the owner
+ * rejected in D1. Random per BUILD, so it is still one value per release.
+ */
+function resolvePublicWebsiteNonceSeed(): string {
+  return (
+    process.env.RELEASE_ID?.trim() ||
+    process.env.GIT_COMMIT_SHA?.trim() ||
+    `build:${randomUUID()}`
+  );
+}
 
 const nextConfig: NextConfig = {
+  env: {
+    [PUBLIC_WEBSITE_NONCE_SEED_ENV_VAR]: resolvePublicWebsiteNonceSeed(),
+  },
   images: {
     deviceSizes: [640, 750, 828, 1080, 1200, 1536, 1920, 2048, 3840],
   },

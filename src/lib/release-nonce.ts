@@ -44,9 +44,15 @@
  * builder and the runner stage on purpose: the builder ENV is what a bundle that
  * inlines `process.env` at build time would capture, the runner ENV is what a
  * runtime read sees, and setting both from the same ARG means the two can never
- * disagree. The runner stage also asserts the value is readable in the finished
- * image, so a Dockerfile that passed the ARG but forgot the ENV fails visibly
- * instead of silently falling back.
+ * disagree. `GIT_COMMIT_SHA` is now declared in the runner as well, so the second
+ * fallback below is actually reachable at runtime.
+ *
+ * The runner stage PRINTS which state the image is in; it does not fail, because a
+ * bare `docker build` and a plain `docker compose build` both legitimately have no
+ * release. What fails is CI: `publish-ghcr-images` runs the IMAGE IT JUST PUSHED
+ * and asserts `RELEASE_ID` equals the built commit. That assertion used to be on a
+ * throwaway scan image while the published one was built without the argument at
+ * all (slice-1 review finding).
  *
  * ## The nonce is a DIGEST, not the identifier
  *
@@ -55,18 +61,41 @@
  * so the nonce is a SHA-256 of a namespaced string rather than the id itself.
  * Nothing about the deployed revision is recoverable from the page source.
  *
+ * ## This module exists TWICE in one process, and the fallback has to survive that
+ *
+ * `src/proxy.ts` imports it from the proxy/middleware entry and
+ * `(website)/layout.tsx` imports it from the app-server graph. Next compiles those
+ * separately, so `resolution` below is memoised per BUNDLE, not per process —
+ * there are two memos and they never see each other. With a release identifier
+ * that is harmless: both digest the same string and get the same nonce.
+ *
+ * It was NOT harmless on the old fallback, which minted `createCspNonce()`
+ * independently in each bundle. The proxy then published one nonce in the policy
+ * while the layout stamped a different one onto the analytics `<Script nonce>`, so
+ * on any build with no release identifier — `npm run dev`, a bare `docker build` —
+ * Google Analytics was refused on every public page with the analytics module on.
+ * The previous docblock's "keeps a single-process deployment self-consistent" was
+ * wrong for exactly this reason, and DEPLOYMENT.md repeated it.
+ *
  * ## Fallback, stated rather than hidden
  *
- * With no release identifier readable — a bare `docker build`, or `next start` in
- * development — this falls back to ONE random value per process and logs it. That
- * keeps a single-process deployment self-consistent (its page cache is emptied by
- * the same restart that mints the new value), but it is NOT safe for a
- * multi-reader deployment, which is why the image asserts the identifier is
- * present and why `source` is exposed for tests and diagnostics.
+ * So the fallback is a BUILD-TIME SEED (`src/lib/release-nonce-seed.ts`), produced
+ * once in `next.config.ts` and substituted into every bundle by Next's
+ * DefinePlugin. Both copies of this module therefore read the same literal and
+ * agree by construction, with nothing to configure. It is random per build rather
+ * than a constant, because a constant would publish the nonce and that is
+ * `unsafe-inline` in all but name.
+ *
+ * The per-process random remains as the LAST resort, for the case where even the
+ * seed was not substituted (a bundler or config change that dropped `env`). It is
+ * logged at error level and it is NOT safe: the two bundles disagree, which is the
+ * failure described above. `source` is exposed so tests and diagnostics can tell
+ * the four cases apart.
  */
 
 import { createCspNonce } from "@/lib/csp";
 import logger from "@/lib/logger";
+import { PUBLIC_WEBSITE_NONCE_SEED_ENV_VAR } from "@/lib/release-nonce-seed";
 
 /**
  * The build ARG / ENV carrying the release identifier. Exported for the docs and
@@ -87,7 +116,17 @@ export type PublicWebsiteNonceSource =
   | "release-id"
   /** `GIT_COMMIT_SHA`, already wired for the AID-3 knowledge bundle (#2372). */
   | "commit-sha"
-  /** Neither was readable: one random value per process. See the docblock. */
+  /**
+   * The build-time seed `next.config.ts` substitutes into every bundle. Safe —
+   * one value per build, shared by the proxy and the app graph — but it means no
+   * release identifier reached the image, so the deploy path is worth checking.
+   */
+  | "build-seed"
+  /**
+   * Not even the seed was readable: one random value per MODULE INSTANCE, and
+   * there are two of them. See the docblock — this is a broken state, not a
+   * degraded one.
+   */
   | "process-fallback";
 
 export interface PublicWebsiteNonce {
@@ -111,10 +150,19 @@ function readReleaseId(): {
   // Already passed by CI and by scripts/run-production-blue-green-deploy.sh for
   // the knowledge bundle, so an image built before RELEASE_ID existed — or a
   // fork that only wired the older arg — still gets a per-release value rather
-  // than the per-process fallback.
+  // than the per-process fallback. Promoted into the Dockerfile's RUNNER stage in
+  // the slice-1 review so a runtime read can actually see it.
   const commitSha = process.env.GIT_COMMIT_SHA?.trim();
   if (commitSha) {
     return { releaseId: commitSha, source: "commit-sha" };
+  }
+
+  // The build-time seed. Written as the literal `process.env.<NAME>` form on
+  // purpose — a computed key is not statically replaceable, and static
+  // replacement into both bundles is the entire mechanism.
+  const buildSeed = process.env.PUBLIC_WEBSITE_NONCE_SEED?.trim();
+  if (buildSeed) {
+    return { releaseId: buildSeed, source: "build-seed" };
   }
 
   return null;
@@ -140,10 +188,15 @@ async function resolve(): Promise<PublicWebsiteNonce> {
 
   if (!release) {
     logger.error(
-      { releaseIdEnvVar: RELEASE_ID_ENV_VAR },
-      "No release identifier is readable, so public website pages will use a " +
-        "per-process CSP nonce. A stored page generated by one process will not " +
-        "hydrate if another process serves it — set RELEASE_ID at image build.",
+      {
+        releaseIdEnvVar: RELEASE_ID_ENV_VAR,
+        seedEnvVar: PUBLIC_WEBSITE_NONCE_SEED_ENV_VAR,
+      },
+      "No release identifier and no build-time nonce seed are readable, so this " +
+        "bundle will mint its own CSP nonce. The proxy and the website layout are " +
+        "separate bundles, so they will disagree and the analytics scripts on " +
+        "public pages will be refused — check that next.config.ts still sets `env`, " +
+        "and set RELEASE_ID at image build.",
     );
     return { nonce: createCspNonce(), source: "process-fallback" };
   }
