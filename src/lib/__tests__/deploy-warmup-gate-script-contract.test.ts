@@ -108,12 +108,77 @@ describe("pre-cutover warm-up gate: deploy script contract", () => {
   });
 
   it("warms every instance that can serve public traffic, target and fallback alike", () => {
-    expect(script).toContain(
-      'printf \'%s %s\' "$TARGET_SERVICE" "$CRON_SERVICE"',
-    );
-    expect(script).toContain("for service in $(warmup_services); do");
+    expect(script).toContain('resolved="$TARGET_SERVICE $CRON_SERVICE"');
     expect(script).toContain(
       "DEPLOY_WARMUP_SERVICES may only name app services",
+    );
+  });
+
+  it("refuses an empty service list instead of cutting over having warmed nothing", () => {
+    // `[ -n "$DEPLOY_WARMUP_SERVICES" ]` is true for a whitespace-only value, which
+    // word-split to nothing: both loops iterated zero times, the gate returned success,
+    // and the deploy cut over without asking the release a single question. It is the
+    // only path where this gate could report a pass having proved nothing.
+    expect(script).toContain("DEPLOY_WARMUP_SERVICES resolved to no services");
+
+    // Resolved into a variable FIRST at both call sites, because `for x in $(f)`
+    // discards f's exit status and would swallow that refusal.
+    expect(script).not.toContain("for service in $(warmup_services); do");
+    expect(
+      script.match(/services="\$\(warmup_services\)" \|\| return 1/g)?.length,
+    ).toBe(2);
+  });
+
+  it("checks every warm-up setting against the range the endpoint enforces", () => {
+    // The endpoint answers 400 with the offending parameter named, and busybox `wget`
+    // discards a non-2xx body — so an out-of-range setting used to block the deploy
+    // with "the gate could not be read", pointing the operator at the container
+    // instead of at the number they typed. The runbook's own advice to "lower the
+    // timeout and the concurrency" reached that state.
+    const validate = script.slice(
+      script.indexOf("validate_warmup_settings() {"),
+      script.indexOf("# Every web instance that can serve public traffic"),
+    );
+
+    expect(validate).toContain(
+      "require_integer_setting_in_range DEPLOY_WARMUP_CONCURRENCY \"$DEPLOY_WARMUP_CONCURRENCY\" 1 8 || return 1",
+    );
+    expect(validate).toContain(
+      'require_integer_setting_in_range DEPLOY_WARMUP_REQUEST_TIMEOUT_SECONDS "$DEPLOY_WARMUP_REQUEST_TIMEOUT_SECONDS" 1 120 || return 1',
+    );
+    expect(validate).toContain(
+      'require_integer_setting_in_range DEPLOY_WARMUP_TOTAL_TIMEOUT_SECONDS "$DEPLOY_WARMUP_TOTAL_TIMEOUT_SECONDS" 5 1800 || return 1',
+    );
+    expect(validate).toContain(
+      'require_integer_setting_in_range DEPLOY_WARMUP_MAX_FAILED_CMS_ROUTES "$DEPLOY_WARMUP_MAX_FAILED_CMS_ROUTES" 0 100 || return 1',
+    );
+    expect(validate).toContain(
+      'require_integer_setting_in_range DEPLOY_WARMUP_MAX_FAILED_CMS_PERCENT "$DEPLOY_WARMUP_MAX_FAILED_CMS_PERCENT" 0 100 || return 1',
+    );
+  });
+
+  it("labels a deploy that completed with a warning, after the logs rather than before", () => {
+    // The owner's decision: "clearly label the deployment as completed with a warning"
+    // and "ensure the failure is visible to the operator completing the deployment".
+    // Printing it once at step 16 of 20 did neither — four steps, a container table and
+    // 80 lines of application logs scroll past, and there is no log file.
+    expect(script).toContain(
+      'warn "Blue/green deploy complete WITH WARNINGS. See the summary below."',
+    );
+    expect(script).toContain("DEPLOY COMPLETED WITH WARNINGS");
+
+    const logs = script.indexOf('docker compose logs "$TARGET_SERVICE" --tail 80');
+    const summary = script.indexOf("print_deploy_warning_summary || true");
+    expect(logs).toBeGreaterThan(0);
+    expect(summary).toBeGreaterThan(logs);
+
+    // Every tolerated outcome is accumulated, not just the tolerated page failure.
+    const gate = script.slice(
+      script.indexOf("run_warmup_gate_for_service() {"),
+      script.indexOf("get_active_service() {"),
+    );
+    expect(gate.match(/record_warmup_warning /g)?.length).toBeGreaterThanOrEqual(
+      4,
     );
   });
 
@@ -127,8 +192,8 @@ describe("pre-cutover warm-up gate: deploy script contract", () => {
     expect(script).toContain(
       'DEPLOY_WARMUP_CONCURRENCY="${DEPLOY_WARMUP_CONCURRENCY:-3}"',
     );
-    expect(script).toContain("validate_warmup_settings");
-    expect(script).toContain("require_non_negative_integer_setting");
+    expect(script).toContain("validate_warmup_settings || return 1");
+    expect(script).toContain("require_integer_setting_in_range");
   });
 
   it("makes disabling the gate impossible without a written reason", () => {

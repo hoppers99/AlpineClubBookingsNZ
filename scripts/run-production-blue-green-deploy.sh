@@ -1409,25 +1409,54 @@ warmup_gate_is_enabled() {
   esac
 }
 
-require_non_negative_integer_setting() {
+# One numeric warm-up setting, checked against the SAME range the endpoint enforces.
+#
+# The range is mirrored here rather than left to the endpoint for a plain operational
+# reason: the endpoint answers HTTP 400 with the offending parameter named in the body,
+# and the container's only HTTP client is busybox `wget`, which on a non-2xx status
+# writes no body at all. The endpoint now also answers the text form with a readable
+# `blocked` report, so the reason survives either way — but catching it HERE means the
+# operator is told which setting is wrong before a container is even asked, and the
+# ranges cannot drift unnoticed because the argument list reads like the endpoint's.
+#
+# Ranges as at src/app/api/deploy/warmup/route.ts:
+#   concurrency 1-8, requestTimeoutSeconds 1-120, totalTimeoutSeconds 5-1800,
+#   maxFailedCmsRoutes 0-100, maxFailedCmsPercent 0-100.
+require_integer_setting_in_range() {
   local name="$1"
   local value="$2"
+  local min="$3"
+  local max="$4"
 
   if ! printf '%s' "$value" | grep -Eq '^[0-9]+$'; then
     echo "${name} must be a non-negative integer. Got: ${value}" >&2
     return 1
   fi
+
+  if [ "$value" -lt "$min" ] || [ "$value" -gt "$max" ]; then
+    echo "${name} must be between ${min} and ${max} (the warm-up endpoint refuses anything else). Got: ${value}" >&2
+    return 1
+  fi
 }
 
 validate_warmup_settings() {
-  require_non_negative_integer_setting DEPLOY_WARMUP_CONCURRENCY "$DEPLOY_WARMUP_CONCURRENCY"
-  require_non_negative_integer_setting DEPLOY_WARMUP_REQUEST_TIMEOUT_SECONDS "$DEPLOY_WARMUP_REQUEST_TIMEOUT_SECONDS"
-  require_non_negative_integer_setting DEPLOY_WARMUP_TOTAL_TIMEOUT_SECONDS "$DEPLOY_WARMUP_TOTAL_TIMEOUT_SECONDS"
-  require_non_negative_integer_setting DEPLOY_WARMUP_MAX_FAILED_CMS_ROUTES "$DEPLOY_WARMUP_MAX_FAILED_CMS_ROUTES"
-  require_non_negative_integer_setting DEPLOY_WARMUP_MAX_FAILED_CMS_PERCENT "$DEPLOY_WARMUP_MAX_FAILED_CMS_PERCENT"
+  local services
+
+  # `|| return 1` on each, rather than leaning on the script's `set -e`: this function
+  # is the one place a mistyped setting is caught, and its refusal should be readable in
+  # the source rather than a property of a shell option set 1,400 lines earlier.
+  require_integer_setting_in_range DEPLOY_WARMUP_CONCURRENCY "$DEPLOY_WARMUP_CONCURRENCY" 1 8 || return 1
+  require_integer_setting_in_range DEPLOY_WARMUP_REQUEST_TIMEOUT_SECONDS "$DEPLOY_WARMUP_REQUEST_TIMEOUT_SECONDS" 1 120 || return 1
+  require_integer_setting_in_range DEPLOY_WARMUP_TOTAL_TIMEOUT_SECONDS "$DEPLOY_WARMUP_TOTAL_TIMEOUT_SECONDS" 5 1800 || return 1
+  require_integer_setting_in_range DEPLOY_WARMUP_MAX_FAILED_CMS_ROUTES "$DEPLOY_WARMUP_MAX_FAILED_CMS_ROUTES" 0 100 || return 1
+  require_integer_setting_in_range DEPLOY_WARMUP_MAX_FAILED_CMS_PERCENT "$DEPLOY_WARMUP_MAX_FAILED_CMS_PERCENT" 0 100 || return 1
+
+  # Assigned first so `warmup_services`'s own refusal is not swallowed by the `for`
+  # list, which discards a command substitution's exit status.
+  services="$(warmup_services)" || return 1
 
   local service
-  for service in $(warmup_services); do
+  for service in $services; do
     case "$service" in
       "$CRON_SERVICE"|"$BLUE_SERVICE"|"$GREEN_SERVICE") ;;
       *)
@@ -1449,13 +1478,31 @@ validate_warmup_settings() {
 # the site is already struggling. The owner's decision anticipates this under
 # "Future scaling": warm every instance separately, because one instance's
 # in-memory store says nothing about another's.
+# An EMPTY resolved list is refused rather than accepted, and that refusal is the
+# point of the loop below. `[ -n "$DEPLOY_WARMUP_SERVICES" ]` is true for a value that
+# is only whitespace — the shape a command substitution that produced nothing leaves
+# behind — and printing it verbatim then word-split to nothing, so both callers
+# iterated zero times, the gate returned success, and the deploy cut over having asked
+# not one question about the release. It is the only path where this gate could report
+# a pass without proving anything, and it printed nothing an operator would notice.
 warmup_services() {
+  local resolved=""
+  local service
+
   if [ -n "$DEPLOY_WARMUP_SERVICES" ]; then
-    printf '%s' "$DEPLOY_WARMUP_SERVICES"
-    return 0
+    for service in $DEPLOY_WARMUP_SERVICES; do
+      resolved="${resolved:+$resolved }$service"
+    done
+  else
+    resolved="$TARGET_SERVICE $CRON_SERVICE"
   fi
 
-  printf '%s %s' "$TARGET_SERVICE" "$CRON_SERVICE"
+  if [ -z "$resolved" ]; then
+    echo "DEPLOY_WARMUP_SERVICES resolved to no services, so the warm-up gate would prove nothing about this release. Name the app services to warm, or unset it for the default (${TARGET_SERVICE} and ${CRON_SERVICE})." >&2
+    return 1
+  fi
+
+  printf '%s' "$resolved"
 }
 
 # The release identifier the gate should expect to find in the container it warms.
@@ -1482,6 +1529,50 @@ resolve_expected_release() {
   fi
 
   printf ''
+}
+
+# Warnings that must outlive the step they were printed in.
+#
+# The owner's decision asks for a deploy that completed with a tolerated failure to be
+# "clearly labelled" and for the failure to be "visible to the operator completing the
+# deployment". Printing it once at step 16 of 20 does not achieve that: four more steps,
+# a container table and 80 lines of application logs scroll past before the completion
+# banner, there is no log file (the wrapper runs the engine with no `tee`), and the
+# operator's terminal is the only record. So each warning is accumulated here and
+# re-printed AFTER the banner, and the banner itself names the state.
+WARMUP_WARNINGS=""
+
+record_warmup_warning() {
+  if [ -z "$WARMUP_WARNINGS" ]; then
+    WARMUP_WARNINGS="$1"
+    return 0
+  fi
+
+  # `printf` rather than a literal newline inside the expansion: a `}` at column zero
+  # inside a string reads like the end of the function to a human and to anything that
+  # extracts a function body by line.
+  WARMUP_WARNINGS="$(printf '%s\n%s' "$WARMUP_WARNINGS" "$1")"
+}
+
+# Re-prints the accumulated warnings and returns 0 when there were any, so the caller
+# can label the completion banner rather than guess.
+print_deploy_warning_summary() {
+  if [ -z "$WARMUP_WARNINGS" ]; then
+    return 1
+  fi
+
+  echo
+  echo "============================================"
+  echo "  DEPLOY COMPLETED WITH WARNINGS"
+  echo "============================================"
+  printf '%s\n' "$WARMUP_WARNINGS" | while IFS= read -r line; do
+    printf '  ! %s\n' "$line"
+  done
+  echo
+  echo "  Do not close this deploy out until each line above is recorded on a"
+  echo "  follow-up issue. The full warm-up summary is at step 16 of 20 above."
+  echo "============================================"
+  return 0
 }
 
 warmup_gate_url() {
@@ -1518,6 +1609,7 @@ run_warmup_gate_for_service() {
   local stderr_file
   local verdict
   local skipped_reason
+  local failed_paths
 
   url="$(warmup_gate_url "$expected_release")"
   # The container-side deadline must expire first, so a slow release produces a
@@ -1560,16 +1652,29 @@ run_warmup_gate_for_service() {
       awk '{print $2}' || true
   )"
 
+  # The failed addresses out of the summary's FAILED ROUTES block, so the end-of-deploy
+  # warning names them rather than pointing at scrolled-off output. Each such line is
+  # `    ! /path [tier] kind — detail`; a WARNINGS line also begins `    ! ` but never
+  # with an address, which is what the `/` and the following ` [` select on.
+  failed_paths="$(
+    printf '%s\n' "$report" |
+      sed -n 's|^[[:space:]]*![[:space:]]*\(/[^[:space:]]*\)[[:space:]]\[.*|\1|p' |
+      tr '\n' ' ' |
+      sed 's/[[:space:]]*$//' || true
+  )"
+
   case "$verdict" in
     pass)
       info "Warm-up gate passed on ${service}."
       ;;
     pass-with-warning)
       warn "Warm-up gate passed on ${service} WITH WARNINGS. The deployment is completing with a known non-critical page failure — record the failed path above and file (or link) a follow-up issue for it before closing this deploy out."
+      record_warmup_warning "${service}: passed WITH WARNINGS — a non-critical published page failed. Failed path(s): ${failed_paths:-see the step 16 summary above}. File or link a follow-up issue before closing this deploy out."
       ;;
     skipped)
       skipped_reason="$(printf '%s\n' "$report" | sed -n 's/^[[:space:]]*SKIPPED: //p' | head -n 1 || true)"
       warn "Warm-up gate skipped on ${service}: ${skipped_reason:-no reason reported}"
+      record_warmup_warning "${service}: the warm-up gate was SKIPPED, so this cutover is unverified — ${skipped_reason:-no reason reported}"
       ;;
     blocked)
       echo "The warm-up gate BLOCKED the cutover on ${service}. See the blocked reasons above." >&2
@@ -1585,6 +1690,7 @@ run_warmup_gate_for_service() {
 run_warmup_gate() {
   local expected_release
   local service
+  local services
 
   if ! warmup_gate_is_enabled; then
     if [ -z "$DEPLOY_WARMUP_OVERRIDE_REASON" ]; then
@@ -1600,18 +1706,26 @@ run_warmup_gate() {
     warn "populates its page cache. The first visitor to each page pays a cold"
     warn "render, and a broken public page will reach members rather than this log."
     warn "================================================================"
+    record_warmup_warning "The pre-cutover warm-up gate was DISABLED for this deploy (reason given: ${DEPLOY_WARMUP_OVERRIDE_REASON}). Nothing verified that this release serves its public pages."
     return 0
   fi
 
-  validate_warmup_settings
+  validate_warmup_settings || return 1
 
   expected_release="$(resolve_expected_release)"
   if [ -z "$expected_release" ]; then
     warn "Could not determine which commit this deploy is releasing, so the gate cannot confirm it warmed the intended release."
+    record_warmup_warning "The gate could not confirm it warmed the intended release: this deploy could not determine which commit it is releasing."
   fi
 
-  for service in $(warmup_services); do
-    run_warmup_gate_for_service "$service" "$expected_release"
+  # Assigned first so an empty resolution refuses the deploy instead of being silently
+  # iterated zero times. See `warmup_services`.
+  services="$(warmup_services)" || return 1
+
+  for service in $services; do
+    # Explicit rather than relying on `set -e` to abort the run: this is the refusal
+    # that stops a bad release reaching members, so it is spelled out here.
+    run_warmup_gate_for_service "$service" "$expected_release" || return 1
   done
 }
 
@@ -1848,7 +1962,16 @@ info "Removed any orphaned Compose containers."
 
 step "20/20" "Cleaning stale Docker cache after deploy"
 prune_stale_docker_assets "after deploy"
-info "Blue/green deploy complete."
+
+# The completion line NAMES the state. A deploy that tolerated a failed public page, or
+# skipped the gate, or could not identify the release it warmed, is not the same event
+# as a clean one, and an operator reading the last line at 2am must not have to
+# remember a warning from four steps ago to know which they got.
+if [ -n "$WARMUP_WARNINGS" ]; then
+  warn "Blue/green deploy complete WITH WARNINGS. See the summary below."
+else
+  info "Blue/green deploy complete."
+fi
 
 echo
 echo "============================================"
@@ -1857,6 +1980,10 @@ echo "============================================"
 docker compose ps
 echo
 docker compose logs "$TARGET_SERVICE" --tail 80
+
+# Last, deliberately: after the container table and the application logs, so it is the
+# final thing on screen rather than the thing they scrolled past.
+print_deploy_warning_summary || true
 }
 
 case "${1:-}" in

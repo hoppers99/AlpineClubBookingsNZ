@@ -41,6 +41,7 @@ interface WarmupReport {
     criticalRendered: number;
     criticalCacheApplicable: number;
     criticalCacheVerified: number;
+    criticalUnpublishedDuringWarmup: number;
     cmsDiscovered: number;
     cmsRendered: number;
     cmsCacheApplicable: number;
@@ -163,6 +164,57 @@ test.describe("pre-cutover warm-up gate", () => {
     );
 
     expect(response.status()).toBe(400);
+
+    const report = (await response.json()) as WarmupReport;
+    expect(report.verdict).toBe("blocked");
+    expect(report.blockingReasons.join(" ")).toContain("maxFailedCmsPercent");
+  });
+
+  test("names the refused setting in the text form the deploy script reads", async ({
+    request,
+  }) => {
+    // The text form answers 200 on a refusal, deliberately: the container's only HTTP
+    // client is busybox `wget`, which discards the body of any non-2xx response. A 400
+    // therefore reached the deploy script as an empty report and the operator was told
+    // "the warm-up gate could not be read" — pointing them at the container, the
+    // network and the cron secret rather than at the setting they had just mistyped.
+    const response = await request.get(
+      `${WARMUP_PATH}?format=text&concurrency=0`,
+      { headers: { "x-cron-secret": cronSecret as string } },
+    );
+
+    expect(response.status()).toBe(200);
+
+    const text = await response.text();
+    expect(text).toContain("concurrency must be between 1 and 8");
+    // The refusal itself is unchanged: the script gates on this line, not the status.
+    expect(text.trimEnd().endsWith("WARMUP-GATE-VERDICT: blocked")).toBe(true);
+  });
+
+  test("proves the store from x-nextjs-cache, which a MISS cannot satisfy", async ({
+    request,
+  }) => {
+    // A real ISR response carries `x-nextjs-prerender: 1` whether it hit or missed, so
+    // this is the assertion that separates "the page was reused" from "a
+    // prerender-capable route replied". Read off the release directly, because the gate
+    // reporting a pass is exactly what must not be trusted here.
+    const first = await request.get("/", { maxRedirects: 0 });
+    expect(first.status()).toBe(200);
+
+    const cmsPath = "/about";
+    await request.get(cmsPath, { maxRedirects: 0 });
+    const second = await request.get(cmsPath, { maxRedirects: 0 });
+
+    expect(second.status()).toBe(200);
+    const cache = second.headers()["x-nextjs-cache"];
+    expect(
+      cache,
+      "the ISR catch-all must report its cache result, or the gate has nothing to read",
+    ).toBeDefined();
+    expect(["HIT", "STALE"]).toContain(cache);
+    // And the header that is NOT proof is present alongside it, which is the whole
+    // reason it cannot be accepted as an equivalent.
+    expect(second.headers()["x-nextjs-prerender"]).toBe("1");
   });
 });
 

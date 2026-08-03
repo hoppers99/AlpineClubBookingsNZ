@@ -198,6 +198,22 @@ function resolvePublicHost(): { host: string } | { problem: string } {
   }
 }
 
+/**
+ * One report, two representations — and, for the text form, always HTTP 200.
+ *
+ * The status code is deliberately format-dependent, which needs its reason stated.
+ * The container's only HTTP client is busybox `wget` (`node:24.17-alpine`,
+ * `Dockerfile`); on a non-2xx status it aborts and writes NO body at all. So a 400 or
+ * a 409 reaches the deploy script as an empty report, and the operator gets "the
+ * warm-up gate could not be read" — pointing them at the container, the network and
+ * the cron secret instead of at the setting they just mistyped or at the other deploy
+ * already running.
+ *
+ * The refusal is identical either way: the text form carries `blocked`, and the script
+ * gates on the verdict sentinel, not on the status. Only the operator's information
+ * changes. JSON keeps the honest REST codes for tests and any future tooling, which
+ * read the body regardless of status.
+ */
 function respond(
   report: WarmupGateReport,
   format: "json" | "text",
@@ -205,7 +221,7 @@ function respond(
 ): NextResponse {
   if (format === "text") {
     return new NextResponse(renderWarmupReportText(report), {
-      status,
+      status: 200,
       headers: {
         "content-type": "text/plain; charset=utf-8",
         "cache-control": "no-store",
@@ -252,13 +268,6 @@ export async function GET(request: NextRequest) {
   }
   const expectedRelease = "value" in release ? release.value : null;
 
-  if (parameterErrors.length > 0) {
-    return NextResponse.json(
-      { error: "Invalid warm-up parameters", problems: parameterErrors },
-      { status: 400, headers: { "cache-control": "no-store" } },
-    );
-  }
-
   const serviceRole = getRuntimeStatus().role;
   const host = resolvePublicHost();
   const origin = `http://127.0.0.1:${process.env.PORT?.trim() || "3000"}`;
@@ -268,6 +277,21 @@ export async function GET(request: NextRequest) {
     origin,
     tolerance,
   };
+
+  if (parameterErrors.length > 0) {
+    // Through the report rather than as a bare JSON error, so the reason survives the
+    // deploy script's transport — see `respond`. The verdict is `blocked`, so the
+    // cutover is refused exactly as it was before, and the operator now reads WHICH
+    // setting was refused instead of "the gate could not be read".
+    return respond(
+      buildBlockedWarmupReport(
+        `The warm-up parameters this deploy asked for are not usable, so nothing was warmed: ${parameterErrors.join("; ")}. Correct the DEPLOY_WARMUP_* setting and re-run.`,
+        base,
+      ),
+      format,
+      400,
+    );
+  }
 
   if ("problem" in host) {
     return respond(buildBlockedWarmupReport(host.problem, base), format);
@@ -325,6 +349,7 @@ export async function GET(request: NextRequest) {
     const releaseIdentity = resolveReleaseIdentity(expectedRelease);
     const evaluation = evaluateWarmup({
       discoveryProblems: discovery.plan.problems,
+      discoveryWarnings: discovery.plan.warnings,
       results: run.results,
       deadlineExpired: run.deadlineExpired,
       tolerance,
