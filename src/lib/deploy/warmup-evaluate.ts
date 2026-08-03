@@ -289,7 +289,7 @@ export function evaluateWarmup({
 
   if (deadlineExpired) {
     warnings.push(
-      "The overall warm-up deadline expired before every address had been requested. Addresses that were never attempted are counted as failures.",
+      "The overall warm-up deadline expired before every address had been requested and proved stored. Whatever the deadline cut short — an address never attempted, or one that rendered but whose store was never verified — is counted as a failure.",
     );
   }
 

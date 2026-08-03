@@ -109,7 +109,12 @@ export type WarmupFailureKind =
   | "unexpected-cache-header"
   /** The policy's nonce and the document's inline scripts disagree. */
   | "nonce-mismatch"
-  /** The overall warm-up deadline expired before this route was attempted. */
+  /**
+   * The overall warm-up deadline expired before the gate could ask: either before
+   * this address was requested at all, or — after a successful render — before its
+   * store could be verified. Either way nothing was proved, so it is a failure; what
+   * this kind adds is that the release was never asked, so it is not at fault.
+   */
   | "not-attempted";
 
 export interface WarmupRouteResult {
@@ -704,6 +709,34 @@ async function warmOneRoute(
 
     const next = await requestWithTransientRetry(route.path, options, deadline);
     requests += next.requests;
+
+    // Zero requests means the OVERALL deadline had already expired, so the
+    // verification request was never made — the same case the first-request path
+    // guards above, and the same misattribution if it is not guarded here. Without
+    // this, `requestWithTransientRetry`'s zero-request stub arrives carrying its
+    // default `transportError: "unreachable"`, the branch below reports "the release
+    // stopped answering while the store was being verified" about a release that was
+    // never asked, and — because the recorded kind is `unreachable` rather than
+    // `not-attempted` — `runWarmup` reports `deadlineExpired: false`, so the run
+    // summary denies the deadline that caused it. Still a FAILURE: the store was not
+    // proved, which for a critical address is a blocked cutover.
+    if (next.requests === 0) {
+      return finish(
+        failed(
+          route,
+          "not-attempted",
+          `the overall warm-up deadline of ${options.totalTimeoutMs}ms expired before the store on this address could be verified`,
+          {
+            rendered: true,
+            // The last response actually received: the render, or the previous
+            // round's MISS. Read before `verification` is reassigned below.
+            httpStatus: verification.status,
+            cacheHeader: verification.cacheHeader,
+          },
+        ),
+      );
+    }
+
     verification = next.response;
 
     if (verification.transportError) {
@@ -782,10 +815,11 @@ async function warmOneRoute(
  * (`DEPLOYMENT.md` → "App CPU sizing"). Firing every route at once would put the
  * container under its heaviest load of the day moments before it takes traffic.
  *
- * The deadline FAILS CLOSED: a route the deadline prevented us from attempting is
- * recorded as `not-attempted`, which is a failure like any other. A critical route
- * among them blocks cutover, and enough CMS routes among them exceed the tolerance
- * and block it too. Nothing is quietly treated as passing because time ran out.
+ * The deadline FAILS CLOSED: a route the deadline prevented us from attempting — or
+ * from verifying the store on, after it rendered — is recorded as `not-attempted`,
+ * which is a failure like any other. A critical route among them blocks cutover, and
+ * enough CMS routes among them exceed the tolerance and block it too. Nothing is
+ * quietly treated as passing because time ran out.
  */
 export async function runWarmup(
   routes: readonly PlannedWarmupRoute[],

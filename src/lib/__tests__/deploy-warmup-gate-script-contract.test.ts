@@ -2,7 +2,11 @@ import { readFileSync } from "fs";
 import path from "path";
 import { describe, expect, it } from "vitest";
 import { DEFAULT_WARMUP_TOLERANCE } from "@/lib/deploy/warmup-evaluate";
-import { WARMUP_VERDICT_SENTINEL } from "@/lib/deploy/warmup-report";
+import {
+  WARMUP_VERDICT_SENTINEL,
+  buildSkippedWarmupReport,
+  renderWarmupReportText,
+} from "@/lib/deploy/warmup-report";
 
 /**
  * The shell half of the pre-cutover warm-up gate (#2566).
@@ -180,6 +184,67 @@ describe("pre-cutover warm-up gate: deploy script contract", () => {
     expect(gate.match(/record_warmup_warning /g)?.length).toBeGreaterThanOrEqual(
       4,
     );
+  });
+
+  it("carries the report's warnings to the end of the deploy whatever the verdict was", () => {
+    // `evaluateWarmup` returns a plain `pass` WITH a non-empty warnings array in
+    // several real cases — the Book Now target or a published page unpublished
+    // mid-run, an unreadable Book Now setting, an image with no release identifier, a
+    // deploy that could not say which release to expect, a widened tolerance. Keying
+    // the accumulator on the verdict alone dropped every one of them: printed once at
+    // step 16 of 20, then four steps, a container table and 80 lines of logs.
+    const gate = script.slice(
+      script.indexOf("run_warmup_gate_for_service() {"),
+      script.indexOf("run_warmup_gate() {"),
+    );
+
+    // Read out of the report's own WARNINGS block rather than inferred.
+    expect(gate).toContain("/^[[:space:]]*WARNINGS \\(/ { in_block = 1; next }");
+    // Recorded AFTER the verdict case statement, so it cannot be keyed on the verdict
+    // again by anyone editing one branch.
+    const esac = gate.lastIndexOf("  esac");
+    const record = gate.indexOf(
+      'record_gate_warnings "$service" "$gate_warnings"',
+    );
+    expect(esac).toBeGreaterThan(0);
+    expect(record).toBeGreaterThan(esac);
+
+    // The accumulator assigns a global, so the loop must not run in a subshell: a
+    // `while` on the right of a pipe would record every line into a copy discarded at
+    // the closing `done`, which is silent and total.
+    const accumulator = script.slice(
+      script.indexOf("record_gate_warnings() {"),
+      script.indexOf("print_deploy_warning_summary() {"),
+    );
+    expect(accumulator).toContain("done <<EOF");
+    expect(accumulator).not.toMatch(/\|\s*while IFS= read -r line/);
+  });
+
+  it("renders a WARNINGS block in the shape the script's extraction reads", () => {
+    // The one place the shell and the renderer could drift silently: rename the block
+    // header or drop the `! ` marker and the script stops finding anything, with no
+    // failure anywhere — the warnings simply never reach the end of the deploy again.
+    // So the shapes are asserted against each other rather than each on its own.
+    const report = {
+      ...buildSkippedWarmupReport("unused", {
+        serviceRole: "web-blue",
+        publicHost: "club.example.nz",
+        origin: "http://127.0.0.1:3000",
+        tolerance: DEFAULT_WARMUP_TOLERANCE,
+      }),
+      verdict: "pass" as const,
+      skippedReason: undefined,
+      warnings: ["first warning", "second warning"],
+    };
+
+    const lines = renderWarmupReportText(report).split("\n");
+    const header = lines.findIndex((line) => /^\s*WARNINGS \(2\):$/.test(line));
+
+    expect(header).toBeGreaterThan(0);
+    expect(lines[header + 1]).toMatch(/^\s*!\s+first warning$/);
+    expect(lines[header + 2]).toMatch(/^\s*!\s+second warning$/);
+    // The block ends at a blank line, which is what the script's awk stops on.
+    expect(lines[header + 3]).toBe("");
   });
 
   it("ships the owner's conservative tolerance as the default", () => {

@@ -1554,6 +1554,38 @@ record_warmup_warning() {
   WARMUP_WARNINGS="$(printf '%s\n%s' "$WARMUP_WARNINGS" "$1")"
 }
 
+# Accumulates every line of one report's WARNINGS block, whatever the verdict was.
+#
+# Keying the accumulator on the verdict alone lost warnings that arrive with a plain
+# `pass`, and `evaluateWarmup` returns exactly that in several real cases
+# (`src/lib/deploy/warmup-evaluate.ts`): the configured Book Now target unpublished
+# between discovery and warming, a published CMS page unpublished the same way, a Book
+# Now setting the gate could not read, an image carrying no release identifier, a
+# deploy that could not say which release to expect, and a tolerance the operator
+# widened. Each of those is a thing the operator has to act on, and each of them
+# scrolled off screen with the step 16 report.
+#
+# Fed from a HERE-DOCUMENT rather than a pipe on purpose: `record_warmup_warning`
+# assigns a global, and a `while` loop on the right of a pipe runs in a subshell, so
+# every line would be recorded into a copy that is discarded at the closing `done`.
+record_gate_warnings() {
+  local service="$1"
+  local warnings="$2"
+  local line
+
+  if [ -z "$warnings" ]; then
+    return 0
+  fi
+
+  while IFS= read -r line; do
+    if [ -n "$line" ]; then
+      record_warmup_warning "${service}: warm-up warning — ${line}"
+    fi
+  done <<EOF
+$warnings
+EOF
+}
+
 # Re-prints the accumulated warnings and returns 0 when there were any, so the caller
 # can label the completion banner rather than guess.
 print_deploy_warning_summary() {
@@ -1610,6 +1642,7 @@ run_warmup_gate_for_service() {
   local verdict
   local skipped_reason
   local failed_paths
+  local gate_warnings
 
   url="$(warmup_gate_url "$expected_release")"
   # The container-side deadline must expire first, so a slow release produces a
@@ -1663,9 +1696,28 @@ run_warmup_gate_for_service() {
       sed 's/[[:space:]]*$//' || true
   )"
 
+  # Every line of the report's WARNINGS block, read out of the report rather than
+  # inferred from the verdict. The block runs from the `WARNINGS (n):` header to the
+  # blank line the renderer puts before the next block
+  # (`src/lib/deploy/warmup-report.ts`), and each line inside it is `    ! <text>`.
+  gate_warnings="$(
+    printf '%s\n' "$report" |
+      awk '
+        /^[[:space:]]*WARNINGS \(/ { in_block = 1; next }
+        in_block && /^[[:space:]]*$/ { in_block = 0; next }
+        in_block { sub(/^[[:space:]]*![[:space:]]*/, ""); print }
+      ' || true
+  )"
+
   case "$verdict" in
     pass)
-      info "Warm-up gate passed on ${service}."
+      if [ -n "$gate_warnings" ]; then
+        # A pass is still a pass — but it is not a clean one, and the reasons above
+        # are repeated after the completion banner rather than left to scroll away.
+        warn "Warm-up gate passed on ${service} with warnings. The cutover proceeds; each warning above is repeated after the completion banner and needs recording before this deploy is closed out."
+      else
+        info "Warm-up gate passed on ${service}."
+      fi
       ;;
     pass-with-warning)
       warn "Warm-up gate passed on ${service} WITH WARNINGS. The deployment is completing with a known non-critical page failure — record the failed path above and file (or link) a follow-up issue for it before closing this deploy out."
@@ -1685,6 +1737,11 @@ run_warmup_gate_for_service() {
       return 1
       ;;
   esac
+
+  # After the case and outside it, so this cannot be keyed on the verdict again: the
+  # reasons the gate reported are carried to the end of the deploy for every verdict
+  # that reaches here, `pass` included.
+  record_gate_warnings "$service" "$gate_warnings"
 }
 
 run_warmup_gate() {

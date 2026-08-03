@@ -603,6 +603,50 @@ describe("runWarmup — bounds", () => {
     expect(notAttempted.length).toBeGreaterThan(0);
     expect(report.results.every((result) => result !== undefined)).toBe(true);
   });
+
+  it("blames the deadline, not the release, when time runs out before the store is verified", async () => {
+    // The render succeeded and reported MISS; the deadline then expired, so the
+    // VERIFICATION request was never sent. `requestWithTransientRetry` returns its
+    // zero-request stub for that, and the stub carries `transportError:
+    // "unreachable"` — so without the requests===0 guard this was reported as "the
+    // release stopped answering while the store was being verified" (a release fault
+    // an operator would go hunting for) and, because the kind was `unreachable`
+    // rather than `not-attempted`, the run summary said `deadlineExpired: false` and
+    // denied the cause outright.
+    let clock = 0;
+    const fetcher = scriptedFetch([{ cache: "MISS" }, { cache: "HIT" }]);
+    const impl = (async (url: string | URL | Request, init?: RequestInit) => {
+      // Past the whole-run deadline in one render, so no time is left to verify.
+      clock += 1_200;
+      return fetcher.impl(url, init);
+    }) as unknown as typeof fetch;
+
+    const report = await runWarmup(
+      [route({ path: "/about", tier: "cms", cacheClass: "isr" })],
+      options({
+        fetchImpl: impl,
+        concurrency: 1,
+        totalTimeoutMs: 1_000,
+        monotonicNow: () => clock,
+      }),
+    );
+
+    const result = report.results[0];
+    expect(fetcher.calls).toHaveLength(1);
+    expect(result.outcome).toBe("failed");
+    expect(result.failure?.kind).toBe("not-attempted");
+    expect(result.failure?.detail).toContain(
+      "expired before the store on this address could be verified",
+    );
+    // The render is still credited, and the last real response is still reported.
+    expect(result.rendered).toBe(true);
+    expect(result.httpStatus).toBe(200);
+    expect(result.cacheHeader).toBe("MISS");
+    expect(result.cacheApplicable).toBe(true);
+    expect(result.cacheVerified).toBe(false);
+    // The whole point: the report attributes it to the deadline.
+    expect(report.deadlineExpired).toBe(true);
+  });
 });
 
 describe("nonceConsistencyProblem", () => {
