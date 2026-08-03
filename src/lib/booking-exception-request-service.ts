@@ -1,7 +1,8 @@
 import { Prisma } from "@prisma/client";
 
 import { prisma } from "@/lib/prisma";
-import { parseDateOnly, formatDateOnly } from "@/lib/date-only";
+import { addDaysDateOnly, parseDateOnly, formatDateOnly } from "@/lib/date-only";
+import { normalizeGuestStayRange } from "@/lib/booking-guest-stay-range-input";
 import { getStayNights } from "@/lib/policies/pricing";
 import { validateMinimumStay } from "@/lib/booking-policies";
 import { evaluateProposedAdultMemberHosting } from "@/lib/adult-member-hosting-review";
@@ -14,6 +15,12 @@ import {
   reservePolicyExceptionCapacity,
 } from "@/lib/booking-exception-reservations";
 import type { GuestStayRange } from "@/lib/booking-guest-stay-ranges";
+import { resolveModificationStayRanges } from "@/lib/booking-modification-stay-ranges";
+import {
+  assertLinkedBookingMembersCanBeBooked,
+  resolveLinkedBookingMembersWithBoundary,
+} from "@/lib/booking-guests";
+import { loadMemberGuestAddPolicy } from "@/lib/member-guest-add-policy";
 import type { PrismaTransactionClient } from "@/lib/db-transaction";
 import {
   type PolicyExceptionCapacityMode,
@@ -172,6 +179,22 @@ export interface CreateModificationExceptionRequestInput {
   memberMessage: string;
   /** A short human summary rendered in the officer queue. */
   requestedSummary: string;
+  /**
+   * The RAW member delta the proposal was computed from (#2526). Stored beside
+   * the frozen snapshot because the snapshot is a *result* — a full proposed
+   * party with no BookingGuest ids — and the canonical modification service is
+   * driven by a *delta* (which guest rows to remove, which ranges to move).
+   * Re-deriving that delta from the snapshot would mean matching proposed guests
+   * back onto live rows by name, which is ambiguous for two guests with the same
+   * name; replaying the stored delta is exact.
+   *
+   * It is NOT trusted: `verifyLiveProposalIntegrity` (#2526) replays this delta
+   * against the LIVE booking and refuses the approval unless the resulting
+   * base+proposed pair hashes to the frozen `proposalHash`. A tampered delta, or
+   * a live booking that has drifted since the request, therefore fails closed
+   * with proposal drift instead of executing something nobody reviewed.
+   */
+  delta: ModificationDeltaInput;
   supersedeRequestId?: string | null;
   /**
    * Whether the LIVE booking being modified currently holds lodge capacity
@@ -200,6 +223,19 @@ function envelopeNights(checkIn: Date, checkOut: Date): string[] {
  * guest's per-night footprint from their own stay range (falling back to the
  * booking envelope). Canonicalised so two freezes of the same facts are
  * byte-identical.
+ *
+ * Canonical parity, two ways (#2526 review):
+ *
+ *  - each guest's range goes through the SAME `normalizeGuestStayRange` the
+ *    create route uses, so a half-supplied range (a Date In with no Date Out) is
+ *    refused at freeze time instead of being quietly completed from the envelope
+ *    and then refused at execution;
+ *  - the party envelope EXPANDS to cover every guest night, mirroring
+ *    `resolveBookingDateEnvelope` (#713), which is what `createConfirmedBooking`
+ *    will do at execution. Freezing the submitted envelope instead let a request
+ *    for one night carry a guest occupying nine: the officer queue showed a
+ *    one-night stay, the engine capacity-checked one night, and the executed
+ *    booking was nine nights of beds and price.
  */
 export function buildProposalPartyFromGuests(
   checkIn: Date,
@@ -207,22 +243,38 @@ export function buildProposalPartyFromGuests(
   guests: readonly ExceptionRequestGuestInput[],
 ): ProposalParty {
   const bookingNights = envelopeNights(checkIn, checkOut);
-  const proposalGuests: ProposalGuest[] = guests.map((guest) => {
-    const start = guest.stayStart ? parseDateOnly(guest.stayStart) : checkIn;
-    const end = guest.stayEnd ? parseDateOnly(guest.stayEnd) : checkOut;
-    const nights = envelopeNights(start, end);
-    return {
-      firstName: guest.firstName,
-      lastName: guest.lastName,
-      ageTier: guest.ageTier,
-      isMember: guest.isMember,
-      memberId: guest.memberId ?? null,
-      nights: nights.length > 0 ? nights : bookingNights,
-    };
+  const guestNights: string[][] = guests.map((guest, index) => {
+    const range = normalizeGuestStayRange(
+      { stayStart: guest.stayStart ?? null, stayEnd: guest.stayEnd ?? null },
+      { checkIn, checkOut },
+      index,
+    );
+    const nights = envelopeNights(range.stayStart, range.stayEnd);
+    return nights.length > 0 ? nights : bookingNights;
   });
+
+  // Expand-only envelope over the stated range plus every guest night.
+  const allNights = [
+    ...new Set([...bookingNights, ...guestNights.flat()]),
+  ].sort();
+  const envelopeCheckIn = allNights.length > 0
+    ? parseDateOnly(allNights[0])
+    : checkIn;
+  const envelopeCheckOut = allNights.length > 0
+    ? addDaysDateOnly(parseDateOnly(allNights[allNights.length - 1]), 1)
+    : checkOut;
+
+  const proposalGuests: ProposalGuest[] = guests.map((guest, index) => ({
+    firstName: guest.firstName,
+    lastName: guest.lastName,
+    ageTier: guest.ageTier,
+    isMember: guest.isMember,
+    memberId: guest.memberId ?? null,
+    nights: guestNights[index],
+  }));
   return canonicalizeProposalParty({
-    checkIn: formatDateOnly(checkIn),
-    checkOut: formatDateOnly(checkOut),
+    checkIn: formatDateOnly(envelopeCheckIn),
+    checkOut: formatDateOnly(envelopeCheckOut),
     guests: proposalGuests,
   });
 }
@@ -236,6 +288,15 @@ export interface LiveBookingGuestInput {
   memberId: string | null;
   stayStart: Date;
   stayEnd: Date;
+  /**
+   * The guest's stored explicit night set (#713). REQUIRED for a faithful replay
+   * (#2526 review finding): the canonical planner preserves a guest's stored
+   * night rows whenever it is not resetting them, so flattening a sparse stay to
+   * its stayStart..stayEnd envelope would freeze - and capacity-check, and price
+   * - beds on nights the execution never books. Absent/empty means the guest
+   * genuinely has no explicit set and the envelope is authoritative.
+   */
+  nights?: ReadonlyArray<{ stayDate: Date }> | null;
 }
 
 export interface ModificationDeltaInput {
@@ -251,17 +312,44 @@ export interface ModificationDeltaInput {
   }>;
 }
 
+/** The nights a resolved stay range covers: its explicit set, or its envelope. */
+function nightsForResolvedRange(range: {
+  stayStart: Date;
+  stayEnd: Date;
+  nights?: Date[];
+}): string[] {
+  return range.nights && range.nights.length > 0
+    ? [...new Set(range.nights.map(formatDateOnly))].sort()
+    : envelopeNights(range.stayStart, range.stayEnd);
+}
+
 /**
  * Build the frozen base (live) and proposed (post-delta) parties for a
  * modification request. The stored proposed snapshot is the authoritative,
  * reviewed artifact #2525 executes byte-for-byte, so this is where "what the
  * member asked for" is rendered once.
  *
- * Proposed-guest rule (mirrors the canonical modification planner): a remaining
- * guest keeps their own per-guest range when one is supplied; otherwise, if the
- * booking dates moved, they are reset to the new envelope; otherwise they keep
- * their stored range. Added guests land in their own range or the new envelope.
- * Removed guests drop out.
+ * The proposed party is resolved by the CANONICAL planner's own helper
+ * (`resolveModificationStayRanges`, shared with `resolveTargetDates` and
+ * `prepareGuestPlan`) rather than by a lookalike of it. That is the whole
+ * integrity story of this workflow: an officer approves a frozen party, and the
+ * approval then drives the canonical service with the stored DELTA - so "the
+ * party this delta produces" has to be one function, computed once, not two
+ * implementations that agree until they do not.
+ *
+ * The divergence this replaced was real and reachable (#2526 review). The old
+ * model decided per guest ("no range entry + dates moved => reset to the new
+ * envelope") while the planner decides on a GLOBAL flag ("any range input
+ * anywhere => every guest without their own entry keeps their stored nights"), so
+ * a date change plus a partial `guestStayRanges` froze, hashed, reviewed and
+ * capacity-checked a party the execution never created. The old model also
+ * flattened a sparse stored night set to its envelope, claiming beds on nights
+ * nobody books.
+ *
+ * Range-validation failures propagate as `BookingGuestStayRangeValidationError`
+ * (the HTTP layer maps them to 400) rather than being coerced into something
+ * plausible: a delta the canonical service would refuse must not be frozen as a
+ * reviewable proposal.
  */
 export function buildModificationProposalParties(args: {
   bookingCheckIn: Date;
@@ -271,18 +359,17 @@ export function buildModificationProposalParties(args: {
 }): { base: ProposalParty; proposed: ProposalParty } {
   const { bookingCheckIn, bookingCheckOut, liveGuests, delta } = args;
 
-  const newCheckIn = delta.checkIn ? parseDateOnly(delta.checkIn) : bookingCheckIn;
-  const newCheckOut = delta.checkOut
-    ? parseDateOnly(delta.checkOut)
-    : bookingCheckOut;
-  const datesChanged =
-    newCheckIn.getTime() !== bookingCheckIn.getTime() ||
-    newCheckOut.getTime() !== bookingCheckOut.getTime();
-
-  const removeSet = new Set(delta.removeGuestIds ?? []);
-  const rangeByGuest = new Map(
-    (delta.guestStayRanges ?? []).map((range) => [range.guestId, range]),
-  );
+  const resolved = resolveModificationStayRanges({
+    booking: { checkIn: bookingCheckIn, checkOut: bookingCheckOut },
+    guests: liveGuests,
+    input: {
+      checkIn: delta.checkIn,
+      checkOut: delta.checkOut,
+      addGuests: delta.addGuests,
+      removeGuestIds: delta.removeGuestIds,
+      guestStayRanges: delta.guestStayRanges,
+    },
+  });
 
   const baseGuests: ProposalGuest[] = liveGuests.map((guest) => ({
     firstName: guest.firstName,
@@ -290,44 +377,36 @@ export function buildModificationProposalParties(args: {
     ageTier: guest.ageTier,
     isMember: guest.isMember,
     memberId: guest.memberId,
-    nights: envelopeNights(guest.stayStart, guest.stayEnd),
+    nights: nightsForResolvedRange({
+      stayStart: guest.stayStart,
+      stayEnd: guest.stayEnd,
+      ...(guest.nights && guest.nights.length > 0
+        ? { nights: guest.nights.map((night) => night.stayDate) }
+        : {}),
+    }),
   }));
 
-  const proposedRemaining: ProposalGuest[] = liveGuests
-    .filter((guest) => !removeSet.has(guest.id))
-    .map((guest) => {
-      const range = rangeByGuest.get(guest.id);
-      let start = guest.stayStart;
-      let end = guest.stayEnd;
-      if (range) {
-        start = range.stayStart ? parseDateOnly(range.stayStart) : newCheckIn;
-        end = range.stayEnd ? parseDateOnly(range.stayEnd) : newCheckOut;
-      } else if (datesChanged) {
-        start = newCheckIn;
-        end = newCheckOut;
-      }
-      return {
-        firstName: guest.firstName,
-        lastName: guest.lastName,
-        ageTier: guest.ageTier,
-        isMember: guest.isMember,
-        memberId: guest.memberId,
-        nights: envelopeNights(start, end),
-      };
-    });
+  const proposedRemaining: ProposalGuest[] = resolved.remaining.map(
+    ({ guest, ...range }) => ({
+      firstName: guest.firstName,
+      lastName: guest.lastName,
+      ageTier: guest.ageTier,
+      isMember: guest.isMember,
+      memberId: guest.memberId,
+      nights: nightsForResolvedRange(range),
+    }),
+  );
 
-  const proposedAdded: ProposalGuest[] = (delta.addGuests ?? []).map((guest) => {
-    const start = guest.stayStart ? parseDateOnly(guest.stayStart) : newCheckIn;
-    const end = guest.stayEnd ? parseDateOnly(guest.stayEnd) : newCheckOut;
-    return {
+  const proposedAdded: ProposalGuest[] = (delta.addGuests ?? []).map(
+    (guest, index) => ({
       firstName: guest.firstName,
       lastName: guest.lastName,
       ageTier: guest.ageTier,
       isMember: guest.isMember,
       memberId: guest.memberId ?? null,
-      nights: envelopeNights(start, end),
-    };
-  });
+      nights: nightsForResolvedRange(resolved.added[index]),
+    }),
+  );
 
   const base = canonicalizeProposalParty({
     checkIn: formatDateOnly(bookingCheckIn),
@@ -335,14 +414,174 @@ export function buildModificationProposalParties(args: {
     guests: baseGuests,
   });
   const proposed = canonicalizeProposalParty({
-    checkIn: formatDateOnly(newCheckIn),
-    checkOut: formatDateOnly(newCheckOut),
+    checkIn: formatDateOnly(resolved.checkIn),
+    checkOut: formatDateOnly(resolved.checkOut),
     guests: [...proposedRemaining, ...proposedAdded],
   });
   return { base, proposed };
 }
 
-type PolicyEvaluationDb = typeof prisma;
+// ---------------------------------------------------------------------------
+// The replayable modification delta (#2526)
+// ---------------------------------------------------------------------------
+
+function optionalDateOnly(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+/**
+ * Canonicalise the stored delta so a re-freeze of the same member request writes
+ * the same JSON: absent/empty collections are dropped rather than stored as `[]`,
+ * and blank date strings become absent. Purely cosmetic for correctness — the
+ * approval verifies the delta by REPLAYING it, not by comparing its text — but it
+ * keeps the stored evidence readable and diffable.
+ */
+export function normalizeStoredExceptionDelta(
+  input: ModificationDeltaInput | null | undefined,
+): Record<string, unknown> {
+  // Defensive: the field is REQUIRED by the input type, so every real call site
+  // supplies it. Tolerating an absent one keeps a caller bug from throwing
+  // inside the member's request transaction — it stores an empty delta, and the
+  // approval then fails closed (the replay cannot reproduce the frozen hash).
+  const delta = input ?? {};
+  const out: Record<string, unknown> = {};
+  const checkIn = optionalDateOnly(delta.checkIn);
+  const checkOut = optionalDateOnly(delta.checkOut);
+  if (checkIn) out.checkIn = checkIn;
+  if (checkOut) out.checkOut = checkOut;
+  if (delta.addGuests?.length) {
+    out.addGuests = delta.addGuests.map((guest) => ({
+      firstName: guest.firstName,
+      lastName: guest.lastName,
+      ageTier: guest.ageTier,
+      isMember: guest.isMember,
+      ...(guest.memberId ? { memberId: guest.memberId } : {}),
+      ...(optionalDateOnly(guest.stayStart)
+        ? { stayStart: guest.stayStart }
+        : {}),
+      ...(optionalDateOnly(guest.stayEnd) ? { stayEnd: guest.stayEnd } : {}),
+    }));
+  }
+  if (delta.removeGuestIds?.length) {
+    out.removeGuestIds = [...delta.removeGuestIds];
+  }
+  if (delta.guestStayRanges?.length) {
+    out.guestStayRanges = delta.guestStayRanges.map((range) => ({
+      guestId: range.guestId,
+      ...(optionalDateOnly(range.stayStart) ? { stayStart: range.stayStart } : {}),
+      ...(optionalDateOnly(range.stayEnd) ? { stayEnd: range.stayEnd } : {}),
+    }));
+  }
+  return out;
+}
+
+/**
+ * Read the stored delta back out of a `requestedChanges` value WITHOUT trusting
+ * it. Anything that is not a well-formed delta returns null, which fails the
+ * approval closed (proposal drift) rather than replaying nonsense. Even a
+ * well-formed delta is only provisional: the caller must still prove the replay
+ * reproduces the frozen proposal hash.
+ */
+export function parseStoredExceptionDelta(
+  requestedChanges: unknown,
+): ModificationDeltaInput | null {
+  if (
+    !requestedChanges ||
+    typeof requestedChanges !== "object" ||
+    Array.isArray(requestedChanges)
+  ) {
+    return null;
+  }
+  const raw = (requestedChanges as { delta?: unknown }).delta;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const record = raw as Record<string, unknown>;
+
+  const stringOrUndefined = (value: unknown): string | undefined =>
+    typeof value === "string" && value.length > 0 ? value : undefined;
+
+  let addGuests: ExceptionRequestGuestInput[] | undefined;
+  if (record.addGuests !== undefined) {
+    if (!Array.isArray(record.addGuests)) return null;
+    addGuests = [];
+    for (const entry of record.addGuests) {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
+      const guest = entry as Record<string, unknown>;
+      if (
+        typeof guest.firstName !== "string" ||
+        typeof guest.lastName !== "string" ||
+        typeof guest.ageTier !== "string" ||
+        typeof guest.isMember !== "boolean"
+      ) {
+        return null;
+      }
+      addGuests.push({
+        firstName: guest.firstName,
+        lastName: guest.lastName,
+        ageTier: guest.ageTier,
+        isMember: guest.isMember,
+        memberId: stringOrUndefined(guest.memberId) ?? null,
+        stayStart: stringOrUndefined(guest.stayStart) ?? null,
+        stayEnd: stringOrUndefined(guest.stayEnd) ?? null,
+      });
+    }
+  }
+
+  let removeGuestIds: string[] | undefined;
+  if (record.removeGuestIds !== undefined) {
+    if (!Array.isArray(record.removeGuestIds)) return null;
+    if (!record.removeGuestIds.every((id) => typeof id === "string")) return null;
+    removeGuestIds = record.removeGuestIds as string[];
+  }
+
+  let guestStayRanges: ModificationDeltaInput["guestStayRanges"];
+  if (record.guestStayRanges !== undefined) {
+    if (!Array.isArray(record.guestStayRanges)) return null;
+    guestStayRanges = [];
+    for (const entry of record.guestStayRanges) {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
+      const range = entry as Record<string, unknown>;
+      if (typeof range.guestId !== "string") return null;
+      guestStayRanges.push({
+        guestId: range.guestId,
+        stayStart: stringOrUndefined(range.stayStart) ?? null,
+        stayEnd: stringOrUndefined(range.stayEnd) ?? null,
+      });
+    }
+  }
+
+  return {
+    checkIn: stringOrUndefined(record.checkIn) ?? null,
+    checkOut: stringOrUndefined(record.checkOut) ?? null,
+    addGuests,
+    removeGuestIds,
+    guestStayRanges,
+  };
+}
+
+/**
+ * The narrow client the two soft-policy evaluators need. Declared structurally
+ * (not `typeof prisma`) so the SAME evaluation can run on a `$transaction`
+ * client: #2526's approval re-evaluates the frozen proposal INSIDE the approval
+ * transaction, under the global and per-lodge locks it already holds, and
+ * reaching for the module client there would check out a second pool connection
+ * beneath those locks — the shape docs/CONCURRENCY_AND_LOCKING.md forbids.
+ */
+export type PolicyEvaluationDb = Pick<
+  typeof prisma,
+  | "booking"
+  | "member"
+  | "adultMemberHostingPolicy"
+  | "lodge"
+  | "minimumStayPolicy"
+  // #2543: the paid-up-adult evaluation reads subscription facts
+  // (SubscriptionLockoutDb) and its D-12 presence derivation reads the
+  // requester's family boundary and the live rows' stored consent status.
+  | "memberSubscription"
+  | "membershipType"
+  | "seasonalMembershipAssignment"
+  | "familyGroupMember"
+  | "bookingGuest"
+>;
 
 /**
  * Re-evaluate the eligible soft policies (minimum stay + adult-member hosting)
@@ -603,6 +842,49 @@ export interface CreatedExceptionRequest {
 }
 
 /**
+ * Refuse a request whose party names a member the requester may not book, BEFORE
+ * it is frozen for review (#2526 review).
+ *
+ * The approval runs the full pipeline itself and fails closed, so this is not the
+ * security boundary — it is there so an officer never reviews and approves a
+ * party that cannot be executed, and so the member finds out at submission rather
+ * than days later through a refusal they cannot interpret. It runs the same
+ * MEMBER-semantics resolve the member's own booking path runs: with the
+ * memberGuests module off (the shipped default) a beyond-family member id is
+ * refused byte-for-byte as it always was; with it on, the request is allowed and
+ * the approval opens the consent request.
+ *
+ * Throws `BookingGuestValidationError`, which `mapExceptionRequestError` turns
+ * into that error's own status.
+ */
+async function assertRequestedPartyMemberGuestsAllowed(args: {
+  requestedByMemberId: string;
+  memberIds: Array<string | null | undefined>;
+}): Promise<void> {
+  if (!args.memberIds.some((memberId) => Boolean(memberId))) return;
+  const policy = await loadMemberGuestAddPolicy();
+  const { members, boundary } = await resolveLinkedBookingMembersWithBoundary(
+    prisma,
+    args.requestedByMemberId,
+    args.memberIds,
+    {
+      skipAuthorization: false,
+      memberGuestWideningEnabled: policy.wideningEnabled,
+    },
+  );
+  await assertLinkedBookingMembersCanBeBooked(
+    prisma,
+    members,
+    args.requestedByMemberId,
+    {
+      actorRole: "MEMBER",
+      onBehalfOfMemberId: null,
+      crossFamilyMemberIds: boundary.beyondFamilyMemberIds,
+    },
+  );
+}
+
+/**
  * Create a NEW-booking policy-exception request. Evaluates the soft policies
  * server-side, freezes the immutable proposal + evidence, and stores it under
  * the member's one-open-request slot. If `supersedeRequestId` is set, the old
@@ -614,6 +896,11 @@ export async function createNewBookingExceptionRequest(
   input: CreateNewBookingExceptionRequestInput,
 ): Promise<CreatedExceptionRequest> {
   const memberMessage = normalizeMemberMessage(input.memberMessage);
+
+  await assertRequestedPartyMemberGuestsAllowed({
+    requestedByMemberId: input.requestedByMemberId,
+    memberIds: input.guests.map((guest) => guest.memberId),
+  });
 
   const proposedParty = buildProposalPartyFromGuests(
     input.checkIn,
@@ -642,7 +929,17 @@ export async function createNewBookingExceptionRequest(
 
   try {
     const created = await prisma.$transaction(async (tx) => {
+      // The predecessor's attempt count, read BEFORE the claim so a replacement
+      // can carry it forward (#2526 review). The officer card renders this as
+      // "Attempts", and every replacement starting again at 1 told them a request
+      // the member had resubmitted three times was a first ask.
+      let attemptCount = 1;
       if (input.supersedeRequestId) {
+        const predecessor =
+          await tx.newBookingPolicyExceptionRequest.findUnique({
+            where: { id: input.supersedeRequestId },
+            select: { attemptCount: true },
+          });
         const claim = await tx.newBookingPolicyExceptionRequest.updateMany({
           where: {
             id: input.supersedeRequestId,
@@ -661,6 +958,8 @@ export async function createNewBookingExceptionRequest(
         if (claim.count === 0) {
           throw new LostSupersedeClaimError();
         }
+        // Only counted once the claim landed, so a lost claim cannot inflate it.
+        attemptCount = (predecessor?.attemptCount ?? 1) + 1;
       }
 
       const request = await tx.newBookingPolicyExceptionRequest.create({
@@ -668,6 +967,7 @@ export async function createNewBookingExceptionRequest(
           lodgeId: input.lodgeId,
           requestedByMemberId: input.requestedByMemberId,
           status: "REQUESTED",
+          attemptCount,
           proposalSnapshot: frozen.snapshot as unknown as Prisma.InputJsonValue,
           proposalHash: frozen.proposalHash,
           frozenEvidence:
@@ -749,6 +1049,11 @@ export async function createModificationExceptionRequest(
   input: CreateModificationExceptionRequestInput,
 ): Promise<CreatedExceptionRequest> {
   const memberMessage = normalizeMemberMessage(input.memberMessage);
+
+  await assertRequestedPartyMemberGuestsAllowed({
+    requestedByMemberId: input.requestedByMemberId,
+    memberIds: (input.delta.addGuests ?? []).map((guest) => guest.memberId),
+  });
 
   const violations = await evaluateProposalPartyViolations(
     prisma,
@@ -833,7 +1138,14 @@ export async function createModificationExceptionRequest(
         await acquireLodgeCapacityLock(tx, input.lodgeId);
       }
 
+      // See the new-booking path: the replacement carries the predecessor's
+      // attempt count forward so the officer card's "Attempts" means something.
+      let attemptCount = 1;
       if (input.supersedeRequestId) {
+        const predecessor = await tx.bookingChangeRequest.findUnique({
+          where: { id: input.supersedeRequestId },
+          select: { attemptCount: true },
+        });
         const claim = await tx.bookingChangeRequest.updateMany({
           where: {
             id: input.supersedeRequestId,
@@ -859,6 +1171,7 @@ export async function createModificationExceptionRequest(
         if (claim.count === 0) {
           throw new LostSupersedeClaimError();
         }
+        attemptCount = (predecessor?.attemptCount ?? 1) + 1;
         // The superseded request no longer holds beds — release its provisional
         // reservation atomically with the SUPERSEDED claim (under the same locks),
         // so the hold the replacement takes below cannot double-count the beds the
@@ -894,12 +1207,16 @@ export async function createModificationExceptionRequest(
           requestedByMemberId: input.requestedByMemberId,
           kind: "POLICY_EXCEPTION",
           status: "REQUESTED",
+          attemptCount,
           // requestedChanges is a required column; keep the existing queue's
           // {requested:{summary}} shape so the officer view renders a summary
           // without a policy-exception-specific branch.
           requestedChanges: {
             source: "POLICY_EXCEPTION",
             requested: { summary: input.requestedSummary },
+            // #2526: the replayable member delta. See `delta` on the input type
+            // — untrusted, and re-verified against the frozen hash at approval.
+            delta: normalizeStoredExceptionDelta(input.delta),
           } as unknown as Prisma.InputJsonValue,
           proposalSnapshot: frozen.snapshot as unknown as Prisma.InputJsonValue,
           proposalHash: frozen.proposalHash,
@@ -1031,12 +1348,26 @@ export type ExceptionQueueStatusFilter =
   | "EXPIRED"
   | "ALL";
 
+/** One covered policy as frozen into the evidence, for the officer queue. */
+export interface ExceptionQueuePolicyRef {
+  reasonCode: PolicyExceptionReasonCode;
+  policyId: string;
+  policyVersion: number;
+  capacityMode: PolicyExceptionCapacityMode;
+}
+
 export interface UnifiedExceptionQueueItem {
   source: "NEW_BOOKING" | "MODIFICATION";
   id: string;
   status: string;
   createdAt: Date;
   updatedAt: Date;
+  /**
+   * The optimistic-concurrency token (#2526). The officer queue hands it back on
+   * the approve/reject call so a decision made against a stale screen loses its
+   * guarded CAS instead of deciding a request that changed underneath it.
+   */
+  version: number;
   bookingId: string | null;
   lodgeId: string | null;
   requestedBy: {
@@ -1051,7 +1382,18 @@ export interface UnifiedExceptionQueueItem {
   proposalHash: string | null;
   aggregateCapacityMode: PolicyExceptionCapacityMode | null;
   reasonCodes: PolicyExceptionReasonCode[];
+  /** Every covered policy at the frozen revision — the reviewed evidence. */
+  policyRefs: ExceptionQueuePolicyRef[];
   affectedNights: string[];
+  /** The proposed stay envelope as frozen, so the queue shows what it decides. */
+  proposedCheckIn: string | null;
+  proposedCheckOut: string | null;
+  /** How many guests the proposed party holds. */
+  proposedGuestCount: number | null;
+  /** The officer's decision note, once a decision has been recorded. */
+  adminNotes: string | null;
+  /** The booking a successful new-booking approval created (NEW_BOOKING only). */
+  createdBookingId: string | null;
   attemptCount: number;
   conflictCount: number;
   lastConflictAt: Date | null;
@@ -1081,6 +1423,47 @@ function frozenAffectedNights(value: unknown): string[] {
     }
   }
   return [];
+}
+
+/** The frozen lodge id out of a stored proposal snapshot, or null. */
+function snapshotLodgeId(value: unknown): string | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const lodgeId = (value as { lodgeId?: unknown }).lodgeId;
+  return typeof lodgeId === "string" ? lodgeId : null;
+}
+
+function frozenPolicyRefs(value: unknown): ExceptionQueuePolicyRef[] {
+  if (!value || typeof value !== "object" || !("policyRefs" in value)) return [];
+  const refs = (value as { policyRefs?: unknown }).policyRefs;
+  if (!Array.isArray(refs)) return [];
+  return refs.filter(
+    (ref): ref is ExceptionQueuePolicyRef =>
+      Boolean(ref) &&
+      typeof ref === "object" &&
+      typeof (ref as ExceptionQueuePolicyRef).reasonCode === "string" &&
+      typeof (ref as ExceptionQueuePolicyRef).policyId === "string" &&
+      typeof (ref as ExceptionQueuePolicyRef).policyVersion === "number",
+  );
+}
+
+/** The frozen proposed party's envelope + size, read defensively. */
+function proposedPartyFacts(value: unknown): {
+  checkIn: string | null;
+  checkOut: string | null;
+  guestCount: number | null;
+} {
+  const empty = { checkIn: null, checkOut: null, guestCount: null };
+  if (!value || typeof value !== "object" || Array.isArray(value)) return empty;
+  const proposed = (value as { proposed?: unknown }).proposed;
+  if (!proposed || typeof proposed !== "object" || Array.isArray(proposed)) {
+    return empty;
+  }
+  const party = proposed as Record<string, unknown>;
+  return {
+    checkIn: typeof party.checkIn === "string" ? party.checkIn : null,
+    checkOut: typeof party.checkOut === "string" ? party.checkOut : null,
+    guestCount: Array.isArray(party.guests) ? party.guests.length : null,
+  };
 }
 
 function summaryFromRequestedChanges(value: unknown): string | null {
@@ -1139,6 +1522,7 @@ export async function readUnifiedExceptionQueue(input: {
         status: row.status,
         createdAt: row.createdAt,
         updatedAt: row.updatedAt,
+        version: row.version,
         bookingId: null,
         lodgeId: row.lodgeId,
         requestedBy: row.requestedBy,
@@ -1148,7 +1532,13 @@ export async function readUnifiedExceptionQueue(input: {
         proposalHash: row.proposalHash,
         aggregateCapacityMode: row.aggregateCapacityMode,
         reasonCodes: frozenReasonCodes(row.frozenEvidence),
+        policyRefs: frozenPolicyRefs(row.frozenEvidence),
         affectedNights: frozenAffectedNights(row.frozenEvidence),
+        proposedCheckIn: proposedPartyFacts(row.proposalSnapshot).checkIn,
+        proposedCheckOut: proposedPartyFacts(row.proposalSnapshot).checkOut,
+        proposedGuestCount: proposedPartyFacts(row.proposalSnapshot).guestCount,
+        adminNotes: row.adminNotes,
+        createdBookingId: row.createdBookingId,
         attemptCount: row.attemptCount,
         conflictCount: row.conflictCount,
         lastConflictAt: row.lastConflictAt,
@@ -1164,8 +1554,11 @@ export async function readUnifiedExceptionQueue(input: {
         status: row.status,
         createdAt: row.createdAt,
         updatedAt: row.updatedAt,
+        version: row.version,
         bookingId: row.bookingId,
-        lodgeId: null,
+        // The lodge a modification proposal targets is frozen INTO the snapshot
+        // (the booking's lodge at request time), not stored as a column here.
+        lodgeId: snapshotLodgeId(row.proposalSnapshot),
         requestedBy: row.requestedBy,
         reviewedBy: row.reviewedBy,
         reviewedAt: row.reviewedAt,
@@ -1173,7 +1566,13 @@ export async function readUnifiedExceptionQueue(input: {
         proposalHash: row.proposalHash,
         aggregateCapacityMode: row.aggregateCapacityMode,
         reasonCodes: frozenReasonCodes(row.frozenEvidence),
+        policyRefs: frozenPolicyRefs(row.frozenEvidence),
         affectedNights: frozenAffectedNights(row.frozenEvidence),
+        proposedCheckIn: proposedPartyFacts(row.proposalSnapshot).checkIn,
+        proposedCheckOut: proposedPartyFacts(row.proposalSnapshot).checkOut,
+        proposedGuestCount: proposedPartyFacts(row.proposalSnapshot).guestCount,
+        adminNotes: row.adminNotes,
+        createdBookingId: null,
         attemptCount: row.attemptCount,
         conflictCount: row.conflictCount,
         lastConflictAt: row.lastConflictAt,

@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   nbCreate: vi.fn(),
   nbUpdateMany: vi.fn(),
   nbFindMany: vi.fn(),
+  nbFindUnique: vi.fn(),
   bcrCreate: vi.fn(),
   bcrUpdateMany: vi.fn(),
   bcrFindMany: vi.fn(),
@@ -42,6 +43,10 @@ const mocks = vi.hoisted(() => ({
       memberId: null,
     }),
   ),
+  // #2526: request-time member-guest authorisation.
+  resolveLinkedMembers: vi.fn(),
+  assertMembersBookable: vi.fn(),
+  loadMemberGuestPolicy: vi.fn(),
 }));
 
 vi.mock("@/lib/prisma", () => {
@@ -52,6 +57,9 @@ vi.mock("@/lib/prisma", () => {
     newBookingPolicyExceptionRequest: {
       create: (...a: unknown[]) => mocks.nbCreate(...a),
       updateMany: (...a: unknown[]) => mocks.nbUpdateMany(...a),
+      // #2526: a supersede reads the predecessor's attemptCount so the
+      // replacement carries it forward.
+      findUnique: (...a: unknown[]) => mocks.nbFindUnique(...a),
     },
     bookingChangeRequest: {
       create: (...a: unknown[]) => mocks.bcrCreate(...a),
@@ -119,6 +127,27 @@ vi.mock("@/lib/adult-member-hosting-review", () => ({
     mocks.evaluateHosting(...a),
 }));
 
+// #2526: request creation now refuses a party naming a member the requester may
+// not book, BEFORE the proposal is frozen for review. The two authorisation
+// helpers are mocked so these tests assert WHAT the service asks them and how it
+// uses the answer, not the boundary machinery itself (which has its own suites).
+vi.mock("@/lib/booking-guests", async (importActual) => {
+  // Partial: the real error CLASSES stay real, because the refusal path is what
+  // these tests assert and an instanceof check has to mean something.
+  const actual = await importActual<typeof import("@/lib/booking-guests")>();
+  return {
+    ...actual,
+    resolveLinkedBookingMembersWithBoundary: (...a: unknown[]) =>
+      mocks.resolveLinkedMembers(...a),
+    assertLinkedBookingMembersCanBeBooked: (...a: unknown[]) =>
+      mocks.assertMembersBookable(...a),
+  };
+});
+
+vi.mock("@/lib/member-guest-add-policy", () => ({
+  loadMemberGuestAddPolicy: (...a: unknown[]) => mocks.loadMemberGuestPolicy(...a),
+}));
+
 import {
   buildModificationProposalParties,
   cancelModificationExceptionRequest,
@@ -181,6 +210,17 @@ beforeEach(() => {
   mocks.bookingGuestFindMany.mockResolvedValue([]);
   mocks.bookingFindUnique.mockResolvedValue({ memberId: null });
   mocks.validateMinimumStay.mockResolvedValue({ valid: false, violations: [minStayViolation()] });
+  mocks.loadMemberGuestPolicy.mockResolvedValue({
+    wideningEnabled: false,
+    approvalRequired: true,
+    pendingHoldExpiryDays: 0,
+  });
+  mocks.resolveLinkedMembers.mockResolvedValue({
+    members: new Map(),
+    boundary: { scopeByMemberId: new Map(), beyondFamilyMemberIds: [] },
+  });
+  mocks.assertMembersBookable.mockResolvedValue(undefined);
+  mocks.nbFindUnique.mockResolvedValue({ attemptCount: 1 });
   mocks.evaluateHosting.mockResolvedValue(null);
   mocks.nbCreate.mockResolvedValue({ id: "req-1", status: "REQUESTED" });
   mocks.nbUpdateMany.mockResolvedValue({ count: 1 });
@@ -274,6 +314,130 @@ describe("createNewBookingExceptionRequest", () => {
     expect(mocks.nbCreate).toHaveBeenCalledTimes(1);
   });
 
+  it("carries the predecessor's attempt count forward on a supersede", async () => {
+    // #2526 review: the officer card renders this as "Attempts". Every
+    // replacement starting again at 1 told them a request the member had
+    // resubmitted three times was a first ask.
+    mocks.nbFindUnique.mockResolvedValue({ attemptCount: 3 });
+    await createNewBookingExceptionRequest(
+      newBookingInput({ supersedeRequestId: "old-1" }),
+    );
+    expect(mocks.nbCreate.mock.calls[0][0].data.attemptCount).toBe(4);
+  });
+
+  it("a first request counts as one attempt", async () => {
+    await createNewBookingExceptionRequest(newBookingInput());
+    expect(mocks.nbCreate.mock.calls[0][0].data.attemptCount).toBe(1);
+  });
+
+  it("does NOT count an attempt when the supersede claim is lost", async () => {
+    mocks.nbFindUnique.mockResolvedValue({ attemptCount: 3 });
+    mocks.nbUpdateMany.mockResolvedValue({ count: 0 });
+    await expect(
+      createNewBookingExceptionRequest(
+        newBookingInput({ supersedeRequestId: "old-1" }),
+      ),
+    ).rejects.toBeInstanceOf(LostSupersedeClaimError);
+    expect(mocks.nbCreate).not.toHaveBeenCalled();
+  });
+
+  it("refuses a party naming a member the requester may not book, before freezing it", async () => {
+    // #2526 review. The approval runs the full pipeline and fails closed, so this
+    // is not the security boundary — it is there so an officer never reviews and
+    // approves a party that cannot be executed, and the member finds out at
+    // submission rather than days later.
+    const { BookingGuestValidationError } = await import("@/lib/booking-guests");
+    mocks.resolveLinkedMembers.mockRejectedValue(
+      new BookingGuestValidationError("Invalid guest member reference", 403),
+    );
+    await expect(
+      createNewBookingExceptionRequest(newBookingInput()),
+    ).rejects.toBeInstanceOf(BookingGuestValidationError);
+    // Nothing was frozen and nothing was written.
+    expect(mocks.nbCreate).not.toHaveBeenCalled();
+    expect(mocks.validateMinimumStay).not.toHaveBeenCalled();
+  });
+
+  it("authorises the party as the MEMBER, never with admin elevation", async () => {
+    await createNewBookingExceptionRequest(newBookingInput());
+    const [, bookerId, memberIds, options] = mocks.resolveLinkedMembers.mock
+      .calls[0] as [unknown, string, unknown[], { skipAuthorization: boolean }];
+    expect(bookerId).toBe("m1");
+    expect(memberIds).toEqual(["m1"]);
+    expect(options.skipAuthorization).toBe(false);
+  });
+
+  it("does no authorisation work at all for a party with no member guests", async () => {
+    // The ordinary case pays nothing for this: no policy read, no boundary query.
+    await createNewBookingExceptionRequest(
+      newBookingInput({
+        guests: [
+          {
+            firstName: "Non",
+            lastName: "Member",
+            ageTier: "ADULT",
+            isMember: false,
+          },
+        ],
+      }),
+    );
+    expect(mocks.resolveLinkedMembers).not.toHaveBeenCalled();
+    expect(mocks.loadMemberGuestPolicy).not.toHaveBeenCalled();
+  });
+
+  it("expands the frozen envelope to cover a guest night outside it", async () => {
+    // #2526 review. The member route validates only that check-out is after
+    // check-in; a guest's own range is not constrained to the envelope. Freezing
+    // the submitted envelope let a one-night request carry a guest occupying nine:
+    // the officer queue showed one night, the engine capacity-checked one night,
+    // and the executed booking was nine nights of beds and price.
+    const created = await createNewBookingExceptionRequest(
+      newBookingInput({
+        checkIn: parseDateOnly("2026-09-01"),
+        checkOut: parseDateOnly("2026-09-02"),
+        guests: [
+          {
+            firstName: "Ada",
+            lastName: "Lovelace",
+            ageTier: "ADULT",
+            isMember: false,
+            stayStart: "2026-09-01",
+            stayEnd: "2026-09-10",
+          },
+        ],
+      }),
+    );
+    expect(created.id).toBe("req-1");
+    const snapshot = mocks.nbCreate.mock.calls[0][0].data.proposalSnapshot as {
+      proposed: { checkIn: string; checkOut: string; guests: Array<{ nights: string[] }> };
+    };
+    expect(snapshot.proposed.checkIn).toBe("2026-09-01");
+    expect(snapshot.proposed.checkOut).toBe("2026-09-10");
+    expect(snapshot.proposed.guests[0].nights).toHaveLength(9);
+  });
+
+  it("refuses a half-supplied guest range rather than completing it silently", async () => {
+    const { BookingGuestStayRangeValidationError } = await import(
+      "@/lib/booking-guest-stay-range-input"
+    );
+    await expect(
+      createNewBookingExceptionRequest(
+        newBookingInput({
+          guests: [
+            {
+              firstName: "Ada",
+              lastName: "Lovelace",
+              ageTier: "ADULT",
+              isMember: false,
+              stayStart: "2026-07-04",
+            },
+          ],
+        }),
+      ),
+    ).rejects.toBeInstanceOf(BookingGuestStayRangeValidationError);
+    expect(mocks.nbCreate).not.toHaveBeenCalled();
+  });
+
   it("lost-claim-no-side-effect: a supersede that claims 0 rows creates NOTHING", async () => {
     mocks.nbUpdateMany.mockResolvedValue({ count: 0 });
     await expect(
@@ -324,6 +488,7 @@ describe("createModificationExceptionRequest", () => {
       proposed: base,
       memberMessage: "please allow",
       requestedSummary: "check-out to 2026-07-05",
+      delta: { checkOut: "2026-07-05" },
       baseHoldsCapacity: true,
     });
 
@@ -348,7 +513,8 @@ describe("createModificationExceptionRequest", () => {
         memberMessage: "please allow",
         requestedSummary: "x",
         supersedeRequestId: "old-9",
-        baseHoldsCapacity: true,
+        delta: { checkOut: "2026-07-05" },
+      baseHoldsCapacity: true,
       }),
     ).rejects.toBeInstanceOf(LostSupersedeClaimError);
     expect(mocks.bcrCreate).not.toHaveBeenCalled();
@@ -377,6 +543,7 @@ describe("createModificationExceptionRequest", () => {
       proposed,
       memberMessage: "please allow",
       requestedSummary: "add Grace",
+      delta: { checkOut: "2026-07-05" },
       baseHoldsCapacity: true,
     });
 
@@ -407,6 +574,7 @@ describe("createModificationExceptionRequest", () => {
       proposed: base,
       memberMessage: "please allow",
       requestedSummary: "no-op footprint",
+      delta: { checkOut: "2026-07-05" },
       baseHoldsCapacity: true,
     });
     expect(mocks.bcrCreate).toHaveBeenCalledTimes(1);
@@ -439,6 +607,7 @@ describe("createModificationExceptionRequest", () => {
       proposed,
       memberMessage: "please allow",
       requestedSummary: "add Grace",
+      delta: { checkOut: "2026-07-05" },
       baseHoldsCapacity: true,
     });
 
@@ -466,6 +635,7 @@ describe("createModificationExceptionRequest", () => {
       memberMessage: "please allow",
       requestedSummary: "resubmit",
       supersedeRequestId: "old-9",
+      delta: { checkOut: "2026-07-05" },
       baseHoldsCapacity: true,
     });
 
@@ -493,6 +663,7 @@ describe("createModificationExceptionRequest", () => {
       memberMessage: "please allow",
       requestedSummary: "resubmit",
       supersedeRequestId: "old-9",
+      delta: { checkOut: "2026-07-05" },
       baseHoldsCapacity: true,
     });
     // The FIRST updateMany is the supersede claim; its where must scope bookingId.
@@ -531,7 +702,8 @@ describe("createModificationExceptionRequest", () => {
         proposed,
         memberMessage: "please allow",
         requestedSummary: "add Grace",
-        baseHoldsCapacity: true,
+        delta: { checkOut: "2026-07-05" },
+      baseHoldsCapacity: true,
       }),
     ).rejects.toBeInstanceOf(PolicyExceptionCapacityUnavailableError);
     // Mutation guard: without the admission check the row is created and the
@@ -558,6 +730,7 @@ describe("createModificationExceptionRequest", () => {
       proposed: base,
       memberMessage: "please allow",
       requestedSummary: "draft edit",
+      delta: { checkOut: "2026-07-05" },
       baseHoldsCapacity: false,
     });
     // Mutation guard: revert the baseHoldsCapacity:false branch and this reserves

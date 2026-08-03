@@ -4,19 +4,24 @@ Audience: Operator
 
 ## What it is
 
-A three-tab console for the requests that need an officer's decision before they
+A four-tab console for the requests that need an officer's decision before they
 become (or change) a booking:
 
 - **Approvals** — new bookings flagged for review (for example minors booked
   without an adult).
 - **Changes** — change requests on bookings whose dates are locked (same-day or
   past nights).
+- **Policy Exceptions** — members asking to be let past a booking rule (a
+  minimum stay, or the requirement that an adult member hosts non-member
+  guests). Unlike **Changes**, approving here *does the thing*: it creates the
+  booking, or applies the change, in one step.
 - **Public Requests** — booking enquiries from non-members and school groups,
   which you price, quote, and approve.
 
 Find it at **Admin → Bookings & Beds → Booking Requests**
 (`/admin/booking-requests`). When any of these queues has pending items it also
-appears under **Admin → Needs Attention → Booking Requests**.
+appears under **Admin → Needs Attention → Booking Requests**, and the badge
+counts waiting policy exceptions alongside the other queues.
 
 > The two older routes **`/admin/booking-approvals`** and
 > **`/admin/booking-change-requests`** are redirects: they open this page on the
@@ -185,6 +190,68 @@ never held up: the booking confirms, the roster generates, and the group checks
 in exactly as normal whether or not the names ever arrive. A last-minute
 substitution must never be stranded at the lodge over a name.
 
+### Policy Exceptions — allow a booking rule to be broken, once
+
+A member who is stopped by a minimum-stay rule, or by the requirement that an
+adult member hosts their non-member guests, can ask an officer instead of simply
+being refused. Those asks land here.
+
+1. Open **Booking Requests → Policy Exceptions**. The tab shows a count of
+   everything waiting. Filter by **Requested** (default), **Approved**,
+   **Rejected**, **Cancelled**, **Superseded**, or **All**.
+2. Each card tells you: who asked and **how long ago**, what they proposed
+   (dates, how many guests, and for a change, what they want changed), which
+   rules it breaks — named, with the policy and version that was reviewed —
+   which nights are affected, and what the member said in their own words.
+3. The card also says whether the request is **holding beds** while it waits. A
+   holding request has already reserved the beds it needs, so approving it
+   cannot be beaten to them. A non-holding request has not, so the lodge can
+   fill underneath it. **A request for a booking the member has not made yet
+   never holds beds**, whatever the policy's capacity mode says — there is no
+   booking for the reservation to hang off yet — so those cards always read *No
+   beds held*.
+4. Open **Show the guests** before you decide. Approving puts that exact party
+   on the booking, and the card's guest count cannot tell you that one of them
+   is a member from outside the requester's family (they still have to be asked,
+   or the add is refused), or that the party is minors with no adult (which still
+   goes to a child-safety review, and still blocks check-in until somebody
+   clears it). If the list will not load, do not approve — try again.
+5. Click **Decide this request**, write your reason, tick the confirmation, then
+   **Approve and apply** or **Refuse**.
+   - A reason is **required** to refuse and to approve an adult-member hosting
+     exception (it is recorded on the booking with your name on it). **The member
+     reads your note on any decision, not only a refusal**, and it goes on the
+     booking's record, so write it for both audiences.
+   - For a change, the form also asks where a **refund** goes — card or account
+     credit — if the change reduces the price of a booking that has already been
+     paid. Leave it on *Not needed* when the price does not drop; if a choice
+     turns out to be needed, the approval says so and you pick one and approve
+     again.
+   - Approving applies the exact proposal on the card. It overrides only the
+     rules listed there — capacity, payment, membership and privacy rules all
+     still apply.
+6. If the lodge has filled since the member asked, the approval does not go
+   through and you are told the request **stays pending**. Nothing was created.
+   The queue refreshes itself, so you can approve it again as soon as space frees
+   up, or refuse it with a reason.
+
+Two things worth knowing:
+
+- **Approving is not a rubber stamp.** Unlike the **Changes** tab, there is no
+  second step: the booking is created, or the change applied, as part of
+  approving. If it could not be done, the request stays exactly as it was.
+- **Check-in is still gated by any pending review.** Approving a policy
+  exception does not clear an unrelated admin review, and a booking with one
+  still cannot check in until that review is cleared. This includes a review your
+  own approval opens: if the approved party is minors with no adult, that
+  child-safety review is left for a human to decide — approving a minimum-stay
+  exception is not a decision about supervision, and you were never asked to make
+  one.
+- **An approved new booking emails the member** what was approved and what is
+  left to pay, because they are not standing in the payment screen the way an
+  ordinary booker is. An approved change is announced by the usual "your booking
+  was changed" email.
+
 ## Settings reference
 
 This is a work queue. The controls per tab:
@@ -198,6 +265,7 @@ therefore keeps its **All** context rather than disappearing from view.
 | --- | --- | --- |
 | Approvals | Pending (default), Approved, Rejected, All | Approve; Reject and cancel (Admin notes required to reject) |
 | Changes | Requested (default), Approved, Rejected, All | Acknowledge as approved; Reject; optional linked modification id |
+| Policy Exceptions | Requested (default), Approved, Rejected, Cancelled, Superseded, All | Approve and apply (confirmation required; reason required for an adult-member hosting override); Refuse (reason required) |
 | Public Requests | Queue (default), Awaiting verification, Verified, Priced, Quoted, Quote sent, Query, Modify, Accepted, Approved, Declined, Cancelled, Converted, All | Save quote; Send quote; Approve & send payment link / Approve & invoice school; Decline; Hold slots (school) |
 
 Notes and constraints:
@@ -234,6 +302,15 @@ Notes and constraints:
 | A change I "approved" did not change the booking | Approving here only acknowledges the review | Open the booking and apply the change on the booking page |
 | A new public request is not on the Approvals tab | Public requests live only on the Public Requests tab | Switch to **Public Requests** and check the **Queue** filter |
 | Approve fails with a capacity message | The lodge is full for one or more nights | The dialog lists the full dates; free capacity or adjust the request |
+| Approving a policy exception says the request "stays pending" | The lodge filled up between the member asking and you deciding | Nothing was created. The queue has already refreshed, so approve it again once beds free up, or refuse it with a reason |
+| Approving a policy exception asks you where a refund should go | The change reduces the price of a booking that is already paid, so the money has to go somewhere | Pick **Refund to the card** or **Account credit** on the decision form, then approve again |
+| Approving a policy exception says it was approved "but some follow-up work failed" | The booking really was created or changed — a later step (an email, an accounting hand-off, an audit write) did not finish | The request is APPROVED and the booking is real. Do NOT approve again. Check the booking, and tell the member yourself if they did not get the email |
+| Approving a policy exception says the request changed while you were reviewing it | Someone else decided it, or the member withdrew or replaced it, since your screen loaded | Reload the queue and look at it again |
+| Approving a policy exception says the booking has changed since the request was made | The live booking was edited after the member asked, so the proposal no longer matches what they described | Ask the member to submit the request again against the booking as it is now |
+| Approving a policy exception says the request predates the current approval format | An old request stored before this workflow shipped, so there is nothing to replay — nothing about the booking has changed | Ask the member to submit the request again; it will then approve normally |
+| Approving a policy exception refuses a guest | The party names a member from outside the requester's family, or one who cannot be booked yet | Nothing was created. Tell the requester to drop that guest or to add them from their own booking so consent can be asked |
+| Approving a policy exception says the policies have changed | A rule was edited after the member asked, so what you would be approving is not what was reviewed | Ask the member to submit again; you will then see the current situation |
+| Approve is greyed out on a policy exception | You have not ticked the confirmation, or an adult-member hosting override needs a written reason | Write the reason and tick the confirmation |
 | Cannot price/approve anything | Your role is view-only for bookings | Ask a full admin for bookings edit access |
 | A request says **Saved details need attention** and its buttons are greyed out | Some of its saved data could not be read back, so it cannot be quoted, priced, held, or approved | Confirm what the group wants with the requester, then **Decline** so they can submit again — or ask support to repair the stored row. There is no guest-edit screen |
 

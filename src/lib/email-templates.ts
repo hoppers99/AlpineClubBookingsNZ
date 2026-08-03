@@ -955,6 +955,41 @@ export function bookingPendingTemplate(
   `);
 }
 
+/**
+ * A member's booking-policy exception request was approved and the booking now
+ * exists (#2526).
+ *
+ * Why this template has to exist at all: an approved NEW-booking exception
+ * normally lands on PAYMENT_PENDING, and the canonical create service emails only
+ * a $0 confirmation or a non-member hold notice — a member using the wizard learns
+ * what to pay because they are standing in it and get redirected to checkout.
+ * Nobody is standing in anything here: the member asked days ago and an officer
+ * decided while they were elsewhere. Without this notice the member is never told
+ * they have a booking, never sees what to pay, and PAYMENT_PENDING holds no beds,
+ * so the stay can be lost without them ever knowing they had it.
+ */
+export function bookingPolicyExceptionApprovedTemplate(args: {
+  firstName: string;
+  checkIn: Date;
+  checkOut: Date;
+  guestCount: number;
+  paymentNote: string;
+  adminNotesLine: string;
+}): string {
+  return layout(`
+    ${heading("Your Request Was Approved")}
+    ${paragraph("Hi " + escapeHtml(args.firstName) + ", an administrator has approved your request and your booking is now in place.")}
+    ${infoTable([
+      { label: "Check-in", value: formatNZDate(args.checkIn) },
+      { label: "Check-out", value: formatNZDate(args.checkOut) },
+      { label: "Guests", value: String(args.guestCount) },
+    ])}
+    ${args.paymentNote ? alertBox(escapeHtml(args.paymentNote), "warning") : ""}
+    ${args.adminNotesLine ? paragraph(escapeHtml(args.adminNotesLine)) : ""}
+    ${button("View Booking", BASE_URL + "/bookings")}
+  `);
+}
+
 export function bookingBumpedTemplate(
   firstName: string,
   checkIn: Date,

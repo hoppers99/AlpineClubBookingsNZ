@@ -106,6 +106,26 @@ export async function calculateModificationSettlementOptions({
   };
 }
 
+/**
+ * The refusal when a modification produces a settleable refund and the caller has
+ * not said where it goes. Exported with a machine CODE (#2526) so a surface that
+ * can OFFER the choice — the officer's booking-policy exception queue — can tell
+ * this apart from every other 400 and render the card/credit control instead of
+ * an error the reader cannot act on.
+ */
+export const SETTLEMENT_METHOD_REQUIRED_MESSAGE =
+  "Choose a refund or account credit before saving";
+export const SETTLEMENT_METHOD_REQUIRED_CODE = "SETTLEMENT_METHOD_REQUIRED";
+
+export class BookingModificationSettlementMethodRequiredError extends ApiError {
+  readonly code = SETTLEMENT_METHOD_REQUIRED_CODE;
+
+  constructor() {
+    super(SETTLEMENT_METHOD_REQUIRED_MESSAGE, 400);
+    this.name = "BookingModificationSettlementMethodRequiredError";
+  }
+}
+
 function resolveSelectedSettlementAmount({
   settlementOptions,
   settlementMethod,
@@ -122,7 +142,7 @@ function resolveSelectedSettlementAmount({
   }
 
   if (settlementOptions.requiresSettlementMethod && !settlementMethod) {
-    throw new ApiError("Choose a refund or account credit before saving", 400);
+    throw new BookingModificationSettlementMethodRequiredError();
   }
 
   if (!settlementOptions.requiresSettlementMethod) {

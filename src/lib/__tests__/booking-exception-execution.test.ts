@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   approveAndExecutePolicyExceptionRequest,
   PolicyExceptionIntegrityHookMissingError,
+  modificationExceptionRequestStore,
+  newBookingExceptionRequestStore,
   resolvePolicyExceptionRequestTerminal,
   type PolicyExceptionApprovalHooks,
 } from "@/lib/booking-exception-execution";
@@ -464,7 +466,7 @@ describe("approveAndExecutePolicyExceptionRequest", () => {
     // capacity; if the lodge is now full it rolls back to keptPendingCapacity
     // instead of executing an overbooking. Its own beds must not count against it,
     // which is why the recheck runs AFTER the release.
-    const { db, order, deleteMany } = makeDb({ row: baseRow() }); // HOLD by default
+    const { db, order, deleteMany, updateMany } = makeDb({ row: baseRow() }); // HOLD by default
     const hooks = makeHooks(
       { recheckCapacity: vi.fn(async () => ({ ok: false, message: "No room now." })) },
       order,
@@ -483,13 +485,113 @@ describe("approveAndExecutePolicyExceptionRequest", () => {
     // The recheck ran, and it ran AFTER the release freed the request's own beds.
     expect(hooks.recheckCapacity).toHaveBeenCalledTimes(1);
     expect(deleteMany).toHaveBeenCalledTimes(1);
-    // Nothing executed and the transaction did NOT commit (rolled back).
+    // Nothing executed, and the APPROVAL transaction rolled back.
     expect(hooks.executeApprovedProposal).not.toHaveBeenCalled();
     expect(order).not.toContain("execute");
-    expect(order).not.toContain("commit");
     // Claim + release happened (then rolled back); execute did not.
     expect(order).toContain("claim-approved");
     expect(order).toContain("release");
+    // #2526 review: the conflict is then recorded in its OWN transaction, which
+    // DOES commit — the rollback above would have discarded a conflict row
+    // written inside it, leaving the officer card and the member's own list with
+    // nothing to explain why the request is still pending.
+    expect(order.indexOf("conflict-bump")).toBeGreaterThan(
+      order.indexOf("release"),
+    );
+    expect(order[order.length - 1]).toBe("commit");
+    expect(order.filter((step) => step === "commit")).toHaveLength(1);
+    const bump = updateMany.mock.calls.find(
+      (call) =>
+        (call[0] as { data: { lastConflictReason?: unknown } }).data
+          .lastConflictReason !== undefined,
+    );
+    expect(bump).toBeDefined();
+    expect(
+      (bump![0] as { data: { lastConflictReason: string } }).data
+        .lastConflictReason,
+    ).toBe("No room now.");
+  });
+
+  it("a post-commit failure is reported as EXECUTED with followUpFailed, never as pending", async () => {
+    // #2526 review. The canonical services' post-commit thunks await unguarded
+    // provider and audit calls, and they run AFTER the commit — the request is
+    // APPROVED and the booking exists. Letting that throw propagate made the
+    // route answer `{ status: "REQUESTED", keptPending: true }`, so an officer was
+    // told nothing had happened, retried into a 409 that blamed somebody else, or
+    // created the booking again by hand. That is the false keep-pending this
+    // workflow exists to make impossible, arriving after the commit instead of
+    // before it.
+    const { db, order } = makeDb({ row: baseRow({ aggregateCapacityMode: "NO_HOLD" }) });
+    const hooks = makeHooks(
+      {
+        executeApprovedProposal: vi.fn(async () => {
+          order.push("execute");
+          return {
+            deferredPostCommit: vi.fn(async () => {
+              throw new Error("Xero queueing fell over");
+            }),
+          };
+        }),
+      },
+      order,
+    );
+    const result = await approveAndExecutePolicyExceptionRequest({
+      requestId: "req-1",
+      expectedVersion: 1,
+      actorMemberId: "admin-1",
+      hooks,
+      db: db as never,
+    });
+    expect(result).toEqual({
+      outcome: "executed",
+      requestId: "req-1",
+      followUpFailed: true,
+    });
+    // It really did commit and execute — the outcome is the truth, not a
+    // consolation.
+    expect(order).toContain("execute");
+    expect(order).toContain("commit");
+  });
+
+  it("a failing member notification is contained the same way", async () => {
+    const { db, order } = makeDb({ row: baseRow({ aggregateCapacityMode: "NO_HOLD" }) });
+    const hooks = makeHooks(
+      {
+        notifyApproved: vi.fn(async () => {
+          throw new Error("SES is down");
+        }),
+      },
+      order,
+    );
+    const result = await approveAndExecutePolicyExceptionRequest({
+      requestId: "req-1",
+      expectedVersion: 1,
+      actorMemberId: "admin-1",
+      hooks,
+      db: db as never,
+    });
+    expect(result).toMatchObject({ outcome: "executed", followUpFailed: true });
+    // The canonical deferred work still ran: one failure does not skip the other.
+    expect(order).toContain("deferred");
+  });
+
+  it("MUTATION GUARD: a clean post-commit carries no followUpFailed flag", async () => {
+    const { db } = makeDb({ row: baseRow({ aggregateCapacityMode: "NO_HOLD" }) });
+    const result = await approveAndExecutePolicyExceptionRequest({
+      requestId: "req-1",
+      expectedVersion: 1,
+      actorMemberId: "admin-1",
+      hooks: makeHooks(),
+      db: db as never,
+    });
+    expect(result).toEqual({ outcome: "executed", requestId: "req-1" });
+  });
+
+  it("declares whether each store's held request actually reserves beds", () => {
+    // The flag the routing above hangs off. A store that reserves nothing is
+    // rechecked before the claim; only one that genuinely holds beds has to wait.
+    expect(modificationExceptionRequestStore.holdsReservation).toBe(true);
+    expect(newBookingExceptionRequestStore.holdsReservation).toBe(false);
   });
 
   it("HOLD capacity still fits: post-release recheck passes and it executes", async () => {
@@ -707,5 +809,226 @@ describe("resolvePolicyExceptionRequestTerminal", () => {
     });
     expect(result).toEqual({ claimed: true, released: 1 });
     expect(updateMany.mock.calls[0][0].data.supersededByRequestId).toBe("req-2");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2526: the NEW_BOOKING request store
+// ---------------------------------------------------------------------------
+
+/**
+ * A fake transaction whose new-booking table behaves like the real one. The
+ * point of these tests is that the SAME approval algorithm — same lock order,
+ * same guarded CAS, same drift gate, same post-commit ordering — decides a
+ * request that lives in the other table, with only the five store operations
+ * differing.
+ */
+function makeNewBookingDb(opts: {
+  row: Record<string, unknown> | null;
+  claimCount?: number;
+}) {
+  const order: string[] = [];
+  const updateMany = vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+    order.push(`claim-${String(data.status ?? "conflict").toLowerCase()}`);
+    return { count: opts.claimCount ?? 1 };
+  });
+  const deleteMany = vi.fn(async () => {
+    order.push("release");
+    return { count: 0 };
+  });
+  const tx = {
+    $executeRaw: vi.fn(async (strings: TemplateStringsArray) => {
+      const sql = strings.join("?");
+      order.push(sql.includes("hashtextextended") ? "lodge-lock" : "global-lock");
+      return 1;
+    }),
+    newBookingPolicyExceptionRequest: {
+      findUnique: vi.fn(async () => opts.row),
+      updateMany,
+    },
+    // Present but never used by the new-booking store: a new-booking request
+    // holds no reservation rows, so the release must not touch this ledger.
+    policyExceptionReservationNight: { deleteMany },
+  };
+  const db = {
+    $transaction: vi.fn(async (fn: (t: typeof tx) => Promise<unknown>) => {
+      const result = await fn(tx);
+      order.push("commit");
+      return result;
+    }),
+  };
+  return { db, tx, order, updateMany, deleteMany };
+}
+
+function newBookingRow(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "nb-1",
+    status: "REQUESTED",
+    version: 1,
+    requestedByMemberId: "m-1",
+    proposalSnapshot: SNAPSHOT,
+    proposalHash: HASH,
+    frozenEvidence: EVIDENCE,
+    aggregateCapacityMode: "HOLD",
+    ...overrides,
+  };
+}
+
+describe("newBookingExceptionRequestStore", () => {
+  it("approves a new-booking request through the same algorithm and lock order", async () => {
+    const { db, order, updateMany, deleteMany } = makeNewBookingDb({
+      row: newBookingRow(),
+    });
+    const hooks = makeHooks({}, order);
+    const result = await approveAndExecutePolicyExceptionRequest({
+      requestId: "nb-1",
+      expectedVersion: 1,
+      actorMemberId: "officer-1",
+      hooks,
+      store: newBookingExceptionRequestStore,
+      db: db as never,
+    });
+
+    expect(result).toEqual({ outcome: "executed", requestId: "nb-1" });
+    expect(order).toEqual([
+      "global-lock",
+      "lodge-lock",
+      "claim-approved",
+      "execute",
+      "commit",
+      "deferred",
+      "notify",
+    ]);
+    // The one-open-request slot is freed on approval here too, or the member
+    // could never submit the same proposal again.
+    expect(updateMany.mock.calls[0][0].data.openStateKey).toBeNull();
+    // Nothing to release: the reservation ledger is modification-keyed.
+    expect(deleteMany).not.toHaveBeenCalled();
+  });
+
+  it("is rechecked BEFORE the claim, so a capacity conflict is RECORDED", async () => {
+    // #2526 review. A new-booking request reserves nothing — the reservation
+    // ledger is keyed on an existing booking — so nothing of its own can count
+    // against it and it does not need the post-claim recheck. Routing it there
+    // anyway (its policy's capacity mode is HOLD by default) meant the conflict
+    // was written inside a transaction that then rolled back, so `conflictCount`
+    // and `lastConflictReason` stayed empty and neither the officer card nor the
+    // member's own list could say why it was still pending.
+    const { db, order, updateMany } = makeNewBookingDb({ row: newBookingRow() });
+    const hooks = makeHooks(
+      { recheckCapacity: vi.fn(async () => ({ ok: false, message: "No room now." })) },
+      order,
+    );
+    const result = await approveAndExecutePolicyExceptionRequest({
+      requestId: "nb-1",
+      expectedVersion: 1,
+      actorMemberId: "officer-1",
+      hooks,
+      store: newBookingExceptionRequestStore,
+      db: db as never,
+    });
+    expect(result).toEqual({
+      outcome: "keptPendingCapacity",
+      message: "No room now.",
+    });
+    // Recorded, and recorded inside the ONE transaction that commits — the row
+    // never reached the claim, so nothing had to be rolled back.
+    expect(order).toContain("commit");
+    expect(order).not.toContain("claim-approved");
+    expect(order).not.toContain("execute");
+    const bump = updateMany.mock.calls.find(
+      (call) =>
+        (call[0] as { data: { lastConflictReason?: unknown } }).data
+          .lastConflictReason !== undefined,
+    );
+    expect(bump, "no conflict was recorded").toBeDefined();
+    expect(
+      (bump![0] as { data: { lastConflictReason: string } }).data
+        .lastConflictReason,
+    ).toBe("No room now.");
+  });
+
+  it("declares that its held requests reserve nothing", () => {
+    // The flag the routing above hangs off. A store that reserves nothing is
+    // rechecked before the claim; only one that genuinely holds beds has to wait
+    // until after the release.
+    expect(newBookingExceptionRequestStore.holdsReservation).toBe(false);
+    expect(modificationExceptionRequestStore.holdsReservation).toBe(true);
+  });
+
+  it("a lost version CAS runs no execution at all", async () => {
+    const { db } = makeNewBookingDb({ row: newBookingRow(), claimCount: 0 });
+    const hooks = makeHooks();
+    const result = await approveAndExecutePolicyExceptionRequest({
+      requestId: "nb-1",
+      expectedVersion: 1,
+      actorMemberId: "officer-1",
+      hooks,
+      store: newBookingExceptionRequestStore,
+      db: db as never,
+    });
+    expect(result).toEqual({ outcome: "claimLost" });
+    expect(hooks.executeApprovedProposal).not.toHaveBeenCalled();
+  });
+
+  it("reports notFound for an id that is not in the new-booking table", async () => {
+    const { db } = makeNewBookingDb({ row: null });
+    const result = await approveAndExecutePolicyExceptionRequest({
+      requestId: "nb-1",
+      expectedVersion: 1,
+      actorMemberId: "officer-1",
+      hooks: makeHooks(),
+      store: newBookingExceptionRequestStore,
+      db: db as never,
+    });
+    expect(result).toEqual({ outcome: "notFound" });
+  });
+
+  it("refuses a new-booking request whose stored snapshot was tampered with", async () => {
+    const { db } = makeNewBookingDb({
+      row: newBookingRow({ proposalHash: "not-the-hash" }),
+    });
+    const result = await approveAndExecutePolicyExceptionRequest({
+      requestId: "nb-1",
+      expectedVersion: 1,
+      actorMemberId: "officer-1",
+      hooks: makeHooks(),
+      store: newBookingExceptionRequestStore,
+      db: db as never,
+    });
+    expect(result).toMatchObject({ outcome: "proposalDrift" });
+  });
+
+  it("refuses a new-booking request whose officer lost access mid-flight", async () => {
+    const { db, updateMany } = makeNewBookingDb({ row: newBookingRow() });
+    const result = await approveAndExecutePolicyExceptionRequest({
+      requestId: "nb-1",
+      expectedVersion: 1,
+      actorMemberId: "officer-1",
+      hooks: makeHooks({ reauthorizeBookingOfficer: vi.fn(async () => false) }),
+      store: newBookingExceptionRequestStore,
+      db: db as never,
+    });
+    expect(result).toEqual({ outcome: "notAuthorized" });
+    expect(updateMany).not.toHaveBeenCalled();
+  });
+
+  it("rejects a new-booking request terminally and frees its open slot", async () => {
+    const { db, updateMany, order } = makeNewBookingDb({ row: newBookingRow() });
+    const result = await resolvePolicyExceptionRequestTerminal({
+      requestId: "nb-1",
+      expectedVersion: 1,
+      to: "REJECTED",
+      actorMemberId: "officer-1",
+      adminNotes: "Not this weekend.",
+      store: newBookingExceptionRequestStore,
+      db: db as never,
+    });
+    expect(result).toEqual({ claimed: true, released: 0 });
+    expect(order).toEqual(["global-lock", "lodge-lock", "claim-rejected", "commit"]);
+    const data = updateMany.mock.calls[0][0].data;
+    expect(data.openStateKey).toBeNull();
+    expect(data.reviewedByMemberId).toBe("officer-1");
+    expect(data.adminNotes).toBe("Not this weekend.");
   });
 });

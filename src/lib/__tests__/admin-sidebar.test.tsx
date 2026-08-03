@@ -30,6 +30,7 @@ const ZERO_COUNTS: AdminPendingCounts = {
   creditApprovals: 0,
   bookingReviews: 0,
   bookingChangeRequests: 0,
+  newBookingPolicyExceptionRequests: 0,
   publicBookingRequests: 0,
   unpaidFinishedStays: 0,
   unsettledAdditionalFinishedStays: 0,

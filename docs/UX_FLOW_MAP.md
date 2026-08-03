@@ -51,6 +51,63 @@ durable request, approval, and reservation behavior belong to #2365. Capacity,
 date, authentication, subscription/membership, duplicate member-night,
 payment, privacy, and data-integrity failures never become exception choices.
 
+## Deciding a booking-policy exception (#2526)
+
+A Booking Officer opens **Admin -> Booking Requests -> Policy Exceptions**. The
+tab carries a count of everything waiting, and each card answers the four
+questions a decision actually needs: who asked and **how long ago** (in plain
+English — "3 days ago", not a timestamp the officer has to subtract), what they
+proposed (dates, party size, the change requested), which rules it breaks at the
+exact policy revision that was reviewed, and whether the request is holding beds
+while it waits. A request that has already been kept pending on capacity shows
+the last conflict and when it happened, so nobody re-clicks Approve wondering
+why nothing happened. A request for a booking that does not exist yet always
+reads *No beds held*, because there is nothing for a reservation to hang off —
+telling an officer those beds were safe was the opposite of the truth and invited
+them to deprioritise the one request that could be beaten to them.
+
+**Who this would put on the booking** sits above the decision, with a *Show the
+guests* button that loads the frozen party on demand: each guest's name, age
+tier, whether they are a member, and whether they are from outside the
+requester's family. Approving executes that party for real, so a bare guest count
+was asking the officer to take responsibility for a decision they had no way to
+make — an unrelated member attached to somebody else's stay, or a party of minors
+with no adult, are both invisible behind "Guests: 2".
+
+Deciding is deliberately two steps: **Decide this request** opens a reason box
+and a confirmation checkbox, and only then do Approve and Refuse become
+available. Approving an adult-member hosting exception, and every refusal, need
+the reason written down — the member reads the note on ANY decision (the field
+says so), and an approved hosting exception is recorded against the booking with
+the officer's name on it. For a change, the form also carries the refund
+question — card or account credit — because a change that reduces a paid
+booking's price cannot be applied until somebody says where the money goes, and
+an officer who is only told "the request is still pending" has been given no
+action and no control to take it with.
+
+The screen is honest about what Approve does: it applies the exact proposal
+shown — creating the booking, or changing the live one — in one step, and it
+overrides only the rules listed on that card. Capacity, payment, membership and
+privacy rules all still apply. If the lodge has filled since the request was
+made, the officer is told the request **stays pending** and nothing is created;
+they can approve it later if space frees up, or refuse it with a reason. Every
+failed attempt refreshes the queue underneath them, because their own failed
+attempt can move the row's version and the next click would otherwise be refused
+as "somebody else changed this". A booking still waiting on any admin review
+remains blocked from lodge check-in; approving a policy exception is not a way
+around that — including a child-safety review the approved party itself opens.
+
+The screen is equally honest in the other direction: work that happens after the
+booking is committed (emails, accounting hand-offs, audit writes) can fail on its
+own, and when it does the officer reads **approved, and the booking was created —
+but some follow-up work failed**, with a nudge to check the booking and the
+member's email. It never reports a committed approval as still pending, which
+sent officers either into a stale-version refusal or into creating the booking a
+second time by hand.
+
+A view-only admin sees the same queue with the controls disabled and a banner
+saying bookings edit access is required.
+
 ## Adult-member hosting (#2364)
 
 An operator opens **Booking Policies → Adult Member Hosting** and chooses, per

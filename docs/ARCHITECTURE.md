@@ -855,12 +855,12 @@ Booking Policies sections (#2142) and is now the **default across the admin
 tree** (#2160, extended by #2168 and #2324) — not a claim that nothing is left.
 Measured
 on the current tree by `view-only-banner-contract.test.ts`, which asserts these
-figures rather than trusting a hand count: **81 components render a banner, and
-255 of the 304 `ViewOnlyActionButton` call sites opt out** of the per-button
+figures rather than trusting a hand count: **82 components render a banner, and
+258 of the 307 `ViewOnlyActionButton` call sites opt out** of the per-button
 reason. (Earlier revisions of this page published 76/232/264/211 — those were
 upstream-historical and had drifted; the numbers here are the ones the contract
-test currently pins, which is the only authority.) Those 255 split by WHICH rule
-covers them: **229** pass the literal
+test currently pins, which is the only authority.) Those 258 split by WHICH rule
+covers them: **232** pass the literal
 `describeReason={false}` and are covered by a banner in the same file, and **26**
 pass `describeReason={!ancestorRendersViewOnlyBanner}` and are covered by a
 verified vouching parent — 21 by a parent's own JSX render site (#2168), 5 by the
@@ -2564,6 +2564,49 @@ sub-page gated on finance. The same fresh read also refuses an account the rest 
 the admin surface refuses (deactivated, or under a forced password change), so a
 session still holding a cookie cannot outlive its own lock-out here. Full
 reference: [`ai-diagnostics/page-context.md`](ai-diagnostics/page-context.md).
+
+## AI Diagnostics SELECT-only tool substrate
+
+The third evidence channel is the database, and it is the one that needed its own
+database identity (#2374, `src/lib/diagnostics/tools/`). **The model never supplies
+SQL.** A tool is a server-owned record pairing a fixed statement with a fixed
+parameter binding, a fixed projection, fixed row/byte ceilings, and a fixed
+admin-permission requirement; the model chooses an entry by id and supplies
+arguments a `.strict()` schema has already accepted, which become positional
+parameters and nothing else. No code path concatenates caller text into SQL.
+
+**Reads run as a dedicated non-superuser role**, `AI_DIAGNOSTICS_DATABASE_URL`,
+never the application's Prisma client — the Compose app role is a PostgreSQL
+superuser, so reusing it would put a diagnostics query one bug away from the
+encrypted credential store (ADR-007). The credential is refused unless it is
+present, parseable, and demonstrably not the application role; and the *role* is
+refused unless the server itself confirms it holds no superuser, `CREATEDB`,
+`CREATEROLE`, `REPLICATION`, `BYPASSRLS`, database `TEMPORARY`/`CREATE`, schema
+`CREATE`, file-reading function privilege, or escalating predefined-role
+membership. Provisioning is an operator step
+(`npm run diagnostics:provision-role`), not a migration: a database role is cluster
+state, needs a secret the schema must never contain, and its `SELECT` allowlist is
+declared in public code so "which tables can Diagnostics read" is answerable by
+reading one file. That allowlist is **empty** today — AID-5 ships no domain tool.
+
+Each read runs inside `BEGIN READ ONLY` with its own `statement_timeout`,
+`lock_timeout`, `idle_in_transaction_session_timeout`, and `search_path` pinned to
+`public`, and the executor wraps the entry's SQL in its own outermost `LIMIT` so a
+tool cannot ship an unbounded scan by omission. Read-only at the transaction level
+is the database's own refusal of every write and DDL statement independently of the
+role's grants, so both layers must fail before a write is possible.
+
+Ten gates run in a fixed order and every one returns **no rows**: registry, loop
+budget, fresh authorization, arguments, metering, credential, read, projection,
+size, audit. Authorization runs *before* argument parsing so the difference between
+"invalid arguments" and "permission denied" cannot be used as an oracle for a
+tool's argument shape, and so an unauthorized invocation never opens a connection;
+the audit row is written *before* any evidence is returned, and evidence is
+discarded if it cannot be written. An over-size result is a refusal, never a silent
+trim. Withholding a tool definition from the model is a usability courtesy — the
+per-invocation permission re-read is the control. Full reference:
+[`ai-diagnostics/tools.md`](ai-diagnostics/tools.md); operator setup in
+[`ai-diagnostics/deployment.md`](ai-diagnostics/deployment.md).
 
 ## Security and Privacy Boundaries
 

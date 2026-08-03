@@ -18,6 +18,7 @@ import {
   applyPromoCodeChanges,
   assertBookingModifiable,
   calculateModificationSettlementOptions,
+  BookingModificationSettlementMethodRequiredError,
   calculateModificationChangeFee,
   calculateModifiedPricing,
   loadActiveSeasonRates,
@@ -323,8 +324,11 @@ export async function modifyBookingBatch({
   // MG4-D-a, brought forward: an ADMIN actor is the one that passes
   // `skipAuthorization`, so its cross-family adds are consent-free and
   // always-notify, stamped with the acting admin.
+  // #2526: a policy-exception approval passes `reviewedMemberProposal`, so
+  // its cross-family adds are NOT consent-free — the notification/consent actor
+  // must agree with the guest plan's own decision (see the flag's docblock).
   const memberGuestActor: MemberGuestAddActor =
-    actor.role === "ADMIN"
+    actor.role === "ADMIN" && input.reviewedMemberProposal !== true
       ? { kind: "ADMIN", adminMemberId: actor.id }
       : { kind: "MEMBER" };
 
@@ -579,8 +583,11 @@ export async function modifyBookingBatch({
           guestsForPricing: guestPlan.guestsForPricing,
           // #2543 — see the `prepareGuestPlan` call above.
           subscriptionLockoutMode,
-          // Finding 2 (privacy re-review of MG3 #2308).
-          skipAuthorization: actor.role === "ADMIN",
+          // Finding 2 (privacy re-review of MG3 #2308). #2526: read the SAME
+          // answer the guest plan used, so a policy-exception approval (which
+          // borrows ADMIN only for the reviewed minimum-stay override) prices
+          // the party under the family boundary it was actually planned under.
+          skipAuthorization: guestPlan.guestAuthorizationIsAdmin,
           skipBookingLifecycleRules: dates.skipBookingLifecycleRules,
           // Multi-lodge: season rates are resolved for the booking's lodge.
           seasonRateData: await loadActiveSeasonRates(tx, bookingLodgeId),
@@ -627,7 +634,7 @@ export async function modifyBookingBatch({
       netChargeCents: priceDiffCents + changeFeeCents,
     });
     if (settlementOptions?.requiresSettlementMethod && !input.settlementMethod) {
-      throw new ApiError("Choose a refund or account credit before saving", 400);
+      throw new BookingModificationSettlementMethodRequiredError();
     }
 
     const { createdGuests } = await applyGuestChanges(tx, {

@@ -55,6 +55,15 @@ x-app-environment: &app-environment
   # admin-managed DB-first (Admin > Email Messages / EmailMessageSetting).
   EMAIL_FROM: ${EMAIL_FROM}
   CRON_SECRET: ${CRON_SECRET}
+  # AI Diagnostics (#2374, ADR-007): a DEDICATED non-superuser SELECT-only role for
+  # the diagnostics tool substrate. Deliberately NOT derived from DATABASE_URL —
+  # `tac` above is a SUPERUSER, and the whole point of this credential is that the
+  # database itself makes a diagnostics read incapable of writing or of reading the
+  # encrypted credential store. Empty by default (the module ships off); provision
+  # with `npm run diagnostics:provision-role` and set it in the Compose .env.
+  # The app refuses every diagnostics read unless the server confirms the role is
+  # least-privilege, so an empty or wrong value degrades safely.
+  AI_DIAGNOSTICS_DATABASE_URL: ${AI_DIAGNOSTICS_DATABASE_URL:-}
   SEED_ADMIN_EMAIL: ${SEED_ADMIN_EMAIL:-}
   SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-}
   SEED_LODGE_PASSWORD: ${SEED_LODGE_PASSWORD:-}

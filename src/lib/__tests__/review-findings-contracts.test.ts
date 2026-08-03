@@ -1018,6 +1018,44 @@ describe("review finding source/schema contracts", () => {
     );
   });
 
+  it("proves the SELECT-only diagnostics role against a real PostgreSQL in CI (#2374)", () => {
+    // AID-5's privilege proof is MANDATORY (issue #2374): ADR-007's claims —
+    // no INSERT/UPDATE/DELETE, no DDL, no TEMP, no credential-store read, a
+    // cancelled long query — are claims about PostgreSQL's behaviour that no mock
+    // can establish. The suite describe.skip's itself without the env vars, so a
+    // missing CI step would turn the whole proof into a silent no-op. That is
+    // exactly how the trigger and annotation-strip suites went unrun before, so
+    // this test pins the step, its env, and its ordering after the migrate step.
+    const workflow = readRepoFile(".github/workflows/ci.yml");
+    const proofStep = workflow.indexOf(
+      "name: Prove the SELECT-only diagnostics role against dedicated PostgreSQL"
+    );
+    expect(proofStep).toBeGreaterThan(-1);
+    // The proof needs the schema deployed (it asserts IntegrationCredential is
+    // unreadable), so it must run AFTER the race database is migrated.
+    const migrateStep = workflow.indexOf(
+      "name: Migrate dedicated advisory-lock race database"
+    );
+    expect(migrateStep).toBeGreaterThan(-1);
+    expect(proofStep).toBeGreaterThan(migrateStep);
+    expect(workflow.slice(proofStep)).toContain(
+      "npx vitest run src/lib/__tests__/ai-diagnostics-select-only-role.realdb.test.ts"
+    );
+
+    const suite = readRepoFile(
+      "src/lib/__tests__/ai-diagnostics-select-only-role.realdb.test.ts"
+    );
+    expect(suite).toContain('process.env.RUN_CONCURRENCY_RACE_TESTS === "1"');
+    expect(suite).toContain("CONCURRENCY_RACE_DATABASE_URL");
+    expect(suite).toContain("concurrency_race_1881");
+    // The proof must run the SHIPPED provisioning statements, not a fixture.
+    expect(suite).toContain("buildAiDiagnosticsRoleSql");
+    // The four refusals the issue names, plus the credential store.
+    expect(suite).toContain('SELECT * FROM public."IntegrationCredential"');
+    expect(suite).toContain("CREATE TEMP TABLE");
+    expect(suite).toContain("pg_catalog.pg_sleep(30)");
+  });
+
   it("executes the email-override annotation strip against a real PostgreSQL in CI (#2269, #2418)", () => {
     // The audit half of that migration was pinned by string-matching the SQL
     // only: mutating `) AS found ON TRUE` to `... WHERE FALSE` wrote zero audit

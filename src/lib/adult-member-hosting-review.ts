@@ -598,6 +598,56 @@ export async function recordAdultMemberHostingReviewForNewBooking(
 }
 
 /**
+ * Record an officer's EXPLICIT decision on a hosting review that is already
+ * recorded and still PENDING (#2526).
+ *
+ * `recordAdultMemberHostingReviewForNewBooking` can open a review straight to
+ * APPROVED because nothing was recorded yet. A MODIFICATION cannot: the
+ * canonical modification service reconciles the hazard from the rows it just
+ * wrote, deliberately WITHOUT a decision (an unrelated edit must never
+ * auto-approve a hosting exception), so the row lands PENDING. When the edit was
+ * itself an approved booking-policy exception, the officer HAS decided — with a
+ * reason, on the exact reviewed proposal — and that decision has to be written
+ * after the service has reconciled, or the booking carries a pending review that
+ * nobody will ever action.
+ *
+ * Deliberately narrow, and guarded at the database:
+ *  - only PENDING → APPROVED. A cleared review (`adultMemberHostingReviewStatus`
+ *    NULL, because the executed change resolved the hazard) is left alone, and a
+ *    review somebody else already decided is never overwritten.
+ *  - a `reason` is required, exactly as D-R4 requires everywhere else — "an
+ *    officer clicked approve" is not an answer anybody can audit.
+ *
+ * Returns whether the guarded update actually moved a row, so the caller can log
+ * the truth rather than an assumption.
+ */
+export async function recordAdultMemberHostingReviewDecision(
+  bookingId: string,
+  db: Pick<PrismaClient, "booking">,
+  decision: { reason: string; byMemberId: string },
+): Promise<boolean> {
+  const reason = decision.reason.trim();
+  if (!reason) {
+    throw new Error(
+      "Recording an adult-member hosting decision requires an explicit reason",
+    );
+  }
+  const claim = await db.booking.updateMany({
+    where: {
+      id: bookingId,
+      adultMemberHostingReviewStatus: AdminReviewStatus.PENDING,
+    },
+    data: {
+      adultMemberHostingReviewStatus: AdminReviewStatus.APPROVED,
+      adultMemberHostingReviewReason: reason.slice(0, 500),
+      adultMemberHostingReviewedById: decision.byMemberId,
+      adultMemberHostingReviewedAt: new Date(),
+    },
+  });
+  return claim.count === 1;
+}
+
+/**
  * Evaluate a party that is not persisted yet (the create path).
  *
  * Create has to know BEFORE the transaction whether the rule will trip, because

@@ -5,6 +5,15 @@ const mocks = vi.hoisted(() => ({
   settingsFindUnique: vi.fn(),
   getIntegrationCredentialValue: vi.fn(),
   providerNeedsReentry: vi.fn(),
+  checkDiagnosticsDatabaseReadiness: vi.fn(),
+}));
+
+// AID-5 (#2374): the readiness aggregate now VERIFIES the dedicated SELECT-only
+// role. Mocked here because the real function opens a `pg` pool; the real thing is
+// proven against an actual PostgreSQL in
+// `ai-diagnostics-select-only-role.realdb.test.ts`.
+vi.mock("@/lib/diagnostics/tools/database", () => ({
+  checkDiagnosticsDatabaseReadiness: mocks.checkDiagnosticsDatabaseReadiness,
 }));
 
 vi.mock("@/lib/prisma", () => ({
@@ -33,6 +42,10 @@ beforeEach(() => {
   mocks.settingsFindUnique.mockResolvedValue({ monthlyBudgetCents: 1000 });
   mocks.getIntegrationCredentialValue.mockResolvedValue("sk-ant-diag-xxx");
   mocks.providerNeedsReentry.mockResolvedValue(false);
+  mocks.checkDiagnosticsDatabaseReadiness.mockResolvedValue({
+    state: "verified",
+    roleName: "ai_diagnostics_ro",
+  });
 });
 
 describe("dedicated credential — NO sharing with page-help", () => {
@@ -61,13 +74,14 @@ describe("dedicated credential — NO sharing with page-help", () => {
 });
 
 describe("getDiagnosticsReadiness — fail-closed gate", () => {
-  it("is READY only when module on + key saved + positive budget", async () => {
+  it("is READY only when module on + key saved + positive budget + VERIFIED SELECT-only role", async () => {
     const r = await getDiagnosticsReadiness({ aiDiagnostics: true });
     expect(r).toMatchObject({
       ready: true,
       moduleEnabled: true,
       keyState: "saved",
       monthlyBudgetCents: 1000,
+      databaseState: "verified",
       blockers: [],
     });
   });
@@ -106,5 +120,48 @@ describe("getDiagnosticsReadiness — fail-closed gate", () => {
     const r = await getDiagnosticsReadiness({ aiDiagnostics: true });
     expect(r.ready).toBe(false);
     expect(r.blockers).toEqual(["resolve_error"]);
+    // Even the catch-all reports an UNVERIFIED role — never a verified one.
+    expect(r.databaseState).toBe("unverified");
+  });
+
+  // AID-5 (#2374): the dedicated SELECT-only role is mandatory (ADR-007), and
+  // readiness must VERIFY it rather than trust that the env var is set. Every
+  // non-verified state blocks, and the state is reported distinctly so an operator
+  // knows whether to provision, repair or fix connectivity.
+  it("is NOT ready when the SELECT-only role is not configured at all", async () => {
+    mocks.checkDiagnosticsDatabaseReadiness.mockResolvedValue({
+      state: "not_configured",
+      roleName: null,
+    });
+    const r = await getDiagnosticsReadiness({ aiDiagnostics: true });
+    expect(r.ready).toBe(false);
+    expect(r.databaseState).toBe("not_configured");
+    expect(r.blockers).toContain("database_not_configured");
+    // The absent-role case is NOT reported as an unsafe role: different fix.
+    expect(r.blockers).not.toContain("database_role_unsafe");
+  });
+
+  it.each([
+    ["misconfigured", "malformed URL, no role, or the application's own role"],
+    ["unverified", "the server could not be asked, so the role is not trusted"],
+    ["over_privileged", "the server says the role is not SELECT-only"],
+  ])("is NOT ready when the SELECT-only role is %s (%s)", async (state) => {
+    mocks.checkDiagnosticsDatabaseReadiness.mockResolvedValue({
+      state,
+      roleName: null,
+    });
+    const r = await getDiagnosticsReadiness({ aiDiagnostics: true });
+    expect(r.ready).toBe(false);
+    expect(r.databaseState).toBe(state);
+    expect(r.blockers).toContain("database_role_unsafe");
+  });
+
+  it("never reports a role name on the readiness response (metadata only)", async () => {
+    // The role name is deployment configuration, but a readiness response is JSON
+    // an admin browser receives — nothing about the credential belongs in it
+    // beyond the state. This pins that the aggregate drops the name.
+    const r = await getDiagnosticsReadiness({ aiDiagnostics: true });
+    expect(JSON.stringify(r)).not.toContain("ai_diagnostics_ro");
+    expect(Object.keys(r)).not.toContain("roleName");
   });
 });

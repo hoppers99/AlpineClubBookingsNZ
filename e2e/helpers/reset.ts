@@ -188,6 +188,88 @@ export async function cancelMemberBookingsOnDate(
   return cleared;
 }
 
+type MinimumStayPolicyRow = {
+  id: string;
+  name: string;
+  active: boolean;
+  version: number;
+};
+
+/**
+ * Deactivates every ACTIVE minimum-stay policy whose name starts with
+ * `namePrefix` in one scope, and returns how many it cleared (0 on a clean first
+ * attempt).
+ *
+ * A spec that stands a booking rule UP in order to break it must take it down
+ * again, or its own retry cannot stand it up at all: the create route refuses a
+ * second ACTIVE policy sharing a (scope, name) pair with 409
+ * `POLICY_NAME_CONFLICT` (#2363,
+ * `src/app/api/admin/booking-policies/minimum-stay/route.ts`). That is exactly
+ * how run 30772673366 turned one real failure into three — both retries died in
+ * setup, on the conflict, instead of re-running the behaviour.
+ *
+ * Two details of the route this drives are easy to get wrong, and both are the
+ * reason this lives here rather than in each spec:
+ *  - DELETE is a DEACTIVATE (`active: false`), and the create's conflict check is
+ *    ACTIVE-only, so deactivating is enough to free the name.
+ *  - DELETE REQUIRES the row's `version` in the body. A bodyless call throws on
+ *    `request.json()`, answers 500, and leaves the policy active — silently, if
+ *    the caller ignores the status.
+ * Hence the version, the asserted status, and the verified post-condition.
+ *
+ * @param adminRequest an ADMIN-authenticated request context (`bookings:edit`).
+ * @param namePrefix the spec's own policy-name prefix. Matching on a prefix, not
+ *   equality, is what lets a spec give each ATTEMPT its own policy name and still
+ *   have one call clear every attempt's leftovers.
+ * @param lodgeId the partition to clear: a lodge id for that lodge's override
+ *   set, omitted for the club-wide set. The list route matches the partition
+ *   EXACTLY — never null-tolerant — so the two are cleared independently.
+ */
+export async function deactivateMinimumStayPolicies(
+  adminRequest: APIRequestContext,
+  { namePrefix, lodgeId }: { namePrefix: string; lodgeId?: string },
+): Promise<number> {
+  const listUrl = lodgeId
+    ? `/api/admin/booking-policies/minimum-stay?lodgeId=${encodeURIComponent(lodgeId)}`
+    : "/api/admin/booking-policies/minimum-stay";
+
+  async function listStale(): Promise<MinimumStayPolicyRow[]> {
+    const listed = await adminRequest.get(listUrl);
+    expect(listed.ok(), `GET ${listUrl} (${listed.status()})`).toBeTruthy();
+    const policies = (await listed.json()) as MinimumStayPolicyRow[];
+    return policies.filter(
+      (policy) => policy.active && policy.name.startsWith(namePrefix),
+    );
+  }
+
+  const stale = await listStale();
+  for (const policy of stale) {
+    const deleted = await adminRequest.delete(
+      `/api/admin/booking-policies/minimum-stay/${policy.id}`,
+      { data: { version: policy.version } },
+    );
+    expect(
+      deleted.ok(),
+      `deactivate leftover minimum-stay policy "${policy.name}" ` +
+        `(${deleted.status()}): ${await deleted.text()}`,
+    ).toBeTruthy();
+  }
+
+  if (stale.length > 0) {
+    // Post-condition: the names really are free again, not merely "the request
+    // returned 200".
+    const surviving = await listStale();
+    expect(
+      surviving.map((policy) => `${policy.name} (${policy.id})`),
+      `active minimum-stay policies matching "${namePrefix}" survived the reset ` +
+        `— this attempt would run against a dirty database (see ` +
+        `docs/E2E_PLAYWRIGHT.md → "Retry idempotency")`,
+    ).toEqual([]);
+  }
+
+  return stale.length;
+}
+
 /**
  * Returns the Xero setup wizard to its pre-attempt state: disconnected, with the
  * persisted step cursor rewound to step one.

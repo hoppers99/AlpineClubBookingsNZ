@@ -624,6 +624,7 @@ const ZERO_PENDING_COUNTS: AdminPendingCounts = {
   creditApprovals: 0,
   bookingReviews: 0,
   bookingChangeRequests: 0,
+  newBookingPolicyExceptionRequests: 0,
   publicBookingRequests: 0,
   unpaidFinishedStays: 0,
   unsettledAdditionalFinishedStays: 0,
@@ -724,6 +725,10 @@ function SidebarLinks({
   const bookingRequestCount =
     counts.bookingReviews +
     counts.bookingChangeRequests +
+    // #2526: a NEW-booking policy exception lives in its own table, so it is a
+    // separate term; a MODIFICATION exception is already a BookingChangeRequest
+    // and is inside the term above.
+    counts.newBookingPolicyExceptionRequests +
     counts.publicBookingRequests;
   if (bookingRequestCount > 0) {
     badges["/admin/booking-requests"] = bookingRequestCount;

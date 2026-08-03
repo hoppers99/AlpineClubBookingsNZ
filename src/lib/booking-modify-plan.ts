@@ -91,10 +91,6 @@ import {
   type MemberGuestConsentColumns,
 } from "@/lib/member-guest-consent";
 import {
-  BookingGuestStayRangeValidationError,
-  normalizeGuestStayRanges,
-} from "@/lib/booking-guest-stay-range-input";
-import {
   addDaysDateOnly,
   eachDateOnlyInRange,
   formatDateOnly,
@@ -106,11 +102,8 @@ import { getSeasonYear } from "@/lib/utils";
 import { assertNoBookingMemberNightConflicts } from "@/lib/booking-member-night-conflicts";
 import {
   BookingModifyReviewJustificationRequiredError,
-  getGuestStayRangeInputMap,
-  hasGuestStayRangeInputs,
-  hasStayRangeInput,
   isBookingFullyPaidForGuestNameEdits,
-  normalizeRangeOrApiError,
+  resolveStayRangesOrApiError,
   type BatchModifyInput,
   type LoadedBookingForModify,
   type LoadedPromoRedemption,
@@ -137,20 +130,6 @@ type ProposedRemainingGuest = {
   stayEnd: Date;
   nights?: Date[];
 };
-
-function normalizeRangesOrApiError<Guest extends { stayStart?: string | Date | null; stayEnd?: string | Date | null }>(
-  guests: Guest[],
-  booking: { checkIn: Date; checkOut: Date }
-) {
-  try {
-    return normalizeGuestStayRanges(guests, booking);
-  } catch (error) {
-    if (error instanceof BookingGuestStayRangeValidationError) {
-      throw new ApiError(error.message, 400);
-    }
-    throw error;
-  }
-}
 
 /**
  * The guest's stored per-night prices, usable as `lockedNightPrices` (#1036).
@@ -504,6 +483,15 @@ export function resolveGuestMemberLinks({
 }
 
 export type GuestPlan = {
+  /**
+   * Whether the GUEST-AUTHORISATION questions were judged with admin elevation
+   * (#2526). Equals `role === "ADMIN"` for every existing caller; false when an
+   * ADMIN caller passed `input.reviewedMemberProposal` — the policy-exception
+   * approval, which borrows ADMIN only for the reviewed minimum-stay override.
+   * The pricing pass reads the SAME answer, so the plan and the price can never
+   * disagree about whether the family boundary applied.
+   */
+  guestAuthorizationIsAdmin: boolean;
   remainingGuests: BookingGuest[];
   proposedRemainingGuests: ProposedRemainingGuest[];
   removedGuests: BookingGuest[];
@@ -617,8 +605,21 @@ export async function prepareGuestPlan(
   // MG4-D-a, brought forward: `role === "ADMIN"` is exactly the condition that
   // passes `skipAuthorization`, so an admin modification adds a cross-family guest
   // consent-free and always-notify, stamped with the acting admin.
-  const memberGuestActor: MemberGuestAddActor =
-    role === "ADMIN" ? { kind: "ADMIN", adminMemberId: actorId } : { kind: "MEMBER" };
+  //
+  // #2526: `input.reviewedMemberProposal` opts an ADMIN caller OUT of that
+  // elevation for the guest-authorisation questions only — see the field's own
+  // docblock. Everything else on this path still keys on `role`, so the reviewed
+  // minimum-stay override (which genuinely is what ADMIN buys the approval) is
+  // untouched. One derived flag, used everywhere the guest rules are decided, so
+  // the two can never disagree.
+  const guestAuthorizationRole: Role =
+    role === "ADMIN" && input.reviewedMemberProposal === true
+      ? ("MEMBER" as Role)
+      : role;
+  const guestAuthorizationIsAdmin = guestAuthorizationRole === "ADMIN";
+  const memberGuestActor: MemberGuestAddActor = guestAuthorizationIsAdmin
+    ? { kind: "ADMIN", adminMemberId: actorId }
+    : { kind: "MEMBER" };
   // #2337: resolve the placeholder→member links (the synchronous narrow gate)
   // BEFORE the member/boundary resolution, so their member ids join the same
   // resolve — a linked member is checked for existence/eligibility and placed in
@@ -633,16 +634,24 @@ export async function prepareGuestPlan(
         ...guestMemberLinks.map((link) => link.memberId),
       ],
       {
-        skipAuthorization: role === "ADMIN",
+        skipAuthorization: guestAuthorizationIsAdmin,
         memberGuestWideningEnabled: memberGuestPolicy?.wideningEnabled ?? false,
       },
     );
-  await assertLinkedBookingMembersCanBeBooked(tx, linkedMembers, actorId, {
-    actorRole: role,
-    onBehalfOfMemberId: role === "ADMIN" ? booking.memberId : null,
+  await assertLinkedBookingMembersCanBeBooked(
+    tx,
+    linkedMembers,
+    // Judged as the booking's own member when the caller asked for member
+    // semantics: the profile/bookability gate answers "can THIS person add that
+    // member", and for an approved exception request that person is the booker.
+    guestAuthorizationIsAdmin ? actorId : booking.memberId,
+    {
+    actorRole: guestAuthorizationRole,
+    onBehalfOfMemberId: guestAuthorizationIsAdmin ? booking.memberId : null,
     // D-8: a blocked cross-family member is refused neutrally.
     crossFamilyMemberIds: boundary.beyondFamilyMemberIds,
-  });
+    },
+  );
   const consentPlan = planMemberGuestConsentWrites({
     guests: input.addGuests
       ? normalizeBookingGuestInputs(input.addGuests, linkedMembers).map((guest, index) => ({
@@ -734,50 +743,34 @@ export async function prepareGuestPlan(
     throw new ApiError("Booking must have at least one guest", 400);
   }
 
-  const hasRangeInputs = hasGuestStayRangeInputs(input);
-  const datesChanged =
-    newCheckIn.getTime() !== new Date(booking.checkIn).getTime() ||
-    newCheckOut.getTime() !== new Date(booking.checkOut).getTime();
-  const existingRangeInputs = getGuestStayRangeInputMap(input);
-  // Preserve an unedited guest's existing night set (issue #713) so editing
-  // one guest (or only names/notes/promo) never collapses another guest's gaps.
-  const existingNightsFor = (guest: BookingGuest & { nights?: { stayDate: Date }[] }) =>
-    guest.nights && guest.nights.length > 0
-      ? guest.nights.map((night) => night.stayDate)
-      : undefined;
-
-  const proposedRemainingGuests: ProposedRemainingGuest[] = remainingGuests.map((guest, index) => {
-    if (!hasRangeInputs) {
-      // A booking date change resets each guest to the full new range (existing
-      // behaviour); otherwise keep the guest exactly as stored, gaps included.
-      return datesChanged
-        ? { guest, stayStart: newCheckIn, stayEnd: newCheckOut }
-        : {
-            guest,
-            stayStart: normalizeDateOnlyForTimeZone(guest.stayStart ?? booking.checkIn),
-            stayEnd: normalizeDateOnlyForTimeZone(guest.stayEnd ?? booking.checkOut),
-            nights: existingNightsFor(guest),
-          };
-    }
-
-    const rangeInput = existingRangeInputs.get(guest.id);
-    const normalizedRange =
-      rangeInput && hasStayRangeInput(rangeInput)
-        ? normalizeRangeOrApiError(rangeInput, { checkIn: newCheckIn, checkOut: newCheckOut }, index)
-        : {
-            stayStart: normalizeDateOnlyForTimeZone(guest.stayStart ?? booking.checkIn),
-            stayEnd: normalizeDateOnlyForTimeZone(guest.stayEnd ?? booking.checkOut),
-            nights: existingNightsFor(guest),
-          };
-
-    return { guest, ...normalizedRange };
+  // The SHARED canonical stay-range resolution (#2526). `resolveTargetDates`
+  // already ran the identical call to derive `newCheckIn`/`newCheckOut`, and the
+  // policy-exception workflow runs it to freeze the party an officer reviews — so
+  // all three agree by construction rather than by inspection. Passing the
+  // resolved envelope as `requested` keeps an in-progress edit (whose check-in is
+  // pinned to the stored one) resolving against the envelope actually being
+  // applied.
+  const resolvedRanges = resolveStayRangesOrApiError({
+    booking: { checkIn: booking.checkIn, checkOut: booking.checkOut },
+    guests: remainingGuests,
+    input,
+    requested: { checkIn: newCheckIn, checkOut: newCheckOut },
   });
+  const proposedRemainingGuests: ProposedRemainingGuest[] = resolvedRanges.remaining.map(
+    ({ guest, ...range }) => ({ guest, ...range }),
+  );
 
+  // Each field assigned explicitly rather than spread: `addGuests` carries its
+  // own raw `nights` (date STRINGS from the request payload) and the resolved
+  // range carries the normalised `Date[]`, so a spread leaves the property typed
+  // as the union of the two and the pricing input rejects it.
   const normalizedAddGuestsWithRanges = normalizedAddGuests
-    ? normalizeRangesOrApiError(normalizedAddGuests, {
-        checkIn: newCheckIn,
-        checkOut: newCheckOut,
-      })
+    ? normalizedAddGuests.map((guest, index) => ({
+        ...guest,
+        stayStart: resolvedRanges.added[index].stayStart,
+        stayEnd: resolvedRanges.added[index].stayEnd,
+        nights: resolvedRanges.added[index].nights,
+      }))
     : undefined;
 
   const proposedGuestRows = [
@@ -842,7 +835,7 @@ export async function prepareGuestPlan(
     proposedGuestRows,
     // `bookingId` arms the owner's gate (finding 4) — see
     // `markCrossFamilyGuestsOnBooking`.
-    { skipAuthorization: role === "ADMIN", bookingId: booking.id },
+    { skipAuthorization: guestAuthorizationIsAdmin, bookingId: booking.id },
   );
 
   const totalGuestCount = guestsForPricing.length;
@@ -871,7 +864,11 @@ export async function prepareGuestPlan(
 
   const reviewUpdate = resolveModifyReviewUpdate({
     booking,
-    role,
+    // #2526: an ADMIN executing a member's reviewed proposal must not
+    // auto-approve the adult-supervision review — that rule was never on the
+    // officer's card. Member semantics open it PENDING, which keeps the #1422
+    // check-in block armed until a human actually looks.
+    role: guestAuthorizationRole,
     actorId,
     nowFlagged: requiresAdminReview,
     memberReviewJustification: input.memberReviewJustification,
@@ -893,7 +890,7 @@ export async function prepareGuestPlan(
       ]),
   );
 
-  if (role !== "ADMIN") {
+  if (!guestAuthorizationIsAdmin) {
     const unpaidMemberGuests = await findUnpaidMemberGuestNames(tx, {
       bookingMemberId: booking.memberId,
       checkIn: isInProgressEdit && editableFrom ? editableFrom : newCheckIn,
@@ -962,6 +959,7 @@ export async function prepareGuestPlan(
   }
 
   return {
+    guestAuthorizationIsAdmin,
     remainingGuests,
     proposedRemainingGuests,
     removedGuests,

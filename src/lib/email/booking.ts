@@ -9,6 +9,7 @@ import {
   unpaidMoneySummaryRows,
   bookingConfirmedTemplate,
   bookingPendingTemplate,
+  bookingPolicyExceptionApprovedTemplate,
   bookingBumpedTemplate,
   bookingGuestsCancelledTemplate,
   bookingCancelledTemplate,
@@ -458,6 +459,85 @@ export async function sendBookingPendingEmail(
       holdUntil: formatNZDateTime(holdUntil),
     },
     lodgeId,
+  });
+}
+
+/**
+ * Tell a member their booking-policy exception request was approved and the
+ * booking now exists (#2526).
+ *
+ * The gap this closes. An approved NEW-booking exception normally lands on
+ * PAYMENT_PENDING, and `createConfirmedBooking` emails only a $0 confirmation or
+ * a non-member hold notice — a member booking through the wizard learns what to
+ * pay because the wizard redirects them to checkout. An approval happens days
+ * later while the member is elsewhere, so without this they were told nothing at
+ * all: no booking, no amount, and PAYMENT_PENDING holds no beds, so the stay
+ * could be filled or reaped with them none the wiser.
+ *
+ * Only the NEW-booking flavour uses this. An approved CHANGE to an existing
+ * booking is announced by the canonical `booking-modified` email the modification
+ * service already sends, so the two never double up.
+ */
+export async function sendBookingPolicyExceptionApprovedEmail(
+  // Booking this message belongs to (#2258); see sendBookingConfirmedEmail.
+  bookingContext: { bookingId: string; recipientMemberId: string },
+  email: string,
+  args: {
+    firstName: string;
+    checkIn: Date;
+    checkOut: Date;
+    guestCount: number;
+    /** Integer cents still owed on the created booking; 0 owes nothing. */
+    amountDueCents: number;
+    /** The officer's decision note, when they left one. */
+    adminNotes?: string | null;
+    // Booking's lodge (multi-lodge phase 8): see sendBookingConfirmedEmail.
+    lodgeId?: string | null;
+  },
+) {
+  const amountDue = formatMoneyCents(args.amountDueCents);
+  // Composed by the sender, never conditionally in the body: the render path has
+  // no conditional syntax, so a token that is sometimes empty must arrive as a
+  // whole line or as nothing (see composeOptionalEmailLine).
+  const paymentNote =
+    args.amountDueCents > 0
+      ? `There is ${amountDue} to pay on this booking. Open it from your account to pay now — the beds are not held until it is paid.`
+      : "";
+  const adminNotesLine = composeOptionalEmailLine(
+    "Note from the club",
+    args.adminNotes,
+    { trailing: "" },
+  );
+
+  await sendEmail({
+    to: email,
+    subject: `Your Request Was Approved - ${EMAIL_DEFAULT_LODGE_NAME}`,
+    html: bookingPolicyExceptionApprovedTemplate({
+      firstName: args.firstName,
+      checkIn: args.checkIn,
+      checkOut: args.checkOut,
+      guestCount: args.guestCount,
+      paymentNote,
+      adminNotesLine,
+    }),
+    bookingContext: bookingOwnerEmailContext(
+      bookingContext.bookingId,
+      bookingContext.recipientMemberId,
+    ),
+    templateName: "booking-policy-exception-approved",
+    templateData: {
+      firstName: args.firstName,
+      checkIn: formatNZDate(args.checkIn),
+      checkOut: formatNZDate(args.checkOut),
+      guestCount: args.guestCount,
+      paymentNote,
+      adminNotesLine,
+      // Raw values behind the two composed lines, so an admin override written
+      // against either form keeps rendering.
+      amount: amountDue,
+      adminNotes: args.adminNotes ?? "",
+    },
+    lodgeId: args.lodgeId,
   });
 }
 

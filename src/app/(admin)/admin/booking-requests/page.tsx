@@ -13,6 +13,7 @@ import { AdminViewOnlyNotice } from "@/components/admin/view-only-action";
 import { CopyField } from "@/components/admin/integration-wizard";
 import { BookingApprovalsPanel } from "@/components/admin/booking-requests/booking-approvals-panel";
 import { BookingChangeRequestsPanel } from "@/components/admin/booking-requests/booking-change-requests-panel";
+import { PolicyExceptionRequestsPanel } from "@/components/admin/booking-requests/policy-exception-requests-panel";
 import { PublicBookingRequestsPanel } from "@/components/admin/booking-requests/public-booking-requests-panel";
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
 import type { BookingRequestsTab } from "@/lib/admin-booking-requests-path";
@@ -32,6 +33,7 @@ const PUBLIC_SEARCH_PARAMS = { tab: "public" } satisfies Record<
 
 function parseBookingRequestsTab(value: string | null): BookingRequestsTab {
   if (value === "changes") return "changes";
+  if (value === "exceptions") return "exceptions";
   if (value === "public") return "public";
   return "approvals";
 }
@@ -56,6 +58,27 @@ export default function BookingRequestsPage() {
 
   useEffect(() => {
     setPublicRequestUrl(`${window.location.origin}/booking-requests`);
+  }, []);
+
+  // Pending booking-policy exception count (#2526), so an officer can see at a
+  // glance that a member is waiting on a decision that gates a real booking.
+  const [exceptionQueueCount, setExceptionQueueCount] = useState(0);
+
+  useEffect(() => {
+    let active = true;
+    fetch("/api/admin/booking-exception-requests?status=REQUESTED&pageSize=1")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (active && data && typeof data.total === "number") {
+          setExceptionQueueCount(data.total);
+        }
+      })
+      .catch(() => {
+        /* badge is best-effort; ignore fetch errors */
+      });
+    return () => {
+      active = false;
+    };
   }, []);
 
   useEffect(() => {
@@ -91,6 +114,12 @@ export default function BookingRequestsPage() {
       if (params.get("status") === "PENDING") {
         params.delete("status");
       }
+    } else if (nextTab === "exceptions") {
+      // The exception queue keeps its own in-panel status filter and has no
+      // per-record deep link, so nothing from a sibling tab carries over.
+      params.delete("bookingId");
+      params.delete("requestId");
+      params.delete("status");
     } else {
       params.delete("bookingId");
       if (params.get("status") === "PENDING" || params.get("status") === "REQUESTED") {
@@ -109,7 +138,8 @@ export default function BookingRequestsPage() {
         <h1 className="text-3xl font-bold">Booking Requests</h1>
         <p className="mt-1 text-muted-foreground">
           Review new booking approvals, locked-period booking change
-          requests, and public booking requests from non-members.
+          requests, booking-policy exception requests, and public booking
+          requests from non-members.
         </p>
       </div>
 
@@ -121,9 +151,20 @@ export default function BookingRequestsPage() {
       ) : null}
 
       <Tabs value={activeTab} onValueChange={handleTabChange}>
-        <TabsList className="grid w-full grid-cols-3 sm:w-auto">
+        <TabsList className="grid w-full grid-cols-2 sm:w-auto sm:grid-cols-4">
           <TabsTrigger value="approvals">Approvals</TabsTrigger>
           <TabsTrigger value="changes">Changes</TabsTrigger>
+          <TabsTrigger value="exceptions" className="gap-2">
+            Policy Exceptions
+            {exceptionQueueCount > 0 && (
+              <Badge
+                variant="secondary"
+                className="border-warning-6 bg-warning-3 text-warning-11"
+              >
+                {exceptionQueueCount}
+              </Badge>
+            )}
+          </TabsTrigger>
           <TabsTrigger value="public" className="gap-2">
             Public Requests
             {publicQueueCount > 0 && (
@@ -152,6 +193,11 @@ export default function BookingRequestsPage() {
               showHeading={false}
               canEdit={canEditBookings}
             />
+          ) : null}
+        </TabsContent>
+        <TabsContent value="exceptions" className="mt-6">
+          {activeTab === "exceptions" && canEditBookings !== undefined ? (
+            <PolicyExceptionRequestsPanel canEdit={canEditBookings} />
           ) : null}
         </TabsContent>
         <TabsContent value="public" className="mt-6">

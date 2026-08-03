@@ -133,6 +133,11 @@ const EXPECTED_ROUTE_AREAS: Record<string, AdminPermissionArea> = {
   // Unified officer exception-request queue (#2524): same class of officer
   // surface as booking-change-requests above, so it shares the bookings area.
   "/api/admin/booking-exception-requests": "bookings",
+  // #2526: the officer's decision endpoint for one exception request. Same
+  // bookings area — `view` reads it, `edit` approves or refuses it, and the
+  // approval additionally reauthorizes against FRESH database roles inside its
+  // own transaction (a session token can be older than a revoked role).
+  "/api/admin/booking-exception-requests/[id]": "bookings",
   "/api/admin/booking-messages": "support",
   "/api/admin/booking-messages/preview": "support",
   "/api/admin/booking-messages/reset": "support",
