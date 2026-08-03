@@ -28,13 +28,21 @@ import { NextRequest } from "next/server";
   capacity input, on the adult-supervision input, on the refusal message
   (including its member-facing "Guest N" number) and on the quoted cents.
 
-  Pricing is a deterministic fake (a flat night rate, with a guest's stored
-  per-night price honoured as a #1036 lock) applied by the SAME function to the
-  route's party and to the planner's party. That is what makes "identical to the
-  cent" a real claim rather than a mocked constant: the cents are a pure function
-  of the resolved party, so any drift in the resolution moves them. The
-  `naive per-guest rule` control at the end of the first suite proves the
-  comparison has teeth — the pre-#2526 rule prices the same delta differently.
+  Pricing is a deterministic fake (a flat adult night rate, a lower child rate,
+  and a guest's stored per-night price honoured as a #1036 lock) applied by the
+  SAME function to the route's party and to the planner's party. That is what
+  makes "identical to the cent" a real claim rather than a mocked constant: the
+  cents are a pure function of the resolved party, so any drift in the resolution
+  moves them. The `naive per-guest rule` control at the end of the first suite
+  proves the comparison has teeth — the pre-#2526 rule prices the same delta
+  differently.
+
+  Three-way equality alone would be a RELATIVE gate, since all three surfaces now
+  call the one resolver and a change to the RULE moves them together. So every
+  matrix case also carries a hand-checked GOLDEN answer (envelope, nights by
+  guest, total cents), and a separate suite drives the in-progress branch, where
+  the two resolver calls are the only place they receive different `requested`
+  envelopes.
 */
 
 const h = vi.hoisted(() => ({
@@ -57,6 +65,7 @@ const h = vi.hoisted(() => ({
   getDefaultLodgeId: vi.fn(),
   getLodgeCapacity: vi.fn(),
   priceGuests: vi.fn(),
+  resolveGuestRates: vi.fn(),
   calculateChangeFee: vi.fn(),
   loadModuleFlags: vi.fn(),
   isXeroConnected: vi.fn(),
@@ -121,19 +130,12 @@ vi.mock("@/lib/lodge-capacity", async (importOriginal) => {
 vi.mock("@/lib/membership-type-policy", () => ({
   assertMembershipTypeBookingAllowed: vi.fn().mockResolvedValue(undefined),
   // A pass-through so the party that reaches pricing and capacity is exactly the
-  // party the resolution produced — nothing is re-derived on the way.
-  resolveGuestRateMembershipTypes: vi
-    .fn()
-    .mockImplementation(
-      (_db: unknown, { guests }: { guests: Array<Record<string, unknown>> }) =>
-        Promise.resolve(
-          guests.map((g) => ({
-            ...g,
-            rateMembershipTypeId: "type-nonmember",
-            rateSource: "NON_MEMBER_DEFAULT",
-          })),
-        ),
-    ),
+  // party the resolution produced — nothing is re-derived on the way. Spied
+  // (rather than inlined) because its FIRST call carries the route's whole
+  // proposed party, `guestsForPricing`, on every branch — including the
+  // in-progress one, where the main pricing pass is replaced by
+  // `buildInProgressGuestRangePlan` and never sees the party at all.
+  resolveGuestRateMembershipTypes: h.resolveGuestRates,
   priceBookingGuestsWithMembershipTypePolicy: h.priceGuests,
   MembershipTypeBookingPolicyError: class extends Error {},
   getMembershipTypeBookingPolicyErrorBody: (e: Error) => ({ error: e.message }),
@@ -210,6 +212,14 @@ const params = Promise.resolve({ id: "b1" });
 
 /** The flat season rate the deterministic pricer charges for an unlocked night. */
 const NIGHT_CENTS = 5_000;
+/**
+ * The CHILD rate, deliberately different from the adult one. It is what makes a
+ * party that resolves in the wrong ORDER cost a different amount: two added
+ * guests with swapped ranges occupy the same total nights, so with one flat rate
+ * the cents would agree even though the wrong guest was priced on the wrong
+ * nights.
+ */
+const CHILD_NIGHT_CENTS = 3_000;
 /** The stored per-night price on the fixture's booked nights (a #1036 lock). */
 const BOOKED_NIGHT_CENTS = 4_200;
 
@@ -258,15 +268,23 @@ const DEFAULT_GUESTS = [
   liveGuest("g3", "Cal", "2026-09-01", "2026-09-04"),
 ];
 
-function bookingWith(guests: ReturnType<typeof liveGuest>[]) {
+/**
+ * The booking under test. `overrides` exists for the in-progress suite, which
+ * needs a stay that NOW sits inside and a status the in-progress edit window
+ * admits; everything else takes the future CONFIRMED default.
+ */
+function bookingWith(
+  guests: ReturnType<typeof liveGuest>[],
+  overrides: { status?: string; checkIn?: string; checkOut?: string } = {},
+) {
   const totalPriceCents = guests.reduce((sum, g) => sum + g.priceCents, 0);
   return {
     id: "b1",
-    status: "CONFIRMED",
+    status: overrides.status ?? "CONFIRMED",
     memberId: "m1",
     lodgeId: "lodge-1",
-    checkIn: D("2026-09-01"),
-    checkOut: D("2026-09-04"),
+    checkIn: D(overrides.checkIn ?? "2026-09-01"),
+    checkOut: D(overrides.checkOut ?? "2026-09-04"),
     wholeLodgeHold: false,
     requiresAdminReview: false,
     adminReviewStatus: null,
@@ -294,6 +312,7 @@ function bookingWith(guests: ReturnType<typeof liveGuest>[]) {
  * not cannot.
  */
 type PricedGuest = {
+  ageTier?: string;
   stayStart: Date;
   stayEnd: Date;
   nights?: ReadonlyArray<Date> | null;
@@ -312,7 +331,8 @@ function priceParty(guests: ReadonlyArray<PricedGuest>) {
         lock.priceCents,
       ]),
     );
-    const perNightCents = nights.map((night) => locked.get(night) ?? NIGHT_CENTS);
+    const rate = guest.ageTier === "CHILD" ? CHILD_NIGHT_CENTS : NIGHT_CENTS;
+    const perNightCents = nights.map((night) => locked.get(night) ?? rate);
     return {
       priceCents: perNightCents.reduce((sum, cents) => sum + cents, 0),
       perNightCents,
@@ -383,6 +403,12 @@ type CapturedRouteRun = {
   body: Record<string, unknown>;
   envelope: [string, string] | null;
   party: ReturnType<typeof partyShape> | null;
+  /**
+   * The same party read off the rate-resolution pass instead of the pricing pass.
+   * `party` is null on the in-progress branch (the main pricing pass is replaced
+   * by `buildInProgressGuestRangePlan`); this one is populated on every branch.
+   */
+  ratedParty: ReturnType<typeof partyShape> | null;
   pricedParty: ReadonlyArray<PricedGuest> | null;
   capacityRange: [string, string] | null;
   minimumStayRange: [string, string] | null;
@@ -392,8 +418,9 @@ type CapturedRouteRun = {
 async function runRoute(
   delta: Record<string, unknown>,
   guests = DEFAULT_GUESTS,
+  bookingOverrides: Parameters<typeof bookingWith>[1] = {},
 ): Promise<CapturedRouteRun> {
-  h.bookingFindUnique.mockResolvedValue(bookingWith(guests));
+  h.bookingFindUnique.mockResolvedValue(bookingWith(guests, bookingOverrides));
   const res = await POST(req(delta), { params });
   const body = (await res.json()) as Record<string, unknown>;
 
@@ -405,6 +432,10 @@ async function runRoute(
   });
   const capacityCall = h.checkCapacityForGuestRanges.mock.calls[0];
   const minStayCall = h.validateMinimumStay.mock.calls[0];
+  // The route resolves rate membership types three times — the proposed party,
+  // then the added guests, then the stored guests — so the FIRST call is the one
+  // carrying `guestsForPricing`.
+  const ratedCall = h.resolveGuestRates.mock.calls[0];
 
   return {
     status: res.status,
@@ -417,6 +448,9 @@ async function runRoute(
       : null,
     party: priceCall
       ? partyShape((priceCall[1] as { guests: Parameters<typeof partyShape>[0] }).guests)
+      : null,
+    ratedParty: ratedCall
+      ? partyShape((ratedCall[1] as { guests: Parameters<typeof partyShape>[0] }).guests)
       : null,
     pricedParty: priceCall
       ? (priceCall[1] as { guests: ReadonlyArray<PricedGuest> }).guests
@@ -440,8 +474,9 @@ async function runRoute(
 async function runPlanner(
   delta: Record<string, unknown>,
   guests = DEFAULT_GUESTS,
+  bookingOverrides: Parameters<typeof bookingWith>[1] = {},
 ) {
-  const booking = bookingWith(guests) as never;
+  const booking = bookingWith(guests, bookingOverrides) as never;
   const input = delta as never;
   const dates = resolveTargetDates({ booking, role: "USER", input });
   const plan = await prepareGuestPlan({} as never, {
@@ -490,10 +525,14 @@ async function runPlanner(
 }
 
 /** Freeze the same delta the way the officer's review card is built. */
-function runFreeze(delta: Record<string, unknown>, guests = DEFAULT_GUESTS) {
+function runFreeze(
+  delta: Record<string, unknown>,
+  guests = DEFAULT_GUESTS,
+  bookingOverrides: Parameters<typeof bookingWith>[1] = {},
+) {
   const { proposed } = buildModificationProposalParties({
-    bookingCheckIn: D("2026-09-01"),
-    bookingCheckOut: D("2026-09-04"),
+    bookingCheckIn: D(bookingOverrides.checkIn ?? "2026-09-01"),
+    bookingCheckOut: D(bookingOverrides.checkOut ?? "2026-09-04"),
     liveGuests: guests as never,
     delta: delta as never,
   });
@@ -531,7 +570,7 @@ beforeEach(() => {
         {
           membershipTypeId: "type-nonmember",
           ageTier: "CHILD",
-          pricePerNightCents: NIGHT_CENTS,
+          pricePerNightCents: CHILD_NIGHT_CENTS,
         },
       ],
     },
@@ -547,6 +586,18 @@ beforeEach(() => {
     minAvailable: 10,
     nightDetails: [],
   });
+  // Pass-through: whatever party the resolution produced reaches pricing and
+  // capacity unchanged, only stamped with a rate identity.
+  h.resolveGuestRates.mockImplementation(
+    (_db: unknown, { guests }: { guests: Array<Record<string, unknown>> }) =>
+      Promise.resolve(
+        guests.map((g) => ({
+          ...g,
+          rateMembershipTypeId: "type-nonmember",
+          rateSource: "NON_MEMBER_DEFAULT",
+        })),
+      ),
+  );
   // The deterministic pricer: the same pure function both sides are compared with.
   h.priceGuests.mockImplementation(
     (_db: unknown, { guests }: { guests: ReadonlyArray<PricedGuest> }) =>
@@ -581,6 +632,13 @@ const ADD_ADULT = {
   firstName: "Dee",
   lastName: "Newcomer",
   ageTier: "ADULT" as const,
+  isMember: false,
+};
+/** A SECOND added guest, at a different age tier so mis-ordering moves money. */
+const ADD_CHILD = {
+  firstName: "Eve",
+  lastName: "Latecomer",
+  ageTier: "CHILD" as const,
   isMember: false,
 };
 
@@ -665,6 +723,31 @@ const MATRIX: Array<[string, Record<string, unknown>]> = [
       ],
     },
   ],
+  [
+    // The route joins its added-guest rows to the resolver's `added` array BY
+    // INDEX. With one added guest that index is always 0, so a collapsed or
+    // reversed join is invisible. Two added guests on DIFFERENT ranges at
+    // DIFFERENT age tiers make it visible three ways at once: the party shape,
+    // the officer's night list, and the cents.
+    "adding TWO guests with different ranges — the positional join",
+    {
+      checkOut: "2026-09-06",
+      addGuests: [
+        { ...ADD_ADULT, stayStart: "2026-09-01", stayEnd: "2026-09-02" },
+        { ...ADD_CHILD, stayStart: "2026-09-02", stayEnd: "2026-09-06" },
+      ],
+    },
+  ],
+  [
+    // The #713 explicit night set, on an ADDED guest this time: the deliberate
+    // gap must survive into the priced party, not collapse to the contiguous
+    // envelope (which on this delta would charge five nights instead of two).
+    "adding a guest with an explicit non-contiguous night set (#713)",
+    {
+      checkOut: "2026-09-06",
+      addGuests: [{ ...ADD_ADULT, nights: ["2026-09-01", "2026-09-05"] }],
+    },
+  ],
   ["removing a guest", { removeGuestIds: ["g3"] }],
   [
     "removing a guest while another guest's range changes",
@@ -681,6 +764,19 @@ const MATRIX: Array<[string, Record<string, unknown>]> = [
     {
       guestStayRanges: [
         { guestId: "g1", stayStart: "2026-09-01", stayEnd: "2026-09-09" },
+      ],
+    },
+  ],
+  [
+    // SHORTENING in range-input mode. The member asks to drop the last night,
+    // but two guests still hold stored ranges that span it, so the #713
+    // auto-expand pins the envelope back open and they are quoted the original
+    // four nights. Old and new route agree on this; nothing pinned it before.
+    "shortening the booking while stored ranges pin the envelope open",
+    {
+      checkOut: "2026-09-03",
+      guestStayRanges: [
+        { guestId: "g2", stayStart: "2026-09-02", stayEnd: "2026-09-03" },
       ],
     },
   ],
@@ -729,6 +825,244 @@ const MATRIX: Array<[string, Record<string, unknown>]> = [
   ],
 ];
 
+/**
+ * THE GOLDEN ANSWER for every matrix case: the resolved envelope, every guest's
+ * occupied nights by name, and the quoted total in cents.
+ *
+ * Why this exists alongside the three-way equality checks. All three compared
+ * surfaces now call the ONE resolver, so an equality check between them is a
+ * RELATIVE gate: it pins the route's plumbing (which envelope goes into which
+ * pass, guest order, index numbering) but is blind by construction to a change in
+ * the RULE, because both sides move together. Reversing the added-guest
+ * resolution order inside the resolver, or restoring the pre-#2526 per-guest
+ * reset, leaves every equality green.
+ *
+ * These values are absolute and were checked by hand against the fixture
+ * (3 guests booked 2026-09-01..2026-09-04, three nights each locked at
+ * `BOOKED_NIGHT_CENTS`, new adult nights at `NIGHT_CENTS`, new child nights at
+ * `CHILD_NIGHT_CENTS`), not merely captured from a passing run. Changing one is a
+ * deliberate statement that the club's answer to that delta has changed, and it
+ * needs the same hand check — never a copy of whatever the new code printed.
+ */
+type Golden = {
+  envelope: [string, string];
+  nights: Record<string, string[]>;
+  cents: number;
+};
+
+const GOLDEN: Record<string, Golden> = {
+  "changing only the overall booking dates (extend)": {
+    envelope: ["2026-09-01", "2026-09-06"],
+    nights: {
+      "Ann Guest": ["2026-09-01", "2026-09-02", "2026-09-03", "2026-09-04", "2026-09-05"],
+      "Bob Guest": ["2026-09-01", "2026-09-02", "2026-09-03", "2026-09-04", "2026-09-05"],
+      "Cal Guest": ["2026-09-01", "2026-09-02", "2026-09-03", "2026-09-04", "2026-09-05"],
+    },
+    cents: 67_800,
+  },
+  "changing only the overall booking dates (shorten)": {
+    envelope: ["2026-09-01", "2026-09-03"],
+    nights: {
+      "Ann Guest": ["2026-09-01", "2026-09-02"],
+      "Bob Guest": ["2026-09-01", "2026-09-02"],
+      "Cal Guest": ["2026-09-01", "2026-09-02"],
+    },
+    cents: 25_200,
+  },
+  "moving the whole booking (both bounds)": {
+    envelope: ["2026-09-08", "2026-09-11"],
+    nights: {
+      "Ann Guest": ["2026-09-08", "2026-09-09", "2026-09-10"],
+      "Bob Guest": ["2026-09-08", "2026-09-09", "2026-09-10"],
+      "Cal Guest": ["2026-09-08", "2026-09-09", "2026-09-10"],
+    },
+    cents: 45_000,
+  },
+  "changing only individual guest ranges": {
+    envelope: ["2026-09-01", "2026-09-04"],
+    nights: {
+      "Ann Guest": ["2026-09-01", "2026-09-02"],
+      "Bob Guest": ["2026-09-01", "2026-09-02", "2026-09-03"],
+      "Cal Guest": ["2026-09-01", "2026-09-02", "2026-09-03"],
+    },
+    cents: 33_600,
+  },
+  "full ranges for ALL guests": {
+    envelope: ["2026-09-01", "2026-09-04"],
+    nights: {
+      "Ann Guest": ["2026-09-01", "2026-09-02", "2026-09-03"],
+      "Bob Guest": ["2026-09-02", "2026-09-03"],
+      "Cal Guest": ["2026-09-01", "2026-09-02"],
+    },
+    cents: 29_400,
+  },
+  "ranges for only SOME guests (unchanged guests mixed with changed ones)": {
+    envelope: ["2026-09-01", "2026-09-04"],
+    nights: {
+      "Ann Guest": ["2026-09-01", "2026-09-02", "2026-09-03"],
+      "Bob Guest": ["2026-09-02"],
+      "Cal Guest": ["2026-09-01", "2026-09-02", "2026-09-03"],
+    },
+    cents: 29_400,
+  },
+  "overall dates AND a partial guestStayRanges — the #2526 divergence": {
+    envelope: ["2026-09-01", "2026-09-05"],
+    nights: {
+      "Ann Guest": ["2026-09-01", "2026-09-02", "2026-09-03", "2026-09-04"],
+      "Bob Guest": ["2026-09-01", "2026-09-02", "2026-09-03"],
+      "Cal Guest": ["2026-09-01", "2026-09-02", "2026-09-03"],
+    },
+    cents: 42_800,
+  },
+  "guests arriving and departing on different nights": {
+    envelope: ["2026-09-01", "2026-09-04"],
+    nights: {
+      "Ann Guest": ["2026-09-01"],
+      "Bob Guest": ["2026-09-02"],
+      "Cal Guest": ["2026-09-03"],
+    },
+    cents: 12_600,
+  },
+  "an explicit non-contiguous night set (#713)": {
+    envelope: ["2026-09-01", "2026-09-04"],
+    nights: {
+      "Ann Guest": ["2026-09-01", "2026-09-03"],
+      "Bob Guest": ["2026-09-01", "2026-09-02", "2026-09-03"],
+      "Cal Guest": ["2026-09-01", "2026-09-02", "2026-09-03"],
+    },
+    cents: 33_600,
+  },
+  "adding a guest with no range of their own": {
+    envelope: ["2026-09-01", "2026-09-04"],
+    nights: {
+      "Ann Guest": ["2026-09-01", "2026-09-02", "2026-09-03"],
+      "Bob Guest": ["2026-09-01", "2026-09-02", "2026-09-03"],
+      "Cal Guest": ["2026-09-01", "2026-09-02", "2026-09-03"],
+      "Dee Newcomer": ["2026-09-01", "2026-09-02", "2026-09-03"],
+    },
+    cents: 52_800,
+  },
+  "adding a guest WITH a range of their own": {
+    envelope: ["2026-09-01", "2026-09-04"],
+    nights: {
+      "Ann Guest": ["2026-09-01", "2026-09-02", "2026-09-03"],
+      "Bob Guest": ["2026-09-01", "2026-09-02", "2026-09-03"],
+      "Cal Guest": ["2026-09-01", "2026-09-02", "2026-09-03"],
+      "Dee Newcomer": ["2026-09-02", "2026-09-03"],
+    },
+    cents: 47_800,
+  },
+  "adding a guest whose range reaches PAST the booking envelope": {
+    envelope: ["2026-09-01", "2026-09-07"],
+    nights: {
+      "Ann Guest": ["2026-09-01", "2026-09-02", "2026-09-03"],
+      "Bob Guest": ["2026-09-01", "2026-09-02", "2026-09-03"],
+      "Cal Guest": ["2026-09-01", "2026-09-02", "2026-09-03"],
+      "Dee Newcomer": ["2026-09-01", "2026-09-02", "2026-09-03", "2026-09-04", "2026-09-05", "2026-09-06"],
+    },
+    cents: 67_800,
+  },
+  "adding TWO guests with different ranges — the positional join": {
+    envelope: ["2026-09-01", "2026-09-06"],
+    nights: {
+      "Ann Guest": ["2026-09-01", "2026-09-02", "2026-09-03"],
+      "Bob Guest": ["2026-09-01", "2026-09-02", "2026-09-03"],
+      "Cal Guest": ["2026-09-01", "2026-09-02", "2026-09-03"],
+      "Dee Newcomer": ["2026-09-01"],
+      "Eve Latecomer": ["2026-09-02", "2026-09-03", "2026-09-04", "2026-09-05"],
+    },
+    cents: 54_800,
+  },
+  "adding a guest with an explicit non-contiguous night set (#713)": {
+    envelope: ["2026-09-01", "2026-09-06"],
+    nights: {
+      "Ann Guest": ["2026-09-01", "2026-09-02", "2026-09-03"],
+      "Bob Guest": ["2026-09-01", "2026-09-02", "2026-09-03"],
+      "Cal Guest": ["2026-09-01", "2026-09-02", "2026-09-03"],
+      "Dee Newcomer": ["2026-09-01", "2026-09-05"],
+    },
+    cents: 47_800,
+  },
+  "removing a guest": {
+    envelope: ["2026-09-01", "2026-09-04"],
+    nights: {
+      "Ann Guest": ["2026-09-01", "2026-09-02", "2026-09-03"],
+      "Bob Guest": ["2026-09-01", "2026-09-02", "2026-09-03"],
+    },
+    cents: 25_200,
+  },
+  "removing a guest while another guest's range changes": {
+    envelope: ["2026-09-01", "2026-09-05"],
+    nights: {
+      "Ann Guest": ["2026-09-02", "2026-09-03", "2026-09-04"],
+      "Bob Guest": ["2026-09-01", "2026-09-02", "2026-09-03"],
+    },
+    cents: 26_000,
+  },
+  "a guest range OUTSIDE the requested envelope widens it (#713 auto-expand)": {
+    envelope: ["2026-09-01", "2026-09-09"],
+    nights: {
+      "Ann Guest": ["2026-09-01", "2026-09-02", "2026-09-03", "2026-09-04", "2026-09-05", "2026-09-06", "2026-09-07", "2026-09-08"],
+      "Bob Guest": ["2026-09-01", "2026-09-02", "2026-09-03"],
+      "Cal Guest": ["2026-09-01", "2026-09-02", "2026-09-03"],
+    },
+    cents: 62_800,
+  },
+  "shortening the booking while stored ranges pin the envelope open": {
+    envelope: ["2026-09-01", "2026-09-04"],
+    nights: {
+      "Ann Guest": ["2026-09-01", "2026-09-02", "2026-09-03"],
+      "Bob Guest": ["2026-09-02"],
+      "Cal Guest": ["2026-09-01", "2026-09-02", "2026-09-03"],
+    },
+    cents: 29_400,
+  },
+  "a range on a REMOVED guest switches the mode but never widens the envelope": {
+    envelope: ["2026-09-01", "2026-09-04"],
+    nights: {
+      "Ann Guest": ["2026-09-01", "2026-09-02", "2026-09-03"],
+      "Bob Guest": ["2026-09-01", "2026-09-02", "2026-09-03"],
+    },
+    cents: 25_200,
+  },
+  "duplicate/conflicting range entries for one guest": {
+    envelope: ["2026-09-01", "2026-09-04"],
+    nights: {
+      "Ann Guest": ["2026-09-02", "2026-09-03"],
+      "Bob Guest": ["2026-09-01", "2026-09-02", "2026-09-03"],
+      "Cal Guest": ["2026-09-01", "2026-09-02", "2026-09-03"],
+    },
+    cents: 33_600,
+  },
+  "a range entry carrying NO dates at all is not a range input": {
+    envelope: ["2026-09-01", "2026-09-05"],
+    nights: {
+      "Ann Guest": ["2026-09-01", "2026-09-02", "2026-09-03", "2026-09-04"],
+      "Bob Guest": ["2026-09-01", "2026-09-02", "2026-09-03", "2026-09-04"],
+      "Cal Guest": ["2026-09-01", "2026-09-02", "2026-09-03", "2026-09-04"],
+    },
+    cents: 52_800,
+  },
+  "an unknown guestId in guestStayRanges is ignored by both": {
+    envelope: ["2026-09-01", "2026-09-04"],
+    nights: {
+      "Ann Guest": ["2026-09-01", "2026-09-02", "2026-09-03"],
+      "Bob Guest": ["2026-09-01", "2026-09-02", "2026-09-03"],
+      "Cal Guest": ["2026-09-01", "2026-09-02", "2026-09-03"],
+    },
+    cents: 37_800,
+  },
+  "everything at once: dates, a partial range, an add and a remove": {
+    envelope: ["2026-09-01", "2026-09-06"],
+    nights: {
+      "Ann Guest": ["2026-09-01", "2026-09-02", "2026-09-03"],
+      "Bob Guest": ["2026-09-01", "2026-09-05"],
+      "Dee Newcomer": ["2026-09-02", "2026-09-03", "2026-09-04", "2026-09-05"],
+    },
+    cents: 41_800,
+  },
+};
+
 describe("#2563 the preview, the save and the freeze resolve one party", () => {
   for (const [name, delta] of MATRIX) {
     it(`agrees on envelope, guest nights and cents: ${name}`, async () => {
@@ -776,8 +1110,23 @@ describe("#2563 the preview, the save and the freeze resolve one party", () => {
       } else {
         expect(route.minimumStayRange).toBeNull();
       }
+
+      // 8. And all of it against the ABSOLUTE expected answer, so that a change
+      //    inside the shared resolver — which would move all three surfaces
+      //    together and keep every equality above green — reddens here instead.
+      const golden = GOLDEN[name];
+      expect(planner.envelope).toEqual(golden.envelope);
+      expect(planner.nightsByName).toEqual(golden.nights);
+      expect(route.body.newTotalPriceCents).toBe(golden.cents);
     });
   }
+
+  it("every matrix case has a golden, and no golden is orphaned", () => {
+    // Belt and braces for the lookup above: a new matrix row without a golden
+    // would otherwise throw on `golden.envelope` with an unhelpful message, and a
+    // golden left behind by a deleted row would sit there asserting nothing.
+    expect(Object.keys(GOLDEN).sort()).toEqual(MATRIX.map(([name]) => name).sort());
+  });
 
   it("the comparison has teeth: the pre-#2526 per-guest rule prices differently", async () => {
     // The control. If the route ever drifted back to "no range entry + the dates
@@ -884,6 +1233,19 @@ describe("#2563 a refused delta is refused identically, with the same guest numb
       },
       "Guest 3: Date In and Date Out are both required.",
     ],
+    [
+      // The SECOND added guest, i.e. index 4 of the one continuing sequence. The
+      // number has to keep counting past the first added guest, which is only
+      // observable with more than one add.
+      "a bad range on the SECOND added guest — the number keeps counting",
+      {
+        addGuests: [
+          { ...ADD_ADULT, stayStart: "2026-09-01", stayEnd: "2026-09-02" },
+          { ...ADD_CHILD, stayEnd: "2026-09-03" },
+        ],
+      },
+      "Guest 5: Date In and Date Out are both required.",
+    ],
   ];
 
   for (const [name, delta, message] of REFUSALS) {
@@ -913,6 +1275,122 @@ describe("#2563 a refused delta is refused identically, with the same guest numb
     expect(route.status).toBe(400);
     expect(h.priceGuests).not.toHaveBeenCalled();
     expect(h.checkCapacityForGuestRanges).not.toHaveBeenCalled();
+  });
+});
+
+/*
+  THE IN-PROGRESS BRANCH — the one shape where the two resolver calls are handed
+  DIFFERENT `requested` envelopes.
+
+  Everywhere else, call 2's `requested` is simply call 1's answer, so the second
+  call is trivially idempotent. On an in-progress edit the route clamps check-in
+  back to the stored day between the two calls
+  (`newCheckIn = isInProgressEdit ? booking.checkIn : finalRequestedCheckIn`), and
+  the docblock in the route says in so many words that safety then rests on the
+  in-progress check-in guard having already refused any delta whose RESOLVED
+  check-in moved. That argument was prose only: the whole matrix above runs on a
+  future booking, so `editPolicy.mode` was never "in-progress" anywhere in this
+  file, and no suite in the repo compared the preview against the planner for a
+  mid-stay edit.
+
+  The cents cannot be compared here — an in-progress preview prices through
+  `buildInProgressGuestRangePlan`, which charges only nights from `editableFrom`
+  and is a structurally different surface from the planner's whole-stay pricing —
+  so this suite compares the RESOLVED PARTY, which is what both sides share.
+*/
+const IN_PROGRESS_BOOKING = {
+  status: "PAID",
+  checkIn: "2026-08-08",
+  checkOut: "2026-08-12",
+} as const;
+
+const IN_PROGRESS_GUESTS = [
+  liveGuest("g1", "Ann", "2026-08-08", "2026-08-12"),
+  liveGuest("g2", "Bob", "2026-08-08", "2026-08-12"),
+  liveGuest("g3", "Cal", "2026-08-08", "2026-08-12"),
+];
+
+describe("#2563 an in-progress edit resolves one party too", () => {
+  // NZ today is 2026-08-10 (NOW), so this stay is under way: check-in is behind
+  // us, check-out ahead, and the status admits the in-progress edit window.
+  const delta = {
+    checkOut: "2026-08-14",
+    guestStayRanges: [
+      { guestId: "g2", stayStart: "2026-08-08", stayEnd: "2026-08-14" },
+    ],
+    // The range-LESS added guest is the only term in the envelope min/max that
+    // depends on `requested`, so it is the one that moves if the clamp between
+    // the two calls is ever wrong.
+    addGuests: [ADD_ADULT],
+  };
+
+  it("resolves the same envelope and the same per-guest nights as the planner", async () => {
+    const planner = await runPlanner(delta, IN_PROGRESS_GUESTS, IN_PROGRESS_BOOKING);
+    const freeze = runFreeze(delta, IN_PROGRESS_GUESTS, IN_PROGRESS_BOOKING);
+    const route = await runRoute(delta, IN_PROGRESS_GUESTS, IN_PROGRESS_BOOKING);
+
+    expect(route.status).toBe(200);
+    // The route really is on the in-progress branch: its main pricing pass never
+    // runs (the in-progress plan replaces it), which is why the party is read off
+    // the rate-resolution pass instead.
+    expect(route.party).toBeNull();
+    expect(route.ratedParty).not.toBeNull();
+
+    // The envelope, via the minimum-stay pass — the one place the route hands the
+    // resolved envelope to a collaborator on this branch.
+    expect(route.minimumStayRange).toEqual(planner.envelope);
+    expect(planner.envelope).toEqual(["2026-08-08", "2026-08-14"]);
+
+    // The party: same guests, same arrival and departure, same nights, same order.
+    expect(route.ratedParty).toEqual(planner.party);
+    expect(freeze.nightsByName).toEqual(planner.nightsByName);
+
+    // Golden. The clamp pinned check-in to the stored 8 Aug, so the added guest
+    // with no range of their own lands on 8-14 Aug and not on some wider span
+    // reaching before the stay. (The in-progress plan then charges only the
+    // nights from `editableFrom` onwards — that is its job, not the resolver's.)
+    expect(planner.nightsByName).toEqual({
+      "Ann Guest": ["2026-08-08", "2026-08-09", "2026-08-10", "2026-08-11"],
+      "Bob Guest": [
+        "2026-08-08",
+        "2026-08-09",
+        "2026-08-10",
+        "2026-08-11",
+        "2026-08-12",
+        "2026-08-13",
+      ],
+      "Cal Guest": ["2026-08-08", "2026-08-09", "2026-08-10", "2026-08-11"],
+      "Dee Newcomer": [
+        "2026-08-08",
+        "2026-08-09",
+        "2026-08-10",
+        "2026-08-11",
+        "2026-08-12",
+        "2026-08-13",
+      ],
+    });
+  });
+
+  it("refuses a moved check-in with the same words the save uses", async () => {
+    // The guard the envelope argument leans on. A guest range that drags the
+    // RESOLVED check-in off the stored day is refused before pass 2 runs, which
+    // is what keeps the clamp a no-op.
+    const moved = {
+      guestStayRanges: [
+        { guestId: "g1", stayStart: "2026-08-06", stayEnd: "2026-08-12" },
+      ],
+    };
+    const route = await runRoute(moved, IN_PROGRESS_GUESTS, IN_PROGRESS_BOOKING);
+    expect(route.status).toBe(400);
+    expect(route.body.error).toBe(
+      "Check-in cannot be changed for an in-progress booking",
+    );
+    await expect(
+      runPlanner(moved, IN_PROGRESS_GUESTS, IN_PROGRESS_BOOKING),
+    ).rejects.toMatchObject({
+      message: "Check-in cannot be changed for an in-progress booking",
+      status: 400,
+    });
   });
 });
 
@@ -991,11 +1469,22 @@ describe("#2563 exactly one stay-range resolution exists, and the route calls it
     // If a new surface starts resolving modification stay ranges, this list is
     // where it has to be declared — the point being that it is a decision, not a
     // copy that drifts.
-    expect(sourceFilesNaming("resolveModificationStayRanges")).toEqual([
+    //
+    // Matched on the CALL form, like `deltaHasStayRangeInputs(` below. Matching
+    // the bare identifier instead made this assertion pass against the PRE-#2563
+    // route, whose docblock NAMED the resolver in prose while the route went on
+    // using its own local copy — and it would redden just as wrongly for a new
+    // file that only points at the resolver in a comment. The defining module is
+    // deliberately absent: its declaration reads
+    // `resolveModificationStayRanges<Guest ...`, so only callers match.
+    expect(sourceFilesNaming("resolveModificationStayRanges(")).toEqual([
       ROUTE_FILE,
       "src/lib/booking-exception-request-service.ts",
-      RESOLVER_FILE,
       "src/lib/booking-modify-validation.ts",
+    ]);
+    // ...and it is DECLARED exactly once, in the module that owns the rule.
+    expect(sourceFilesNaming("export function resolveModificationStayRanges")).toEqual([
+      RESOLVER_FILE,
     ]);
     // The GLOBAL range-input predicate is CALLED only by the resolution it
     // switches (other files name it in prose, which is the pointer working).

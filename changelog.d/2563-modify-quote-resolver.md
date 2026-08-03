@@ -27,6 +27,9 @@
   same quoted total to the cent, the same validation messages and error codes. A
   preview still changes nothing in the database. What is new is a test suite that
   drives all three surfaces — the preview a member reads, the save that writes the
-  booking, and the party an officer approves — over the same twenty kinds of
-  change and nine kinds of invalid input, and requires all three to agree before
-  the code can ship.
+  booking, and the party an officer approves — over the same twenty-three kinds of
+  change and ten kinds of invalid input, and requires all three to agree before
+  the code can ship. Each of those changes also has a written-down expected
+  answer — the dates, who stays which nights, and the total — so a future change
+  to the rule itself has to be a deliberate one, and a booking that is already
+  under way is covered as well as one still in the future.

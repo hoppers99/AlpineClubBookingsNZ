@@ -275,20 +275,62 @@ function selectedIndexesForStoredGuestTargets(
   The preview now makes the SAME TWO CALLS the apply path makes, in the same
   order, so the answer is identical by construction:
 
-   1. the envelope call, mirroring `resolveTargetDates` — the requested envelope
-      expanded (never shrunk) to cover every resolved range;
+   1. the envelope call, mirroring `resolveTargetDates` — in range-input mode the
+      effective envelope is the UNION of every resolved range (so a stored range
+      can pin it open wider than the member asked for, #713, and a shortened
+      check-out that another guest still spans is not honoured); with no range
+      inputs anywhere it is the requested envelope untouched;
    2. the per-guest call after the in-progress clamp, mirroring
       `prepareGuestPlan`, which passes the CLAMPED envelope as `requested` so an
       in-progress edit resolves against the envelope actually being applied.
 
-  Why the second call cannot move the envelope the first one settled. It re-runs
-  the resolver's own envelope pass, but every guest with an explicit range
-  resolves the same way regardless of the envelope it is handed (the envelope is
-  only ever a DEFAULT for an entry that supplies no dates at all, and such an
-  entry takes the stored-range branch instead), while a guest or added guest with
-  no range of their own contributes exactly the `requested` bounds. The min/max
-  over that set is therefore `requested` itself — the pass is idempotent, and
-  `prepareGuestPlan` relies on the same property.
+  WHY THE SECOND CALL CANNOT MOVE THE ENVELOPE THE FIRST ONE SETTLED. This is the
+  load-bearing argument for making two calls at all: the route prices and
+  capacity-checks `newCheckIn`/`newCheckOut` from call 1, while call 2 normalises
+  every guest against an envelope it re-derives internally. If those two differed,
+  guests would be priced on nights outside the quoted envelope.
+
+  Call 2 re-runs the resolver's own envelope pass over the SAME delta and the same
+  guests, and every term of that min/max is identical to call 1's bar one:
+
+   - an entry that carries any dates (a start and an end, or an explicit night
+     set) resolves envelope-INDEPENDENTLY — `normalizeGuestStayRange` reads its
+     `booking` argument only to default an entry that supplies no dates at all;
+   - a remaining guest with no range entry contributes its STORED range, falling
+     back to the ORIGINAL booking bounds, which does not depend on `requested`
+     either. READ THAT TWICE: it does NOT contribute the requested bounds, which
+     is why a shortened check-out that another guest's stored range still spans
+     comes back pinned open rather than honoured;
+   - the one term that does depend on `requested` is a range-less ADDED guest,
+     which contributes exactly the `requested` bounds.
+
+  So call 2's envelope is `min/max(fixed terms, requested)` where `requested` is
+  call 1's answer — and call 1's answer is already the min/max over those same
+  fixed terms, so it dominates them and the second min/max returns it unchanged.
+  With no range inputs the resolver skips the pass entirely and returns
+  `requested` verbatim. Either way the pass is idempotent, and `prepareGuestPlan`
+  rests on the same property.
+
+  TWO PRECONDITIONS, because the argument fails without them:
+
+   a. `requested` for call 2 must be call 1's answer. The in-progress branch is
+      the one place it is not — `newCheckIn` is clamped back to `booking.checkIn`
+      — and there the argument rests entirely on the in-progress check-in guard
+      below, which 400s any delta whose RESOLVED check-in moved off the stored
+      day. That guard makes the clamp a no-op by the time call 2 runs. Relax it
+      and a range-less added guest can be handed an envelope reaching back to the
+      stored check-in, wider than the one being priced.
+   b. Nothing between the two calls may SHRINK the envelope. A downward clamp of
+      `newCheckOut` would leave call 2's min/max dominated by the stored and
+      explicit ranges instead, so call 2 would resolve against a wider envelope
+      than the quote prices.
+
+  (a) is pinned: `modify-quote-planner-stay-range-parity` drives a mid-stay edit
+  through this route and the planner together, and asserts the guard's own 400.
+  (b) cannot be pinned by a test — a test would have to introduce the shrinking
+  clamp to observe it — so it is a standing constraint on whoever next edits the
+  lines between the two calls, not a covered case. Treat this paragraph as the
+  design note that has to be re-derived if that code moves.
 
   The invariant is that preview and save resolve ranges identically (see
   `GUEST_MEMBER_LINK_IN_PROGRESS_MESSAGE` on the same theme), and it is now
@@ -929,6 +971,14 @@ export async function POST(
   // (date STRINGS from the request payload) and the resolved range carries the
   // normalised `Date[]`, so a spread leaves the property typed as the union of the
   // two and the pricing input rejects it.
+  //
+  // The positional join is sound because `stayRangeDelta.addGuests` IS
+  // `normalizedAddGuests` — the same array instance — and the resolver builds
+  // `added` with a plain `.map` over it, so the two are the same length in the
+  // same order by construction. Re-order, filter or re-sort either side and that
+  // stops being true: `modify-quote-planner-stay-range-parity` carries a
+  // two-added-guest case with different ranges specifically so a mis-ordered join
+  // fails rather than silently pricing one added guest on the other's nights.
   const normalizedAddGuestsWithRanges = normalizedAddGuests
     ? normalizedAddGuests.map((guest, index) => ({
         ...guest,
