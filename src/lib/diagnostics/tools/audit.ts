@@ -91,14 +91,21 @@ export async function recordDiagnosticsToolAudit(
     actor: { memberId: input.actingMemberId },
     entity: {
       type: DIAGNOSTICS_TOOL_AUDIT_ENTITY_TYPE,
-      // The registry key, which is server-owned public code — not caller text.
+      // A registry key for every outcome except `unknown_tool`, where it is the id
+      // the caller ASKED for — recorded on purpose, because "which name did the
+      // model invent" is the forensic content of that row. It is caller text, but
+      // it is not free text: `invoke.ts` only records an id that passed
+      // `isValidDiagnosticsToolId` (lowercase dotted segments, 64 characters), and
+      // anything else is recorded as the literal `unknown`.
       id: audit.toolId,
     },
     category: "security",
     severity,
     outcome: denied ? "blocked" : failed ? "failure" : "success",
-    // Fixed sentence plus a registry key and a fixed enum. Nothing interpolated
-    // here can come from the operator, the model, or a database value.
+    // Fixed sentence plus the tool id above and a fixed enum. Nothing interpolated
+    // here can come from the operator or from a database value, and the only
+    // model-chosen part is a tool id already constrained to the registry key
+    // pattern (see `entity.id`).
     summary: `Diagnostics tool ${audit.toolId} ${
       denied ? "denied" : failed ? "failed" : "ran"
     } on ${input.surface}`,

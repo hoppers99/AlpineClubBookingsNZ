@@ -23,7 +23,12 @@
  *  1. `requiredAreas` names the area(s) that already govern this data in the
  *     admin UI, at `view`. A cross-area tool lists every area (ADR-002 §3 — AND).
  *  2. `sql` is one statement, no semicolon, schema-qualified, parameterised.
- *  3. `bind` maps parsed args to parameters positionally; it never formats SQL.
+ *  3. `bind` maps parsed args to parameters positionally; it never formats SQL,
+ *     and it returns exactly as many parameters as the SQL references — `$1..$N`,
+ *     no gaps. One short is not an error at the database: the executor appends the
+ *     row cap as the next `$n`, so a missing parameter silently ALIASES the row cap
+ *     onto the entry's own predicate. `registry.test.ts` pins the arity at review
+ *     time and `runDiagnosticsReadOnlyQuery` refuses it at runtime.
  *  4. `project` returns ONLY allowlisted columns, as flat scalars, and the SAME
  *     field set for every row (the executor refuses rows whose shapes disagree).
  *  5. Add the table's `GRANT SELECT` to `SELECT_GRANTS` in `provision-role.ts`
@@ -68,7 +73,11 @@ export interface DiagnosticsToolSpec<TArgs> {
   description: string;
   /** Areas required at `view`, AND-ed, re-checked fresh on every invocation. */
   requiredAreas: readonly AdminPermissionArea[];
-  /** `.strict()` so an unknown argument is a REJECTION, not something ignored. */
+  /**
+   * `.strict()` so an unknown argument is a REJECTION, not something ignored —
+   * with `RESERVED_ARGUMENT_KEYS` scanned first, because `.strict()` alone lets a
+   * `JSON.parse`-created `__proto__` through by silently dropping it.
+   */
   argsSchema: z.ZodType<TArgs>;
   inputSchema: DiagnosticsToolInputSchema;
   /** One fixed statement. No semicolon — the executor wraps it in a LIMIT subquery. */
@@ -114,6 +123,47 @@ export interface DiagnosticsToolEntry {
 }
 
 /**
+ * Keys that must be REFUSED before the schema runs, because `.strict()` is not
+ * total on its own. Measured against this repo's zod 4.4.3:
+ * `z.object({}).strict().safeParse(JSON.parse('{"__proto__":{"x":1}}'))` succeeds
+ * with `data: {}` — the key is silently STRIPPED and no unrecognized-key issue is
+ * reported. `constructor`, `prototype`, `toString` and friends are all correctly
+ * rejected; only `__proto__` slips, because `JSON.parse` defines it as an ordinary
+ * own property and zod's own key walk never surfaces it.
+ *
+ * Silently repairing an argument is the contract breach, not the pollution: the
+ * arguments reaching here are the model's `tool_use` input, and `argsHash` is
+ * ADR-004's durable record of what was ACCEPTED. A dropped key makes a call that
+ * sent `{"__proto__": …}` hash byte-identically to one that sent `{}`, so the audit
+ * row cannot tell them apart — and the first tool pack with a `z.record(...)`
+ * filters field would silently run a different query than the model asked for.
+ *
+ * AID-4 refuses the same keys, at the same point, for the same reason
+ * (`page-context/parse.ts` → `RESERVED_KEYS`). That list is module-private there
+ * deliberately — exporting it would offer callers a second door into a parser whose
+ * contract is total rejection — so this is a second, deliberate declaration rather
+ * than a shared import, and the two channels agree that a reserved key is a
+ * REJECTION.
+ */
+const RESERVED_ARGUMENT_KEYS: readonly string[] = [
+  "__proto__",
+  "constructor",
+  "prototype",
+];
+
+/**
+ * Own-property scan of the RAW arguments, before the schema runs — the only point
+ * at which `__proto__` is still visible. `Object.getOwnPropertyNames` is
+ * deliberate: it sees a non-enumerable own property too.
+ */
+function hasReservedArgumentKey(raw: unknown): boolean {
+  if (typeof raw !== "object" || raw === null) return false;
+  return Object.getOwnPropertyNames(raw).some((key) =>
+    RESERVED_ARGUMENT_KEYS.includes(key),
+  );
+}
+
+/**
  * Erase one typed spec into a registry entry. The single `as TArgs` inside is
  * sound because it is applied to the OUTPUT of `argsSchema.safeParse`, i.e. to a
  * value the schema itself has just validated.
@@ -129,6 +179,7 @@ export function defineDiagnosticsTool<TArgs>(
     inputSchema: spec.inputSchema,
     sql: spec.sql,
     parseArgs: (raw) => {
+      if (hasReservedArgumentKey(raw)) return { ok: false };
       const parsed = spec.argsSchema.safeParse(raw);
       if (!parsed.success) return { ok: false };
       const args = parsed.data as TArgs;

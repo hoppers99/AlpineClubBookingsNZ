@@ -4,7 +4,8 @@
  * THE ORDER OF THE GATES IS THE CONTRACT. Each one refuses on its own terms, and
  * none of them can be reached out of order:
  *
- *   1. REGISTRY     the tool id must name a server-owned entry (ADR-001 §2).
+ *   1. REGISTRY     the tool id must name a server-owned entry (ADR-001 §2). An id
+ *                   that names none is refused HERE — and still costs a call.
  *   2. LOOP BUDGET  the session must have a round open and calls left (ADR-005 §3).
  *   3. AUTHORIZE    the caller's matrix re-read FRESH from the database, AND
  *                   across every area the tool declares (ADR-002 §2/§3).
@@ -257,6 +258,24 @@ export async function invokeDiagnosticsTool(
     // with `-1` and let the gates below refuse; never let it abort the audit.
   }
 
+  /**
+   * What the CATCH-ALL at the bottom must be able to report honestly. Each is
+   * updated as its gate passes, so an unexpected fault after authorization is
+   * audited as what it was — an allowed call that then failed — rather than as an
+   * authorization block against an admin who was never blocked.
+   *
+   * Before these were hoisted, every `internal_error` row recorded
+   * `authOutcome: "denied"`, `areasChecked: []` and `argsHash: null`, which
+   * `audit.ts` turns into outcome `blocked` at severity `important`: a
+   * security-category, 24-month row asserting a permission incident that never
+   * happened, with the areas the call actually touched erased. `audit.ts` already
+   * has `failure` for exactly this case.
+   */
+  let faultAreasChecked: readonly AdminPermissionArea[] = [];
+  let faultAuthOutcome: "allowed" | "denied" = "denied";
+  let faultArgsHash: string | null = null;
+  let faultRoundIndex = roundIndexAtEntry;
+
   const fail = async (
     reason: DiagnosticsToolFailureReason,
     detail: FailureDetail,
@@ -303,17 +322,28 @@ export async function invokeDiagnosticsTool(
   try {
     const tool = validId ? findDiagnosticsTool(requestedId) : undefined;
     if (!tool) {
+      // The registry is still gate 1 — a hostile id reaches nothing else — but the
+      // loop budget is CLAIMED here too, before the refusal. An unregistered id
+      // used to cost nothing while still writing a durable audit row, so one
+      // provider round of 60 hallucinated or injected ids produced 60
+      // important-severity security rows with the session counters still reading
+      // zero. "A caller cannot probe for free" has to hold for a name that is not
+      // in the table as much as for one that is.
+      const unknownClaim = input.session.claimToolCall();
       return await fail("unknown_tool", {
         toolId: safeToolId,
         areasChecked: [],
         authOutcome: "denied",
-        roundIndex: roundIndexAtEntry,
+        roundIndex: unknownClaim.ok ? unknownClaim.roundIndex : roundIndexAtEntry,
       });
     }
 
     // 2. LOOP BUDGET. Claimed before anything expensive, and claimed even for a
     //    call that is about to be denied — a caller must not be able to probe
     //    authorization for free, round after round.
+    // Recorded before the claim, not after: a session whose `claimToolCall` throws
+    // must not erase the areas of a tool we had already identified.
+    faultAreasChecked = tool.requiredAreas;
     const claim = input.session.claimToolCall();
     if (!claim.ok) {
       return await fail("call_budget_exhausted", {
@@ -324,6 +354,7 @@ export async function invokeDiagnosticsTool(
       });
     }
     const roundIndex = claim.roundIndex;
+    faultRoundIndex = roundIndex;
 
     // 3. AUTHORIZE — fresh, from the database, AND across every declared area.
     const authorization = await authorizeDiagnosticsToolCall({
@@ -339,6 +370,7 @@ export async function invokeDiagnosticsTool(
         missingAreas: authorization.missingAreas,
       });
     }
+    faultAuthOutcome = "allowed";
 
     // 4. ARGUMENTS. Parsed by the entry's own `.strict()` schema and bound
     //    positionally by the entry's own `bind`. The hash is of the ACCEPTED
@@ -353,6 +385,7 @@ export async function invokeDiagnosticsTool(
       });
     }
     const argsHash = sha256Hex(canonicalStringify(binding.args));
+    faultArgsHash = argsHash;
 
     // 5. METERING. Can't-record ⇒ don't-read (ADR-005 §5), the same rule AID-2
     //    applies to paid provider calls.
@@ -383,7 +416,7 @@ export async function invokeDiagnosticsTool(
     //    LIMIT so truncation can be reported honestly rather than guessed at.
     const rowLimit = Math.min(tool.rowLimit, DIAGNOSTICS_TOOL_BOUNDS.maxRows);
     const read = await runDiagnosticsReadOnlyQuery(
-      { sql: tool.sql, params: binding.params, rowLimit },
+      { sql: tool.sql, params: binding.params, rowLimit, toolId: tool.id },
       database.pool,
     );
     if (!read.ok) {
@@ -498,9 +531,10 @@ export async function invokeDiagnosticsTool(
     });
     return await fail("internal_error", {
       toolId: safeToolId,
-      areasChecked: [],
-      authOutcome: "denied",
-      roundIndex: roundIndexAtEntry,
+      areasChecked: faultAreasChecked,
+      authOutcome: faultAuthOutcome,
+      argsHash: faultArgsHash,
+      roundIndex: faultRoundIndex,
     });
   }
 }

@@ -124,12 +124,20 @@ export function reportWebhookError(
 
 /**
  * Bridge a genuine AI FAILURE to Sentry (scoped, deduped). Scoped like
- * cron/webhook: called from the usage-recording failure path (`recordAiUsage`)
- * and the chat route's provider-auth-failure path. A failure to write a usage
- * row means the deployment can no longer prove what it spent (and it drives the
- * metering circuit breaker that stops further spend); a provider-auth failure
- * means the stored Anthropic key is bad and an operator must re-enter it. Both
- * are real alerting events (#2211, C3).
+ * cron/webhook: called from the AI failure paths where an operator must act —
+ * usage recording (`recordAiUsage`), the chat route's provider-auth failure, and
+ * the AI Diagnostics evidence channels. A failure to write a usage row means the
+ * deployment can no longer prove what it spent (and it drives the metering circuit
+ * breaker that stops further spend); a provider-auth failure means the stored
+ * Anthropic key is bad and an operator must re-enter it; a diagnostics credential
+ * or audit failure means an admin-facing control refused and somebody has to
+ * repair it. All are real alerting events (#2211, C3).
+ *
+ * NOT for an expected, self-limiting outcome, even a failed one. `err` is passed
+ * straight to `Sentry.captureException` with NO redaction, so a caller must not
+ * hand it an error whose message can quote data — a PostgreSQL driver error quotes
+ * the failing statement and its parameter values, which is why
+ * `diagnostics/tools/database.ts` forwards only the SQLSTATE.
  */
 export function reportAiError(
   input: Omit<ReportScopedErrorInput, "scope">

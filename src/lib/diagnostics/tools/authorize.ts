@@ -38,22 +38,47 @@ import {
   hasAllAreaViews,
   missingAreaViews,
   readFreshAdminPermissionMatrix,
+  type FreshAdminPermissionMatrixFailure,
 } from "../page-context/authorize";
 
 export type DiagnosticsToolAuthorization =
   | { ok: true; matrix: AdminPermissionMatrix }
   | {
       ok: false;
-      reason: "actor_unresolved" | "actor_read_failed" | "permission_denied";
+      reason:
+        | "actor_unresolved"
+        | "actor_blocked"
+        | "actor_read_failed"
+        | "permission_denied";
       /** Populated only for `permission_denied`; empty otherwise. */
       missingAreas: AdminPermissionArea[];
     };
 
 /**
- * Authorize one tool invocation. Never throws: an unresolvable actor and an
- * unreadable role set are typed refusals the caller must treat as denials, and
- * they stay DISTINCT so a database outage and an authorization anomaly (a stale
- * or forged acting member id) are not the same audit row.
+ * Every way the fresh actor read can fail, mapped to the reason it reports. A
+ * TOTAL `Record` on purpose, and identical in shape to AID-4's own map in
+ * `page-context/resolve.ts`: a new failure code cannot compile until somebody has
+ * given it a reason. The ternary this replaced had a fallback, so
+ * `member_blocked` — an administratively locked-out admin — was filed as
+ * `actor_read_failed`, which the reference guide defines as a database fault and
+ * whose operator sentence invites a retry. One cause must not produce two
+ * different verdicts across the two evidence channels.
+ */
+const ACTOR_FAILURE_REASON: Record<
+  FreshAdminPermissionMatrixFailure,
+  "actor_unresolved" | "actor_blocked" | "actor_read_failed"
+> = {
+  member_not_found: "actor_unresolved",
+  member_blocked: "actor_blocked",
+  read_failed: "actor_read_failed",
+};
+
+/**
+ * Authorize one tool invocation. Never throws: an unresolvable actor, a locked-out
+ * actor and an unreadable role set are typed refusals the caller must treat as
+ * denials, and all three stay DISTINCT so a database outage, a deactivated account
+ * and an authorization anomaly (a stale or forged acting member id) are not the
+ * same audit row.
  *
  * An empty `requiredAreas` denies, because `hasAllAreaViews` refuses an empty
  * list: a tool that requires nothing would be a tool anyone may run, which the
@@ -78,10 +103,7 @@ export async function authorizeDiagnosticsToolCall(input: {
   if (!fresh.ok) {
     return {
       ok: false,
-      reason:
-        fresh.failure === "member_not_found"
-          ? "actor_unresolved"
-          : "actor_read_failed",
+      reason: ACTOR_FAILURE_REASON[fresh.failure],
       missingAreas: [],
     };
   }

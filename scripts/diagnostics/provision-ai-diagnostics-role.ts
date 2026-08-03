@@ -36,7 +36,9 @@ import { Client } from "pg";
 import {
   buildAiDiagnosticsRoleSql,
   DEFAULT_AI_DIAGNOSTICS_ROLE_NAME,
+  isSupportedProvisionIdentifier,
   SELECT_GRANTS,
+  SUPPORTED_IDENTIFIER_DESCRIPTION,
 } from "../../src/lib/diagnostics/tools/provision-role";
 import { DIAGNOSTICS_TOOL_BOUNDS } from "../../src/lib/diagnostics/tools/types";
 
@@ -50,6 +52,29 @@ function readEnv(name: string): string | undefined {
 function fail(message: string): never {
   console.error(`[provision-ai-diagnostics-role] ${message}`);
   process.exit(1);
+}
+
+/**
+ * Refuse an unsupported role or database name HERE, with the variable that carried
+ * it, rather than letting the SQL builder throw a raw stack trace at the operator.
+ *
+ * The refusal itself is right — the builder interpolates these names into
+ * dollar-quoted `DO $$ … $$` blocks — but a hyphenated or `user@server` name is
+ * legal in PostgreSQL and standard on managed providers, so an operator hitting it
+ * needs to be told what to change, and where. `AI_DIAGNOSTICS_DB_PRESERVE_TEMP_ROLES`
+ * matters most: it defaults to the APPLICATION role parsed out of `DATABASE_URL`, so
+ * a deployment whose app role is `tac-app` could not provision at all, however clean
+ * its own diagnostics role name was.
+ */
+function requireSupportedIdentifier(
+  value: string,
+  what: string,
+  source: string,
+): void {
+  if (isSupportedProvisionIdentifier(value)) return;
+  fail(
+    `Refusing to provision: ${what} "${value}" (from ${source}) cannot be used in the provisioning SQL. Use ${SUPPORTED_IDENTIFIER_DESCRIPTION}. See docs/ai-diagnostics/deployment.md.`,
+  );
 }
 
 function main(): void {
@@ -113,14 +138,37 @@ function main(): void {
       .filter(Boolean) ?? [adminRole]
   );
 
-  const statements = buildAiDiagnosticsRoleSql({
-    roleName,
-    password,
+  requireSupportedIdentifier(roleName, "the diagnostics role", "AI_DIAGNOSTICS_DB_ROLE");
+  requireSupportedIdentifier(
     databaseName,
-    preserveTempForRoles,
-    statementTimeoutMs: DIAGNOSTICS_TOOL_BOUNDS.statementTimeoutMs,
-    connectionLimit: DIAGNOSTICS_TOOL_BOUNDS.maxPoolConnections * 2,
-  });
+    "the database name",
+    "the provisioning connection string",
+  );
+  for (const preserved of preserveTempForRoles) {
+    requireSupportedIdentifier(
+      preserved,
+      "a role that must keep TEMPORARY",
+      "AI_DIAGNOSTICS_DB_PRESERVE_TEMP_ROLES (which defaults to the role in DATABASE_URL)",
+    );
+  }
+
+  let statements: string[];
+  try {
+    statements = buildAiDiagnosticsRoleSql({
+      roleName,
+      password,
+      databaseName,
+      preserveTempForRoles,
+      statementTimeoutMs: DIAGNOSTICS_TOOL_BOUNDS.statementTimeoutMs,
+      connectionLimit: DIAGNOSTICS_TOOL_BOUNDS.maxPoolConnections * 2,
+    });
+  } catch (err) {
+    // The builder refuses several things besides identifiers (a control character
+    // in the password, a non-positive timeout). Its message is safe to print — it
+    // never contains the password literal — but an unhandled throw here would print
+    // a stack trace instead of an actionable line.
+    fail(err instanceof Error ? err.message : String(err));
+  }
 
   if (dryRun) {
     console.log(

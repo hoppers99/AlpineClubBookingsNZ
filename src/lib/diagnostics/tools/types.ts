@@ -76,6 +76,30 @@ export const DIAGNOSTICS_TOOL_BOUNDS = {
   maxToolCallsPerSession: 16,
   /** Connections the dedicated SELECT-only pool may open. */
   maxPoolConnections: 3,
+  /**
+   * CLIENT-side deadline on any single query the diagnostics pool sends (pg's
+   * `query_timeout`), deliberately LONGER than `statementTimeoutMs`.
+   *
+   * The layering is the point, and the order matters. `statement_timeout` is the
+   * SERVER cancelling and replying, which is the control that produces SQLSTATE
+   * 57014 and the honest "that read took too long" answer — so it must win. This
+   * one only fires when no reply can travel back at all (a black-holed route, a
+   * wedged pooler holding the socket open), which pg otherwise leaves unbounded:
+   * `connectionTimeoutMillis` covers acquiring a client, never the round trip.
+   */
+  queryTimeoutMs: 10_000,
+  /**
+   * How long the SERVER's verdict on the diagnostics role stays good for. The
+   * probe is one round trip; caching it for the life of the process meant a role
+   * escalated by hand was reported `verified` until the container restarted.
+   */
+  rolePrivilegeTtlMs: 60_000,
+  /**
+   * Hard deadline on that probe, above `queryTimeoutMs` for the same
+   * server-control-wins reason: an unanswered probe must become the `unverified`
+   * refusal this substrate promises, never a readiness request that hangs.
+   */
+  privilegeProbeTimeoutMs: 12_000,
   /** Hard cap on the rendered evidence block handed to the model. */
   renderedBlockMaxChars: 8_000,
 } as const;
@@ -106,6 +130,16 @@ export type DiagnosticsToolFailureReason =
   | "metering_unavailable"
   /** The acting member row does not exist (a stale or forged acting member id). */
   | "actor_unresolved"
+  /**
+   * The acting member exists but their account is locked out of the admin surface
+   * — deactivated, or under a forced password change. Distinct from
+   * `actor_read_failed` because an administratively locked-out admin is not a
+   * database fault, and distinct from `permission_denied` because it is not a
+   * per-area outcome: there is no authorized actor here at all. AID-4's page
+   * context reports the same cause as `actor_blocked`, and the two evidence
+   * channels must not disagree about what happened.
+   */
+  | "actor_blocked"
   /** The fresh role read itself failed — kept distinct from `actor_unresolved`. */
   | "actor_read_failed"
   /** The caller lacks `view` on at least one area the tool declares. */
@@ -226,6 +260,8 @@ export const DIAGNOSTICS_TOOL_FAILURE_MESSAGES: Record<
     "Diagnostics usage cannot be recorded at the moment, so no tool was run.",
   actor_unresolved:
     "Your account could not be found, so no diagnostics tool was run.",
+  actor_blocked:
+    "Your admin account is currently locked out, so no diagnostics tool was run.",
   actor_read_failed:
     "Your permissions could not be checked just now, so no diagnostics tool was run.",
   permission_denied:

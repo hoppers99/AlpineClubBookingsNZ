@@ -126,15 +126,37 @@ export interface AiDiagnosticsRoleProvisionInput {
 const IDENTIFIER_PATTERN = /^[A-Za-z_][A-Za-z0-9_]{0,62}$/;
 
 /**
+ * The plain-English description of what that pattern accepts, so the operator CLI
+ * and the deployment guide say the same thing this file enforces.
+ */
+export const SUPPORTED_IDENTIFIER_DESCRIPTION =
+  "letters, digits and underscores only, starting with a letter or underscore, at most 63 characters (no '-', '.', '@' or '$')";
+
+/**
+ * True when this builder will accept `value` as a role or relation name.
+ *
+ * Exported so the operator CLI can refuse a bad name with its own actionable
+ * message, naming the environment variable that carried it, instead of letting a
+ * thrown `Error` reach the operator as a ten-frame Node stack trace. The
+ * restriction is real and documented: a managed-provider role name like `tac-app`
+ * or `user@server` is legal in PostgreSQL when quoted, and this builder refuses it
+ * rather than carrying a tagged-quote scheme for the dollar-quoted `DO $$ … $$`
+ * blocks below.
+ */
+export function isSupportedProvisionIdentifier(value: string): boolean {
+  return IDENTIFIER_PATTERN.test(value);
+}
+
+/**
  * Quote a validated identifier. The strict pattern above is the real control —
  * quoting is the belt. Anything outside the pattern throws rather than being
  * escaped, because a diagnostics role called `"; DROP …` is a configuration
  * mistake to refuse, not a string to sanitise.
  */
 export function quoteIdentifier(value: string): string {
-  if (!IDENTIFIER_PATTERN.test(value)) {
+  if (!isSupportedProvisionIdentifier(value)) {
     throw new Error(
-      `Refusing to build provisioning SQL for identifier ${JSON.stringify(value)}: use letters, digits and underscores only (no '$', which would break a dollar-quoted block).`,
+      `Refusing to build provisioning SQL for identifier ${JSON.stringify(value)}: use ${SUPPORTED_IDENTIFIER_DESCRIPTION}.`,
     );
   }
   return `"${value}"`;
@@ -251,6 +273,21 @@ $$;`);
   //    revokes run on every provision so a hand-added grant cannot outlive the
   //    file that is supposed to declare it, and the default-privilege revoke
   //    stops a future table inheriting a grant automatically.
+  //
+  //    The ROUTINES revoke is not the control it looks like, and the docs say so:
+  //    PostgreSQL grants EXECUTE on every new function to PUBLIC by default, and a
+  //    PUBLIC grant cannot be revoked for one role. Revoking role-specific
+  //    privileges (of which there are normally none) therefore leaves the role with
+  //    EXECUTE on every function in schema `public` — measured on the migrated
+  //    schema: 233 routines, all executable by the freshly provisioned role, before
+  //    and after this statement. It is kept because it does strip a hand-added
+  //    role-specific grant; what actually contains the residue is the READ ONLY
+  //    transaction plus the runtime self-check, which counts the
+  //    `SECURITY DEFINER` routines the role may execute and refuses on any (a
+  //    `SECURITY DEFINER` function runs as its owner, so it is the one shape that
+  //    could write). Revoking EXECUTE from PUBLIC is deliberately NOT done: it is
+  //    database-wide collateral that would break the application's own functions,
+  //    the same reasoning as `CREATE ON SCHEMA public` above.
   statements.push(
     `REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM ${role};`,
     `REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public FROM ${role};`,
