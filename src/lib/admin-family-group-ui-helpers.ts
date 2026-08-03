@@ -8,7 +8,23 @@ export interface MemberOption {
   email: string;
 }
 
-export interface FamilyGroupMemberRow extends MemberOption {
+/**
+ * The calculated age label for identity-sensitive Family Group workflows
+ * (#2568): the finished string the server produced with
+ * `formatMemberIdentityAge` ("47 years", "3 years 8 months", or
+ * "Age unavailable"). Optional on every type that carries it, because the
+ * routine payloads deliberately omit it — a surface that does not send it
+ * renders no age at all. Never a date of birth: age is calculated server-side
+ * so the browser is not handed the birth date to work it out from.
+ */
+export interface WithMemberAgeLabel {
+  ageLabel?: string | null;
+}
+
+/** A member option shown while confirming a specific member's identity (#2568). */
+export interface MemberIdentityOption extends MemberOption, WithMemberAgeLabel {}
+
+export interface FamilyGroupMemberRow extends MemberOption, WithMemberAgeLabel {
   ageTier: string;
   active: boolean;
   canLogin?: boolean;
@@ -41,11 +57,13 @@ export interface ParentLinkSummary extends MemberOption {
   parentLinkType: "PRIMARY" | "SECONDARY";
 }
 
-export interface RequestMemberMatch extends MemberOption {
+// #2568: `ageLabel`, NOT `dateOfBirth`. A suggested match is a real member
+// record, and the admin only needs to tell one person from another — so the
+// server sends the calculated age and keeps the stored birth date server-side.
+export interface RequestMemberMatch extends MemberOption, WithMemberAgeLabel {
   ageTier: string;
   active: boolean;
   canLogin?: boolean;
-  dateOfBirth: string | null;
   alreadyInGroup: boolean;
   parentLinks?: ParentLinkSummary[];
 }
@@ -59,7 +77,10 @@ export interface FamilyGroupRequest {
     | "REMOVAL_REQUEST"
     | "GROUP_CREATE";
   createdAt: string;
-  requester: MemberOption;
+  // #2568: the requester carries an age too — on a join request the requester
+  // IS the person being added to the group, and on the others their identity is
+  // still part of the decision being approved.
+  requester: MemberIdentityOption;
   familyGroup: {
     id: string;
     name: string | null;
@@ -81,6 +102,12 @@ export interface FamilyGroupRequest {
   requestNotes?: string | null;
   requestedAgeTier?: string | null;
   requestedAgeTierLabel?: string | null;
+  // #2568: the age implied by the date of birth the REQUESTER supplied for the
+  // person being added. Calculated server-side from the request's own declared
+  // value, so the create-or-link decision can be checked against a candidate
+  // record's age without doing the arithmetic in the admin's head.
+  childAgeLabel?: string | null;
+  requestedAgeLabel?: string | null;
   canCreateMemberFromRequest?: boolean;
   subjectMemberId?: string | null;
   subjectMember?: {
@@ -90,6 +117,8 @@ export interface FamilyGroupRequest {
     email: string;
     ageTier: string;
     active: boolean;
+    /** #2568 — the member being REMOVED from the group. */
+    ageLabel?: string | null;
   } | null;
   // For GROUP_CREATE: the partner to auto-invite on approval (if any).
   invitedMemberId?: string | null;
@@ -100,6 +129,8 @@ export interface FamilyGroupRequest {
     email: string;
     ageTier?: string;
     active?: boolean;
+    /** #2568 — the member who gets invited if this approval goes through. */
+    ageLabel?: string | null;
   } | null;
   matchingMembers: RequestMemberMatch[];
 }
@@ -109,11 +140,12 @@ export interface SharedEmailCluster<T extends FamilyGroupMemberRow = FamilyGroup
   members: T[];
 }
 
-export interface FamilyGroupRequestSearchResult extends MemberOption {
+export interface FamilyGroupRequestSearchResult
+  extends MemberOption,
+    WithMemberAgeLabel {
   ageTier: string;
   active: boolean;
   canLogin?: boolean;
-  dateOfBirth?: string | null;
   parentLinks?: ParentLinkSummary[];
 }
 
@@ -264,7 +296,9 @@ export function mapFamilyGroupRequestSearchResults(
       ageTier: member.ageTier,
       active: member.active,
       canLogin: member.canLogin,
-      dateOfBirth: member.dateOfBirth ?? null,
+      // #2568: the server-calculated age, carried through as-is. Nothing here
+      // ever sees or derives a date of birth.
+      ageLabel: member.ageLabel ?? null,
       parentLinks: member.parentLinks ?? [],
       alreadyInGroup: request.familyGroup.members.some(
         (groupMember) => groupMember.id === member.id

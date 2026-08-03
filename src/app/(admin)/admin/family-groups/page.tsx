@@ -12,6 +12,7 @@ import { Trash2, Plus, Users, X, Edit2, Search } from "lucide-react";
 import { FamilyGroupEditor } from "@/components/admin/family-group-editor";
 import { DatasetResetButton } from "@/components/admin/dataset-reset-button";
 import { AgeTierBadge } from "@/components/admin/family-groups/age-tier-badge";
+import { MemberAgeChip } from "@/components/admin/family-groups/member-age-display";
 import { FamilyGroupRequestReviewSection } from "@/components/admin/family-groups/request-review-section";
 import { AdminViewOnlySectionBanner, ViewOnlyActionButton } from "@/components/admin/view-only-action";
 import {
@@ -22,7 +23,7 @@ import {
   formatFamilyGroupDate,
   type FamilyGroupRequest,
   type FamilyGroupSummary,
-  type MemberOption,
+  type MemberIdentityOption,
 } from "@/lib/admin-family-group-ui-helpers";
 import { useScrollToFeedback } from "@/hooks/use-scroll-to-feedback";
 
@@ -53,8 +54,10 @@ export default function FamilyGroupsPage() {
   // #2257 — the example lives UNDER the field, not inside it as grey pseudo-content.
   const groupNameHint = useFieldHint();
   const [memberSearch, setMemberSearch] = useState("");
-  const [searchResults, setSearchResults] = useState<MemberOption[]>([]);
-  const [selectedMembers, setSelectedMembers] = useState<MemberOption[]>([]);
+  // #2568: candidates and the pending set both carry the calculated age — the
+  // new-group form is where members are LINKED, an identity-sensitive action.
+  const [searchResults, setSearchResults] = useState<MemberIdentityOption[]>([]);
+  const [selectedMembers, setSelectedMembers] = useState<MemberIdentityOption[]>([]);
   const [searching, setSearching] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
@@ -123,8 +126,11 @@ export default function FamilyGroupsPage() {
 
     const timer = setTimeout(async () => {
       try {
+        // #2568: the family-group lookup, which answers with each candidate's
+        // calculated age and no date of birth, and applies the active /
+        // non-archived / ten-row limits itself.
         const res = await fetch(
-          `/api/admin/members?q=${encodeURIComponent(memberSearch)}&type=primary&active=true&pageSize=10`
+          `/api/admin/family-groups/member-search?q=${encodeURIComponent(memberSearch)}`
         );
         if (res.ok && !cancelled) {
           const data = await res.json();
@@ -132,12 +138,13 @@ export default function FamilyGroupsPage() {
           const selectedIds = new Set(selectedMembers.map((m) => m.id));
           setSearchResults(
             data.members
-              .filter((m: MemberOption) => !selectedIds.has(m.id))
-              .map((m: MemberOption) => ({
+              .filter((m: MemberIdentityOption) => !selectedIds.has(m.id))
+              .map((m: MemberIdentityOption) => ({
                 id: m.id,
                 firstName: m.firstName,
                 lastName: m.lastName,
                 email: m.email,
+                ageLabel: m.ageLabel,
               }))
           );
         }
@@ -260,7 +267,7 @@ export default function FamilyGroupsPage() {
     scrollToError(editorAnchorRef);
   }, [showForm, formOpenNonce, scrollToError]);
 
-  function addMember(member: MemberOption) {
+  function addMember(member: MemberIdentityOption) {
     if (!canEditMembership) return;
     setSelectedMembers((prev) => [...prev, member]);
     setMemberSearch("");
@@ -636,9 +643,14 @@ export default function FamilyGroupsPage() {
                         <Badge
                           key={m.id}
                           variant="secondary"
-                          className="flex items-center gap-1 py-1 px-2"
+                          // #2568: wraps rather than overflowing once a long name
+                          // and an age share the pill on a narrow screen.
+                          className="flex max-w-full flex-wrap items-center gap-1 py-1 px-2"
                         >
-                          {m.firstName} {m.lastName}
+                          <span className="break-words">
+                            {m.firstName} {m.lastName}
+                          </span>
+                          <MemberAgeChip ageLabel={m.ageLabel} />
                           <button
                             type="button"
                             onClick={() => removeMember(m.id)}
@@ -674,10 +686,17 @@ export default function FamilyGroupsPage() {
                             disabled={canEditMembership !== true}
                             className="w-full text-left px-3 py-2 hover:bg-accent text-sm disabled:cursor-not-allowed disabled:opacity-50"
                           >
-                            <span className="font-medium">
-                              {m.firstName} {m.lastName}
+                            {/* #2568: age beside the name, so the admin links
+                                the intended generation. */}
+                            <span className="flex flex-wrap items-center gap-2">
+                              <span className="break-words font-medium">
+                                {m.firstName} {m.lastName}
+                              </span>
+                              <MemberAgeChip ageLabel={m.ageLabel} />
                             </span>
-                            <span className="text-muted-foreground ml-2">{m.email}</span>
+                            <span className="block break-words text-muted-foreground">
+                              {m.email}
+                            </span>
                           </button>
                         ))}
                       </div>
@@ -761,6 +780,13 @@ export default function FamilyGroupsPage() {
                         </div>
                       </td>
                       <td className="px-4 py-3">
+                        {/* #2568: NO age on these pills. This is the routine
+                            Family Group overview — a roster of who is in each
+                            group, with no action attached to an individual
+                            member. Age belongs to the identity-sensitive
+                            screens (the new-group form above, the request
+                            review cards, and the per-group editor), and the
+                            list payload deliberately does not carry it. */}
                         <div className="flex flex-wrap gap-1">
                           {g.members
                             .map((m) => (

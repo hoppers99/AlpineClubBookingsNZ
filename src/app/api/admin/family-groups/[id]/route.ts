@@ -5,6 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { logAudit } from "@/lib/audit";
 import logger from "@/lib/logger";
 import { hasMemberCompletedAccountSetup } from "@/lib/password-reset";
+import { formatMemberIdentityAge } from "@/lib/member-age";
 
 const updateFamilyGroupSchema = z.object({
   name: z.string().min(1).max(200).optional(),
@@ -13,12 +14,22 @@ const updateFamilyGroupSchema = z.object({
 
 /**
  * GET /api/admin/family-groups/[id]
+ *
+ * Backs the family-group EDITOR, where an administrator picks a specific member
+ * to keep, add or remove. Each member therefore carries the calculated age
+ * (#2568) — and never the stored date of birth.
+ *
+ * The membership-view permission is named explicitly rather than inferred from
+ * the request path, so the identity information cannot be served to a general
+ * administrator on a request that reaches the handler without the path header.
  */
 export async function GET(
   _req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const guard = await requireAdmin();
+  const guard = await requireAdmin({
+    permission: { area: "membership", level: "view" },
+  });
   if (!guard.ok) return guard.response;
   const { id } = await params;
   const group = await prisma.familyGroup.findUnique({
@@ -47,6 +58,9 @@ export async function GET(
               passwordHash: true,
               passwordChangedAt: true,
               lastLoginAt: true,
+              // #2568: read to calculate the age below, then dropped — see the
+              // destructure in the mapping.
+              dateOfBirth: true,
             },
           },
         },
@@ -73,9 +87,13 @@ export async function GET(
     // #2520: no per-membership `role` in the payload — the column is retired and
     // nothing in the admin UI read it out of this response.
     members: group.memberships.map((m) => {
-      const { passwordHash, passwordChangedAt, lastLoginAt, ...member } = m.member;
+      // #2568: `dateOfBirth` is destructured out with the credential fields, so
+      // only the calculated `ageLabel` reaches the browser.
+      const { passwordHash, passwordChangedAt, lastLoginAt, dateOfBirth, ...member } =
+        m.member;
       return {
         ...member,
+        ageLabel: formatMemberIdentityAge(dateOfBirth),
         hasPassword: Boolean(passwordHash) && hasMemberCompletedAccountSetup({
           passwordChangedAt,
           lastLoginAt,

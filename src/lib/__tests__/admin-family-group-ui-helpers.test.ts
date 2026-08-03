@@ -47,7 +47,8 @@ const baseRequest: FamilyGroupRequest = {
       ageTier: "CHILD",
       active: true,
       canLogin: false,
-      dateOfBirth: "2018-01-01",
+      // #2568: matches carry the server-calculated age, never a birth date.
+      ageLabel: "8 years",
       alreadyInGroup: false,
       parentLinks: [],
     },
@@ -92,7 +93,7 @@ describe("admin-family-group-ui-helpers", () => {
         ageTier: "CHILD",
         active: true,
         canLogin: false,
-        dateOfBirth: "2018-01-01",
+        ageLabel: "8 years",
       },
       {
         id: "parent-1",
@@ -114,7 +115,7 @@ describe("admin-family-group-ui-helpers", () => {
         ageTier: "CHILD",
         active: true,
         canLogin: false,
-        dateOfBirth: "2018-01-01",
+        ageLabel: "8 years",
         parentLinks: [],
         alreadyInGroup: false,
       },

@@ -1,5 +1,6 @@
 import { Badge } from "@/components/ui/badge";
 import { ViewOnlyActionButton } from "@/components/admin/view-only-action";
+import { MemberAgeChip } from "@/components/admin/family-groups/member-age-display";
 import {
   getMemberName,
   type FamilyGroupMemberRow,
@@ -94,9 +95,13 @@ export function FamilyGroupLoginHolderSection({
                         />
                         <div className="min-w-0 flex-1">
                           <div className="flex flex-wrap items-center gap-2">
-                            <span className="text-sm font-medium text-foreground">
+                            <span className="break-words text-sm font-medium text-foreground">
                               {getMemberName(member)}
                             </span>
+                            {/* #2568: identity-sensitive — this radio decides
+                                which of two adults who share a surname AND an
+                                email address keeps the login. */}
+                            <MemberAgeChip ageLabel={member.ageLabel} />
                             {member.canLogin && (
                               <Badge variant="secondary" className="bg-success-3 text-success-11 border-success-6">
                                 Current

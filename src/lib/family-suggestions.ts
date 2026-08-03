@@ -1,5 +1,6 @@
 import { prisma } from "./prisma";
 import logger from "./logger";
+import { formatMemberIdentityAge } from "@/lib/member-age";
 
 export interface SuggestedFamilyGroup {
   signature: string;
@@ -14,6 +15,14 @@ export interface SuggestedFamilyGroup {
     ageTier: string;
     canLogin: boolean;
     xeroContactId: string | null;
+    /**
+     * #2568: calculated age, for the duplicate-prevention decision this screen
+     * exists to support — creating a group here binds specific member records
+     * together, and two ungrouped people who share a surname and an email are
+     * exactly the case where a parent and a child get confused. Server-side
+     * only; the stored date of birth is never returned.
+     */
+    ageLabel: string;
   }>;
 }
 
@@ -73,6 +82,8 @@ export async function suggestFamilyGroups(): Promise<{
         ageTier: true,
         canLogin: true,
         xeroContactId: true,
+        // #2568: read to calculate `ageLabel`; never returned as-is.
+        dateOfBirth: true,
         familyGroupMemberships: { select: { familyGroupId: true } },
       },
     }),
@@ -135,6 +146,7 @@ export async function suggestFamilyGroups(): Promise<{
         ageTier: m.ageTier,
         canLogin: m.canLogin,
         xeroContactId: m.xeroContactId,
+        ageLabel: formatMemberIdentityAge(m.dateOfBirth),
       })),
     });
 
@@ -176,6 +188,7 @@ export async function suggestFamilyGroups(): Promise<{
           ageTier: m.ageTier,
           canLogin: m.canLogin,
           xeroContactId: m.xeroContactId,
+          ageLabel: formatMemberIdentityAge(m.dateOfBirth),
         })),
       })
     );
