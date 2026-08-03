@@ -1,12 +1,15 @@
 import { AgeTier } from "@prisma/client";
 
 import type {
+  AdultMemberHostingConsequence,
   AdultMemberHostingPolicyExceptionViolation,
+  AdultMemberHostScope,
   PolicyExceptionCapacityMode,
   QualifyingHostsForNight,
   ResolvedPolicyScope,
   UncoveredGuestNight,
 } from "@/lib/booking-policy-exceptions";
+import { ADULT_MEMBER_HOST_SCOPES } from "@/lib/booking-policy-exceptions";
 
 /**
  * The configurable adult-member hosting policy (#2364, epic decision D-R3).
@@ -49,10 +52,48 @@ import type {
 export type AdultMemberHostingMode =
   | "INHERIT"
   | "DISABLED"
-  | "ADMIN_REVIEW_REQUIRED";
+  | "ADMIN_REVIEW_REQUIRED"
+  | "ENFORCED";
 
 /** The mode an evaluation can actually run under: INHERIT always resolves away. */
-export type EffectiveAdultMemberHostingMode = "DISABLED" | "ADMIN_REVIEW_REQUIRED";
+export type EffectiveAdultMemberHostingMode =
+  | "DISABLED"
+  | "ADMIN_REVIEW_REQUIRED"
+  | "ENFORCED";
+
+/**
+ * The scopes a club or lodge has switched on (#2569 §2), as booleans rather than
+ * a set, so the shape matches the three independent checkboxes the owner asked
+ * for and matches the three columns one-for-one.
+ */
+export interface AdultMemberHostScopeSet {
+  sameBooking: boolean;
+  anyMemberAtLodge: boolean;
+  nominatedHost: boolean;
+}
+
+/**
+ * What a club that has never touched the second dimension gets: the pre-#2569
+ * rule exactly (#2569 §15).
+ *
+ * This constant is the whole reason the upgrade moves nobody's behaviour. Every
+ * existing policy row carries NULL host-scope columns, every NULL set resolves
+ * here, and this set is "an eligible adult member on the same booking" — which is
+ * what the rule has always meant. Widening it would silently broaden a policy the
+ * club never reviewed, which §15 forbids in as many words.
+ */
+export const DEFAULT_ADULT_MEMBER_HOST_SCOPES: AdultMemberHostScopeSet =
+  Object.freeze({
+    sameBooking: true,
+    anyMemberAtLodge: false,
+    nominatedHost: false,
+  });
+
+/** Where the resolved value for one DIMENSION came from (#2569 §16 display). */
+export type AdultMemberHostingSettingSource =
+  | "LODGE"
+  | "CLUB_WIDE"
+  | "BUILT_IN_DEFAULT";
 
 export interface AdultMemberHostingPolicyLike {
   id: string;
@@ -61,6 +102,16 @@ export interface AdultMemberHostingPolicyLike {
   mode: AdultMemberHostingMode;
   capacityMode: PolicyExceptionCapacityMode;
   version: number;
+  /**
+   * The host-qualification scope set, ALL THREE NULL TOGETHER meaning "this
+   * scope did not decide" (the database CHECK holds them to all-null or all-set).
+   * Optional on the interface as well as nullable, so a caller that reads a
+   * narrowed select — or a test double written before #2569 — resolves the
+   * built-in default rather than failing to compile.
+   */
+  hostScopeSameBooking?: boolean | null;
+  hostScopeAnyMemberAtLodge?: boolean | null;
+  hostScopeNominatedHost?: boolean | null;
 }
 
 /**
@@ -141,6 +192,18 @@ export interface HostingParticipant {
    * "the same booking" keeps meaning what it says.
    */
   hostOnly?: boolean;
+  /**
+   * WHICH host scope this row supplies coverage under (#2569 §2). Absent means
+   * `SAME_BOOKING`, and that default is what keeps every existing loader — and
+   * every pre-#2569 test double — evaluating exactly as it did before.
+   *
+   * This is the seam the OR logic turns on: the evaluator counts a host only if
+   * the club has that host's scope switched on, so a loader for a wider scope is
+   * added by stamping its participants rather than by touching the rule. A #738
+   * split sibling is deliberately `SAME_BOOKING`: a split pair is one party the
+   * database happens to store as two rows, not a second booking at the lodge.
+   */
+  hostScope?: AdultMemberHostScope;
 }
 
 export interface ResolvedAdultMemberHostingPolicy {
@@ -150,6 +213,15 @@ export interface ResolvedAdultMemberHostingPolicy {
   policyId: string | null;
   policyVersion: number;
   resolvedScope: ResolvedPolicyScope;
+  /**
+   * The host-qualification scope set in force, resolved INDEPENDENTLY of `mode`
+   * (#2569 §2). A lodge may override the consequence while inheriting the club's
+   * scope set, or override the scope set while inheriting the consequence, so the
+   * two dimensions can genuinely come from different rows — `resolvedScope`
+   * describes where the CONSEQUENCE came from, `hostScopeSource` where this did.
+   */
+  hostScopes: AdultMemberHostScopeSet;
+  hostScopeSource: AdultMemberHostingSettingSource;
 }
 
 /** Frozen onto every violation so a snapshot names the rule it came from. */
@@ -173,6 +245,79 @@ export class UnknownAdultMemberHostingScopeError extends Error {
     super(`Cannot resolve the adult-member hosting policy scope: ${detail}`);
     this.name = "UnknownAdultMemberHostingScopeError";
   }
+}
+
+/**
+ * An ACTIVE hosting policy that enables no host scope at all (#2569 §2/§16).
+ *
+ * Unevaluatable rather than permissive: with nothing able to supply coverage,
+ * every non-member guest-night is uncovered, so "review required" would flag
+ * every single booking and "enforced" would refuse every single one. Neither is a
+ * policy anybody chose, and the alternative reading — treat it as disabled —
+ * would silently drop the club's rule.
+ *
+ * REACHED ONLY BY A MISCONFIGURATION THE API REFUSES. The admin route validates
+ * the resolved combination for every affected scope before saving, and config
+ * transfer refuses it in its dry run, so this exists for operator psql and for
+ * any future writer: it fails loudly, naming the scope, rather than letting a
+ * half-saved policy decide bookings.
+ */
+export class EmptyAdultMemberHostScopeSetError extends Error {
+  constructor(readonly detail: string) {
+    super(
+      "The adult-member hosting policy is active but no adult members are set " +
+        `to count, so it cannot be evaluated: ${detail}`,
+    );
+    this.name = "EmptyAdultMemberHostScopeSetError";
+  }
+}
+
+/** Whether a row decided the second dimension at all. */
+function rowHasHostScopes(row: AdultMemberHostingPolicyLike): boolean {
+  // The database CHECK holds the three columns to all-null or all-set, so any
+  // one of them being non-null means the row decided. Testing all three and
+  // requiring agreement would turn a constraint violation into a silent
+  // fall-through to the club default; testing one would trust the constraint
+  // more than it is worth here. Requiring ALL to be set is the safe reading:
+  // a half-written row inherits rather than asserting a scope set nobody chose.
+  return (
+    typeof row.hostScopeSameBooking === "boolean" &&
+    typeof row.hostScopeAnyMemberAtLodge === "boolean" &&
+    typeof row.hostScopeNominatedHost === "boolean"
+  );
+}
+
+function rowHostScopes(
+  row: AdultMemberHostingPolicyLike,
+): AdultMemberHostScopeSet {
+  return {
+    sameBooking: row.hostScopeSameBooking === true,
+    anyMemberAtLodge: row.hostScopeAnyMemberAtLodge === true,
+    nominatedHost: row.hostScopeNominatedHost === true,
+  };
+}
+
+/** The enabled scopes as a sorted list, for the frozen snapshot and the UI. */
+export function enabledHostScopeList(
+  scopes: AdultMemberHostScopeSet,
+): AdultMemberHostScope[] {
+  // Iterating the canonical constant rather than Object.keys keeps the order
+  // stable and independent of the object literal, which matters because this
+  // list is frozen onto a snapshot that two evaluations must produce identically.
+  return ADULT_MEMBER_HOST_SCOPES.filter((scope) =>
+    hostScopeEnabled(scopes, scope),
+  );
+}
+
+export function hostScopeSetIsEmpty(scopes: AdultMemberHostScopeSet): boolean {
+  return !scopes.sameBooking && !scopes.anyMemberAtLodge && !scopes.nominatedHost;
+}
+
+/** Whether a resolved consequence actually evaluates the rule. */
+export function hostingModeIsActive(
+  mode: EffectiveAdultMemberHostingMode,
+): mode is AdultMemberHostingConsequence {
+  return mode === "ADMIN_REVIEW_REQUIRED" || mode === "ENFORCED";
 }
 
 /**
@@ -207,6 +352,15 @@ export function resolveAdultMemberHostingPolicy(
   }
 
   const lodgeRow = lodgeRows[0] ?? null;
+  const clubRow = clubRows[0] ?? null;
+
+  // The SECOND dimension, resolved BEFORE and INDEPENDENTLY of the consequence
+  // (#2569 §2). A lodge may override the consequence while inheriting the club's
+  // scope set, or override the scope set while inheriting the consequence, so a
+  // lodge row that says INHERIT about its MODE can still carry a custom scope
+  // set — which is why this cannot be folded into the branches below.
+  const hostScopes = resolveHostScopes(lodgeRow, clubRow);
+
   if (lodgeRow && lodgeRow.mode !== "INHERIT") {
     return {
       mode: lodgeRow.mode,
@@ -218,10 +372,10 @@ export function resolveAdultMemberHostingPolicy(
         lodgeId: effectiveLodgeId,
         effectiveLodgeId,
       },
+      ...hostScopes,
     };
   }
 
-  const clubRow = clubRows[0] ?? null;
   if (clubRow) {
     if (clubRow.mode === "INHERIT") {
       // The migration's CHECK constraint forbids this, so reaching it means the
@@ -241,6 +395,7 @@ export function resolveAdultMemberHostingPolicy(
         lodgeId: null,
         effectiveLodgeId,
       },
+      ...hostScopes,
     };
   }
 
@@ -258,6 +413,36 @@ export function resolveAdultMemberHostingPolicy(
       lodgeId: null,
       effectiveLodgeId,
     },
+    ...hostScopes,
+  };
+}
+
+/**
+ * Resolve the HOST-QUALIFICATION dimension on its own (#2569 §2).
+ *
+ * Lodge decision, else club decision, else the built-in default. "Decision"
+ * means all three columns are set — a lodge that left them NULL is the explicit
+ * `Inherit club host scopes` option, and a club that left them NULL never chose,
+ * which is what keeps every pre-#2569 row on same-booking-only coverage (§15).
+ *
+ * Deliberately does NOT consult `mode`. The dimensions are independent, so a
+ * lodge inheriting the consequence may still customise the scope set, and a lodge
+ * whose consequence is DISABLED keeps its saved scope set for later reuse (§16)
+ * rather than having it reset to the default on read.
+ */
+function resolveHostScopes(
+  lodgeRow: AdultMemberHostingPolicyLike | null,
+  clubRow: AdultMemberHostingPolicyLike | null,
+): Pick<ResolvedAdultMemberHostingPolicy, "hostScopes" | "hostScopeSource"> {
+  if (lodgeRow && rowHasHostScopes(lodgeRow)) {
+    return { hostScopes: rowHostScopes(lodgeRow), hostScopeSource: "LODGE" };
+  }
+  if (clubRow && rowHasHostScopes(clubRow)) {
+    return { hostScopes: rowHostScopes(clubRow), hostScopeSource: "CLUB_WIDE" };
+  }
+  return {
+    hostScopes: DEFAULT_ADULT_MEMBER_HOST_SCOPES,
+    hostScopeSource: "BUILT_IN_DEFAULT",
   };
 }
 
@@ -325,22 +510,77 @@ function uniqueSortedNights(nights: readonly string[]): string[] {
 }
 
 /**
+ * Which adult members count, as a member-facing clause (#2569 §17: somebody told
+ * their booking is uncovered must also be told what would cover it).
+ *
+ * Never names a person. Under `ANY_MEMBER_AT_LODGE` that is a privacy
+ * requirement, not a style choice (§5) — the member is told coverage is missing,
+ * never who else is or is not at the lodge.
+ */
+function describeHostScopes(scopes: AdultMemberHostScopeSet): string {
+  const parts: string[] = [];
+  if (scopes.sameBooking) parts.push("an adult member staying on this booking");
+  if (scopes.anyMemberAtLodge) {
+    parts.push("any adult member staying at the lodge that night");
+  }
+  if (scopes.nominatedHost) {
+    parts.push("an adult member you nominate who is staying at the lodge");
+  }
+  if (parts.length === 0) return "an adult member";
+  if (parts.length === 1) return parts[0];
+  return `${parts.slice(0, -1).join(", ")} or ${parts[parts.length - 1]}`;
+}
+
+/**
  * The member-facing sentence. Names the rule and the size of the problem, never
  * a guest — the guest/night evidence is in `requirements` for the admin screen
  * and the server log, and this string is rendered straight into a booking
  * response.
+ *
+ * TWO SENTENCES THAT DIFFER BY CONSEQUENCE (#2569 §1: "use clear
+ * consequence-based wording"). Review mode tells the member the booking is made
+ * and an admin will look; enforced mode tells them it cannot be confirmed as it
+ * stands and names the four ways out the owner listed. Saying "an admin needs to
+ * look at it" under enforced would be false — there is no booking yet.
+ *
+ * THE REVIEW-MODE SENTENCE IS UNCHANGED for a club on the built-in scope set, to
+ * the byte. That is the migration promise in §15 reaching as far as the words the
+ * member reads: a club that upgrades and changes nothing sees no difference
+ * anywhere, including here.
  */
 export function formatAdultMemberHostingMessage(
   uncoveredCount: number,
   affectedNightCount: number,
+  consequence: AdultMemberHostingConsequence = "ADMIN_REVIEW_REQUIRED",
+  scopes: AdultMemberHostScopeSet = DEFAULT_ADULT_MEMBER_HOST_SCOPES,
 ): string {
   const nights = `${affectedNightCount} night${affectedNightCount === 1 ? "" : "s"}`;
   const guestNights = `${uncoveredCount} guest night${uncoveredCount === 1 ? "" : "s"}`;
-  return (
-    "This club asks that an adult member stays on the same booking as any " +
-    `non-member guest. On ${nights} of this booking, ${guestNights} have no ` +
-    "adult member staying, so an admin needs to look at it."
-  );
+
+  if (
+    consequence === "ADMIN_REVIEW_REQUIRED" &&
+    scopes.sameBooking &&
+    !scopes.anyMemberAtLodge &&
+    !scopes.nominatedHost
+  ) {
+    return (
+      "This club asks that an adult member stays on the same booking as any " +
+      `non-member guest. On ${nights} of this booking, ${guestNights} have no ` +
+      "adult member staying, so an admin needs to look at it."
+    );
+  }
+
+  const rule =
+    "This club asks that every night a non-member guest stays is covered by " +
+    `${describeHostScopes(scopes)}.`;
+  const size = `On ${nights} of this booking, ${guestNights} are not covered.`;
+
+  return consequence === "ADMIN_REVIEW_REQUIRED"
+    ? `${rule} ${size} An admin needs to look at it.`
+    : `${rule} ${size} This booking cannot be confirmed as it stands. You can ` +
+        "add adult member cover for those nights, change the guests or the " +
+        "dates, choose another lodge, or ask a Booking Officer to approve an " +
+        "exception.";
 }
 
 /**
@@ -361,11 +601,27 @@ export function evaluateAdultMemberHostingWithPolicy(
   participants: readonly HostingParticipant[],
   resolved: ResolvedAdultMemberHostingPolicy,
 ): AdultMemberHostingPolicyExceptionViolation | null {
-  if (resolved.mode !== "ADMIN_REVIEW_REQUIRED") return null;
+  if (!hostingModeIsActive(resolved.mode)) return null;
+  const consequence = resolved.mode;
+  const scopes = resolved.hostScopes;
+  if (hostScopeSetIsEmpty(scopes)) {
+    throw new EmptyAdultMemberHostScopeSetError(
+      `policy ${resolved.policyId ?? "unconfigured"} at lodge ` +
+        `${resolved.resolvedScope.effectiveLodgeId} is ${consequence}`,
+    );
+  }
 
-  // Nights on which at least one qualifying adult member is staying.
+  // Nights on which at least one qualifying adult member is staying UNDER AN
+  // ENABLED SCOPE. This is the whole OR rule (#2569 §2): a host is counted only
+  // where the club has that host's scope switched on, and a night is covered if
+  // ANY enabled scope supplied a host for it. Different nights of one booking can
+  // therefore be covered by different scopes and different members, because the
+  // decision is taken per night rather than per booking.
   const hostsByNight = new Map<string, Set<string>>();
+  const scopesByNight = new Map<string, Set<AdultMemberHostScope>>();
   for (const participant of participants) {
+    const participantScope = participant.hostScope ?? "SAME_BOOKING";
+    if (!hostScopeEnabled(scopes, participantScope)) continue;
     if (!participantQualifiesAsHost(participant)) continue;
     const memberId = participant.member?.id;
     if (!memberId) continue;
@@ -373,6 +629,10 @@ export function evaluateAdultMemberHostingWithPolicy(
       const hosts = hostsByNight.get(night) ?? new Set<string>();
       hosts.add(memberId);
       hostsByNight.set(night, hosts);
+      const nightScopes =
+        scopesByNight.get(night) ?? new Set<AdultMemberHostScope>();
+      nightScopes.add(participantScope);
+      scopesByNight.set(night, nightScopes);
     }
   }
 
@@ -411,10 +671,17 @@ export function evaluateAdultMemberHostingWithPolicy(
     .map((night) => ({
       night,
       memberIds: [...(hostsByNight.get(night) ?? [])].sort(),
+      // Which enabled scope actually supplied each night's cover (#2569 §11).
+      // Sorted through the canonical constant, so two evaluations of the same
+      // facts produce the identical snapshot.
+      coveredByScopes: ADULT_MEMBER_HOST_SCOPES.filter((scope) =>
+        scopesByNight.get(night)?.has(scope),
+      ),
     }));
 
   return {
     reasonCode: "ADULT_MEMBER_HOSTING_REQUIRED",
+    consequence,
     // A resolved ADMIN_REVIEW_REQUIRED mode always came from a real row, so the
     // synthesised null id is unreachable here; the fallback keeps the frozen
     // shape total rather than leaving a `null` where a string is promised.
@@ -429,14 +696,32 @@ export function evaluateAdultMemberHostingWithPolicy(
       uncoveredNonMemberGuestNights: uncovered.length,
       uncovered,
       qualifyingHostsByNight,
+      enabledHostScopes: enabledHostScopeList(scopes),
     },
     exceptionEligible: true,
     capacityMode: resolved.capacityMode,
     message: formatAdultMemberHostingMessage(
       uncovered.length,
       affectedNights.length,
+      consequence,
+      scopes,
     ),
   };
+}
+
+/** Whether a club that enabled `scopes` counts a host offered under `scope`. */
+export function hostScopeEnabled(
+  scopes: AdultMemberHostScopeSet,
+  scope: AdultMemberHostScope,
+): boolean {
+  switch (scope) {
+    case "SAME_BOOKING":
+      return scopes.sameBooking;
+    case "ANY_MEMBER_AT_LODGE":
+      return scopes.anyMemberAtLodge;
+    case "NOMINATED_HOST":
+      return scopes.nominatedHost;
+  }
 }
 
 /**
@@ -462,4 +747,72 @@ export function adultMemberHostingReviewChanged(
       .map((row) => `${row.night} ${row.guestRef}`)
       .join("|");
   return key(previous) !== key(next);
+}
+
+/**
+ * The host scopes whose EVALUATORS exist today.
+ *
+ * #2569's settings model is complete — three independent scopes, club default and
+ * per-lodge inherit for both dimensions, stored and resolved — but the loaders
+ * that FIND a host under the two wider scopes are not: `ANY_MEMBER_AT_LODGE`
+ * needs a lodge-presence query across other members' bookings plus the
+ * cross-booking re-evaluation that §5 requires when the last unrelated adult
+ * leaves, and `NOMINATED_HOST` needs the nomination model, candidate search,
+ * notification and host-change dependency handling of §6 to §12. Those are the
+ * carry-forward on this PR.
+ *
+ * SO THE SETTING IS REFUSED, NOT IGNORED. Storing a scope nothing evaluates would
+ * be the worst of the three options: the club would read "any adult member at the
+ * lodge counts", the evaluator would find none, and every affected booking would
+ * be sent to review or refused outright for missing cover the club believes it
+ * has. Refusing the save says the true thing — this option is not available yet —
+ * and it fails at the one moment an operator is present to read it, rather than at
+ * a member's booking.
+ *
+ * The COLUMNS are deliberately already there, so enabling these scopes later is a
+ * one-line change to this constant plus the loaders, with no migration.
+ */
+export const IMPLEMENTED_ADULT_MEMBER_HOST_SCOPES: readonly AdultMemberHostScope[] =
+  Object.freeze(["SAME_BOOKING"] as AdultMemberHostScope[]);
+
+/** The enabled scopes this build cannot yet evaluate, in canonical order. */
+export function unavailableHostScopes(
+  scopes: AdultMemberHostScopeSet,
+): AdultMemberHostScope[] {
+  return enabledHostScopeList(scopes).filter(
+    (scope) => !IMPLEMENTED_ADULT_MEMBER_HOST_SCOPES.includes(scope),
+  );
+}
+
+/** Officer-facing label for one host scope, matching the settings checkboxes. */
+export const ADULT_MEMBER_HOST_SCOPE_LABELS: Record<
+  AdultMemberHostScope,
+  string
+> = {
+  SAME_BOOKING: "Eligible adult member on the same booking",
+  ANY_MEMBER_AT_LODGE: "Any eligible adult member staying at the lodge",
+  NOMINATED_HOST: "Nominated responsible adult member",
+};
+
+/**
+ * The plain-English preview of a resolved policy (#2569 §16).
+ *
+ * One sentence for the consequence and one clause for the coverage, built from
+ * the SAME resolved values the evaluator uses, so the preview cannot claim
+ * something the rule does not do. Shared between the admin card and its tests
+ * rather than written into the component, because a preview that drifts from the
+ * rule is worse than no preview.
+ */
+export function describeAdultMemberHostingPolicy(
+  mode: EffectiveAdultMemberHostingMode,
+  scopes: AdultMemberHostScopeSet,
+): string {
+  if (mode === "DISABLED") {
+    return "This lodge does not require non-member guests to be covered by an adult member.";
+  }
+  const consequence =
+    mode === "ENFORCED"
+      ? "This lodge stops bookings where non-member guests are not covered"
+      : "This lodge allows the booking but sends it to a Booking Officer where non-member guests are not covered";
+  return `${consequence}. Coverage may be supplied by ${describeHostScopes(scopes)}.`;
 }
