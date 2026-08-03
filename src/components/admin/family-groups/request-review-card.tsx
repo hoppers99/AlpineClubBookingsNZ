@@ -186,7 +186,17 @@ export function FamilyGroupRequestReviewCard({
             {request.type === "CHILD_REQUEST" && (
               request.requestedAgeTier ? (
                 <p>
-                  Requested age tier:{" "}
+                  {/* #2568: the age above and this tier answer DIFFERENT
+                      questions, and the tier label carries numeric ranges, so
+                      the basis is stated rather than left to be inferred. Age is
+                      as at today; an age tier is fixed at the season start
+                      (1 April by default) and holds until the next rollover — so
+                      a child who has had a birthday since then legitimately
+                      reads "5 years" beside "Infant (0-4)". Unlabelled, that
+                      pairing looks like a corrupt record and invites an admin to
+                      "correct" a tier that is right by club policy. */}
+                  Requested age tier{" "}
+                  <span className="whitespace-nowrap">(as at season start)</span>:{" "}
                   <span className="font-medium text-foreground">
                     {request.requestedAgeTierLabel ?? request.requestedAgeTier}
                   </span>
@@ -431,7 +441,12 @@ export function FamilyGroupRequestReviewCard({
             {request.childDateOfBirth
               ? `DOB ${formatFamilyGroupDate(request.childDateOfBirth)}`
               : "DOB not provided"}
-            {request.requestedAgeTierLabel ? ` - ${request.requestedAgeTierLabel}` : ""}
+            {/* #2568: same basis note as the tier line above — the ranged tier
+                label is as at the season start, the age below it is as at
+                today. */}
+            {request.requestedAgeTierLabel
+              ? ` - ${request.requestedAgeTierLabel} as at season start`
+              : ""}
           </p>
           {/* #2568: see the adult branch above — same create-versus-link risk. */}
           <MemberAgeLine

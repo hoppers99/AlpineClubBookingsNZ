@@ -1,3 +1,4 @@
+import { AGE_UNAVAILABLE_LABEL } from "@/lib/member-age";
 import { cn } from "@/lib/utils";
 
 /**
@@ -20,7 +21,19 @@ import { cn } from "@/lib/utils";
  * - **Mobile and long-name safe.** The value itself never breaks mid-way
  *   (`whitespace-nowrap`), while every row that hosts it wraps around it, so a
  *   long name pushes the age onto the next line instead of colliding with it.
+ * - **No stutter on the unavailable sentinel.** Both presentations put the word
+ *   "Age" in front of the value — visibly in the line, for a screen reader in
+ *   the chip. `Age unavailable` already begins with it, so the prefix is dropped
+ *   for that one value; otherwise a member with no recorded date of birth read
+ *   "Age: Age unavailable" and was announced "Age Age unavailable". The label
+ *   text itself is never rewritten: the owner specification fixes it as
+ *   `Age unavailable`.
  */
+
+/** Whether this label already reads as its own sentence ("Age unavailable"). */
+function labelCarriesItsOwnAgePrefix(ageLabel: string) {
+  return ageLabel === AGE_UNAVAILABLE_LABEL;
+}
 export function MemberAgeChip({
   ageLabel,
   className,
@@ -39,7 +52,9 @@ export function MemberAgeChip({
         className
       )}
     >
-      <span className="sr-only">Age </span>
+      {labelCarriesItsOwnAgePrefix(ageLabel) ? null : (
+        <span className="sr-only">Age </span>
+      )}
       {ageLabel}
     </span>
   );
@@ -61,7 +76,8 @@ export function MemberAgeLine({
 
   return (
     <span className={cn("block", className)}>
-      Age: <span className="whitespace-nowrap font-medium text-foreground">{ageLabel}</span>
+      {labelCarriesItsOwnAgePrefix(ageLabel) ? null : "Age: "}
+      <span className="whitespace-nowrap font-medium text-foreground">{ageLabel}</span>
     </span>
   );
 }
