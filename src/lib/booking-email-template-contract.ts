@@ -57,6 +57,10 @@ export const BOOKING_URL_TEMPLATE_NAMES: ReadonlySet<string> = new Set([
   // the optional booking link is what lets a member go straight to the booking
   // they now need to raise a fresh request from.
   "policy-exception-request-expired",
+  // #2576: the loss-of-cover notice. Booking-scoped and registered, so the set
+  // membership is mechanical, and the optional booking link is what lets a member
+  // go straight to the booking they now have to fix.
+  "hosting-coverage-lost",
 ]);
 
 export interface BookingUrlTemplateContractFinding {

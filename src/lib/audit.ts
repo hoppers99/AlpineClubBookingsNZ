@@ -1,5 +1,5 @@
 import { prisma } from "./prisma";
-import type { Prisma } from "@prisma/client";
+import type { Prisma, PrismaClient } from "@prisma/client";
 import logger from "@/lib/logger";
 // test seam
 export { buildMemberAuditLogWhere } from "./audit-query";
@@ -84,7 +84,16 @@ export type StructuredAuditEvent = {
   incidentPreserved?: boolean | null;
 };
 
-type AuditLogClient = Prisma.TransactionClient | typeof prisma;
+/**
+ * Any client that can write an audit row.
+ *
+ * A structural `Pick` rather than `Prisma.TransactionClient | typeof prisma`
+ * (#2576): the services that record audit rows take NARROW `Pick<PrismaClient, ...>`
+ * clients so their tests can pass a double, and a union of the two full client types
+ * refuses those even though every real caller passes a `tx` or the module client.
+ * Both of those still satisfy this, so no existing caller changes.
+ */
+export type AuditLogClient = Pick<PrismaClient, "auditLog">;
 
 const REDACTED = "[REDACTED]";
 const REDACTED_CARD = "[REDACTED_CARD]";

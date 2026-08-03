@@ -679,6 +679,8 @@ model Member {
   // member merge repoints it and member deletion nulls it — the DMMF
   // completeness guard in member-merge only sees Member-TYPED fields.
   bookingsAdultMemberHostingReviewed         Booking[]                                  @relation("BookingsAdultMemberHostingReviewed")
+  hostingCoverageIncidentsOverridden         HostingCoverageIncident[]                  @relation("HostingCoverageIncidentsOverridden")
+  hostingCoverageReevaluations               HostingCoverageReevaluation[]              @relation("HostingCoverageReevaluations")
   bookingsAdminCapacityHeld                  Booking[]                                  @relation("BookingsAdminCapacityHeld")
   bookingsCapacityOverridden                 Booking[]                                  @relation("BookingsCapacityOverridden")
   bookingsWholeLodgeHeld                     Booking[]                                  @relation("BookingsWholeLodgeHeld")
@@ -1812,6 +1814,7 @@ model Booking {
   deletedBy                   Member?                         @relation("BookingsDeletedBy", fields: [deletedById], references: [id], onDelete: SetNull)
   adminReviewedBy             Member?                         @relation("BookingsAdminReviewed", fields: [adminReviewedById], references: [id], onDelete: SetNull)
   adultMemberHostingReviewedBy Member?                        @relation("BookingsAdultMemberHostingReviewed", fields: [adultMemberHostingReviewedById], references: [id], onDelete: SetNull)
+  hostingCoverageIncidents    HostingCoverageIncident[]
   adminCapacityHoldBy         Member?                         @relation("BookingsAdminCapacityHeld", fields: [adminCapacityHoldByMemberId], references: [id], onDelete: SetNull)
   capacityOverriddenBy        Member?                         @relation("BookingsCapacityOverridden", fields: [capacityOverriddenByMemberId], references: [id], onDelete: SetNull)
   wholeLodgeHoldBy            Member?                         @relation("BookingsWholeLodgeHeld", fields: [wholeLodgeHoldByMemberId], references: [id], onDelete: SetNull)
@@ -3267,6 +3270,157 @@ model AdultMemberHostingPolicy {
   lodge Lodge? @relation(fields: [lodgeId], references: [id], onDelete: Restrict)
 
   @@index([lodgeId])
+}
+
+// ---------------------------------------------------------------------------
+// Same-owner hosting coverage: incidents and bounded re-evaluation work (#2576)
+// ---------------------------------------------------------------------------
+
+/// Why a booking lost its required adult-member coverage AFTER it was confirmed
+/// (#2576 §7, §8). Exactly two causes, because there are exactly two ways it can
+/// happen: an authorised Booking Officer deliberately overrode the refusal, or an
+/// authoritative change outside the ordinary member edit flow (a membership
+/// lapse, an administrative cancellation, a lifecycle transition, a data
+/// correction) removed the cover and could not reasonably be blocked. An ordinary
+/// member self-service change is neither: it is refused before it commits, so it
+/// never produces an incident.
+enum HostingCoverageIncidentCause {
+  OFFICER_OVERRIDE
+  SYSTEM_CHANGE
+}
+
+/// How an incident stopped being a live problem (#2576 §7, §16). Recorded rather
+/// than inferred, because "coverage came back" and "the booking was cancelled"
+/// are the same absence of a hazard and a very different story for an officer
+/// reading the history.
+enum HostingCoverageIncidentResolution {
+  COVERAGE_RESTORED
+  BOOKING_AMENDED
+  EXCEPTION_APPROVED
+  BOOKING_CANCELLED
+}
+
+/// A confirmed booking that is carrying uncovered non-member guest-nights
+/// (#2576 §7, §16).
+///
+/// NOT A SECOND HOSTING REVIEW. `Booking.adultMemberHostingReview*` records what
+/// the rule currently says about a booking and is reset whenever the hazard
+/// materially changes; this table records that cover was TAKEN AWAY from a
+/// booking that had already been accepted, which is a different fact with a
+/// different lifecycle. The booking keeps its beds, its payments and its status —
+/// §7 and §16 both forbid automatic cancellation in as many words — and this row
+/// is what puts it in front of an officer and keeps it there until somebody
+/// resolves it.
+///
+/// ONE ACTIVE ROW PER BOOKING, enforced by the partial unique index
+/// `HostingCoverageIncident_active_booking_unique` (raw SQL, since Prisma cannot
+/// express a predicated index; recorded in prisma/partial-unique-indexes.tsv).
+/// That is what makes "create or update one durable active incident for the
+/// materially identical uncovered state" (§16) an invariant rather than a hope:
+/// a concurrent second opener loses on the index instead of doubling the queue.
+/// Resolved rows accumulate as history and are outside the predicate.
+model HostingCoverageIncident {
+  id        String @id @default(cuid())
+  bookingId String
+
+  /// Denormalized copy of the booking's lodge, captured once at open time so the
+  /// officer queue can filter and index by lodge without a join. Safe because
+  /// `Booking.lodgeId` is immutable — a booking never changes lodge, it is
+  /// cancelled and re-made — so this copy cannot drift.
+  lodgeId String
+
+  cause HostingCoverageIncidentCause
+
+  /// Fingerprint of the uncovered state this row is about: the policy revision
+  /// plus the exact uncovered guest/night pairs, in the deterministic order the
+  /// evaluator produces. Two reconciliations of the same unchanged problem
+  /// compute the same key and update nothing, which is what makes both the
+  /// incident and its notification idempotent (§8, §16).
+  stateKey String @db.VarChar(300)
+
+  /// The frozen hosting violation as evidence — the same snapshot shape the
+  /// review column stores, so an officer sees one evidence format. Kept in full
+  /// here (member ids included) because this row is only ever read under admin
+  /// booking permissions; the member-facing wording is derived, never this JSON.
+  evidence Json
+
+  /// The officer who overrode the refusal, for an OFFICER_OVERRIDE incident, and
+  /// their mandatory reason (§7). A real foreign key for the same reason
+  /// `Booking.adultMemberHostingReviewedById` is one: "an officer approved this"
+  /// is only an audit answer if the officer is a real member row.
+  overriddenByMemberId String?
+  overrideReason       String? @db.VarChar(500)
+
+  /// The state key the booking owner was last notified about. Notifications are
+  /// TRANSITION-based (§16): a reconciliation that recomputes the same key sends
+  /// nothing, and a materially different uncovered state notifies once more.
+  notifiedStateKey String?   @db.VarChar(300)
+  ownerNotifiedAt  DateTime?
+
+  openedAt   DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  resolvedAt DateTime?
+  resolution HostingCoverageIncidentResolution?
+
+  booking      Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  overriddenBy Member? @relation("HostingCoverageIncidentsOverridden", fields: [overriddenByMemberId], references: [id], onDelete: SetNull)
+
+  @@index([bookingId])
+  @@index([resolvedAt, openedAt])
+  @@index([lodgeId, resolvedAt])
+}
+
+/// Bounded re-evaluation work recorded durably in the transaction that caused it
+/// (#2576 §8).
+///
+/// The outbox half of "allow the authoritative change, then re-read current facts
+/// after commit". A membership lapse, an administrative cancellation or a
+/// lifecycle transition must not be blocked and must not run the dependent
+/// re-evaluation inline — the facts it needs are the COMMITTED ones, and doing
+/// provider-free-but-multi-booking work inside somebody else's money transaction
+/// is how a lock is held too long. So the authoritative writer records exactly
+/// which owner, lodge and nights need looking at, and the work is drained after
+/// commit (inline, best-effort) or by the general cron sweep (authoritative).
+///
+/// BOUNDED BY CONSTRUCTION, which is the point §10 insists on: an item names one
+/// `memberId`, one lodge and an explicit night list. There is no lodge-wide sweep
+/// here and no way to express one.
+model HostingCoverageReevaluation {
+  id String @id @default(cuid())
+
+  /// The booking OWNER whose same-owner bookings need re-evaluating. A real
+  /// foreign key rather than a snapshot column: this is a live pointer used to
+  /// re-read facts, so a member merge has to repoint it or the queued work would
+  /// look at an account that no longer holds the bookings.
+  memberId String
+
+  /// The affected lodge. A plain column, not a relation: the item is transient
+  /// work, lodges are never deleted (every booking relation to them is
+  /// Restrict), and the authoritative lodge for any incident this produces is
+  /// the booking's own.
+  lodgeId String
+
+  /// Sorted, unique NZ lodge-nights (YYYY-MM-DD) to re-evaluate. JSON rather
+  /// than a scalar list so the shape is one column and one write.
+  nights Json
+
+  cause HostingCoverageIncidentCause
+
+  /// What caused the work, for the audit trail and for the incident this may
+  /// open: the booking that changed, the officer who acted, and their reason.
+  sourceBookingId String?
+  actorMemberId   String?
+  reason          String? @db.VarChar(500)
+
+  enqueuedAt  DateTime  @default(now())
+  processedAt DateTime?
+  attempts    Int       @default(0)
+  lastError   String?   @db.VarChar(1000)
+
+  member Member @relation("HostingCoverageReevaluations", fields: [memberId], references: [id], onDelete: Cascade)
+
+  @@index([processedAt, enqueuedAt])
+  @@index([memberId, lodgeId])
 }
 
 // ---------------------------------------------------------------------------

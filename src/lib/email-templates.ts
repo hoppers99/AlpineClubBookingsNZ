@@ -4631,6 +4631,49 @@ export function memberGuestConsentAnsweredTemplate(data: {
 }
 
 /**
+ * "Your booking needs adult member cover" — #2576 §7, §16.
+ *
+ * Sent when a CONFIRMED booking at an enforcing lodge loses the adult-member
+ * cover the club requires — because an officer deliberately overrode the refusal,
+ * or because an authoritative change (a membership lapsing, an administrative
+ * cancellation, a lifecycle transition) removed it and could not be blocked.
+ *
+ * THE SECOND PARAGRAPH IS THE MOST IMPORTANT ONE, and it is there because of what
+ * a member assumes when the club emails them about a problem with a confirmed
+ * stay: that the stay is gone. It is not. §7 and §16 both forbid automatic
+ * cancellation, the beds and payments are untouched, and saying so plainly is the
+ * difference between a notice and a scare.
+ *
+ * NAMES NO PERSON, under any scope (§11). It says which nights need cover, never
+ * who stopped providing it — even though under `SAME_BOOKING_OWNER` that person is
+ * on the member's own account, because the covering member may be a family adult
+ * whose membership has just lapsed and that is not this email's news to break.
+ * The three ways out are the ones the owner listed.
+ */
+export function hostingCoverageLostTemplate(data: {
+  firstName: string;
+  lodgeName: string;
+  checkIn: Date;
+  checkOut: Date;
+  uncoveredNights: string;
+}): string {
+  return layout(`
+    ${heading("Your booking needs adult member cover")}
+    ${paragraph(
+      `Hi ${escapeHtml(data.firstName)}, a change elsewhere means your booking at ${escapeHtml(data.lodgeName)} no longer has a qualifying adult member staying on every night your non-member guests are there.`,
+    )}
+    ${infoTable([
+      { label: "Check-in", value: escapeHtml(formatNZDate(data.checkIn)) },
+      { label: "Check-out", value: escapeHtml(formatNZDate(data.checkOut)) },
+      { label: "Nights needing cover", value: escapeHtml(data.uncoveredNights) },
+    ])}
+    ${paragraph("Your booking has not been cancelled, and your beds and payments are unchanged. A Booking Officer has been notified and will be in touch.")}
+    ${paragraph("You can also fix it yourself: add adult member cover for those nights, change the affected booking, or ask a Booking Officer to approve an exception.")}
+    ${supportContactSentence("If you have any questions, contact the club at ")}
+  `);
+}
+
+/**
  * "Your exception request has lapsed" — #2553.
  *
  * A bed-holding policy-exception request the club never decided is closed by the

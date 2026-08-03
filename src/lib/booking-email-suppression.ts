@@ -161,6 +161,12 @@ export const ALWAYS_BOOKING_SCOPED_TEMPLATE_NAMES: ReadonlySet<string> =
     // it, and an admin-audience classification would let a silenced booking mail
     // out.
     "policy-exception-request-expired",
+    // #2576: the loss-of-cover notice. Always carries a real bookingId (it is a
+    // fact about one booking), member-audience, and not gated on a personal
+    // preference for the same reason as the two above — so this switch is the only
+    // thing that withholds it, and an admin-audience classification would let a
+    // silenced booking mail out.
+    "hosting-coverage-lost",
   ]);
 
 /**

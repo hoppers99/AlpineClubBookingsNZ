@@ -189,6 +189,23 @@ export const MEMBER_MERGE_RELATION_SPECS: readonly MemberMergeRelationSpec[] = [
   // with the surviving member and the audit trail stays readable.
   spec("Booking", "noEmailsBy", "noEmailsByMemberId", "move"),
   spec("BookingGuest", "member", "memberId", "move"),
+  // #2576: the officer who overrode a same-owner coverage refusal, and the
+  // mandatory reason they gave. The same shape and the same reasoning as
+  // `adultMemberHostingReviewedBy` above — an actor back-reference with no
+  // member-scoped unique constraint — so it `move`s and "who let this through"
+  // stays answerable after a merge.
+  spec(
+    "HostingCoverageIncident",
+    "overriddenBy",
+    "overriddenByMemberId",
+    "move",
+  ),
+  // #2576: queued, unprocessed re-evaluation work for one booking OWNER. Moves
+  // rather than cascading, and that is load-bearing: the loser's bookings move to
+  // the master in the same merge, so work left pointing at the loser would find
+  // no bookings and a genuinely uncovered stay would never be noticed. There is
+  // no member-scoped unique constraint, so a move can never collide.
+  spec("HostingCoverageReevaluation", "member", "memberId", "move"),
   spec("GroupBooking", "organiserMember", "organiserMemberId", "move"),
   spec("GroupBookingJoin", "joinerMember", "joinerMemberId", "resolve", {
     note: "@@unique(groupBookingId,joinerMemberId)",

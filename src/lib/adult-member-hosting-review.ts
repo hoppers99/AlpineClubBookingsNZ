@@ -6,18 +6,39 @@ import {
   type PrismaClient,
 } from "@prisma/client";
 
+import {
+  hostingCoverageStateKey,
+  openOrUpdateHostingCoverageIncident,
+  resolveHostingCoverageIncidents,
+  type HostingCoverageIncidentCause,
+  type HostingCoverageIncidentOutcome,
+} from "@/lib/adult-member-hosting-coverage-incidents";
+import { enqueueHostingCoverageReevaluation } from "@/lib/adult-member-hosting-coverage-queue";
+import {
+  SameOwnerCoverageWouldBreakError,
+  sameBookingOwnerCoverageSourceWhere,
+  sameOwnerCoverageDependentWhere,
+  strandedCoverageReference,
+  type StrandedCoverageBooking,
+} from "@/lib/adult-member-hosting-same-owner";
 import { ApiError } from "@/lib/api-error";
 import type {
   AdultMemberHostingPolicyExceptionViolation,
   AggregatedPolicyExceptions,
 } from "@/lib/booking-policy-exceptions";
 import { aggregatePolicyExceptionViolations } from "@/lib/booking-policy-exceptions";
-import { eachDateOnlyInRange, formatDateOnly } from "@/lib/date-only";
+import {
+  addDaysDateOnly,
+  eachDateOnlyInRange,
+  formatDateOnly,
+  parseDateOnly,
+} from "@/lib/date-only";
 import { getDefaultLodgeId } from "@/lib/lodges";
 import { isOperationallyPresentConsent } from "@/lib/member-guest-consent";
 import { prisma } from "@/lib/prisma";
 import {
   adultMemberHostingReviewChanged,
+  adultMemberHostingStateKey,
   evaluateAdultMemberHostingWithPolicy,
   hostingModeIsActive,
   resolveAdultMemberHostingPolicy,
@@ -79,6 +100,15 @@ export type AdultMemberHostingReviewDb = Pick<
   | "memberSubscription"
   | "seasonalMembershipAssignment"
   | "membershipType"
+  // #2576: the same-owner coverage machinery. The incident and the queue row are
+  // written INSIDE the caller's transaction alongside the change that caused them
+  // (§8), and the audit row with them, so they are part of the required shape
+  // rather than optional extras — a caller that quietly could not write them
+  // would allow an authoritative change and lose the obligation to check what it
+  // broke, which is the one failure this design must not have.
+  | "hostingCoverageIncident"
+  | "hostingCoverageReevaluation"
+  | "auditLog"
 >;
 
 /** The narrow client the policy read needs on its own. */
@@ -278,18 +308,102 @@ function hostingSiblingWhere(
 async function loadSiblingHosts(
   booking: LoadedHostingBooking,
   db: AdultMemberHostingReviewDb,
-): Promise<HostingParticipant[]> {
+): Promise<{ participants: HostingParticipant[]; siblingIds: string[] }> {
   const siblings = (await db.booking.findMany({
     where: hostingSiblingWhere(booking),
     select: BOOKING_HOSTING_SELECT,
   })) as LoadedHostingBooking[];
 
-  return siblings
-    // A sibling that arrived without its guest relation contributes no hosts.
-    // Dropping it is the safe direction here: fewer borrowed hosts can only
-    // OPEN a review for an admin to look at, never suppress one.
-    .filter((sibling) => Array.isArray(sibling.guests))
-    .flatMap((sibling) => toHostingParticipants(sibling, true));
+  return {
+    participants: siblings
+      // A sibling that arrived without its guest relation contributes no hosts.
+      // Dropping it is the safe direction here: fewer borrowed hosts can only
+      // OPEN a review for an admin to look at, never suppress one.
+      .filter((sibling) => Array.isArray(sibling.guests))
+      .flatMap((sibling) => toHostingParticipants(sibling, true)),
+    siblingIds: siblings.map((sibling) => sibling.id),
+  };
+}
+
+/**
+ * A hard ceiling on how many same-owner source bookings one evaluation reads
+ * (#2576 §10: "use suitable indexes and bounded result limits").
+ *
+ * Generous rather than tight, because it is a guard and not a policy: a member
+ * with more than this many CONFIRMED-or-PAID bookings at ONE lodge overlapping ONE
+ * stay is a data problem, not a club member. Twenty-five is far beyond anything the
+ * split-booking and family shapes produce (a #738 split pair is two), and the read
+ * is already narrowed to one owner, one lodge and one date window before the limit
+ * applies.
+ *
+ * FAILING SAFE MEANS FAILING TOWARDS THE RULE: if the ceiling ever truncated, fewer
+ * hosts are seen, so a night reads as uncovered and the booking is flagged or
+ * refused rather than quietly allowed.
+ */
+const SAME_OWNER_COVERAGE_SOURCE_LIMIT = 25;
+
+/**
+ * The qualifying-adult-member candidates attending ANOTHER eligible booking on the
+ * SAME account, at the same lodge, over nights that overlap this stay (#2576 §1
+ * to §4).
+ *
+ * Three things about the returned rows carry the whole scope:
+ *
+ *  - `hostScope: "SAME_BOOKING_OWNER"` — the evaluator counts them only where the
+ *    club has that scope switched on. That is the seam #2569 left, used exactly as
+ *    intended: no branch of the rule changed to add this scope.
+ *  - `hostOnly: true` — their own nights are NOT this booking's responsibility.
+ *    This is also §15's capacity answer: the adult member's REAL attendance on
+ *    their own booking is recognised as evidence here, and they are never
+ *    duplicated as a guest on this one, so no bed is double-counted.
+ *  - the participant shape is `toHostingParticipants`' — the same live Member
+ *    facts, the same sparse `BookingGuestNight` nights, the same D-12 consent
+ *    predicate. §13 forbids a second definition of a qualifying adult member and
+ *    there is none: whether these people actually qualify is decided afterwards by
+ *    `participantQualifiesAsHost`, exactly as for the booking's own guests.
+ *
+ * THE GUEST READ IS NARROWED TO MEMBER-LINKED ROWS, which is a true narrowing
+ * rather than a policy: a guest with no Member link can never host under any
+ * scope, so loading a source booking's non-member guests would be loading rows the
+ * evaluator is guaranteed to ignore. Their own nights are that booking's problem
+ * and are judged when that booking is reconciled.
+ *
+ * SPLIT SIBLINGS ARE EXCLUDED, deliberately. A #738 split pair is one party the
+ * database stores as two rows, and the invariant is that such a sibling supplies
+ * cover under `SAME_BOOKING` — not as "another booking at the lodge". Loading it
+ * here as well would put one person in the participant list twice and would make
+ * the same-booking half of the rule reachable through the same-owner half.
+ */
+async function loadSameBookingOwnerHosts(
+  booking: LoadedHostingBooking,
+  db: AdultMemberHostingReviewDb,
+  excludeBookingIds: readonly string[],
+): Promise<HostingParticipant[]> {
+  const where = sameBookingOwnerCoverageSourceWhere(booking);
+  const sources = (await db.booking.findMany({
+    where:
+      excludeBookingIds.length > 0
+        ? { ...where, id: { not: booking.id, notIn: [...excludeBookingIds] } }
+        : where,
+    take: SAME_OWNER_COVERAGE_SOURCE_LIMIT,
+    select: {
+      id: true,
+      guests: {
+        // Member-linked rows only — see the narrowing note above.
+        where: { memberId: { not: null } },
+        select: BOOKING_HOSTING_SELECT.guests.select,
+      },
+    },
+  })) as Array<{ id: string; guests: LoadedHostingBooking["guests"] }>;
+
+  return sources
+    .filter((source) => Array.isArray(source.guests))
+    .flatMap((source) =>
+      toHostingParticipants(source, true).map((participant) => ({
+        ...participant,
+        hostScope: "SAME_BOOKING_OWNER" as const,
+      })),
+    );
 }
 
 /**
@@ -334,22 +448,32 @@ export async function evaluateBookingAdultMemberHosting(
   resolved: ResolvedAdultMemberHostingPolicy;
 }> {
   const resolved = await loadAdultMemberHostingPolicy(booking.lodgeId, db);
-  // Skip the sibling read entirely while the policy is off: it is the only
-  // query this evaluation adds to every booking write, and a club that has not
-  // turned the rule on should pay nothing for it.
-  const participants = hostingModeIsActive(resolved.mode)
-    ? await withSubscriptionSettlement(
-        [
-          ...toHostingParticipants(booking),
-          ...(await loadSiblingHosts(booking, db)),
-        ],
-        db,
-        getSeasonYear(booking.checkIn),
-      )
-    : [];
+  // Skip the sibling read entirely while the policy is off: it is the only query
+  // this evaluation adds to every booking write, and a club that has not turned
+  // the rule on should pay nothing for it.
+  //
+  // The SAME-OWNER read is skipped on that principle and one more: a club with the
+  // rule on but `SAME_BOOKING_OWNER` off pays nothing either, which is what keeps
+  // the #2569 upgrade a no-op on cost as well as on answers.
+  let participants: HostingParticipant[] = [];
+  if (hostingModeIsActive(resolved.mode)) {
+    const siblings = await loadSiblingHosts(booking, db);
+    participants = await withSubscriptionSettlement(
+      [
+        ...toHostingParticipants(booking),
+        ...siblings.participants,
+        ...(resolved.hostScopes.sameBookingOwner
+          ? await loadSameBookingOwnerHosts(booking, db, siblings.siblingIds)
+          : []),
+      ],
+      db,
+      getSeasonYear(booking.checkIn),
+    );
+  }
   const violation = evaluateAdultMemberHostingWithPolicy(participants, resolved);
   return { violation, resolved };
 }
+
 
 /**
  * Stamp #2543's `subscriptionSettled` onto participants, so a member the club is
@@ -444,6 +568,52 @@ export type HostingReviewOutcome = (
  */
 export type HostingEnforcement = "REFUSE" | "REVIEW_ONLY";
 
+/**
+ * How a change that would strand ANOTHER same-owner booking's cover is handled
+ * (#2576 §6 versus §7/§8).
+ *
+ * `BLOCK` — the ordinary member self-service answer. The dependent bookings are
+ * re-evaluated against the rows the caller just wrote, and if any of them is left
+ * uncovered the change is REFUSED with
+ * `SameOwnerCoverageWouldBreakError`, thrown from inside the caller's transaction
+ * so the change rolls back and the member is told which of their bookings, which
+ * lodge and which nights.
+ *
+ * `ESCALATE` — the §7 and §8 answer. The change is allowed, and the bounded
+ * re-evaluation work it implies is recorded durably in the SAME transaction; after
+ * commit the drain re-reads the facts, opens or updates an urgent compliance
+ * incident for anything newly uncovered, and notifies the owner and the officer
+ * queue. Nothing is cancelled and no beds or payments move.
+ *
+ * `ESCALATE` IS THE DEFAULT, and that is the opposite choice from `enforcement`
+ * above — deliberately, because the failure directions are opposite. A path that
+ * inherits `REFUSE` and should not have been enforced merely annoys somebody; a
+ * path that inherited `BLOCK` and should not have would ROLL BACK an authoritative
+ * change — a membership lapse, an administrative cancellation, a payment-lifecycle
+ * transition, a cron sweep — which §8 forbids in as many words and which would
+ * wedge the system rather than protect anybody. `ESCALATE` is never silence: it
+ * produces a durable incident, an officer-queue entry, an audit trail and an owner
+ * notification.
+ *
+ * The member self-service paths therefore pass `BLOCK` explicitly, and
+ * `adult-member-hosting-call-sites.test.ts` pins that set tree-wide so a new
+ * member-facing edit route cannot quietly inherit the escalating behaviour.
+ */
+export type HostingDependentCoverageDisposition = "BLOCK" | "ESCALATE";
+
+/** Who did the escalating change and why, for the incident and the audit trail. */
+export interface HostingCoverageChangeContext {
+  /**
+   * `OFFICER_OVERRIDE` for §7 (an authorised officer deliberately overrode the
+   * refusal, with a mandatory reason), `SYSTEM_CHANGE` for §8 (an authoritative
+   * change outside the ordinary member edit flow).
+   */
+  cause: HostingCoverageIncidentCause;
+  actorMemberId?: string | null;
+  /** Mandatory for `OFFICER_OVERRIDE`; refused without one. */
+  reason?: string | null;
+}
+
 export interface HostingReconcileOptions {
   /**
    * Status to use when a hazard is opened for the FIRST time on this booking.
@@ -454,6 +624,14 @@ export interface HostingReconcileOptions {
   decision?: { reason: string; byMemberId: string } | null;
   /** See `HostingEnforcement`. Defaults to `REFUSE`. */
   enforcement?: HostingEnforcement;
+  /**
+   * See `HostingDependentCoverageDisposition`. Defaults to `ESCALATE`. Read only
+   * by `reconcileAdultMemberHostingReviewWithSiblings` — the single-id form
+   * settles one booking's own review and never reaches across accounts.
+   */
+  dependentCoverage?: HostingDependentCoverageDisposition;
+  /** Required context for an `ESCALATE` change; see `HostingCoverageChangeContext`. */
+  coverageChange?: HostingCoverageChangeContext;
 }
 
 /**
@@ -641,6 +819,11 @@ export async function reconcileAdultMemberHostingReviewWithSiblings(
       ...(options.enforcement ? { enforcement: options.enforcement } : {}),
     });
   }
+
+  // #2576 §6 to §8: this booking's rows can also decide whether ANOTHER booking on
+  // the same account is compliant. Last, and after the siblings, because it is a
+  // question about the resulting state of the whole account at this lodge.
+  await settleSameOwnerDependentCoverage(bookingId, db, options);
   return outcome;
 }
 
@@ -825,6 +1008,328 @@ function proposedGuestNights(
   // booking's own date validation owns that refusal.
   if (endExclusive <= start) return [];
   return eachDateOnlyInRange(start, endExclusive).map(formatDateOnly);
+}
+
+
+/**
+ * The columns the dependent-coverage machinery needs off a booking, without the
+ * guest tree. Deliberately narrow: this read runs on booking write paths and only
+ * ever decides WHICH bookings to look at.
+ */
+type CoverageOwnerFacts = {
+  id: string;
+  memberId: string;
+  lodgeId: string;
+  checkIn: Date;
+  checkOut: Date;
+};
+
+/**
+ * Settle the same-owner bookings whose cover this change may have removed
+ * (#2576 §6, §7, §8).
+ *
+ * Runs at the END of the mutation transaction, after the caller's write and after
+ * the split-sibling fan-out, because it is a question about the RESULTING rows:
+ * "given what is now true, is another booking on this account left uncovered".
+ * Evaluating the pre-change rows would answer a question nobody asked.
+ *
+ * ONLY UNDER `ENFORCED`, AND ONLY WITH THE SCOPE ENABLED. Both conditions are
+ * load-bearing:
+ *
+ *  - the scope: without `SAME_BOOKING_OWNER` no booking's compliance can depend on
+ *    another booking, so there is nothing to strand and nothing to escalate;
+ *  - the consequence: under `ADMIN_REVIEW_REQUIRED` an uncovered booking is a
+ *    normal, permitted state that already carries a pending officer review.
+ *    Refusing a member's edit, or opening a second officer-facing incident, for a
+ *    situation the club has explicitly said it merely wants to look at would be a
+ *    policy nobody chose.
+ *
+ * CONCURRENCY (§9). No new advisory-lock family, because the existing discipline
+ * already closes the race, and it closes it precisely BECAUSE same-owner coverage
+ * is same-lodge by definition (§4). Every path that can confirm a booking and every
+ * path that can remove exact-night attendance takes the per-lodge capacity lock —
+ * and most take the global `pg_advisory_xact_lock(1)` as well — for the booking's
+ * own lodge, before doing either. Two interacting writers here are therefore always
+ * contending for the SAME per-lodge key and cannot interleave: the source removal
+ * either commits before the dependent's confirm reads (so the confirm sees it and
+ * refuses) or after it (so the removal sees the confirmed dependent and is
+ * refused or escalated). This function reads through the caller's `tx`, so it sees
+ * that transaction's own writes and the committed state of everything else.
+ */
+async function settleSameOwnerDependentCoverage(
+  bookingId: string,
+  db: AdultMemberHostingReviewDb,
+  options: HostingReconcileOptions,
+): Promise<void> {
+  const booking = (await db.booking.findUnique({
+    where: { id: bookingId },
+    select: {
+      id: true,
+      memberId: true,
+      lodgeId: true,
+      checkIn: true,
+      checkOut: true,
+    },
+  })) as CoverageOwnerFacts | null;
+  if (!booking) return;
+
+  const resolved = await loadAdultMemberHostingPolicy(booking.lodgeId, db);
+  if (resolved.mode !== "ENFORCED") return;
+  if (!resolved.hostScopes.sameBookingOwner) return;
+
+  const disposition = options.dependentCoverage ?? "ESCALATE";
+  if (disposition === "ESCALATE") {
+    const context = options.coverageChange ?? { cause: "SYSTEM_CHANGE" as const };
+    if (context.cause === "OFFICER_OVERRIDE" && !context.reason?.trim()) {
+      // §7 makes the reason mandatory, and this is the point at which the
+      // override becomes irreversible. Failing here rather than recording an
+      // unexplained override is the same rule D-R4 already applies to a hosting
+      // decision.
+      throw new Error(
+        "Overriding same-owner hosting coverage requires an explicit reason",
+      );
+    }
+    await enqueueHostingCoverageReevaluation(
+      {
+        memberId: booking.memberId,
+        lodgeId: booking.lodgeId,
+        // The nights this booking covers, and no others (§10). A change to this
+        // booking cannot affect a night it never touched, so this IS the bound —
+        // not a heuristic narrowing of a wider sweep.
+        nights: eachDateOnlyInRange(booking.checkIn, booking.checkOut).map(
+          formatDateOnly,
+        ),
+        cause: context.cause,
+        sourceBookingId: booking.id,
+        actorMemberId: context.actorMemberId ?? null,
+        reason: context.reason ?? null,
+      },
+      db,
+    );
+    return;
+  }
+
+  const stranded = await findNewlyStrandedSameOwnerBookings(booking, db);
+  if (stranded.length > 0) throw new SameOwnerCoverageWouldBreakError(stranded);
+}
+
+/**
+ * The same-owner bookings this change has left uncovered AND that were not already
+ * uncovered before it (#2576 §6 step 3: "if the proposed change WOULD LEAVE any
+ * booking uncovered").
+ *
+ * "NEWLY" IS THE WHOLE SUBTLETY, and getting it wrong makes the rule unusable in
+ * one direction and useless in the other. A booking that was ALREADY carrying an
+ * uncovered state — because an officer overrode something last week, or a
+ * membership lapsed and an incident is open — must not block an unrelated edit the
+ * member makes today: they cannot fix that booking by abandoning this change, and
+ * refusing would trap them. A booking that is uncovered only BECAUSE of this change
+ * must block it.
+ *
+ * The test is the shared material-identity key (`adultMemberHostingStateKey`, the
+ * same definition that decides whether an officer's review decision still applies
+ * and whether the owner has already been notified): if the dependent's uncovered
+ * state after this change is byte-identical to what its own stored review snapshot
+ * or its open incident already records, this change did not cause it. Anything else
+ * — a first hazard, or a materially different one — is caused by this change and is
+ * refused.
+ *
+ * READ-ONLY. It evaluates each dependent rather than reconciling it, on purpose:
+ * the change is about to be rolled back by the throw, so writing review rows for
+ * dependents would either be undone (harmless but pointless) or, worse, would
+ * record a hazard derived from rows that never existed.
+ */
+async function findNewlyStrandedSameOwnerBookings(
+  booking: CoverageOwnerFacts,
+  db: AdultMemberHostingReviewDb,
+): Promise<StrandedCoverageBooking[]> {
+  const dependents = (await db.booking.findMany({
+    where: sameOwnerCoverageDependentWhere(booking),
+    take: SAME_OWNER_COVERAGE_SOURCE_LIMIT,
+    select: BOOKING_HOSTING_SELECT,
+  })) as LoadedHostingBooking[];
+  if (dependents.length === 0) return [];
+
+  const openIncidents = await db.hostingCoverageIncident.findMany({
+    where: {
+      bookingId: { in: dependents.map((dependent) => dependent.id) },
+      resolvedAt: null,
+    },
+    select: { bookingId: true, stateKey: true },
+  });
+  const incidentKeyByBooking = new Map(
+    openIncidents.map((incident) => [incident.bookingId, incident.stateKey]),
+  );
+
+  const lodgeName = await resolveCoverageLodgeName(booking.lodgeId, db);
+  const stranded: StrandedCoverageBooking[] = [];
+  for (const dependent of dependents) {
+    if (!Array.isArray(dependent.guests)) continue;
+    const { violation } = await evaluateBookingAdultMemberHosting(dependent, db);
+    if (violation === null) continue;
+
+    const currentKey = adultMemberHostingStateKey(violation);
+    const recorded = parseStoredHostingReview(dependent.adultMemberHostingReview);
+    if (recorded && adultMemberHostingStateKey(recorded) === currentKey) continue;
+    const incidentKey = incidentKeyByBooking.get(dependent.id);
+    if (incidentKey && incidentKey === hostingCoverageStateKey(violation)) continue;
+
+    stranded.push({
+      bookingId: dependent.id,
+      reference: strandedCoverageReference(dependent.id),
+      lodgeName,
+      nights: violation.affectedNights,
+    });
+  }
+  return stranded;
+}
+
+/**
+ * The lodge's display name for the member-facing refusal.
+ *
+ * Falls back to a neutral word rather than throwing or leaking the id: the refusal
+ * is already correct without it, and "your other booking at the lodge on these
+ * nights" is a usable sentence where "your other booking at clv8k2p9x0001 …" is
+ * not. The lodge is the one being changed, so there is no cross-lodge disclosure
+ * to consider.
+ */
+async function resolveCoverageLodgeName(
+  lodgeId: string,
+  db: AdultMemberHostingReviewDb,
+): Promise<string> {
+  const lodge = await db.lodge.findFirst({
+    where: { id: lodgeId },
+    select: { name: true },
+  });
+  return lodge?.name ?? "the lodge";
+}
+
+/**
+ * The dependent bookings one queued re-evaluation item covers (#2576 §10).
+ *
+ * The drain's entry point into this module, and the reason the bound is a property
+ * of the DATA rather than of the caller's discipline: an item names one owner, one
+ * lodge and an explicit night list, and this turns that into a booking id list by
+ * intersecting the same three things. There is no shape of item that can widen it
+ * into the lodge-wide sweep #2575 rejected.
+ *
+ * The night list bounds the read as a date envelope (earliest to latest night),
+ * because the per-night decision belongs to the evaluator, which reads each
+ * booking's own `BookingGuestNight` rows.
+ */
+export async function loadSameOwnerCoverageDependentIds(
+  work: { memberId: string; lodgeId: string; nights: readonly string[] },
+  db: AdultMemberHostingReviewDb,
+): Promise<string[]> {
+  const nights = [...new Set(work.nights)].sort();
+  if (nights.length === 0) return [];
+  const first = parseDateOnly(nights[0]);
+  // The night AFTER the last one is the exclusive checkout bound, so a booking
+  // arriving on the last night is included and one arriving the morning after is
+  // not — the same half-open convention as everywhere else.
+  const lastExclusive = addDaysDateOnly(parseDateOnly(nights[nights.length - 1]), 1);
+
+  const dependents = await db.booking.findMany({
+    where: sameOwnerCoverageDependentWhere({
+      // A synthetic envelope rather than a real booking: the item may outlive the
+      // booking that caused it (an administrative cancellation, a hard delete), and
+      // the work is still owed. `id` excludes nothing, which is correct — every
+      // active booking of this owner at this lodge over these nights is a
+      // candidate, including the one that changed if it still exists.
+      id: "",
+      memberId: work.memberId,
+      lodgeId: work.lodgeId,
+      checkIn: first,
+      checkOut: lastExclusive,
+    }),
+    take: SAME_OWNER_COVERAGE_SOURCE_LIMIT,
+    select: { id: true },
+  });
+  return dependents.map((dependent) => dependent.id);
+}
+
+/**
+ * Bring one dependent booking's incident state into line with current facts
+ * (#2576 §8, §14, §16). Called by the drain, after commit, per dependent.
+ *
+ * Four outcomes, all idempotent:
+ *
+ *  - no hazard, no incident → nothing;
+ *  - no hazard, an open incident → resolve it as `COVERAGE_RESTORED`. §14's
+ *    existential rule reaches here: another eligible same-owner source keeps the
+ *    booking compliant, so an incident opened when the first source went away is
+ *    closed rather than left standing, and no loss-of-cover message is sent;
+ *  - a hazard, no incident or a materially different one → open or update, and
+ *    report the state key so the caller can notify ONCE for that transition;
+ *  - a hazard identical to the recorded one → `unchanged`, and no notification.
+ *
+ * The review snapshot is reconciled first, with `REVIEW_ONLY`. That is not a
+ * carve-out from the enforced consequence: the booking already exists and was
+ * already confirmed, so there is nothing left to refuse — refusing here would
+ * throw inside a background drain and roll back the incident that is the whole
+ * point. Recording the hazard keeps the booking's own page and the officer's
+ * booking view honest alongside the incident.
+ */
+export async function reconcileSameOwnerCoverageIncident(
+  params: {
+    bookingId: string;
+    cause: HostingCoverageIncidentCause;
+    actorMemberId?: string | null;
+    reason?: string | null;
+  },
+  db: AdultMemberHostingReviewDb,
+): Promise<
+  // Flat rather than grouped by shape, so a caller narrowing on `action` reaches
+  // `incidentId` without a cast.
+  { action: "none" } | { action: "resolved" } | HostingCoverageIncidentOutcome
+> {
+  const outcome = await reconcileAdultMemberHostingReview(params.bookingId, db, {
+    enforcement: "REVIEW_ONLY",
+  });
+  if (outcome.mode !== "ENFORCED") {
+    // The club is no longer enforcing (or the booking moved out of scope), so an
+    // incident is no longer the right instrument. Resolve rather than leave a row
+    // an officer can do nothing useful with.
+    const closed = await resolveHostingCoverageIncidents(
+      { bookingId: params.bookingId, resolution: "COVERAGE_RESTORED" },
+      db,
+    );
+    return { action: closed > 0 ? "resolved" : "none" };
+  }
+
+  if (outcome.violation === null) {
+    const closed = await resolveHostingCoverageIncidents(
+      {
+        bookingId: params.bookingId,
+        resolution: "COVERAGE_RESTORED",
+        actorMemberId: params.actorMemberId ?? null,
+      },
+      db,
+    );
+    return { action: closed > 0 ? "resolved" : "none" };
+  }
+
+  const booking = await db.booking.findUnique({
+    where: { id: params.bookingId },
+    select: { lodgeId: true },
+  });
+  if (!booking) return { action: "none" };
+
+  return openOrUpdateHostingCoverageIncident(
+    {
+      bookingId: params.bookingId,
+      lodgeId: booking.lodgeId,
+      cause: params.cause,
+      violation: outcome.violation,
+      override:
+        params.cause === "OFFICER_OVERRIDE" &&
+        params.actorMemberId &&
+        params.reason?.trim()
+          ? { byMemberId: params.actorMemberId, reason: params.reason }
+          : null,
+    },
+    db,
+  );
 }
 
 /**

@@ -782,12 +782,41 @@ export function hostScopeEnabled(
 }
 
 /**
+ * The MATERIAL IDENTITY of one hazard, as a string.
+ *
+ * Exactly: the policy row, its revision, and the uncovered guest-night pairs in
+ * the evaluator's deterministic order. Everything else a snapshot carries — a
+ * renamed guest, a night that gained a second host, the qualifying-host lists,
+ * the message — is evidence ABOUT the hazard rather than the hazard itself.
+ *
+ * ONE DEFINITION, TWO CONSUMERS, which is why it is extracted rather than
+ * written twice. `adultMemberHostingReviewChanged` decides whether an officer's
+ * existing decision still applies; #2576's compliance incident decides whether it
+ * is looking at "the materially identical uncovered state" (§16) and whether the
+ * booking owner has already been told about it. Those two must agree, or a
+ * reconciliation that correctly leaves a decided review alone would still send a
+ * fresh loss-of-cover email about a problem the member already knows about.
+ */
+export function adultMemberHostingStateKey(
+  violation: AdultMemberHostingPolicyExceptionViolation,
+): string {
+  return [
+    violation.policyId,
+    String(violation.policyVersion),
+    ...violation.requirements.uncovered.map(
+      (row) => `${row.night} ${row.guestRef}`,
+    ),
+  ].join("|");
+}
+
+/**
  * Has the hazard materially changed between two snapshots?
  *
- * "Materially" is exactly: a different policy row or revision, or a different
- * set of uncovered guest-nights. Everything else — a renamed guest, a night
- * that gained a second host, the qualifying-host lists — is evidence about the
- * same hazard and must not reopen a review an admin already decided.
+ * "Materially" is `adultMemberHostingStateKey`: a different policy row or
+ * revision, or a different set of uncovered guest-nights. Everything else — a
+ * renamed guest, a night that gained a second host, the qualifying-host lists —
+ * is evidence about the same hazard and must not reopen a review an admin already
+ * decided.
  *
  * `null` means "no hazard". null -> violation is a change (a new hazard
  * appeared); violation -> null is a change (it cleared).
@@ -797,13 +826,9 @@ export function adultMemberHostingReviewChanged(
   next: AdultMemberHostingPolicyExceptionViolation | null,
 ): boolean {
   if (previous === null || next === null) return previous !== next;
-  if (previous.policyId !== next.policyId) return true;
-  if (previous.policyVersion !== next.policyVersion) return true;
-  const key = (violation: AdultMemberHostingPolicyExceptionViolation) =>
-    violation.requirements.uncovered
-      .map((row) => `${row.night} ${row.guestRef}`)
-      .join("|");
-  return key(previous) !== key(next);
+  return (
+    adultMemberHostingStateKey(previous) !== adultMemberHostingStateKey(next)
+  );
 }
 
 /** Officer-facing label for one host scope, matching the settings checkboxes. */

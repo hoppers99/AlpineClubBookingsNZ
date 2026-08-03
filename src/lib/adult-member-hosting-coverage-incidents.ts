@@ -1,0 +1,326 @@
+import { createHash } from "node:crypto";
+
+import { Prisma, type PrismaClient } from "@prisma/client";
+
+import { createAuditLog } from "@/lib/audit";
+import type { AdultMemberHostingPolicyExceptionViolation } from "@/lib/booking-policy-exceptions";
+import { formatBookingReference } from "@/lib/booking-reference";
+import { adultMemberHostingStateKey } from "@/lib/policies/adult-member-hosting";
+
+/**
+ * The durable, officer-facing record of a CONFIRMED booking that has lost its
+ * required adult-member coverage (#2576 §7, §8, §16).
+ *
+ * WHY A TABLE AND NOT THE EXISTING REVIEW COLUMNS. `Booking.adultMemberHostingReview*`
+ * answers "what does the rule say about this booking right now", and it is reset
+ * whenever the hazard materially changes. An incident answers a different
+ * question — "cover was TAKEN AWAY from a booking the club had already accepted,
+ * and nobody has dealt with it" — and it has to survive that reset, carry the
+ * officer's override reason, and keep a resolution history. It is also the thing
+ * that must NOT exist for the ordinary case: under `ADMIN_REVIEW_REQUIRED` an
+ * uncovered booking is a normal review, and doubling it into an incident would
+ * double the officer's queue.
+ *
+ * SO: INCIDENTS EXIST ONLY UNDER `ENFORCED`. That is the whole rule, and it falls
+ * straight out of the owner's text. §7 and §8 are both about a booking that
+ * "becomes uncovered after confirmation" — which can only happen where the club
+ * would have refused it. Under review mode the booking was always allowed to
+ * exist uncovered and the pending review is already the officer's signal.
+ *
+ * NO AUTOMATIC CANCELLATION, ANYWHERE IN THIS MODULE. §7 and §16 both say so in
+ * as many words: the booking keeps its status, its beds and its payments. Nothing
+ * here writes `Booking.status`, and the only booking columns it touches are none
+ * at all — the incident is a separate row.
+ */
+
+/** The narrow client this service needs; a `Prisma.TransactionClient` satisfies it. */
+export type HostingCoverageIncidentDb = Pick<
+  PrismaClient,
+  "hostingCoverageIncident" | "auditLog"
+>;
+
+/** Why the cover went away. Mirrors the Prisma enum without importing it. */
+export type HostingCoverageIncidentCause = "OFFICER_OVERRIDE" | "SYSTEM_CHANGE";
+
+/** How an incident stopped being live. Mirrors the Prisma enum. */
+export type HostingCoverageIncidentResolution =
+  | "COVERAGE_RESTORED"
+  | "BOOKING_AMENDED"
+  | "EXCEPTION_APPROVED"
+  | "BOOKING_CANCELLED";
+
+/**
+ * The stored fingerprint of one uncovered state.
+ *
+ * A digest of `adultMemberHostingStateKey` rather than the key itself, for one
+ * practical reason: the key grows with the number of uncovered guest-nights and a
+ * large party can outrun any column width, and a TRUNCATED key is worse than
+ * useless — two materially different states would compare equal, so an officer
+ * override on Friday would suppress the notification for a different problem on
+ * Saturday. A digest is fixed-width and order-sensitive.
+ *
+ * VERSION-PREFIXED so a future change to what "materially identical" means
+ * invalidates old keys deliberately (every incident is then treated as changed
+ * once, which notifies once) instead of silently comparing across definitions.
+ */
+export function hostingCoverageStateKey(
+  violation: AdultMemberHostingPolicyExceptionViolation,
+): string {
+  const digest = createHash("sha256")
+    .update(adultMemberHostingStateKey(violation))
+    .digest("hex");
+  return `v1:${digest}`;
+}
+
+export interface OpenHostingCoverageIncidentParams {
+  bookingId: string;
+  lodgeId: string;
+  cause: HostingCoverageIncidentCause;
+  violation: AdultMemberHostingPolicyExceptionViolation;
+  /** The officer who overrode the refusal, and their mandatory reason (§7). */
+  override?: { byMemberId: string; reason: string } | null;
+}
+
+export type HostingCoverageIncidentOutcome =
+  /** Nothing was recorded before; a new incident is open. */
+  | { action: "opened"; incidentId: string; stateKey: string }
+  /** An active incident already existed and its uncovered state MOVED. */
+  | { action: "updated"; incidentId: string; stateKey: string }
+  /** An active incident already existed for the identical state; nothing written. */
+  | { action: "unchanged"; incidentId: string; stateKey: string };
+
+/**
+ * Open an incident, or fold the new facts into the one that is already open
+ * (§16: "create or update ONE durable active compliance incident for the
+ * materially identical uncovered state").
+ *
+ * IDEMPOTENT, AND THAT IS THE POINT. The re-evaluation drain is at-least-once by
+ * design — an item can be redelivered after a crash, and the general cron sweep
+ * re-runs anything left pending — so this is called repeatedly with the same
+ * facts. Called twice with the same uncovered state it writes NOTHING the second
+ * time and reports `unchanged`, which is what stops the notification in §16 from
+ * repeating for "the same unchanged condition".
+ *
+ * THE RACE IS CLOSED AT THE DATABASE, not here. Two concurrent openers both see
+ * no active row and both insert; the partial unique index
+ * `HostingCoverageIncident_active_booking_unique` lets exactly one win, and the
+ * loser retries as an update. Without the index the officer's queue would show
+ * the same booking twice and each row would notify.
+ *
+ * The evidence JSON is the FULL frozen violation, member ids included: this row is
+ * only ever read under admin booking permissions (§11), and the member-facing
+ * wording is derived from the nights, never from this JSON.
+ */
+export async function openOrUpdateHostingCoverageIncident(
+  params: OpenHostingCoverageIncidentParams,
+  db: HostingCoverageIncidentDb,
+): Promise<HostingCoverageIncidentOutcome> {
+  const stateKey = hostingCoverageStateKey(params.violation);
+  const override = params.override ?? null;
+  if (override && !override.reason.trim()) {
+    // §7 makes the reason mandatory. A programming error that reached here
+    // without one fails loudly rather than recording an unexplained override.
+    throw new Error(
+      "Recording an overridden hosting-coverage incident requires an explicit reason",
+    );
+  }
+
+  const existing = await db.hostingCoverageIncident.findFirst({
+    where: { bookingId: params.bookingId, resolvedAt: null },
+    select: { id: true, stateKey: true },
+  });
+
+  if (existing) {
+    if (existing.stateKey === stateKey) {
+      return { action: "unchanged", incidentId: existing.id, stateKey };
+    }
+    await db.hostingCoverageIncident.update({
+      where: { id: existing.id },
+      data: {
+        stateKey,
+        evidence: params.violation as unknown as Prisma.InputJsonValue,
+        cause: params.cause,
+        // A later override reason replaces an earlier one only when one was
+        // actually supplied; a system-driven update must not erase the officer's
+        // recorded reason for the override that opened this incident.
+        ...(override
+          ? {
+              overriddenByMemberId: override.byMemberId,
+              overrideReason: override.reason.trim().slice(0, 500),
+            }
+          : {}),
+      },
+    });
+    await recordIncidentAudit(
+      "booking.hostingCoverage.incidentUpdated",
+      params,
+      existing.id,
+      db,
+    );
+    return { action: "updated", incidentId: existing.id, stateKey };
+  }
+
+  try {
+    const created = await db.hostingCoverageIncident.create({
+      data: {
+        bookingId: params.bookingId,
+        lodgeId: params.lodgeId,
+        cause: params.cause,
+        stateKey,
+        evidence: params.violation as unknown as Prisma.InputJsonValue,
+        overriddenByMemberId: override?.byMemberId ?? null,
+        overrideReason: override ? override.reason.trim().slice(0, 500) : null,
+      },
+      select: { id: true },
+    });
+    await recordIncidentAudit(
+      "booking.hostingCoverage.incidentOpened",
+      params,
+      created.id,
+      db,
+    );
+    return { action: "opened", incidentId: created.id, stateKey };
+  } catch (err) {
+    if (!isActiveIncidentConflict(err)) throw err;
+    // A concurrent opener won the partial unique index. Re-read and fold in,
+    // rather than surfacing a unique violation to a caller whose only mistake
+    // was to arrive second.
+    const winner = await db.hostingCoverageIncident.findFirst({
+      where: { bookingId: params.bookingId, resolvedAt: null },
+      select: { id: true, stateKey: true },
+    });
+    if (!winner) throw err;
+    if (winner.stateKey === stateKey) {
+      return { action: "unchanged", incidentId: winner.id, stateKey };
+    }
+    await db.hostingCoverageIncident.update({
+      where: { id: winner.id },
+      data: {
+        stateKey,
+        evidence: params.violation as unknown as Prisma.InputJsonValue,
+      },
+    });
+    return { action: "updated", incidentId: winner.id, stateKey };
+  }
+}
+
+/** Prisma's unique-constraint failure on the one-active-incident index. */
+function isActiveIncidentConflict(err: unknown): boolean {
+  return (
+    err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002"
+  );
+}
+
+/**
+ * Close every active incident on a booking (§7's automatic resolution, §16's
+ * "resolve the incident automatically when the condition is corrected").
+ *
+ * The four resolutions are the four things the owner listed: qualifying coverage
+ * was restored, the booking was amended, a valid policy exception was approved,
+ * or the affected booking was cancelled. Which one it is is a fact the CALLER
+ * knows and this function is told — inferring it from the absence of a hazard
+ * would report `COVERAGE_RESTORED` for a booking somebody cancelled.
+ *
+ * IDEMPOTENT: a guarded `updateMany` on `resolvedAt: null`, so a second call
+ * moves nothing and reports 0. Returns the number of incidents closed so a caller
+ * can log the truth rather than an assumption.
+ */
+export async function resolveHostingCoverageIncidents(
+  params: {
+    bookingId: string;
+    resolution: HostingCoverageIncidentResolution;
+    actorMemberId?: string | null;
+  },
+  db: HostingCoverageIncidentDb,
+): Promise<number> {
+  const closed = await db.hostingCoverageIncident.updateMany({
+    where: { bookingId: params.bookingId, resolvedAt: null },
+    data: { resolvedAt: new Date(), resolution: params.resolution },
+  });
+  if (closed.count === 0) return 0;
+  await createAuditLog(
+    {
+      action: "booking.hostingCoverage.incidentResolved",
+      entityType: "Booking",
+      entityId: params.bookingId,
+      actorMemberId: params.actorMemberId ?? null,
+      category: "booking",
+      severity: "info",
+      outcome: "success",
+      summary:
+        `Hosting-coverage incident resolved (${params.resolution}) for booking ` +
+        formatBookingReference(params.bookingId),
+      metadata: { resolution: params.resolution, closed: closed.count },
+    },
+    db,
+  );
+  return closed.count;
+}
+
+/**
+ * Mark the booking owner as notified about one incident's CURRENT state, but only
+ * if they have not already been told about that exact state (§16: "notifications
+ * must be based on actual state transitions; repeated reconciliation of the same
+ * unchanged problem must not send repeated messages").
+ *
+ * A GUARDED CLAIM, not a read-then-write. The `updateMany` matches only while
+ * `notifiedStateKey` is still something other than this state, so two concurrent
+ * drains racing on the same incident produce exactly one winner and exactly one
+ * email. `count === 1` means "you own the notification"; 0 means somebody else
+ * already sent it, or the incident was resolved underneath.
+ *
+ * CLAIM BEFORE SEND, deliberately. The alternative — send, then stamp — sends
+ * twice whenever the stamp fails, and a duplicate "your booking has lost its
+ * cover" email to a member who has already rung the club is worse than a missed
+ * one, which the next reconciliation re-detects anyway.
+ */
+export async function claimHostingCoverageOwnerNotification(
+  params: { incidentId: string; stateKey: string },
+  db: Pick<PrismaClient, "hostingCoverageIncident">,
+): Promise<boolean> {
+  const claim = await db.hostingCoverageIncident.updateMany({
+    where: {
+      id: params.incidentId,
+      resolvedAt: null,
+      NOT: { notifiedStateKey: params.stateKey },
+    },
+    data: { notifiedStateKey: params.stateKey, ownerNotifiedAt: new Date() },
+  });
+  return claim.count === 1;
+}
+
+async function recordIncidentAudit(
+  action: string,
+  params: OpenHostingCoverageIncidentParams,
+  incidentId: string,
+  db: HostingCoverageIncidentDb,
+): Promise<void> {
+  await createAuditLog(
+    {
+      action,
+      entityType: "Booking",
+      entityId: params.bookingId,
+      actorMemberId: params.override?.byMemberId ?? null,
+      category: "booking",
+      // `important` rather than `info`: an enforcing club has a confirmed booking on
+      // its books that its own rule would refuse. That is the definition of
+      // something an officer has to look at.
+      severity: "important",
+      outcome: "success",
+      summary:
+        `Booking ${formatBookingReference(params.bookingId)} has ` +
+        `${params.violation.requirements.uncoveredNonMemberGuestNights} ` +
+        `uncovered non-member guest-night(s) after a ${params.cause} change`,
+      details: params.override?.reason ?? null,
+      metadata: {
+        incidentId,
+        cause: params.cause,
+        lodgeId: params.lodgeId,
+        affectedNights: params.violation.affectedNights,
+        policyId: params.violation.policyId,
+        policyVersion: params.violation.policyVersion,
+      },
+    },
+    db,
+  );
+}

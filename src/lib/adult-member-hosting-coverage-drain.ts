@@ -1,0 +1,225 @@
+import {
+  claimHostingCoverageOwnerNotification,
+  resolveHostingCoverageIncidents,
+} from "@/lib/adult-member-hosting-coverage-incidents";
+import {
+  claimHostingCoverageReevaluations,
+  completeHostingCoverageReevaluation,
+  failHostingCoverageReevaluation,
+  type HostingCoverageReevaluationItem,
+} from "@/lib/adult-member-hosting-coverage-queue";
+import {
+  loadSameOwnerCoverageDependentIds,
+  reconcileSameOwnerCoverageIncident,
+} from "@/lib/adult-member-hosting-review";
+import { sendHostingCoverageLostEmail } from "@/lib/email/booking";
+import logger from "@/lib/logger";
+import { prisma } from "@/lib/prisma";
+
+/**
+ * Drain the bounded same-owner re-evaluation queue (#2576 §8).
+ *
+ * The post-commit half of the escalation path: an authoritative change recorded
+ * what needs looking at inside its own transaction, and this re-reads the facts,
+ * settles each dependent booking's incident, and notifies the owner once per
+ * transition.
+ *
+ * DELIBERATELY NOT INSIDE A TRANSACTION. Each dependent booking is settled on its
+ * own, and the notification is sent after the incident row is claimed. That is the
+ * opposite of the usual advice and it is right here for three reasons: the facts it
+ * must read are the COMMITTED ones (§8 says "re-read current facts after commit");
+ * one item can touch several bookings and holding a transaction across all of them
+ * would serialise unrelated stays; and an email must never be sent from inside a
+ * transaction that can still roll back. Every write it makes is individually
+ * idempotent, so partial progress is safe and re-running finishes the job.
+ *
+ * RUN TWICE, ON PURPOSE. Callers run it INLINE immediately after their commit, so
+ * §7's "immediate re-evaluation" is real; the general cron sweep runs it again so
+ * a crashed process, a failed email or a redeployment mid-drain cannot leave a
+ * booking uncovered with nobody told. Inline failures are logged and swallowed —
+ * the authoritative change has already committed and must not be undone by a
+ * follow-up problem — because the cron is the authority on completion.
+ */
+
+export interface HostingCoverageDrainResult {
+  claimed: number;
+  processed: number;
+  incidentsOpened: number;
+  incidentsUpdated: number;
+  incidentsResolved: number;
+  notified: number;
+  failed: number;
+}
+
+const EMPTY_RESULT: HostingCoverageDrainResult = {
+  claimed: 0,
+  processed: 0,
+  incidentsOpened: 0,
+  incidentsUpdated: 0,
+  incidentsResolved: 0,
+  notified: 0,
+  failed: 0,
+};
+
+export async function drainHostingCoverageReevaluations(
+  options: { limit?: number; maxAttempts?: number } = {},
+  db: typeof prisma = prisma,
+): Promise<HostingCoverageDrainResult> {
+  const items = await claimHostingCoverageReevaluations(options, db);
+  if (items.length === 0) return { ...EMPTY_RESULT };
+
+  const result: HostingCoverageDrainResult = { ...EMPTY_RESULT, claimed: items.length };
+  for (const item of items) {
+    try {
+      const outcome = await processHostingCoverageReevaluation(item, db);
+      result.incidentsOpened += outcome.incidentsOpened;
+      result.incidentsUpdated += outcome.incidentsUpdated;
+      result.incidentsResolved += outcome.incidentsResolved;
+      result.notified += outcome.notified;
+      await completeHostingCoverageReevaluation(item.id, db);
+      result.processed += 1;
+    } catch (err) {
+      result.failed += 1;
+      logger.error(
+        { err, itemId: item.id, memberId: item.memberId, lodgeId: item.lodgeId },
+        "Failed to re-evaluate same-owner hosting coverage",
+      );
+      await failHostingCoverageReevaluation(
+        item.id,
+        err instanceof Error ? err.message : String(err),
+        db,
+      ).catch(() => undefined);
+    }
+  }
+  return result;
+}
+
+/**
+ * Settle one queued item: every active booking of that owner, at that lodge, over
+ * those nights.
+ *
+ * Bounded by the item itself (§10) — see `loadSameOwnerCoverageDependentIds`, which
+ * turns the owner/lodge/night triple into a booking-id list and cannot be widened
+ * into a lodge-wide sweep.
+ *
+ * §14's EXISTENTIAL RULE IS WHAT THIS LOOP IMPLEMENTS. It does not ask "did the
+ * source that used to cover this booking go away"; it asks "is this booking covered
+ * NOW, by anything". So a booking with a second eligible same-owner source stays
+ * compliant, an incident opened earlier is resolved rather than left standing, and
+ * no misleading loss-of-cover message is sent.
+ */
+async function processHostingCoverageReevaluation(
+  item: HostingCoverageReevaluationItem,
+  db: typeof prisma,
+): Promise<{
+  incidentsOpened: number;
+  incidentsUpdated: number;
+  incidentsResolved: number;
+  notified: number;
+}> {
+  const counts = {
+    incidentsOpened: 0,
+    incidentsUpdated: 0,
+    incidentsResolved: 0,
+    notified: 0,
+  };
+  const dependentIds = await loadSameOwnerCoverageDependentIds(
+    { memberId: item.memberId, lodgeId: item.lodgeId, nights: item.nights },
+    db,
+  );
+
+  for (const bookingId of dependentIds) {
+    const outcome = await reconcileSameOwnerCoverageIncident(
+      {
+        bookingId,
+        cause: item.cause,
+        actorMemberId: item.actorMemberId,
+        reason: item.reason,
+      },
+      db,
+    );
+    if (outcome.action === "resolved") {
+      counts.incidentsResolved += 1;
+      continue;
+    }
+    if (outcome.action === "none") continue;
+    if (outcome.action === "unchanged") continue;
+
+    if (outcome.action === "opened") counts.incidentsOpened += 1;
+    else counts.incidentsUpdated += 1;
+
+    const claimed = await claimHostingCoverageOwnerNotification(
+      { incidentId: outcome.incidentId, stateKey: outcome.stateKey },
+      db,
+    );
+    if (!claimed) continue;
+    if (await notifyOwnerOfLostCoverage(bookingId, db)) counts.notified += 1;
+  }
+
+  // The SOURCE booking itself may have been cancelled by the change that queued
+  // this work, in which case any incident it was carrying is moot: nobody can
+  // restore cover for a stay that is not happening. §7 lists cancellation of the
+  // affected booking as one of the four automatic resolutions.
+  if (item.sourceBookingId && !dependentIds.includes(item.sourceBookingId)) {
+    counts.incidentsResolved += await resolveHostingCoverageIncidents(
+      {
+        bookingId: item.sourceBookingId,
+        resolution: "BOOKING_CANCELLED",
+        actorMemberId: item.actorMemberId,
+      },
+      db,
+    );
+  }
+
+  return counts;
+}
+
+/**
+ * Send the owner the loss-of-cover notice, having already claimed it.
+ *
+ * Returns whether a message was actually sent. A missing email address is not an
+ * error and not a retry: the incident is still open, still in the officer queue,
+ * and an officer contacting a member with no address on file is the club's normal
+ * process. Re-queueing forever over an absent address would hide real failures.
+ */
+async function notifyOwnerOfLostCoverage(
+  bookingId: string,
+  db: typeof prisma,
+): Promise<boolean> {
+  const booking = await db.booking.findUnique({
+    where: { id: bookingId },
+    select: {
+      id: true,
+      memberId: true,
+      lodgeId: true,
+      checkIn: true,
+      checkOut: true,
+      adultMemberHostingReview: true,
+      member: { select: { firstName: true, email: true } },
+    },
+  });
+  if (!booking?.member?.email) return false;
+
+  const review = booking.adultMemberHostingReview as {
+    affectedNights?: unknown;
+  } | null;
+  const nights = Array.isArray(review?.affectedNights)
+    ? review.affectedNights.filter(
+        (night): night is string => typeof night === "string",
+      )
+    : [];
+
+  await sendHostingCoverageLostEmail({
+    bookingId: booking.id,
+    recipientMemberId: booking.memberId,
+    email: booking.member.email,
+    firstName: booking.member.firstName,
+    checkIn: booking.checkIn,
+    checkOut: booking.checkOut,
+    // The nights come off the snapshot the reconciliation just wrote, so the
+    // email cannot describe a different problem from the incident.
+    uncoveredNights: nights.length > 0 ? nights.join(", ") : "see your booking",
+    lodgeId: booking.lodgeId,
+  });
+  return true;
+}

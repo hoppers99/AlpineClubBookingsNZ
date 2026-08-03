@@ -83,6 +83,99 @@ export const UPCOMING_CHECK_IN_BOOKING_STATUSES = [
   BookingStatus.PENDING,
 ] as const;
 
+/**
+ * The booking states whose attendance may COVER another booking's non-member
+ * guest-night under the `SAME_BOOKING_OWNER` host scope (#2576 §3).
+ *
+ * Declared HERE, beside the rest of the lifecycle sets, because the owner's
+ * decision is explicit that this rule reads "the repository's canonical
+ * lifecycle helpers rather than adding a second independent status list". The
+ * hosting evaluator is pure and the same-owner loader is a query builder;
+ * neither is the place a club's idea of "genuinely confirmed active attendance"
+ * should be spelled out for the second time.
+ *
+ * CONFIRMED and PAID, and nothing else. Both are the club's own statement that
+ * the stay is happening: PAID is settled, and CONFIRMED is the pay-on-account /
+ * accepted-quote hold that reserves the beds while an emailed invoice is
+ * outstanding. Every other state is excluded for a reason the owner listed by
+ * name:
+ *
+ *  - `DRAFT`, `PENDING` — a draft, an unconfirmed request, or a provisional
+ *    "only if my guests come" hold. A speculative booking must not allow another
+ *    booking to confirm.
+ *  - `PAYMENT_PENDING` — named in the exclusion list in as many words.
+ *  - `AWAITING_REVIEW` — a booking (or a sent quote) waiting on an officer or an
+ *    exception decision is not yet attendance anybody has agreed to.
+ *  - `WAITLISTED`, `WAITLIST_OFFERED` — a queue position and an unaccepted offer
+ *    are not stays.
+ *  - `BUMPED`, `CANCELLED` — gone.
+ *  - `COMPLETED` — see the historical set below.
+ *
+ * A soft-deleted (archived) booking is excluded by `deletedAt`, which is a
+ * column rather than a status; `hostingCoverageSourceBookingFilter` applies it,
+ * so use that filter rather than this set alone in a query.
+ *
+ * NOT the same question as `capacityHoldingBookingFilter`. That set answers
+ * "does this booking consume a bed", which AWAITING_REVIEW and a converted
+ * PENDING quote both do — holding a bed is not the same as the club having
+ * accepted that these people are coming.
+ */
+export const HOSTING_COVERAGE_SOURCE_BOOKING_STATUSES = [
+  BookingStatus.CONFIRMED,
+  BookingStatus.PAID,
+] as const;
+
+/**
+ * The same set plus `COMPLETED`, for evaluating HISTORICAL compliance only
+ * (#2576 §3: "historical completed attendance may be considered only where
+ * evaluating historical compliance; it must not be used as current or future
+ * coverage").
+ *
+ * Deliberately a separate constant rather than a flag on the set above, so a
+ * caller has to name which question it is asking. Nothing on a booking write
+ * path may use this one — a completed stay cannot cover a future night, and
+ * `COMPLETED` is reached the moment a stay starts, so treating it as current
+ * coverage would let a stay that has begun and ended keep clearing a rule.
+ */
+export const HISTORICAL_HOSTING_COVERAGE_SOURCE_BOOKING_STATUSES = [
+  ...HOSTING_COVERAGE_SOURCE_BOOKING_STATUSES,
+  BookingStatus.COMPLETED,
+] as const;
+
+/** Per-booking form of the set above. `historical` opts into COMPLETED. */
+export function isHostingCoverageSourceBookingStatus(
+  status: string,
+  options: { historical?: boolean } = {},
+): boolean {
+  const set = options.historical
+    ? HISTORICAL_HOSTING_COVERAGE_SOURCE_BOOKING_STATUSES
+    : HOSTING_COVERAGE_SOURCE_BOOKING_STATUSES;
+  return (set as readonly string[]).includes(status);
+}
+
+/**
+ * The `where` fragment for "this booking's attendance may supply same-owner
+ * coverage" (#2576 §3) — the status set above AND not soft-deleted.
+ *
+ * Use this rather than a bare `status: { in: [...] }`: an archived booking is
+ * excluded by `deletedAt`, not by its status, and the owner's exclusion list
+ * names archived bookings explicitly.
+ */
+export function hostingCoverageSourceBookingFilter(
+  options: { historical?: boolean } = {},
+): Prisma.BookingWhereInput {
+  return {
+    status: {
+      in: [
+        ...(options.historical
+          ? HISTORICAL_HOSTING_COVERAGE_SOURCE_BOOKING_STATUSES
+          : HOSTING_COVERAGE_SOURCE_BOOKING_STATUSES),
+      ],
+    },
+    deletedAt: null,
+  };
+}
+
 // A member's existing "real stay" for the cross-lodge duplicate-stay guard
 // (ADR-004, #1587): everything that is not cancelled/bumped and not a waitlist
 // placeholder. This includes PAYMENT_PENDING (a real pending stay awaiting
