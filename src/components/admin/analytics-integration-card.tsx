@@ -33,16 +33,18 @@ import {
   ForbiddenSaveError,
   useSectionEditState,
 } from "@/hooks/use-section-edit-state";
+// `analytics-settings-shared`, never `analytics-settings`: the latter is
+// `server-only`, and importing a VALUE from it here fails `npm run build` with
+// "'server-only' cannot be imported from a Client Component module". See that
+// module's header — lint, typecheck, knip and vitest all miss it.
 import {
   ANALYTICS_BANNER_MESSAGE_MAX_LENGTH,
   ANALYTICS_STATUS_LABELS,
+  PRIVACY_POLICY_ADMIN_HREF,
   type AnalyticsIntegrationStatus,
   type AnalyticsSettingsValues,
-} from "@/lib/analytics-settings";
-import {
-  PRIVACY_POLICY_ADMIN_HREF,
   type PrivacyPolicyPageState,
-} from "@/lib/analytics-privacy-policy";
+} from "@/lib/analytics-settings-shared";
 
 /**
  * Google Analytics as a peer integration on Admin -> Integrations (#2573, owner
@@ -351,9 +353,45 @@ export function AnalyticsIntegrationCard() {
             </p>
           ) : null}
 
-          {section.loading || !draft ? (
+          {/*
+            The load error and its retry live OUTSIDE the placeholder branch, in the
+            reading order, and the placeholder is gated on `loading` ALONE.
+
+            `useSectionEditState` is given no `initial` here, so a failed GET clears
+            `loading` and leaves `draft` null: with the error rendered only inside the
+            else-branch the admin sat on "Loading settings…" forever with the
+            explanation invisible and no way forward but a page reload — the exact
+            trap the reference adopter's docblock warns about
+            (`booking-policies/group-discount-section.tsx`). The status chip is null in
+            that state too, so a configured club also reads as unconfigured; saying so
+            is the point of the message.
+          */}
+          <div role="alert" className="space-y-2 text-sm text-destructive">
+            {section.error ? (
+              <>
+                <p>{section.error}</p>
+                {/* Only a failed LOAD needs a retry: a failed save is retried with
+                    the Save button, which is still on screen. */}
+                {draft ? null : (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={section.loading}
+                    onClick={() => {
+                      void section.reload();
+                    }}
+                  >
+                    Try again
+                  </Button>
+                )}
+              </>
+            ) : null}
+          </div>
+
+          {section.loading ? (
             <p className="text-sm text-muted-foreground">Loading settings…</p>
-          ) : (
+          ) : !draft ? null : (
             <div className="space-y-6">
               <div className="space-y-2">
                 <Label htmlFor="analytics-measurement-id">
@@ -375,6 +413,26 @@ export function AnalyticsIntegrationCard() {
                   web stream. It is configuration rather than a secret — it appears
                   in the page source of every page analytics runs on. Clear the field
                   to switch analytics off. No restart or redeploy is needed.
+                </p>
+                {/*
+                  Owner section 7 requires that client-side navigation cannot cause
+                  duplicate page views. This application enforces its half in code —
+                  `send_page_view: false` plus one de-duplicated sanitised page view
+                  per address — but Google's enhanced-measurement option "Page changes
+                  based on browser history events" is a GA PROPERTY setting, on by
+                  default for a new stream and not controllable from gtag. With it on,
+                  Google adds a page view of its own on every soft navigation. Nothing
+                  in the app can switch it off, so the admin has to be told.
+                */}
+                <p className="text-xs text-muted-foreground">
+                  In your GA4 web stream, switch off{" "}
+                  <span className="font-medium">
+                    Page changes based on browser history events
+                  </span>{" "}
+                  under Enhanced measurement. This application sends one page view per
+                  address itself, with the address stripped of anything after a{" "}
+                  <code>?</code> or a <code>#</code>. Left on, Google adds its own page
+                  view as you move between pages, so views are counted twice.
                 </p>
               </div>
 
@@ -488,11 +546,8 @@ export function AnalyticsIntegrationCard() {
                 </div>
               </div>
 
-              {section.error ? (
-                <div role="alert" className="text-sm text-destructive">
-                  {section.error}
-                </div>
-              ) : null}
+              {/* The error itself is rendered above, outside this branch, so a
+                  failed load cannot hide it. */}
               <div role="status" className="text-sm text-muted-foreground">
                 {section.success}
               </div>
