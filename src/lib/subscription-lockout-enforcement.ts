@@ -204,15 +204,6 @@ export interface NonMemberPricingRequirements {
 }
 
 /**
- * The refusal a booking path raises when the party has no paid-up adult member.
- *
- * 409, not 403. A 403 says "you may not do this"; this booking IS permitted, by
- * a Booking Officer, through the #2365 exception-request workflow — the state of
- * the party is what conflicts. It also keeps the code out of the
- * `HARD_STOP_BOOKING_FAILURE_CODES` family, which is precisely the set of
- * refusals that may NOT enter exception review.
- */
-/**
  * Who is reading this refusal.
  *
  * `BOOKER` — the member who owns (or is creating) the booking, or an admin. The
@@ -224,6 +215,15 @@ export interface NonMemberPricingRequirements {
  */
 export type PaidUpAdultRefusalAudience = "BOOKER" | "OTHER_PARTY_MEMBER";
 
+/**
+ * The refusal a booking path raises when the party has no paid-up adult member.
+ *
+ * 409, not 403. A 403 says "you may not do this"; this booking IS permitted, by
+ * a Booking Officer, through the #2365 exception-request workflow — the state of
+ * the party is what conflicts. It also keeps the code out of the
+ * `HARD_STOP_BOOKING_FAILURE_CODES` family, which is precisely the set of
+ * refusals that may NOT enter exception review.
+ */
 export class PaidUpAdultMemberRequiredError extends ApiError {
   readonly code = "PAID_UP_ADULT_MEMBER_REQUIRED";
   readonly violation: PaidUpAdultMemberPolicyExceptionViolation;
