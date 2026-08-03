@@ -22,6 +22,14 @@ const updateFamilyGroupSchema = z.object({
  * The membership-view permission is named explicitly rather than inferred from
  * the request path, so the identity information cannot be served to a general
  * administrator on a request that reaches the handler without the path header.
+ *
+ * The response is built field by field — never by spreading the Prisma row. A
+ * spread of the group re-exported the raw `memberships` relation alongside the
+ * sanitised `members` array, so every member's `passwordHash`,
+ * `passwordChangedAt`, `lastLoginAt` and (once #2568 selected it)
+ * `dateOfBirth` reached the browser even though the mapping below strips all
+ * four. A whitelist cannot leak a field a later `select` adds; a spread can, and
+ * did.
  */
 export async function GET(
   _req: NextRequest,
@@ -58,23 +66,18 @@ export async function GET(
               passwordHash: true,
               passwordChangedAt: true,
               lastLoginAt: true,
-              // #2568: read to calculate the age below, then dropped — see the
-              // destructure in the mapping.
+              // #2568: read to calculate the age below, then dropped — the
+              // response names its fields explicitly and this is not one of them.
               dateOfBirth: true,
             },
           },
         },
         orderBy: { member: { firstName: "asc" } },
       },
-      joinRequests: {
-        where: { status: "PENDING" },
-        include: {
-          requester: {
-            select: { id: true, firstName: true, lastName: true, email: true },
-          },
-        },
-        orderBy: { createdAt: "desc" },
-      },
+      // No `joinRequests` relation is read: the editor loads the review queue
+      // from `GET /api/admin/family-groups/requests`, and this route's copy was
+      // never consumed. Dropping it keeps the SQL and the payload to what the
+      // screen actually uses.
     },
   });
 
@@ -83,23 +86,33 @@ export async function GET(
   }
 
   return NextResponse.json({
-    ...group,
+    id: group.id,
+    name: group.name,
+    createdAt: group.createdAt,
     // #2520: no per-membership `role` in the payload — the column is retired and
     // nothing in the admin UI read it out of this response.
-    members: group.memberships.map((m) => {
-      // #2568: `dateOfBirth` is destructured out with the credential fields, so
-      // only the calculated `ageLabel` reaches the browser.
-      const { passwordHash, passwordChangedAt, lastLoginAt, dateOfBirth, ...member } =
-        m.member;
-      return {
-        ...member,
-        ageLabel: formatMemberIdentityAge(dateOfBirth),
-        hasPassword: Boolean(passwordHash) && hasMemberCompletedAccountSetup({
-          passwordChangedAt,
-          lastLoginAt,
+    members: group.memberships.map(({ member }) => ({
+      id: member.id,
+      firstName: member.firstName,
+      lastName: member.lastName,
+      email: member.email,
+      ageTier: member.ageTier,
+      active: member.active,
+      canLogin: member.canLogin,
+      archivedAt: member.archivedAt,
+      inheritEmailFromId: member.inheritEmailFromId,
+      inheritEmailFrom: member.inheritEmailFrom,
+      // #2568: the calculated age, never the stored date of birth.
+      ageLabel: formatMemberIdentityAge(member.dateOfBirth),
+      // The only thing the UI needs from the credential columns: whether this
+      // member has finished account setup. The hash itself stays server-side.
+      hasPassword:
+        Boolean(member.passwordHash) &&
+        hasMemberCompletedAccountSetup({
+          passwordChangedAt: member.passwordChangedAt,
+          lastLoginAt: member.lastLoginAt,
         }),
-      };
-    }),
+    })),
   });
 }
 
@@ -214,8 +227,13 @@ export async function PUT(
     details: JSON.stringify(parsed.data),
   });
 
+  // Field by field, for the same reason as the GET above: a spread of the row
+  // would re-export the raw `memberships` relation beside the flattened
+  // `members` array. Nothing reads the duplicate.
   return NextResponse.json({
-    ...updated,
+    id,
+    name: updated?.name ?? null,
+    createdAt: updated?.createdAt ?? null,
     members: updated?.memberships.map((m) => m.member) ?? [],
   });
 }

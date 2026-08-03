@@ -3,6 +3,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { ageTierEnum } from "@/lib/age-tier-schema";
 import { formatMemberIdentityAge } from "@/lib/member-age";
+import { buildParentLinks, type ParentLinkSummary } from "@/lib/member-parent-links";
 
 /**
  * Member lookup for the identity-sensitive Family Group admin workflows (#2568).
@@ -19,6 +20,13 @@ import { formatMemberIdentityAge } from "@/lib/member-age";
  * capped at ten rows, optionally restricted to a set of age tiers (the
  * infant/child/youth restriction a dependant request needs). `total` is the full
  * match count so a caller can say when a list was cut short.
+ *
+ * It DOES carry `parentLinks`, exactly as the members endpoint it replaced did.
+ * That is not decoration: on a child request the admin picks which parent's
+ * mailbox the child inherits from this row's parent list
+ * (`inheritEmailFromId`), and a searched row overwrites the same candidate id
+ * loaded with the request, so dropping the links silently removed the real
+ * parent from that choice and left only the requester.
  */
 
 const MAX_RESULTS = 10;
@@ -49,6 +57,12 @@ export interface FamilyGroupMemberSearchRow {
   canLogin: boolean;
   /** Calculated server-side; see `formatMemberIdentityAge`. Never a birth date. */
   ageLabel: string;
+  /**
+   * This member's recorded parents, which are the notification-email choices a
+   * child-request approval offers. Same shape and same fields the members
+   * endpoint returned, and no parent's date of birth (it is not selected).
+   */
+  parentLinks: ParentLinkSummary[];
 }
 
 // Same name/email predicate the members admin search uses, so an admin who
@@ -103,6 +117,34 @@ export async function searchFamilyGroupCandidateMembers(
         canLogin: true,
         // Read to calculate the age below, and dropped from the mapped row.
         dateOfBirth: true,
+        // The parent rows `buildParentLinks` needs. Deliberately the same field
+        // list the members endpoint selected — name, email, status and
+        // `inheritEmailFromId` — and deliberately no `dateOfBirth`: a parent
+        // option is a name in a dropdown, not an identity check of its own.
+        parent: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            email: true,
+            ageTier: true,
+            active: true,
+            canLogin: true,
+            inheritEmailFromId: true,
+          },
+        },
+        secondaryParent: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            email: true,
+            ageTier: true,
+            active: true,
+            canLogin: true,
+            inheritEmailFromId: true,
+          },
+        },
       },
       orderBy: [{ lastName: "asc" }, { firstName: "asc" }],
       take: MAX_RESULTS,
@@ -120,6 +162,7 @@ export async function searchFamilyGroupCandidateMembers(
       active: member.active,
       canLogin: member.canLogin,
       ageLabel: formatMemberIdentityAge(member.dateOfBirth),
+      parentLinks: buildParentLinks(member),
     })),
     total,
   };
