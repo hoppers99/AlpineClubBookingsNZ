@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest";
 
 import { ADMIN_PERMISSION_AREAS } from "@/lib/admin-permissions";
 
+import { readSqlPlaceholderNumbers } from "../database";
 import {
   DIAGNOSTICS_SUBSTRATE_PROBE_TOOL_ID,
   DIAGNOSTICS_TOOLS,
@@ -19,6 +20,16 @@ import {
 import { DIAGNOSTICS_TOOL_BOUNDS } from "../types";
 
 const AREA_KEYS = new Set(ADMIN_PERMISSION_AREAS.map((area) => area.key));
+
+/**
+ * Representative VALID arguments for each entry, so the parameter-arity contract
+ * below can actually reach `bind`. A new tool pack must add its own row — the test
+ * fails loudly rather than skipping, because a skipped arity check is exactly how a
+ * one-parameter-short entry would ship.
+ */
+const EXAMPLE_ARGS: Record<string, unknown> = {
+  [DIAGNOSTICS_SUBSTRATE_PROBE_TOOL_ID]: {},
+};
 
 describe("diagnostics tool registry contract (#2374)", () => {
   it("registers at least one tool and no duplicate ids", () => {
@@ -147,6 +158,52 @@ describe("diagnostics tool registry contract (#2374)", () => {
       // it holds however the schema is written.
       expect(tool.parseArgs({ __unexpected__: 1 }).ok).toBe(false);
       expect(tool.parseArgs({ toolId: "x" }).ok).toBe(false);
+    },
+  );
+
+  it.each(DIAGNOSTICS_TOOLS.map((tool) => [tool.id, tool] as const))(
+    "%s REJECTS a reserved key that `.strict()` alone would silently strip",
+    (_id, tool) => {
+      // `.strict()` is not total. Measured on zod 4.4.3:
+      // `z.object({}).strict().safeParse(JSON.parse('{"__proto__":{}}'))` SUCCEEDS
+      // with `data: {}` and reports no unrecognized key. The arguments reaching
+      // `parseArgs` are the model's `tool_use` input deserialised from provider
+      // JSON, so `__proto__` arrives as an ordinary own property exactly like this.
+      // Accepting it makes the audit `argsHash` identical to a call that sent `{}`,
+      // so ADR-004's durable record cannot tell the two apart — and the first entry
+      // with a `z.record(...)` field would silently drop a filter key.
+      expect(tool.parseArgs(JSON.parse('{"__proto__":{"polluted":"yes"}}')).ok).toBe(
+        false,
+      );
+      expect(tool.parseArgs(JSON.parse('{"constructor":{}}')).ok).toBe(false);
+      expect(tool.parseArgs(JSON.parse('{"prototype":{}}')).ok).toBe(false);
+      // And nothing was polluted on the way past.
+      expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+    },
+  );
+
+  it.each(DIAGNOSTICS_TOOLS.map((tool) => [tool.id, tool] as const))(
+    "%s binds exactly the parameters its SQL references — $1..$N, no gaps",
+    (_id, tool) => {
+      // The executor appends the row cap as `$${params.length + 1}`, which is
+      // correct only while the entry references exactly `$1..$N`. One parameter
+      // short does NOT fail at the database: verified on postgres:16, the row cap
+      // silently serves as the missing placeholder and the query returns rows, so
+      // the tool's own predicate is evaluated against the row cap and the result is
+      // projected, hashed and audited as a clean success.
+      const example = EXAMPLE_ARGS[tool.id];
+      expect(
+        example,
+        `add an EXAMPLE_ARGS row for ${tool.id} so its parameter arity is checked`,
+      ).toBeDefined();
+      const binding = tool.parseArgs(example);
+      expect(binding.ok, `${tool.id} rejected its own EXAMPLE_ARGS`).toBe(true);
+      if (!binding.ok) return;
+
+      const referenced = [...new Set(readSqlPlaceholderNumbers(tool.sql))].sort(
+        (a, b) => a - b,
+      );
+      expect(referenced).toEqual(binding.params.map((_value, index) => index + 1));
     },
   );
 

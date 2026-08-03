@@ -11,6 +11,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   AI_DIAGNOSTICS_DATABASE_URL_ENV,
   isDiagnosticsRolePrivilegeSafe,
+  readSqlPlaceholderNumbers,
+  REFUSED_DIAGNOSTICS_URL_PARAMETERS,
   resolveDiagnosticsDatabaseConfig,
   type DiagnosticsRolePrivilegeReport,
 } from "../database";
@@ -129,10 +131,73 @@ describe("resolveDiagnosticsDatabaseConfig (#2374, ADR-007)", () => {
       problem: "reuses_application_role",
     });
   });
+
+  // `pg` reads a query parameter in preference to the URL's own userinfo
+  // (`config.user = config.user || decodeURIComponent(result.username)`), and merges
+  // the parsed connection string OVER the pool's explicit options. So a `?user=`
+  // would let the driver connect as the application role while this gate vetted the
+  // dedicated one, and `?statement_timeout=0` would strip the pool's own bound.
+  it.each(REFUSED_DIAGNOSTICS_URL_PARAMETERS.map((name) => [name]))(
+    "refuses a diagnostics URL carrying ?%s=",
+    (parameter) => {
+      process.env[AI_DIAGNOSTICS_DATABASE_URL_ENV] =
+        `postgresql://ai_diagnostics_ro:diagpw@postgres:5432/tacbookings?${parameter}=tac`;
+      expect(resolveDiagnosticsDatabaseConfig()).toEqual({
+        ok: false,
+        problem: "unsafe_url_parameters",
+      });
+    },
+  );
+
+  it("refuses the override however it is capitalised", () => {
+    process.env[AI_DIAGNOSTICS_DATABASE_URL_ENV] =
+      "postgresql://ai_diagnostics_ro:diagpw@postgres:5432/tacbookings?USER=tac";
+    expect(resolveDiagnosticsDatabaseConfig()).toEqual({
+      ok: false,
+      problem: "unsafe_url_parameters",
+    });
+  });
+
+  it("refuses the override BEFORE it reads the role, so the gate cannot be fooled", () => {
+    // The refusal must not depend on the role name being wrong: this URL names the
+    // dedicated role in its userinfo and the application role in its parameters,
+    // which is exactly the shape that used to pass every check and then connect as
+    // the application.
+    process.env[AI_DIAGNOSTICS_DATABASE_URL_ENV] =
+      "postgresql://ai_diagnostics_ro:diagpw@postgres:5432/tacbookings?user=tac&password=apppw";
+    const result = resolveDiagnosticsDatabaseConfig();
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.problem).toBe("unsafe_url_parameters");
+  });
+
+  it.each([
+    "connection_limit=3",
+    "sslmode=require",
+    "application_name=something-else",
+  ])("still accepts the parameters operators legitimately write (%s)", (query) => {
+    process.env[AI_DIAGNOSTICS_DATABASE_URL_ENV] =
+      `postgresql://ai_diagnostics_ro:diagpw@postgres:5432/tacbookings?${query}`;
+    expect(resolveDiagnosticsDatabaseConfig().ok).toBe(true);
+  });
+});
+
+describe("readSqlPlaceholderNumbers (#2374)", () => {
+  it("finds every $n a statement references", () => {
+    expect(
+      readSqlPlaceholderNumbers(
+        'SELECT id FROM public."Booking" WHERE "lodgeId" = $1 AND "startDate" >= $2 AND id <> $1',
+      ),
+    ).toEqual([1, 2, 1]);
+  });
+
+  it("returns nothing for a statement with no parameters", () => {
+    expect(readSqlPlaceholderNumbers("SELECT true AS probe_ok")).toEqual([]);
+  });
 });
 
 const SAFE: DiagnosticsRolePrivilegeReport = {
   roleName: "ai_diagnostics_ro",
+  matchesConfiguredRole: true,
   isSuperuser: false,
   canCreateDb: false,
   canCreateRole: false,
@@ -143,6 +208,9 @@ const SAFE: DiagnosticsRolePrivilegeReport = {
   canCreateInPublicSchema: false,
   canReadServerFiles: false,
   forbiddenRoleMemberships: 0,
+  writableRelations: 0,
+  undeclaredReadableRelations: 0,
+  executableSecurityDefinerRoutines: 0,
 };
 
 describe("isDiagnosticsRolePrivilegeSafe (#2374, ADR-007)", () => {
@@ -168,5 +236,40 @@ describe("isDiagnosticsRolePrivilegeSafe (#2374, ADR-007)", () => {
     expect(
       isDiagnosticsRolePrivilegeSafe({ ...SAFE, forbiddenRoleMemberships: 1 }),
     ).toBe(false);
+  });
+
+  it.each([
+    "writableRelations",
+    "undeclaredReadableRelations",
+    "executableSecurityDefinerRoutines",
+  ] as const)("refuses a role whose %s count is not zero", (field) => {
+    // The privileges that make the name "SELECT-only" true. Nothing in the runtime
+    // path used to ask about a single TABLE privilege, so a role carrying
+    // INSERT/UPDATE/DELETE/TRUNCATE on every table in the schema — or a hand-added
+    // `GRANT SELECT ON "IntegrationCredential"` — was reported `verified`.
+    expect(isDiagnosticsRolePrivilegeSafe({ ...SAFE, [field]: 1 })).toBe(false);
+  });
+
+  it("refuses when the server connected us as a DIFFERENT role than we vetted", () => {
+    // The config gate compares the URL's userinfo against `DATABASE_URL`; this is
+    // the same question asked of the server, so a redirected login cannot leave the
+    // vetted name standing in for the real one.
+    expect(
+      isDiagnosticsRolePrivilegeSafe({ ...SAFE, matchesConfiguredRole: false }),
+    ).toBe(false);
+  });
+
+  it("checks EVERY field of the report, so a new one cannot be forgotten", () => {
+    // Mutation guard for the predicate itself: flipping any single field away from
+    // its safe value must refuse. Written over `Object.keys` so a field added to
+    // `DiagnosticsRolePrivilegeReport` and left out of the predicate fails here.
+    for (const [key, value] of Object.entries(SAFE)) {
+      if (key === "roleName") continue; // The NAME is metadata, not a privilege.
+      const unsafeValue = typeof value === "boolean" ? !value : 1;
+      expect(
+        isDiagnosticsRolePrivilegeSafe({ ...SAFE, [key]: unsafeValue }),
+        `${key} is not part of the safety verdict`,
+      ).toBe(false);
+    }
   });
 });

@@ -42,7 +42,9 @@
  *   CONCURRENCY_RACE_DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:55442/concurrency_race_1881 \
  *     npx vitest run src/lib/__tests__/ai-diagnostics-select-only-role.realdb.test.ts
  */
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+
+import { realElapsedMs } from "./helpers/clock";
 
 const RUN = process.env.RUN_CONCURRENCY_RACE_TESTS === "1";
 const RACE_DB_URL = process.env.CONCURRENCY_RACE_DATABASE_URL ?? "";
@@ -123,6 +125,7 @@ describe("diagnostics privilege proof DB safety guard (#2374)", () => {
     let PgClientCtor: typeof import("pg").Client;
     let buildAiDiagnosticsRoleSql: typeof import("@/lib/diagnostics/tools/provision-role")["buildAiDiagnosticsRoleSql"];
     let FORBIDDEN_PREDEFINED_ROLES: typeof import("@/lib/diagnostics/tools/provision-role")["FORBIDDEN_PREDEFINED_ROLES"];
+    let FORBIDDEN_SERVER_FILE_FUNCTIONS: typeof import("@/lib/diagnostics/tools/database")["FORBIDDEN_SERVER_FILE_FUNCTIONS"];
     let getDiagnosticsDatabase: typeof import("@/lib/diagnostics/tools/database")["getDiagnosticsDatabase"];
     let closeDiagnosticsDatabase: typeof import("@/lib/diagnostics/tools/database")["closeDiagnosticsDatabase"];
     let runDiagnosticsReadOnlyQuery: typeof import("@/lib/diagnostics/tools/database")["runDiagnosticsReadOnlyQuery"];
@@ -189,6 +192,47 @@ describe("diagnostics privilege proof DB safety guard (#2374)", () => {
       await admin.query("COMMIT");
     }
 
+    /**
+     * The two grants this suite adds on top of the shipped (empty) allowlist: SELECT
+     * on one scratch table, and a deliberately over-granted SELECT+INSERT on another
+     * so the READ ONLY transaction can be shown refusing a write the GRANT allows.
+     */
+    async function grantScratchPrivileges(): Promise<void> {
+      await admin.query(
+        `GRANT SELECT ON public.${GRANTED_TABLE} TO "${TEST_ROLE}"`,
+      );
+      await admin.query(
+        `GRANT SELECT, INSERT ON public.${WRITABLE_TABLE} TO "${TEST_ROLE}"`,
+      );
+    }
+
+    /**
+     * Run `fn` with those grants STRIPPED, so the role is exactly the shape an
+     * operator's provisioning leaves behind.
+     *
+     * Both grants are things the runtime self-check now refuses — any write
+     * privilege on any relation, and any readable relation the declared allowlist
+     * does not name — which is the check doing its job. So the tests that need an
+     * ACCEPTED pool run against the declared shape, and the tests that need the
+     * over-grants keep them. The cached verdict is dropped on the way in and out,
+     * because it is cached per pool for up to `rolePrivilegeTtlMs`.
+     */
+    async function withDeclaredGrantsOnly<T>(fn: () => Promise<T>): Promise<T> {
+      await admin.query(
+        `REVOKE ALL PRIVILEGES ON public.${GRANTED_TABLE} FROM "${TEST_ROLE}"`,
+      );
+      await admin.query(
+        `REVOKE ALL PRIVILEGES ON public.${WRITABLE_TABLE} FROM "${TEST_ROLE}"`,
+      );
+      await closeDiagnosticsDatabase();
+      try {
+        return await fn();
+      } finally {
+        await grantScratchPrivileges();
+        await closeDiagnosticsDatabase();
+      }
+    }
+
     beforeAll(async () => {
       // Guard the dedicated URL BEFORE importing pg or any app module.
       assertSafePrivilegeProofDbUrl(RACE_DB_URL);
@@ -199,6 +243,9 @@ describe("diagnostics privilege proof DB safety guard (#2374)", () => {
       ({ Client: PgClientCtor } = await import("pg"));
       ({ buildAiDiagnosticsRoleSql, FORBIDDEN_PREDEFINED_ROLES } = await import(
         "@/lib/diagnostics/tools/provision-role"
+      ));
+      ({ FORBIDDEN_SERVER_FILE_FUNCTIONS } = await import(
+        "@/lib/diagnostics/tools/database"
       ));
       ({ DIAGNOSTICS_TOOL_BOUNDS } = await import(
         "@/lib/diagnostics/tools/types"
@@ -230,15 +277,10 @@ describe("diagnostics privilege proof DB safety guard (#2374)", () => {
       await provision();
 
       // The grants a tool pack (AID-6A/B/C) would add for its own table, applied
-      // here so the proof can show SELECT works while every write does not.
-      await admin.query(
-        `GRANT SELECT ON public.${GRANTED_TABLE} TO "${TEST_ROLE}"`,
-      );
-      // Deliberately over-granted: INSERT on this table exists ONLY so the suite
-      // can prove the READ ONLY transaction refuses a write the GRANT allows.
-      await admin.query(
-        `GRANT SELECT, INSERT ON public.${WRITABLE_TABLE} TO "${TEST_ROLE}"`,
-      );
+      // here so the proof can show SELECT works while every write does not — plus a
+      // deliberate over-grant of INSERT, which exists ONLY so the suite can prove the
+      // READ ONLY transaction refuses a write the GRANT allows.
+      await grantScratchPrivileges();
 
       roleUrl = `postgresql://${TEST_ROLE}:${encodeURIComponent(TEST_ROLE_PASSWORD)}@${parsed.host}/${encodeURIComponent(databaseName)}`;
 
@@ -324,30 +366,111 @@ describe("diagnostics privilege proof DB safety guard (#2374)", () => {
     });
 
     it("holds no membership in any privilege-escalating predefined role", async () => {
+      // `MEMBER`, not `USAGE`. The role is provisioned NOINHERIT, and for a NOINHERIT
+      // role `USAGE` is FALSE while `MEMBER` is TRUE — so the `USAGE` predicate this
+      // assertion used to share with the runtime self-check reported zero for a role
+      // that HAD been granted `pg_write_all_data` and could reach every table with
+      // one `SET ROLE`. On a freshly provisioned role both predicates read zero,
+      // which is what made the old assertion a tautology on this axis; the drift case
+      // below is the one that distinguishes them.
       const result = await admin.query(
-        `SELECT count(*)::int AS memberships
+        `SELECT
+           count(*) FILTER (WHERE pg_catalog.pg_has_role($1, forbidden.oid, 'MEMBER'))::int AS memberships,
+           count(*) FILTER (WHERE pg_catalog.pg_has_role($1, forbidden.oid, 'USAGE'))::int  AS inherited
          FROM pg_catalog.pg_roles forbidden
-         WHERE forbidden.rolname = ANY($2::text[])
-           AND pg_catalog.pg_has_role($1, forbidden.oid, 'USAGE')`,
+         WHERE forbidden.rolname = ANY($2::text[])`,
         [TEST_ROLE, [...FORBIDDEN_PREDEFINED_ROLES]],
       );
       expect(result.rows[0].memberships).toBe(0);
+      expect(result.rows[0].inherited).toBe(0);
     });
 
-    it("cannot execute server-file or large-object functions", async () => {
+    it("cannot execute ANY overload of a server-file or large-object function", async () => {
+      // By NAME across every signature: PostgreSQL ships `pg_read_file(text)`,
+      // `(text, bigint, bigint)` and `(text, bigint, bigint, boolean)` as three
+      // functions with three ACLs, and EXECUTE on any one of them is enough to read a
+      // file under the data directory. A check pinned to one signature is a canary
+      // that cannot fire.
       const result = await admin.query(
         `SELECT
-           pg_catalog.has_function_privilege($1, 'pg_catalog.pg_read_file(text)', 'EXECUTE')        AS read_file,
-           pg_catalog.has_function_privilege($1, 'pg_catalog.pg_read_binary_file(text)', 'EXECUTE') AS read_binary,
-           pg_catalog.has_function_privilege($1, 'pg_catalog.pg_ls_dir(text)', 'EXECUTE')           AS ls_dir,
-           pg_catalog.has_function_privilege($1, 'pg_catalog.pg_reload_conf()', 'EXECUTE')          AS reload_conf`,
+           count(*)::int AS overloads,
+           count(*) FILTER (
+             WHERE pg_catalog.has_function_privilege($1, p.oid, 'EXECUTE')
+           )::int AS executable
+         FROM pg_catalog.pg_proc p
+         JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+         WHERE n.nspname = 'pg_catalog' AND p.proname = ANY($2::text[])`,
+        [TEST_ROLE, [...FORBIDDEN_SERVER_FILE_FUNCTIONS]],
+      );
+      // More overloads than names, which is the whole point of checking by name.
+      expect(result.rows[0].overloads).toBeGreaterThan(
+        FORBIDDEN_SERVER_FILE_FUNCTIONS.length,
+      );
+      expect(result.rows[0].executable).toBe(0);
+
+      const other = await admin.query(
+        `SELECT pg_catalog.has_function_privilege($1, 'pg_catalog.pg_reload_conf()', 'EXECUTE') AS reload_conf`,
+        [TEST_ROLE],
+      );
+      expect(other.rows[0].reload_conf).toBe(false);
+    });
+
+    it("holds no table privilege at all on the migrated schema", async () => {
+      // The property the role is NAMED for, asserted against the real schema rather
+      // than inferred from the provisioning statements. The scratch grants this suite
+      // adds are excluded, so what is left is every application table.
+      const result = await admin.query(
+        `SELECT
+           count(*) FILTER (
+             WHERE pg_catalog.has_table_privilege($1, c.oid, 'SELECT')
+               OR pg_catalog.has_any_column_privilege($1, c.oid, 'SELECT')
+           )::int AS readable,
+           count(*) FILTER (
+             WHERE pg_catalog.has_table_privilege($1, c.oid, 'INSERT')
+               OR pg_catalog.has_table_privilege($1, c.oid, 'UPDATE')
+               OR pg_catalog.has_table_privilege($1, c.oid, 'DELETE')
+               OR pg_catalog.has_table_privilege($1, c.oid, 'TRUNCATE')
+               OR pg_catalog.has_any_column_privilege($1, c.oid, 'INSERT')
+               OR pg_catalog.has_any_column_privilege($1, c.oid, 'UPDATE')
+           )::int AS writable,
+           count(*)::int AS relations
+         FROM pg_catalog.pg_class c
+         JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+         WHERE n.nspname = 'public'
+           AND c.relkind = ANY (ARRAY['r','v','m','f','p'])
+           AND c.relname <> ALL ($2::text[])`,
+        [TEST_ROLE, [GRANTED_TABLE, WRITABLE_TABLE, UNGRANTED_TABLE]],
+      );
+      // The migrations really are deployed, so "zero readable" is not vacuous.
+      expect(result.rows[0].relations).toBeGreaterThan(50);
+      expect(result.rows[0].readable).toBe(0);
+      expect(result.rows[0].writable).toBe(0);
+    });
+
+    it("may execute no SECURITY DEFINER routine, though PUBLIC gives it EXECUTE on the rest", async () => {
+      // The subtlety the provisioning cannot fix: PostgreSQL grants EXECUTE on every
+      // new function to PUBLIC, and a PUBLIC grant cannot be revoked for one role, so
+      // `REVOKE ALL ON ALL ROUTINES … FROM <role>` is a no-op. What matters is that
+      // none of those routines runs with its owner's privileges.
+      const result = await admin.query(
+        `SELECT
+           count(*)::int AS routines,
+           count(*) FILTER (
+             WHERE pg_catalog.has_function_privilege($1, p.oid, 'EXECUTE')
+           )::int AS executable,
+           count(*) FILTER (
+             WHERE p.prosecdef
+               AND pg_catalog.has_function_privilege($1, p.oid, 'EXECUTE')
+           )::int AS executable_security_definer
+         FROM pg_catalog.pg_proc p
+         JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+         WHERE n.nspname = 'public'`,
         [TEST_ROLE],
       );
       const p = result.rows[0];
-      expect(p.read_file).toBe(false);
-      expect(p.read_binary).toBe(false);
-      expect(p.ls_dir).toBe(false);
-      expect(p.reload_conf).toBe(false);
+      // Documented honestly rather than wished away: the routines ARE executable.
+      expect(p.executable).toBe(p.routines);
+      expect(p.executable_security_definer).toBe(0);
     });
 
     it("carries a server-side statement timeout and read-only default of its own", async () => {
@@ -511,9 +634,146 @@ describe("diagnostics privilege proof DB safety guard (#2374)", () => {
     // ---------------------------------------------------------------------
 
     it("accepts the provisioned role through the runtime privilege self-check", async () => {
+      await withDeclaredGrantsOnly(async () => {
+        const handle = await getDiagnosticsDatabase();
+        expect(handle.ok).toBe(true);
+        if (handle.ok) expect(handle.roleName).toBe(TEST_ROLE);
+      });
+    });
+
+    it("REFUSES the same role the moment it holds a write grant or an undeclared read", async () => {
+      // The suite's own scratch grants are exactly the drift the self-check exists to
+      // catch: SELECT on a table the declared allowlist does not name, and INSERT on
+      // another. Nothing in the runtime path used to ask about a single table
+      // privilege, so a role carrying full DML was reported `verified`.
+      await closeDiagnosticsDatabase();
       const handle = await getDiagnosticsDatabase();
-      expect(handle.ok).toBe(true);
-      if (handle.ok) expect(handle.roleName).toBe(TEST_ROLE);
+      expect(handle.ok).toBe(false);
+      if (handle.ok) return;
+      expect(handle.reason).toBe("database_role_unsafe");
+      expect(handle.report?.writableRelations).toBe(1);
+      expect(handle.report?.undeclaredReadableRelations).toBe(2);
+      // And it is the ONLY thing wrong with it.
+      expect(handle.report?.isSuperuser).toBe(false);
+      expect(handle.report?.matchesConfiguredRole).toBe(true);
+      await closeDiagnosticsDatabase();
+    });
+
+    it("REFUSES a hand-granted predefined-role membership a NOINHERIT role hides", async () => {
+      await withDeclaredGrantsOnly(async () => {
+        // The shortcut an operator reaches for: "let diagnostics read one more
+        // table". `pg_has_role(…, 'USAGE')` reports this as ZERO for a NOINHERIT
+        // role, so the control written to catch it saw nothing.
+        await admin.query(`GRANT pg_read_all_data TO "${TEST_ROLE}"`);
+        await closeDiagnosticsDatabase();
+        try {
+          const handle = await getDiagnosticsDatabase();
+          expect(handle.ok).toBe(false);
+          if (!handle.ok) {
+            expect(handle.reason).toBe("database_role_unsafe");
+            expect(handle.report?.forbiddenRoleMemberships).toBe(1);
+          }
+
+          // And the capability is real, not theoretical: the role cannot read the
+          // credential store directly, but one `SET ROLE` away it can.
+          const client = new PgClientCtor({ connectionString: roleUrl });
+          await client.connect();
+          try {
+            await expect(
+              client.query(`SELECT count(*) FROM public."IntegrationCredential"`),
+            ).rejects.toMatchObject({ code: INSUFFICIENT_PRIVILEGE });
+            await client.query("SET ROLE pg_read_all_data");
+            const escalated = await client.query(
+              `SELECT count(*)::int AS rows FROM public."IntegrationCredential"`,
+            );
+            expect(escalated.rows[0].rows).toBeGreaterThanOrEqual(0);
+          } finally {
+            await client.end().catch(() => {});
+          }
+        } finally {
+          await admin.query(`REVOKE pg_read_all_data FROM "${TEST_ROLE}"`);
+          await closeDiagnosticsDatabase();
+        }
+      });
+    });
+
+    it("REFUSES a role granted EXECUTE on a non-default pg_read_file overload", async () => {
+      await withDeclaredGrantsOnly(async () => {
+        await admin.query(
+          `GRANT EXECUTE ON FUNCTION pg_catalog.pg_read_file(text, bigint, bigint) TO "${TEST_ROLE}"`,
+        );
+        await closeDiagnosticsDatabase();
+        try {
+          const handle = await getDiagnosticsDatabase();
+          expect(handle.ok).toBe(false);
+          if (!handle.ok) expect(handle.report?.canReadServerFiles).toBe(true);
+        } finally {
+          await admin.query(
+            `REVOKE EXECUTE ON FUNCTION pg_catalog.pg_read_file(text, bigint, bigint) FROM "${TEST_ROLE}"`,
+          );
+          await closeDiagnosticsDatabase();
+        }
+      });
+    });
+
+    it("REFUSES a role that may execute a SECURITY DEFINER routine in public", async () => {
+      await withDeclaredGrantsOnly(async () => {
+        // PUBLIC gets EXECUTE on a new function by default, so this needs no grant at
+        // all — creating the function is enough, which is exactly why the check is a
+        // count rather than a revoke.
+        await admin.query(
+          `CREATE FUNCTION public.aid5_secdef_probe() RETURNS int AS 'SELECT 1' LANGUAGE sql SECURITY DEFINER`,
+        );
+        await closeDiagnosticsDatabase();
+        try {
+          const handle = await getDiagnosticsDatabase();
+          expect(handle.ok).toBe(false);
+          if (!handle.ok) {
+            expect(handle.report?.executableSecurityDefinerRoutines).toBe(1);
+          }
+
+          // Re-provisioning does NOT fix it — the revoke cannot touch a PUBLIC grant.
+          await provision();
+          await closeDiagnosticsDatabase();
+          const afterProvision = await getDiagnosticsDatabase();
+          expect(afterProvision.ok).toBe(false);
+        } finally {
+          await admin.query(`DROP FUNCTION IF EXISTS public.aid5_secdef_probe()`);
+          await closeDiagnosticsDatabase();
+        }
+      });
+    });
+
+    it("re-verifies the role with the SERVER once the cached verdict ages out", async () => {
+      await withDeclaredGrantsOnly(async () => {
+        const accepted = await getDiagnosticsDatabase();
+        expect(accepted.ok).toBe(true);
+
+        // Escalate the LIVE role, the way a hand-edit would.
+        await admin.query(`ALTER ROLE "${TEST_ROLE}" WITH CREATEDB`);
+        const pinnedNow = new Date();
+        try {
+          // Inside the TTL the cached verdict still stands...
+          expect((await getDiagnosticsDatabase()).ok).toBe(true);
+
+          // ...and once it has aged out the server is asked again and says no. The
+          // frozen test clock is moved rather than slept through — the suite's `Date`
+          // is fake, so a real sleep would never expire a TTL measured with
+          // `Date.now()`. The database's own state is untouched by that.
+          vi.setSystemTime(
+            new Date(
+              pinnedNow.getTime() + DIAGNOSTICS_TOOL_BOUNDS.rolePrivilegeTtlMs + 1,
+            ),
+          );
+          const refused = await getDiagnosticsDatabase();
+          expect(refused.ok).toBe(false);
+          if (!refused.ok) expect(refused.report?.canCreateDb).toBe(true);
+        } finally {
+          vi.setSystemTime(pinnedNow);
+          await provision();
+          await closeDiagnosticsDatabase();
+        }
+      });
     });
 
     it("REFUSES the application's superuser credential at runtime", async () => {
@@ -541,50 +801,54 @@ describe("diagnostics privilege proof DB safety guard (#2374)", () => {
     });
 
     it("runs the registry probe tool's SQL and proves the transaction is READ ONLY", async () => {
-      const handle = await getDiagnosticsDatabase();
-      expect(handle.ok).toBe(true);
-      if (!handle.ok) return;
+      await withDeclaredGrantsOnly(async () => {
+        const handle = await getDiagnosticsDatabase();
+        expect(handle.ok).toBe(true);
+        if (!handle.ok) return;
 
-      const probe = DIAGNOSTICS_TOOLS[0];
-      const result = await runDiagnosticsReadOnlyQuery(
-        { sql: probe.sql, params: [], rowLimit: probe.rowLimit },
-        handle.pool,
-      );
-      expect(result.ok).toBe(true);
-      if (!result.ok) return;
-      const row = probe.project(result.rows[0]);
-      expect(row.probeOk).toBe(true);
-      // The database itself reporting the executor's settings back.
-      expect(row.transactionReadOnly).toBe("on");
-      // NUMERICALLY, not as a formatted string. PostgreSQL re-renders a GUC in
-      // whatever unit divides evenly — `SET LOCAL statement_timeout = 5000` reads
-      // back as `5s`, not `5000ms` — so the raw setting is only asserted to be
-      // present and non-zero, and the derived millisecond value is what pins the
-      // control. A regression that dropped the timeout entirely reports `0`.
-      expect(row.statementTimeoutMs).toBe(
-        DIAGNOSTICS_TOOL_BOUNDS.statementTimeoutMs,
-      );
-      expect(row.statementTimeout).not.toBe("");
-      expect(row.statementTimeout).not.toBe("0");
+        const probe = DIAGNOSTICS_TOOLS[0];
+        const result = await runDiagnosticsReadOnlyQuery(
+          { sql: probe.sql, params: [], rowLimit: probe.rowLimit, toolId: probe.id },
+          handle.pool,
+        );
+        expect(result.ok).toBe(true);
+        if (!result.ok) return;
+        const row = probe.project(result.rows[0]);
+        expect(row.probeOk).toBe(true);
+        // The database itself reporting the executor's settings back.
+        expect(row.transactionReadOnly).toBe("on");
+        // NUMERICALLY, not as a formatted string. PostgreSQL re-renders a GUC in
+        // whatever unit divides evenly — `SET LOCAL statement_timeout = 5000` reads
+        // back as `5s`, not `5000ms` — so the raw setting is only asserted to be
+        // present and non-zero, and the derived millisecond value is what pins the
+        // control. A regression that dropped the timeout entirely reports `0`.
+        expect(row.statementTimeoutMs).toBe(
+          DIAGNOSTICS_TOOL_BOUNDS.statementTimeoutMs,
+        );
+        expect(row.statementTimeout).not.toBe("");
+        expect(row.statementTimeout).not.toBe("0");
+      });
     });
 
     it("caps rows in SQL, whatever the query would have returned", async () => {
-      const handle = await getDiagnosticsDatabase();
-      expect(handle.ok).toBe(true);
-      if (!handle.ok) return;
+      await withDeclaredGrantsOnly(async () => {
+        const handle = await getDiagnosticsDatabase();
+        expect(handle.ok).toBe(true);
+        if (!handle.ok) return;
 
-      // 100 rows available, rowLimit 3 → the executor's own LIMIT returns exactly
-      // rowLimit + 1 (the extra row is how truncation is detected honestly).
-      const result = await runDiagnosticsReadOnlyQuery(
-        {
-          sql: "SELECT g AS n FROM pg_catalog.generate_series(1, 100) AS g",
-          params: [],
-          rowLimit: 3,
-        },
-        handle.pool,
-      );
-      expect(result.ok).toBe(true);
-      if (result.ok) expect(result.rows).toHaveLength(4);
+        // 100 rows available, rowLimit 3 → the executor's own LIMIT returns exactly
+        // rowLimit + 1 (the extra row is how truncation is detected honestly).
+        const result = await runDiagnosticsReadOnlyQuery(
+          {
+            sql: "SELECT g AS n FROM pg_catalog.generate_series(1, 100) AS g",
+            params: [],
+            rowLimit: 3,
+          },
+          handle.pool,
+        );
+        expect(result.ok).toBe(true);
+        if (result.ok) expect(result.rows).toHaveLength(4);
+      });
     });
 
     it("binds a registry entry's OWN parameters and still appends its LIMIT", async () => {
@@ -594,28 +858,59 @@ describe("diagnostics privilege proof DB safety guard (#2374)", () => {
       // when a tool pack (AID-6A/B/C) lands — and a real server is the only thing
       // that can confirm the numbering, since a wrong `$n` is a runtime error rather
       // than a type error.
-      const handle = await getDiagnosticsDatabase();
-      expect(handle.ok).toBe(true);
-      if (!handle.ok) return;
+      await withDeclaredGrantsOnly(async () => {
+        const handle = await getDiagnosticsDatabase();
+        expect(handle.ok).toBe(true);
+        if (!handle.ok) return;
 
-      const result = await runDiagnosticsReadOnlyQuery(
-        {
-          sql: "SELECT g AS n, $1::text AS first_param, $2::int AS second_param FROM pg_catalog.generate_series(1, 50) AS g ORDER BY g",
-          params: ["bound-value", 42],
-          rowLimit: 2,
-        },
-        handle.pool,
-      );
+        const result = await runDiagnosticsReadOnlyQuery(
+          {
+            sql: "SELECT g AS n, $1::text AS first_param, $2::int AS second_param FROM pg_catalog.generate_series(1, 50) AS g ORDER BY g",
+            params: ["bound-value", 42],
+            rowLimit: 2,
+          },
+          handle.pool,
+        );
 
-      expect(result.ok).toBe(true);
-      if (!result.ok) return;
-      // rowLimit + 1 rows, proving the appended LIMIT parameter was read as the
-      // limit and not consumed by the entry's own placeholders.
-      expect(result.rows).toHaveLength(3);
-      expect(result.rows[0]).toMatchObject({
-        n: 1,
-        first_param: "bound-value",
-        second_param: 42,
+        expect(result.ok).toBe(true);
+        if (!result.ok) return;
+        // rowLimit + 1 rows, proving the appended LIMIT parameter was read as the
+        // limit and not consumed by the entry's own placeholders.
+        expect(result.rows).toHaveLength(3);
+        expect(result.rows[0]).toMatchObject({
+          n: 1,
+          first_param: "bound-value",
+          second_param: 42,
+        });
+      });
+    });
+
+    it("REFUSES an entry that binds one parameter short, which PostgreSQL would not", async () => {
+      // The reason the arity guard exists, proven both ways on a real server.
+      await withDeclaredGrantsOnly(async () => {
+        const handle = await getDiagnosticsDatabase();
+        expect(handle.ok).toBe(true);
+        if (!handle.ok) return;
+
+        const oneShort =
+          "SELECT g AS n FROM pg_catalog.generate_series(1, 50) AS g WHERE g > $1 AND g < $2";
+
+        // 1. The database is perfectly happy to let the appended row cap serve as the
+        //    entry's own `$2`. No error, and the wrong answer: the second predicate is
+        //    evaluated against the row cap rather than the caller's value.
+        const aliased = await admin.query(
+          `SELECT * FROM (${oneShort}) AS diagnostics_tool_result LIMIT ($2)::bigint`,
+          [0, 6],
+        );
+        expect(aliased.rows).toHaveLength(5);
+
+        // 2. The executor refuses it instead, before opening a transaction.
+        const result = await runDiagnosticsReadOnlyQuery(
+          { sql: oneShort, params: [0], rowLimit: 5, toolId: "diagnostics.example" },
+          handle.pool,
+        );
+        expect(result.ok).toBe(false);
+        if (!result.ok) expect(result.timedOut).toBe(false);
       });
     });
 
@@ -628,44 +923,55 @@ describe("diagnostics privilege proof DB safety guard (#2374)", () => {
       // privilege check is ever reached — the error here is 42601, not 42501 or
       // 25006. Asserted on the OUTCOME rather than the SQLSTATE, because which
       // layer refuses first is an implementation detail and all three must hold.
-      const handle = await getDiagnosticsDatabase();
-      expect(handle.ok).toBe(true);
-      if (!handle.ok) return;
+      await withDeclaredGrantsOnly(async () => {
+        const handle = await getDiagnosticsDatabase();
+        expect(handle.ok).toBe(true);
+        if (!handle.ok) return;
 
-      const result = await runDiagnosticsReadOnlyQuery(
-        {
-          sql: `INSERT INTO public.${WRITABLE_TABLE} (id, note) VALUES (99, $1) RETURNING id`,
-          params: ["written-by-diagnostics"],
-          rowLimit: 1,
-        },
-        handle.pool,
-      );
-      expect(result.ok).toBe(false);
+        const result = await runDiagnosticsReadOnlyQuery(
+          {
+            sql: `INSERT INTO public.${WRITABLE_TABLE} (id, note) VALUES (99, $1) RETURNING id`,
+            params: ["written-by-diagnostics"],
+            rowLimit: 1,
+          },
+          handle.pool,
+        );
+        expect(result.ok).toBe(false);
 
-      // And the row genuinely is not there.
-      const after = await admin.query(
-        `SELECT count(*)::int AS rows FROM public.${WRITABLE_TABLE} WHERE id = 99`,
-      );
-      expect(after.rows[0].rows).toBe(0);
+        // And the row genuinely is not there.
+        const after = await admin.query(
+          `SELECT count(*)::int AS rows FROM public.${WRITABLE_TABLE} WHERE id = 99`,
+        );
+        expect(after.rows[0].rows).toBe(0);
+      });
     });
 
     it("cancels a long-running query at the statement timeout", async () => {
-      const handle = await getDiagnosticsDatabase();
-      expect(handle.ok).toBe(true);
-      if (!handle.ok) return;
+      await withDeclaredGrantsOnly(async () => {
+        const handle = await getDiagnosticsDatabase();
+        expect(handle.ok).toBe(true);
+        if (!handle.ok) return;
 
-      const result = await runDiagnosticsReadOnlyQuery(
-        { sql: "SELECT pg_catalog.pg_sleep(30) AS slept", params: [], rowLimit: 1 },
-        handle.pool,
-      );
-      expect(result.ok).toBe(false);
-      if (!result.ok) {
-        expect(result.timedOut).toBe(true);
+        // `Date.now()` is frozen for every test in this repo, so `result.durationMs`
+        // is 0 here and asserting on it would be vacuous. Real elapsed time comes
+        // from `process.hrtime.bigint()` via the shared helper.
+        const startedNs = process.hrtime.bigint();
+        const result = await runDiagnosticsReadOnlyQuery(
+          {
+            sql: "SELECT pg_catalog.pg_sleep(30) AS slept",
+            params: [],
+            rowLimit: 1,
+            toolId: "diagnostics.example",
+          },
+          handle.pool,
+        );
+        expect(result.ok).toBe(false);
+        if (!result.ok) expect(result.timedOut).toBe(true);
         // Cancelled at the configured timeout, not after 30 seconds.
-        expect(result.durationMs).toBeLessThan(
+        expect(realElapsedMs(startedNs)).toBeLessThan(
           DIAGNOSTICS_TOOL_BOUNDS.statementTimeoutMs * 3,
         );
-      }
+      });
     }, 40_000);
 
     it("cancels a long query run directly by the role, from its own role default", async () => {

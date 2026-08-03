@@ -12,9 +12,11 @@ import {
   buildAiDiagnosticsRoleSql,
   DEFAULT_AI_DIAGNOSTICS_ROLE_NAME,
   FORBIDDEN_PREDEFINED_ROLES,
+  isSupportedProvisionIdentifier,
   quoteIdentifier,
   quoteLiteral,
   SELECT_GRANTS,
+  SUPPORTED_IDENTIFIER_DESCRIPTION,
 } from "../provision-role";
 
 const base = {
@@ -268,6 +270,33 @@ describe("provisioning SQL quoting refuses hostile input rather than escaping it
   it("accepts the PascalCase relation names this schema uses", () => {
     expect(quoteIdentifier("IntegrationCredential")).toBe(
       '"IntegrationCredential"',
+    );
+  });
+
+  // The operator CLI asks this question BEFORE it builds any SQL, so a managed
+  // provider's `tac-app` or `user@server` role name is refused with an actionable
+  // line naming the variable that carried it, instead of a Node stack trace.
+  it.each(["ai_diagnostics_ro", "IntegrationCredential", "_leading_underscore"])(
+    "isSupportedProvisionIdentifier accepts %s",
+    (value) => {
+      expect(isSupportedProvisionIdentifier(value)).toBe(true);
+    },
+  );
+
+  it.each(["tac-diag-ro", "tac.app", "user@server", "role$$name", ""])(
+    "isSupportedProvisionIdentifier refuses %s",
+    (value) => {
+      expect(isSupportedProvisionIdentifier(value)).toBe(false);
+      // …and it is the same answer the builder gives, so the CLI's pre-check can
+      // never disagree with what would actually throw.
+      expect(() => quoteIdentifier(value)).toThrow();
+    },
+  );
+
+  it("names the accepted alphabet in a message an operator can act on", () => {
+    expect(SUPPORTED_IDENTIFIER_DESCRIPTION).toContain("underscores");
+    expect(() => quoteIdentifier("tac-diag-ro")).toThrow(
+      /letters, digits and underscores only/,
     );
   });
 

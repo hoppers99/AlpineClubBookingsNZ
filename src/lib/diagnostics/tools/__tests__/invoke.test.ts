@@ -73,7 +73,11 @@ function allowAuthorization(): void {
 }
 
 function denyAuthorization(
-  reason: "actor_unresolved" | "actor_read_failed" | "permission_denied",
+  reason:
+    | "actor_unresolved"
+    | "actor_blocked"
+    | "actor_read_failed"
+    | "permission_denied",
   missingAreas: AdminPermissionArea[] = [],
 ): void {
   authorizeMock.mockResolvedValue({ ok: false, reason, missingAreas });
@@ -296,9 +300,34 @@ describe("invokeDiagnosticsTool — every gate fails closed (#2374)", () => {
     expect(session.stats().callsThisSession).toBe(1);
   });
 
+  it("claims a call for an UNREGISTERED id too, so bogus ids are not unlimited", async () => {
+    // An unknown id used to cost nothing while still writing a durable,
+    // important-severity security audit row. One provider round of 60 hallucinated
+    // or injected ids would then produce 60 rows with the counters still at zero,
+    // and the advertised "4 tool calls per round" bound never engaging.
+    const session = openSession({ maxToolCallsPerRound: 2 });
+    const first = await invoke({ toolId: "diagnostics.probe_a", session });
+    expect(first.status).toBe("error");
+    expect(session.stats().callsThisSession).toBe(1);
+
+    await invoke({ toolId: "diagnostics.probe_b", session });
+    expect(session.stats().callsThisSession).toBe(2);
+
+    // The allowance is now spent, and a REAL call is refused on budget.
+    const third = await invoke({ session });
+    expect(third.status).toBe("error");
+    if (third.status === "error") {
+      expect(third.reason).toBe("call_budget_exhausted");
+    }
+  });
+
   it.each([
     ["permission_denied", ["support"] as AdminPermissionArea[]],
     ["actor_unresolved", [] as AdminPermissionArea[]],
+    // A locked-out admin (deactivated, or under a forced password change) is its own
+    // reason: filing it as `actor_read_failed` made a deliberate lock-out
+    // indistinguishable from a database fault, and told the admin to retry.
+    ["actor_blocked", [] as AdminPermissionArea[]],
     ["actor_read_failed", [] as AdminPermissionArea[]],
   ] as const)("denies on %s without opening a connection", async (reason, missing) => {
     denyAuthorization(reason, [...missing]);
@@ -406,6 +435,7 @@ describe("invokeDiagnosticsTool — every gate fails closed (#2374)", () => {
     ["call_budget_exhausted", () => {}],
     ["permission_denied", () => denyAuthorization("permission_denied", ["support"])],
     ["actor_unresolved", () => denyAuthorization("actor_unresolved")],
+    ["actor_blocked", () => denyAuthorization("actor_blocked")],
     ["actor_read_failed", () => denyAuthorization("actor_read_failed")],
     ["invalid_args", () => {}],
     [
@@ -573,5 +603,47 @@ describe("invokeDiagnosticsTool — every gate fails closed (#2374)", () => {
     expect(result.reason).toBe("internal_error");
     expect(result.message).not.toContain("pool exploded");
     expect(lastAudit().audit.failureReason).toBe("internal_error");
+  });
+
+  it("audits a fault AFTER authorization as allowed-then-failed, not as blocked", async () => {
+    // `audit.ts` derives outcome `blocked` at severity `important` from
+    // `authOutcome: "denied"`. The catch-all used to hard-code that for every fault
+    // however far the invocation got, so an internal fault after a SUCCESSFUL
+    // authorization was recorded in a 24-month security row as a permission block
+    // against that admin — with `areasChecked` erased and `argsHash` dropped. A
+    // dashboard keyed on blocked/`ai_diagnostics.tool_invocation` would report a
+    // permission incident that never happened, and `failure` already exists for
+    // exactly this case.
+    getDatabaseMock.mockRejectedValue(new Error("pool exploded"));
+    const result = await invoke();
+    expect(result.status).toBe("error");
+    if (result.status !== "error") return;
+
+    expect(result.audit.authOutcome).toBe("allowed");
+    expect(result.audit.areasChecked).toEqual(["support"]);
+    // Gate 4 had already accepted and hashed the arguments.
+    expect(result.audit.argsHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(result.audit.roundIndex).toBe(0);
+    expect(lastAudit().audit).toMatchObject({
+      authOutcome: "allowed",
+      areasChecked: ["support"],
+      failureReason: "internal_error",
+    });
+  });
+
+  it("still audits a fault BEFORE authorization as denied", async () => {
+    // The other half: a fault that happens while authorizing has no allowed
+    // outcome to report, and must not claim one.
+    authorizeMock.mockRejectedValue(new Error("authorizer exploded"));
+    const result = await invoke();
+    expect(result.status).toBe("error");
+    if (result.status !== "error") return;
+    expect(result.reason).toBe("internal_error");
+    expect(result.audit.authOutcome).toBe("denied");
+    expect(result.audit.argsHash).toBeNull();
+    // The tool was known, so the areas it declares are still recorded — that is
+    // what `DiagnosticsToolAudit.areasChecked` documents ("recorded even when the
+    // check denied").
+    expect(result.audit.areasChecked).toEqual(["support"]);
   });
 });

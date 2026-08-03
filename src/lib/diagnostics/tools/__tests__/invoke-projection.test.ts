@@ -184,7 +184,10 @@ describe("a projection that breaks its contract discards the whole result (#2374
     // The module docstring names bigint; node-postgres hands an int8 column back
     // as a string, but a projection that parsed one would produce a bigint, and
     // `JSON.stringify` throws on those — so it must be refused here, not later.
-    ["a bigint", () => ({ big: 10n })],
+    // `BigInt(10)` rather than `10n`: the test tsconfig targets below ES2020, where
+    // a bigint LITERAL is a compile error (`tsc -p tsconfig.test.json` catches it,
+    // `npm test` does not).
+    ["a bigint", () => ({ big: BigInt(10) })],
     ["a function", () => ({ fn: () => 1 })],
     ["a symbol", () => ({ sym: Symbol("s") })],
   ])("refuses %s", async (_label, project) => {
@@ -307,7 +310,10 @@ describe("a FIXED projection means fixed across rows too (#2374)", () => {
     // silently disagree about what they contain invites the model to read a missing
     // field as a meaningful absence.
     let call = 0;
-    entry = makeEntry(() => {
+    // Annotated `DiagnosticsToolRow` because the two branches infer a union with an
+    // optional `b`, which the row type's index signature rejects — the shape is the
+    // point of the test, so it is declared rather than inferred.
+    entry = makeEntry((): DiagnosticsToolRow => {
       call += 1;
       return call === 1 ? { a: 1, b: 2 } : { a: 1 };
     });

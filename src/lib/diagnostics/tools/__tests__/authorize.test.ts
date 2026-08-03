@@ -130,24 +130,47 @@ describe("authorizeDiagnosticsToolCall (#2374, ADR-002 §2/§3)", () => {
     if (!result.ok) expect(result.reason).toBe("permission_denied");
   });
 
-  it("keeps a missing member and a failed read as DIFFERENT outcomes", async () => {
-    readMock.mockResolvedValueOnce({ ok: false, failure: "member_not_found" });
-    const missing = await authorizeDiagnosticsToolCall({
-      actingMemberId: "ghost",
-      requiredAreas: ["support"],
-    });
-    expect(missing).toEqual({
-      ok: false,
-      reason: "actor_unresolved",
-      missingAreas: [],
-    });
-
-    readMock.mockResolvedValueOnce({ ok: false, failure: "read_failed" });
-    const faulted = await authorizeDiagnosticsToolCall({
+  // A TOTAL map, one reason per failure code — the same table AID-4's page context
+  // holds. The ternary this replaced had a fallback, so `member_blocked` (an
+  // administratively locked-out admin) was filed as `actor_read_failed`: the
+  // reference guide defines that as a database fault, its operator sentence invites
+  // a retry, and the same person's page-context fetch in the same conversation
+  // recorded `actor_blocked`. One cause, two channels, two different verdicts.
+  it.each([
+    ["member_not_found", "actor_unresolved"],
+    ["member_blocked", "actor_blocked"],
+    ["read_failed", "actor_read_failed"],
+  ] as const)("maps the %s failure to %s", async (failure, reason) => {
+    readMock.mockResolvedValueOnce({ ok: false, failure });
+    const result = await authorizeDiagnosticsToolCall({
       actingMemberId: "member-1",
       requiredAreas: ["support"],
     });
-    expect(faulted).toEqual({
+    expect(result).toEqual({ ok: false, reason, missingAreas: [] });
+  });
+
+  it("never reports a lock-out as a permission outcome", async () => {
+    // `actor_blocked` is not a per-area verdict: there is no authorized actor at
+    // all, so it must not carry missing areas the caller could reason about.
+    readMock.mockResolvedValueOnce({ ok: false, failure: "member_blocked" });
+    const result = await authorizeDiagnosticsToolCall({
+      actingMemberId: "member-1",
+      requiredAreas: ["bookings", "finance"],
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("actor_blocked");
+      expect(result.missingAreas).toEqual([]);
+    }
+  });
+
+  it("treats a THROWN reader as a read failure, not as a lock-out", async () => {
+    readMock.mockRejectedValueOnce(new Error("prisma exploded"));
+    const result = await authorizeDiagnosticsToolCall({
+      actingMemberId: "member-1",
+      requiredAreas: ["support"],
+    });
+    expect(result).toEqual({
       ok: false,
       reason: "actor_read_failed",
       missingAreas: [],
