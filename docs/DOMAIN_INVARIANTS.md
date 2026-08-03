@@ -2746,8 +2746,9 @@ flags read there skips the hard block and the unpaid member books at member rate
 the same - so #2543 neither widens nor narrows it.
 
 **The financial-year reseed is gated on the Xero module, not on the mode.** A club that
-has deliberately switched the lockout off resolves `NO_BLOCK` through the legacy boolean
-with Xero still on, and every request-path reseeder in the tree routes through
+has deliberately switched the lockout off resolves `NO_BLOCK` — from the `mode` the
+contract migration backfilled out of its old boolean — with Xero still on, and every
+request-path reseeder in the tree routes through
 `resolveSubscriptionLockoutMode` (the booking write paths, `findUnpaidMemberGuests`, the
 member notice builder). Gating the reseed on `mode !== "NO_BLOCK"` therefore left such a
 club with no request-path reseed at all: after a container restart `getSeasonYear` and
@@ -2921,13 +2922,24 @@ refusal into a financial-status oracle. The fingerprint follows: it hashes the
 hazard ("this party has nobody paid-up on it"), not who, so re-saving the same
 party shape does not reopen a decided review.
 
-**The violation shape is unchanged by the owner trigger**, and that is the privacy
-decision rather than an omission. An owner-triggered refusal reads
-`repricedUnpaidMemberCount: 0`, which discloses only that the trigger was not a
-member of the party — and under that trigger the unfinancial member IS the person
-receiving the refusal (an admin acting on their behalf is exempt from the check
-entirely, as on every other #2543 gate). The fingerprint therefore separates the
-two hazards without naming anybody, and no frozen snapshot's shape moves.
+**The FROZEN violation shape is unchanged by the owner trigger; the member-facing
+RESPONSE is audience-scoped instead.** An owner-triggered refusal reads
+`repricedUnpaidMemberCount: 0`, which discloses that the trigger was not a member of
+the party. On ten of the eleven enforcement sites that is a fact the recipient
+already holds, because the unfinancial member IS the person receiving the refusal:
+create, quote, confirm-draft, modify-quote, guest-add, the modify apply path and
+both waitlist confirms all run for the booking's own owner, an admin is exempt from
+the check entirely, and the group-join gate passes the JOINER as the owner of the
+booking being made rather than the group booking's owner. The eleventh is
+single-guest removal, where a member may take their own guest row off **somebody
+else's** booking — there the refusal can reach a member of another family while the
+trigger is the booking owner's unpaid subscription, which they can see nowhere else
+in the app. So `buildPaidUpAdultRefusalBody` takes an audience and the removal path
+asks for `OTHER_PARTY_MEMBER` when the actor is not the owner: identical refusal,
+wording, HOLD and override door, with that one count withheld. The frozen violation
+keeps both counts because the open-state fingerprint is hashed from them, so
+redacting there would change which refusals count as the same hazard; only the copy
+rendered to the member is narrowed, and no snapshot's shape moves.
 
 **A violation must name the nights it holds.** When the owner arm fires on a party
 that yields no nights of its own, `affectedNights` falls back to the booking
@@ -2974,22 +2986,34 @@ list above stays at two. What the trigger IS stricter than is the interim repric
 build of #2543, which never shipped: the gap was closed by owner decision before the
 mode reached a club.
 
-**Config-transfer reconciles the (mode, enabled) pair on import.** An absent-or-null
-`mode` MEANS "resolve from the legacy boolean", and the importer writes only fields
-physically present in a bundle (dropping null-valued ones altogether in the default
-merge mode) - so `enabled`, being non-null, always travelled and `mode` did not, leaving
-the target's own stale `mode` in place to win at read time. Two silent failures followed:
-a pre-#2543 bundle carrying `enabled: false` imported onto a club storing
-`NON_MEMBER_PRICING` reported "changed: enabled" in the dry-run while every unpaid member
-went on being repriced and refused; and a post-#2543 bundle from a club that had never
-opened the panel (`mode: null, enabled: false`) left the target on
-`mode = NON_MEMBER_PRICING, enabled = false`, an inconsistent pair no admin save can
-produce and one that breaks the rollback guarantee, because an old colour reads
-`enabled = false` and applies no lockout at all. The singleton spec's `reconcile` hook now
-derives the legacy boolean from a recognised `mode`, and derives `mode` from the boolean
-when no recognised mode is present, on the one code path both the dry-run and the apply
-use. No format-version bump is needed: an old bundle now imports to the right policy
-rather than to a guess, so there is nothing for a version gate to refuse.
+**Config-transfer maps the legacy bundle KEY, and a broken one fails the dry-run.**
+There is no `(mode, enabled)` pair to reconcile any more — `enabled` is neither a column
+nor an exported field — but a bundle exported before #2543 still carries the key, and it
+still records a real decision. Left unmapped it would be an unknown field: the importer
+writes only fields physically present in a bundle (dropping null-valued ones in the
+default merge mode) and type-checks only names in the spec's `fields`, so the key would be
+silently dropped, the target would keep its own `mode`, and the dry-run would report no
+change to the policy. A club importing a pre-#2543 bundle to turn the lockout off would
+have been told it worked while every unpaid member went on being repriced and refused. So
+the singleton spec's `reconcile` hook maps the key to the mode it means (`true →
+HARD_BLOCK`, `false → NO_BLOCK` — the same mapping the contract migration applied to live
+rows), on the one code path both the dry-run and the apply use, and it also covers the
+bundle a post-#2543 club exported before an admin ever opened the panel
+(`mode: null, enabled: false` → `NO_BLOCK`).
+
+Two properties of that hook are load-bearing. It derives ONLY into an absent-or-null
+`mode` and never over a value the bundle states, so a hand-edited `"MAYBE"` is refused by
+name by the DMMF enum check rather than silently corrected into whatever the legacy boolean
+said. And it runs BEFORE the field-validation loop, which is what lets `mode` carry
+`required: true` now that its column is `NOT NULL`: `required` fires only on a PRESENT
+null, so a pre-#2543 bundle (no key at all) is untouched, a `mode: null` beside an
+`enabled` has a real mode by the time the loop sees it, and the one remaining shape —
+`mode: null` with nothing to derive from, i.e. a hand-trimmed or partially-written file —
+fails the dry-run as an error instead of aborting the whole import transaction on a
+write-time Prisma exception. The reverse derivation is gone with the column: there is no
+boolean left to write back, and `enabled` never reaches Prisma. No format-version bump is
+needed either — an old bundle imports to the right policy rather than to a guess, so there
+is nothing for a version gate to refuse.
 
 **Reversal:** set the mode back to `HARD_BLOCK` (or `NO_BLOCK`) in Admin →
 Subscription lockout. No migration, no code change, and no already-taken booking is

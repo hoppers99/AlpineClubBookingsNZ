@@ -11,9 +11,11 @@
 -- Prisma never applies, checksums or even reads this file. Run it by hand, as the
 -- migration role, against the database you are rolling back.
 --
--- WHEN TO USE IT. Only to go back to the release immediately before this one
--- (the release whose schema has BOTH `enabled` and a nullable `mode`). If you are
--- rolling back further than that, use the verified backup instead.
+-- WHEN TO USE IT. To go back to the release immediately before this one — the
+-- release currently in production, whose schema has `enabled` and NO `mode` column
+-- and no `SubscriptionLockoutMode` type at all, because both of this release's
+-- migrations ship together (that is the whole point of the #2561 directive). If you
+-- are rolling back further than that, use the verified backup instead.
 --
 -- WHAT IT RESTORES, AND WHAT IT DOES NOT.
 --
@@ -22,9 +24,21 @@
 --     direction is deliberate and is the owner's mapping (#2561): the previous
 --     release cannot reprice anybody, so refusing an unpaid member is the honest
 --     fallback, whereas `false` would hand them full member rates — the one
---     outcome the club explicitly decided against.
---   * `mode` is returned to nullable-without-default, which is the exact shape
---     the previous release's Prisma client expects.
+--     outcome the club explicitly decided against. The column comes back
+--     byte-identical to the one `20260626120000` created —
+--     `BOOLEAN NOT NULL DEFAULT true`.
+--   * `mode` and its enum type deliberately SURVIVE, as inert extras. They are not
+--     dropped, because `mode` is now the only record of each club's policy and
+--     dropping it would destroy a setting the previous release cannot recreate. The
+--     previous release's Prisma client does not name `mode` anywhere — it neither
+--     selects it nor inserts it — so an extra nullable column is invisible to it,
+--     which is exactly why the rollback works. Expect
+--     `prisma migrate diff` against that release's `schema.prisma` to report two
+--     leftover objects (`DROP COLUMN "mode"`, `DROP TYPE
+--     "SubscriptionLockoutMode"`); that is the intended end state, not drift to
+--     chase. Step 3 below returns `mode` to nullable-without-default so the shape
+--     matches "expand applied, contract not applied", which is what makes a later
+--     roll-forward a clean re-run of `migration.sql`.
 --   * NOT restored: which clubs had never opened the panel. Before this
 --     migration a NULL `mode` meant "no choice made, read the boolean"; the
 --     backfill replaced those NULLs with a real mode, and this script cannot tell
@@ -49,8 +63,11 @@ ALTER TABLE "MembershipLockoutSettings"
 UPDATE "MembershipLockoutSettings"
 SET "enabled" = ("mode" <> 'NO_BLOCK');
 
--- 3. Return `mode` to the shape the previous release added it in: nullable, no
---    default. Its client tolerates a NULL here and resolves it from the boolean.
+-- 3. Return `mode` to the shape the EXPAND migration in this release left it in:
+--    nullable, no default. Not required for the previous release to run — its client
+--    never names this column — but it makes the database agree with "expand applied,
+--    contract not applied", so rolling forward later is a clean re-run of
+--    migration.sql rather than a partially-applied shape to reason about.
 ALTER TABLE "MembershipLockoutSettings"
   ALTER COLUMN "mode" DROP DEFAULT,
   ALTER COLUMN "mode" DROP NOT NULL;

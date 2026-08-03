@@ -521,9 +521,19 @@ it.
 **Environment.** Throwaway PostgreSQL 16.14 container. The **full migration
 history** applied to an empty database, then the demo seed, giving a
 production-shaped dataset: 35 members, 19 bookings (every status), 40 booking
-guests, 13 payments, 8 member subscriptions. The contract migration was held back
-so the starting point was exactly the **previous release's** schema —
+guests, 13 payments, 8 member subscriptions. The contract migration was held back,
+so the starting point was the state the **expand** migration leaves:
 `enabled BOOLEAN NOT NULL DEFAULT true` plus a nullable `mode` with no default.
+
+That intermediate state is **not** a deployed release, and it matters where the
+distinction lands. Both migrations ship in this one release, so the release actually
+running in production has `enabled` and **no `mode` column and no
+`SubscriptionLockoutMode` type at all**. The intermediate is nonetheless the correct
+pre-state for the four cycles below, because it is exactly what
+`prisma migrate deploy` finds when it reaches the contract migration — the expand
+migration having just run ahead of it in the same command. Where the previously
+deployed schema *is* the thing under test — the previous release's own client — it is
+used instead, in "The windowed claim" below.
 
 **Four deploy → rollback cycles**, one per pre-state a real club can hold. Each
 applied `prisma migrate deploy`, asserted the post-state, then ran `rollback.sql`
@@ -555,24 +565,51 @@ enforcementActive       = false
 APP READ OK
 ```
 
-**The windowed claim was verified, not assumed.** A Prisma client generated from
-the *previous* release's schema was run against both shapes:
+**The windowed claim was verified, not assumed — and re-verified against the right
+client.** The first pass used a client generated from the expand-only intermediate
+schema, which names **both** `enabled` and `mode`. That exercises the dropped column,
+but it is not the client an operator rolls back to. So the check was re-run with a
+client generated from the previously deployed schema itself
+(`git show origin/main:prisma/schema.prisma`), which names `enabled` and **does not
+name `mode` anywhere**. Same throwaway container, migrations applied, one
+`MembershipLockoutSettings` row (`mode = NO_BLOCK`, `financialYearEndMonthOverride = 7`,
+`updatedAt = 2026-05-05 09:00:00`):
 
-- against the **migrated** schema it fails, which is what makes this migration
-  `windowed` rather than `yes`:
+- against the **migrated** schema both a read and a write fail, which is what makes
+  this migration `windowed` rather than `yes`:
   ```
-  The column `MembershipLockoutSettings.enabled` does not exist in the current database.
+  === previous-release client against the MIGRATED schema (mode NOT NULL, enabled dropped) ===
+  READ FAILED:  [P2022] The column `MembershipLockoutSettings.enabled` does not exist in the current database.
+  WRITE FAILED: [P2022] The column `MembershipLockoutSettings.enabled` does not exist in the current database.
   ```
-- against the **rolled-back** schema it reads *and writes* normally, with the
-  seeded data intact — so `rollback.sql` genuinely restores the previous release:
+- after `rollback.sql`, the same client reads *and writes* normally:
   ```
-  previous-release client read OK
-    enabled = false
-    mode    = NO_BLOCK
-    yearEnd = 7
-  previous-release client write OK: enabled -> true
-  bookings visible to the old client = 19
+  === previous-release client against the ROLLED-BACK schema ===
+  READ OK: {"id":"default","enabled":false,"financialYearEndMonthOverride":7,
+            "textFallbackEnabled":true,"useFeeScheduleItemCodes":false,
+            "updatedByMemberId":null,"createdAt":"2026-05-05T09:00:00.000Z",
+            "updatedAt":"2026-05-05T09:00:00.000Z"}
+  WRITE OK: enabled -> true
   ```
+  Note what the read does **not** contain: `mode`. The previous release's client never
+  names the column, which is why leaving it in place is safe — and why `rollback.sql`
+  deliberately does not drop it, since after the backfill it is the only record of
+  each club's policy.
+- the restored column is byte-identical to the one `20260626120000` created,
+  `enabled BOOLEAN NOT NULL DEFAULT true`, and the row's other values are untouched.
+- the leftovers are exactly the two inert extras, measured rather than assumed.
+  `prisma migrate diff` from the rolled-back database to the previous release's
+  datamodel reports:
+  ```
+  ALTER TABLE "MembershipLockoutSettings" DROP COLUMN "mode";
+  DROP TYPE "SubscriptionLockoutMode";
+  ```
+  That is the intended end state, not drift to chase, and `rollback.sql` says so where
+  an operator will read it. (Run against this branch's own base schema. Run against
+  `origin/main` as it stands today the same diff also lists
+  `BookingChangeRequestStatus`'s `EXPIRED` value and `BookingChangeRequest.holdExpiresAt`
+  — unrelated migrations `main` has taken on since this branch was cut, which disappear
+  when it is rebased.)
 
 **Backfill correctness** is additionally pinned by
 `prisma/migration-verification/20260803010000_contract_subscription_lockout_drop_enabled.ts`,
@@ -589,7 +626,7 @@ be caught by a row **mismatch** rather than a raised error.
 | Migration | `20260803010000_contract_subscription_lockout_drop_enabled` |
 | Rehearsal date | 2026-08-03 |
 | Result | **PASS** — 4/4 deploy+rollback cycles, 24/24 assertions, 55/55 fixture assertions |
-| Notable findings | None. The previous-release client fails as declared on the migrated schema and recovers fully after `rollback.sql`. |
+| Notable findings | One, in the evidence rather than the migration. The first client check was generated from the expand-only intermediate schema, which is not a deployed release; re-run with the previously deployed schema's own client it fails on the migrated shape and reads *and writes* after `rollback.sql`, so the conclusion is unchanged and now rests on the right client. |
 | Rehearsed by | Lane implementation session (pre-merge, on PR #2560) |
 
 > This rehearsal used a demo-seeded database, not a production snapshot. Before the

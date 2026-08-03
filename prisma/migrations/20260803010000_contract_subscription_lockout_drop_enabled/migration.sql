@@ -41,10 +41,12 @@
 -- trigger, foreign key, session-clock write or provider call is involved.
 --
 -- Rollback. rollback.sql beside this file recreates `enabled` from `mode`
--- (NO_BLOCK -> false, HARD_BLOCK and NON_MEMBER_PRICING -> true) and restores
--- `mode` to nullable-without-default, i.e. the exact schema the previous release
--- expects. Rehearsed both ways against a production-shaped database; the
--- transcript summary is in docs/PRODUCTION_UPGRADE_RUNBOOK.md.
+-- (NO_BLOCK -> false, HARD_BLOCK and NON_MEMBER_PRICING -> true) and returns `mode`
+-- to nullable-without-default. It does NOT drop `mode` or its enum type: they are
+-- now the only record of each club's policy, and the previous release's client never
+-- names either, so they sit there inert and it runs. Rehearsed both ways against a
+-- production-shaped database; the transcript summary is in
+-- docs/PRODUCTION_UPGRADE_RUNBOOK.md.
 
 -- 1. Backfill every un-chosen row from the legacy boolean. Must run BEFORE the
 --    drop below, and must not overwrite a mode an admin has already chosen.
