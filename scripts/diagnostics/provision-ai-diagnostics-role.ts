@@ -189,12 +189,48 @@ function main(): void {
   });
 }
 
+/**
+ * Print whatever the server said, on both the success and the rollback path. Safe to
+ * echo: a notice carries the server's own text, never the statement list (which holds
+ * the password literal).
+ */
+function reportNotices(notices: string[]): void {
+  if (notices.length === 0) return;
+  console.log("[provision-ai-diagnostics-role] The server reported:");
+  for (const notice of notices) console.log(`  ${notice}`);
+}
+
 async function run(
   adminUrl: string,
   statements: string[],
   info: { roleName: string; databaseName: string; host: string },
 ): Promise<void> {
   const client = new Client({ connectionString: adminUrl });
+
+  /**
+   * Server notices, surfaced rather than swallowed.
+   *
+   * PostgreSQL says a great deal at WARNING level and still returns success, and one
+   * of those sentences is the exact failure this script must not paper over:
+   * `REVOKE <role> FROM <member>` without `GRANTED BY` removes only the current
+   * role's own grant and reports `WARNING: role "…" has not been granted membership
+   * in role "…" by role "postgres"` when somebody else did the granting. The
+   * statement list now revokes per recorded grantor and raises if a membership
+   * survives, so that warning should no longer appear — but a client that discards
+   * notices could never have told an operator it had, which is why the shipped
+   * success message used to claim memberships were stripped whatever happened.
+   */
+  const notices: string[] = [];
+  let sawWarning = false;
+  client.on("notice", (notice) => {
+    const severity = String(notice.severity ?? "NOTICE").toUpperCase();
+    // NOTICE and DEBUG are routine chatter; WARNING and above are not.
+    if (severity !== "NOTICE" && severity !== "DEBUG" && severity !== "INFO") {
+      sawWarning = true;
+    }
+    notices.push(`${severity}: ${notice.message ?? ""}`);
+  });
+
   await client.connect();
   try {
     // One transaction: role creation, attribute pinning, revokes and grants are
@@ -213,11 +249,14 @@ async function run(
         err instanceof Error ? err.message : String(err)
       }`,
     );
+    reportNotices(notices);
     process.exitCode = 1;
     return;
   } finally {
     await client.end().catch(() => {});
   }
+
+  reportNotices(notices);
 
   console.log(
     [
@@ -226,9 +265,18 @@ async function run(
       // Said out loud because it is the one thing an operator is most likely to undo
       // by hand: "let diagnostics read one more table" is usually a GRANT of some
       // existing role, and the runtime refuses the credential outright for it.
-      "  Role memberships: stripped. This role must belong to NO role at all —",
-      "  the application refuses every diagnostics read if it is a member of one,",
-      "  because a member is one SET ROLE away from that role's privileges.",
+      //
+      // Stated as a fact ONLY when the server said nothing at WARNING level. The
+      // transaction's own re-check raises if a membership survived the revokes, so a
+      // commit does mean they are gone — but a warning means the server told us
+      // something about this run, and an unconditional "stripped" is how a claim
+      // becomes untrue.
+      sawWarning
+        ? "  Role memberships: the server reported a WARNING above — verify before trusting this run."
+        : "  Role memberships: stripped, and re-checked inside the same transaction.",
+      "  This role must belong to NO role at all: the application refuses every",
+      "  diagnostics read if it is a member of one, because a member is one",
+      "  SET ROLE away from that role's privileges.",
       "",
       "  Now set this in the deployment environment (compose .env), with the password you supplied:",
       `    AI_DIAGNOSTICS_DATABASE_URL=postgresql://${info.roleName}:<AI_DIAGNOSTICS_DB_PASSWORD>@${info.host}/${info.databaseName}?connection_limit=${DIAGNOSTICS_TOOL_BOUNDS.maxPoolConnections}`,

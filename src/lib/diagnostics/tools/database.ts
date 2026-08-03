@@ -252,15 +252,41 @@ export interface DiagnosticsRolePrivilegeReport {
    * `SET ROLE far` — so counting `pg_auth_members` rows (direct grants only) would
    * miss a two-hop chain. `pg_has_role(…, 'MEMBER')` is the closure, which is why it
    * is the predicate here.
+   *
+   * ONE MEMBERSHIP IS IMPLICIT and cannot be provisioned away: PostgreSQL treats the
+   * owner of the current database as a member of `pg_database_owner`, with no row in
+   * `pg_auth_members`. Measured — a role owning its database reports 1 here, 0
+   * recorded rows, and `pg_has_role(current_user, 'pg_database_owner', 'MEMBER')`
+   * true; and in this schema `public` is owned by `pg_database_owner`, so the
+   * membership is a real privilege rather than a bookkeeping artefact. Refusing is
+   * correct; re-provisioning cannot clear it. Nothing in the documented deployment
+   * creates that situation, and `deployment.md` records it as the one refusal whose
+   * remedy is "do not make the diagnostics role a database owner".
    */
   roleMemberships: number;
   /**
    * Membership count across FORBIDDEN_PREDEFINED_ROLES that exist on this server — a
-   * SUBSET of `roleMemberships`, kept because it lets the refusal name what went
-   * wrong ("it was granted a predefined escalation role") instead of only counting.
+   * SUBSET of `roleMemberships`, kept because it lets the refusal say what went wrong
+   * ("it was granted a predefined escalation role") instead of only counting.
    * `roleMemberships === 0` is the gate; this is the better sentence for an operator.
    */
   forbiddenRoleMemberships: number;
+  /**
+   * WHICH predefined roles, so the refusal names them instead of only counting them.
+   * The operator guide promised a named refusal and nothing emitted a name: the
+   * readiness surface deliberately carries no privilege detail (it is JSON an admin
+   * browser receives) and the log carried counts alone, which left "granted
+   * `pg_read_all_data`" and "granted `pg_signal_backend`" indistinguishable in the
+   * one place an operator would look.
+   *
+   * Safe to log, unlike role names in general: every value here is matched against
+   * `FORBIDDEN_PREDEFINED_ROLES`, so it can only ever be one of eight names from this
+   * repository's own source — PostgreSQL built-ins, not deployment secrets and not
+   * server text we chose to trust. The TOTAL membership count is deliberately NOT
+   * expanded into names for the same reason inverted: those are arbitrary role names
+   * from the cluster.
+   */
+  forbiddenRoleNames: readonly string[];
   /**
    * Relations in schema `public` on which the role holds INSERT, UPDATE, DELETE or
    * TRUNCATE — at table OR column level. This is the column that makes the name
@@ -315,6 +341,10 @@ export function isDiagnosticsRolePrivilegeSafe(
     // at all is one `SET ROLE` from that role's privileges, and a NOINHERIT role
     // hides the fact from every other column here.
     report.forbiddenRoleMemberships === 0 &&
+    // Redundant with the count above, and kept so on purpose: this is a fail-closed
+    // gate, so a future change that populated the names without the count — or a
+    // server that answered with one and not the other — must still refuse.
+    report.forbiddenRoleNames.length === 0 &&
     report.writableRelations === 0 &&
     report.undeclaredReadableRelations === 0 &&
     report.executableSecurityDefinerRoutines === 0
@@ -389,6 +419,12 @@ SELECT
     WHERE forbidden.rolname = ANY($1::text[])
       AND pg_catalog.pg_has_role(current_user, forbidden.oid, 'MEMBER')
   )::int                                                              AS forbidden_role_memberships,
+  (
+    SELECT coalesce(array_agg(forbidden.rolname::text ORDER BY forbidden.rolname), '{}'::text[])
+    FROM pg_catalog.pg_roles forbidden
+    WHERE forbidden.rolname = ANY($1::text[])
+      AND pg_catalog.pg_has_role(current_user, forbidden.oid, 'MEMBER')
+  )                                                                   AS forbidden_role_names,
   (
     SELECT count(*)
     FROM pg_catalog.pg_class c
@@ -516,6 +552,16 @@ async function readRolePrivileges(
     canReadServerFiles: row.can_read_server_files === true,
     roleMemberships: Number(row.role_memberships ?? 0),
     forbiddenRoleMemberships: Number(row.forbidden_role_memberships ?? 0),
+    // Re-filtered against our own constant rather than trusted as returned. The SQL
+    // already restricts the rows to `$1`, so this cannot change a correct answer —
+    // it means a driver, a mock or a future edit cannot put arbitrary server text
+    // into the value that gets logged.
+    forbiddenRoleNames: (Array.isArray(row.forbidden_role_names)
+      ? row.forbidden_role_names.map((name) => String(name))
+      : []
+    ).filter((name): name is (typeof FORBIDDEN_PREDEFINED_ROLES)[number] =>
+      (FORBIDDEN_PREDEFINED_ROLES as readonly string[]).includes(name),
+    ),
     writableRelations: Number(row.writable_relations ?? 0),
     undeclaredReadableRelations: Number(row.undeclared_readable_relations ?? 0),
     executableSecurityDefinerRoutines: Number(
@@ -682,9 +728,12 @@ export async function getDiagnosticsDatabase(): Promise<DiagnosticsDatabaseHandl
       tag: "diagnostics-select-only-privileges",
       message:
         "Refusing to use the diagnostics database role: it is not SELECT-only",
-      // Privilege booleans only — no connection string, no password, no role
-      // secret. The role NAME is deployment configuration an operator needs to
-      // act on the alert.
+      // Privilege counts and booleans only — no connection string, no password, no
+      // role secret. The role NAME is deployment configuration an operator needs to
+      // act on the alert, and `forbiddenRoleNames` is drawn from this repository's own
+      // eight-name constant, so the alert can say WHICH escalation role was granted
+      // rather than only that one was. The total membership count is deliberately not
+      // expanded into names: those would be arbitrary role names from the cluster.
       context: { ...report },
     });
     // Drop the cache on an UNSAFE verdict, exactly as the probe-threw branch

@@ -48,8 +48,14 @@ export const PUBLIC_TEMP_REVOKE_NOTE =
 /**
  * Predefined roles that would defeat the table allowlist or the read-only
  * contract outright. Membership is revoked explicitly on every provision so a
- * hand-granted escalation cannot survive a re-run. PostgreSQL warns (and
- * succeeds) when the role is not a member, which is the harmless normal case.
+ * hand-granted escalation cannot survive a re-run.
+ *
+ * The revoke is written per RECORDED GRANT rather than as a bare
+ * `REVOKE pg_monitor FROM <role>`, because a bare REVOKE only removes the grant the
+ * CURRENT role made. PostgreSQL reports "not a member by role X" as a WARNING and
+ * still returns success, so the bare form looked like the harmless normal case and
+ * was in fact the silent-failure case whenever anybody else had done the granting
+ * (measured on postgres:16.14 for `pg_monitor` and for an ordinary role alike).
  *
  * This list is NOT the membership control — step 5 below strips membership in
  * EVERY role, and the runtime self-check gates on the total. It is kept because
@@ -241,16 +247,47 @@ $$;`,
   ];
 
   // 4. Strip any membership in a predefined role that would bypass the
-  //    allowlist or the read-only contract. Guarded by an existence check
-  //    because the set of predefined roles grows with the server version
-  //    (`pg_maintain` is PostgreSQL 17+): a bare REVOKE of an absent role errors
-  //    and would abort the whole provisioning run on an older server.
+  //    allowlist or the read-only contract.
+  //
+  //    REVOKE IS SCOPED TO THE GRANTOR, which is the whole reason this is written as
+  //    a loop over `pg_auth_members` rather than as a bare
+  //    `REVOKE pg_monitor FROM <role>`. A membership is recorded per grantor, and
+  //    `REVOKE ... FROM ...` without `GRANTED BY` revokes only the CURRENT role's own
+  //    grant — even for a superuser. Measured on postgres:16.14: a membership granted
+  //    by a separate deployer role survived a superuser's bare REVOKE, which reported
+  //    `REVOKE ROLE` and emitted nothing but
+  //    `WARNING: role "…" has not been granted membership in role "…" by role
+  //    "postgres"`, while `pg_has_role(…, 'MEMBER')` stayed true. Adding
+  //    `GRANTED BY <grantor>` revoked it (measured: the row went, and the predicate
+  //    went false).
+  //
+  //    Looping over the rows also removes the need for the old existence guard: the
+  //    set of predefined roles grows with the server version (`pg_maintain` is
+  //    PostgreSQL 17+), and a role that does not exist on this server simply
+  //    contributes no rows.
+  //
+  //    And it stops the noise that would have buried the signal. The bare form warned
+  //    once per predefined role on EVERY provision, whether or not anything was
+  //    granted — measured, seven WARNINGs on a clean run against postgres:16 — so the
+  //    one warning that mattered arrived in a crowd. Driven by recorded rows, a clean
+  //    run is silent, which is what makes the operator CLI's notice output worth
+  //    reading.
   for (const predefined of FORBIDDEN_PREDEFINED_ROLES) {
     statements.push(`DO $$
+DECLARE
+  grantor_name text;
 BEGIN
-  IF EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = ${quoteLiteral(predefined)}) THEN
-    EXECUTE format('REVOKE %I FROM %I', ${quoteLiteral(predefined)}, ${roleLiteral});
-  END IF;
+  FOR grantor_name IN
+    SELECT grantor.rolname
+    FROM pg_catalog.pg_auth_members m
+    JOIN pg_catalog.pg_roles granted ON granted.oid = m.roleid
+    JOIN pg_catalog.pg_roles member ON member.oid = m.member
+    JOIN pg_catalog.pg_roles grantor ON grantor.oid = m.grantor
+    WHERE granted.rolname = ${quoteLiteral(predefined)}
+      AND member.rolname = ${roleLiteral}
+  LOOP
+    EXECUTE format('REVOKE %I FROM %I GRANTED BY %I', ${quoteLiteral(predefined)}, ${roleLiteral}, grantor_name);
+  END LOOP;
 END
 $$;`);
   }
@@ -270,28 +307,63 @@ $$;`);
   //
   //    Revoking the DIRECT grants is sufficient and complete: `SET ROLE`
   //    reachability is transitive, but every chain starts at a direct edge from this
-  //    role, so removing all of those removes the closure. `pg_auth_members` can
-  //    hold several rows for one membership (one per grantor in PostgreSQL 16+), and
-  //    `REVOKE` is idempotent, so the loop is written over whatever rows are there.
+  //    role, so removing all of those removes the closure.
   //
-  //    If the provisioning connection lacks ADMIN OPTION on a granted role the
-  //    REVOKE errors and the whole transaction rolls back. That is the intended
-  //    failure: the deployment cannot satisfy ADR-007 with that credential, and the
-  //    CLI prints the server's message rather than provisioning a role the runtime
-  //    would then refuse.
+  //    ONE ROW PER GRANTOR, AND `GRANTED BY` ON EVERY REVOKE. `pg_auth_members` holds
+  //    a row per (granted role, member, grantor), and a REVOKE without `GRANTED BY`
+  //    touches only the current role's own grant — so the earlier `SELECT DISTINCT`
+  //    over role names alone was the bug, not an optimisation: it discarded exactly
+  //    the column the REVOKE needs. It is not idempotent-and-therefore-harmless
+  //    either. Measured on postgres:16.14, a membership granted by a deployer role
+  //    survived a superuser's bare REVOKE with only a WARNING, the DO block committed,
+  //    and the role stayed one `SET ROLE` from the app role's privileges while
+  //    readiness reported `over_privileged` forever and this repair path claimed
+  //    success.
+  //
+  //    THEN RE-CHECK AND RAISE. A warning is not a failure in PostgreSQL, and this
+  //    statement list runs in one transaction whose only reason to exist is that a
+  //    partial run must not commit. So the block re-reads `pg_auth_members` after the
+  //    loop and raises if anything survived, which turns silent survival into the
+  //    rollback the operator guide already promises. It also covers the credential
+  //    case: a provisioner that may not revoke another role's grant fails loudly
+  //    instead (measured: `permission denied to revoke privileges granted by role
+  //    "…"`, `DETAIL: Only roles with privileges of role "…" may revoke privileges
+  //    granted by this role`).
+  //
+  //    The re-check reads `pg_auth_members` and NOT `pg_has_role`, deliberately.
+  //    `pg_database_owner` confers an implicit membership on whoever owns the current
+  //    database, with no row in `pg_auth_members` and nothing to revoke — so a
+  //    `pg_has_role` re-check would make provisioning impossible for a deployment
+  //    whose diagnostics role owns its database, rather than merely refused at
+  //    runtime. That case is documented in `deployment.md` as the one refusal
+  //    re-provisioning cannot repair; the remedy is not to make the diagnostics role a
+  //    database owner.
   statements.push(`DO $$
 DECLARE
-  granted_role text;
+  membership record;
+  surviving text;
 BEGIN
-  FOR granted_role IN
-    SELECT DISTINCT g.rolname
+  FOR membership IN
+    SELECT granted.rolname AS granted_role, grantor.rolname AS grantor
     FROM pg_catalog.pg_auth_members m
-    JOIN pg_catalog.pg_roles g ON g.oid = m.roleid
-    JOIN pg_catalog.pg_roles r ON r.oid = m.member
-    WHERE r.rolname = ${roleLiteral}
+    JOIN pg_catalog.pg_roles granted ON granted.oid = m.roleid
+    JOIN pg_catalog.pg_roles member ON member.oid = m.member
+    JOIN pg_catalog.pg_roles grantor ON grantor.oid = m.grantor
+    WHERE member.rolname = ${roleLiteral}
   LOOP
-    EXECUTE format('REVOKE %I FROM %I', granted_role, ${roleLiteral});
+    EXECUTE format('REVOKE %I FROM %I GRANTED BY %I', membership.granted_role, ${roleLiteral}, membership.grantor);
   END LOOP;
+
+  SELECT string_agg(DISTINCT granted.rolname, ', ')
+    INTO surviving
+    FROM pg_catalog.pg_auth_members m
+    JOIN pg_catalog.pg_roles granted ON granted.oid = m.roleid
+    JOIN pg_catalog.pg_roles member ON member.oid = m.member
+    WHERE member.rolname = ${roleLiteral};
+
+  IF surviving IS NOT NULL THEN
+    RAISE EXCEPTION 'Refusing to provision %: it is still a member of % after revoking every recorded membership. Revoke it with the grantor that granted it, then re-run.', ${roleLiteral}, surviving;
+  END IF;
 END
 $$;`);
 
