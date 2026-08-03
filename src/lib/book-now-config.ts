@@ -153,3 +153,25 @@ export async function getBookNowVariants(): Promise<{
     member: bookNowVariant(true, choice),
   };
 }
+
+/**
+ * The club's configured public booking entry page, or null when there is not one.
+ *
+ * For the pre-cutover warm-up gate (#2566). The owner's critical-route list names
+ * "any public booking entry route", and in this deployment that is either a CMS
+ * content page an admin pointed the Book Now button at, or nothing public at all:
+ * on the default `BOOKING_FLOW` target an anonymous visitor is sent to the member
+ * login path, which the same decision excludes from warming, and `/book` is
+ * authenticated.
+ *
+ * Reads through the one resolver above rather than querying again, so it inherits
+ * every rule the button itself obeys — the hidden-button case, the #1929 fail-open
+ * contract, and the #2352 servability check that refuses a target the public
+ * website no longer serves. A null here therefore means "no public booking page to
+ * warm", never "there is one but this function disagrees with the button".
+ */
+export async function getConfiguredBookNowPagePath(): Promise<string | null> {
+  const choice = await resolveBookNowChoice();
+
+  return choice.show ? choice.pageHref : null;
+}
