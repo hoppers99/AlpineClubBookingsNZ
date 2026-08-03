@@ -18,7 +18,6 @@ import {
 } from "@/config/club-settings-defaults";
 import { DEFAULT_MEMBER_FIELDS_SETTINGS } from "@/config/member-fields";
 import { DEFAULT_LOGIN_SECURITY_POLICY } from "@/lib/password-policy";
-import { isSubscriptionLockoutMode } from "@/lib/membership-lockout-settings";
 import {
   CLUB_MODULE_SETTINGS_COLUMN_SELECT,
   DEFAULT_MODULE_SETTINGS,
@@ -121,10 +120,21 @@ interface SingletonSpec {
    * Last chance to make a bundle's fields CONSISTENT WITH EACH OTHER before they
    * are diffed and written (#2543).
    *
-   * Needed only where two travelling columns encode one decision, so a bundle can
-   * carry a pair the app's own writer could never produce. Runs inside
-   * `parseSingleton`, i.e. on the one path both the dry-run and the apply use, so
-   * the plan can never promise something different from what lands.
+   * Needed only where a legacy bundle key encodes a decision the current column
+   * spells differently, so a bundle can carry a shape the app's own writer could
+   * never produce. Runs inside `parseSingleton`, i.e. on the one path both the
+   * dry-run and the apply use, so the plan can never promise something different
+   * from what lands.
+   *
+   * RUNS BEFORE THE FIELD VALIDATION LOOP, and that order is load-bearing: it is
+   * what lets a derived field still carry `constraints.required`. Run afterwards, a
+   * spec could not require the derived field at all — the loop would reject the
+   * legacy shape before the hook had a chance to fill it in — so the field would
+   * have to stay unconstrained and a `null` in a hand-edited bundle would sail past
+   * the dry-run into a write-time Prisma exception. A hook therefore receives
+   * UNVALIDATED input and must behave itself: derive only from a value it has
+   * type-checked, and leave anything it does not recognise exactly as it found it,
+   * so the loop below still gets to refuse it.
    */
   reconcile?: (incoming: Record<string, unknown>) => Record<string, unknown>;
 }
@@ -529,13 +539,22 @@ export const SINGLETONS: SingletonSpec[] = [
     // .nullable(). The two booleans are non-null (@default) and fail on a present
     // null (#2200).
     //
-    // `mode` carries NO `required` even though its column is now NOT NULL, and that
-    // is deliberate rather than an oversight: a PRE-#2543 bundle legitimately has no
-    // `mode` key at all, and the hook below derives one from the boolean it does
-    // carry. Requiring it here would refuse every bundle exported before #2543 —
-    // exactly the compatibility this hook exists to provide.
+    // `mode` IS required, because its column is now NOT NULL (#2543/#2561) and
+    // #2200's rule is that a present null on such a column fails the dry-run rather
+    // than the write. It costs a pre-#2543 bundle nothing: `parseSingleton` skips an
+    // ABSENT key before the null check (`if (!(field in record)) continue`), so
+    // `required` can only ever fire on a key that is present and null — and a bundle
+    // that carries `mode: null` alongside `enabled` has already had a real mode
+    // derived for it by the `reconcile` hook below, which runs first. What is left
+    // for this rule to catch is the shape nothing else can: `mode: null` with no
+    // `enabled` key to derive from, in a hand-trimmed or partially-written file.
+    // Without it that file passed the dry-run reporting a policy change and then
+    // aborted the whole import transaction on `mode: null` against a non-nullable
+    // enum — an unfiltered `create: { id: "default", ...data }` on a target with no
+    // row, or the wholesale `update` overwrite mode performs.
     constraints: {
       financialYearEndMonthOverride: { min: 1, max: 12 },
+      mode: { required: true },
       textFallbackEnabled: { required: true },
       useFeeScheduleItemCodes: { required: true },
     },
@@ -558,12 +577,19 @@ export const SINGLETONS: SingletonSpec[] = [
     // Deriving `mode` here puts the value on a field that does travel.
     //
     // The reverse branch is gone with the column: there is no longer a boolean to
-    // re-derive, and writing one would name a column that does not exist. An
-    // unrecognised `mode` string is left alone rather than mapped, exactly as
-    // `coerceLockoutMode` treats it, so a hand-edited bundle cannot invent a fourth
-    // policy — the dry-run's enum validation refuses it instead.
+    // re-derive, and writing one would name a column that does not exist.
+    //
+    // IT DERIVES ONLY INTO AN ABSENT-OR-NULL `mode`, and never over a value the
+    // bundle actually states. A present `mode` — including a hand-edited
+    // `"HRD_BLOCK"` — is handed to the validation loop untouched, where the DMMF
+    // enum check refuses it by name, so a bundle cannot invent a fourth policy and a
+    // typo cannot be silently "corrected" into whatever the legacy boolean said.
+    // That is also why the test is written out here rather than deferred to
+    // `isSubscriptionLockoutMode`: the two answers differ on exactly the strings
+    // this branch must not touch.
     reconcile: (incoming) => {
-      if (isSubscriptionLockoutMode(incoming.mode)) {
+      const stated = "mode" in incoming && incoming.mode !== null;
+      if (stated) {
         return incoming;
       }
       if (typeof incoming.enabled === "boolean") {
@@ -572,6 +598,10 @@ export const SINGLETONS: SingletonSpec[] = [
           mode: incoming.enabled ? "HARD_BLOCK" : "NO_BLOCK",
         };
       }
+      // `mode` is absent or null with nothing to derive from. Absent means "this
+      // bundle says nothing about the policy", which merge mode honours by leaving
+      // the target's own mode alone; a present null is a broken file, and
+      // `constraints.mode.required` above fails the dry-run on it.
       return incoming;
     },
   },
@@ -730,6 +760,9 @@ for (const s of SINGLETONS) {
  * the REAL Prisma model column types (via dmmf) — a hand-edited value of the
  * wrong shape fails the dry-run as an error instead of a write-time Prisma
  * exception mid-transaction. Returns null (with errors pushed) on failure.
+ *
+ * A spec's `reconcile` hook runs before that type-check, so what is validated is
+ * exactly what will be written, and a derived field can still be `required`.
  */
 function parseSingleton(
   spec: SingletonSpec,
@@ -750,7 +783,13 @@ function parseSingleton(
     errors.push(`${file}: must be a JSON object`);
     return null;
   }
-  const record = incoming as Record<string, unknown>;
+  // The spec's own legacy-key reconciliation runs FIRST, so a field it derives can
+  // still carry `constraints.required` and the loop below judges the record that
+  // will actually be written. See `SingletonSpec.reconcile` for why that order is
+  // the one that closes the hole rather than opening one.
+  const record = spec.reconcile
+    ? spec.reconcile(incoming as Record<string, unknown>)
+    : (incoming as Record<string, unknown>);
   const modelName = spec.delegate[0].toUpperCase() + spec.delegate.slice(1);
   const model = Prisma.dmmf.datamodel.models.find((m) => m.name === modelName);
   let ok = true;
@@ -814,7 +853,7 @@ function parseSingleton(
     }
   }
   if (!ok) return null;
-  return spec.reconcile ? spec.reconcile(record) : record;
+  return record;
 }
 
 function delegateOf(db: ReadDb | TxDb, name: string): SingletonDelegate {
