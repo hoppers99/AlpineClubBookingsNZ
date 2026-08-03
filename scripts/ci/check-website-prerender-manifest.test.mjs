@@ -70,6 +70,41 @@ describe("auditPrerenderManifest", () => {
     expect(problems[0]).toContain("ALLOWED_BUILD_TIME_ROUTES");
   });
 
+  it("fails on a NEW on-demand-generated route outside the (website) group", () => {
+    // The slice-1 review's finding: `dynamicRoutes` was only checked against the
+    // seven MUST_STAY_DYNAMIC names, so this manifest returned zero problems — a
+    // token-bearing route outside `(website)` becoming storable passed both this
+    // gate and check-website-render-modes.mjs, which walks `(website)` only.
+    const problems = auditPrerenderManifest(
+      manifest({
+        dynamicRoutes: { "/[...slug]": {}, "/pay/[token]": {} },
+      }),
+    );
+
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("/pay/[token]");
+    expect(problems[0]).toContain("ALLOWED_ON_DEMAND_ROUTES");
+  });
+
+  it("fails on a new on-demand route even when it looks like a content page", () => {
+    const problems = auditPrerenderManifest(
+      manifest({ dynamicRoutes: { "/[...slug]": {}, "/blog/[slug]": {} } }),
+    );
+
+    expect(problems.some((p) => p.includes("/blog/[slug]"))).toBe(true);
+  });
+
+  it("reports a MUST_STAY_DYNAMIC route once, with its own specific reason", () => {
+    // Both loops could claim it; the specific message wins so the output does not
+    // repeat itself.
+    const problems = auditPrerenderManifest(
+      manifest({ dynamicRoutes: { "/[...slug]": {}, "/join/[code]": {} } }),
+    );
+
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("re-check");
+  });
+
   it("treats an empty manifest as broken, not as clean", () => {
     expect(auditPrerenderManifest({}).length).toBeGreaterThan(0);
   });

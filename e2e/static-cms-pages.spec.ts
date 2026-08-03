@@ -35,17 +35,32 @@ import { E2E_ADMIN } from "../prisma/e2e-fixtures";
 /** A seeded CMS page served by the `(website)/[...slug]` catch-all. */
 const CMS_PAGE = "/about";
 
-function scriptSrcNonce(response: APIResponse): string {
+/**
+ * One named directive out of the response's policy.
+ *
+ * Assertions here MUST go through this rather than matching against the whole
+ * header, and the slice-1 review is why: the D1 tightening drops Stripe from
+ * `script-src` ONLY, and `https://js.stripe.com` is still legitimately present in
+ * `connect-src` and `frame-src`. A whole-header `not.toContain` therefore fails on
+ * a correct policy — and, worse, would not have caught Stripe coming BACK into
+ * `script-src`, which is the property the test claims to hold. The same trap
+ * applies to `'unsafe-inline'`, which `style-src` carries on every route.
+ */
+function directive(response: APIResponse, name: string): string {
   const policy = response.headers()["content-security-policy"];
   expect(policy, "every response must carry a CSP").toBeTruthy();
 
-  const scriptSrc = policy
+  const found = policy
     .split(";")
     .map((part) => part.trim())
-    .find((part) => part.startsWith("script-src "));
-  expect(scriptSrc, "the policy must carry a script-src").toBeTruthy();
+    .find((part) => part === name || part.startsWith(`${name} `));
+  expect(found, `the policy must carry a ${name}`).toBeTruthy();
 
-  const nonce = (scriptSrc as string).match(/'nonce-([^']+)'/)?.[1];
+  return found as string;
+}
+
+function scriptSrcNonce(response: APIResponse): string {
+  const nonce = directive(response, "script-src").match(/'nonce-([^']+)'/)?.[1];
   expect(nonce, "script-src must name a nonce").toBeTruthy();
   return nonce as string;
 }
@@ -145,16 +160,38 @@ test("Stripe is dropped from script-src on the public website and kept elsewhere
   const website = await request.get(CMS_PAGE);
   const login = await request.get("/login");
 
-  expect(website.headers()["content-security-policy"]).not.toContain(
-    "https://js.stripe.com",
+  expect(directive(website, "script-src")).not.toContain("https://js.stripe.com");
+  expect(directive(login, "script-src")).toContain("https://js.stripe.com");
+  // Stripe stays where it was never the point: the payment surfaces reach
+  // api.stripe.com and frame js.stripe.com, and D1 did not touch either.
+  expect(directive(website, "connect-src")).toContain("https://api.stripe.com");
+  expect(directive(website, "frame-src")).toContain("https://js.stripe.com");
+  // Google Tag Manager stays in script-src — the analytics module loads gtag from
+  // it on exactly these pages.
+  expect(directive(website, "script-src")).toContain(
+    "https://www.googletagmanager.com",
   );
-  expect(login.headers()["content-security-policy"]).toContain(
-    "https://js.stripe.com",
-  );
-  // Neither may reach for the blunt option the owner rejected.
-  expect(website.headers()["content-security-policy"]).not.toContain(
-    "'unsafe-inline'; ",
-  );
+  // And the public website may not reach for the blunt option the owner rejected.
+  expect(directive(website, "script-src")).not.toContain("'unsafe-inline'");
+});
+
+test("a stored CMS page is never offered to a shared cache", async ({ request }) => {
+  // The #2322 invariant, asserted where slice 1 moved it (slice-1 review).
+  // `export const revalidate = 300` makes Next fill in
+  // `s-maxage=300, stale-while-revalidate=31535700` of its own accord
+  // (`server/lib/cache-control.js` + the 31536000 `expireTime` default), which is
+  // precisely the directive #2322 exists to keep off public pages: a shared cache
+  // would store the page and could then serve it stale for the best part of a
+  // year, where `revalidatePublicSite()` cannot reach it. The unit suite asserts
+  // the proxy's own header; only a real server shows which header survives to the
+  // wire, because the framework writes its own when the proxy has not.
+  const response = await request.get(CMS_PAGE);
+  const cacheControl = response.headers()["cache-control"] ?? "";
+
+  expect(cacheControl, "a CMS page must carry a Cache-Control").toBeTruthy();
+  expect(cacheControl).toContain("private");
+  expect(cacheControl).not.toContain("s-maxage");
+  expect(cacheControl).not.toContain("stale-while-revalidate");
 });
 
 test("an anonymous visitor gets the signed-out header on a stored page", async ({
@@ -232,6 +269,44 @@ test.describe("signed in", () => {
     expect(hint?.value).toBe("1");
     // A display hint, not a session: readable by the page, and carrying one bit.
     expect(hint?.httpOnly).toBe(false);
+  });
+});
+
+test.describe("a slug under another route group's prefix", () => {
+  test.use({ storageState: storageStatePath(E2E_ADMIN.email) });
+
+  /**
+   * F1 (slice-1 review). `(website)/[...slug]` claims every URL no other route
+   * claims, which is WIDER than the set the proxy gives the fixed per-release nonce
+   * to — so a page served in the difference would be STORED carrying a per-request
+   * nonce that no later response names, and every inline script on it would be
+   * refused. `/pay` is the live shape: `pay` was reserved nowhere, and `(public)/pay`
+   * holds only `[token]/`, so the bare path fell through to the catch-all.
+   */
+  test("is refused at the write, and the address is a plain 404", async ({
+    request,
+  }) => {
+    const created = await request.post("/api/admin/page-content", {
+      data: {
+        slug: "pay",
+        caption: "How to pay",
+        menuTitle: "",
+        title: "How to pay",
+        headerText: "",
+        sortOrder: 9100,
+      },
+    });
+
+    expect(
+      created.status(),
+      "a slug under another route group's prefix must be refused at the write",
+    ).toBe(400);
+    expect(((await created.json()) as { error: string }).error).toContain(
+      "reserved",
+    );
+
+    // And the address itself answers a plain miss rather than a page nobody can use.
+    expect((await request.get("/pay")).status()).toBe(404);
   });
 });
 

@@ -26,6 +26,13 @@ import { pathToFileURL } from "node:url";
  * direction — the emitted HTML — and the two together mean neither a new
  * prerendered route nor a nonce-less script can arrive quietly.
  *
+ * **BOTH halves of the manifest are closed lists**, and that symmetry arrived in
+ * the slice-1 review. `dynamicRoutes` used to be checked only against the seven
+ * routes that must stay per-request, so a manifest listing a NEW stored route
+ * passed — which is the more dangerous direction, because a stored route is one
+ * visitor's render handed to the next. `routes` is the build-time half,
+ * `dynamicRoutes` the on-demand half, and each names exactly what is allowed.
+ *
  * Verified against a real `docker build --target builder` of this branch: the
  * manifest listed `dynamicRoutes: ["/[...slug]"]` and
  * `routes: ["/_global-error", "/sitemap.xml"]`, and the build's own route table
@@ -80,6 +87,26 @@ const MUST_STAY_DYNAMIC = [
 const ALLOWED_BUILD_TIME_ROUTES = new Set(["/_global-error", "/sitemap.xml"]);
 
 /**
+ * Routes allowed to be generated ON DEMAND and then STORED, as a closed list.
+ *
+ * The slice-1 review found this half was not closed: `dynamicRoutes` was only
+ * checked against the seven names in {@link MUST_STAY_DYNAMIC}, so a manifest
+ * listing `/pay/[token]` or `/blog/[slug]` alongside `/[...slug]` produced zero
+ * problems. That is short of the criterion #2352 recorded ("a future PR cannot
+ * silently re-dynamise a route OR make a new one static") and it left the exact
+ * class this file's header calls the hazard uncovered: a route generated on demand
+ * and stored, then handed to whoever asks next.
+ *
+ * The live shape it would have missed: a later PR removes the group-level
+ * `force-dynamic` from `src/app/(public)/layout.tsx` — or adds a
+ * `generateStaticParams` to `pay/[token]` — and the first visitor's render of a
+ * one-time payment link is stored and served to the next. Neither this check nor
+ * `check-website-render-modes.mjs` noticed, because the latter walks
+ * `src/app/(website)` only.
+ */
+const ALLOWED_ON_DEMAND_ROUTES = new Set([ISR_DYNAMIC_ROUTE]);
+
+/**
  * The pure half, so the rules are testable without a build.
  *
  * Returns a list of plain-English problems; an empty list is a pass.
@@ -114,6 +141,23 @@ export function auditPrerenderManifest(manifest) {
         `${route} is listed as an on-demand-generated route (manifest dynamicRoutes), ` +
           "so a render of it would be STORED and served to whoever asked next. For a " +
           "token- or PIN-bearing address that is a page skipping its own re-check.",
+      );
+    }
+  }
+
+  for (const route of dynamicRoutes) {
+    // MUST_STAY_DYNAMIC already reports its own, with a more specific reason.
+    if (
+      !ALLOWED_ON_DEMAND_ROUTES.has(route) &&
+      !MUST_STAY_DYNAMIC.includes(route)
+    ) {
+      problems.push(
+        `${route} is newly generated on demand and STORED (manifest dynamicRoutes), ` +
+          "so one visitor's render is handed to whoever asks for that address next. " +
+          "If that is intended, argue for it in ALLOWED_ON_DEMAND_ROUTES here — and " +
+          "be sure the route carries nothing per-visitor, no token or PIN in its URL, " +
+          "and a public-website CSP nonce (src/lib/public-website-paths.ts), because " +
+          "a stored page outside that set carries a nonce no later response names.",
       );
     }
   }
