@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { BookingRequestType } from "@prisma/client";
+import { AdultMemberHostingRequiredError } from "@/lib/adult-member-hosting-review";
 import { approveBookingRequest, BookingRequestError } from "@/lib/booking-request";
 import {
   approveMemberWholeLodgeRequest,
@@ -215,6 +216,26 @@ export async function POST(
     }
     if (err instanceof BookingRequestError) {
       return NextResponse.json({ error: err.message }, { status: err.status });
+    }
+    // #2569 — the ENFORCED hosting refusal, answered honestly to the OFFICER
+    // rather than rethrown. Without this branch the rethrow became a bare 500
+    // with no message, which reads as an outage rather than as the club's own
+    // rule: a public request is an all-non-member party owned by a non-login
+    // contact, so at a lodge set to stop uncovered bookings there is nobody on it
+    // who can host and the approval genuinely cannot proceed.
+    //
+    // No `exceptionRequestPath` here, unlike the six member-facing paths. The
+    // exception door is a member-authenticated workflow and this caller IS the
+    // authority it leads to; pointing an officer at it would be wrong advice.
+    // Their remedies are to put a qualifying adult member in the party, move the
+    // request to another lodge, or change the lodge's setting. The frozen
+    // sentence already states how many nights and guest-nights are uncovered, and
+    // the request itself is untouched — the throw rolled the approval back.
+    if (err instanceof AdultMemberHostingRequiredError) {
+      return NextResponse.json(
+        { error: err.message, code: err.code },
+        { status: err.status },
+      );
     }
     throw err;
   }

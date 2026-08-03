@@ -23,7 +23,9 @@ import {
   DEFAULT_ADULT_MEMBER_HOST_SCOPES,
   EmptyAdultMemberHostScopeSetError,
   IMPLEMENTED_ADULT_MEMBER_HOST_SCOPES,
+  PUBLIC_GROUP_JOIN_ADULT_MEMBER_HOSTING_MESSAGE,
   describeAdultMemberHostingPolicy,
+  formatAdultMemberHostingWaitlistRefusal,
   enabledHostScopeList,
   evaluateAdultMemberHostingWithPolicy,
   formatAdultMemberHostingMessage,
@@ -463,6 +465,58 @@ describe("the ENFORCED consequence", () => {
     expect(
       published.requirements.qualifyingHostsByNight[1].coveredByScopes,
     ).toEqual(["ANY_MEMBER_AT_LODGE"]);
+  });
+});
+
+describe("the refusal reaches every refusing surface in a shape that fits it", () => {
+  const enforced = resolveAdultMemberHostingPolicy(
+    [legacyRow({ mode: "ENFORCED", ...scopeColumns(SCOPES.sameBookingOnly) })],
+    "lodge-1",
+  );
+
+  it("adds the un-consumed-offer fact for a waitlist confirm, and nothing else", () => {
+    const violation = evaluateAdultMemberHostingWithPolicy(
+      [nonMember("g1", ["2026-07-04"])],
+      enforced,
+    )!;
+    const body = buildAdultMemberHostingRefusalBody(violation);
+    const sentence = formatAdultMemberHostingWaitlistRefusal(body.error);
+
+    // The base refusal survives whole — the member still gets the rule, the size
+    // of the problem and all four ways out.
+    expect(sentence.startsWith(body.error)).toBe(true);
+    // Plus the one fact the booking paths cannot state: the offer was not spent.
+    // Both waitlist confirms roll their claim back, so the entry is still
+    // WAITLIST_OFFERED on its original expiry.
+    expect(sentence).toMatch(/waitlist offer has not been used/);
+    expect(sentence).toMatch(/stays open until it expires/);
+    // And it must NOT say the #2543 refusal's thing. That one reverts the offer to
+    // the queue, so "you've kept your place on the waitlist" is true there and
+    // false here — the member would go looking for a queue position they still
+    // hold an offer for.
+    expect(sentence).not.toMatch(/kept your place/);
+  });
+
+  it("tells an unauthenticated non-member joiner nothing about the club's settings", () => {
+    // The whole point of this constant: the verified-join confirm is reached from
+    // an emailed token with no session, so the consequence setting, the enabled
+    // host scopes and the uncovered nights must not appear in it. Asserted as
+    // absences, because the failure mode is somebody "improving" the sentence by
+    // pasting the frozen violation's message into it.
+    const message = PUBLIC_GROUP_JOIN_ADULT_MEMBER_HOSTING_MESSAGE;
+    expect(message).toMatch(/contact the organiser/i);
+    expect(message).not.toMatch(/guest night/i);
+    expect(message).not.toMatch(/exception/i);
+    expect(message).not.toMatch(/Booking Officer/i);
+    expect(message).not.toMatch(/nominate/i);
+
+    // It is also NOT the member-facing refusal, which names all four ways out —
+    // three of which a non-login contact cannot take.
+    const violation = evaluateAdultMemberHostingWithPolicy(
+      [nonMember("g1", ["2026-07-04"])],
+      enforced,
+    )!;
+    expect(message).not.toBe(violation.message);
   });
 });
 

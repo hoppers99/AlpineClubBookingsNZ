@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
+import {
+  AdultMemberHostingRequiredError,
+  buildAdultMemberHostingRefusalBody,
+} from "@/lib/adult-member-hosting-review";
 import { ApiError } from "@/lib/api-error";
 import { MinimumStayPolicyViolationError } from "@/lib/booking-policy-exceptions";
 import { auth } from "@/lib/auth";
@@ -242,6 +246,21 @@ export async function PUT(
           violations: err.violations,
           exceptionReview: err.exceptionReview,
         },
+        { status: err.status },
+      );
+    }
+    // #2569 — the ENFORCED hosting refusal on the DATE path. Tested BEFORE the
+    // generic ApiError branch for the reason the minimum-stay branch above is:
+    // `AdultMemberHostingRequiredError` extends ApiError, so the generic branch
+    // would flatten it to a bare 409 sentence and drop the code, the frozen
+    // violation and the path to ask a Booking Officer — leaving the member refused
+    // with no door. Moving dates is one of the ways a covered booking becomes
+    // uncovered (the adult member's own stay no longer spans the new nights), so
+    // this path refuses as often as the guest paths do. Host identities are
+    // withheld from this body (#2569 §5).
+    if (err instanceof AdultMemberHostingRequiredError) {
+      return NextResponse.json(
+        buildAdultMemberHostingRefusalBody(err.violation),
         { status: err.status },
       );
     }

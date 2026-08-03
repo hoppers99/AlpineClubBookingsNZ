@@ -59,6 +59,21 @@ export async function POST(
           { outcome: "minimum_stay", message: result.message },
           { status: 409 }
         );
+      // #2569: the lodge's hosting rule is set to stop bookings, and a verified
+      // non-member join has nobody on it who can cover its nights, so it fails
+      // closed. A 409 for the same reason `minimum_stay` is one — the sign-up was
+      // fine when it was staged and the club's state (or its policy) has moved
+      // under it — and, like that arm, `result.message` is the ONLY field
+      // forwarded: this surface is unauthenticated, so the consequence setting,
+      // the enabled host scopes and the uncovered nights stay in the server log
+      // the service writes beside the refusal rather than one spread from the
+      // wire. The member-authenticated paths get the full exception-door body;
+      // this one points the joiner at the organiser, who can actually fix it.
+      case "adult_member_hosting":
+        return NextResponse.json(
+          { outcome: "adult_member_hosting", message: result.message },
+          { status: 409 }
+        );
       case "already_done":
         return NextResponse.json(
           { outcome: "already_done", bookingId: result.bookingId },

@@ -5,6 +5,7 @@ import {
   holdBookingRequestSlots,
 } from "@/lib/booking-request-quotes";
 import { BookingRequestError } from "@/lib/booking-request";
+import { AdultMemberHostingRequiredError } from "@/lib/adult-member-hosting-review";
 import {
   BookingMemberNightConflictError,
   getBookingMemberNightConflictResponse,
@@ -82,6 +83,17 @@ export async function POST(
     }
     if (err instanceof BookingRequestError || err instanceof BookingRequestQuoteError) {
       return NextResponse.json({ error: err.message }, { status: err.status });
+    }
+    // #2569 — see the same branch on the approve route beside this one. A hold is
+    // a capacity-holding booking carrying the requested party, so an ENFORCED
+    // lodge refuses it on the same terms, and the officer is told which rule
+    // stopped it instead of getting a bare 500. The hold rolled back with the
+    // throw, so the request is exactly as it was.
+    if (err instanceof AdultMemberHostingRequiredError) {
+      return NextResponse.json(
+        { error: err.message, code: err.code },
+        { status: err.status },
+      );
     }
     throw err;
   }

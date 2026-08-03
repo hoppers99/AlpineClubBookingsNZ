@@ -1,4 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
+import {
+  AdultMemberHostingRequiredError,
+  buildAdultMemberHostingRefusalBody,
+} from "@/lib/adult-member-hosting-review";
 import { ApiError } from "@/lib/api-error";
 import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
@@ -415,6 +419,24 @@ export async function DELETE(
         err.audience === "OTHER_PARTY_MEMBER"
           ? buildPaidUpAdultRefusalBodyForOtherPartyMember(err.violation)
           : buildPaidUpAdultRefusalBody(err.violation),
+        { status: err.status },
+      );
+    }
+    // #2569 — same reason, same order: `AdultMemberHostingRequiredError` extends
+    // ApiError, so it must be tested BEFORE the generic branch or the ENFORCED
+    // hosting refusal is flattened to a bare sentence and the member loses the
+    // exception door. Host identities are withheld from this body (#2569 §5).
+    //
+    // This is the path where the refusal is most easily misread as a bug: taking
+    // the LAST adult member off a booking that still carries non-member guests is
+    // exactly the change the rule forbids, so the removal is refused and the
+    // booking is left whole. Unlike its #2543 neighbour above this body has no
+    // audience split — the hosting violation names no member (§5), so there is
+    // nothing in it that could disclose the owner's affairs to another party
+    // member removing their own row.
+    if (err instanceof AdultMemberHostingRequiredError) {
+      return NextResponse.json(
+        buildAdultMemberHostingRefusalBody(err.violation),
         { status: err.status },
       );
     }

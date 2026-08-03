@@ -1532,6 +1532,11 @@ export async function holdBookingRequestSlots(input: {
       // to wait for the requester to pay before the club's own rule is visible.
       // The accept re-reconciles after it rewrites the guest list, so nothing
       // recorded here can go stale.
+      //
+      // #2569: at a lodge on the ENFORCED consequence this REFUSES rather than
+      // records, rolling the hold back — a hold is a capacity-holding booking, so
+      // it is the thing the club said it would not take. The hold route answers
+      // the officer with the rule that stopped it.
       await reconcileAdultMemberHostingReviewWithSiblings(held.id, tx);
 
       await tx.bookingRequest.update({

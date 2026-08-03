@@ -584,6 +584,55 @@ export function formatAdultMemberHostingMessage(
 }
 
 /**
+ * The one sentence an UNAUTHENTICATED non-member group joiner is told when the
+ * lodge's ENFORCED hosting rule refuses their join.
+ *
+ * GENERIC ON PURPOSE, and the only field that outcome carries — the same rule
+ * `PUBLIC_GROUP_JOIN_MINIMUM_STAY_MESSAGE` follows on the same route, and for the
+ * same reason: a verified non-member join is confirmed from an emailed token with
+ * no session behind it, so a body naming the club's consequence setting, the
+ * enabled host scopes or the uncovered nights would turn that confirm into a
+ * policy-configuration read for anyone holding a token. The frozen violation stays
+ * in the server log line beside the refusal.
+ *
+ * No exception door either, and that is not an omission. The door is a
+ * member-authenticated workflow (`/api/bookings/exception-requests`); a non-login
+ * contact has no account to raise a request from, and the person who CAN fix this
+ * — by covering the nights, or by asking a Booking Officer — is the organiser.
+ * So the sentence points there.
+ */
+export const PUBLIC_GROUP_JOIN_ADULT_MEMBER_HOSTING_MESSAGE =
+  "This lodge asks that non-member guests are covered by an adult member for " +
+  "every night they stay, and this sign-up would not be. Please contact the " +
+  "organiser.";
+
+/**
+ * The WAITLIST-CONFIRM flavour of the enforced refusal.
+ *
+ * Both waitlist confirm paths — same-lodge and the cross-lodge promotion — refuse
+ * without consuming the offer: the reconciler throws inside the claiming
+ * transaction, so the claim rolls back and the booking is left exactly as it was,
+ * still WAITLIST_OFFERED with its original expiry. The base sentence cannot say
+ * that (a booking-time refusal has no offer behind it), and leaving it unsaid was
+ * the #2543 lesson on this same pair of paths: a bare refusal reads as though the
+ * member has lost the offer as well as the stay.
+ *
+ * ONE formatter for both paths, for the reason #2543's waitlist-refusal formatter
+ * is one (`policies/subscription-lockout-pricing.ts` — named in prose rather than
+ * as its identifier on purpose, because that suite's own tree-wide sweep asserts
+ * which files reference it and a doc comment is not a caller): the answer must not
+ * depend on which lodge the sweep happened to offer.
+ * The structural sweep in `adult-member-hosting-call-sites.test.ts` pins the caller
+ * set tree-wide, so a later lane cannot reach for this nicer-reading sentence on a
+ * path with no waitlist entry behind it.
+ */
+export function formatAdultMemberHostingWaitlistRefusal(
+  baseMessage: string,
+): string {
+  return `${baseMessage} Your waitlist offer has not been used — it stays open until it expires.`;
+}
+
+/**
  * Evaluate one booking's participants against an already-resolved policy.
  *
  * Returns `null` when the policy is disabled, when the party has no non-member
