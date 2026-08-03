@@ -178,15 +178,37 @@ looser one.
 | Tool calls per session | 16 | server-side session counter |
 | Provider rounds | AID-2's `DIAGNOSTICS_MAX_TOOL_ROUNDS` | server-side session counter |
 | Pool connections | 3 | the dedicated `pg` pool, plus the role's `CONNECTION LIMIT` |
-| Rendered evidence block | 8,000 chars | truncated tail, with an explicit in-block notice |
-| Server-owned evidence read | 15,000 ms | explicit deadline; expiry and refusal both return no rows |
+| Rendered evidence block | 8,000 chars | whole rows dropped from the tail, and the rows header states how many of how many it listed |
+| Server-owned evidence read | 15,000 ms | explicit deadline on the **wait**; expiry and refusal both return no rows |
 
-The rendered-block cap is what sets a tool pack's practical row ceiling, and it is
-worth stating because it is easy to miss: a 50-row result that renders past 8,000
-characters loses its tail to a generic in-block notice instead of the substrate's own
-honest `truncated` flag over a complete prefix. AID-6A's correlation entries stop at
-30 rows and its job-health entry at 20 for that reason, and the job-health source
-orders by severity so what gets cut is always the healthy tail.
+The rendered-block cap is what sets a tool pack's practical row ceiling. When a result
+is too wide for the block, the renderer drops **whole** rows from the tail and changes
+the rows header to `rows (K of N listed …)`, so the count the model reads always
+matches the rows in front of it and a partial row is never presented as a row. That is
+the backstop, not the plan: an entry should pick a `rowLimit` that renders whole, so
+the model gets the substrate's own honest `truncated` flag over a complete listing.
+AID-6A's correlation entries stop at 24 rows and its job-health entry at 18 for that
+reason, both **measured** against the entry's own projected shape at realistic field
+widths rather than estimated — a registry contract test renders every entry at its own
+row limit and pins that the block never lies about what it listed. The job-health
+source orders by severity, so what gets given up is always the healthy tail.
+
+Two ceilings, and the byte one **refuses** rather than trimming. `byteLimit` is checked
+against `canonicalStringify` of the projected rows — `JSON.stringify(…, null, 2)`, so
+one indented line per field, roughly double what a naive estimate suggests — and a
+result over it is discarded whole as `result_too_large`. An entry whose own `rowLimit`
+rows exceed its own `byteLimit` is therefore broken, not merely tight, and broken
+silently: AID-6A found `background_job_health` in exactly that state, telling operators
+to narrow a question that takes no arguments. A registry contract test now serialises
+every entry's own projected shape at its own row limit and fails if the ceiling is
+unachievable.
+
+A `server_owned` entry gets the 15-second deadline on the **wait**, and that is all the
+substrate can give it: `Promise.race` does not cancel the loser, and nothing propagates
+a cancellation into Prisma, so an abandoned read keeps running. A first-party source
+that fans out or can be slow must therefore bound its own **work** — its own deadline,
+below the executor's, and a batched rather than unbounded fan-out. AID-6A's job-health
+source is the worked example.
 
 The server-owned deadline sits **above** the privilege-probe deadline on purpose: the
 canonical readiness answer includes that probe, so a shorter deadline would turn "the
@@ -388,8 +410,29 @@ The checklist a reviewer should hold you to:
    whole table fails readiness closed.
 7. `surfacesPersonalData` is true if any projected field identifies a person;
    ADR-004 §1 then requires a per-invocation opt-in from the operator.
-8. Document the entry in its pack's doc: what it answers, which permission, which
-   columns it reads and why, and what it deliberately never returns.
+8. Know which projected values are **server-defined codes** and which are not. A
+   column whose value originates in a request — a header, a name, a note — is
+   attacker-chosen text, and the projection re-validates it against a known shape and
+   substitutes a stable code when it does not conform, rather than shipping it. The
+   renderer's neutralising is the second layer, not the first. AID-6A's `requestId` is
+   the worked example: it is verbatim `x-request-id` header text, which any signed-in
+   member can write.
+9. Declare an `evidenceScope` whenever the entry's filter is **narrower than the
+   question an operator will ask it**. An empty result otherwise carries the state
+   `not_found` — "there is no evidence of this to report" — which is a claim about the
+   whole domain rather than about the slice the entry read. The scope sentence is
+   server-owned, comes from the registry, and renders above the rows.
+10. Measure `rowLimit` and `byteLimit`; do not estimate them. Add the entry's widest
+    realistic **raw row** to `EXAMPLE_RAW_ROWS` in `registry.test.ts`, which then
+    serialises `rowLimit` rows of your own projected shape and fails if your
+    `byteLimit` is unachievable, and renders them and fails if the block would
+    misreport what it listed. Both contracts are census-style: a new entry with no row
+    fails loudly.
+11. A `server_owned` source bounds its own **work**, not just the executor's wait: a
+    deadline below the executor's, and a batched fan-out. A deadline **refuses**; it
+    never returns a partial set that a classifier would read as a real absence.
+12. Document the entry in its pack's doc: what it answers, which permission, which
+    columns it reads and why, and what it deliberately never returns.
 
 Secret-bearing relations (credentials, tokens, password/2FA, sessions) and raw
 provider-payload stores are permanently out of scope (ADR-007 §1).

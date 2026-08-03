@@ -156,10 +156,26 @@ flowchart TD
   diagnostics role cannot do at all.
 - **AC9 — Correlation as a side channel.** A support-only admin asks a finance
   question, hoping the system-correlation tool will answer it. → The five correlation
-  entries filter on **disjoint** audit categories, so the tool they can run cannot see
-  the rows the denied one would have returned; the denial names `finance:view` and
-  nothing infers the answer from another source (I1, and the disjointness is pinned by
-  a contract test).
+  entries filter on **disjoint** audit categories and every audit row carries exactly
+  one category, so the tool they can run cannot return the rows the denied one would
+  have; the denial names `finance:view` and nothing infers the answer from another
+  source (I1, and the disjointness is pinned by a contract test).
+
+  **One qualification, because the stronger claim would be false.** The audit
+  `category` is not the permission-area map, and `admin` is the platform's
+  cross-domain catch-all for administrator-initiated operations — member merge,
+  member-lifecycle decisions, imports, and payment, booking and lodge *settings*
+  changes all record there. The system entry therefore does report, behind
+  `support:view` alone, **that** such an action occurred: an action code, a severity,
+  an entity *type* and an instant, and nothing else. That is not an escalation.
+  `support` is already the area that governs Admin > Audit Log and
+  `/api/admin/audit-log`, where the same administrator reads those same rows in full,
+  with the summary, the details, the metadata and the IP address this projection
+  withholds — so the correlation channel is at every point at least as strict as the
+  surface that permission already opens. What the domain permission buys is the
+  domain's **own** events: the payment, the booking, the member's own account change.
+  `docs/ai-diagnostics/tool-pack-support.md` carries the full category → entry
+  mapping, and it is the reference for anyone extending the taxonomy in AID-6B/6C.
 - **AC5 — Stale-role escalation.** An admin whose finance role was just revoked
   keeps a session open. → Next tool call re-reads roles and denies (S1).
 - **AC6 — Fork leakage.** Public code is pushed that hard-codes Tokoroa's private

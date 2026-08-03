@@ -48,15 +48,82 @@ parses arguments (see [tools.md](tools.md) → "The gates, in order"), so an arg
 cannot decide an authorization rule. Five fixed entries with five fixed permission
 sets is the shape that keeps the two in step.
 
+### One deliberate reading of a requirement, recorded so it is reviewable
+
+#2375 is internally inconsistent on this point, so the choice is stated here rather
+than left to inference. Its correlation section says "booking-event correlation
+requires `bookings:view`"; its examples say combined system and booking evidence
+requires "both `support:view` and `bookings:view`"; and its acceptance criterion 4
+says domain diagnostics must use their domain permission "without also requiring
+`support:view`".
+
+This pack follows the **stricter** reading: `support` **and** the domain, for
+correlation only. The reasoning is above — correlation reads the audit trail, and the
+audit trail is a `support` surface. Acceptance criterion 4 is honoured where it plainly
+applies: the domain tools AID-6B and AID-6C add will require their domain area alone.
+
+What the strict reading costs, stated plainly. A club-defined access role granting only
+`bookings:view` — which the access-roles UI permits — gets **no** booking correlation,
+and the operator is told they need Support & System. The built-in bundles hide this,
+because `ADMIN_BOOKINGS` and `ADMIN_MEMBERSHIP` both already include `support: "view"`,
+so it can only appear on a hand-built custom role. The failure is closed and legible (a
+named missing area, not a silent empty result), which is why it ships this way rather
+than being loosened on the spot. If the owner prefers the literal AC4 reading, the
+change is one line per entry in `support-correlation.ts` plus its permission contract
+test, and it widens who can read the audit trail — which is why it is the owner's call
+and not a reviewer's.
+
 ### What a missing permission looks like
 
 A caller who lacks an area is not offered that tool, and an invocation naming it
 anyway is denied server-side with `permission_denied` and the missing area named.
-Nothing infers the answer from elsewhere: the category filters are **disjoint**, so
-the tool a caller *can* run cannot see the rows the denied one would have returned.
-A support-only administrator asking a finance question gets a denial that says
-`finance:view` is required — not a system-correlation answer dressed up as a finance
-one. A contract test pins the disjointness.
+Nothing infers the answer from elsewhere: the category filters are **disjoint** and
+every audit row carries exactly one category, so the tool a caller *can* run cannot
+return the rows the denied one would have. A support-only administrator asking a
+finance question gets a denial that says `finance:view` is required. A contract test
+pins the disjointness.
+
+One qualification, because the stronger claim would be untrue. `support:view` alone
+does reach **administrator-initiated** events in every domain, because that is what
+the `admin` audit category is — see the mapping table below. That is not an
+escalation: `support` is already the area that governs Admin > Audit Log, where the
+same administrator reads those same rows in full, with the summary, the metadata and
+the IP address this projection withholds. What the domain permission buys is the
+domain's **own** events: the payment, the booking, the member's own account change.
+
+### Audit categories are not the permission areas
+
+The audit `category` on a row is an older, coarser taxonomy than the admin permission
+areas, and the two do not line up. This matters twice — for reading an empty result
+correctly, and for anyone extending the taxonomy in AID-6B or AID-6C.
+
+| Category | Correlation entry | What actually records there |
+| --- | --- | --- |
+| `system`, `security`, `communication` | System | Setup, credentials, password/magic-link policy, backups, auth events, PIN login, email/notification sends |
+| `admin` | System | **The cross-domain catch-all** — the largest category in the codebase. Member merge, member-lifecycle delete/archive, member import, lodge-access changes, seasonal membership assignments, internet-banking **payment settings**, booking-request **settings**, chores, lockers, rooms, bed allocation, lodge settings, access roles, modules |
+| `booking` | Booking | Member-facing and system booking events. Not booking *settings* — those are `admin` |
+| `account` | Membership | Member self-service only: profile edits, notification preferences, post-login landing, membership cancellation |
+| `privacy` | Membership | Deletion requests, member export, **admin issue reports** — even though Issue Reports is a `support` screen |
+| `payment`, `xero` | Finance | Payments, refunds, reconciliation, Xero sync. Not payment *settings* — those are `admin` |
+| `lodge` | Lodge | Rosters, guest arrival/departure, bed-allocation lifecycle, display built-ins, and **induction** — even though Induction is a `membership` screen |
+
+The consequence to keep in mind: a correlation tool answering "nothing matched" is
+answering about **its own categories**, not about the domain. A Membership Officer
+asking what happened around a member merge gets zero rows from the membership entry,
+because a merge is `admin`. Three things stop that reading as "it never happened":
+
+- each entry's **`scope:` line** in the evidence block names the categories it
+  searched and says in as many words that nothing matched means nothing matched in
+  those categories;
+- each entry's **model-facing description** names its categories and names the traps
+  above explicitly ("member merges are recorded under admin", "induction is recorded
+  under lodge"), so the model can pick the right entry in the first place; and
+- contract tests pin both.
+
+Re-mapping is not on the table: a row's category is a single string that does not say
+which screen wrote it, so `admin` cannot be split by category, and adding it to all
+four domain entries would destroy the disjointness that makes a denial impossible to
+work around.
 
 ## Evidence sources
 
@@ -86,6 +153,37 @@ reserved-key scan, the metering circuit breaker, the fixed projection with redac
 and per-field caps, the row and byte ceilings, truncation honesty and the
 approved-metadata audit row all apply identically. The only gate it skips is the
 SELECT-only credential check, which does not govern it.
+
+### The residual these three carry, stated plainly
+
+Readiness genuinely could not be a `SELECT`: it needs encrypted credential state and a
+verdict about the diagnostics role's own connection, both permanently out of that
+role's reach. The other three **do** query application tables on the application's
+own full-privilege connection — `DiagnosticsBudgetReservation` and
+`DiagnosticsUsageEvent` for budget health, and whole `CronJobRun` rows for job health.
+There is no column grant behind them, so unlike the correlation entries — where
+`SELECT "ipAddress" FROM "AuditLog"` is refused by PostgreSQL itself — **the registry
+projection is the only boundary**.
+
+Nothing leaks today: the projections are correct, and the executor's per-field cap
+refuses a JSON `resultSummary` outright. But `CronJobRun.error` (raw error text, often
+a stack) and `DiagnosticsUsageEvent.errorMessage` (provider error text) sit one field
+away, so **every edit to a source or a projection in this pack is a security-relevant
+change** and needs the review a grant would get. The rule that stops this drifting
+further is #2375's own: a future source that *could* be a column-granted `SELECT` must
+be one.
+
+Two bounds the SQL arm gets for free are supplied by hand here, because a first-party
+calculation gets no `statement_timeout` and the executor's 15-second race abandons a
+slow read without cancelling it:
+
+- **Bounded fan-out.** Job health reads three queries per tracked job. At 34 jobs that
+  is 103 statements, and issuing them in one `Promise.all` put 103 concurrent queries
+  on the application pool per tool call. They now run in batches of four jobs.
+- **Its own deadline, which refuses.** The job-health source stops issuing batches
+  after 10 seconds and **rejects** rather than returning fewer runs — a partial run set
+  would make the classifier report a healthy job as `missing`, which is a fabricated
+  answer rather than an absent one. The operator sees `evidence_unavailable`.
 
 One honest difference is reported rather than hidden: the Admin > Health screen asks
 the cron-leader container whether scheduling is enabled, over HTTP. A diagnostics
@@ -154,24 +252,41 @@ deliberate friction ADR-007 asks for.
 | --- | --- |
 | Correlation window | Closed enum: `15m`, `1h` (default), `6h`, `24h`, `7d`. No other value parses. |
 | Correlation input | One optional **exact** request id, 3–128 characters, no whitespace or quotes. The predicate is `=`; there is no `LIKE`, no wildcard, nothing to enumerate with. |
-| Correlation rows | 30, newest first, with truncation reported. |
-| Job health rows | 20, **worst severity first**, with the registered job count on every row. |
+| Correlation rows | 24, newest first, with truncation reported. |
+| Correlation bytes | 16 384, measured against 24 rows at the widest values the projection can emit. |
+| Job health rows | 18, **worst severity first**, with the registered job count on every row. |
+| Job health bytes | 16 384, measured the same way. |
 | Single-row tools | Readiness, deployment and usage health return exactly one row. |
-| Server-owned read | 15 s deadline; expiry and refusal are both `evidence_unavailable` with no rows. |
+| Server-owned read | 15 s deadline on the **wait**; job health carries its own 10 s deadline on the **work**. Expiry and refusal are both `evidence_unavailable` with no rows. |
 
-Two of those deserve their reasoning:
+Three of those deserve their reasoning, and all three numbers are measured rather than
+estimated — an earlier revision of this page estimated them and got both ceilings
+wrong:
 
-- **30 correlation rows, not the 50 #2375 permits.** The substrate renders a tool
-  result into an evidence block capped at 8 000 characters. Fifty rows of this shape
-  do not fit, so the block would clip its own tail and the model would see a generic
-  truncation notice instead of the substrate's honest `truncated` flag over a
-  complete prefix.
-- **The job-health ceiling is below the number of registered jobs** (34 at the time
-  of writing, and the number only grows). Twenty rows render inside that block and the
-  whole registry does not, so the source orders by severity (error, warning, info, ok)
-  and then by job name, and the executor keeps the first twenty. A healthy job can
-  never displace an unhealthy one, and every row carries `registeredJobCount` so
-  "twenty of thirty-four" is never mistaken for "twenty jobs exist".
+- **24 correlation rows, not the 50 #2375 permits.** The substrate renders a tool
+  result into an evidence block capped at 8 000 characters, about 1 000 of which is
+  fixed framing. Real action codes in this repository run to 60 characters, so a
+  rendered row is ~260. Thirty rows came to exactly 8 000 characters with three rows
+  gone and a fourth cut mid-field; 24 render whole with room to spare.
+- **The job-health ceiling is below the number of registered jobs** (34 at the time of
+  writing, and the number only grows). The source orders by severity (error, warning,
+  info, ok) and then by job name, and the executor keeps the first **18**. A healthy
+  job can never displace an unhealthy one, and every row carries `registeredJobCount`
+  so "eighteen of thirty-four" is never mistaken for "eighteen jobs exist". Eighteen
+  rather than twenty because twenty rows render to 7 999 of the 8 000 available
+  characters once every job has both a success and an older failure — the steady state
+  of a mature deployment — so the block would routinely have to drop its last row.
+- **Both byte ceilings are 16 384.** The executor's size gate **refuses** a result over
+  the entry's ceiling; it never trims one. Job health declared 8 192, and 20 rows of
+  its own shape on an ordinary deployment serialised to 8 272 — so a full result was
+  refused with `result_too_large`, and the model was told to narrow a question that
+  takes no arguments at all. A registry contract test now serialises every entry's own
+  projected shape at its own row limit and fails if the entry's ceiling is
+  unachievable.
+
+**When a result really is too wide for the block, the block says so.** It drops whole
+rows from the tail and states `rows (K of N listed …)`, so the count the model reads
+always matches the rows in front of it and a partial row is never presented as a row.
 
 The window predicate is always applied, **including** when a request id is supplied.
 That is a performance control: `AuditLog` has no index on `requestId`, so a

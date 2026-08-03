@@ -18,6 +18,15 @@
   the permission required — it never fills the gap from somewhere else, and removing an
   area takes effect on the next lookup, mid-conversation.
 
+  **"Nothing matched" now says what it searched.** The audit trail's own categories are
+  older and coarser than the admin permission areas and do not line up with them — a
+  member merge, a member import or a change to payment or booking settings is recorded
+  as an administrator action rather than under its business domain, and induction is
+  recorded under lodge operations. So each correlation lookup states which categories it
+  covered, and the assistant is told that finding nothing means nothing matched *in
+  those categories* rather than that the event never happened. Where a related event
+  lives under another category, the lookup that would find it is named.
+
   **What it never returns.** No API key, credential value, database password,
   connection string, or credential identifier. No prompts, answers, provider payloads
   or provider error text — only stable failure codes. No job error text or job result
