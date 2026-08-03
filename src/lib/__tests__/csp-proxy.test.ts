@@ -924,19 +924,91 @@ describe("sign-in marker cookie (#2352 D2)", () => {
     expect(setCookieHeaders(post)).toEqual([]);
   });
 
-  it("does not forward the hint to the render, so no server code can depend on it", async () => {
+  it("strips the hint from the Cookie header forwarded to the render", async () => {
     // It is a DISPLAY hint for the browser. If a server render could read it, the
     // next person to reach for "is this visitor signed in?" would find a forgeable
     // answer sitting right there.
+    //
+    // Asserted on `x-middleware-request-cookie`, which is where the value actually
+    // travels. The previous version of this test looked for
+    // `x-middleware-request-signed-in-hint` — a header name that cannot exist for
+    // any input, because the override headers are named after HTTP HEADERS and the
+    // hint is a cookie INSIDE the cookie header — so it passed unconditionally
+    // while the hint really was reaching `cookies()` (slice-1 review, F2).
+    const response = await proxy(
+      new NextRequest("https://example.org/about", {
+        headers: {
+          cookie: `theme=dark; ${SIGNED_IN_HINT_COOKIE}=${SIGNED_IN_HINT_VALUE}; locale=en-NZ`,
+        },
+      }),
+    );
+    const forwarded = response.headers.get("x-middleware-request-cookie");
+
+    expect(
+      forwarded,
+      "the other cookies must still reach the render",
+    ).toBe("theme=dark; locale=en-NZ");
+    expect(forwarded).not.toContain(SIGNED_IN_HINT_COOKIE);
+  });
+
+  it("drops the Cookie header entirely when the hint was the only cookie", async () => {
     const response = await proxy(
       new NextRequest("https://example.org/about", {
         headers: { cookie: `${SIGNED_IN_HINT_COOKIE}=${SIGNED_IN_HINT_VALUE}` },
       }),
     );
 
+    expect(response.headers.get("x-middleware-request-cookie")).toBeNull();
+    // An empty `cookie: ` would still list the header in the override set, which
+    // reads like "the render was handed cookies" to anyone debugging.
     expect(
-      response.headers.get(`x-middleware-request-${SIGNED_IN_HINT_COOKIE}`),
-    ).toBeNull();
+      response.headers.get("x-middleware-override-headers"),
+    ).not.toContain("cookie");
+  });
+
+  it("still forwards a session cookie untouched", async () => {
+    // The strip must be surgical: next-auth's own cookie is what the render's
+    // `auth()` depends on, and mangling it would sign every member out.
+    const response = await proxy(
+      new NextRequest("https://example.org/dashboard", {
+        headers: {
+          cookie: `${SESSION}; ${SIGNED_IN_HINT_COOKIE}=${SIGNED_IN_HINT_VALUE}`,
+        },
+      }),
+    );
+
+    expect(response.headers.get("x-middleware-request-cookie")).toBe(SESSION);
+  });
+
+  it("does not let the render read the hint on the request that SETS it", async () => {
+    // Next seeds `cookies()` from `x-middleware-set-cookie`, which the
+    // NextResponse cookie proxy writes. Writing the Set-Cookie header directly is
+    // what keeps that signal absent — the browser gets the same bytes either way.
+    const response = await proxy(
+      new NextRequest("https://example.org/dashboard", {
+        headers: { cookie: SESSION },
+      }),
+    );
+
+    expect(
+      response.headers.getSetCookie().some((c) => c.startsWith(SIGNED_IN_HINT_COOKIE)),
+      "the browser must still be sent the hint",
+    ).toBe(true);
+    expect(response.headers.get("x-middleware-set-cookie")).toBeNull();
+  });
+
+  it("filters by exact cookie name, not by substring", async () => {
+    const response = await proxy(
+      new NextRequest("https://example.org/about", {
+        headers: {
+          cookie: `x-${SIGNED_IN_HINT_COOKIE}=1; ${SIGNED_IN_HINT_COOKIE}-old=1; note=${SIGNED_IN_HINT_COOKIE}=1`,
+        },
+      }),
+    );
+
+    expect(response.headers.get("x-middleware-request-cookie")).toBe(
+      `x-${SIGNED_IN_HINT_COOKIE}=1; ${SIGNED_IN_HINT_COOKIE}-old=1; note=${SIGNED_IN_HINT_COOKIE}=1`,
+    );
   });
 });
 
@@ -1015,6 +1087,84 @@ describe("anonymous public-page cache headers (#2322)", () => {
     expect(
       getAnonymousPageCacheControl(new NextRequest("https://example.org/")),
     ).toBe(ANONYMOUS_CACHE_CONTROL);
+  });
+
+  /**
+   * The #2322 invariant asserted where slice 1 MOVED it (slice-1 review).
+   *
+   * The two tests above hold the invariant over `getAnonymousPageCacheControl()`,
+   * which only ever answers for `/`. Every other public-website path returned null,
+   * which used to mean "the framework's `private, no-store` default" and, once the
+   * CMS catch-all carried `export const revalidate = 300`, silently began to mean
+   * `s-maxage=300, stale-while-revalidate=31535700` instead
+   * (`next/dist/server/lib/cache-control.js` plus the 31536000 `expireTime`
+   * default). That is the exact directive #2322 exists to keep off public pages,
+   * and no test looked at a CMS path.
+   */
+  const CMS_PATHS = ["/about", "/faq", "/trips/2026", "/definitely-missing"];
+
+  it.each(CMS_PATHS)(
+    "never invites a shared cache to store %s",
+    async (path) => {
+      const response = await proxy(new NextRequest(`https://example.org${path}`));
+      const directive = response.headers.get("Cache-Control");
+
+      expect(directive).toBe(
+        "private, no-cache, no-store, max-age=0, must-revalidate",
+      );
+      expect(directive).toContain("private");
+      expect(directive).not.toContain("s-maxage");
+      expect(directive).not.toContain("stale-while-revalidate");
+    },
+  );
+
+  it("sends the same directive to a member with a session on a CMS path", async () => {
+    // A stored page is one copy for everyone, so the header cannot depend on who
+    // is asking — and this response carries the D2 marker `Set-Cookie`, which a
+    // shared cache would otherwise be free to hand to a stranger.
+    const response = await proxy(
+      requestWithCookie("https://example.org/about", "authjs.session-token=abc"),
+    );
+
+    expect(response.headers.get("Cache-Control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+  });
+
+  it("leaves `/` on its own deliberate browser window", async () => {
+    // The explicit directive must not swallow the one allow-listed route.
+    const response = await proxy(new NextRequest("https://example.org/"));
+
+    expect(response.headers.get("Cache-Control")).toBe(ANONYMOUS_CACHE_CONTROL);
+  });
+
+  it("leaves `/` to the framework when a session suppresses the anonymous window", async () => {
+    // `/` is force-dynamic, so Next writes the same `private, no-store` itself and
+    // there is no `s-maxage` here to correct. #2322's decision about that one route
+    // stays wholly in getAnonymousPageCacheControl().
+    const response = await proxy(
+      requestWithCookie("https://example.org/", "authjs.session-token=abc"),
+    );
+
+    expect(response.headers.get("Cache-Control")).toBeNull();
+  });
+
+  it("leaves a member or admin page to the framework", async () => {
+    // Outside the public website nothing changed: no route there carries a
+    // `revalidate`, so Next's own `private, no-store` default is already right and
+    // the proxy has no business overwriting it.
+    for (const path of ["/dashboard", "/admin", "/login", "/display"]) {
+      const response = await proxy(new NextRequest(`https://example.org${path}`));
+      expect(response.headers.get("Cache-Control"), path).toBeNull();
+    }
+  });
+
+  it("leaves a non-GET public-website request to the framework", async () => {
+    const response = await proxy(
+      requestWithCookie("https://example.org/contact", undefined, "POST"),
+    );
+
+    expect(response.headers.get("Cache-Control")).toBeNull();
   });
 
   it("never caches a non-GET request", () => {

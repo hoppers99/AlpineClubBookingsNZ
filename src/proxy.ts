@@ -43,10 +43,14 @@ import {
  *
  * This list is about the BROWSER cache only, and #2352 did not change it. The
  * catch-all is now served from Next's own full-route ISR cache — a server-side
- * store the proxy neither reads nor advertises — so it still sends no
- * `Cache-Control` of ours while no longer paying a full render per visit. Adding
- * it here would be a separate decision about the browser, not a consequence of
- * that one.
+ * store the proxy neither reads nor advertises — so it is still not invited into
+ * anybody's cache while no longer paying a full render per visit. Adding it here
+ * would be a separate decision about the browser, not a consequence of that one.
+ *
+ * What DID have to change is the header a CMS page leaves with: the `revalidate`
+ * export made the framework fill in an `s-maxage` of its own, so every
+ * public-website path outside this list now gets
+ * {@link PRIVATE_ONLY_CACHE_CONTROL} explicitly. See that constant.
  */
 const CACHEABLE_ANONYMOUS_PATHS = new Set(["/"]);
 
@@ -105,6 +109,36 @@ const ANONYMOUS_PAGE_CACHE_CONTROL =
   "private, max-age=60, stale-while-revalidate=300";
 
 /**
+ * What every OTHER public-website GET sends, and the reason it has to be sent
+ * explicitly rather than left to the framework (#2352 slice-1 review).
+ *
+ * Before slice 1 the CMS pages were dynamic, so Next filled in its own
+ * `revalidate === 0` directive — `private, no-cache, no-store, max-age=0,
+ * must-revalidate` (`next/dist/server/lib/cache-control.js`,
+ * `getCacheControlHeader`). With `export const revalidate = 300` on the catch-all
+ * the same function returns `s-maxage=<revalidate>, stale-while-revalidate=<expire
+ * - revalidate>`, and `expire` defaults to `nextConfig.expireTime` = 31536000
+ * (`config-shared.js`), so a CMS page was leaving with
+ * `s-maxage=300, stale-while-revalidate=31535700`.
+ *
+ * That is exactly the directive #2322 exists to keep off public pages, and it was
+ * never decided: it arrived as a side effect of the `revalidate` export. A shared
+ * cache in front of the app (a fork behind a CDN, an operator adding one, a
+ * corporate proxy) could store a page for 300 seconds and then serve it stale for
+ * up to 364 days, which `revalidatePublicSite()` cannot reach — so D3's "instant
+ * on edit" would simply be false for those visitors. Worse, the response that
+ * carries the D2 marker cookie carries no `Vary: Cookie` of ours, so a shared
+ * cache could hand one visitor's `Set-Cookie` to a stranger.
+ *
+ * So the pre-slice-1 directive is restored verbatim for those paths. It changes
+ * nothing about Next's own SERVER-side store — that is the `.next` cache, which
+ * this header has no bearing on — and nothing about `/`, which keeps its
+ * deliberate 60-second browser window above.
+ */
+const PRIVATE_ONLY_CACHE_CONTROL =
+  "private, no-cache, no-store, max-age=0, must-revalidate";
+
+/**
  * next-auth v5 session cookie — plain, `__Secure-` prefixed, and the chunked
  * `.0`/`.1` variants. The authoritative pattern lives in
  * `src/lib/auth-diagnostics.ts` (`SESSION_COOKIE_NAME_PATTERN`).
@@ -141,10 +175,10 @@ function hasSessionCookie(request: NextRequest): boolean {
  * keeps the header off responses whose whole contract is "indistinguishable from
  * the module being switched on" (#2405).
  *
- * `SIGNED_IN_HINT_COOKIE` never appears in the request headers passed THROUGH to
- * the app, so no server render can come to depend on it — the hint exists for the
- * browser only, which is what keeps it a display hint rather than a second,
- * weaker session.
+ * The hint is STRIPPED from the `Cookie` header passed through to the app
+ * ({@link stripSignedInHintFromCookieHeader}), so no server render can come to
+ * depend on it — the hint exists for the browser only, which is what keeps it a
+ * display hint rather than a second, weaker session.
  */
 function syncSignedInHint(
   request: NextRequest,
@@ -158,31 +192,95 @@ function syncSignedInHint(
 
   if (hintPresent === signedIn) return;
 
-  if (signedIn) {
-    response.cookies.set({
-      name: SIGNED_IN_HINT_COOKIE,
-      value: SIGNED_IN_HINT_VALUE,
-      path: "/",
-      sameSite: "lax",
-      httpOnly: false,
-      secure: process.env.NODE_ENV === "production",
-      maxAge: SIGNED_IN_HINT_MAX_AGE_SECONDS,
-    });
-    return;
+  // Expiring rather than deleting on the way out: an explicit past-dated
+  // overwrite carries the same attributes the value was written with, so a
+  // browser that scoped the original to `/` cannot be left holding it.
+  response.headers.append(
+    "Set-Cookie",
+    serialiseSignedInHintCookie(
+      signedIn ? SIGNED_IN_HINT_VALUE : "",
+      signedIn ? SIGNED_IN_HINT_MAX_AGE_SECONDS : 0,
+    ),
+  );
+}
+
+/**
+ * The marker cookie's `Set-Cookie` value, written as a header rather than through
+ * `response.cookies.set()` ON PURPOSE.
+ *
+ * `NextResponse`'s cookie proxy also writes `x-middleware-set-cookie`, and Next
+ * merges that into the render's `cookies()`
+ * (`next/dist/server/async-storage/request-store.js`, `mergeMiddlewareCookies`).
+ * So going through the proxy API would leave the hint readable server-side on the
+ * one request that sets it, which is the same property
+ * {@link stripSignedInHintFromCookieHeader} exists to hold on every other
+ * request. Same bytes on the wire either way — `ResponseCookies` appends to this
+ * header — so the browser behaviour is unchanged.
+ */
+function serialiseSignedInHintCookie(
+  value: string,
+  maxAgeSeconds: number,
+): string {
+  const attributes = [
+    `${SIGNED_IN_HINT_COOKIE}=${value}`,
+    "Path=/",
+    `Max-Age=${maxAgeSeconds}`,
+    "SameSite=Lax",
+  ];
+
+  // Never HttpOnly — the browser has to read it, which is the whole mechanism —
+  // and not Secure in development, where the app is served over plain http and a
+  // Secure cookie would never be stored.
+  if (process.env.NODE_ENV === "production") {
+    attributes.push("Secure");
   }
 
-  // Expire rather than delete(): an explicit past-dated overwrite carries the
-  // same attributes the value was written with, so a browser that scoped the
-  // original to `/` cannot be left holding it.
-  response.cookies.set({
-    name: SIGNED_IN_HINT_COOKIE,
-    value: "",
-    path: "/",
-    sameSite: "lax",
-    httpOnly: false,
-    secure: process.env.NODE_ENV === "production",
-    maxAge: 0,
-  });
+  return attributes.join("; ");
+}
+
+/**
+ * The `Cookie` header to forward to the render, with the #2352 D2 sign-in marker
+ * removed. Returns null when the header would be empty afterwards.
+ *
+ * This exists because "not forwarded to the render" was ASSERTED before it was
+ * true (slice-1 review, F2). `NextResponse.next({ request: { headers } })` makes
+ * Next re-emit every header of that set as `x-middleware-request-<name>`
+ * (`next/dist/server/web/spec-extension/response.js`, `handleMiddlewareField`),
+ * and `Cookie` is one header — so copying `request.headers` verbatim carried the
+ * hint straight through, and `(await cookies()).get("signed-in-hint")` worked in
+ * any server component or route handler. The test that was meant to catch it
+ * asserted on `x-middleware-request-signed-in-hint`, a header name that can never
+ * exist for any input, so it passed unconditionally.
+ *
+ * Filtered at the STRING level, not by reserialising `request.cookies`: every
+ * other pair keeps its exact original bytes, so nothing downstream can be changed
+ * by a percent-encoded or unusually quoted value passing through this function.
+ *
+ * One residual, and it is why {@link syncSignedInHint} writes the `Set-Cookie`
+ * header directly instead of through `response.cookies`: Next also seeds
+ * `cookies()` from `x-middleware-set-cookie`
+ * (`next/dist/server/async-storage/request-store.js`, `mergeMiddlewareCookies`),
+ * which the `NextResponse.cookies` proxy sets. Writing the header ourselves means
+ * that signal is never produced, so the request that first SETS the hint cannot
+ * read it back either.
+ */
+// test seam
+export function stripSignedInHintFromCookieHeader(
+  cookieHeader: string | null,
+): string | null {
+  if (!cookieHeader) return null;
+
+  const kept = cookieHeader
+    .split(";")
+    .filter((pair) => {
+      const separator = pair.indexOf("=");
+      const name = (separator === -1 ? pair : pair.slice(0, separator)).trim();
+      return name !== SIGNED_IN_HINT_COOKIE;
+    })
+    .map((pair) => pair.trim())
+    .filter((pair) => pair.length > 0);
+
+  return kept.length > 0 ? kept.join("; ") : null;
 }
 
 /**
@@ -209,6 +307,40 @@ export function getAnonymousPageCacheControl(
   // above is what makes a flight body harmless — see its docblock.
 
   return hasSessionCookie(request) ? null : ANONYMOUS_PAGE_CACHE_CONTROL;
+}
+
+/**
+ * Should this response carry {@link PRIVATE_ONLY_CACHE_CONTROL}?
+ *
+ * Scoped to a public-website GET, which is the only place the framework now fills
+ * in an `s-maxage` of its own: `(website)/[...slug]` is the one route with a
+ * `revalidate` export, and the rest of the group is `force-dynamic` and therefore
+ * already gets `revalidate === 0`. Sending it to the whole group anyway keeps one
+ * rule instead of a second path list, and for the `force-dynamic` routes the value
+ * is byte-identical to what Next would have written.
+ *
+ * Non-GET is left alone for the same reason: a cached response needs a cacheable
+ * method, and Next's own default already refuses to store one.
+ *
+ * {@link CACHEABLE_ANONYMOUS_PATHS} is excluded outright, not just when the
+ * anonymous directive is actually sent. `/` is `force-dynamic`, so the framework
+ * never writes an `s-maxage` for it and there is nothing here to correct — and
+ * leaving it alone keeps #2322's decision about that one route entirely in
+ * `getAnonymousPageCacheControl()` rather than half here. Slice 2 makes `/` static
+ * and has to revisit both halves together.
+ */
+// test seam
+export function getPrivateOnlyCacheControl(
+  request: NextRequest,
+  publicWebsite: boolean,
+): boolean {
+  if (!publicWebsite || request.method !== "GET") {
+    return false;
+  }
+
+  return !CACHEABLE_ANONYMOUS_PATHS.has(
+    normalisePathname(request.nextUrl.pathname),
+  );
 }
 
 /**
@@ -289,6 +421,30 @@ export async function proxy(request: NextRequest) {
   // list is a second thing to keep in step, and its filesystem-backed
   // exhaustiveness test (`setup-gate.test.ts`) then covers this split too.
   //
+  // **The gate's question and this one are not naturally the same, and the
+  // difference is load-bearing** (slice-1 review, F1). The gate asks "is this a
+  // public-website page for 503 purposes"; the nonce asks "will this response be
+  // rendered by the `(website)` tree and STORED by the catch-all". The catch-all
+  // claims every URL no other route claims, which is a wider set — so a path in
+  // the difference would be stored carrying a per-request nonce that no later
+  // response names, and every inline script on it would be refused.
+  //
+  // They are made the same set from the OTHER side rather than by widening this
+  // one, because widening it would hand the fixed nonce to `/dashboard` and
+  // `/admin` and D1 explicitly keeps those per-request:
+  // `isCmsServablePageSlug()` (`src/lib/public-website-paths.ts`) makes both the
+  // catch-all render and the admin slug validator refuse a path this predicate
+  // refuses. So a stored CMS PAGE is always inside the fixed-nonce set.
+  //
+  // One residual, tracked as #2570 rather than hidden: a 404 the catch-all raises
+  // for a path outside the set (`/dashboard/nope`, `/pay`) is still stored as a
+  // 404 entry with that request's nonce, so the not-found DOCUMENT served from the
+  // store afterwards carries a nonce the policy no longer names — its inline
+  // scripts do not run and the page renders without hydrating. Closing it needs
+  // either a per-request opt-out of the store (unproven on next@16.2.12 and a 500
+  // if it is wrong) or the owner widening D1, so it is a decision rather than a
+  // guess. Nothing on that document is personal, and an admin write clears it.
+  //
   // The whole GROUP, not D1's five named pages, and the reason is structural:
   // `(website)/layout.tsx` is one shared layout, it renders the analytics
   // `<Script nonce>` for every route under it, and it can no longer read the
@@ -348,6 +504,19 @@ export async function proxy(request: NextRequest) {
 
   const requestHeaders = new Headers(request.headers);
 
+  // The D2 marker cookie is for the BROWSER only. See
+  // `stripSignedInHintFromCookieHeader` for why this line is what makes that
+  // true rather than a comment claiming it.
+  const forwardedCookies = stripSignedInHintFromCookieHeader(
+    request.headers.get("cookie"),
+  );
+
+  if (forwardedCookies === null) {
+    requestHeaders.delete("cookie");
+  } else {
+    requestHeaders.set("cookie", forwardedCookies);
+  }
+
   requestHeaders.set(CSP_NONCE_HEADER, nonce);
   requestHeaders.set(CSP_HEADER, csp);
   requestHeaders.set(
@@ -375,6 +544,8 @@ export async function proxy(request: NextRequest) {
     // header logged-out). Appending leaves any Vary the framework adds for RSC
     // navigation intact.
     response.headers.append("Vary", "Cookie");
+  } else if (getPrivateOnlyCacheControl(request, publicWebsite)) {
+    response.headers.set("Cache-Control", PRIVATE_ONLY_CACHE_CONTROL);
   }
 
   return response;
