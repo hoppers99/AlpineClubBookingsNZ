@@ -1,0 +1,227 @@
+// @vitest-environment jsdom
+
+import "@testing-library/jest-dom/vitest";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import { PolicyExceptionRequestsPanel } from "@/components/admin/booking-requests/policy-exception-requests-panel";
+
+/**
+ * #2562 — the officer-note split on the #2526 queue.
+ *
+ * The owner's decision is specific about the labelling, not just the plumbing: any
+ * note shown to the member must be labelled member-visible IN THE OFFICER UI, and
+ * the UI must say so BEFORE the officer submits. The private field exists so an
+ * officer who needs to record a judgement has somewhere to put it that is not the
+ * member's screen, so both halves are pinned: the labels, and that the two travel
+ * to their own fields on the wire.
+ */
+
+vi.mock("sonner", () => ({ toast: { success: vi.fn(), info: vi.fn(), error: vi.fn() } }));
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ refresh: vi.fn(), push: vi.fn() }),
+}));
+
+function jsonResponse(data: unknown, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+function queueItem(overrides: Record<string, unknown> = {}) {
+  return {
+    source: "MODIFICATION",
+    id: "req-1",
+    status: "REQUESTED",
+    createdAt: "2026-07-01T10:00:00.000Z",
+    version: 3,
+    bookingId: "bk-1",
+    lodgeId: "lodge-1",
+    requestedBy: {
+      id: "m-1",
+      firstName: "Ada",
+      lastName: "Lovelace",
+      email: "ada@example.com",
+    },
+    reviewedBy: null,
+    reviewedAt: null,
+    memberMessage: "Please allow the one-night stay.",
+    proposalHash: "abc",
+    aggregateCapacityMode: "HOLD",
+    reasonCodes: ["MINIMUM_STAY"],
+    policyRefs: [
+      {
+        reasonCode: "MINIMUM_STAY",
+        policyId: "pol-1",
+        policyVersion: 1,
+        capacityMode: "HOLD",
+      },
+    ],
+    affectedNights: ["2026-07-01"],
+    proposedCheckIn: "2026-07-01",
+    proposedCheckOut: "2026-07-02",
+    proposedGuestCount: 1,
+    adminNotes: null,
+    internalNotes: null,
+    createdBookingId: null,
+    attemptCount: 1,
+    conflictCount: 0,
+    lastConflictAt: null,
+    lastConflictReason: null,
+    supersededByRequestId: null,
+    summary: "check-out to 2026-07-02",
+    ...overrides,
+  };
+}
+
+let queueResponse: () => Response;
+let decisionResponse: () => Response;
+let fetchMock: ReturnType<typeof vi.fn>;
+
+function installFetch() {
+  queueResponse = () => jsonResponse({ data: [queueItem()], page: 1, pageSize: 100, total: 1 });
+  decisionResponse = () => jsonResponse({ id: "req-1", status: "REJECTED" });
+  fetchMock = vi.fn(async (input: unknown, init?: RequestInit) => {
+    const url = String(input);
+    if (url.includes("/api/admin/booking-exception-requests?")) return queueResponse();
+    if (init?.method === "PATCH") return decisionResponse();
+    return jsonResponse({ proposedGuests: [] });
+  });
+  global.fetch = fetchMock as unknown as typeof fetch;
+}
+
+beforeEach(() => {
+  installFetch();
+});
+
+async function openDecisionForm() {
+  render(<PolicyExceptionRequestsPanel />);
+  const decide = await screen.findByRole("button", { name: /Decide this request/i });
+  fireEvent.click(decide);
+}
+
+describe("the officer decision form labels who reads what, before submission", () => {
+  it("draws two fields, and names the audience of each", async () => {
+    await openDecisionForm();
+    expect(screen.getByLabelText(/Explanation for the member/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/Internal note/i)).toBeInTheDocument();
+    // Said before the decision is submitted, not afterwards.
+    expect(
+      screen.getByText(/The member will see this/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/Only admins see this. It is never shown to the member/i),
+    ).toBeInTheDocument();
+  });
+
+  it("tells the officer the member-facing note is required to refuse", async () => {
+    await openDecisionForm();
+    expect(
+      screen.getByText(/required to refuse; optional on approve/i),
+    ).toBeInTheDocument();
+  });
+
+  it("keeps Refuse unavailable until the MEMBER-facing note is written", async () => {
+    await openDecisionForm();
+    const refuse = screen.getByRole("button", { name: "Refuse" });
+    expect(refuse).toBeDisabled();
+    // An internal note alone does not unlock it — the member must be told something.
+    fireEvent.change(screen.getByLabelText(/Internal note/i), {
+      target: { value: "Not worth the argument." },
+    });
+    expect(refuse).toBeDisabled();
+    fireEvent.change(screen.getByLabelText(/Explanation for the member/i), {
+      target: { value: "That weekend is always full." },
+    });
+    expect(refuse).not.toBeDisabled();
+  });
+
+  it("sends the two notes as separate fields", async () => {
+    await openDecisionForm();
+    fireEvent.change(screen.getByLabelText(/Explanation for the member/i), {
+      target: { value: "That weekend is always full." },
+    });
+    fireEvent.change(screen.getByLabelText(/Internal note/i), {
+      target: { value: "Third time this season." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Refuse" }));
+
+    await waitFor(() => {
+      const patch = fetchMock.mock.calls.find(
+        ([, init]) => (init as RequestInit | undefined)?.method === "PATCH",
+      );
+      expect(patch).toBeDefined();
+      expect(JSON.parse(String((patch?.[1] as RequestInit).body))).toMatchObject({
+        action: "reject",
+        adminNotes: "That weekend is always full.",
+        internalNotes: "Third time this season.",
+      });
+    });
+  });
+
+  it("omits an internal note that was left blank rather than sending an empty string", async () => {
+    await openDecisionForm();
+    fireEvent.change(screen.getByLabelText(/Explanation for the member/i), {
+      target: { value: "No room." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Refuse" }));
+    await waitFor(() => {
+      const patch = fetchMock.mock.calls.find(
+        ([, init]) => (init as RequestInit | undefined)?.method === "PATCH",
+      );
+      const body = JSON.parse(String((patch?.[1] as RequestInit).body));
+      expect(body.internalNotes).toBeUndefined();
+    });
+  });
+});
+
+describe("a decided request shows which half the member has already read", () => {
+  it("labels the two notes separately on the decided card", async () => {
+    queueResponse = () =>
+      jsonResponse({
+        data: [
+          queueItem({
+            status: "REJECTED",
+            reviewedAt: "2026-07-02T09:00:00.000Z",
+            reviewedBy: { id: "officer-1", firstName: "Grace", lastName: "Hopper" },
+            adminNotes: "That weekend is always full, sorry.",
+            internalNotes: "Third time this season.",
+          }),
+        ],
+        page: 1,
+        pageSize: 100,
+        total: 1,
+      });
+    render(<PolicyExceptionRequestsPanel />);
+    expect(
+      await screen.findByText(/Explanation the member can see/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/Internal note — admins only, never shown to the member/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("That weekend is always full, sorry."),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Third time this season.")).toBeInTheDocument();
+  });
+
+  it("draws no internal-note block when the officer left none", async () => {
+    queueResponse = () =>
+      jsonResponse({
+        data: [
+          queueItem({
+            status: "REJECTED",
+            adminNotes: "No room that weekend.",
+            internalNotes: null,
+          }),
+        ],
+        page: 1,
+        pageSize: 100,
+        total: 1,
+      });
+    render(<PolicyExceptionRequestsPanel />);
+    expect(await screen.findByText("No room that weekend.")).toBeInTheDocument();
+    expect(screen.queryByText(/Internal note — admins only/i)).toBeNull();
+  });
+});

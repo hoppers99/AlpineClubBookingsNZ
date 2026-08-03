@@ -20,8 +20,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
   reset a sixth thing, this test fails until the member-guest path learns it too.
 */
 
+// #2562: the wizard reads `?replaceRequest=<id>` so a member can replace an open
+// exception request from their own request list. Stubbed as an empty query here —
+// these cases are not about that path.
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
+  useSearchParams: () => new URLSearchParams(),
 }));
 
 vi.mock("next-auth/react", () => ({

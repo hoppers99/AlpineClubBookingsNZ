@@ -170,6 +170,9 @@ function modificationRow(
     },
     memberMessage: "Please allow the one-night stay.",
     adminNotes: null,
+    // #2562: the private half of the decision. Present on the row the admin detail
+    // read returns, and on no member-facing surface.
+    internalNotes: null,
     proposalSnapshot: SNAPSHOT,
     proposalHash: computeProposalHash(SNAPSHOT),
     frozenEvidence: freezePolicyExceptionEvidence(violations),
@@ -626,5 +629,145 @@ describe("PATCH — reject", () => {
     );
     expect(res.status).toBe(409);
     expect(mocks.logAudit).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * #2562 — the officer-note split.
+ *
+ * `adminNotes` is the member-facing decision explanation and always was; the new
+ * `internalNotes` column is the private half. Three properties are load-bearing and
+ * all three are pinned here: the two travel to separate columns, an internal note
+ * can never stand in for the member-facing reason a refusal requires, and the audit
+ * log records that a private note EXISTS without copying its text.
+ */
+describe("PATCH — the officer-note split", () => {
+  it("carries both notes to the terminal claim, in their own fields", async () => {
+    const res = await PATCH(
+      patchRequest({
+        action: "reject",
+        source: "MODIFICATION",
+        expectedVersion: 3,
+        adminNotes: "That weekend is always full, sorry.",
+        internalNotes: "Third time this season; have a word at the AGM.",
+      }),
+      { params },
+    );
+    expect(res.status).toBe(200);
+    expect(mocks.resolveTerminal.mock.calls[0][0]).toMatchObject({
+      adminNotes: "That weekend is always full, sorry.",
+      internalNotes: "Third time this season; have a word at the AGM.",
+    });
+  });
+
+  it("refuses a refusal that has ONLY an internal note", async () => {
+    // The member would be left with a bare "not approved" and something written
+    // about them they cannot see. The gate reads `adminNotes` for exactly that
+    // reason, and says so.
+    const res = await PATCH(
+      patchRequest({
+        action: "reject",
+        source: "MODIFICATION",
+        expectedVersion: 3,
+        internalNotes: "Not worth the argument.",
+      }),
+      { params },
+    );
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/not a substitute/i);
+    expect(mocks.resolveTerminal).not.toHaveBeenCalled();
+  });
+
+  it("records only THAT an internal note exists in the refusal audit, never its text", async () => {
+    await PATCH(
+      patchRequest({
+        action: "reject",
+        source: "MODIFICATION",
+        expectedVersion: 3,
+        adminNotes: "Not this weekend.",
+        internalNotes: "Chases every officer until somebody says yes.",
+      }),
+      { params },
+    );
+    const entry = mocks.logAudit.mock.calls[0][0] as {
+      details?: unknown;
+      metadata?: Record<string, unknown>;
+    };
+    expect(entry.metadata?.internalNoteRecorded).toBe(true);
+    // The audit log is read by more surfaces than the officer queue, so the private
+    // text must not be duplicated into it.
+    expect(JSON.stringify(entry)).not.toContain("Chases every officer");
+    expect(entry.details).toBe("Not this weekend.");
+  });
+
+  it("hands both notes to the approval hooks, and audits only the flag", async () => {
+    await PATCH(
+      patchRequest({
+        action: "approve",
+        source: "MODIFICATION",
+        expectedVersion: 3,
+        confirm: true,
+        adminNotes: "Allowed this once.",
+        internalNotes: "Watch the pattern next season.",
+      }),
+      { params },
+    );
+    expect(mocks.buildHooks.mock.calls[0][0]).toMatchObject({
+      adminNotes: "Allowed this once.",
+      internalNotes: "Watch the pattern next season.",
+    });
+    const entry = mocks.logAudit.mock.calls[0][0] as {
+      metadata?: Record<string, unknown>;
+    };
+    expect(entry.metadata?.internalNoteRecorded).toBe(true);
+    expect(JSON.stringify(entry)).not.toContain("Watch the pattern");
+  });
+
+  it("does not satisfy the hosting-override reason rule with an internal note", async () => {
+    mocks.bcrFindFirst.mockResolvedValue(modificationRow([HOSTING]));
+    const res = await PATCH(
+      patchRequest({
+        action: "approve",
+        source: "MODIFICATION",
+        expectedVersion: 3,
+        confirm: true,
+        internalNotes: "Fine, they are sensible people.",
+      }),
+      { params },
+    );
+    // D-R4 wants an attributable reason ON THE RECORD the member also reads.
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/member-facing explanation/i);
+    expect(mocks.approve).not.toHaveBeenCalled();
+  });
+
+  it("exposes both notes on the admin detail read, which is admin-guarded", async () => {
+    mocks.bcrFindFirst.mockResolvedValue({
+      ...modificationRow(),
+      adminNotes: "Allowed this once.",
+      internalNotes: "Watch the pattern next season.",
+    });
+    const res = await GET(
+      new NextRequest("http://localhost/api/admin/booking-exception-requests/req-1"),
+      { params },
+    );
+    const body = await res.json();
+    expect(body.adminNotes).toBe("Allowed this once.");
+    expect(body.internalNotes).toBe("Watch the pattern next season.");
+  });
+
+  it("refuses an internal note longer than the column allows", async () => {
+    const res = await PATCH(
+      patchRequest({
+        action: "reject",
+        source: "MODIFICATION",
+        expectedVersion: 3,
+        adminNotes: "No.",
+        internalNotes: "x".repeat(2001),
+      }),
+      { params },
+    );
+    expect(res.status).toBe(400);
+    expect(mocks.resolveTerminal).not.toHaveBeenCalled();
   });
 });

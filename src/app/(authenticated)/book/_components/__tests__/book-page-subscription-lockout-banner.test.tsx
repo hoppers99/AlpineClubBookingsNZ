@@ -19,7 +19,13 @@ import { readSubscriptionLockoutView } from "@/app/(authenticated)/book/_compone
 
 const routerMocks = vi.hoisted(() => ({ push: vi.fn(), replace: vi.fn() }));
 
-vi.mock("next/navigation", () => ({ useRouter: () => routerMocks }));
+// #2562: the wizard reads `?replaceRequest=<id>` so a member can replace an open
+// exception request from their own request list. Stubbed as an empty query here —
+// these cases are not about that path.
+vi.mock("next/navigation", () => ({
+  useRouter: () => routerMocks,
+  useSearchParams: () => new URLSearchParams(),
+}));
 
 vi.mock("next-auth/react", () => ({
   useSession: () => ({

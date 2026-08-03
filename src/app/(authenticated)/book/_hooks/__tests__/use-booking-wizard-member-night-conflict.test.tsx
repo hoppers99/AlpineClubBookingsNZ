@@ -10,8 +10,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 // the banner must carry the situation only, or the same sentence appears twice
 // on the single-conflict screen.
 
+// #2562: the wizard reads `?replaceRequest=<id>` so a member can replace an open
+// exception request from their own request list. Stubbed as an empty query here —
+// these cases are not about that path.
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
+  useSearchParams: () => new URLSearchParams(),
 }));
 
 vi.mock("next-auth/react", () => ({

@@ -9,8 +9,12 @@ import type { GuestData } from "@/components/guest-form";
 // guest by default (#1680). These tests drive the seed-once / removal-guard
 // logic directly against the hook so the party contents are assertable.
 
+// #2562: the wizard reads `?replaceRequest=<id>` so a member can replace an open
+// exception request from their own request list. Stubbed as an empty query here —
+// these cases are not about that path.
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
+  useSearchParams: () => new URLSearchParams(),
 }));
 
 vi.mock("next-auth/react", () => ({
