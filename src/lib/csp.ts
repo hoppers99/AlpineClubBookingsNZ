@@ -28,23 +28,29 @@ export interface CspOptions {
    */
   selfOrigin?: string;
   /**
-   * Is this a public-website (`(website)` route group) page? (#2352, D1.)
+   * Is this a public-website page — EITHER public route group, `(website)` or
+   * `(website-dynamic)`? (#2352, D1.)
    *
    * Decided by the CALLER rather than re-derived here, because the authoritative
-   * predicate is `isPublicWebsitePath()` in `src/lib/setup-gate.ts` — the same
-   * one the #2420 setup gate uses — and importing that module here would drag
+   * predicate is `isPublicWebsitePath()` in `src/lib/public-website-paths.ts` — the
+   * same one the #2420 setup gate uses — and importing the gate here would drag
    * the database-backed setup state into a file every layout imports.
    * `src/proxy.ts` is the only caller that builds a page policy, and
    * `csp-proxy.test.ts` pins the mapping by driving the real proxy over a URL
    * matrix rather than trusting the flag.
    *
-   * TWO consequences, and they are a pair rather than a coincidence:
-   *  • the `nonce` handed in is the FIXED per-release value
-   *    (`src/lib/release-nonce.ts`), because a stored page can carry only one;
-   *  • Stripe is dropped from `script-src`, which is the tightening bundled with
-   *    that trade — Stripe.js is never loaded on a public information page, so
-   *    allowing it there was surplus reach for an attacker who has just been
-   *    handed a readable nonce.
+   * Its ONE consequence is that Stripe is dropped from `script-src` — the
+   * tightening bundled with D1's trade. Stripe.js is loaded only from the member
+   * payment surfaces, so allowing it on any public page was surplus reach.
+   *
+   * **This flag does NOT mean "the nonce handed in is the fixed per-release value",
+   * and since the owner's 3 Aug 2026 narrowing that distinction is load-bearing.**
+   * The fixed nonce covers only the five approved `(website)` routes
+   * (`isFixedNonceWebsitePath()`); `/hut-leader-instructions`, `/join/[code]` and
+   * `/join/verify/[token]` are public-website pages that carry a per-request nonce.
+   * The tightening deliberately covers them anyway: following the nonce here would
+   * have handed those three a LOOSER policy as a side effect of tightening their
+   * nonce.
    */
   publicWebsite?: boolean;
 }

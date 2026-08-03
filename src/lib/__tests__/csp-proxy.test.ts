@@ -14,6 +14,7 @@ import {
 } from "@/lib/csp";
 import { REQUEST_PATH_HEADER } from "@/lib/internal-return-path";
 import { getPublicWebsiteNonce } from "@/lib/release-nonce";
+import { isFixedNonceWebsitePath } from "@/lib/public-website-paths";
 import { isPublicWebsitePath } from "@/lib/setup-gate";
 import {
   SIGNED_IN_HINT_COOKIE,
@@ -74,10 +75,15 @@ function expectStrictScriptSrc(policy: string) {
 }
 
 /**
- * The public website's script-src (#2352 D1): the fixed per-release nonce, Stripe
- * dropped, and — the half that is easy to forget — everything else exactly as
- * strict as before. `unsafe-inline` in particular was the option the owner
- * REJECTED, so its absence here is the trade being kept to its terms.
+ * The public website's script-src (#2352 D1): Stripe dropped, and — the half that
+ * is easy to forget — everything else exactly as strict as before. `unsafe-inline`
+ * in particular was the option the owner REJECTED, so its absence here is the trade
+ * being kept to its terms.
+ *
+ * This is about the SOURCE LIST and says nothing about which nonce the policy
+ * names. Since the 3 Aug narrowing the two travel separately: every public-website
+ * address gets this tightened list, while only the five approved routes get the
+ * fixed per-release nonce.
  */
 function expectPublicWebsiteScriptSrc(policy: string) {
   const scriptSrc = directive(policy, "script-src");
@@ -698,10 +704,20 @@ describe("public website fixed release nonce (#2352 D1)", () => {
    * That distinction is the whole value of this block. `csp.ts` takes a
    * `publicWebsite` boolean from its caller, so a test of the builder alone would
    * only prove that the flag does what it says. What has to hold is that the proxy
-   * sets it for exactly the addresses the `(website)` route group serves — and the
-   * authority on that question is `isPublicWebsitePath()`, the same predicate the
-   * #2420 setup gate uses. Asserting against the predicate rather than against a
-   * second hand-written list is what stops the two drifting.
+   * asks the right question of each address — and since the owner's 3 Aug 2026
+   * narrowing there are TWO questions, deliberately answered by two predicates:
+   *
+   *  • the NONCE follows `isFixedNonceWebsitePath()` — the five approved
+   *    `(website)` routes and everything the CMS catch-all serves, and nothing
+   *    else. `/hut-leader-instructions`, `/join/[code]` and `/join/verify/[token]`
+   *    moved to `(website-dynamic)` and are back on a per-request value;
+   *  • the POLICY's Stripe tightening follows `isPublicWebsitePath()` — the WHOLE
+   *    public website, both groups, because Stripe.js has no business on a
+   *    PIN-gated instructions page either.
+   *
+   * Asserting against the predicates rather than against a second hand-written
+   * list is what stops any of the three drifting; the cases below name the
+   * addresses where the two answers differ, which is where a regression would land.
    */
   const urls = [
     // (website): the CMS catch-all's territory and its fixed routes.
@@ -711,11 +727,12 @@ describe("public website fixed release nonce (#2352 D1)", () => {
     "/contact",
     "/join",
     "/join/apply",
+    "/definitely-missing",
+    "/wp-admin/setup-config.php",
+    // (website-dynamic): public website, per-request nonce, tightened policy.
     "/join/ABC123",
     "/join/verify/token-xyz",
     "/hut-leader-instructions",
-    "/definitely-missing",
-    "/wp-admin/setup-config.php",
     // Not the website: every other group, plus the shapes the gate refuses.
     "/login",
     "/register",
@@ -733,20 +750,30 @@ describe("public website fixed release nonce (#2352 D1)", () => {
   ] as const;
 
   it.each(urls)(
-    "carries the fixed nonce iff isPublicWebsitePath() claims %s",
+    "carries the fixed nonce iff isFixedNonceWebsitePath() claims %s",
     async (url) => {
       const releaseNonce = await getPublicWebsiteNonce();
       const response = await proxy(new NextRequest(`https://example.org${url}`));
       const policy = response.headers.get(CSP_HEADER) as string;
       const nonce = nonceFromScriptSrc(policy);
 
-      if (isPublicWebsitePath(url)) {
-        expect(nonce, `${url} is a public website page`).toBe(releaseNonce);
-        expectPublicWebsiteScriptSrc(policy);
+      if (isFixedNonceWebsitePath(url)) {
+        expect(nonce, `${url} is served by one of the five approved routes`).toBe(
+          releaseNonce,
+        );
       } else {
         expect(nonce, `${url} must keep a fresh per-request nonce`).not.toBe(
           releaseNonce,
         );
+      }
+
+      // The policy's public-website flag is the WIDE predicate, on purpose: its
+      // only effect is dropping Stripe from `script-src`, and the three
+      // per-request public pages should be tightened too. Following the nonce here
+      // would have handed them a LOOSER policy as a side effect of a security fix.
+      if (isPublicWebsitePath(url)) {
+        expectPublicWebsiteScriptSrc(policy);
+      } else {
         expectStrictScriptSrc(policy);
       }
 
@@ -782,6 +809,32 @@ describe("public website fixed release nonce (#2352 D1)", () => {
     expect(nonceFromScriptSrc(a.headers.get(CSP_HEADER) as string)).toBe(
       nonceFromScriptSrc(b.headers.get(CSP_HEADER) as string),
     );
+  });
+
+  /**
+   * The narrowing, as the property it is meant to buy (owner decision, 3 Aug 2026).
+   *
+   * The matrix above pins that these three do not get the RELEASE value; this pins
+   * the thing that actually matters, which is that they get a fresh one every time.
+   * An unguessable per-response nonce is the defence the fixed value gives up, and
+   * these pages give up nothing because none of them is ever stored.
+   */
+  it.each([
+    "/hut-leader-instructions",
+    "/join/ABC123",
+    "/join/verify/token-xyz",
+  ])("mints a DIFFERENT nonce on each request for %s", async (url) => {
+    const a = await proxy(new NextRequest(`https://example.org${url}`));
+    const b = await proxy(new NextRequest(`https://example.org${url}`));
+    const first = nonceFromScriptSrc(a.headers.get(CSP_HEADER) as string);
+    const second = nonceFromScriptSrc(b.headers.get(CSP_HEADER) as string);
+
+    expect(first).toBeTruthy();
+    expect(second).not.toBe(first);
+    // And each response hands its own value to the render, or the page's inline
+    // scripts would be refused by the policy on the very same response.
+    expect(a.headers.get(`x-middleware-request-${CSP_NONCE_HEADER}`)).toBe(first);
+    expect(b.headers.get(`x-middleware-request-${CSP_NONCE_HEADER}`)).toBe(second);
   });
 
   /**

@@ -117,10 +117,10 @@ const loadPublishedPage = cache(async (slug: string) => {
   // write (#2352 slice-1 review, F1).
   //
   // This route is the one that fills the full-route store, and it claims every
-  // URL no other route claims — a strictly WIDER set than the addresses
-  // `isPublicWebsitePath()` calls the public website, which is the set the proxy
-  // gives the fixed per-release nonce to. A page served in the difference is
-  // rendered with whatever per-request nonce its generating request carried,
+  // URL no other route claims — a strictly WIDER set than the addresses the proxy
+  // gives the fixed per-release nonce to (`isFixedNonceWebsitePath()`: the five
+  // approved `(website)` routes and nothing else). A page served in the difference
+  // is rendered with whatever per-request nonce its generating request carried,
   // stored with that value frozen into its inline scripts, and then handed to
   // every later visitor under a policy naming a different one: nothing on the
   // page executes and it never hydrates.

@@ -1,41 +1,66 @@
 /**
- * Which URLs belong to the `(website)` route group — the public website.
+ * Which URLs belong to the public website, and — since the D1 narrowing — which of
+ * them carry the FIXED per-release CSP nonce.
  *
- * Extracted from `src/lib/setup-gate.ts` in the #2352 slice-1 review so three
+ * Extracted from `src/lib/setup-gate.ts` in the #2352 slice-1 review so several
  * callers can share one answer without dragging the gate's database reads with
  * them. It is deliberately DEPENDENCY-FREE (no `next/server`, no Prisma, no
- * `server-only`): the proxy, the CMS catch-all render and the admin slug
- * validator all import it.
+ * `server-only`): the proxy, the CMS catch-all render and the admin slug validator
+ * all import it.
  *
- * The three questions it answers, and why they have to be the same answer:
- *  • **The #2420 setup gate** — is this an address the "Site setup in progress"
- *    503 stands in for?
- *  • **The #2352 D1 nonce split** — does this address carry the FIXED per-release
- *    script nonce, or a freshly minted per-request one?
- *  • **The CMS catch-all's territory** — may `(website)/[...slug]` serve a page
- *    here at all?
+ * ## One predicate used to answer three questions. It now answers one each.
  *
- * The third is the one the slice-1 review added, and it is what makes the other
- * two safe. `(website)/[...slug]` claims every URL no other route claims, so
- * without it the catch-all's territory was WIDER than this predicate: a published
- * CMS page at `/pay` (a legal slug — `pay` was reserved nowhere) was rendered by
- * the catch-all, stored in the full-route cache with whatever per-request nonce
- * the generating request happened to carry, and then served to every later
- * visitor under a policy naming a different one. Every inline script on it would
- * be refused and the page would never hydrate. Making the catch-all refuse those
- * paths — and the admin write refuse those slugs — is what keeps
- * "stored by the catch-all" a subset of "carries the fixed nonce".
+ * Before the owner's 3 Aug 2026 narrowing there was a single `isPublicWebsitePath()`
+ * and three callers asked it three DIFFERENT questions:
+ *
+ *  1. **The #2420 setup gate** — is this an address the "Site setup in progress"
+ *     503 stands in for?
+ *  2. **The #2352 D1 nonce split** — does this address carry the FIXED per-release
+ *     script nonce, or a freshly minted per-request one?
+ *  3. **The CMS catch-all's territory** — may `(website)/[...slug]` serve a page
+ *     here at all?
+ *
+ * While the fixed nonce covered the whole `(website)` group those three had the
+ * same answer, so one function could serve all three. The narrowing broke that: the
+ * fixed nonce now covers exactly the five approved addresses, while the holding
+ * screen must still stand in for the WHOLE public website — including the three
+ * pages that moved to `(website-dynamic)`. One predicate cannot say both things, and
+ * narrowing the shared one would have quietly taken the pre-setup 503 off
+ * `/hut-leader-instructions`, `/join/[code]` and `/join/verify/[token]`.
+ *
+ * So the split is by QUESTION, not by convenience:
+ *
+ *  • {@link isPublicWebsitePath} answers (1). Unchanged behaviour: every public
+ *    address, both groups. Only the setup gate calls it.
+ *  • {@link isFixedNonceWebsitePath} answers (2). True for exactly the addresses
+ *    the five approved routes can serve.
+ *  • {@link isCmsServablePageSlug} answers (3), and is (2) restated as a slug
+ *    question — because a page the catch-all STORES must be an address the fixed
+ *    nonce covers, or its inline scripts are refused for every later visitor.
+ *
+ * ## The one-sentence invariant
+ *
+ * **An address carries the fixed per-release nonce if and only if one of the five
+ * approved `(website)` routes can serve it — so the only nonce-bearing documents
+ * ever stored are the ones those five produce, and everything else on the site,
+ * public or not, is rendered per request under a nonce minted for that request.**
+ *
+ * Held from both sides, which is why it is an invariant rather than an intention:
+ * `src/proxy.ts` publishes the fixed nonce for exactly {@link isFixedNonceWebsitePath},
+ * and {@link isCmsServablePageSlug} makes the catch-all's loader, the admin slug
+ * validator, the public site menu and the Book Now target all refuse an address
+ * outside it.
  */
 
 /**
- * Top-level path segments that belong to a route group OTHER than `(website)`,
- * and so are never gated and never CMS territory.
+ * Top-level path segments that belong to a route group OTHER than the two public
+ * website groups, and so are never gated and never CMS territory.
  *
  * An ALLOW list would be wrong: `(website)/[...slug]` is a catch-all, so "is this
  * a public-website address?" really is "is it anything but one of these?".
  * Enumerated rather than inferred because the proxy sees only a URL — it has no
  * access to the route tree — and `setup-gate.test.ts` walks `src/app/**` and
- * fails if a new top-level route outside `(website)` is added without being
+ * fails if a new top-level route outside the public groups is added without being
  * listed here.
  *
  * Everything here is either an operator surface or an address the operator needs
@@ -108,6 +133,55 @@ export const NON_WEBSITE_ROOT_SEGMENTS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * The `(website)` route group's routes, as URL patterns — the FIXED-NONCE census.
+ *
+ * This is owner decision D1's five approved addresses (31 Jul 2026, narrowed back
+ * to exactly these on 3 Aug), written down where the runtime can read it. Adding a
+ * sixth is a decision about the CSP, not a routing detail, so it has to be made
+ * here on purpose: `scripts/ci/check-website-render-modes.mjs` walks the route
+ * group, compares it with this list, and fails until the two agree.
+ *
+ * `/[...slug]` is the CMS catch-all and is the only one of the five that is stored.
+ * The other four are still `force-dynamic` pending #2352 slices 2 and 3 — they are
+ * listed because the nonce split is about which POLICY an address is served under,
+ * not about which addresses happen to be cached today, and a slice-2 change must not
+ * have to touch this list to keep the policy right.
+ */
+export const FIXED_NONCE_WEBSITE_ROUTES = [
+  "/",
+  "/[...slug]",
+  "/contact",
+  "/join",
+  "/join/apply",
+] as const;
+
+/**
+ * The `(website-dynamic)` route group's routes, as URL patterns — the PER-REQUEST
+ * census, and the input {@link isFixedNonceWebsitePath} subtracts.
+ *
+ * These three are public website pages in every other respect (same chrome, same
+ * pre-setup holding screen) and differ only in carrying a per-request nonce. Each
+ * is `force-dynamic` for a permanent reason of its own — a PIN-gated
+ * per-assignment page, a group code in the URL, a one-time token in the URL — so
+ * none of them is ever stored and none of them needs a nonce that outlives a
+ * request.
+ *
+ * **The predicate is DERIVED from this list rather than hand-written alongside it,
+ * and that is what stops the classic decay.** A hand-maintained mirror of a route
+ * tree rots in the dangerous direction: a route added to the group but forgotten in
+ * the mirror would silently be handed the weaker fixed nonce, with nothing failing.
+ * Here there is one list, `check-website-render-modes.mjs` fails if the group's
+ * files and this list disagree, and the runtime answer follows the list — so the
+ * only way to add a per-request public page is to add it here, and the only way to
+ * add a fixed-nonce one is to amend {@link FIXED_NONCE_WEBSITE_ROUTES}.
+ */
+export const PER_REQUEST_WEBSITE_ROUTES = [
+  "/hut-leader-instructions",
+  "/join/[code]",
+  "/join/verify/[token]",
+] as const;
+
+/**
  * Machine-readable addresses served from the app root or `public/` that are not
  * the visitor-facing website. `robots.txt` in particular has to keep answering:
  * a crawler that cannot read it falls back to crawling everything, which is the
@@ -166,8 +240,79 @@ function normalisePathname(pathname: string) {
 }
 
 /**
- * Does this URL resolve into the `(website)` route group — i.e. is it part of
- * the public website the holding screen stands in for?
+ * A route pattern compiled to a per-segment matcher: a string matches that segment
+ * literally, `null` matches any one non-empty segment.
+ *
+ * Only literal segments and single dynamic segments (`[code]`) are understood, and
+ * an unsupported shape THROWS at module load rather than being skipped. That is
+ * deliberate: a catch-all or optional catch-all in the per-request group would
+ * claim more addresses than a per-segment match can express, and silently matching
+ * fewer would hand the fixed nonce to a per-request page. A module-load throw fails
+ * the dev server, every test and the build at once; a quiet miss would fail nothing.
+ */
+function compileRoutePattern(pattern: string): (string | null)[] {
+  return pattern
+    .split("/")
+    .filter((segment) => segment.length > 0)
+    .map((segment) => {
+      if (!segment.startsWith("[")) {
+        return segment;
+      }
+      if (/^\[[^.[\]]+\]$/.test(segment)) {
+        return null;
+      }
+      throw new Error(
+        `Unsupported route segment "${segment}" in "${pattern}": ` +
+          "src/lib/public-website-paths.ts understands literal and single dynamic " +
+          "segments only. A catch-all here would claim addresses this matcher " +
+          "cannot express, which would hand the fixed CSP nonce to a per-request page.",
+      );
+    });
+}
+
+const PER_REQUEST_ROUTE_MATCHERS = PER_REQUEST_WEBSITE_ROUTES.map(
+  compileRoutePattern,
+);
+
+/**
+ * The four STATIC addresses among the approved five, which win over any dynamic
+ * pattern exactly as they do in Next's own route table.
+ *
+ * `/join/apply` is why this set has to exist: it matches the `/join/[code]` pattern
+ * segment-for-segment, but Next serves the static route, so the address belongs to
+ * the fixed-nonce group. Derived from {@link FIXED_NONCE_WEBSITE_ROUTES} rather than
+ * typed out again, so amending the census cannot leave this behind.
+ */
+const FIXED_NONCE_STATIC_PATHS: ReadonlySet<string> = new Set(
+  FIXED_NONCE_WEBSITE_ROUTES.filter((route) => !route.includes("[")),
+);
+
+function matchesPerRequestRoute(path: string): boolean {
+  const segments = path.split("/").filter((segment) => segment.length > 0);
+
+  return PER_REQUEST_ROUTE_MATCHERS.some(
+    (matcher) =>
+      matcher.length === segments.length &&
+      matcher.every(
+        (expected, index) => expected === null || expected === segments[index],
+      ),
+  );
+}
+
+/**
+ * Does this URL resolve into one of the two public website route groups — i.e. is
+ * it part of the public website the holding screen stands in for?
+ *
+ * **This is the #2420 SETUP GATE's question and nothing else now.** It deliberately
+ * claims both public groups, so `/hut-leader-instructions`, `/join/[code]` and
+ * `/join/verify/[token]` are answered with the 503 holding screen before setup is
+ * complete exactly as the five approved routes are. Narrowing it to the fixed-nonce
+ * set would have taken the holding screen off those three, which is a change to
+ * what an unlaunched club exposes and was never asked for — the D1 narrowing is
+ * about which NONCE an address carries, not about which addresses are public.
+ *
+ * For the nonce decision use {@link isFixedNonceWebsitePath}; for the CMS
+ * catch-all's territory use {@link isCmsServablePageSlug}.
  *
  * Case-sensitive, like Next's own routing: `/Admin/nope` is not the admin area,
  * it is an unmatched website address, and it should be gated exactly as
@@ -209,18 +354,67 @@ export function isPublicWebsitePath(pathname: string): boolean {
 }
 
 /**
+ * Does this address carry the FIXED per-release CSP nonce (#2352 D1, narrowed by
+ * the owner on 3 Aug 2026)?
+ *
+ * True for exactly the addresses one of the five approved `(website)` routes can
+ * serve: the four fixed paths, plus everything the `[...slug]` CMS catch-all
+ * claims. False for the three `(website-dynamic)` pages and for every non-website
+ * address, both of which mint a nonce per request.
+ *
+ * The subtraction is the whole of it, and it is exact rather than approximate:
+ * a public-website address is in the fixed-nonce set unless a `(website-dynamic)`
+ * route claims it, and Next's static-beats-dynamic precedence is mirrored by
+ * checking {@link FIXED_NONCE_STATIC_PATHS} first so `/join/apply` stays with the
+ * five instead of being swallowed by the `/join/[code]` pattern.
+ *
+ * Two consequences worth stating, because both are correct and neither is obvious:
+ *  • `/join/deeper/still` and `/hut-leader-instructions/extra` are in the set. No
+ *    `(website-dynamic)` route claims them (its patterns are fixed-length), so the
+ *    catch-all serves them, so they must carry the nonce a stored page would be
+ *    stored with.
+ *  • `/dashboard/nope` is NOT in the set, and the catch-all still renders its 404.
+ *    That is the #2570 residual — a stored 404 document whose nonce a later
+ *    response no longer names — and it is unchanged by the narrowing. See
+ *    `src/proxy.ts`.
+ */
+export function isFixedNonceWebsitePath(pathname: string): boolean {
+  const path = normalisePathname(pathname);
+
+  if (!isPublicWebsitePath(path)) {
+    return false;
+  }
+
+  if (FIXED_NONCE_STATIC_PATHS.has(path)) {
+    return true;
+  }
+
+  return !matchesPerRequestRoute(path);
+}
+
+/**
  * May the `(website)/[...slug]` CMS catch-all serve a page for this slug?
  *
- * Takes a SLUG (`about`, `trips/2026`), not a path, because that is what both
- * callers hold: the admin write validator and the catch-all's own loader. The
- * answer is `isPublicWebsitePath()` of the corresponding path, and the point of
- * the wrapper is the name — a reader at either call site should see the reason
- * rather than a path predicate used for something that is not a path decision.
+ * Takes a SLUG (`about`, `trips/2026`), not a path, because that is what its
+ * callers hold: the admin write validator, the catch-all's own loader, the public
+ * site menu and the Book Now target. The answer is
+ * {@link isFixedNonceWebsitePath} of the corresponding path, and the point of the
+ * wrapper is the name — a reader at any of those call sites should see the reason
+ * rather than a nonce predicate used for something that is not a nonce decision.
  *
  * A `false` here is not a preference. Under full-route ISR a page served outside
  * the fixed-nonce set is a page stored with a per-request nonce, which every
  * later response then fails to name — see this module's header.
+ *
+ * It tightened with the D1 narrowing, and the three addresses it gained were
+ * already unreachable rather than newly refused: `hut-leader-instructions`,
+ * `join/<code>` and `join/verify/<token>` are claimed by real routes, so a CMS
+ * page at one of those slugs could never be served in any release. Refusing them
+ * here is what stops the admin creating one, and what drops any existing row out
+ * of the public menu — the same treatment `/lodge/history` got in the slice-1
+ * security re-review, for the same reason: an address the site will not serve is
+ * an address the site must not offer.
  */
 export function isCmsServablePageSlug(slug: string): boolean {
-  return isPublicWebsitePath(`/${slug}`);
+  return isFixedNonceWebsitePath(`/${slug}`);
 }

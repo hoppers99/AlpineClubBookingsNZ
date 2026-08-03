@@ -50,14 +50,20 @@ const MANIFEST_FILE = "prerender-manifest.json";
 const ISR_DYNAMIC_ROUTE = "/[...slug]";
 
 /**
- * `(website)` routes that must stay per-request, and why each one is not simply
+ * Public-website routes that must stay per-request, and why each one is not simply
  * "not done yet":
- *  • `/`, `/join`, `/contact`, `/join/apply` — held for #2352 slices 2 and 3,
- *    which first have to answer how a BUILD-time render acquires the per-release
- *    nonce (reconciliation F2);
+ *  • `/`, `/join`, `/contact`, `/join/apply` — the `(website)` group, held for
+ *    #2352 slices 2 and 3, which first have to answer how a BUILD-time render
+ *    acquires the per-release nonce (reconciliation F2);
  *  • `/hut-leader-instructions` — per-assignment and PIN-gated;
  *  • `/join/[code]`, `/join/verify/[token]` — a group code and a one-time token
  *    in the URL; a stored copy is a page that skips its own re-check.
+ *
+ * The last three moved to the `(website-dynamic)` group in the owner's 3 Aug 2026
+ * narrowing, which makes them per-request for a SECOND reason: they carry a nonce
+ * minted for the request, so a stored copy could never match a later response's
+ * policy either. Both halves are checked here, and this list did not have to change
+ * for the move — which is the point of checking the manifest rather than the tree.
  */
 const MUST_STAY_DYNAMIC = [
   "/",

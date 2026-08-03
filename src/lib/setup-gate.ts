@@ -48,11 +48,16 @@ import {
  * RE-EXPORTED here, unchanged, so every existing importer and the filesystem
  * exhaustiveness check in `setup-gate.test.ts` keep working.
  *
- * It moved in the #2352 slice-1 review because a third caller needs it and must
- * not pay for this module's database reads: the CMS catch-all itself, which has
- * to refuse a path the classifier does not claim. That module's header explains
- * why the catch-all's territory and the classifier's answer have to be the same
- * set — a stored page outside it carries a nonce no later response names.
+ * It moved in the #2352 slice-1 review because other callers need it and must not
+ * pay for this module's database reads. Since the D1 narrowing (owner decision,
+ * 3 Aug 2026) those callers use a DIFFERENT predicate from the same module: the
+ * nonce split and the CMS catch-all's territory are `isFixedNonceWebsitePath()`
+ * and `isCmsServablePageSlug()`, which cover only the five approved routes, while
+ * `isPublicWebsitePath()` — the one this gate asks — deliberately still claims the
+ * whole public website, both route groups. That is what keeps the pre-setup 503
+ * holding screen in front of `/hut-leader-instructions`, `/join/[code]` and
+ * `/join/verify/[token]` after they moved out of the fixed-nonce group. The
+ * module's header sets out all three questions and which predicate answers each.
  */
 export {
   isPublicWebsitePath,

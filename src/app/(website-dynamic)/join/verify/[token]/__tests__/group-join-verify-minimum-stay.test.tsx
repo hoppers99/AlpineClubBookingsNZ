@@ -3,7 +3,7 @@
 import "@testing-library/jest-dom/vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { GroupJoinVerifyPageClient } from "@/app/(website)/join/verify/[token]/group-join-verify-page-client";
+import { GroupJoinVerifyPageClient } from "@/app/(website-dynamic)/join/verify/[token]/group-join-verify-page-client";
 
 // #2363. Minimum stay is re-checked when a non-member confirms their emailed
 // link, so the rules can have tightened since they asked to join. That answer

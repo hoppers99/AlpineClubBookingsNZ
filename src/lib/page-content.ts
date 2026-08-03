@@ -149,22 +149,30 @@ export function isValidPageSlug(value: string): boolean {
  *
  *  1. {@link RESERVED_PAGE_SLUGS} in ANY segment — the long-standing rule that
  *     stops a database page shadowing or sitting underneath a real route.
- *  2. A FIRST segment that belongs to another route group
- *     (`NON_WEBSITE_ROOT_SEGMENTS`). Rule 1 held only nine names, so `pay`,
- *     `chores`, `calendar`, `notices`, `profile`, `lodge`, `finance` and the rest
- *     were all accepted — and a page at `/pay` really was reachable, because
- *     `(public)/pay` contains only `[token]/`, so nothing claimed the bare path
- *     and the `(website)` catch-all served it.
+ *  2. Any address outside the FIXED-NONCE set (`isCmsServablePageSlug()`). Rule 1
+ *     held only nine names, so `pay`, `chores`, `calendar`, `notices`, `profile`,
+ *     `lodge`, `finance` and the rest were all accepted — and a page at `/pay`
+ *     really was reachable, because `(public)/pay` contains only `[token]/`, so
+ *     nothing claimed the bare path and the `(website)` catch-all served it.
  *
  *     Since slice 1 that catch-all fills the full-route ISR store, and the proxy
- *     gives the FIXED per-release CSP nonce to exactly the addresses
- *     `isPublicWebsitePath()` claims. A page outside that set is stored carrying
- *     the per-request nonce of whichever request generated it, and every later
- *     response names a different one — so the browser refuses every inline script
- *     on it and the page never becomes interactive. Refusing the slug is what
- *     keeps "stored by the catch-all" inside "carries the fixed nonce".
+ *     gives the FIXED per-release CSP nonce to exactly the addresses the five
+ *     approved `(website)` routes can serve. A page outside that set is stored
+ *     carrying the per-request nonce of whichever request generated it, and every
+ *     later response names a different one — so the browser refuses every inline
+ *     script on it and the page never becomes interactive. Refusing the slug is
+ *     what keeps "stored by the catch-all" inside "carries the fixed nonce".
  *
- * Only the FIRST segment, because that is the only one the classifier looks at:
+ *     Rule 2 does the work of a reserved WORD for the three `(website-dynamic)`
+ *     addresses as well, and does it more precisely than a word would.
+ *     `hut-leader-instructions`, `join/<code>` and `join/verify/<token>` are all
+ *     refused because a real per-request route claims them, so a CMS page there
+ *     could never be served — while `trips/hut-leader-instructions`, which no
+ *     route claims, is still a perfectly good page. Adding the name to
+ *     {@link RESERVED_PAGE_SLUGS} instead would have refused that second address
+ *     too, for no reason: that set matches in EVERY segment position.
+ *
+ * Rule 2 looks at the first segment for the route-GROUP question:
  * `/trips/pay` has root segment `trips`, is a public-website address, and is
  * served and stored normally.
  */
