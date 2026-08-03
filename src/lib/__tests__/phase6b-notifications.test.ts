@@ -16,6 +16,25 @@ vi.mock("@/lib/lodge-capacity", async (importOriginal) => {
   };
 });
 
+/**
+ * #2548: admin alert audiences resolve from the access-role permission matrix,
+ * so a candidate row must carry the access-role assignments the resolver
+ * selects. These fixtures are Full Admins, as these tests always assumed.
+ */
+function adminRecipient(
+  email: string,
+  notificationPreference: Record<string, boolean> | null = null,
+) {
+  return {
+    email,
+    canLogin: true,
+    accessRoles: [
+      { role: "ADMIN", roleDefinitionId: null, roleDefinition: null },
+    ],
+    notificationPreference,
+  };
+}
+
 // Use vi.hoisted so the mock objects are available at hoist time
 const { mockPrisma, mockTransporter } = vi.hoisted(() => {
   const mockTransporter = {
@@ -195,7 +214,9 @@ describe("N-03: checkCapacityWarnings", () => {
     vi.clearAllMocks();
     vi.resetModules();
     mockPrisma.notificationDeliveryPolicy.findUnique.mockResolvedValue(null);
-    mockPrisma.member.findMany.mockResolvedValue([{ email: "support@example.org" }]);
+    mockPrisma.member.findMany.mockResolvedValue([
+      adminRecipient("support@example.org"),
+    ]);
     mockPrisma.emailLog.create.mockResolvedValue({ id: "log-1" });
     mockPrisma.emailLog.update.mockResolvedValue({});
   });
@@ -299,7 +320,9 @@ describe("N-05: notifyXeroSyncError", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.resetModules();
-    mockPrisma.member.findMany.mockResolvedValue([{ email: "support@example.org" }]);
+    mockPrisma.member.findMany.mockResolvedValue([
+      adminRecipient("support@example.org"),
+    ]);
     mockPrisma.emailLog.create.mockResolvedValue({ id: "log-1" });
     mockPrisma.emailLog.update.mockResolvedValue({});
     mockPrisma.emailLog.findFirst.mockResolvedValue(null);
@@ -615,7 +638,9 @@ describe("N-13: sendAdminDigest", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.resetModules();
-    mockPrisma.member.findMany.mockResolvedValue([{ email: "support@example.org" }]);
+    mockPrisma.member.findMany.mockResolvedValue([
+      adminRecipient("support@example.org"),
+    ]);
     mockPrisma.emailLog.create.mockResolvedValue({ id: "log-1" });
     mockPrisma.emailLog.update.mockResolvedValue({});
     mockPrisma.notificationDeliveryPolicy.findUnique.mockResolvedValue(null);

@@ -113,7 +113,10 @@ async function deriveLegacyEntranceFeeCategoryLabel(
   for (const fm of familyMemberships) {
     const groupMembers = await prisma.familyGroupMember.findMany({
       where: { familyGroupId: fm.familyGroupId },
-      include: { member: { select: { ageTier: true } } },
+      // #2520: `select`, not `include` — an `include` projects every scalar of
+      // FamilyGroupMember, naming the retired `role` column in the SQL. Only
+      // the member's age tier is read from these rows.
+      select: { member: { select: { ageTier: true } } },
     });
     const adults = groupMembers.filter((gm) => gm.member.ageTier === "ADULT");
     const dependents = groupMembers.filter(

@@ -102,7 +102,8 @@ export async function GET() {
               memberships: {
                 where: { member: { active: true } },
                 select: {
-                  role: true,
+                  // #2520: `role` is NOT selected. The column is retired and the
+                  // payload no longer exposes it (see `members` below).
                   member: {
                     // #2424: the family-scoped select — it carries each
                     // parent's family groups so the payload can decide, on the
@@ -192,10 +193,12 @@ export async function GET() {
     familyGroups: currentMember.familyGroupMemberships.map((membership) => ({
       id: membership.familyGroup.id,
       name: membership.familyGroup.name,
-      members: membership.familyGroup.memberships.map((groupMember) => ({
-        groupRole: groupMember.role,
-        ...serializeFamilyMember(groupMember.member, currentMember.id, groupIds),
-      })),
+      // #2520: `groupRole` is gone from the payload. It exposed the retired
+      // FamilyGroupMember.role column to the member-facing onboarding wizard,
+      // which declared the field in its type and never rendered it.
+      members: membership.familyGroup.memberships.map((groupMember) =>
+        serializeFamilyMember(groupMember.member, currentMember.id, groupIds)
+      ),
     })),
     pendingRequests: pendingRequests.map((request) => ({
       id: request.id,

@@ -53,6 +53,29 @@ export const MEMBER_ACCESS_ROLE_SELECT = {
   roleDefinition: { select: ACCESS_ROLE_DEFINITION_SELECT },
 } as const;
 
+/**
+ * Candidate rows for any "which admins…" query (#2548): active, able to sign
+ * in, and holding at least one access-role assignment beyond the plain
+ * USER/ORG classification.
+ *
+ * The narrowing matters. Every ordinary member carries a `USER` assignment row
+ * (the access-role backfill wrote one for each of them), so a bare
+ * `accessRoles: { some: {} }` would load the entire club — with joined role
+ * definitions — every time an alert fires. Definition-backed custom roles have
+ * `role: null`, hence the second clause: they are matched on the definition
+ * link instead. This is only a candidate filter; the real answer always comes
+ * from resolving the permission matrix over the rows it returns.
+ */
+export const ADMIN_CAPABLE_MEMBER_WHERE = {
+  active: true,
+  canLogin: true,
+  accessRoles: {
+    some: {
+      OR: [{ role: { notIn: ["USER", "ORG"] } }, { roleDefinitionId: { not: null } }],
+    },
+  },
+} satisfies Prisma.MemberWhereInput;
+
 /** JSON-safe shape for client components and API responses. */
 export type AccessRoleDefinitionSummary = {
   id: string;

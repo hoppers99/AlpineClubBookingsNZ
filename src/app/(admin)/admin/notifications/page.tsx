@@ -18,7 +18,8 @@ const sections = [
   {
     href: "/admin/notification-recipients",
     title: "Recipients",
-    description: "Choose which system alerts each active admin receives.",
+    description:
+      "Choose which system alerts each admin user receives, within the areas their role can edit.",
     icon: Bell,
   },
   {

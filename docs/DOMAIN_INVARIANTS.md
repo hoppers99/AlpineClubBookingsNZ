@@ -3179,11 +3179,55 @@ pure workflow logic (`src/lib/booking-exception-requests.ts`):
   1000 characters, normalised once at the request boundary so every later surface
   renders exactly the stored value.
 - **Every transition is guarded and single.** Only a `REQUESTED` request may move,
-  and only to `APPROVED`/`REJECTED`/`CANCELLED`/`SUPERSEDED`; the guarded
+  and only to `APPROVED`/`REJECTED`/`CANCELLED`/`SUPERSEDED`/`EXPIRED`; the guarded
   `updateMany` plus the integer `version` token make a lost claim run no side
   effect (the `BookingRequest.version` discipline, #1923). `REJECTED`,
-  `CANCELLED` and `SUPERSEDED` release the provisional reservation; `APPROVED`
-  turns it into the executed booking's own beds inside the same transaction.
+  `CANCELLED`, `SUPERSEDED` and `EXPIRED` release the provisional reservation;
+  `APPROVED` turns it into the executed booking's own beds inside the same
+  transaction.
+- **Every held bed is on a deadline, and only a held bed is (#2553).** A
+  request that actually reserves beds is stamped at creation with an immutable
+  `holdExpiresAt` — `POLICY_EXCEPTION_HOLD_TTL_DAYS` (7) from creation, capped at
+  the start of the first night it holds, floored at
+  `POLICY_EXCEPTION_HOLD_MIN_TTL_HOURS` (24) so a late request still gets a real
+  review window. It is written once and never rewritten, so a member's expiry
+  cannot move under them and the reaper's clock is an auditable fact of the
+  request rather than a live setting. The `policy-exception-hold-reaper` cron then
+  moves each past-deadline request `REQUESTED -> EXPIRED` through
+  `resolvePolicyExceptionRequestTerminal`, the SAME guarded-claim-plus-atomic-
+  release path the other terminal outcomes take, so beds are returned under the
+  global -> per-lodge locks exactly once and no forked release exists to drift.
+  The converse holds for every row the current code STAMPS: `holdExpiresAt` is
+  NULL, and the reaper's scan never sees the row, whenever no capacity is at stake
+  — a `LOCKED_PERIOD` row, a `NO_HOLD` aggregate, or a HOLD aggregate whose
+  incremental footprint came out empty (a pure shrink). A cron may release stranded
+  beds; it may never close a live request that costs the club nothing to leave open.
+  **The one stated exception, because the #2553 migration deliberately does not
+  backfill:** a row written before that migration (or by a draining old colour) can
+  be holding beds *with* `holdExpiresAt` NULL, and the reaper ages that row out from
+  `createdAt` plus its own earliest held night under the identical rule. So NULL is
+  never a safe proxy for "this request holds no capacity" — a scan or predicate that
+  tests `holdExpiresAt IS NOT NULL` would silently skip exactly the stranded holds
+  this invariant exists to catch. The live `PolicyExceptionReservationNight` rows are
+  the only reliable test, which is why the reaper's scan filters on them.
+  Concurrency safety comes from the `version` CAS rather than a job-level lock: a
+  decision landing between the scan and the claim wins, and overlapping cron cycles
+  produce exactly one expiry and one release. A lost claim is silent; a past-deadline
+  row the shared transition REFUSES outright (not a policy-exception row, or an
+  unparsable `proposalSnapshot`) can never self-heal, so it is counted as
+  `unresolvable` in `CronJobRun.resultSummary` and logged at warn rather than
+  reported as a clean run. **An expiry is never silent, and never inside the release
+  transaction (owner decision, 2 Aug 2026).** Three records, in this order: the
+  `EXPIRED` status the member already sees on their booking's Change Requests card;
+  a `booking-policy-exception-request.expired` AuditLog row, so the request's audit
+  timeline reads created -> expired; and a `policy-exception-request-expired`
+  courtesy email to the member who raised it, telling them the request lapsed and
+  its held beds were released. The audit write and the send both happen AFTER
+  `resolvePolicyExceptionRequestTerminal` returns a claimed outcome, and both are
+  logged-and-swallowed on failure: a bounced notice can neither roll back a
+  capacity release, nor cause one to be re-run, nor stop the reaper closing the
+  run's other stranded holds. The one-open-request slot is freed too, so a lapse
+  never locks the member out of resubmitting.
 - **Approval is atomic with execution (#2525).** `approveAndExecutePolicyExceptionRequest`
   reauthorizes from fresh DB roles, re-reads under global -> per-lodge locks,
   applies the drift rules above, claims `REQUESTED -> APPROVED` with the `version`
@@ -4548,12 +4592,91 @@ The four powers over a non-login member, and how #2284 settled each:
   "every login-holding adult in the group is equal" boundary above, and
   deliberately so; no code may treat `detailsConfirmedByMemberId` as naming a
   single, lead-appointed responsible adult. With the role reader gone,
-  **`FamilyGroupMember.role` no longer gates authorisation anywhere**; its
-  misleading schema comment is corrected and the column is retained pending a
-  dedicated removal migration. Relatedly, the family-group join request no longer
-  materialises a group around a consentless target as `ADMIN` — it seeds `MEMBER`
-  (`src/app/api/members/family/request-join/route.ts`). Member-merge's
-  `maxFamilyRole` upgrade is now vestigial rather than load-bearing.
+  **`FamilyGroupMember.role` no longer gates authorisation anywhere** — and #2520
+  finished the job: **the generated Prisma Client no longer carries the field at
+  all**, so no statement it emits can name the column. Every writer is gone (the
+  group-creating flows, the join/invite/nomination/partner and Xero-import paths,
+  and the demo seed), member-merge's vestigial `maxFamilyRole` upgrade is gone,
+  every `FamilyGroupMember` query is narrowed with an explicit `select`, and the
+  field is marked **`@ignore`** in `prisma/schema.prisma`.
+
+  The `@ignore` is the load-bearing part, and removing the call sites was **not**
+  sufficient without it. Measured against Prisma 7.9.0 by recording the SQL
+  through a driver adapter:
+
+  - A static `@default("MEMBER")` is materialised **client-side** as a bind
+    parameter, so the column appeared in the column list of every `INSERT` the
+    client emitted — `create`, `upsert`'s insert branch and `createMany` alike —
+    **even for a call that set no role and narrowed itself with
+    `select: { id: true }`**. Narrowing cannot reach that: it is the write's
+    column list, not its projection.
+  - An unnarrowed `create`/`update`/`upsert`/`delete` names every scalar in its
+    implicit `RETURNING`, and an `include:` (or a bare `: true`) on the join table
+    names every scalar in its `SELECT`.
+
+  `@ignore` closes all of those at once and makes naming the column a **compile**
+  error rather than a latent production error. It changes no database state — the
+  schema diff with and without it is empty, so the annotation owes no migration —
+  and the column keeps its `NOT NULL DEFAULT 'MEMBER'`, so rows inserted from here
+  on are filled by the **database** default and are never `NULL`.
+  `src/lib/__tests__/family-group-role-retirement.test.ts` pins the annotation and
+  the client's shape, and covers the surfaces the client cannot: nested-relation
+  projections and raw SQL. Narrowing of the delegate calls themselves is enforced
+  by `src/lib/__tests__/doomed-column-select-guard.test.ts`, which now registers
+  `familyGroupMember` alongside the two #2130 models.
+
+  Worth recording precisely, because the #2284 close-out is easy to misread: what
+  #2284 removed was the last **authorisation** reader. **Payload** readers
+  outlived it and were found by #2520 — every admin family-group response
+  (`GET`/`POST /api/admin/family-groups` and `GET`/`PUT
+  /api/admin/family-groups/[id]`) returned a per-member `role`, and
+  `GET /api/member/onboarding` selected the column explicitly and returned it to
+  the member-facing onboarding wizard as `groupRole`. None was rendered (the
+  wizard declared `groupRole` in its type and never used it; the admin pages never
+  referenced it), so removing them changes no screen — but "the column has no
+  reader" was not true of the deployed release until now, and the blue/green
+  precondition below depends on it being true. A retired audit script
+  (`scripts/audit-access-role-membership-cleanup.ts`) also still named the column
+  in raw fixture SQL and a snapshot query; #2520 removed those the same way #2130
+  removed that script's `AgeTierSetting.xeroContactGroupId` references.
+  No code may treat family-group membership as carrying a rank: **membership in a
+  group is the only fact the join table records**, and every adult login
+  co-member of a group is equal (the boundary above). Relatedly, the family-group
+  join request no longer materialises a group around a consentless target with any
+  role at all (`src/app/api/members/family/request-join/route.ts`).
+
+  The column itself survives one more release. Removing the Prisma field requires
+  the `DROP COLUMN` migration in the same pull request — the migration-drift gate
+  compares `prisma/migrations/` against `prisma/schema.prisma` — and that DROP is
+  only old-code compatible once the release described above is the *draining*
+  colour, because the **currently deployed** client still carries the field and so
+  still names it. Shipping the drop in the same release as the writer removal would
+  break the previous colour between migrate and cutover, i.e. force a maintenance
+  window. So the retirement is deliberately two-step, per
+  `docs/BLUE_GREEN_MIGRATION_POLICY.md`: this RUNTIME release stops depending on
+  the column, and the CONTRACT release drops it, removes the field, deletes the
+  guard test, and drops `familyGroupMember` from the other guard's
+  `NARROW_SELECT_MODELS`.
+
+  **#2520 stays open until that CONTRACT release lands** — the DROP is the second
+  half of its scope, not a separate follow-up, so the pull request delivering this
+  RUNTIME half must not close it.
+
+  Two details the CONTRACT pull request must get right, both easy to get wrong:
+
+  - It may declare `old_code_compatible=yes` **only because** the draining colour
+    is the release described above, whose client cannot name the column. Verify
+    that release is actually deployed and soaked first.
+  - This RUNTIME release ships **no migration of its own**, so there is no
+    migration folder from it to put in `previous_expand_release`. Do what the
+    #2130 contract row (`20260721130000`) did for its runtime-prep release: name
+    an adjacent migration in that field and record the real precondition — "do not
+    deploy until the release carrying the `@ignore` has shipped and soaked" — in
+    `lock_impact_plan`.
+
+  Until the drop lands the stored values are **meaningless**, not frozen: the
+  column keeps its `NOT NULL DEFAULT 'MEMBER'`, so new rows still receive
+  `'MEMBER'` from the database.
 
 **What one MEMBER may see about another member's parent** (#2424, owner decision
 2026-08-01). `GET /api/members/family` and `GET /api/member/onboarding` both
@@ -5037,8 +5160,9 @@ and is hard-deleted at the end. The merge is **additive and master-wins**:
     `MembershipCancellationRequestParticipant`, `GroupBookingJoin`,
     `NotificationPreference` (1-1), `MemberInductionSignOff` (earliest sign-off
     wins), `MemberInductionAssignedSigner`, `FamilyGroupMember` (keep the
-    master's row, upgrade its role to `MAX(ADMIN > MEMBER)`, and re-point the
-    family's billing membership), and `MemberPartnerLink` (canonical
+    master's row and re-point the family's billing membership at it; #2520
+    removed the old `MAX(ADMIN > MEMBER)` role upgrade along with the retired
+    column it wrote), and `MemberPartnerLink` (canonical
     `memberAId < memberBId` pair, self-pairs and duplicates deleted, and at most
     one CONFIRMED partner kept for the master).
   - **cascade** — the loser's auth identity and ephemeral tokens

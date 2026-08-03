@@ -324,7 +324,9 @@ describe("GET /api/members/family — parent email visibility (#2424)", () => {
 
     const selfSelect = mockPrisma.member.findUnique.mock.calls[0][0].select;
     const groupSelect =
-      mockPrisma.familyGroupMember.findMany.mock.calls[0][0].include.member
+      // #2520: the family-group read is narrowed with `select`, not `include`,
+      // so it never projects the retired FamilyGroupMember.role column.
+      mockPrisma.familyGroupMember.findMany.mock.calls[0][0].select.member
         .select;
     for (const select of [selfSelect, groupSelect]) {
       for (const parentKey of ["parent", "secondaryParent"] as const) {
@@ -443,7 +445,9 @@ describe("GET /api/members/family — delegated-edit provenance (#2284 S3)", () 
 
     const selfSelect = mockPrisma.member.findUnique.mock.calls[0][0].select;
     const groupSelect =
-      mockPrisma.familyGroupMember.findMany.mock.calls[0][0].include.member
+      // #2520: the family-group read is narrowed with `select`, not `include`,
+      // so it never projects the retired FamilyGroupMember.role column.
+      mockPrisma.familyGroupMember.findMany.mock.calls[0][0].select.member
         .select;
     for (const select of [selfSelect, groupSelect]) {
       expect(select.detailsConfirmedBy).toEqual({

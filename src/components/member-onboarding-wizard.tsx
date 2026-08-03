@@ -76,7 +76,6 @@ interface FamilyMember {
   canLogin: boolean;
   role: string;
   isCurrentUser: boolean;
-  groupRole: string;
   status: OnboardingStatus;
   nextAction:
     | "current_user"

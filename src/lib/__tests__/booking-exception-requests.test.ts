@@ -439,19 +439,32 @@ describe("violationFingerprint", () => {
 // --- lifecycle ------------------------------------------------------------
 
 describe("request lifecycle", () => {
-  it("MUTATION: only REQUESTED may transition, and only to the four outcomes", () => {
-    for (const to of ["APPROVED", "REJECTED", "CANCELLED", "SUPERSEDED"] as const) {
+  it("MUTATION: only REQUESTED may transition, and only to the five outcomes", () => {
+    for (const to of [
+      "APPROVED",
+      "REJECTED",
+      "CANCELLED",
+      "SUPERSEDED",
+      // #2553: the hold reaper's outcome.
+      "EXPIRED",
+    ] as const) {
       expect(isPolicyExceptionTransitionAllowed("REQUESTED", to)).toBe(true);
     }
     expect(isPolicyExceptionTransitionAllowed("REQUESTED", "REQUESTED")).toBe(false);
     expect(isPolicyExceptionTransitionAllowed("APPROVED", "REJECTED")).toBe(false);
     expect(isPolicyExceptionTransitionAllowed("CANCELLED", "APPROVED")).toBe(false);
+    // #2553: EXPIRED is terminal like the rest — an expired request is closed, and
+    // a member resubmits rather than an officer reviving it in place.
+    expect(isPolicyExceptionTransitionAllowed("EXPIRED", "APPROVED")).toBe(false);
+    expect(isPolicyExceptionTransitionAllowed("EXPIRED", "REQUESTED")).toBe(false);
   });
 
-  it("classifies the three releasing terminal statuses", () => {
+  it("classifies the four releasing terminal statuses", () => {
     expect(isTerminalReleasingStatus("REJECTED")).toBe(true);
     expect(isTerminalReleasingStatus("CANCELLED")).toBe(true);
     expect(isTerminalReleasingStatus("SUPERSEDED")).toBe(true);
+    // #2553: an expiry releases the hold on exactly the same terms.
+    expect(isTerminalReleasingStatus("EXPIRED")).toBe(true);
     expect(isTerminalReleasingStatus("APPROVED")).toBe(false);
     expect(isTerminalReleasingStatus("REQUESTED")).toBe(false);
   });

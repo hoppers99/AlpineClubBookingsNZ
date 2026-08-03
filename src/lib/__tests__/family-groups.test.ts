@@ -999,7 +999,7 @@ describe("POST /api/members/family/request-join", () => {
     expect(body.requestId).toBe("req-1");
   });
 
-  it("seeds a group-less target as MEMBER, never ADMIN, before they consent (#2284 S4)", async () => {
+  it("seeds a group-less target with no rank at all before they consent (#2284 S4, #2520)", async () => {
     mockedAuth.mockResolvedValue(memberSession);
     mockedPrisma.member.findUnique.mockResolvedValue({
       id: "member-1",
@@ -1035,13 +1035,13 @@ describe("POST /api/members/family/request-join", () => {
       })
     );
     expect(res.status).toBe(201);
-    // The target never consented to this group; they must not be seeded ADMIN.
+    // The target never consented to this group. #2284 stopped seeding them
+    // "ADMIN"; #2520 removed the column entirely, so the row now records
+    // membership and nothing else. Exact shape, so a re-added rank reddens here.
+    // `select` narrows the write's implicit RETURNING (#2130 house rule).
     expect(mockedPrisma.familyGroupMember.create).toHaveBeenCalledWith({
-      data: expect.objectContaining({
-        familyGroupId: "new-group",
-        memberId: "member-2",
-        role: "MEMBER",
-      }),
+      data: { familyGroupId: "new-group", memberId: "member-2" },
+      select: { id: true },
     });
   });
 
@@ -1458,12 +1458,14 @@ describe("Admin Family Group Join Requests", () => {
             memberId: "child-1",
           },
         },
+        // #2520: membership only — the retired `role` is not written. `select`
+        // narrows the write's implicit RETURNING (#2130 house rule).
         create: {
           familyGroupId: "fg1",
           memberId: "child-1",
-          role: "MEMBER",
         },
         update: {},
+        select: { id: true },
       });
       expect(txUpdate).toHaveBeenCalledWith({
         where: { id: "req-child-1" },
@@ -1747,12 +1749,14 @@ describe("Admin Family Group Join Requests", () => {
             memberId: "child-created",
           },
         },
+        // #2520: membership only — the retired `role` is not written. `select`
+        // narrows the write's implicit RETURNING (#2130 house rule).
         create: {
           familyGroupId: "fg1",
           memberId: "child-created",
-          role: "MEMBER",
         },
         update: {},
+        select: { id: true },
       });
       expect(txUpdate).toHaveBeenCalledWith({
         where: { id: "req-child-create" },

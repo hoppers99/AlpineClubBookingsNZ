@@ -360,9 +360,10 @@ export async function POST(
             create: {
               familyGroupId,
               memberId: target.id,
-              role: "USER",
             },
             update: {},
+            // Result discarded — narrow the implicit RETURNING (#2130 house rule).
+            select: { id: true },
           })
         )
       );

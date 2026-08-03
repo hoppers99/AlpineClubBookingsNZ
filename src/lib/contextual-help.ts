@@ -1735,7 +1735,7 @@ const adminHelpEntries: HelpEntry[] = [
         {
           name: "Recipients",
           description:
-            "The active admins selected for each system-alert category.",
+            "The admin users selected for each system-alert category, limited to the areas each role can edit.",
         },
         {
           name: "Message wording",

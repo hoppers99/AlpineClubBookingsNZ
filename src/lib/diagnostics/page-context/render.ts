@@ -48,12 +48,16 @@ const TRUNCATION_NOTICE =
 
 /**
  * Neutralize an untrusted span: drop angle brackets so no pseudo-tag can be
- * forged, defuse the wrapper token, and collapse newlines so a value can never
- * fake a new bullet or a new section header.
+ * forged, drop quotes so a value in an attribute position can never close the
+ * attribute and forge another (the two attribute values rendered today are
+ * server-generated and quote-free, so this is defence in depth against a future
+ * edit putting untrusted text there — the same hardening the tools renderer
+ * carries), defuse the wrapper token, and collapse newlines so a value can
+ * never fake a new bullet or a new section header.
  */
 function neutralize(value: string): string {
   return value
-    .replace(/[<>]/g, "")
+    .replace(/[<>"']/g, "")
     .split(EVIDENCE_TAG)
     .join(NEUTRALIZED_TAG)
     .replace(/\s+/g, " ")

@@ -64,6 +64,12 @@ area:
 (`USER`), and Organisation (`ORG`) — are code-defined, shown for reference, and
 can never be edited or deleted here.
 
+**Areas also decide who is emailed.** Every admin alert belongs to one of these
+areas, and a role is only offered — and only ever sent — the alerts for the
+areas it can **edit**. Giving a role Bookings edit is therefore what makes
+booking-change and exception-request alerts reach it. See
+[Recipients](notification-recipients.md) for the alert-to-area table.
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |
@@ -77,5 +83,6 @@ can never be edited or deleted here.
 
 - Back to the [documentation hub](../README.md).
 - Sibling guides: [Members](members.md) (where roles are assigned),
-  [Committee](committee.md), [Login & Security](security.md).
+  [Committee](committee.md), [Login & Security](security.md),
+  [Recipients](notification-recipients.md) (which alerts each area receives).
 - Reference: access roles / definitions in [`ARCHITECTURE.md`](../ARCHITECTURE.md).

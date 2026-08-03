@@ -51,6 +51,11 @@ export const BOOKING_URL_TEMPLATE_NAMES: ReadonlySet<string> = new Set([
   // {{BASE_URL}}/bookings line in the editable default, resolved to the
   // recipient-authorized detail link at send time.
   "family-member-added",
+  // #2553: the hold-reaper's lapse notice. Booking-scoped and registered, so the
+  // set membership is mechanical (the contract suite below compares the two), and
+  // the optional booking link is what lets a member go straight to the booking
+  // they now need to raise a fresh request from.
+  "policy-exception-request-expired",
 ]);
 
 export interface BookingUrlTemplateContractFinding {
