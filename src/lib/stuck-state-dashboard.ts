@@ -99,6 +99,7 @@ type FindManyDelegate = {
 
 type StuckStateDashboardDb = {
   paymentRecoveryOperation: CountDelegate;
+  hostingCoverageIncident: CountDelegate;
   booking: FindManyDelegate & CountDelegate;
   groupBookingSettlement: FindManyDelegate;
   issueReport: CountDelegate;
@@ -913,6 +914,35 @@ export async function getStuckStateDashboard(input?: {
     )} still ${
       unnamedPlaceholderBookings === 1 ? "lists" : "list"
     } placeholder guest names ("Guest 2", "School Child 5"), so the chore list and arrival roster would show those instead of real people. Most bookers are chased automatically, but some rows are not — a school list already confirmed with its placeholder names, or a booking still held for approval — so treat this as a list to work through: open the booking and edit the names, which an admin or Booking Officer can always do. The stay is never held up over this.`,
+  });
+
+  // #2576 §7 and §16: a CONFIRMED booking at an enforcing lodge that has lost the
+  // adult-member cover the club requires. CRITICAL, and that is the owner's word —
+  // "appear prominently in the Booking Officer work queue" — because the club is
+  // carrying a booking its own rule would refuse, with beds allocated and money
+  // taken. Deliberately NOT auto-cancelled (§7, §16 both forbid it), so this queue
+  // entry is the whole mechanism by which anybody finds out. Resolved incidents are
+  // outside the count: the predicate is the same `resolvedAt: null` the partial
+  // unique index uses, so the card and the invariant cannot disagree.
+  const hostingCoverageIncidents = await deps.db.hostingCoverageIncident.count({
+    where: { resolvedAt: null },
+  });
+  addItem(items, {
+    id: "booking-hosting-coverage-incidents",
+    domain: "booking",
+    title: "Bookings without required adult member cover",
+    severity: "critical",
+    owner: "Admin",
+    count: hostingCoverageIncidents,
+    href: "/admin/bookings",
+    summary: `${hostingCoverageIncidents} confirmed ${plural(
+      hostingCoverageIncidents,
+      "booking",
+    )} ${
+      hostingCoverageIncidents === 1 ? "has" : "have"
+    } lost the adult member cover this club requires and ${
+      hostingCoverageIncidents === 1 ? "needs" : "need"
+    } an officer to restore cover, amend the booking, or approve an exception. Beds and payments are untouched.`,
   });
 
   await addEmailItems(items, deps);

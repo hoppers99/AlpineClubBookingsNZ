@@ -172,9 +172,28 @@ describe("the school and organisation carve-out, and only that (#2569 §13)", ()
     // organisation REQUEST APPROVALS and nothing else, so a second site — a
     // member-owned flow quietly exempted — would be a policy change made by a
     // one-line argument rather than by a decision.
+    // TWO files, and the second is not a second carve-out. #2576's post-commit
+    // coverage drain re-evaluates a booking that is ALREADY confirmed, so there is
+    // nothing left to refuse — throwing there would abort a background sweep and
+    // roll back the very incident it exists to record. It lives inside the review
+    // service itself rather than at a flow, and the position assertion below pins
+    // it to that one function, so it cannot become a way for a booking path to opt
+    // out of an enforcing club's rule.
     expect(sourceFilesNaming('enforcement: "REVIEW_ONLY"')).toEqual([
+      "src/lib/adult-member-hosting-review.ts",
       "src/lib/school-booking-request.ts",
     ]);
+    const reviewService = readRepoCode("src/lib/adult-member-hosting-review.ts");
+    expect(
+      reviewService.match(/enforcement: "REVIEW_ONLY"/g) ?? [],
+    ).toHaveLength(1);
+    const incidentReconciler = reviewService.indexOf(
+      "export async function reconcileSameOwnerCoverageIncident(",
+    );
+    expect(incidentReconciler).toBeGreaterThan(-1);
+    expect(
+      reviewService.indexOf('enforcement: "REVIEW_ONLY"'),
+    ).toBeGreaterThan(incidentReconciler);
     const source = readRepoCode("src/lib/school-booking-request.ts");
     expect(source.match(/enforcement: "REVIEW_ONLY"/g) ?? []).toHaveLength(1);
     // And it is inside that approval rather than the MEMBER whole-lodge approval

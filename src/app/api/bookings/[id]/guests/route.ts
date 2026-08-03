@@ -90,6 +90,7 @@ import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycl
 import {
   AdultMemberHostingRequiredError,
   buildAdultMemberHostingRefusalBody,
+  hostingCoverageActorOptions,
   reconcileAdultMemberHostingReviewWithSiblings,
 } from "@/lib/adult-member-hosting-review";
 import { getSeasonYear } from "@/lib/utils";
@@ -815,7 +816,18 @@ export async function POST(
       // adult member is added to cover them), so the review is re-derived from
       // the rows just written. `tx` because this transaction holds the per-lodge
       // capacity lock.
-      await reconcileAdultMemberHostingReviewWithSiblings(bookingId, tx);
+      //
+      // #2576 §6: adding guests changes the participant-night picture, which can
+      // take exact-night cover away from another booking on this account (a night
+      // range that shifts, an adult member whose row is replaced). The disposition
+      // travels with the actor.
+      await reconcileAdultMemberHostingReviewWithSiblings(bookingId, tx, {
+        ...hostingCoverageActorOptions({
+          actorRole,
+          hasBookingsEditAccess: isAdmin,
+          actorMemberId: session.user.id,
+        }),
+      });
 
       // Create BookingModification record
       const bookingModification = await tx.bookingModification.create({

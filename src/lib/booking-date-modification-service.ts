@@ -21,7 +21,10 @@ import {
 } from "@/lib/booking-edit-policy";
 import { linkModificationToOutstandingChangeRequest } from "@/lib/booking-change-request-linkage";
 import { assertBookingEnvelopeInvariants } from "@/lib/booking-envelope-invariants";
-import { reconcileAdultMemberHostingReviewWithSiblings } from "@/lib/adult-member-hosting-review";
+import {
+  hostingCoverageActorOptions,
+  reconcileAdultMemberHostingReviewWithSiblings,
+} from "@/lib/adult-member-hosting-review";
 import {
   createModificationAdditionalPaymentIntent,
   executeBookingModificationRefund,
@@ -956,7 +959,16 @@ export async function modifyBookingDates({
     // so the hazard can appear, disappear, or change shape without a single
     // guest changing. `tx` for the usual reason: this transaction holds the
     // global booking lock and the per-lodge capacity lock.
-    await reconcileAdultMemberHostingReviewWithSiblings(bookingId, tx);
+    //
+    // #2576 §6: arrival and departure changes are a named change class, and moving
+    // the nights can take exact-night cover away from another booking on this
+    // account. The disposition travels with the actor.
+    await reconcileAdultMemberHostingReviewWithSiblings(bookingId, tx, {
+      ...hostingCoverageActorOptions({
+        actorRole: actor.role,
+        actorMemberId: actor.id,
+      }),
+    });
 
     return {
       booking: updatedBooking,
@@ -1565,7 +1577,14 @@ export async function adminShiftBookingDates({
 
     // #2364. An admin date SHIFT keeps every price and every guest, but it does
     // move the nights, so the hosting evaluation has to run again.
-    await reconcileAdultMemberHostingReviewWithSiblings(bookingId, tx);
+    //
+    // #2576 §7/§8: this path is officer-only by construction, so it is never
+    // blocked — a shift that takes cover away from another booking on the account
+    // is allowed and escalated to an urgent incident. `actorRole: "ADMIN"` is
+    // stated rather than derived for the same reason the line below it is.
+    await reconcileAdultMemberHostingReviewWithSiblings(bookingId, tx, {
+      ...hostingCoverageActorOptions({ actorRole: "ADMIN" }),
+    });
 
     return {
       booking: updatedBooking,

@@ -49,6 +49,10 @@ import { revokePaymentLinksForBooking } from "@/lib/payment-link";
 import { settleGroupBookingOnOrganiserCancel } from "@/lib/group-cancel";
 import { repairLegacyAppliedCreditNoteAllocationsForBooking } from "@/lib/xero-applied-credit-allocation-repair";
 import { findUnconvergedAppliedCreditDeallocation } from "@/lib/xero-applied-credit-operation-serialization";
+import {
+  hostingCoverageActorOptions,
+  reconcileAdultMemberHostingReviewWithSiblings,
+} from "@/lib/adult-member-hosting-review";
 import { acquireLodgeCapacityLock } from "@/lib/capacity";
 import { bookingStayHasStarted } from "@/lib/booking-edit-policy";
 
@@ -574,6 +578,23 @@ async function performBookingCancellation(
         tx
       );
 
+      // #2576 §6. Cancellation is the first change class the owner names, and it
+      // is the one that removes attendance outright: cancelling the booking a
+      // qualifying adult member is staying on can leave ANOTHER booking on the same
+      // account without cover for the exact nights its non-member guests are there.
+      // Reconciling inside the claim transaction is what makes the refusal real —
+      // the throw rolls the cancellation back, so a member cannot strand their own
+      // other booking, while an officer's cancellation is allowed and escalated to
+      // an urgent compliance incident instead (§7, §8). Also clears this booking's
+      // own hosting review, since a cancelled stay has no hazard.
+      await reconcileAdultMemberHostingReviewWithSiblings(bookingId, tx, {
+        ...hostingCoverageActorOptions({
+          actorRole: sessionUserRole,
+          hasBookingsEditAccess,
+          actorMemberId: sessionUserId,
+        }),
+      });
+
       return {
         claimed: true as const,
         fresh,
@@ -732,6 +753,23 @@ async function performBookingCancellation(
         bookingId,
         tx
       );
+      // #2576 §6. Cancellation is the first change class the owner names, and it
+      // is the one that removes attendance outright: cancelling the booking a
+      // qualifying adult member is staying on can leave ANOTHER booking on the same
+      // account without cover for the exact nights its non-member guests are there.
+      // Reconciling inside the claim transaction is what makes the refusal real —
+      // the throw rolls the cancellation back, so a member cannot strand their own
+      // other booking, while an officer's cancellation is allowed and escalated to
+      // an urgent compliance incident instead (§7, §8). Also clears this booking's
+      // own hosting review, since a cancelled stay has no hazard.
+      await reconcileAdultMemberHostingReviewWithSiblings(bookingId, tx, {
+        ...hostingCoverageActorOptions({
+          actorRole: sessionUserRole,
+          hasBookingsEditAccess,
+          actorMemberId: sessionUserId,
+        }),
+      });
+
       return { claimed: true as const, fresh, creditRestoredCents };
     });
 
@@ -966,6 +1004,23 @@ async function performBookingCancellation(
         0,
         xeroAllocated._sum.amountCents ?? 0
       );
+
+      // #2576 §6. Cancellation is the first change class the owner names, and it
+      // is the one that removes attendance outright: cancelling the booking a
+      // qualifying adult member is staying on can leave ANOTHER booking on the same
+      // account without cover for the exact nights its non-member guests are there.
+      // Reconciling inside the claim transaction is what makes the refusal real —
+      // the throw rolls the cancellation back, so a member cannot strand their own
+      // other booking, while an officer's cancellation is allowed and escalated to
+      // an urgent compliance incident instead (§7, §8). Also clears this booking's
+      // own hosting review, since a cancelled stay has no hazard.
+      await reconcileAdultMemberHostingReviewWithSiblings(bookingId, tx, {
+        ...hostingCoverageActorOptions({
+          actorRole: sessionUserRole,
+          hasBookingsEditAccess,
+          actorMemberId: sessionUserId,
+        }),
+      });
 
       return {
         claimed: true as const,
@@ -1479,6 +1534,23 @@ async function performBookingCancellation(
         });
       }
     }
+
+    // #2576 §6. Cancellation is the first change class the owner names, and it
+    // is the one that removes attendance outright: cancelling the booking a
+    // qualifying adult member is staying on can leave ANOTHER booking on the same
+    // account without cover for the exact nights its non-member guests are there.
+    // Reconciling inside the claim transaction is what makes the refusal real —
+    // the throw rolls the cancellation back, so a member cannot strand their own
+    // other booking, while an officer's cancellation is allowed and escalated to
+    // an urgent compliance incident instead (§7, §8). Also clears this booking's
+    // own hosting review, since a cancelled stay has no hazard.
+    await reconcileAdultMemberHostingReviewWithSiblings(bookingId, tx, {
+      ...hostingCoverageActorOptions({
+        actorRole: sessionUserRole,
+        hasBookingsEditAccess,
+        actorMemberId: sessionUserId,
+      }),
+    });
 
     return {
       claimed: true as const,

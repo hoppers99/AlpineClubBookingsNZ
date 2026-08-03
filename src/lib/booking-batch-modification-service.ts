@@ -53,7 +53,10 @@ import {
   ADULT_SUPERVISION_REVIEW_REASON,
   minorsReviewAlertShouldFire,
 } from "@/lib/booking-review";
-import { reconcileAdultMemberHostingReviewWithSiblings } from "@/lib/adult-member-hosting-review";
+import {
+  hostingCoverageActorOptions,
+  reconcileAdultMemberHostingReviewWithSiblings,
+} from "@/lib/adult-member-hosting-review";
 import logger from "@/lib/logger";
 import { createBookingModificationCredit } from "@/lib/member-credit";
 import {
@@ -896,7 +899,17 @@ export async function modifyBookingBatch({
     // exception is a deliberate act with a reason attached, not a side effect of
     // an unrelated change, so a newly-appeared hazard opens PENDING for
     // everybody and an already-decided one is left exactly as it was.
-    await reconcileAdultMemberHostingReviewWithSiblings(bookingId, tx);
+    //
+    // #2576 §6/§7: participant-night, lodge and date changes can all take
+    // exact-night cover away from another booking on this account. The disposition
+    // travels with the actor — an ordinary member is refused and rolled back, an
+    // officer is allowed and the consequence is escalated to an urgent incident.
+    await reconcileAdultMemberHostingReviewWithSiblings(bookingId, tx, {
+      ...hostingCoverageActorOptions({
+        actorRole: actor.role,
+        actorMemberId: actor.id,
+      }),
+    });
 
     return {
       booking: updatedBooking,

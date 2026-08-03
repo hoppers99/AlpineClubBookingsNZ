@@ -67,6 +67,18 @@ describe("general cron runner", () => {
     const result = await runGeneralCronCycle({
       recordCronRun,
       tasks: {
+        // #2576: the same-owner coverage drain, stubbed here and in the failure
+        // cycle below for the same reason every other task is — the runner's job
+        // is to record an outcome per job, not to reach a database.
+        drainHostingCoverageReevaluations: vi.fn(async () => ({
+          claimed: 0,
+          processed: 0,
+          incidentsOpened: 0,
+          incidentsUpdated: 0,
+          incidentsResolved: 0,
+          notified: 0,
+          failed: 0,
+        })),
         sendAdditionalPaymentReminders: vi.fn(async () => ({
           reminderDays: 3,
           finalReminderDaysBeforeCheckIn: 2,
@@ -184,7 +196,7 @@ describe("general cron runner", () => {
     // same window (#2550's placeholder guest-name reminders and #2553's hold
     // reaper), and this literal is where a merge that keeps both branches' job
     // registrations but only one branch's count shows up.
-    expect(recordCronRun).toHaveBeenCalledTimes(9);
+    expect(recordCronRun).toHaveBeenCalledTimes(10);
     expect(recordCronRun).toHaveBeenCalledWith(
       expect.objectContaining({
         jobName: "additional-payment-reminders",
@@ -237,6 +249,13 @@ describe("general cron runner", () => {
     expect(recordCronRun).toHaveBeenCalledWith(
       expect.objectContaining({
         jobName: "placeholder-guest-name-reminders",
+        status: "SUCCESS",
+      })
+    );
+    // #2576
+    expect(recordCronRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        jobName: "hosting-coverage-reevaluation",
         status: "SUCCESS",
       })
     );
@@ -297,6 +316,18 @@ describe("general cron runner", () => {
       runGeneralCronCycle({
         recordCronRun,
         tasks: {
+          // #2576: the same-owner coverage drain, stubbed here for the same reason
+          // every other task is — the runner's job is to record an outcome per
+          // job, not to reach a database.
+          drainHostingCoverageReevaluations: vi.fn(async () => ({
+            claimed: 0,
+            processed: 0,
+            incidentsOpened: 0,
+            incidentsUpdated: 0,
+            incidentsResolved: 0,
+            notified: 0,
+            failed: 0,
+          })),
           sendAdditionalPaymentReminders,
           confirmPendingBookings: vi.fn(async () => {
             throw new Error("database unavailable");

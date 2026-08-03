@@ -1,4 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
+import {
+  SameOwnerCoverageWouldBreakError,
+  buildSameOwnerCoverageRefusalBody,
+} from "@/lib/adult-member-hosting-same-owner";
 import { auth } from "@/lib/auth";
 import { cancelBooking } from "@/lib/booking-cancel";
 import { getClientIp } from "@/lib/rate-limit";
@@ -120,6 +124,17 @@ export async function POST(
       { status: result.status }
     );
   } catch (error) {
+    // #2576 §6. ABOVE the generic branch, and that position is the whole point:
+    // this refusal is a 409 the member can act on — it names which of their own
+    // bookings, which lodge and which nights would be left without adult-member
+    // cover — and below a `Failed to cancel booking` 500 it would read as a bug in
+    // the site rather than as a decision they can respond to.
+    if (error instanceof SameOwnerCoverageWouldBreakError) {
+      return NextResponse.json(
+        buildSameOwnerCoverageRefusalBody(error),
+        { status: error.status }
+      );
+    }
     logger.error({ err: error }, "Error cancelling booking");
     return NextResponse.json(
       { error: "Failed to cancel booking" },

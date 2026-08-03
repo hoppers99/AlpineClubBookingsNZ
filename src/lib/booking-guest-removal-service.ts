@@ -27,7 +27,10 @@ import {
   minorsReviewAlertShouldFire,
   requiresAdultSupervisionReview,
 } from "@/lib/booking-review";
-import { reconcileAdultMemberHostingReviewWithSiblings } from "@/lib/adult-member-hosting-review";
+import {
+  hostingCoverageActorOptions,
+  reconcileAdultMemberHostingReviewWithSiblings,
+} from "@/lib/adult-member-hosting-review";
 import {
   getBookingEditPolicy,
   usesActiveBookingEditLifecycle,
@@ -765,7 +768,14 @@ export async function removeBookingGuestInTransaction({
   // opens a hosting review, and taking out the last non-member guest closes one.
   // Both are derived from the rows this transaction just wrote, using its own
   // client because it holds the global booking lock and the per-lodge lock.
-  await reconcileAdultMemberHostingReviewWithSiblings(bookingId, tx);
+  //
+  // #2576 §6: removing the qualifying adult member is the change class the owner
+  // names first, and it can strand ANOTHER booking on this account. The
+  // disposition travels with the actor — a member is refused and rolled back, an
+  // officer is allowed and escalated.
+  await reconcileAdultMemberHostingReviewWithSiblings(bookingId, tx, {
+    ...hostingCoverageActorOptions({ actorRole, actorMemberId }),
+  });
 
   return {
     booking: updatedBooking,

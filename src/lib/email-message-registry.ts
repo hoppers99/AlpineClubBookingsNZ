@@ -1624,6 +1624,10 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "triggeringMemberName",
   // #2550: how many of the party still carry a generated placeholder name.
   "unnamedGuestCount",
+  // #2576: the NZ lodge-nights on which a booking's non-member guests have no
+  // qualifying adult member staying. A comma-separated list, formatted by the
+  // sender, so a club's override can put it wherever the sentence reads best.
+  "uncoveredNights",
   "verifyUrl",
   "windowHours",
   // MG4 (#2309): the withdrawal notice's two composed blocks — what happened,

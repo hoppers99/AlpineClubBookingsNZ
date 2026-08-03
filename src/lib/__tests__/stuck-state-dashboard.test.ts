@@ -85,6 +85,11 @@ function buildDeps(overrides?: Partial<StuckStateDashboardDependencies>) {
       paymentRecoveryOperation: {
         count: vi.fn(),
       },
+      // #2576: active same-owner hosting-coverage incidents (the critical officer
+      // card). Zero by default so every existing expectation is unchanged.
+      hostingCoverageIncident: {
+        count: vi.fn().mockResolvedValue(0),
+      },
       booking: {
         findMany: vi.fn().mockResolvedValue([]),
         count: vi.fn().mockResolvedValue(0),
@@ -181,6 +186,7 @@ describe("getStuckStateDashboard", () => {
     const deps = buildDeps({
       db: {
         paymentRecoveryOperation: { count: paymentCount },
+        hostingCoverageIncident: { count: vi.fn().mockResolvedValue(0) },
         booking: {
           findMany: vi.fn().mockResolvedValue(waitlistBookings),
           // #1349 crash-window detector: cancelled bookings holding a captured
