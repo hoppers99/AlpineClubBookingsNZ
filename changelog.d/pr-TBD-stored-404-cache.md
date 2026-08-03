@@ -15,3 +15,12 @@
   Nothing changes for members or for the public pages themselves: the same content
   is served, at the same speed, and the club logo and other shipped images keep
   their normal browser caching.
+
+  Two small operator-visible details. The site map (`/sitemap.xml`) was the same
+  fault in a more exposed form — a cache could have held it for a year — and it is
+  closed the same way; search engines refetch it each time, which is what the club
+  wants anyway. And any file added to the shipped `public/` folder that is not an
+  image (a self-hosted font, say, or a PDF) will be fetched fresh on every page view
+  rather than cached by the browser. Nothing shipped today is affected; if that ever
+  matters, the fix is a one-line addition to the shared list of asset file types in
+  `src/lib/asset-url-404.ts` rather than a change to the caching rule.

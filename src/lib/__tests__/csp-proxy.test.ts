@@ -1149,12 +1149,24 @@ describe("anonymous public-page cache headers (#2322)", () => {
     expect(response.headers.get("Vary")).toContain("Cookie");
   });
 
-  it("leaves the framework default in place for a request carrying a session", async () => {
+  it("withholds the anonymous window from a request carrying a session", async () => {
+    // The #2322 property: a visitor with a session never gets the relaxed value, so
+    // no store can hold their copy of `/`. What fills the gap changed with #2578's
+    // review — the proxy now writes the private-only directive itself rather than
+    // leaving the header empty for the framework, which is the same bytes and one
+    // fewer assumption. The case that owns that reasoning is
+    // "sends `/` the explicit directive when a session suppresses the anonymous
+    // window"; this one stays pinned on the anonymous value being absent.
     const response = await proxy(
       requestWithCookie("https://example.org/", "authjs.session-token=abc"),
     );
+    // Coalesced so this case fails only on its own property: an empty header is a
+    // legitimate way to withhold the anonymous window, and which value fills the gap
+    // is the next case's business.
+    const directive = response.headers.get("Cache-Control") ?? "";
 
-    expect(response.headers.get("Cache-Control")).toBeNull();
+    expect(directive).not.toBe(ANONYMOUS_CACHE_CONTROL);
+    expect(directive).not.toContain("max-age=60");
   });
 
   it.each([
@@ -1212,6 +1224,13 @@ describe("anonymous public-page cache headers (#2322)", () => {
    * (`next/dist/server/lib/cache-control.js` plus the 31536000 `expireTime`
    * default). That is the exact directive #2322 exists to keep off public pages,
    * and no test looked at a CMS path.
+   *
+   * The 300 above is the derivation from the route's export, NOT the wire value: the
+   * public layout's five 15-second tagged caches clamp the route's effective
+   * revalidate, so what #2578 measured was `s-maxage=15,
+   * stale-while-revalidate=31535985`. `PRIVATE_ONLY_CACHE_CONTROL`'s docblock in
+   * `src/proxy.ts` reconciles the two and names the knob; neither figure changes what
+   * this suite asserts, since the class is refused whatever the number.
    */
   const CMS_PATHS = ["/about", "/faq", "/trips/2026", "/definitely-missing"];
 
@@ -1250,15 +1269,38 @@ describe("anonymous public-page cache headers (#2322)", () => {
     expect(response.headers.get("Cache-Control")).toBe(ANONYMOUS_CACHE_CONTROL);
   });
 
-  it("leaves `/` to the framework when a session suppresses the anonymous window", async () => {
-    // `/` is force-dynamic, so Next writes the same `private, no-store` itself and
-    // there is no `s-maxage` here to correct. #2322's decision about that one route
-    // stays wholly in getAnonymousPageCacheControl().
+  it("sends `/` the explicit directive when a session suppresses the anonymous window (#2578)", async () => {
+    // This used to expect null, on the reasoning that `/` is force-dynamic so Next
+    // writes the same `private, no-store` itself and #2322's decision about that one
+    // route stays wholly in getAnonymousPageCacheControl(). The value on the wire is
+    // indeed the same — which is the point: writing it ourselves costs nothing
+    // observable and stops the invariant below depending on a route export. As it
+    // stood, a signed-in GET of `/` left with the marker `Set-Cookie` and NO directive
+    // of the proxy's, so #2352 slice 2 (which makes `/` static) would have shipped
+    // `s-maxage` beside that cookie on the busiest URL in the app.
     const response = await proxy(
       requestWithCookie("https://example.org/", "authjs.session-token=abc"),
     );
 
-    expect(response.headers.get("Cache-Control")).toBeNull();
+    expect(response.headers.get("Cache-Control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+    expect(
+      response.headers.getSetCookie().some((value) => value.startsWith("signed-in-hint=1")),
+      "the case only means something while this response carries the marker cookie",
+    ).toBe(true);
+  });
+
+  it("sends `/` the explicit directive for a HEAD, which the anonymous window never covers", async () => {
+    // getAnonymousPageCacheControl() is GET-only, so before #2578's review fix a HEAD
+    // of `/` was the one page-shaped address no directive of ours reached at all.
+    const response = await proxy(
+      new NextRequest("https://example.org/", { method: "HEAD" }),
+    );
+
+    expect(response.headers.get("Cache-Control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
   });
 
   it("sends a member or admin page the same explicit directive (#2578)", async () => {
@@ -1511,16 +1553,42 @@ describe("out-of-territory responses are never offered to a shared cache (#2578)
     // — but the near misses it admits, which the catch-all claims and stores.
     ["/_next/staticfoo", PRIVATE_ONLY],
     ["/_next/imagemap", PRIVATE_ONLY],
+    // Static files under `public/` that are NOT one of the seven image extensions in
+    // `ASSET_URL_EXTENSIONS`: page-shaped here, so they get the directive. Neither
+    // file exists today (`public/` holds `branding/*` plus `robots.txt`), and they are
+    // pinned because the one knob that would move them is that extension list — which
+    // moves the rewrite and the setup gate's classifier with it. Adding an extension
+    // to the proxy alone would hand the framework's `s-maxage` back to every miss of
+    // that shape.
+    ["/fonts/Inter.woff2", PRIVATE_ONLY],
+    ["/handbook.pdf", PRIVATE_ONLY],
+    // Asset-shaped, but under an ODD-CASED `/API/` prefix — which is neither an asset
+    // nor an API URL for routing purposes, and was the hole in the first cut of this
+    // fix. `ASSET_MISS_SOURCE`'s `(?!api/)` lookahead compiles case-insensitively so
+    // no rewrite terminates these, Next's route table is case-sensitive so no handler
+    // claims them, and `(website)/[...slug]` renders the 404 page out of the page
+    // store — carrying the framework's `s-maxage` unless the proxy writes one.
+    // `asset-url-404.test.ts` pins the routing for the same three addresses.
+    ["/API/x.png", PRIVATE_ONLY],
+    ["/Api/does-not-exist.png", PRIVATE_ONLY],
+    ["/API/images/uploaded/x.jpg", PRIVATE_ONLY],
+    ["/ApI/nested/deep/logo.ico", PRIVATE_ONLY],
     // In territory, unchanged by this fix.
     ["/about", PRIVATE_ONLY],
     ["/contact", PRIVATE_ONLY],
     ["/hut-leader-instructions", PRIVATE_ONLY],
+    // `/` for an anonymous GET keeps #2322's window; the signed-in and HEAD cases are
+    // in the #2322 block above, where the rest of that route's reasoning lives.
     ["/", ANONYMOUS],
     // The two shapes whose directive belongs to another layer, and which cannot
     // come from the page store: an `/api` handler's own (`/api/skifield-conditions`
     // answers `public, max-age=600` on purpose) and a real file's, served by
     // `send` with its set-if-absent `public, max-age=…`.
     ["/api/admin/waitlist", null],
+    // The real, correctly-cased uploaded-image handler, whose URLs all end in an image
+    // extension (`src/app/api/images/uploaded/[...path]/route.ts`). The odd-cased row
+    // above must not be read as licence to touch this one.
+    ["/api/images/uploaded/x.jpg", null],
     ["/branding/logo.png", null],
     ["/branding/Logo.PNG", null],
     ["/gallery.svg", null],
@@ -1562,6 +1630,35 @@ describe("out-of-territory responses are never offered to a shared cache (#2578)
       ),
       "a HEAD is routed as the GET is, so it takes the same framework directive",
     ).toBe(true);
+    expect(
+      getPrivateOnlyCacheControl(
+        new NextRequest("https://example.org/", { method: "HEAD" }),
+        true,
+      ),
+      "a HEAD of `/` is the one page-shaped address the anonymous window cannot cover",
+    ).toBe(true);
+    expect(
+      getPrivateOnlyCacheControl(
+        new NextRequest("https://example.org/", {
+          headers: { cookie: "authjs.session-token=abc" },
+        }),
+        true,
+      ),
+      "a signed-in `/` gets the directive: the anonymous window is not being sent",
+    ).toBe(true);
+  });
+
+  it("widens to HEAD in territory as well, which is the one in-territory change", async () => {
+    // Measured on the first cut of this fix: the proxy wrote nothing for `HEAD /about`
+    // while the GET of the same URL left with the private-only value, so the framework's
+    // own directive reached the wire on the HEAD. Same route, same store, same fault —
+    // so "in-territory GET is byte-identical" is asserted here rather than allowed to
+    // stand in for "nothing in territory moved".
+    const response = await proxy(
+      new NextRequest("https://example.org/about", { method: "HEAD" }),
+    );
+
+    expect(response.headers.get("Cache-Control")).toBe(PRIVATE_ONLY);
   });
 
   it("normalises a trailing slash before answering, both territories", () => {
@@ -1589,6 +1686,15 @@ describe("out-of-territory responses are never offered to a shared cache (#2578)
       ["/dashboard/nope", "authjs.session-token=abc"],
       ["/admin/typo", "authjs.session-token=abc"],
       ["/definitely-missing", "authjs.session-token=abc"],
+      // `/` signed in, which the first cut of this fix did not probe — and it was the
+      // one probe that would have failed, because `getAnonymousPageCacheControl()`
+      // answers only an ANONYMOUS GET while `/` was excluded from the private-only
+      // rule outright. The busiest URL in the app, carrying the marker cookie beside
+      // whatever directive another layer chose.
+      ["/", "authjs.session-token=abc"],
+      // Asset-shaped under an odd-cased `/API/` prefix: page-shaped for routing, so it
+      // both carries the cookie and must carry a directive of its own.
+      ["/API/x.png", "authjs.session-token=abc"],
       // Signed out but holding a stale hint: the proxy CLEARS it. This is the shape
       // an anonymous request can produce, which is what makes it reachable by a
       // shared cache in the first place.
@@ -1596,6 +1702,7 @@ describe("out-of-territory responses are never offered to a shared cache (#2578)
       ["/dashboard/nope", "signed-in-hint=1"],
       ["/admin/typo", "signed-in-hint=1"],
       ["/", "signed-in-hint=1"],
+      ["/API/x.png", "signed-in-hint=1"],
     ] as const;
 
     for (const [path, cookie] of probes) {
@@ -1623,6 +1730,7 @@ describe("out-of-territory responses are never offered to a shared cache (#2578)
     // sync on the same page load.
     for (const path of [
       "/api/admin/waitlist",
+      "/api/images/uploaded/x.jpg",
       "/branding/logo.png",
       "/branding/Logo.PNG",
       "/gallery.svg",
@@ -1665,6 +1773,12 @@ describe("out-of-territory responses are never offered to a shared cache (#2578)
    * this file pins the gate complete and every module on so the header cases above can
    * run at all. The property is about the header, not about the gate's decision, so
    * the seam is where it belongs.
+   *
+   * These responses ask a DIFFERENT question from the pass-through ones above, which
+   * the first cut of this fix missed by sharing one predicate: the exclusions there
+   * exist to protect another layer's directive, and a response the proxy returns has
+   * no other layer. So the asset shapes and `/` are sealed here even though they are
+   * skipped above, and only the method and the `/api` parity carve-out survive.
    */
   describe("a response the proxy returns itself", () => {
     it("seals a page-shaped 404 rather than leaving it heuristically cacheable", () => {
@@ -1677,10 +1791,43 @@ describe("out-of-territory responses are never offered to a shared cache (#2578)
       applyPrivateOnlyCacheControl(
         new NextRequest("https://example.org/chores/tok-123"),
         response,
-        false,
       );
 
       expect(response.headers.get("Cache-Control")).toBe(PRIVATE_ONLY);
+    });
+
+    it.each([
+      // Asset-shaped: excluded from the PASS-THROUGH rule to protect `send`'s own
+      // `public, max-age=…`, which cannot exist on a response the proxy returns
+      // itself. Measured on the first cut through the real proxy, with the display
+      // module off, `GET /display/screen.png` came back 404 with no directive at all.
+      "/display/screen.png",
+      "/chores/logo.svg",
+      // `/`: #2322's browser window belongs to the home PAGE, not to a gate's 404 or a
+      // holding screen served at that address.
+      "/",
+    ])("seals %s too, where no other layer has a directive to protect", (path) => {
+      const response = new NextResponse(null, { status: 404 });
+
+      applyPrivateOnlyCacheControl(new NextRequest(`https://example.org${path}`), response);
+
+      expect(response.headers.get("Cache-Control")).toBe(PRIVATE_ONLY);
+    });
+
+    it("leaves the other verbs alone, which RFC 9111 already refuses to store", () => {
+      // A POST or DELETE response is stored only against explicit freshness
+      // information, so a bare 404 is unstorable without one — and #2405's parity is
+      // about those verbs' gate answers matching the enabled module's.
+      for (const method of ["POST", "PUT", "PATCH", "DELETE"]) {
+        const response = new NextResponse(null, { status: 404 });
+
+        applyPrivateOnlyCacheControl(
+          new NextRequest("https://example.org/chores/tok-123", { method }),
+          response,
+        );
+
+        expect(response.headers.get("Cache-Control"), method).toBeNull();
+      }
     });
 
     it("leaves a directive the responder chose in place", () => {
@@ -1690,11 +1837,7 @@ describe("out-of-territory responses are never offered to a shared cache (#2578)
       const response = new NextResponse(null, { status: 503 });
       response.headers.set("Cache-Control", "no-store");
 
-      applyPrivateOnlyCacheControl(
-        new NextRequest("https://example.org/about"),
-        response,
-        true,
-      );
+      applyPrivateOnlyCacheControl(new NextRequest("https://example.org/about"), response);
 
       expect(response.headers.get("Cache-Control")).toBe("no-store");
     });
@@ -1709,7 +1852,6 @@ describe("out-of-territory responses are never offered to a shared cache (#2578)
       applyPrivateOnlyCacheControl(
         new NextRequest("https://example.org/api/admin/waitlist"),
         response,
-        false,
       );
 
       expect(response.headers.get("Cache-Control")).toBeNull();

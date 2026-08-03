@@ -1156,7 +1156,34 @@ The security-relevant properties:
   `revalidate === 0` default, so nothing a member is served changes. It covers GET
   **and HEAD**: a HEAD for a page is routed exactly as the GET is and takes the same
   framework directive, so restricting the rule to GET would make it true of bodies
-  and false of headers.
+  and false of headers. Widening to HEAD is the one change the fix makes IN
+  territory: the proxy used to write nothing for `HEAD /about` (measured), so the
+  framework's own directive reached the wire — the `s-maxage=15` measured for the
+  GET of the same stored page, derived for HEAD from the routing being identical.
+  An in-territory GET is byte-identical to before.
+
+  The `s-maxage=15` above is the MEASURED wire value, not the `revalidate = 300`
+  on `src/app/(website)/[...slug]/page.tsx`. They differ because `unstable_cache`
+  shrinks the enclosing work unit's revalidate to the smallest nested value
+  (`next/dist/server/web/spec-extension/unstable-cache.js`), and the public layout
+  reads five tagged caches built at `SHORT_CONFIG_TTL_SECONDS = 15`
+  (`src/lib/public-layout-config.ts`) — hence 15, and
+  `31536000 − 15 = 31535985` for the stale-while-revalidate half. **The exposure
+  window a reader sizes off these figures is the layout's TTL, not the page's
+  export**: change `SHORT_CONFIG_TTL_SECONDS`, or take the last short-TTL cache out
+  of the public layout, and the numbers here move. Nothing about the fix depends
+  on them — the proxy refuses the whole class whatever the figure.
+- **`/` is excluded only while the anonymous window is actually being sent, and
+  the first cut of #2578 got that wrong.** It excluded `/` outright, arguing that
+  `/` is `force-dynamic` so the framework writes `private, no-store` for it
+  anyway. True, and still not safe: for a SIGNED-IN GET of `/`, and for any HEAD
+  of `/` (the anonymous rule is GET-only), neither rule wrote a directive while
+  the D2 marker `Set-Cookie` was still written — so the structural invariant
+  below held on the busiest URL in the app only by virtue of a route export, which
+  is the class of assumption #2578 exists to stop relying on and which #2352
+  slice 2 (making `/` static) intends to change. The proxy now covers `/` exactly
+  when the anonymous rule does not; today that value is byte-identical to Next's
+  own, so nothing on the wire changes yet.
 - **Two shapes deliberately keep another layer's directive, and the marker cookie
   is withheld on exactly those.** `/api/*` is one: the optional catch-all
   `api/[[...unmatched]]` claims the whole namespace so no `/api` address can come
@@ -1172,17 +1199,59 @@ The security-relevant properties:
   are answered by one predicate in the proxy (`isPageShapedPath()`), which also
   gates the D2 `Set-Cookie`, so the invariant holds structurally: **the proxy
   never emits a `Set-Cookie` on a response whose `Cache-Control` it has left to
-  another layer.** The hint is NOT suppressed out of territory generally —
+  another layer.** One predicate was necessary and not sufficient — the review of
+  the first cut found the invariant false at `/`, where the directive side had a
+  carve-out the predicate knew nothing about (see the `/` bullet above). It now
+  rests on two facts together: the hint sync is the proxy's only `Set-Cookie`
+  writer and is gated on that predicate, and every path the predicate admits gets a
+  directive from one of the two cache rules. A third `Set-Cookie` writer, or a
+  second carve-out on the directive side, has to re-establish the pairing rather
+  than inherit it. The hint is NOT suppressed out of territory generally —
   `/login` and the member area are where the session state changes, so
   suppressing there would take the correction off the responses that need it —
   and it does not have to be, because those responses now carry `private` rather
   than a shared-cache directive.
-- **A response the proxy returns itself is sealed too.** The #2420 holding screen
-  already sends `no-store` with a `Retry-After`; a module gate's 404 for a page
-  path carried no directive at all, which RFC 9111 lets a shared cache store
-  heuristically, so it now gets the private-only value set-if-absent. `/api` gate
-  responses are excluded by the same predicate, which is what keeps #2405's
-  module-state parity — a directive there would read as "the module is off".
+
+  **One carve-in inside the asset exclusion: an odd-cased `/API/…`.** The rewrite
+  that terminates asset misses compiles case-INSENSITIVELY (path-to-regexp's
+  `sensitive` defaults to false), so its `(?!api/)` lookahead refuses `/API/x.png`
+  as well as `/api/x.png`, while Next's route table is case-SENSITIVE, so no
+  handler claims it either. `(website)/[...slug]` therefore renders the club's 404
+  page for it, out of the page store, with the framework's `s-maxage` on it — the
+  first cut of #2578 left exactly that on the wire, measured, over an unbounded
+  URL space that scanners probe (`src/lib/__tests__/asset-url-404.test.ts` already
+  pinned the routing). For header purposes such an address is a page, so it is
+  treated as one; the real lowercase namespace is taken first, so nothing an
+  `/api` handler can answer is affected.
+
+  **The asset class is exactly `ASSET_URL_EXTENSIONS` (seven image extensions),
+  which is narrower than "a file under `public/`".** Both halves of the exclusion's
+  premise come from that list, so a static file of any other type — a self-hosted
+  font, a PDF handbook — counts as page-shaped and is sent `private, no-store`,
+  meaning a browser refetches it on every page view. `/robots.txt` is the only such
+  file shipped today (`send` gave it `public, max-age=0`, i.e. revalidate every
+  time, so the change is negligible), and `/sitemap.xml` is a genuine closure: as a
+  static prerender with no `revalidate` it was shipping `s-maxage=31536000` beside
+  the marker cookie. App JS and CSS are unaffected — they live under
+  `_next/static/`, which the matcher excludes. If a non-image static file is ever
+  added, the single knob is `ASSET_URL_EXTENSIONS` in `src/lib/asset-url-404.ts`,
+  which moves the rewrite, the setup gate's classifier and the proxy predicate
+  together; adding an extension to the proxy alone would hand the framework's
+  `s-maxage` back to every miss of that shape.
+- **A response the proxy returns itself is sealed too, and by its OWN rule.** The
+  #2420 holding screen already sends `no-store` with a `Retry-After`; a module
+  gate's 404 for a page path carried no directive at all, which RFC 9111 lets a
+  shared cache store heuristically, so it now gets the private-only value
+  set-if-absent. The first cut reused the pass-through predicate here, which was a
+  category error: its exclusions exist to protect ANOTHER layer's directive, and a
+  response the proxy returns never reaches `send` or a route handler, so there is
+  no other layer — measured through the proxy with the display module off,
+  `GET /display/screen.png` came back 404 with no directive at all. The gate for these responses is therefore
+  the method (GET and HEAD; the other verbs are unstorable without explicit
+  freshness) plus the `/api` carve-out, which is what keeps #2405's module-state
+  parity — a directive there would read as "the module is off". `/` gets no
+  carve-out here: #2322's browser window belongs to the home page, not to a gate's
+  404 served at that address.
 
 The relaxed value survives the framework default because Next writes its own
 `Cache-Control` only when the response does not already carry one
@@ -2465,10 +2534,13 @@ permanently (D7).
   container build, on `/pay`, `/dashboard/nope` and `/admin/typo`, against a
   pre-slice-1 baseline that answered `private, no-cache, no-store` on all four
   addresses. The proxy now writes the private-only directive for every page-shaped GET
-  in either territory, so no out-of-territory address is invited into a shared cache
-  whichever route answers it, and no `Set-Cookie` of ours ever leaves beside a
-  shared-cache directive. See "Anonymous Public-Page Caching" above for the rule and
-  its two deliberate exclusions. The nonce residual described here is untouched by
+  or HEAD in either territory, so no out-of-territory address is invited into a shared
+  cache whichever route answers it, and no `Set-Cookie` of ours ever leaves beside a
+  shared-cache directive. That includes an odd-cased `/API/x.png`, which no rewrite and
+  no handler claims and which the catch-all therefore answers from the store as well.
+  See "Anonymous Public-Page Caching" above for the rule, its two deliberate
+  exclusions, and the measured-versus-derived reconciliation of the `s-maxage=15`
+  figure quoted here. The nonce residual described here is untouched by
   that fix: same store, same blank document, same accepted trade — only its headers
   changed.
 

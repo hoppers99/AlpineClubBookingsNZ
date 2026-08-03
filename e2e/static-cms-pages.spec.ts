@@ -562,7 +562,8 @@ test.describe("a mistyped member-area address", () => {
  * the visitor — which is exactly how these three URLs came to ship
  * `s-maxage=15, stale-while-revalidate=31535985` with no `Vary`. Measured on a
  * container build of slice 1; the pre-slice-1 baseline answered `private, no-cache,
- * no-store` on all four of the addresses below.
+ * no-store` on all four of the addresses the issue named. `/API/x.png` is the fifth,
+ * added by the review of this fix rather than by the issue — see the list.
  *
  * `/pay`, `/dashboard/nope` and `/admin/typo` are outside the public-website territory
  * and are served from the page store anyway, because the CMS catch-all claims every URL
@@ -582,6 +583,14 @@ test.describe("out-of-territory 404 cache headers", () => {
     "/admin/typo",
     // The in-territory control.
     "/definitely-missing",
+    // Asset-shaped under an odd-cased `/API/` prefix, added by the review of this fix
+    // and failing before it: no `afterFiles` rewrite claims it (the `(?!api/)`
+    // lookahead compiles case-insensitively), no handler claims it (Next's route table
+    // is case-sensitive), so the CMS catch-all answers it from the page store like any
+    // other missing address. `/API/…` is ordinary scanner vocabulary over an unbounded
+    // URL space, which is what made this the one shape worth measuring on the wire
+    // rather than only in the unit matrix.
+    "/API/x.png",
   ];
 
   for (const address of MEASURED) {
@@ -633,9 +642,26 @@ test.describe("out-of-territory 404 cache headers", () => {
     const response = await request.get("/branding/favicon.example.ico", {
       headers: { cookie: "signed-in-hint=1" },
     });
+    const cacheControl = response.headers()["cache-control"] ?? "";
 
     expect(response.status(), "the shipped branding asset must exist").toBe(200);
     expect(response.headers()["set-cookie"] ?? "").not.toContain("signed-in-hint");
+    // The half of this case's name that is about CACHING, which the first cut asserted
+    // nowhere: the unit matrix proves the proxy writes nothing here, and only a real
+    // server can show that what reaches the wire is the filesystem layer's own value
+    // rather than `no-store`. This is the promise the changelog makes to operators —
+    // "the club logo and other shipped images keep their normal browser caching" — so
+    // a later change that dropped the asset arm out of the predicate for the header
+    // while leaving the cookie alone would be caught here.
+    expect(cacheControl, "the filesystem layer's own directive must survive").not.toContain(
+      "no-store",
+    );
+    // Deliberately not pinning the exact value: it belongs to whichever layer serves
+    // the file (`send`'s set-if-absent value for `public/`, or an operator's own front
+    // door), and this fix's promise is only that the proxy does not replace it with
+    // `no-store`. `s-maxage` is not asserted against either — an image is the same
+    // bytes for everyone and this case already proves no `Set-Cookie` rides with it,
+    // so an operator caching it in front of the app is their choice, not this hazard.
   });
 });
 

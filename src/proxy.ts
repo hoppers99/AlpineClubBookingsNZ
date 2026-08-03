@@ -127,7 +127,10 @@ const ANONYMOUS_PAGE_CACHE_CONTROL =
  * the same function returns `s-maxage=<revalidate>, stale-while-revalidate=<expire
  * - revalidate>`, and `expire` defaults to `nextConfig.expireTime` = 31536000
  * (`config-shared.js`), so a CMS page was leaving with
- * `s-maxage=300, stale-while-revalidate=31535700`.
+ * `s-maxage=300, stale-while-revalidate=31535700` — the derivation FROM THE ROUTE'S
+ * EXPORT, which is not what the wire shows. See the clamp below: the measured value
+ * is `s-maxage=15`, and the 300 here is retained only because it is the figure the
+ * `revalidate` export makes anyone reading that file expect.
  *
  * That is exactly the directive #2322 exists to keep off public pages, and it was
  * never decided: it arrived as a side effect of the `revalidate` export. A shared
@@ -150,6 +153,25 @@ const ANONYMOUS_PAGE_CACHE_CONTROL =
  * `s-maxage=15, stale-while-revalidate=31535985` — the same class of directive, on
  * addresses the proxy had classified as not-the-website and therefore skipped. The
  * byte string here is unchanged.
+ *
+ * **Why the measured figure is 15 and not the route's `revalidate = 300`, because
+ * two numbers for one directive would otherwise rot into each other.** `s-maxage=15`
+ * is the MEASURED wire value (container build of slice 1, 3 Aug 2026) and it is the
+ * one to trust; 300 is the derivation from
+ * `src/app/(website)/[...slug]/page.tsx`'s export alone. They differ because
+ * `unstable_cache` shrinks the enclosing work unit's `revalidate` to the smallest
+ * nested value — `if (workUnitStore.revalidate < options.revalidate) {} else {
+ * workUnitStore.revalidate = options.revalidate }`
+ * (`next/dist/server/web/spec-extension/unstable-cache.js`) — and the public layout
+ * reads five tagged caches built at `SHORT_CONFIG_TTL_SECONDS = 15`
+ * (`src/lib/public-layout-config.ts`). So the route's effective revalidate is 15,
+ * the same `getCacheControlHeader()` yields `31536000 − 15 = 31535985` for the
+ * stale-while-revalidate half, and the arithmetic checks out against the
+ * measurement. THAT IS THE DEPENDENCY: raise `SHORT_CONFIG_TTL_SECONDS`, or drop the
+ * last short-TTL cache out of the public layout, and the figures recorded here (and
+ * in `docs/SECURITY-ATTACK-SURFACE.md`) move — the exposure window a reader sizes
+ * off them is the layout's TTL, not the page's export. Nothing about this fix depends
+ * on the number: the proxy refuses the whole class, whatever the figure.
  */
 const PRIVATE_ONLY_CACHE_CONTROL =
   "private, no-cache, no-store, max-age=0, must-revalidate";
@@ -189,6 +211,24 @@ const PROXY_ASSET_SHAPE_PATTERN = new RegExp(
 );
 
 /**
+ * The `/api` namespace as Next's ROUTE TABLE sees it: case-sensitive, because
+ * `next.config.ts` sets no `experimental.caseSensitiveRoutes` and app routes match
+ * case-sensitively regardless. `/API/x` reaches no handler under
+ * `src/app/api/[[...unmatched]]/route.ts`.
+ */
+function isApiHandlerPath(path: string): boolean {
+  return path === "/api" || path.startsWith("/api/");
+}
+
+/**
+ * The same namespace as the `afterFiles` REWRITES see it — case-insensitively,
+ * because path-to-regexp's `sensitive` defaults to false, so
+ * `ASSET_MISS_SOURCE`'s `(?!api/)` lookahead excludes `/API/`, `/Api/` and `/api/`
+ * alike. See {@link isPageShapedPath} for why that seam matters here.
+ */
+const API_NAMESPACE_ANY_CASE_PATTERN = /^\/api(?:\/|$)/i;
+
+/**
  * Could this request be answered with a page DOCUMENT — and therefore, is this a
  * response whose `Cache-Control` and `Set-Cookie` the proxy owns?
  *
@@ -214,6 +254,40 @@ const PROXY_ASSET_SHAPE_PATTERN = new RegExp(
  *     logo's and favicon's browser caching with `no-store` on every public page
  *     view, which is a measurable cost bought for nothing.
  *
+ * **The asset class is exactly `ASSET_URL_EXTENSIONS` — seven image extensions —
+ * which is narrower than "a file under `public/`", deliberately.** Both halves of the
+ * premise above come from that list: the rewrites terminate those shapes and nothing
+ * else. So a static file of any other type (`public/fonts/Inter.woff2`,
+ * `public/handbook.pdf`) counts as page-shaped here and is sent the private-only
+ * directive, which for a real file means it is refetched on every page view rather
+ * than cached by the browser. That is the safe direction — an extension missing from
+ * the list falls through to the CMS catch-all when the file is absent, so treating it
+ * as an asset without a rewrite behind it would reopen #2578 for that shape — and it
+ * costs nothing today, because `public/` holds only `branding/*` images plus
+ * `robots.txt` (app JS and CSS live under `_next/static/`, which the matcher
+ * excludes). ONE KNOB if that changes: add the extension to
+ * `ASSET_URL_EXTENSIONS` (`src/lib/asset-url-404.ts`), which moves the rewrite, the
+ * setup gate's classifier and this predicate together. Adding it here alone would
+ * hand the framework's `s-maxage` back to every miss of that shape.
+ *
+ * **That two-case premise has a THIRD case, and it is the hole the first cut of
+ * #2578 shipped (review finding, 4 Aug 2026).** An asset-shaped URL under an
+ * ODD-CASED `/API/` prefix is claimed by neither: no rewrite claims it, because
+ * `ASSET_MISS_SOURCE`'s `(?!api/)` lookahead compiles case-INSENSITIVELY, and no
+ * handler claims it, because Next's route table is case-SENSITIVE — so
+ * `(website)/[...slug]` renders the club's 404 page for it, out of the page store,
+ * with the framework's `s-maxage` on it. That is not an inference: it is what
+ * `src/lib/__tests__/asset-url-404.test.ts` already pins (`["/API/x.png",
+ * ["proxy"]]`, `["/API/images/uploaded/x.jpg", ["proxy"]]`, and
+ * `resolveRewrites("/API/x.png") === null` driven through Next's own
+ * `getPathMatch()`), and what `src/lib/asset-url-404.ts`'s header states in words.
+ * Measured on the first cut: `/API/x.png`, `/Api/does-not-exist.png` and
+ * `/ApI/nested/deep/logo.ico` all left with no directive of ours, over an unbounded
+ * URL space that ordinary scanners probe. So for ROUTING purposes such an address is
+ * a page, whatever it ends in, and it is treated as one here — the real (lowercase)
+ * namespace is taken by {@link isApiHandlerPath} first, so nothing an `/api` handler
+ * can actually answer is affected.
+ *
  * Both consequences follow from the same fact — no page document can be served here
  * — so ONE predicate answers both questions the proxy asks about such a response:
  * whether to write the private-only directive ({@link getPrivateOnlyCacheControl})
@@ -222,13 +296,29 @@ const PROXY_ASSET_SHAPE_PATTERN = new RegExp(
  * coincidence: **the proxy never emits a `Set-Cookie` on a response whose
  * `Cache-Control` it has left to another layer.**
  *
+ * One predicate is necessary and was not sufficient: the review of the first cut found
+ * the invariant false at `/`, where {@link getPrivateOnlyCacheControl} had a carve-out
+ * this predicate knows nothing about. It is closed there, so the claim above now rests
+ * on two facts together — {@link syncSignedInHint} is the proxy's ONLY `Set-Cookie`
+ * writer and is gated on this predicate, and every path it admits gets a directive
+ * from either `getPrivateOnlyCacheControl()` or `getAnonymousPageCacheControl()`.
+ * Anything that adds a third `Set-Cookie` writer, or a second carve-out on the
+ * directive side, has to re-establish the pairing rather than inherit it.
+ *
  * Note this says nothing about which addresses are the public WEBSITE — that is
  * `isPublicWebsitePath()`. A member page, `/login`, `/robots.txt` and `/sitemap.xml`
  * are all page-shaped and all outside the website territory.
  */
 function isPageShapedPath(path: string): boolean {
-  if (path === "/api" || path.startsWith("/api/")) {
+  // The real handler namespace, as the route table matches it.
+  if (isApiHandlerPath(path)) {
     return false;
+  }
+
+  // An odd-cased `/API/…`: no rewrite claims it and no handler claims it, so the CMS
+  // catch-all renders it out of the page store. Page-shaped whatever its extension.
+  if (API_NAMESPACE_ANY_CASE_PATTERN.test(path)) {
+    return true;
   }
 
   return !PROXY_ASSET_SHAPE_PATTERN.test(path);
@@ -257,7 +347,10 @@ function hasSessionCookie(request: NextRequest): boolean {
  * the same page load — and an asset URL is the one class the proxy deliberately
  * leaves carrying another layer's directive, which for a real file is `send`'s
  * `public, max-age=…`. Writing a `Set-Cookie` next to a `public` directive is the
- * hazard #2578 exists to close, so the two rules are keyed off the same predicate.
+ * hazard #2578 exists to close, so the two rules are keyed off the same predicate —
+ * including its odd-cased `/API/…` carve-in, where an asset-shaped URL DOES get both
+ * the cookie and the private-only directive, because the CMS catch-all answers it
+ * with a document and no other layer has a directive there to protect.
  *
  * **What #2578 did NOT do: suppress the hint on every out-of-territory path.** That
  * was considered and rejected, and the reason is that `/login`, `/logout` and the
@@ -418,7 +511,9 @@ export function getAnonymousPageCacheControl(
  * anyway keeps one rule instead of a path list, and for the `force-dynamic` routes
  * the value is byte-identical to what Next would have written — including the three
  * `(website-dynamic)` pages, which is why the D1 narrowing left this on
- * `isPublicWebsitePath()` rather than following the nonce.
+ * `isPublicWebsitePath()` rather than following the nonce. An in-territory GET is
+ * therefore untouched by #2578; an in-territory HEAD is not, and the paragraph on
+ * methods below owns that.
  *
  * **Out of territory — the #2578 fix, and it is keyed on the REQUEST rather than on
  * the route because the proxy has no other option.** The catch-all claims every URL
@@ -454,12 +549,32 @@ export function getAnonymousPageCacheControl(
  * genuinely is left alone: no cache stores those, and Next's own answer for them is
  * already `no-store`.
  *
- * {@link CACHEABLE_ANONYMOUS_PATHS} is excluded outright, not just when the anonymous
- * directive is actually sent. `/` is `force-dynamic`, so the framework never writes
- * an `s-maxage` for it and there is nothing here to correct — and leaving it alone
- * keeps #2322's decision about that one route entirely in
- * `getAnonymousPageCacheControl()` rather than half here. Slice 2 makes `/` static
- * and has to revisit both halves together.
+ * Widening to HEAD is the one place #2578 changes IN-territory behaviour, and it is a
+ * deliberate change rather than a side effect. Measured before the widening, this
+ * function answered false for `HEAD /about` and the proxy wrote no header — so the
+ * framework's own value reached the wire, which on that stored CMS page is the
+ * `s-maxage=15` measured for the GET (derived for HEAD from the routing being the
+ * same, not separately measured on the wire). Same route, same store, same fault.
+ * `csp-proxy.test.ts` asserts the new answer in territory as well as out, so
+ * "in-territory GET is byte-identical" cannot quietly be read as "nothing in
+ * territory moved".
+ *
+ * {@link CACHEABLE_ANONYMOUS_PATHS} is excluded only while the anonymous directive is
+ * ACTUALLY being sent, which is the second review finding #2578 collected against its
+ * own first cut. The earlier rule excluded `/` outright and argued that `/` is
+ * `force-dynamic`, so the framework writes `private, no-store` for it anyway and
+ * #2322's decision about that one route stays wholly inside
+ * `getAnonymousPageCacheControl()`. Both halves of that were true and the conclusion
+ * still failed: for a SIGNED-IN GET of `/` (and for any HEAD of `/`, which the
+ * GET-only anonymous function never answers) neither function wrote a directive while
+ * {@link syncSignedInHint} still wrote the marker `Set-Cookie` — so the structural
+ * invariant in {@link isPageShapedPath} was held on `/` only by that `force-dynamic`
+ * export, which is
+ * exactly the class of assumption #2578 exists to stop relying on, and which #2352
+ * slice 2 intends to change. Asking `getAnonymousPageCacheControl()` costs nothing
+ * observable today — for a `force-dynamic` `/` the value written is byte-identical to
+ * Next's own — and it keeps the two functions in one relationship rather than two:
+ * this one covers `/` exactly when that one does not.
  */
 // test seam
 export function getPrivateOnlyCacheControl(
@@ -472,8 +587,13 @@ export function getPrivateOnlyCacheControl(
 
   const path = normalisePathname(request.nextUrl.pathname);
 
+  // `/`, and only while the anonymous window is the directive actually being sent.
+  if (CACHEABLE_ANONYMOUS_PATHS.has(path)) {
+    return getAnonymousPageCacheControl(request) === null;
+  }
+
   if (publicWebsite) {
-    return !CACHEABLE_ANONYMOUS_PATHS.has(path);
+    return true;
   }
 
   // #2578. `isPublicWebsitePath()` already refuses `/api` and every asset shape, so
@@ -494,19 +614,37 @@ export function getPrivateOnlyCacheControl(
  *
  * Set-if-absent, so the setup gate's own `no-store` + `Retry-After` discipline
  * (`src/lib/setup-gate.ts`) stays exactly as that issue decided it, and so a future
- * short-circuit that chooses a directive on purpose keeps it. `/api` responses are
- * excluded by the predicate itself, which is what keeps the #2405 module-state parity
- * — a gated verb's bare 400 and the JSON 404 must stay indistinguishable from what
- * the enabled module answers, and those handlers set their own directives.
+ * short-circuit that chooses a directive on purpose keeps it.
+ *
+ * **It asks a DIFFERENT question from {@link getPrivateOnlyCacheControl}, and the
+ * first cut of #2578 wrongly reused that one (review finding, 4 Aug 2026).** That
+ * predicate answers "will another layer write a directive here, and would overwriting
+ * it cost something", which is why it excludes the asset shapes and `/`. A response
+ * the proxy RETURNS never reaches `send` and never reaches a route handler, so on
+ * these responses there is no other layer and nothing to protect: the exclusions
+ * withhold the directive and buy nothing. Measured on the first cut through the real
+ * proxy with the display module off, `GET /display/screen.png` came back `404` with no
+ * `Cache-Control` at all (review measurement, 4 Aug 2026; reproduced at this seam) —
+ * heuristically storable under RFC 9111, the same class the page-shaped case closes.
+ * So the gate here is the method plus the `/api` carve-out and nothing else:
+ *
+ *  - **GET and HEAD only.** A cache may store those; for the other verbs RFC 9111
+ *    requires explicit freshness before anything is stored, so a bare 404 is already
+ *    unstorable.
+ *  - **`/api` excluded**, which is what keeps the #2405 module-state parity — a gated
+ *    verb's bare 400 and the JSON 404 must stay indistinguishable from what the
+ *    enabled module answers, and those handlers set their own directives.
+ *  - **No `/` carve-out.** #2322's browser window belongs to the home PAGE; a holding
+ *    screen or a gate 404 served at `/` is not that page and must not be stored.
  */
 // test seam
 export function applyPrivateOnlyCacheControl(
   request: NextRequest,
   response: NextResponse,
-  publicWebsite: boolean,
 ): void {
   if (response.headers.has("Cache-Control")) return;
-  if (!getPrivateOnlyCacheControl(request, publicWebsite)) return;
+  if (request.method !== "GET" && request.method !== "HEAD") return;
+  if (isApiHandlerPath(normalisePathname(request.nextUrl.pathname))) return;
 
   response.headers.set("Cache-Control", PRIVATE_ONLY_CACHE_CONTROL);
 }
@@ -724,7 +862,7 @@ export async function proxy(request: NextRequest) {
   if (setupInProgressResponse) {
     setupInProgressResponse.headers.set(CSP_HEADER, csp);
     setSecurityHeaders(setupInProgressResponse.headers, pathname);
-    applyPrivateOnlyCacheControl(request, setupInProgressResponse, publicWebsite);
+    applyPrivateOnlyCacheControl(request, setupInProgressResponse);
     return setupInProgressResponse;
   }
 
@@ -736,7 +874,7 @@ export async function proxy(request: NextRequest) {
   if (featureFlagBlockResponse) {
     featureFlagBlockResponse.headers.set(CSP_HEADER, csp);
     setSecurityHeaders(featureFlagBlockResponse.headers, pathname);
-    applyPrivateOnlyCacheControl(request, featureFlagBlockResponse, publicWebsite);
+    applyPrivateOnlyCacheControl(request, featureFlagBlockResponse);
     return featureFlagBlockResponse;
   }
 
