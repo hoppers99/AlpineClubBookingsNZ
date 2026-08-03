@@ -1982,13 +1982,34 @@ sample fails the suite rather than slipping past it.
 
 ### Public website render modes and the fixed CSP nonce (#2352 slice 1)
 
-`src/app/(website)/layout.tsx` reads **neither the session nor the request
-headers**, and that is a deliberate, enforced property rather than a coincidence of
-its current contents. Those two calls — `auth()` and `headers()` — were the only
-things forcing every public page to be rendered from scratch on every visit, and a
-production build prerendered zero pages because of them.
+The public website is **two route groups sharing one chrome component**, and the
+only difference between them is where the CSP nonce comes from:
 
-With them gone, each route in the group states its own mode:
+- `src/app/(website)` holds exactly the five addresses owner decision D1 approved
+  (`/`, the `[...slug]` CMS catch-all, `/join`, `/contact`, `/join/apply`) and
+  carries the **fixed per-release** nonce;
+- `src/app/(website-dynamic)` holds `/hut-leader-instructions`, `/join/[code]` and
+  `/join/verify/[token]`, which are `force-dynamic` for permanent reasons of their
+  own and therefore keep a **freshly minted per-request** nonce, like every member
+  and admin page. The owner narrowed D1 back to the five on 3 Aug 2026: a fixed
+  nonce is a real, if small, loss of defence, and it buys nothing on a page that is
+  never stored.
+
+Both groups' layouts are three lines around `src/components/website/website-chrome.tsx`
+— header, footer, banners, help widget, analytics consent, theme class, skip link and
+the pre-setup holding screen, defined ONCE. The owner's direction for the split was
+explicit: no duplicated markup.
+
+That shared chrome reads **neither the session nor the request headers**, and that
+is a deliberate, enforced property rather than a coincidence of its current
+contents. Those two calls — `auth()` and `headers()` — were the only things forcing
+every public page to be rendered from scratch on every visit, and a production build
+prerendered zero pages because of them. The per-request group's layout is the one
+place `headers()` is allowed, and it is safe precisely because it is a SIBLING of
+`(website)/layout.tsx` rather than a parent: the read opts that group's routes out of
+static rendering, which is what they already are, and it cannot reach the five.
+
+With those reads gone, each route states its own mode:
 
 - `(website)/[...slug]` — the admin-authored CMS pages — is served from
   **full-route ISR**: `generateStaticParams()` returns `[]` (nothing is prerendered
@@ -2003,26 +2024,33 @@ With them gone, each route in the group states its own mode:
   (`isPrefetch`) is served stale without triggering a rebuild at all. Only a tag
   expiry, which `revalidatePath` produces, forces a blocking regeneration.
 - That route's territory is deliberately narrowed to match the CSP nonce split. The
-  catch-all claims every URL no other route claims, which is wider than the set
-  `isPublicWebsitePath()` calls the public website — and the proxy hands the fixed
-  per-release nonce to exactly that set. A page stored outside it would carry a
-  nonce no later response names, so `isCmsServablePageSlug()`
+  catch-all claims every URL no other route claims, which is wider than the set the
+  proxy hands the fixed per-release nonce to (`isFixedNonceWebsitePath()`: the five
+  approved routes and nothing else). A page stored outside it would carry a nonce no
+  later response names, so `isCmsServablePageSlug()`
   (`src/lib/public-website-paths.ts`) makes both the catch-all's loader and the
   admin slug validator refuse the difference. `/pay` was the live shape. The same
   predicate also filters the two surfaces that ADVERTISE a page — the site menu
   (`listWebsiteMenuPages()`) and the Book Now page target — so a row saved before
   the rule existed stops being linked to rather than pointing every visitor at a
-  404 (slice-1 security re-review).
-- Every other route in the group declares `export const dynamic = "force-dynamic"`.
-  For `/`, `/join`, `/contact` and `/join/apply` that is a hold pending #2352
-  slices 2 and 3; for `/hut-leader-instructions`, `/join/[code]` and
-  `/join/verify/[token]` it is permanent — a per-assignment PIN-gated page and two
-  token-bearing screens must never be stored.
+  404 (slice-1 security re-review). The narrowing tightened it a little further:
+  `hut-leader-instructions`, `join/<code>` and `join/verify/<token>` are refused as
+  slugs too, because a real route claims those addresses, while
+  `trips/hut-leader-instructions` — which no route claims — is still a perfectly good
+  page.
+- `/`, `/join`, `/contact` and `/join/apply` declare
+  `export const dynamic = "force-dynamic"` as a hold pending #2352 slices 2 and 3.
+- The three `(website-dynamic)` routes declare it permanently, and their group layout
+  declares it as well so a page added there is per-request by default rather than by
+  remembering: a per-assignment PIN-gated page and two token-bearing screens must
+  never be stored.
 
-Two things replaced the layout's request reads. The CSP nonce is now **one fixed
-value per release** on every `(website)` address, derived in
-`src/lib/release-nonce.ts` from the `RELEASE_ID` build arg — a stored page can carry
-only one nonce, and Next stamps it at render time from the request's own CSP
+Two things replaced the chrome's request reads. The CSP nonce arrives as a **prop**,
+which is what lets one component serve two nonce territories: `(website)/layout.tsx`
+passes the fixed per-release value from `src/lib/release-nonce.ts` (derived from the
+`RELEASE_ID` build arg — a stored page can carry only one nonce, and Next stamps it
+at render time from the request's own CSP header), and
+`(website-dynamic)/layout.tsx` passes the per-request value out of the CSP nonce
 header. The public header's one signed-in boolean is resolved in the browser from a
 non-secret marker cookie (`src/lib/signed-in-hint.ts`), and the footer's page slug
 comes from `usePathname()` instead of an `x-page-slug` request header, which was
@@ -2030,6 +2058,18 @@ removed. The full security reasoning, the rejected alternatives and the scope of
 the nonce trade are in `docs/SECURITY-ATTACK-SURFACE.md` → "The Public Website's
 Fixed CSP Nonce"; the operator view is in `DEPLOYMENT.md` → "Public website page
 cache".
+
+One predicate used to answer three questions, and the narrowing separated them
+(`src/lib/public-website-paths.ts`). They are not the same question and the
+difference is load-bearing: `isPublicWebsitePath()` answers the #2420 setup gate and
+still claims BOTH public groups, so the three moved pages are answered with the
+pre-setup 503 holding screen exactly as the five are (verified on a real container:
+`completedAt` NULL gives 503 on all three); `isFixedNonceWebsitePath()` answers the
+nonce; `isCmsServablePageSlug()` answers the catch-all's territory. The Stripe
+tightening in the policy deliberately follows the WIDE predicate — Stripe.js has no
+business on a PIN-gated instructions page either, and following the nonce there would
+have handed those three pages a looser policy as a side effect of tightening their
+nonce.
 
 `src/app/(public)/layout.tsx` declares `export const dynamic = "force-dynamic"` for
 its whole group, and that line is measured rather than tidy: the `auth()` call it no
@@ -2042,12 +2082,27 @@ group-level declaration is the right shape there; `(website)` states its modes p
 route because exactly one of them is deliberately different.
 
 Two CI gates keep all of this from drifting, and they answer different questions.
-`scripts/ci/check-website-render-modes.mjs` reads the source: every `(website)`
-route declares its mode, the catch-all keeps `generateStaticParams() => []` plus its
-`revalidate`, and no `loading.tsx`, `template.tsx`, `default.tsx` or Partial
-Prerendering appears in the group — each of those introduces a boundary that could
+`scripts/ci/check-website-render-modes.mjs` reads the source: every route in either
+group declares its mode, the catch-all keeps `generateStaticParams() => []` plus its
+`revalidate`, nothing in `(website-dynamic)` mentions `generateStaticParams` or
+`revalidate` at all, and no `loading.tsx`, `template.tsx`, `default.tsx` or Partial
+Prerendering appears in either group — each of those introduces a boundary that could
 commit a 200 before the catch-all decides an address is a 404, and under ISR that
-soft 404 would then be stored.
+soft 404 would then be stored. It also holds the three structural properties the
+narrowing depends on, because a route group is invisible in a URL and none of these
+would fail anything else:
+
+- **the two route censuses** — each group's set of routes must equal the
+  corresponding list in `src/lib/public-website-paths.ts`, so a page dropped into
+  `(website)` cannot quietly be handed the weaker fixed nonce; adding one fails CI
+  until the census is deliberately amended, which is the point;
+- **chrome parity** — both layouts must compose the one shared chrome and no chrome
+  of their own, so the groups cannot drift apart visually;
+- **the chrome's own reads** — it may call neither `auth()`, `cookies()` nor
+  `headers()`, and may resolve neither nonce itself. Before the extraction that ban
+  was covered by the `(website)/layout.tsx` rules; moving the chrome to
+  `src/components/website/` would otherwise have moved it out of the gate's reach at
+  the same time.
 `scripts/ci/check-website-prerender-manifest.mjs` runs after the build and reads
 `.next/prerender-manifest.json`, which is the only place the framework's own answer
 is written down. BOTH halves are closed allowlists: the catch-all must still be the
@@ -2057,9 +2112,15 @@ appear in neither list. The on-demand half being closed is the more important on
 a stored route is one visitor's render handed to the next, and a route outside
 `(website)` becoming storable was invisible to both guards before the slice-1
 review. That second gate exists because the
-failure it catches is silent — any component under `(website)` that calls `auth()`,
-`cookies()` or `headers()` opts the catch-all out of the cache with a green build, a
-green test suite, and no symptom but the returning CPU cost.
+failure it catches is silent — any component in the shared chrome or under
+`(website)` that calls `auth()`, `cookies()` or `headers()` opts the catch-all out of
+the cache with a green build, a green test suite, and no symptom but the returning
+CPU cost.
+
+Measured on a real `docker build` of this branch: the route table reported
+`● /[...slug]` (SSG) with `ƒ /hut-leader-instructions`, `ƒ /join/[code]`,
+`ƒ /join/verify/[token]`, `ƒ /_not-found` and every other app route Dynamic, and both
+gates plus `check-prerendered-script-nonces.mjs` passed inside the image.
 
 The rules read a **canonicalised** pathname (`normaliseForRules` in
 `src/config/feature-routes.ts`): one trailing slash and one Next data suffix

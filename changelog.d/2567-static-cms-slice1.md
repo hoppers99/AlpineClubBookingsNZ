@@ -35,19 +35,33 @@
   and what a fork serving several clubs from one server would need to know are all
   written up in `docs/SECURITY-ATTACK-SURFACE.md`.
 
+  **The trade is confined to five addresses**: the home page, the information pages,
+  Join, Contact and the membership application form. Three public pages that a first
+  cut had swept in are back on a fresh token per visit — the lodge instructions page
+  a hut leader opens from an assignment email, and the two screens for joining a
+  group booking from a code or an emailed link. None of those is ever stored, so a
+  fixed token would have cost them a protection and bought nothing. They look and
+  behave exactly as before: same header, footer, banners and theme, from one shared
+  definition rather than a second copy, so the two cannot drift apart. Adding a new
+  public page to the fixed-token set now fails the build until the decision is made
+  on purpose.
+
   One naming rule got stricter as part of this. A content page may no longer start
   with a word the application itself owns — `pay`, `calendar`, `notices`, `profile`,
   `chores`, `bookings`, `lodge`, `finance`, `display` and the like, alongside the
   `admin`/`login`/`register` names that were already refused. Saving one now returns
   a clear error. Those addresses could be created before and appeared to work, but
   under whole-page caching they would have been served with a security token that no
-  longer matched, so nothing on the page would run. If you already have such a page
-  it now shows "page not found" until you rename it. It also stops being advertised —
-  the site menu drops it and a Book Now button aimed at it goes back to the normal
-  booking flow — so no link points at the dead address, which is also why it is worth
-  looking for one after upgrading: `CONFIGURATION.md` ("Some slugs are refused, and the
-  list grew") lists the reserved words, and Admin > Page Content still shows the page
-  with its address, ready to rename.
+  longer matched, so nothing on the page would run. Three more addresses are refused
+  for the same reason — `hut-leader-instructions`, and anything under `join/` other
+  than `join/apply` — because the application already serves real pages there. If you
+  already have such a page it now shows "page not found" until you rename it. It also
+  stops being advertised — the site menu drops it and a Book Now button aimed at it
+  goes back to the normal booking flow — so no link points at the dead address, which
+  is also why it is worth looking for one after upgrading: `CONFIGURATION.md` ("Some
+  slugs are refused, and the list grew") lists the reserved words and carries a query
+  for each shape, and Admin > Page Content still shows the page with its address,
+  ready to rename.
 
   The home page, Join, Contact and the membership application form are deliberately
   unchanged for now; they follow in a later step once this one has been measured on

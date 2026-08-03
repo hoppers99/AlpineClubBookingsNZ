@@ -165,6 +165,14 @@ and then served from a cache. Four operational facts:
   outlive its release. That matters beyond freshness: the CSP nonce on these pages
   is fixed per release (see `docs/SECURITY-ATTACK-SURFACE.md` → "The Public
   Website's Fixed CSP Nonce"), and a page from an older release would not hydrate.
+- **The fixed nonce covers five addresses and no others.** `/`, the CMS catch-all,
+  `/join`, `/contact` and `/join/apply` (owner decision D1, narrowed to exactly
+  these on 3 Aug 2026). `/hut-leader-instructions` and the two group-join screens
+  are rendered fresh for every visitor with their own one-time nonce, the same as
+  the member area and the admin area. Nothing about this is configurable and there
+  is nothing for an operator to do; it is recorded here because "the public website
+  has a fixed nonce" is not the whole truth, and the difference is what a security
+  reviewer will ask about.
 - **`RELEASE_ID` should reach the image, and CI proves it does.** It is a build ARG
   carrying the deployed commit SHA; the fixed nonce is derived from it. CI's
   `publish-ghcr-images` job passes it to the app image and then runs that pushed

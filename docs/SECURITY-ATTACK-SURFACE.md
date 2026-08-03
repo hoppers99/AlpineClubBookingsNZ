@@ -2173,7 +2173,7 @@ static at all. The owner chose the fixed nonce and explicitly rejected
 
 ### What the trade costs
 
-On `(website)` pages the nonce is readable in the page source, so it no longer
+On those five pages the nonce is readable in the page source, so it no longer
 stops a FULLY INJECTED `<script>` tag. It still stops the commoner injection
 shapes — `onclick=` and other `on*` handlers, `javascript:` URLs — because those
 cannot carry a nonce at all. Everything else is unchanged: no `unsafe-inline`,
@@ -2189,25 +2189,52 @@ Bundled tightening, per D1: **Stripe is dropped from `script-src` on these pages
 Stripe.js is loaded only from the member payment surfaces, so allowing it on a
 public information page was reach for an attacker and nothing for the club.
 
-### Scope — and one deliberate widening of D1, flagged for the owner
+### Scope — exactly the five addresses D1 named
 
-D1 named five pages (`/`, the CMS catch-all, `/join`, `/contact`, `/join/apply`).
-The implementation applies the fixed nonce to the **whole `(website)` route
-group**, which adds three: `/hut-leader-instructions`, `/join/[code]` and
-`/join/verify/[token]`.
+The fixed nonce covers `/`, the `[...slug]` CMS catch-all, `/join`, `/contact` and
+`/join/apply`, and nothing else.
 
-That is structural rather than a preference. `(website)/layout.tsx` is ONE shared
-layout; it renders the analytics `<Script nonce>` for every route beneath it, and
-it can no longer read the request — that read is precisely what forced a full
-render on every public page view. So the nonce it stamps must be the one the proxy
-publishes for every address it serves. Splitting the layout in two was the
-alternative and was rejected: it duplicates the shared chrome permanently to buy a
-difference that slices 2 and 3 remove anyway.
+**The one-sentence invariant:** an address carries the fixed per-release nonce if
+and only if one of those five routes can serve it — so the only nonce-bearing
+documents ever stored are the ones those five produce, and every other address on
+the site, public or not, is rendered per request under a nonce minted for that
+request.
 
-The three added pages are still rendered PER REQUEST (`force-dynamic`) — none of
-them is stored — so what they gain is the group's policy, not a cache entry. They
-handle no payment and hold no privileged content: PIN-gated lodge instructions and
-two group-join screens whose secret is the token in the URL, not the page.
+The first cut of this work applied the fixed nonce to the whole `(website)` route
+group, which swept in three more pages: `/hut-leader-instructions`, `/join/[code]`
+and `/join/verify/[token]`. **The owner reversed that on 3 Aug 2026** and the
+narrowing is implemented. The reasoning is worth keeping, because the structural
+argument for the widening was real:
+
+- A route takes its CSP nonce from the layout above it, and the shared public layout
+  may not read the request — that read is precisely what forced a full render on
+  every public page view. So two nonce sources genuinely do need two layouts.
+- What made the widening the wrong trade is that the three swept-in pages are
+  `force-dynamic` and therefore never stored, so the fixed nonce cost them the
+  unguessable-per-response defence and returned nothing at all.
+- So there are now two route groups: `src/app/(website)` (the five, fixed nonce) and
+  `src/app/(website-dynamic)` (the three, per-request nonce, read out of
+  `CSP_NONCE_HEADER` exactly as every member and admin page reads it).
+- **The markup is not duplicated to get that** — the owner's direction was explicit
+  on the point. Both layouts are three lines around one shared
+  `src/components/website/website-chrome.tsx`, which takes the nonce as a prop, and
+  CI fails the build if either layout grows chrome of its own or stops composing it.
+
+Two deliberate asymmetries in the split, each recorded because it looks like an
+inconsistency and is not:
+
+- **The Stripe tightening follows the WIDE predicate, not the nonce.** Dropping
+  `https://js.stripe.com` from `script-src` is right for the whole public website:
+  Stripe.js is loaded only from the member payment surfaces, so allowing it on a
+  PIN-gated instructions page is reach for an attacker and nothing for the club.
+  Narrowing that flag alongside the nonce would have handed those three pages a
+  LOOSER policy as a side effect of tightening their nonce.
+- **The #2420 pre-setup holding screen also follows the wide predicate.** The three
+  moved pages are public website addresses, so an unlaunched club still answers them
+  with 503 and the holding screen. Narrowing the shared predicate would have been
+  the small change and would have quietly taken that off them — a change to what an
+  unconfigured install exposes, made as a side effect of a CSP decision. Verified on
+  a real container build: with `ClubTheme.completedAt` NULL, all three answer 503.
 
 Login, registration, the member area, admin, finance, lodge and `/display` keep a
 freshly minted per-request nonce, exactly as before. `/login` is out of scope
@@ -2244,22 +2271,39 @@ permanently (D7).
   another onto the analytics `<Script nonce>`, and Google Analytics was refused on
   every public page. The per-instance random survives only as a last resort behind an
   error-level log.
-- `src/lib/csp.ts` takes the public-website decision from its caller;
-  `src/proxy.ts` makes it with `isPublicWebsitePath()` — the same predicate the
-  #2420 setup gate uses, so there is no second list to keep in step.
-- **The nonce split and the CACHE's territory are made into the same set, and that
-  is a security property rather than tidiness** (slice-1 review, F1). The gate's
-  question ("is this a public-website page for 503 purposes") is narrower than the
-  nonce's ("will this response be rendered by the `(website)` tree and stored"),
-  because `(website)/[...slug]` claims every URL no other route claims. The
-  difference was reachable: `pay` was a legal CMS slug and `(public)/pay` holds only
-  `[token]/`, so a published page at `/pay` was stored carrying whatever per-request
-  nonce generated it and then served under a policy naming a different one — every
-  inline script refused, permanently, for everyone. It is closed from the CMS side
-  rather than by widening the nonce, because widening would hand the fixed nonce to
-  `/dashboard` and `/admin`, which D1 keeps per-request: `isCmsServablePageSlug()`
-  (`src/lib/public-website-paths.ts`) makes the admin write and the catch-all's
-  loader both refuse those slugs.
+- `src/lib/csp.ts` takes the public-website decision from its caller, and
+  `src/proxy.ts` makes TWO decisions from two predicates in
+  `src/lib/public-website-paths.ts`: `isFixedNonceWebsitePath()` for the nonce, and
+  `isPublicWebsitePath()` for the policy's Stripe tightening and the #2420 setup
+  gate.
+- **One predicate used to answer three questions, and the narrowing forced a split**
+  — by question, not by convenience. While the fixed nonce covered the whole
+  `(website)` group, "is this the public website for 503 purposes", "does this carry
+  the fixed nonce" and "may the CMS catch-all serve this" had the same answer, so one
+  function served all three. They no longer do: the nonce covers five addresses while
+  the holding screen must still cover the whole public website. So
+  `isPublicWebsitePath()` keeps the setup gate's meaning unchanged (both groups),
+  `isFixedNonceWebsitePath()` answers the nonce, and `isCmsServablePageSlug()`
+  restates the second as a slug question. Each caller uses the one that answers ITS
+  question, and `src/lib/__tests__/public-website-path-predicates.test.ts` pins the
+  addresses where the answers differ.
+- **The nonce set and the CACHE's territory are the same set, and that is a security
+  property rather than tidiness** (slice-1 review, F1). `(website)/[...slug]` claims
+  every URL no other route claims, which is wider than the five. The difference was
+  reachable: `pay` was a legal CMS slug and `(public)/pay` holds only `[token]/`, so a
+  published page at `/pay` was stored carrying whatever per-request nonce generated it
+  and then served under a policy naming a different one — every inline script refused,
+  permanently, for everyone. It is closed from the CMS side rather than by widening
+  the nonce, because widening would hand the fixed nonce to `/dashboard` and `/admin`,
+  which D1 keeps per-request: `isCmsServablePageSlug()` makes the admin write and the
+  catch-all's loader both refuse those slugs. The narrowing tightened it three
+  addresses further — `hut-leader-instructions`, `join/<code>` and
+  `join/verify/<token>` are refused as slugs, because a real per-request route claims
+  each of them, so a CMS page there could never have been served in any release.
+  Refusing them at the write is what stops one being created; refusing them in the
+  loader and the menu reader is what handles a row from an earlier release.
+  `trips/hut-leader-instructions`, which no route claims, is still a valid page — a
+  reserved WORD would have refused that too, for no reason.
 - **The same predicate now filters what ADVERTISES a page, which the first pass
   missed** (slice-1 security re-review). Refusing to serve a row is not the whole
   answer while the site still links to it: a page saved at `/lodge/history` before
@@ -2272,14 +2316,43 @@ permanently (D7).
   site will not serve is an address the site does not offer; the Book Now case
   reuses #1929's existing fail-open to the booking flow. Finding the affected row
   is an operator step, and `CONFIGURATION.md` carries the query for it.
-- One residual is recorded rather than claimed closed: a 404 the catch-all raises for
-  an address outside that set is still stored as a 404 entry carrying the generating
-  request's nonce, so the not-found DOCUMENT served from the store afterwards has a
-  nonce the policy no longer names and does not hydrate. It renders and its links
-  work; it holds nothing personal; an admin write clears it. Closing it needs either
-  a per-request opt-out of the store (unproven against next@16.2.12, and a 500 if the
-  behaviour is not what it appears) or the owner widening D1's scope, so it is put to
-  the owner as #2570 rather than guessed at.
+- One residual is recorded rather than claimed closed, and it is now MEASURED rather
+  than reasoned about (#2570). A 404 the catch-all raises for an address outside the
+  set is stored as a 404 entry carrying the generating request's nonce, so the
+  not-found DOCUMENT served from the store afterwards has a nonce the policy no longer
+  names and does not hydrate. Observed on a real container build of this branch: two
+  requests for `/admin/typo` returned 404 both times, the first with policy nonce and
+  HTML nonce equal, the second with a fresh policy nonce while the HTML still carried
+  the first request's value. An in-territory miss (`/definitely-missing`) is
+  consistent on both requests, because it carries the fixed nonce — so the fault is
+  confined to addresses belonging to another route group. It holds nothing personal,
+  the status is a correct 404 on every request, and an admin write or a deploy clears
+  it.
+
+  **The visible symptom is worse than the #2570 briefing said, and this correction
+  matters to the decision.** That briefing described a page whose "text and ordinary
+  links work" with only its scripts refused. Measured on the same build: a
+  `notFound()` response from this route carries ZERO server-rendered visible markup —
+  `<body>` is an empty placeholder and the entire 404 screen arrives in the RSC flight
+  payload, inside nonce'd inline `<script>` tags (0 visible characters outside
+  `<script>` on `/admin/typo`, `/dashboard/nope` and `/definitely-missing`, against
+  ~3.7k on `/contact`). So a later visitor to a mistyped member address sees a BLANK
+  page until the next admin save or deploy, not a readable "page not found". No data
+  is exposed and the HTTP status stays correct, but "documented wart" was assessed
+  against the gentler description.
+
+  The owner chose option 2 on 3 Aug (stop storing those documents), and the mechanism
+  it named does not exist on next@16.2.12: with `cacheComponents` off, an on-demand
+  ISR generation renders under the prerender-legacy work-unit store, where both
+  `connection()` and `unstable_noStore()` throw `DynamicServerError` and base-server
+  converts that to a 500 — the worse outcome that option's own terms said to drop the
+  change for. The replacement considered was a proxy rewrite of such an address to a
+  dedicated per-request not-found route, and **that cannot work either, for a reason
+  of principle rather than of framework version: middleware runs BEFORE routing, so
+  the proxy cannot tell `/dashboard/nope` from `/dashboard/bookings`.** Rewriting
+  every non-website address would 404 the real member and admin areas. So this is back
+  with the owner rather than downgraded quietly; the mechanisms that would work, and
+  what each costs, are set out on #2570.
 
 ### The sign-in marker cookie (D2)
 
@@ -2335,12 +2408,31 @@ and `DEPLOYMENT.md`.
 
 ### Guards
 
-- `scripts/ci/check-website-render-modes.mjs` — every `(website)` route declares
-  its render mode; the CMS catch-all keeps `generateStaticParams() => []` plus its
-  `revalidate`; no `loading.tsx`/`template.tsx`/`default.tsx` and no Partial
-  Prerendering anywhere in the group. The boundary ban is the enforceable form of
-  the #2434 streaming warning: a boundary could commit a 200 before the catch-all
-  decides a URL is a 404, and under ISR that soft 404 would then be stored.
+- `scripts/ci/check-website-render-modes.mjs` — every route in either public group
+  declares its render mode; the CMS catch-all keeps `generateStaticParams() => []`
+  plus its `revalidate`; nothing in `(website-dynamic)` so much as mentions
+  `generateStaticParams` or `revalidate`; no `loading.tsx`/`template.tsx`/`default.tsx`
+  and no Partial Prerendering anywhere in either group. The boundary ban is the
+  enforceable form of the #2434 streaming warning: a boundary could commit a 200
+  before the catch-all decides a URL is a 404, and under ISR that soft 404 would then
+  be stored. Three structural checks arrived with the narrowing, and each covers a
+  change that would otherwise fail nothing at all:
+  - **the fixed-nonce census** — `src/app/(website)`'s routes must equal
+    `FIXED_NONCE_WEBSITE_ROUTES`, and `(website-dynamic)`'s must equal
+    `PER_REQUEST_WEBSITE_ROUTES`. A route group is invisible in a URL, so a page
+    dropped into the wrong one is a CSP decision made by accident; adding a sixth
+    fixed-nonce route fails CI until the census is deliberately amended. The runtime
+    predicate is derived from the same lists, so there is one source of truth rather
+    than a mirror to keep in step.
+  - **chrome parity** — both layouts compose the one shared chrome component and no
+    chrome of their own, and the set of chrome components each renders directly must
+    be identical (empty). This is the owner's "no duplicated markup" as an
+    enforceable rule.
+  - **the shared chrome's own reads** — it may call none of `auth()`, `cookies()` or
+    `headers()`, and may resolve neither nonce itself. While the chrome WAS
+    `(website)/layout.tsx` that ban came free; extracting it to
+    `src/components/website/` would otherwise have moved it out of the gate's reach
+    in the same commit, which is exactly the kind of coverage loss a refactor hides.
 - `scripts/ci/check-prerendered-script-nonces.mjs` — unchanged, and still green
   because `generateStaticParams()` returning `[]` emits no build-time HTML. That
   property is why slice 1 was safe to ship before the build-time-nonce question
@@ -2357,11 +2449,21 @@ and `DEPLOYMENT.md`.
   passed both this gate and `check-website-render-modes.mjs`, which walks
   `src/app/(website)` only. Closed in the slice-1 review.
 - `src/lib/__tests__/csp-proxy.test.ts` — the fixed nonce appears on exactly the
-  addresses `isPublicWebsitePath()` claims and nowhere else; every other directive
-  is byte-identical to a member page's; the marker cookie is set, cleared, left
-  alone when it already agrees, and stripped from the `Cookie` header the render is
-  handed (asserted on `x-middleware-request-cookie`, where the value really travels);
-  and no public-website response invites a shared cache to store it.
+  addresses `isFixedNonceWebsitePath()` claims and nowhere else, while the tightened
+  source list appears on every address `isPublicWebsitePath()` claims (the two
+  predicates asserted separately on one URL matrix, so the addresses where they
+  disagree are the cases); the three per-request pages get a DIFFERENT nonce on each
+  of two requests, and each response hands its own value to the render; every other
+  directive is byte-identical to a member page's; the marker cookie is set, cleared,
+  left alone when it already agrees, and stripped from the `Cookie` header the render
+  is handed (asserted on `x-middleware-request-cookie`, where the value really
+  travels); and no public-website response invites a shared cache to store it.
+- `src/lib/__tests__/public-website-path-predicates.test.ts` — the split itself: the
+  setup gate still claims all three moved addresses, the fixed-nonce set is exactly
+  the five plus the catch-all's territory, `/join/apply` stays with the five even
+  though it matches `/join/[code]`'s shape (Next serves the static route, and the
+  predicate mirrors that precedence), and the census walk classifies every
+  per-request route from the list rather than from a second hand-written set.
 - `src/lib/__tests__/cms-page-nonce-territory.test.ts` — every slug the admin write
   accepts is inside the fixed-nonce set, and every root segment belonging to another
   route group is refused. Driven off `NON_WEBSITE_ROOT_SEGMENTS` itself, so a segment
