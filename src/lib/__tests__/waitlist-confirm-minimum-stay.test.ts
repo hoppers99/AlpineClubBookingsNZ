@@ -102,6 +102,9 @@ vi.mock("@/lib/logger", () => ({
 }));
 
 import { confirmWaitlistOffer } from "@/lib/waitlist";
+// The real formatter, so this path and the cross-lodge promotion are checked
+// against one shared string rather than against two copies of it.
+import { formatMissingPaidUpAdultWaitlistRefusal } from "@/lib/policies/subscription-lockout-pricing";
 
 const LODGE = "lodge-a";
 const CHECK_IN = new Date("2026-07-10T00:00:00.000Z");
@@ -409,6 +412,17 @@ describe("confirmWaitlistOffer paid-up-adult re-check (#2543)", () => {
 
     expect(result.success).toBe(false);
     expect(result.code).toBe("PAID_UP_ADULT_MEMBER_REQUIRED");
+    // The WAITLIST flavour of the shared refusal, byte-identical to the cross-lodge
+    // promotion's. The offer was rejected without being consumed, so the bare
+    // sentence would read as though the member had lost the offer AND their spot.
+    expect(result.error).toBe(formatMissingPaidUpAdultWaitlistRefusal());
+    expect(result.error).toContain("kept your place on the waitlist");
+    // ...while the frozen violation's own message is unchanged: it is hashed into
+    // exception snapshots and read by the reviewing officer, for whom the waitlist
+    // sentence is neither true nor relevant.
+    expect(result.paidUpAdultRefusal?.details).toBe(violation.message);
+    // Neither sentence names who is unpaid.
+    expect(JSON.stringify(result)).not.toMatch(/m-unpaid/);
     // The shared refusal body, so the member is told where to ask — and told the
     // beds are held while an officer decides.
     expect(result.paidUpAdultRefusal?.exceptionRequestPath).toBe(

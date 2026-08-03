@@ -26,6 +26,7 @@ import {
 import { DuplicateStayConflictError } from "@/lib/booking-create-types";
 import { getNonMemberHoldDays } from "@/lib/cancellation";
 import { resolveSubscriptionLockoutMode } from "@/lib/member-subscription-eligibility";
+import { formatMissingPaidUpAdultWaitlistRefusal } from "@/lib/policies/subscription-lockout-pricing";
 import {
   buildPaidUpAdultRefusalBody,
   evaluateNonMemberPricingRequirements,
@@ -406,13 +407,12 @@ export async function confirmCrossLodgeWaitlistOffer(
       }
       return {
         success: false,
-        // The violation's own sentence, byte-identical to the one every other
-        // path refuses with. Deliberately NOT extended with this path's "you've
-        // been returned to the waitlist" wording: the same-lodge confirm reverts
-        // and answers with the bare shared sentence too, and one refusal that
-        // reads differently depending on which lodge was offered is exactly the
-        // drift the shared body exists to prevent.
-        error: nonMemberPricing.violation.message,
+        // The waitlist flavour of the shared refusal, byte-identical to the
+        // same-lodge confirm's: both reject the offer WITHOUT consuming it, and the
+        // bare sentence read as though the member had lost the offer AND their spot.
+        // Shared through one formatter so the answer cannot depend on which lodge
+        // the sweep happened to offer.
+        error: formatMissingPaidUpAdultWaitlistRefusal(),
         code: "PAID_UP_ADULT_MEMBER_REQUIRED",
         paidUpAdultRefusal: buildPaidUpAdultRefusalBody(
           nonMemberPricing.violation,

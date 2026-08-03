@@ -458,6 +458,48 @@ describe("the booking OWNER reaches every evaluation (#2543, owner decision 3 Au
     expect(source).toContain("return presence?.requestedByMemberId?.trim() || null;");
   });
 
+  it("the two waitlist paths refuse with one shared sentence, and the booking paths do not", () => {
+    // Both waitlist paths reject the offer WITHOUT consuming it, so their refusal
+    // has to say so — the bare sentence read as though the member had lost the offer
+    // AND their spot. Shared through ONE formatter rather than copied, so the answer
+    // cannot depend on which lodge the sweep happened to offer; and scoped to those
+    // two, because a booking-time refusal has no waitlist place to claim.
+    for (const file of ["src/lib/waitlist.ts", "src/lib/waitlist-cross-lodge.ts"]) {
+      const source = readRepoFile(file);
+      expect(source, file).toContain(
+        "error: formatMissingPaidUpAdultWaitlistRefusal(),",
+      );
+      // Not the frozen violation's message, which the officer's snapshot keeps.
+      expect(source, file).not.toContain("error: nonMemberPricing.violation.message");
+    }
+    for (const file of [
+      "src/app/api/bookings/route.ts",
+      "src/app/api/bookings/[id]/confirm-draft/route.ts",
+      "src/app/api/bookings/[id]/modify-quote/route.ts",
+      "src/lib/group-booking.ts",
+    ]) {
+      expect(readRepoFile(file), file).not.toContain(
+        "formatMissingPaidUpAdultWaitlistRefusal",
+      );
+    }
+  });
+
+  it("the waitlist-confirm route lets the path's own sentence win over the shared body", () => {
+    // Positional, and it silently ate the wording once already:
+    // `buildPaidUpAdultRefusalBody` carries its own `error` (the frozen violation's
+    // message), so spreading the body AFTER `error: result.error` discarded the
+    // waitlist sentence while every service-level test stayed green.
+    const source = readRepoFile(
+      "src/app/api/bookings/[id]/waitlist-confirm/route.ts",
+    );
+    const spread = source.indexOf("...(result.paidUpAdultRefusal ?? {}),");
+    const error = source.indexOf("error: result.error,");
+
+    expect(spread).toBeGreaterThan(-1);
+    expect(error).toBeGreaterThan(-1);
+    expect(spread).toBeLessThan(error);
+  });
+
   it("keeps the reprice list a statement about the party, not about the owner", () => {
     // The owner joins the FACTS batch only. Counting a not-staying owner as
     // repriced would inflate the violation's count and emit a rate notice about a

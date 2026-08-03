@@ -2854,6 +2854,19 @@ already maps to a 409 with no cross-lodge special case. The rate notice rides th
 success result too, because a cross-lodge quote can differ from the member's own
 lodge by the whole member/non-member spread.
 
+**The two waitlist paths refuse with one shared sentence the booking paths do not
+use.** `formatMissingPaidUpAdultWaitlistRefusal` appends "You've kept your place on
+the waitlist." to the shared refusal, and both waitlist paths call it so their
+answer cannot depend on which lodge the sweep offered. It is scoped to them because
+they reject the offer WITHOUT consuming it — neither revert touches
+`waitlistPosition`, so the claim is literally true — while a booking-time refusal
+has no waitlist place to claim. The frozen violation's own `message` is deliberately
+unchanged: it is hashed into exception snapshots and read by the reviewing officer,
+so `details`/`violations`/`exceptionReview` keep the policy's wording while `error`
+carries the member's. The waitlist-confirm route therefore places
+`error: result.error` AFTER the shared-body spread — the body carries its own
+`error`, and spreading it last silently discarded the waitlist sentence.
+
 **Every write path passes the owner**, because the requirement is a property of a
 set of call sites rather than of behaviour: a path that forgets it silently
 enforces the old repriced-only rule while every other path's tests stay green.

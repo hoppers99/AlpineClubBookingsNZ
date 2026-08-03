@@ -214,6 +214,36 @@ export function formatMissingPaidUpAdultRefusal(): string {
   );
 }
 
+/**
+ * The same refusal for the TWO WAITLIST paths — same-lodge `confirmWaitlistOffer`
+ * and the cross-lodge promotion — which reject the offer WITHOUT consuming it.
+ *
+ * The extra sentence exists because the bare refusal, arriving in answer to
+ * "confirm my offer", reads as though the member lost the offer AND their spot.
+ * They lost neither: both paths revert the entry to WAITLISTED and neither touches
+ * `waitlistPosition`, so the claim is literally true rather than reassuring
+ * padding. Worded like the two minimum-stay waitlist refusals it sits beside —
+ * one short second-person sentence, appended last, saying where the member now is.
+ *
+ * SCOPED TO THOSE TWO PATHS, and shared between them so they cannot drift. A
+ * booking-time refusal has no waitlist place to keep, so it must not claim one;
+ * and one refusal that reads differently depending on which lodge the sweep
+ * happened to offer is exactly the drift the shared wording exists to prevent.
+ *
+ * The frozen violation's own `message` is deliberately NOT changed: it is hashed
+ * into exception-request snapshots and rendered to the reviewing officer, where
+ * "you've kept your place on the waitlist" is neither true nor relevant. So the
+ * two differ on purpose — this is the sentence the member reads, `violation.message`
+ * is the sentence the policy records.
+ *
+ * ("...and try again" then the waitlist sentence is a slightly odd join, and it is
+ * a deliberate trade: rewriting the shared sentence would move the frozen
+ * violation message every booking path and every stored snapshot depends on.)
+ */
+export function formatMissingPaidUpAdultWaitlistRefusal(): string {
+  return `${formatMissingPaidUpAdultRefusal()} You've kept your place on the waitlist.`;
+}
+
 // ---------------------------------------------------------------------------
 // Requirement 3b — the refusal is exception-eligible (#2543 + #2363/#2365).
 // ---------------------------------------------------------------------------

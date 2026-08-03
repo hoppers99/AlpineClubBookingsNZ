@@ -13,6 +13,7 @@ import {
   buildPaidUpAdultMemberViolation,
   evaluatePaidUpAdultPresence,
   formatMissingPaidUpAdultRefusal,
+  formatMissingPaidUpAdultWaitlistRefusal,
   formatUnpaidSubscriptionRateReason,
   memberUnpaidSubscriptionForcesNonMemberRate,
   participantIsPaidUpAdultMember,
@@ -205,6 +206,24 @@ describe("member-facing reasons (#2533 requirement 2)", () => {
     const reason = formatMissingPaidUpAdultRefusal();
     expect(reason).toMatch(/at least one paid-up adult member/i);
     expect(reason).not.toMatch(/\$/);
+  });
+
+  it("adds the kept-your-place reassurance for the waitlist paths, and only there", () => {
+    // The two waitlist paths reject the offer WITHOUT consuming it, so answering
+    // "confirm my offer" with the bare sentence read as though the member had lost
+    // the offer AND their spot. They lost neither — both paths revert the entry to
+    // WAITLISTED and neither touches `waitlistPosition` — so the sentence is
+    // literally true rather than reassuring padding.
+    const waitlist = formatMissingPaidUpAdultWaitlistRefusal();
+
+    // A strict extension of the shared sentence: the booking-time refusal is not
+    // re-worded, so the two cannot describe the same rule differently.
+    expect(waitlist.startsWith(formatMissingPaidUpAdultRefusal())).toBe(true);
+    expect(waitlist).toContain("You've kept your place on the waitlist.");
+    // Same discretion as the sentence it extends.
+    expect(waitlist).not.toMatch(/\$/);
+    // The booking-time refusal has no waitlist place, and must not claim one.
+    expect(formatMissingPaidUpAdultRefusal()).not.toMatch(/waitlist/i);
   });
 });
 

@@ -55,12 +55,20 @@ export async function POST(
       : 400;
     return NextResponse.json(
       {
-        error: result.error,
         // #2543 — the shared refusal body (frozen violation, HOLD promise, and
         // the path to ask a Booking Officer), spread so this path answers the
         // paid-up-adult refusal in exactly the shape the five booking write paths
         // do. Present on that refusal only.
         ...(result.paidUpAdultRefusal ?? {}),
+        // AFTER the spread, and the order is load-bearing. The shared body carries
+        // its own `error` — the frozen violation's message — and spreading it last
+        // silently discarded whatever this path had put there. Both waitlist paths
+        // refuse with a sentence the booking paths cannot use (they reject the offer
+        // without consuming it, so the member is told they kept their waitlist
+        // place), and that sentence is the one the member must read. The body's
+        // remaining fields are unaffected: `details`, `violations` and
+        // `exceptionReview` still carry the policy's own wording for the officer.
+        error: result.error,
         // Price drift on a cross-lodge offer (ADR-004): the client shows
         // the refreshed figure so the member can re-confirm knowingly.
         ...(result.updatedPriceCents !== undefined

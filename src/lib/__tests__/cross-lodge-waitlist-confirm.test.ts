@@ -111,6 +111,9 @@ vi.mock("@/lib/logger", () => ({
 }));
 
 import { confirmCrossLodgeWaitlistOffer } from "@/lib/waitlist-cross-lodge";
+// The real formatter (this module is NOT mocked), so the two waitlist paths are
+// checked against one shared string rather than against a copy of it.
+import { formatMissingPaidUpAdultWaitlistRefusal } from "@/lib/policies/subscription-lockout-pricing";
 // Real class (this module is NOT mocked here), so both the production code and
 // the test share its identity and `instanceof` works.
 import { DuplicateStayConflictError } from "@/lib/booking-create-types";
@@ -533,8 +536,17 @@ describe("confirmCrossLodgeWaitlistOffer paid-up-adult requirement (#2543)", () 
 
       expect(result.success).toBe(false);
       expect(result.code).toBe("PAID_UP_ADULT_MEMBER_REQUIRED");
-      // The shared sentence every other path refuses with, byte-identical.
-      expect(result.error).toBe(evaluation.violation.message);
+      // The WAITLIST flavour of the shared refusal: the offer was rejected without
+      // being consumed, so the bare sentence would read as though the member had
+      // lost the offer AND their spot.
+      expect(result.error).toBe(formatMissingPaidUpAdultWaitlistRefusal());
+      expect(result.error).toContain("kept your place on the waitlist");
+      // The frozen violation's own message is unchanged — it is hashed into
+      // exception snapshots and read by the reviewing officer, for whom the
+      // waitlist sentence is neither true nor relevant.
+      expect(result.paidUpAdultRefusal?.details).toBe(
+        evaluation.violation.message,
+      );
       // Nothing was priced, claimed or created for a party the rule refuses.
       expect(mocks.createConfirmedBooking).not.toHaveBeenCalled();
       expect(mocks.checkCapacityForGuestRanges).not.toHaveBeenCalled();

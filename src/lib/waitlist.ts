@@ -35,6 +35,7 @@ import {
   evaluateNonMemberPricingRequirements,
   toSubscriptionLockoutParticipants,
 } from "@/lib/subscription-lockout-enforcement";
+import { formatMissingPaidUpAdultWaitlistRefusal } from "@/lib/policies/subscription-lockout-pricing";
 
 export const WAITLIST_OFFER_HOURS =
   Number(process.env.WAITLIST_OFFER_HOURS) || 48;
@@ -847,7 +848,10 @@ export async function confirmWaitlistOffer(
       );
       return {
         success: false,
-        error: nonMemberPricing.violation.message,
+        // The waitlist flavour of the shared refusal: identical to the cross-lodge
+        // promotion's, and distinct from the booking-time paths' because this one
+        // rejected the offer WITHOUT consuming it, and the member needs telling.
+        error: formatMissingPaidUpAdultWaitlistRefusal(),
         code: "PAID_UP_ADULT_MEMBER_REQUIRED",
         paidUpAdultRefusal: buildPaidUpAdultRefusalBody(
           nonMemberPricing.violation,
