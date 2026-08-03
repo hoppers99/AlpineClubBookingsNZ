@@ -311,6 +311,173 @@ test.describe("a slug under another route group's prefix", () => {
 });
 
 /**
+ * The D1 narrowing (owner decision, 3 Aug 2026): the fixed per-release nonce covers
+ * exactly the five approved routes, and the three public pages the first cut swept
+ * in are back on a freshly minted per-request nonce.
+ *
+ * Only a real server can show this. The unit suite proves the PROXY publishes two
+ * different nonces for the two territories; what has to hold is that each RENDER
+ * stamps the value its own response's policy names — the proxy's header and Next's
+ * stamping are separate mechanisms, and a mismatch means every inline script on the
+ * page is refused and the page never becomes interactive.
+ */
+test.describe("the per-request public pages (#2352 D1 narrowing)", () => {
+  /**
+   * `/hut-leader-instructions` with no `?a=`: PIN-gated and per-assignment, so it is
+   * `force-dynamic` for a permanent reason and shows a form rather than any
+   * assignment. That is enough for every assertion here, all of which are about the
+   * nonce and the shared chrome rather than the page's own content.
+   */
+  const PER_REQUEST_PAGE = "/hut-leader-instructions";
+
+  test("gets a FRESH nonce on every request, and the HTML matches its own", async ({
+    request,
+  }) => {
+    const first = await request.get(PER_REQUEST_PAGE);
+    const second = await request.get(PER_REQUEST_PAGE);
+
+    expect(first.status()).toBe(200);
+    expect(second.status()).toBe(200);
+
+    const firstNonce = scriptSrcNonce(first);
+    const secondNonce = scriptSrcNonce(second);
+
+    expect(
+      secondNonce,
+      "a page that is never stored must mint a nonce per response — that unguessable " +
+        "value is the defence the five approved routes give up, and this page gives " +
+        "up nothing",
+    ).not.toBe(firstNonce);
+
+    // Each response's own HTML carries its own value, and no inline script is left
+    // unnonced. Both halves matter: equal-but-absent would also pass a looser check.
+    for (const [response, nonce] of [
+      [first, firstNonce],
+      [second, secondNonce],
+    ] as const) {
+      const html = await response.text();
+      expect(unnoncedInlineScripts(html)).toEqual([]);
+      expect(
+        html.includes(`nonce="${nonce}"`),
+        "the nonce stamped into the HTML must be the one this response's policy allows",
+      ).toBe(true);
+    }
+  });
+
+  test("is not served the release nonce that a stored CMS page carries", async ({
+    request,
+  }) => {
+    // The narrowing from both sides in one case. `/about` is stored and carries the
+    // release value; this page must not, or the move would be cosmetic.
+    const stored = await request.get(CMS_PAGE);
+    const perRequest = await request.get(PER_REQUEST_PAGE);
+
+    expect(scriptSrcNonce(perRequest)).not.toBe(scriptSrcNonce(stored));
+  });
+
+  test("still gets the tightened public-website policy", async ({ request }) => {
+    // The deliberate asymmetry: the Stripe tightening follows the WIDE predicate, so
+    // narrowing the NONCE must not have handed this page a looser policy as a side
+    // effect. Stripe.js is loaded only from the member payment surfaces.
+    const response = await request.get(PER_REQUEST_PAGE);
+
+    expect(directive(response, "script-src")).not.toContain("https://js.stripe.com");
+    expect(directive(response, "script-src")).not.toContain("'unsafe-inline'");
+  });
+
+  test("loads in a browser with no CSP or hydration complaint", async ({ page }) => {
+    // The property the split exists to protect, in the only place it can fail: a
+    // per-request nonce that the render did not receive would block every inline
+    // script here and the page would never hydrate. Watched classes only — a broad
+    // "no console errors" assertion fails on unrelated noise and gets deleted rather
+    // than fixed.
+    const complaints: string[] = [];
+    const WATCHED = [
+      "content security policy",
+      "refused to execute",
+      "refused to load",
+      "hydration",
+      "hydrating",
+    ];
+
+    page.on("console", (message) => {
+      if (message.type() !== "error" && message.type() !== "warning") return;
+      const text = message.text();
+      if (WATCHED.some((needle) => text.toLowerCase().includes(needle))) {
+        complaints.push(text);
+      }
+    });
+
+    await page.goto(PER_REQUEST_PAGE);
+    // Rendered by the shared chrome's client component reading the marker cookie, so
+    // it being visible means React hydrated and any mismatch has been reported.
+    await expect(page.getByRole("link", { name: "Log In" }).first()).toBeVisible();
+
+    expect(complaints).toEqual([]);
+    // And the chrome really is the SAME chrome: the footer's slug comes from
+    // `usePathname()` in the shared component, so a per-group copy would show here.
+    await expect(page.locator("footer[data-page-slug]")).toHaveAttribute(
+      "data-page-slug",
+      PER_REQUEST_PAGE.replace(/^\//, ""),
+    );
+  });
+});
+
+/**
+ * The #2570 residual, pinned at the properties that must hold rather than at the
+ * fault — and with the fault's SEVERITY corrected by measurement.
+ *
+ * A mistyped member-area address is claimed by the CMS catch-all, which refuses it
+ * (it is outside the fixed-nonce set) and raises a 404 — and that 404 DOCUMENT is
+ * stored, so a later visitor is served a copy whose baked-in nonce the new policy no
+ * longer names and whose inline scripts are therefore refused. Measured on a
+ * container build of this branch: two requests for `/admin/typo` both answered 404,
+ * the second with a fresh policy nonce while the HTML still carried the first
+ * request's value.
+ *
+ * **The severity is worse than the briefing that produced the decision said, and the
+ * measurement is why.** A `notFound()` response from this route has ZERO
+ * server-rendered visible markup: `<body>` is an empty placeholder and the whole 404
+ * screen arrives inside the RSC flight payload, which is carried in nonce'd inline
+ * `<script>` tags (measured: 0 visible characters outside `<script>` on
+ * `/admin/typo`, `/dashboard/nope` AND the in-territory `/definitely-missing`, versus
+ * ~3.7k on `/contact`). So the refused-script outcome is a BLANK page, not the
+ * readable-but-inert page the owner was told about. The in-territory miss is
+ * unaffected because it carries the fixed nonce and the policy keeps naming it.
+ *
+ * The owner chose to stop storing those documents (option 2, 3 Aug). Next's
+ * per-render cache opt-out answers 500 on next@16.2.12, and a proxy rewrite cannot
+ * substitute for it because middleware runs before routing and cannot tell a typo
+ * from a real member address. So the decision is back with the owner, and these cases
+ * assert only what is TRUE and must stay true: a proper 404 on both requests (no
+ * 500 — the outcome option 2's own terms said to drop the change for), the club's own
+ * 404 content present in the document, and a per-request nonce rather than the
+ * release value. The mismatch itself is deliberately NOT asserted: a test that pins a
+ * fault fails the day the fault is fixed.
+ */
+test.describe("a mistyped member-area address", () => {
+  for (const address of ["/dashboard/nope", "/admin/typo"]) {
+    test(`answers a proper 404 twice in a row at ${address}`, async ({ request }) => {
+      const first = await request.get(address);
+      const second = await request.get(address);
+
+      expect(first.status(), "a mistyped address must never 500").toBe(404);
+      expect(second.status(), "including when served from the store").toBe(404);
+
+      // The club's own 404 screen, not Next's built-in one: `src/app/not-found.tsx`
+      // renders the admin-authored `/404` page content, or its hardcoded fallback.
+      expect(await second.text()).toContain("Page Not Found");
+
+      // A per-request nonce, not the release value — these addresses belong to
+      // another route group and the narrowing did not change that.
+      expect(scriptSrcNonce(second)).not.toBe(
+        scriptSrcNonce(await request.get(CMS_PAGE)),
+      );
+    });
+  }
+});
+
+/**
  * F4, and the verification of `revalidatePublicSite()` the reconciliation asked
  * for (#2352 F3).
  *
