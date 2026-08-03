@@ -187,6 +187,91 @@ describe("the two route censuses", () => {
   });
 });
 
+/**
+ * Percent-encoded addresses, with every expected answer written out LITERALLY.
+ *
+ * The slice-1 security re-review reported the raw comparison as a high-severity
+ * bypass: percent-encode one character of a member address and it stops matching the
+ * deny list, so — the argument went — the per-request pages and the member pages
+ * would be served under the publicly readable release nonce. The premise is that Next
+ * resolves routes from the DECODED path. It does not, and the fix that premise
+ * implies would have handed `/join/appl%79` (really the `/join/[code]` page) the fixed
+ * nonce, which is the regression rather than the repair.
+ *
+ * Measured on a container build of this branch (`next start`, next 16.2.12), read off
+ * the ISR headers because the catch-all is the only route in either public group that
+ * sets `x-nextjs-cache` / `x-nextjs-prerender`. The framework source that explains it
+ * is cited in `src/lib/public-website-paths.ts`:
+ *
+ *     /hut-leader-instructions   200, no ISR headers -> the (website-dynamic) page
+ *     /hut-leader-instruction%73 404, ISR headers    -> the CATCH-ALL
+ *     /dashboar%64               404, ISR headers    -> the catch-all, not /dashboard
+ *     /logi%6E                   404, ISR headers    -> the catch-all, not /login
+ *     /join/apply                200, no ISR headers -> the static route
+ *     /join/appl%79              404, no ISR headers -> /join/[code], as /join/ANY
+ *     /join/verif%79/tok         404, ISR headers    -> the catch-all
+ *     /robots%2Etxt              200                 -> the real FILE, served decoded
+ *
+ * The answers are spelled out as constants rather than derived from the predicate,
+ * because a case that asks the predicate what it thinks cannot catch the predicate
+ * disagreeing with the route table — which was exactly the gap the review found in
+ * the csp-proxy matrix.
+ */
+describe("percent-encoded addresses are answered as Next answers them", () => {
+  it.each([
+    // An encoded static route is claimed by NOTHING but the catch-all, so it is
+    // catch-all territory and takes the nonce a document stored there needs.
+    ["/hut-leader-instruction%73", true, true],
+    ["/hut%2Dleader%2Dinstructions", true, true],
+    ["/logi%6E", true, true],
+    ["/dashboar%64", true, true],
+    ["/admi%6E/site-style", true, true],
+    // A dynamic route matches its regex against the RAW path, so this one really is
+    // the group-join page. Decoding first would have made it fixed-nonce — a
+    // genuinely per-request page under the publicly readable value.
+    ["/join/appl%79", true, false],
+    // ...and the mirror image: an encoded LITERAL segment stops the token route
+    // matching, so the catch-all serves it and fixed is right.
+    ["/join/verif%79/tok", true, true],
+    // `%2F` never invents a segment boundary, here or in Next: one segment, so no
+    // fixed-length per-request pattern can claim it.
+    ["/join%2Fverify%2Ftok", true, true],
+    // The one measured divergence, and it is inert: a static FILE has an `fsPath`
+    // and Next does serve it from the decoded path, so `/robots%2Etxt` returns the
+    // real file while this classifier still claims the address. The only effect is
+    // that a URL nothing emits is answered with the 503 holding screen while setup
+    // is incomplete; after setup the answer only picks a nonce for a response that
+    // carries no document. Recorded in the module header rather than chased.
+    ["/robots%2Etxt", true, true],
+    ["/gallery%2Epng", true, true],
+  ] as const)(
+    "%s -> public %s, fixed nonce %s",
+    (path, expectedPublic, expectedFixed) => {
+      expect(isPublicWebsitePath(path)).toBe(expectedPublic);
+      expect(isFixedNonceWebsitePath(path)).toBe(expectedFixed);
+    },
+  );
+
+  it("keeps the canonical forms of those addresses where they were", () => {
+    // The other half of the pairing: the encoded shapes above must not be read as
+    // "encoding does not matter". `/join/apply` is one of the owner's five and
+    // `/hut-leader-instructions` is per-request, and both stay that way.
+    expect(isFixedNonceWebsitePath("/join/apply")).toBe(true);
+    expect(isFixedNonceWebsitePath("/hut-leader-instructions")).toBe(false);
+    expect(isPublicWebsitePath("/dashboard")).toBe(false);
+    expect(isPublicWebsitePath("/robots.txt")).toBe(false);
+    expect(isPublicWebsitePath("/gallery.png")).toBe(false);
+  });
+
+  it("does not throw on a malformed escape, and treats it as the literal it is", () => {
+    // `decodeURIComponent("%zz")` throws, and Next swallows that and keeps the raw
+    // path. Nothing here decodes, so there is nothing to throw — this case exists so
+    // that a future decoding attempt cannot land without handling it.
+    expect(isFixedNonceWebsitePath("/about%zz")).toBe(true);
+    expect(isPublicWebsitePath("/dashboard%zz")).toBe(true);
+  });
+});
+
 describe("the CMS catch-all's territory follows the fixed-nonce set", () => {
   it.each(["hut-leader-instructions", "join/ABC123", "join/verify/token-xyz"])(
     "refuses the slug %s, because a real per-request route claims that address",

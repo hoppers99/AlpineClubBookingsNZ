@@ -791,6 +791,63 @@ describe("public website fixed release nonce (#2352 D1)", () => {
     },
   );
 
+  /**
+   * The same question with the answers written out LITERALLY, which is the gap the
+   * slice-1 security re-review found in the matrix above.
+   *
+   * That matrix asks `isFixedNonceWebsitePath()` what it expects and then checks the
+   * proxy agreed. It is the right shape for "the proxy asks the right predicate", and
+   * it is blind by construction to the predicate disagreeing with Next's route table
+   * — the exact class the review reported (percent-encoded addresses). So the cases
+   * here name the expected territory as a constant, and the encoded shapes are pinned
+   * against the behaviour MEASURED on a production container (next 16.2.11; the
+   * mechanism and the readings are recorded in `src/lib/public-website-paths.ts`).
+   *
+   * A real server is still the only place the route-table half can be proven, and
+   * `e2e/static-cms-pages.spec.ts` carries that case.
+   */
+  it.each([
+    // [address, carries the fixed per-release nonce, why]
+    ["/", true, "the home page, one of the five"],
+    ["/about", true, "a stored CMS page"],
+    ["/join/apply", true, "static, and beats the /join/[code] pattern"],
+    ["/hut-leader-instructions", false, "moved to (website-dynamic)"],
+    ["/join/ABC123", false, "the group-join page"],
+    ["/join/verify/token-xyz", false, "the emailed-token page"],
+    ["/dashboard", false, "the member area keeps a per-request nonce"],
+    ["/admin", false, "the admin area keeps a per-request nonce"],
+    [
+      "/hut-leader-instruction%73",
+      true,
+      "measured 404: no static route matches an encoded path, so this is catch-all territory",
+    ],
+    [
+      "/join/appl%79",
+      false,
+      "measured: renders the group-join page, because a dynamic route matches the RAW path",
+    ],
+    [
+      "/dashboar%64",
+      true,
+      "measured 404: catch-all territory, and the stored document needs the fixed value",
+    ],
+  ] as const)(
+    "%s carries the fixed nonce: %s",
+    async (url, expectedFixed, why) => {
+      const releaseNonce = await getPublicWebsiteNonce();
+      const response = await proxy(new NextRequest(`https://example.org${url}`));
+      const nonce = nonceFromScriptSrc(
+        response.headers.get(CSP_HEADER) as string,
+      );
+
+      if (expectedFixed) {
+        expect(nonce, `${url}: ${why}`).toBe(releaseNonce);
+      } else {
+        expect(nonce, `${url}: ${why}`).not.toBe(releaseNonce);
+      }
+    },
+  );
+
   it("is asserting the real release-derived nonce, not the fallback", async () => {
     // Without this the whole block would pass on the per-process fallback, which
     // is also stable inside one test process — the classic "green for the wrong

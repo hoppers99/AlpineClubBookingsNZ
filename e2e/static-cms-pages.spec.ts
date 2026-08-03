@@ -424,6 +424,81 @@ test.describe("the per-request public pages (#2352 D1 narrowing)", () => {
 });
 
 /**
+ * Percent-encoded addresses, which is the ONE half of the nonce split no unit test
+ * can see (slice-1 security re-review).
+ *
+ * The re-review reported the classifier's raw segment comparison as a high-severity
+ * bypass, on the premise that Next resolves routes from the decoded path — encode one
+ * character of `/hut-leader-instructions` or `/dashboard` and, the argument went, the
+ * page would be served under the publicly readable release nonce. The premise is
+ * false: a static route matches by exact string equality against the RAW pathname and
+ * a dynamic route matches its regex against the raw pathname, so the classifier and
+ * the route table already agree. Measured on a container build of this branch before
+ * the refutation was accepted — `/hut-leader-instruction%73` answered 404 with the ISR
+ * headers only the catch-all sets, and both requests named the same nonce as the HTML
+ * carried — and these are the cases that keep it honest: a unit test can only ask the
+ * predicate what it thinks, while these ask the server what it serves.
+ *
+ * They fail in both directions, which is the point: decoding inside the classifier
+ * (the "fix" the finding proposed) would break the consistency case below, and Next
+ * changing its resolution in a future upgrade would break the route-table case.
+ */
+test.describe("percent-encoded public addresses", () => {
+  test("an encoded per-request address is catch-all territory, and stays consistent", async ({
+    request,
+  }) => {
+    const encoded = "/hut-leader-instruction%73";
+
+    // The route-table half. `/hut-leader-instructions` is a real page; its encoded
+    // form is claimed by no static route, so the catch-all serves it, refuses the
+    // slug and 404s. Anything but 404 here means Next started resolving encoded
+    // paths to static routes and the classifier has to follow.
+    const first = await request.get(encoded);
+    expect(first.status()).toBe(404);
+    expect((await request.get("/hut-leader-instructions")).status()).toBe(200);
+
+    // The consequence, and the reason the classifier must NOT decode: an address the
+    // catch-all serves is stored, so it needs the one nonce the policy keeps naming.
+    // Handing it a fresh nonce per request — which is what decoding would do — leaves
+    // the second visitor a stored document whose scripts the new policy refuses.
+    const second = await request.get(encoded);
+    const nonce = scriptSrcNonce(first);
+
+    expect(scriptSrcNonce(second)).toBe(nonce);
+    expect(nonce).toBe(scriptSrcNonce(await request.get(CMS_PAGE)));
+
+    const html = await second.text();
+    expect(unnoncedInlineScripts(html)).toEqual([]);
+    expect(
+      html.includes(`nonce="${nonce}"`),
+      "the stored document's nonce must still be the one this response's policy allows",
+    ).toBe(true);
+  });
+
+  test("an encoded /join/apply is the group-join page, not the apply page", async ({
+    request,
+  }) => {
+    // The mirror direction, and the one that matters most for security: a DYNAMIC
+    // route matches the raw path, so `/join/appl%79` is `(website-dynamic)/join/[code]`
+    // with code `apply`. Decoding in the classifier would have called this address
+    // one of the approved five and served a genuinely per-request page under the
+    // fixed, publicly readable nonce.
+    const canonical = await request.get("/join/apply");
+    expect(canonical.status()).toBe(200);
+
+    // Read the heading off the page itself rather than hardcoding it: an admin-authored
+    // `join/apply` row overrides the code default, and the assertion is about which
+    // ROUTE answered, not about the copy.
+    const heading = /<h1[^>]*>([^<]+)<\/h1>/.exec(await canonical.text())?.[1];
+    expect(heading, "the apply page must render an h1 to compare against").toBeTruthy();
+
+    expect(await (await request.get("/join/appl%79")).text()).not.toContain(
+      heading as string,
+    );
+  });
+});
+
+/**
  * The #2570 residual, pinned at the properties that must hold rather than at the
  * fault — and with the fault's SEVERITY corrected by measurement.
  *

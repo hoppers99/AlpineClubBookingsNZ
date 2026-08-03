@@ -424,11 +424,21 @@ export async function proxy(request: NextRequest) {
   // #2352 D1, as the owner narrowed it on 3 Aug 2026. The invariant, in one
   // sentence:
   //
-  //   **An address carries the fixed per-release nonce if and only if one of the
-  //   five approved `(website)` routes can serve it — so the only nonce-bearing
-  //   documents ever stored are the ones those five produce, and every other
-  //   address on the site is rendered per request under a nonce minted for that
-  //   request.**
+  //   **An address carries the fixed per-release nonce if and only if it is a
+  //   public website address one of the five approved `(website)` routes can serve
+  //   — so no PAGE is ever stored outside that set, and every other address on the
+  //   site is rendered per request under a nonce minted for that request.**
+  //
+  // It says PAGE deliberately. The one exception is the stored out-of-territory 404
+  // DOCUMENT described further down (#2570): `/dashboard/nope` IS served by one of
+  // the five, because the catch-all claims every URL no other route claims, and it
+  // still keeps a per-request nonce. Stating this as a plain "if and only if" would
+  // contradict the residual recorded in this very docblock.
+  //
+  // Percent-encoded addresses need no special handling and get none:
+  // `isFixedNonceWebsitePath()` compares raw segments because Next matches routes
+  // raw too, so the two agree in both directions. Measured, with the framework
+  // source that explains it, in `src/lib/public-website-paths.ts`.
   //
   // The five are `/`, the `[...slug]` CMS catch-all, `/join`, `/contact` and
   // `/join/apply`. `isFixedNonceWebsitePath()` is the whole answer, and it is a

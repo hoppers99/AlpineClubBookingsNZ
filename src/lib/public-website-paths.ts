@@ -40,16 +40,86 @@
  *
  * ## The one-sentence invariant
  *
- * **An address carries the fixed per-release nonce if and only if one of the five
- * approved `(website)` routes can serve it — so the only nonce-bearing documents
- * ever stored are the ones those five produce, and everything else on the site,
- * public or not, is rendered per request under a nonce minted for that request.**
+ * **An address carries the fixed per-release nonce if and only if it is a public
+ * website address that one of the five approved `(website)` routes can serve — so no
+ * PAGE is ever stored outside that set, and everything else on the site, public or
+ * not, is rendered per request under a nonce minted for that request.**
  *
  * Held from both sides, which is why it is an invariant rather than an intention:
  * `src/proxy.ts` publishes the fixed nonce for exactly {@link isFixedNonceWebsitePath},
  * and {@link isCmsServablePageSlug} makes the catch-all's loader, the admin slug
  * validator, the public site menu and the Book Now target all refuse an address
  * outside it.
+ *
+ * **It is stated over PAGES because of one recorded exception, and the exception is
+ * named here rather than left for a reader to trip over (#2570).** The `[...slug]`
+ * catch-all claims every URL no other route claims, which includes addresses whose
+ * first segment belongs to ANOTHER route group — `/dashboard/nope`, `/admin/typo`.
+ * Those are deliberately NOT public-website addresses and so stay per-request, because
+ * the proxy runs before routing and cannot tell `/dashboard/nope` from
+ * `/dashboard/bookings`; widening would hand the fixed nonce to the real member and
+ * admin areas, which decision D1 keeps per-request. The catch-all still renders its
+ * 404 there, and that 404 DOCUMENT is stored carrying the generating request's nonce,
+ * which no later response names. So the stored out-of-territory 404 documents are the
+ * whole of the difference between "carries the fixed nonce" and "can be served by one
+ * of the five", and an earlier wording of this paragraph asserted a plain "if and only
+ * if" that they falsify. Tracked on #2570; not closed here.
+ *
+ * ## Percent-encoded addresses: this file matches RAW, and that IS the mirror
+ *
+ * Every comparison below is against raw URL segments. That looks like a bypass —
+ * percent-encode one character of a member address and it stops matching the deny
+ * list — and the slice-1 review reported it as a high-severity one. It is not, because
+ * Next resolves app ROUTES from the raw pathname as well, so the two agree. Measured
+ * on a container build of THIS branch (`next start`, next 16.2.12) rather than
+ * reasoned about, and identified by route rather than by status: the ISR catch-all is
+ * the only route in either public group that answers with `x-nextjs-cache` /
+ * `x-nextjs-prerender`, so those two headers say which route replied.
+ *
+ *     /hut-leader-instructions   200, no ISR headers -> the (website-dynamic) page
+ *     /hut-leader-instruction%73 404, ISR headers    -> the CATCH-ALL, refusing the slug
+ *     /hut%2Dleader%2Dinstructions  as above
+ *     /dashboar%64               404, ISR headers    -> the catch-all, not /dashboard
+ *     /logi%6E                   404, ISR headers    -> the catch-all, not /login
+ *     /join/apply                200, no ISR headers -> the static route, one of the five
+ *     /join/appl%79              404, no ISR headers -> /join/[code], same as /join/ANY
+ *     /join/verif%79/tok         404, ISR headers    -> the catch-all, not the token page
+ *
+ * On an earlier container (16.2.11) with the group-bookings module enabled,
+ * `/join/appl%79` answered 200 titled "Join a group booking" — the group-join page
+ * outright, which is the same conclusion read off the body instead of the headers.
+ *
+ * The mechanism, in next@16.2.12's own source: a static route matches by exact string
+ * equality against the raw pathname (`server/route-matchers/route-matcher.js` —
+ * `pathname === this.definition.pathname`), and a dynamic route matches its regex
+ * against the raw pathname with only the captured PARAMS decoded afterwards
+ * (`shared/lib/router/utils/route-matcher.js`). The router server invokes the render
+ * with the raw pathname (`invokePath`, `server/lib/router-server.js`) and base-server
+ * routes on that. `fsChecker.getItem()` does try a decoded variant, but for an app
+ * route all it produces is the `invokeOutput` hint, which filters DYNAMIC candidates
+ * only (`base-server.js:1551`), so a decoded STATIC route never wins.
+ *
+ * So the answers here are the answers Next gives, in both directions:
+ *  • an encoded form of a static route (`/hut-leader-instruction%73`, `/dashboar%64`)
+ *    is claimed by nothing but the catch-all, so it is catch-all territory and takes
+ *    the fixed nonce — which is the nonce the document stored there needs;
+ *  • `/join/appl%79` really is the group-join page, so per-request is right.
+ *    Decoding before matching would have handed a genuinely dynamic page the publicly
+ *    readable fixed nonce — the security regression, not the fix.
+ *
+ * The one thing Next DOES resolve from a decoded path is a static FILE, which has an
+ * `fsPath` and is served directly: `/robots%2Etxt` returns the real `robots.txt`
+ * (measured). The consequence is confined to the pre-setup gate and is recorded rather
+ * than fixed, because it is inert in both directions: while `ClubTheme.completedAt` is
+ * NULL, `/robots%2Etxt` and `/branding/logo%2Epng` are claimed as website addresses and
+ * answered with the 503 holding screen even though the file itself would have been
+ * served — and no browser or crawler emits that form, they ask for `/robots.txt`. After
+ * setup the classifier's answer for an asset URL only picks a nonce for a response that
+ * carries no document at all.
+ *
+ * `public-website-path-predicates.test.ts` pins every shape above with the expected
+ * answer written out literally, and `e2e/static-cms-pages.spec.ts` pins the route-table
+ * half on a real server, because that is the half no unit test can see.
  */
 
 /**
@@ -233,6 +303,14 @@ const NON_WEBSITE_EXACT_PATHS: ReadonlySet<string> = new Set([
  */
 const STATIC_ASSET_EXTENSION_PATTERN = /\.(?:png|jpg|jpeg|gif|webp|svg|ico)$/i;
 
+/**
+ * One trailing slash off, and nothing else — in particular NO percent-decoding.
+ *
+ * Next strips the trailing slash the same way before matching
+ * (`removeTrailingSlash` in `handleCatchallRenderRequest`), and it matches routes
+ * against the raw pathname. Decoding here would make this file disagree with the
+ * route table in both directions; the module header sets out the measurement.
+ */
 function normalisePathname(pathname: string) {
   return pathname.length > 1 && pathname.endsWith("/")
     ? pathname.slice(0, -1)
@@ -287,6 +365,14 @@ const FIXED_NONCE_STATIC_PATHS: ReadonlySet<string> = new Set(
   FIXED_NONCE_WEBSITE_ROUTES.filter((route) => !route.includes("[")),
 );
 
+/**
+ * Does a `(website-dynamic)` route claim this address?
+ *
+ * Segments are compared RAW, which mirrors Next: a dynamic route's regex is matched
+ * against the undecoded pathname and only the captured params are decoded, so
+ * `/join/appl%79` is the `/join/[code]` page (measured) while `/join/verif%79/tok` is
+ * not the token page and falls to the catch-all. See the module header.
+ */
 function matchesPerRequestRoute(path: string): boolean {
   const segments = path.split("/").filter((segment) => segment.length > 0);
 
@@ -377,6 +463,11 @@ export function isPublicWebsitePath(pathname: string): boolean {
  *    That is the #2570 residual — a stored 404 document whose nonce a later
  *    response no longer names — and it is unchanged by the narrowing. See
  *    `src/proxy.ts`.
+ *
+ * A percent-encoded address is answered exactly as Next answers it, and the module
+ * header carries the measurement: an encoded static route is catch-all territory
+ * (`/hut-leader-instruction%73` is in the set), and `/join/appl%79` is the
+ * `/join/[code]` page, so it is not.
  */
 export function isFixedNonceWebsitePath(pathname: string): boolean {
   const path = normalisePathname(pathname);
