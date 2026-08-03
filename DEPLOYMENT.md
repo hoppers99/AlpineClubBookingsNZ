@@ -193,11 +193,11 @@ and then served from a cache. Four operational facts:
   container — it made the analytics scripts on public pages fail their own policy.
   See `src/lib/release-nonce.ts`.
 - **The new release is warmed and VERIFIED before traffic moves to it** (#2566,
-  owner decision Option 4). Step 16 of 20 in the blue/green engine renders every
-  eligible public page on the new colour and proves the page cache really was
-  populated, then blocks the cutover if a critical page failed. See "Pre-cutover
-  warm-up gate" below for what it checks, what it tolerates, and what to do when it
-  refuses.
+  owner decision Option 4). Step 16 of 20 in the blue/green engine renders the
+  release's approved public website routes and every published Page Content address
+  on the new colour, proves the page cache really was populated, then blocks the
+  cutover if a critical page failed. See "Pre-cutover warm-up gate" below for what
+  it checks, what it tolerates, and what to do when it refuses.
 - **The five-minute backstop bounds when a REBUILD is triggered, not when a visitor
   first sees fresh content.** An admin edit is genuinely instant — it clears the
   stored copy outright, so the next request has to render again. A change with no
@@ -228,13 +228,25 @@ What it does, in order:
 
 - reads the new release's own build output to establish which public addresses it
   stores and which it renders per request
+- cross-checks its hand-written critical list against the repository's public-route
+  census (`FIXED_NONCE_WEBSITE_ROUTES`), and refuses to plan a run while any
+  approved public address is missing from it. That is what stops a release that
+  gained a public page from passing the gate having never requested it
 - reads the club's published Page Content rows for the addresses to warm, and the
   configured Book Now page target
 - requests each address **on the new container itself**, over its own loopback
-  origin, with the production `Host` header — never through the public domain, which
-  would warm whichever colour is currently live
+  origin, carrying the deployment's public host as `X-Forwarded-Host` (with
+  `X-Forwarded-Proto`) — never through the public domain, which would warm whichever
+  colour is currently live. The forwarded header is the mechanism, deliberately
+  stated: an HTTP client writes the wire `Host` from the URL authority, so a loopback
+  request cannot carry a production `Host` however it is set. Nothing on a public
+  render path reads the raw header today — absolute URLs and `metadataBase` come
+  from `NEXTAUTH_URL` — and a unit test fails if one starts to
 - requests each stored page a second time and requires the release to report it as
-  served **from its cache** (`x-nextjs-cache`). A 200 is not accepted as proof
+  served **from its cache**: `x-nextjs-cache: HIT` or `STALE`, read on its own. A 200
+  is not accepted as proof, and neither is `x-nextjs-prerender: 1` — Next sets that
+  header on every prerender-capable response including a `MISS`, so it says which
+  route answered, not that anything was stored
 - checks that the served document's inline scripts still match the security policy
   served with them, which is what a page that renders but never comes alive looks
   like
@@ -253,8 +265,15 @@ configured one. Also: a server error, an unexpected 404 or redirect, a redirect 
 login, an empty or non-HTML response, a page that renders but is never stored, a
 per-request page that has started being stored, a policy/nonce mismatch, a release
 that does not identify itself as the one being deployed, and any failure to discover
-the routes at all. The critical route list is written out explicitly in
-`src/lib/deploy/warmup-route-policy.ts` so it is reviewable rather than inferred.
+the routes at all — including an approved public address that the critical list does
+not name. The critical route list is written out explicitly in
+`src/lib/deploy/warmup-route-policy.ts` so it is reviewable rather than inferred, and
+the census cross-check above is what keeps "explicit" from becoming "out of date".
+
+A `prebuilt` address — one frozen at build time — is warmed but not required to prove
+a store: there is no store to populate, and Next reports a cache header on it anyway,
+so one is accepted rather than treated as a fault. Only a per-request address is
+required to report **no** cache.
 
 **What it tolerates.** An isolated failure on one published content page, and only
 when the failure is genuinely isolated: at most **one** failed page **and** at most
@@ -264,21 +283,36 @@ oversight. The deploy then completes labelled **with a warning**, the failed pat
 its response are printed, and the operator is expected to raise or link a follow-up
 issue for it before closing the deploy out.
 
+That label is not left at step 16. Every warm-up warning — a tolerated page failure, a
+skipped gate, a disabled gate, or a release the gate could not identify — is
+accumulated and **re-printed after the completion banner**, and the final line reads
+"Blue/green deploy complete WITH WARNINGS" rather than "complete". There is no deploy
+log file, so the operator's terminal is the only record: without this, four more steps,
+the container table and 80 lines of application logs scroll past between the warning
+and the last thing on screen.
+
 **What it skips.** A club whose site-style setup is not finished. Every public
 address answers the "Site setup in progress" holding screen until then, so there is
 nothing to warm; the gate says so and the deploy continues.
 
 Settings, all optional and all read by `scripts/run-production-blue-green-deploy.sh`:
 
-| Variable | Default | Effect |
-| --- | --- | --- |
-| `DEPLOY_WARMUP_CONCURRENCY` | `3` | Requests in flight at once. Kept small so the release is not under its heaviest load of the day moments before it takes traffic. |
-| `DEPLOY_WARMUP_REQUEST_TIMEOUT_SECONDS` | `20` | Per-request ceiling. A cold render is 1-2s on an idle host and up to ~13s on a CPU-starved one. |
-| `DEPLOY_WARMUP_TOTAL_TIMEOUT_SECONDS` | `240` | Whole-gate ceiling. Addresses it never reached count as failures. |
-| `DEPLOY_WARMUP_MAX_FAILED_CMS_ROUTES` | `1` | The count half of the tolerance. |
-| `DEPLOY_WARMUP_MAX_FAILED_CMS_PERCENT` | `10` | The percentage half. |
-| `DEPLOY_WARMUP_SERVICES` | target colour + `app` | Which app services to warm. |
-| `DEPLOY_WARMUP_ENABLED` | `1` | Set to `0` to skip the gate entirely. Refused unless `DEPLOY_WARMUP_OVERRIDE_REASON` is also set, and the reason is printed in the deploy log. |
+| Variable | Default | Accepted | Effect |
+| --- | --- | --- | --- |
+| `DEPLOY_WARMUP_CONCURRENCY` | `3` | `1`-`8` | Requests in flight at once. Kept small so the release is not under its heaviest load of the day moments before it takes traffic. |
+| `DEPLOY_WARMUP_REQUEST_TIMEOUT_SECONDS` | `20` | `1`-`120` | Per-request ceiling. A cold render is 1-2s on an idle host and up to ~13s on a CPU-starved one. |
+| `DEPLOY_WARMUP_TOTAL_TIMEOUT_SECONDS` | `240` | `5`-`1800` | Whole-gate ceiling. Addresses it never reached count as failures. |
+| `DEPLOY_WARMUP_MAX_FAILED_CMS_ROUTES` | `1` | `0`-`100` | The count half of the tolerance. |
+| `DEPLOY_WARMUP_MAX_FAILED_CMS_PERCENT` | `10` | `0`-`100` | The percentage half. |
+| `DEPLOY_WARMUP_SERVICES` | target colour + `app` | one or more app service names | Which app services to warm. A value that resolves to no services is refused rather than treated as "nothing to check". |
+| `DEPLOY_WARMUP_ENABLED` | `1` | `0` or `1` | Set to `0` to skip the gate entirely. Refused unless `DEPLOY_WARMUP_OVERRIDE_REASON` is also set, and the reason is printed in the deploy log and repeated after the completion banner. |
+
+The accepted ranges are enforced twice on purpose. The deploy script checks them
+before it asks a container anything, so a mistyped setting is named immediately; the
+endpoint enforces them too, and reports a refusal as a readable `blocked` summary
+rather than a bare HTTP 400, because the container's only HTTP client is busybox
+`wget` and it discards the body of a non-2xx response. Out of range, either way, you
+are told **which** setting was refused — not that the gate could not be read.
 
 Widening the tolerance is allowed and recorded in the summary; it is never silent.
 

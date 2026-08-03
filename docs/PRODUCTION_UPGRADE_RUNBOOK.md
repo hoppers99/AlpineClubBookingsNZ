@@ -312,7 +312,11 @@ takes to render every public page — bounded by `DEPLOY_WARMUP_TOTAL_TIMEOUT_SE
 old colour is already broken, "does the new release actually serve its public pages?"
 is the most valuable question you can ask before opening the site again, and the
 answer arrives while members are still held out. If the window is genuinely too tight,
-lower the timeout and the concurrency rather than disabling the gate.
+lower the timeout and the concurrency rather than disabling the gate — but stay inside
+the accepted ranges (`DEPLOY_WARMUP_TOTAL_TIMEOUT_SECONDS` 5-1800,
+`DEPLOY_WARMUP_CONCURRENCY` 1-8; the full table is in `DEPLOYMENT.md` → "Pre-cutover
+warm-up gate"). Outside them the deploy refuses before it starts and names the
+setting; `DEPLOY_WARMUP_CONCURRENCY=0` is not how the gate is disabled.
 
 **Rollback path.** Two options, in order of preference:
 
