@@ -14,6 +14,11 @@ const createFamilyGroupSchema = z.object({
 /**
  * GET /api/admin/family-groups
  * List all family groups with their members (via join table).
+ *
+ * #2568: this is the ROUTINE Family Group overview. It deliberately carries
+ * neither a date of birth nor a calculated age — the member pills here are a
+ * roster, not an identity check, and age belongs only on the screens where an
+ * administrator is acting on one specific member record. Do not add either.
  */
 export async function GET() {
   const guard = await requireAdmin();

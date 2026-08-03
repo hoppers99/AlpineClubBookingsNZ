@@ -13,7 +13,7 @@ import { parseJsonRequestBody } from "@/lib/api-json";
 import { logAudit } from "@/lib/audit";
 import { prisma } from "@/lib/prisma";
 import { resolveOptionalActiveLodgeId } from "@/lib/lodges";
-import { invalidatePublicLodgeCapacity } from "@/lib/public-layout-cache";
+import { revalidatePublicSite } from "@/lib/public-content-revalidation";
 
 // requireAdmin() is enforced by requireBedAllocationAdmin().
 const bulkSchema = z
@@ -62,7 +62,7 @@ export async function POST(request: Request) {
       namePrefix: body.data.namePrefix,
       lodgeId,
     });
-    invalidatePublicLodgeCapacity();
+    revalidatePublicSite();
 
     logAudit({
       action: "BED_ALLOCATION_ROOMS_BULK_CREATED",

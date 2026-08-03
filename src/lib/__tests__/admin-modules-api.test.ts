@@ -23,6 +23,7 @@ const mocks = vi.hoisted(() => ({
     userAgent: "vitest",
   })),
   invalidatePublicLayoutConfig: vi.fn(),
+  revalidatePublicSite: vi.fn(),
 }));
 
 vi.mock("@/lib/public-layout-cache", () => ({
@@ -31,6 +32,14 @@ vi.mock("@/lib/public-layout-cache", () => ({
     capacity: "public-layout:capacity",
   },
   invalidatePublicLayoutConfig: mocks.invalidatePublicLayoutConfig,
+}));
+
+// #2352 F3: a module toggle is rendered INTO the public layout, so the route now
+// clears the full-route ISR store as well as the tagged data caches. Stubbed
+// because `revalidatePath` needs a static-generation store that no unit test has;
+// the shared helper's own behaviour is covered by public-content-invalidation-contract.
+vi.mock("@/lib/public-content-revalidation", () => ({
+  revalidatePublicSite: mocks.revalidatePublicSite,
 }));
 
 vi.mock("@/lib/auth", () => ({
@@ -310,10 +319,9 @@ describe("Admin modules API", () => {
 
     expect(response.status).toBe(200);
     expect(body.settings).toMatchObject(nextSettings);
-    expect(mocks.invalidatePublicLayoutConfig).toHaveBeenCalledWith(
-      "public-layout:modules",
-      "public-layout:capacity",
-    );
+    // #2352 F3: the capacity tag is cleared by revalidatePublicSite() itself, so
+    // the route passes only the tag that is specific to this write.
+    expect(mocks.revalidatePublicSite).toHaveBeenCalledWith("public-layout:modules");
     expect(mocks.clubModuleSettingsUpsert).toHaveBeenCalledWith({
       where: { id: "default" },
       create: {

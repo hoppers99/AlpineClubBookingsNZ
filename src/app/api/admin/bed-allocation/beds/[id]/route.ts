@@ -11,7 +11,7 @@ import {
 } from "@/lib/admin-bed-allocation-routes";
 import { parseJsonRequestBody } from "@/lib/api-json";
 import { logAudit } from "@/lib/audit";
-import { invalidatePublicLodgeCapacity } from "@/lib/public-layout-cache";
+import { revalidatePublicSite } from "@/lib/public-content-revalidation";
 
 // requireAdmin() is enforced by requireBedAllocationAdmin().
 const bedPatchSchema = z
@@ -47,7 +47,7 @@ export async function PATCH(
 
     const { id } = await params;
     const bed = await updateBedAllocationBed({ id, ...body.data });
-    invalidatePublicLodgeCapacity();
+    revalidatePublicSite();
     logAudit({
       action: "BED_ALLOCATION_BED_UPDATED",
       memberId: guard.session.user.id,
@@ -75,7 +75,7 @@ export async function DELETE(
   try {
     const { id } = await params;
     const bed = await deleteBedAllocationBed({ id });
-    invalidatePublicLodgeCapacity();
+    revalidatePublicSite();
     logAudit({
       action: "BED_ALLOCATION_BED_DELETED",
       memberId: guard.session.user.id,

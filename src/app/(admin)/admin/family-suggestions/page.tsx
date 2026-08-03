@@ -13,6 +13,7 @@ import {
   ViewOnlyActionButton,
 } from "@/components/admin/view-only-action"
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access"
+import { AGE_UNAVAILABLE_LABEL } from "@/lib/member-age"
 import {
   TableBody,
   TableCell,
@@ -29,6 +30,13 @@ interface SuggestedMember {
   ageTier: string
   canLogin: boolean
   xeroContactId: string | null
+  /**
+   * #2568: calculated server-side, never a date of birth. This screen binds
+   * specific member records into a new family group off nothing more than a
+   * shared surname or a shared mailbox, so the age is what tells a parent from
+   * an adult child before the group is created.
+   */
+  ageLabel?: string | null
 }
 
 interface Suggestion {
@@ -327,6 +335,8 @@ export default function FamilySuggestionsPage() {
                   <TableRow>
                     <TableHead>Name</TableHead>
                     <TableHead>Email</TableHead>
+                    {/* #2568 */}
+                    <TableHead>Age</TableHead>
                     <TableHead>Age Tier</TableHead>
                     <TableHead>Can Login</TableHead>
                     <TableHead>Xero</TableHead>
@@ -335,8 +345,11 @@ export default function FamilySuggestionsPage() {
                 <TableBody>
                   {suggestion.members.map((m) => (
                     <TableRow key={m.id}>
-                      <TableCell>{m.firstName} {m.lastName}</TableCell>
-                      <TableCell className="text-muted-foreground">{m.email}</TableCell>
+                      <TableCell className="break-words">{m.firstName} {m.lastName}</TableCell>
+                      <TableCell className="break-words text-muted-foreground">{m.email}</TableCell>
+                      <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
+                        {m.ageLabel ?? AGE_UNAVAILABLE_LABEL}
+                      </TableCell>
                       <TableCell>
                         <Badge variant="outline" className="text-xs">{m.ageTier}</Badge>
                       </TableCell>

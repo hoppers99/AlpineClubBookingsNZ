@@ -41,7 +41,7 @@ const MEMBER_FACING_LONG_DATE_SITES: ReadonlyArray<{
   },
   {
     what: "the public hut-leader-instructions 'last updated' stamp",
-    file: "src/app/(website)/hut-leader-instructions/hut-leader-instructions-client.tsx",
+    file: "src/app/(website-dynamic)/hut-leader-instructions/hut-leader-instructions-client.tsx",
     mustContain: ["return formatNZLongDate(new Date(value));"],
   },
   {

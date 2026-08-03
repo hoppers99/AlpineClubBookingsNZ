@@ -13,11 +13,13 @@
  *     That is deliberate — the holding screen must render on an install whose
  *     static assets a visitor has never fetched, and it means the "don't 503 the
  *     assets the holding screen needs" constraint is satisfied by needing none.
- *  2. `src/app/(website)/layout.tsx` — the fallback. The gate answers only for a
+ *  2. `src/components/website/website-chrome.tsx` — the fallback, shared by both
+ *     public route groups (it was `(website)/layout.tsx` until the #2352 D1
+ *     narrowing extracted it). The gate answers only for a
  *     path `isPublicWebsitePath()` CLAIMS, and asset-extension paths are refused
  *     on purpose — this screen is a document, and a document must never be the
  *     answer to a request for an image — so such a URL that no route serves
- *     reaches the layout directly; the layout keeps its own pre-setup branch so
+ *     reaches the chrome directly; the chrome keeps its own pre-setup branch so
  *     those cannot see the real site. It renders as normal JSX against the app
  *     stylesheet, so
  *     it looks slightly richer than the proxy's inline-styled copy. Only the
@@ -146,7 +148,8 @@ export interface SetupInProgressDocumentInput {
 /**
  * A complete, self-contained HTML document for the holding screen.
  *
- * The club theme CSS is inlined exactly as `(website)/layout.tsx` inlines it —
+ * The club theme CSS is inlined exactly as the shared public chrome
+ * (`src/components/website/website-chrome.tsx`) inlines it —
  * same builder, same admin-authored `rawCss` trust level — so the two screens
  * share a palette. `<html class="website-theme">` because the theme sheet scopes
  * half its variables to that class.

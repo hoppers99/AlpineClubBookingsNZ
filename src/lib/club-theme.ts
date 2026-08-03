@@ -184,7 +184,7 @@ export async function saveClubTheme(input: ClubThemeUpdateInput) {
  * The sequence that made it matter, on a live and fully configured club:
  * `src/proxy.ts`'s setup gate holds a cached "complete" answer, so it lets the
  * request through; the database blips; this read fails a moment later inside
- * `(website)/layout.tsx`'s own cache refresh; the layout concludes "setup
+ * the shared public chrome's own cache refresh; the chrome concludes "setup
  * incomplete" and paints the "Site setup in progress" screen with a 200; and
  * because `/` is allow-listed as anonymously cacheable, `proxy()` stamps
  * `public, max-age=60, stale-while-revalidate=300` on it. A two-second outage

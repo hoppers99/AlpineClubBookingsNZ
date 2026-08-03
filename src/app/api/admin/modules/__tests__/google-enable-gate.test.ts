@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   transaction: vi.fn(),
   auditCreate: vi.fn(),
   invalidate: vi.fn(),
+  revalidatePublicSite: vi.fn(),
   loggerError: vi.fn(),
 }));
 
@@ -28,6 +29,12 @@ vi.mock("@/lib/prisma", () => ({
 vi.mock("@/lib/public-layout-cache", () => ({
   invalidatePublicLayoutConfig: mocks.invalidate,
   PUBLIC_LAYOUT_CACHE_TAGS: { modules: "modules", capacity: "capacity" },
+}));
+// The route's success path revalidates the public site (#2352), and
+// revalidatePath needs Next's request store, which a unit test has no access
+// to — the same mock every sibling route test carries.
+vi.mock("@/lib/public-content-revalidation", () => ({
+  revalidatePublicSite: mocks.revalidatePublicSite,
 }));
 vi.mock("@/lib/audit", () => ({
   buildStructuredAuditLogCreateArgs: (args: unknown) => args,

@@ -6,41 +6,38 @@ import { useCallback, useEffect, useRef } from "react";
 import { Menu } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { WebsiteLogo } from "@/components/website-logo";
+import { useSignedInHint } from "@/hooks/use-signed-in-hint";
+import type { WebsiteHeaderCtaVariants } from "@/lib/website-header-ctas";
 
 export interface WebsiteNavLink {
   href: string;
   label: string;
 }
 
-interface WebsiteMobileMenuProps {
-  isAuthenticated: boolean;
+interface WebsiteMobileMenuProps extends WebsiteHeaderCtaVariants {
   clubName: string;
   logoUrl?: string | null;
   logoDataUrl?: string | null;
   navLinks: ReadonlyArray<WebsiteNavLink>;
-  // Configurable public Book Now (E3 #1929): hide the button entirely when the
-  // admin has disabled it.
-  showBookNow: boolean;
-  // #2430: resolved by getBookNowConfig alongside the href, so the drawer and
-  // the desktop header can never disagree about what the CTA is called.
-  bookNowLabel: string;
-  bookingsHref: string;
-  dashboardHref: string;
 }
 
 export function WebsiteMobileMenu({
-  isAuthenticated,
   clubName,
   logoUrl,
   logoDataUrl,
   navLinks,
-  showBookNow,
-  bookNowLabel,
-  bookingsHref,
-  dashboardHref,
+  anonymous,
+  member,
 }: WebsiteMobileMenuProps) {
   const pathname = usePathname();
   const detailsRef = useRef<HTMLDetailsElement>(null);
+  // #2352 D2: the drawer takes the same two CTA variants the desktop header does
+  // and reads the same marker cookie, so the two can never disagree about who the
+  // visitor is — or, since #2430, about what the Book Now button is called.
+  // Configurable public Book Now (E3 #1929): `bookNow` is null when the admin has
+  // hidden it, which is an admin choice and therefore identical in both variants.
+  const signedIn = useSignedInHint();
+  const variant = signedIn ? member : anonymous;
 
   const isActiveLink = (href: string) =>
     href === "/" ? pathname === "/" : pathname === href;
@@ -90,55 +87,27 @@ export function WebsiteMobileMenu({
           ))}
         </nav>
         <div className="mt-6 flex flex-col gap-2 border-t border-brand-snow/10 px-3 pt-6">
-          {isAuthenticated ? (
-            <>
-              <Button
-                variant="outline"
-                size="sm"
-                asChild
-                className="w-full border-brand-snow/20 bg-brand-snow/5 text-brand-snow hover:bg-brand-snow/10 hover:text-brand-snow"
-              >
-                <Link href={dashboardHref} onClick={closeMenu}>
-                  Dashboard
-                </Link>
-              </Button>
-              {showBookNow ? (
-                <Button
-                  size="sm"
-                  asChild
-                  className="w-full shadow-lg shadow-brand-gold/20"
-                >
-                  <Link href={bookingsHref} onClick={closeMenu}>
-                    {bookNowLabel}
-                  </Link>
-                </Button>
-              ) : null}
-            </>
-          ) : (
-            <>
-              <Button
-                variant="outline"
-                size="sm"
-                asChild
-                className="w-full border-brand-snow/20 bg-brand-snow/5 text-brand-snow hover:bg-brand-snow/10 hover:text-brand-snow"
-              >
-                <Link href="/login" onClick={closeMenu}>
-                  Log In
-                </Link>
-              </Button>
-              {showBookNow ? (
-                <Button
-                  size="sm"
-                  asChild
-                  className="w-full shadow-lg shadow-brand-gold/20"
-                >
-                  <Link href={bookingsHref} onClick={closeMenu}>
-                    {bookNowLabel}
-                  </Link>
-                </Button>
-              ) : null}
-            </>
-          )}
+          <Button
+            variant="outline"
+            size="sm"
+            asChild
+            className="w-full border-brand-snow/20 bg-brand-snow/5 text-brand-snow hover:bg-brand-snow/10 hover:text-brand-snow"
+          >
+            <Link href={variant.account.href} onClick={closeMenu}>
+              {variant.account.label}
+            </Link>
+          </Button>
+          {variant.bookNow ? (
+            <Button
+              size="sm"
+              asChild
+              className="w-full shadow-lg shadow-brand-gold/20"
+            >
+              <Link href={variant.bookNow.href} onClick={closeMenu}>
+                {variant.bookNow.label}
+              </Link>
+            </Button>
+          ) : null}
         </div>
       </div>
     </details>

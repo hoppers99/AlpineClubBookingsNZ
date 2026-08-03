@@ -9,16 +9,23 @@ describe("public layout cache writer invalidation", () => {
   it("invalidates modules and derived capacity after module writes", () => {
     const route = source("src/app/api/admin/modules/route.ts");
     expect(route).toContain("PUBLIC_LAYOUT_CACHE_TAGS.modules");
-    expect(route).toContain("PUBLIC_LAYOUT_CACHE_TAGS.capacity");
-    expect(route.indexOf("invalidatePublicLayoutConfig(")).toBeGreaterThan(
+    // #2352 F3: the capacity tag now comes from revalidatePublicSite() itself,
+    // which also clears the full-route ISR store — a module flag is rendered INTO
+    // the public layout, so a tag-only clear left every stored page showing the
+    // old switch position.
+    expect(route).toContain("revalidatePublicSite(");
+    expect(route.indexOf("revalidatePublicSite(")).toBeGreaterThan(
       route.indexOf("await write"),
     );
   });
 
-  it("invalidates capacity after lodge setting writes", () => {
+  it("clears the stored public pages after lodge setting writes", () => {
+    // #2352 slice-1 review: this used to assert `invalidatePublicLodgeCapacity()`,
+    // a capacity-TAG clear. `{{lodge-capacity}}` is resolved from uncached reads, so
+    // the stored CMS page carries no capacity tag and the tag clear expired nothing.
     const route = source("src/app/api/admin/lodge-settings/route.ts");
-    expect(route).toContain("invalidatePublicLodgeCapacity();");
-    expect(route.indexOf("invalidatePublicLodgeCapacity();")).toBeGreaterThan(
+    expect(route).toContain("revalidatePublicSite();");
+    expect(route.indexOf("revalidatePublicSite();")).toBeGreaterThan(
       route.indexOf("await updateLodgeSettings"),
     );
   });

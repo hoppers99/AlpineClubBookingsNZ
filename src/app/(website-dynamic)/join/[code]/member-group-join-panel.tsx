@@ -47,7 +47,7 @@ interface FamilyMember extends BookingFamilyMember {
  * POSTs to the authenticated /join endpoint. Non-member friends still use the
  * public request form (GroupJoinPageClient); this panel only adds members.
  *
- * It reads no client session context (the (website) layout has no SessionProvider)
+ * It reads no client session context (neither public layout has a SessionProvider)
  * — the server component renders it only for a logged-in visitor, and the join +
  * family fetches ride the session cookie.
  */

@@ -19,11 +19,21 @@ const mocks = vi.hoisted(() => ({
   revalidatePath: vi.fn(),
   primeEmailPalette: vi.fn(),
   invalidatePublicLayoutConfig: vi.fn(),
+  revalidatePublicSite: vi.fn(),
 }));
 
 vi.mock("@/lib/public-layout-cache", () => ({
   PUBLIC_LAYOUT_CACHE_TAGS: { theme: "public-layout:theme" },
   invalidatePublicLayoutConfig: mocks.invalidatePublicLayoutConfig,
+}));
+
+// #2352 F3: the theme CSS and logo are rendered INTO the public layout, and this
+// route is also the complete-setup transition — so it clears the full-route ISR
+// store as well as the theme tag. Stubbed because `revalidatePath` needs a
+// static-generation store that no unit test has; the shared helper's own contents
+// are pinned by public-content-invalidation-contract.
+vi.mock("@/lib/public-content-revalidation", () => ({
+  revalidatePublicSite: mocks.revalidatePublicSite,
 }));
 
 vi.mock("@/lib/session-guards", () => ({
@@ -393,7 +403,7 @@ describe("site style admin API", () => {
     const body = await response.json();
 
     expect(response.status).toBe(200);
-    expect(mocks.invalidatePublicLayoutConfig).toHaveBeenCalledWith(
+    expect(mocks.revalidatePublicSite).toHaveBeenCalledWith(
       "public-layout:theme",
     );
     expect(body.theme.completedAt).toEqual(expect.any(String));
@@ -405,8 +415,11 @@ describe("site style admin API", () => {
         }),
       }),
     );
+    // The `(website)` entry is gone from this list on purpose (#2352 F3): the
+    // route-group form was never verified against the full-route store, so the
+    // public site is cleared through revalidatePublicSite() — asserted above —
+    // which uses the `"/"` + `"layout"` form used everywhere else.
     expect(mocks.revalidatePath.mock.calls).toEqual([
-      ["/(website)", "layout"],
       ["/(authenticated)", "layout"],
       ["/(admin)", "layout"],
     ]);

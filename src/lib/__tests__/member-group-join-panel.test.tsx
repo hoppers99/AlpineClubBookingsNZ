@@ -8,7 +8,7 @@ vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: pushMock }),
 }));
 
-import { MemberGroupJoinPanel } from "@/app/(website)/join/[code]/member-group-join-panel";
+import { MemberGroupJoinPanel } from "@/app/(website-dynamic)/join/[code]/member-group-join-panel";
 
 const CODE = "ABCD2345";
 

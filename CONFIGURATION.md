@@ -597,6 +597,89 @@ menu.
   slashes between segments (`trip-reports`, `trips/2026`). Application
   route names (`admin`, `api`, `book`, `dashboard`, `login`, and similar)
   are reserved and rejected in every segment position.
+- **Catch-all pages are cached whole (#2352).** Since slice 1 of #2352 the
+  admin-authored pages served by the catch-all are built once and then handed to
+  every visitor from a cache, instead of being rebuilt from scratch on every
+  visit. What this means in practice:
+  - **An edit appears immediately.** Saving in Admin > Page Content clears the
+    cached copy, exactly as before. So do the Hide/Publish toggle, a theme or
+    logo change, a site banner change, a module switch, a lodge capacity or
+    bed-allocation change, and an Image Manager upload, delete or folder change.
+    Every admin save that changes something a public page shows clears the cache.
+  - **Anything that changes without a save takes at least five minutes, and then
+    one more visit.** A site banner whose start time simply arrives is the usual
+    example. Be precise about the timing, because "within five minutes" is not
+    what happens: after five minutes the next visitor is still served the old
+    copy and only triggers the rebuild, so the change shows from the visit AFTER
+    that. On a quiet weekday that can be hours. Five minutes is the owner's
+    decision (#2352 D3), taken so a busy site does not pay a background rebuild
+    every minute; the previous behaviour was about fifteen seconds.
+  - **The cached copy is the same for everyone.** No member name or other
+    personal detail has ever appeared on these pages, and the "Log In" /
+    "Dashboard" button corrects itself in the browser. If you are adding
+    something to a public page, do not make it depend on who is looking.
+  - **The cache is emptied by a restart and by every deploy**, so it never holds
+    stale content across a release.
+  - **Multi-tenant forks: read this.** The cache is keyed by web address with no
+    club dimension. That is correct for this template, which runs one club per
+    deployment. A fork that served several clubs from one process would serve
+    club A's pages to club B.
+  - **Some slugs are refused, and the list grew.** A content page may not start
+    with a segment the application itself owns — `admin`, `api`, `login`,
+    `register`, `pay`, `chores`, `calendar`, `notices`, `profile`, `bookings`,
+    `lodge`, `finance`, `display` and the rest. Saving one now returns a clear
+    error. Before #2352 a page like `/pay` could be created and would appear to
+    work; under whole-page caching it would have been served with a security
+    token that no longer matched, so nothing on it would run. If you have such a
+    page from an earlier release it now answers "page not found" — rename it and
+    the content comes back.
+  - **Check for one after upgrading, because the page keeps its content and only
+    loses its address.** A page in that position is no longer advertised anywhere
+    — the site menu drops it, and a Book Now button pointing at it reverts to the
+    normal booking flow — so nothing links to a dead address, but nothing tells
+    you it is there either. Admin > Page Content still lists it with its address,
+    and this query names them outright:
+
+    ```sql
+    SELECT slug, title, published FROM "PageContent"
+    WHERE split_part(slug, '/', 1) IN (
+      'admin', 'api', 'asset-not-found', 'book', 'booking-requests', 'bookings',
+      'calendar', 'change-password', 'chores', 'confirm-email-change',
+      'dashboard', 'display', 'family-invite', 'finance', 'forgot-password',
+      'induction', 'lodge', 'lodge-instructions', 'login',
+      'membership-cancellation', 'nominations', 'notices', 'pay', 'profile',
+      'register', 'reset-password', 'school-bookings', 'verify-email'
+    );
+    ```
+
+    The list is `NON_WEBSITE_ROOT_SEGMENTS` in
+    `src/lib/public-website-paths.ts`; read it there if you are on a later
+    release, because it grows whenever the application claims a new top-level
+    address. Renaming the page in Admin > Page Content is the whole fix — the
+    content, header and menu title come with it.
+
+    Three more shapes are refused for the same reason, and the query above does
+    not find them because they are not top-level segments:
+    `hut-leader-instructions`, a ONE-level address under `join/`
+    (`join/<group-code>`), and `join/verify/<token>` are real public pages of the
+    application (lodge instructions for a hut leader, and the two group-join
+    screens), so a content page at one of them could never have been served in any
+    release. This query names one if it exists:
+
+    ```sql
+    SELECT slug, title, published FROM "PageContent"
+    WHERE slug = 'hut-leader-instructions'
+       OR (slug ~ '^join/[^/]+$' AND slug <> 'join/apply')
+       OR slug ~ '^join/verify/[^/]+$';
+    ```
+
+    The bounds matter both ways, so do not widen the query to `slug LIKE 'join/%'`.
+    `join/apply` is a valid code-backed starter page, and so is anything DEEPER than
+    the shapes above — `join/2026/spring-camp` and `join/verify/notes/2026` are served
+    normally, because the application's routes there are exactly two and three
+    segments long and nothing claims a deeper address. A page one level deeper under
+    a reserved NAME is fine for the same reason: `trips/hut-leader-instructions` is
+    claimed by nothing and the catch-all serves it.
 - Page HTML supports embed tokens that render interactive sections across
   PageContent-backed public routes, including code-backed starter routes.
   Supported tokens are `{{committee-members-cards}}`,
@@ -714,8 +797,11 @@ Admin > Page Content panel (`PublicContentSettings`):
 - **Target** — *booking flow* (the default: a logged-in member goes to `/book`,
   a guest is sent through login) or a chosen **published content page**.
 - A page target that becomes unpublished or is deleted **fails open** to the
-  booking flow, so the button is never dead. So does a database error reading
-  the settings row: `getBookNowConfig`'s catch shows the button (#1929's
+  booking flow, so the button is never dead. Since #2352 slice 1 so does a target
+  whose address is now reserved (see "Some slugs are refused, and the list grew"
+  above) — the page is published but no longer served, so the button goes back to
+  the booking flow rather than pointing at a 404. So does a database error reading
+  the settings row: `getBookNowVariants`'s catch shows the button (#1929's
   contract, deliberately unchanged by #2430 — the no-row branch fails closed
   because that is a club's absent choice, whereas an outage is not). The
   authenticated dashboard's own Book Now action is unaffected — a signed-in
@@ -725,8 +811,12 @@ Admin > Page Content panel (`PublicContentSettings`):
   booking-flow target the button sends them to the member login, and with a page
   target it sends them to a content page — neither is a booking they can make.
   A signed-in member sees **Book Now**. Both surfaces (desktop header and mobile
-  drawer) take the label from `getBookNowConfig`, so they cannot disagree. The
-  label is not configurable, and it does not change when you change the target.
+  drawer) take both labels from one `getBookNowVariants` read, so they cannot
+  disagree. Since #2352 the choice between them is made in the browser, from the
+  sign-in marker cookie, because the public pages are one stored copy served to
+  everyone — a member may see the signed-out label for a moment before it
+  corrects itself. The label is not configurable, and it does not change when you
+  change the target.
 
 ## Website Site Content
 
@@ -2340,6 +2430,7 @@ rate-limited, or temporarily unavailable.
 | `ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS` | Explicit migration safety override.                                   |
 | `BLUE_GREEN_MIGRATION_OVERRIDE_REASON` | Required explanation when allowing a breaking migration.              |
 | `MIGRATION_SAFETY_LEDGER`              | Path to the migration safety ledger.                                  |
+| `RELEASE_ID`                           | Docker **build** arg, not a runtime setting. Identifies the release, and the public website's fixed CSP script nonce is derived from it (#2352). CI and `scripts/run-production-blue-green-deploy.sh` set it to the deployed commit SHA automatically; `docker-compose.yml` falls back to `GIT_COMMIT_SHA`. If neither is set — a hand-rolled `docker build` — the nonce falls back to a random per-BUILD seed baked into the bundles, which is still one value per release; you only lose the ability to read the deployed revision out of the image. Leave it alone unless you build images by hand — see "Public website page caching" below. |
 | `CONFIG_BUNDLE_IMPORT_PATH`            | Optional. Path to a config-transfer bundle applied non-interactively on boot **only** when the database is empty of non-seed configuration (DR / clone provisioning, ADR-003). Fails closed on a non-empty target, a bad bundle, or an unreadable path, and never blocks startup. See "Config Bundle Auto-Import On Boot (DR / clone)" in `DEPLOYMENT.md`. |
 
 ## Staging And Accessibility

@@ -90,8 +90,19 @@ The app containers ship with **no CPU control at all** in `docker-compose.yml`
 — no `cpus` cap, and deliberately no explicit `cpu_shares` weight either
 (#2351). The reasons, and how scheduling then behaves:
 
-Page renders are fully dynamic (nothing is prerendered — every page reads the
-per-request CSP nonce and session), and the JavaScript engine throws away a
+> **Partly addressed since #2352 slice 1.** The admin-authored CMS pages are now
+> served from a cache rather than re-rendered per visit, so they no longer pay the
+> cold-render cost described below on every visit — only on the first visit per
+> path per container, and after an admin edit or the five-minute backstop.
+> Everything below still holds for `/`, `/join`, `/contact`, `/join/apply` and
+> every member/admin page, which are still rendered per request. Note those four
+> public pages DO already carry the fixed per-release CSP nonce, even though they
+> are not cached — the nonce is decided for the whole `(website)` route group. The
+> keep-warm pinger and the uncapped CPU default stay in place as belt and braces
+> either way. See "Public website page cache" below.
+
+Page renders are fully dynamic (every page is rendered per request), and the
+JavaScript engine throws away a
 route's optimised code once that route sits idle briefly. The next request to
 the route then pays several CPU-seconds rebuilding it — most of it in the
 engine's background compiler threads, which parallelise across cores. The
@@ -134,6 +145,76 @@ a keep-warm pinger (curl the key public routes on each app container every
 the structural fix tracked in #2352 (static/ISR public pages). Changing the
 app CPU arrangement also changes the load-testing baseline profile — see the
 note in `docs/LOAD_TESTING.md`.
+
+## Public website page cache
+
+Slice 1 of #2352. The admin-authored CMS pages (`/privacy`, `/faq`, `/rules`,
+`/committee`, `/terms` and every page an admin adds) are rendered once per path
+and then served from a cache. Four operational facts:
+
+- **The cache is IN MEMORY, per container, and bounded.** Next writes runtime
+  full-route entries under `.next/server/app`, which is read-only in this
+  container, so `next.config.ts` sets `experimental.isrFlushToDisk: false` and
+  `cacheMaxMemorySize: 64MB`. The bound is a least-recently-used eviction, which
+  is deliberate: it means a crawler walking nonsense addresses evicts old entries
+  instead of filling something up. The `/app/.next/cache` tmpfs (Next's fetch and
+  image caches) now carries an explicit `size=64m` for the same reason — an
+  uncapped tmpfs defaults to half the host's RAM and counts against the
+  container's 1 GiB `mem_limit`.
+- **It is emptied by every restart and every deploy**, so a stored page can never
+  outlive its release. That matters beyond freshness: the CSP nonce on these pages
+  is fixed per release (see `docs/SECURITY-ATTACK-SURFACE.md` → "The Public
+  Website's Fixed CSP Nonce"), and a page from an older release would not hydrate.
+- **The fixed nonce covers five addresses and no others.** `/`, the CMS catch-all,
+  `/join`, `/contact` and `/join/apply` (owner decision D1, narrowed to exactly
+  these on 3 Aug 2026). `/hut-leader-instructions` and the two group-join screens
+  are rendered fresh for every visitor with their own one-time nonce, the same as
+  the member area and the admin area. Nothing about this is configurable and there
+  is nothing for an operator to do; it is recorded here because "the public website
+  has a fixed nonce" is not the whole truth, and the difference is what a security
+  reviewer will ask about.
+- **`RELEASE_ID` should reach the image, and CI proves it does.** It is a build ARG
+  carrying the deployed commit SHA; the fixed nonce is derived from it. CI's
+  `publish-ghcr-images` job passes it to the app image and then runs that pushed
+  image and asserts the value equals the built commit, so an ordinary GHCR deploy
+  cannot ship without it. `scripts/run-production-blue-green-deploy.sh` also exports
+  it, which covers the build-on-the-host path (it is skipped when prebuilt registry
+  images are used, which is the normal case). `GIT_COMMIT_SHA` is a second fallback,
+  readable in the runtime image.
+- **If neither reaches the image, the nonce still works.** A bare `docker build` or
+  a plain `docker compose build` has no release, so `next.config.ts` bakes a random
+  per-BUILD seed into every bundle and the nonce is derived from that instead — one
+  value per release, shared by every process, exactly as intended. What you lose is
+  the ability to identify the deployed revision from the image, and the build prints
+  a warning saying so. The old note here claimed the fallback was "one nonce per
+  process — fine for a single process": that was wrong in both halves. The module is
+  loaded twice in one process (the proxy bundle and the app bundle are compiled
+  separately), so a per-process value was never self-consistent even on a single
+  container — it made the analytics scripts on public pages fail their own policy.
+  See `src/lib/release-nonce.ts`.
+- **Warming the new colour before cutover is not implemented yet.** The owner
+  approved it (#2352 D6) and the blue/green script has the slot for it between the
+  target-health step and the Caddy switch; it lands with slice 2, when `/` becomes
+  static and there is a fixed list of addresses worth warming. Until then the first
+  visitor to each CMS page after a deploy pays one cold render.
+- **The five-minute backstop bounds when a REBUILD is triggered, not when a visitor
+  first sees fresh content.** An admin edit is genuinely instant — it clears the
+  stored copy outright, so the next request has to render again. A change with no
+  save behind it (a site banner whose start time simply arrives) is different: after
+  five minutes the next request is still served the OLD stored copy and only
+  triggers the rebuild in the background, so the change appears from the request
+  after that one. On a quiet weekend that second request can be a long time coming.
+  A Next.js Link prefetch is served the stored copy and does not trigger a rebuild
+  at all.
+
+Every page the public website serves carries
+`Cache-Control: private, no-cache, no-store, max-age=0, must-revalidate`, except
+`/`, which carries a deliberate 60-second browser window (#2322). Nothing invites a
+shared cache to keep a public page, which matters because `revalidatePublicSite()`
+cannot reach one: a CDN or corporate proxy holding a stale copy would make "an edit
+appears immediately" false for those visitors with no expiry an admin can wait out.
+`src/proxy.ts` sets that header explicitly — the `revalidate` export otherwise makes
+Next fill in an `s-maxage` of its own.
 
 ## Prerequisites
 

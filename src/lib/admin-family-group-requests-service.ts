@@ -26,6 +26,7 @@ import {
   FAMILY_LINK_GENERATION_LIMIT_ERROR,
 } from "@/lib/member-family-link-depth";
 import { validateInheritEmailSource } from "@/lib/member-email-inheritance";
+import { formatMemberIdentityAge } from "@/lib/member-age";
 import {
   sendChildRequestApprovedEmail,
   sendChildRequestRejectedEmail,
@@ -252,10 +253,27 @@ async function findPotentialMemberMatches(request: {
     ageTier: member.ageTier,
     active: member.active,
     canLogin: member.canLogin,
-    dateOfBirth: member.dateOfBirth,
+    // #2568: the calculated age replaces the stored date of birth. The admin is
+    // deciding WHICH of several similarly-named records to link, and the age is
+    // all that decision needs — so `dateOfBirth` is read here (it is also the
+    // match filter above) and never leaves the server.
+    ageLabel: formatMemberIdentityAge(member.dateOfBirth),
     parentLinks: buildParentLinks(member),
     alreadyInGroup: member.familyGroupMemberships.length > 0,
   }));
+}
+
+/**
+ * Swap a person's stored date of birth for the calculated age label (#2568).
+ *
+ * The date of birth is destructured OUT of the result, so a caller cannot
+ * accidentally forward it: the compiler stops it, not a code review.
+ */
+function replaceDateOfBirthWithAge<T extends { dateOfBirth: Date | null }>(
+  person: T
+): Omit<T, "dateOfBirth"> & { ageLabel: string } {
+  const { dateOfBirth, ...rest } = person;
+  return { ...rest, ageLabel: formatMemberIdentityAge(dateOfBirth) };
 }
 
 export async function listAdminFamilyGroupRequests(): Promise<JsonRouteResult> {
@@ -266,14 +284,40 @@ export async function listAdminFamilyGroupRequests(): Promise<JsonRouteResult> {
       type: { in: [...REVIEWED_REQUEST_TYPES] },
     },
     include: {
+      // #2568: `dateOfBirth` is selected for the three people this review is
+      // ABOUT — the requester, the member being removed, and the partner an
+      // approval would invite — solely so the age can be calculated below. None
+      // of these payloads carries the date itself.
       requester: {
-        select: { id: true, firstName: true, lastName: true, email: true },
+        select: {
+          id: true,
+          firstName: true,
+          lastName: true,
+          email: true,
+          dateOfBirth: true,
+        },
       },
       subjectMember: {
-        select: { id: true, firstName: true, lastName: true, email: true, ageTier: true, active: true },
+        select: {
+          id: true,
+          firstName: true,
+          lastName: true,
+          email: true,
+          ageTier: true,
+          active: true,
+          dateOfBirth: true,
+        },
       },
       invitedMember: {
-        select: { id: true, firstName: true, lastName: true, email: true, ageTier: true, active: true },
+        select: {
+          id: true,
+          firstName: true,
+          lastName: true,
+          email: true,
+          ageTier: true,
+          active: true,
+          dateOfBirth: true,
+        },
       },
       familyGroup: {
         select: {
@@ -297,8 +341,34 @@ export async function listAdminFamilyGroupRequests(): Promise<JsonRouteResult> {
     requests.map(async (request) => ({
       ...request,
       ...getChildRequestTierMetadata(request, ageTierSettings),
+      // #2568: swap each person's stored date of birth for the calculated age
+      // before the payload leaves the server. The spread above would otherwise
+      // carry `dateOfBirth` straight through on all three relations.
+      requester: replaceDateOfBirthWithAge(request.requester),
+      subjectMember: request.subjectMember
+        ? replaceDateOfBirthWithAge(request.subjectMember)
+        : null,
+      invitedMember: request.invitedMember
+        ? replaceDateOfBirthWithAge(request.invitedMember)
+        : null,
+      // The age implied by the date of birth the requester DECLARED for the
+      // person being added. That declared value stays on the payload (the card
+      // has always shown it, and it is what an admin checks a candidate record
+      // against) — this is the same value expressed as an age, so the two never
+      // have to be reconciled by hand.
+      childAgeLabel:
+        request.type === "CHILD_REQUEST"
+          ? formatMemberIdentityAge(request.childDateOfBirth)
+          : null,
+      requestedAgeLabel:
+        request.type === "ADULT_REQUEST"
+          ? formatMemberIdentityAge(request.requestedDateOfBirth)
+          : null,
       familyGroup: {
         ...request.familyGroup,
+        // Deliberately NO age on the group's existing members: this is the
+        // routine roster of the group, not a member whose identity is being
+        // confirmed (#2568 scope).
         members: request.familyGroup.memberships.map((membership) => membership.member),
         memberships: undefined,
       },

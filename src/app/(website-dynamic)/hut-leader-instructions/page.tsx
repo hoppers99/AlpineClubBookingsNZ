@@ -7,6 +7,21 @@ export const metadata: Metadata = {
   robots: { index: false, follow: false },
 };
 
+/**
+ * Permanently per-request, and out of #2352's scope for a reason of its own rather
+ * than by sequencing: this page is per-assignment and PIN-gated, so there is no
+ * shared copy to store. It reads `searchParams`, which already opts it out — this
+ * line makes the intent explicit so a future refactor that stopped reading the
+ * query string could not silently make an assignment-scoped page cacheable.
+ *
+ * It also lives in `(website-dynamic)` rather than `(website)`, which is the other
+ * half of the same statement (owner decision, 3 Aug 2026): nothing here is stored,
+ * so nothing here needs a nonce that outlives a request, so this page keeps the
+ * freshly minted per-request CSP nonce that every member and admin page has. The
+ * group's layout declares the render mode too; this line is the route's own reason.
+ */
+export const dynamic = "force-dynamic";
+
 // Remote pre-arrival lodge-instructions view for non-login hut leaders (#1642).
 // Public route (no login gate): the assignment id arrives as `?a=` from the
 // assignment email link, and the client verifies it together with the kiosk

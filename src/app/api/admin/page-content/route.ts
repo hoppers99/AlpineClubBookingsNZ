@@ -121,7 +121,10 @@ export async function POST(request: NextRequest) {
 
   if (isReservedPageSlug(slug)) {
     return NextResponse.json(
-      { error: "This slug is reserved and cannot be used" },
+      {
+        error:
+          "This slug is reserved for part of the application (for example admin, login, pay, calendar or profile) and cannot be used for a content page. Choose a different first word.",
+      },
       { status: 400 },
     );
   }
@@ -239,7 +242,10 @@ export async function PUT(request: NextRequest) {
 
   if (isReservedPageSlug(slug)) {
     return NextResponse.json(
-      { error: "This slug is reserved and cannot be used" },
+      {
+        error:
+          "This slug is reserved for part of the application (for example admin, login, pay, calendar or profile) and cannot be used for a content page. Choose a different first word.",
+      },
       { status: 400 },
     );
   }

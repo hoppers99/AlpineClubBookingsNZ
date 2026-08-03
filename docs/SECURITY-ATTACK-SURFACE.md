@@ -80,7 +80,7 @@ the row, not open work. Open findings now live in labelled GitHub issues
 
 | Route or surface | Auth mechanism | Actor | Data touched | External calls | Rate, signature, or boundary controls | Logging and audit | Residual risk or follow-up |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `src/proxy.ts` global proxy, pre-setup gate, and module gates | No session auth. Applies CSP/security headers to page requests and selected API matcher paths; returns 404 for disabled module routes; returns 503 + the "Site setup in progress" screen for every public-website path until `ClubTheme.completedAt` is set (#2420, "The Pre-Setup Gate" below). | Anonymous and authenticated browser traffic. | Module settings via `loadEffectiveModuleFlags()`; setup state, club name and contact address via `setup-gate.ts` (memoised 15s, read only while setup is incomplete). | None. | CSP nonce, `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy`, module route blocking, pre-setup 503 gate (fails closed, `no-store`, `Retry-After`). | No per-request audit. | API matcher is selective, not global for every API path. Keep route-level auth as the enforcement boundary. The setup gate never covers `/api/*`, the admin area, or the login flows — an operator must be able to finish setup. Since #2404 the matcher RUNS on asset-shaped URLs (`/foo.png`, `/favicon.ico`, `/wp-content/uploads/x.jpg`), so those carry a policy and meet the gate like any other address; only `/api`, `/_next/static/` and `/_next/image` stay excluded. A miss under `_next/static` is terminated without a document by the `afterFiles` rewrites, whose own `default-src 'none'` is then the policy that ships; a miss under `/api` is answered as JSON by `api/[[...unmatched]]`, and no rewrite rule may touch `/api` at all (module-state parity — see "Static-Asset URLs And The Nonce-Only CSP"). #2404 also removed the prefetch exemption outright, so no request header — `Purpose: prefetch`, `Next-Router-Prefetch`, `RSC`, in any combination — takes a URL outside the proxy. The gate still declines to CLAIM asset-shaped paths (a 503 holding screen is a document), so a URL of that shape which reaches a render is ungated by design; `(website)/layout.tsx` and the `(website)` metadata guard cover it. |
+| `src/proxy.ts` global proxy, pre-setup gate, and module gates | No session auth. Applies CSP/security headers to page requests and selected API matcher paths; returns 404 for disabled module routes; returns 503 + the "Site setup in progress" screen for every public-website path until `ClubTheme.completedAt` is set (#2420, "The Pre-Setup Gate" below). | Anonymous and authenticated browser traffic. | Module settings via `loadEffectiveModuleFlags()`; setup state, club name and contact address via `setup-gate.ts` (memoised 15s, read only while setup is incomplete). | None. | CSP nonce, `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy`, module route blocking, pre-setup 503 gate (fails closed, `no-store`, `Retry-After`). | No per-request audit. | API matcher is selective, not global for every API path. Keep route-level auth as the enforcement boundary. The setup gate never covers `/api/*`, the admin area, or the login flows — an operator must be able to finish setup. Since #2404 the matcher RUNS on asset-shaped URLs (`/foo.png`, `/favicon.ico`, `/wp-content/uploads/x.jpg`), so those carry a policy and meet the gate like any other address; only `/api`, `/_next/static/` and `/_next/image` stay excluded. A miss under `_next/static` is terminated without a document by the `afterFiles` rewrites, whose own `default-src 'none'` is then the policy that ships; a miss under `/api` is answered as JSON by `api/[[...unmatched]]`, and no rewrite rule may touch `/api` at all (module-state parity — see "Static-Asset URLs And The Nonce-Only CSP"). #2404 also removed the prefetch exemption outright, so no request header — `Purpose: prefetch`, `Next-Router-Prefetch`, `RSC`, in any combination — takes a URL outside the proxy. The gate still declines to CLAIM asset-shaped paths (a 503 holding screen is a document), so a URL of that shape which reaches a render is ungated by design; the shared public chrome (`src/components/website/website-chrome.tsx`, composed by both public route groups) and the public metadata guard cover it. |
 | `/api/health`, `/api/health/ready` | Public. | Load balancers, operators, anonymous callers. | DB reachability, runtime version/uptime, config readiness. Public responses omit provider error detail. | DB query only. | No rate limit. No secrets in response. | Logger debug/error only. | Anonymous callers can observe availability. #615 can decide whether to add light rate limiting or cache headers. |
 | `/api/age-tier-settings`, `/api/committee` | Public read endpoints. | Anonymous website users. | Public age-tier/rate settings and published committee assignment presentation fields; and, **only when `PublicContentSettings.committeePhotoDisplay != NONE`**, per-published-member photo metadata (member id + `photoUpdatedAt` version) so the roster can build the scoped `/api/members/[id]/photo` URL. | None. | No rate limit. Committee query selects active, published assignment fields only; member email is not selected or returned, phone is returned only when show-phone is enabled, and contact keys are returned only for contactable assignments. Photo metadata (incl. member id) is emitted **only** when the club has opted the roster into photos — with `committeePhotoDisplay = NONE` (the default), no member id or photo pointer is returned. | None beyond DB errors if thrown. | Public committee names and optional phone numbers are intentional once an admin publishes the assignment; email remains server-only. Committee-photo bytes are served (and gated) by the scoped `/api/members/[id]/photo` endpoint, which applies the SAME `committeePhotoDisplay != NONE` condition to its anonymous branch (#2242) — so "Don't show photos" takes the bytes off the public internet, not just the roster metadata. |
 | `/api/address-autocomplete/search`, `/api/address-autocomplete/details/[id]` | Public server-side proxy to Addy, gated by the `addressAutocomplete` Admin Module. | Anonymous website users. | Search terms, address suggestion ids, Addy result payloads. | Addy API via `src/lib/addy-api.ts`. | Module-route/proxy gate returns 404 while disabled, Zod query validation, `rateLimiters.addressAutocomplete` at 90/min/IP. Secrets stay server-side. | Minimal error responses, no audit. | Upstream-cost and enumeration surface remains public only when the module is enabled; manual address entry remains the fallback. |
@@ -110,6 +110,7 @@ the row, not open work. Open findings now live in labelled GitHub issues
 | `/api/admin/display/preview-grant`, `/api/admin/display/preview`, and the state route's `?previewGrant` path | The shared `requireAdmin()` guard mints the grant; the grant itself is an HMAC-signed, 5-minute, domain-separated, stateless capability. | Admin (mint); a sandboxed opaque-origin preview iframe (consume). | A signed payload naming exactly one template + lodge (plus an optional simulated date); on redemption, the same privacy-reduced preview state. | None. | A distinct HMAC domain-separation prefix (`lodge-display-preview-grant:`) means a pairing blob can never be replayed as a grant or vice versa; the expiry lives inside the signed payload (cannot be extended by tampering); a signed `windowStart` in the grant is authoritative — an unsigned `?previewDate` on the sandbox-rewritable iframe URL cannot shift the served window beyond it (#176); single-purpose — only the state route's preview path honours it, never the heartbeat or any admin route; it is not a display token and never stamps `lastSeenAt`; it renders through the same privacy serialiser; the permissive `Access-Control-Allow-Origin: *` is safe because the opaque-origin fetch sends no cookies and the body is already the public wall feed. | None beyond logger. | A leaked grant can at worst re-render a five-minute, privacy-reduced board for its named lodge/template. |
 | `/api/admin/setup/**`, `/api/admin/modules`, `/api/admin/health`, `/api/admin/runtime-status` | Admin session. `runtime-status` now uses the shared `requireAdmin()` guard. | Admin. | Setup progress, provider readiness, module settings, health detail, runtime status. | Provider test route can check Stripe/email/Xero config when admin triggers it; health checks DB/Xero/SMTP/Stripe readiness. | Admin role plus active-account guard via `requireAdmin()`. | Audit logs for setup/progress/module changes; logger for provider/health errors. | Resolved under #613 (closed): `admin/runtime-status` uses `requireAdmin()`. Provider-test/setup guard standardisation is the remaining hardening item. |
 | `/api/admin/members/**`, including dependents, family, lifecycle, setup invites, password resets, import/export, credits, Xero link/push/unlink | Admin session via the shared `requireAdmin()` guard (per-method test-enforced, #1132). | Admin. | Member PII, passwords/action tokens, family/dependent links, credits, lifecycle/archive/delete state, Xero contact links, import/export payloads. | Email sends, Xero contact/group sync, password setup/reset email. CSV setup invites are limited to imported rows that can log in. | Shared `requireAdmin()` guard on every method; import has rate limit; some credit/lifecycle routes import rate-limit helpers. Access-role writes are Full-Admin-only (#1012). Deactivating, de-logging, or archiving an account is guarded (#1604, extended #1622): the last active Full Admin can never be removed, and only a Full Admin may deactivate/de-login/archive a privileged-role account — enforced on member edit, bulk update, lifecycle archive, and dependent linking with `disableLogin` (`POST /api/admin/members/[id]/dependents/link`) via `src/lib/admin-account-guards.ts`. | Extensive audit log for member, credit, lifecycle, and Xero actions; logger for failures. | Highest PII/IDOR blast radius. #613 should migrate to shared admin guard; #614 should guard missing admin checks; #617 should review lifecycle integrity. |
+| `/api/admin/family-groups/**` (list, `[id]`, `requests`, `member-search`, `partner-invites`), `/api/admin/family-suggestions/**` | Admin session via the shared `requireAdmin()` guard. The identity-confirmation surfaces name the requirement explicitly rather than inferring it from the request path: `GET /api/admin/family-groups/member-search` and `GET /api/admin/family-groups/[id]` both demand `membership:view` (#2568). | Membership admin (view to read, edit to act). | Family group membership, pending join/child/adult/removal requests, partner invitations, and — on the identity-sensitive surfaces only — each member's **calculated age** (#2568). | Email sends on request review; partner invitation tokens. | Area permission checked server-side against database-read roles on every request, so an admin whose role covers an unrelated area receives no identity information. Dates of birth are NOT in these payloads: the age is computed server-side and sent as a finished string, and no calculated age is stored. The routine group-list response carries neither. `GET /api/admin/family-groups/[id]` builds its body by WHITELIST rather than by spreading the Prisma row (#2568 review): the spread re-exported the raw `memberships` relation beside the sanitised member list, so every member's `passwordHash`, `passwordChangedAt` and `lastLoginAt` — and the `dateOfBirth` the age work added — reached the browser despite the mapping stripping all four. Only `hasPassword`, derived server-side, survives of the credential columns. | Audit log for group create / update / delete and request review; logger for failures. | The blast radius is member identity data rather than money. A regression to watch for is a new family-group payload re-introducing `dateOfBirth`, or age appearing on a routine or member-facing view — both are pinned by `src/lib/__tests__/member-identity-age-surfaces.test.ts`. |
 | `/api/admin/member-applications/**`, `/api/admin/membership-cancellation-requests/**`, `/api/admin/members/[id]/membership-cancellation`, `/api/admin/membership-cancellation-settings`, `/api/admin/deletion-requests/**` | Admin session via the shared `requireAdmin()` guard (per-method test-enforced, #1132). | Admin. | Applications, cancellation requests/participants/settings, deletion request state, member lifecycle action requests. | Email sends; cancellation approval can affect Xero contact groups/archive through services. | Admin role plus active guard; participant resend/approval routes import rate-limit helpers. Approving a membership cancellation or a deletion request applies the #1604 admin-account guards (extended by #1622): only a Full Admin may de-login/anonymise a privileged-role account, and the last active Full Admin cannot be removed. The family-group login-holder transfer (`POST /api/admin/family-groups/[id]/login-holder`) carries the same two guards, evaluating the last-admin end state on its post-write count so the incoming holder's login grant is included. | Audit log and logger. | Sensitive lifecycle and account deletion operations. #617 should review durable state transitions and external writes outside long transactions. |
 | `/api/admin/bookings/**`, `/api/admin/booking-change-requests/**`, `/api/admin/booking-reviews`, `/api/admin/waitlist` | Admin session via the shared `requireAdmin()` guard (per-method test-enforced, #1132). | Admin. | Booking list/search/detail, operational payment/Xero/bed/change filters, review/force-confirm state, change requests, waitlist. | Email sends; Xero invoice/outbox; capacity/booking services. | Admin role plus active guard; route/service validation. | Audit logs for booking approvals/force-confirm/change-request decisions; logger. | Financial and reservation integrity surface. #613/#614 should standardize guard markers; #617 should review invariants. |
 | `/api/admin/bookings/[id]/exclusive-hold` | Admin session via the shared `requireAdmin()` guard (mirrors the sibling capacity-hold route). | Admin. | `Booking.wholeLodgeHold` plus its who/when audit fields; on set, the ids of overlapping capacity-holding bookings surfaced for officer resolution. **Also `BedAllocation` rows (#2285):** setting the hold DELETES every per-bed row this booking owns (manually placed and admin-approved rows included) and clearing it re-plans them through the auto-allocator, which can in turn move or unallocate OTHER bookings' provisional rows; each such displacement and each `#1750` partner promotion writes its own extra audit row. | None. | The flag write, the conflict read and the allocation reconcile all run inside the per-lodge capacity lock (`acquireLodgeCapacityLock`, #154) — the same key every admission takes — so setting a hold cannot race an in-flight admission and the flag can never commit apart from its allocation rows; the reconcile runs strictly after the compare-and-set write, so a lost claim (409) changes nothing. No capacity **admission** decision is made here and the availability engine (`checkCapacityForGuestRanges`) is never consulted (exclusive-booking ADR-001 decision 1) — the hold is never refused for want of space — but the bed-allocation planner IS run on the clear direction, so "no arithmetic at all" is not accurate: it is bed *placement*, not bed *admission*. Set and clear are idempotency-guarded (409 on a redundant set or clear); Zod body validation. | `booking.exclusiveHold.set`/`booking.exclusiveHold.cleared` audit entries (important severity) recording the overlapping conflict ids, the reconcile counts, and — on set — a capped list of the removed allocation rows so a mistaken hold can be undone by hand (#2285); plus `bed_allocation.provisional_displaced` and `BED_ALLOCATION_PARTNER_PROMOTED` rows from the reconcile itself. | Privacy property is member-facing indistinguishability (exclusive-booking ADR-001 decision 6): held nights present to members and the public exactly as a genuinely full lodge — same "no space" messaging, waitlist, and emails — and the exclusive nature is visible only on admin surfaces, never surfaced to members. |
@@ -1193,8 +1194,10 @@ with a 200 and got it stamped `public, max-age=60, stale-while-revalidate=300`.
 A launch-state lie, pinned in every anonymous visitor's cache, from an outage
 already over.
 
-Fixed at the root: that function now reports `readFailed` separately, and
-`(website)/layout.tsx` paints the holding screen only on a POSITIVE answer. The
+Fixed at the root: that function now reports `readFailed` separately, and the
+shared public chrome (`src/components/website/website-chrome.tsx`, which held this
+branch as `(website)/layout.tsx` until the D1 narrowing extracted it) paints the
+holding screen only on a POSITIVE answer. The
 asymmetry with the proxy gate, which still fails closed on the same input, is
 deliberate and is the general rule worth keeping — **503 is a true statement
 about an unreadable database; a 200 that describes the club is not.**
@@ -1269,8 +1272,10 @@ lobby TV display (fork #54) and the global 404 (#2356).
       the wire to lose. Nothing in `(website)` has a `loading.tsx`, so the page
       is not behind a streaming boundary in the first place.
     - **What was actually measured was an unconfigured site.** On a club that
-      has not completed site-style setup (`ClubTheme.completedAt IS NULL`),
-      `(website)/layout.tsx` returns its "Site setup in progress" screen
+      has not completed site-style setup (`ClubTheme.completedAt IS NULL`), the
+      shared public chrome — `(website)/layout.tsx` when this was measured, since
+      the D1 narrowing `src/components/website/website-chrome.tsx` — returns its
+      "Site setup in progress" screen
       INSTEAD of `{children}`. The page component never runs, its `notFound()`
       never fires, and **every** URL answers 200 — including `/about` and the
       other real pages. Verified directly: zero `PageContent` reads are issued
@@ -1517,9 +1522,10 @@ address — real page, typo, and bot probe alike — which is the configuration 
   assets the screen needs" constraint is satisfied trivially — there are none.
   Two of the three admin-editable values interpolated into it — club name and
   contact address — are HTML-escaped. **The third, the theme CSS, is not, and
-  cannot be:** it is injected raw into a `<style>` element, exactly as
-  `(website)/layout.tsx` injects it, and its safety rests entirely on
-  `sanitiseRawCss()` stripping every `</style` sequence from the admin-authored
+  cannot be:** it is injected raw into a `<style>` element, exactly as the shared
+  public chrome (`src/components/website/website-chrome.tsx`, extracted from
+  `(website)/layout.tsx` by the D1 narrowing) injects it, and its safety rests
+  entirely on `sanitiseRawCss()` stripping every `</style` sequence from the admin-authored
   `rawCss`. Say it that way round rather than "the interpolated values are
   escaped", because the review found that sanitiser broken (finding F2, below)
   and the earlier wording would have let a reader conclude the 503 page was safe
@@ -1537,8 +1543,11 @@ address — real page, typo, and bot probe alike — which is the configuration 
   database outage is answered with the holding screen and a 503 — which is what
   503 literally means. Failing open would restore the 200-for-every-address
   defect under exactly the conditions that make it hardest to notice. Note the
-  deliberate asymmetry with `(website)/layout.tsx`, which since finding F4 does
-  the OPPOSITE on the same input: see the `/` caching residual above.
+  deliberate asymmetry with the render-time fallback in
+  `src/components/website/website-chrome.tsx` — `(website)/layout.tsx` until the D1
+  narrowing extracted it, and now the one copy shared by both public route groups —
+  which since finding F4 does the OPPOSITE on the same input: see the `/` caching
+  residual above.
 - **The gate has two preconditions — the proxy must RUN, and the classifier must
   CLAIM — and the layout and metadata guards behind it are load-bearing because
   of the second.** The first used to be bypassable by anyone: the `missing:`
@@ -1563,8 +1572,9 @@ address — real page, typo, and bot probe alike — which is the configuration 
     route table is case-SENSITIVE, so no `/api` route claims it and the
     `(website)` catch-all renders it. These guards are what stop that render
     showing the real site or its page inventory.
-  - The layout's branch answers 200 — a layout cannot set a status, which is
-    precisely why the authoritative decision is in the proxy — and substitutes
+  - The chrome's branch answers 200 — a layout or component cannot set a status,
+    which is precisely why the authoritative decision is in the proxy — and
+    substitutes
     the holding screen for `{children}`. Only the copy is shared with the 503
     document (`SETUP_IN_PROGRESS_COPY`); a test pins that both surfaces use it.
   - **Suppressing `{children}` is not enough on its own, and the review found
@@ -2140,6 +2150,402 @@ above.
   the `(?!api/)` lookahead matching case-insensitively.
 - `scripts/ci/check-prerendered-script-nonces.mjs` is unchanged and still covers the
   build-output half of the class.
+
+## The Public Website's Fixed CSP Nonce - 2026-08-02
+
+Issue #2352 slice 1. Recorded here explicitly, in the owner's words from decision
+D1, rather than slipped in as an implementation detail: **the public website now
+carries one fixed script nonce per release instead of a fresh one per request.**
+
+### What changed, and why it could not be avoided
+
+The admin-authored CMS pages (`(website)/[...slug]`) are served from Next's
+full-route ISR cache: rendered once for a path, stored, and handed to every later
+visitor until the content changes. A stored page can carry only ONE nonce value,
+because Next stamps the nonce into its own inline bootstrap and RSC scripts at
+render time, reading it from the request's own `Content-Security-Policy` header
+(`next/dist/server/app-render/app-render.js`). If the policy on a later response
+named a different value, every inline script on the stored page would be blocked
+and the page would never hydrate.
+
+Two alternatives were evaluated and are not available:
+
+- **Injecting a nonce at the edge.** Next's proxy layer and Caddy can change
+  response HEADERS, not response BODIES. Rewriting the stored HTML on the way out
+  is not something either can do.
+- **Hash-based CSP.** The inline scripts needing hashes are Next's RSC payload
+  scripts, whose contents literally contain the rendered page — so any build-time
+  hash list is stale the moment an admin edits a page.
+
+The remaining options were a fixed-per-release nonce, `unsafe-inline`, or not going
+static at all. The owner chose the fixed nonce and explicitly rejected
+`unsafe-inline`.
+
+### What the trade costs
+
+On those five pages the nonce is readable in the page source, so it no longer
+stops a FULLY INJECTED `<script>` tag. It still stops the commoner injection
+shapes — `onclick=` and other `on*` handlers, `javascript:` URLs — because those
+cannot carry a nonce at all. Everything else is unchanged: no `unsafe-inline`,
+`object-src 'none'`, `base-uri 'self'`, `form-action 'self'`,
+`frame-ancestors 'none'`.
+
+The first line of defence is what makes this a second line rather than the only
+one: the only untrusted content on these pages is admin-authored CMS HTML, which
+is allowlist-sanitised on write AND again on read, permitting no `script` element
+and no `on*` attribute.
+
+Bundled tightening, per D1: **Stripe is dropped from `script-src` on these pages.**
+Stripe.js is loaded only from the member payment surfaces, so allowing it on a
+public information page was reach for an attacker and nothing for the club.
+
+### Scope — exactly the five addresses D1 named
+
+The fixed nonce covers `/`, the `[...slug]` CMS catch-all, `/join`, `/contact` and
+`/join/apply`, and nothing else.
+
+**The one-sentence invariant:** an address carries the fixed per-release nonce if
+and only if it is a public website address that one of those five routes can serve
+— so no PAGE is ever stored outside that set, and every other address on the site,
+public or not, is rendered per request under a nonce minted for that request.
+
+It is stated over PAGES on purpose, and an earlier wording that said "if and only
+if one of those five can serve it" was wrong in the "if" direction. The catch-all
+claims every URL no other route claims, so `/dashboard/nope` IS served by one of
+the five while deliberately keeping a per-request nonce — and the 404 DOCUMENT the
+catch-all produces there is stored. That is the #2570 residual recorded below, and
+the two statements have to agree.
+
+**Percent-encoded addresses are not a gap in the split, and this was measured
+rather than argued** (slice-1 security re-review reported the opposite as high
+severity). The classifier compares raw URL segments, and so does Next: a static
+route matches by exact string equality against the raw pathname, a dynamic route
+matches its regex against the raw pathname with only the captured params decoded
+afterwards, and the router server invokes the render with the raw pathname
+(`invokePath`). `fsChecker.getItem()` does try a decoded variant, but for an app
+route it only produces the `invokeOutput` hint, which filters DYNAMIC candidates
+only, so a decoded static route never wins.
+
+Measured on a container build of this branch (`next start`, next 16.2.12) and read
+off the ISR headers rather than the status, because the catch-all is the only route
+in either public group that answers with `x-nextjs-cache` / `x-nextjs-prerender`:
+
+| Address | Status | ISR headers | Route that answered |
+| --- | --- | --- | --- |
+| `/hut-leader-instructions` | 200 | no | the `(website-dynamic)` page, per-request nonce |
+| `/hut-leader-instruction%73` | 404 | yes | the CATCH-ALL, refusing the slug — fixed nonce |
+| `/dashboar%64` | 404 | yes | the catch-all, not `/dashboard` — fixed nonce |
+| `/logi%6E` | 404 | yes | the catch-all, not `/login` — fixed nonce |
+| `/join/apply` | 200 | no | the static route, one of the five — fixed nonce |
+| `/join/appl%79` | 404 | no | `/join/[code]`, exactly as `/join/ANY` — per-request |
+| `/join/verif%79/tok` | 404 | yes | the catch-all, not the token page — fixed nonce |
+
+So an encoded static address is catch-all territory and correctly takes the fixed
+nonce — and the stored document at `/hut-leader-instruction%73` was verified
+consistent, both requests naming the same nonce as the HTML carries, with no
+unnonced inline script. `/join/appl%79` correctly does not take it: decoding before
+classifying would have handed a genuinely dynamic page the publicly readable fixed
+nonce, which is the security regression rather than the repair. (On an earlier
+container at 16.2.11 with group bookings enabled, that address answered 200 titled
+"Join a group booking" — the same conclusion read off the body.) The one thing Next
+does resolve from a decoded path is a static FILE, which has an `fsPath` and is
+served directly (`/robots%2Etxt` returns the real `robots.txt`); the only consequence
+is that such a URL is claimed
+as a website address and answered with the 503 holding screen while setup is
+incomplete, which nothing emits and which carries no document risk after setup.
+`src/lib/public-website-paths.ts` holds the framework source references,
+`public-website-path-predicates.test.ts` pins each shape with a literal expected
+answer, and `e2e/static-cms-pages.spec.ts` pins the route-table half on a real
+server.
+
+The first cut of this work applied the fixed nonce to the whole `(website)` route
+group, which swept in three more pages: `/hut-leader-instructions`, `/join/[code]`
+and `/join/verify/[token]`. **The owner reversed that on 3 Aug 2026** and the
+narrowing is implemented. The reasoning is worth keeping, because the structural
+argument for the widening was real:
+
+- A route takes its CSP nonce from the layout above it, and the shared public layout
+  may not read the request — that read is precisely what forced a full render on
+  every public page view. So two nonce sources genuinely do need two layouts.
+- What made the widening the wrong trade is that the three swept-in pages are
+  `force-dynamic` and therefore never stored, so the fixed nonce cost them the
+  unguessable-per-response defence and returned nothing at all.
+- So there are now two route groups: `src/app/(website)` (the five, fixed nonce) and
+  `src/app/(website-dynamic)` (the three, per-request nonce, read out of
+  `CSP_NONCE_HEADER` exactly as every member and admin page reads it).
+- **The markup is not duplicated to get that** — the owner's direction was explicit
+  on the point. Both layouts are three lines around one shared
+  `src/components/website/website-chrome.tsx`, which takes the nonce as a prop, and
+  CI fails the build if either layout grows chrome of its own or stops composing it.
+
+Two deliberate asymmetries in the split, each recorded because it looks like an
+inconsistency and is not:
+
+- **The Stripe tightening follows the WIDE predicate, not the nonce.** Dropping
+  `https://js.stripe.com` from `script-src` is right for the whole public website:
+  Stripe.js is loaded only from the member payment surfaces, so allowing it on a
+  PIN-gated instructions page is reach for an attacker and nothing for the club.
+  Narrowing that flag alongside the nonce would have handed those three pages a
+  LOOSER policy as a side effect of tightening their nonce.
+- **The #2420 pre-setup holding screen also follows the wide predicate.** The three
+  moved pages are public website addresses, so an unlaunched club still answers them
+  with 503 and the holding screen. Narrowing the shared predicate would have been
+  the small change and would have quietly taken that off them — a change to what an
+  unconfigured install exposes, made as a side effect of a CSP decision. Verified on
+  a real container build: with `ClubTheme.completedAt` NULL, all three answer 503.
+
+Login, registration, the member area, admin, finance, lodge and `/display` keep a
+freshly minted per-request nonce, exactly as before. `/login` is out of scope
+permanently (D7).
+
+### The mechanism
+
+- `src/lib/release-nonce.ts` derives the value as a SHA-256 digest of a namespaced
+  string plus the release identifier, so **the release identifier is not
+  recoverable from the page source**.
+- The identifier is `RELEASE_ID`, a Docker build ARG promoted to an ENV in both the
+  builder and the runner stage (`Dockerfile`). CI and
+  `scripts/run-production-blue-green-deploy.sh` pass the commit SHA. Deriving from
+  something baked into the IMAGE is what makes every process of one release agree
+  without coordination — a per-process value would break a page one process stored
+  when another served it.
+- CI asserts the value on the image that actually ships: `publish-ghcr-images`
+  passes `RELEASE_ID` to the app image and then RUNS that pushed image and fails if
+  the value does not equal the built commit. The earlier arrangement asserted it on
+  the throwaway image `docker-image-security` scans while the published image was
+  built without the argument at all, and the deploy script's own export could not
+  cover for it — `prepare_application_images()` returns early on the prebuilt-image
+  path, which is the ordinary GHCR deploy. Found in the slice-1 review.
+- `GIT_COMMIT_SHA` is a real second fallback: it is now declared in the Dockerfile's
+  RUNNER stage, not only the builder, so a runtime read can see it.
+- With no identifier readable at all (a bare `docker build`, or local `next start`),
+  the value comes from a random per-BUILD seed that `next.config.ts` substitutes into
+  every bundle. That is still one value per release, shared by every reader.
+  **The previous wording here — "falls back to one random value per process ... safe
+  only for a single-process deployment" — was wrong in both halves.** The module is
+  imported by two separately-compiled bundles (the proxy entry and the app-server
+  graph), so a per-process value was not even self-consistent inside one container:
+  the proxy published one nonce in the policy while `(website)/layout.tsx` stamped
+  another onto the analytics `<Script nonce>`, and Google Analytics was refused on
+  every public page. The per-instance random survives only as a last resort behind an
+  error-level log.
+- `src/lib/csp.ts` takes the public-website decision from its caller, and
+  `src/proxy.ts` makes TWO decisions from two predicates in
+  `src/lib/public-website-paths.ts`: `isFixedNonceWebsitePath()` for the nonce, and
+  `isPublicWebsitePath()` for the policy's Stripe tightening and the #2420 setup
+  gate.
+- **One predicate used to answer three questions, and the narrowing forced a split**
+  — by question, not by convenience. While the fixed nonce covered the whole
+  `(website)` group, "is this the public website for 503 purposes", "does this carry
+  the fixed nonce" and "may the CMS catch-all serve this" had the same answer, so one
+  function served all three. They no longer do: the nonce covers five addresses while
+  the holding screen must still cover the whole public website. So
+  `isPublicWebsitePath()` keeps the setup gate's meaning unchanged (both groups),
+  `isFixedNonceWebsitePath()` answers the nonce, and `isCmsServablePageSlug()`
+  restates the second as a slug question. Each caller uses the one that answers ITS
+  question, and `src/lib/__tests__/public-website-path-predicates.test.ts` pins the
+  addresses where the answers differ.
+- **The nonce set and the CACHE's territory are the same set, and that is a security
+  property rather than tidiness** (slice-1 review, F1). `(website)/[...slug]` claims
+  every URL no other route claims, which is wider than the five. The difference was
+  reachable: `pay` was a legal CMS slug and `(public)/pay` holds only `[token]/`, so a
+  published page at `/pay` was stored carrying whatever per-request nonce generated it
+  and then served under a policy naming a different one — every inline script refused,
+  permanently, for everyone. It is closed from the CMS side rather than by widening
+  the nonce, because widening would hand the fixed nonce to `/dashboard` and `/admin`,
+  which D1 keeps per-request: `isCmsServablePageSlug()` makes the admin write and the
+  catch-all's loader both refuse those slugs. The narrowing tightened it three
+  addresses further — `hut-leader-instructions`, `join/<code>` and
+  `join/verify/<token>` are refused as slugs, because a real per-request route claims
+  each of them, so a CMS page there could never have been served in any release.
+  Refusing them at the write is what stops one being created; refusing them in the
+  loader and the menu reader is what handles a row from an earlier release.
+  `trips/hut-leader-instructions`, which no route claims, is still a valid page — a
+  reserved WORD would have refused that too, for no reason.
+- **The same predicate now filters what ADVERTISES a page, which the first pass
+  missed** (slice-1 security re-review). Refusing to serve a row is not the whole
+  answer while the site still links to it: a page saved at `/lodge/history` before
+  this slice stays `published` with its menu title intact, so
+  `listWebsiteMenuPages()` kept it in the public header and the mobile drawer, and
+  an admin-chosen Book Now target at such an address kept the button pointing there
+  — a nav link to a 404 on every public page, with no signal to the visitor or the
+  operator. Both readers now apply `isCmsServablePageSlug()`
+  (`src/lib/page-content-html.ts`, `src/lib/book-now-config.ts`), so an address the
+  site will not serve is an address the site does not offer; the Book Now case
+  reuses #1929's existing fail-open to the booking flow. Finding the affected row
+  is an operator step, and `CONFIGURATION.md` carries the query for it.
+- One residual is recorded rather than claimed closed, and it is now MEASURED rather
+  than reasoned about (#2570). A 404 the catch-all raises for an address outside the
+  set is stored as a 404 entry carrying the generating request's nonce, so the
+  not-found DOCUMENT served from the store afterwards has a nonce the policy no longer
+  names and does not hydrate. Observed on a real container build of this branch: two
+  requests for `/admin/typo` returned 404 both times, the first with policy nonce and
+  HTML nonce equal, the second with a fresh policy nonce while the HTML still carried
+  the first request's value. An in-territory miss (`/definitely-missing`) is
+  consistent on both requests, because it carries the fixed nonce — so the fault is
+  confined to addresses belonging to another route group. It holds nothing personal,
+  the status is a correct 404 on every request, and an admin write or a deploy clears
+  it.
+
+  **The visible symptom is worse than the #2570 briefing said, and this correction
+  matters to the decision.** That briefing described a page whose "text and ordinary
+  links work" with only its scripts refused. Measured on the same build: a
+  `notFound()` response from this route carries ZERO server-rendered visible markup —
+  `<body>` is an empty placeholder and the entire 404 screen arrives in the RSC flight
+  payload, inside nonce'd inline `<script>` tags (0 visible characters outside
+  `<script>` on `/admin/typo`, `/dashboard/nope` and `/definitely-missing`, against
+  ~3.7k on `/contact`). So a later visitor to a mistyped member address sees a BLANK
+  page until the next admin save or deploy, not a readable "page not found". No data
+  is exposed and the HTTP status stays correct, but "documented wart" was assessed
+  against the gentler description.
+
+  The owner chose option 2 on 3 Aug (stop storing those documents), and the mechanism
+  it named does not exist on next@16.2.12: with `cacheComponents` off, an on-demand
+  ISR generation renders under the prerender-legacy work-unit store, where both
+  `connection()` and `unstable_noStore()` throw `DynamicServerError` and base-server
+  converts that to a 500 — the worse outcome that option's own terms said to drop the
+  change for. The replacement considered was a proxy rewrite of such an address to a
+  dedicated per-request not-found route, and **that cannot work either, for a reason
+  of principle rather than of framework version: middleware runs BEFORE routing, so
+  the proxy cannot tell `/dashboard/nope` from `/dashboard/bookings`.** Rewriting
+  every non-website address would 404 the real member and admin areas. So this is back
+  with the owner rather than downgraded quietly; the mechanisms that would work, and
+  what each costs, are set out on #2570.
+- **The analytics scripts take their nonce from the LOADED DOCUMENT, not from the
+  render that mounted them** (slice-1 review). A document's CSP is fixed when it
+  loads; the nonce prop is not, because the two public layouts pass different values.
+  A soft navigation between the groups therefore remounted `AnalyticsConsent` holding
+  the other territory's nonce while the policy in force was still the first
+  document's, and `script-src` carries no `'strict-dynamic'`, so the injected inline
+  GA config was refused: gtag loaded and never configured, one console CSP error, no
+  other symptom. `src/components/analytics-consent.tsx` now reads the nonce off a
+  nonced `<script>` already in the document (IDL property, because CSP nonce hiding
+  blanks the attribute) and falls back to the prop. It is not a relaxation — the value
+  is already in the DOM of the document those scripts run in, and naming the wrong
+  nonce can only get our own script refused, never make an injected one run. The same
+  fault predated the split on `/` → `/login`, and the same change closes it.
+
+### The sign-in marker cookie (D2)
+
+`signed-in-hint`, value `"1"`, `Path=/`, `SameSite=Lax`, not `HttpOnly`.
+
+It is **not authentication and must never be treated as such.** It carries one bit
+and no name, email, role, identifier or token. Forging it changes three things,
+all of them link text or link targets: the desktop account CTA, the same CTA in
+the mobile drawer, and the Book Now destination. Every page behind those links is
+still guarded server-side.
+
+Two properties are worth stating because they are what keep it a display hint:
+
+- `src/proxy.ts` sets and clears it from the OBSERVED presence of a next-auth
+  session cookie, so it is self-healing — sign-out through any path, an expired
+  session or a cleared cookie jar all converge on the next request.
+- It is stripped from the `Cookie` header forwarded to the render, so no server code
+  can come to depend on a forgeable answer to "is this visitor signed in?". That is
+  now true rather than asserted: `NextResponse.next({ request: { headers } })`
+  re-emits every header of the copied set as `x-middleware-request-<name>`, and
+  `Cookie` is one header, so the hint was reaching `(await cookies()).get(...)` in
+  any server component or route handler. The test that was meant to catch it asserted
+  on a header name that can never exist. The proxy also writes the `Set-Cookie`
+  header directly instead of through `response.cookies`, because the latter emits
+  `x-middleware-set-cookie`, which Next merges into `cookies()` — so even the request
+  that first sets the hint cannot read it back. Found in the slice-1 review.
+
+The public header never exposed any personal data — the #2352 planning pass
+enumerated it as exactly one boolean — which is what makes serving one stored copy
+to everyone acceptable.
+
+### The prefetch-header finding (F1)
+
+The reconciliation's highest-severity finding, and the reason #2404 had to land
+first. The proxy matcher used to skip any request carrying `next-router-prefetch`
+or `Purpose: prefetch` — ordinary headers anyone can set. On a dynamic response
+that only skipped the per-request CSP. Under full-route ISR, a prefetch-shaped
+request that missed the cache would **generate and store a page with no nonce at
+all**, and that copy would then be served to every visitor under the nonce-only
+policy: zero inline scripts execute, the page never hydrates. Invisible to the
+build-time prerender guard, because nothing was prerendered.
+
+#2404 deleted the exemption outright. `csp-proxy.test.ts` pins the whole
+prefetch/`RSC` matrix, and `e2e/static-cms-pages.spec.ts` asserts on a real server
+that a `Purpose: prefetch` request stores a fully nonced page.
+
+### Multi-tenant fork warning
+
+Next's page cache is keyed by PATH with no tenant dimension. That is correct for
+this template, which serves one club per deployment. **A fork serving several clubs
+from one process would serve club A's home page to club B.** See `CONFIGURATION.md`
+and `DEPLOYMENT.md`.
+
+### Guards
+
+- `scripts/ci/check-website-render-modes.mjs` — every route in either public group
+  declares its render mode; the CMS catch-all keeps `generateStaticParams() => []`
+  plus its `revalidate`; nothing in `(website-dynamic)` so much as mentions
+  `generateStaticParams` or `revalidate`; no `loading.tsx`/`template.tsx`/`default.tsx`
+  and no Partial Prerendering anywhere in either group. The boundary ban is the
+  enforceable form of the #2434 streaming warning: a boundary could commit a 200
+  before the catch-all decides a URL is a 404, and under ISR that soft 404 would then
+  be stored. Three structural checks arrived with the narrowing, and each covers a
+  change that would otherwise fail nothing at all:
+  - **the fixed-nonce census** — `src/app/(website)`'s routes must equal
+    `FIXED_NONCE_WEBSITE_ROUTES`, and `(website-dynamic)`'s must equal
+    `PER_REQUEST_WEBSITE_ROUTES`. A route group is invisible in a URL, so a page
+    dropped into the wrong one is a CSP decision made by accident; adding a sixth
+    fixed-nonce route fails CI until the census is deliberately amended. The runtime
+    predicate is derived from the same lists, so there is one source of truth rather
+    than a mirror to keep in step.
+  - **chrome parity** — both layouts compose the one shared chrome component and no
+    chrome of their own, and the set of chrome components each renders directly must
+    be identical (empty). This is the owner's "no duplicated markup" as an
+    enforceable rule.
+  - **the shared chrome's own reads** — it may call none of `auth()`, `cookies()` or
+    `headers()`, and may resolve neither nonce itself. **This is coverage the gate
+    never had, not coverage preserved.** Before the narrowing nothing at source level
+    banned a request read in the public layout: the only thing standing between a
+    `headers()` call there and a silent loss of ISR was
+    `check-website-prerender-manifest.mjs`, which needs a full build to answer. The
+    extraction is what made the absence matter — the chrome is now composed by both
+    groups, so one read there would opt every public route out at once — so the ban
+    was written in the same commit as the move.
+- `scripts/ci/check-prerendered-script-nonces.mjs` — unchanged, and still green
+  because `generateStaticParams()` returning `[]` emits no build-time HTML. That
+  property is why slice 1 was safe to ship before the build-time-nonce question
+  (#2352 F2) is answered, and it is asserted directly by the route's own test.
+  Verified on a real container build of this branch: two prerendered artefacts,
+  both of them Next's own error shell, both already documented exceptions.
+- `scripts/ci/check-website-prerender-manifest.mjs` — the same class from the
+  build's own records, with a closed allowlist on BOTH halves. A new build-time route
+  is a page whose inline scripts carry no nonce (nothing stamps one without a
+  request). A new ON-DEMAND route is worse: one visitor's render is stored and handed
+  to whoever asks next. The second half used to be checked only against the seven
+  routes that must stay per-request, so `/pay/[token]` becoming storable — by a later
+  PR dropping the group-level `force-dynamic` from `src/app/(public)/layout.tsx` —
+  passed both this gate and `check-website-render-modes.mjs`, which walks
+  `src/app/(website)` only. Closed in the slice-1 review.
+- `src/lib/__tests__/csp-proxy.test.ts` — the fixed nonce appears on exactly the
+  addresses `isFixedNonceWebsitePath()` claims and nowhere else, while the tightened
+  source list appears on every address `isPublicWebsitePath()` claims (the two
+  predicates asserted separately on one URL matrix, so the addresses where they
+  disagree are the cases); the three per-request pages get a DIFFERENT nonce on each
+  of two requests, and each response hands its own value to the render; every other
+  directive is byte-identical to a member page's; the marker cookie is set, cleared,
+  left alone when it already agrees, and stripped from the `Cookie` header the render
+  is handed (asserted on `x-middleware-request-cookie`, where the value really
+  travels); and no public-website response invites a shared cache to store it.
+- `src/lib/__tests__/public-website-path-predicates.test.ts` — the split itself: the
+  setup gate still claims all three moved addresses, the fixed-nonce set is exactly
+  the five plus the catch-all's territory, `/join/apply` stays with the five even
+  though it matches `/join/[code]`'s shape (Next serves the static route, and the
+  predicate mirrors that precedence), and the census walk classifies every
+  per-request route from the list rather than from a second hand-written set.
+- `src/lib/__tests__/cms-page-nonce-territory.test.ts` — every slug the admin write
+  accepts is inside the fixed-nonce set, and every root segment belonging to another
+  route group is refused. Driven off `NON_WEBSITE_ROOT_SEGMENTS` itself, so a segment
+  added for a new route group is covered the day it lands.
+- `src/lib/__tests__/isr-page-cache-behaviour.test.ts` — executes Next's own cache
+  to observe that a store which cannot be written degrades to a warning and a
+  re-render rather than a 500.
 
 ## Follow-Up Mapping
 

@@ -30,7 +30,8 @@ import { SETUP_IN_PROGRESS_COPY } from "@/lib/setup-in-progress-screen";
  * whole `/api` namespace case-insensitively, and Next's case-sensitive route
  * table then leaves it to the `(website)` catch-all.
  *
- * `(website)/layout.tsx` catches those requests and substitutes the holding
+ * The shared public chrome (`src/components/website/website-chrome.tsx`) catches
+ * those requests and substitutes the holding
  * screen for `{children}`, so the page component never runs. That suppresses the
  * BODY and nothing else. In the vendored next@16.2.11 the document head is a
  * SEPARATE flight slot from the page's seed data (`app-render.js` builds

@@ -108,14 +108,17 @@ function buildMatch(overrides: Partial<RequestMemberMatch> = {}): RequestMemberM
     ageTier: "CHILD",
     active: true,
     canLogin: false,
-    dateOfBirth: "2018-01-01",
+    ageLabel: "8 years",
     alreadyInGroup: false,
     parentLinks: [],
     ...overrides,
   };
 }
 
-/** A raw /api/admin/members search-result row (FamilyGroupRequestSearchResult). */
+/**
+ * A raw row from GET /api/admin/family-groups/member-search
+ * (FamilyGroupRequestSearchResult). #2568: `ageLabel`, never a date of birth.
+ */
 function buildSearchRow(overrides: Record<string, unknown> = {}) {
   return {
     id: "child-2",
@@ -125,7 +128,7 @@ function buildSearchRow(overrides: Record<string, unknown> = {}) {
     ageTier: "CHILD",
     active: true,
     canLogin: false,
-    dateOfBirth: "2018-01-01",
+    ageLabel: "8 years",
     ...overrides,
   };
 }
@@ -170,7 +173,7 @@ describe("FamilyGroupRequestReviewSection - searchRequestMembers", () => {
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
     expect(fetchMock.mock.calls[0][0]).toBe(
-      "/api/admin/members?q=Bea&active=true&pageSize=10&ageTierIn=INFANT,CHILD,YOUTH"
+      "/api/admin/family-groups/member-search?q=Bea&ageTierIn=INFANT,CHILD,YOUTH"
     );
   });
 
@@ -199,7 +202,7 @@ describe("FamilyGroupRequestReviewSection - searchRequestMembers", () => {
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
     expect(fetchMock.mock.calls[0][0]).toBe(
-      "/api/admin/members?q=Carla&active=true&pageSize=10"
+      "/api/admin/family-groups/member-search?q=Carla"
     );
     expect(String(fetchMock.mock.calls[0][0])).not.toContain("ageTierIn");
   });

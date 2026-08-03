@@ -27,6 +27,32 @@ export interface CspOptions {
    * still reach /api/display/state.
    */
   selfOrigin?: string;
+  /**
+   * Is this a public-website page — EITHER public route group, `(website)` or
+   * `(website-dynamic)`? (#2352, D1.)
+   *
+   * Decided by the CALLER rather than re-derived here, because the authoritative
+   * predicate is `isPublicWebsitePath()` in `src/lib/public-website-paths.ts` — the
+   * same one the #2420 setup gate uses — and importing the gate here would drag
+   * the database-backed setup state into a file every layout imports.
+   * `src/proxy.ts` is the only caller that builds a page policy, and
+   * `csp-proxy.test.ts` pins the mapping by driving the real proxy over a URL
+   * matrix rather than trusting the flag.
+   *
+   * Its ONE consequence is that Stripe is dropped from `script-src` — the
+   * tightening bundled with D1's trade. Stripe.js is loaded only from the member
+   * payment surfaces, so allowing it on any public page was surplus reach.
+   *
+   * **This flag does NOT mean "the nonce handed in is the fixed per-release value",
+   * and since the owner's 3 Aug 2026 narrowing that distinction is load-bearing.**
+   * The fixed nonce covers only the five approved `(website)` routes
+   * (`isFixedNonceWebsitePath()`); `/hut-leader-instructions`, `/join/[code]` and
+   * `/join/verify/[token]` are public-website pages that carry a per-request nonce.
+   * The tightening deliberately covers them anyway: following the nonce here would
+   * have handed those three a LOOSER policy as a side effect of tightening their
+   * nonce.
+   */
+  publicWebsite?: boolean;
 }
 
 /**
@@ -110,7 +136,7 @@ export const TIGHT_IMG_SRC_PATHS: readonly string[] = [
 
 export function buildContentSecurityPolicy(nonce: string, options: CspOptions = {}) {
   const isDev = process.env.NODE_ENV === "development";
-  const { pathname, selfOrigin } = options;
+  const { pathname, selfOrigin, publicWebsite = false } = options;
 
   // Scoped relaxations for the sandboxed display preview (LTV-036, ADR-004 §7):
   //  • /display: frame-ancestors 'self' so our own admin preview surfaces can
@@ -148,7 +174,12 @@ export function buildContentSecurityPolicy(nonce: string, options: CspOptions = 
       "'self'",
       `'nonce-${nonce}'`,
       ...(isDev ? ["'unsafe-eval'"] : []),
-      "https://js.stripe.com",
+      // Dropped on the public website (#2352 D1): Stripe.js is loaded from the
+      // member payment surfaces only, never from a public information page, so
+      // this entry bought an attacker reach and the club nothing. Google Tag
+      // Manager stays — the analytics module loads gtag from it on exactly these
+      // pages when an admin has switched analytics on.
+      ...(publicWebsite ? [] : ["https://js.stripe.com"]),
       "https://www.googletagmanager.com",
     ].join(" "),
     // Keep inline styles during the script nonce rollout; Tailwind/Radix and

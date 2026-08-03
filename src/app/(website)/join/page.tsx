@@ -8,6 +8,14 @@ import {
   pageContentHtmlToPlainText,
 } from "@/lib/page-content-html";
 
+/**
+ * Held back from static rendering (#2352 slice 1, owner decision D4) — slice 3.
+ * See `(website)/page.tsx` for why the line is required rather than tidy: with the
+ * shared layout no longer reading the request, a fixed route without it is
+ * prerendered at build, with no database and no CSP nonce.
+ */
+export const dynamic = "force-dynamic";
+
 export async function generateMetadata(): Promise<Metadata> {
   // Pre-setup, before any lookup (#2420 F1). See setupInProgressMetadata().
   // Post-setup, the published filter in the lookup below keeps a draft row out

@@ -8,6 +8,7 @@ import {
   imagePublicUrl,
   resolveInImagesRoot,
 } from "@/lib/image-storage";
+import { revalidatePublicSite } from "@/lib/public-content-revalidation";
 
 // GET /api/admin/image-manager/images?dir=<relative-path> – list images in a directory
 export async function GET(request: NextRequest) {
@@ -110,6 +111,12 @@ export async function DELETE(request: NextRequest) {
 
   try {
     await fs.unlink(filePath);
+    // #2352 slice-1 review, and the DELETE case is the one that matters most: the
+    // photo-gallery embeds resolve their file list SERVER-side, so a stored CMS page
+    // kept rendering a deleted photo's URL — a broken image, and a takedown that was
+    // not actually effective on the public page — until the 300-second backstop
+    // lapsed. The gallery component has no failed-image fallback.
+    revalidatePublicSite();
     return NextResponse.json({ ok: true });
   } catch {
     return NextResponse.json(

@@ -15,26 +15,43 @@ import { prisma } from "@/lib/prisma";
 import {
   ANONYMOUS_BOOK_NOW_LABEL,
   MEMBER_BOOK_NOW_LABEL,
-  getBookNowConfig,
+  getBookNowVariants,
 } from "@/lib/book-now-config";
+
+/**
+ * The per-visitor form of the button, as the header used to ask for it.
+ *
+ * #2352 D2 replaced the old `getBookNowConfig(isAuthenticated)` with
+ * `getBookNowVariants()`, which resolves BOTH forms from one database read
+ * because the public header is now a single stored copy served to everyone. The
+ * whole fail-open matrix below is unchanged and still asserted per visitor state;
+ * this helper is just the shape adapter.
+ */
+async function bookNowFor(isAuthenticated: boolean) {
+  const variants = await getBookNowVariants();
+  return {
+    show: variants.show,
+    ...(isAuthenticated ? variants.member : variants.anonymous),
+  };
+}
 
 const findUnique = (
   prisma.publicContentSettings as unknown as { findUnique: ReturnType<typeof vi.fn> }
 ).findUnique;
 
-describe("getBookNowConfig fail-open matrix (E3 #1929)", () => {
+describe("getBookNowVariants fail-open matrix (E3 #1929)", () => {
   beforeEach(() => vi.clearAllMocks());
 
   // #2430: a club that has never saved the singleton now gets the shipped
   // default, which is OFF — no public booking CTA on a fresh install.
   it("follows the shipped default when no settings row exists", async () => {
     findUnique.mockResolvedValue(null);
-    expect(await getBookNowConfig(true)).toEqual({
+    expect(await bookNowFor(true)).toEqual({
       show: false,
       href: "/book",
       label: MEMBER_BOOK_NOW_LABEL,
     });
-    expect(await getBookNowConfig(false)).toEqual({
+    expect(await bookNowFor(false)).toEqual({
       show: false,
       href: "/login?next=/book",
       label: ANONYMOUS_BOOK_NOW_LABEL,
@@ -58,12 +75,12 @@ describe("getBookNowConfig fail-open matrix (E3 #1929)", () => {
       bookNowTarget: "BOOKING_FLOW",
       bookNowPage: null,
     });
-    expect(await getBookNowConfig(true)).toEqual({
+    expect(await bookNowFor(true)).toEqual({
       show: true,
       href: "/book",
       label: MEMBER_BOOK_NOW_LABEL,
     });
-    expect(await getBookNowConfig(false)).toEqual({
+    expect(await bookNowFor(false)).toEqual({
       show: true,
       href: "/login?next=/book",
       label: ANONYMOUS_BOOK_NOW_LABEL,
@@ -72,7 +89,7 @@ describe("getBookNowConfig fail-open matrix (E3 #1929)", () => {
 
   it("hides the button when showBookNow is false", async () => {
     findUnique.mockResolvedValue({ showBookNow: false, bookNowTarget: "BOOKING_FLOW", bookNowPage: null });
-    expect(await getBookNowConfig(true)).toEqual({
+    expect(await bookNowFor(true)).toEqual({
       show: false,
       href: "/book",
       label: MEMBER_BOOK_NOW_LABEL,
@@ -83,16 +100,16 @@ describe("getBookNowConfig fail-open matrix (E3 #1929)", () => {
     findUnique.mockResolvedValue({
       showBookNow: true,
       bookNowTarget: "PAGE",
-      bookNowPage: { path: "/how-to-book", published: true },
+      bookNowPage: { slug: "how-to-book", path: "/how-to-book", published: true },
     });
-    expect(await getBookNowConfig(true)).toEqual({
+    expect(await bookNowFor(true)).toEqual({
       show: true,
       href: "/how-to-book",
       label: MEMBER_BOOK_NOW_LABEL,
     });
     // The label follows the SESSION, not the destination: an anonymous visitor
     // is still an anonymous visitor on an admin-chosen page (#2430).
-    expect(await getBookNowConfig(false)).toEqual({
+    expect(await bookNowFor(false)).toEqual({
       show: true,
       href: "/how-to-book",
       label: ANONYMOUS_BOOK_NOW_LABEL,
@@ -103,18 +120,45 @@ describe("getBookNowConfig fail-open matrix (E3 #1929)", () => {
     findUnique.mockResolvedValue({
       showBookNow: true,
       bookNowTarget: "PAGE",
-      bookNowPage: { path: "/how-to-book", published: false },
+      bookNowPage: { slug: "how-to-book", path: "/how-to-book", published: false },
     });
-    expect(await getBookNowConfig(true)).toEqual({
+    expect(await bookNowFor(true)).toEqual({
       show: true,
       href: "/book",
       label: MEMBER_BOOK_NOW_LABEL,
     });
   });
 
+  // #2352 slice-1 review. The slice reserved every first segment owned by another
+  // route group, so a target chosen before that rule existed can still be
+  // published while the catch-all no longer serves it. Pointing the public button
+  // at a 404 is worse than the default booking flow, and this is the same dead
+  // target #1929's contract already fails open for.
+  it("fails open when the PAGE target sits under a reserved prefix", async () => {
+    findUnique.mockResolvedValue({
+      showBookNow: true,
+      bookNowTarget: "PAGE",
+      bookNowPage: {
+        slug: "lodge/booking-info",
+        path: "/lodge/booking-info",
+        published: true,
+      },
+    });
+    expect(await bookNowFor(true)).toEqual({
+      show: true,
+      href: "/book",
+      label: MEMBER_BOOK_NOW_LABEL,
+    });
+    expect(await bookNowFor(false)).toEqual({
+      show: true,
+      href: "/login?next=/book",
+      label: ANONYMOUS_BOOK_NOW_LABEL,
+    });
+  });
+
   it("fails open when the PAGE target FK is null", async () => {
     findUnique.mockResolvedValue({ showBookNow: true, bookNowTarget: "PAGE", bookNowPage: null });
-    expect(await getBookNowConfig(false)).toEqual({
+    expect(await bookNowFor(false)).toEqual({
       show: true,
       href: "/login?next=/book",
       label: ANONYMOUS_BOOK_NOW_LABEL,
@@ -123,7 +167,7 @@ describe("getBookNowConfig fail-open matrix (E3 #1929)", () => {
 
   it("fails open when the DB read throws", async () => {
     findUnique.mockRejectedValue(new Error("db down"));
-    expect(await getBookNowConfig(true)).toEqual({
+    expect(await bookNowFor(true)).toEqual({
       show: true,
       href: "/book",
       label: MEMBER_BOOK_NOW_LABEL,
@@ -144,8 +188,8 @@ describe("public Book Now CTA label (#2430)", () => {
       bookNowPage: null,
     });
 
-    expect((await getBookNowConfig(false)).label).toBe("Member booking");
-    expect((await getBookNowConfig(true)).label).toBe("Book Now");
+    expect((await bookNowFor(false)).label).toBe("Member booking");
+    expect((await bookNowFor(true)).label).toBe("Book Now");
   });
 
   it("never offers 'Book Now' to an anonymous visitor on any resolved state", async () => {
@@ -156,15 +200,57 @@ describe("public Book Now CTA label (#2430)", () => {
       {
         showBookNow: true,
         bookNowTarget: "PAGE",
-        bookNowPage: { path: "/how-to-book", published: true },
+        bookNowPage: { slug: "how-to-book", path: "/how-to-book", published: true },
       },
     ];
 
     for (const state of states) {
       findUnique.mockResolvedValue(state);
-      expect((await getBookNowConfig(false)).label).not.toBe(
+      expect((await bookNowFor(false)).label).not.toBe(
         MEMBER_BOOK_NOW_LABEL,
       );
     }
+  });
+});
+
+// #2352 D2: the point of resolving both forms together is ONE database read. Two
+// reads would have doubled the cost of the header on every public page, which is
+// the opposite of what this issue is for, and would let the two forms disagree if
+// an admin saved between them.
+describe("getBookNowVariants resolves both forms from one read (#2352 D2)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("reads PublicContentSettings exactly once", async () => {
+    findUnique.mockResolvedValue({
+      showBookNow: true,
+      bookNowTarget: "BOOKING_FLOW",
+      bookNowPage: null,
+    });
+
+    const variants = await getBookNowVariants();
+
+    expect(findUnique).toHaveBeenCalledTimes(1);
+    expect(variants.anonymous.label).toBe(ANONYMOUS_BOOK_NOW_LABEL);
+    expect(variants.member.label).toBe(MEMBER_BOOK_NOW_LABEL);
+    // `show` is the ADMIN's choice, so it is shared rather than per-visitor — the
+    // button cannot appear for one visitor and not another.
+    expect(variants.show).toBe(true);
+  });
+
+  it("gives both forms the SAME admin-chosen page target", async () => {
+    findUnique.mockResolvedValue({
+      showBookNow: true,
+      bookNowTarget: "PAGE",
+      bookNowPage: {
+        slug: "how-booking-works",
+        path: "/how-booking-works",
+        published: true,
+      },
+    });
+
+    const variants = await getBookNowVariants();
+
+    expect(variants.anonymous.href).toBe("/how-booking-works");
+    expect(variants.member.href).toBe("/how-booking-works");
   });
 });
