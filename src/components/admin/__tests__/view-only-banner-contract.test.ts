@@ -322,11 +322,11 @@ const NOTICE = "AdminViewOnlyNotice";
 */
 const FIGURES = {
   /** Every `<ViewOnlyActionButton>` render site in the admin tree. */
-  callSites: 304,
+  callSites: 307,
   /** Those that hand their explanation to a banner, by either rule. */
-  optOuts: 255,
+  optOuts: 258,
   /** `describeReason={false}` — needs a banner in the SAME file. */
-  staticOptOuts: 229,
+  staticOptOuts: 232,
   /** `describeReason={!ancestorRendersViewOnlyBanner}` — needs a vouch. */
   vouchedOptOuts: 26,
   /** …of the vouched: proved at a parent's own JSX render site (#2168). */
@@ -340,7 +340,7 @@ const FIGURES = {
   leafControls: 36,
   leafFiles: 21,
   /** Components that render an `AdminViewOnlySectionBanner`. */
-  bannerComponents: 81,
+  bannerComponents: 82,
 } as const;
 
 const WIZARD_SHELL = "IntegrationWizard";
@@ -1224,6 +1224,13 @@ describe("view-only section banner coverage (#2160)", () => {
                page's banner it already sits behind, so optOuts 254 -> 255 and
                staticOptOuts 228 -> 229 and nothing else moves (no new banner
                component, no new exception).
+          307  +3  TLR-8C's Policy Exceptions queue (#2526,
+               policy-exception-requests-panel.tsx): the decision form's
+               controls are static opt-outs under the panel's own new
+               AdminViewOnlySectionBanner, so optOuts 255 -> 258,
+               staticOptOuts 229 -> 232 and bannerComponents 81 -> 82 move
+               together. The vouched split, exceptions and the leaf bucket
+               are untouched.
       */
       // #2259 adds the per-booking "No emails"
       // switch (`booking-no-emails-controls.tsx`), a leaf control dropped into
