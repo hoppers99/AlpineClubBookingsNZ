@@ -1,0 +1,102 @@
+-- #2520 — CONTRACT half of the FamilyGroupMember.role retirement: physically
+-- DROP the column.
+--
+-- Background. The column was created by
+-- 20260407120000_add_family_group_member_join_table as
+-- `"role" TEXT NOT NULL DEFAULT 'MEMBER'` and carried a group-local rank label
+-- ('MEMBER', 'ADMIN', and 'LEAD' from the 20260408020000 dependents backfill).
+-- #2284 removed the last AUTHORISATION reader — the one-step partner declaration
+-- in member-partner-link.ts, re-anchored onto Member.detailsConfirmedByMemberId —
+-- and PR #2565 (merge commit 9a59c3ffa, the RUNTIME half of this issue) removed
+-- every remaining writer and payload reader, removed member-merge's vestigial
+-- maxFamilyRole upgrade, and marked the field `@ignore` so the generated Prisma
+-- Client cannot name the column at all. This migration removes the column
+-- itself, and this release removes the `@ignore`d field from prisma/schema.prisma
+-- with it (the migration-drift gate compares the two, so they must land together).
+--
+-- previous_expand_release. 20260803010000_contract_subscription_lockout_drop_enabled.
+-- The RUNTIME half this contracts against is PR #2565, which shipped NO migration
+-- of its own, so there is no folder from it to name — the same situation the #2130
+-- contract row (20260721130000) handled by naming an adjacent migration. The
+-- adjacent migration named here is the sibling WINDOWED migration in this same
+-- release, which is the row an operator planning this window has to read anyway.
+--
+-- OWNER DIRECTIVE, 3 Aug 2026 (#2520). The original plan was two releases: deploy
+-- #2565, let it soak seven days, then drop. The owner superseded that — the drop
+-- ships now, as part of the Tokoroa cutover, behind an accepted maintenance
+-- window. So #2565 has NOT been deployed as a separate release and there is no
+-- drained colour that has stopped naming the column. That is why this row is
+-- declared `old_code_compatible=windowed` rather than `yes`.
+--
+-- WHAT BREAKS ON THE OLD COLOUR, measured against the currently released code
+-- (v0.13.2, whose prisma/schema.prisma line 4172 declares
+-- `role String @default("MEMBER")` with no `@ignore`), not assumed:
+--
+--   * `listOneStepPartnerCandidates` and the one-step path of
+--     `requestPartnerLink` put `role: "ADMIN"` in the WHERE clause, so the SQL
+--     names the column directly. The member profile page renders the first of
+--     those, so it is not a corner of the app;
+--   * every unnarrowed find/create/update/upsert/delete on the join table names
+--     every scalar in its SELECT or implicit RETURNING, and a static
+--     `@default("MEMBER")` is materialised CLIENT-side as a bind parameter, so
+--     the column appears in the column list of EVERY insert the old client emits
+--     — including one that sets no role and narrows itself to
+--     `select: { id: true }`;
+--   * an `include:` on the join table (the admin family-group routes) and an
+--     explicit `role: true` (GET /api/member/onboarding) name it too.
+--
+-- The moment this DROP commits, the old colour raises Postgres 42703 / Prisma
+-- P2022 across the whole family surface: the member profile page, admin family
+-- groups, member onboarding, family join/invite/removal, member merge, Xero
+-- member import and nomination. There is no ordering that keeps both colours
+-- working, which is exactly what the `windowed` value exists to say.
+--
+-- THE WINDOW. Traffic removed, the old web app AND every worker/cron/queue
+-- process stopped, no old connections left, a fresh verified backup taken
+-- immediately before migrating, the four pre-migration checks recorded, then this
+-- migration under ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS=1 with a recorded override
+-- reason naming the window. Full ordered sequence in
+-- docs/PRODUCTION_UPGRADE_RUNBOOK.md -> "Windowed migration deploy sequence"
+-- (#2520 subsection), summarised in DEPLOYMENT.md -> "Windowed migrations" and in
+-- docs/BLUE_GREEN_MIGRATION_SAFETY.tsv.
+--
+-- Data safety. NO DML: this migration reads and rewrites no rows. The values it
+-- destroys are meaningless rather than frozen — nothing has read them since
+-- #2284, and every row inserted since #2565 took 'MEMBER' from the DATABASE
+-- default because the client stopped naming the column. They are nonetheless
+-- destroyed irrecoverably (PostgreSQL cannot un-drop a column), which is why the
+-- pre-migration checks record the distinct values and their counts, and why the
+-- runbook adds an optional per-row `\copy` dump that makes an EXACT restore
+-- possible. Without that dump, rollback.sql repopulates every row with 'MEMBER'
+-- — see its own header for why that is the safe value and what it costs.
+--
+-- Lock impact. "FamilyGroupMember" is on the deploy guard's HOT_TABLE_SQL_REGEX,
+-- so this row is a gate requirement and not merely documentation. In practice the
+-- table is small (one row per family membership — tens to low hundreds for a club
+-- of this size) and cold: it is written only when a family group is created or
+-- edited, never on a booking or payment path. `DROP COLUMN` is metadata-only —
+-- PostgreSQL marks the attribute dropped in pg_attribute and performs NO table
+-- rewrite — so it takes one brief ACCESS EXCLUSIVE lock and returns. No index,
+-- constraint, trigger, foreign key, sequence, session-clock DML or provider call
+-- is involved; the column carries no index and no constraint of its own. With the
+-- application stopped for the window there is nothing to contend with, so the
+-- lock cannot queue behind a live transaction; let the deploy guard stop on lock
+-- timeout regardless.
+--
+-- Rollback. rollback.sql beside this file recreates the column in the exact shape
+-- the previously deployed client expects (`TEXT NOT NULL DEFAULT 'MEMBER'`) and
+-- documents the safe compatibility value. Rehearsed both ways against a
+-- production-shaped database, including a Prisma client generated from v0.13.2's
+-- own schema; the transcript is in docs/PRODUCTION_UPGRADE_RUNBOOK.md.
+
+-- The retired column goes. Nothing in this release reads, writes or CAN name it:
+-- the field is gone from prisma/schema.prisma in this same commit, so the
+-- generated client has no `role` on this model and there is no call shape that
+-- emits SQL naming the column. Measured in the rehearsal rather than assumed —
+-- `where: { role: ... }` is a compile error, while `select: { role: true }` and
+-- `create({ data: { role } })` compile but are rejected by the client with
+-- PrismaClientValidationError before any SQL is emitted. See the runbook §7.2
+-- transcript; the distinction is recorded because "compile error" alone would
+-- overstate it.
+ALTER TABLE "FamilyGroupMember"
+  DROP COLUMN "role";
