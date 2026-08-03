@@ -9,6 +9,7 @@ import {
   type ModuleSettingsValues,
 } from "@/config/modules";
 import type { FeatureFlags } from "@/config/schema";
+import { isAnalyticsIntegrationConfigured } from "@/lib/analytics-settings";
 import logger from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
 
@@ -60,6 +61,14 @@ function readinessMessage(params: {
   key: ModuleKey;
   label: string;
   adminEnabled: boolean;
+  /**
+   * Whether the Google Analytics integration has a valid measurement ID saved
+   * (#2573). Resolved by the CALLER, because it is a database read and this
+   * function is synchronous — and left `undefined` when the caller had no reason
+   * to resolve it, which reads as "not configured" and so keeps the readiness
+   * message fail-closed.
+   */
+  analyticsConfigured?: boolean;
 }): { status: ModuleReadinessStatus; message: string } {
   if (!params.adminEnabled) {
     return {
@@ -92,14 +101,16 @@ function readinessMessage(params: {
   // verified — there is no env var to check here. Setup + verification live on
   // the in-app wizard (/admin/google/setup).
 
-  if (
-    params.key === "analytics" &&
-    !process.env.NEXT_PUBLIC_GA_MEASUREMENT_ID?.trim()
-  ) {
+  // Google Analytics configuration is DB-only since #2573 (measurement ID, consent
+  // banner mode and message), and `NEXT_PUBLIC_GA_MEASUREMENT_ID` was removed from
+  // runtime entirely in the same change — there is no environment variable left to
+  // check here, and no fallback to it. So an enabled-but-unconfigured module points
+  // the admin at the in-app setup instead of at a deploy-time variable.
+  if (params.key === "analytics" && !params.analyticsConfigured) {
     return {
       status: "credentials_missing",
       message:
-        "Google Analytics is enabled, but NEXT_PUBLIC_GA_MEASUREMENT_ID is not configured.",
+        "Google Analytics is enabled, but no valid GA4 measurement ID has been saved. Complete the setup under Admin → Integrations → Google Analytics.",
     };
   }
 
@@ -111,6 +122,7 @@ function readinessMessage(params: {
 
 function buildModuleStatusList(
   settings: ModuleSettingsValues,
+  context?: ModuleStatusContext,
 ): ModuleStatus[] {
   return MODULE_KEYS.map((key) => {
     const definition = MODULE_DEFINITIONS[key];
@@ -119,6 +131,7 @@ function buildModuleStatusList(
       key,
       label: definition.label,
       adminEnabled,
+      analyticsConfigured: context?.analyticsConfigured,
     });
 
     return {
@@ -135,26 +148,40 @@ function buildModuleStatusList(
   });
 }
 
+/**
+ * Readiness facts a caller has already resolved. Optional throughout: a caller that
+ * omits one gets the fail-closed reading of it (#2573).
+ */
+export interface ModuleStatusContext {
+  analyticsConfigured?: boolean;
+}
+
 export function buildClubModuleSettingsPayload(
   record?: Partial<ClubModuleSettingsRecord> | null,
+  context?: ModuleStatusContext,
 ): ClubModuleSettingsPayload {
   const settings = normalizeClubModuleSettings(record);
 
   return {
     settings,
-    modules: buildModuleStatusList(settings),
+    modules: buildModuleStatusList(settings, context),
     updatedAt: record?.updatedAt?.toISOString() ?? null,
     updatedByMemberId: record?.updatedByMemberId ?? null,
   };
 }
 
 export async function loadClubModuleSettings(): Promise<ClubModuleSettingsPayload> {
-  const record = await prisma.clubModuleSettings.findUnique({
-    where: { id: CLUB_MODULE_SETTINGS_ID },
-    select: CLUB_MODULE_SETTINGS_COLUMN_SELECT,
-  });
+  const [record, analyticsConfigured] = await Promise.all([
+    prisma.clubModuleSettings.findUnique({
+      where: { id: CLUB_MODULE_SETTINGS_ID },
+      select: CLUB_MODULE_SETTINGS_COLUMN_SELECT,
+    }),
+    // Never throws: a read failure reports "not configured", which shows the
+    // "complete the setup" readiness message rather than failing the whole page.
+    isAnalyticsIntegrationConfigured(),
+  ]);
 
-  return buildClubModuleSettingsPayload(record);
+  return buildClubModuleSettingsPayload(record, { analyticsConfigured });
 }
 
 const DISABLED_MODULE_FLAGS: FeatureFlags = Object.fromEntries(

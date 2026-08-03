@@ -8,6 +8,14 @@ export const PUBLIC_LAYOUT_CACHE_TAGS = {
   banners: "public-layout:banners",
   theme: "public-layout:theme",
   identity: "public-layout:identity",
+  // Club Google Analytics configuration (#2573): measurement ID, consent-banner
+  // mode, banner message and consent revision. Cleared by the analytics
+  // integration write route and by the "Ask visitors to choose again" action, so a
+  // removed measurement ID stops the tag and a bumped revision re-prompts without
+  // waiting for the 15-second TTL — or, under full-route ISR, without waiting for
+  // the 300-second backstop (those writers call `revalidatePublicSite()`, which
+  // clears the stored pages as well as this tag).
+  analytics: "public-layout:analytics",
 } as const;
 
 export function invalidatePublicLayoutConfig(

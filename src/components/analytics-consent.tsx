@@ -1,13 +1,89 @@
 "use client";
 
 import Script from "next/script";
-import { useEffect, useMemo, useState } from "react";
+import { usePathname } from "next/navigation";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { BarChart3, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  resolveAnalyticsDecision,
+  type ConsentChoice,
+  type ConsentSource,
+  type StoredConsent,
+} from "@/lib/analytics-consent-decision";
+import {
+  readStoredConsent,
+  writeStoredConsent,
+} from "@/lib/analytics-consent-storage";
+import {
+  buildAnalyticsPageLocation,
+  isAnalyticsEligiblePath,
+  sanitiseAnalyticsReferrer,
+} from "@/lib/analytics-route-policy";
+import {
+  ANALYTICS_PREFERENCES_ATTRIBUTE,
+  ANALYTICS_PREFERENCES_AVAILABILITY_EVENT,
+  ANALYTICS_PREFERENCES_OPEN_EVENT,
+} from "@/lib/analytics-preferences-channel";
+import type { AnalyticsRuntimeConfig } from "@/lib/analytics-settings";
 
-const CONSENT_STORAGE_KEY = "analytics-consent.v1";
-
-type ConsentChoice = "accepted" | "declined";
+/**
+ * The public Google Analytics runtime: the consent banner, the tag, the visitor
+ * preferences panel, and the route/URL policy that bounds all three (#2573).
+ *
+ * ## What can be sent to Google, and when
+ *
+ * Nothing at all unless `config` is non-null — which the server makes so only when
+ * the analytics module is ON and the club has saved a VALID GA4 measurement ID
+ * (`resolveAnalyticsRuntimeConfig`, fail-closed on every other state including a
+ * database read failure). Then:
+ *
+ *  • **Banner enabled (recommended, the default).** No script, no request, no
+ *    cookieless ping and no consent-status signal reaches Google before the visitor
+ *    selects Accept. That is enforced structurally rather than by a flag: while
+ *    `analyticsAllowed` is false this component renders NO `<Script>` at all, and
+ *    every `gtag()` call it makes is a push onto a local `window.dataLayer` array
+ *    that nothing transmits until `gtag/js` itself is fetched. Decline, and closing
+ *    or dismissing the banner, are the same thing and leave the tag unloaded.
+ *  • **Banner disabled.** The tag loads automatically on eligible pages, a decline
+ *    recorded while the banner was showing is ignored once (owner section 4), and a
+ *    later opt-out through the preferences panel is still honoured (owner
+ *    clarification 1). Advertising storage, advertising user data and advertising
+ *    personalisation stay DENIED in both modes; Google's advanced consent mode is
+ *    deliberately not implemented.
+ *
+ * Once loaded, the only URL information sent is `origin + pathname` for an
+ * analytics-eligible route — never a query string, never a fragment, never a token,
+ * PIN, email address, member id, booking id or payment id. `send_page_view: false`
+ * turns Google's own automatic page view OFF so the raw `location.href` is never
+ * used, and this component sends one sanitised `page_view` per navigation instead,
+ * de-duplicated against the last value actually sent. The referrer is sanitised too:
+ * gtag would otherwise hand Google `document.referrer` verbatim, which for a visitor
+ * arriving from `/pay/<token>` is the payment token.
+ *
+ * ## No inline script, deliberately
+ *
+ * Before #2573 this component injected two INLINE scripts (the consent bootstrap and
+ * the `gtag('config', …)` call) and had to stamp them with the loaded document's CSP
+ * nonce. Both are gone: every `gtag` call now happens in this bundle, pushing onto
+ * `window.dataLayer` exactly as the inline snippets did, in the same order, and
+ * `gtag/js` replays the queue when it loads. One external `<Script src>` is left, and
+ * it still needs the nonce — `script-src` carries no `'strict-dynamic'`, so a
+ * dynamically injected script tag is nonce-checked whether it is inline or not.
+ *
+ * So {@link readLoadedDocumentNonce} stays exactly as load-bearing as it was (#2352
+ * D1 review): the nonce PROP can be the other public route group's value after a soft
+ * navigation between them, while the policy in force is the one that arrived with the
+ * document. Read the document, not the prop.
+ */
 
 declare global {
   interface Window {
@@ -16,54 +92,21 @@ declare global {
   }
 }
 
-function readConsent(): ConsentChoice | null {
-  try {
-    const stored = window.localStorage.getItem(CONSENT_STORAGE_KEY);
-    return stored === "accepted" || stored === "declined" ? stored : null;
-  } catch {
-    return null;
-  }
-}
-
-function writeConsent(choice: ConsentChoice) {
-  try {
-    window.localStorage.setItem(CONSENT_STORAGE_KEY, choice);
-  } catch {
-    // Private browsing / quota errors: the current render still honors choice.
-  }
-}
-
-function updateAnalyticsConsent(choice: ConsentChoice) {
-  window.dataLayer = window.dataLayer ?? [];
-  window.gtag =
-    window.gtag ??
-    function gtag(...args: unknown[]) {
-      window.dataLayer?.push(args);
-    };
-  window.gtag("consent", "update", {
-    analytics_storage: choice === "accepted" ? "granted" : "denied",
-  });
-}
-
 /**
  * The nonce the LOADED DOCUMENT's policy actually names.
  *
- * Every `<Script>` below is `afterInteractive`, so it is injected by the browser
- * after hydration — and the policy it has to satisfy is the one that came with the
+ * The `<Script>` below is `afterInteractive`, so it is injected by the browser after
+ * hydration — and the policy it has to satisfy is the one that came with the
  * document, which never changes for the life of that document. The `nonce` PROP does
  * change: `(website)/layout.tsx` passes the fixed per-release value and
  * `(website-dynamic)/layout.tsx` passes the per-request one (#2352 D1), so a soft
  * navigation between the two public groups unmounts one layout and mounts the other,
  * and this component remounts holding the other territory's nonce while the loaded
- * document's policy still names the first. `script-src` has no `'strict-dynamic'`, so
- * a dynamically injected INLINE script is nonce-checked: the result was `gtag` loaded
- * and never configured, one console CSP error and no other symptom. The same shape
- * predates the split on `/` -> `/login` (`(public)/layout.tsx` passes a per-request
- * value too), so reading the document closes both.
+ * document's policy still names the first.
  *
  * Not a security relaxation: the value read is the one already sitting in the DOM of
- * the document these scripts are about to run in, so nothing is learned that a script
- * in that document could not already see, and naming the WRONG nonce can only get our
+ * the document this script is about to run in, so nothing is learned that a script in
+ * that document could not already see, and naming the WRONG nonce can only get our
  * own script refused — it can never make an injected one run.
  */
 function readLoadedDocumentNonce(): string | undefined {
@@ -84,61 +127,193 @@ function readLoadedDocumentNonce(): string | undefined {
   return undefined;
 }
 
+/**
+ * Create `window.dataLayer` and the `gtag` shim if they do not exist yet, and return
+ * the shim.
+ *
+ * This is the inline bootstrap snippet Google documents, moved into the bundle. A
+ * push made before `gtag/js` loads is not lost: the library reads the existing array
+ * on load and replays it in order, which is the whole reason the documented snippet
+ * runs before the loader tag.
+ */
+function ensureGtag(): (...args: unknown[]) => void {
+  window.dataLayer = window.dataLayer ?? [];
+  if (!window.gtag) {
+    window.gtag = function gtag(...args: unknown[]) {
+      window.dataLayer?.push(args);
+    };
+  }
+  return window.gtag;
+}
+
+/**
+ * The consent categories, with advertising denied in every call, in both banner
+ * modes, unconditionally — owner decision sections 3 and 4. No setting changes it,
+ * and there is deliberately no advanced-consent-mode signal here.
+ */
+function consentCategories(analyticsGranted: boolean) {
+  return {
+    ad_storage: "denied",
+    ad_user_data: "denied",
+    ad_personalization: "denied",
+    analytics_storage: analyticsGranted ? "granted" : "denied",
+  } as const;
+}
+
+/**
+ * Google's own kill switch for a specific measurement ID.
+ *
+ * Needed because unmounting the `<Script>` does not unload a library the browser has
+ * already executed: after an in-page opt-out the tag is still resident and would keep
+ * sending automatically-collected events. Setting this flag is what "prevent further
+ * Analytics collection as far as the supported implementation permits" (owner
+ * section 5) actually means. It says nothing about data already sent, and this app
+ * never claims otherwise.
+ */
+function setGaDisableFlag(measurementId: string, disabled: boolean) {
+  (window as unknown as Record<string, unknown>)[
+    `ga-disable-${measurementId}`
+  ] = disabled;
+}
+
 export function AnalyticsConsent({
-  enabled,
-  measurementId,
+  config,
   nonce,
 }: {
-  enabled: boolean;
-  measurementId?: string;
+  /** Resolved server-side; `null` means no analytics, for any reason. */
+  config: AnalyticsRuntimeConfig | null;
   nonce?: string;
 }) {
-  const cleanMeasurementId = measurementId?.trim();
+  const pathname = usePathname();
   // Resolved once per mount, from the document first and the server-rendered prop
   // only as a fallback (a `next start` with no proxy, or a document whose policy
   // carries no nonce at all). A lazy `useState` initialiser rather than an effect:
-  // these scripts are injected on the first client render, so a value that arrived
-  // one render later would come too late to be stamped.
+  // the script is injected on the first client render, so a value that arrived one
+  // render later would come too late to be stamped.
   const [scriptNonce] = useState(() => readLoadedDocumentNonce() ?? nonce);
-  const [choice, setChoice] = useState<ConsentChoice | null>(null);
+  const [stored, setStored] = useState<StoredConsent | null>(null);
   const [hydrated, setHydrated] = useState(false);
-  const shouldRender = enabled && Boolean(cleanMeasurementId);
-  const accepted = shouldRender && choice === "accepted";
-  const consentBootstrap = useMemo(
-    () => `
-window.dataLayer = window.dataLayer || [];
-function gtag(){dataLayer.push(arguments);}
-gtag('consent', 'default', {
-  ad_storage: 'denied',
-  ad_user_data: 'denied',
-  ad_personalization: 'denied',
-  analytics_storage: 'denied',
-  wait_for_update: 500
-});
-`,
-    [],
-  );
-  const gaConfig = useMemo(
-    () => `
-gtag('js', new Date());
-gtag('config', ${JSON.stringify(cleanMeasurementId)}, { anonymize_ip: true });
-`,
-    [cleanMeasurementId],
-  );
+  const [preferencesOpen, setPreferencesOpen] = useState(false);
 
+  const measurementId = config?.measurementId;
+  const consentRevision = config?.consentRevision;
+
+  // `usePathname()` returns null when no router context is mounted. Treat that as
+  // ineligible: fail closed.
+  const routeEligible =
+    typeof pathname === "string" && isAnalyticsEligiblePath(pathname);
+
+  const decision = config
+    ? resolveAnalyticsDecision(config, stored)
+    : { analyticsAllowed: false, showBanner: false, preference: "unset" as const };
+
+  // The tag loads only when the club is configured, the route is eligible, the
+  // stored/derived decision allows it, and the browser has told us what is stored.
+  // `hydrated` is part of the gate rather than a cosmetic guard: before the read
+  // resolves we do not know whether this visitor declined, and loading on the
+  // strength of "no record yet" would be a load without consent.
+  const analyticsAllowed =
+    Boolean(config) && routeEligible && hydrated && decision.analyticsAllowed;
+  const bannerVisible =
+    Boolean(config) && routeEligible && hydrated && decision.showBanner;
+  // The preferences control is offered wherever the runtime is mounted and the club
+  // is validly configured, INCLUDING a route analytics does not run on: a visitor
+  // who wants to opt out should not have to find a tracked page first. Only the
+  // banner and the tag are route-gated.
+  const preferencesAvailable = Boolean(config) && hydrated;
+
+  // Read storage once per mount, and again if the club's revision changes under a
+  // long-lived tab (a revalidated layout can hand down a new one without a reload).
   useEffect(() => {
-    if (!shouldRender) return;
-    const stored = readConsent();
-    setChoice(stored);
+    if (!config) {
+      setHydrated(false);
+      return;
+    }
+    setStored(readStoredConsent());
     setHydrated(true);
-    if (stored) updateAnalyticsConsent(stored);
-  }, [shouldRender]);
+  }, [config, consentRevision]);
 
-  // Publish the banner's visibility so a co-located bottom-corner widget (the
-  // public help launcher, epic #2094 C2) can step aside while it shows. A data
-  // attribute for the initial read plus an event for reactive updates — the same
-  // signal the banner already drives, not a duplicated storage check.
-  const bannerVisible = shouldRender && hydrated && choice === null;
+  /*
+    Consent signalling and tag configuration, in ONE effect declared BEFORE the
+    page-view effect below — the order is load-bearing.
+
+    Everything goes onto `window.dataLayer` in push order and `gtag/js` replays that
+    queue when it loads, so the queue has to read the way Google's documented inline
+    snippets read: consent first, then `js`/`config`, then events. An event queued
+    ahead of its `config` is attributed to no measurement ID.
+
+    The FIRST consent push is a `default` and every later one an `update`, which is
+    the documented pair: `default` states the position the page starts from, `update`
+    records a change the visitor made. Both are local array pushes; neither is a
+    network call, and neither reaches Google before the loader below is mounted.
+  */
+  const consentDefaultPushedRef = useRef(false);
+  const configuredMeasurementIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!measurementId || !hydrated) return;
+
+    const gtag = ensureGtag();
+    if (consentDefaultPushedRef.current) {
+      gtag("consent", "update", consentCategories(analyticsAllowed));
+    } else {
+      gtag("consent", "default", consentCategories(analyticsAllowed));
+      consentDefaultPushedRef.current = true;
+    }
+
+    setGaDisableFlag(measurementId, !analyticsAllowed);
+
+    if (analyticsAllowed && configuredMeasurementIdRef.current !== measurementId) {
+      gtag("js", new Date());
+      gtag("config", measurementId, {
+        anonymize_ip: true,
+        // Google's own page view would use the raw `location.href`. Ours is the
+        // sanitised one; this is what stops both being sent.
+        send_page_view: false,
+      });
+      configuredMeasurementIdRef.current = measurementId;
+    }
+  }, [analyticsAllowed, hydrated, measurementId]);
+
+  /*
+    One sanitised page view per eligible navigation, never a duplicate.
+
+    Google's automatic page view is switched off in the `config` call above, so this
+    is the ONLY page view sent — which is what makes both guarantees hold at once: the
+    URL is sanitised (no query, no fragment, no identifiers) and a client-side
+    navigation cannot produce a second view of the same address. The ref holds the
+    last location actually SENT, so a re-render, a consent change, or a navigation
+    back to the same path sends nothing.
+  */
+  const lastPageViewRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!analyticsAllowed || typeof pathname !== "string") return;
+
+    const pageLocation = buildAnalyticsPageLocation(
+      window.location.origin,
+      pathname,
+    );
+    if (!pageLocation || lastPageViewRef.current === pageLocation) return;
+
+    const pageReferrer = sanitiseAnalyticsReferrer(
+      document.referrer,
+      window.location.origin,
+    );
+    const payload = {
+      page_location: pageLocation,
+      ...(pageReferrer ? { page_referrer: pageReferrer } : {}),
+    };
+    const gtag = ensureGtag();
+    // `set` first so any event Google's enhanced measurement sends on its own
+    // (scroll, outbound click, site search) inherits the sanitised values instead of
+    // reading `location.href` for itself.
+    gtag("set", payload);
+    gtag("event", "page_view", payload);
+    lastPageViewRef.current = pageLocation;
+  }, [analyticsAllowed, pathname]);
+
+  // Publish the banner's visibility so a co-located bottom-corner widget (the public
+  // help launcher, epic #2094 C2) can step aside while it shows. A data attribute for
+  // the initial read plus an event for reactive updates.
   useEffect(() => {
     const root = document.documentElement;
     if (bannerVisible) {
@@ -156,39 +331,62 @@ gtag('config', ${JSON.stringify(cleanMeasurementId)}, { anonymize_ip: true });
     };
   }, [bannerVisible]);
 
-  if (!shouldRender) {
-    return null;
-  }
+  // Publish whether a preferences control should be offered, and listen for the
+  // footer link asking to open it. See `analytics-preferences-channel.ts`.
+  useEffect(() => {
+    const root = document.documentElement;
+    if (preferencesAvailable) {
+      root.setAttribute(ANALYTICS_PREFERENCES_ATTRIBUTE, "available");
+    } else {
+      root.removeAttribute(ANALYTICS_PREFERENCES_ATTRIBUTE);
+    }
+    window.dispatchEvent(
+      new CustomEvent(ANALYTICS_PREFERENCES_AVAILABILITY_EVENT, {
+        detail: { available: preferencesAvailable },
+      }),
+    );
+    return () => {
+      root.removeAttribute(ANALYTICS_PREFERENCES_ATTRIBUTE);
+    };
+  }, [preferencesAvailable]);
 
-  function setConsent(nextChoice: ConsentChoice) {
-    setChoice(nextChoice);
-    writeConsent(nextChoice);
-    updateAnalyticsConsent(nextChoice);
+  useEffect(() => {
+    if (!preferencesAvailable) return;
+    const open = () => setPreferencesOpen(true);
+    window.addEventListener(ANALYTICS_PREFERENCES_OPEN_EVENT, open);
+    return () => {
+      window.removeEventListener(ANALYTICS_PREFERENCES_OPEN_EVENT, open);
+    };
+  }, [preferencesAvailable]);
+
+  const record = useCallback(
+    (choice: ConsentChoice, source: ConsentSource) => {
+      if (!consentRevision) return;
+      const next: StoredConsent = { choice, revision: consentRevision, source };
+      setStored(next);
+      writeStoredConsent(next);
+    },
+    [consentRevision],
+  );
+
+  if (!config) {
+    return null;
   }
 
   return (
     <>
-      <Script id="ga-consent-default" nonce={scriptNonce} strategy="afterInteractive">
-        {consentBootstrap}
-      </Script>
-
-      {accepted && (
-        <>
-          <Script
-            id="ga4-loader"
-            nonce={scriptNonce}
-            src={`https://www.googletagmanager.com/gtag/js?id=${encodeURIComponent(
-              cleanMeasurementId as string,
-            )}`}
-            strategy="afterInteractive"
-          />
-          <Script id="ga4-config" nonce={scriptNonce} strategy="afterInteractive">
-            {gaConfig}
-          </Script>
-        </>
+      {analyticsAllowed && measurementId && (
+        <Script
+          id="ga4-loader"
+          nonce={scriptNonce}
+          src={`https://www.googletagmanager.com/gtag/js?id=${encodeURIComponent(
+            measurementId,
+          )}`}
+          strategy="afterInteractive"
+        />
       )}
 
-      {hydrated && choice === null && (
+      {bannerVisible && (
         <div
           role="dialog"
           aria-label="Analytics cookie consent"
@@ -199,25 +397,27 @@ gtag('config', ${JSON.stringify(cleanMeasurementId)}, { anonymize_ip: true });
               aria-hidden="true"
               className="hidden h-5 w-5 shrink-0 text-muted-foreground sm:block"
             />
+            {/* Admin-authored plain text, rendered as a React text child. Never
+                dangerouslySetInnerHTML: HTML or Markdown in the saved message is
+                shown literally rather than interpreted. */}
             <p className="flex-1 text-sm leading-6 text-muted-foreground">
-              We use optional Google Analytics to understand aggregate site use.
-              It runs only if you accept.
+              {config.bannerMessage}
             </p>
             <div className="flex shrink-0 flex-wrap gap-2">
-              <Button type="button" onClick={() => setConsent("accepted")}>
+              <Button type="button" onClick={() => record("accepted", "banner")}>
                 Accept
               </Button>
               <Button
                 type="button"
                 variant="outline"
-                onClick={() => setConsent("declined")}
+                onClick={() => record("declined", "banner")}
               >
                 Decline
               </Button>
               <button
                 type="button"
                 aria-label="Close analytics consent banner"
-                onClick={() => setConsent("declined")}
+                onClick={() => record("declined", "banner")}
                 className="flex h-10 w-10 items-center justify-center rounded-md border border-border text-muted-foreground hover:bg-muted focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
                 <X aria-hidden="true" className="h-4 w-4" />
@@ -226,6 +426,52 @@ gtag('config', ${JSON.stringify(cleanMeasurementId)}, { anonymize_ip: true });
           </div>
         </div>
       )}
+
+      <Dialog open={preferencesOpen} onOpenChange={setPreferencesOpen}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Analytics preferences</DialogTitle>
+            <DialogDescription>
+              {decision.preference === "allowed"
+                ? "Google Analytics is currently allowed on this website in this browser."
+                : decision.preference === "declined"
+                  ? "Google Analytics is currently switched off on this website in this browser."
+                  : "You have not yet chosen whether Google Analytics may run on this website."}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 text-sm text-muted-foreground">
+            <p>
+              Analytics helps us understand how this website is used. Your choice is
+              stored in this browser only, and you can change it at any time.
+            </p>
+            <p>
+              Switching analytics off stops further collection from this browser. It
+              does not remove information already sent to Google.
+            </p>
+          </div>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                record("declined", "preferences");
+                setPreferencesOpen(false);
+              }}
+            >
+              Turn analytics off
+            </Button>
+            <Button
+              type="button"
+              onClick={() => {
+                record("accepted", "preferences");
+                setPreferencesOpen(false);
+              }}
+            >
+              Allow analytics
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </>
   );
 }
