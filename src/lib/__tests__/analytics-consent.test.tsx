@@ -2,8 +2,19 @@
 
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AnalyticsConsent } from "@/components/analytics-consent";
+import { ANALYTICS_PREFERENCES_ATTRIBUTE, ANALYTICS_PREFERENCES_OPEN_EVENT } from "@/lib/analytics-preferences-channel";
+import type { AnalyticsRuntimeConfig } from "@/lib/analytics-settings";
+
+/**
+ * The public Google Analytics runtime (#2573): the prior-consent guarantee, the
+ * banner-disabled mode, the visitor preferences panel, and the URL sanitisation.
+ *
+ * `next/script` is replaced with a plain element so the test can see WHETHER a script
+ * would be injected and with what — the guarantee under test is that nothing renders
+ * at all before consent, so the absence of that element is the assertion.
+ */
 
 vi.mock("next/script", () => ({
   default: ({
@@ -23,93 +34,452 @@ vi.mock("next/script", () => ({
   ),
 }));
 
+const mockPathname = vi.hoisted(() => ({ value: "/contact" as string | null }));
+vi.mock("next/navigation", () => ({
+  usePathname: () => mockPathname.value,
+}));
+
+const BANNER_ON: AnalyticsRuntimeConfig = {
+  measurementId: "G-TEST123456",
+  consentBannerEnabled: true,
+  bannerMessage: "We use optional Google Analytics on this website.",
+  consentRevision: 1,
+};
+
+const BANNER_OFF: AnalyticsRuntimeConfig = {
+  ...BANNER_ON,
+  consentBannerEnabled: false,
+};
+
+const STORAGE_KEY = "analytics-consent.v2";
+
 function analyticsLoader() {
   return document.querySelector<HTMLElement>("#ga4-loader");
 }
 
-describe("AnalyticsConsent", () => {
-  beforeEach(() => {
-    window.localStorage.clear();
-    window.dataLayer = undefined;
-    window.gtag = undefined;
-  });
+/** Every `gtag(...)` call that has been queued, as flat argument arrays. */
+function queuedCalls(): unknown[][] {
+  return (window.dataLayer ?? []) as unknown[][];
+}
 
-  it("does not render scripts or a banner until the module and measurement id are present", () => {
-    render(<AnalyticsConsent enabled measurementId="" nonce="nonce-1" />);
+function consentCalls() {
+  return queuedCalls().filter((entry) => entry[0] === "consent");
+}
 
-    expect(screen.queryByRole("dialog")).toBeNull();
-    expect(document.querySelector("[data-testid]")).toBeNull();
-  });
+function pageViewCalls() {
+  return queuedCalls().filter(
+    (entry) => entry[0] === "event" && entry[1] === "page_view",
+  );
+}
 
-  it("shows the opt-in banner with default-denied consent and no GA loader", async () => {
-    render(<AnalyticsConsent enabled measurementId="G-TEST123" nonce="nonce-1" />);
+beforeEach(() => {
+  window.localStorage.clear();
+  window.dataLayer = undefined;
+  window.gtag = undefined;
+  mockPathname.value = "/contact";
+  document.querySelectorAll("script[data-fixture]").forEach((el) => el.remove());
+  document.documentElement.removeAttribute(ANALYTICS_PREFERENCES_ATTRIBUTE);
+});
 
-    expect(await screen.findByRole("dialog", { name: "Analytics cookie consent" })).toBeTruthy();
-    expect(screen.getByTestId("ga-consent-default").getAttribute("data-nonce"))
-      .toBe("nonce-1");
+afterEach(() => {
+  delete (window as unknown as Record<string, unknown>)["ga-disable-G-TEST123456"];
+});
+
+describe("no configuration means no analytics at all", () => {
+  it("renders nothing when the server resolved no config", () => {
+    const { container } = render(<AnalyticsConsent config={null} nonce="n-1" />);
+
+    expect(container.innerHTML).toBe("");
     expect(analyticsLoader()).toBeNull();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(window.dataLayer).toBeUndefined();
+    expect(
+      document.documentElement.getAttribute(ANALYTICS_PREFERENCES_ATTRIBUTE),
+    ).toBeNull();
+  });
+});
+
+describe("banner enabled — PRIOR CONSENT", () => {
+  it("shows the banner and loads NOTHING before the visitor accepts", async () => {
+    render(<AnalyticsConsent config={BANNER_ON} nonce="n-1" />);
+
+    expect(
+      await screen.findByRole("dialog", { name: "Analytics cookie consent" }),
+    ).toBeTruthy();
+    // The guarantee, stated as four separate absences: no tag, no request, no
+    // cookieless ping, no consent-status signal reaching Google. Nothing is sent
+    // until `gtag/js` itself is fetched, and no element that would fetch it exists.
+    expect(analyticsLoader()).toBeNull();
+    expect(document.querySelector('[data-src*="googletagmanager"]')).toBeNull();
+    expect(pageViewCalls()).toHaveLength(0);
+    // A `consent default` IS queued — a local array push, not a network call — and it
+    // must deny analytics storage.
+    expect(consentCalls()).toEqual([
+      [
+        "consent",
+        "default",
+        {
+          ad_storage: "denied",
+          ad_user_data: "denied",
+          ad_personalization: "denied",
+          analytics_storage: "denied",
+        },
+      ],
+    ]);
+    // Nothing configures a measurement ID either, so even a tag loaded by something
+    // else on the page could not attribute an event.
+    expect(queuedCalls().some((entry) => entry[0] === "config")).toBe(false);
   });
 
-  it("loads GA4 only after accept and stores the choice", async () => {
-    render(<AnalyticsConsent enabled measurementId="G-TEST123" nonce="nonce-1" />);
+  it("renders the admin-authored message as text, never as markup", () => {
+    render(
+      <AnalyticsConsent
+        config={{
+          ...BANNER_ON,
+          bannerMessage: '<img src=x onerror="alert(1)"> & **bold**',
+        }}
+      />,
+    );
+
+    const banner = screen.getByRole("dialog", {
+      name: "Analytics cookie consent",
+    });
+    expect(banner.querySelector("img")).toBeNull();
+    expect(banner.textContent).toContain('<img src=x onerror="alert(1)">');
+    expect(banner.textContent).toContain("**bold**");
+  });
+
+  it("loads the tag only after Accept, and stores the choice with the revision", async () => {
+    render(
+      <AnalyticsConsent
+        config={{ ...BANNER_ON, consentRevision: 4 }}
+        nonce="n-1"
+      />,
+    );
 
     fireEvent.click(await screen.findByRole("button", { name: "Accept" }));
 
-    await waitFor(() => {
-      expect(analyticsLoader()).not.toBeNull();
-    });
-    expect(analyticsLoader()?.getAttribute("data-src")).toContain(
-      "https://www.googletagmanager.com/gtag/js?id=G-TEST123",
+    await waitFor(() => expect(analyticsLoader()).not.toBeNull());
+    expect(analyticsLoader()?.getAttribute("data-src")).toBe(
+      "https://www.googletagmanager.com/gtag/js?id=G-TEST123456",
     );
-    expect(window.localStorage.getItem("analytics-consent.v1")).toBe("accepted");
-    expect(window.dataLayer).toContainEqual([
+    expect(JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? "null")).toEqual({
+      choice: "accepted",
+      revision: 4,
+      source: "banner",
+    });
+    expect(consentCalls().at(-1)).toEqual([
       "consent",
       "update",
-      { analytics_storage: "granted" },
+      {
+        ad_storage: "denied",
+        ad_user_data: "denied",
+        ad_personalization: "denied",
+        analytics_storage: "granted",
+      },
     ]);
+    expect(screen.queryByRole("dialog", { name: "Analytics cookie consent" })).toBeNull();
   });
 
-  it("persists decline without loading GA4", async () => {
-    render(<AnalyticsConsent enabled measurementId="G-TEST123" />);
+  it("turns Google's own automatic page view OFF when it configures the tag", async () => {
+    render(<AnalyticsConsent config={BANNER_ON} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Accept" }));
 
-    fireEvent.click(await screen.findByRole("button", { name: "Decline" }));
-
-    expect(window.localStorage.getItem("analytics-consent.v1")).toBe("declined");
-    expect(analyticsLoader()).toBeNull();
-    expect(screen.queryByRole("dialog")).toBeNull();
-  });
-
-  it("honors a stored accept without showing the banner again", async () => {
-    window.localStorage.setItem("analytics-consent.v1", "accepted");
-
-    render(<AnalyticsConsent enabled measurementId="G-TEST123" />);
-
-    await waitFor(() => {
-      expect(analyticsLoader()).not.toBeNull();
+    await waitFor(() =>
+      expect(queuedCalls().some((entry) => entry[0] === "config")).toBe(true),
+    );
+    const configCall = queuedCalls().find((entry) => entry[0] === "config");
+    expect(configCall?.[1]).toBe("G-TEST123456");
+    // Without this Google would send `location.href`, query string and all.
+    expect(configCall?.[2]).toMatchObject({
+      send_page_view: false,
+      anonymize_ip: true,
     });
-    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("queues consent before the tag configuration, so no event is unattributed", async () => {
+    render(<AnalyticsConsent config={BANNER_ON} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Accept" }));
+
+    await waitFor(() => expect(pageViewCalls()).toHaveLength(1));
+    const verbs = queuedCalls().map((entry) => String(entry[0]));
+    expect(verbs.indexOf("consent")).toBeLessThan(verbs.indexOf("config"));
+    expect(verbs.indexOf("config")).toBeLessThan(verbs.lastIndexOf("event"));
+  });
+
+  it.each([
+    ["Decline", "Decline"],
+    ["dismissal", "Close analytics consent banner"],
+  ])("treats %s as a decline and never loads the tag", async (_label, name) => {
+    render(<AnalyticsConsent config={BANNER_ON} />);
+
+    fireEvent.click(await screen.findByRole("button", { name }));
+
+    expect(JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? "null")).toEqual({
+      choice: "declined",
+      revision: 1,
+      source: "banner",
+    });
+    expect(analyticsLoader()).toBeNull();
+    expect(pageViewCalls()).toHaveLength(0);
+    expect(screen.queryByRole("dialog", { name: "Analytics cookie consent" })).toBeNull();
+  });
+
+  it("honours a stored accept without re-showing the banner", async () => {
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ choice: "accepted", revision: 1, source: "banner" }),
+    );
+
+    render(<AnalyticsConsent config={BANNER_ON} />);
+
+    await waitFor(() => expect(analyticsLoader()).not.toBeNull());
+    expect(screen.queryByRole("dialog", { name: "Analytics cookie consent" })).toBeNull();
+  });
+
+  it("re-prompts, and loads nothing, after the admin bumps the consent revision", async () => {
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ choice: "accepted", revision: 1, source: "banner" }),
+    );
+
+    render(<AnalyticsConsent config={{ ...BANNER_ON, consentRevision: 2 }} />);
+
+    expect(
+      await screen.findByRole("dialog", { name: "Analytics cookie consent" }),
+    ).toBeTruthy();
+    expect(analyticsLoader()).toBeNull();
+  });
+});
+
+describe("banner disabled", () => {
+  it("loads automatically, shows no prompt, and keeps advertising denied", async () => {
+    render(<AnalyticsConsent config={BANNER_OFF} />);
+
+    await waitFor(() => expect(analyticsLoader()).not.toBeNull());
+    expect(screen.queryByRole("dialog", { name: "Analytics cookie consent" })).toBeNull();
+    expect(consentCalls()[0]?.[2]).toEqual({
+      ad_storage: "denied",
+      ad_user_data: "denied",
+      ad_personalization: "denied",
+      analytics_storage: "granted",
+    });
+  });
+
+  it("ignores a decline recorded while the banner was showing", async () => {
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ choice: "declined", revision: 1, source: "banner" }),
+    );
+
+    render(<AnalyticsConsent config={BANNER_OFF} />);
+
+    await waitFor(() => expect(analyticsLoader()).not.toBeNull());
+  });
+
+  it("still honours an opt-out made through the preferences control", async () => {
+    // Owner clarification 1: banner-off mode must not make the preferences control
+    // ineffective.
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ choice: "declined", revision: 1, source: "preferences" }),
+    );
+
+    render(<AnalyticsConsent config={BANNER_OFF} />);
+
+    await waitFor(() =>
+      expect(
+        document.documentElement.getAttribute(ANALYTICS_PREFERENCES_ATTRIBUTE),
+      ).toBe("available"),
+    );
+    expect(analyticsLoader()).toBeNull();
+  });
+});
+
+describe("the public preferences control", () => {
+  async function openPanel(config: AnalyticsRuntimeConfig) {
+    render(<AnalyticsConsent config={config} />);
+    await waitFor(() =>
+      expect(
+        document.documentElement.getAttribute(ANALYTICS_PREFERENCES_ATTRIBUTE),
+      ).toBe("available"),
+    );
+    fireEvent(window, new CustomEvent(ANALYTICS_PREFERENCES_OPEN_EVENT));
+    return screen.findByRole("dialog", { name: /Analytics preferences/ });
+  }
+
+  it("is offered in banner-enabled mode too", async () => {
+    expect(await openPanel(BANNER_ON)).toBeTruthy();
+  });
+
+  it("is offered on a route analytics does not run on, so opting out is always reachable", async () => {
+    // A visitor who wants to switch analytics off should not have to find a tracked
+    // page first. Only the banner and the tag are route-gated.
+    mockPathname.value = "/dashboard";
+    expect(await openPanel(BANNER_OFF)).toBeTruthy();
+    expect(analyticsLoader()).toBeNull();
+  });
+
+  it("records an opt-out, sets Google's kill switch, and unmounts the tag", async () => {
+    await openPanel(BANNER_OFF);
+    await waitFor(() => expect(analyticsLoader()).not.toBeNull());
+
+    fireEvent.click(screen.getByRole("button", { name: "Turn analytics off" }));
+
+    await waitFor(() => expect(analyticsLoader()).toBeNull());
+    expect(JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? "null")).toEqual({
+      choice: "declined",
+      revision: 1,
+      source: "preferences",
+    });
+    // Unmounting the element does not unload a library the browser already executed,
+    // so the documented per-ID kill switch is what stops further collection.
+    expect(
+      (window as unknown as Record<string, unknown>)["ga-disable-G-TEST123456"],
+    ).toBe(true);
+    expect(consentCalls().at(-1)?.[2]).toMatchObject({
+      analytics_storage: "denied",
+    });
+  });
+
+  it("records an opt-in and loads the tag from a declined state", async () => {
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ choice: "declined", revision: 1, source: "banner" }),
+    );
+    await openPanel(BANNER_ON);
+
+    fireEvent.click(screen.getByRole("button", { name: "Allow analytics" }));
+
+    await waitFor(() => expect(analyticsLoader()).not.toBeNull());
+    expect(JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? "null")).toEqual({
+      choice: "accepted",
+      revision: 1,
+      source: "preferences",
+    });
+  });
+
+  it("never claims data already sent to Google has been removed", async () => {
+    const panel = await openPanel(BANNER_OFF);
+    expect(panel.textContent).toContain(
+      "It does not remove information already sent to Google.",
+    );
+    expect(panel.textContent).not.toMatch(/delete|erase|compliant/i);
+  });
+});
+
+describe("route policy and URL sanitisation, enforced at the runtime", () => {
+  it.each([
+    "/admin/members/mem_123",
+    "/dashboard",
+    "/pay/tok_secret",
+    "/reset-password",
+    "/join/verify/tok_secret",
+  ])("loads nothing and sends nothing on %s", async (pathname) => {
+    mockPathname.value = pathname;
+
+    render(<AnalyticsConsent config={BANNER_OFF} />);
+
+    await waitFor(() =>
+      expect(
+        document.documentElement.getAttribute(ANALYTICS_PREFERENCES_ATTRIBUTE),
+      ).toBe("available"),
+    );
+    expect(analyticsLoader()).toBeNull();
+    expect(pageViewCalls()).toHaveLength(0);
+    // The banner is route-gated too: an excluded page must not ask a question whose
+    // answer it would never act on.
+    expect(screen.queryByRole("dialog", { name: "Analytics cookie consent" })).toBeNull();
+  });
+
+  it("fails closed when no router context is mounted", async () => {
+    mockPathname.value = null;
+
+    render(<AnalyticsConsent config={BANNER_OFF} />);
+
+    await waitFor(() => expect(window.dataLayer).toBeDefined());
+    expect(analyticsLoader()).toBeNull();
+    expect(pageViewCalls()).toHaveLength(0);
+  });
+
+  it("sends one sanitised origin+pathname page view, with no query and no fragment", async () => {
+    mockPathname.value = "/about-the-club";
+
+    render(<AnalyticsConsent config={BANNER_OFF} />);
+
+    await waitFor(() => expect(pageViewCalls()).toHaveLength(1));
+    const payload = pageViewCalls()[0]?.[2] as Record<string, unknown>;
+    expect(payload.page_location).toBe(`${window.location.origin}/about-the-club`);
+    expect(String(payload.page_location)).not.toContain("?");
+    expect(String(payload.page_location)).not.toContain("#");
+    // `set` mirrors the same values so Google's own enhanced-measurement events
+    // inherit them rather than reading `location.href` for themselves.
+    expect(queuedCalls().some((entry) => entry[0] === "set")).toBe(true);
+  });
+
+  it("sends exactly one page view per address across client-side navigation", async () => {
+    mockPathname.value = "/contact";
+    const { rerender } = render(<AnalyticsConsent config={BANNER_OFF} />);
+    await waitFor(() => expect(pageViewCalls()).toHaveLength(1));
+
+    // A re-render with no navigation must not duplicate the view.
+    rerender(<AnalyticsConsent config={BANNER_OFF} />);
+    await waitFor(() => expect(pageViewCalls()).toHaveLength(1));
+
+    mockPathname.value = "/about";
+    rerender(<AnalyticsConsent config={BANNER_OFF} />);
+    await waitFor(() => expect(pageViewCalls()).toHaveLength(2));
+
+    // Navigating to an EXCLUDED route sends nothing…
+    mockPathname.value = "/dashboard";
+    rerender(<AnalyticsConsent config={BANNER_OFF} />);
+    await waitFor(() => expect(pageViewCalls()).toHaveLength(2));
+
+    // …and coming back to an address already reported sends nothing either.
+    mockPathname.value = "/about";
+    rerender(<AnalyticsConsent config={BANNER_OFF} />);
+    await waitFor(() => expect(pageViewCalls()).toHaveLength(2));
+  });
+
+  it("reduces a token-bearing same-origin referrer to the origin", async () => {
+    // The concrete leak: a visitor who landed on /pay/<token> and clicked through
+    // would otherwise have handed Google the payment token.
+    Object.defineProperty(document, "referrer", {
+      configurable: true,
+      value: `${window.location.origin}/pay/tok_secret123`,
+    });
+    try {
+      render(<AnalyticsConsent config={BANNER_OFF} />);
+      await waitFor(() => expect(pageViewCalls()).toHaveLength(1));
+      const payload = pageViewCalls()[0]?.[2] as Record<string, unknown>;
+      expect(payload.page_referrer).toBe(window.location.origin);
+      expect(String(payload.page_referrer)).not.toContain("tok_secret123");
+    } finally {
+      Object.defineProperty(document, "referrer", {
+        configurable: true,
+        value: "",
+      });
+    }
   });
 });
 
 /**
- * The nonce these scripts are stamped with has to be the LOADED DOCUMENT's, not the
+ * The nonce the loader script is stamped with has to be the LOADED DOCUMENT's, not the
  * one the current render was handed (#2352 D1 review).
  *
  * A document's CSP is fixed when it loads; the `nonce` prop is not. `(website)` passes
  * the fixed per-release value and `(website-dynamic)` the per-request one, so a soft
  * navigation between the two public groups swaps layouts and remounts this component
- * holding the other territory's nonce — while the policy in force is still the one
- * that arrived with the document. Every script here is `afterInteractive`, i.e.
- * injected by the browser at that moment and nonce-checked (`script-src` carries no
- * `'strict-dynamic'`), so the inline GA config was silently refused: gtag loaded and
- * never configured.
+ * holding the other territory's nonce — while the policy in force is still the one that
+ * arrived with the document. The loader is `afterInteractive`, i.e. injected by the
+ * browser at that moment and nonce-checked (`script-src` carries no `'strict-dynamic'`),
+ * so reading the prop meant gtag was silently refused.
+ *
+ * #2573 removed the two INLINE scripts this used to be asserted on — every `gtag` call
+ * now happens in the bundle — so the assertions moved to the one external `<Script src>`
+ * that is left. It still needs the nonce, and the reader is unchanged.
  */
 describe("AnalyticsConsent nonce source", () => {
-  beforeEach(() => {
-    window.localStorage.clear();
-    document.querySelectorAll("script[data-fixture]").forEach((el) => el.remove());
-  });
-
   function addDocumentScript(nonce: string) {
     const script = document.createElement("script");
     script.setAttribute("data-fixture", "");
@@ -117,66 +487,33 @@ describe("AnalyticsConsent nonce source", () => {
     document.head.appendChild(script);
   }
 
+  async function loaderNonce() {
+    // Banner OFF so the loader renders without a click: this suite is about the
+    // nonce, not about consent.
+    render(<AnalyticsConsent config={BANNER_OFF} nonce="stale-prop-nonce" />);
+    await waitFor(() => expect(analyticsLoader()).not.toBeNull());
+    return analyticsLoader()?.getAttribute("data-nonce");
+  }
+
   it("prefers the document's nonce over the prop it was rendered with", async () => {
-    // The soft-navigation case: the document was served naming `doc-nonce`, and this
-    // mount was handed the other group's `stale-prop-nonce`.
     addDocumentScript("doc-nonce");
-
-    render(
-      <AnalyticsConsent
-        enabled
-        measurementId="G-TEST123"
-        nonce="stale-prop-nonce"
-      />,
-    );
-
-    expect(
-      (await screen.findByTestId("ga-consent-default")).getAttribute("data-nonce"),
-    ).toBe("doc-nonce");
-  });
-
-  it("stamps the document's nonce on the GA4 scripts too", async () => {
-    addDocumentScript("doc-nonce");
-
-    render(
-      <AnalyticsConsent
-        enabled
-        measurementId="G-TEST123"
-        nonce="stale-prop-nonce"
-      />,
-    );
-
-    fireEvent.click(await screen.findByRole("button", { name: "Accept" }));
-
-    await waitFor(() => {
-      expect(analyticsLoader()).not.toBeNull();
-    });
-    expect(analyticsLoader()?.getAttribute("data-nonce")).toBe("doc-nonce");
-    expect(
-      screen.getByTestId("ga4-config").getAttribute("data-nonce"),
-    ).toBe("doc-nonce");
+    await expect(loaderNonce()).resolves.toBe("doc-nonce");
   });
 
   it("falls back to the prop when the document carries no nonce at all", async () => {
     // `next start` with no proxy in front of it, or any policy without a nonce. The
     // prop is still the best available answer; an empty attribute would be worse.
-    render(
-      <AnalyticsConsent enabled measurementId="G-TEST123" nonce="prop-nonce" />,
-    );
-
-    expect(
-      (await screen.findByTestId("ga-consent-default")).getAttribute("data-nonce"),
-    ).toBe("prop-nonce");
+    await expect(loaderNonce()).resolves.toBe("stale-prop-nonce");
   });
 
   it("reads the IDL property when CSP nonce hiding has blanked the attribute", async () => {
-    // This is what a real browser looks like: once the document is parsed, the nonce
+    // This is what a real browser looks like: once the document is parsed the nonce
     // CONTENT attribute is emptied and the value survives only on the element's
     // `nonce` IDL property. jsdom does not implement hiding, so it is simulated with
-    // an own property that shadows the reflecting accessor — otherwise this file
-    // could only ever exercise the `getAttribute` path and a browser-only bug would
-    // sit here undetected. A reader that trusted `getAttribute` alone would stamp
-    // nothing and every script on the page would be refused.
+    // an own property that shadows the reflecting accessor — otherwise this file could
+    // only ever exercise the `getAttribute` path and a browser-only bug would sit here
+    // undetected. A reader that trusted `getAttribute` alone would stamp nothing and
+    // the loader would be refused on every page.
     const hidden = document.createElement("script");
     hidden.setAttribute("data-fixture", "");
     hidden.setAttribute("nonce", "");
@@ -186,13 +523,7 @@ describe("AnalyticsConsent nonce source", () => {
     });
     document.head.appendChild(hidden);
 
-    render(
-      <AnalyticsConsent enabled measurementId="G-TEST123" nonce="prop-nonce" />,
-    );
-
-    expect(
-      (await screen.findByTestId("ga-consent-default")).getAttribute("data-nonce"),
-    ).toBe("doc-nonce");
+    await expect(loaderNonce()).resolves.toBe("doc-nonce");
   });
 
   it("skips a script with no nonce and keeps looking", async () => {
@@ -203,12 +534,6 @@ describe("AnalyticsConsent nonce source", () => {
     document.head.appendChild(unnonced);
     addDocumentScript("doc-nonce");
 
-    render(
-      <AnalyticsConsent enabled measurementId="G-TEST123" nonce="prop-nonce" />,
-    );
-
-    expect(
-      (await screen.findByTestId("ga-consent-default")).getAttribute("data-nonce"),
-    ).toBe("doc-nonce");
+    await expect(loaderNonce()).resolves.toBe("doc-nonce");
   });
 });

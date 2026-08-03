@@ -322,11 +322,11 @@ const NOTICE = "AdminViewOnlyNotice";
 */
 const FIGURES = {
   /** Every `<ViewOnlyActionButton>` render site in the admin tree. */
-  callSites: 307,
+  callSites: 312,
   /** Those that hand their explanation to a banner, by either rule. */
-  optOuts: 258,
+  optOuts: 263,
   /** `describeReason={false}` — needs a banner in the SAME file. */
-  staticOptOuts: 232,
+  staticOptOuts: 237,
   /** `describeReason={!ancestorRendersViewOnlyBanner}` — needs a vouch. */
   vouchedOptOuts: 26,
   /** …of the vouched: proved at a parent's own JSX render site (#2168). */
@@ -340,7 +340,7 @@ const FIGURES = {
   leafControls: 36,
   leafFiles: 21,
   /** Components that render an `AdminViewOnlySectionBanner`. */
-  bannerComponents: 82,
+  bannerComponents: 83,
 } as const;
 
 const WIZARD_SHELL = "IntegrationWizard";
@@ -1231,6 +1231,19 @@ describe("view-only section banner coverage (#2160)", () => {
                staticOptOuts 229 -> 232 and bannerComponents 81 -> 82 move
                together. The vouched split, exceptions and the leaf bucket
                are untouched.
+          312  +5  #2573's Google Analytics integration card
+               (analytics-integration-card.tsx), which moves the GA4 setup onto
+               Admin -> Integrations as a peer of Xero and Stripe. Its settings
+               DIALOG renders its own AdminViewOnlySectionBanner — the
+               sanctioned shape for dialog contents, which an ancestor's banner
+               cannot reach — so all five controls are static opt-outs in the
+               same file: Edit, Save, "Restore the suggested wording", and the
+               two halves of the confirm-gated "Ask visitors to choose again"
+               action. optOuts 258 -> 263, staticOptOuts 232 -> 237 and
+               bannerComponents 82 -> 83 move together; the vouched split,
+               exceptions and the leaf bucket are untouched, because nothing
+               here is gated on anything narrower than the finance area the
+               banner states.
       */
       // #2259 adds the per-booking "No emails"
       // switch (`booking-no-emails-controls.tsx`), a leaf control dropped into

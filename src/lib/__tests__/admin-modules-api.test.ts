@@ -14,6 +14,10 @@ const mocks = vi.hoisted(() => ({
   requireActiveSessionUser: vi.fn(),
   clubModuleSettingsFindUnique: vi.fn(),
   clubModuleSettingsUpsert: vi.fn(),
+  // #2573: analytics readiness is a DATABASE read now, not an env-var check.
+  analyticsSettingsFindUnique: vi.fn<
+    () => Promise<Record<string, unknown> | null>
+  >(async () => null),
   auditLogCreate: vi.fn(),
   transaction: vi.fn(),
   buildStructuredAuditLogCreateArgs: vi.fn((event) => ({ data: event })),
@@ -62,6 +66,9 @@ vi.mock("@/lib/prisma", () => ({
     clubModuleSettings: {
       findUnique: mocks.clubModuleSettingsFindUnique,
       upsert: mocks.clubModuleSettingsUpsert,
+    },
+    analyticsSettings: {
+      findUnique: mocks.analyticsSettingsFindUnique,
     },
     auditLog: {
       create: mocks.auditLogCreate,
@@ -253,7 +260,12 @@ describe("Admin modules API", () => {
     expect(JSON.stringify(addy)).not.toContain("secret-addy-key");
   });
 
-  it("reports analytics setup without exposing measurement id values", async () => {
+  /*
+    #2573 turned analytics readiness from an env-var check into a DATABASE read, and
+    both directions matter. The old assertion could pass with the env var simply
+    unset, which after the hard cutover proves nothing at all.
+  */
+  async function analyticsReadiness() {
     mocks.auth.mockResolvedValue(adminSession);
     mocks.clubModuleSettingsFindUnique.mockResolvedValue({
       id: "default",
@@ -261,16 +273,63 @@ describe("Admin modules API", () => {
       updatedAt: new Date("2026-05-18T11:00:00.000Z"),
       updatedByMemberId: "admin-1",
     });
-    vi.stubEnv("NEXT_PUBLIC_GA_MEASUREMENT_ID", "");
-
     const response = await GET();
     const body = await response.json();
-    const analytics = body.modules.find(
+    return body.modules.find(
       (module: { key: string }) => module.key === "analytics",
     );
+  }
+
+  it("reports analytics as unconfigured when no measurement id is stored", async () => {
+    mocks.analyticsSettingsFindUnique.mockResolvedValue(null);
+    // Set deliberately: the environment value must NOT make the module look ready,
+    // because nothing reads it any more. This is the hard-cutover assertion.
+    vi.stubEnv("NEXT_PUBLIC_GA_MEASUREMENT_ID", "G-FROMENVIRONMENT");
+
+    const analytics = await analyticsReadiness();
 
     expect(analytics.readiness.status).toBe("credentials_missing");
-    expect(JSON.stringify(analytics)).not.toContain("G-SECRET");
+    expect(analytics.readiness.message).toContain("Admin → Integrations");
+    expect(analytics.readiness.message).not.toContain(
+      "NEXT_PUBLIC_GA_MEASUREMENT_ID",
+    );
+    expect(JSON.stringify(analytics)).not.toContain("G-FROMENVIRONMENT");
+  });
+
+  it("reports analytics as ready once a valid measurement id is stored", async () => {
+    mocks.analyticsSettingsFindUnique.mockResolvedValue({
+      measurementId: "G-STORED1234",
+      consentBannerEnabled: true,
+      bannerMessage: null,
+      consentRevision: 1,
+      updatedAt: new Date("2026-06-01T00:00:00.000Z"),
+      updatedByMemberId: "admin-1",
+    });
+    vi.stubEnv("NEXT_PUBLIC_GA_MEASUREMENT_ID", "");
+
+    const analytics = await analyticsReadiness();
+
+    expect(analytics.readiness.status).toBe("ready");
+    // The measurement id is configuration, not confidential — but the modules
+    // payload has no business carrying it, so it must not leak in here either.
+    expect(JSON.stringify(analytics)).not.toContain("G-STORED1234");
+  });
+
+  it("reports analytics as unconfigured when the stored measurement id is invalid", async () => {
+    // Reachable through a database restore or a manual fix, and section 8 requires
+    // an invalid id to mean no analytics rather than a broken tag.
+    mocks.analyticsSettingsFindUnique.mockResolvedValue({
+      measurementId: "GTM-ABCDEF",
+      consentBannerEnabled: true,
+      bannerMessage: null,
+      consentRevision: 1,
+      updatedAt: null,
+      updatedByMemberId: null,
+    });
+
+    expect((await analyticsReadiness()).readiness.status).toBe(
+      "credentials_missing",
+    );
   });
 
   it("rejects invalid update payloads before writing", async () => {
