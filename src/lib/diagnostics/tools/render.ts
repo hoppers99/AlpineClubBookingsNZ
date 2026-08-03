@@ -24,6 +24,10 @@
  */
 
 import {
+  DIAGNOSTICS_EVIDENCE_STATE_DESCRIPTIONS,
+  evidenceStateForToolResult,
+} from "../case/states";
+import {
   DIAGNOSTICS_TOOL_BOUNDS,
   type DiagnosticsToolResult,
   type DiagnosticsToolRow,
@@ -86,10 +90,20 @@ const HEADER =
 export function renderToolResultEvidenceBlock(
   result: DiagnosticsToolResult,
 ): string {
+  // The STABLE evidence state (AID-6A, #2375) travels in the opening tag alongside
+  // the coarse status, and its server-owned sentence is the first line of the body.
+  // The reason is the one #2375 gives for the whole vocabulary: an empty result and a
+  // refused one look identical to a model unless something says which happened, and
+  // the state distinguishes "nothing matched" from "you were not permitted to see
+  // it" from "this deployment is not set up for it". Both values are from closed
+  // server-side unions, so neither can carry caller text — the neutraliser is
+  // applied anyway, because this function must not depend on its caller.
+  const evidenceState = evidenceStateForToolResult(result);
   const lines: string[] = [
-    `<${EVIDENCE_TAG} tool="${neutralize(result.toolId)}" observed-at="${neutralize(result.observedAt)}" status="${result.status}">`,
+    `<${EVIDENCE_TAG} tool="${neutralize(result.toolId)}" observed-at="${neutralize(result.observedAt)}" status="${result.status}" evidence-state="${neutralize(evidenceState)}">`,
     HEADER,
     "",
+    `evidence state: ${neutralize(evidenceState)} — ${neutralize(DIAGNOSTICS_EVIDENCE_STATE_DESCRIPTIONS[evidenceState])}`,
   ];
 
   if (result.status === "error") {

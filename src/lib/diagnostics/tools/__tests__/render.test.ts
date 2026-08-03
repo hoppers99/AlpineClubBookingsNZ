@@ -110,14 +110,17 @@ describe("tool result evidence block (#2374, ADR-003 §2)", () => {
     });
     // The forged text survives as INERT CONTENT inside the attribute value — that
     // is fine and expected. What must not happen is a new ATTRIBUTE: with the
-    // quotes stripped, the opening tag still carries exactly the three the renderer
+    // quotes stripped, the opening tag still carries exactly the four the renderer
     // writes, and `trusted` / `authority` are values rather than attribute names.
     const opening = block.slice(0, block.indexOf(">") + 1);
-    expect(opening.match(/="/g)).toHaveLength(3);
+    expect(opening.match(/="/g)).toHaveLength(4);
     expect([...opening.matchAll(/([a-z-]+)="/g)].map((match) => match[1])).toEqual([
       "tool",
       "observed-at",
       "status",
+      // The stable evidence state (AID-6A, #2375). From a closed server-side union,
+      // so it can never carry caller text — but it is neutralised anyway.
+      "evidence-state",
     ]);
     expect(opening).not.toContain('trusted="');
     expect(opening).not.toContain('authority="');
