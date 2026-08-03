@@ -400,9 +400,19 @@ Four rules follow, and a new spec must satisfy all four:
   restarts the worker, so `beforeAll`/`beforeEach` run again — that is where the
   reset belongs. Use the shared primitives in
   [`e2e/helpers/reset.ts`](../e2e/helpers/reset.ts)
-  (`cancelMemberBookingsOnDate`, `resetXeroSetupWizard`); they drive the product's
+  (`cancelMemberBookingsOnDate`, `deactivateMinimumStayPolicies`,
+  `resetXeroSetupWizard`); they drive the product's
   own admin API, so no spec needs direct database access and no test-only
   endpoint is added. A clean first attempt is a no-op.
+
+  **Configuration a spec stands up counts as state too.** A spec that creates a
+  booking rule in order to break it must take that rule back down, or its own
+  retry cannot create it again: a second ACTIVE minimum-stay policy sharing a
+  (scope, name) pair is refused with 409 `POLICY_NAME_CONFLICT` (#2363), and the
+  policy DELETE requires the row's `version` in the body — a bodyless call is a
+  500 that silently leaves the rule active. `deactivateMinimumStayPolicies` does
+  both correctly and verifies the names are free again; give each attempt its own
+  policy NAME as well, so a reset that cannot clean still cannot wedge the retry.
 - **Give each attempt its own booking dates.** `stayWindowForAttempt(index,
   testInfo.retry)` (`e2e/helpers/stay-dates.ts`) maps attempt 0/1/2 onto three
   disjoint bands of Mondays, so a retry can never collide with the booking its

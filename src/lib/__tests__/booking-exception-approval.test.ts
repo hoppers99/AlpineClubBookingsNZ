@@ -659,6 +659,7 @@ describe("executeApprovedProposal — new booking", () => {
     });
     const input = createConfirmedBooking.mock.calls[0][0];
     expect(input.effectiveMemberId).toBe("m-1");
+    expect(input.lodgeId).toBe(LODGE);
     expect(input.sessionUserId).toBe(OFFICER);
     expect(input.isOnBehalf).toBe(true);
     expect(input.confirmOverCapacity).toBeUndefined();
@@ -672,6 +673,32 @@ describe("executeApprovedProposal — new booking", () => {
       txMocks(tx).newBookingPolicyExceptionRequest.updateMany.mock.calls[0][0]
         .data.createdBookingId,
     ).toBe("bk-new");
+  });
+
+  it("executes at the lodge the proposal FROZE, never the club's default", async () => {
+    // The multi-lodge leak this guards is the one that costs a real oversell: an
+    // exception raised at a second lodge executing at whichever lodge a missing
+    // `lodgeId` falls back to (the club default). Both lodge-bearing steps of the
+    // execution must follow the FROZEN lodge — the capacity recheck and the
+    // canonical create — so both are asserted against a lodge that is NOT the
+    // one every other case in this file uses. `e2e/multi-lodge/
+    // policy-exception-second-lodge.spec.ts` is the same guarantee end to end.
+    const SECOND_LODGE = "lodge-b";
+    expect(SECOND_LODGE).not.toBe(LODGE);
+    const snapshot = { ...NEW_BOOKING_SNAPSHOT, lodgeId: SECOND_LODGE };
+    const { hooks } = hooksFor();
+    const tx = makeTx();
+
+    await expect(hooks.recheckCapacity(snapshot, tx)).resolves.toEqual({ ok: true });
+    expect(checkCapacityForGuestRanges.mock.calls[0][0]).toBe(SECOND_LODGE);
+
+    await hooks.executeApprovedProposal({
+      tx,
+      request: loadedRequest({ bookingId: null, kind: null }),
+      snapshot,
+      override: MIN_STAY_OVERRIDE,
+    });
+    expect(createConfirmedBooking.mock.calls[0][0].lodgeId).toBe(SECOND_LODGE);
   });
 
   it("runs the member-guest authorisation pipeline as the REQUESTING MEMBER", async () => {

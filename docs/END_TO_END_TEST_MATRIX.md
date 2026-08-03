@@ -67,7 +67,7 @@ request -> approve -> execute journey is covered by
 | Refund choice | A price-reducing change on a settled booking answers `needsSettlementMethod` with an actionable message, never kept-pending, and the officer's choice reaches the executor | `decision-route`, panel decision form |
 | The reviewed party is visible | The detail endpoint describes every proposed guest (name, age tier, member, beyond-family from the LIVE boundary, nights held) and the card loads it before the decision | `decision-route` (GET), panel |
 | Authorization + reason | Fresh-DB reauthorization (`bookings: edit`, active, no forced password change) inside the approval transaction; approve requires explicit confirmation; an adult-member hosting override and every refusal require a written reason | `booking-exception-approval`, `decision-route`, Playwright unconfirmed-approve and reason-less-refusal cases |
-| Multi-lodge | A request raised at the second lodge is queued against THAT lodge and its approval creates the booking there, never at the club default | Playwright `e2e/multi-lodge/policy-exception-second-lodge.spec.ts` |
+| Multi-lodge | A request raised at the second lodge is queued against THAT lodge and its approval creates the booking there, never at the club default | `booking-exception-approval` (the frozen lodge reaches BOTH the capacity recheck and the canonical create), Playwright `e2e/multi-lodge/policy-exception-second-lodge.spec.ts` (present at the second lodge and absent at the default one) |
 
 The remaining gap is not a coverage choice but a missing surface: **there is no
 member-facing exception UI yet.** The request/list/cancel/supersede paths exist

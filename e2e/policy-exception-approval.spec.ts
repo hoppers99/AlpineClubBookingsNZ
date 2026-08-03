@@ -3,7 +3,10 @@ import { type APIRequestContext, type BrowserContext, expect, test } from "@play
 import { storageStatePath } from "./helpers/auth";
 import { E2E_ADMIN, WAITLIST_FULL_WINDOW } from "./helpers/fixtures";
 import { personas } from "./helpers/personas";
-import { cancelMemberBookingsOnDate } from "./helpers/reset";
+import {
+  cancelMemberBookingsOnDate,
+  deactivateMinimumStayPolicies,
+} from "./helpers/reset";
 import { stayWindowForAttempt } from "./helpers/stay-dates";
 
 /**
@@ -37,16 +40,9 @@ let memberContext: BrowserContext;
 let admin: APIRequestContext;
 let memberId: string;
 
-/** Remove every minimum-stay policy this spec created. Safe to re-run. */
+/** Take this spec's club-wide minimum-stay rule back down. Safe to re-run. */
 async function deleteSpecPolicies(api: APIRequestContext) {
-  const response = await api.get("/api/admin/booking-policies/minimum-stay");
-  if (!response.ok()) return;
-  const policies = (await response.json()) as Array<{ id: string; name: string }>;
-  for (const policy of policies) {
-    if (policy.name.startsWith(POLICY_NAME)) {
-      await api.delete(`/api/admin/booking-policies/minimum-stay/${policy.id}`);
-    }
-  }
+  await deactivateMinimumStayPolicies(api, { namePrefix: POLICY_NAME });
 }
 
 /** Withdraw every open exception request this member left behind. */
