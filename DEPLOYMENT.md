@@ -396,6 +396,59 @@ verification queries, sequencing, and the ledger entries that release needs;
 each contract migration must name its `previous_expand_release` in
 `docs/BLUE_GREEN_MIGRATION_SAFETY.tsv`.
 
+### Windowed migrations: a deploy with a maintenance window
+
+Not every change can be expand-then-contract across two releases. When the owner
+decides to complete one in a **single** release, the migration is declared
+`old_code_compatible=windowed` in the safety ledger, which says plainly: the
+previous release **will** break the moment migrate commits, so the deploy takes a
+short planned outage instead of a rolling cutover.
+
+Check for these before every deploy:
+
+```bash
+awk -F'\t' '$4 == "windowed" { print $1 }' docs/BLUE_GREEN_MIGRATION_SAFETY.tsv
+```
+
+**Current windowed migration:**
+`20260803010000_contract_subscription_lockout_drop_enabled` (#2543 / #2561). It
+drops `MembershipLockoutSettings.enabled`. The previous release's Prisma client
+names that column on every read of the model, and the booking gates resolve the
+club's subscription-lockout policy through that read — so between migrate and
+cutover the old colour cannot take a booking at all. There is no ordering that
+keeps both colours working, which is why the window exists.
+
+**The sequence, in order. Each step is there because the next one cannot be
+undone without it:**
+
+1. **Build and validate the new images first**, before touching the database. A
+   build that fails after the column is dropped leaves no working release to start.
+2. **Take a fresh backup and verify it restores.** Immediately before migrating.
+   For an ordinary migration you can abort up to the cutover; for a windowed one the
+   point of no return is the migrate step, so this is the last unconditional way
+   back. See [Backups](#backups).
+3. **Enter maintenance mode / remove user traffic.** Nobody should be mid-booking.
+4. **Stop the old app *and* the workers.** Both read this settings row. Workers left
+   running produce the same failures with nobody watching them.
+5. **Migrate**, with the acknowledgement above and a
+   `BLUE_GREEN_MIGRATION_OVERRIDE_REASON` naming this window. The validator refuses
+   the deploy without it — and refuses it regardless if the migration ships no
+   `rollback.sql`.
+6. **Start the new release**, confirm `/api/health/ready`, then leave maintenance
+   mode.
+
+**If it goes wrong.** Prefer going *forward*: the schema is migrated and the data is
+intact, so finishing the deploy is usually the fastest recovery. If the new release
+will not start, run the reverse script beside the migration —
+`prisma/migrations/<migration>/rollback.sql` — as the migration role, then redeploy
+the previous release's images. Restore from backup only if the **data** is wrong
+rather than the schema. Note that `_prisma_migrations` still records the migration
+as applied after a `rollback.sql`, so rolling forward later means clearing that row
+or re-applying `migration.sql` by hand.
+
+Full step-by-step, including the rehearsal evidence for the current one, is in
+`docs/PRODUCTION_UPGRADE_RUNBOOK.md` → "Windowed migration deploy sequence".
+
 ## Config Self-Heal On Boot
 
 A routine production deploy runs `prisma migrate deploy` **only**. The seed

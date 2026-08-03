@@ -98,23 +98,58 @@ as a red flag and check the release notes before deploying.
 
 ### The subscription booking lockout becomes a three-way choice (#2543)
 
-**Nothing changes for your club on this upgrade.** The one migration,
-`20260803000000_subscription_lockout_three_way_mode`, is purely additive: it
-creates the `SubscriptionLockoutMode` type and adds a **nullable** `mode` column
-to the single-row cold `MembershipLockoutSettings` table, with no default and no
-backfill. It is ledgered `expand` / `old_code_compatible=yes`, trips none of the
-deploy guard's breaking patterns, needs no traffic window, and needs no
-`ALLOW_BREAKING` override.
+**Your club's booking behaviour does not change on this upgrade — but this release
+needs a maintenance window.** Read this section before scheduling it.
 
-A null `mode` means "this club has not chosen yet", and the application reads the
-existing `enabled` boolean instead (`true` → stop them booking, `false` → let them
-book). So your current behaviour carries over exactly, and no booking is repriced.
+**Two migrations, completing the change in one release.** The owner chose to finish
+this in a single release rather than keep temporary dual-read/dual-write
+compatibility alive for a later contract release (#2561):
 
-The old `enabled` column is **deliberately not dropped** in this release: a
-draining blue/green colour is still reading it, and the new code writes both
-columns on every save so a rollback lands on the nearest equivalent behaviour.
-Dropping it is a separate contract migration in a later release, which will name
-this one as its `previous_expand_release`.
+- `20260803000000_subscription_lockout_three_way_mode` — additive: creates the
+  `SubscriptionLockoutMode` type and adds a nullable `mode` column to the
+  single-row cold `MembershipLockoutSettings` table. Ledgered `expand` /
+  `old_code_compatible=yes`.
+- `20260803010000_contract_subscription_lockout_drop_enabled` — backfills `mode`
+  from the old `enabled` boolean (`true` → **Stop them booking**, `false` → **Let
+  them book normally**), makes `mode` mandatory with a `HARD_BLOCK` default, and
+  **drops `enabled`**. Ledgered `contract` /
+  **`old_code_compatible=windowed`**.
+
+**Your setting carries over exactly.** Whatever the old on/off switch said is
+written into the new three-way setting by the backfill, so no club's booking
+behaviour moves and no booking is repriced. A club that had deliberately switched
+the lockout OFF stays off — that mapping is pinned against real rows by a
+verification fixture whose mutants include the one that would silently hard-block
+those clubs.
+
+**Why the window.** Once `enabled` is dropped, the previous release can no longer
+read the settings row at all — and because the booking gates resolve the lockout
+policy through that read, the old version cannot take a booking. There is no
+ordering that keeps both versions working, so this deploy is a short planned
+outage rather than a rolling cutover:
+
+1. build and validate the new images **first**;
+2. take a fresh backup and **verify it restores**;
+3. put the site into maintenance mode / remove user traffic;
+4. stop the old app **and** the background workers;
+5. migrate, with `ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS=1` and a
+   `BLUE_GREEN_MIGRATION_OVERRIDE_REASON` naming the window;
+6. start the new release.
+
+The migration itself is quick — three metadata-only statements on a single-row
+table — so the window is dominated by stopping and starting the application.
+
+**If you need to go back.** Prefer going forward: the schema is migrated and the
+data is intact. If the new release will not start, the migration ships a tested
+reverse script beside it,
+`prisma/migrations/20260803010000_contract_subscription_lockout_drop_enabled/rollback.sql`,
+which recreates `enabled` from the mode (**Let them book normally** → false, the
+other two → true) and lets the previous release run again. Both directions were
+rehearsed against a production-shaped database before this shipped; the transcript
+is in `docs/PRODUCTION_UPGRADE_RUNBOOK.md` §7.1, and the full sequence is in
+`DEPLOYMENT.md` → "Windowed migrations".
+
+See also point 3 below on configuration bundles.
 
 **The new third option is opt-in and money-affecting.** Once upgraded, an admin
 can change **Admin → Subscription Lockout → Booking lockout** from the previous
@@ -157,9 +192,11 @@ taken.
    or Xero idempotency key moves, so nothing re-syncs and no reconciliation breaks.
 3. **Re-export your configuration bundles after upgrading, before importing one into
    an upgraded club.** A bundle exported before this release carries only the old
-   on/off boolean. The importer now derives the new three-way setting from it, so such
-   a bundle imports to the right policy - but a bundle exported from an upgraded club
-   carries both fields and is unambiguous. There is no format-version bump for this.
+   on/off boolean. The importer still derives the new three-way setting from it, and
+   that compatibility is deliberate and tested — bundle files outlive the column, and
+   an old bundle still records a real decision about whether the club gated bookings.
+   A bundle exported from an upgraded club carries the mode itself and is
+   unambiguous. There is no format-version bump for this.
 
 ### Re-export configuration bundles for format version 4 (#2364)
 

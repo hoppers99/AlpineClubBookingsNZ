@@ -15,6 +15,17 @@
   old on/off switch said carries straight over — on becomes "stop them booking",
   off becomes "let them book normally" — and no existing booking is repriced.
 
+  **This release needs a short maintenance window, and your operator should read
+  the upgrade notes before scheduling it.** The old on/off column is removed in the
+  same release that replaces it, rather than being left behind for a later one. That
+  keeps the system honest — there is only ever one record of your setting — but it
+  means the previous version cannot run once the upgrade has been applied, so the
+  site goes into maintenance mode for the few minutes the change takes instead of
+  rolling over seamlessly. Your setting is carried across automatically, a fresh
+  backup is taken and verified first, and a tested reverse script ships with the
+  release in case the new version does not start. `docs/UPGRADING.md` has the
+  sequence in plain English.
+
   If you do choose the new option, this is what a member experiences. Their own
   nights are charged at the club's existing non-member rate, using the same Xero
   item code as any other non-member, so the invoice reads as an ordinary

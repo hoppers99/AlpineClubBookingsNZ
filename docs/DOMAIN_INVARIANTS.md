@@ -2666,15 +2666,48 @@ here:
 - **`NON_MEMBER_PRICING`** — the rule above: the unpaid member is repriced, told
   why, and the booking must carry a paid-up adult member.
 
-**Nothing moved on the release that shipped this.** The migration adds `mode`
-NULLABLE with no backfill; a null means "read the legacy `enabled` boolean"
-(`true → HARD_BLOCK`, `false → NO_BLOCK`), resolved in
-`normalizeMembershipLockoutSettings`. A club that had deliberately switched the
-lockout off therefore stays off, and one that had it on keeps hard-blocking, until
-an admin picks a mode in Admin → Subscription lockout. `enabled` is not dropped in
-the same release — the application writes both columns on every save
-(`legacyEnabledForLockoutMode`) so a draining blue/green colour keeps reading a
-truthful value; a later contract release drops it.
+**Nothing moved on the release that shipped this, and `mode` is the ONLY record of
+the policy.** Owner directive on #2561: the change completes in one release rather
+than keeping dual-read/dual-write compatibility alive for a later contract release.
+Two migrations, one deploy:
+
+- `20260803000000_subscription_lockout_three_way_mode` (expand) adds the enum and a
+  nullable `mode`;
+- `20260803010000_contract_subscription_lockout_drop_enabled` (contract) BACKFILLS
+  `mode` from the legacy boolean (`true → HARD_BLOCK`, `false → NO_BLOCK`), makes it
+  `NOT NULL DEFAULT HARD_BLOCK`, and DROPS `enabled`.
+
+So a club that had deliberately switched the lockout off stays off, and one that had
+it on keeps hard-blocking — but that mapping now lives in the migration rather than
+in a read-time fallback. `normalizeMembershipLockoutSettings` has no legacy branch:
+a recognised `mode` wins, and the only null left is "no settings row exists at all",
+which resolves to the same `HARD_BLOCK` the column defaults to. The backfill's
+correctness is pinned against real rows by
+`prisma/migration-verification/20260803010000_contract_subscription_lockout_drop_enabled.ts`,
+whose mutants include the two that would move a club's money: an inverted mapping,
+and an unconditional `HARD_BLOCK` that would silently re-enable the lockout for every
+club that had turned it off.
+
+**That drop needs a maintenance window, and the ledger says so.** The contract row is
+the repo's first `old_code_compatible=windowed` declaration: the previous release's
+Prisma client names `enabled` on every read of this model, and the booking gates
+resolve the policy through that read, so the old colour cannot take a booking between
+migrate and cutover. Verified rather than assumed — a client generated from the
+previous schema fails with `The column MembershipLockoutSettings.enabled does not
+exist in the current database`, and recovers after the `rollback.sql` that ships
+beside the migration (`NO_BLOCK → false`, `HARD_BLOCK` and `NON_MEMBER_PRICING →
+true`, plus `mode` back to nullable-without-default). Deploy sequence in
+`DEPLOYMENT.md` → "Windowed migrations"; rehearsal transcript in
+`docs/PRODUCTION_UPGRADE_RUNBOOK.md` §7.1.
+
+**Bundle-format compatibility outlives the column.** A configuration bundle exported
+before #2543 carries `enabled` and no `mode`, and those files are still on operators'
+disks. `enabled` is no longer an exported field, so config-transfer's `reconcile`
+hook maps the bundle KEY to the mode it means on the way in. Without it the key would
+be an unknown field, silently dropped, and a club importing a pre-#2543 bundle to
+turn the lockout off would be told it worked while every unpaid member went on being
+refused. The reverse derivation is gone with the column: there is no boolean left to
+write back.
 
 **The mode is resolved once per request and passed down - to the money as well as
 to the gates.** Every consumer reads it through `member-subscription-eligibility.ts`:
