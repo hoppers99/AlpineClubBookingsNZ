@@ -30,9 +30,10 @@ vi.mock("@/lib/ai-diagnostics-usage", async (importOriginal) => {
     await importOriginal<typeof import("@/lib/ai-diagnostics-usage")>();
   return { ...actual, getDiagnosticsUsageSummary: vi.fn() };
 });
-vi.mock("@/lib/admin-cron-runs", () => ({
-  getCronRunsForAdminHealth: vi.fn(),
-}));
+vi.mock("@/lib/admin-cron-runs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/admin-cron-runs")>();
+  return { ...actual, getCronRunsForAdminHealth: vi.fn() };
+});
 vi.mock("@/lib/prisma", () => ({
   prisma: {
     diagnosticsBudgetReservation: { count: vi.fn() },
@@ -42,10 +43,16 @@ vi.mock("@/lib/prisma", () => ({
 
 import { getDiagnosticsReadiness } from "@/lib/ai-diagnostics-config";
 import { getDiagnosticsUsageSummary } from "@/lib/ai-diagnostics-usage";
-import { getCronRunsForAdminHealth } from "@/lib/admin-cron-runs";
+import {
+  CronRunReadDeadlineError,
+  getCronRunsForAdminHealth,
+} from "@/lib/admin-cron-runs";
+import { canonicalStringify } from "@/lib/diagnostics/knowledge/hash";
 import { loadEffectiveModuleFlags } from "@/lib/module-settings";
 import { prisma } from "@/lib/prisma";
 
+import { renderToolResultEvidenceBlock } from "../../render";
+import { DIAGNOSTICS_TOOL_BOUNDS } from "../../types";
 import {
   DIAGNOSTICS_BACKGROUND_JOB_HEALTH_TOOL_ID,
   DIAGNOSTICS_DEPLOYMENT_TOOL_ID,
@@ -568,6 +575,91 @@ describe("AID-6A background job health (#2375)", () => {
     });
     // Zero would read as "stale immediately", which is a different claim.
     expect(projected.staleAfterMinutes).toBeNull();
+  });
+
+  it("fits its own byte ceiling and renders whole at its own row ceiling", async () => {
+    // The defect this pins (#2375): `byteLimit` was 8 192, and on an ordinary
+    // deployment — every job having simply run at least once, so latestRunAtUtc,
+    // latestRunStatus and latestSuccessAtUtc are populated — twenty projected rows
+    // serialised to 8 272 bytes. Gate 9 refused the whole result with
+    // `result_too_large`, and the model was told to narrow a question that TAKES NO
+    // ARGUMENTS: the evidence was unreachable, in exactly the situation the tool exists
+    // for. Nothing caught it because no assertion existed on byteCount at all.
+    cronRunsMock.mockResolvedValue([]);
+    const rows = await readBackgroundJobHealthEvidence(NOW);
+    const jobEntry = entry(DIAGNOSTICS_BACKGROUND_JOB_HEALTH_TOOL_ID);
+    const projected = rows.slice(0, jobEntry.rowLimit).map((row) =>
+      jobEntry.project({
+        ...row,
+        // The steady state of a mature deployment: a recent success and an older
+        // failure, so every timestamp field is populated.
+        latest_run_at_utc: "2026-08-03T03:04:05.678Z",
+        latest_run_status: "SUCCESS",
+        latest_success_at_utc: "2026-08-03T03:04:05.678Z",
+        latest_failure_at_utc: "2026-05-01T03:04:05.678Z",
+      }),
+    );
+    expect(projected).toHaveLength(jobEntry.rowLimit);
+    expect(
+      Buffer.byteLength(canonicalStringify(projected), "utf8"),
+    ).toBeLessThanOrEqual(jobEntry.byteLimit);
+
+    const block = renderToolResultEvidenceBlock({
+      schemaVersion: 1,
+      status: "ok",
+      toolId: jobEntry.id,
+      label: jobEntry.label,
+      rows: projected,
+      truncated: true,
+      evidenceScope: jobEntry.evidenceScope,
+      observedAt: NOW.toISOString(),
+      audit: {
+        toolId: jobEntry.id,
+        areasChecked: ["support"],
+        authOutcome: "allowed",
+        failureReason: null,
+        argsHash: "a".repeat(64),
+        resultHash: "b".repeat(64),
+        rowCount: projected.length,
+        byteCount: 0,
+        durationMs: 1,
+        roundIndex: 0,
+        observedAt: NOW.toISOString(),
+      },
+    });
+    // All eighteen present, which is why the ceiling is eighteen and not the twenty
+    // that rendered to 7 999 of the 8 000 available characters.
+    expect(block.split("\n").filter((line) => /^- \d+\./.test(line))).toHaveLength(
+      jobEntry.rowLimit,
+    );
+    expect(block).toContain(`rows (${jobEntry.rowLimit}):`);
+    // And the scope says how many of how many, so a truncated list is not read as the
+    // whole registry.
+    expect(block).toContain("scope: ");
+    expect(block).toContain("registeredJobCount");
+  });
+
+  it("bounds its own read in TIME, and refuses rather than reporting a partial one", async () => {
+    // The `server_owned` arm gets none of the SQL arm's `BEGIN READ ONLY`,
+    // `statement_timeout` or `lock_timeout`, and the executor's 15-second race abandons
+    // a slow read WITHOUT cancelling it. So this source carries its own deadline, set
+    // below the executor's.
+    cronRunsMock.mockResolvedValue([]);
+    await readBackgroundJobHealthEvidence(NOW);
+    const options = cronRunsMock.mock.calls[0]?.[1];
+    expect(options?.deadlineAtMs).toBeGreaterThan(Date.now());
+    expect(options?.deadlineAtMs).toBeLessThan(
+      Date.now() + DIAGNOSTICS_TOOL_BOUNDS.serverEvidenceTimeoutMs,
+    );
+
+    // A deadline refusal REJECTS. It must not resolve with fewer runs: the classifier
+    // would turn missing rows into a `missing` verdict for a job that is running fine,
+    // which is a fabricated answer rather than an absent one. The executor maps the
+    // rejection to `evidence_unavailable` with no rows.
+    cronRunsMock.mockRejectedValue(new CronRunReadDeadlineError());
+    await expect(readBackgroundJobHealthEvidence(NOW)).rejects.toThrow(
+      CronRunReadDeadlineError,
+    );
   });
 
   it("projects timestamps as ISO strings, never as Date objects", async () => {

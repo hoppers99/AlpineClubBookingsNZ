@@ -37,6 +37,8 @@
  * evidence cannot drift into a sentence that reads like an instruction.
  */
 
+import "server-only";
+
 import { z } from "zod";
 
 import { defineDiagnosticsTool, type DiagnosticsToolEntry } from "../define";
@@ -147,6 +149,10 @@ const deploymentTool = defineDiagnosticsTool({
   rowLimit: 1,
   byteLimit: 2_048,
   surfacesPersonalData: false,
+  // The narrowing worth stating: this is THIS container's view, and on a blue/green
+  // deployment the other slot can be running a different release.
+  evidenceScope:
+    "The release, runtime role and knowledge bundle of the container that answered this request. On a blue/green deployment the other slot may be running a different release.",
 });
 
 /**
@@ -188,6 +194,10 @@ const usageHealthTool = defineDiagnosticsTool({
   rowLimit: 1,
   byteLimit: 2_048,
   surfacesPersonalData: false,
+  // The narrowing worth stating: one calendar month, not a lifetime total, so an
+  // empty-looking month is not evidence that diagnostics has never been used.
+  evidenceScope:
+    "The CURRENT calendar month only. Earlier months are not included, so a low figure here is not a lifetime total.",
 });
 
 /**
@@ -195,14 +205,42 @@ const usageHealthTool = defineDiagnosticsTool({
  *
  * THE ROW CEILING IS BELOW THE NUMBER OF REGISTERED JOBS, deliberately. There are
  * more than thirty scheduled jobs (34 at the time of writing, and the number only
- * grows); twenty rows of this shape render inside the 8 000-character evidence block
- * the substrate allows, and the whole registry does not — a result the block had to
- * clip would lose its tail to a generic notice instead of the substrate's own honest
- * `truncated` flag. So the source orders by severity (error, warning, info, ok) and
- * then by job name, the executor keeps the first twenty and SAYS it truncated, and no
- * healthy job can displace an unhealthy one. Each row also carries
- * `registeredJobCount`, so "twenty of thirty-four" is never mistaken for "twenty jobs
- * exist".
+ * grows) and the whole registry does not fit the substrate's 8 000-character evidence
+ * block. So the source orders by severity (error, warning, info, ok) and then by job
+ * name, the executor keeps the first EIGHTEEN and SAYS it truncated, and no healthy job
+ * can displace an unhealthy one. Each row also carries `registeredJobCount`, so
+ * "eighteen of thirty-four" is never mistaken for "eighteen jobs exist".
+ *
+ * EIGHTEEN RATHER THAN TWENTY, measured. Twenty rows of this twelve-field shape render
+ * to 7 999 characters once every job has both a latest success and an older failure —
+ * the steady state of a mature deployment — which is one character inside the cap, so
+ * the block would routinely have to drop its last row. The renderer is honest when
+ * that happens (it drops whole rows and says how many of how many it listed), but a
+ * ceiling that never needs it is the better contract: eighteen rows render to about
+ * 7 300 characters with real headroom, and the two rows given up are by construction
+ * the healthiest of the eighteen.
+ *
+ * THE BYTE CEILING WAS WRONG, and it is worth recording what it cost because the
+ * failure was silent. `byteLimit` was 8 192, and gate 9 REFUSES the whole result when
+ * the projected rows exceed it. Measured against the real definitions, the real
+ * source and this entry's own projection: on an ordinary deployment where every job
+ * has simply run at least once — so `latestRunAtUtc`, `latestRunStatus` and
+ * `latestSuccessAtUtc` are populated — twenty rows serialised to 8 272 bytes and the
+ * executor refused them all with `result_too_large`, telling an operator to narrow a
+ * question that TAKES NO ARGUMENTS. The all-populated case reached 8 712. The ceiling
+ * is now 16 384 (half the substrate's hard 32 768), and two contract tests now
+ * serialise this entry's own projected shape at its own row limit and fail if the
+ * ceiling is unachievable — the assertion that was missing, because the registry
+ * contract only checked `byteLimit <= maxResultBytes` and never that an entry's own
+ * limit was reachable at its own row limit.
+ *
+ * WHY 16 384 RATHER THAN JUST ENOUGH. At today's real job names, 18 rows serialise to
+ * 8 103 bytes, which 8 192 does technically clear — by 89 bytes. That is the same knife
+ * edge that broke this entry the first time, and `job_name` is open-ended: any pull
+ * request may register a longer one. So the ceiling is measured against a job name at
+ * `fieldValueMaxChars` (200), where 18 rows cost 11 127 bytes, and the registry contract
+ * measures it that way too. A ceiling has to survive the next job, not just this
+ * release's.
  */
 const backgroundJobHealthTool = defineDiagnosticsTool({
   id: DIAGNOSTICS_BACKGROUND_JOB_HEALTH_TOOL_ID,
@@ -234,9 +272,11 @@ const backgroundJobHealthTool = defineDiagnosticsTool({
     cronSchedulingEnabled: row.cron_scheduling_enabled === true,
     registeredJobCount: numberOr(row.registered_job_count, 0),
   }),
-  rowLimit: 20,
-  byteLimit: 8_192,
+  rowLimit: 18,
+  byteLimit: 16_384,
   surfacesPersonalData: false,
+  evidenceScope:
+    "The eighteen worst-severity scheduled jobs of all the jobs this release registers; the true total is on every row as registeredJobCount, and the jobs not listed are the healthiest ones. Whether cron scheduling is enabled reflects THIS container's configuration, not the cron-leader container's.",
 });
 
 /** The AID-6A system half, in presentation order. */

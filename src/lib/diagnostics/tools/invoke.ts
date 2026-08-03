@@ -673,6 +673,11 @@ export async function invokeDiagnosticsTool(
       observedAt,
       audit,
     };
+    // The entry's own server-owned scope sentence, carried so the renderer can say
+    // what was searched (AID-6A, #2375). Copied from the REGISTRY, never from a row
+    // or an argument, and omitted rather than set to an empty string when an entry
+    // declares none — a blank `scope:` line would read as "we searched nothing".
+    if (tool.evidenceScope) success.evidenceScope = tool.evidenceScope;
     return success;
   } catch (err) {
     reportAiError({

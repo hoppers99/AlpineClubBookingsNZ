@@ -108,6 +108,20 @@ interface DiagnosticsToolSpecBase<TArgs> {
   byteLimit: number;
   /** True when a projected field can identify a person (ADR-004 §1 opt-in). */
   surfacesPersonalData: boolean;
+  /**
+   * Server-owned sentence naming WHAT this entry searched, rendered into the
+   * evidence block above the rows (AID-6A, #2375).
+   *
+   * Required in spirit for any entry whose filter is NARROWER than the question an
+   * operator will ask it: without it, an empty result carries the state `not_found`
+   * — "Nothing matched, so there is no evidence of this to report." — which is a
+   * claim about the whole domain rather than about the slice the entry actually
+   * read. The correlation entries are the live case: their audit-category filters do
+   * not partition the same way the admin permission areas do, so a membership
+   * question can land on rows recorded under `admin` or `lodge` and come back empty.
+   * Never caller text; the renderer neutralises it regardless.
+   */
+  evidenceScope?: string;
 }
 
 /** A tool that reads the database as the dedicated SELECT-only role. */
@@ -177,6 +191,7 @@ interface DiagnosticsToolEntryBase {
   rowLimit: number;
   byteLimit: number;
   surfacesPersonalData: boolean;
+  evidenceScope?: string;
 }
 
 /**
@@ -191,11 +206,24 @@ export interface DiagnosticsSelectOnlyToolEntry extends DiagnosticsToolEntryBase
 }
 
 /**
- * A registered server-owned tool as the executor sees it. It exposes NO handle on
- * its evidence source at all — that is deliberate, and stricter than the SQL arm:
- * the only way to read is the closure `parseArgs` returns, so there is no exported
- * function a caller could invoke with unparsed input or with no authorization
- * behind it.
+ * A registered server-owned tool as the executor sees it.
+ *
+ * THE ENTRY exposes no handle on its evidence source at all — deliberately, and
+ * stricter than the SQL arm, which keeps `sql` readable: the only way to read
+ * through a registry entry is the closure `parseArgs` returns, so an entry cannot be
+ * used to reach a source with unparsed input or with no authorization behind it. A
+ * contract test pins `"readEvidence" in entry === false`.
+ *
+ * WHAT THAT DOES NOT SAY, because an earlier version of this comment overstated it:
+ * the source FUNCTIONS themselves are ordinary module exports in
+ * `packs/support-evidence.ts` — the pack's own contract tests assert on their raw
+ * rows, which is where the "every row is raw, the projection allowlists it" property
+ * is actually proved. So a future server-side caller could import one and read it
+ * with none of the ten gates. Two things keep that honest rather than latent: the
+ * pack modules are marked `server-only`, so no such import can reach a browser
+ * bundle, and `support-evidence.ts` states in its own docblock that reading a source
+ * directly is outside the substrate's guarantees. The guarantee here is about the
+ * ENTRY, not about the reachability of the function.
  */
 export interface DiagnosticsServerOwnedToolEntry
   extends DiagnosticsToolEntryBase {
@@ -301,6 +329,7 @@ export function defineDiagnosticsTool<TArgs>(
     rowLimit: spec.rowLimit,
     byteLimit: spec.byteLimit,
     surfacesPersonalData: spec.surfacesPersonalData,
+    evidenceScope: spec.evidenceScope,
   };
 
   /** The one gate both arms go through before their own source is reachable. */

@@ -25,13 +25,40 @@
  *     staleness threshold. #2375 requires reusing it rather than handing the model
  *     raw timestamps and asking it to infer whether a nightly job is late.
  *
- * WHAT THIS FILE IS NOT. It is not a second privileged data path. Every function
- * here is READ-ONLY, first-party, and reachable only through
- * `invokeDiagnosticsTool` — registry lookup, loop budget, fresh AND-ed
- * authorization, `.strict()` arguments, the metering breaker, the fixed
- * projection with redaction, the row/byte ceilings and the approved-metadata audit
- * row all still apply (see `define.ts` and `invoke.ts`). None of them takes a
- * caller-supplied source, none writes, and none calls an external provider.
+ * WHAT THIS FILE IS, EXACTLY, and the residual that comes with it. Every function
+ * here is READ-ONLY, first-party, takes no caller-supplied source, performs no write
+ * and calls no external provider. Reached THROUGH A REGISTRY ENTRY, each one sits
+ * behind the whole gate chain — registry lookup, loop budget, fresh AND-ed
+ * authorization, `.strict()` arguments, the metering breaker, the fixed projection
+ * with redaction, the row/byte ceilings and the approved-metadata audit row (see
+ * `define.ts` and `invoke.ts`).
+ *
+ * What would be untrue is to call this "not a second privileged data path" without
+ * qualification, so here is the precise position:
+ *
+ *  - THE READINESS SOURCE genuinely could not be a `SELECT`. It needs encrypted
+ *    credential state and a verdict about the diagnostics role's own connection, both
+ *    permanently out of that role's reach by ADR-007, and it has to stay answerable in
+ *    exactly the case where that credential is the blocker.
+ *  - THE OTHER THREE DO QUERY APPLICATION TABLES on the application's full-privilege
+ *    Prisma client: `DiagnosticsBudgetReservation` and `DiagnosticsUsageEvent` here,
+ *    and whole `CronJobRun` rows via `getCronRunsForAdminHealth`. There is no
+ *    `SELECT_GRANTS` entry and therefore no column grant behind them, so unlike the
+ *    correlation entries — where `SELECT "ipAddress" FROM "AuditLog"` is refused by
+ *    PostgreSQL itself with 42501 — the registry PROJECTION is the only boundary.
+ *    Nothing leaks today: the projections are correct, and `boundedScalar` would
+ *    refuse the JSON `resultSummary` outright. But `CronJobRun.error` (raw error text,
+ *    often a stack) and `DiagnosticsUsageEvent.errorMessage` (provider error text) sit
+ *    one field away, so EVERY EDIT TO A SOURCE OR A PROJECTION IN THIS PACK IS A
+ *    SECURITY-RELEVANT CHANGE and needs the same review as a grant would.
+ *    #2375's own rule is what keeps this from drifting further: a fourth source that
+ *    could be a column-granted `SELECT` must be one, not another function here.
+ *  - READING A SOURCE DIRECTLY IS OUTSIDE THE GUARANTEES. These functions are module
+ *    exports because the pack's contract tests assert on their raw rows; a production
+ *    caller that imported one would get none of the gates above. The module is
+ *    `server-only`, so no such import can reach a browser bundle, and no production
+ *    caller other than `support-system.ts` exists — but the guarantee is about the
+ *    registry ENTRY, which exposes no handle at all, not about these functions.
  *
  * EVERY ROW IS RAW. These functions return raw rows in the same shape a SQL read
  * produces; the registry entry's `project` is what allowlists, redacts and caps
@@ -44,6 +71,8 @@
  * The field names say `_at_utc` so neither the model nor an operator has to guess
  * whether an instant is local NZ time.
  */
+
+import "server-only";
 
 import {
   buildCronHealthReport,
@@ -317,12 +346,26 @@ const CRON_SEVERITY_RANK: Record<string, number> = {
  * WHAT IS NEVER PROJECTED: `CronJobRun.error` (raw error text, often a stack) and
  * `resultSummary` (arbitrary JSON). ADR-003 keeps both out of the evidence channel
  * entirely; the classified status and the timestamps are the diagnosable part.
+ *
+ * THE READ IS BOUNDED IN CONCURRENCY AND IN TIME, which the substrate cannot do for
+ * it. `select_only_sql` entries get `BEGIN READ ONLY`, a 5-second `statement_timeout`
+ * and a 2-second `lock_timeout` from the executor; a first-party calculation gets none
+ * of that, and the executor's 15-second race abandons a slow read without cancelling
+ * it. So this passes `getCronRunsForAdminHealth` a batch width and a deadline of its
+ * own, set below the executor's so the refusal comes from here — where it is a clean
+ * throw the executor reports as `evidence_unavailable` — rather than from a race whose
+ * loser keeps running. A deadline REFUSES rather than returning fewer runs, because a
+ * partial run set would make the classifier report a healthy job as `missing`.
  */
+const JOB_HEALTH_READ_BUDGET_MS = 10_000;
+
 export async function readBackgroundJobHealthEvidence(
   now: Date = new Date(),
 ): Promise<readonly DiagnosticsToolRawRow[]> {
   const definitions = getAdminCronJobDefinitions();
-  const runs = await getCronRunsForAdminHealth(definitions);
+  const runs = await getCronRunsForAdminHealth(definitions, {
+    deadlineAtMs: Date.now() + JOB_HEALTH_READ_BUDGET_MS,
+  });
   const report = buildCronHealthReport({ definitions, runs, now });
 
   return [...report.jobs]

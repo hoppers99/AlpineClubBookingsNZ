@@ -243,6 +243,18 @@ export interface DiagnosticsToolSuccess {
    * it reports "the first N" rather than presenting a partial set as complete.
    */
   truncated: boolean;
+  /**
+   * The entry's server-owned sentence describing WHAT it searched (AID-6A, #2375).
+   * Copied from the registry, never derived from a row or an argument.
+   *
+   * It exists because an empty result plus `not_found` reads as "there is no
+   * evidence of this" — a wider claim than a tool with a narrow fixed filter is
+   * entitled to make. A correlation entry, for instance, filters on a closed set of
+   * audit categories that does NOT partition the same way the admin permission areas
+   * do, so nothing-matched has to be qualified by the scope or the model will narrate
+   * domain-wide absence from a category-shaped hole.
+   */
+  evidenceScope?: string;
   observedAt: string;
   audit: DiagnosticsToolAudit;
 }
