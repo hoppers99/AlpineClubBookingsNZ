@@ -199,12 +199,19 @@ count as covering it. A lodge may override one and inherit the other.
    different people. Every non-member guest-night has to be covered — partial
    coverage across the stay is not enough.
 
-   - **Eligible adult member on the same booking** — available now, and the only
-     option a club that has never configured the card is using.
-   - **Any eligible adult member staying at the lodge** and **Nominated
-     responsible adult member** appear but are marked *not available yet*. They
-     are refused on save rather than stored and ignored, because a club that
-     saved one would believe it had widened who counts while nothing found them.
+   - **Eligible adult member on the same booking** — the rule the club has always
+     had, and the only option a club that has never configured the card is using.
+     It counts a qualifying adult member staying on the booking itself, for the
+     nights they are actually there.
+   - **Another booking on the same account** allows a qualifying adult member on
+     another confirmed booking owned by the same member account to cover the same
+     lodge and the same nights. This is the split-booking case: a member puts their
+     family on one booking and their guests on another, and the adult on the first
+     covers the second. It has to be the same member account — not the same
+     surname, email address or family group, and not the administrator who entered
+     the bookings — and the covering person has to be genuinely attending that
+     exact night at that exact lodge. Turn it on only if your club works that way;
+     a club with one booking per party does not need it.
 
    The card cannot be saved with your own set and nothing ticked. Turning the
    requirement off keeps your saved set for later; it just is not applied, and
@@ -259,13 +266,25 @@ stopped once and asked for a reason. A panel appears on the review step with a
 box for it; type the reason and click **Record the reason and create**. Saving as
 a draft asks the same question in the same place. The reason and your name are
 stored with the booking, so "who let this through, and why" has an answer months
-later. That is the only place the rule refuses anything.
+later.
 
 **Requests you approve.** Approving a public booking request, a school request or
-a member's whole-lodge request never asks you for a reason and is never blocked —
-but because those parties are all non-member guests, the booking appears for
-review just like any other. Approving the request is not the same as accepting
-the hosting exception, so the review stays open until somebody decides it.
+a member's whole-lodge request never asks you for a reason, and under **Allow the
+booking, but send it to a Booking Officer to review** it is never blocked either —
+but because those parties are all non-member guests, the booking appears for review
+just like any other. Approving the request is not the same as accepting the hosting
+exception, so the review stays open until somebody decides it.
+
+Under **Stop the booking unless it is corrected or an exception is approved** the
+picture changes for two of the three. A public booking request and a member's
+whole-lodge request are both stopped: the approval is rolled back untouched and you
+are told which rule stopped it, with no exception link, because you reading the
+message are already the person an exception would be asked of. Your options are to
+put a qualifying adult member in the party, move the request to another lodge, or
+change the lodge's setting. **School and organisation requests are the exception**:
+they keep their current behaviour whatever the consequence says, because they run a
+separate officer-managed process and may be supervised by teachers, organisation
+leaders or custodians who do not map onto the adult club-member rule.
 
 **What the public sees.** When the requirement is on, the public booking-rules
 block states it in one sentence. It says nothing about asking for an exception,
