@@ -80,8 +80,9 @@ describe("evaluateAuditSnapshots", () => {
         ASSOCIATE: 1,
         RESERVE: 1,
       },
-      // familyGroupRoles removed with its check (#2520) — it counted
-      // FamilyGroupMember."role", dropped by the follow-on contract migration.
+      // familyGroupRoles removed with its check (#2520) — it counted the
+      // FamilyGroupMember role column, dropped by
+      // 20260803030000_contract_drop_family_group_member_role.
       metrics: {
         acceptedAgeTierGroups: 2,
         familyGroupMemberRows: 2,
@@ -145,7 +146,8 @@ describe("evaluateAuditSnapshots", () => {
     //
     // 24 -> 23 in #2520, which removed "FamilyGroupMember group-local MEMBER
     // labels preserved" along with the familyGroupRoles snapshot it read, so the
-    // retired script stops naming a column the CONTRACT migration drops. The
+    // retired script stopped naming a column the CONTRACT migration
+    // (20260803030000) has since dropped. The
     // "Family-group join rows preserved" check is retained and is the one that
     // matters — it counts the join ROWS, the fact the cleanup could damage. This
     // pin working as designed is why the deletion had to be justified rather

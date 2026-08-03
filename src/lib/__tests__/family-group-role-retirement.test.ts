@@ -1,45 +1,49 @@
-// #2520 — the FamilyGroupMember.role retirement guard.
+// #2520 — the FamilyGroupMember.role retirement guard, POST-DROP.
 //
-// #2284 removed the last authorisation READER of the column. #2520 removed every
-// WRITER of it plus member-merge's vestigial `maxFamilyRole` upgrade, and then
-// marked the field `@ignore` in prisma/schema.prisma. The column itself is still
-// in the database, because dropping it is a CONTRACT-phase migration that is
-// only old-code compatible once THIS release is the draining colour
-// (docs/BLUE_GREEN_MIGRATION_POLICY.md).
+// The column is gone. `20260803030000_contract_drop_family_group_member_role`
+// dropped it under a maintenance window (owner directive, 3 Aug 2026) and this
+// release removed the field from prisma/schema.prisma in the same commit.
 //
-// WHAT ACTUALLY MAKES THE DROP SAFE, and why removing the call sites was not
-// enough on its own. Measured against Prisma 7.9.0 on this schema by recording
-// the SQL through a driver adapter, not reasoned about:
+// WHY THIS FILE SURVIVED THE DROP. Its previous version said to delete it here,
+// on the reasoning that "once the field is gone from schema.prisma the compiler
+// enforces all of it unconditionally". That reasoning is close but not exact, and
+// the exact version is what justifies deleting the delegate scans. Measured
+// against the generated client on this branch (transcript in
+// docs/PRODUCTION_UPGRADE_RUNBOOK.md §7.2):
 //
-//   - a static `@default("MEMBER")` is materialised CLIENT-side as a bind
-//     parameter, so the column appeared in the column list of EVERY INSERT the
-//     client emitted — `create`, `upsert`'s insert branch, and `createMany` —
-//     even for a call that set no role and narrowed itself to
-//     `select: { id: true }`. Narrowing cannot reach this: it is the write's
-//     column list, not its projection;
-//   - an unnarrowed `create`/`update`/`upsert`/`delete` names every scalar in
-//     its implicit RETURNING, and an `include:` on the join table names every
-//     scalar in its SELECT.
+//   * `where: { role: ... }` IS a compile error;
+//   * `select: { role: true }` and `create({ data: { role } })` COMPILE, and are
+//     rejected at runtime by the client with PrismaClientValidationError before
+//     any SQL is emitted.
 //
-// `@ignore` removes the field from the generated client, which closes all of
-// those at once: with it in place none of those SQL forms can name the column,
-// and naming `role` on this delegate is a COMPILE error rather than a latent
-// production error. The `@ignore` is therefore the single load-bearing fact this
-// file exists to pin, and the client-shape test below is the strongest
-// assertion here — it interrogates the generated client rather than the source.
+// So no call shape can emit SQL naming the dropped column — the client has no such
+// field to put in a SELECT, an INSERT column list, a RETURNING or a WHERE. The
+// hazard the old guard existed for was the IMPLICIT one (an `include:` or a bare
+// `: true` naming the column with no author intent), and that is now structurally
+// impossible rather than merely policed. What is left is explicit, loud and
+// unconditional: the first invocation fails, in any test or dev run. On that basis
+// the narrowing scans, the nested-relation scans and the write/read scans were all
+// deleted, and `familyGroupMember` came out of
+// doomed-column-select-guard.test.ts's NARROW_SELECT_MODELS at the same time.
 //
-// DIVISION OF LABOUR — do not re-implement one in the other. Narrowing of the
-// `prisma.familyGroupMember.*` delegate calls themselves is enforced by
-// `doomed-column-select-guard.test.ts`, which registers `familyGroupMember` in
-// its NARROW_SELECT_MODELS and already walks src/, prisma/ AND scripts/ with
-// create/update/upsert/delete in its PROJECTING_METHODS. THIS file covers what
-// that delegate scan cannot see: the generated client's shape, the schema
-// annotations, the join table reached as a NESTED RELATION, and raw SQL.
+// None of that covers the two things kept below:
 //
-// DELETE THIS FILE with the CONTRACT release that drops the column, and remove
-// `familyGroupMember` from the other guard's NARROW_SELECT_MODELS at the same
-// time: once the field is gone from schema.prisma the compiler enforces all of
-// it unconditionally.
+//   * RAW SQL. `$queryRaw`/`$executeRaw` and the psql heredocs in scripts/ are
+//     plain strings. The compiler cannot see a dropped column in one, and this is
+//     not hypothetical — a retired audit script kept a
+//     `SELECT "role" … FROM "FamilyGroupMember"` snapshot query and an
+//     `INSERT … ("role") …` fixture right through #2284, invisible to any
+//     delegate scan.
+//   * THE GENERATED CLIENT'S SHAPE. This is the owner-required proof that the
+//     replacement runtime cannot name the dropped column, asserted against the
+//     generated client rather than inferred from source. It is also the assertion
+//     that fails first if someone re-adds the field to the schema without the
+//     migration to match.
+//
+// The migration and ledger assertions tie the halves together: the field's
+// absence from schema.prisma is only correct because a committed migration drops
+// the column, and a windowed migration is only valid with a rollback.sql beside
+// it.
 import fs from "node:fs";
 import path from "node:path";
 
@@ -47,42 +51,16 @@ import { Prisma } from "@prisma/client";
 import { describe, expect, it } from "vitest";
 
 const REPO_ROOT = process.cwd();
-// scripts/ is walked because that is exactly where a survivor hid: the retired
-// audit script named the column in raw fixture SQL and in a snapshot query,
-// invisible to a src/+prisma/ scan (#2520 review finding).
+// scripts/ is walked for the same reason it always was: that is where the last
+// survivor hid, in raw fixture SQL a src/+prisma/ scan could never have seen.
 const SCAN_DIRS = [
   path.join(REPO_ROOT, "src"),
   path.join(REPO_ROOT, "prisma"),
   path.join(REPO_ROOT, "scripts"),
 ];
 const SCHEMA_PATH = path.join(REPO_ROOT, "prisma", "schema.prisma");
-
-/** Prisma delegate methods that WRITE rows. */
-const WRITE_METHODS = new Set([
-  "create",
-  "createMany",
-  "createManyAndReturn",
-  "update",
-  "updateMany",
-  "updateManyAndReturn",
-  "upsert",
-]);
-
-/**
- * Prisma delegate methods that PROJECT scalar columns, i.e. whose SQL names
- * every scalar of the model unless the call narrows it. `count`, `aggregate` and
- * `groupBy` are deliberately absent: they project only what they are asked for.
- * `delete` IS here — its RETURNING projects every scalar exactly as a `create`'s
- * does (measured), and the omission was a gap in the first version of this file.
- */
-const PROJECTING_READ_METHODS = new Set([
-  "findMany",
-  "findFirst",
-  "findFirstOrThrow",
-  "findUnique",
-  "findUniqueOrThrow",
-  "delete",
-]);
+const DROP_MIGRATION = "20260803030000_contract_drop_family_group_member_role";
+const MIGRATION_DIR = path.join(REPO_ROOT, "prisma", "migrations", DROP_MIGRATION);
 
 function walk(dir: string, files: string[] = []): string[] {
   if (!fs.existsSync(dir)) return files;
@@ -109,7 +87,10 @@ function isTestFile(relPath: string): boolean {
 /**
  * `text` with `//` and block comments blanked out, newline-for-newline so
  * reported line numbers stay true. String and template bodies are KEPT, because
- * the raw-SQL scan needs them; the code scans below run on `codeOnly` instead.
+ * the raw-SQL scan needs them: the SQL lives inside them.
+ *
+ * Comments are stripped so a comment explaining why the column is gone cannot
+ * fail the guard that proves it is gone.
  */
 function withoutJsComments(text: string): string {
   let out = "";
@@ -146,18 +127,7 @@ function withoutJsComments(text: string): string {
   return out;
 }
 
-/**
- * `text` with comments AND string/template bodies blanked out, newline-for-
- * newline so reported line numbers stay true. Every CODE scan below runs on this
- * rather than raw source, for two independent reasons:
- *
- *  - a comment that names a removed symbol (explaining why it went) must not
- *    fail the guard that proves it is gone; and
- *  - a string can contain anything that looks like code. An email template in
- *    `email-message-audit-defaults.ts` literally contains the text
- *    "Included memberships: {{…}}", which a raw regex reads as a nested
- *    relation read.
- */
+/** `text` with comments AND string/template bodies blanked out. */
 function codeOnly(text: string): string {
   let out = "";
   const keepNewlines = (chunk: string) => {
@@ -193,7 +163,7 @@ function codeOnly(text: string): string {
   return out;
 }
 
-type SourceFile = { rel: string; text: string; raw: string };
+type SourceFile = { rel: string; raw: string };
 
 function productionSources(): SourceFile[] {
   const out: SourceFile[] = [];
@@ -201,382 +171,121 @@ function productionSources(): SourceFile[] {
     for (const file of walk(dir)) {
       const rel = path.relative(REPO_ROOT, file).split(path.sep).join("/");
       if (isTestFile(rel)) continue;
-      const source = fs.readFileSync(file, "utf8");
-      out.push({ rel, text: codeOnly(source), raw: withoutJsComments(source) });
+      out.push({ rel, raw: withoutJsComments(fs.readFileSync(file, "utf8")) });
     }
   }
   return out;
 }
 
-/**
- * Scan forward from `start` (the index of an opening delimiter) to its match,
- * skipping string literals, template literals and comments so a brace inside
- * `"{"` or a `// }` cannot unbalance the count. Returns the index of the closing
- * delimiter, or -1 if the source is unbalanced.
- */
-function matchDelimiter(text: string, start: number): number {
-  const open = text[start];
-  const close = open === "(" ? ")" : open === "{" ? "}" : "]";
-  let depth = 0;
-  for (let i = start; i < text.length; i += 1) {
-    const ch = text[i];
-    // Comments.
-    if (ch === "/" && text[i + 1] === "/") {
-      const nl = text.indexOf("\n", i);
-      if (nl === -1) return -1;
-      i = nl;
-      continue;
-    }
-    if (ch === "/" && text[i + 1] === "*") {
-      const end = text.indexOf("*/", i + 2);
-      if (end === -1) return -1;
-      i = end + 1;
-      continue;
-    }
-    // String and template literals (escape-aware; template substitutions are
-    // skipped wholesale, which is safe because we only need balance).
-    if (ch === '"' || ch === "'" || ch === "`") {
-      i += 1;
-      while (i < text.length && text[i] !== ch) {
-        if (text[i] === "\\") i += 1;
-        i += 1;
-      }
-      continue;
-    }
-    if (ch === open) depth += 1;
-    else if (ch === close) {
-      depth -= 1;
-      if (depth === 0) return i;
-    }
-  }
-  return -1;
-}
-
-/**
- * Keys written at depth 1 of a `{ … }` object literal, i.e. the argument's own
- * keys and not those of anything nested inside it. Used so a `select:` buried in
- * a nested relation cannot be mistaken for the call narrowing itself.
- */
-function topLevelKeys(objectText: string): string[] {
-  const keys: string[] = [];
-  let depth = 0;
-  for (let i = 0; i < objectText.length; i += 1) {
-    const ch = objectText[i];
-    if (ch === "/" && objectText[i + 1] === "/") {
-      const nl = objectText.indexOf("\n", i);
-      if (nl === -1) break;
-      i = nl;
-      continue;
-    }
-    if (ch === "/" && objectText[i + 1] === "*") {
-      const end = objectText.indexOf("*/", i + 2);
-      if (end === -1) break;
-      i = end + 1;
-      continue;
-    }
-    if (ch === '"' || ch === "'" || ch === "`") {
-      i += 1;
-      while (i < objectText.length && objectText[i] !== ch) {
-        if (objectText[i] === "\\") i += 1;
-        i += 1;
-      }
-      continue;
-    }
-    if (ch === "{" || ch === "[" || ch === "(") {
-      depth += 1;
-      continue;
-    }
-    if (ch === "}" || ch === "]" || ch === ")") {
-      depth -= 1;
-      continue;
-    }
-    if (depth !== 1) continue;
-    const rest = objectText.slice(i);
-    const m = /^([A-Za-z_$][\w$]*)\s*:/.exec(rest);
-    if (m) {
-      keys.push(m[1]);
-      i += m[0].length - 1;
-    }
-  }
-  return keys;
-}
-
-type Call = { rel: string; method: string; args: string; line: number };
-
-/** Every `…familyGroupMember.<method>( … )` call in production source. */
-function familyGroupMemberCalls(): Call[] {
-  const calls: Call[] = [];
-  for (const { rel, text } of productionSources()) {
-    const pattern = /familyGroupMember\s*\.\s*([A-Za-z]+)\s*\(/g;
-    let m: RegExpExecArray | null;
-    while ((m = pattern.exec(text)) !== null) {
-      const parenIndex = m.index + m[0].length - 1;
-      const end = matchDelimiter(text, parenIndex);
-      expect(
-        end,
-        `${rel}: could not find the closing paren of familyGroupMember.${m[1]}(`,
-      ).toBeGreaterThan(parenIndex);
-      calls.push({
-        rel,
-        method: m[1],
-        args: text.slice(parenIndex + 1, end),
-        line: text.slice(0, m.index).split("\n").length,
-      });
-      pattern.lastIndex = end;
-    }
-  }
-  return calls;
-}
-
-/** The `{ … }` object literal an argument list opens with, braces included. */
-function argumentObject(args: string): string | null {
-  const brace = args.indexOf("{");
-  if (brace === -1) return null;
-  const end = matchDelimiter(args, brace);
-  if (end === -1) return null;
-  return args.slice(brace, end + 1);
-}
-
-describe("#2520 FamilyGroupMember.role retirement", () => {
+describe("#2520 FamilyGroupMember.role is dropped", () => {
   // ---------------------------------------------------------------------------
-  // The load-bearing pair: the generated client cannot name the column, and the
-  // schema annotation that makes that true is still there. Everything below is
-  // defence in depth behind these two.
+  // The owner-required proof: the replacement runtime cannot name the column.
   // ---------------------------------------------------------------------------
 
-  it("the generated Prisma Client does not expose the retired column at all", () => {
-    // This is the CONTRACT migration's actual precondition, asserted against the
-    // generated client rather than inferred from the source: if the client has no
-    // `role` field, no SELECT, no INSERT column list and no implicit RETURNING it
-    // emits can name the column, whatever any call site does.
+  it("the generated Prisma Client does not expose the dropped column at all", () => {
+    // Asserted against the generated client, not inferred from the source: with
+    // no `role` field there is no SELECT, no INSERT column list and no implicit
+    // RETURNING the client can emit that names the dropped column, whatever any
+    // call site does. This is what makes the DROP safe for the replacement
+    // runtime, and it is the assertion that fires if the field is re-added to
+    // prisma/schema.prisma without a migration to match.
     const scalars = Object.keys(Prisma.FamilyGroupMemberScalarFieldEnum);
     expect(
       scalars,
-      "FamilyGroupMember.role must stay `@ignore`d in prisma/schema.prisma. " +
-        "Without it Prisma materialises the static @default client-side, so the " +
-        "column reappears in the column list of every INSERT — even one that " +
-        "sets no role and narrows itself with `select` — and the CONTRACT " +
-        "`DROP COLUMN` stops being old-code compatible.",
+      "FamilyGroupMember.role was DROPPED from the database by " +
+        `${DROP_MIGRATION}. The generated client must not carry the field: if it ` +
+        "does, Prisma will name a column that no longer exists and every read or " +
+        "write of the join table fails with Postgres 42703 / Prisma P2022.",
     ).not.toContain("role");
     // Sanity: the enum is really this model's, so the assertion above is not
-    // vacuously true of an empty or wrong object.
-    expect(scalars).toEqual(
-      expect.arrayContaining(["id", "familyGroupId", "memberId", "joinedAt"]),
-    );
+    // vacuously true of an empty or wrong object. The surviving scalars are
+    // exactly these four — a fifth would mean the model gained a field this
+    // guard has not reasoned about.
+    expect([...scalars].sort()).toEqual([
+      "familyGroupId",
+      "id",
+      "joinedAt",
+      "memberId",
+    ]);
   });
 
-  it("the schema keeps the column @ignore'd and marked retired", () => {
+  it("the schema declares no rank field on the join table", () => {
     const schema = fs.readFileSync(SCHEMA_PATH, "utf8");
     const model = /model FamilyGroupMember \{[\s\S]*?\n\}/.exec(schema);
     expect(model, "FamilyGroupMember model not found in schema.prisma").not.toBeNull();
     const body = model![0];
-    const roleLine = /\n(\s*role\s+String[^\n]*)/.exec(body);
-    if (!roleLine) {
-      // The CONTRACT release landed. This whole file should go with it, along
-      // with `familyGroupMember` in doomed-column-select-guard.test.ts.
-      return;
-    }
+    // Field declarations only, so the explanatory comment above them (which does
+    // name the column, deliberately) cannot fail this.
+    const fieldLines = body
+      .split("\n")
+      .filter((line) => !/^\s*\/\//.test(line))
+      .join("\n");
     expect(
-      roleLine[1],
-      "While FamilyGroupMember.role still exists it must carry `@ignore`, which " +
-        "is what keeps it out of the generated client and therefore out of every " +
-        "statement the client emits.",
-    ).toContain("@ignore");
-    expect(
-      body,
-      "While FamilyGroupMember.role still exists, the schema must keep saying " +
-        "it is retired — the comment is what stops a future author treating " +
-        "the column as a live signal.",
-    ).toContain("RETIRED");
+      /(^|\s)role\s+\S/.test(fieldLines),
+      "FamilyGroupMember must declare no `role` field: the database column is " +
+        `dropped (${DROP_MIGRATION}), so a field here would produce SQL naming a ` +
+        "column that does not exist. Family-group membership carries no rank — " +
+        "see docs/DOMAIN_INVARIANTS.md on the family authorisation boundary.",
+    ).toBe(false);
+    // The absence is documented rather than accidental, so a future author does
+    // not "restore" the column as a live signal.
+    expect(body).toContain("NO `role` FIELD");
   });
 
   // ---------------------------------------------------------------------------
-  // Source-level defence in depth. Narrowing of the delegate calls themselves is
-  // enforced by doomed-column-select-guard.test.ts (see the header) — these
-  // cover the surfaces that scan cannot reach.
+  // The field's absence is only correct because a committed migration drops the
+  // column, and a windowed migration is only valid with its reverse script.
   // ---------------------------------------------------------------------------
 
-  it("finds the call sites it is meant to police", () => {
-    // A refactor that renames the delegate, or a scan that silently walks
-    // nothing, must fail here rather than vacuously passing everything below.
-    const calls = familyGroupMemberCalls();
-    expect(calls.length).toBeGreaterThan(20);
-    expect(calls.some((c) => WRITE_METHODS.has(c.method))).toBe(true);
-    expect(calls.some((c) => PROJECTING_READ_METHODS.has(c.method))).toBe(true);
-  });
-
-  it("no production write sets `role`", () => {
-    const offenders = familyGroupMemberCalls()
-      .filter((c) => WRITE_METHODS.has(c.method))
-      .filter((c) => /(^|[^\w.])role\s*:/.test(c.args))
-      .map((c) => `${c.rel}:${c.line} (familyGroupMember.${c.method})`);
+  it("ships the DROP migration and its reverse script", () => {
+    const migrationSql = path.join(MIGRATION_DIR, "migration.sql");
+    const rollbackSql = path.join(MIGRATION_DIR, "rollback.sql");
+    expect(fs.existsSync(migrationSql), `${DROP_MIGRATION}/migration.sql`).toBe(true);
     expect(
-      offenders,
-      "FamilyGroupMember.role is retired (#2284/#2520) and its CONTRACT drop " +
-        "assumes no deployed colour writes it. Remove the `role` key: the " +
-        "column grants nothing, and its NOT NULL DEFAULT 'MEMBER' fills it in " +
-        "the database until the drop lands.",
-    ).toEqual([]);
+      fs.existsSync(rollbackSql),
+      "A windowed migration must ship rollback.sql beside migration.sql " +
+        "(docs/BLUE_GREEN_MIGRATION_POLICY.md). The deploy validator enforces " +
+        "this too, as a documentation failure the ALLOW_BREAKING override cannot " +
+        "rescue.",
+    ).toBe(true);
+
+    const migration = fs.readFileSync(migrationSql, "utf8");
+    expect(migration).toMatch(/ALTER TABLE "FamilyGroupMember"/);
+    expect(migration).toMatch(/DROP COLUMN "role"/);
+
+    // The reverse script must restore the exact shape the previous release's
+    // client expects: TEXT, NOT NULL, constant 'MEMBER' default — the shape
+    // 20260407120000_add_family_group_member_join_table created.
+    const rollback = fs.readFileSync(rollbackSql, "utf8");
+    expect(rollback).toMatch(/ADD COLUMN "role" TEXT NOT NULL DEFAULT 'MEMBER'/);
   });
 
-  it("every projecting read is narrowed with an explicit top-level `select`", () => {
-    const offenders: string[] = [];
-    for (const call of familyGroupMemberCalls()) {
-      if (!PROJECTING_READ_METHODS.has(call.method)) continue;
-      const obj = argumentObject(call.args);
-      const keys = obj ? topLevelKeys(obj) : [];
-      const where = `${call.rel}:${call.line} (familyGroupMember.${call.method})`;
-      if (!keys.includes("select")) {
-        offenders.push(`${where} — no top-level \`select\``);
-      } else if (keys.includes("include")) {
-        offenders.push(`${where} — \`include\` alongside \`select\``);
-      }
-    }
-    expect(
-      offenders,
-      "An unnarrowed (or `include`-based) read names EVERY scalar of " +
-        "FamilyGroupMember in its SELECT. This colour must never name the " +
-        "retired column: the CONTRACT migration drops it while this colour is " +
-        "still draining. Narrow the read with an explicit `select` listing only " +
-        "the columns and relations it uses.",
-    ).toEqual([]);
+  it("is declared windowed in the blue/green safety ledger", () => {
+    const ledger = fs.readFileSync(
+      path.join(REPO_ROOT, "docs", "BLUE_GREEN_MIGRATION_SAFETY.tsv"),
+      "utf8",
+    );
+    const row = ledger
+      .split("\n")
+      .find((line) => line.startsWith(`${DROP_MIGRATION}\t`));
+    expect(row, `no ledger row for ${DROP_MIGRATION}`).toBeDefined();
+    const fields = row!.split("\t");
+    // DROP COLUMN is a destructive removal, so the validator requires
+    // phase=contract with a named previous expand release; the owner directive
+    // requires the honest `windowed` declaration rather than `yes`; and
+    // `windowed` is only meaningful with the window written down.
+    expect(fields[1]).toBe("contract");
+    expect(fields[2]).not.toBe("n/a");
+    expect(fields[2]).not.toBe("");
+    expect(fields[3]).toBe("windowed");
+    expect(fields[4] ?? "").toContain("MAINTENANCE-WINDOW PLAN");
   });
 
-  it("no production read selects `role`", () => {
-    const offenders = familyGroupMemberCalls()
-      .filter((c) => PROJECTING_READ_METHODS.has(c.method))
-      .filter((c) => {
-        const obj = argumentObject(c.args);
-        if (!obj) return false;
-        const selectMatch = /(^|[^\w.])select\s*:\s*\{/.exec(obj);
-        if (!selectMatch) return false;
-        const braceIndex = obj.indexOf("{", selectMatch.index + selectMatch[0].length - 1);
-        const end = matchDelimiter(obj, braceIndex);
-        if (end === -1) return false;
-        return topLevelKeys(obj.slice(braceIndex, end + 1)).includes("role");
-      })
-      .map((c) => `${c.rel}:${c.line} (familyGroupMember.${c.method})`);
-    expect(
-      offenders,
-      "FamilyGroupMember.role has no reader (#2284 retired the last one) and " +
-        "the CONTRACT drop assumes it stays that way.",
-    ).toEqual([]);
-  });
+  // ---------------------------------------------------------------------------
+  // The one surface the compiler cannot reach.
+  // ---------------------------------------------------------------------------
 
-  // The delegate scan above only sees `prisma.familyGroupMember.…` calls. The
-  // join table is ALSO reachable as a nested relation and those reads project
-  // its scalars by exactly the same rule. That blind spot is not hypothetical:
-  // it is where every reader that survived #2284 was hiding (an `include` on the
-  // admin family-group routes, and an explicit `role: true` in the member-facing
-  // onboarding query), so it is policed here too.
-  //
-  // All THREE relations that reach the join table are listed. `billingMembership`
-  // (FamilyGroup.billingMembership, @relation("FamilyBillingMembership")) was
-  // missing from the first version of this file: the family-billing surface is
-  // actively worked, `include: { billingMembership: true }` is the natural way to
-  // write that read, and the harm would not surface until a deploy months later.
-  const RELATION_KEYS = [
-    "memberships",
-    "familyGroupMemberships",
-    "billingMembership",
-  ] as const;
-
-  type RelationRead = {
-    rel: string;
-    key: string;
-    line: number;
-    body: string | null;
-  };
-
-  function relationReads(): RelationRead[] {
-    const found: RelationRead[] = [];
-    for (const { rel, text } of productionSources()) {
-      for (const key of RELATION_KEYS) {
-        // Two forms project the relation: `key: { … }` and the bare `key: true`.
-        // The bare form matched nothing in the first version of this file, which
-        // made `include: { memberships: true }` — the cheapest possible
-        // regression — invisible.
-        const pattern = new RegExp(`(^|[^\\w.])${key}\\s*:\\s*(\\{|true\\b)`, "g");
-        let m: RegExpExecArray | null;
-        while ((m = pattern.exec(text)) !== null) {
-          const line = text.slice(0, m.index).split("\n").length;
-          if (m[2] === "true") {
-            // `_count: { select: { memberships: true } }` counts rows and
-            // projects no scalar at all, so it is not a projection. Detect it by
-            // the enclosing key rather than by position in the file.
-            const lead = text.slice(Math.max(0, m.index - 40), m.index);
-            if (/_count\s*:/.test(lead)) {
-              pattern.lastIndex = m.index + m[0].length;
-              continue;
-            }
-            found.push({ rel, key, line, body: null });
-            pattern.lastIndex = m.index + m[0].length;
-            continue;
-          }
-          const braceIndex = m.index + m[0].length - 1;
-          const end = matchDelimiter(text, braceIndex);
-          if (end === -1) continue;
-          found.push({ rel, key, line, body: text.slice(braceIndex, end + 1) });
-          pattern.lastIndex = end;
-        }
-      }
-    }
-    return found;
-  }
-
-  it("finds the nested relation reads it is meant to police", () => {
-    const reads = relationReads();
-    expect(reads.length).toBeGreaterThan(20);
-    expect(reads.some((r) => r.key === "memberships")).toBe(true);
-    expect(reads.some((r) => r.key === "familyGroupMemberships")).toBe(true);
-    expect(reads.some((r) => r.key === "billingMembership")).toBe(true);
-  });
-
-  it("no nested relation read projects the join table's scalars", () => {
-    const offenders: string[] = [];
-    for (const read of relationReads()) {
-      const where = `${read.rel}:${read.line} (${read.key})`;
-      if (read.body === null) {
-        offenders.push(`${where} — bare \`: true\` projects every scalar`);
-        continue;
-      }
-      const keys = topLevelKeys(read.body);
-      // A pure filter (`{ some: … }`, `{ none: … }`, `{ every: … }`) is a WHERE
-      // clause, not a projection: it selects no columns at all.
-      if (keys.some((k) => ["some", "none", "every"].includes(k))) continue;
-      if (keys.includes("include")) {
-        offenders.push(`${where} — \`include\` projects every scalar`);
-        continue;
-      }
-      if (!keys.includes("select")) {
-        offenders.push(`${where} — neither \`select\` nor a filter`);
-        continue;
-      }
-      const selectMatch = /(^|[^\w.])select\s*:\s*\{/.exec(read.body);
-      if (!selectMatch) continue;
-      const braceIndex = read.body.indexOf("{", selectMatch.index + selectMatch[0].length - 1);
-      const end = matchDelimiter(read.body, braceIndex);
-      if (end === -1) continue;
-      if (topLevelKeys(read.body.slice(braceIndex, end + 1)).includes("role")) {
-        offenders.push(`${where} — selects the retired \`role\``);
-      }
-    }
-    expect(
-      offenders,
-      "A nested `memberships` / `familyGroupMemberships` / `billingMembership` " +
-        "read must narrow the join table with an explicit `select` that does not " +
-        "name the retired `role` column — an `include`, or a bare `: true`, " +
-        "projects every scalar, which names it.",
-    ).toEqual([]);
-  });
-
-  it("no raw SQL names the retired column", () => {
-    // The Prisma-client guards above are blind to `$queryRaw`/`$executeRaw` and
-    // to the psql heredocs in scripts/. That is not hypothetical either: the
-    // retired audit script kept a `SELECT "role" … FROM "FamilyGroupMember"`
-    // snapshot query and an `INSERT … ("role") …` fixture through #2284, which a
-    // src/+prisma/ delegate scan could never have seen.
-    //
+  it("no raw SQL names the dropped column", () => {
     // Comments are stripped, but STRING BODIES ARE NOT — that is the point, since
     // the SQL lives in them. So prose inside a SQL template literal must not
     // write the quoted identifier; say `role column`, not the quoted form.
@@ -596,18 +305,34 @@ describe("#2520 FamilyGroupMember.role retirement", () => {
     }
     expect(
       offenders,
-      'Raw SQL naming "FamilyGroupMember" must not name the retired "role" ' +
-        "column: the CONTRACT migration drops it, and raw SQL is not protected " +
-        "by the `@ignore` that shields every Prisma-client statement.",
+      'Raw SQL naming "FamilyGroupMember" must not name the dropped "role" ' +
+        "column. Raw SQL is the one surface the removed Prisma field does not " +
+        "protect: the compiler cannot see a column name inside a string, so this " +
+        "scan is the only thing standing between a stray $queryRaw or psql " +
+        "heredoc and a Postgres 42703 in production.",
     ).toEqual([]);
   });
 
-  it("member-merge no longer carries the vestigial maxFamilyRole upgrade", () => {
+  it("finds the raw-SQL surface it is meant to police", () => {
+    // If the scan matched no "FamilyGroupMember" raw SQL anywhere it would pass
+    // vacuously forever, so prove the surface is still there. The retired audit
+    // script's fixture INSERT is the standing example.
+    const withTable = productionSources().filter(({ raw }) =>
+      /"FamilyGroupMember"/.test(raw),
+    );
+    expect(withTable.length).toBeGreaterThan(0);
+  });
+
+  it("member-merge carries no vestigial role-merging behaviour", () => {
+    // The `maxFamilyRole` upgrade promoted the surviving membership row to the
+    // higher of the two labels when a merge collapsed two memberships of the same
+    // family group. The label granted nothing after #2284, so PR #2565 removed
+    // the behaviour; this pins that it stays removed, and that no substitute
+    // update of the surviving row has crept back in.
     const mergeText = codeOnly(
       fs.readFileSync(path.join(REPO_ROOT, "src", "lib", "member-merge.ts"), "utf8"),
     );
     expect(mergeText).not.toContain("maxFamilyRole");
-    // The whole reason it existed: promoting the surviving membership row.
     expect(mergeText).not.toMatch(/familyGroupMember\s*\.\s*update\b/);
   });
 });
