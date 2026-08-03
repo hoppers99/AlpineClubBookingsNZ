@@ -72,6 +72,13 @@ export const getCachedClubIdentity = unstable_cache(
  * The resolver never throws — a database failure resolves to `null` and is logged —
  * so this cannot make the public layout fail. That is the fail-closed requirement of
  * owner decision section 8: no analytics, and the site renders normally.
+ *
+ * The entry also carries whether the canonical privacy policy is published, which the
+ * banner needs in order to link it. Publishing or unpublishing that page clears the
+ * STORED public pages (`revalidatePublicSite()`) but not this tag, so the link can lag
+ * a publish by up to the 15-second TTL. Accepted rather than fixed by widening the
+ * page-content writers' tag set: the consequence is a link appearing seconds late,
+ * and the alternative couples every page-content write to the analytics cache.
  */
 export const getCachedAnalyticsRuntimeConfig = unstable_cache(
   resolveAnalyticsRuntimeConfig,

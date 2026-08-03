@@ -4,21 +4,24 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   findUnique: vi.fn(),
+  pageFindUnique: vi.fn(),
   loggerError: vi.fn(),
 }));
 
 vi.mock("server-only", () => ({}));
 vi.mock("@/lib/prisma", () => ({
-  prisma: { analyticsSettings: { findUnique: mocks.findUnique } },
+  prisma: {
+    analyticsSettings: { findUnique: mocks.findUnique },
+    // The runtime resolver also reads the canonical privacy page, so the banner can
+    // link the policy at the point of consent (#2573 section 2 item 4).
+    pageContent: { findUnique: mocks.pageFindUnique },
+  },
 }));
 vi.mock("@/lib/logger", () => ({
   default: { error: mocks.loggerError, warn: vi.fn(), info: vi.fn() },
 }));
 
 import {
-  ANALYTICS_BANNER_MESSAGE_MAX_LENGTH,
-  ANALYTICS_STATUS_LABELS,
-  DEFAULT_ANALYTICS_BANNER_MESSAGE,
   describeAnalyticsStatus,
   isAnalyticsIntegrationConfigured,
   isValidGa4MeasurementId,
@@ -27,6 +30,11 @@ import {
   parseMeasurementId,
   resolveAnalyticsRuntimeConfig,
 } from "@/lib/analytics-settings";
+import {
+  ANALYTICS_BANNER_MESSAGE_MAX_LENGTH,
+  ANALYTICS_STATUS_LABELS,
+  DEFAULT_ANALYTICS_BANNER_MESSAGE,
+} from "@/lib/analytics-settings-shared";
 
 /**
  * The club's Google Analytics configuration (#2573): GA4 measurement ID validation,
@@ -313,6 +321,8 @@ describe("describeAnalyticsStatus — the four card states", () => {
 describe("resolveAnalyticsRuntimeConfig — fail closed in every branch", () => {
   beforeEach(() => {
     mocks.findUnique.mockReset();
+    mocks.pageFindUnique.mockReset();
+    mocks.pageFindUnique.mockResolvedValue({ published: true });
     mocks.loggerError.mockClear();
   });
 
@@ -321,6 +331,7 @@ describe("resolveAnalyticsRuntimeConfig — fail closed in every branch", () => 
     // pay a database round trip, and must not be able to resolve a config either.
     await expect(resolveAnalyticsRuntimeConfig(false)).resolves.toBeNull();
     expect(mocks.findUnique).not.toHaveBeenCalled();
+    expect(mocks.pageFindUnique).not.toHaveBeenCalled();
   });
 
   it("returns null when no measurement ID is stored", async () => {
@@ -348,7 +359,7 @@ describe("resolveAnalyticsRuntimeConfig — fail closed in every branch", () => 
     expect(mocks.loggerError).toHaveBeenCalledOnce();
   });
 
-  it("hands the public runtime exactly the four values it needs", async () => {
+  it("hands the public runtime exactly the values it needs and nothing else", async () => {
     mocks.findUnique.mockResolvedValue({
       measurementId: " G-ABCDE12345 ",
       consentBannerEnabled: false,
@@ -366,6 +377,37 @@ describe("resolveAnalyticsRuntimeConfig — fail closed in every branch", () => 
       consentBannerEnabled: false,
       bannerMessage: "Custom wording.",
       consentRevision: 6,
+      privacyPolicyPath: "/privacy",
+    });
+  });
+
+  it("omits the privacy-policy link when the page is unpublished or absent", async () => {
+    // The banner must not offer a link to a 404, so `null` rather than a path — and
+    // the club is told about the missing policy on the admin card instead.
+    mocks.findUnique.mockResolvedValue({
+      measurementId: "G-ABCDE12345",
+      consentBannerEnabled: true,
+      bannerMessage: null,
+      consentRevision: 1,
+      updatedAt: null,
+      updatedByMemberId: null,
+    });
+
+    mocks.pageFindUnique.mockResolvedValue({ published: false });
+    await expect(resolveAnalyticsRuntimeConfig(true)).resolves.toMatchObject({
+      privacyPolicyPath: null,
+    });
+
+    mocks.pageFindUnique.mockResolvedValue(null);
+    await expect(resolveAnalyticsRuntimeConfig(true)).resolves.toMatchObject({
+      privacyPolicyPath: null,
+    });
+
+    // A failed privacy read must not take analytics — or the page — down with it.
+    mocks.pageFindUnique.mockRejectedValue(new Error("connection refused"));
+    await expect(resolveAnalyticsRuntimeConfig(true)).resolves.toMatchObject({
+      measurementId: "G-ABCDE12345",
+      privacyPolicyPath: null,
     });
   });
 });
@@ -429,6 +471,7 @@ function stripComments(source: string): string {
 describe("hard cutover: no runtime read of the environment variable", () => {
   const RUNTIME_FILES = [
     "src/lib/analytics-settings.ts",
+    "src/lib/analytics-settings-shared.ts",
     "src/lib/analytics-route-policy.ts",
     "src/lib/analytics-consent-decision.ts",
     "src/lib/analytics-consent-storage.ts",

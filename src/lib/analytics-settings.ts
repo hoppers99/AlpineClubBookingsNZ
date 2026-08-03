@@ -2,6 +2,14 @@ import "server-only";
 
 import logger from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
+import { loadPrivacyPolicyPageState } from "@/lib/analytics-privacy-policy";
+import {
+  ANALYTICS_BANNER_MESSAGE_MAX_LENGTH,
+  DEFAULT_ANALYTICS_BANNER_MESSAGE,
+  type AnalyticsIntegrationStatus,
+  type AnalyticsRuntimeConfig,
+  type AnalyticsSettingsValues,
+} from "@/lib/analytics-settings-shared";
 
 /**
  * Club-wide Google Analytics configuration — the DATABASE is the sole canonical
@@ -20,25 +28,14 @@ import { prisma } from "@/lib/prisma";
  * disabled module or a database read failure all resolve to "no analytics", and
  * the public website still renders normally in every one of those states — the
  * only thing that stops is the third-party tag.
+ *
+ * The constants, labels and shapes both this module and the `"use client"` admin
+ * card need live in `analytics-settings-shared.ts` — a client component may not
+ * import a value from a `server-only` module, and that module's header explains
+ * why nothing but the build gate catches it.
  */
 
 export const ANALYTICS_SETTINGS_ID = "default";
-
-/**
- * The suggested default banner message (owner decision section 11). Editable
- * plain text; an admin may replace it with any other plain-text wording.
- *
- * It is deliberately not the pre-#2573 hard-coded sentence: that one said nothing
- * about the visitor being able to change their mind later, and there now is a
- * public Analytics preferences control to point them at.
- */
-export const DEFAULT_ANALYTICS_BANNER_MESSAGE =
-  "We use optional Google Analytics to understand how this website is used. " +
-  "Analytics runs only after you select Accept. You can change your choice " +
-  "later in Analytics preferences.";
-
-/** Plain-text banner message ceiling (issue body: "for example 500 characters"). */
-export const ANALYTICS_BANNER_MESSAGE_MAX_LENGTH = 500;
 
 /**
  * A GA4 web data stream's measurement ID: `G-` followed by the stream's
@@ -56,44 +53,6 @@ export const ANALYTICS_BANNER_MESSAGE_MAX_LENGTH = 500;
  * out of scope (owner decision section 2's not-configurable list).
  */
 const GA4_MEASUREMENT_ID_PATTERN = /^G-[A-Za-z0-9]{4,24}$/;
-
-export interface AnalyticsSettingsValues {
-  /** Trimmed GA4 measurement ID, or null when the club has not entered one. */
-  measurementId: string | null;
-  consentBannerEnabled: boolean;
-  /** Trimmed plain-text banner message. Never null: the default stands in. */
-  bannerMessage: string;
-  /** Visitor re-consent counter. Bumped only by the explicit admin action. */
-  consentRevision: number;
-  updatedAt: string | null;
-  updatedByMemberId: string | null;
-}
-
-/**
- * The four card states the owner's decision names (section 1), plus the module-off
- * case which the Integrations page answers by not rendering the card at all.
- */
-export type AnalyticsIntegrationStatus =
-  | "setup_required"
-  | "configured_with_banner"
-  | "configured_without_banner"
-  | "invalid_configuration";
-
-/**
- * What the PUBLIC runtime is given. `null` means "no analytics", and it is the
- * answer for module-off, no-measurement-ID, invalid-measurement-ID and
- * read-failure alike — the public site cannot tell those apart and must not
- * behave differently between them.
- *
- * Note what is NOT here: nothing about the admin who saved it, no timestamps, no
- * club identifiers. Only the four values the banner and the tag need.
- */
-export interface AnalyticsRuntimeConfig {
-  measurementId: string;
-  consentBannerEnabled: boolean;
-  bannerMessage: string;
-  consentRevision: number;
-}
 
 export function isValidGa4MeasurementId(value: string): boolean {
   return GA4_MEASUREMENT_ID_PATTERN.test(value);
@@ -263,16 +222,6 @@ export function describeAnalyticsStatus(
     : "configured_without_banner";
 }
 
-export const ANALYTICS_STATUS_LABELS: Record<
-  AnalyticsIntegrationStatus,
-  string
-> = {
-  setup_required: "Setup required",
-  configured_with_banner: "Configured with consent banner",
-  configured_without_banner: "Configured without consent banner",
-  invalid_configuration: "Invalid or incomplete configuration",
-};
-
 const ANALYTICS_SETTINGS_SELECT = {
   measurementId: true,
   consentBannerEnabled: true,
@@ -331,11 +280,22 @@ export async function resolveAnalyticsRuntimeConfig(
     return null;
   }
 
+  // The privacy policy the banner links at the point of consent (section 2 item 4).
+  // Read only AFTER the club is known to be configured, so a club with analytics
+  // off or unconfigured adds no query — and read through the same never-throws
+  // helper the admin panel uses, whose failure answer is "not published", i.e. no
+  // link rather than a link to a page that may not be there.
+  const privacyPolicy = await loadPrivacyPolicyPageState();
+
   return {
     measurementId,
     consentBannerEnabled: settings.consentBannerEnabled,
     bannerMessage: settings.bannerMessage,
     consentRevision: settings.consentRevision,
+    privacyPolicyPath:
+      privacyPolicy.exists && privacyPolicy.published
+        ? privacyPolicy.publicPath
+        : null,
   };
 }
 

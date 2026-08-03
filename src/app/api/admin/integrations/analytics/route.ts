@@ -6,13 +6,13 @@ import {
 } from "@/lib/audit";
 import {
   ANALYTICS_SETTINGS_ID,
-  DEFAULT_ANALYTICS_BANNER_MESSAGE,
   describeAnalyticsStatus,
   loadAnalyticsSettings,
   normalizeAnalyticsSettings,
   parseBannerMessage,
   parseMeasurementId,
 } from "@/lib/analytics-settings";
+import { DEFAULT_ANALYTICS_BANNER_MESSAGE } from "@/lib/analytics-settings-shared";
 import { prisma } from "@/lib/prisma";
 import { PUBLIC_LAYOUT_CACHE_TAGS } from "@/lib/public-layout-cache";
 import { revalidatePublicSite } from "@/lib/public-content-revalidation";

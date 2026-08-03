@@ -3,6 +3,10 @@ import "server-only";
 import logger from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
 import { toPagePath } from "@/lib/page-content";
+import {
+  PRIVACY_POLICY_ADMIN_HREF,
+  type PrivacyPolicyPageState,
+} from "@/lib/analytics-settings-shared";
 
 /**
  * The club's canonical privacy policy, as the Google Analytics setup panel needs to
@@ -19,26 +23,15 @@ import { toPagePath } from "@/lib/page-content";
  * page exist, is it published, and where does the admin go to edit it. A club with no
  * published privacy policy gets a prominent warning and a link to the website content
  * settings — but setup is NOT blocked on it, which is the clarification's other half.
+ *
+ * The same state answers a second question, for the VISITOR rather than the admin:
+ * `resolveAnalyticsRuntimeConfig` uses it to decide whether the consent banner may
+ * link the policy at the point of the decision. `PRIVACY_POLICY_ADMIN_HREF` and
+ * {@link PrivacyPolicyPageState} therefore live in `analytics-settings-shared.ts`,
+ * which the `"use client"` admin card can import; this module keeps the read.
  */
 
 const PRIVACY_PAGE_SLUG = "privacy";
-
-/**
- * Where an admin edits the page: the existing website content editor
- * (`src/app/(admin)/admin/page-content/page.tsx`), not a new screen.
- */
-export const PRIVACY_POLICY_ADMIN_HREF = "/admin/page-content";
-
-export interface PrivacyPolicyPageState {
-  /** A `PageContent` row exists for the canonical slug. */
-  exists: boolean;
-  /** …and it is published, so a visitor can actually read it. */
-  published: boolean;
-  /** Public path, for the "view it" link. */
-  publicPath: string;
-  /** Admin path, for the "edit it" link. */
-  adminHref: string;
-}
 
 /**
  * Never throws. A database failure reports "not published", which makes the panel

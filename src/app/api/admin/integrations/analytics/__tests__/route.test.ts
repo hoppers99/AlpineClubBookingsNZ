@@ -43,7 +43,7 @@ vi.mock("@/lib/logger", () => ({
 
 import { GET, PUT } from "../route";
 import { POST as RECONSENT } from "../reconsent/route";
-import { DEFAULT_ANALYTICS_BANNER_MESSAGE } from "@/lib/analytics-settings";
+import { DEFAULT_ANALYTICS_BANNER_MESSAGE } from "@/lib/analytics-settings-shared";
 import { PUBLIC_LAYOUT_CACHE_TAGS } from "@/lib/public-layout-cache";
 
 /**
