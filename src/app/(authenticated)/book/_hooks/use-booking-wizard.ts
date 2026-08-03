@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useSession } from "next-auth/react";
 import { toast } from "sonner";
 import { type GuestData } from "@/components/guest-form";
@@ -25,6 +25,11 @@ import {
 import { MEMBER_GUEST_CROSS_FAMILY_REFUSAL_MESSAGE } from "@/lib/member-guest-refusal";
 import type { MemberGuestCandidate } from "@/lib/member-guest-find";
 import { predictMemberGuestConsent } from "../_components/member-guest-preview";
+import {
+  readExceptionOffer,
+  type ExceptionOffer,
+} from "@/lib/booking-exception-offer";
+import type { ExceptionRequestSubmitResult } from "@/components/booking/request-officer-approval-card";
 import {
   type AvailablePromoCode,
   type BookingPaymentMethod,
@@ -142,7 +147,28 @@ function clearGuestNights(guestList: GuestData[]): GuestData[] {
 // return. The BookErrorPaymentTarget type is referenced via state below.
 export function useBookingWizard() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { data: session } = useSession();
+  /**
+   * #2562 — the server-confirmed offer to ask a Booking Officer, or null.
+   *
+   * Set ONLY from a refusal the SERVER classified as reviewable, through the one
+   * shared rule in `readExceptionOffer`. The wizard never decides eligibility for
+   * itself, so a hard failure (a full lodge, invalid dates, a consent or authority
+   * refusal, a tampered payload) can never draw the action.
+   */
+  const [exceptionOffer, setExceptionOffer] = useState<ExceptionOffer | null>(
+    null,
+  );
+  /**
+   * The open request this visit is here to REPLACE, from
+   * `/book?replaceRequest=<id>` — the link the member's request area renders. Read
+   * once from the URL and passed through to the create call as
+   * `supersedeRequestId`; the service does the guarded claim, so a stale or
+   * foreign id simply loses the claim and creates nothing.
+   */
+  const replaceExceptionRequestId =
+    searchParams?.get("replaceRequest")?.trim() || null;
   const { lodgeCapacity } = useClubIdentity();
   const [step, setStep] = useState<BookingWizardStep>("dates");
   // Lodge being booked (multi-lodge phase 8). /api/lodges only returns
@@ -1023,6 +1049,9 @@ export function useBookingWizard() {
     setGuestProfileBlocks([]);
     setMemberNightConflicts([]);
     setShowWaitlistPrompt(false);
+    // A fresh attempt retires the previous refusal's offer: the payload may have
+    // changed, so the rules the server would freeze may have too (#2562).
+    setExceptionOffer(null);
     const checkInStr = checkIn!;
     const checkOutStr = checkOut!;
 
@@ -1116,6 +1145,10 @@ export function useBookingWizard() {
         setError("");
       } else {
         handleBookingApiError(data, "Failed to create booking");
+        // #2562: the ONE shared rule decides whether this refusal may offer to ask
+        // a Booking Officer. It reads the server's own classification and answers
+        // null for everything else, so no hard failure can open the door.
+        setExceptionOffer(readExceptionOffer(data));
       }
       setSubmitting(false);
     }
@@ -1137,6 +1170,10 @@ export function useBookingWizard() {
     setErrorPaymentTargets([]);
     setGuestProfileBlocks([]);
     setMemberNightConflicts([]);
+    // Cleared but never SET on this path (#2562): an exception request creates or
+    // changes a real booking, so offering it as the answer to a refused
+    // waitlist join would answer a different question than the member asked.
+    setExceptionOffer(null);
     const checkInStr = checkIn!;
     const checkOutStr = checkOut!;
 
@@ -1191,6 +1228,7 @@ export function useBookingWizard() {
     setErrorPaymentTargets([]);
     setGuestProfileBlocks([]);
     setMemberNightConflicts([]);
+    setExceptionOffer(null);
     const checkInStr = checkIn!;
     const checkOutStr = checkOut!;
 
@@ -1230,8 +1268,56 @@ export function useBookingWizard() {
     } else {
       const data = await res.json();
       handleBookingApiError(data, "Failed to save draft");
+      // Same reviewable-refusal door as the confirm path: a draft is refused by
+      // the same policy gates, and the member's remedy is the same request.
+      setExceptionOffer(readExceptionOffer(data));
       setSavingDraft(false);
     }
+  }
+
+  /**
+   * Send the exception request the current refusal opened the door to (#2562).
+   *
+   * Deliberately reuses `buildGuestPayload()` — the EXACT payload the refused
+   * create call sent — so the proposal an officer freezes is the proposal that was
+   * refused, not a second construction of it that could differ. The dates come
+   * from the same state the create used.
+   *
+   * Throws an Error carrying the server's own sentence, plus its `code` where it
+   * sent one, so the card can name the right next step for the two 409s whose
+   * remedy is not "try again".
+   */
+  async function submitExceptionRequest(input: {
+    memberMessage: string;
+    supersedeRequestId: string | null;
+  }): Promise<ExceptionRequestSubmitResult> {
+    const res = await fetch("/api/bookings/exception-requests", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        lodgeId: lodgeId ?? undefined,
+        checkIn: checkIn!,
+        checkOut: checkOut!,
+        guests: buildGuestPayload(),
+        memberMessage: input.memberMessage,
+        supersedeRequestId: input.supersedeRequestId ?? undefined,
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const failure = new Error(
+        typeof data?.error === "string" && data.error
+          ? data.error
+          : "The request could not be sent. Try again.",
+      ) as Error & { code?: string };
+      if (typeof data?.code === "string") failure.code = data.code;
+      throw failure;
+    }
+    return {
+      id: String(data.id),
+      proposal: data.proposal,
+      capacityHeld: data.capacityHeld === true,
+    };
   }
 
   // Whole date-only nights between the two lodge dates. UTC date-only
@@ -1462,6 +1548,10 @@ export function useBookingWizard() {
     handleSubmit,
     handleJoinWaitlist,
     handleSaveAsDraft,
+    // #2562 — the member-facing exception-request surface.
+    exceptionOffer,
+    replaceExceptionRequestId,
+    submitExceptionRequest,
     getGuestProfileBlockMessage,
     getGuestProfileActionLabel,
     nights,

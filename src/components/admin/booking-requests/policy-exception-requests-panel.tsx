@@ -99,7 +99,10 @@ interface QueueItem {
   proposedCheckIn: string | null;
   proposedCheckOut: string | null;
   proposedGuestCount: number | null;
+  /** The MEMBER-FACING decision explanation (#2562) — the member reads this. */
   adminNotes: string | null;
+  /** The officer's PRIVATE note (#2562) — admin surfaces only, never the member. */
+  internalNotes: string | null;
   createdBookingId: string | null;
   attemptCount: number;
   conflictCount: number;
@@ -155,7 +158,14 @@ export function PolicyExceptionRequestsPanel({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [openId, setOpenId] = useState<string | null>(null);
+  // The MEMBER-FACING decision explanation. Named `notes` since #2526 and kept
+  // that way so every existing reference reads the same field; the label beside
+  // it, and the state below, are what #2562 added.
   const [notes, setNotes] = useState("");
+  // The officer's PRIVATE note. A separate field so an officer who needs to
+  // record a judgement about a member has somewhere to put it that is not the
+  // member's own screen — which is the whole reason the split exists.
+  const [internalNotes, setInternalNotes] = useState("");
   const [confirmed, setConfirmed] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
   // How a refund arising from an approved CHANGE is settled. Not part of the
@@ -208,6 +218,7 @@ export function PolicyExceptionRequestsPanel({
   function resetDecisionForm() {
     setOpenId(null);
     setNotes("");
+    setInternalNotes("");
     setConfirmed(false);
     setSettlementMethod("");
   }
@@ -244,6 +255,7 @@ export function PolicyExceptionRequestsPanel({
             source: item.source,
             expectedVersion: item.version,
             adminNotes: notes.trim() || undefined,
+            internalNotes: internalNotes.trim() || undefined,
             ...(action === "approve" ? { confirm: true } : {}),
             ...(action === "approve" && settlementMethod
               ? { settlementMethod }
@@ -591,6 +603,7 @@ export function PolicyExceptionRequestsPanel({
                             onClick={() => {
                               setOpenId(item.id);
                               setNotes("");
+                              setInternalNotes("");
                               setConfirmed(false);
                             }}
                           >
@@ -598,11 +611,24 @@ export function PolicyExceptionRequestsPanel({
                           </ViewOnlyActionButton>
                         ) : (
                           <>
+                            {/* #2562 — the note SPLIT, and the labelling that makes
+                                it safe. Before this, one field served both jobs and
+                                was member-visible, so an officer recording a
+                                judgement about the member had no honest option. The
+                                two fields are drawn together, each saying plainly
+                                who reads it, BEFORE the decision is submitted. */}
                             <div className="space-y-1">
                               <Label htmlFor={`exception-notes-${item.id}`}>
-                                Reason for the decision
-                                {needsReason ? " (required)" : " (optional on approve)"}
+                                Explanation for the member
+                                {needsReason
+                                  ? " (required)"
+                                  : " (required to refuse; optional on approve)"}
                               </Label>
+                              <p className="text-xs font-semibold text-warning-11">
+                                The member will see this. It is shown on their own
+                                request list and, on an approval, in the email they
+                                get.
+                              </p>
                               <Textarea
                                 id={`exception-notes-${item.id}`}
                                 value={notes}
@@ -614,7 +640,33 @@ export function PolicyExceptionRequestsPanel({
                                 }
                                 onChange={(event) => setNotes(event.target.value)}
                                 maxLength={2000}
-                                placeholder="What you decided and why. The member sees this on ANY decision — approval or refusal — and it is kept on the booking's record."
+                                placeholder="What you decided and why, written for the member. It is kept on the booking's record."
+                              />
+                            </div>
+                            <div className="space-y-1">
+                              <Label htmlFor={`exception-internal-${item.id}`}>
+                                Internal note (optional)
+                              </Label>
+                              <p className="text-xs text-muted-foreground">
+                                Only admins see this. It is never shown to the
+                                member, never emailed to them, and never sent to any
+                                member-facing screen — put anything here that you
+                                would not say to their face.
+                              </p>
+                              <Textarea
+                                id={`exception-internal-${item.id}`}
+                                value={internalNotes}
+                                disabled={!canEdit}
+                                title={
+                                  canEdit === false
+                                    ? ADMIN_VIEW_ONLY_ACTION_REASON
+                                    : undefined
+                                }
+                                onChange={(event) =>
+                                  setInternalNotes(event.target.value)
+                                }
+                                maxLength={2000}
+                                placeholder="Context for the next officer. The member never reads this."
                               />
                             </div>
                             {item.source === "MODIFICATION" ? (
@@ -707,10 +759,28 @@ export function PolicyExceptionRequestsPanel({
                         {item.reviewedBy
                           ? ` by ${item.reviewedBy.firstName} ${item.reviewedBy.lastName}`
                           : ""}
+                        {/* #2562: after the decision the two notes stay visually
+                            separated and labelled, so an officer reading a colleague's
+                            decision knows which half the member has already read. */}
                         {item.adminNotes ? (
-                          <p className="mt-2 whitespace-pre-wrap">
-                            {item.adminNotes}
-                          </p>
+                          <div className="mt-2 rounded-md border border-border bg-background p-2">
+                            <p className="text-xs font-semibold text-foreground">
+                              Explanation the member can see
+                            </p>
+                            <p className="mt-1 whitespace-pre-wrap">
+                              {item.adminNotes}
+                            </p>
+                          </div>
+                        ) : null}
+                        {item.internalNotes ? (
+                          <div className="mt-2 rounded-md border border-dashed border-border bg-background p-2">
+                            <p className="text-xs font-semibold text-foreground">
+                              Internal note — admins only, never shown to the member
+                            </p>
+                            <p className="mt-1 whitespace-pre-wrap">
+                              {item.internalNotes}
+                            </p>
+                          </div>
                         ) : null}
                       </div>
                     )}

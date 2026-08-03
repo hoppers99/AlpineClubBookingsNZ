@@ -33,6 +33,15 @@ import {
 import { describeMemberGuestConsentBadge } from "@/lib/member-guest-consent-card";
 import type { MemberGuestCandidate } from "@/lib/member-guest-find";
 import { BookingNoEmailsNotice } from "@/components/booking-no-emails-notice";
+import {
+  RequestOfficerApprovalCard,
+  type ExceptionRequestSubmitResult,
+} from "@/components/booking/request-officer-approval-card";
+import {
+  readExceptionOffer,
+  type ExceptionOffer,
+} from "@/lib/booking-exception-offer";
+import { countNightsDateOnly, parseDateOnly } from "@/lib/date-only";
 import { PromoCodeInput, type PromoResult } from "@/components/promo-code-input";
 import { useScrollToFeedback } from "@/hooks/use-scroll-to-feedback";
 // Both constants live in `member-guest-refusal.ts`, which has NO imports of its
@@ -470,6 +479,61 @@ interface QuoteResult {
   subscriptionMemberRateNotice?: string | null;
 }
 
+/**
+ * The parts of a pending modification that a policy-exception proposal cannot
+ * carry (#2562), named for the member.
+ *
+ * The proposal shape is a party and a set of nights — dates, guests added, guests
+ * removed, per-guest stay ranges. Everything else this panel can send is a
+ * different kind of change, so an approval will not apply it, and the request card
+ * says so before the member submits rather than leaving them to discover it. The
+ * list is derived from the ACTUAL payload keys, so a key added to the builder
+ * later cannot be silently dropped without appearing here.
+ */
+const EXCEPTION_PROPOSAL_PAYLOAD_KEYS = [
+  "checkIn",
+  "checkOut",
+  "addGuests",
+  "removeGuestIds",
+  "guestStayRanges",
+] as const;
+
+const EXCEPTION_OMITTED_CHANGE_LABELS: Record<string, string> = {
+  guestUpdates: "guest name corrections",
+  linkGuestToMember: "linking a placeholder guest to a member",
+  promoCode: "the promo code",
+  removePromoCode: "removing the promo code",
+  promoGuestIds: "who the promo code applies to",
+  promoAddedGuestIndexes: "who the promo code applies to",
+  applyCreditCents: "using account credit",
+  partnerSharedGuests: "partner-shared places",
+  adminOverride: "the admin date override",
+  pricingMode: "the admin pricing mode",
+  confirmOverCapacity: "the over-capacity confirmation",
+  settlementMethod: "how a refund is settled",
+  memberReviewJustification: "the review reason",
+};
+
+export function exceptionRequestPayloadFromModification(
+  body: Record<string, unknown>,
+): { payload: Record<string, unknown>; omittedChanges: string[] } {
+  const payload: Record<string, unknown> = {};
+  for (const key of EXCEPTION_PROPOSAL_PAYLOAD_KEYS) {
+    if (body[key] !== undefined) payload[key] = body[key];
+  }
+  const omitted = new Set<string>();
+  for (const key of Object.keys(body)) {
+    if ((EXCEPTION_PROPOSAL_PAYLOAD_KEYS as readonly string[]).includes(key)) {
+      continue;
+    }
+    // An unknown key is still reported, by its own name, rather than dropped
+    // silently: a wrong-looking word on screen is recoverable, a change the member
+    // believes they submitted is not.
+    omitted.add(EXCEPTION_OMITTED_CHANGE_LABELS[key] ?? key);
+  }
+  return { payload, omittedChanges: [...omitted].sort() };
+}
+
 function previousDateOnly(dateString: string | null) {
   if (!dateString) return null;
   const date = new Date(`${dateString}T00:00:00.000Z`);
@@ -493,9 +557,17 @@ function formatSignedCents(cents: number) {
 export function EditBookingPanel({
   booking,
   canAdminOverride = false,
+  replaceExceptionRequestId = null,
   onDone,
 }: {
   booking: BookingData;
+  /**
+   * #2562: the open policy-exception request this edit is here to REPLACE, from
+   * `/bookings/<id>?replaceRequest=<id>` — the link the member's request area
+   * renders. Passed through as `supersedeRequestId`; the service does the guarded
+   * claim, so a stale or foreign id loses it and creates nothing.
+   */
+  replaceExceptionRequestId?: string | null;
   // Issue #1668: admin override lifts the date-window locks for this booking.
   // (Whether the standard self-service path is available is expressed by the
   // booking.editPolicy fields the panel already reads.)
@@ -666,6 +738,19 @@ export function EditBookingPanel({
   const [quoteLoading, setQuoteLoading] = useState(false);
   const [quoteError, setQuoteError] = useState("");
   const [settlementMethod, setSettlementMethod] = useState<"card" | "credit" | null>(null);
+  /**
+   * #2562 — the server-confirmed offer to ask a Booking Officer, or null.
+   *
+   * Set ONLY from a refusal the SERVER classified as reviewable, through the one
+   * shared rule in `readExceptionOffer`, and set from BOTH refusal points on this
+   * path: the quote (modify-quote answers 409 PAID_UP_ADULT_MEMBER_REQUIRED instead
+   * of a quote) and the save (the modify paths hard-block a minimum-stay breach with
+   * a 400 carrying the frozen review). A hard failure — a full lodge, invalid dates,
+   * a consent or authority refusal — can never open it.
+   */
+  const [exceptionOffer, setExceptionOffer] = useState<ExceptionOffer | null>(
+    null,
+  );
 
   // #2337: the placeholder→member links this edit will apply, keyed by the
   // existing guest row id. `linkFinderGuestId` is the row currently choosing a
@@ -1253,10 +1338,18 @@ export function EditBookingPanel({
               : null,
           );
           setQuote(null);
+          // #2562: a refused QUOTE is a real blockage on this path — the member
+          // cannot save what they cannot price — so the reviewable ones open the
+          // request door here rather than making them press Save to find out.
+          setExceptionOffer(readExceptionOffer(data));
           return;
         }
         setMemberGuestAddError(null);
         setQuote(data);
+        // A quote that came back is not a refusal, so no request is on offer.
+        // Cleared here rather than only on the next attempt, so a member who fixes
+        // the proposal is not still looking at a door they no longer need.
+        setExceptionOffer(null);
         // A fresh quote that no longer needs an over-capacity confirm clears any
         // stale apply-side warning (#1668).
         if (!data.overCapacityConfirmRequired) {
@@ -1295,6 +1388,7 @@ export function EditBookingPanel({
     if (quoteTimeoutRef.current) clearTimeout(quoteTimeoutRef.current);
     if (!modificationPayloadJson) {
       setQuote(null);
+      setExceptionOffer(null);
       return;
     }
     quoteTimeoutRef.current = setTimeout(
@@ -1629,6 +1723,52 @@ export function EditBookingPanel({
     void handleSave();
   }
 
+  /**
+   * Send the exception request the current refusal opened the door to (#2562).
+   *
+   * The delta is the SAME payload the refused quote or save sent, narrowed by
+   * `exceptionRequestPayloadFromModification` to the five fields a proposal is
+   * made of. Narrowed rather than rebuilt, so the proposal an officer freezes is
+   * the change that was actually refused; the fields a proposal cannot carry are
+   * named to the member on the card before they submit.
+   *
+   * Throws an Error carrying the server's own sentence, plus its `code` where it
+   * sent one, so the card can name the right next step for the two 409s whose
+   * remedy is not "try again".
+   */
+  async function submitExceptionRequest(input: {
+    memberMessage: string;
+    supersedeRequestId: string | null;
+  }): Promise<ExceptionRequestSubmitResult> {
+    const { payload } = exceptionRequestPayloadFromModification(
+      buildModificationPayload(),
+    );
+    const res = await fetch(`/api/bookings/${booking.id}/exception-requests`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...payload,
+        memberMessage: input.memberMessage,
+        supersedeRequestId: input.supersedeRequestId ?? undefined,
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const failure = new Error(
+        typeof data?.error === "string" && data.error
+          ? data.error
+          : "The request could not be sent. Try again.",
+      ) as Error & { code?: string };
+      if (typeof data?.code === "string") failure.code = data.code;
+      throw failure;
+    }
+    return {
+      id: String(data.id),
+      proposal: data.proposal,
+      capacityHeld: data.capacityHeld === true,
+    };
+  }
+
   async function handleSave(notifyMemberChoice?: boolean) {
     setSaveError("");
     // #2104: block submission with an inline error adjacent to the field (not the
@@ -1646,6 +1786,8 @@ export function EditBookingPanel({
       return;
     }
     setSaving(true);
+    // A fresh save attempt retires the previous refusal's offer (#2562).
+    setExceptionOffer(null);
 
     try {
       const body = buildModificationPayload();
@@ -1717,9 +1859,16 @@ export function EditBookingPanel({
               : data.error ||
                   "These dates do not meet the minimum-stay rules, so the change was not saved.",
           );
+          // #2562: this refusal is exactly what the workflow exists for, so offer
+          // the request — subject, as always, to the shared rule's own gates.
+          setExceptionOffer(readExceptionOffer(data));
           return;
         }
         setSaveError(data.error || "Failed to save changes");
+        // Every other refusal goes through the same shared rule, which answers null
+        // for all of them: the reviewable codes are an explicit allowlist and no
+        // hard-stop code is on it.
+        setExceptionOffer(readExceptionOffer(data));
         return;
       }
 
@@ -3301,6 +3450,76 @@ export function EditBookingPanel({
           {saveError && (
             <div className="rounded-md bg-danger-3 p-3 text-sm text-danger-11">{saveError}</div>
           )}
+
+          {/* #2562 — the exception-request door, drawn ONLY when the server's own
+              refusal said every blocking failure is reviewable. It sits under Save
+              because at this point saving cannot succeed: the member's next honest
+              move is to change the proposal or to ask. */}
+          {exceptionOffer ? (
+            <RequestOfficerApprovalCard
+              source="MODIFICATION"
+              offer={exceptionOffer}
+              replaceRequestId={replaceExceptionRequestId}
+              onSubmit={submitExceptionRequest}
+              proposal={{
+                lodgeName: null,
+                checkIn,
+                checkOut,
+                envelopeNightCount: countNightsDateOnly(
+                  parseDateOnly(checkIn),
+                  parseDateOnly(checkOut),
+                ),
+                base: {
+                  checkIn: booking.checkIn,
+                  checkOut: booking.checkOut,
+                  guestCount: booking.guests.length,
+                },
+                // The server's own figure when it produced one. A refusal answered
+                // INSTEAD of a quote leaves this null, and the card then says how
+                // pricing actually works rather than inventing a number.
+                priceImpact: quote
+                  ? {
+                      label:
+                        quote.netChargeCents >= 0
+                          ? "Extra to pay if this is approved"
+                          : "Refund due if this is approved",
+                      amountCents: Math.abs(quote.netChargeCents),
+                    }
+                  : null,
+                omittedChanges: exceptionRequestPayloadFromModification(
+                  buildModificationPayload(),
+                ).omittedChanges,
+                guests: [
+                  ...remainingGuests.map((guest) => ({
+                    firstName: guest.firstName,
+                    lastName: guest.lastName,
+                    ageTierLabel:
+                      ageTierOptions.find((option) => option.tier === guest.ageTier)
+                        ?.label ?? guest.ageTier,
+                    isMember: guest.isMember,
+                    nights: existingGuestNights[guest.id] ?? [],
+                    stay:
+                      guest.stayStart && guest.stayEnd
+                        ? { start: guest.stayStart, end: guest.stayEnd }
+                        : null,
+                  })),
+                  ...addedGuests.map((guest) => ({
+                    firstName: guest.firstName,
+                    lastName: guest.lastName,
+                    ageTierLabel:
+                      ageTierOptions.find((option) => option.tier === guest.ageTier)
+                        ?.label ?? guest.ageTier,
+                    isMember: guest.isMember,
+                    nights: guest.nights ?? [],
+                    stay:
+                      guest.stayStart && guest.stayEnd
+                        ? { start: guest.stayStart, end: guest.stayEnd }
+                        : null,
+                  })),
+                ],
+              }}
+            />
+          ) : null}
         </>
       )}
 

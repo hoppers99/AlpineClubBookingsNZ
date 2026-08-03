@@ -32,6 +32,13 @@ import { addDaysDateOnly, parseDateOnly } from "@/lib/date-only";
 import { formatNZWeekdayDate } from "@/lib/nzst-date";
 import { PromoCodeInput, type PromoResult } from "@/components/promo-code-input";
 import { TimePicker } from "@/components/time-picker";
+import {
+  RequestOfficerApprovalCard,
+  type ExceptionRequestProposalView,
+  type ExceptionRequestSubmitResult,
+} from "@/components/booking/request-officer-approval-card";
+import type { ExceptionOffer } from "@/lib/booking-exception-offer";
+import { useAgeTierOptions } from "@/lib/use-age-tier-options";
 import { CheckCircle2, CreditCard, Landmark } from "lucide-react";
 import type {
   AvailablePromoCode,
@@ -114,6 +121,9 @@ export function ReviewStep({
   submitting,
   savingDraft,
   memberGuestPendingHoldExpiryDays,
+  exceptionOffer,
+  replaceExceptionRequestId,
+  submitExceptionRequest,
 }: {
   // NZ date-only lodge nights (#2474).
   checkIn: string | null;
@@ -179,7 +189,22 @@ export function ReviewStep({
   savingDraft: boolean;
   /** D-4: the club's own configured hold length, for the explainer's sentence 1. */
   memberGuestPendingHoldExpiryDays: number;
+  /**
+   * #2562 — the server-confirmed offer to ask a Booking Officer, or null. Null
+   * means the last refusal was not reviewable (or there was none), and the card is
+   * not drawn. This step never decides that for itself.
+   */
+  exceptionOffer: ExceptionOffer | null;
+  /** The open request this submission replaces, from `/book?replaceRequest=<id>`. */
+  replaceExceptionRequestId: string | null;
+  submitExceptionRequest: (input: {
+    memberMessage: string;
+    supersedeRequestId: string | null;
+  }) => Promise<ExceptionRequestSubmitResult>;
 }) {
+  // The club's own age-tier labels, so the request card names a tier the way every
+  // other member-facing screen does rather than echoing the raw enum.
+  const ageTierOptions = useAgeTierOptions();
   // MG3 (#2308), owner sign-off answer 4: all four sentences, always visible,
   // whenever anybody the booker added is still waiting.
   const pendingMemberGuestNames = pendingMemberGuestFirstNames(reviewGuestPayload);
@@ -799,6 +824,57 @@ export function ReviewStep({
           )}
         </div>
       )}
+
+      {/* #2562 — the exception-request door, drawn ONLY when the server's own
+          refusal said every blocking failure is reviewable. It sits above the
+          confirm buttons because at this point confirming cannot succeed: the
+          member's next honest move is either to change the proposal or to ask. */}
+      {exceptionOffer && bookingDateStrings ? (
+        <RequestOfficerApprovalCard
+          source="NEW_BOOKING"
+          offer={exceptionOffer}
+          replaceRequestId={replaceExceptionRequestId}
+          onSubmit={submitExceptionRequest}
+          proposal={{
+            lodgeName: selectedLodge?.name ?? null,
+            checkIn: bookingDateStrings.checkIn,
+            checkOut: bookingDateStrings.checkOut,
+            envelopeNightCount: nights,
+            base: null,
+            // A new booking's whole intent IS the party and the nights, so there
+            // is nothing the request cannot carry.
+            omittedChanges: [],
+            // The quote the SERVER produced for this party, labelled as a quote.
+            // `priceQuote` is a required prop of this step, so it is always the
+            // club's own figure and never a client calculation.
+            priceImpact: {
+              label: "Total for this stay",
+              // The SERVER's own quote for this party, with any applied promo — the
+              // same figure the price summary above shows, read from the same
+              // place rather than recomputed here.
+              amountCents:
+                appliedPromo?.finalPriceCents ?? priceQuote.totalPriceCents,
+            },
+            guests: reviewGuestPayload.map((guest) => ({
+              firstName: guest.firstName,
+              lastName: guest.lastName,
+              ageTierLabel:
+                ageTierOptions.find((option) => option.tier === guest.ageTier)
+                  ?.label ?? guest.ageTier,
+              isMember: guest.isMember,
+              // The member's own choice, echoed back in the form they made it: a
+              // picked night set, a picked range, or (both absent) the whole stay.
+              // `buildGuestPayload` sends only one of the two shapes, so these are
+              // never both populated.
+              nights: guest.nights ?? [],
+              stay:
+                guest.stayStart && guest.stayEnd
+                  ? { start: guest.stayStart, end: guest.stayEnd }
+                  : null,
+            })),
+          }}
+        />
+      ) : null}
 
       <div className="flex flex-col-reverse gap-3 sm:flex-row sm:justify-between">
         <Button variant="outline" onClick={() => setStep("guests")}>

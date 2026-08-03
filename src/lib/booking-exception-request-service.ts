@@ -21,6 +21,12 @@ import {
   resolveLinkedBookingMembersWithBoundary,
 } from "@/lib/booking-guests";
 import { loadMemberGuestAddPolicy } from "@/lib/member-guest-add-policy";
+import {
+  toMemberExceptionProposal,
+  toMemberExceptionRequestItem,
+  type MemberExceptionProposal,
+  type MemberExceptionRequestItem,
+} from "@/lib/member-exception-requests";
 import type { PrismaTransactionClient } from "@/lib/db-transaction";
 import {
   type PolicyExceptionCapacityMode,
@@ -839,6 +845,28 @@ export interface CreatedExceptionRequest {
   proposalHash: string;
   reasonCodes: PolicyExceptionReasonCode[];
   aggregateCapacityMode: PolicyExceptionCapacityMode;
+  /**
+   * The proposal EXACTLY as it was frozen, returned to the member who just
+   * submitted it (#2562).
+   *
+   * Not a courtesy. The freeze is not the raw payload: the party envelope EXPANDS
+   * to cover every guest night (mirroring what the canonical create will do), and a
+   * guest's nights resolve through the canonical planner's own helper. So the
+   * proposal an officer decides can legitimately be WIDER than the dates the member
+   * typed — and a member who is never shown that difference cannot tell that the
+   * request they are tracking is not the request they thought they made. Returning
+   * it lets the submission screen show the frozen article immediately, while
+   * withdraw and replace are still available.
+   */
+  proposal: MemberExceptionProposal;
+  /**
+   * Whether this request actually reserved beds, from the write itself rather than
+   * from the policy's capacity mode (#2562). Always false for a new-booking
+   * request; on a modification, true only when reservation rows were really
+   * written — which excludes a HOLD proposal whose incremental footprint came out
+   * empty (a pure shrink).
+   */
+  capacityHeld: boolean;
 }
 
 /**
@@ -999,6 +1027,11 @@ export async function createNewBookingExceptionRequest(
       proposalHash: frozen.proposalHash,
       reasonCodes: frozen.frozenEvidence.reasonCodes,
       aggregateCapacityMode: frozen.aggregateCapacityMode,
+      proposal: toMemberExceptionProposal(frozen.snapshot),
+      // A new-booking request reserves nothing, whatever its capacity mode says:
+      // the reservation ledger is keyed on an existing BookingChangeRequest and
+      // there is no booking row yet.
+      capacityHeld: false,
     };
   } catch (error) {
     if (isOpenSlotUniqueViolation(error)) {
@@ -1262,6 +1295,10 @@ export async function createModificationExceptionRequest(
       proposalHash: frozen.proposalHash,
       reasonCodes: frozen.frozenEvidence.reasonCodes,
       aggregateCapacityMode: frozen.aggregateCapacityMode,
+      proposal: toMemberExceptionProposal(frozen.snapshot),
+      // The FACT of the write, not the policy's intent: `reservesBeds` is the same
+      // predicate that decided whether reservation rows were inserted above.
+      capacityHeld: reservesBeds,
     };
   } catch (error) {
     if (isOpenSlotUniqueViolation(error)) {
@@ -1390,8 +1427,18 @@ export interface UnifiedExceptionQueueItem {
   proposedCheckOut: string | null;
   /** How many guests the proposed party holds. */
   proposedGuestCount: number | null;
-  /** The officer's decision note, once a decision has been recorded. */
+  /**
+   * The officer's MEMBER-FACING decision explanation, once a decision has been
+   * recorded (#2562). Rendered to the member on their own request list, so the
+   * officer UI labels it as member-visible before they submit it.
+   */
   adminNotes: string | null;
+  /**
+   * The officer's PRIVATE note (#2562). Admin surfaces only — this queue read is
+   * behind `requireAdmin`, and the member projection
+   * (`src/lib/member-exception-requests.ts`) has no field for it.
+   */
+  internalNotes: string | null;
   /** The booking a successful new-booking approval created (NEW_BOOKING only). */
   createdBookingId: string | null;
   attemptCount: number;
@@ -1538,6 +1585,7 @@ export async function readUnifiedExceptionQueue(input: {
         proposedCheckOut: proposedPartyFacts(row.proposalSnapshot).checkOut,
         proposedGuestCount: proposedPartyFacts(row.proposalSnapshot).guestCount,
         adminNotes: row.adminNotes,
+        internalNotes: row.internalNotes,
         createdBookingId: row.createdBookingId,
         attemptCount: row.attemptCount,
         conflictCount: row.conflictCount,
@@ -1572,6 +1620,7 @@ export async function readUnifiedExceptionQueue(input: {
         proposedCheckOut: proposedPartyFacts(row.proposalSnapshot).checkOut,
         proposedGuestCount: proposedPartyFacts(row.proposalSnapshot).guestCount,
         adminNotes: row.adminNotes,
+        internalNotes: row.internalNotes,
         createdBookingId: null,
         attemptCount: row.attemptCount,
         conflictCount: row.conflictCount,
@@ -1590,4 +1639,116 @@ export async function readUnifiedExceptionQueue(input: {
   const data = items.slice(start, start + input.pageSize);
 
   return { data, page: input.page, pageSize: input.pageSize, total };
+}
+
+// ---------------------------------------------------------------------------
+// Member-facing read (#2562): the requester's own requests, both flavours
+// ---------------------------------------------------------------------------
+
+/**
+ * How many of a member's own requests their request area shows. Bounded, and
+ * generous: the section is a status list on My Bookings, not an archive, and a
+ * member who has raised more than fifty booking-rule requests has a different
+ * conversation to have with the club.
+ */
+const MEMBER_EXCEPTION_REQUEST_CAP = 50;
+
+/**
+ * Every booking-policy exception request the member RAISED, merged from both
+ * tables and projected through the member DTO (#2562).
+ *
+ * Scoped on `requestedByMemberId` alone, which is deliberately the requester and
+ * not the booking's owner: a family delegate can raise a request on somebody
+ * else's booking, and it is the person who asked who needs to track, withdraw and
+ * replace it. The booking's owner sees the outcome on the booking itself.
+ *
+ * Three things this function is careful about:
+ *
+ *  1. It selects a STRICT COLUMN LIST, and `internalNotes` is not in it. The
+ *     officer's private note is never read on this path at all, so it cannot be
+ *     leaked by a later mapper edit — there is nothing in memory to leak.
+ *  2. `capacityHeld` comes from the RESERVATION LEDGER (`_count` of live
+ *     `PolicyExceptionReservationNight` rows), never from `aggregateCapacityMode`.
+ *     A new-booking request reserves nothing whatever its mode says, so its answer
+ *     is hard-coded false at the one place that knows why; a modification answers
+ *     from its real rows, which is also correct for the pure-shrink case where a
+ *     HOLD aggregate reserved no bed at all.
+ *  3. Both sources are capped, merged, then sorted newest-first in memory —
+ *     correct across two tables, which one SQL ORDER BY cannot be.
+ */
+export async function readMemberExceptionRequests(
+  requestedByMemberId: string,
+): Promise<MemberExceptionRequestItem[]> {
+  const [newBookingRows, modificationRows] = await Promise.all([
+    prisma.newBookingPolicyExceptionRequest.findMany({
+      where: { requestedByMemberId },
+      select: {
+        id: true,
+        status: true,
+        createdAt: true,
+        reviewedAt: true,
+        proposalSnapshot: true,
+        frozenEvidence: true,
+        memberMessage: true,
+        // The MEMBER-FACING decision explanation. `internalNotes` is deliberately
+        // absent from this select — see the doc comment above.
+        adminNotes: true,
+        lastConflictReason: true,
+        lastConflictAt: true,
+        createdBookingId: true,
+        supersededByRequestId: true,
+      },
+      orderBy: { createdAt: "desc" },
+      take: MEMBER_EXCEPTION_REQUEST_CAP,
+    }),
+    prisma.bookingChangeRequest.findMany({
+      where: { requestedByMemberId, kind: "POLICY_EXCEPTION" },
+      select: {
+        id: true,
+        status: true,
+        createdAt: true,
+        reviewedAt: true,
+        bookingId: true,
+        proposalSnapshot: true,
+        frozenEvidence: true,
+        memberMessage: true,
+        adminNotes: true,
+        lastConflictReason: true,
+        lastConflictAt: true,
+        supersededByRequestId: true,
+        // The reservation ledger IS the capacity answer (#2525). A count, not the
+        // rows: the member is told whether beds are held, never which nights the
+        // ledger holds them on.
+        _count: { select: { reservationNights: true } },
+      },
+      orderBy: { createdAt: "desc" },
+      take: MEMBER_EXCEPTION_REQUEST_CAP,
+    }),
+  ]);
+
+  const items: MemberExceptionRequestItem[] = [
+    ...newBookingRows.map((row) =>
+      toMemberExceptionRequestItem({
+        ...row,
+        source: "NEW_BOOKING",
+        bookingId: null,
+        // FALSE for every new-booking request, always: the provisional
+        // reservation ledger is keyed on an existing BookingChangeRequest, and a
+        // new booking has no row to key on. Saying "holding beds" here is the
+        // exact lie the officer queue had to be corrected for in #2526.
+        holdsReservationNights: false,
+      }),
+    ),
+    ...modificationRows.map((row) =>
+      toMemberExceptionRequestItem({
+        ...row,
+        source: "MODIFICATION",
+        createdBookingId: null,
+        holdsReservationNights: row._count.reservationNights > 0,
+      }),
+    ),
+  ];
+
+  items.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  return items.slice(0, MEMBER_EXCEPTION_REQUEST_CAP);
 }

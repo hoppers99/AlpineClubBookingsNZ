@@ -53,7 +53,21 @@ const decisionSchema = z
      * changed underneath it.
      */
     expectedVersion: z.coerce.number().int().min(1),
+    /**
+     * The MEMBER-FACING decision explanation (#2562). The member reads this on
+     * their own request list, and on an approval it is interpolated into the
+     * approval email — so the officer screen says so beside the field, and this
+     * field name is deliberately unchanged from #2526 rather than renamed, which
+     * would have silently repointed every existing decision.
+     */
     adminNotes: z.string().trim().max(2000).optional(),
+    /**
+     * The officer's PRIVATE note (#2562). Stored on its own column and read only
+     * by admin-guarded surfaces. It is never a substitute for the member-facing
+     * explanation: a refusal still requires `adminNotes`, so an officer cannot
+     * refuse a request with an internal note and nothing for the member.
+     */
+    internalNotes: z.string().trim().max(2000).optional(),
     /**
      * Explicit confirmation that the officer means to apply the reviewed
      * override. Required on approve — an approval creates or rewrites a real
@@ -213,7 +227,13 @@ export async function GET(
     reviewedBy: row.reviewedBy,
     requestedBy: row.requestedBy,
     memberMessage: row.memberMessage,
+    // The member-facing explanation and the private note, side by side (#2562).
+    // Both are safe HERE and only here: this endpoint is behind
+    // `requireAdmin({ bookings: view })`. The member's own read
+    // (`GET /api/bookings/exception-requests`) goes through the member DTO, which
+    // has no slot for `internalNotes` and never selects the column.
     adminNotes: row.adminNotes,
+    internalNotes: row.internalNotes,
     proposalHash: row.proposalHash,
     aggregateCapacityMode: row.aggregateCapacityMode,
     conflictCount: row.conflictCount,
@@ -254,8 +274,15 @@ export async function PATCH(
       { status: 400 },
     );
   }
-  const { action, source, expectedVersion, adminNotes, confirm, settlementMethod } =
-    parsed.data;
+  const {
+    action,
+    source,
+    expectedVersion,
+    adminNotes,
+    internalNotes,
+    confirm,
+    settlementMethod,
+  } = parsed.data;
   const store = storeFor(source);
   const ipAddress = getClientIp(req);
 
@@ -276,10 +303,16 @@ export async function PATCH(
   const reviewedReasonCodes = evidence?.reasonCodes ?? [];
 
   if (action === "reject") {
-    // A refusal the member will read: always give them the reason.
+    // A refusal the member will read: always give them the reason. #2562 added a
+    // separate internal note, and this gate deliberately still reads
+    // `adminNotes` — an officer must not be able to refuse a request with private
+    // commentary and nothing at all for the member.
     if (!adminNotes) {
       return NextResponse.json(
-        { error: "Give the member a reason for the refusal." },
+        {
+          error:
+            "Give the member a reason for the refusal. An internal note is not a substitute — the member never sees it.",
+        },
         { status: 400 },
       );
     }
@@ -289,6 +322,7 @@ export async function PATCH(
       to: "REJECTED",
       actorMemberId: session.user.id,
       adminNotes,
+      internalNotes,
       store,
     });
     if (!result.claimed) {
@@ -319,6 +353,10 @@ export async function PATCH(
         requestId: id,
         reasonCodes: reviewedReasonCodes,
         releasedReservationNights: result.released,
+        // WHETHER an internal note was left, never its text (#2562). The audit
+        // log is read by more surfaces than the officer queue, and a private note
+        // copied into it would be private in one place and not the other.
+        internalNoteRecorded: Boolean(internalNotes),
       },
       ipAddress,
     });
@@ -355,7 +393,7 @@ export async function PATCH(
     return NextResponse.json(
       {
         error:
-          "Approving an adult-member hosting exception needs a written reason for the record.",
+          "Approving an adult-member hosting exception needs a written reason for the record. Put it in the member-facing explanation — an internal note does not satisfy this.",
       },
       { status: 400 },
     );
@@ -366,6 +404,7 @@ export async function PATCH(
     actorMemberId: session.user.id,
     ipAddress,
     adminNotes,
+    internalNotes,
     settlementMethod,
     // The member's own words, carried onto any adult-supervision review this
     // approval opens — the officer never decides that rule (#2526 review), so the
@@ -489,6 +528,8 @@ export async function PATCH(
           requestId: id,
           reasonCodes: reviewedReasonCodes,
           createdBookingId: outcome.createdBookingId,
+          // See the refusal audit above: presence, never the text (#2562).
+          internalNoteRecorded: Boolean(internalNotes),
           hostingDecisionRecorded: outcome.hostingDecisionRecorded,
           followUpFailed: result.followUpFailed === true,
           proposalHash: found.row.proposalHash,

@@ -26,11 +26,22 @@ export function mapExceptionRequestError(error: unknown): NextResponse {
   if (error instanceof NoEligiblePolicyExceptionError) {
     return NextResponse.json({ error: error.message }, { status: 400 });
   }
+  // #2562: machine-readable, because the member-facing form has a DIFFERENT next
+  // step for each of these two and cannot tell them apart from prose. An
+  // already-open request means "go and replace the one you have"; a lost
+  // supersede claim means "the one you were replacing has already been decided,
+  // so reload and look at it".
   if (error instanceof OpenExceptionRequestConflictError) {
-    return NextResponse.json({ error: error.message }, { status: 409 });
+    return NextResponse.json(
+      { error: error.message, code: "OPEN_EXCEPTION_REQUEST" },
+      { status: 409 },
+    );
   }
   if (error instanceof LostSupersedeClaimError) {
-    return NextResponse.json({ error: error.message }, { status: 409 });
+    return NextResponse.json(
+      { error: error.message, code: "LOST_SUPERSEDE_CLAIM" },
+      { status: 409 },
+    );
   }
   // The lodge cannot currently hold the requested change (#2525 FIX 4): a
   // capacity conflict, mapped like the other request-creation conflicts.

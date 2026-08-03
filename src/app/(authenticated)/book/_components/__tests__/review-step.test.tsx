@@ -116,6 +116,11 @@ function renderReview(
       cancelIfGuestsBumped={false}
       setCancelIfGuestsBumped={vi.fn()}
       setStep={vi.fn()}
+      // #2562: no refusal has happened in these fixtures, so no request is on
+      // offer and the card is not drawn.
+      exceptionOffer={null}
+      replaceExceptionRequestId={null}
+      submitExceptionRequest={vi.fn()}
       handleSaveAsDraft={vi.fn()}
       handleSubmit={vi.fn()}
       submitting={false}
