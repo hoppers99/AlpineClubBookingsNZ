@@ -109,6 +109,14 @@ Points worth knowing:
 - The existing **age tier** badge stays where it was. The age sits beside it —
   the tier tells you the pricing/eligibility class, the age tells you which
   person this is.
+- The two are worked out **as at different dates**, so they can look like they
+  disagree and still both be right. The age is as at today. An age tier is fixed
+  at the **season start** (1 April) and stays put until the next season rollover,
+  so a member whose birthday has passed since 1 April can show an age above their
+  tier's range — `5 years` beside **Infant (0-4)**, or `18 years` beside
+  **YOUTH**. Where a tier label with a numeric range is shown next to an age, the
+  screen says "as at season start" so the pair reads as two facts rather than as
+  a broken record. Nothing needs correcting.
 - One remaining place still shows the full date of birth: the **date of birth the
   requester typed** on a child or adult request, which is what you check the
   candidate record against. That is the request's own declared value, not a

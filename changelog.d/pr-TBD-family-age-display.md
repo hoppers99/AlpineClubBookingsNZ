@@ -17,7 +17,12 @@
   The ordinary Family Group list is unchanged, and so is every member-facing and
   public screen — those are routine views with no action attached to an individual
   member. The existing age-tier badge stays exactly where it was; the age sits
-  beside it.
+  beside it. The two are worked out as at different dates and can look like they
+  disagree: the age is as at today, while an age tier is fixed at the 1 April
+  season start and holds until the next rollover, so a child who has had a
+  birthday since then reads `5 years` beside **Infant (0-4)**. Where a tier label
+  with a numeric range sits next to an age, the screen now says "as at season
+  start" so the pair reads as two facts rather than as a broken record.
 
   Two things worth knowing. The age is worked out fresh every time you load the
   screen, on the New Zealand calendar date, so a birthday counts on the day —
@@ -30,3 +35,11 @@
   The one date of birth still shown is the one the **requester typed** on a child
   or same-email adult request — the value you check a candidate record against —
   now with the matching age printed under it.
+
+- **The family group editor no longer sends its members' stored login credentials
+  to the browser (#2568).** Opening a group for editing loaded a second, hidden
+  copy of each member's record that included the scrambled form of their password
+  and when they last signed in. Nothing on screen used it, but it was sitting in
+  the page. The editor is now sent only the fields it actually shows, plus the
+  simple "has finished account setup" flag it needs. Nothing about how you edit a
+  group changed.

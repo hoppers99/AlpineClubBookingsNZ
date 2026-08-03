@@ -5109,6 +5109,18 @@ member sees that member's **calculated age** beside their name. The invariants:
   "0 years", which would look like a real infant.
 - **Under five shows completed years AND months**; five and over shows completed
   years only.
+- **Age is as at today; an age tier is as at the season start.** The two sit side
+  by side on these screens and are deliberately computed against different
+  reference dates: `formatMemberIdentityAge` defaults to the club's current
+  calendar day, while `Member.ageTier` (and a child request's derived
+  `requestedAgeTier`) is `computeAgeTierWithSettings(dob, getSeasonStartDate(...))`
+  and holds until the next rollover in `cron-age-up.ts`. A member whose birthday
+  falls between the season start and today therefore reads, correctly, "5 years"
+  beside "Infant (0-4)". Wherever a tier label carrying a numeric range is
+  rendered next to an age, the UI states the season-start basis
+  (`request-review-card.tsx`) — the pairing must never read as a corrupt record.
+  Neither figure is derived from the other: age is never inferred from a tier,
+  and a tier is never recomputed from a label.
 - **The browser is sent the age, not the birth date.** Every family-group payload
   that needs identity information carries a finished `ageLabel` string and no
   `dateOfBirth`. The one date of birth still rendered is the value the REQUESTER

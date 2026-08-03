@@ -140,6 +140,62 @@ describe("GET /api/admin/family-groups/member-search (#2568)", () => {
     expectNoDateOfBirth(body);
   });
 
+  it("carries each candidate's parent links, so a search cannot collapse the notification-email choices", async () => {
+    // The members endpoint this lookup replaced returned `parentLinks` on every
+    // row, and the child-request "Notification email recipient" select is built
+    // from them. Because a searched row OVERWRITES the same candidate id loaded
+    // with the request, dropping the links removed the child's real parent from
+    // that choice the moment an admin pressed Search.
+    mockedAuth.mockResolvedValue(membershipViewerSession);
+    mockedPrisma.member.findMany.mockResolvedValue([
+      {
+        ...candidateRows[1],
+        id: "ivy-1",
+        firstName: "Ivy",
+        ageTier: "CHILD",
+        parent: {
+          id: "ann-1",
+          firstName: "Ann",
+          lastName: "Smith",
+          email: "ann@example.com",
+          ageTier: "ADULT",
+          active: true,
+          canLogin: true,
+          inheritEmailFromId: null,
+        },
+        secondaryParent: {
+          id: "bob-1",
+          firstName: "Bob",
+          lastName: "Smith",
+          email: "bob@no-email.invalid",
+          ageTier: "ADULT",
+          active: true,
+          canLogin: true,
+          inheritEmailFromId: null,
+        },
+      },
+    ] as never);
+    mockedPrisma.member.count.mockResolvedValue(1 as never);
+
+    const { GET } = await import(
+      "@/app/api/admin/family-groups/member-search/route"
+    );
+    const body = await (await GET(searchRequest())).json();
+
+    expect(body.members[0].parentLinks).toEqual([
+      expect.objectContaining({ id: "ann-1", parentLinkType: "PRIMARY" }),
+      expect.objectContaining({ id: "bob-1", parentLinkType: "SECONDARY" }),
+    ]);
+    // A parent option is a name in a dropdown: no parent's birth date is read.
+    const select = (
+      mockedPrisma.member.findMany.mock.calls[0][0] as {
+        select: { parent: { select: Record<string, unknown> } };
+      }
+    ).select;
+    expect(select.parent.select).not.toHaveProperty("dateOfBirth");
+    expectNoDateOfBirth(body);
+  });
+
   it("labels a member with no date of birth as unavailable", async () => {
     mockedAuth.mockResolvedValue(membershipViewerSession);
     mockedPrisma.member.findMany.mockResolvedValue([
@@ -283,9 +339,36 @@ describe("GET /api/admin/family-groups/[id] — the editor payload (#2568)", () 
       expect.objectContaining({ id: "parent-1", ageLabel: "52 years" }),
       expect.objectContaining({ id: "toddler-1", ageLabel: "3 years 8 months" }),
     ]);
-    expectNoDateOfBirth(body.members);
-    // The credential fields are still stripped, as before.
-    expect(serialise(body.members)).not.toContain("passwordHash");
+    // The WHOLE body, not just the sanitised `members` array. Scoping this to
+    // `body.members` is what let a `...group` spread re-export the raw
+    // `memberships` relation — dates of birth and password hashes included —
+    // beside the array the map had carefully cleaned.
+    expectNoDateOfBirth(body);
+  });
+
+  it("returns only the four keys the editor reads, and no raw membership rows", async () => {
+    mockedAuth.mockResolvedValue(membershipManagerSession);
+    mockedPrisma.familyGroup.findUnique.mockResolvedValue(groupRow as never);
+
+    const { GET } = await import("@/app/api/admin/family-groups/[id]/route");
+    const body = await (
+      await GET(new NextRequest("http://localhost/api/admin/family-groups/fg-1"), {
+        params: Promise.resolve({ id: "fg-1" }),
+      })
+    ).json();
+
+    expect(Object.keys(body).sort()).toEqual(["createdAt", "id", "members", "name"]);
+    // No second, unsanitised copy of the same people under another key.
+    expect(body).not.toHaveProperty("memberships");
+    // Credential columns are read to derive `hasPassword` and never forwarded —
+    // anywhere in the payload, under any key.
+    const text = serialise(body);
+    expect(text).not.toContain("passwordHash");
+    expect(text).not.toContain("passwordChangedAt");
+    expect(text).not.toContain("lastLoginAt");
+    expect(text).not.toContain("hashed");
+    expect(body.members[0].hasPassword).toBe(true);
+    expect(body.members[1].hasPassword).toBe(false);
   });
 
   it("denies a general administrator with an unrelated role", async () => {

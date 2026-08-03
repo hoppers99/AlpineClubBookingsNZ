@@ -34,6 +34,7 @@ import { cn } from "@/lib/utils";
 function labelCarriesItsOwnAgePrefix(ageLabel: string) {
   return ageLabel === AGE_UNAVAILABLE_LABEL;
 }
+
 export function MemberAgeChip({
   ageLabel,
   className,

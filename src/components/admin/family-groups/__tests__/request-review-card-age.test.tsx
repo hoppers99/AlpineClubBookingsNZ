@@ -205,6 +205,82 @@ describe("request review card — where the age appears (#2568)", () => {
 
     expect(screen.getAllByText("Age unavailable").length).toBeGreaterThan(0);
   });
+
+  it("states the unavailable label once, never stuttered", () => {
+    // Both presentations put "Age" in front of the value — visibly in the line,
+    // as sr-only text in the chip — and the sentinel already starts with it. A
+    // legacy member with no recorded date of birth read "Age: Age unavailable"
+    // and was announced "Age Age unavailable".
+    const { container } = renderCard(
+      buildChildRequest({ childAgeLabel: "Age unavailable" }),
+      { searchedMembers: [buildMatch({ ageLabel: "Age unavailable" })] }
+    );
+
+    expect(container.textContent).not.toContain("Age: Age unavailable");
+    expect(container.textContent).not.toContain("Age Age unavailable");
+    for (const rendering of screen.getAllByText("Age unavailable")) {
+      // Nothing wrapping the value adds a second "Age" — including the
+      // visually-hidden prefix, which `textContent` would show.
+      expect(rendering.textContent).toBe("Age unavailable");
+    }
+    // The label text itself is untouched: the owner specification fixes it.
+    expect(screen.getAllByText("Age unavailable").length).toBeGreaterThan(1);
+  });
+
+  it("still prefixes a real age, so a bare number is never read out alone", () => {
+    renderCard(buildChildRequest(), { searchedMembers: [buildMatch()] });
+
+    expect(screen.getByText("19 years").textContent).toBe("Age 19 years");
+    expect(screen.getByText("3 years 8 months").parentElement?.textContent).toContain(
+      "Age: 3 years 8 months"
+    );
+  });
+});
+
+describe("request review card — age and age tier are different questions (#2568)", () => {
+  it("states that a ranged age-tier label is as at the season start", () => {
+    // Age is as at today; the tier is fixed at the season start. A child born
+    // 15 Jun 2021 is INFANT ("Infant (0-4)") for the whole 2026 season and
+    // "5 years" old from 15 Jun 2026, so the two must not read as a
+    // contradiction on the same panel.
+    renderCard(
+      buildChildRequest({
+        childAgeLabel: "5 years",
+        requestedAgeTier: "INFANT",
+        requestedAgeTierLabel: "Infant (0-4)",
+      })
+    );
+
+    const tierLine = screen.getByText(/Requested age tier/);
+    expect(tierLine.textContent).toContain("as at season start");
+    expect(tierLine.textContent).toContain("Infant (0-4)");
+    expect(screen.getByText("5 years")).toBeTruthy();
+  });
+
+  it("states the same basis on the create-a-dependant panel", () => {
+    renderCard(
+      buildChildRequest({
+        childAgeLabel: "5 years",
+        canCreateMemberFromRequest: true,
+        requestedAgeTier: "INFANT",
+        requestedAgeTierLabel: "Infant (0-4)",
+      }),
+      { requestSelection: "__create__" }
+    );
+
+    expect(
+      screen.getByText(/Infant \(0-4\) as at season start/)
+    ).toBeTruthy();
+  });
+
+  it("says nothing about a season start when no tier could be derived", () => {
+    const { container } = renderCard(
+      buildChildRequest({ childDateOfBirth: null, childAgeLabel: null })
+    );
+
+    expect(container.textContent).toContain("Requested age tier: Not available without DOB");
+    expect(container.textContent).not.toContain("as at season start");
+  });
 });
 
 describe("request review card — presentation rules (#2568)", () => {
