@@ -363,4 +363,40 @@ describe("listWebsiteMenuPages", () => {
     );
     expect(pages.map((page) => page.slug)).toEqual(["about"]);
   });
+
+  // #2352 slice-1 review. The slice reserved every first segment that belongs to
+  // another route group, so a row saved before that rule can still be published
+  // while the catch-all refuses to serve it. Published plus a menu title is no
+  // longer enough to be advertised: the header and the mobile drawer would keep a
+  // nav link pointing at a 404, with no signal to the visitor or the operator.
+  it("drops a published page whose slug is now a reserved prefix", async () => {
+    mocks.pageContentFindMany.mockResolvedValue([
+      { slug: "about", menuTitle: "About", title: "About", path: "/about" },
+      {
+        slug: "lodge/history",
+        menuTitle: "Lodge History",
+        title: "Lodge History",
+        path: "/lodge/history",
+      },
+      {
+        slug: "notices/archive",
+        menuTitle: "Notice Archive",
+        title: "Notice Archive",
+        path: "/notices/archive",
+      },
+      { slug: "pay", menuTitle: "Pay", title: "Pay", path: "/pay" },
+      // A reserved word deeper in the slug is NOT reserved by this rule — only the
+      // first segment is, because that is the only one the classifier reads.
+      {
+        slug: "trips/pay",
+        menuTitle: "Trip Payments",
+        title: "Trip Payments",
+        path: "/trips/pay",
+      },
+    ]);
+
+    const pages = await listWebsiteMenuPages();
+
+    expect(pages.map((page) => page.slug)).toEqual(["about", "trips/pay"]);
+  });
 });

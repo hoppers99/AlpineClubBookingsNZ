@@ -14,10 +14,8 @@ import {
 import { getGoogleSetupState } from "@/lib/google-config";
 import { prisma } from "@/lib/prisma";
 import logger from "@/lib/logger";
-import {
-  invalidatePublicLayoutConfig,
-  PUBLIC_LAYOUT_CACHE_TAGS,
-} from "@/lib/public-layout-cache";
+import { PUBLIC_LAYOUT_CACHE_TAGS } from "@/lib/public-layout-cache";
+import { revalidatePublicSite } from "@/lib/public-content-revalidation";
 import {
   CLUB_MODULE_SETTINGS_COLUMN_SELECT,
   MODULE_KEYS,
@@ -165,10 +163,12 @@ export async function PUT(request: Request) {
         )[0]
       : await write;
 
-  invalidatePublicLayoutConfig(
-    PUBLIC_LAYOUT_CACHE_TAGS.modules,
-    PUBLIC_LAYOUT_CACHE_TAGS.capacity,
-  );
+  // Full-route clear as well as the tag clear (#2352 F3): the module flags are
+  // rendered INTO the public layout (the analytics banner, the nav), so under
+  // full-route ISR a tag-only invalidation left every stored page showing the old
+  // switch position until the 300-second backstop lapsed. `revalidatePublicSite()`
+  // always clears the capacity tag, so it is not repeated here.
+  revalidatePublicSite(PUBLIC_LAYOUT_CACHE_TAGS.modules);
 
   return NextResponse.json(buildClubModuleSettingsPayload(record));
 }

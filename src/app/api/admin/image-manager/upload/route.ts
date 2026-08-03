@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/session-guards";
+import { revalidatePublicSite } from "@/lib/public-content-revalidation";
 import fs from "fs/promises";
 import path from "path";
 import {
@@ -193,6 +194,15 @@ export async function POST(request: NextRequest) {
         error: `Failed to save file (${e.code ?? "unknown error"})`,
       });
     }
+  }
+
+  // #2352 slice-1 review. `{{photo-gallery}}` / `{{photo-slideshow}}` are resolved
+  // SERVER-side at render time — `listPhotoGalleryImagesFromDirectory()` in
+  // src/lib/page-content-embeds.ts does an `fs.readdir` and passes the result as
+  // props — so under full-route ISR that listing is frozen into the stored page. A
+  // batch that stored nothing changed nothing, so only clear on a real write.
+  if (results.some((result) => result.ok)) {
+    revalidatePublicSite();
   }
 
   return NextResponse.json({ results });

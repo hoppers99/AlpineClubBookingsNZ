@@ -16,10 +16,8 @@ import { prisma } from "@/lib/prisma";
 import { primeEmailPalette } from "@/lib/email-theme";
 import logger from "@/lib/logger";
 import { requireAdmin } from "@/lib/session-guards";
-import {
-  invalidatePublicLayoutConfig,
-  PUBLIC_LAYOUT_CACHE_TAGS,
-} from "@/lib/public-layout-cache";
+import { PUBLIC_LAYOUT_CACHE_TAGS } from "@/lib/public-layout-cache";
+import { revalidatePublicSite } from "@/lib/public-content-revalidation";
 
 /**
  * Prisma's transaction contention codes: P2028 (transaction API error, which
@@ -100,8 +98,27 @@ export async function PUT(request: NextRequest) {
   // surfaces the before/after adjustment as a disclosure instead.
   try {
     const theme = await saveClubTheme(parsed.data);
-    invalidatePublicLayoutConfig(PUBLIC_LAYOUT_CACHE_TAGS.theme);
-    revalidatePath("/(website)", "layout");
+    // #2352 F3. This save is the COMPLETE-SETUP transition as well as an ordinary
+    // theme edit, and both need the full-route store cleared, not just the theme
+    // tag:
+    //  • an ordinary edit changes the CSS and logo the public layout renders into
+    //    every stored page;
+    //  • completing setup ends the "Site setup in progress" state, and any page
+    //    stored while the layout was painting the holding screen must not outlive
+    //    it. (The #2420 proxy gate answers 503 before a render, so this is the
+    //    narrow case where the gate's 15-second memo said "complete" while the
+    //    layout still read an unfinished row.)
+    //
+    // The transition half is asserted at the UNIT level only — `site-style-api.test.ts`
+    // pins that this PUT issues the call. The pre-setup Playwright project cannot
+    // cover it: it flips `ClubTheme` directly, because `saveClubTheme()` never clears
+    // `completedAt`, so this handler never runs in that flow. An earlier version of
+    // this comment implied otherwise.
+    //
+    // `revalidatePublicSite()` replaces `revalidatePath("/(website)", "layout")`
+    // here: the route-group form was never verified against the full-route store,
+    // and one form used everywhere is one thing to verify rather than two.
+    revalidatePublicSite(PUBLIC_LAYOUT_CACHE_TAGS.theme);
     revalidatePath("/(authenticated)", "layout");
     revalidatePath("/(admin)", "layout");
     // #1912: HTML emails resolve their brand colours from a cached copy of this

@@ -9,6 +9,24 @@ import {
 } from "@/lib/page-content-html";
 import { buildEmbeddedBody } from "@/lib/page-content-embeds";
 
+/**
+ * Held back from static rendering on purpose (#2352 slice 1, owner decision D4).
+ *
+ * `(website)/layout.tsx` no longer reads the session or the request, so without
+ * this line Next would prerender this route AT BUILD — and a build has no database
+ * (`Dockerfile` points `DATABASE_URL` at an unreachable host) and no request, so it
+ * would freeze an empty home page carrying inline scripts with no CSP nonce. That
+ * second half is a build failure, not a silent one:
+ * `scripts/ci/check-prerendered-script-nonces.mjs` refuses build-time HTML whose
+ * inline scripts are unnonced.
+ *
+ * Slice 2 makes this page static, and its first task is choosing how a build-time
+ * render acquires the per-release nonce. That is a design question of its own, which
+ * is exactly why D4 split the work and why this route waits for a measured gate
+ * rather than riding along.
+ */
+export const dynamic = "force-dynamic";
+
 function pageSlugFromPath(path: string) {
   return path.replace(/^\//, "") || "home";
 }

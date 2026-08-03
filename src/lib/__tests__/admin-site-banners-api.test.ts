@@ -20,11 +20,19 @@ const mocks = vi.hoisted(() => ({
     userAgent: "vitest",
   })),
   invalidatePublicLayoutConfig: vi.fn(),
+  revalidatePublicSite: vi.fn(),
 }));
 
 vi.mock("@/lib/public-layout-cache", () => ({
   PUBLIC_LAYOUT_CACHE_TAGS: { banners: "public-layout:banners" },
   invalidatePublicLayoutConfig: mocks.invalidatePublicLayoutConfig,
+}));
+
+// #2352 F3: banners are rendered INTO the public layout, so the route now clears
+// the full-route ISR store as well as the tagged data caches. Stubbed because
+// `revalidatePath` needs a static-generation store that no unit test has.
+vi.mock("@/lib/public-content-revalidation", () => ({
+  revalidatePublicSite: mocks.revalidatePublicSite,
 }));
 
 vi.mock("@/lib/auth", () => ({
@@ -290,7 +298,7 @@ describe("Admin site banners API", () => {
       const body = await response.json();
 
       expect(response.status).toBe(201);
-      expect(mocks.invalidatePublicLayoutConfig).toHaveBeenCalledWith(
+      expect(mocks.revalidatePublicSite).toHaveBeenCalledWith(
         "public-layout:banners",
       );
       expect(mocks.siteBannerCreate).toHaveBeenCalledWith({
@@ -331,7 +339,7 @@ describe("Admin site banners API", () => {
       const body = await response.json();
 
       expect(response.status).toBe(200);
-      expect(mocks.invalidatePublicLayoutConfig).toHaveBeenCalledWith(
+      expect(mocks.revalidatePublicSite).toHaveBeenCalledWith(
         "public-layout:banners",
       );
       expect(mocks.siteBannerUpdate).toHaveBeenCalledWith({
@@ -386,7 +394,7 @@ describe("Admin site banners API", () => {
       );
 
       expect(response.status).toBe(200);
-      expect(mocks.invalidatePublicLayoutConfig).toHaveBeenCalledWith(
+      expect(mocks.revalidatePublicSite).toHaveBeenCalledWith(
         "public-layout:banners",
       );
       expect(mocks.siteBannerDelete).toHaveBeenCalledWith({

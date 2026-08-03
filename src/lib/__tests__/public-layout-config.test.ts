@@ -41,7 +41,6 @@ import {
 } from "@/lib/public-layout-config";
 import {
   invalidatePublicLayoutConfig,
-  invalidatePublicLodgeCapacity,
   PUBLIC_LAYOUT_CACHE_TAGS,
 } from "@/lib/public-layout-cache";
 
@@ -96,8 +95,14 @@ describe("public layout config cache", () => {
     ]);
   });
 
-  it("provides a capacity-specific invalidation for bed configuration writes", () => {
-    invalidatePublicLodgeCapacity();
+  // There is no capacity-specific invalidation any more (#2352 slice-1 review).
+  // A capacity write has to clear the STORED public pages, not just the tag —
+  // `{{lodge-capacity}}` is resolved from uncached reads, so the page's ISR entry
+  // carries no capacity tag for `revalidateTag` to expire. The nine writers now call
+  // `revalidatePublicSite()`, which is pinned by
+  // public-content-invalidation-contract.test.ts.
+  it("still exposes the tag itself for the shared helper to clear", () => {
+    invalidatePublicLayoutConfig(PUBLIC_LAYOUT_CACHE_TAGS.capacity);
     expect(mocks.revalidateTag).toHaveBeenCalledWith(
       PUBLIC_LAYOUT_CACHE_TAGS.capacity,
       "max",

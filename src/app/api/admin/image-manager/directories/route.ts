@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/session-guards";
+import { revalidatePublicSite } from "@/lib/public-content-revalidation";
 import fs from "fs/promises";
 import path from "path";
 import {
@@ -99,6 +100,12 @@ export async function POST(request: NextRequest) {
     // path-traversal barrier is local. The images root and parent already exist
     // (GET ensures the root; the UI only creates inside an existing directory).
     await fs.mkdir(newAbs);
+    // Every write to the images tree clears the stored public pages (#2352 slice-1
+    // review): the photo-gallery embeds resolve their file list with an `fs.readdir`
+    // at render time, so that listing is frozen into a stored page. A rename or a
+    // recursive delete changes what a `{{photo-gallery:<dir>}}` token resolves to
+    // just as much as an upload does.
+    revalidatePublicSite();
     return NextResponse.json({ ok: true });
   } catch (err) {
     const e = err as NodeJS.ErrnoException;
@@ -191,6 +198,7 @@ export async function PATCH(request: NextRequest) {
 
   try {
     await fs.rename(oldAbs, newAbs);
+    revalidatePublicSite();
     return NextResponse.json({ ok: true });
   } catch {
     return NextResponse.json(
@@ -236,6 +244,7 @@ export async function DELETE(request: NextRequest) {
 
   try {
     await fs.rm(absPath, { recursive: true });
+    revalidatePublicSite();
     return NextResponse.json({ ok: true });
   } catch {
     return NextResponse.json(

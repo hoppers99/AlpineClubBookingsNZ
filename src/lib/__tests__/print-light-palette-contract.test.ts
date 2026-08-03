@@ -650,7 +650,7 @@ const PRINTABLE_SURFACE_ROOTS = [
   "src/app/(admin)/admin/roster",
   "src/app/(admin)/admin/induction",
   "src/app/(authenticated)/lodge-instructions",
-  "src/app/(website)/hut-leader-instructions",
+  "src/app/(website-dynamic)/hut-leader-instructions",
   "src/components/ui",
   "src/components/admin/date-range-controls.tsx",
   "src/components/lodge-select.tsx",

@@ -200,11 +200,12 @@ describe("a published CMS page still answers 200", () => {
  * The pre-setup state at the ROUTE level, asserted so it stays uniform (#2405
  * security review).
  *
- * With `ClubTheme.completedAt` NULL, `(website)/layout.tsx` returns its "Site
+ * With `ClubTheme.completedAt` NULL, the shared public chrome
+ * (`src/components/website/website-chrome.tsx`) returns its "Site
  * setup in progress" screen instead of `{children}`: the page component never
  * runs, and misses and real pages are answered identically. A `notFound()` from
  * `generateMetadata()` would break out of that — the root not-found boundary
- * sits ABOVE the layout — so unknown paths would answer 404 while published
+ * sits ABOVE both public layouts — so unknown paths would answer 404 while published
  * pages still rendered the holding screen. That difference is an enumeration
  * oracle: an anonymous visitor could walk an unlaunched club's site and learn
  * exactly which pages exist, and the 404 body would serve database-backed

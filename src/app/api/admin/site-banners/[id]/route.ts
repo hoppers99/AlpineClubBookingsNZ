@@ -15,10 +15,8 @@ import {
   serializeAdminSiteBanner,
   siteBannerAuditSnapshot,
 } from "@/lib/site-banners";
-import {
-  invalidatePublicLayoutConfig,
-  PUBLIC_LAYOUT_CACHE_TAGS,
-} from "@/lib/public-layout-cache";
+import { PUBLIC_LAYOUT_CACHE_TAGS } from "@/lib/public-layout-cache";
+import { revalidatePublicSite } from "@/lib/public-content-revalidation";
 
 const paramsSchema = z.object({
   id: z.string().min(1),
@@ -137,7 +135,8 @@ export async function PATCH(
     return updated;
   });
 
-  invalidatePublicLayoutConfig(PUBLIC_LAYOUT_CACHE_TAGS.banners);
+  // Full-route clear as well as the tag clear (#2352 F3) — see the POST route.
+  revalidatePublicSite(PUBLIC_LAYOUT_CACHE_TAGS.banners);
 
   return NextResponse.json({ banner: serializeAdminSiteBanner(banner) });
 }
@@ -190,7 +189,8 @@ export async function DELETE(
     );
   });
 
-  invalidatePublicLayoutConfig(PUBLIC_LAYOUT_CACHE_TAGS.banners);
+  // Full-route clear as well as the tag clear (#2352 F3) — see the POST route.
+  revalidatePublicSite(PUBLIC_LAYOUT_CACHE_TAGS.banners);
 
   return NextResponse.json({ ok: true });
 }

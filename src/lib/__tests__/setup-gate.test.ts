@@ -175,8 +175,19 @@ describe("which addresses the setup gate covers", () => {
    * group would start answering 503 during setup unless it is listed. This walks
    * the route tree and fails when that happens, which is what keeps the list
    * from quietly going stale.
+   *
+   * BOTH public route groups count as the website (#2352 D1 narrowing, 3 Aug
+   * 2026). `(website-dynamic)` holds `/hut-leader-instructions`, `/join/[code]`
+   * and `/join/verify/[token]`: they carry a per-request CSP nonce instead of the
+   * fixed per-release one, and that is the ONLY thing the group changes about
+   * them. They are public website addresses, so the holding screen still stands in
+   * for them before setup is complete — and treating the new group as "some other
+   * route group" here would have demanded exactly the opposite, that
+   * `hut-leader-instructions` and `join` be added to the exemption list.
    */
-  it("exempts every top-level route that lives outside the (website) group", () => {
+  const PUBLIC_WEBSITE_GROUPS = ["(website)", "(website-dynamic)"];
+
+  it("exempts every top-level route that lives outside the public website groups", () => {
     const appDir = path.join(process.cwd(), "src/app");
     const directories = (dir: string) =>
       readdirSync(dir, { withFileTypes: true })
@@ -203,7 +214,7 @@ describe("which addresses the setup gate covers", () => {
           continue;
         }
 
-        if (entry === "(website)") {
+        if (PUBLIC_WEBSITE_GROUPS.includes(entry)) {
           websiteSegments.push(segment);
           continue;
         }
@@ -526,16 +537,22 @@ describe("the proxy applies the gate end to end", () => {
   });
 });
 
-describe("the layout's fallback screen says the same thing", () => {
+describe("the shared chrome's fallback screen says the same thing", () => {
   it("renders its pre-setup branch from the shared copy", () => {
-    // The layout still has to hold a copy of this screen: the gate answers only
-    // for a path it CLAIMS, and it refuses asset-extension paths on purpose, so
-    // such a URL that no route serves reaches the layout directly. It cannot set
-    // a status, so its copy is 200 — but it must never say something different
-    // from the 503 body. Checked structurally because the branch only renders
-    // inside a request scope.
+    // The render-time fallback still has to hold a copy of this screen: the gate
+    // answers only for a path it CLAIMS, and it refuses asset-extension paths on
+    // purpose, so such a URL that no route serves reaches the render directly. It
+    // cannot set a status, so its copy is 200 — but it must never say something
+    // different from the 503 body. Checked structurally because the branch only
+    // renders inside a request scope.
+    //
+    // It lives in the shared chrome since the D1 narrowing (3 Aug 2026), which is
+    // what makes ONE copy cover both public route groups — the three per-request
+    // pages get the same holding screen as the five approved ones, from the same
+    // strings. `scripts/ci/check-website-render-modes.mjs` fails the build if
+    // either layout stops composing this component.
     const source = readFileSync(
-      path.join(process.cwd(), "src/app/(website)/layout.tsx"),
+      path.join(process.cwd(), "src/components/website/website-chrome.tsx"),
       "utf8",
     );
 

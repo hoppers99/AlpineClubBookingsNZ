@@ -216,6 +216,14 @@ jobs:
       - name: Test
         run: npm test
 
+      # #2352: the public website's render modes are load-bearing and nothing else
+      # notices when one changes — a route that quietly stops being per-request
+      # gets prerendered at build with no database and no CSP nonce, and a route
+      # that quietly starts being per-request just costs CPU. Source-only, so it
+      # runs before the build rather than after it.
+      - name: Check public website render modes
+        run: node scripts/ci/check-website-render-modes.mjs
+
       - name: Build
         run: npm run build
 
@@ -226,6 +234,14 @@ jobs:
       # if that output is missing rather than passing on an empty scan.
       - name: Check prerendered pages carry script nonces
         run: node scripts/ci/check-prerendered-script-nonces.mjs
+
+      # Also after the build, and for the half the source check above cannot see
+      # (#2352): whether Next AGREED. A component under (website) that reads
+      # auth()/cookies()/headers() opts the CMS catch-all out of the full-route
+      # cache silently — build green, tests green, and the only symptom is the CPU
+      # cost coming back. The manifest is where the answer is written down.
+      - name: Check the build's cached-route set
+        run: node scripts/ci/check-website-prerender-manifest.mjs
 
   migration-drift:
     name: Migration drift check
@@ -488,8 +504,25 @@ jobs:
             --build-arg NEXT_PUBLIC_SENTRY_DSN="${NEXT_PUBLIC_SENTRY_DSN}" \
             --build-arg GIT_COMMIT_SHA="${GIT_COMMIT_SHA}" \
             --build-arg KNOWLEDGE_BUNDLE_OBSERVED_AT="${KNOWLEDGE_BUNDLE_OBSERVED_AT}" \
+            --build-arg RELEASE_ID="${GIT_COMMIT_SHA}" \
             --tag "${IMAGE_REF}" \
             .
+
+      # #2352 D1: the public website's CSP nonce is derived from RELEASE_ID at
+      # RUNTIME, so the build arg has to survive into the finished image's own
+      # environment. The Dockerfile warns during the build; this fails the job,
+      # because a silent fallback to a per-process nonce would mean a page stored
+      # by one process never hydrating when another one serves it. Reads the value
+      # exactly the way src/lib/release-nonce.ts does.
+      - name: Assert the release identifier is readable in the image
+        run: |
+          actual="$(docker run --rm --entrypoint node "${IMAGE_REF}" -e 'process.stdout.write((process.env.RELEASE_ID ?? "").trim())')"
+          if [ "${actual}" != "${GIT_COMMIT_SHA}" ]; then
+            echo "RELEASE_ID in the image is '${actual}', expected '${GIT_COMMIT_SHA}'." >&2
+            echo "The build arg did not reach the runtime ENV — see the RELEASE_ID block in Dockerfile." >&2
+            exit 1
+          fi
+          echo "RELEASE_ID is readable in the image and matches the built commit."
 
       - name: Fail on CRITICAL image vulnerabilities
         uses: aquasecurity/trivy-action@v0.36.0
@@ -556,6 +589,13 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
+      # RELEASE_ID (#2352 D1) is passed HERE because this is the image production
+      # runs, and it was the one missing the argument: docker-image-security passed
+      # it to a throwaway scan image and asserted on that, while the published
+      # image was built without it and nothing checked. The deploy script's own
+      # export could not cover for it either — prepare_application_images()
+      # returns early when using prebuilt images, which is the ordinary GHCR path.
+      # Slice-1 review finding.
       - name: Build and push app image
         uses: docker/build-push-action@v7
         with:
@@ -567,8 +607,23 @@ jobs:
             NEXT_PUBLIC_SENTRY_DSN=${{ env.NEXT_PUBLIC_SENTRY_DSN }}
             GIT_COMMIT_SHA=${{ env.GIT_COMMIT_SHA }}
             KNOWLEDGE_BUNDLE_OBSERVED_AT=${{ env.KNOWLEDGE_BUNDLE_OBSERVED_AT }}
+            RELEASE_ID=${{ env.GIT_COMMIT_SHA }}
           cache-from: type=gha,scope=alpineclubbookingsnz-app
           cache-to: type=gha,mode=max,scope=alpineclubbookingsnz-app
+
+      # The assertion moved onto the artefact that ships. docker-image-security
+      # still asserts on its own scan image, which is the earlier signal; this is
+      # the one DEPLOYMENT.md and docs/SECURITY-ATTACK-SURFACE.md are describing
+      # when they say the release identifier is readable in the deployed image.
+      - name: Assert RELEASE_ID is readable in the PUBLISHED app image
+        run: |
+          actual="$(docker run --rm --entrypoint node "${APP_IMAGE}" -e 'process.stdout.write((process.env.RELEASE_ID ?? "").trim())')"
+          if [ "${actual}" != "${GIT_COMMIT_SHA}" ]; then
+            echo "RELEASE_ID in ${APP_IMAGE} is '${actual}', expected '${GIT_COMMIT_SHA}'." >&2
+            echo "Public website pages would fall back to a per-build nonce seed — see src/lib/release-nonce.ts." >&2
+            exit 1
+          fi
+          echo "RELEASE_ID is readable in the published app image and matches the built commit."
 
       - name: Build and push migrate image
         uses: docker/build-push-action@v7

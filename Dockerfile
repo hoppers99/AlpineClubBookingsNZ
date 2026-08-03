@@ -46,6 +46,17 @@ ARG KNOWLEDGE_BUNDLE_OBSERVED_AT=""
 ENV KNOWLEDGE_BUNDLE_OBSERVED_AT=$KNOWLEDGE_BUNDLE_OBSERVED_AT
 RUN npm run diagnostics:bundle
 
+# Release identifier for the per-release public-website CSP nonce (#2352 D1).
+# Declared in the BUILDER as well as the runner on purpose: a bundle that inlines
+# `process.env` at build time captures this value, a runtime read sees the runner's,
+# and setting both from the one ARG is what stops the two disagreeing. CI and
+# scripts/run-production-blue-green-deploy.sh pass the commit SHA. Absent (a bare
+# `docker build`), src/lib/release-nonce.ts falls back to GIT_COMMIT_SHA and then to
+# one random value per process, logging an error — see that file for why a
+# multi-reader deployment must not rely on the fallback.
+ARG RELEASE_ID=""
+ENV RELEASE_ID=$RELEASE_ID
+
 RUN npx prisma generate
 RUN npm run build
 
@@ -80,6 +91,29 @@ COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/.artifacts ./.artifacts
 
 RUN mkdir -p .next/cache && chown nextjs:nodejs .next/cache
+
+# Per-release public-website CSP nonce (#2352 D1). The value has to be readable
+# from the FINISHED image's own environment, because that is where
+# src/lib/release-nonce.ts reads it. Repeating the ARG here is what promotes the
+# build argument into a runtime ENV; the check below is what proves it, so a
+# Dockerfile that passed the ARG but forgot the ENV — or a compose file that never
+# forwarded it — fails visibly at build instead of falling back silently at
+# runtime. Empty is tolerated (a bare `docker build` has no release), and says so.
+ARG RELEASE_ID=""
+ENV RELEASE_ID=$RELEASE_ID
+# GIT_COMMIT_SHA is declared in the runner too, so src/lib/release-nonce.ts's
+# documented SECOND fallback is real rather than aspirational. It used to be a
+# builder-only ENV, so a runtime read saw nothing and the chain skipped straight
+# past it (slice-1 review finding). Anything that passes the knowledge-bundle arg
+# but not RELEASE_ID now still gets a per-release nonce.
+ARG GIT_COMMIT_SHA=""
+ENV GIT_COMMIT_SHA=$GIT_COMMIT_SHA
+# Empty is tolerated rather than fatal: a bare `docker build` and a plain
+# `docker compose build` both legitimately have no release, and next.config.ts
+# substitutes a per-BUILD seed into every bundle for exactly that case, so the
+# nonce is still one value per release. The message says which state the image is
+# in; CI asserts the real value on the image it publishes (publish-ghcr-images).
+RUN node -e "const id=(process.env.RELEASE_ID??'').trim(); const sha=(process.env.GIT_COMMIT_SHA??'').trim(); if(id===''&&sha===''){console.warn('WARNING: neither RELEASE_ID nor GIT_COMMIT_SHA is set in the runtime image. The public website CSP nonce falls back to the build-time seed baked into the bundles (#2352). That is safe, but the deployed revision is not identifiable from the image.');}else{console.log('Release identifier is readable in the runtime image (RELEASE_ID: '+id.length+' characters, GIT_COMMIT_SHA: '+sha.length+' characters).');}"
 
 # Image Manager uploads are written here at runtime. Create the directory owned
 # by the app user so that a freshly-mounted named volume (docker-compose:

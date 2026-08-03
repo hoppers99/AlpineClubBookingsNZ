@@ -6,6 +6,15 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   getSiteFooterContent: vi.fn(),
   getCachedClubIdentity: vi.fn(),
+  pathname: { current: "/" },
+}));
+
+// #2352: the <footer> element is a client shell so its data-page-slug comes from
+// the URL rather than the `x-page-slug` request header the layout used to read —
+// that header read was one of the two lines forcing a full render on every public
+// page view.
+vi.mock("next/navigation", () => ({
+  usePathname: () => mocks.pathname.current,
 }));
 
 vi.mock("@/components/website-logo", () => ({
@@ -29,6 +38,28 @@ import { starterSiteContent } from "../../../prisma/starter-site-content";
 describe("WebsiteFooter", () => {
   beforeEach(() => {
     mocks.getCachedClubIdentity.mockResolvedValue({ name: "Test Alpine Club" });
+    mocks.pathname.current = "/";
+  });
+
+  // #2352: an admin's custom CSS can target this attribute, so it has to keep
+  // carrying the same slug the page sections use — now derived from the URL.
+  it.each([
+    ["/", "home"],
+    ["/about", "about"],
+    ["/about/history", "about/history"],
+  ])("stamps data-page-slug from the URL: %s -> %s", async (pathname, slug) => {
+    mocks.pathname.current = pathname;
+    mocks.getSiteFooterContent.mockResolvedValue({
+      blurbHtml: "",
+      quickLinksHtml: "",
+      affiliationsHtml: "",
+    });
+
+    const { container } = render(await WebsiteFooter({ logoDataUrl: null }));
+
+    expect(container.querySelector("footer")?.getAttribute("data-page-slug")).toBe(
+      slug,
+    );
   });
 
   it("renders admin-managed footer sections beside code-managed legal links", async () => {
@@ -38,7 +69,7 @@ describe("WebsiteFooter", () => {
       affiliationsHtml: "<h3>Affiliations</h3><ul><li>FMC</li></ul>",
     });
 
-    render(await WebsiteFooter({ pageSlug: "home", logoDataUrl: null }));
+    render(await WebsiteFooter({ logoDataUrl: null }));
 
     expect(screen.getByText("Test Alpine Club")).toBeTruthy();
     expect(screen.getByText("Admin blurb")).toBeTruthy();
@@ -70,7 +101,7 @@ describe("WebsiteFooter", () => {
       affiliationsHtml: "<h3>Affiliations</h3>",
     });
 
-    render(await WebsiteFooter({ pageSlug: "home", logoDataUrl: null }));
+    render(await WebsiteFooter({ logoDataUrl: null }));
 
     expect(screen.getByText("Test Alpine Club")).toBeTruthy();
     expect(screen.queryByText("Quick Links")).toBeNull();
@@ -94,7 +125,7 @@ describe("WebsiteFooter", () => {
     });
 
     const { container } = render(
-      await WebsiteFooter({ pageSlug: "home", logoDataUrl: null }),
+      await WebsiteFooter({ logoDataUrl: null }),
     );
 
     expect(screen.getByText("Quick Links")).toBeTruthy();
@@ -123,7 +154,7 @@ describe("WebsiteFooter", () => {
       affiliationsHtml: "",
     });
 
-    render(await WebsiteFooter({ pageSlug: "home", logoDataUrl: null }));
+    render(await WebsiteFooter({ logoDataUrl: null }));
 
     expect(screen.getByText("Renamed Ski Club")).toBeTruthy();
     expect(
