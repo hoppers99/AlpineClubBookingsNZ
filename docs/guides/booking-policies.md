@@ -261,6 +261,47 @@ review you have already decided is only re-raised if the problem genuinely
 changes — different guests or different nights — not because somebody corrected a
 spelling.
 
+**When "another booking on the same account" is on, a change can be refused.**
+This is the one behaviour the wider setting adds beyond coverage itself, and it is
+worth understanding before you turn it on.
+
+Once one of a member's bookings is relying on the adult member staying on another,
+the two are linked in practice. A member who then tries to cancel that other
+booking, move its dates, change its lodge, take the adult member off it, or lose the
+member-guest consent that put them there, is **stopped** with a message naming which
+of their own bookings would be left uncovered, the lodge and the exact nights. They
+are told to sort the affected booking out first, provide other cover, or ring a
+Booking Officer. Nothing is written: their booking is exactly as it was.
+
+Two things it deliberately does NOT do. It never mentions anybody else's booking —
+every booking in that message is on the member's own account, and there is no way
+for another account's booking to appear in it. And it never stops a change that
+leaves alternative cover: if a THIRD booking on the account still has a qualifying
+adult member on those nights, the change goes through and nothing is flagged,
+because the rule asks whether cover exists, not whether one particular person is
+still there.
+
+**You are never stopped, and that is why the incident exists.** An officer's change
+always goes through — you are the authority the member's message points at, so
+refusing you would be circular, and some changes (a membership lapsing, an
+administrative cancellation, a failed payment) cannot sensibly be blocked at all.
+What happens instead:
+
+- the affected booking **stays confirmed**, keeps its beds and keeps its payments.
+  Nothing is ever cancelled automatically;
+- it gets an urgent entry on the **Bookings without required adult member cover**
+  card on the admin dashboard's stuck-state list, which is how anybody finds out;
+- the booking owner is emailed once, naming the lodge and the uncovered nights;
+- the whole thing is in the audit log, with your reason where the screen you used
+  captured one;
+- the entry clears **by itself** when the problem goes away — cover is restored, the
+  booking is amended, an exception is approved, or the booking is cancelled. You do
+  not tick anything off.
+
+Re-running the same check does not re-send the email or duplicate the entry: the
+club tells the owner when the situation actually changes, not every time a background
+job looks at it.
+
 **Booking on behalf of a member.** If the party would trip the rule, you are
 stopped once and asked for a reason. A panel appears on the review step with a
 box for it; type the reason and click **Record the reason and create**. Saving as
@@ -338,7 +379,7 @@ because there is nowhere to ask yet.
 | Trigger days | Minimum Stay | Which weekdays activate the rule | Sat | At least one day |
 | Exception capacity handling | Minimum Stay | Whether a future exception request holds the affected capacity while it waits | Existing rows: Hold | Required on create; Hold wins when several eligible rules apply; a hold ends when the request is decided or its deadline passes (7 days, never past the first night held, never under 24 hours) |
 | Non-member guests without adult member cover | Adult Member Hosting | Allowed; allowed but sent to a Booking Officer; or stopped unless corrected or an exception is approved | Allowed (club); Use the club-wide setting (lodge) | The club-wide scope cannot inherit; no upgrade selects "stopped" |
-| Adult members who count | Adult Member Hosting | Any combination of: on the same booking; any adult member at the lodge; a nominated adult member | Inherit (lodge and club) — the built-in default is "on the same booking" | At least one must be ticked when you set your own; the two wider options are not available yet and are refused on save |
+| Adult members who count | Adult Member Hosting | Either or both of: on the same booking; on another booking on the same account | Inherit (lodge and club) — the built-in default is "on the same booking" | At least one must be ticked when you set your own; there are two options and no others |
 | Exception capacity handling | Adult Member Hosting | Whether a future exception request holds the affected capacity while it waits | None — you must choose | Required on every save; the same hold deadline applies |
 | Paid-up adult member required | Configured on [Subscription Lockout](subscription-lockout.md), not here | Refuses a booking with no paid-up adult member on it, when either somebody staying is being repriced for an unpaid subscription or the member who made the booking has one | Off (only applies when you choose "let them book, at non-member rates") | Always holds the bed while a request is pending; not configurable |
 | Show indicative pricing | Public Requests | Price shown on the public request form | off | — |

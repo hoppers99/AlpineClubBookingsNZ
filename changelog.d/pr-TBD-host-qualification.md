@@ -51,3 +51,32 @@
   stopped too and the officer is told which rule stopped it, with the request left
   exactly as it was. There is no exception link on that message, because the officer
   reading it is already the person an exception would be asked of.
+
+  **Once "another booking on the same account" is on, a change that would break
+  the cover is stopped (#2576).** When one of a member's bookings is relying on the
+  adult member staying on another, cancelling that other booking, moving its dates
+  or lodge, taking the adult member off it, or losing the member-guest consent that
+  put them there, is refused. The member is told which of their own bookings would
+  be left without cover, at which lodge, on which nights, and is pointed at the
+  three things that fix it: sort the affected booking out first, provide other
+  qualifying cover, or ring a Booking Officer. Nothing is written, so their booking
+  is exactly as it was.
+
+  It never mentions anybody else's booking — every booking named is on the member's
+  own account — and it never stops a change that leaves alternative cover in place.
+  If a third booking on the account still has a qualifying adult member on those
+  nights, the change simply goes through and nothing is flagged, because the rule
+  asks whether cover exists and not whether one particular person is still there.
+
+  **A Booking Officer is never stopped, and the club gets an urgent entry
+  instead.** Your change always goes through — you are the authority the member's
+  message points at — and so do the changes nobody can sensibly block, such as a
+  membership lapsing or a payment failing. What happens instead is that the affected
+  booking stays confirmed and keeps its beds and its payments, nothing is ever
+  cancelled automatically, the booking owner is emailed once naming the lodge and the
+  uncovered nights, and the booking appears on a new **Bookings without required
+  adult member cover** entry on the Stuck States queue. That entry clears itself when
+  the problem goes away — cover is restored, the booking is amended, an exception is
+  approved, or the booking is cancelled — so there is nothing to tick off. Repeatedly
+  re-checking the same unchanged problem does not re-send the email or duplicate the
+  entry.

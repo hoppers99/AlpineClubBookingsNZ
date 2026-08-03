@@ -227,6 +227,46 @@ policy writer takes a per-lodge capacity lock and no booking path takes the
 policy-set key, so the keyspaces are disjoint and cannot deadlock in either
 order.
 
+#### Same-owner coverage takes no new lock (#2576)
+
+`SAME_BOOKING_OWNER` makes one booking's compliance a function of ANOTHER booking's
+rows, which is exactly the shape that usually needs a new advisory-lock family. It
+does not get one, and the reason is that the coverage relationship is same-lodge by
+definition: a source must be at the same lodge on the same night. Every path that
+can confirm a booking and every path that can remove exact-night attendance already
+takes `acquireLodgeCapacityLock` for that lodge, and most take
+`pg_advisory_xact_lock(1)` as well, so two interacting writers are always contending
+for the SAME per-lodge key and cannot interleave. The race #2576 §9 names —
+"the dependent booking confirms based on source attendance; the source attendance is
+simultaneously removed" — resolves deterministically either way round:
+
+- source removal commits first → the dependent's confirmation reads it and refuses
+  (member) or escalates (officer);
+- the confirmation commits first → the removal's dependent read sees the confirmed
+  booking and is refused or escalated.
+
+`settleSameOwnerDependentCoverage` reads through the CALLER's `tx` for the same
+reason every other hosting read does, so it sees that transaction's own writes and
+the committed state of everything else.
+
+Two things deliberately sit OUTSIDE the transaction, and both would be bugs inside
+one. `HostingCoverageReevaluation` rows are written inside the authoritative
+transaction — the change and the obligation to look at its consequences commit or
+roll back together — but `drainHostingCoverageReevaluations` runs after the commit,
+on the module client, because the facts it must read are the COMMITTED ones and
+because it sends email. `settleHostingCoverageAfterCommit` is the wrapper the
+mutation paths call for that, and it never accepts a `tx`;
+`adult-member-hosting-call-sites.test.ts` asserts so tree-wide.
+
+Concurrency inside the drain is handled by guarded claims rather than locks, the
+same pattern the rest of this repository uses for exactly-one-claimant: a queue item
+is claimed by an `updateMany` guarded on `processedAt: null` AND the `attempts` value
+just read, the owner's notification by an `updateMany` guarded on
+`notifiedStateKey`, and the one-active-incident-per-booking rule by the partial
+unique index `HostingCoverageIncident_active_booking_unique` (a concurrent second
+opener loses on the index and folds into the winner). No new key is added to the
+lock-ordering table.
+
 #### Which client reads the subscription-lockout mode (#2543)
 
 The same rule, reached differently. `peekSubscriptionLockoutMode()` takes no `db`

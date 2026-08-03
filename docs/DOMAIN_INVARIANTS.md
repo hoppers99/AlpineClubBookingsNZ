@@ -2716,15 +2716,97 @@ and adds only WHERE the host may be. Its rules:
   booking observed at evaluation time; it never becomes a stored authorisation, so
   another eligible source keeps the dependent booking compliant with no incident
   and no loss-of-coverage message.
+- **Ownership is never attendance.** A booking owned by an adult member supplies
+  nothing unless a qualifying adult member is actually recorded as attending the
+  relevant lodge-night. Any qualifying adult member participant may cover, not only
+  the account holder.
+- **No capacity is consumed twice** (§15). The covering adult arrives as a
+  `hostOnly` participant: their real attendance on their own booking is evidence
+  for the dependent booking, and they are never duplicated as a guest on it. The
+  source booking's own guests remain that booking's question.
 - **Re-evaluation stays bounded** to the same `memberId`, lodge and nights. The
-  lodge-wide sweep #2575 rejected is not built.
+  lodge-wide sweep #2575 rejected is not built. A queue item names one owner, one
+  lodge and an explicit night list, so no shape of item can express a wider sweep,
+  and a malformed night list yields no work rather than an unbounded read.
+- **Coverage is existential, not an assignment.** Stated again because it is the
+  invariant most easily broken by an optimisation: nothing stores a permanent
+  dependency on a particular person or booking, both `where` builders are re-derived
+  from live rows at every evaluation, and evidence naming the source observed once
+  never becomes an authorisation.
 
-The SETTINGS surface for this scope — enum, column, resolver, admin card, API,
-config transfer — ships with the rules above; the loader that finds a same-owner
-host, and the self-service change and officer-override handling of #2576 §6 to §9,
-land in the same PR. Until they do the scope is recognised but supplies no cover,
-which is why the seam is marked in `evaluateAdultMemberHostingWithPolicy` and the
-PR stays draft.
+**Changes that would take cover away (#2576 §6 to §9).** These apply only where the
+club is on `ENFORCED` *and* has `SAME_BOOKING_OWNER` enabled: under
+`ADMIN_REVIEW_REQUIRED` an uncovered booking is a permitted state that already
+carries a pending officer review, so neither a refusal nor a second officer-facing
+record is something the club asked for.
+
+- **An ordinary member's self-service change is REFUSED** when it would leave
+  another booking on the same account uncovered — cancelling, a lodge or date
+  change, a participant-night change, removing the qualifying adult member, or
+  losing member-guest consent. `SameOwnerCoverageWouldBreakError` is a 409 raised
+  from inside the mutation transaction, so the change rolls back, and it names the
+  affected booking reference, its lodge and the uncovered nights. Same-account only:
+  nothing in `sameOwnerCoverageDependentWhere` can match another account's booking,
+  which is the privacy boundary rather than a filter applied afterwards.
+- **"Newly" uncovered is the test, not "uncovered".** A booking already carrying an
+  uncovered state cannot be fixed by abandoning today's unrelated edit, so refusing
+  over it would trap the member. The comparison is the shared material-identity key
+  (`adultMemberHostingStateKey`) against the dependent's own stored review snapshot
+  or its open incident — the same definition that decides whether an officer's
+  review decision still applies.
+- **An authorised officer's change is ALLOWED and ESCALATED** (§7, §8): the affected
+  booking keeps its status, its beds and its payments, and gets an urgent compliance
+  incident instead. Nothing in the coverage machinery writes `Booking.status` —
+  automatic cancellation is forbidden in as many words. An override with no captured
+  reason is recorded honestly as a `SYSTEM_CHANGE` with the officer named as actor,
+  never as an explained override with an invented reason; recording an
+  `OFFICER_OVERRIDE` without a reason throws.
+- **Every confirming path re-reads the facts at confirmation** (§9). Most reconcile
+  inside their own transaction, which refuses an uncovered booking at an enforcing
+  club. Four cannot, because capacity is claimed and a charge is in flight or
+  settled: the saved-card auto-charge cron, the officer "confirm pending guests"
+  claim, the Internet Banking switch, and group-settlement child confirmation. Those
+  record the bounded re-evaluation inside the confirming transaction and escalate
+  after commit — §8's treatment of automated status transitions and payment
+  lifecycle. `adult-member-hosting-call-sites.test.ts` pins that set at exactly
+  four.
+- **The race is closed by the per-lodge capacity lock, not a new lock family.**
+  Same-owner coverage is same-lodge by definition, and every path that can confirm a
+  booking and every path that can remove exact-night attendance already takes
+  `acquireLodgeCapacityLock` for that lodge. Two interacting writers therefore
+  contend for the same key: the source removal either commits before the dependent's
+  confirm reads it (so the confirm refuses or escalates) or after (so the removal
+  sees the confirmed dependent and is refused or escalated). Deterministic either
+  way. See `docs/CONCURRENCY_AND_LOCKING.md`.
+- **An incident is only ever opened for a booking the club has accepted.** §7 and
+  §16 are about a booking that becomes uncovered AFTER confirmation, so the opener
+  requires confirmed active attendance. This is load-bearing rather than tidy: the
+  auto-charge claims PENDING → CONFIRMED, queues the work, and releases the claim
+  back to PENDING if the charge fails — without the test the drain would put a stay
+  nobody confirmed in front of an officer as an emergency. It does not RESOLVE a
+  standing incident on a regressed booking either, because that booking still holds
+  its beds and reporting `COVERAGE_RESTORED` would be untrue.
+- **One active incident per booking, one message per transition** (§16). The partial
+  unique index `HostingCoverageIncident_active_booking_unique` makes the first an
+  invariant against a concurrent second opener rather than a hope; the loser folds
+  into the winner instead of surfacing a constraint violation. The stored `stateKey`
+  is a fixed-width digest of the material-identity key, so a large party cannot
+  outrun the column and make two different problems compare equal. The owner's
+  notification is a guarded claim on `notifiedStateKey` taken BEFORE the send, so a
+  repeated reconciliation of the same unchanged problem sends nothing and two
+  concurrent drains send once between them.
+- **Resolution is recorded, not inferred**, as one of `COVERAGE_RESTORED`,
+  `BOOKING_AMENDED`, `EXCEPTION_APPROVED` or `BOOKING_CANCELLED` — inferring it from
+  the absence of a hazard would report restored cover for a booking somebody
+  cancelled. Resolution is idempotent (a guarded `updateMany` on `resolvedAt: null`)
+  and a club that turns enforcement off has its incidents closed rather than left as
+  rows nobody can act on.
+- **The queue is at-least-once and every effect is idempotent.** Work is recorded in
+  the transaction that caused it, drained inline immediately after that commit
+  (best-effort, since the authoritative change must not be undone by a follow-up
+  problem) and again by the `hosting-coverage-reevaluation` general-cron job, which
+  is the authority on completion. `attempts` increments at CLAIM time, so a process
+  that dies mid-item still counts up and a poison item retires.
 
 ### Subscription-lockout booking pricing (#2533)
 
