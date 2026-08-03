@@ -90,3 +90,125 @@ describe("AnalyticsConsent", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 });
+
+/**
+ * The nonce these scripts are stamped with has to be the LOADED DOCUMENT's, not the
+ * one the current render was handed (#2352 D1 review).
+ *
+ * A document's CSP is fixed when it loads; the `nonce` prop is not. `(website)` passes
+ * the fixed per-release value and `(website-dynamic)` the per-request one, so a soft
+ * navigation between the two public groups swaps layouts and remounts this component
+ * holding the other territory's nonce — while the policy in force is still the one
+ * that arrived with the document. Every script here is `afterInteractive`, i.e.
+ * injected by the browser at that moment and nonce-checked (`script-src` carries no
+ * `'strict-dynamic'`), so the inline GA config was silently refused: gtag loaded and
+ * never configured.
+ */
+describe("AnalyticsConsent nonce source", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    document.querySelectorAll("script[data-fixture]").forEach((el) => el.remove());
+  });
+
+  function addDocumentScript(nonce: string) {
+    const script = document.createElement("script");
+    script.setAttribute("data-fixture", "");
+    script.setAttribute("nonce", nonce);
+    document.head.appendChild(script);
+  }
+
+  it("prefers the document's nonce over the prop it was rendered with", async () => {
+    // The soft-navigation case: the document was served naming `doc-nonce`, and this
+    // mount was handed the other group's `stale-prop-nonce`.
+    addDocumentScript("doc-nonce");
+
+    render(
+      <AnalyticsConsent
+        enabled
+        measurementId="G-TEST123"
+        nonce="stale-prop-nonce"
+      />,
+    );
+
+    expect(
+      (await screen.findByTestId("ga-consent-default")).getAttribute("data-nonce"),
+    ).toBe("doc-nonce");
+  });
+
+  it("stamps the document's nonce on the GA4 scripts too", async () => {
+    addDocumentScript("doc-nonce");
+
+    render(
+      <AnalyticsConsent
+        enabled
+        measurementId="G-TEST123"
+        nonce="stale-prop-nonce"
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Accept" }));
+
+    await waitFor(() => {
+      expect(analyticsLoader()).not.toBeNull();
+    });
+    expect(analyticsLoader()?.getAttribute("data-nonce")).toBe("doc-nonce");
+    expect(
+      screen.getByTestId("ga4-config").getAttribute("data-nonce"),
+    ).toBe("doc-nonce");
+  });
+
+  it("falls back to the prop when the document carries no nonce at all", async () => {
+    // `next start` with no proxy in front of it, or any policy without a nonce. The
+    // prop is still the best available answer; an empty attribute would be worse.
+    render(
+      <AnalyticsConsent enabled measurementId="G-TEST123" nonce="prop-nonce" />,
+    );
+
+    expect(
+      (await screen.findByTestId("ga-consent-default")).getAttribute("data-nonce"),
+    ).toBe("prop-nonce");
+  });
+
+  it("reads the IDL property when CSP nonce hiding has blanked the attribute", async () => {
+    // This is what a real browser looks like: once the document is parsed, the nonce
+    // CONTENT attribute is emptied and the value survives only on the element's
+    // `nonce` IDL property. jsdom does not implement hiding, so it is simulated with
+    // an own property that shadows the reflecting accessor — otherwise this file
+    // could only ever exercise the `getAttribute` path and a browser-only bug would
+    // sit here undetected. A reader that trusted `getAttribute` alone would stamp
+    // nothing and every script on the page would be refused.
+    const hidden = document.createElement("script");
+    hidden.setAttribute("data-fixture", "");
+    hidden.setAttribute("nonce", "");
+    Object.defineProperty(hidden, "nonce", {
+      value: "doc-nonce",
+      configurable: true,
+    });
+    document.head.appendChild(hidden);
+
+    render(
+      <AnalyticsConsent enabled measurementId="G-TEST123" nonce="prop-nonce" />,
+    );
+
+    expect(
+      (await screen.findByTestId("ga-consent-default")).getAttribute("data-nonce"),
+    ).toBe("doc-nonce");
+  });
+
+  it("skips a script with no nonce and keeps looking", async () => {
+    // Next's own bootstrap scripts are not the only scripts on the page; a widget
+    // script with no nonce must not end the search with an empty answer.
+    const unnonced = document.createElement("script");
+    unnonced.setAttribute("data-fixture", "");
+    document.head.appendChild(unnonced);
+    addDocumentScript("doc-nonce");
+
+    render(
+      <AnalyticsConsent enabled measurementId="G-TEST123" nonce="prop-nonce" />,
+    );
+
+    expect(
+      (await screen.findByTestId("ga-consent-default")).getAttribute("data-nonce"),
+    ).toBe("doc-nonce");
+  });
+});

@@ -45,6 +45,45 @@ function updateAnalyticsConsent(choice: ConsentChoice) {
   });
 }
 
+/**
+ * The nonce the LOADED DOCUMENT's policy actually names.
+ *
+ * Every `<Script>` below is `afterInteractive`, so it is injected by the browser
+ * after hydration — and the policy it has to satisfy is the one that came with the
+ * document, which never changes for the life of that document. The `nonce` PROP does
+ * change: `(website)/layout.tsx` passes the fixed per-release value and
+ * `(website-dynamic)/layout.tsx` passes the per-request one (#2352 D1), so a soft
+ * navigation between the two public groups unmounts one layout and mounts the other,
+ * and this component remounts holding the other territory's nonce while the loaded
+ * document's policy still names the first. `script-src` has no `'strict-dynamic'`, so
+ * a dynamically injected INLINE script is nonce-checked: the result was `gtag` loaded
+ * and never configured, one console CSP error and no other symptom. The same shape
+ * predates the split on `/` -> `/login` (`(public)/layout.tsx` passes a per-request
+ * value too), so reading the document closes both.
+ *
+ * Not a security relaxation: the value read is the one already sitting in the DOM of
+ * the document these scripts are about to run in, so nothing is learned that a script
+ * in that document could not already see, and naming the WRONG nonce can only get our
+ * own script refused — it can never make an injected one run.
+ */
+function readLoadedDocumentNonce(): string | undefined {
+  if (typeof document === "undefined") {
+    return undefined;
+  }
+
+  for (const element of Array.from(document.getElementsByTagName("script"))) {
+    // CSP nonce hiding blanks the content ATTRIBUTE once the document is parsed but
+    // keeps the value on the IDL property, so `.nonce` is the one that answers in a
+    // browser; `getAttribute` covers jsdom and anything without nonce hiding.
+    const value = element.nonce || element.getAttribute("nonce");
+    if (value) {
+      return value;
+    }
+  }
+
+  return undefined;
+}
+
 export function AnalyticsConsent({
   enabled,
   measurementId,
@@ -55,6 +94,12 @@ export function AnalyticsConsent({
   nonce?: string;
 }) {
   const cleanMeasurementId = measurementId?.trim();
+  // Resolved once per mount, from the document first and the server-rendered prop
+  // only as a fallback (a `next start` with no proxy, or a document whose policy
+  // carries no nonce at all). A lazy `useState` initialiser rather than an effect:
+  // these scripts are injected on the first client render, so a value that arrived
+  // one render later would come too late to be stamped.
+  const [scriptNonce] = useState(() => readLoadedDocumentNonce() ?? nonce);
   const [choice, setChoice] = useState<ConsentChoice | null>(null);
   const [hydrated, setHydrated] = useState(false);
   const shouldRender = enabled && Boolean(cleanMeasurementId);
@@ -123,7 +168,7 @@ gtag('config', ${JSON.stringify(cleanMeasurementId)}, { anonymize_ip: true });
 
   return (
     <>
-      <Script id="ga-consent-default" nonce={nonce} strategy="afterInteractive">
+      <Script id="ga-consent-default" nonce={scriptNonce} strategy="afterInteractive">
         {consentBootstrap}
       </Script>
 
@@ -131,13 +176,13 @@ gtag('config', ${JSON.stringify(cleanMeasurementId)}, { anonymize_ip: true });
         <>
           <Script
             id="ga4-loader"
-            nonce={nonce}
+            nonce={scriptNonce}
             src={`https://www.googletagmanager.com/gtag/js?id=${encodeURIComponent(
               cleanMeasurementId as string,
             )}`}
             strategy="afterInteractive"
           />
-          <Script id="ga4-config" nonce={nonce} strategy="afterInteractive">
+          <Script id="ga4-config" nonce={scriptNonce} strategy="afterInteractive">
             {gaConfig}
           </Script>
         </>

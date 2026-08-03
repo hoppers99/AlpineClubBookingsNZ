@@ -82,6 +82,12 @@ export async function WebsiteChrome({
    * inline scripts still match the policy on a later response;
    * `(website-dynamic)/layout.tsx` passes the per-request value from the request's
    * own CSP header, the way every member and admin page does.
+   *
+   * It reaches server-rendered markup only. `AnalyticsConsent` injects its scripts
+   * from the browser after hydration, and takes the nonce from the LOADED DOCUMENT
+   * rather than from this prop — the two differ after a soft navigation between the
+   * groups, and only the document's value is the one the policy in force names. See
+   * `src/components/analytics-consent.tsx`.
    */
   nonce: string | undefined;
   children: React.ReactNode;
