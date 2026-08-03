@@ -450,6 +450,7 @@ export const MEMBER_MERGE_SNAPSHOT_SCALAR_COLUMNS: readonly string[] = [
   // to revisit for the whole class at once, not for these two alone.
   "AiAssistantSettings.updatedByMemberId",
   "AiAssistantUsageEvent.memberId",
+  "AnalyticsSettings.updatedByMemberId",
   "BedAllocationSettings.updatedByMemberId",
   "BookingMessageOverride.updatedByMemberId",
   "BookingRequest.reviewedByMemberId",
