@@ -100,6 +100,18 @@ export async function POST(
         result.newStatus === BookingStatus.PAYMENT_PENDING &&
         (newBooking?.finalPriceCents ?? 0) > 0,
       requiresSetup: result.newStatus === BookingStatus.PENDING,
+      // #2543 — the same "why" the two same-lodge branches below return. This
+      // branch is the one it matters most on: a cross-lodge quote can differ from
+      // the member's own lodge by the whole member/non-member spread, and the
+      // promotion has just charged them the non-member side of it.
+      // `confirmCrossLodgeWaitlistOffer` computes the sentence and puts it on the
+      // success result, and DOMAIN_INVARIANTS records that it rides that result —
+      // dropping it here made the field dead on the one path that earns it, and
+      // made the cross-lodge answer differ from the same-lodge answer for no
+      // reason. The sentence the member actually reads before deciding is in the
+      // OFFER email (both flavours go through one send site in `waitlist.ts`), so
+      // this is the API contract being consistent rather than the only channel.
+      subscriptionMemberRateNotice: result.subscriptionMemberRateNotice ?? null,
     });
   }
 
