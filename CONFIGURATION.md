@@ -603,11 +603,17 @@ menu.
   visit. What this means in practice:
   - **An edit appears immediately.** Saving in Admin > Page Content clears the
     cached copy, exactly as before. So do the Hide/Publish toggle, a theme or
-    logo change, a site banner change and a module switch.
-  - **Anything that changes without a save appears within five minutes.** A site
-    banner whose start date simply arrives is the usual example. That window used
-    to be about fifteen seconds; five minutes is the owner's decision (#2352 D3),
-    taken so a busy site does not pay a background rebuild every minute.
+    logo change, a site banner change, a module switch, a lodge capacity or
+    bed-allocation change, and an Image Manager upload, delete or folder change.
+    Every admin save that changes something a public page shows clears the cache.
+  - **Anything that changes without a save takes at least five minutes, and then
+    one more visit.** A site banner whose start time simply arrives is the usual
+    example. Be precise about the timing, because "within five minutes" is not
+    what happens: after five minutes the next visitor is still served the old
+    copy and only triggers the rebuild, so the change shows from the visit AFTER
+    that. On a quiet weekday that can be hours. Five minutes is the owner's
+    decision (#2352 D3), taken so a busy site does not pay a background rebuild
+    every minute; the previous behaviour was about fifteen seconds.
   - **The cached copy is the same for everyone.** No member name or other
     personal detail has ever appeared on these pages, and the "Log In" /
     "Dashboard" button corrects itself in the browser. If you are adding
@@ -618,6 +624,15 @@ menu.
     club dimension. That is correct for this template, which runs one club per
     deployment. A fork that served several clubs from one process would serve
     club A's pages to club B.
+  - **Some slugs are refused, and the list grew.** A content page may not start
+    with a segment the application itself owns — `admin`, `api`, `login`,
+    `register`, `pay`, `chores`, `calendar`, `notices`, `profile`, `bookings`,
+    `lodge`, `finance`, `display` and the rest. Saving one now returns a clear
+    error. Before #2352 a page like `/pay` could be created and would appear to
+    work; under whole-page caching it would have been served with a security
+    token that no longer matched, so nothing on it would run. If you have such a
+    page from an earlier release it now answers "page not found" — rename it and
+    the content comes back.
 - Page HTML supports embed tokens that render interactive sections across
   PageContent-backed public routes, including code-backed starter routes.
   Supported tokens are `{{committee-members-cards}}`,
@@ -2364,7 +2379,7 @@ rate-limited, or temporarily unavailable.
 | `ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS` | Explicit migration safety override.                                   |
 | `BLUE_GREEN_MIGRATION_OVERRIDE_REASON` | Required explanation when allowing a breaking migration.              |
 | `MIGRATION_SAFETY_LEDGER`              | Path to the migration safety ledger.                                  |
-| `RELEASE_ID`                           | Docker **build** arg, not a runtime setting. Identifies the release, and the public website's fixed CSP script nonce is derived from it (#2352). CI and `scripts/run-production-blue-green-deploy.sh` set it to the deployed commit SHA automatically; `docker-compose.yml` falls back to `GIT_COMMIT_SHA`. Leave it alone unless you build images by hand — see "Public website page caching" below. |
+| `RELEASE_ID`                           | Docker **build** arg, not a runtime setting. Identifies the release, and the public website's fixed CSP script nonce is derived from it (#2352). CI and `scripts/run-production-blue-green-deploy.sh` set it to the deployed commit SHA automatically; `docker-compose.yml` falls back to `GIT_COMMIT_SHA`. If neither is set — a hand-rolled `docker build` — the nonce falls back to a random per-BUILD seed baked into the bundles, which is still one value per release; you only lose the ability to read the deployed revision out of the image. Leave it alone unless you build images by hand — see "Public website page caching" below. |
 | `CONFIG_BUNDLE_IMPORT_PATH`            | Optional. Path to a config-transfer bundle applied non-interactively on boot **only** when the database is empty of non-seed configuration (DR / clone provisioning, ADR-003). Fails closed on a non-empty target, a bad bundle, or an unreadable path, and never blocks startup. See "Config Bundle Auto-Import On Boot (DR / clone)" in `DEPLOYMENT.md`. |
 
 ## Staging And Accessibility

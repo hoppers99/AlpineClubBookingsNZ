@@ -1993,8 +1993,22 @@ With them gone, each route in the group states its own mode:
 - `(website)/[...slug]` — the admin-authored CMS pages — is served from
   **full-route ISR**: `generateStaticParams()` returns `[]` (nothing is prerendered
   at build, because a Docker build has no database), each path is generated on its
-  first request and stored, and `revalidate = 300` is the freshness backstop. An
-  admin edit clears the store outright through `revalidatePublicSite()`.
+  first request and stored, and `revalidate = 300` triggers a background rebuild. An
+  admin edit clears the store outright through `revalidatePublicSite()`, which is
+  what makes an edit instant. `revalidate` is deliberately NOT described as a
+  staleness bound: `ResponseCache.handleGet()` resolves the stale entry to the
+  requester and only then revalidates in the background
+  (`next/dist/server/response-cache/index.js`), so a change with no write behind it
+  appears from the request AFTER the one that trips the window — and a Link prefetch
+  (`isPrefetch`) is served stale without triggering a rebuild at all. Only a tag
+  expiry, which `revalidatePath` produces, forces a blocking regeneration.
+- That route's territory is deliberately narrowed to match the CSP nonce split. The
+  catch-all claims every URL no other route claims, which is wider than the set
+  `isPublicWebsitePath()` calls the public website — and the proxy hands the fixed
+  per-release nonce to exactly that set. A page stored outside it would carry a
+  nonce no later response names, so `isCmsServablePageSlug()`
+  (`src/lib/public-website-paths.ts`) makes both the catch-all's loader and the
+  admin slug validator refuse the difference. `/pay` was the live shape.
 - Every other route in the group declares `export const dynamic = "force-dynamic"`.
   For `/`, `/join`, `/contact` and `/join/apply` that is a hold pending #2352
   slices 2 and 3; for `/hut-leader-instructions`, `/join/[code]` and
@@ -2032,9 +2046,13 @@ commit a 200 before the catch-all decides an address is a 404, and under ISR tha
 soft 404 would then be stored.
 `scripts/ci/check-website-prerender-manifest.mjs` runs after the build and reads
 `.next/prerender-manifest.json`, which is the only place the framework's own answer
-is written down: the catch-all must still be listed as an on-demand-generated
-route, the held-back and token-bearing routes must appear in neither list, and no
-new route may be prerendered at build time. That second gate exists because the
+is written down. BOTH halves are closed allowlists: the catch-all must still be the
+only on-demand-generated route, the only build-time prerendered routes are the
+sitemap and Next's own error shell, and the held-back and token-bearing routes must
+appear in neither list. The on-demand half being closed is the more important one —
+a stored route is one visitor's render handed to the next, and a route outside
+`(website)` becoming storable was invisible to both guards before the slice-1
+review. That second gate exists because the
 failure it catches is silent — any component under `(website)` that calls `auth()`,
 `cookies()` or `headers()` opts the catch-all out of the cache with a green build, a
 green test suite, and no symptom but the returning CPU cost.

@@ -2224,14 +2224,50 @@ permanently (D7).
   something baked into the IMAGE is what makes every process of one release agree
   without coordination — a per-process value would break a page one process stored
   when another served it.
-- The image asserts the value is readable in its own environment, and CI fails the
-  `docker-image-security` job if it is not.
-- With no identifier readable at all (a bare `docker build`, or local `next start`)
-  the module falls back to one random value per process and logs an error. That is
-  safe only for a single-process deployment; it is not the production path.
+- CI asserts the value on the image that actually ships: `publish-ghcr-images`
+  passes `RELEASE_ID` to the app image and then RUNS that pushed image and fails if
+  the value does not equal the built commit. The earlier arrangement asserted it on
+  the throwaway image `docker-image-security` scans while the published image was
+  built without the argument at all, and the deploy script's own export could not
+  cover for it — `prepare_application_images()` returns early on the prebuilt-image
+  path, which is the ordinary GHCR deploy. Found in the slice-1 review.
+- `GIT_COMMIT_SHA` is a real second fallback: it is now declared in the Dockerfile's
+  RUNNER stage, not only the builder, so a runtime read can see it.
+- With no identifier readable at all (a bare `docker build`, or local `next start`),
+  the value comes from a random per-BUILD seed that `next.config.ts` substitutes into
+  every bundle. That is still one value per release, shared by every reader.
+  **The previous wording here — "falls back to one random value per process ... safe
+  only for a single-process deployment" — was wrong in both halves.** The module is
+  imported by two separately-compiled bundles (the proxy entry and the app-server
+  graph), so a per-process value was not even self-consistent inside one container:
+  the proxy published one nonce in the policy while `(website)/layout.tsx` stamped
+  another onto the analytics `<Script nonce>`, and Google Analytics was refused on
+  every public page. The per-instance random survives only as a last resort behind an
+  error-level log.
 - `src/lib/csp.ts` takes the public-website decision from its caller;
   `src/proxy.ts` makes it with `isPublicWebsitePath()` — the same predicate the
   #2420 setup gate uses, so there is no second list to keep in step.
+- **The nonce split and the CACHE's territory are made into the same set, and that
+  is a security property rather than tidiness** (slice-1 review, F1). The gate's
+  question ("is this a public-website page for 503 purposes") is narrower than the
+  nonce's ("will this response be rendered by the `(website)` tree and stored"),
+  because `(website)/[...slug]` claims every URL no other route claims. The
+  difference was reachable: `pay` was a legal CMS slug and `(public)/pay` holds only
+  `[token]/`, so a published page at `/pay` was stored carrying whatever per-request
+  nonce generated it and then served under a policy naming a different one — every
+  inline script refused, permanently, for everyone. It is closed from the CMS side
+  rather than by widening the nonce, because widening would hand the fixed nonce to
+  `/dashboard` and `/admin`, which D1 keeps per-request: `isCmsServablePageSlug()`
+  (`src/lib/public-website-paths.ts`) makes the admin write and the catch-all's
+  loader both refuse those slugs.
+- One residual is recorded rather than claimed closed: a 404 the catch-all raises for
+  an address outside that set is still stored as a 404 entry carrying the generating
+  request's nonce, so the not-found DOCUMENT served from the store afterwards has a
+  nonce the policy no longer names and does not hydrate. It renders and its links
+  work; it holds nothing personal; an admin write clears it. Closing it needs either
+  a per-request opt-out of the store (unproven against next@16.2.12, and a 500 if the
+  behaviour is not what it appears) or the owner widening D1's scope, so it is put to
+  the owner as #2570 rather than guessed at.
 
 ### The sign-in marker cookie (D2)
 
@@ -2248,8 +2284,16 @@ Two properties are worth stating because they are what keep it a display hint:
 - `src/proxy.ts` sets and clears it from the OBSERVED presence of a next-auth
   session cookie, so it is self-healing — sign-out through any path, an expired
   session or a cleared cookie jar all converge on the next request.
-- It is deliberately NOT forwarded to the render, so no server code can come to
-  depend on a forgeable answer to "is this visitor signed in?".
+- It is stripped from the `Cookie` header forwarded to the render, so no server code
+  can come to depend on a forgeable answer to "is this visitor signed in?". That is
+  now true rather than asserted: `NextResponse.next({ request: { headers } })`
+  re-emits every header of the copied set as `x-middleware-request-<name>`, and
+  `Cookie` is one header, so the hint was reaching `(await cookies()).get(...)` in
+  any server component or route handler. The test that was meant to catch it asserted
+  on a header name that can never exist. The proxy also writes the `Set-Cookie`
+  header directly instead of through `response.cookies`, because the latter emits
+  `x-middleware-set-cookie`, which Next merges into `cookies()` — so even the request
+  that first sets the hint cannot read it back. Found in the slice-1 review.
 
 The public header never exposed any personal data — the #2352 planning pass
 enumerated it as exactly one boolean — which is what makes serving one stored copy
@@ -2292,15 +2336,24 @@ and `DEPLOYMENT.md`.
   Verified on a real container build of this branch: two prerendered artefacts,
   both of them Next's own error shell, both already documented exceptions.
 - `scripts/ci/check-website-prerender-manifest.mjs` — the same class from the
-  build's own records, and the security half is the closed allowlist of routes
-  allowed to be prerendered at build time. A new build-time route is a page whose
-  inline scripts carry no nonce (nothing stamps one without a request), so it must
-  be argued for in that list rather than arriving with a passing build. The same
-  check refuses a token-bearing `(website)` route that has become storable.
+  build's own records, with a closed allowlist on BOTH halves. A new build-time route
+  is a page whose inline scripts carry no nonce (nothing stamps one without a
+  request). A new ON-DEMAND route is worse: one visitor's render is stored and handed
+  to whoever asks next. The second half used to be checked only against the seven
+  routes that must stay per-request, so `/pay/[token]` becoming storable — by a later
+  PR dropping the group-level `force-dynamic` from `src/app/(public)/layout.tsx` —
+  passed both this gate and `check-website-render-modes.mjs`, which walks
+  `src/app/(website)` only. Closed in the slice-1 review.
 - `src/lib/__tests__/csp-proxy.test.ts` — the fixed nonce appears on exactly the
   addresses `isPublicWebsitePath()` claims and nowhere else; every other directive
   is byte-identical to a member page's; the marker cookie is set, cleared, left
-  alone when it already agrees, and never forwarded to the render.
+  alone when it already agrees, and stripped from the `Cookie` header the render is
+  handed (asserted on `x-middleware-request-cookie`, where the value really travels);
+  and no public-website response invites a shared cache to store it.
+- `src/lib/__tests__/cms-page-nonce-territory.test.ts` — every slug the admin write
+  accepts is inside the fixed-nonce set, and every root segment belonging to another
+  route group is refused. Driven off `NON_WEBSITE_ROOT_SEGMENTS` itself, so a segment
+  added for a new route group is covered the day it lands.
 - `src/lib/__tests__/isr-page-cache-behaviour.test.ts` — executes Next's own cache
   to observe that a store which cannot be written degrades to a warning and a
   re-render rather than a 500.
