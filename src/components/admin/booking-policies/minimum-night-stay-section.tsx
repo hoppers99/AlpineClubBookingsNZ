@@ -255,12 +255,16 @@ function MinStayForm({
             <option value="" disabled>
               Select how capacity is handled
             </option>
-            <option value="HOLD">Hold requested capacity during review</option>
+            <option value="HOLD">Hold requested capacity while it waits</option>
             <option value="NO_HOLD">Do not hold capacity until approval</option>
           </select>
           <FieldHint {...capacityHint.hintProps}>
             This applies when a booking needs an approved exception to this
-            minimum-stay rule. New policies have no automatic choice.
+            minimum-stay rule. New policies have no automatic choice. A hold is
+            not open-ended: it lasts until the request is decided or its deadline
+            passes — 7 days after it is raised, never past the start of the first
+            night held, and never less than 24 hours — after which the beds return
+            to the pool and the request is marked Expired.
           </FieldHint>
         </div>
 
@@ -822,7 +826,7 @@ export function MinimumNightStaySection() {
                         </div>
                         <p className="mt-2 text-sm text-muted-foreground">
                           {policy.capacityMode === "HOLD"
-                            ? "Exception requests hold the requested capacity during review."
+                            ? "Exception requests hold the requested capacity while they wait, until they are decided or the hold expires (7 days, and never past the first night held)."
                             : "Exception requests do not hold capacity until approval."}{" "}
                           Revision {policy.version}.
                         </p>

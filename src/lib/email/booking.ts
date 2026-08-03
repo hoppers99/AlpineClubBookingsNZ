@@ -24,6 +24,7 @@ import {
   resolvePromoAdjustmentCents,
   bookingModificationTypeLabel,
   bookingModificationSummaryRows,
+  policyExceptionRequestExpiredTemplate,
   wholeLodgeGuestNamesReminderTemplate,
 } from "../email-templates";
 import {
@@ -1075,6 +1076,55 @@ export async function sendBookingModifiedEmail(params: {
       paymentReference: params.paymentReference ?? "",
       xeroInvoiceNumber: params.xeroInvoiceNumber ?? "",
       paymentNote,
+    },
+    lodgeId: params.lodgeId,
+  });
+}
+
+/**
+ * Tell a member their bed-holding policy-exception request lapsed (#2553).
+ *
+ * Called by the hold-reaper cron AFTER the release transaction has committed, so
+ * a mail failure can never roll back or repeat a capacity release. The recipient
+ * is the member who RAISED the request (not necessarily the booking's owner — a
+ * family delegate can raise one), which is also the authority the optional
+ * booking link is resolved against.
+ */
+export async function sendPolicyExceptionRequestExpiredEmail(params: {
+  // Booking this message belongs to (#2258); see sendBookingConfirmedEmail.
+  bookingId: string;
+  recipientMemberId: string;
+  email: string;
+  firstName: string;
+  checkIn: Date;
+  checkOut: Date;
+  /** The hold deadline that passed, stamped or derived; never "now". */
+  expiresAt: Date;
+  // Booking's lodge (multi-lodge phase 8): see sendBookingConfirmedEmail.
+  lodgeId?: string | null;
+}) {
+  const settings = await loadEmailMessageSettingsForLodge(params.lodgeId);
+
+  return sendEmail({
+    to: params.email,
+    subject: `Your exception request has lapsed - ${settings.lodgeName}`,
+    html: policyExceptionRequestExpiredTemplate({
+      firstName: params.firstName,
+      lodgeName: settings.lodgeName,
+      checkIn: params.checkIn,
+      checkOut: params.checkOut,
+      expiresAt: params.expiresAt,
+    }),
+    bookingContext: bookingOwnerEmailContext(
+      params.bookingId,
+      params.recipientMemberId,
+    ),
+    templateName: "policy-exception-request-expired",
+    templateData: {
+      firstName: params.firstName,
+      checkIn: formatNZDate(params.checkIn),
+      checkOut: formatNZDate(params.checkOut),
+      expiresAt: formatNZDateTime(params.expiresAt),
     },
     lodgeId: params.lodgeId,
   });

@@ -13,6 +13,10 @@ import {
   validateApprovedTemplateTokens,
   validateEmailTemplateContent,
 } from "@/lib/email-message-renderer";
+import {
+  ALWAYS_BOOKING_SCOPED_TEMPLATE_NAMES,
+  isBookingSuppressibleTemplate,
+} from "@/lib/booking-email-suppression";
 
 describe("email message registry", () => {
   it("uses content-only defaults for noisy scheduled report emails", () => {
@@ -601,6 +605,69 @@ describe("#2320 review — per-template preview samples match the real sends", (
     expect(unpaid.sampleData.settlementActionNote).toContain(
       "hold has been extended",
     );
+  });
+
+  it("registers the #2553 hold-lapse notice as a withholdable member template", () => {
+    // The reaper closes a member's request and takes back the beds they had
+    // reserved, so the notice is member-audience and the per-booking "No emails"
+    // switch must be able to withhold it. An admin-audience classification would
+    // let a silenced booking mail out; the retry cron leans on the same
+    // membership to refuse replaying a NULL-bookingId row.
+    const definition = getEmailTemplateDefinition(
+      "policy-exception-request-expired",
+    );
+    if (!definition) throw new Error("missing policy-exception-request-expired");
+
+    expect(definition.audience).toBe("member");
+    expect(isAdminSystemTemplate("policy-exception-request-expired")).toBe(false);
+    expect(isBookingSuppressibleTemplate("policy-exception-request-expired")).toBe(
+      true,
+    );
+    expect(
+      ALWAYS_BOOKING_SCOPED_TEMPLATE_NAMES.has(
+        "policy-exception-request-expired",
+      ),
+    ).toBe(true);
+    // Not delivery-editable (that control is for admin alerts), and always sent:
+    // a member whose request was closed for them has no other signal.
+    expect(definition.deliveryEditable).toBe(false);
+    expect(getDefaultDeliveryMode("policy-exception-request-expired")).toBe(
+      "always",
+    );
+  });
+
+  it("keeps the lapse notice's load-bearing facts required and renderable", () => {
+    const definition = getEmailTemplateDefinition(
+      "policy-exception-request-expired",
+    );
+    if (!definition) throw new Error("missing policy-exception-request-expired");
+
+    // The stay says WHICH request lapsed and the deadline says why it closed.
+    expect(definition.requiredTokens).toEqual([
+      "checkIn",
+      "checkOut",
+      "expiresAt",
+    ]);
+    // The two facts the notice exists to state, in the shipped default itself.
+    const rendered = renderTemplateString(
+      definition.defaultBody,
+      definition.sampleData,
+    );
+    expect(rendered).toContain("has lapsed");
+    expect(rendered).toContain("beds it was holding have been released");
+    expect(rendered).toContain("Your booking itself has not changed");
+    // No token survives unrendered and no line is left dangling on a label.
+    expect(rendered).not.toContain("{{");
+    for (const line of rendered.split("\n")) {
+      expect(line.trimEnd()).not.toMatch(/[-:–—]$/);
+    }
+    expect(
+      validateEmailTemplateContent({
+        templateName: "policy-exception-request-expired",
+        subject: definition.defaultSubject,
+        bodyText: definition.defaultBody,
+      }).valid,
+    ).toBe(true);
   });
 
   it("previews the labels the booking-review senders really compose", () => {

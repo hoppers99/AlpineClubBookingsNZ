@@ -6,6 +6,7 @@ import {
   type RecordCronJobRunInput,
 } from "@/lib/cron-job-run";
 import { reapStaleGroupSettlements } from "@/lib/cron-group-settlement-reaper";
+import { reapExpiredPolicyExceptionHolds } from "@/lib/cron-policy-exception-hold-reaper";
 import { sendPlaceholderGuestNameReminders } from "@/lib/placeholder-guest-name-reminders";
 import { sendPreArrivalReminders } from "@/lib/cron-pre-arrival-reminders";
 import { sendQuoteExpiryReminders } from "@/lib/cron-quote-expiry-reminders";
@@ -17,6 +18,7 @@ const GENERAL_CRON_JOB_NAMES = [
   "confirm-pending",
   "group-settlement-reaper",
   "placeholder-guest-name-reminders",
+  "policy-exception-hold-reaper",
   "pre-arrival-reminders",
   "purge-booking-requests",
   "quote-expiry-reminders",
@@ -33,6 +35,9 @@ export interface GeneralCronCycleResult {
   groupSettlementReap: Awaited<ReturnType<typeof reapStaleGroupSettlements>> | null;
   placeholderGuestNameReminders: Awaited<
     ReturnType<typeof sendPlaceholderGuestNameReminders>
+  > | null;
+  policyExceptionHoldReap: Awaited<
+    ReturnType<typeof reapExpiredPolicyExceptionHolds>
   > | null;
   preArrivalReminders: Awaited<ReturnType<typeof sendPreArrivalReminders>> | null;
   bookingRequestPurge: Awaited<ReturnType<typeof purgeExpiredBookingRequests>> | null;
@@ -57,6 +62,7 @@ export interface GeneralCronRunnerDependencies {
     sendAdditionalPaymentReminders: typeof sendAdditionalPaymentReminders;
     confirmPendingBookings: typeof confirmPendingBookings;
     reapStaleGroupSettlements: typeof reapStaleGroupSettlements;
+    reapExpiredPolicyExceptionHolds: typeof reapExpiredPolicyExceptionHolds;
     sendPlaceholderGuestNameReminders: typeof sendPlaceholderGuestNameReminders;
     sendPreArrivalReminders: typeof sendPreArrivalReminders;
     purgeExpiredBookingRequests: typeof purgeExpiredBookingRequests;
@@ -138,6 +144,7 @@ export async function runGeneralCronCycle(
     confirmPending: null,
     groupSettlementReap: null,
     placeholderGuestNameReminders: null,
+    policyExceptionHoldReap: null,
     preArrivalReminders: null,
     bookingRequestPurge: null,
     quoteExpiryReminders: null,
@@ -176,6 +183,14 @@ export async function runGeneralCronCycle(
       work:
         taskDependencies.sendPlaceholderGuestNameReminders ??
         sendPlaceholderGuestNameReminders,
+    },
+    {
+      jobName: "policy-exception-hold-reaper",
+      resultKey: "policyExceptionHoldReap",
+      failureMessage: "Policy-exception hold reaper cron error",
+      work:
+        taskDependencies.reapExpiredPolicyExceptionHolds ??
+        reapExpiredPolicyExceptionHolds,
     },
     {
       jobName: "pre-arrival-reminders",
