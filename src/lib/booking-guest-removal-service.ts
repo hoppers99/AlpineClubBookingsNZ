@@ -540,7 +540,18 @@ export async function removeBookingGuestInTransaction({
       participants: toSubscriptionLockoutParticipants(remainingGuests),
     });
     if (nonMemberPricing?.violation) {
-      throw new PaidUpAdultMemberRequiredError(nonMemberPricing.violation);
+      // AUDIENCE, not authorisation. This is the ONE #2543 gate whose refusal can
+      // be delivered to somebody other than the unfinancial member: a member may
+      // take their OWN guest row off a booking they do not own, and the owner arm
+      // above can then fire alone. `repricedUnpaidMemberCount: 0` would tell that
+      // member — often from another family — that the booking owner's subscription
+      // is unpaid, which they can learn nowhere else in the app. The refusal, the
+      // wording, the HOLD and the override door are unchanged; only that one count
+      // is withheld. See `PaidUpAdultRefusalAudience`.
+      throw new PaidUpAdultMemberRequiredError(
+        nonMemberPricing.violation,
+        booking.memberId === actorMemberId ? "BOOKER" : "OTHER_PARTY_MEMBER",
+      );
     }
   }
 

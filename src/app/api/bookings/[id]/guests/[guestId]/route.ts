@@ -22,6 +22,7 @@ import {
 import { resolveSubscriptionLockoutMode } from "@/lib/member-subscription-eligibility";
 import {
   buildPaidUpAdultRefusalBody,
+  buildPaidUpAdultRefusalBodyForOtherPartyMember,
   PaidUpAdultMemberRequiredError,
 } from "@/lib/subscription-lockout-enforcement";
 import {
@@ -404,9 +405,18 @@ export async function DELETE(
     // violation, the HOLD promise and the path to ask a Booking Officer. Same
     // body as the other five paths.
     if (err instanceof PaidUpAdultMemberRequiredError) {
-      return NextResponse.json(buildPaidUpAdultRefusalBody(err.violation), {
-        status: err.status,
-      });
+      // The one refusal in the tree that can be delivered to somebody who does NOT
+      // own the booking: a member may take their own guest row off another member's
+      // booking, and the #2543 owner arm can then fire alone, where
+      // `repricedUnpaidMemberCount: 0` would expose the OWNER's unpaid subscription.
+      // The service decides the audience, because only it still holds the booking
+      // row by the time this catch runs (see `PaidUpAdultRefusalAudience`).
+      return NextResponse.json(
+        err.audience === "OTHER_PARTY_MEMBER"
+          ? buildPaidUpAdultRefusalBodyForOtherPartyMember(err.violation)
+          : buildPaidUpAdultRefusalBody(err.violation),
+        { status: err.status },
+      );
     }
     // Shared-lib domain errors (e.g. the #1032 quote-priced edit block from
     // assertBookingNotQuotePriced) carry intentional user-facing messages.

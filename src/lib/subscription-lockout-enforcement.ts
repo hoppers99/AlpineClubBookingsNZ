@@ -10,6 +10,7 @@ import {
   aggregatePolicyExceptionViolations,
   type AggregatedPolicyExceptions,
   type PaidUpAdultMemberPolicyExceptionViolation,
+  type PolicyExceptionViolation,
 } from "@/lib/booking-policy-exceptions";
 import {
   eachDateOnlyInRange,
@@ -171,13 +172,33 @@ export interface NonMemberPricingRequirements {
    * lodge and which composes with this one; this stays the narrow
    * financial-integrity guard on the money mode.
    *
-   * THE VIOLATION SHAPE IS UNCHANGED by the second trigger, and that is a privacy
-   * decision. `requirements` still carries counts and no identities, so an
-   * owner-triggered refusal reads `repricedUnpaidMemberCount: 0` — the one thing
-   * it discloses is that the trigger was not a member of the party, which the
-   * person receiving the refusal already knows, because under this trigger the
-   * unfinancial member IS the booker (an admin acting on their behalf is exempt
-   * from the whole check, as on every other #2543 gate).
+   * THE FROZEN VIOLATION SHAPE IS UNCHANGED by the second trigger. `requirements`
+   * still carries counts and no identities, and it must keep both counts: the
+   * officer's snapshot is hashed from them (`booking-exception-requests.ts` folds
+   * `repriced=` and `party=` into the open-state fingerprint), so redacting them
+   * here would change which refusals count as "the same hazard".
+   *
+   * WHAT THE COUNTS DISCLOSE, AND TO WHOM. An owner-triggered refusal reads
+   * `repricedUnpaidMemberCount: 0`, so it says the trigger was NOT a member of the
+   * party. On ten of the eleven sites that is a fact the recipient already holds,
+   * because the unfinancial member IS the recipient: create, quote, confirm-draft,
+   * modify-quote, guest-add, the modify apply path and both waitlist confirms all
+   * run for the booking's own owner, an admin is exempt from the whole check, and
+   * the group-join gate passes the JOINER as the owner of the booking they are
+   * making (`group-booking.ts`), not the group booking's owner.
+   *
+   * THE ELEVENTH SITE IS THE EXCEPTION, and it is why the RESPONSE body is
+   * audience-scoped rather than the violation. `removeBookingGuestInTransaction`
+   * lets a member take their OWN guest row off somebody else's booking, so there
+   * the refusal can be delivered to a member of another family while the trigger
+   * is the booking OWNER's unpaid subscription — a member who can see that
+   * person's financial standing nowhere else in the app. Pre-#2543-owner-decision
+   * the same refusal could only fire with `repricedUnpaidMemberCount >= 1`, i.e.
+   * about the party, never about the owner. So `buildPaidUpAdultRefusalBody` takes
+   * an `audience`, and the removal path asks for `"OTHER_PARTY_MEMBER"` when the
+   * actor does not own the booking, which the route answers with
+   * `buildPaidUpAdultRefusalBodyForOtherPartyMember`: same refusal, same override
+   * door, without the field that distinguishes the two triggers.
    */
   violation: PaidUpAdultMemberPolicyExceptionViolation | null;
 }
@@ -191,25 +212,51 @@ export interface NonMemberPricingRequirements {
  * `HARD_STOP_BOOKING_FAILURE_CODES` family, which is precisely the set of
  * refusals that may NOT enter exception review.
  */
+/**
+ * Who is reading this refusal.
+ *
+ * `BOOKER` — the member who owns (or is creating) the booking, or an admin. The
+ * default, and true on every site but one.
+ *
+ * `OTHER_PARTY_MEMBER` — somebody who is on the booking but does not own it,
+ * reachable only through the single-guest removal path's self-removal arm. See
+ * `NonMemberPricingRequirements.violation` for why the distinction exists.
+ */
+export type PaidUpAdultRefusalAudience = "BOOKER" | "OTHER_PARTY_MEMBER";
+
 export class PaidUpAdultMemberRequiredError extends ApiError {
   readonly code = "PAID_UP_ADULT_MEMBER_REQUIRED";
   readonly violation: PaidUpAdultMemberPolicyExceptionViolation;
   readonly exceptionReview: AggregatedPolicyExceptions;
+  /**
+   * Carried on the error because the SERVICE knows it and the route does not: by
+   * the time the route catches this, the booking read that established who owns it
+   * has rolled back with the transaction. Defaults to `BOOKER` so every existing
+   * throw site keeps its exact body.
+   */
+  readonly audience: PaidUpAdultRefusalAudience;
 
-  constructor(violation: PaidUpAdultMemberPolicyExceptionViolation) {
+  constructor(
+    violation: PaidUpAdultMemberPolicyExceptionViolation,
+    audience: PaidUpAdultRefusalAudience = "BOOKER",
+  ) {
     super(violation.message, 409);
     this.name = "PaidUpAdultMemberRequiredError";
     this.violation = violation;
     this.exceptionReview = aggregatePolicyExceptionViolations([violation]);
+    this.audience = audience;
   }
 }
 
 /**
  * The response body every path returns for this refusal.
  *
- * Shared so the five paths cannot describe the same refusal five ways — and so
- * the member-facing client can rely on `exceptionReview.capacityMode === "HOLD"`
- * to promise that requesting an override keeps the beds.
+ * Shared so the paths cannot describe the same refusal several ways — and so the
+ * member-facing client can rely on `exceptionReview.capacityMode === "HOLD"` to
+ * promise that requesting an override keeps the beds.
+ *
+ * This is the `BOOKER` form. A reader who does not own the booking gets
+ * `buildPaidUpAdultRefusalBodyForOtherPartyMember` below instead.
  */
 export function buildPaidUpAdultRefusalBody(
   violation: PaidUpAdultMemberPolicyExceptionViolation,
@@ -227,6 +274,53 @@ export function buildPaidUpAdultRefusalBody(
      * if the caller cannot find the door.
      */
     exceptionRequestPath: "/api/bookings/exception-requests",
+  };
+}
+
+/**
+ * The same body with ONE field withheld: `requirements.repricedUnpaidMemberCount`.
+ *
+ * For a refusal delivered to somebody who is on the booking but does not own it —
+ * only reachable through single-guest self-removal. That count is what separates
+ * the requirement's two triggers, so a `0` tells the reader the trigger was not in
+ * the party, i.e. that the booking OWNER's subscription is unpaid. Everything the
+ * member acts on is unchanged: the rule (`requiredPaidUpAdultMembers`), the
+ * message, the affected nights, the HOLD promise and the exception door.
+ *
+ * A separate function rather than a flag on the one above, so the shared body keeps
+ * its exact type for the ten call sites that use it, and so the narrowing is
+ * visible at the site that asks for it. The frozen violation the officer reviews is
+ * never touched — this returns copies.
+ */
+export function buildPaidUpAdultRefusalBodyForOtherPartyMember(
+  violation: PaidUpAdultMemberPolicyExceptionViolation,
+) {
+  const body = buildPaidUpAdultRefusalBody(violation);
+  const violations = body.violations.map(withheldTriggerCount);
+  return {
+    ...body,
+    violations,
+    exceptionReview: { ...body.exceptionReview, violations },
+  };
+}
+
+/**
+ * Drop `repricedUnpaidMemberCount` from a paid-up-adult violation, leaving every
+ * other violation shape alone.
+ *
+ * Written as an ALLOWLIST rather than as "spread and omit one", so a field added to
+ * `requirements` later has to be named here before it reaches a reader who does not
+ * own the booking. For a narrowing that exists to withhold something, defaulting to
+ * "not disclosed" is the safe direction; a client that needs the new field will fail
+ * visibly on this path instead of the field leaking silently.
+ */
+function withheldTriggerCount(violation: PolicyExceptionViolation) {
+  if (violation.reasonCode !== "PAID_UP_ADULT_MEMBER_REQUIRED") return violation;
+  const { kind, requiredPaidUpAdultMembers, participantCount } =
+    violation.requirements;
+  return {
+    ...violation,
+    requirements: { kind, requiredPaidUpAdultMembers, participantCount },
   };
 }
 
