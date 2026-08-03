@@ -28,31 +28,61 @@ import type { PlannedWarmupRoute } from "@/lib/deploy/warmup-route-policy";
  *  • The requests still pass through `src/proxy.ts`, so the policy, the nonce and
  *    the pre-setup gate all behave exactly as they will for a visitor.
  *
- * ## The production Host header is set explicitly
+ * ## The production host reaches the release as `X-Forwarded-Host`
  *
- * A loopback request would otherwise carry `Host: 127.0.0.1:3000`, and the release
- * would render canonical URLs and redirects for that host. Host and
- * `X-Forwarded-Host`/`-Proto` are therefore set from the deployment's own public
- * URL, so rendering matches real traffic. `X-Forwarded-For` is deliberately NOT
- * set: `getClientIp()` takes the RIGHTMOST value as the trusted peer
- * (`DEPLOYMENT.md` → "Public Rate Limits And Proxy Headers"), so injecting one
- * would be asking the app to trust a client address the warm-up invented.
+ * A loopback request otherwise renders for `127.0.0.1:3000`, so the deployment's own
+ * public host is sent with every request. WHICH header carries it is worth stating
+ * exactly, because an earlier version of this comment asserted a mechanism that
+ * measurably does not run:
  *
- * ## Verification is a cache HIT, not a 200
+ *  • `x-forwarded-host` (with `x-forwarded-proto`) is what arrives, and it is the
+ *    header this codebase reads. `src/app/api/issue-reports/route.ts` is the only
+ *    place in the tree that resolves a request host at all, and it prefers the
+ *    forwarded value over `Host`. Neither `src/proxy.ts` nor any `(website)` page
+ *    reads either one: absolute URLs and `metadataBase` come from `NEXTAUTH_URL`
+ *    (`src/lib/app-url.ts`, `src/app/layout.tsx`). So rendering, canonical URLs and
+ *    redirects already match real production traffic.
+ *  • `host` is set as well, and MEASURED not to reach the wire: an HTTP client writes
+ *    `Host` from the URL authority, so a local Node server handed a request built
+ *    exactly like the one below reported `host=127.0.0.1:3999` with
+ *    `xfh=club.example.nz` (node v22.14; the runtime image is node:24.17-alpine —
+ *    `Dockerfile`). It is kept rather than dropped because the intent is right and a
+ *    client that stopped overwriting it would make the stronger form true for free.
+ *
+ * The consequence to hold on to: warming STORES what it renders, so the first
+ * behaviour keyed on the RAW `Host` header — a canonical-host redirect, a host
+ * allowlist — would need a wire `Host` that `fetch` cannot send, and would otherwise
+ * either store a page rendered for the loopback authority or fail every route as an
+ * `unexpected-redirect`. That assumption is enforced rather than recorded:
+ * `src/lib/deploy/__tests__/warmup-host-header-contract.test.ts` fails if a public
+ * render path starts reading the host header.
+ *
+ * `X-Forwarded-For` is deliberately NOT set: `getClientIp()` takes the RIGHTMOST
+ * value as the trusted peer (`DEPLOYMENT.md` → "Public Rate Limits And Proxy
+ * Headers"), so injecting one would be asking the app to trust a client address the
+ * warm-up invented.
+ *
+ * ## Verification is a cache HIT — not a 200, and not a prerender header
  *
  * "Do not treat one successful HTTP 200 response as proof that a page is warm."
- * For a route the build declares stored, the first request renders and stores it
- * and a later request must come back `x-nextjs-cache: HIT`. That header is the
- * supported indicator and it is MEASURED in this repository rather than assumed:
+ * For a route the build declares stored, the first request renders and stores it and
+ * a later request must come back `x-nextjs-cache: HIT` (or `STALE`). That header is
+ * the supported indicator and it is MEASURED in this repository rather than assumed:
  * the module header of `src/lib/public-website-paths.ts` records a container run of
  * next@16.2.12 in which the ISR catch-all was the only route in either public group
- * answering with `x-nextjs-cache` / `x-nextjs-prerender`, and
- * `e2e/static-cms-pages.spec.ts` exercises those headers on a real server.
+ * answering with `x-nextjs-cache` / `x-nextjs-prerender`.
+ *
+ * The second of those two headers is NOT an equivalent indicator, and
+ * {@link isStoredResponse} carries the framework source that says why: Next sets it
+ * on a `MISS` as well.
  *
  * For a route the build declares per-request there is no store, so the gate proves
- * the opposite: the response must NOT report a cache. A `render-only` route that
- * starts reporting one has begun storing a page rendered for one visitor — the
- * #2352 hazard inverted — and that is treated as systemic rather than tolerable.
+ * the opposite: a `render-only` response must NOT report a cache. One that starts
+ * reporting one has begun storing a page rendered for one visitor — the #2352 hazard
+ * inverted — and that is treated as systemic rather than tolerable. A `prebuilt`
+ * route is the third case and is neither: its HTML was frozen at build time, so
+ * there is no store for this gate to populate and a cache indicator on it is
+ * expected rather than alarming.
  */
 
 /** Why a route failed, in the categories the owner's decision distinguishes. */
@@ -148,6 +178,11 @@ const PRERENDER_HEADER = "x-nextjs-prerender";
  * `STALE` counts: the entry existed and was served from the store, which is the
  * property being verified. Whether it was fresh is the business of the 300-second
  * backstop, not of the warm-up.
+ *
+ * `MISS` and `REVALIDATED` deliberately do not count. `MISS` is the whole point of
+ * the check. `REVALIDATED` means the response was regenerated because THAT REQUEST
+ * asked for on-demand revalidation — something a warm-up request never does — so
+ * accepting it would accept a fresh render as proof of a store.
  */
 const STORED_CACHE_VALUES = new Set(["HIT", "STALE"]);
 
@@ -278,6 +313,9 @@ async function requestOnce(
       cache: "no-store",
       signal: controller.signal,
       headers: {
+        // `x-forwarded-host` is the header that reaches the release; `host` is set
+        // for intent and is overwritten by the client with the URL authority. See
+        // the module header — this is measured, not assumed.
         host: options.hostHeader,
         "x-forwarded-host": options.hostHeader,
         "x-forwarded-proto": options.forwardedProto ?? "https",
@@ -331,21 +369,63 @@ function looksLikeHtmlDocument(response: WarmupResponse): boolean {
   );
 }
 
+/**
+ * Did this response come OUT of the release's page store?
+ *
+ * Decided from `x-nextjs-cache` ALONE whenever that header is present, and the
+ * "alone" is the correction this module's first cut needed. `x-nextjs-prerender: 1`
+ * is NOT a store indicator: next@16.2.12 sets both headers in the SAME block for
+ * every SSG/ISR app-page response, hit and miss alike
+ * (`node_modules/next/dist/build/templates/app-page.js`):
+ *
+ *     if (isSSG && !isDynamicRSCRequest && (!didPostpone || isPrefetchRSCRequest)) {
+ *       if (!isMinimalMode) {
+ *         res.setHeader('x-nextjs-cache', isOnDemandRevalidate ? 'REVALIDATED'
+ *           : cacheEntry.isMiss ? 'MISS'
+ *           : cacheEntry.isStale ? 'STALE' : 'HIT');
+ *       }
+ *       res.setHeader(NEXT_IS_PRERENDER_HEADER, '1');
+ *     }
+ *
+ * So the prerender header says which ROUTE replied — a prerender-capable one — and
+ * never that a store was populated. `src/lib/public-website-paths.ts` records the
+ * same conclusion from a container run, where even the catch-all's 404 answered with
+ * the ISR headers. Treating it as equivalent made a release whose store never
+ * populates report every page as "confirmed stored (MISS)" and pass the gate, which
+ * is precisely the systemic failure the owner's decision requires to block.
+ *
+ * The header is kept for exactly one case: Next omits `x-nextjs-cache` in MINIMAL
+ * mode, and there the prerender header is the only indicator that exists. This
+ * deployment does not run minimal mode, so the branch is unreachable here; it is
+ * present so that a hosting change degrades to "verified" rather than to a gate that
+ * blocks every deploy for a reason no operator could act on.
+ */
 function isStoredResponse(response: WarmupResponse): boolean {
   const cacheHeader = response.cacheHeader?.trim().toUpperCase() ?? null;
 
-  if (cacheHeader && STORED_CACHE_VALUES.has(cacheHeader)) {
-    return true;
+  if (cacheHeader !== null) {
+    return STORED_CACHE_VALUES.has(cacheHeader);
   }
 
-  // A prerendered response reports itself through the second header. Accepted as
-  // the equivalent indicator rather than as a fallback: it means the same thing —
-  // this body came out of the release's own store.
   return response.prerenderHeader?.trim() === "1";
 }
 
 function reportsAnyCache(response: WarmupResponse): boolean {
   return response.cacheHeader !== null || response.prerenderHeader !== null;
+}
+
+/**
+ * Is this planned address a Page Content row, whatever tier it was planned at?
+ *
+ * The distinction the tier cannot make: the club's configured Book Now target is a
+ * published CMS page promoted to `critical`, so "is it a CMS page?" and "is it tier
+ * cms?" are different questions, and the unpublished-mid-run race is a property of
+ * the former.
+ */
+function isCmsPageRoute(route: PlannedWarmupRoute): boolean {
+  return (
+    route.source === "published-cms-page" || route.source === "book-now-target"
+  );
 }
 
 function failed(
@@ -487,7 +567,12 @@ async function warmOneRoute(
   }
 
   if (status === 404) {
-    if (route.tier === "cms" && options.isStillPublished) {
+    // Keyed on the SOURCE, not the tier. The configured Book Now target is a
+    // published CMS page that `buildWarmupPlan` promotes to tier `critical`, so a
+    // tier test made it the one CMS page in the plan that never got this re-check —
+    // and an admin unpublishing it mid-run would have blocked the cutover with an
+    // `unexpected-404` on a page that was answering correctly.
+    if (isCmsPageRoute(route) && options.isStillPublished) {
       const stillPublished = await options
         .isStillPublished(route.path)
         .catch(() => true);
@@ -554,7 +639,18 @@ async function warmOneRoute(
   }
 
   if (route.cacheClass !== "isr") {
-    if (reportsAnyCache(firstResponse)) {
+    // Two classes reach here, and only ONE of them must report no cache.
+    //
+    //  • `render-only` is `force-dynamic`, which emits neither header, so a cache
+    //    indicator means the release has quietly begun storing a per-request page.
+    //  • `prebuilt` is build-time HTML that never revalidates, and next@16.2.12 sets
+    //    BOTH headers on it because it is `isSSG` — typically `x-nextjs-cache: HIT`.
+    //    Requiring their absence would fail every such route as a release-wide fault
+    //    the moment one existed (#2352 slice 3 makes that likely), contradicting this
+    //    class's own policy note in `warmup-route-policy.ts`: there is no store to
+    //    populate, so a cache-hit header is not required. Not required, and — since
+    //    the build already produced the HTML — not alarming either.
+    if (route.cacheClass === "render-only" && reportsAnyCache(firstResponse)) {
       return finish(
         failed(
           route,
@@ -582,7 +678,10 @@ async function warmOneRoute(
       cacheVerified: false,
       outcome: "warmed",
       httpStatus: status,
-      cacheHeader: null,
+      // Recorded for `prebuilt` because it is real and worth reading; null for
+      // `render-only`, where the absence is the thing that was just proved.
+      cacheHeader:
+        route.cacheClass === "prebuilt" ? firstResponse.cacheHeader : null,
       requests,
       durationMs: 0,
     });

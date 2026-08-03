@@ -85,7 +85,12 @@ export const WARMUP_VERDICT_SENTINEL = "WARMUP-GATE-VERDICT";
 
 function cacheVerificationWord(result: WarmupRouteResult): string {
   if (!result.cacheApplicable) {
-    return "not applicable (this release renders the address per request)";
+    // Two classes have no store for this gate to prove, for opposite reasons, and
+    // telling an operator that a build-time page "renders per request" would send
+    // them looking for a bug that is not there.
+    return result.route.cacheClass === "prebuilt"
+      ? "not applicable (this address was rendered at build time)"
+      : "not applicable (this release renders the address per request)";
   }
 
   if (result.cacheVerified) {
@@ -175,6 +180,7 @@ export function buildSkippedWarmupReport(
       criticalRendered: 0,
       criticalCacheApplicable: 0,
       criticalCacheVerified: 0,
+      criticalUnpublishedDuringWarmup: 0,
       cmsDiscovered: 0,
       cmsRendered: 0,
       cmsCacheApplicable: 0,
@@ -293,9 +299,12 @@ export function renderWarmupReportText(report: WarmupGateReport): string {
     `  tolerance             : at most ${report.tolerance.maxFailedCmsRoutes} failed CMS page(s) AND at most ${report.tolerance.maxFailedCmsPercent}% of those discovered`,
   );
 
-  if (report.counts.cmsUnpublishedDuringWarmup > 0) {
+  const unpublishedMidRun =
+    report.counts.cmsUnpublishedDuringWarmup +
+    report.counts.criticalUnpublishedDuringWarmup;
+  if (unpublishedMidRun > 0) {
     lines.push(
-      `  unpublished mid-run   : ${report.counts.cmsUnpublishedDuringWarmup} (not counted as failures)`,
+      `  unpublished mid-run   : ${unpublishedMidRun} (not counted as failures${report.counts.criticalUnpublishedDuringWarmup > 0 ? `, ${report.counts.criticalUnpublishedDuringWarmup} of them a critical address — see the warnings` : ""})`,
     );
   }
 

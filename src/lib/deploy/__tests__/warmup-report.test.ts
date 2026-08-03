@@ -48,9 +48,13 @@ function warmed(route: PlannedWarmupRoute): WarmupRouteResult {
   };
 }
 
-function report(results: WarmupRouteResult[]) {
+function report(
+  results: WarmupRouteResult[],
+  discoveryWarnings: readonly string[] = [],
+) {
   const evaluation = evaluateWarmup({
     discoveryProblems: [],
+    discoveryWarnings,
     results,
     deadlineExpired: false,
     releaseIdentity: { state: "match" },
@@ -64,6 +68,7 @@ function report(results: WarmupRouteResult[]) {
         { path: "/lodge/history", reason: "not an address the website serves" },
       ],
       problems: [],
+      warnings: discoveryWarnings,
       notes: ["No public booking entry route was warmed."],
     },
     run: {
@@ -126,6 +131,30 @@ describe("renderWarmupReportText", () => {
     expect(text).toContain("HTTP: 200; cache: NOT confirmed stored (MISS)");
     expect(text).toContain("CUTOVER BLOCKED:");
     expect(text.trimEnd().endsWith(`${WARMUP_VERDICT_SENTINEL}: blocked`)).toBe(
+      true,
+    );
+  });
+
+  it("surfaces a discovery gap as a warning rather than a quiet note", () => {
+    // The Book Now setting being UNREADABLE is the case this covers, and the operator
+    // report is the only place they would ever see it. The old shape collapsed a failed
+    // read into "no target" and printed "Nothing public is missing" — an all-clear on a
+    // critical public route the gate had never established the existence of. A gap in
+    // what was proved has to read as a gap.
+    const text = renderWarmupReportText(
+      report(
+        [warmed(home), warmed(faq)],
+        [
+          "This club's Book Now setting could not be read (statement timeout), so the gate could not establish whether there is a public booking entry page to warm.",
+        ],
+      ),
+    );
+
+    expect(text).toContain("Book Now setting could not be read");
+    expect(text).toContain("statement timeout");
+    // Still a pass — the button fails open, so this is not a reason to refuse a
+    // release — but a pass that says out loud what it did not check.
+    expect(text.trimEnd().endsWith(`${WARMUP_VERDICT_SENTINEL}: pass`)).toBe(
       true,
     );
   });

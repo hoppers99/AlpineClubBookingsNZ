@@ -75,7 +75,7 @@ const REAL_PRERENDER_MANIFEST = {
 beforeEach(() => {
   distDir = fs.mkdtempSync(path.join(os.tmpdir(), "warmup-dist-"));
   mocks.listPublishedCmsPagePaths.mockResolvedValue(["/about"]);
-  mocks.getConfiguredBookNowPagePath.mockResolvedValue(null);
+  mocks.getConfiguredBookNowPagePath.mockResolvedValue({ state: "none" });
   mocks.getWebsiteThemeRenderState.mockResolvedValue({
     isComplete: true,
     readFailed: false,
@@ -202,14 +202,58 @@ describe("discoverWarmupRoutes", () => {
     );
   });
 
-  it("carries on when the Book Now read throws, because that button fails open", async () => {
+  it("says the booking entry is UNKNOWN when the setting could not be read, not that there is none", async () => {
+    // The misreport this replaces: the resolver fails open, so a failed settings read
+    // arrived as `null` and the plan answered "Nothing public is missing" about a
+    // critical public route it had never looked at.
+    writeManifests(REAL_PRERENDER_MANIFEST);
+    mocks.getConfiguredBookNowPagePath.mockResolvedValue({
+      state: "unreadable",
+      detail: "statement timeout",
+    });
+
+    const discovery = await discoverWarmupRoutes({ distDir });
+
+    // Not blocking — the button itself fails open — but not an all-clear either.
+    expect(discovery.plan.problems).toEqual([]);
+    expect(discovery.plan.notes.join(" ")).not.toContain(
+      "Nothing public is missing",
+    );
+    expect(discovery.plan.warnings.join(" ")).toContain(
+      "could not establish whether there is a public booking entry page",
+    );
+    expect(discovery.plan.warnings.join(" ")).toContain("statement timeout");
+  });
+
+  it("treats a throw from the Book Now read the same way, rather than as no target", async () => {
     writeManifests(REAL_PRERENDER_MANIFEST);
     mocks.getConfiguredBookNowPagePath.mockRejectedValue(new Error("db down"));
 
     const discovery = await discoverWarmupRoutes({ distDir });
 
     expect(discovery.plan.problems).toEqual([]);
-    expect(discovery.plan.notes.join(" ")).toContain("No public booking entry");
+    expect(discovery.plan.warnings.join(" ")).toContain("db down");
+    expect(discovery.plan.notes.join(" ")).not.toContain(
+      "No public booking entry",
+    );
+  });
+
+  it("promotes a configured Book Now page to a critical route", async () => {
+    writeManifests(REAL_PRERENDER_MANIFEST);
+    mocks.listPublishedCmsPagePaths.mockResolvedValue(["/about", "/how-to"]);
+    mocks.getConfiguredBookNowPagePath.mockResolvedValue({
+      state: "page",
+      path: "/how-to",
+    });
+
+    const discovery = await discoverWarmupRoutes({ distDir });
+
+    const bookNow = discovery.plan.routes.find(
+      (route) => route.path === "/how-to",
+    );
+    expect(bookNow?.tier).toBe("critical");
+    expect(bookNow?.source).toBe("book-now-target");
+    expect(discovery.plan.warnings).toEqual([]);
   });
 });
 

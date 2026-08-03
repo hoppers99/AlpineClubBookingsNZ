@@ -39,13 +39,29 @@ interface FakeResponseSpec {
   throws?: Error;
 }
 
+/**
+ * A response in the shape next@16.2.12 really sends.
+ *
+ * The pairing is not optional and that is the point of doing it here: an `x-nextjs-cache`
+ * header always arrives WITH `x-nextjs-prerender: 1`, because
+ * `build/templates/app-page.js` sets both inside one `if (isSSG …)` block whatever the
+ * cache result was. So a spec that names a cache value gets the prerender header too
+ * unless it says otherwise, and a fixture modelling a shape the release cannot emit —
+ * the reason the store-verification rule was pinned against the wrong response and
+ * passed while production would have shipped an empty page cache — is no longer
+ * something this helper can produce by omission.
+ */
 function fakeResponse(spec: FakeResponseSpec): Response {
   const headers = new Headers();
   if (spec.cache !== null && spec.cache !== undefined) {
     headers.set("x-nextjs-cache", spec.cache);
   }
-  if (spec.prerender !== null && spec.prerender !== undefined) {
-    headers.set("x-nextjs-prerender", spec.prerender);
+  const prerender =
+    spec.prerender === undefined && spec.cache
+      ? "1"
+      : (spec.prerender ?? undefined);
+  if (prerender !== undefined) {
+    headers.set("x-nextjs-prerender", prerender);
   }
   headers.set("content-type", spec.contentType ?? "text/html; charset=utf-8");
   if (spec.location) {
@@ -118,7 +134,13 @@ describe("runWarmup — a stored route", () => {
     // The owner's case: "If pages return successfully but repeated requests show
     // that the cache is not being populated, treat this as a systemic warm-up
     // failure." A 200-only checker would have called this a pass.
-    const fetcher = scriptedFetch([{ cache: "MISS" }]);
+    //
+    // The fixture sends BOTH headers, which is what a real ISR route emits on a MISS
+    // (next@16.2.12 sets `x-nextjs-prerender: 1` in the same block as
+    // `x-nextjs-cache`, hit and miss alike). An earlier version of this case omitted
+    // the prerender header, so it modelled a response shape the release never sends
+    // and passed while production would have been certified warm with an empty store.
+    const fetcher = scriptedFetch([{ cache: "MISS", prerender: "1" }]);
 
     const report = await runWarmup(
       [route()],
@@ -129,21 +151,63 @@ describe("runWarmup — a stored route", () => {
     expect(report.results[0].failure?.kind).toBe("cache-not-stored");
     expect(report.results[0].rendered).toBe(true);
     expect(report.results[0].cacheVerified).toBe(false);
+    expect(report.results[0].cacheHeader).toBe("MISS");
+  });
+
+  it("never lets the prerender header override a MISS", async () => {
+    // The regression this pins is the whole issue's point of failure: with
+    // `x-nextjs-prerender: 1` accepted as an equivalent indicator, a release whose
+    // page store never populates reported "N of N confirmed stored" and the gate
+    // returned `pass`.
+    const everyResponseMisses = scriptedFetch([
+      { cache: "MISS", prerender: "1" },
+      { cache: "MISS", prerender: "1" },
+      { cache: "MISS", prerender: "1" },
+    ]);
+
+    const report = await runWarmup(
+      [route()],
+      options({ fetchImpl: everyResponseMisses.impl }),
+    );
+
+    expect(report.results[0].cacheVerified).toBe(false);
+    expect(report.results[0].failure?.kind).toBe("cache-not-stored");
+  });
+
+  it("does not accept REVALIDATED as proof of a store", async () => {
+    // It means the response was regenerated because that request asked for on-demand
+    // revalidation — a fresh render, not a reused one. A warm-up request never asks,
+    // so seeing it means something else is driving the store and the gate has proved
+    // nothing.
+    const fetcher = scriptedFetch([
+      { cache: "MISS", prerender: "1" },
+      { cache: "REVALIDATED", prerender: "1" },
+    ]);
+
+    const report = await runWarmup(
+      [route()],
+      options({ fetchImpl: fetcher.impl }),
+    );
+
+    expect(report.results[0].cacheVerified).toBe(false);
   });
 
   it("accepts a page whose store reports STALE, and re-checks a MISS once", async () => {
     const stale = await runWarmup(
       [route()],
       options({
-        fetchImpl: scriptedFetch([{ cache: "MISS" }, { cache: "STALE" }]).impl,
+        fetchImpl: scriptedFetch([
+          { cache: "MISS", prerender: "1" },
+          { cache: "STALE", prerender: "1" },
+        ]).impl,
       }),
     );
     expect(stale.results[0].cacheVerified).toBe(true);
 
     const recheck = scriptedFetch([
-      { cache: "MISS" },
-      { cache: "MISS" },
-      { cache: "HIT" },
+      { cache: "MISS", prerender: "1" },
+      { cache: "MISS", prerender: "1" },
+      { cache: "HIT", prerender: "1" },
     ]);
     const eventual = await runWarmup(
       [route()],
@@ -153,15 +217,19 @@ describe("runWarmup — a stored route", () => {
     expect(eventual.results[0].requests).toBe(3);
   });
 
-  it("accepts the prerender header as the equivalent stored indicator", async () => {
-    const fetcher = scriptedFetch([
+  it("accepts the prerender header ONLY when there is no cache header at all", async () => {
+    // Next omits `x-nextjs-cache` in minimal mode, where the prerender header is the
+    // only indicator that exists. This deployment does not run minimal mode, so the
+    // branch is unreachable in production and is kept so a hosting change degrades to
+    // "verified" rather than to a gate nobody can get past.
+    const minimalMode = scriptedFetch([
       { cache: null, prerender: "1" },
       { cache: null, prerender: "1" },
     ]);
 
     const report = await runWarmup(
       [route()],
-      options({ fetchImpl: fetcher.impl }),
+      options({ fetchImpl: minimalMode.impl }),
     );
 
     expect(report.results[0].cacheVerified).toBe(true);
@@ -200,6 +268,54 @@ describe("runWarmup — a per-request route", () => {
     );
 
     expect(report.results[0].failure?.kind).toBe("unexpected-cache-header");
+  });
+});
+
+describe("runWarmup — a build-time route", () => {
+  const prebuilt = route({
+    path: "/",
+    tier: "critical",
+    cacheClass: "prebuilt",
+    source: "critical-list",
+  });
+
+  it("accepts the cache headers a build-time page really carries", async () => {
+    // A prebuilt page is `isSSG`, so next sets BOTH headers on it — typically
+    // `x-nextjs-cache: HIT`. Requiring their absence, as the `render-only` rule does,
+    // failed every such route as a release-wide fault the moment one existed: #2352
+    // slice 3 makes a warmed public address build-time prerendered, and the operator
+    // would have been told the release "is storing a page rendered for one visitor".
+    const fetcher = scriptedFetch([{ cache: "HIT", prerender: "1" }]);
+
+    const report = await runWarmup(
+      [prebuilt],
+      options({ fetchImpl: fetcher.impl }),
+    );
+
+    expect(report.results[0].outcome).toBe("warmed");
+    expect(report.results[0].failure).toBeUndefined();
+    // There is no store for THIS gate to populate, so nothing is verified — and one
+    // request is all it costs.
+    expect(report.results[0].cacheApplicable).toBe(false);
+    expect(report.results[0].cacheHeader).toBe("HIT");
+    expect(report.results[0].requests).toBe(1);
+  });
+
+  it("still fails a build-time page that renders a broken document", async () => {
+    const report = await runWarmup(
+      [prebuilt],
+      options({
+        fetchImpl: scriptedFetch([
+          {
+            cache: "HIT",
+            prerender: "1",
+            policy: "script-src 'self' 'nonce-DIFFERENT'",
+          },
+        ]).impl,
+      }),
+    );
+
+    expect(report.results[0].failure?.kind).toBe("nonce-mismatch");
   });
 });
 
@@ -287,9 +403,16 @@ describe("runWarmup — failure classification", () => {
     expect(missing.results[0].failure?.kind).toBe("unexpected-404");
   });
 
-  it("never treats a critical 404 as a publishing race", async () => {
+  it("never treats a critical 404 on a BUILT page as a publishing race", async () => {
     const report = await runWarmup(
-      [route({ path: "/join", tier: "critical", cacheClass: "render-only" })],
+      [
+        route({
+          path: "/join",
+          tier: "critical",
+          cacheClass: "render-only",
+          source: "critical-list",
+        }),
+      ],
       options({
         fetchImpl: scriptedFetch([{ status: 404 }]).impl,
         isStillPublished: async () => false,
@@ -297,6 +420,49 @@ describe("runWarmup — failure classification", () => {
     );
 
     expect(report.results[0].failure?.kind).toBe("unexpected-404");
+  });
+
+  it("treats the promoted Book Now target as the CMS page it is, not as a critical 404", async () => {
+    // The one CMS page the plan carries at critical tier. Gating the re-check on the
+    // TIER made an admin unpublishing it mid-run block a production cutover on a page
+    // that was answering correctly — and nothing public is broken in that state,
+    // because the button's #1929 fail-open contract requires `published` and falls
+    // back to the member booking flow.
+    const raced = await runWarmup(
+      [
+        route({
+          path: "/how-booking-works",
+          tier: "critical",
+          cacheClass: "isr",
+          source: "book-now-target",
+        }),
+      ],
+      options({
+        fetchImpl: scriptedFetch([{ status: 404 }]).impl,
+        isStillPublished: async () => false,
+      }),
+    );
+
+    expect(raced.results[0].outcome).toBe("unpublished-during-warmup");
+    expect(raced.results[0].failure).toBeUndefined();
+
+    // And a 404 on a target that IS still published is still a real failure.
+    const genuinelyMissing = await runWarmup(
+      [
+        route({
+          path: "/how-booking-works",
+          tier: "critical",
+          cacheClass: "isr",
+          source: "book-now-target",
+        }),
+      ],
+      options({
+        fetchImpl: scriptedFetch([{ status: 404 }]).impl,
+        isStillPublished: async () => true,
+      }),
+    );
+
+    expect(genuinelyMissing.results[0].failure?.kind).toBe("unexpected-404");
   });
 
   it("retries a transient transport failure once, then gives up", async () => {
@@ -354,7 +520,7 @@ describe("runWarmup — failure classification", () => {
 });
 
 describe("runWarmup — request shape", () => {
-  it("asks the target's own origin, with the production host", async () => {
+  it("asks the target's own origin, with the production host forwarded", async () => {
     const fetcher = scriptedFetch([{ cache: "MISS" }, { cache: "HIT" }]);
 
     await runWarmup(
@@ -365,6 +531,12 @@ describe("runWarmup — request shape", () => {
     expect(fetcher.calls[0].url).toBe(
       "http://127.0.0.1:3000/te-reo-m%C4%81ori",
     );
+    // `x-forwarded-host` is the one that reaches the release and the one this codebase
+    // reads; `host` is set for intent and is overwritten by the HTTP client with the
+    // URL authority. Both are asserted on the INIT object here, which is all a unit
+    // test can see — the wire behaviour is measured and recorded in the module header,
+    // and `warmup-host-header-contract.test.ts` holds the assumption that makes the
+    // forwarded header sufficient.
     expect(fetcher.calls[0].headers.host).toBe("bookings.example.nz");
     expect(fetcher.calls[0].headers["x-forwarded-host"]).toBe(
       "bookings.example.nz",

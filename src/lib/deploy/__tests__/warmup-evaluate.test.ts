@@ -304,6 +304,56 @@ describe("evaluateWarmup", () => {
     );
   });
 
+  it("reports an unpublished Book Now target as a prominent warning, and lets the deploy through", () => {
+    // The promoted Book Now target is the one CMS page at critical tier, so an admin's
+    // timing used to block a production cutover on a page that was answering
+    // correctly. Nothing public is broken in that state — the button falls back — but
+    // the admin needs to know it fell back.
+    const bookNow: PlannedWarmupRoute = {
+      path: "/how-booking-works",
+      tier: "critical",
+      cacheClass: "isr",
+      source: "book-now-target",
+      why: "the club's configured booking entry",
+    };
+
+    const evaluation = evaluate({
+      results: [
+        ...[plan("critical", "/", "render-only")].map(warmed),
+        {
+          ...warmed(bookNow),
+          outcome: "unpublished-during-warmup",
+          rendered: false,
+          cacheApplicable: false,
+          cacheVerified: false,
+          httpStatus: 404,
+        },
+      ],
+    });
+
+    expect(evaluation.verdict).toBe("pass");
+    expect(evaluation.blockingReasons).toEqual([]);
+    expect(evaluation.counts.criticalUnpublishedDuringWarmup).toBe(1);
+    expect(evaluation.warnings.join(" ")).toContain(
+      "fallen back to the member booking flow",
+    );
+    expect(evaluation.warnings.join(" ")).toContain("Admin > Page Content");
+  });
+
+  it("surfaces a discovery warning prominently without blocking", () => {
+    const evaluation = evaluate({
+      results: [plan("critical", "/", "render-only")].map(warmed),
+      discoveryWarnings: [
+        "this club's Book Now setting could not be read, so the gate could not establish whether there is a public booking entry page to warm",
+      ],
+    });
+
+    expect(evaluation.verdict).toBe("pass");
+    expect(evaluation.warnings.join(" ")).toContain(
+      "could not establish whether there is a public booking entry page",
+    );
+  });
+
   it("blocks when nothing was warmed at all", () => {
     const evaluation = evaluate({ results: [] });
 
@@ -320,6 +370,35 @@ describe("evaluateWarmup", () => {
     });
 
     expect(evaluation.warnings.join(" ")).toContain("deadline expired");
+  });
+
+  it("applies the tolerance to every non-critical tier it counts, not just to \"cms\"", () => {
+    // Latent by construction today — `tier` is a two-value union — so the third value
+    // is forced in. Counting bucketed everything non-critical into `cms*` while the
+    // tolerance filtered on `tier === "cms"`, so a failure on a future non-critical
+    // public tier would have been counted, then skipped by the arithmetic: no warning,
+    // no blocking reason, verdict `pass`, and a failed public page reported nowhere.
+    const futureTier = {
+      path: "/history",
+      tier: "public-fixed",
+      cacheClass: "prebuilt",
+      source: "critical-list",
+      why: "a non-critical fixed public page a later change adds",
+    } as unknown as PlannedWarmupRoute;
+
+    const evaluation = evaluate({
+      results: [
+        ...[plan("critical", "/", "render-only")].map(warmed),
+        failing(futureTier),
+      ],
+    });
+
+    expect(evaluation.counts.cmsFailed).toBe(1);
+    expect(evaluation.warnings.join(" ")).toContain("/history");
+    expect(evaluation.verdict).toBe("blocked");
+    expect(evaluation.blockingReasons.join(" ")).toContain(
+      "exceeds the tolerance",
+    );
   });
 
   it("keeps the owner's conservative default", () => {

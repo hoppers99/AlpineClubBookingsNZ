@@ -20,12 +20,18 @@
  *     below, plus the club's configured Book Now target.
  *
  * The critical list is written out by hand on purpose ("Do not rely solely on
- * automatic inference"). What is NOT written out by hand is each route's render
- * mode: the list DECLARES what it expects, the build MANIFEST says what is true,
- * and {@link buildWarmupPlan} refuses the deploy when the two disagree. That
- * disagreement is the interesting failure — it is how `/` silently becoming a
- * stored page (or silently stopping being one, once #2352 slice 2 lands) reaches
- * an operator instead of production.
+ * automatic inference"). Two things are NOT hand-maintained, and both exist so the
+ * hand-written half cannot rot:
+ *
+ *  • **Each route's render mode.** The list DECLARES what it expects, the build
+ *    MANIFEST says what is true, and {@link buildWarmupPlan} refuses the deploy when
+ *    the two disagree. That disagreement is the interesting failure — it is how `/`
+ *    silently becoming a stored page (or silently stopping being one, once #2352
+ *    slice 2 lands) reaches an operator instead of production.
+ *  • **Whether the list is COMPLETE.** Every literal entry of the repository's public
+ *    route census must be declared, or the plan carries a blocking problem naming the
+ *    address (see {@link CENSUS_FIXED_WEBSITE_ROUTES}). Without that, a release that
+ *    gained a public page passed the gate having never requested it.
  *
  * ## The exclusion list is ONE predicate, not a deny list
  *
@@ -54,7 +60,10 @@
  * about them.
  */
 
-import { isFixedNonceWebsitePath } from "@/lib/public-website-paths";
+import {
+  FIXED_NONCE_WEBSITE_ROUTES,
+  isFixedNonceWebsitePath,
+} from "@/lib/public-website-paths";
 
 /**
  * What the BUILD says happens when this address is requested.
@@ -63,11 +72,12 @@ import { isFixedNonceWebsitePath } from "@/lib/public-website-paths";
  *    STORED. The warm-up must prove the store worked, not merely that a 200 came
  *    back.
  *  • `prebuilt` — frozen at build time with no revalidation. There is no store to
- *    populate, so "warm" is meaningless and a cache-hit header is not required.
- *    Nothing discovery produces classifies here today (`/sitemap.xml` and
- *    `/_global-error` are the only two, and neither is a page a visitor reads);
- *    it exists so #2352 slice 3 has to state its intent rather than silently
- *    changing what the gate proves.
+ *    populate, so "warm" is meaningless and a cache-hit header is not required —
+ *    and, since next sets one on any `isSSG` response, one is ACCEPTED rather than
+ *    treated as a fault (`warmup-run.ts` → `warmOneRoute`). Nothing discovery
+ *    produces classifies here today (`/sitemap.xml` and `/_global-error` are the
+ *    only two, and neither is a page a visitor reads); it exists so #2352 slice 3
+ *    has to state its intent rather than silently changing what the gate proves.
  *  • `render-only` — rendered per request. Warming it still buys the thing
  *    `DEPLOYMENT.md` → "App CPU sizing" measures — the first render of a route
  *    costs several CPU-seconds of engine re-warm — and it is a real smoke test of
@@ -159,6 +169,30 @@ export interface CriticalRouteDeclaration {
  *    one-time token). They are outside `isFixedNonceWebsitePath()`, so
  *    {@link buildWarmupPlan} would refuse them anyway.
  */
+/**
+ * The public-route CENSUS this list is cross-checked against.
+ *
+ * `FIXED_NONCE_WEBSITE_ROUTES` (`src/lib/public-website-paths.ts`) is the repository's
+ * existing authoritative record of the approved `(website)` routes, held in place by
+ * `scripts/ci/check-website-render-modes.mjs` — a new public page cannot ship without
+ * being added to it. {@link buildWarmupPlan} therefore refuses to plan a run while any
+ * LITERAL entry of that census has no declaration here.
+ *
+ * Why the check exists at all: the build manifests were only ever used to CLASSIFY the
+ * addresses this list already names, never iterated over, so drift was caught in one
+ * direction only. A declared route that disappeared from the release blocked the
+ * deploy; a release that GAINED an eligible public page passed silently, was never
+ * requested once, and reached its first real visitor unrendered. That is the whole
+ * class of failure this gate exists to catch, and the owner's acceptance criterion 1
+ * ("all eligible public routes are discovered from authoritative sources") rules it
+ * out.
+ *
+ * The dynamic entry `/[...slug]` is skipped: it is a pattern, not an address, and its
+ * addresses arrive from the published-CMS read instead.
+ */
+const CENSUS_FIXED_WEBSITE_ROUTES: readonly string[] =
+  FIXED_NONCE_WEBSITE_ROUTES;
+
 export const CRITICAL_PUBLIC_ROUTES: readonly CriticalRouteDeclaration[] = [
   {
     path: "/",
@@ -211,21 +245,53 @@ export interface WarmupPlan {
    * that cannot enumerate what to warm cannot say anything about the release.
    */
   problems: readonly string[];
+  /**
+   * Discovery findings that do not block but must be PROMINENT — something
+   * discovery could not establish, as against something it established to be wrong.
+   * They are surfaced through the evaluation's warnings, not the quiet notes list,
+   * because a gap in what was proved is not a footnote.
+   */
+  warnings: readonly string[];
   /** Non-blocking notes that belong in the report (e.g. no public booking entry). */
   notes: readonly string[];
 }
+
+/**
+ * What the club's configured public booking entry turned out to be.
+ *
+ * Three states rather than `string | null`, because the third one used to be
+ * indistinguishable from the first and the report then asserted the benign reading as
+ * fact: `resolveBookNowChoice()` swallows a database error and fails open, so a failed
+ * read of `PublicContentSettings` arrived here as "this club has no page target" and
+ * the plan answered "Nothing public is missing" — about a critical public route it had
+ * never looked at.
+ *
+ * Declared in this pure module rather than beside the resolver so the planner keeps its
+ * "no Prisma, no server-only" property; `src/lib/book-now-config.ts` imports the type
+ * from here.
+ */
+export type ConfiguredBookNowTarget =
+  /** The button is hidden, or points at the member login path. Nothing to warm. */
+  | { state: "none" }
+  /** The admin chose a published content page, at this address. */
+  | { state: "page"; path: string }
+  /** The setting could not be read, so what to warm is UNKNOWN. */
+  | { state: "unreadable"; detail: string };
 
 export interface WarmupPlanInput {
   table: RouteTableSnapshot;
   /** Defaults to {@link CRITICAL_PUBLIC_ROUTES}; injectable for the tests. */
   criticalRoutes?: readonly CriticalRouteDeclaration[];
+  /**
+   * The public-route census the critical list is cross-checked against. Defaults to
+   * {@link CENSUS_FIXED_WEBSITE_ROUTES}; injectable so the tests can prove the
+   * cross-check fires in both directions.
+   */
+  fixedWebsiteRoutes?: readonly string[];
   /** Published, servable CMS page paths, as read from the database. */
   cmsPaths: readonly string[];
-  /**
-   * The club's configured Book Now page target, or null when the button is
-   * hidden or points at the default (member-login) booking flow.
-   */
-  bookNowPagePath: string | null;
+  /** The club's configured public booking entry, in all three of its states. */
+  bookNowTarget: ConfiguredBookNowTarget;
 }
 
 /**
@@ -409,12 +475,14 @@ export function classifyWarmupRoute(
 export function buildWarmupPlan({
   table,
   criticalRoutes = CRITICAL_PUBLIC_ROUTES,
+  fixedWebsiteRoutes = CENSUS_FIXED_WEBSITE_ROUTES,
   cmsPaths,
-  bookNowPagePath,
+  bookNowTarget,
 }: WarmupPlanInput): WarmupPlan {
   const routes: PlannedWarmupRoute[] = [];
   const excluded: ExcludedWarmupPath[] = [];
   const problems: string[] = [];
+  const warnings: string[] = [];
   const notes: string[] = [];
   const seen = new Set<string>();
 
@@ -495,11 +563,41 @@ export function buildWarmupPlan({
     );
   }
 
-  if (bookNowPagePath === null) {
+  // The census cross-check: every LITERAL approved public route must be declared
+  // above, or the gate is enumerating less than the release serves. See
+  // CENSUS_FIXED_WEBSITE_ROUTES for why this is a blocking problem rather than a note.
+  const declaredCriticalPaths = new Set(
+    criticalRoutes.map((declaration) => stripTrailingSlash(declaration.path)),
+  );
+  for (const censusRoute of fixedWebsiteRoutes) {
+    if (censusRoute.includes("[")) {
+      continue;
+    }
+
+    const path = stripTrailingSlash(censusRoute);
+    if (declaredCriticalPaths.has(path)) {
+      continue;
+    }
+
+    problems.push(
+      `Public website route "${path}" is an approved public address of this release (FIXED_NONCE_WEBSITE_ROUTES in src/lib/public-website-paths.ts) but is not declared in CRITICAL_PUBLIC_ROUTES, so the gate would never request it and an unrendered page would reach the first real visitor. Add it to the critical-route list in src/lib/deploy/warmup-route-policy.ts with the render mode the build gives it.`,
+    );
+  }
+
+  if (bookNowTarget.state === "unreadable") {
+    // NOT the all-clear below. The owner's critical-route list names "any public
+    // booking entry route", and this branch means the gate does not know whether
+    // there is one — so it says that, prominently, instead of reporting a gap it
+    // never looked into as "nothing public is missing".
+    warnings.push(
+      `This club's Book Now setting could not be read (${bookNowTarget.detail}), so the gate could not establish whether there is a public booking entry page to warm. If one is configured, it has NOT been rendered or proved stored by this run. The button itself is unaffected: its resolver fails open to the member booking flow.`,
+    );
+  } else if (bookNowTarget.state === "none") {
     notes.push(
       "No public booking entry route was warmed: this club's Book Now button is hidden or points at the member login path, which is excluded from warming. Nothing public is missing.",
     );
   } else {
+    const bookNowPagePath = bookNowTarget.path;
     const rejection = warmupPathRejection(bookNowPagePath);
     const path = rejection
       ? bookNowPagePath
@@ -581,5 +679,5 @@ export function buildWarmupPlan({
     });
   }
 
-  return { routes, excluded, problems, notes };
+  return { routes, excluded, problems, warnings, notes };
 }

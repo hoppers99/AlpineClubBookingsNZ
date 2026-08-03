@@ -8,6 +8,7 @@ import { listPublishedCmsPagePaths } from "@/lib/page-content-html";
 import type { ReleaseIdentityCheck } from "@/lib/deploy/warmup-evaluate";
 import {
   buildWarmupPlan,
+  type ConfiguredBookNowTarget,
   type IsrDynamicRoute,
   type RouteTableSnapshot,
   type WarmupPlan,
@@ -175,7 +176,7 @@ export interface WarmupDiscoveryDependencies {
   distDir?: string;
   readTable?: typeof readRouteTableSnapshot;
   listCmsPaths?: () => Promise<string[]>;
-  bookNowPagePath?: () => Promise<string | null>;
+  bookNowTarget?: () => Promise<ConfiguredBookNowTarget>;
   now?: () => Date;
 }
 
@@ -194,7 +195,7 @@ export async function discoverWarmupRoutes(
     distDir,
     readTable = readRouteTableSnapshot,
     listCmsPaths = listPublishedCmsPagePaths,
-    bookNowPagePath = getConfiguredBookNowPagePath,
+    bookNowTarget = getConfiguredBookNowPagePath,
     now = () => new Date(),
   } = dependencies;
 
@@ -203,7 +204,13 @@ export async function discoverWarmupRoutes(
 
   if ("problem" in table) {
     return {
-      plan: { routes: [], excluded: [], problems: [table.problem], notes: [] },
+      plan: {
+        routes: [],
+        excluded: [],
+        problems: [table.problem],
+        warnings: [],
+        notes: [],
+      },
       cmsSnapshotAt,
       cmsPathsInSnapshot: 0,
     };
@@ -220,6 +227,7 @@ export async function discoverWarmupRoutes(
         problems: [
           "The published CMS page list could not be read from the database, so the addresses to warm cannot be established.",
         ],
+        warnings: [],
         notes: [],
       },
       cmsSnapshotAt,
@@ -227,21 +235,25 @@ export async function discoverWarmupRoutes(
     };
   }
 
-  let configuredBookNowPath: string | null = null;
+  // The resolver already reports its own read failure as `unreadable`, so this catch
+  // covers only a throw it cannot produce itself (a module or client failure). Either
+  // way the answer is the same and is NOT `none`: a read that did not happen is not a
+  // club with no booking page, and the plan must not report it as one.
+  let bookNow: ConfiguredBookNowTarget;
   try {
-    configuredBookNowPath = await bookNowPagePath();
-  } catch {
-    // The button's own resolver already fails open, so a read failure here is not
-    // a reason to refuse the deploy — but it IS a reason not to claim the public
-    // booking entry was covered.
-    configuredBookNowPath = null;
+    bookNow = await bookNowTarget();
+  } catch (error) {
+    bookNow = {
+      state: "unreadable",
+      detail: error instanceof Error ? error.message : "unknown error",
+    };
   }
 
   return {
     plan: buildWarmupPlan({
       table: table.table,
       cmsPaths,
-      bookNowPagePath: configuredBookNowPath,
+      bookNowTarget: bookNow,
     }),
     cmsSnapshotAt,
     cmsPathsInSnapshot: cmsPaths.length,

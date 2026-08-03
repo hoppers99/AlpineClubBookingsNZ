@@ -56,6 +56,14 @@ export interface WarmupCounts {
   criticalRendered: number;
   criticalCacheApplicable: number;
   criticalCacheVerified: number;
+  /**
+   * Critical addresses that turned out to be unpublished mid-run — in practice only
+   * ever the promoted Book Now page target, since it is the one CMS page the plan
+   * carries at critical tier. Counted separately so a critical route that rendered
+   * fewer times than it was discovered has a stated reason instead of looking like a
+   * defect in the gate.
+   */
+  criticalUnpublishedDuringWarmup: number;
   cmsDiscovered: number;
   cmsRendered: number;
   cmsCacheApplicable: number;
@@ -82,10 +90,32 @@ export interface WarmupEvaluation {
 export interface WarmupEvaluationInput {
   /** Route-discovery failures. Any entry blocks. */
   discoveryProblems: readonly string[];
+  /**
+   * Discovery findings that do NOT block but must be prominent — something the gate
+   * could not establish, as against something it established to be wrong. They join
+   * {@link WarmupEvaluation.warnings} rather than the report's quiet notes list,
+   * because "the booking entry could not be read" is not a note.
+   */
+  discoveryWarnings?: readonly string[];
   results: readonly WarmupRouteResult[];
   deadlineExpired: boolean;
   tolerance?: WarmupTolerance;
   releaseIdentity?: ReleaseIdentityCheck;
+}
+
+/**
+ * The one place "is this route inside the tolerated tier?" is decided.
+ *
+ * Both the COUNTING and the EVALUATION read it, which is the point. They used to
+ * disagree: counting bucketed everything non-critical into `cms*`, while the
+ * tolerance check and the per-failure warnings filtered on `tier === "cms"`. With
+ * two tier values those expressions agree, so no test could tell them apart — and
+ * the day a third public tier appeared, a failure on it would have been counted and
+ * then skipped by the tolerance arithmetic, giving a silent `pass` on a failed
+ * public page.
+ */
+function isToleratedTier(result: WarmupRouteResult): boolean {
+  return result.route.tier !== "critical";
 }
 
 /**
@@ -121,6 +151,7 @@ export function countWarmupResults(
     criticalRendered: 0,
     criticalCacheApplicable: 0,
     criticalCacheVerified: 0,
+    criticalUnpublishedDuringWarmup: 0,
     cmsDiscovered: 0,
     cmsRendered: 0,
     cmsCacheApplicable: 0,
@@ -130,11 +161,14 @@ export function countWarmupResults(
   };
 
   for (const result of results) {
-    if (result.route.tier === "critical") {
+    if (!isToleratedTier(result)) {
       counts.criticalDiscovered += 1;
       if (result.rendered) counts.criticalRendered += 1;
       if (result.cacheApplicable) counts.criticalCacheApplicable += 1;
       if (result.cacheVerified) counts.criticalCacheVerified += 1;
+      if (result.outcome === "unpublished-during-warmup") {
+        counts.criticalUnpublishedDuringWarmup += 1;
+      }
       continue;
     }
 
@@ -160,6 +194,7 @@ export function countWarmupResults(
  */
 export function evaluateWarmup({
   discoveryProblems,
+  discoveryWarnings = [],
   results,
   deadlineExpired,
   tolerance = DEFAULT_WARMUP_TOLERANCE,
@@ -172,6 +207,10 @@ export function evaluateWarmup({
 
   for (const problem of discoveryProblems) {
     blockingReasons.push(`Route discovery failed: ${problem}`);
+  }
+
+  for (const warning of discoveryWarnings) {
+    warnings.push(`Route discovery: ${warning}`);
   }
 
   if (releaseIdentity.state === "mismatch") {
@@ -224,7 +263,7 @@ export function evaluateWarmup({
   }
 
   const cmsFailures = results.filter(
-    (result) => result.route.tier === "cms" && result.outcome === "failed",
+    (result) => isToleratedTier(result) && result.outcome === "failed",
   );
 
   const systemicKindFailures = results.filter((result) =>
@@ -288,11 +327,26 @@ export function evaluateWarmup({
   }
 
   for (const result of results) {
-    if (result.outcome === "unpublished-during-warmup") {
-      warnings.push(
-        `${result.route.path} was unpublished between discovery and warming, so its 404 is the correct answer and is not counted as a failure.`,
-      );
+    if (result.outcome !== "unpublished-during-warmup") {
+      continue;
     }
+
+    if (result.route.source === "book-now-target") {
+      // The one case where the race lands on a CRITICAL address, and it is a real
+      // thing for an admin to know rather than a technicality: the Book Now button
+      // has silently fallen back to the member booking flow (the #1929 fail-open
+      // contract requires `bookNowPage?.published`), so nothing public is broken and
+      // the cutover proceeds — but the button no longer opens the page the club
+      // chose, and only an admin can re-point it.
+      warnings.push(
+        `${result.route.path} is this club's configured Book Now target and was unpublished between discovery and warming. The 404 is correct and does not block the cutover, but the Book Now button has fallen back to the member booking flow — re-point or re-publish it in Admin > Page Content.`,
+      );
+      continue;
+    }
+
+    warnings.push(
+      `${result.route.path} was unpublished between discovery and warming, so its 404 is the correct answer and is not counted as a failure.`,
+    );
   }
 
   if (blockingReasons.length > 0) {

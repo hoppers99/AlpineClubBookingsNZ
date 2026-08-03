@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { FIXED_NONCE_WEBSITE_ROUTES } from "@/lib/public-website-paths";
 import {
   buildWarmupPlan,
   classifyWarmupRoute,
@@ -158,7 +159,7 @@ describe("buildWarmupPlan", () => {
     const plan = buildWarmupPlan({
       table: routeTable(),
       cmsPaths: ["/about", "/faq", "/about/", "/about"],
-      bookNowPagePath: null,
+      bookNowTarget: { state: "none" },
     });
 
     expect(plan.problems).toEqual([]);
@@ -187,17 +188,34 @@ describe("buildWarmupPlan", () => {
     const plan = buildWarmupPlan({
       table: routeTable(),
       cmsPaths: [],
-      bookNowPagePath: null,
+      bookNowTarget: { state: "none" },
     });
 
     expect(plan.notes.join(" ")).toContain("No public booking entry route");
+  });
+
+  it("warns that the booking entry is UNKNOWN when the setting could not be read", () => {
+    const plan = buildWarmupPlan({
+      table: routeTable(),
+      cmsPaths: ["/about"],
+      bookNowTarget: { state: "unreadable", detail: "statement timeout" },
+    });
+
+    // The critical distinction: an unreadable setting must not be reported with the
+    // "Nothing public is missing" all-clear that a deliberately hidden button gets.
+    expect(plan.problems).toEqual([]);
+    expect(plan.notes.join(" ")).not.toContain("Nothing public is missing");
+    expect(plan.warnings.join(" ")).toContain(
+      "could not establish whether there is a public booking entry page",
+    );
+    expect(plan.warnings.join(" ")).toContain("statement timeout");
   });
 
   it("promotes the configured Book Now page to a critical route", () => {
     const plan = buildWarmupPlan({
       table: routeTable(),
       cmsPaths: ["/about", "/booking-info"],
-      bookNowPagePath: "/booking-info",
+      bookNowTarget: { state: "page", path: "/booking-info" },
     });
 
     const bookNow = plan.routes.find((route) => route.path === "/booking-info");
@@ -213,7 +231,7 @@ describe("buildWarmupPlan", () => {
     const plan = buildWarmupPlan({
       table: routeTable(),
       cmsPaths: ["/about"],
-      bookNowPagePath: "/lodge/history",
+      bookNowTarget: { state: "page", path: "/lodge/history" },
     });
 
     expect(plan.problems).toEqual([]);
@@ -238,7 +256,7 @@ describe("buildWarmupPlan", () => {
         "https://evil.example/x",
         "/../escape",
       ],
-      bookNowPagePath: null,
+      bookNowTarget: { state: "none" },
     });
 
     expect(plan.routes.filter((route) => route.tier === "cms")).toEqual([]);
@@ -254,8 +272,9 @@ describe("buildWarmupPlan", () => {
     const plan = buildWarmupPlan({
       table: routeTable(),
       criticalRoutes: declarations,
+      fixedWebsiteRoutes: ["/"],
       cmsPaths: [],
-      bookNowPagePath: null,
+      bookNowTarget: { state: "none" },
     });
 
     expect(plan.problems.join(" ")).toContain('is declared "isr"');
@@ -275,8 +294,9 @@ describe("buildWarmupPlan", () => {
       criticalRoutes: [
         { path: "/joining", expected: "render-only", why: "a renamed page" },
       ],
+      fixedWebsiteRoutes: ["/joining"],
       cmsPaths: [],
-      bookNowPagePath: null,
+      bookNowTarget: { state: "none" },
     });
 
     expect(plan.problems.join(" ")).toContain('is declared "render-only"');
@@ -293,8 +313,9 @@ describe("buildWarmupPlan", () => {
       criticalRoutes: [
         { path: "/join", expected: "render-only", why: "a deleted page" },
       ],
+      fixedWebsiteRoutes: ["/join"],
       cmsPaths: [],
-      bookNowPagePath: null,
+      bookNowTarget: { state: "none" },
     });
 
     expect(plan.problems.join(" ")).toContain("claimed by no route");
@@ -306,7 +327,7 @@ describe("buildWarmupPlan", () => {
     const plan = buildWarmupPlan({
       table: routeTable({ isrDynamicRoutes: [] }),
       cmsPaths: ["/about"],
-      bookNowPagePath: null,
+      bookNowTarget: { state: "none" },
     });
 
     expect(plan.problems.join(" ")).toContain(
@@ -318,13 +339,46 @@ describe("buildWarmupPlan", () => {
     const plan = buildWarmupPlan({
       table: routeTable(),
       criticalRoutes: [],
+      fixedWebsiteRoutes: [],
       cmsPaths: ["/about"],
-      bookNowPagePath: null,
+      bookNowTarget: { state: "none" },
     });
 
     expect(plan.problems.join(" ")).toContain(
       "No critical public route survived",
     );
+  });
+
+  it("blocks when the release gained a public route the critical list does not name", () => {
+    // The gap the cross-check closes: the fixed half of discovery was purely
+    // declarative, so a release that GAINED an eligible public page — #2352 slice 3
+    // adding `/history` and registering it in the census — passed the gate having
+    // never requested it once. Nothing else fires: the census guards in CI pass
+    // because the census WAS updated, the `toEqual` pin on the critical list passes
+    // because it was not touched, and the page is not a Page Content row either.
+    const plan = buildWarmupPlan({
+      table: routeTable({ appRoutePatterns: ["/history"] }),
+      fixedWebsiteRoutes: [...CRITICAL_PUBLIC_ROUTES.map((r) => r.path), "/history"],
+      cmsPaths: [],
+      bookNowTarget: { state: "none" },
+    });
+
+    expect(plan.problems.join(" ")).toContain('Public website route "/history"');
+    expect(plan.problems.join(" ")).toContain("CRITICAL_PUBLIC_ROUTES");
+    expect(plan.routes.map((route) => route.path)).not.toContain("/history");
+  });
+
+  it("does not ask the census for a route PATTERN, only for addresses", () => {
+    // `/[...slug]` is in the census and is not an address. Its addresses arrive from
+    // the published-CMS read, so demanding a declaration for it would block every
+    // deploy for ever.
+    const plan = buildWarmupPlan({
+      table: routeTable(),
+      cmsPaths: [],
+      bookNowTarget: { state: "none" },
+    });
+
+    expect(plan.problems).toEqual([]);
   });
 
   it("blocks on a build regex it cannot use", () => {
@@ -335,7 +389,7 @@ describe("buildWarmupPlan", () => {
         ],
       }),
       cmsPaths: [],
-      bookNowPagePath: null,
+      bookNowTarget: { state: "none" },
     });
 
     expect(plan.problems.join(" ")).toContain("unusable route regex");
@@ -362,10 +416,23 @@ describe("CRITICAL_PUBLIC_ROUTES", () => {
     const plan = buildWarmupPlan({
       table: routeTable(),
       cmsPaths: [],
-      bookNowPagePath: null,
+      bookNowTarget: { state: "none" },
     });
 
     expect(plan.problems).toEqual([]);
     expect(plan.routes).toHaveLength(CRITICAL_PUBLIC_ROUTES.length);
+  });
+
+  it("names every literal public address the release's own census approves", () => {
+    // The completeness half, run against the REAL census rather than a fixture: the
+    // plan above is clean, which can only be true while every literal entry of
+    // FIXED_NONCE_WEBSITE_ROUTES is declared. Asserted directly as well, so the reason
+    // a future failure appears is unmistakable.
+    const declared = CRITICAL_PUBLIC_ROUTES.map((route) => route.path);
+
+    for (const censusRoute of FIXED_NONCE_WEBSITE_ROUTES) {
+      if (censusRoute.includes("[")) continue;
+      expect(declared).toContain(censusRoute);
+    }
   });
 });
