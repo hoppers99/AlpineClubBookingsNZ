@@ -123,6 +123,23 @@ describe("AI Diagnostics SELECT-only role provisioning SQL (#2374, ADR-007)", ()
     }
   });
 
+  it("revokes EVERY remaining role membership, not only the named ones", () => {
+    const statements = buildAiDiagnosticsRoleSql(base);
+    const sweep = statements.find((candidate) =>
+      candidate.includes("pg_catalog.pg_auth_members"),
+    );
+    // The named list above is a subset. A membership in an ordinary application role
+    // is one `SET ROLE` from that role's privileges and is invisible to every
+    // ordinary privilege check, because the role is NOINHERIT — so provisioning
+    // strips the lot rather than enumerating what an operator might have granted.
+    expect(sweep, "no statement sweeps remaining role memberships").toBeDefined();
+    expect(sweep).toContain("REVOKE %I FROM %I");
+    expect(sweep).toContain("'ai_diagnostics_ro'");
+    // Direct grants only, which is complete: a `SET ROLE` chain always starts with a
+    // direct edge from this role, so removing every direct edge removes the closure.
+    expect(sweep).toContain("SELECT DISTINCT g.rolname");
+  });
+
   it("ships an EMPTY SELECT allowlist — AID-5 carries no domain tool", () => {
     expect(SELECT_GRANTS).toHaveLength(0);
     expect(sql()).not.toMatch(/GRANT SELECT ON "/);
@@ -153,6 +170,22 @@ describe("AI Diagnostics SELECT-only role provisioning SQL (#2374, ADR-007)", ()
       const statements = buildAiDiagnosticsRoleSql(base);
       expect(indexOfStatement(statements, "CREATE ROLE %I LOGIN")).toBeLessThan(
         indexOfStatement(statements, "NOSUPERUSER"),
+      );
+    });
+
+    it("pins NOINHERIT BEFORE sweeping memberships, and sweeps before any grant", () => {
+      // Order matters in both directions here. The attribute pin must land first so
+      // the role is NOINHERIT for the rest of the run, and the sweep must precede
+      // every GRANT so it cannot strip a membership this run was meant to leave in
+      // place (there is none today, and the ordering keeps that true by construction).
+      const statements = buildAiDiagnosticsRoleSql(base);
+      const sweep = indexOfStatement(statements, "pg_catalog.pg_auth_members");
+      expect(indexOfStatement(statements, "NOINHERIT")).toBeLessThan(sweep);
+      expect(sweep).toBeLessThan(
+        indexOfStatement(statements, "GRANT CONNECT ON DATABASE"),
+      );
+      expect(sweep).toBeLessThan(
+        indexOfStatement(statements, "GRANT USAGE ON SCHEMA public"),
       );
     });
 

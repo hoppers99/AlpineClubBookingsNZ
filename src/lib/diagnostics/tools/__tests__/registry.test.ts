@@ -6,13 +6,17 @@
  * silently ignores unknown arguments fails here rather than in production.
  */
 import { describe, expect, it } from "vitest";
+import { z } from "zod";
 
 import { ADMIN_PERMISSION_AREAS } from "@/lib/admin-permissions";
+import { canonicalStringify, sha256Hex } from "@/lib/diagnostics/knowledge/hash";
 
 import { readSqlPlaceholderNumbers } from "../database";
 import {
+  defineDiagnosticsTool,
   DIAGNOSTICS_SUBSTRATE_PROBE_TOOL_ID,
   DIAGNOSTICS_TOOLS,
+  type DiagnosticsToolEntry,
   findDiagnosticsTool,
   FORBIDDEN_TOOL_SQL_PATTERNS,
   isValidDiagnosticsToolId,
@@ -30,6 +34,141 @@ const AREA_KEYS = new Set(ADMIN_PERMISSION_AREAS.map((area) => area.key));
 const EXAMPLE_ARGS: Record<string, unknown> = {
   [DIAGNOSTICS_SUBSTRATE_PROBE_TOOL_ID]: {},
 };
+
+/**
+ * A throwaway entry built around a caller-supplied schema, so the NESTED argument
+ * shapes below can actually be exercised.
+ *
+ * Every entry AID-5 ships takes `z.object({}).strict()`, which rejects a nested
+ * argument on the schema alone — so a nested-key assertion against the shipped
+ * registry cannot fail, whatever the guard does. That is exactly how a
+ * depth-limited scan shipped green in the first place. This fixture is the same
+ * `defineDiagnosticsTool` an author calls, with the argument shape the next tool
+ * packs (AID-6B/#2376, AID-6C/#2377) need.
+ */
+function nestedArgumentFixture<TArgs>(argsSchema: z.ZodType<TArgs>) {
+  return defineDiagnosticsTool<TArgs>({
+    id: "diagnostics.nested_args_fixture",
+    label: "Nested-argument fixture",
+    description:
+      "Test-only entry with a nested argument shape, used to pin the depth-total reserved-key scan.",
+    requiredAreas: ["support"],
+    argsSchema,
+    inputSchema: {
+      type: "object",
+      properties: { filters: { type: "object" } },
+      additionalProperties: false,
+    },
+    sql: "SELECT true AS ok",
+    bind: () => [],
+    project: (row) => ({ ok: row.ok === true }),
+    rowLimit: 1,
+    byteLimit: 64,
+    surfacesPersonalData: false,
+  });
+}
+
+/**
+ * The nesting shapes a reserved key can hide in, each with a schema that ACCEPTS the
+ * polluted input so the assertion is not satisfied by the schema instead of the
+ * guard.
+ *
+ * `hashesAsIfAbsent` records what zod 4.4.3 actually does with the key, because the
+ * two answers are different defects. For `__proto__` it STRIPS: the parse succeeds and
+ * the accepted arguments are byte-identical to a call that never sent the key, so
+ * ADR-004's durable `argsHash` cannot tell the two apart — the audit-integrity defect.
+ * For `constructor` inside a `z.record(...)` it KEEPS the key (measured: the canonical
+ * hashes differ), so the record would at least be faithful — but it is still an
+ * argument the registry documents as a REJECTION, and the guard refuses it.
+ */
+interface NestedReservedKeyCase {
+  label: string;
+  polluted: string;
+  clean: string;
+  hashesAsIfAbsent: boolean;
+  /** The schema ALONE, to measure what zod does when nothing guards it. */
+  parseWithSchemaOnly: (raw: unknown) => { success: boolean; data: unknown };
+  /** The same schema behind `defineDiagnosticsTool`, which must refuse. */
+  entry: DiagnosticsToolEntry;
+}
+
+/**
+ * Built through a generic function rather than declared as a literal table: each
+ * schema has a different argument type, and a single array literal would collapse
+ * them into a union that no longer satisfies `z.ZodType<TArgs>`.
+ */
+function nestedReservedKeyCase<TArgs>(
+  label: string,
+  argsSchema: z.ZodType<TArgs>,
+  polluted: string,
+  clean: string,
+  hashesAsIfAbsent: boolean,
+): NestedReservedKeyCase {
+  return {
+    label,
+    polluted,
+    clean,
+    hashesAsIfAbsent,
+    parseWithSchemaOnly: (raw) => {
+      const result = argsSchema.safeParse(raw);
+      return {
+        success: result.success,
+        data: result.success ? result.data : undefined,
+      };
+    },
+    entry: nestedArgumentFixture(argsSchema),
+  };
+}
+
+const NESTED_RESERVED_KEY_CASES: readonly NestedReservedKeyCase[] = [
+  nestedReservedKeyCase(
+    "one object down",
+    z
+      .object({ filters: z.object({ status: z.string().optional() }).strict() })
+      .strict(),
+    '{"filters":{"__proto__":{"polluted":"yes"},"status":"open"}}',
+    '{"filters":{"status":"open"}}',
+    true,
+  ),
+  nestedReservedKeyCase(
+    "in a `z.record(...)`, the shape the first tool pack needs",
+    z.object({ filters: z.record(z.string(), z.string()) }).strict(),
+    '{"filters":{"__proto__":{"polluted":"yes"},"status":"open"}}',
+    '{"filters":{"status":"open"}}',
+    true,
+  ),
+  nestedReservedKeyCase(
+    "inside an ARRAY element",
+    z
+      .object({ filters: z.array(z.object({ status: z.string() }).strict()) })
+      .strict(),
+    '{"filters":[{"__proto__":{"polluted":"yes"},"status":"open"}]}',
+    '{"filters":[{"status":"open"}]}',
+    true,
+  ),
+  nestedReservedKeyCase(
+    "four levels down",
+    z
+      .object({
+        a: z
+          .object({
+            b: z.object({ c: z.object({ d: z.string() }).strict() }).strict(),
+          })
+          .strict(),
+      })
+      .strict(),
+    '{"a":{"b":{"c":{"__proto__":{"polluted":"yes"},"d":"x"}}}}',
+    '{"a":{"b":{"c":{"d":"x"}}}}',
+    true,
+  ),
+  nestedReservedKeyCase(
+    "as `constructor`, which zod KEEPS rather than strips",
+    z.object({ filters: z.record(z.string(), z.string()) }).strict(),
+    '{"filters":{"constructor":"x","status":"open"}}',
+    '{"filters":{"status":"open"}}',
+    false,
+  ),
+];
 
 describe("diagnostics tool registry contract (#2374)", () => {
   it("registers at least one tool and no duplicate ids", () => {
@@ -181,6 +320,76 @@ describe("diagnostics tool registry contract (#2374)", () => {
       expect(({} as Record<string, unknown>).polluted).toBeUndefined();
     },
   );
+
+  it.each(DIAGNOSTICS_TOOLS.map((tool) => [tool.id, tool] as const))(
+    "%s REJECTS a reserved key at ANY depth, in an object or an array",
+    (_id, tool) => {
+      // A top-level-only scan is not the guarantee the registry documents. Zod strips
+      // a NESTED `__proto__` exactly as readily as a top-level one, so a guard that
+      // stopped at depth 1 would reproduce the same audit-hash defect one level down —
+      // measured by the `NESTED_RESERVED_KEY_CASES` table below, which uses a fixture
+      // entry because no entry shipped today takes a nested argument. These inputs
+      // therefore fail on this entry's schema as well; the assertions exist so the
+      // first tool pack with a `filters` object inherits a scan that already looks
+      // everywhere, and they will bite the moment such an entry is registered.
+      for (const raw of [
+        '{"filters":{"__proto__":{"polluted":"yes"},"status":"open"}}',
+        '{"filters":[{"__proto__":{"polluted":"yes"}}]}',
+        '{"a":{"b":{"c":{"d":{"__proto__":{}}}}}}',
+        '{"a":[[{"constructor":{}}]]}',
+        '{"a":{"b":{"prototype":{}}}}',
+      ]) {
+        expect(tool.parseArgs(JSON.parse(raw)).ok, raw).toBe(false);
+      }
+      expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+    },
+  );
+
+  it.each(NESTED_RESERVED_KEY_CASES.map((entry) => [entry.label, entry] as const))(
+    "refuses a reserved key %s — which zod accepts, and then cannot hash apart",
+    (_label, testCase) => {
+      const polluted: unknown = JSON.parse(testCase.polluted);
+      const clean: unknown = JSON.parse(testCase.clean);
+
+      // 1. Zod ACCEPTS the polluted input. This is the measurement, not a claim: if
+      //    a future zod fixes the strip, this assertion is what tells us.
+      const pollutedParse = testCase.parseWithSchemaOnly(polluted);
+      const cleanParse = testCase.parseWithSchemaOnly(clean);
+      expect(pollutedParse.success).toBe(true);
+      expect(cleanParse.success).toBe(true);
+      if (!pollutedParse.success || !cleanParse.success) return;
+
+      // 2. And where it STRIPS the key it repairs the arguments silently, so the
+      //    durable `argsHash` — which `invoke.ts` computes as
+      //    `sha256Hex(canonicalStringify(binding.args))` — is BYTE-IDENTICAL for a call
+      //    that sent the reserved key and one that did not. That is the audit-integrity
+      //    defect, reproduced at depth. Asserted in BOTH directions so this stays a
+      //    measurement of zod rather than a belief about it.
+      const pollutedHash = sha256Hex(canonicalStringify(pollutedParse.data));
+      const cleanHash = sha256Hex(canonicalStringify(cleanParse.data));
+      if (testCase.hashesAsIfAbsent) {
+        expect(pollutedHash).toBe(cleanHash);
+      } else {
+        expect(pollutedHash).not.toBe(cleanHash);
+      }
+
+      // 3. `parseArgs` is what makes the rejection total: the reserved key never
+      //    reaches the schema, so there is no repaired call to hash.
+      expect(testCase.entry.parseArgs(polluted).ok).toBe(false);
+      expect(testCase.entry.parseArgs(clean).ok).toBe(true);
+      expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+    },
+  );
+
+  it("terminates on a cyclic object rather than spinning in the reserved-key scan", () => {
+    // `parseArgs` takes `unknown`. JSON cannot carry a cycle, but the type says
+    // nothing about that, and an iterative scan without a visited set would hang the
+    // request thread instead of refusing.
+    const cyclic: Record<string, unknown> = { a: 1 };
+    cyclic.self = cyclic;
+    const tool = DIAGNOSTICS_TOOLS[0];
+    expect(tool.parseArgs(cyclic).ok).toBe(false);
+  });
 
   it.each(DIAGNOSTICS_TOOLS.map((tool) => [tool.id, tool] as const))(
     "%s binds exactly the parameters its SQL references — $1..$N, no gaps",

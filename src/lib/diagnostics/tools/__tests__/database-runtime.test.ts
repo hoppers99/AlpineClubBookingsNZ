@@ -49,6 +49,7 @@ const pg = vi.hoisted(() => {
     can_create_in_database: false,
     can_create_in_public_schema: false,
     can_read_server_files: false,
+    role_memberships: 0,
     forbidden_role_memberships: 0,
     writable_relations: 0,
     undeclared_readable_relations: 0,
@@ -239,6 +240,15 @@ describe("getDiagnosticsDatabase — the verified pool (#2374, ADR-007)", () => 
     // reported zero memberships for a role handed `pg_write_all_data` by hand.
     expect(probe.sql).toContain("pg_has_role(current_user, forbidden.oid, 'MEMBER')");
     expect(probe.sql).not.toContain("'USAGE'");
+    // And it asks about EVERY role, not only the eight it can name. The subject is
+    // `pg_roles` rather than `pg_auth_members` because `SET ROLE` reachability is
+    // transitive — a role granted two hops away is still reachable — and the role's
+    // own row is excluded, since every role is a member of itself.
+    expect(probe.sql).toContain(
+      "pg_has_role(current_user, other.oid, 'MEMBER')",
+    );
+    expect(probe.sql).toContain("other.oid <> r.oid");
+    expect(probe.sql).not.toContain("pg_auth_members");
     // Every overload of every file-reading function, not one hard-coded signature.
     expect(probe.sql).not.toContain("pg_read_file(text)");
     expect(probe.values?.[0]).toEqual([...FORBIDDEN_PREDEFINED_ROLES]);
@@ -290,6 +300,9 @@ describe("getDiagnosticsDatabase — the verified pool (#2374, ADR-007)", () => 
     ["can CREATE in schema public", { can_create_in_public_schema: true }],
     ["can read server files", { can_read_server_files: true }],
     ["belongs to an escalating role", { forbidden_role_memberships: 1 }],
+    // The named list is a subset. A membership in an ordinary application role is
+    // invisible to every other column here (NOINHERIT), so the TOTAL is the gate.
+    ["belongs to ANY other role", { role_memberships: 1 }],
     ["can write to a relation", { writable_relations: 1 }],
     ["can read an undeclared relation", { undeclared_readable_relations: 1 }],
     [

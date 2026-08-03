@@ -207,6 +207,7 @@ const SAFE: DiagnosticsRolePrivilegeReport = {
   canCreateInDatabase: false,
   canCreateInPublicSchema: false,
   canReadServerFiles: false,
+  roleMemberships: 0,
   forbiddenRoleMemberships: 0,
   writableRelations: 0,
   undeclaredReadableRelations: 0,
@@ -235,6 +236,26 @@ describe("isDiagnosticsRolePrivilegeSafe (#2374, ADR-007)", () => {
   it("refuses a role that is a member of any escalating predefined role", () => {
     expect(
       isDiagnosticsRolePrivilegeSafe({ ...SAFE, forbiddenRoleMemberships: 1 }),
+    ).toBe(false);
+  });
+
+  it("refuses a role that is a member of ANY role, predefined or not", () => {
+    // The named list is a subset, not the gate. A membership in an ordinary
+    // application role — or in a superuser role — is invisible to every other field
+    // in this report, because the role is NOINHERIT: `isSuperuser` reads the role's
+    // own attribute, and the relation and function counts all use `current_user` ACL
+    // functions, which respect `rolinherit`. So the report below is exactly what the
+    // server returns for `GRANT tac_app TO ai_diagnostics_ro`, and it must refuse.
+    expect(isDiagnosticsRolePrivilegeSafe({ ...SAFE, roleMemberships: 1 })).toBe(
+      false,
+    );
+    // And the total is what decides it, even when the named subset says nothing.
+    expect(
+      isDiagnosticsRolePrivilegeSafe({
+        ...SAFE,
+        roleMemberships: 2,
+        forbiddenRoleMemberships: 0,
+      }),
     ).toBe(false);
   });
 

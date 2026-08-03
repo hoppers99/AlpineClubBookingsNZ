@@ -58,6 +58,15 @@ const GRANTED_TABLE = "aid5_privilege_granted";
 const WRITABLE_TABLE = "aid5_privilege_writable";
 /** A table the role is granted nothing on, to prove the allowlist is closed. */
 const UNGRANTED_TABLE = "aid5_privilege_ungranted";
+/**
+ * An ORDINARY, non-superuser role standing in for a deployment's application role —
+ * the thing an operator actually reaches for when a diagnostics read fails
+ * (`GRANT tac_app TO ai_diagnostics_ro`) and the one no list of predefined role names
+ * can anticipate.
+ */
+const APP_LIKE_ROLE = "aid5_probe_app_like";
+/** Granted to `APP_LIKE_ROLE`, so membership has to be counted through a chain. */
+const GROUP_LIKE_ROLE = "aid5_probe_group_like";
 
 /** PostgreSQL SQLSTATEs this suite asserts on. */
 const INSUFFICIENT_PRIVILEGE = "42501";
@@ -316,6 +325,15 @@ describe("diagnostics privilege proof DB safety guard (#2374)", () => {
         await admin
           .query(`REVOKE ALL ON SCHEMA public FROM "${TEST_ROLE}"`)
           .catch(() => {});
+        // Belt for the membership cases: if one of them failed part-way these roles
+        // would otherwise survive the run and be granted again on the next one.
+        for (const role of [APP_LIKE_ROLE, GROUP_LIKE_ROLE]) {
+          await admin.query(`DROP OWNED BY "${role}"`).catch(() => {});
+          await admin.query(`DROP ROLE IF EXISTS "${role}"`).catch(() => {});
+        }
+        await admin
+          .query(`REVOKE "${adminRole}" FROM "${TEST_ROLE}"`)
+          .catch(() => {});
         await admin
           .query(`DROP ROLE IF EXISTS "${TEST_ROLE}"`)
           .catch(() => {});
@@ -363,6 +381,21 @@ describe("diagnostics privilege proof DB safety guard (#2374)", () => {
       // It must still be able to connect and to name relations.
       expect(p.connect).toBe(true);
       expect(p.usage_schema).toBe(true);
+    });
+
+    it("is a member of NO role at all, which is what the runtime gate requires", async () => {
+      // The baseline the total-membership gate stands on: a correctly provisioned role
+      // belongs to nothing, so requiring zero refuses no valid deployment. Counted the
+      // way the self-check counts it — the transitive closure by `MEMBER`, excluding
+      // the role's own row, since every role is a member of itself.
+      const result = await admin.query(
+        `SELECT count(*)::int AS memberships
+         FROM pg_catalog.pg_roles other
+         WHERE other.rolname <> $1
+           AND pg_catalog.pg_has_role($1, other.oid, 'MEMBER')`,
+        [TEST_ROLE],
+      );
+      expect(result.rows[0].memberships).toBe(0);
     });
 
     it("holds no membership in any privilege-escalating predefined role", async () => {
@@ -692,6 +725,150 @@ describe("diagnostics privilege proof DB safety guard (#2374)", () => {
           }
         } finally {
           await admin.query(`REVOKE pg_read_all_data FROM "${TEST_ROLE}"`);
+          await closeDiagnosticsDatabase();
+        }
+      });
+    });
+
+    it("REFUSES membership in an ORDINARY role, which nothing else in the report sees", async () => {
+      // The symmetric hole the predefined-role list left open. `GRANT <app role> TO
+      // <diagnostics role>` is the same operator shortcut as the case above, but the
+      // granted role is not one the shipped list can name — and because the role is
+      // NOINHERIT the membership is invisible to EVERY other column: `rolsuper` is
+      // read for `current_user` only, and the writable/undeclared/server-file counts
+      // all use `current_user` ACL functions, which respect `rolinherit`. The total
+      // membership count is the only thing that can catch it.
+      await withDeclaredGrantsOnly(async () => {
+        await admin.query(`CREATE ROLE "${APP_LIKE_ROLE}" NOSUPERUSER`);
+        await admin.query(`CREATE ROLE "${GROUP_LIKE_ROLE}" NOSUPERUSER`);
+        // What an ordinary application role holds: the encrypted credential store and
+        // a table the diagnostics role has no privilege on at all.
+        await admin.query(
+          `GRANT SELECT ON public."IntegrationCredential" TO "${APP_LIKE_ROLE}"`,
+        );
+        await admin.query(
+          `GRANT INSERT ON public.${UNGRANTED_TABLE} TO "${APP_LIKE_ROLE}"`,
+        );
+        // A second hop, so the count has to be the transitive closure and not the
+        // direct `pg_auth_members` rows.
+        await admin.query(`GRANT "${GROUP_LIKE_ROLE}" TO "${APP_LIKE_ROLE}"`);
+        await admin.query(`GRANT "${APP_LIKE_ROLE}" TO "${TEST_ROLE}"`);
+        await closeDiagnosticsDatabase();
+        try {
+          const handle = await getDiagnosticsDatabase();
+          expect(handle.ok).toBe(false);
+          if (!handle.ok) {
+            expect(handle.reason).toBe("database_role_unsafe");
+            // Direct membership plus the one reached through it.
+            expect(handle.report?.roleMemberships).toBe(2);
+            // Every other column is blind to it, which is the finding in one line.
+            expect(handle.report?.forbiddenRoleMemberships).toBe(0);
+            expect(handle.report?.isSuperuser).toBe(false);
+            expect(handle.report?.canReadServerFiles).toBe(false);
+            expect(handle.report?.writableRelations).toBe(0);
+            expect(handle.report?.undeclaredReadableRelations).toBe(0);
+            expect(handle.report?.matchesConfiguredRole).toBe(true);
+          }
+
+          // And the capability is real. As the diagnostics role: refused. One
+          // `SET ROLE` later: the credential store, and a write.
+          const client = new PgClientCtor({ connectionString: roleUrl });
+          await client.connect();
+          try {
+            await expect(
+              client.query(`SELECT count(*) FROM public."IntegrationCredential"`),
+            ).rejects.toMatchObject({ code: INSUFFICIENT_PRIVILEGE });
+            await client.query(`SET ROLE "${APP_LIKE_ROLE}"`);
+            const escalated = await client.query(
+              `SELECT count(*)::int AS rows FROM public."IntegrationCredential"`,
+            );
+            expect(escalated.rows[0].rows).toBeGreaterThanOrEqual(0);
+            await client.query("SET default_transaction_read_only = off");
+            // No `RETURNING`: that would need SELECT on the returned column, and the
+            // point here is the WRITE. The app-like role holds INSERT and nothing else.
+            const written = await client.query(
+              `INSERT INTO public.${UNGRANTED_TABLE} (id, note) VALUES (42, 'escalated')`,
+            );
+            expect(written.rowCount).toBe(1);
+            // The two-hop role is reachable too, which is why the count is transitive.
+            await client.query("RESET ROLE");
+            await client.query(`SET ROLE "${GROUP_LIKE_ROLE}"`);
+            const reached = await client.query(`SELECT current_user AS whoami`);
+            expect(reached.rows[0].whoami).toBe(GROUP_LIKE_ROLE);
+          } finally {
+            await client.end().catch(() => {});
+          }
+
+          // Unlike the SECURITY DEFINER case, re-provisioning DOES repair this: the
+          // statement list sweeps every membership, not only the eight it can name.
+          await provision();
+          await closeDiagnosticsDatabase();
+          const afterProvision = await getDiagnosticsDatabase();
+          expect(afterProvision.ok).toBe(true);
+          const swept = await admin.query(
+            `SELECT pg_catalog.pg_has_role($1, $2, 'MEMBER') AS still_member`,
+            [TEST_ROLE, APP_LIKE_ROLE],
+          );
+          expect(swept.rows[0].still_member).toBe(false);
+        } finally {
+          await admin
+            .query(`DELETE FROM public.${UNGRANTED_TABLE} WHERE id = 42`)
+            .catch(() => {});
+          for (const role of [APP_LIKE_ROLE, GROUP_LIKE_ROLE]) {
+            // DROP OWNED BY also drops the privileges granted TO the role, which a
+            // bare DROP ROLE would refuse.
+            await admin.query(`DROP OWNED BY "${role}"`).catch(() => {});
+            await admin.query(`DROP ROLE IF EXISTS "${role}"`).catch(() => {});
+          }
+          await closeDiagnosticsDatabase();
+        }
+      });
+    });
+
+    it("REFUSES membership in a SUPERUSER role, including for server-file access", async () => {
+      // The worst version of the same shape: the granted role is a superuser, so
+      // `SET ROLE` yields everything — yet `is_superuser` is false (it is the
+      // diagnostics role's own attribute) and `can_read_server_files` is false (the
+      // ACL check respects NOINHERIT). Membership is the only trace.
+      await withDeclaredGrantsOnly(async () => {
+        const adminAttributes = await admin.query(
+          `SELECT rolsuper FROM pg_catalog.pg_roles WHERE rolname = $1`,
+          [adminRole],
+        );
+        // Non-vacuous: if the harness role were not a superuser this proves nothing.
+        expect(adminAttributes.rows[0]?.rolsuper).toBe(true);
+
+        await admin.query(`GRANT "${adminRole}" TO "${TEST_ROLE}"`);
+        await closeDiagnosticsDatabase();
+        try {
+          const handle = await getDiagnosticsDatabase();
+          expect(handle.ok).toBe(false);
+          if (!handle.ok) {
+            expect(handle.reason).toBe("database_role_unsafe");
+            expect(handle.report?.roleMemberships).toBeGreaterThanOrEqual(1);
+            expect(handle.report?.forbiddenRoleMemberships).toBe(0);
+            expect(handle.report?.isSuperuser).toBe(false);
+            expect(handle.report?.canReadServerFiles).toBe(false);
+          }
+
+          const client = new PgClientCtor({ connectionString: roleUrl });
+          await client.connect();
+          try {
+            await expect(
+              client.query(`SELECT pg_catalog.pg_read_file('postgresql.conf', 0, 60)`),
+            ).rejects.toMatchObject({ code: INSUFFICIENT_PRIVILEGE });
+            await client.query(`SET ROLE "${adminRole}"`);
+            const file = await client.query(
+              `SELECT pg_catalog.pg_read_file('postgresql.conf', 0, 60) AS head`,
+            );
+            expect(String(file.rows[0].head).length).toBeGreaterThan(0);
+          } finally {
+            await client.end().catch(() => {});
+          }
+        } finally {
+          await admin
+            .query(`REVOKE "${adminRole}" FROM "${TEST_ROLE}"`)
+            .catch(() => {});
           await closeDiagnosticsDatabase();
         }
       });
