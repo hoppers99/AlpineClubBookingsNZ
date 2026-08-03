@@ -19,6 +19,7 @@ import {
   hostingCoverageActorOptions,
   loadSameOwnerCoverageDependentIds,
 } from "@/lib/adult-member-hosting-review";
+import { hostingCoverageStateKey } from "@/lib/adult-member-hosting-coverage-incidents";
 import {
   SameOwnerCoverageWouldBreakError,
   formatStrandedCoverageMessage,
@@ -683,6 +684,9 @@ describe("the scope is opt-in (#2576 §12, §13)", () => {
 });
 
 describe("a change that would strand another booking (#2576 §6, §7, §14)", () => {
+  /** The nights `b-main`'s non-member child stays in the pair below. */
+  const KID_NIGHTS_FOR_STRANDING = ["2026-07-03", "2026-07-04"];
+
   /**
    * What `b-source` is left carrying once the adult member has gone: a MEMBER child.
    *
@@ -812,6 +816,53 @@ describe("a change that would strand another booking (#2576 §6, §7, §14)", ()
         hostingCoverageActorOptions({ actorRole: "MEMBER", actorMemberId: "owner-1" }),
       ),
     ).resolves.toBeTruthy();
+  });
+
+  it("does not refuse over a hazard recorded ONLY on an open incident", async () => {
+    // The sibling of the test above, and a DIFFERENT branch of the same comparison.
+    // A dependent whose cover was removed by an officer last week carries an open
+    // INCIDENT, and its review snapshot may have been cleared or reset since — the
+    // incident is what survives a review reset, which is the whole reason it exists
+    // as a separate row. Refusing today's unrelated member edit over it would trap
+    // them exactly as the stored-snapshot case would.
+    //
+    // Mutation-found: dropping the incident half of the comparison left every other
+    // test in this file green.
+    const rows = [
+      booking({ id: "b-source", guests: [REMAINING_MEMBER_CHILD] }),
+      booking({
+        id: "b-main",
+        guests: [guestRow("kid", KID_NIGHTS_FOR_STRANDING)],
+      }),
+    ];
+    const { db } = makeStore(rows);
+    // Evaluate the dependent exactly as the reconciler will, so the seeded incident
+    // carries the key its CURRENT uncovered state produces — an independently
+    // written literal would only prove the two happened to differ.
+    const { violation } = await evaluateBookingAdultMemberHosting(
+      rows[1] as never,
+      db,
+    );
+    expect(violation).not.toBeNull();
+    const seeded = makeStore(rows, {
+      incidents: [
+        {
+          id: "incident-1",
+          bookingId: "b-main",
+          stateKey: hostingCoverageStateKey(violation!),
+        },
+      ],
+    });
+    await expect(
+      reconcileAdultMemberHostingReviewWithSiblings(
+        "b-source",
+        seeded.db,
+        hostingCoverageActorOptions({ actorRole: "MEMBER", actorMemberId: "owner-1" }),
+      ),
+    ).resolves.toBeTruthy();
+    // The change is permitted, AND the standing incident is still queued for
+    // re-examination — that arm is what closes it if cover ever comes back.
+    expect(seeded.queued).toHaveLength(1);
   });
 
   it("allows an officer's change and records the bounded work instead (§7, §8)", async () => {
