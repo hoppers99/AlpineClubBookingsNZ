@@ -76,7 +76,13 @@ import { stayWindowForAttempt, type StayWindow } from "./helpers/stay-dates";
 
 test.describe.configure({ mode: "serial" });
 
-const POLICY_NAME = "E2E member exception UI minimum stay";
+/**
+ * The prefix every attempt's policy name starts with. `beforeAll` deactivates the
+ * whole prefix and then creates `${POLICY_NAME_PREFIX} a<attempt>` — the two halves
+ * docs/E2E_PLAYWRIGHT.md asks for, so a reset that somehow cannot clean still
+ * cannot wedge the retry on 409 `POLICY_NAME_CONFLICT`.
+ */
+const POLICY_NAME_PREFIX = "E2E member exception UI minimum stay";
 const MEMBER = personas.booker;
 const MEMBER_NAME = `${MEMBER.firstName} ${MEMBER.lastName}`;
 
@@ -218,7 +224,9 @@ test.beforeAll(async ({}, testInfo) => {
   // Clear this attempt's own leftovers BEFORE creating anything. An open request
   // blocks a new one outright, and a leftover booking on either window holds the
   // member-night this journey needs.
-  await deactivateMinimumStayPolicies(admin, { namePrefix: POLICY_NAME });
+  await deactivateMinimumStayPolicies(admin, {
+    namePrefix: POLICY_NAME_PREFIX,
+  });
   await cancelOpenExceptionRequests(member);
   await cancelMemberBookingsOnDate(admin, {
     memberName: MEMBER_NAME,
@@ -230,7 +238,7 @@ test.beforeAll(async ({}, testInfo) => {
   // beds, and it makes the modification path's capacity sentence deterministic.
   const created = await admin.post("/api/admin/booking-policies/minimum-stay", {
     data: {
-      name: POLICY_NAME,
+      name: `${POLICY_NAME_PREFIX} a${testInfo.retry}`,
       startDate: "2020-01-01",
       endDate: "2099-12-31",
       triggerDays: [0, 1, 2, 3, 4, 5, 6],
@@ -252,7 +260,9 @@ test.afterAll(async () => {
       memberName: MEMBER_NAME,
       checkIn: [compliant.checkIn, shortStay.checkIn],
     });
-    await deactivateMinimumStayPolicies(admin, { namePrefix: POLICY_NAME });
+    await deactivateMinimumStayPolicies(admin, {
+      namePrefix: POLICY_NAME_PREFIX,
+    });
   }
   await adminContext?.close();
   await memberContext?.close();
