@@ -4,6 +4,7 @@ import { loginPersona } from "../helpers/auth";
 import { E2E_ADMIN, SECOND_LODGE, WAITLISTER } from "../helpers/fixtures";
 import {
   cancelMemberBookingsOnDate,
+  cancelOpenExceptionRequests,
   deactivateMinimumStayPolicies,
 } from "../helpers/reset";
 import { stayWindow } from "../helpers/stay-dates";
@@ -91,17 +92,14 @@ function ownBookingsOnNight(
   );
 }
 
+/**
+ * Withdraw every open exception request this member left behind, through the
+ * shared helper (#2562) — the member read answers the member DTO now, whose
+ * `status` is the member's own word rather than the Prisma enum, so a local
+ * `status === "REQUESTED"` loop would clean up nothing while reporting success.
+ */
 async function cancelOpenRequests(member: APIRequestContext) {
-  const listed = await member.get("/api/bookings/exception-requests");
-  if (!listed.ok()) return;
-  const rows = (await listed.json()) as Array<{ id: string; status: string }>;
-  for (const row of rows) {
-    if (row.status === "REQUESTED") {
-      await member.patch(`/api/bookings/exception-requests/${row.id}`, {
-        data: { action: "cancel" },
-      });
-    }
-  }
+  await cancelOpenExceptionRequests(member);
 }
 
 test.beforeAll(async ({ browser }) => {

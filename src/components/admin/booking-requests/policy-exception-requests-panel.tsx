@@ -386,7 +386,15 @@ export function PolicyExceptionRequestsPanel({
               const hasNotes = notes.trim().length > 0;
 
               return (
-                <Card key={item.id}>
+                // #2562: the request id is carried on the card so the member-UI
+                // browser spec can decide THE request it just raised rather than
+                // "the first card", which in a shared, age-ordered queue is a
+                // different request the moment anything else is waiting.
+                <Card
+                  key={item.id}
+                  data-testid="policy-exception-request"
+                  data-request-id={item.id}
+                >
                   <CardHeader>
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                       <div>
