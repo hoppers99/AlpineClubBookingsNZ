@@ -96,6 +96,54 @@ as a red flag and check the release notes before deploying.
 
 ## Unreleased
 
+### Google Analytics stops until an admin re-enters the measurement id (#2573)
+
+**Read this before you deploy if your club uses Google Analytics: analytics will
+stop at this deploy, and an admin has to turn it back on in the app.** This is an
+intentional, owner-accepted hard cutover, not a regression.
+
+**What changed.** The GA4 measurement id, whether the visitor consent banner is
+shown, and the banner wording are now club configuration held in the database and
+edited at **Admin → Setup & Configuration → Integrations → Google Analytics**.
+`NEXT_PUBLIC_GA_MEASUREMENT_ID` is no longer read anywhere at runtime. There is no
+fallback to it, and its value is **not** copied into the database automatically —
+so nothing can silently start tracking under a configuration nobody reviewed.
+
+**Migration.** `20260803060000_add_analytics_settings` creates one new, empty
+`AnalyticsSettings` table plus an index. Ledgered `expand` /
+`old_code_compatible=yes` in
+[`docs/BLUE_GREEN_MIGRATION_SAFETY.tsv`](BLUE_GREEN_MIGRATION_SAFETY.tsv). No row
+is seeded, no backfill runs, and the previously deployed colour neither reads nor
+writes the table — so this needs **no maintenance window of its own** and no
+special sequencing. Run it in the normal deploy window.
+
+**Post-upgrade action — required, per club, or analytics stays off:**
+
+1. Sign in as an admin with finance **edit** access.
+2. Confirm the **Google Analytics** module is on at **Admin → Setup &
+   Configuration → Modules**. If it is on but unconfigured, its readiness badge
+   now reads "Needs setup" and points at Integrations rather than at an
+   environment variable.
+3. Go to **Admin → Setup & Configuration → Integrations**, open the **Google
+   Analytics** card, select **Edit**, and enter the club's GA4 measurement id
+   (`G-…`, from Google Analytics → Admin → Data streams → your web stream).
+4. Choose the consent-banner mode. **Show the consent banner** is the default and
+   the recommended option: nothing whatsoever is sent to Google until a visitor
+   accepts. The alternative loads analytics automatically without asking, and the
+   screen warns you before you save it.
+5. **Save.** No restart or redeploy is needed — the save clears the public
+   configuration cache and the stored public pages, so the change is live at once.
+6. Remove `NEXT_PUBLIC_GA_MEASUREMENT_ID` from your `.env` / Compose environment.
+   Leaving it set does nothing, but it will mislead the next operator.
+
+**During a blue/green drain the two colours can disagree** — the old colour still
+reads its environment value while the new colour reads the (empty) table. The only
+consequence is that analytics may be on for the old colour and off for the new
+one, which is bounded by the drain and errs towards *not* tracking. It can never
+run without consent on the new colour.
+
+Full setup walkthrough: [Integrations](guides/integrations.md).
+
 ### The subscription booking lockout becomes a three-way choice (#2543)
 
 **Your club's booking behaviour does not change on this upgrade — but this release

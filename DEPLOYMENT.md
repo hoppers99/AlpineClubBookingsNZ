@@ -958,12 +958,37 @@ queued events verify and replay on retry; duplicate deliveries are deduplicated
 automatically. Replacing any Stripe key clears the verified webhook badge.
 Then remove the legacy `STRIPE_*` env vars.
 
+**Google Analytics (#2573):** the same in-app cutover, with one difference — the
+GA4 measurement id is ordinary configuration rather than an encrypted credential,
+so it is stored in plain text in the `AnalyticsSettings` table rather than in the
+vault. At the upgrade `NEXT_PUBLIC_GA_MEASUREMENT_ID` stops being read, there is no
+fallback to it, and **its value is not imported automatically** — so Google
+Analytics goes inactive on every club at that deploy and stays inactive until an
+admin enters and saves a valid measurement id.
+
+**This is a required post-deploy step for any club that uses analytics.** With
+finance edit access: enable the **Google Analytics** module at
+**Admin → Modules** if it is not already on, then open **Admin → Integrations**,
+select **Set up Google Analytics** on that card, and enter the measurement id
+(`G-…`), the consent-banner mode, and the banner wording. Save takes effect at
+once — it clears both the tagged public-layout cache and the stored public pages,
+so no restart or redeploy is needed, and a removed or invalid id can never leave a
+stale Google tag firing from a stored page. Then remove
+`NEXT_PUBLIC_GA_MEASUREMENT_ID` from the environment.
+
+The integration fails closed throughout: module off, no id, an invalid id, or a
+database read failure all mean no analytics, and the public website keeps rendering
+normally in every one of those states. Step-by-step walkthrough in
+[`docs/guides/integrations.md`](docs/guides/integrations.md); the operator-facing
+release note is in [`docs/UPGRADING.md`](docs/UPGRADING.md).
+
 **Expected downtime:** none at deploy. Xero-backed operations (sync, webhooks,
 invoice/payment automation) pause between the upgrade and step 4 completing, and
 resume once credentials are re-entered and Xero is reconnected. Because
 production runs blue/green web slots plus a cron-leader, a wizard write in one
 web slot is observed by the cron-leader within the credential cache TTL
-(30–60s), no restart required.
+(30–60s), no restart required. Analytics is off for the same kind of gap — from
+the deploy until the measurement id is saved.
 
 ### Auth-secret rotation runbook
 

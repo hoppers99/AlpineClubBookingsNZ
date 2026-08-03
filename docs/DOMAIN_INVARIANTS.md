@@ -4401,12 +4401,49 @@ zero are not external financial history by themselves.
 
 ## Analytics And Privacy
 
-Google Analytics must not load unless all three hold: the Analytics module is
-enabled, `NEXT_PUBLIC_GA_MEASUREMENT_ID` is configured, and the visitor has
-explicitly accepted the consent banner. Declining or dismissing the banner
-counts as denied, Google Consent Mode defaults every storage category to
-denied until an explicit accept, and the stored per-browser choice
-(`analytics-consent.v1`) is honoured on revisit.
+Google Analytics must not load unless ALL of the following hold (#2573):
+
+- the Analytics module is enabled at Admin → Modules (the master switch);
+- a valid GA4 measurement id is stored in `AnalyticsSettings` — the database is
+  the sole canonical source, `NEXT_PUBLIC_GA_MEASUREMENT_ID` is not read
+  anywhere at runtime, and there is no fallback to it;
+- the route is analytics-eligible under the fixed, application-controlled policy
+  in `src/lib/analytics-route-policy.ts`; and
+- the visitor has explicitly accepted, **whenever the consent banner is
+  enabled**.
+
+While the banner is enabled and no accepted choice is recorded at the club's
+current consent revision, nothing at all reaches Google: no tag load, no
+request, no cookieless ping and no consent-status signal. Declining or
+dismissing the banner both count as denied.
+
+While the banner is disabled the tag loads automatically on eligible routes, a
+decline recorded *while the banner was showing* is invalidated once, and a
+subsequent opt-out through the public Analytics preferences control is honoured
+at any consent revision — so the preferences control can never be made
+ineffective by turning the banner off.
+
+Advertising storage, advertising user data and advertising personalisation are
+denied in every consent signal, in both banner modes, with no setting that
+changes it.
+
+Only `origin + pathname` is ever sent as page-location information, and only for
+an eligible route. Never a query string, never a fragment, and never a reset
+token, invitation token, verification code, PIN, email address, member id,
+booking id or payment id — including in the referrer, which is sanitised before
+Google sees it. Client-side navigation sends exactly one page view per address.
+
+The per-browser choice (`analytics-consent.v2`) stores the applicable consent
+revision and which surface recorded it, and is honoured on revisit. Only the
+explicit “Ask visitors to choose again” admin action bumps the revision; an
+ordinary settings save never does. Every read and write of the configuration is
+permission-checked server-side, every change is audit logged, and a save
+invalidates the public configuration cache so a removed or invalid measurement
+id can never leave a stale tag active.
+
+Every one of these fails CLOSED: a missing row, an invalid measurement id, a
+disabled module or a database read failure all mean no analytics, and the public
+website still renders normally.
 
 ## Membership Lifecycle
 

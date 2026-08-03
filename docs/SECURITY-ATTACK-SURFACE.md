@@ -2424,6 +2424,36 @@ permanently (D7).
   is already in the DOM of the document those scripts run in, and naming the wrong
   nonce can only get our own script refused, never make an injected one run. The same
   fault predated the split on `/` → `/login`, and the same change closes it.
+  **#2573 removed both INLINE analytics scripts** — the consent bootstrap and the
+  `gtag('config', …)` call now run from the bundle, pushing onto `window.dataLayer` in
+  the same order — so exactly one external `<Script src>` is left. The document-nonce
+  read is unchanged and still load-bearing: `script-src` carries no
+  `'strict-dynamic'`, so a dynamically injected script tag is nonce-checked whether it
+  is inline or not.
+- **Google Analytics can only be pointed somewhere by an authorised admin, and only
+  at what the application allows** (#2573). The measurement id moved out of
+  `NEXT_PUBLIC_GA_MEASUREMENT_ID` into `AnalyticsSettings`, behind
+  `finance:view`/`finance:edit` on `/api/admin/integrations/analytics` and behind the
+  `analytics` module flag in `src/config/feature-routes.ts` (which 404s the subtree
+  when the module is off). It is validated as a GA4 `G-…` id on write, and re-validated
+  on every read, so a restored or hand-edited row that is not a GA4 id means no
+  analytics rather than an arbitrary third-party script id in a `<script src>`.
+  Advertising consent categories are denied unconditionally, in both banner modes, with
+  no setting that changes it. The admin-authored banner message is stored as plain text
+  and rendered as a React text child — never `dangerouslySetInnerHTML` — so markup in
+  it is shown literally.
+- **What may be sent to Google is bounded by code, not by configuration**
+  (`src/lib/analytics-route-policy.ts`). Two independent gates: the address must be one
+  the five approved `(website)` routes serve (derived from the same route census the
+  nonce split uses, so a new admin, member or token route is excluded the day it is
+  added), and it must also *look* like an admin-authored page slug — which is what
+  refuses the catch-all's territory of identifier-shaped and credential-flavoured
+  addresses (`/reset/<token>`, `/t/<hex>`, `/cm5x…`). `send_page_view: false` turns
+  Google's own automatic page view off, so `location.href` is never used; this app sends
+  one `origin + pathname` view per navigation, de-duplicated against the last value
+  sent. `document.referrer` is sanitised before Google sees it — an excluded
+  same-origin referrer is reduced to the bare origin, which is what stops a visitor
+  arriving from `/pay/<token>` handing Google the payment token.
 
 ### The sign-in marker cookie (D2)
 
