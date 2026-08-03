@@ -12,14 +12,14 @@
  * that re-declared its own grants would prove nothing about what operators run.
  *
  * DECLARATIVE, NOT ADDITIVE. Re-running the statements is safe and is the
- * intended way to rotate the password — but it also REVOKES every table,
- * sequence and routine privilege from the role before granting the (currently
- * empty) allowlist back. That is the point: the grant allowlist lives here, in
- * public code, so "which tables can Diagnostics read" is answerable by reading
- * one file. A tool pack (AID-6A/B/C, #2375-#2377) that needs a new table adds
- * its grant to `SELECT_GRANTS` in the same pull request as the tool — and an
- * operator re-provisions as part of that upgrade. ADR-007's "deliberate
- * friction" is exactly this.
+ * intended way to rotate the password — but it also REVOKES every role
+ * membership, and every table, sequence and routine privilege, from the role before
+ * granting the (currently empty) allowlist back. That is the point: the grant
+ * allowlist lives here, in public code, so "which tables can Diagnostics read" is
+ * answerable by reading one file. A tool pack (AID-6A/B/C, #2375-#2377) that needs
+ * a new table adds its grant to `SELECT_GRANTS` in the same pull request as the
+ * tool — and an operator re-provisions as part of that upgrade. ADR-007's
+ * "deliberate friction" is exactly this.
  *
  * WHAT IT DOES *NOT* DO, deliberately:
  *  - It does not revoke `CREATE ON SCHEMA public FROM PUBLIC`. PostgreSQL 15+
@@ -50,6 +50,12 @@ export const PUBLIC_TEMP_REVOKE_NOTE =
  * contract outright. Membership is revoked explicitly on every provision so a
  * hand-granted escalation cannot survive a re-run. PostgreSQL warns (and
  * succeeds) when the role is not a member, which is the harmless normal case.
+ *
+ * This list is NOT the membership control — step 5 below strips membership in
+ * EVERY role, and the runtime self-check gates on the total. It is kept because
+ * naming the eight escalation roles in public code documents what the control is
+ * for, and because a refusal that can say "a predefined escalation role" is a
+ * better sentence for an operator than a bare count.
  */
 export const FORBIDDEN_PREDEFINED_ROLES = [
   "pg_read_all_data",
@@ -249,7 +255,47 @@ END
 $$;`);
   }
 
-  // 5. Database-level privileges: CONNECT only. TEMP has to be revoked from
+  // 5. Strip membership in EVERY role, not only the eight named above. This is
+  //    the membership control; step 4 is documentation with a revoke attached.
+  //
+  //    A diagnostics role that is a member of anything is one `SET ROLE` away from
+  //    that role's privileges, and because this role is NOINHERIT the membership is
+  //    invisible to every ordinary privilege check — measured on postgres:16.14,
+  //    `GRANT "tac_app" TO "ai_diagnostics_ro"` left `rolsuper`,
+  //    `has_table_privilege`, `has_function_privilege` and
+  //    `pg_has_role(…, 'USAGE')` all reporting nothing, while `SET ROLE "tac_app"`
+  //    read `IntegrationCredential` and inserted a `Booking`. So provisioning
+  //    revokes the lot rather than enumerating the ways an operator might have
+  //    granted one.
+  //
+  //    Revoking the DIRECT grants is sufficient and complete: `SET ROLE`
+  //    reachability is transitive, but every chain starts at a direct edge from this
+  //    role, so removing all of those removes the closure. `pg_auth_members` can
+  //    hold several rows for one membership (one per grantor in PostgreSQL 16+), and
+  //    `REVOKE` is idempotent, so the loop is written over whatever rows are there.
+  //
+  //    If the provisioning connection lacks ADMIN OPTION on a granted role the
+  //    REVOKE errors and the whole transaction rolls back. That is the intended
+  //    failure: the deployment cannot satisfy ADR-007 with that credential, and the
+  //    CLI prints the server's message rather than provisioning a role the runtime
+  //    would then refuse.
+  statements.push(`DO $$
+DECLARE
+  granted_role text;
+BEGIN
+  FOR granted_role IN
+    SELECT DISTINCT g.rolname
+    FROM pg_catalog.pg_auth_members m
+    JOIN pg_catalog.pg_roles g ON g.oid = m.roleid
+    JOIN pg_catalog.pg_roles r ON r.oid = m.member
+    WHERE r.rolname = ${roleLiteral}
+  LOOP
+    EXECUTE format('REVOKE %I FROM %I', granted_role, ${roleLiteral});
+  END LOOP;
+END
+$$;`);
+
+  // 6. Database-level privileges: CONNECT only. TEMP has to be revoked from
   //    PUBLIC to be denied to this role at all (see PUBLIC_TEMP_REVOKE_NOTE),
   //    and is granted straight back to the roles that legitimately need it.
   statements.push(
@@ -263,13 +309,13 @@ $$;`);
   }
   statements.push(`GRANT CONNECT ON DATABASE ${database} TO ${role};`);
 
-  // 6. Schema-level: USAGE (needed to name a relation at all), never CREATE.
+  // 7. Schema-level: USAGE (needed to name a relation at all), never CREATE.
   statements.push(
     `REVOKE ALL PRIVILEGES ON SCHEMA public FROM ${role};`,
     `GRANT USAGE ON SCHEMA public TO ${role};`,
   );
 
-  // 7. Object-level: revoke EVERYTHING, then grant back the allowlist. The
+  // 8. Object-level: revoke EVERYTHING, then grant back the allowlist. The
   //    revokes run on every provision so a hand-added grant cannot outlive the
   //    file that is supposed to declare it, and the default-privilege revoke
   //    stops a future table inheriting a grant automatically.

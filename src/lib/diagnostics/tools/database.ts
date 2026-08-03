@@ -21,10 +21,10 @@
  * demonstrably NOT the application role; and the connected role is refused
  * unless the server itself confirms it is the role we vetted, is a non-superuser,
  * holds no write privilege on any relation, can read nothing outside the declared
- * `SELECT` allowlist, and has no TEMP, no CREATE, no dangerous predefined-role
- * membership, no `SECURITY DEFINER` routine privilege and no file-reading
- * function privilege. A deployment that has not run the provisioning step gets a
- * loud refusal, never a superuser fallback.
+ * `SELECT` allowlist, and has no TEMP, no CREATE, no membership in ANY other role,
+ * no `SECURITY DEFINER` routine privilege and no file-reading function privilege. A
+ * deployment that has not run the provisioning step gets a loud refusal, never a
+ * superuser fallback.
  *
  * WHAT THIS MODULE NEVER DOES: it never accepts SQL from a caller outside the
  * server-owned registry, never interpolates a value into SQL (every argument is
@@ -228,7 +228,38 @@ export interface DiagnosticsRolePrivilegeReport {
   canCreateInPublicSchema: boolean;
   /** EXECUTE on ANY overload of `FORBIDDEN_SERVER_FILE_FUNCTIONS`. */
   canReadServerFiles: boolean;
-  /** Membership count across FORBIDDEN_PREDEFINED_ROLES that exist on this server. */
+  /**
+   * Roles OTHER than itself that this role is a member of — directly or through a
+   * chain — and THE membership gate. A correctly provisioned diagnostics role is a
+   * member of nothing, so the only safe answer is zero.
+   *
+   * It is a total count and not a list of names because the role is `NOINHERIT`, and
+   * for a `NOINHERIT` role a membership is invisible to every other column in this
+   * report: `rolsuper` is read for `current_user` only, and `has_table_privilege`,
+   * `has_any_column_privilege`, `has_function_privilege` and
+   * `pg_has_role(…, 'USAGE')` all respect `rolinherit`. Measured on postgres:16.14,
+   * `GRANT "tac_app" TO "ai_diagnostics_ro"` (an ordinary non-superuser application
+   * role) left every boolean false and all four other counts at zero — and one
+   * `SET ROLE "tac_app"` then read `IntegrationCredential` and inserted a `Booking`.
+   * `GRANT "postgres"` was equally invisible, including to `canReadServerFiles`,
+   * while `SET ROLE "postgres"; pg_read_file('postgresql.conf', 0, 60)` returned the
+   * file. Enumerating role names cannot close that: the escalation is whichever role
+   * the operator happened to grant.
+   *
+   * TRANSITIVE on purpose. `SET ROLE` reachability is not limited to direct grants —
+   * measured on the same server, `GRANT far TO mid; GRANT mid TO diag` gives
+   * `pg_has_role(diag, far, 'MEMBER')` = true and a live session really does
+   * `SET ROLE far` — so counting `pg_auth_members` rows (direct grants only) would
+   * miss a two-hop chain. `pg_has_role(…, 'MEMBER')` is the closure, which is why it
+   * is the predicate here.
+   */
+  roleMemberships: number;
+  /**
+   * Membership count across FORBIDDEN_PREDEFINED_ROLES that exist on this server — a
+   * SUBSET of `roleMemberships`, kept because it lets the refusal name what went
+   * wrong ("it was granted a predefined escalation role") instead of only counting.
+   * `roleMemberships === 0` is the gate; this is the better sentence for an operator.
+   */
   forbiddenRoleMemberships: number;
   /**
    * Relations in schema `public` on which the role holds INSERT, UPDATE, DELETE or
@@ -279,6 +310,10 @@ export function isDiagnosticsRolePrivilegeSafe(
     !report.canCreateInDatabase &&
     !report.canCreateInPublicSchema &&
     !report.canReadServerFiles &&
+    report.roleMemberships === 0 &&
+    // The membership gate is the TOTAL, not the named subset: a member of any role
+    // at all is one `SET ROLE` from that role's privileges, and a NOINHERIT role
+    // hides the fact from every other column here.
     report.forbiddenRoleMemberships === 0 &&
     report.writableRelations === 0 &&
     report.undeclaredReadableRelations === 0 &&
@@ -301,7 +336,25 @@ export function isDiagnosticsRolePrivilegeSafe(
  * on. `MEMBER` is the predicate that matches how the privilege is actually
  * reachable.
  *
- * The three counts at the end use table AND column level predicates:
+ * MEMBERSHIP IS COUNTED TWICE, and the TOTAL is the gate. `role_memberships` counts
+ * every role other than `current_user` itself that `current_user` is a member of;
+ * `forbidden_role_memberships` counts the named subset, purely so a refusal can say
+ * which shape of mistake it was. Asking only about the eight named roles left the
+ * same hole one step to the side: `GRANT "tac_app"` or `GRANT "postgres"` to the
+ * diagnostics role is invisible to every other column of this report (a NOINHERIT
+ * role's membership does not show up in `rolsuper`, in `has_table_privilege`, in
+ * `has_function_privilege` or in `pg_has_role(…, 'USAGE')`) and is one `SET ROLE`
+ * from reading `IntegrationCredential`, writing `Booking`, or reading
+ * `postgresql.conf`. A correctly provisioned role belongs to nothing, so zero is
+ * both the honest gate and a gate no valid deployment trips.
+ *
+ * The subject is `pg_roles` rather than `pg_auth_members` because `SET ROLE`
+ * reachability is transitive: measured on the same server, `GRANT far TO mid;
+ * GRANT mid TO diag` yields `pg_has_role(diag, far, 'MEMBER')` = true and a live
+ * session as `diag` really does `SET ROLE far`. Counting the direct grant rows in
+ * `pg_auth_members` would report 1 where the reachable set is 2.
+ *
+ * The relation and routine counts at the end use table AND column level predicates:
  * `GRANT INSERT (note) ON …` is a write privilege that `has_table_privilege`
  * alone reports as absent.
  */
@@ -324,6 +377,12 @@ SELECT
       AND p.proname = ANY($2::text[])
       AND pg_catalog.has_function_privilege(current_user, p.oid, 'EXECUTE')
   )                                                                   AS can_read_server_files,
+  (
+    SELECT count(*)
+    FROM pg_catalog.pg_roles other
+    WHERE other.oid <> r.oid
+      AND pg_catalog.pg_has_role(current_user, other.oid, 'MEMBER')
+  )::int                                                              AS role_memberships,
   (
     SELECT count(*)
     FROM pg_catalog.pg_roles forbidden
@@ -455,6 +514,7 @@ async function readRolePrivileges(
     canCreateInDatabase: row.can_create_in_database === true,
     canCreateInPublicSchema: row.can_create_in_public_schema === true,
     canReadServerFiles: row.can_read_server_files === true,
+    roleMemberships: Number(row.role_memberships ?? 0),
     forbiddenRoleMemberships: Number(row.forbidden_role_memberships ?? 0),
     writableRelations: Number(row.writable_relations ?? 0),
     undeclaredReadableRelations: Number(row.undeclared_readable_relations ?? 0),

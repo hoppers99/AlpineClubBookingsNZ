@@ -75,8 +75,10 @@ export interface DiagnosticsToolSpec<TArgs> {
   requiredAreas: readonly AdminPermissionArea[];
   /**
    * `.strict()` so an unknown argument is a REJECTION, not something ignored —
-   * with `RESERVED_ARGUMENT_KEYS` scanned first, because `.strict()` alone lets a
-   * `JSON.parse`-created `__proto__` through by silently dropping it.
+   * with `RESERVED_ARGUMENT_KEYS` scanned first, at EVERY depth, because `.strict()`
+   * alone lets a `JSON.parse`-created `__proto__` through by silently dropping it,
+   * and it does so one nested object down just as readily as at the top level. A
+   * nested or `z.record(...)` argument therefore needs no guard of its own.
    */
   argsSchema: z.ZodType<TArgs>;
   inputSchema: DiagnosticsToolInputSchema;
@@ -142,8 +144,11 @@ export interface DiagnosticsToolEntry {
  * (`page-context/parse.ts` → `RESERVED_KEYS`). That list is module-private there
  * deliberately — exporting it would offer callers a second door into a parser whose
  * contract is total rejection — so this is a second, deliberate declaration rather
- * than a shared import, and the two channels agree that a reserved key is a
- * REJECTION.
+ * than a shared import. The two channels agree on the verdict — a reserved key is a
+ * REJECTION, never something to strip — and this one is the stricter of the two in
+ * how far it looks: AID-4 scans the top level and the `filters` object it knows its
+ * own payload carries, whereas the scan below is TOTAL over every depth of whatever
+ * arrives (see `hasReservedArgumentKey`).
  */
 const RESERVED_ARGUMENT_KEYS: readonly string[] = [
   "__proto__",
@@ -153,14 +158,45 @@ const RESERVED_ARGUMENT_KEYS: readonly string[] = [
 
 /**
  * Own-property scan of the RAW arguments, before the schema runs — the only point
- * at which `__proto__` is still visible. `Object.getOwnPropertyNames` is
- * deliberate: it sees a non-enumerable own property too.
+ * at which `__proto__` is still visible. TOTAL by construction, for four reasons
+ * worth stating because each one was a way to get this wrong:
+ *
+ *  - EVERY DEPTH, arrays included. A top-level-only scan does not deliver the
+ *    guarantee this file claims. Measured on zod 4.4.3:
+ *    `z.object({ filters: z.object({ status: z.string().optional() }).strict() }).strict()`
+ *    accepted `JSON.parse('{"filters":{"__proto__":{"polluted":"yes"},"status":"open"}}')`
+ *    and returned `{"filters":{"status":"open"}}` — so the canonical hash of the
+ *    ACCEPTED arguments was byte-identical to the same call without the key, which is
+ *    exactly the audit-integrity defect this guard exists to remove, reproduced one
+ *    level down. A `filters` object is not a hypothetical shape either: it is the one
+ *    the first tool pack (AID-6B/6C) needs. Scanning everything also means an author
+ *    adding a nested or record-shaped argument inherits the guarantee without having
+ *    to know it exists.
+ *  - `Object.getOwnPropertyNames`, not `for…in`: it sees a non-enumerable own
+ *    property too, and it does not walk a prototype chain.
+ *  - ITERATIVE, not recursive. The arguments are provider-deserialised JSON whose
+ *    nesting depth the caller chose, and a recursive walk would turn a deep payload
+ *    into a stack overflow inside a security guard.
+ *  - `getOwnPropertyDescriptor` rather than a property read, and a `WeakSet` of
+ *    visited objects. `raw` is typed `unknown`: a getter must never be INVOKED by the
+ *    guard that is meant to vet the value, and a cyclic object (which JSON cannot
+ *    carry, but a caller can build) must terminate rather than spin.
  */
 function hasReservedArgumentKey(raw: unknown): boolean {
-  if (typeof raw !== "object" || raw === null) return false;
-  return Object.getOwnPropertyNames(raw).some((key) =>
-    RESERVED_ARGUMENT_KEYS.includes(key),
-  );
+  const pending: unknown[] = [raw];
+  const seen = new WeakSet<object>();
+  while (pending.length > 0) {
+    const value = pending.pop();
+    if (typeof value !== "object" || value === null) continue;
+    if (seen.has(value)) continue;
+    seen.add(value);
+    for (const key of Object.getOwnPropertyNames(value)) {
+      if (RESERVED_ARGUMENT_KEYS.includes(key)) return true;
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (descriptor && "value" in descriptor) pending.push(descriptor.value);
+    }
+  }
+  return false;
 }
 
 /**

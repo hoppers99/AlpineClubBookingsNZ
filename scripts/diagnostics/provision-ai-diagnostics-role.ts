@@ -223,6 +223,12 @@ async function run(
     [
       `[provision-ai-diagnostics-role] Provisioned SELECT-only role "${info.roleName}" on ${info.databaseName}.`,
       `  SELECT grants declared in provision-role.ts: ${SELECT_GRANTS.length}`,
+      // Said out loud because it is the one thing an operator is most likely to undo
+      // by hand: "let diagnostics read one more table" is usually a GRANT of some
+      // existing role, and the runtime refuses the credential outright for it.
+      "  Role memberships: stripped. This role must belong to NO role at all —",
+      "  the application refuses every diagnostics read if it is a member of one,",
+      "  because a member is one SET ROLE away from that role's privileges.",
       "",
       "  Now set this in the deployment environment (compose .env), with the password you supplied:",
       `    AI_DIAGNOSTICS_DATABASE_URL=postgresql://${info.roleName}:<AI_DIAGNOSTICS_DB_PASSWORD>@${info.host}/${info.databaseName}?connection_limit=${DIAGNOSTICS_TOOL_BOUNDS.maxPoolConnections}`,
