@@ -1124,6 +1124,37 @@ wiring, checked against the contract above:
   supersede branch of `createModificationExceptionRequest` (releases the prior
   request's hold before reserving the replacement). A lost claim releases and
   reserves nothing.
+- **Abandoned-hold reaper (#2553)** — `reapExpiredPolicyExceptionHolds`
+  (`src/lib/cron-policy-exception-hold-reaper.ts`, in the three-hourly general
+  cycle) mints **no lock of its own**: it scans candidates outside any
+  transaction, then calls `resolvePolicyExceptionRequestTerminal` with
+  `to: "EXPIRED"` per request, which takes global `lock(1)` → per-lodge lock and
+  makes the guarded `version` claim exactly as the reject/cancel/supersede paths
+  do. That is deliberate — a second release implementation, or a job-level lock
+  layered on top, would be a new way for the release to drift from the three that
+  already work. Concurrency safety therefore rests on the same `version` CAS every
+  other transition uses: a decision landing between the scan and the claim wins,
+  the reaper's claim matches 0 rows, and it releases nothing. Two overlapping cron
+  cycles over the same request produce exactly one expiry and one release, so beds
+  can never be credited back twice. The scan is additionally narrowed to requests
+  that still have live `PolicyExceptionReservationNight` rows, so the cron's only
+  possible effect is returning beds that are genuinely stranded. One consequence of
+  leaning on a shared helper: `resolvePolicyExceptionRequestTerminal` returns
+  `claimed: false` both for a lost claim and for a row it REFUSES before the claim
+  (not a policy-exception row, or an unparsable `proposalSnapshot`), so it now
+  reports which — a lost claim self-heals on the next scan, a refusal never does.
+  The reaper counts refusals as `unresolvable` in `CronJobRun.resultSummary` and
+  logs them at warn, so beds stranded by an unresolvable row surface instead of
+  looking like a clean run forever. Its two side effects — the
+  `booking-policy-exception-request.expired` audit row and the
+  `policy-exception-request-expired` member notice (owner decision, 2 Aug 2026) —
+  run only after that helper has returned a claimed outcome, i.e. after its
+  transaction has committed and both locks are released, which is the repo rule on
+  keeping provider calls outside a transaction. Each is wrapped so it cannot
+  throw: a failed send has nothing to roll back and nothing to retry (the beds are
+  already in the pool and the request is no longer `REQUESTED`, so a "retry" would
+  be a second release), so it is logged and swallowed, `failed` keeps meaning the
+  release itself failed, and the rest of the run's candidates are still processed.
 - **Transaction-aware canonical services (#2525)** — `createConfirmedBooking`
   (`booking-create.ts`) and `modifyBookingBatch`
   (`booking-batch-modification-service.ts`) each now accept an optional caller

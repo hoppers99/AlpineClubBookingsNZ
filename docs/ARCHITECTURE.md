@@ -2388,7 +2388,7 @@ flowchart TD
     Leader["app cron-leader<br/>(CRON_ENABLED=true)"]
     Leader --> Q15["Every 15 min<br/>payment-recovery, xero-outbox,<br/>xero-operation-replay, xero-inbound-reconcile"]
     Leader --> Q30["Every 30 min<br/>waitlist-processor, email-retry"]
-    Leader --> Q3h["Every 3 h<br/>additional-payment-reminders, confirm-pending,<br/>placeholder-guest-name-reminders, pre-arrival-reminders,<br/>purge-booking-requests, quote-expiry-reminders,<br/>school-attendee-confirmations, group-settlement-reaper"]
+    Leader --> Q3h["Every 3 h<br/>additional-payment-reminders, confirm-pending,<br/>placeholder-guest-name-reminders, pre-arrival-reminders,<br/>purge-booking-requests, quote-expiry-reminders,<br/>school-attendee-confirmations, group-settlement-reaper,<br/>policy-exception-hold-reaper"]
     Leader --> Daily["Daily<br/>complete-bookings, data-pruning, draft-cleanup,<br/>age-up, capacity-warnings, admin-digest,<br/>credit-reconciliation, hut-leader-auto-assign,<br/>checkin-reminders, pending-deadline-alerts,<br/>member-guest-consent-expiry,<br/>nomination-reminders, finance-daily-sync,<br/>xero-membership-refresh, xero-link-backfill,<br/>xero-link-cleanup, xero-reconciliation-report,<br/>xero-credit-sync-check"]
     Leader --> Cfg["Configurable<br/>backup"]
 ```
@@ -2397,6 +2397,7 @@ flowchart TD
 | --- | --- | --- |
 | `confirm-pending` | Every 3 hours | Confirm pending bookings after hold deadlines |
 | `group-settlement-reaper` | Every 3 hours | Release CONFIRMED-unpaid group children when an organiser-pays settlement stays unpaid past its window (default 48h, clamped to check-in); voids the open intent and notifies the group. Second phase (#1094): cancels the reverted PAYMENT_PENDING children, with a joiner notice, once the FAILED settlement sits unretried through another full window. Third phase (#1236): resumes a crash-interrupted organiser-cancel cleanup (ORGANISER_PAYS group still not CANCELLED under a CANCELLED organiser booking, older than `GROUP_CANCEL_RESUME_GRACE_MINUTES`, default 15m), re-driving the idempotent joiner cleanup — its persisted refund plan reconstructs the per-child refund mirror rather than recomputing |
+| `policy-exception-hold-reaper` | Every 3 hours | Release the beds an abandoned policy-exception request is holding (#2553). Scans `REQUESTED` `POLICY_EXCEPTION` requests with a `HOLD` aggregate that still have live `PolicyExceptionReservationNight` rows, and moves each one past its immutable `holdExpiresAt` to `EXPIRED` through `resolvePolicyExceptionRequestTerminal` — the same guarded `version` claim and atomic release the reject/cancel/supersede outcomes use, under global -> per-lodge locks. A request holding no beds is never touched; a decision landing in the same window wins the claim and the reaper releases nothing. Each expiry then writes a `booking-policy-exception-request.expired` audit row and sends the member a `policy-exception-request-expired` courtesy notice, both AFTER the release commits and both isolated, so a failed audit write or a bounced email can neither roll back nor repeat a capacity release nor stop the run's other candidates. A past-deadline row the shared transition refuses outright is counted as `unresolvable` and logged at warn rather than reported as a clean run |
 | `additional-payment-reminders` | Every 3 hours | Chase an uncollected additional payment while the stay is still ahead (#2350) |
 | `pre-arrival-reminders` | Every 3 hours | Send current directions and door-code reminders before check-in |
 | `purge-booking-requests` | Every 3 hours | Delete expired declined and never-verified public booking requests after the retention window |
@@ -2531,6 +2532,38 @@ Private/fork knowledge uses a generic, deployment-owned overlay
 (`config/diagnostics-knowledge.json`, git-ignored); public code never mandates
 any club's paths. Full reference:
 [`diagnostics/KNOWLEDGE_BUNDLE.md`](diagnostics/KNOWLEDGE_BUNDLE.md).
+
+## AI Diagnostics typed page context
+
+The same product also needs to know **which admin page** the operator is looking
+at. It does not scrape the DOM, take a screenshot, or accept a free-text blob
+(the member-facing Page help assistant's flat `pageContext` string is deliberately
+left alone and never reused here). Instead the browser sends a strictly typed
+**selector** — a key in a server-side route registry, at most one opaque record
+id, and a handful of route-allowlisted view tokens — and the server re-derives
+every fact itself (#2373, `src/lib/diagnostics/page-context/`).
+
+**A client value selects; it never asserts.** Resolution runs four gates:
+parse (strict schema, then the route's own allowlists, rejecting wholesale
+rather than dropping a bad token), authorize (the caller's permission matrix
+re-read from the database-joined access roles on **every** resolution — never a
+JWT or a cache — and AND across every area the route declares), re-fetch (a
+fixed, typed, column-allowlisted read of the one record, whose **kind comes from
+the registry, never the client**), then bound (redact free text, cap every fact,
+stamp observed-at, attach approved audit metadata only). That metadata describes
+the **attempt** — a hashed record reference is recorded whether the lookup hit or
+missed, so id probing through this path cannot audit as "no record requested".
+
+Identifying fields are **opt-in per record**; without the opt-in the record
+resolves to non-identifying state plus an explicit "personal detail omitted"
+notice. A registry row can never be gated below the admin route lattice's own
+requirement for its path — a contract test resolves each registered pathname
+**and each of its allowlisted step sub-paths** through `getAdminRouteRequirement`
+and asserts it, which is what keeps a support-gated row from allowlisting a
+sub-page gated on finance. The same fresh read also refuses an account the rest of
+the admin surface refuses (deactivated, or under a forced password change), so a
+session still holding a cookie cannot outlive its own lock-out here. Full
+reference: [`ai-diagnostics/page-context.md`](ai-diagnostics/page-context.md).
 
 ## Security and Privacy Boundaries
 

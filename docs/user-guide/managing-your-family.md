@@ -75,8 +75,10 @@ partner):
    person is emailed, and any shared double-bed placements you both held are
    released back to the club for re-allocation.
 
-If you are a family-group admin, you can instead declare a no-login adult member
-of your own group as your partner in one step. The partner rules are in
+If a no-login adult in your group has had their details confirmed by you, you can
+declare them as your partner in one step. There is no "group admin" — any adult
+with a login in the group can confirm a member's details, and whoever did is the
+one who can make that declaration. The partner rules are in
 [`STATE_MACHINES.md`](../STATE_MACHINES.md#partner-link-lifecycle-declared-partnerhusbandwife-1742).
 
 ## What to expect

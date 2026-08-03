@@ -564,7 +564,7 @@ const PUBLIC_EXCEPTION_CAPACITY_COPY_ENABLED: boolean = false;
 /** The published sentence for each capacity mode (#2363, surfaced by #2365). */
 function exceptionCapacityCopy(mode: "HOLD" | "NO_HOLD"): string {
   return mode === "HOLD"
-    ? "If an exception is requested, the requested capacity is held while the club reviews it."
+    ? "If an exception is requested, the requested capacity is held while the club reviews it, for up to 7 days and never past the start of the first night requested."
     : "An exception request does not reserve capacity until the club approves it.";
 }
 

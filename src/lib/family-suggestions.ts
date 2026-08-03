@@ -248,8 +248,10 @@ export async function resetHiddenFamilySuggestions(): Promise<{
 }
 
 /**
- * Create a family group from a suggestion.
- * Sets the first canLogin adult as ADMIN, rest as USER.
+ * Create a family group from a suggestion. Every suggested member is added as a
+ * plain membership: #2520 removed the "pick a lead and mark them ADMIN" step,
+ * because the `FamilyGroupMember.role` column it wrote granted nothing (#2284)
+ * and is retired pending its CONTRACT drop. There is no rank to assign.
  */
 export async function createFamilyGroupFromSuggestion(
   name: string,
@@ -269,25 +271,17 @@ export async function createFamilyGroupFromSuggestion(
     throw new FamilySuggestionError("Some members not found or inactive");
   }
 
-  // Pick the lead: first canLogin adult, else first canLogin member, else first member
-  const lead =
-    members.find((m) => m.canLogin && m.ageTier === "ADULT") ??
-    members.find((m) => m.canLogin) ??
-    members[0];
-
   const group = await prisma.$transaction(async (tx) => {
     const newGroup = await tx.familyGroup.create({ data: { name } });
 
     await tx.familyGroupMember.createMany({
+      // #2520: no `role` is written, so nothing here distinguishes one member
+      // from another. The lead-picking that used to precede this block existed
+      // ONLY to choose who got role "ADMIN" — the group's name is a parameter
+      // and never depended on it — so it went with the write.
       data: members.map((m) => ({
         familyGroupId: newGroup.id,
         memberId: m.id,
-        // #2284 (S4): only the two documented values are written. The lead
-        // keeps "ADMIN" for continuity with the other group-creating flows;
-        // everyone else is "MEMBER", not the undocumented "USER" this used to
-        // write (which merge silently coerced to MEMBER anyway). The field no
-        // longer gates authorisation, so this is purely cosmetic consistency.
-        role: m.id === lead.id ? "ADMIN" : "MEMBER",
       })),
       skipDuplicates: true,
     });

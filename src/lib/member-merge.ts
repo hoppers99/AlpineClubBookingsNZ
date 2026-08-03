@@ -249,7 +249,7 @@ export const MEMBER_MERGE_RELATION_SPECS: readonly MemberMergeRelationSpec[] = [
 
   // --- Family ---
   spec("FamilyGroupMember", "member", "memberId", "resolve", {
-    note: "@@unique(familyGroupId,memberId); role upgraded to MAX(ADMIN>MEMBER); billing membership re-pointed",
+    note: "@@unique(familyGroupId,memberId); master's row kept, billing membership re-pointed (#2520 removed the role MAX upgrade with the retired column)",
   }),
   spec("FamilyGroupJoinRequest", "invitedMember", "invitedMemberId", "move"),
   spec("FamilyGroupJoinRequest", "linkedMember", "linkedMemberId", "move"),
@@ -1175,14 +1175,6 @@ export function planPartnerLinkMerge(
   }
 
   return { deleteIds, updates, warnings };
-}
-
-// ---------------------------------------------------------------------------
-// Family-group role (ADMIN > MEMBER)
-// ---------------------------------------------------------------------------
-
-export function maxFamilyRole(a: string, b: string): string {
-  return a === "ADMIN" || b === "ADMIN" ? "ADMIN" : "MEMBER";
 }
 
 // ---------------------------------------------------------------------------
@@ -2794,12 +2786,12 @@ async function resolveAllCollisions(
     }
   }
 
-  // FamilyGroupMember (role MAX + billing membership re-point).
+  // FamilyGroupMember (billing membership re-point; #2520 removed the role MAX).
   const fgm = await resolveFamilyGroupMembers(tx, masterId, loserId);
   if (fgm.moved + fgm.dropped > 0) {
     collisions.push({
       model: "FamilyGroupMember.member",
-      resolution: `moved ${fgm.moved}, merged ${fgm.dropped} duplicate group(s) (role -> MAX)`,
+      resolution: `moved ${fgm.moved}, merged ${fgm.dropped} duplicate group(s)`,
       count: fgm.moved + fgm.dropped,
     });
   }
@@ -2923,9 +2915,22 @@ async function resolveFamilyGroupMembers(
   masterId: string,
   loserId: string,
 ): Promise<{ moved: number; dropped: number }> {
+  // #2520: both reads are narrowed to the two columns this resolver uses, so
+  // neither projects the retired `role` column. That is a blue/green
+  // precondition, not a micro-optimisation: Prisma names every scalar of the
+  // model in an unnarrowed find's SELECT, so an unnarrowed read here would make
+  // this deployed colour break the moment the CONTRACT migration drops the
+  // column while it is still draining.
+  const membershipSelect = { id: true, familyGroupId: true } as const;
   const [loserRows, masterRows] = await Promise.all([
-    tx.familyGroupMember.findMany({ where: { memberId: loserId } }),
-    tx.familyGroupMember.findMany({ where: { memberId: masterId } }),
+    tx.familyGroupMember.findMany({
+      where: { memberId: loserId },
+      select: membershipSelect,
+    }),
+    tx.familyGroupMember.findMany({
+      where: { memberId: masterId },
+      select: membershipSelect,
+    }),
   ]);
   if (loserRows.length === 0) return { moved: 0, dropped: 0 };
   const masterByGroup = new Map(masterRows.map((r) => [r.familyGroupId, r]));
@@ -2934,15 +2939,10 @@ async function resolveFamilyGroupMembers(
   for (const row of loserRows) {
     const masterRow = masterByGroup.get(row.familyGroupId);
     if (!masterRow) continue; // no collision -> will be moved
-    // Upgrade master's role to the max, and re-point the family's billing
-    // membership if it pointed at the loser's (about-to-be-dropped) row.
-    const upgraded = maxFamilyRole(masterRow.role, row.role);
-    if (upgraded !== masterRow.role) {
-      await tx.familyGroupMember.update({
-        where: { id: masterRow.id },
-        data: { role: upgraded },
-      });
-    }
+    // Re-point the family's billing membership if it pointed at the loser's
+    // (about-to-be-dropped) row. #2520 removed the `maxFamilyRole` upgrade that
+    // also ran here: the column it wrote granted nothing (#2284), so promoting
+    // the surviving row to "ADMIN" changed no behaviour anywhere.
     await tx.familyGroup.updateMany({
       where: { billingMembershipId: row.id },
       data: { billingMembershipId: masterRow.id },

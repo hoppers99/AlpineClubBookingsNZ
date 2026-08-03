@@ -119,6 +119,9 @@ type RowOverrides = Partial<{
   kind: string;
   proposalHash: string | null;
   aggregateCapacityMode: string | null;
+  // #2553: the refusal tests need a snapshot the parser rejects, so the shape is
+  // deliberately open here rather than the parsed snapshot type.
+  proposalSnapshot: unknown;
 }>;
 
 function baseRow(overrides: RowOverrides = {}) {
@@ -145,7 +148,15 @@ function makeDb(opts: {
   releaseCount?: number;
 }) {
   const order: string[] = [];
-  const updateMany = vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+  // #2553: `where` is part of the recorded call shape too — the EXPIRED test
+  // asserts the guarded claim is scoped to REQUESTED + the exact version, so the
+  // mock's parameter type has to admit it.
+  const updateMany = vi.fn(async ({
+    data,
+  }: {
+    where?: Record<string, unknown>;
+    data: Record<string, unknown>;
+  }) => {
     if (data.status === "APPROVED") {
       order.push("claim-approved");
       return { count: opts.claimCount ?? 1 };
@@ -153,7 +164,8 @@ function makeDb(opts: {
     if (
       data.status === "REJECTED" ||
       data.status === "CANCELLED" ||
-      data.status === "SUPERSEDED"
+      data.status === "SUPERSEDED" ||
+      data.status === "EXPIRED"
     ) {
       order.push(`claim-${String(data.status).toLowerCase()}`);
       return { count: opts.claimCount ?? 1 };
@@ -672,6 +684,117 @@ describe("resolvePolicyExceptionRequestTerminal", () => {
       db: db as never,
     });
     expect(result).toEqual({ claimed: false, released: 0 });
+    expect(deleteMany).not.toHaveBeenCalled();
+  });
+
+  // #2553: the hold reaper closes an abandoned request through this SAME helper,
+  // so it inherits the lock order, the guarded claim and the atomic release
+  // rather than forking a second release path.
+  it("EXPIRED: same guarded claim + atomic release, in global→lodge lock order", async () => {
+    const { db, order, updateMany } = makeDb({ row: baseRow(), releaseCount: 3 });
+    const result = await resolvePolicyExceptionRequestTerminal({
+      requestId: "req-1",
+      expectedVersion: 1,
+      to: "EXPIRED",
+      db: db as never,
+    });
+    expect(result).toEqual({ claimed: true, released: 3 });
+    expect(order).toEqual([
+      "global-lock",
+      "lodge-lock",
+      "claim-expired",
+      "release",
+      "commit",
+    ]);
+    const claim = updateMany.mock.calls[0][0];
+    // Guarded on REQUESTED + the exact version, like every other transition.
+    expect(claim.where).toMatchObject({
+      status: "REQUESTED",
+      version: 1,
+      kind: "POLICY_EXCEPTION",
+    });
+    // The one-open-request slot is freed, so a lapse never locks the member out
+    // of raising a fresh proposal.
+    expect(claim.data.openStateKey).toBeNull();
+    // An expiry is nobody's decision: it stamps no reviewer and no cancelledAt.
+    expect(claim.data.reviewedByMemberId).toBeUndefined();
+    expect(claim.data.cancelledAt).toBeUndefined();
+  });
+
+  it("EXPIRED: a lost version claim releases nothing (a decision won the race)", async () => {
+    const { db, deleteMany } = makeDb({ row: baseRow(), claimCount: 0 });
+    const result = await resolvePolicyExceptionRequestTerminal({
+      requestId: "req-1",
+      expectedVersion: 1,
+      to: "EXPIRED",
+      db: db as never,
+    });
+    // No `refused` reason: this is the ordinary race, which the next scan re-reads
+    // and either claims or finds already closed. The reaper stays silent for it.
+    expect(result).toEqual({ claimed: false, released: 0 });
+    expect(deleteMany).not.toHaveBeenCalled();
+  });
+
+  // #2553: the two PRE-claim refusals are reported distinctly from a lost claim,
+  // because they are permanent for that row. An unattended caller that cannot tell
+  // them apart treats "I can never resolve this" as "somebody beat me to it" and
+  // its stranded beds never surface.
+  it("REFUSED: a missing or non-policy-exception row says so, and locks nothing", async () => {
+    const { db, order, deleteMany } = makeDb({
+      row: baseRow({ kind: "LOCKED_PERIOD" }),
+    });
+    const result = await resolvePolicyExceptionRequestTerminal({
+      requestId: "req-1",
+      expectedVersion: 1,
+      to: "EXPIRED",
+      db: db as never,
+    });
+    expect(result).toEqual({
+      claimed: false,
+      released: 0,
+      refused: "not-policy-exception",
+    });
+    // Refused before any lock is taken, so a bad row cannot serialise the lodge.
+    expect(order).toEqual(["commit"]);
+    expect(deleteMany).not.toHaveBeenCalled();
+
+    const missing = makeDb({ row: null });
+    expect(
+      await resolvePolicyExceptionRequestTerminal({
+        requestId: "req-1",
+        expectedVersion: 1,
+        to: "EXPIRED",
+        db: missing.db as never,
+      }),
+    ).toEqual({ claimed: false, released: 0, refused: "not-policy-exception" });
+  });
+
+  it("REFUSED: an unparsable proposalSnapshot says so rather than looking like a race", async () => {
+    const { db, order, deleteMany } = makeDb({
+      // A MODIFICATION snapshot whose lodgeId is not a string: there is no lodge
+      // to lock, so no retry can ever resolve this row.
+      row: baseRow({
+        proposalSnapshot: {
+          kind: "MODIFICATION",
+          lodgeId: 42,
+          bookingId: "bk-1",
+          base: {},
+          proposed: {},
+        },
+      }),
+    });
+    const result = await resolvePolicyExceptionRequestTerminal({
+      requestId: "req-1",
+      expectedVersion: 1,
+      to: "EXPIRED",
+      db: db as never,
+    });
+    expect(result).toEqual({
+      claimed: false,
+      released: 0,
+      refused: "unreadable-proposal",
+    });
+    expect(order).toEqual(["commit"]);
     expect(deleteMany).not.toHaveBeenCalled();
   });
 

@@ -87,7 +87,11 @@ export async function POST(req: NextRequest) {
         memberId: parsed.data.memberId,
       },
     },
-    include: {
+    // #2520: `select`, not `include` — an `include` projects every scalar of
+    // FamilyGroupMember, which would name the retired `role` column in the SQL
+    // and break this colour when the CONTRACT migration drops it mid-drain.
+    // Only the two relations are used (see the name/group lookups below).
+    select: {
       member: {
         select: {
           id: true,

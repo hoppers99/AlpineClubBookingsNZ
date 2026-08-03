@@ -471,6 +471,35 @@ Nothing in a spec may hardcode a calendar date. Stay windows come from
 `lodgeNightLabel` / `calendarDayLabel`. A hardcoded date produces an assertion
 that can only pass in the week it was written.
 
+### 4. Pointer geometry measured once, reused by a second drag
+
+A drag-and-drop spec that drives two drags in a row must re-measure its bounding
+boxes before each one. `DndContext` resolves the drop with `closestCenter`
+against droppable rects it measures at drag start, and starting a drag changes
+the board's own layout: the hovered cell gains its "Drop here" content and
+reflows the rows beneath it. Coordinates captured before the first drag can
+therefore resolve a **different row** on the second, and the failure does not
+look like a geometry failure. The drag is live, the `DragOverlay` is up, and only
+its text is wrong, so a `hasText`-filtered locator matches nothing and times out.
+
+This is what `bed-allocation.spec.ts:127` did on run 30762167423: the second
+pointer drag was active with its card showing "No change for Ken King; the
+selected allocations already use Bunk Room A / A1", and the "Drop here" marker
+sat in the **source** row, one row above the destination.
+
+- **Measure the handle, the dragged card and the target cell immediately before
+  every drag.** Never hoist one measurement out of a loop or share it between two
+  scenarios in the same test.
+- **Wait for a cancelled drag to tear down before starting the next one.** The
+  overlay is mounted only while a drag is live, so asserting it is hidden is both
+  the honest check that the cancel worked and the settle point that leaves the
+  board static enough to measure.
+- **Do not read a lagging collision as the cause.** `closestCenter` publishes a
+  render or effect cycle behind the pointer, but `expect(...).toBeVisible()`
+  polls, so pure lag resolves itself well inside the timeout. A locator that
+  never matches across the full 15s means the collision settled on the wrong
+  droppable, which is a geometry bug.
+
 ### What is deliberately NOT the fix
 
 Bumping `retries`, widening a `toBeVisible` timeout, `page.waitForTimeout`, or

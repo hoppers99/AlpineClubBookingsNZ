@@ -543,6 +543,41 @@ describe("createModificationExceptionRequest", () => {
     });
     expect(mocks.bcrCreate).toHaveBeenCalledTimes(1);
     expect(mocks.peUpsert).not.toHaveBeenCalled();
+    // #2553: it also gets NO hold deadline. Nothing is stranded, so the reaper
+    // must have no licence to close this request behind the member's back.
+    // Mutation guard: gate the stamp on `holdsCapacity` instead of `reservesBeds`
+    // and this reddens.
+    expect(mocks.bcrCreate.mock.calls[0][0].data.holdExpiresAt).toBeNull();
+  });
+
+  it("#2553: a bed-holding modification is stamped with an immutable hold deadline", async () => {
+    // The suite runs on the frozen clock (2026-07-01T00:00:00.000Z) and the
+    // proposal's only night is 2026-07-04, so the 7-day TTL is capped by the
+    // first held night: 2026-07-04 00:00 Pacific/Auckland = 2026-07-03T12:00Z.
+    const proposed = {
+      checkIn: "2026-07-04",
+      checkOut: "2026-07-05",
+      guests: [
+        { firstName: "Ada", lastName: "Lovelace", ageTier: "ADULT", isMember: true, memberId: "m1", nights: ["2026-07-04"] },
+        { firstName: "Grace", lastName: "Hopper", ageTier: "ADULT", isMember: false, memberId: null, nights: ["2026-07-04"] },
+      ],
+    };
+
+    await createModificationExceptionRequest({
+      requestedByMemberId: "m1",
+      bookingId: "booking-1",
+      lodgeId: "lodge_1",
+      base,
+      proposed,
+      memberMessage: "please allow",
+      requestedSummary: "add Grace",
+      delta: { checkOut: "2026-07-05" },
+      baseHoldsCapacity: true,
+    });
+
+    const holdExpiresAt = mocks.bcrCreate.mock.calls[0][0].data.holdExpiresAt;
+    expect(holdExpiresAt).toBeInstanceOf(Date);
+    expect((holdExpiresAt as Date).toISOString()).toBe("2026-07-03T12:00:00.000Z");
   });
 
   it("supersede RELEASES the prior request's hold before reserving the replacement", async () => {

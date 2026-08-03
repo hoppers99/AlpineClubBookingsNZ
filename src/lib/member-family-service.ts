@@ -277,7 +277,10 @@ export async function getMemberFamily(memberId: string): Promise<JsonRouteResult
           memberId: { not: memberId },
           member: { active: true },
         },
-        include: {
+        // #2520: `select`, not `include` — an `include` projects every scalar of
+        // FamilyGroupMember, naming the retired `role` column in the SQL. Only
+        // `member` is read from these rows.
+        select: {
           member: {
             select: FAMILY_MEMBER_PROFILE_SELECT,
           },

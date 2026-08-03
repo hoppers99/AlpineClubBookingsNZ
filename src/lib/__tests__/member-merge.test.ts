@@ -6,7 +6,6 @@ import {
   describeFamilyLinkDrift,
   diffFieldMergePatches,
   diffSelfRelationLinkState,
-  maxFamilyRole,
   memberMergeConfirmationPhrase,
   mergeMemberFields,
   normalizeConfirmationText,
@@ -724,13 +723,11 @@ describe("partitionKeyedCollisions (collision matrix)", () => {
   });
 });
 
-describe("maxFamilyRole", () => {
-  it("upgrades to ADMIN when either side is ADMIN", () => {
-    expect(maxFamilyRole("MEMBER", "ADMIN")).toBe("ADMIN");
-    expect(maxFamilyRole("ADMIN", "MEMBER")).toBe("ADMIN");
-    expect(maxFamilyRole("MEMBER", "MEMBER")).toBe("MEMBER");
-  });
-});
+// #2520 removed `maxFamilyRole` and its unit tests. It ranked two values of the
+// retired FamilyGroupMember.role column so a merge could promote the surviving
+// membership row to "ADMIN" — a write nothing read (#2284). The merge behaviour
+// that DOES matter (drop the colliding loser row, re-point family billing, move
+// the rest) is proven in member-merge-execute.test.ts.
 
 describe("confirmation phrase", () => {
   it("collapses internal whitespace and trims", () => {

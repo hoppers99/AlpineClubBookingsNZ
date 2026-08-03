@@ -247,98 +247,118 @@ test("existing-chip pointer and keyboard drops preserve dates, while keyboard ca
           hasText: `to ${destination!.roomName} / ${destination!.name}, snapped to original lodge night`,
         });
 
-    // Pointer preview + cancel: real sensor wiring, no request.
-    await targetCell().scrollIntoViewIfNeeded();
-    await dragHandle().scrollIntoViewIfNeeded();
-    const from = await dragHandle().boundingBox();
-    const to = await targetCell().boundingBox();
-    const dragged = await dragHandle().locator("xpath=..").boundingBox();
-    expect(from).toBeTruthy();
-    expect(to).toBeTruthy();
-    expect(dragged).toBeTruthy();
-    const viewport = page.viewportSize();
-    expect(viewport, "the pointer scenario has a fixed viewport").toBeTruthy();
-    for (const [label, box] of [
-      ["drag handle", from],
-      ["target cell", to],
-    ] as const) {
-      const center = {
-        x: box!.x + box!.width / 2,
-        y: box!.y + box!.height / 2,
+    // The floating drag card. It is mounted ONLY while a drag is live (the
+    // DragOverlay renders it from `activeDragLabel`), so "hidden" is the honest
+    // signal that no drag is in flight.
+    const dragCard = () => page.getByTestId("bed-allocation-drag-feedback");
+
+    // Geometry is re-measured immediately before EVERY drag rather than cached
+    // across both of them. dnd-kit resolves the drop with closestCenter against
+    // droppable rects it measures at drag start, and starting a drag changes the
+    // board's own layout (the hovered cell gains its "Drop here" content, which
+    // reflows the rows below it). Coordinates taken before the first drag can
+    // therefore resolve a DIFFERENT row on the second one: CI run 30762167423
+    // failed here with the drag live and the card up, but reading "No change for
+    // Ken King; the selected allocations already use Bunk Room A / A1": the
+    // pointer had landed on the SOURCE row, one row above the destination.
+    const startPointerDragToTarget = async () => {
+      await targetCell().scrollIntoViewIfNeeded();
+      await dragHandle().scrollIntoViewIfNeeded();
+      const from = await dragHandle().boundingBox();
+      const to = await targetCell().boundingBox();
+      const dragged = await dragHandle().locator("xpath=..").boundingBox();
+      expect(from).toBeTruthy();
+      expect(to).toBeTruthy();
+      expect(dragged).toBeTruthy();
+      const viewport = page.viewportSize();
+      expect(viewport, "the pointer scenario has a fixed viewport").toBeTruthy();
+      for (const [label, box] of [
+        ["drag handle", from],
+        ["target cell", to],
+      ] as const) {
+        const center = {
+          x: box!.x + box!.width / 2,
+          y: box!.y + box!.height / 2,
+        };
+        expect(
+          center.x,
+          `${label} centre is inside the viewport`,
+        ).toBeGreaterThanOrEqual(0);
+        expect(center.x, `${label} centre is inside the viewport`).toBeLessThan(
+          viewport!.width,
+        );
+        expect(
+          center.y,
+          `${label} centre is inside the viewport`,
+        ).toBeGreaterThanOrEqual(0);
+        expect(center.y, `${label} centre is inside the viewport`).toBeLessThan(
+          viewport!.height,
+        );
+      }
+      // DndContext uses closestCenter, so preserve the handle-to-card-centre grab
+      // offset and aim the dragged CARD's centre at the destination cell. If the
+      // offset would put the cursor just outside that cell, clamp it one pixel
+      // inside while staying as close as possible to the ideal alignment.
+      const idealTargetPointer = {
+        x:
+          to!.x +
+          to!.width / 2 +
+          (from!.x + from!.width / 2 - (dragged!.x + dragged!.width / 2)),
+        y:
+          to!.y +
+          to!.height / 2 +
+          (from!.y + from!.height / 2 - (dragged!.y + dragged!.height / 2)),
+      };
+      const targetPointer = {
+        x: Math.min(
+          Math.max(idealTargetPointer.x, to!.x + 1),
+          to!.x + to!.width - 1,
+        ),
+        y: Math.min(
+          Math.max(idealTargetPointer.y, to!.y + 1),
+          to!.y + to!.height - 1,
+        ),
       };
       expect(
-        center.x,
-        `${label} centre is inside the viewport`,
-      ).toBeGreaterThanOrEqual(0);
-      expect(center.x, `${label} centre is inside the viewport`).toBeLessThan(
-        viewport!.width,
-      );
+        targetPointer.x,
+        "adjusted pointer x stays inside the target cell",
+      ).toBeGreaterThanOrEqual(to!.x);
       expect(
-        center.y,
-        `${label} centre is inside the viewport`,
-      ).toBeGreaterThanOrEqual(0);
-      expect(center.y, `${label} centre is inside the viewport`).toBeLessThan(
-        viewport!.height,
+        targetPointer.x,
+        "adjusted pointer x stays inside the target cell",
+      ).toBeLessThan(to!.x + to!.width);
+      expect(
+        targetPointer.y,
+        "adjusted pointer y stays inside the target cell",
+      ).toBeGreaterThanOrEqual(to!.y);
+      expect(
+        targetPointer.y,
+        "adjusted pointer y stays inside the target cell",
+      ).toBeLessThan(to!.y + to!.height);
+      await page.mouse.move(
+        from!.x + from!.width / 2,
+        from!.y + from!.height / 2,
       );
-    }
-    // DndContext uses closestCenter, so preserve the handle-to-card-centre grab
-    // offset and aim the dragged CARD's centre at the destination cell. If the
-    // offset would put the cursor just outside that cell, clamp it one pixel
-    // inside while staying as close as possible to the ideal alignment.
-    const idealTargetPointer = {
-      x:
-        to!.x +
-        to!.width / 2 +
-        (from!.x + from!.width / 2 - (dragged!.x + dragged!.width / 2)),
-      y:
-        to!.y +
-        to!.height / 2 +
-        (from!.y + from!.height / 2 - (dragged!.y + dragged!.height / 2)),
+      await page.mouse.down();
+      await page.mouse.move(targetPointer.x, targetPointer.y, {
+        steps: 12,
+      });
+      await expect(preview()).toBeVisible();
     };
-    const targetPointer = {
-      x: Math.min(
-        Math.max(idealTargetPointer.x, to!.x + 1),
-        to!.x + to!.width - 1,
-      ),
-      y: Math.min(
-        Math.max(idealTargetPointer.y, to!.y + 1),
-        to!.y + to!.height - 1,
-      ),
-    };
-    expect(
-      targetPointer.x,
-      "adjusted pointer x stays inside the target cell",
-    ).toBeGreaterThanOrEqual(to!.x);
-    expect(
-      targetPointer.x,
-      "adjusted pointer x stays inside the target cell",
-    ).toBeLessThan(to!.x + to!.width);
-    expect(
-      targetPointer.y,
-      "adjusted pointer y stays inside the target cell",
-    ).toBeGreaterThanOrEqual(to!.y);
-    expect(
-      targetPointer.y,
-      "adjusted pointer y stays inside the target cell",
-    ).toBeLessThan(to!.y + to!.height);
-    await page.mouse.move(from!.x + from!.width / 2, from!.y + from!.height / 2);
-    await page.mouse.down();
-    await page.mouse.move(targetPointer.x, targetPointer.y, {
-      steps: 12,
-    });
-    await expect(preview()).toBeVisible();
+
+    // Pointer preview + cancel: real sensor wiring, no request.
+    await startPointerDragToTarget();
     await page.keyboard.press("Escape");
     await page.mouse.up();
+    // The cancel really tore the drag down, and waiting for that here is what
+    // lets the next drag measure a settled board instead of one still animating
+    // the overlay home.
+    await expect(dragCard()).toBeHidden();
     await expect.poll(() => moveRequests.length).toBe(0);
 
     // Pointer success: release over the real cell, then prove the page emitted
     // the date-free PATCH and the server persisted the original nights.
-    await page.mouse.move(from!.x + from!.width / 2, from!.y + from!.height / 2);
-    await page.mouse.down();
-    await page.mouse.move(targetPointer.x, targetPointer.y, {
-      steps: 12,
-    });
-    await expect(preview()).toBeVisible();
+    await startPointerDragToTarget();
     await page.mouse.up();
     await expect(page.getByText("Visible guest nights moved")).toBeVisible({
       timeout: 30_000,

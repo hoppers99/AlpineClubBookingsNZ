@@ -894,9 +894,10 @@ export async function reviewAdminFamilyGroupRequest(params: {
             create: {
               familyGroupId: request.familyGroupId,
               memberId: affectedMemberId,
-              role: "MEMBER",
             },
             update: {},
+            // Result discarded — narrow the implicit RETURNING (#2130 house rule).
+            select: { id: true },
           });
         }
 
@@ -1208,16 +1209,20 @@ async function reviewGroupCreateRequest(params: {
         // review transaction above for the full rationale).
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`member-lifecycle:${request.requesterId}`}))`;
 
-        // GROUP_CREATE approval must create the requester's membership with
-        // role ADMIN — do NOT route this through the generic member upsert
-        // used by the other request types, which creates role MEMBER and
-        // would leave the new group without a group admin.
+        // GROUP_CREATE approval creates the requester's membership. It used to
+        // write role ADMIN to mark them the group's lead; #2520 removed that
+        // write, because the column granted nothing (#2284) and is retired
+        // pending its CONTRACT drop. There is deliberately no "group admin"
+        // concept left to seed: every adult login co-member of a family group
+        // is equal (see the family authorisation boundary in
+        // docs/DOMAIN_INVARIANTS.md).
         await tx.familyGroupMember.create({
           data: {
             familyGroupId: request.familyGroupId,
             memberId: request.requesterId,
-            role: "ADMIN",
           },
+          // Result discarded — narrow the implicit RETURNING (#2130 house rule).
+          select: { id: true },
         });
 
         await tx.familyGroupJoinRequest.update({

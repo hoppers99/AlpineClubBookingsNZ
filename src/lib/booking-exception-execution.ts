@@ -863,20 +863,44 @@ export async function approveAndExecutePolicyExceptionRequest(params: {
 export type PolicyExceptionTerminalStatus =
   | "REJECTED"
   | "CANCELLED"
-  | "SUPERSEDED";
+  | "SUPERSEDED"
+  // #2553: the provisional hold ran out before anybody decided the request, so
+  // the reaper cron closes it here — through this SAME helper, never a forked
+  // release path.
+  | "EXPIRED";
+
+/**
+ * Why this helper refused a row BEFORE it ever reached the guarded claim. A
+ * refusal is PERMANENT for that row — retrying changes nothing — which is exactly
+ * what separates it from an ordinary lost claim, where the next read sees the
+ * fresh version and succeeds. An unattended caller (the #2553 reaper) has to be
+ * able to tell the two apart, or a row it can never resolve looks like a race it
+ * lost and its stranded beds stay invisible behind a green cron-health row.
+ */
+export type ResolveTerminalRefusal =
+  /** Missing row, or a row that is not a POLICY_EXCEPTION request. */
+  | "not-policy-exception"
+  /** `proposalSnapshot` does not parse, so there is no lodge to lock. */
+  | "unreadable-proposal";
 
 export interface ResolveTerminalResult {
   /** Whether the guarded claim moved the row (a lost claim runs no release). */
   claimed: boolean;
   /** How many reservation night rows were released (0 for a NO_HOLD request). */
   released: number;
+  /**
+   * Set only when `claimed` is false AND the refusal is permanent (see
+   * {@link ResolveTerminalRefusal}). Absent means the ordinary optimistic-claim
+   * loss: somebody else moved the row first and already dealt with its beds.
+   */
+  refused?: ResolveTerminalRefusal;
 }
 
 /**
  * Atomically move a HELD policy-exception request to a terminal RELEASING status
  * (REJECTED by an officer, CANCELLED by the member, SUPERSEDED by a newer
- * proposal) and release its provisional reservation in the SAME guarded
- * transaction.
+ * proposal, or EXPIRED by the #2553 hold reaper) and release its provisional
+ * reservation in the SAME guarded transaction.
  *
  * The guarded `version` CAS is the single-flight: a lost claim (someone already
  * moved the row, or the version advanced) releases NOTHING and runs no side
@@ -884,6 +908,12 @@ export interface ResolveTerminalResult {
  * per-lodge capacity lock keyed on the frozen lodge — because the release is a
  * capacity change and must serialise against every occupancy read/claim at that
  * lodge. Provider notifications are the caller's post-commit concern.
+ *
+ * Two pre-claim checks can refuse the row outright — it is not a
+ * POLICY_EXCEPTION request, or its `proposalSnapshot` does not parse (so there is
+ * no lodge to lock). Those cases return `claimed: false` WITH a `refused` reason,
+ * because unlike a lost claim they never resolve on a retry; the reaper counts and
+ * logs them rather than assuming a decision won the race.
  */
 export async function resolvePolicyExceptionRequestTerminal(params: {
   requestId: string;
@@ -908,10 +938,17 @@ export async function resolvePolicyExceptionRequestTerminal(params: {
   const store = params.store ?? modificationExceptionRequestStore;
 
   return db.$transaction(async (tx): Promise<ResolveTerminalResult> => {
+    // The store's own preRead applies the kind guard, so null covers BOTH a
+    // missing row and a row of the wrong kind — the one combined refusal the
+    // ResolveTerminalRefusal doc promises.
     const preRead = await store.preRead(tx, requestId);
-    if (!preRead) return { claimed: false, released: 0 };
+    if (!preRead) {
+      return { claimed: false, released: 0, refused: "not-policy-exception" };
+    }
     const snapshot = parseProposalSnapshot(preRead.proposalSnapshot);
-    if (!snapshot) return { claimed: false, released: 0 };
+    if (!snapshot) {
+      return { claimed: false, released: 0, refused: "unreadable-proposal" };
+    }
 
     await acquireGlobalBookingLock(tx);
     await acquireLodgeCapacityLock(tx, snapshot.lodgeId);

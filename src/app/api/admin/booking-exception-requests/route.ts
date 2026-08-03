@@ -6,7 +6,19 @@ import { readUnifiedExceptionQueue } from "@/lib/booking-exception-request-servi
 
 const querySchema = z.object({
   status: z
-    .enum(["REQUESTED", "APPROVED", "REJECTED", "CANCELLED", "SUPERSEDED", "ALL"])
+    .enum([
+      "REQUESTED",
+      "APPROVED",
+      "REJECTED",
+      "CANCELLED",
+      "SUPERSEDED",
+      // #2553: a request the hold reaper closed. Read-only filter value, kept in
+      // step with `ExceptionQueueStatusFilter` so the type and the route cannot
+      // disagree — the service advertising a value the route rejects is how an
+      // officer screen ends up 400ing on its own "Expired" tab.
+      "EXPIRED",
+      "ALL",
+    ])
     .optional()
     .default("REQUESTED"),
   page: z.coerce.number().int().min(1).optional().default(1),

@@ -376,6 +376,11 @@ enum BookingChangeRequestStatus {
   // SUPERSEDED: a newer proposal (or live-booking drift) replaced this one.
   CANCELLED
   SUPERSEDED
+  // #2553: the hold ran out. A HOLD-mode policy-exception request reserves real
+  // beds while it waits (#2525); nobody approved, rejected or withdrew it before
+  // its `holdExpiresAt` deadline, so the reaper cron released the beds and closed
+  // the request. Written ONLY by that cron, and only onto a POLICY_EXCEPTION row.
+  EXPIRED
 }
 
 // #2365: which flavour of admin-reviewed change a BookingChangeRequest carries.
@@ -4596,6 +4601,23 @@ model BookingChangeRequest {
   // this one.
   supersededByRequestId String?
   cancelledAt          DateTime?
+  // #2553: when this request's provisional capacity hold runs out. Set at
+  // creation ONLY for a POLICY_EXCEPTION request that actually reserved beds —
+  // a HOLD frozen aggregate WITH a non-empty incremental footprint (#2525) — and
+  // never rewritten afterwards, so the reaper's deadline is a stable, immutable
+  // fact rather than something a later write can move under a member. NULL means
+  // "no TTL is STAMPED here", which is two populations: (a) nothing is at stake —
+  // a LOCKED_PERIOD row, a NO_HOLD policy-exception request, or a HOLD request
+  // whose footprint came out empty (a pure shrink); and (b) the row PREDATES this
+  // column and IS holding beds, because the migration deliberately did not
+  // backfill — written before it, or by a draining old colour. So NULL is NOT a
+  // safe proxy for "holds no capacity": never filter a capacity question on
+  // `holdExpiresAt IS NOT NULL`; the PolicyExceptionReservationNight rows are the
+  // only reliable test. The reaper handles both — it releases the hold and moves
+  // the request to EXPIRED once `now >= holdExpiresAt`, and for population (b) it
+  // derives the same deadline from `createdAt` and the request's first held night;
+  // see src/lib/cron-policy-exception-hold-reaper.ts.
+  holdExpiresAt        DateTime?
   // Optimistic-concurrency token for the guarded approval claim, app-managed and
   // bumped on every mutating write — exactly the BookingRequest.version pattern
   // (#1923), and for the same reason: updatedAt is millisecond-precision and two
@@ -5114,15 +5136,48 @@ model FamilyGroupMember {
   id            String   @id @default(cuid())
   familyGroupId String
   memberId      String
-  // #2284 (S4): NOT consulted for authorisation anywhere. The one power it ever
-  // gated — the one-step partner declaration (member-partner-link.ts) — was
-  // re-anchored onto Member.detailsConfirmedByMemberId, so this column now
-  // records nothing that grants anything. Written "ADMIN" or "MEMBER" by a
-  // scatter of flows (see the #2284 census); merge upgrades toward "ADMIN"
-  // (member-merge.ts maxFamilyRole) but nothing reads the result. Retained for
-  // now rather than dropped in the same PR as the re-anchor; scheduled for
-  // removal in a dedicated migration (see #2284 close-out / follow-up).
-  role          String   @default("MEMBER")
+  // RETIRED — @ignore keeps it out of the generated Prisma Client entirely.
+  // #2284 removed the last authorisation reader (the one-step partner
+  // declaration in member-partner-link.ts, re-anchored onto
+  // Member.detailsConfirmedByMemberId), and #2520 removed every writer plus
+  // member-merge's vestigial maxFamilyRole upgrade.
+  //
+  // Why @ignore rather than only deleting the call sites: removing the readers
+  // and writers is NOT sufficient to stop the SQL naming the column, and that
+  // distinction is what the coming DROP depends on. Measured against Prisma
+  // 7.9.0 on this schema:
+  //
+  //   - a static `@default("MEMBER")` is materialised CLIENT-side as a bind
+  //     parameter, so the column appeared in the column list of every INSERT —
+  //     `create`, `upsert`'s insert branch and `createMany` alike — even when
+  //     the call set no role and narrowed itself to `select: { id: true }`;
+  //   - an unnarrowed `create`/`update`/`upsert`/`delete` names every scalar in
+  //     its implicit RETURNING, and an `include:` on the join table names every
+  //     scalar in its SELECT.
+  //
+  // @ignore removes the field from the client, so none of those SQL forms can
+  // name the column and no call-site discipline has to be maintained to keep it
+  // that way: naming `role` on this delegate is now a COMPILE error rather than
+  // a latent production error. It changes no database state — the diff between
+  // this schema and the one without @ignore is empty, so no migration is owed —
+  // and the column keeps its `NOT NULL DEFAULT 'MEMBER'`
+  // (20260407120000_add_family_group_member_join_table), so rows inserted from
+  // here on are filled by the DATABASE default and are never NULL. Stored
+  // values are meaningless, not frozen.
+  //
+  // The field stays here ONLY because the DB column does. This is the RUNTIME
+  // half of the blue/green retirement (docs/BLUE_GREEN_MIGRATION_POLICY.md):
+  // removing the field requires the DROP migration in the same PR (the
+  // migration-drift gate compares migrations against this file), and that DROP
+  // is only old-code compatible once THIS release is the draining colour.
+  // #2520 stays OPEN until that CONTRACT release lands; it removes this field,
+  // adds the DROP migration, and adds the ledger row. Note this release ships
+  // no migration of its own, so — exactly as the #2130 contract row
+  // (20260721130000) did for its runtime-prep release — that ledger row names an
+  // adjacent migration in `previous_expand_release` and records the real
+  // precondition ("do not deploy until the release carrying this @ignore has
+  // shipped and soaked") in `lock_impact_plan`.
+  role          String   @default("MEMBER") @ignore
   joinedAt      DateTime @default(now())
 
   familyGroup FamilyGroup @relation(fields: [familyGroupId], references: [id], onDelete: Cascade)
