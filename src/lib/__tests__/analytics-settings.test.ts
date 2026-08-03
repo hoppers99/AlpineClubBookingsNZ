@@ -135,6 +135,102 @@ describe("parseBannerMessage", () => {
       bannerMessage: "<b>hi</b> & <script>x</script>",
     });
   });
+
+  /*
+    The consent banner is the one surface whose DISPLAYED words are what a visitor
+    is agreeing to, so a stored value that renders differently to the text an admin
+    proofread is not acceptable — U+202E RIGHT-TO-LEFT OVERRIDE makes
+    "Analytics is off <RLO>gnikcart" display as "Analytics is off tracking".
+    These pin the strip, and each one fails if the character class is removed.
+  */
+  describe("invisible and control characters", () => {
+    const RLO = "\u202E"; // RIGHT-TO-LEFT OVERRIDE
+    const LRO = "\u202D"; // LEFT-TO-RIGHT OVERRIDE
+    const ZWSP = "\u200B"; // ZERO WIDTH SPACE
+    const BOM = "\uFEFF"; // ZERO WIDTH NO-BREAK SPACE
+    const SHY = "\u00AD"; // SOFT HYPHEN
+
+    it("strips the bidi override that would reverse the displayed meaning", () => {
+      expect(
+        parseBannerMessage(`Analytics is off ${RLO}gnikcart`, true),
+      ).toEqual({ ok: true, bannerMessage: "Analytics is off gnikcart" });
+      expect(parseBannerMessage(`${LRO}hello`, true)).toEqual({
+        ok: true,
+        bannerMessage: "hello",
+      });
+    });
+
+    it("strips zero-width, byte-order-mark and soft-hyphen characters", () => {
+      expect(
+        parseBannerMessage(`Acc${ZWSP}ept ana${SHY}lytics${BOM}`, true),
+      ).toEqual({ ok: true, bannerMessage: "Accept analytics" });
+    });
+
+    it.each([
+      ["NUL", "\u0000"],
+      ["BEL", "\u0007"],
+      ["ESC", "\u001B"],
+      ["DEL", "\u007F"],
+      ["C1 NEL", "\u0085"],
+    ])("strips the %s control code", (_label, control) => {
+      expect(parseBannerMessage(`Hello${control}World`, true)).toEqual({
+        ok: true,
+        bannerMessage: "HelloWorld",
+      });
+    });
+
+    it("still turns real whitespace into a space rather than welding words", () => {
+      // Tab, newline, vertical tab, form feed, no-break space and the line and
+      // paragraph separators are all `\s`, so they must COLLAPSE to a space — not be
+      // removed, which would join two words into one.
+      expect(
+        parseBannerMessage(
+          "one\ttwo\nthree\u000Bfour\u000Cfive\u00A0six\u2028seven\u2029eight",
+          true,
+        ),
+      ).toEqual({
+        ok: true,
+        bannerMessage: "one two three four five six seven eight",
+      });
+    });
+
+    it("treats a message of nothing but invisibles as empty", () => {
+      // Required while the banner is on…
+      expect(parseBannerMessage(`${ZWSP}${RLO}${BOM}`, true).ok).toBe(false);
+      // …and an accepted "keep the stored wording" while it is off.
+      expect(parseBannerMessage(`${ZWSP}${RLO}${BOM}`, false)).toEqual({
+        ok: true,
+        bannerMessage: null,
+      });
+    });
+
+    it("measures length after stripping, so invisibles cannot pad past the ceiling", () => {
+      const padded =
+        "a".repeat(ANALYTICS_BANNER_MESSAGE_MAX_LENGTH) + ZWSP.repeat(50);
+      expect(parseBannerMessage(padded, true)).toEqual({
+        ok: true,
+        bannerMessage: "a".repeat(ANALYTICS_BANNER_MESSAGE_MAX_LENGTH),
+      });
+    });
+
+    it("strips BEFORE collapsing, so no doubled or leading space is left behind", () => {
+      /*
+        The ORDER is the assertion here, not just the strip. Stripping after the
+        whitespace collapse leaves the hole the invisible occupied: `one <ZWSP> two`
+        would come back as "one  two" with two spaces, and a leading invisible would
+        leave the message indented — neither of which is "the stored value is what the
+        admin sees". Removing the invisibles first means the collapse then sees one
+        run of whitespace and closes it up.
+      */
+      expect(parseBannerMessage(`one ${ZWSP} two`, true)).toEqual({
+        ok: true,
+        bannerMessage: "one two",
+      });
+      expect(parseBannerMessage(`${ZWSP} Accept analytics ${RLO}`, true)).toEqual(
+        { ok: true, bannerMessage: "Accept analytics" },
+      );
+    });
+  });
 });
 
 describe("normalizeAnalyticsSettings", () => {

@@ -130,15 +130,44 @@ export function parseMeasurementId(
 }
 
 /**
+ * Characters that are INVISIBLE where the banner renders, and therefore cannot be
+ * allowed to survive into it.
+ *
+ * Two distinct problems, one answer. C0/C1 control codes (`U+0000` NUL, `U+0007`
+ * BEL, `U+001B` ESC, `U+007F` DEL and friends) are not text and have no business in
+ * a stored setting. The bidirectional formatting codes are worse: `U+202E`
+ * RIGHT-TO-LEFT OVERRIDE reverses the rendering of everything after it, so
+ * `"Analytics is off <U+202E>gnikcart"` DISPLAYS as "Analytics is off tracking"
+ * while the stored string says the opposite. On a consent banner — the one surface
+ * whose displayed words are the thing a visitor is agreeing to — a stored value that
+ * reads differently to the value on screen is not acceptable, whether it arrived by
+ * malice or by pasting out of a word processor. Zero-width characters
+ * (`U+200B`–`U+200F`, `U+FEFF`) and the soft hyphen (`U+00AD`) are the same class:
+ * they change or hide the rendering without appearing in the text an admin proofread.
+ *
+ * `U+0009`, `U+000A`, `U+000B`, `U+000C`, `U+000D`, `U+00A0`, `U+2028` and `U+2029`
+ * are deliberately NOT in the set: every one of them is `\s`, so the collapse below
+ * turns them into an ordinary space, which is the right answer for text pasted out of
+ * a document. Removing them instead would silently weld two words together.
+ */
+const INVISIBLE_OR_CONTROL_PATTERN =
+  /[\u0000-\u0008\u000E-\u001F\u007F-\u009F\u00AD\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF]/g;
+
+/**
  * Trim a submitted banner message and enforce the plain-text rules.
  *
  * `bannerRequired` is the banner-enabled case: section 4 of the issue body
  * requires a non-empty value while the banner is on, and requires the saved text
  * to be PRESERVED while the banner is off — so a banner-off save of an empty box
  * is accepted and simply keeps whatever is stored (the caller passes the stored
- * value through). Control characters are stripped rather than rejected: the value
- * is rendered as a React text child, so it can never become markup, and a stray
- * newline pasted from a document is not something to fail a save over.
+ * value through).
+ *
+ * Markup is NOT stripped or escaped — the value is rendered as a React text child,
+ * so `<b>` is shown literally and can never become an element, and escaping here
+ * would double-escape what the visitor sees. Invisible and control characters ARE
+ * stripped, for the display-integrity reason set out on
+ * {@link INVISIBLE_OR_CONTROL_PATTERN}; a stray newline pasted from a document is
+ * still not something to fail a save over, and becomes a space.
  */
 export function parseBannerMessage(
   value: string,
@@ -146,10 +175,16 @@ export function parseBannerMessage(
 ):
   | { ok: true; bannerMessage: string | null }
   | { ok: false; error: string } {
-  // Collapse every run of whitespace (including newlines and tabs) to one space:
-  // the banner is a single paragraph, so multi-line input would render as one line
-  // anyway, and normalising here means the stored value is what the admin sees.
-  const trimmed = value.replace(/\s+/g, " ").trim();
+  // Order matters: drop the invisibles FIRST so a control code sandwiched between
+  // two words disappears, then collapse every run of whitespace (including newlines
+  // and tabs) to one space — the banner is a single paragraph, so multi-line input
+  // would render as one line anyway, and normalising here means the stored value is
+  // what the admin sees. A message that was ONLY invisible characters is now empty,
+  // and falls into the required/optional branch below exactly as a blank box does.
+  const trimmed = value
+    .replace(INVISIBLE_OR_CONTROL_PATTERN, "")
+    .replace(/\s+/g, " ")
+    .trim();
   if (trimmed.length === 0) {
     if (bannerRequired) {
       return {

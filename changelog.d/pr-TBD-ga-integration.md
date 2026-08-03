@@ -34,7 +34,9 @@
 
   You can also edit the wording of the banner message. It is plain text — HTML and
   formatting are shown literally rather than interpreted — and the Accept and
-  Decline button labels stay as they are.
+  Decline button labels stay as they are. Invisible characters are removed when the
+  message is saved, so what a visitor reads on the banner is the wording you
+  proofread; run-on spaces and pasted line breaks become single spaces.
 
   **Visitors can change their mind either way.** An **Analytics preferences** link
   now appears in the website footer whenever analytics is set up, in both modes.
