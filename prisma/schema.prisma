@@ -3170,17 +3170,27 @@ model MinimumStayPolicy {
 // Adult-member hosting policy (#2364, epic decision D-R3/D-R4)
 // ---------------------------------------------------------------------------
 
-// Whether non-member guest-nights must overlap an adult member participant.
+// The CONSEQUENCE when a non-member guest-night has no qualifying adult-member
+// host (#2364; three-way since the owner's #2569 decision).
+//
+// Deliberately named for the consequence rather than for the rule, because the
+// rule itself is now a SECOND, independent dimension — which adult members count
+// (the hostScope* columns below). A club sets both.
 //
 // INHERIT is a LODGE-ONLY value: it is how a lodge says "use the club default"
 // while still owning a row (so config transfer and the admin screen can state
 // the choice explicitly rather than inferring it from an absent row). The
 // migration's CHECK constraint refuses INHERIT on the club-wide row, which is
 // what makes resolution terminate.
+//
+// ENFORCED (#2569) refuses the write with HTTP 409 `ADULT_MEMBER_HOSTING_REQUIRED`
+// and opens the existing #2365 policy-exception door; it is never selected by a
+// migration, so no existing club moves onto it by upgrading.
 enum AdultMemberHostingMode {
   INHERIT
   DISABLED
   ADMIN_REVIEW_REQUIRED
+  ENFORCED
 }
 
 model AdultMemberHostingPolicy {
@@ -3207,6 +3217,35 @@ model AdultMemberHostingPolicy {
   // table is created empty by the same migration, so there is no row to back-
   // fill and no draining old colour that could insert without naming it.
   capacityMode PolicyExceptionCapacityMode
+
+  // WHICH adult members count as supplying coverage (#2569, the owner's second
+  // policy dimension). Independent of `mode`, resolved independently, and
+  // combined with OR: a non-member guest-night is compliant where AT LEAST ONE
+  // enabled scope supplies eligible adult-member coverage for that exact night.
+  //
+  // ALL THREE ARE NULLABLE TOGETHER, and the migration's CHECK holds them to
+  // all-null or all-set. NULL means "this scope did not decide", which is what
+  // makes the second dimension inherit the same way the first one does:
+  //
+  //   - a lodge row with all three NULL inherits the club's scope set (the
+  //     "Inherit club host scopes" option), whatever its own `mode` says;
+  //   - a lodge row with them set is that lodge's custom scope set;
+  //   - the club row with all three NULL means the club never decided, which
+  //     resolves to the BUILT-IN DEFAULT — same-booking only.
+  //
+  // That built-in default is what makes the upgrade a no-op (#2569 §15): every
+  // existing row keeps NULL, so every existing club keeps judging exactly the
+  // same-booking coverage it judged before, and nothing is silently broadened to
+  // any-member-at-the-lodge. A club opts into the wider scopes by saving them.
+  //
+  // Nullable rather than `Boolean @default(...)` deliberately. A default would
+  // make "the club has not decided" indistinguishable from "the club chose
+  // same-booking only", which is the same distinction `configured` draws on the
+  // admin card, and would also mean a draining old colour's INSERT silently
+  // asserted a decision it never made.
+  hostScopeSameBooking      Boolean?
+  hostScopeAnyMemberAtLodge Boolean?
+  hostScopeNominatedHost    Boolean?
 
   // Stable policy revision and compare-and-swap token, managed by the
   // AdultMemberHostingPolicy_version trigger. Same contract as
