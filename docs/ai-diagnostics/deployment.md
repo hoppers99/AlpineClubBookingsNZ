@@ -74,9 +74,13 @@ every tool call unless the answer is the least-privilege shape ADR-007 requires:
   clean, and one `SET ROLE tac_app` then reads `IntegrationCredential` and writes
   `Booking`. Membership is tested as membership rather than as inherited usage for the
   same reason, and it is counted through chains as well as direct grants, because
-  `SET ROLE` reaches a role granted two hops away. The refusal still names a
-  privilege-escalating predefined role (`pg_read_all_data` and the rest) separately
-  when that is what happened, because it is a more useful sentence than a count;
+  `SET ROLE` reaches a role granted two hops away. When the granted role is one of the
+  privilege-escalating predefined roles (`pg_read_all_data` and the rest), the refusal
+  logged on the server names it, because that is a more useful sentence than a count.
+  The readiness screen does not: it reports `over_privileged` and no privilege detail
+  at all, by design, since it is JSON an admin browser receives. Ordinary role names
+  are not logged either — only the eight predefined names, which are PostgreSQL
+  built-ins rather than anything about this deployment;
 - no `EXECUTE` on any overload of `pg_read_file`, `pg_read_binary_file`, `pg_ls_dir`,
   `pg_stat_file`, `lo_import` or `lo_export`;
 - no `EXECUTE` on a `SECURITY DEFINER` routine in `public` (see "What is deliberately
@@ -161,16 +165,28 @@ Diagnostics read" is answered by reading one file.
 - Revokes membership in every privilege-escalating predefined role
   (`pg_read_all_data`, `pg_write_all_data`, `pg_read_server_files`,
   `pg_write_server_files`, `pg_execute_server_program`, `pg_signal_backend`,
-  `pg_monitor`, `pg_maintain`), each guarded by an existence check because that set
-  grows with the server version.
+  `pg_monitor`, `pg_maintain`). A role that does not exist on this server (the set
+  grows with the version — `pg_maintain` is PostgreSQL 17+) simply has no membership to
+  revoke.
 - Then revokes **every remaining membership**, whatever it is in. That is the actual
   control; the named list above documents what it is for. Only the direct grants need
   revoking — a chain always starts with one — so stripping them removes the two-hop
-  case too. If the provisioning credential does not hold `ADMIN OPTION` on a role the
-  diagnostics role was granted, this `REVOKE` fails, the whole transaction rolls back,
-  and the script prints the server's message: that credential cannot provision a role
-  the runtime would accept, so the failure is the right answer rather than a
-  half-restricted role.
+  case too.
+- **Every one of those revokes names the grantor that made the grant, and the result is
+  re-checked before the transaction is allowed to commit.** This is not a detail. A
+  membership is recorded per grantor, and `REVOKE <role> FROM <member>` without
+  `GRANTED BY` removes only the grant the *current* role made — even for a superuser.
+  Anybody else's grant survives, and PostgreSQL reports that as a `WARNING` while still
+  returning success, so the repair would have looked like it worked and left the role
+  one `SET ROLE` from the privileges it was supposed to lose. The statement list
+  therefore revokes each recorded grant with its own grantor and then raises an error
+  if any membership is still recorded, which rolls the whole transaction back.
+- Two consequences worth knowing. First, if the provisioning credential may not revoke
+  another role's grant, the run fails loudly (`permission denied to revoke privileges
+  granted by role "…"`) rather than half-succeeding: that credential cannot produce a
+  role the runtime would accept, so the failure is the right answer. Second, the script
+  now prints whatever the server said at `WARNING` level and above, and only claims
+  memberships were stripped when it said nothing.
 - Grants `CONNECT` on the database and `USAGE` on schema `public` — never `CREATE`.
 - Revokes all table and sequence privileges plus default privileges, then grants back
   only the declared `SELECT` allowlist.
@@ -186,6 +202,18 @@ Diagnostics read" is answered by reading one file.
 password and for picking up a new table grant. Because it is declarative, a re-run
 also **removes** a grant, or a role membership, somebody added by hand — that is
 deliberate.
+
+**The one refusal re-provisioning cannot repair: don't make the diagnostics role a
+database owner.** `pg_database_owner` is an implicit membership — PostgreSQL treats
+whoever owns the current database as a member of it, with no row recorded and nothing
+to revoke. A diagnostics role that owns its own database therefore reports one
+membership, is refused at runtime, and stays refused however many times the
+provisioning is re-run. Nothing in the documented deployment does this (the role is
+created by the provisioning script and never owns a database), and the fix is to give
+the role no ownership rather than to relax the membership rule: an owner can `SET ROLE
+pg_database_owner`, and in this schema `public` is owned through exactly that role. The
+provisioning deliberately does not raise on it, so the situation is a runtime refusal
+an operator can diagnose rather than a provisioning run that can never succeed.
 
 ### One collateral change to shared database state
 
