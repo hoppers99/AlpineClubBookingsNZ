@@ -2099,10 +2099,11 @@ would fail anything else:
 - **chrome parity** — both layouts must compose the one shared chrome and no chrome
   of their own, so the groups cannot drift apart visually;
 - **the chrome's own reads** — it may call neither `auth()`, `cookies()` nor
-  `headers()`, and may resolve neither nonce itself. Before the extraction that ban
-  was covered by the `(website)/layout.tsx` rules; moving the chrome to
-  `src/components/website/` would otherwise have moved it out of the gate's reach at
-  the same time.
+  `headers()`, and may resolve neither nonce itself. This is new coverage rather than
+  preserved coverage: no source-level ban on a request read in the public layout
+  existed before the narrowing, only the post-build manifest check. The extraction is
+  what made its absence matter, because the chrome is composed by both groups, so the
+  ban was written in the same commit as the move.
 `scripts/ci/check-website-prerender-manifest.mjs` runs after the build and reads
 `.next/prerender-manifest.json`, which is the only place the framework's own answer
 is written down. BOTH halves are closed allowlists: the catch-all must still be the

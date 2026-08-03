@@ -14,7 +14,8 @@ import {
  *
  * ## Why the decision lives in the proxy and not in a layout
  *
- * While `ClubTheme.completedAt IS NULL`, `(website)/layout.tsx` returns its
+ * While `ClubTheme.completedAt IS NULL`, the shared public chrome
+ * (`src/components/website/website-chrome.tsx`) returns its
  * holding screen INSTEAD of `{children}`, so the page component never runs, its
  * `notFound()` never fires, and every address — real page and typo alike —
  * answers `200 OK`. A layout has no way to set a status code: `notFound()` is
@@ -73,8 +74,8 @@ type SetupGateState =
  * holding-screen document) is reused for.
  *
  * The point of caching is the constraint that this gate must not add a database
- * read to every request that `(website)/layout.tsx` is about to make anyway. The
- * layout reads `ClubTheme` through a 15-second tagged cache
+ * read to every request that the shared public chrome is about to make anyway. The
+ * chrome reads `ClubTheme` through a 15-second tagged cache
  * (`getCachedWebsiteThemeRenderState`); matching that TTL here means the gate
  * costs at most one extra single-row read per 15 seconds per process, not one
  * per request. Once setup IS complete the cached answer is a bare boolean and
@@ -116,7 +117,7 @@ async function loadSetupGateState(): Promise<SetupGateState> {
   }
 
   // Only read once the site is known to be unconfigured, and read from exactly
-  // the sources `(website)/layout.tsx`'s own pre-setup branch reads, so the two
+  // the sources the shared public chrome's own pre-setup branch reads, so the two
   // screens can never name the club or the contact address differently. Neither
   // call throws — both fall back to config defaults if the database is
   // unreachable — which matters because this path has to be able to render a

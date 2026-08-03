@@ -658,24 +658,28 @@ menu.
     address. Renaming the page in Admin > Page Content is the whole fix — the
     content, header and menu title come with it.
 
-    Three more addresses are refused for the same reason, and the query above
-    does not find them because they are not top-level segments:
-    `hut-leader-instructions`, `join/<anything>` and
-    `join/verify/<anything>` are real public pages of the application (lodge
-    instructions for a hut leader, and the two group-join screens), so a content
-    page there could never have been served in any release. This query names one
-    if it exists:
+    Three more shapes are refused for the same reason, and the query above does
+    not find them because they are not top-level segments:
+    `hut-leader-instructions`, a ONE-level address under `join/`
+    (`join/<group-code>`), and `join/verify/<token>` are real public pages of the
+    application (lodge instructions for a hut leader, and the two group-join
+    screens), so a content page at one of them could never have been served in any
+    release. This query names one if it exists:
 
     ```sql
     SELECT slug, title, published FROM "PageContent"
     WHERE slug = 'hut-leader-instructions'
-       OR slug LIKE 'join/%';
+       OR (slug ~ '^join/[^/]+$' AND slug <> 'join/apply')
+       OR slug ~ '^join/verify/[^/]+$';
     ```
 
-    `join/apply` is the exception and is perfectly valid — it is one of the
-    code-backed starter pages. So is anything one level deeper, such as
-    `trips/hut-leader-instructions`: nothing in the application claims that
-    address, so the catch-all serves it normally.
+    The bounds matter both ways, so do not widen the query to `slug LIKE 'join/%'`.
+    `join/apply` is a valid code-backed starter page, and so is anything DEEPER than
+    the shapes above — `join/2026/spring-camp` and `join/verify/notes/2026` are served
+    normally, because the application's routes there are exactly two and three
+    segments long and nothing claims a deeper address. A page one level deeper under
+    a reserved NAME is fine for the same reason: `trips/hut-leader-instructions` is
+    claimed by nothing and the catch-all serves it.
 - Page HTML supports embed tokens that render interactive sections across
   PageContent-backed public routes, including code-backed starter routes.
   Supported tokens are `{{committee-members-cards}}`,

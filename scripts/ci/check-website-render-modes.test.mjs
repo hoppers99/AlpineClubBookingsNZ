@@ -409,10 +409,10 @@ export function generateStaticParams(): { slug: string[] }[] {
     });
 
     /**
-     * The half the extraction could otherwise have lost. While the chrome WAS
-     * `(website)/layout.tsx` the request-read ban covered it; moving it to
-     * `src/components/website/` moved it out of both group scans, so these cases
-     * are what keep the ban real rather than a docblock claim.
+     * The ban the gate never had until the narrowing. Nothing at source level
+     * refused a request read in the public layout before it — the claim that the
+     * extraction merely preserved existing coverage was wrong — so these cases are
+     * what keep the new ban real rather than a docblock claim.
      */
     it.each(["headers()", "cookies()", "auth()"])(
       "fails a shared chrome that calls %s",

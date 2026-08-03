@@ -24,6 +24,8 @@ const staticNavLinks = [{ href: "/contact", label: "Contact" }];
  * Takes NO session (#2352 D2). It used to receive an `isAuthenticated` boolean
  * from `(website)/layout.tsx`, and that layout's `auth()` call was one of the two
  * lines that forced every public page to be rendered from scratch on every visit.
+ * It is rendered by the shared chrome now
+ * (`src/components/website/website-chrome.tsx`), which reads neither.
  * The header now renders BOTH forms of its call-to-action pair and lets the
  * browser pick from the non-secret marker cookie — see
  * `src/lib/signed-in-hint.ts` for what that cookie is and is not.

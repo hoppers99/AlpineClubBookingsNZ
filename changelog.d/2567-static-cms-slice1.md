@@ -52,10 +52,14 @@
   `admin`/`login`/`register` names that were already refused. Saving one now returns
   a clear error. Those addresses could be created before and appeared to work, but
   under whole-page caching they would have been served with a security token that no
-  longer matched, so nothing on the page would run. Three more addresses are refused
-  for the same reason — `hut-leader-instructions`, and anything under `join/` other
-  than `join/apply` — because the application already serves real pages there. If you
-  already have such a page it now shows "page not found" until you rename it. It also
+  longer matched, so nothing on the page would run. Three more shapes are refused for
+  the same reason, because the application already serves real pages at them:
+  `hut-leader-instructions`, a one-level address under `join/` such as
+  `join/spring-camp` (`join/apply` is the exception and stays valid), and
+  `join/verify/<anything>`. Deeper addresses such as `join/2026/spring-camp` are
+  untouched and still work — nothing in the application claims them. If you do have a
+  page at one of the three refused shapes it now shows "page not found" until you
+  rename it. It also
   stops being advertised — the site menu drops it and a Book Now button aimed at it
   goes back to the normal booking flow — so no link points at the dead address, which
   is also why it is worth looking for one after upgrading: `CONFIGURATION.md` ("Some
@@ -66,3 +70,16 @@
   The home page, Join, Contact and the membership application form are deliberately
   unchanged for now; they follow in a later step once this one has been measured on
   a real deployment.
+
+- **Fixed along the way: optional analytics could quietly stop recording visits after
+  moving between certain pages.** Google Analytics is only ever loaded for a visitor
+  who has accepted it, and the small script that configures it carries the page's
+  security token. It took that token from the page it was rendered with rather than
+  from the page actually open in the browser, so after moving from a page on one
+  token to a page on the other — for example from the lodge instructions page to the
+  home page — the browser refused the configuration script: analytics loaded but was
+  never switched on, and nothing showed except a message in the developer console. It
+  now reads the token from the open page, which also fixes the same fault moving
+  between the public site and the sign-in pages, where it predates this work. Nothing
+  changes for a club with analytics turned off, or for a visitor who has not accepted
+  it.

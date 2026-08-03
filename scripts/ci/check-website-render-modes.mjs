@@ -60,10 +60,12 @@ import { pathToFileURL } from "node:url";
  *    owner's direction for the split was explicit: no duplicated markup.
  * 5. **The shared chrome itself.** It must read NOTHING from the request and must
  *    resolve NEITHER nonce: the value arrives as a prop, which is the only reason
- *    two groups can differ while sharing one component. This check is the reason the
- *    extraction did not cost coverage — before it, `auth()`/`headers()` were banned
- *    in the file that held the chrome, and moving the chrome out of the route group
- *    would otherwise have moved it out of the gate's reach as well.
+ *    two groups can differ while sharing one component. This is coverage this gate
+ *    never had rather than coverage carried across the extraction: nothing here
+ *    banned `auth()` or `headers()` in the public layout before the narrowing, only
+ *    `check-website-prerender-manifest.mjs` after a full build. What the extraction
+ *    changed is the stakes — one request read in the shared chrome opts BOTH groups
+ *    out at once — so the ban was written alongside the move.
  * 6. **No render boundaries.** No `loading.tsx`, `template.tsx` or `default.tsx`
  *    anywhere under either group, and no Partial Prerendering flag on any of their
  *    routes. This is the enforceable form of the #2434 streaming-boundary warning:
@@ -559,12 +561,13 @@ export function auditPublicWebsiteStructure({
 
   // ---- The shared chrome itself -------------------------------------------
   //
-  // This block is what stops the extraction from having COST coverage. Before the
-  // 3 Aug narrowing the chrome WAS `(website)/layout.tsx`, so the request-read ban
-  // above covered it; moving it to `src/components/website/` moved it out of both
-  // group scans at once. A `headers()` call added here would opt every route in
-  // BOTH groups out of static rendering — the exact regression slice 1 exists to
-  // prevent — and the only symptom would be the CPU bill.
+  // New coverage, not preserved coverage. Before the 3 Aug narrowing no source-level
+  // check banned a request read in the public layout at all — the request-read
+  // patterns below arrived with this block — so the only backstop was
+  // `check-website-prerender-manifest.mjs`, twenty minutes into CI and only after a
+  // full build. What the extraction changed is the blast radius: a `headers()` call
+  // here would opt every route in BOTH groups out of static rendering, the exact
+  // regression slice 1 exists to prevent, and the only symptom would be the CPU bill.
   if (chromeSource === undefined || chromeSource === null) {
     problems.push(
       `The shared chrome (${CHROME_FILE}) is missing. Both public layouts compose it; ` +
