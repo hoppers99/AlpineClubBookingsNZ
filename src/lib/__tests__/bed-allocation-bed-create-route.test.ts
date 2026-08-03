@@ -1,7 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("@/lib/public-layout-cache", () => ({
-  invalidatePublicLodgeCapacity: vi.fn(),
+// #2352 slice-1 review: these writers now clear the STORED public pages, not just
+// the capacity tag. `revalidatePath` needs a static-generation store that no unit
+// test has, so the shared helper is stubbed here; its own contents are pinned by
+// public-content-invalidation-contract.test.ts.
+vi.mock("@/lib/public-content-revalidation", () => ({
+  revalidatePublicSite: vi.fn(),
+  revalidatePublicPageContent: vi.fn(),
 }));
 import { Prisma } from "@prisma/client";
 

@@ -25,13 +25,29 @@ import {
  * So every entry point now calls THIS function rather than one half of it. The two
  * calls are cheap and idempotent, and pairing them removes the class of bug where
  * a new admin write picks whichever one the file it was copied from happened to
- * use.
+ * use. The slice-1 review extended "every entry point" to the writers that change
+ * data the CMS page BODY renders — lodge capacity and the images tree — which the
+ * original F3 audit missed because it looked only at layout config.
  *
  * The route-group form (`revalidatePath("/(website)", "layout")`) was deliberately
  * NOT kept: `"/"` with `"layout"` covers the same routes from the root down, it is
  * the form already proven against the full-route store, and one form means one
- * thing to verify. The Playwright setup-completion case is what proves it clears a
- * stored entry rather than only a data cache.
+ * thing to verify.
+ *
+ * **What proves it clears a STORED entry rather than only a data cache**, stated
+ * precisely because an earlier version of this comment named a test that does not
+ * exist: the unpublish case in `e2e/static-cms-pages.spec.ts`. It warms the store
+ * with a 200, hides the page through the admin PATCH, and asserts the very next
+ * request is a 404 — which can only pass if `revalidatePath("/", "layout")` cleared
+ * the stored copy, since a data-cache clear would leave the 200 answering for up to
+ * the 300-second backstop.
+ *
+ * The COMPLETE-SETUP transition that F3 also asked for is covered at the unit level
+ * only (`site-style-api.test.ts` asserts the PUT issues the call). There is no
+ * end-to-end case for it: `e2e/pre-setup/setup-gate.spec.ts` flips the state by
+ * writing `ClubTheme` directly — it has to, because `saveClubTheme()` never clears
+ * `completedAt` — so the admin PUT, and therefore this function, is never invoked in
+ * that flow. Recorded rather than implied.
  */
 export function revalidatePublicSite(
   ...extraTags: Array<

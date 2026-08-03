@@ -53,6 +53,39 @@ const fullRouteAndTagWriters = [
   ["src/app/api/admin/site-style/route.ts", "PUBLIC_LAYOUT_CACHE_TAGS.theme"],
 ] as const;
 
+/**
+ * The gap the slice-1 review found in the list above: F3 audited only the four
+ * writers that change LAYOUT CONFIG, and missed every writer that changes data the
+ * CMS page BODY renders server-side.
+ *
+ *  • **Lodge capacity.** `{{lodge-capacity}}` / `{{lodge-capacity:slug}}` resolve
+ *    through UNCACHED reads (`src/lib/page-content-embeds.ts` →
+ *    `getLodgeCapacity()` / `getDefaultLodgeCapacity()`, neither wrapped in
+ *    `unstable_cache`). No cached read means no cache tag on the page's ISR entry,
+ *    so the `revalidateTag("public-layout:capacity")` these nine handlers used to
+ *    issue had nothing to expire: an admin lowering the bed count from 24 to 18
+ *    left `/accommodation` advertising 24.
+ *  • **The images tree.** `{{photo-gallery}}` / `{{photo-slideshow}}` are resolved
+ *    by an `fs.readdir` at render time and passed as props, so the listing freezes
+ *    into the stored page. None of these routes revalidated anything at all, so a
+ *    DELETED photo kept being rendered from the store.
+ *
+ * Every one of them now goes through `revalidatePublicSite()`, and this list is
+ * what stops the next one being missed.
+ */
+const bodyDataWriters = [
+  "src/app/api/admin/lodge-settings/route.ts",
+  "src/app/api/admin/bed-allocation/beds/route.ts",
+  "src/app/api/admin/bed-allocation/beds/[id]/route.ts",
+  "src/app/api/admin/bed-allocation/rooms/route.ts",
+  "src/app/api/admin/bed-allocation/rooms/[id]/route.ts",
+  "src/app/api/admin/bed-allocation/rooms/bulk/route.ts",
+  "src/app/api/admin/bed-allocation/rooms/import-from-config/route.ts",
+  "src/app/api/admin/image-manager/upload/route.ts",
+  "src/app/api/admin/image-manager/images/route.ts",
+  "src/app/api/admin/image-manager/directories/route.ts",
+] as const;
+
 describe("public site full-route invalidation contract (#2352 F3)", () => {
   it.each(fullRouteAndTagWriters)(
     "clears the stored public pages as well as the tag in %s",
@@ -64,6 +97,31 @@ describe("public site full-route invalidation contract (#2352 F3)", () => {
       expect(source).not.toMatch(/^\s*invalidatePublicLayoutConfig\(/m);
     },
   );
+
+  it.each(bodyDataWriters)(
+    "clears the stored public pages after a body-data write in %s",
+    (relativePath) => {
+      const source = fs.readFileSync(path.join(process.cwd(), relativePath), "utf8");
+
+      expect(source).toMatch(/^\s*revalidatePublicSite\(\);?$/m);
+      // The tag-only helper these used to call is gone; a reintroduction would be
+      // the same defect again. Line-anchored on a CALL, because the lodge-settings
+      // route's own comment names the helper it stopped using — a substring check
+      // would fail on the explanation rather than on a regression.
+      expect(source).not.toMatch(/^\s*invalidatePublicLodgeCapacity\(/m);
+    },
+  );
+
+  it("has no tag-only capacity helper left to call", () => {
+    const cache = fs.readFileSync(
+      path.join(process.cwd(), "src/lib/public-layout-cache.ts"),
+      "utf8",
+    );
+
+    expect(cache).not.toMatch(
+      /export function invalidatePublicLodgeCapacity\(/,
+    );
+  });
 
   it("keeps ONE shared entry point, so a new write cannot pick the wrong half", () => {
     const helper = fs.readFileSync(

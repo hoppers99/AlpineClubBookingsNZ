@@ -9,7 +9,7 @@ import {
 } from "@/lib/lodge-settings";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/session-guards";
-import { invalidatePublicLodgeCapacity } from "@/lib/public-layout-cache";
+import { revalidatePublicSite } from "@/lib/public-content-revalidation";
 
 // Per-lodge scope (lodge-scoping contract): an explicit lodgeId must name
 // an active lodge; omitted keeps the legacy single-row behaviour.
@@ -97,7 +97,13 @@ export async function PUT(request: Request) {
     updatedByMemberId: guard.session.user.id,
     lodgeId: body.data.lodgeId,
   });
-  invalidatePublicLodgeCapacity();
+  // #2352 slice-1 review. This was `invalidatePublicLodgeCapacity()`, i.e. the
+  // capacity TAG only. `{{lodge-capacity}}` is resolved server-side from uncached
+  // reads, so the stored CMS page carries no capacity tag and a tag clear expired
+  // nothing — `/accommodation` kept advertising the old bed count until the
+  // 300-second backstop lapsed AND a further request arrived. The full clear is
+  // what makes a capacity save behave like every other admin save.
+  revalidatePublicSite();
 
   await createAuditLog({
     action: "LODGE_SETTINGS_UPDATED",

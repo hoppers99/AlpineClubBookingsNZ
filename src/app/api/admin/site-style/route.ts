@@ -107,8 +107,13 @@ export async function PUT(request: NextRequest) {
     //    stored while the layout was painting the holding screen must not outlive
     //    it. (The #2420 proxy gate answers 503 before a render, so this is the
     //    narrow case where the gate's 15-second memo said "complete" while the
-    //    layout still read an unfinished row — which is exactly the state the
-    //    pre-setup Playwright project creates and then restores.)
+    //    layout still read an unfinished row.)
+    //
+    // The transition half is asserted at the UNIT level only — `site-style-api.test.ts`
+    // pins that this PUT issues the call. The pre-setup Playwright project cannot
+    // cover it: it flips `ClubTheme` directly, because `saveClubTheme()` never clears
+    // `completedAt`, so this handler never runs in that flow. An earlier version of
+    // this comment implied otherwise.
     //
     // `revalidatePublicSite()` replaces `revalidatePath("/(website)", "layout")`
     // here: the route-group form was never verified against the full-route store,

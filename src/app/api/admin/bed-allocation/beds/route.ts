@@ -8,7 +8,7 @@ import {
 } from "@/lib/admin-bed-allocation-routes";
 import { parseJsonRequestBody } from "@/lib/api-json";
 import { logAudit } from "@/lib/audit";
-import { invalidatePublicLodgeCapacity } from "@/lib/public-layout-cache";
+import { revalidatePublicSite } from "@/lib/public-content-revalidation";
 
 // requireAdmin() is enforced by requireBedAllocationAdmin().
 const bedSchema = z
@@ -41,7 +41,7 @@ export async function POST(request: Request) {
     }
 
     const bed = await createBedAllocationBed(body.data);
-    invalidatePublicLodgeCapacity();
+    revalidatePublicSite();
     logAudit({
       action: "BED_ALLOCATION_BED_CREATED",
       memberId: guard.session.user.id,

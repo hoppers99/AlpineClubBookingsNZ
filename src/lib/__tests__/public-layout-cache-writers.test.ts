@@ -19,10 +19,13 @@ describe("public layout cache writer invalidation", () => {
     );
   });
 
-  it("invalidates capacity after lodge setting writes", () => {
+  it("clears the stored public pages after lodge setting writes", () => {
+    // #2352 slice-1 review: this used to assert `invalidatePublicLodgeCapacity()`,
+    // a capacity-TAG clear. `{{lodge-capacity}}` is resolved from uncached reads, so
+    // the stored CMS page carries no capacity tag and the tag clear expired nothing.
     const route = source("src/app/api/admin/lodge-settings/route.ts");
-    expect(route).toContain("invalidatePublicLodgeCapacity();");
-    expect(route.indexOf("invalidatePublicLodgeCapacity();")).toBeGreaterThan(
+    expect(route).toContain("revalidatePublicSite();");
+    expect(route.indexOf("revalidatePublicSite();")).toBeGreaterThan(
       route.indexOf("await updateLodgeSettings"),
     );
   });

@@ -3,6 +3,16 @@ import { NextRequest } from "next/server";
 
 vi.mock("server-only", () => ({}));
 
+// #2352 slice-1 review: an upload that stores a file clears the STORED public pages,
+// because `{{photo-gallery}}` resolves its file list server-side and freezes it into
+// the page. `revalidatePath` needs a static-generation store that no unit test has,
+// so the shared helper is stubbed; its contents are pinned by
+// public-content-invalidation-contract.test.ts.
+vi.mock("@/lib/public-content-revalidation", () => ({
+  revalidatePublicSite: vi.fn(),
+  revalidatePublicPageContent: vi.fn(),
+}));
+
 const mocks = vi.hoisted(() => ({
   auth: vi.fn(),
   requireActiveSessionUser: vi.fn(),
