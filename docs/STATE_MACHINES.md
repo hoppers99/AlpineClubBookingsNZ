@@ -689,6 +689,43 @@ conflict commits in the one transaction that commits. Either way
 what lets both the officer's card and the member's own list say "the lodge is
 full" rather than showing a silent `REQUESTED`.
 
+**The member's own view of that lifecycle (#2562).** The member-facing request
+area does not add a state; it PROJECTS the stored ones, and the projection is a
+pure function in `src/lib/member-exception-requests.ts` shared by every member
+surface, so there is only one place a status can be turned into a word. Six stored
+statuses become seven member-visible ones, because `REQUESTED` splits in two:
+
+```text
+REQUESTED, no conflict recorded  -> pending
+                                    ("With the Booking Officer")
+REQUESTED, lastConflictAt set    -> pending-capacity-conflict
+                                    ("Waiting - the lodge was full")
+APPROVED                         -> approved   ("Approved and booked")
+REJECTED                         -> refused    ("Not approved")
+CANCELLED                        -> withdrawn  ("Withdrawn by you")
+SUPERSEDED                       -> superseded ("Replaced by a newer request")
+EXPIRED                          -> expired    ("Lapsed")
+```
+
+The split is the point, not a nicety: a request an officer has already tried to
+apply and the lodge stopped is a materially different thing to tell somebody than
+a request nobody has opened, and collapsing them reads as "nobody has looked" — a
+statement the member would act on. A conflict counts as live only while the row is
+still `REQUESTED`; once it is decided, withdrawn, replaced, expired or executed, an
+old conflict is history and stops colouring the row. The mapping is exhaustive over
+the Prisma enum (a `never` assignment), so a status added later cannot default into
+a friendly word.
+
+Two derived facts travel with each row and are deliberately NOT restatements of the
+status. `capacityHeld` is read from the reservation ledger, never from
+`aggregateCapacityMode` — false for every new-booking request whatever its mode
+says, and false for a modification whose incremental footprint came out empty (a
+pure shrink) — and `canWithdraw` / `canReplace` are derived from the very condition
+the cancel and supersede services' guarded claims name (`status = REQUESTED`), so
+the UI cannot offer an action the API would answer with a 409. A replacement is a
+new frozen proposal reached through the wizard that built the original, not an edit
+of the stored one: the officer decides the exact proposal that was frozen.
+
 Edit-eligibility is governed by a date-window edit policy
 (`getBookingEditPolicy`), whose `mode` selects what a request may change:
 

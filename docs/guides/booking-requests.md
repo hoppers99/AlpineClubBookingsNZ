@@ -216,12 +216,24 @@ being refused. Those asks land here.
    or the add is refused), or that the party is minors with no adult (which still
    goes to a child-safety review, and still blocks check-in until somebody
    clears it). If the list will not load, do not approve — try again.
-5. Click **Decide this request**, write your reason, tick the confirmation, then
-   **Approve and apply** or **Refuse**.
-   - A reason is **required** to refuse and to approve an adult-member hosting
-     exception (it is recorded on the booking with your name on it). **The member
-     reads your note on any decision, not only a refusal**, and it goes on the
-     booking's record, so write it for both audiences.
+5. Click **Decide this request**. There are **two note fields**, and each one says
+   plainly who reads it before you submit anything:
+   - **Explanation for the member.** The member sees this — on their own request
+     list, and in the email an approval sends. Write it for them.
+   - **Internal note (optional).** Only admins see this. It is never shown to the
+     member, never emailed to them, and never sent to any member-facing screen, so
+     it is where a judgement about the member or a note for the next officer
+     belongs. The audit log records *that* you left one, never its text.
+
+   Then tick the confirmation and click **Approve and apply** or **Refuse**.
+   - An **Explanation for the member** is **required** to refuse and to approve an
+     adult-member hosting exception (that one is recorded on the booking with your
+     name on it). An internal note is never a substitute: refusing without a
+     member-facing explanation is rejected, because a refusal the member cannot
+     read is a refusal they cannot act on.
+   - After a decision, both notes stay on the card, separately labelled, so an
+     officer reading a colleague's decision can see which half the member has
+     already read.
    - For a change, the form also asks where a **refund** goes — card or account
      credit — if the change reduces the price of a booking that has already been
      paid. Leave it on *Not needed* when the price does not drop; if a choice
@@ -251,6 +263,15 @@ Two things worth knowing:
   left to pay, because they are not standing in the payment screen the way an
   ordinary booker is. An approved change is announced by the usual "your booking
   was changed" email.
+- **The member raises and manages these themselves** (#2562). They ask from the
+  booking wizard or the edit screen, and they track, withdraw and replace their
+  requests under **My booking-rule requests** on their own My Bookings page — so a
+  proposal that looks wrong is theirs to correct, and you do not have to raise or
+  amend one on the phone. A member may hold only one open request at a time; a
+  correction closes the old one as *Superseded* and starts a new one, which is why
+  a card can vanish from **Requested** and reappear under **Superseded**. What they
+  see is documented in
+  [Booking a stay](../user-guide/booking-a-stay.md#asking-to-be-let-past-a-booking-rule).
 
 ## Settings reference
 
@@ -265,7 +286,7 @@ therefore keeps its **All** context rather than disappearing from view.
 | --- | --- | --- |
 | Approvals | Pending (default), Approved, Rejected, All | Approve; Reject and cancel (Admin notes required to reject) |
 | Changes | Requested (default), Approved, Rejected, All | Acknowledge as approved; Reject; optional linked modification id |
-| Policy Exceptions | Requested (default), Approved, Rejected, Cancelled, Superseded, All | Approve and apply (confirmation required; reason required for an adult-member hosting override); Refuse (reason required) |
+| Policy Exceptions | Requested (default), Approved, Rejected, Cancelled, Superseded, All | Approve and apply (confirmation required; member-facing explanation required for an adult-member hosting override); Refuse (member-facing explanation required). Both actions also take an optional internal note the member never sees |
 | Public Requests | Queue (default), Awaiting verification, Verified, Priced, Quoted, Quote sent, Query, Modify, Accepted, Approved, Declined, Cancelled, Converted, All | Save quote; Send quote; Approve & send payment link / Approve & invoice school; Decline; Hold slots (school) |
 
 Notes and constraints:

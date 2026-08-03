@@ -35,10 +35,13 @@ emails the member who raised it. An operator choosing HOLD to protect capacity
 while they consult the committee needs to see that deadline in the setting itself,
 which is why the copy carries it rather than only the docs.
 
-For members, this release deliberately keeps the existing journey: create,
+For members, the #2363 release deliberately kept the existing journey: create,
 group join, and date-change mutations stop on minimum stay; quote/policy-check
 surfaces can describe the exact affected nights and policy, but the booking
-wizard does not offer a submit-for-review action or advance. The edit panel's
+wizard offered no submit-for-review action. **That last clause is now historical
+— #2562 added it**; see "Asking to be let past a booking rule — the member's
+side" below for what a member sees today. The rest of this section still holds,
+including which failures never become exception choices. The edit panel's
 minimum-stay banner stays advisory and Save stays enabled — the server decides —
 and a refused save now names the rule and the affected nights in the panel
 rather than showing a generic failure. A non-member signing up to a group by
@@ -47,7 +50,9 @@ its public link is told the stay is too short and to contact the organiser
 request and their confirmation click, the confirmation page says so plainly and
 confirms nothing was booked or charged. No capacity is reserved from the
 configured `HOLD` value yet. The combined review interaction,
-durable request, approval, and reservation behavior belong to #2365. Capacity,
+durable request, approval, and reservation behavior belong to #2365 and have all
+since shipped (#2524/#2525/#2526 on the server and officer side, #2562 on the
+member's). Capacity,
 date, authentication, subscription/membership, duplicate member-night,
 payment, privacy, and data-integrity failures never become exception choices.
 
@@ -108,6 +113,64 @@ second time by hand.
 A view-only admin sees the same queue with the controls disabled and a banner
 saying bookings edit access is required.
 
+The decision form asks for **two** notes, each labelled with its audience before
+anything is submitted (#2562): an **Explanation for the member**, which the member
+reads on their own request list and in the approval email, and an optional
+**Internal note**, which only admins ever see. The labelling is the safety
+mechanism — one field previously did both jobs and was member-visible, so an officer
+recording a judgement about a member had no honest option. A refusal still requires
+the member-facing explanation: an internal note cannot stand in for it, and the
+message says so rather than accepting one silently. After the decision both notes
+stay on the card, separately labelled, so a colleague can see which half the member
+has already read.
+
+## Asking to be let past a booking rule — the member's side (#2562)
+
+The member journey the two sections above deliberately left out. A refusal from a
+waivable rule is no longer a dead end: **Request Booking Officer approval** appears
+on the booking wizard's review step and under Save on the edit panel — and *only*
+where the server's own refusal said every blocking failure is reviewable. A full
+lodge, dates in the past, a night the member already holds, a guest they have no
+authority over, a missing consent and a tampered proposal draw no door at all; the
+action is absent rather than disabled, because a door that cannot open is worse than
+no door.
+
+Before submitting, the member reads the exact proposal — lodge, nights, every guest
+and the nights they picked for them, the guest-night total, the price the server
+quoted (or, where the refusal was answered instead of a quote, how pricing actually
+works rather than an invented number), and every rule they are asking to be let
+past, all at once rather than one at a time. An explanation is **required**. Two
+sentences are always present and never softened: sending a request books and
+confirms nothing, and approval is at the officer's discretion with no guarantee.
+
+Capacity wording follows the real behaviour of the path rather than the policy's
+intent, because the tempting generic sentence is false for a whole population: a
+new-booking request **holds no beds**, whatever the rule's capacity mode says, and
+says so; a modification says whether *its own* incremental hold exists, which is
+also correct for a pure shrink that reserves nothing. Approval can never put the
+lodge over capacity, and every branch says so or implies it without promising a bed.
+After submitting, the member sees the proposal the server actually **froze** — which
+can be wider than the dates they typed, because the freeze expands the envelope to
+cover every guest night — while withdraw and replace are still open.
+
+**My booking-rule requests** on My Bookings is the tracking surface, and it shows
+every state rather than a friendly summary of them: with the officer, waiting
+because the lodge was full, approved and booked (with a link to the booking),
+not approved (with the officer's member-facing explanation), withdrawn, replaced,
+and lapsed. A `REQUESTED` row with a recorded conflict reads as "an officer tried
+and there was no room", never as "nobody has looked". While a request is open the
+member can **Withdraw** it (one click, then a confirmation) or **Replace it with a
+corrected request** — which returns them to the screen that built the proposal, since
+an officer decides the exact proposal that was frozen and editing it underneath them
+is how an approval lands on something nobody read. The section is absent entirely for
+a member who has never raised one, and the cards stack on a phone.
+
+One honesty note the edit path needs and the wizard does not: a proposal is a party
+and a set of nights, so anything else in the same pending edit — a guest name
+correction, a promo code, an account-credit election, a placeholder-to-member link —
+is **named on the card** and stated as not included, rather than left for the member
+to assume it was submitted.
+
 ## Adult-member hosting (#2364)
 
 An operator opens **Booking Policies → Adult Member Hosting** and chooses, per
@@ -135,8 +198,10 @@ cleared whenever the party changes, since a reason written about one set of
 uncovered nights does not describe another. Approving a public, school or member
 whole-lodge request never asks the question and is never blocked; those bookings
 simply appear for review like any other. The public `{{booking-policies}}` page
-states the rule when it is in force, and says nothing about requesting an
-exception — that surface does not exist until #2365.
+states the rule when it is in force and still says nothing about requesting an
+exception: raising one needs a login, so advertising it on a public page would
+point a non-member at a door they cannot reach. Signed-in members meet it where the
+rule actually stops them (#2562, below).
 
 | Persona or flow                           | User goal                                                                                                                            | Expected steps                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | Copy and next action needs                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | Failure, empty, pending states                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | Accessibility and manual test route                                                                                                                                                                                                                             |
 | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

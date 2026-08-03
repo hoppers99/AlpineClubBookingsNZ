@@ -2612,6 +2612,79 @@ proposal state and capacity reservation from `HOLD` all belong to #2365; the
 capacity mode is frozen onto the snapshot and aggregated here, and reserves
 nothing.
 
+### The officer-note split on policy-exception requests (#2562)
+
+A Booking Officer's decision carries **two** notes, and which audience reads which
+is an invariant, not a convention.
+
+- `adminNotes` is **member-visible**, on both request tables. It is the decision
+  explanation, written for the member: rendered on their own request list, and
+  interpolated into the approval email. The officer screen labels it as
+  member-visible *before* the decision is submitted, so nobody discovers the
+  audience afterwards.
+- `internalNotes` is **never member-visible**, on either table. It is the officer's
+  private commentary — a judgement about the member, a reference to somebody else's
+  booking, a note for the next officer — and is read only by admin-guarded surfaces
+  (the officer queue list and its per-request detail endpoint, both behind
+  `requireAdmin`).
+
+Four structural properties hold that boundary, so it does not depend on any single
+call site remembering it:
+
+1. **The member DTO has no slot for it.** `toMemberExceptionRequestItem`
+   (`src/lib/member-exception-requests.ts`) is a strict allowlist that never spreads
+   a row, and its INPUT type does not accept `internalNotes` — handing the private
+   note to the member projection is a typecheck failure, not a privacy incident.
+2. **The member read does not select the column.** `readMemberExceptionRequests`
+   names its columns explicitly and omits `internalNotes`, so on the member path
+   there is nothing in memory for a later mapper edit to leak.
+3. **No email, notification or member-facing template names it.** The approval
+   email composes its optional line from `adminNotes` alone.
+4. **The audit log records its EXISTENCE, never its text**
+   (`internalNoteRecorded: boolean`). The audit trail is read by more surfaces than
+   the officer queue, and copying the text there would make it private in one place
+   and not the other.
+
+**A private note is never a substitute for the member-facing one.** Refusing a
+request still requires `adminNotes`, and so does approving an adult-member hosting
+exception (D-R4's reason-for-the-record): a refusal the member cannot read is a
+refusal they cannot act on. Both routes say so in the refusal message rather than
+silently accepting an internal note in its place.
+
+The column is an expand-only addition
+(`20260803040000_add_policy_exception_internal_notes`), nullable with no backfill on
+both tables, so a decision written by an older deployment carries `internalNotes`
+NULL — which reads correctly as "the officer left no private note", because that
+deployment had no field to write one in.
+
+### The member's own request area (#2562)
+
+The member-facing projection of an exception request states only facts, never
+intentions:
+
+- **Capacity comes from the reservation ledger, never from the policy's capacity
+  mode.** `capacityHeld` is true only where live `PolicyExceptionReservationNight`
+  rows exist. It is therefore false for **every** new-booking request whatever its
+  mode says (the ledger keys to an existing `BookingChangeRequest`, and there is no
+  booking yet), and false for a modification whose incremental footprint came out
+  empty — a pure shrink. The generic sentence "your beds are held while we review"
+  is false for the whole new-booking population and appears nowhere.
+- **A recorded conflict is reported, not hidden.** A `REQUESTED` row with
+  `lastConflictAt` set reads as "an officer tried and the lodge was full", never as
+  "nobody has looked". Those are different facts and the second is one the member
+  would act on.
+- **Withdraw and replace are offered only where the API would accept them**,
+  derived from the same `status = REQUESTED` condition the cancel and supersede
+  services' guarded claims name.
+- **The request action is offered only where the SERVER classified the refusal as
+  reviewable.** One shared rule (`readExceptionOffer`,
+  `src/lib/booking-exception-offer.ts`) decides it for both wizards, and it fails
+  closed: an allowlist of reviewable refusal codes that can never contain a
+  hard-stop code, a required non-empty `exceptionReview`, the server's own
+  `exceptionEligible: true` on every violation, and a known capacity mode. One
+  unrecognised violation disqualifies the whole refusal, because a request can only
+  override the rules it froze.
+
 ### Subscription-lockout booking pricing (#2533)
 
 **Owner decision (2 Aug 2026), extending the #2364 lapsed-member framing.** The
