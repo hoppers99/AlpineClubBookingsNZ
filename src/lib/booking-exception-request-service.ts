@@ -418,6 +418,7 @@ export async function evaluateProposalPartyViolations(
     lodgeId,
     checkIn,
     checkOut,
+    bookingOwnerMemberId: await resolveProposalBookingOwner(db, presence),
     guests: party.guests.map((guest) => ({
       ...guest,
       operationallyPresent: operationallyPresentFor(guest.memberId),
@@ -428,6 +429,40 @@ export async function evaluateProposalPartyViolations(
   }
 
   return violations;
+}
+
+/**
+ * Who would OWN the booking a proposal describes (#2543, owner decision 3 Aug
+ * 2026).
+ *
+ * The second half of making the override door real. The paid-up-adult requirement
+ * also fires when the booking OWNER is an unfinancial member, staying or not; a
+ * booking path that refused on that trigger must reproduce the SAME violation
+ * here, or the request machinery finds nothing to review, refuses to create a
+ * request, and the 409 names a workflow the member cannot enter.
+ *
+ * A MODIFICATION reads the live booking's own `memberId` rather than trusting the
+ * requester to be it: that is the member the booking paths judge, and reading it
+ * server-side is what stops the door being opened against somebody else's
+ * standing. A NEW booking has no row yet, so the requester is who would own it.
+ * `ProposalGuest` deliberately does not carry the fact, exactly as with D-12
+ * presence — the proposal is frozen and hashed, and a new field would change every
+ * existing proposal hash.
+ */
+async function resolveProposalBookingOwner(
+  db: PolicyEvaluationDb,
+  presence:
+    | { requestedByMemberId?: string | null; bookingId?: string | null }
+    | undefined,
+): Promise<string | null> {
+  if (presence?.bookingId) {
+    const booking = await db.booking.findUnique({
+      where: { id: presence.bookingId },
+      select: { memberId: true },
+    });
+    return booking?.memberId ?? null;
+  }
+  return presence?.requestedByMemberId?.trim() || null;
 }
 
 /**

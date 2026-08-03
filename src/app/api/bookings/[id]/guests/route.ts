@@ -440,6 +440,10 @@ export async function POST(
           seasonYear,
           checkIn: booking.checkIn,
           checkOut: booking.checkOut,
+          // Owner decision, 3 Aug 2026: an unfinancial owner triggers the
+          // requirement whether or not they hold a bed on the booking they are
+          // adding to.
+          bookingOwnerMemberId: booking.memberId,
           // D-12 over the whole post-add party. `toSubscriptionLockoutParticipants`
           // reads a persisted row's `consentStatus` and a pre-persist row's planned
           // `memberGuestConsent.consentStatus`, which is exactly the two shapes

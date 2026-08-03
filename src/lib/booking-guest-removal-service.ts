@@ -532,6 +532,11 @@ export async function removeBookingGuestInTransaction({
       seasonYear: getSeasonYear(booking.checkIn),
       checkIn: booking.checkIn,
       checkOut: booking.checkOut,
+      // Owner decision, 3 Aug 2026. It matters most on this path: an unfinancial
+      // owner who removes their OWN guest row would otherwise walk out from under
+      // the requirement entirely, leaving a party they still own and still pay for
+      // with nobody paid-up on it.
+      bookingOwnerMemberId: booking.memberId,
       participants: toSubscriptionLockoutParticipants(remainingGuests),
     });
     if (nonMemberPricing?.violation) {

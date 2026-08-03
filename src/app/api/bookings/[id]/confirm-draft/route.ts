@@ -171,6 +171,10 @@ export async function POST(
       seasonYear,
       checkIn: booking.checkIn,
       checkOut: booking.checkOut,
+      // Owner decision, 3 Aug 2026: the requirement follows an unfinancial member
+      // whether or not they hold a bed on their own draft. The HARD_BLOCK gate
+      // directly above refuses this same person as a person.
+      bookingOwnerMemberId: booking.memberId,
       participants: toSubscriptionLockoutParticipants(booking.guests),
     });
     if (nonMemberPricing?.violation) {

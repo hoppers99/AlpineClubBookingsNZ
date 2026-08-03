@@ -934,6 +934,10 @@ export async function prepareGuestPlan(
       seasonYear: getSeasonYear(newCheckIn),
       checkIn: newCheckIn,
       checkOut: newCheckOut,
+      // Owner decision, 3 Aug 2026. On the apply path this also closes the
+      // removal shape of the same hole: an unfinancial owner cannot take their own
+      // row off and leave a party they still own with nobody paid-up on it.
+      bookingOwnerMemberId: booking.memberId,
       participants: guestsForPricing.map((guest) => ({
         isMember: guest.isMember,
         memberId: guest.memberId ?? null,

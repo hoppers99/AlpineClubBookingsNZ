@@ -774,6 +774,11 @@ export async function joinGroupBookingAsMember(
       seasonYear,
       checkIn,
       checkOut,
+      // Owner decision, 3 Aug 2026: the joiner OWNS the booking they are creating,
+      // so an unfinancial joiner triggers the requirement even when every bed they
+      // are claiming is for a linked family member. The HARD_BLOCK gate above
+      // refuses that same joiner as a person.
+      bookingOwnerMemberId: sessionUserId,
       participants: guests,
     });
     if (nonMemberPricing?.violation) {

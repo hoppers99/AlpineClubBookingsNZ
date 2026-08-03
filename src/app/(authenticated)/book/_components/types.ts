@@ -70,6 +70,13 @@ export interface PriceQuote {
   // and a Booking Officer can approve an override, so it never gates the button.
   // Absent only on an old cached response predating the field, which the review
   // step treats exactly as false.
+  //
+  // Set INDEPENDENTLY of `subscriptionMemberRateNotice`, and one combination is
+  // the whole reason to say so: owner decision 3 Aug 2026 fires the requirement
+  // when the person BOOKING has an unpaid subscription, whether or not they stay,
+  // so a party of non-members booked by an unfinancial member returns this flag
+  // true with a null notice — nothing was repriced, and there is no price to
+  // explain. Do not treat the notice as a precondition for showing the warning.
   paidUpAdultMemberMissing?: boolean;
   nonMemberHoldDecision?: {
     enabled: boolean;

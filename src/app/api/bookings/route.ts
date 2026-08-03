@@ -787,6 +787,13 @@ export async function POST(request: NextRequest) {
       seasonYear: getSeasonYear(checkIn),
       checkIn,
       checkOut,
+      // Owner decision, 3 Aug 2026: the requirement follows the unfinancial
+      // member, not only their bed. The HARD_BLOCK gate above refuses this same
+      // person outright, as a person, whether or not they are staying; keyed only
+      // on the guest rows, the relaxed mode let an unfinancial member book a party
+      // of non-members with no reprice, no requirement and no notice — the one
+      // case the strict mode most reliably closes.
+      bookingOwnerMemberId: effectiveMemberId,
       // D-12 on a PRE-PERSIST party. `guestInputs` is `consentPlan.guests`, so
       // every cross-family member guest already carries the `memberGuestConsent`
       // columns this request is about to write — including the PENDING status.

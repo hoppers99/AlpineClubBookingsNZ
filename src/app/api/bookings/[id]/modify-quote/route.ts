@@ -1195,6 +1195,10 @@ export async function POST(
       seasonYear,
       checkIn: newCheckIn,
       checkOut: newCheckOut,
+      // Owner decision, 3 Aug 2026: an unfinancial owner triggers the requirement
+      // whether or not they are one of the rows being priced, so the preview
+      // refuses exactly what the apply path refuses.
+      bookingOwnerMemberId: booking.memberId,
       // D-12. `proposedGuestRows` is rebuilt field by field and deliberately
       // carries no consent column, so passing it raw made a PENDING cross-family
       // adult count as the party's paid-up adult HERE while the guest-add path

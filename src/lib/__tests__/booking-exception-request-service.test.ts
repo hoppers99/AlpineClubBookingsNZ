@@ -27,6 +27,21 @@ const mocks = vi.hoisted(() => ({
   // family boundary, and the live rows' stored consent status on a modification.
   familyGroupMemberFindMany: vi.fn(async () => []),
   bookingGuestFindMany: vi.fn(async () => []),
+  /**
+   * #2543 owner arm (owner decision, 3 Aug 2026): the paid-up-adult requirement
+   * also fires when the BOOKING OWNER is an unfinancial member, so a MODIFICATION
+   * proposal reads the live booking's own `memberId` to find out who that is —
+   * deliberately server-side rather than trusting the requester to be the owner.
+   *
+   * Defaults to a booking with no member owner, which is the neutral answer: the
+   * owner arm cannot fire, and every existing expectation in this suite is judged
+   * exactly as it was before the arm existed.
+   */
+  bookingFindUnique: vi.fn(
+    async (): Promise<{ memberId: string | null } | null> => ({
+      memberId: null,
+    }),
+  ),
 }));
 
 vi.mock("@/lib/prisma", () => {
@@ -51,6 +66,8 @@ vi.mock("@/lib/prisma", () => {
       update: (...a: unknown[]) => mocks.bookingUpdate(...a),
       create: (...a: unknown[]) => mocks.bookingCreate(...a),
       updateMany: (...a: unknown[]) => mocks.bookingUpdateMany(...a),
+      // #2543 owner arm: a modification proposal reads the live booking's owner.
+      findUnique: () => mocks.bookingFindUnique(),
     },
     // #2543 — the D-12 presence derivation resolves the requester's family
     // boundary and, for a modification, reads the live rows' consent status. Both
@@ -162,6 +179,7 @@ beforeEach(() => {
   // default — every existing case in this file predates the derivation.
   mocks.familyGroupMemberFindMany.mockResolvedValue([]);
   mocks.bookingGuestFindMany.mockResolvedValue([]);
+  mocks.bookingFindUnique.mockResolvedValue({ memberId: null });
   mocks.validateMinimumStay.mockResolvedValue({ valid: false, violations: [minStayViolation()] });
   mocks.evaluateHosting.mockResolvedValue(null);
   mocks.nbCreate.mockResolvedValue({ id: "req-1", status: "REQUESTED" });

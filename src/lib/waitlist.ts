@@ -526,6 +526,11 @@ export async function processWaitlistForDates(freedDates: {
         seasonYear: getSeasonYear(offerDetails.checkIn),
         checkIn: offerDetails.checkIn,
         checkOut: offerDetails.checkOut,
+        // Owner decision, 3 Aug 2026. Threaded for consistency with the confirm
+        // path below, which is where the refusal lives; this call reads only the
+        // rate notice, and that notice is keyed on an actual reprice, so an
+        // unfinancial owner who holds no bed changes nothing here.
+        bookingOwnerMemberId: offerDetails.memberId,
         participants: toSubscriptionLockoutParticipants(
           await prisma.bookingGuest.findMany({
             where: { bookingId: offerDetails.bookingId },
@@ -818,6 +823,10 @@ export async function confirmWaitlistOffer(
       seasonYear: getSeasonYear(offerKind.checkIn),
       checkIn: offerKind.checkIn,
       checkOut: offerKind.checkOut,
+      // Owner decision, 3 Aug 2026. The guard above has already established that
+      // this offer belongs to `memberId`, so the booking's owner is the member
+      // confirming it.
+      bookingOwnerMemberId: offerKind.memberId,
       participants: toSubscriptionLockoutParticipants(
         await prisma.bookingGuest.findMany({ where: { bookingId } }),
       ),

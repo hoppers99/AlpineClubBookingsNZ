@@ -362,6 +362,15 @@ export function ReviewStep({
             fills in the rest of the wizard — the whole point of surfacing it on
             the quote is that they find out here rather than on submit.
 
+            Owner decision 3 Aug 2026 widened WHEN the server sets this flag: the
+            requirement also fires when the person BOOKING has an unpaid
+            subscription, whether or not they are staying. That case carries no
+            rate notice — nobody's nights were repriced — so this warning is the
+            only thing standing between an unfinancial member booking beds for
+            non-members and a 409 on submit. Nothing here needed to change to
+            cover it, because the flag is the server's own answer rather than
+            anything this component re-derives.
+
             Deliberately NOT behind a disclosure and NOT gating the button: the
             server owns the refusal, and a Booking Officer can approve an
             override (the violation is exception-eligible and holds the bed), so

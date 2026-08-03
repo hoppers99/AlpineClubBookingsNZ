@@ -429,6 +429,28 @@ describe("ReviewStep subscription-lockout notices (#2543)", () => {
     expect(warning).toHaveAttribute("role", "alert");
   });
 
+  it("warns the unfinancial BOOKER even though nothing on the party was repriced", () => {
+    // Owner decision 3 Aug 2026 widened the server's trigger: the requirement also
+    // fires when the person BOOKING has an unpaid subscription, whether or not they
+    // are staying. A member booking beds for a party of non-members therefore gets
+    // this flag with a NULL rate notice — nobody's nights were repriced, so there is
+    // no price to explain — and this warning is the only thing standing between them
+    // and a 409 on submit. Pinned because coupling the warning to the notice would
+    // silence exactly that case.
+    const priceQuote = quoteWith({
+      paidUpAdultMemberMissing: true,
+      subscriptionMemberRateNotice: null,
+    });
+    renderReview([memberGuest], undefined, { priceQuote });
+
+    expect(
+      screen.getByTestId("paid-up-adult-missing-notice"),
+    ).toHaveTextContent(formatMissingPaidUpAdultRefusal());
+    expect(
+      screen.queryByTestId("subscription-member-rate-notice"),
+    ).not.toBeInTheDocument();
+  });
+
   it("renders no paid-up-adult warning when the flag is false", () => {
     const priceQuote = quoteWith({ paidUpAdultMemberMissing: false });
     renderReview([memberGuest], undefined, { priceQuote });

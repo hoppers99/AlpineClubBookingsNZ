@@ -30,6 +30,7 @@ import {
 import {
   loadMemberSubscriptionSettlements,
   subscriptionIsSettled,
+  subscriptionIsUnpaid,
   type MemberSubscriptionSettlement,
 } from "@/lib/subscription-lockout-facts";
 import { getSeasonYear } from "@/lib/utils";
@@ -107,15 +108,25 @@ export interface NonMemberPricingRequirements {
   /**
    * Whether the paid-up-adult requirement applies to this party at all.
    *
-   * TRUE only when the club is in `NON_MEMBER_PRICING` *and* this party actually
-   * contains somebody being repriced for an unpaid subscription. See the
-   * `violation` note below for why the requirement is conditional.
+   * TRUE when the club is in `NON_MEMBER_PRICING` and EITHER this party contains
+   * somebody being repriced for an unpaid subscription, OR the booking owner is
+   * an unfinancial member — whether or not they are staying. See the `violation`
+   * note below for both triggers and why the requirement is still not
+   * unconditional.
    */
   paidUpAdultMemberRequired: boolean;
   /**
    * The "told why" sentence to show the member, or null when nobody is
    * repriced. Names no one and no amount — it is rendered straight into booking
    * and quote responses that a family member may be reading.
+   *
+   * KEYED ON THE REPRICE, not on `paidUpAdultMemberRequired`, and the two are no
+   * longer the same question. An unfinancial booking owner who is not staying
+   * triggers the requirement without anybody's nights being repriced, and this
+   * sentence says that "member rates aren't available for those nights" — which
+   * would be a claim about a price nobody was charged. That party gets the
+   * refusal (or the quote's early warning) and no rate notice, because there is
+   * no rate to explain.
    */
   memberRateNotice: string | null;
   /**
@@ -123,18 +134,50 @@ export interface NonMemberPricingRequirements {
    * member and has none; null otherwise. A caller that receives one MUST refuse
    * the booking and offer the override-request path.
    *
-   * THE REQUIREMENT IS CONDITIONAL ON A REPRICE, and that scoping is load-bearing.
-   * The owner's rule is about the unpaid member: "they get charged non-member
-   * rates, and there still has to be at least one paid-up adult member on the
-   * booking". Applied unconditionally to every booking instead, switching a club
-   * to `NON_MEMBER_PRICING` — which is a RELAXATION of the hard block — would
-   * newly refuse whole classes of booking that are legal today and have nothing
-   * to do with subscriptions: a paid-up Youth member booking their own bed, a
-   * family booking whose only member row is a child, an all-non-member party. The
-   * club asked to stop turning unpaid members away, not to start turning those
-   * away. "Is there a responsible adult member present?" in the general case is
-   * already the adult-member-hosting policy's question (#2364), which a club
-   * configures separately and which composes with this one.
+   * THE REQUIREMENT HAS TWO TRIGGERS, and it is still not unconditional. It fires
+   * when somebody STAYING on this party is being repriced for an unpaid
+   * subscription, and — owner decision, 3 Aug 2026 — when the BOOKING OWNER is an
+   * unfinancial member, whether or not they stay.
+   *
+   * THE FIRST TRIGGER is the owner's original rule about the unpaid member: "they
+   * get charged non-member rates, and there still has to be at least one paid-up
+   * adult member on the booking".
+   *
+   * THE SECOND TRIGGER WAS ADDED DELIBERATELY, over the objection this comment
+   * used to record. The objection was that `NON_MEMBER_PRICING` is a RELAXATION of
+   * the hard block and must not newly refuse bookings that are legal today, and it
+   * is still why the requirement is not applied to every booking: a paid-up Youth
+   * member booking their own bed, a family booking whose only member row is a
+   * child, and an all-non-member party are all untouched by either trigger. But
+   * the reasoning had a hole, and it was the wrong one to leave open. HARD_BLOCK
+   * refuses an unfinancial member AS A PERSON — they cannot book at all, even for
+   * a party of non-members they will not join. Keyed only on who stays, the
+   * relaxed mode let exactly that booking through with no reprice, no requirement
+   * and no notice, so switching a club to the softer rule quietly opened the one
+   * case the strict rule most reliably closed, and lapsing would have cost a
+   * member nothing so long as they booked for others.
+   *
+   * SO THE REQUIREMENT FOLLOWS THE UNFINANCIAL MEMBER, not only their bed. In that
+   * case it is still gentler than HARD_BLOCK rather than stricter: a flat 403
+   * becomes a 409 with an override door and the beds held, so a booking a Booking
+   * Officer is willing to approve can proceed. An unfinancial owner can never
+   * satisfy their own requirement — they fail the money half of
+   * `participantIsPaidUpAdultMember` — and a paid-up adult member in the PARTY
+   * satisfies it exactly as before, which is what keeps the intended family case
+   * working: the financial spouse is on the booking, so it books.
+   *
+   * "Is there a responsible adult member present?" in the GENERAL case remains the
+   * adult-member-hosting policy's question (#2364), which a club configures per
+   * lodge and which composes with this one; this stays the narrow
+   * financial-integrity guard on the money mode.
+   *
+   * THE VIOLATION SHAPE IS UNCHANGED by the second trigger, and that is a privacy
+   * decision. `requirements` still carries counts and no identities, so an
+   * owner-triggered refusal reads `repricedUnpaidMemberCount: 0` — the one thing
+   * it discloses is that the trigger was not a member of the party, which the
+   * person receiving the refusal already knows, because under this trigger the
+   * unfinancial member IS the booker (an admin acting on their behalf is exempt
+   * from the whole check, as on every other #2543 gate).
    */
   violation: PaidUpAdultMemberPolicyExceptionViolation | null;
 }
@@ -286,6 +329,10 @@ type LiveMemberFacts = HostingMemberFacts & { ageTier: AgeTier };
  * is judged against exactly the mode the gate branched on. Resolving it twice
  * inside one request would let an admin's mid-request settings change refuse
  * under one regime and price under the other.
+ *
+ * `bookingOwnerMemberId` is the second half of the requirement's trigger, and
+ * every write path passes it: the requirement follows an unfinancial member
+ * whether or not they take a bed. See `NonMemberPricingRequirements.violation`.
  */
 export async function evaluateNonMemberPricingRequirements(
   db: SubscriptionLockoutDb,
@@ -296,12 +343,30 @@ export async function evaluateNonMemberPricingRequirements(
     checkIn: Date;
     checkOut: Date;
     participants: ReadonlyArray<SubscriptionLockoutParticipant>;
+    /**
+     * The booking OWNER's member id, when the booking has one (owner decision,
+     * 3 Aug 2026 — see `NonMemberPricingRequirements.violation`).
+     *
+     * Judged by exactly the same owing test as every party member: it joins the
+     * one settlement batch below, so the answer comes from
+     * `resolveMemberSubscriptionSettlement` and never from a second copy of the
+     * rule at a call site.
+     *
+     * Callers pass it whether or not the owner is staying. When they ARE staying
+     * their own guest row already reprices them and this adds nothing; it is the
+     * NOT-staying case the arm exists for, and a caller cannot tell the two apart
+     * without doing the comparison that happens here.
+     *
+     * Omitted, null or blank means "no owner to judge", and the evaluation is
+     * exactly the party-only one.
+     */
+    bookingOwnerMemberId?: string | null;
   },
 ): Promise<NonMemberPricingRequirements | null> {
   const mode = input.mode ?? (await peekSubscriptionLockoutMode());
   if (mode !== "NON_MEMBER_PRICING") return null;
 
-  const memberIds = [
+  const partyMemberIds = [
     ...new Set(
       input.participants
         .filter((participant) => participant.isMember)
@@ -309,14 +374,32 @@ export async function evaluateNonMemberPricingRequirements(
         .filter((id): id is string => Boolean(id)),
     ),
   ];
+  const bookingOwnerMemberId = input.bookingOwnerMemberId?.trim() || null;
+  /**
+   * The party PLUS the owner, for the facts batch only.
+   *
+   * One batch rather than a second read, so the owner and the party cannot be
+   * judged by two settlements that disagree. Kept SEPARATE from
+   * `partyMemberIds` because the reprice list below must stay a statement about
+   * nights this booking actually prices: an owner who is not staying holds no
+   * nights, so counting them as repriced would inflate the violation's count and
+   * emit a rate notice about a charge nobody received.
+   */
+  const settlementMemberIds =
+    bookingOwnerMemberId && !partyMemberIds.includes(bookingOwnerMemberId)
+      ? [...partyMemberIds, bookingOwnerMemberId]
+      : partyMemberIds;
 
   const policies = await resolveMembershipTypePoliciesForMembers(db, {
-    memberIds,
+    memberIds: settlementMemberIds,
     seasonYear: input.seasonYear,
   });
-  const members: LiveMemberFacts[] = memberIds.length
+  // Live standing facts for the PARTY only: the presence test judges who is on
+  // the booking, and an owner who is not staying is not one of them (nor could
+  // they satisfy the requirement if they were — they are unfinancial).
+  const members: LiveMemberFacts[] = partyMemberIds.length
     ? await db.member.findMany({
-        where: { id: { in: memberIds } },
+        where: { id: { in: partyMemberIds } },
         select: {
           id: true,
           ageTier: true,
@@ -331,7 +414,7 @@ export async function evaluateNonMemberPricingRequirements(
   );
 
   const settlements = await loadMemberSubscriptionSettlements(db, {
-    memberIds,
+    memberIds: settlementMemberIds,
     seasonYear: input.seasonYear,
     subscriptionBehaviorByMember: new Map(
       [...policies].map(([memberId, policy]) => [
@@ -345,7 +428,7 @@ export async function evaluateNonMemberPricingRequirements(
     memberId: string,
   ): MemberSubscriptionSettlement | undefined => settlements.get(memberId);
 
-  const repricedMemberIds = memberIds
+  const repricedMemberIds = partyMemberIds
     .filter((memberId) =>
       memberUnpaidSubscriptionForcesNonMemberRate({
         isMember: true,
@@ -377,12 +460,37 @@ export async function evaluateNonMemberPricingRequirements(
 
   const presence = evaluatePaidUpAdultPresence(paidUpParticipants);
 
-  // The requirement only bites on a party this mode is actually repricing — see
+  /**
+   * The owner arm (owner decision, 3 Aug 2026 — see
+   * `NonMemberPricingRequirements.violation`).
+   *
+   * `subscriptionIsUnpaid` is the named complement of the ONE predicate the
+   * reprice above and the #2364 hosting bridge below both read, so the owner is
+   * judged by the same rule as everybody else — including its two edges, and both
+   * are deliberate:
+   *
+   *  - NO SETTLEMENT ENTRY answers false. Unreachable, since the owner is put into
+   *    the batch above, and the right direction if it ever were reached: a member
+   *    the batch never answered about must not manufacture a refusal.
+   *  - AN OWNER ID WITH NO MEMBER ROW answers true, because
+   *    `resolveMemberSubscriptionSettlement` treats a null age tier as owing. That
+   *    is the same safe-direction-on-money rule the reprice arm applies to an
+   *    unresolvable participant, so the two cannot disagree. It is only reachable
+   *    through a deleted-member race on a foreign key, and it fails closed onto a
+   *    409 with the override door rather than a wall.
+   */
+  const bookingOwnerUnfinancial =
+    bookingOwnerMemberId !== null &&
+    subscriptionIsUnpaid(settlementFor(bookingOwnerMemberId));
+
+  // Two triggers, and the second is why an unfinancial member can no longer
+  // anchor a booking they simply keep themselves off — see
   // `NonMemberPricingRequirements.violation`.
-  const paidUpAdultMemberRequired = repricedMemberIds.length > 0;
+  const paidUpAdultMemberRequired =
+    repricedMemberIds.length > 0 || bookingOwnerUnfinancial;
   const violated = paidUpAdultMemberRequired && !presence.hasPaidUpAdult;
 
-  const affectedNights = violated
+  const partyNights = violated
     ? [
         ...new Set(
           input.participants.flatMap((participant) =>
@@ -391,16 +499,32 @@ export async function evaluateNonMemberPricingRequirements(
         ),
       ].sort()
     : [];
+  /**
+   * A violation must name the nights it holds, so an empty party set falls back
+   * to the booking envelope.
+   *
+   * Unreachable on the old repriced-only trigger — a reprice implies a member
+   * participant, and a participant with no resolvable nights implies a degenerate
+   * stay window the booking's own date validation refuses. It becomes reachable
+   * with the owner arm, which can fire on a party the caller describes without
+   * per-guest ranges, and a HOLD over zero nights would reserve nothing while
+   * promising the member their beds.
+   */
+  const affectedNights =
+    violated && partyNights.length === 0 && input.checkOut > input.checkIn
+      ? eachDateOnlyInRange(input.checkIn, input.checkOut).map(formatDateOnly)
+      : partyNights;
 
   return {
     repricedMemberIds,
     hasPaidUpAdultMember: presence.hasPaidUpAdult,
     paidUpAdultMemberRequired,
-    memberRateNotice: paidUpAdultMemberRequired
-      ? formatUnpaidSubscriptionRateReason(
-          `${input.seasonYear}/${input.seasonYear + 1}`,
-        )
-      : null,
+    memberRateNotice:
+      repricedMemberIds.length > 0
+        ? formatUnpaidSubscriptionRateReason(
+            `${input.seasonYear}/${input.seasonYear + 1}`,
+          )
+        : null,
     violation: violated
       ? buildPaidUpAdultMemberViolation({
           affectedNights,
@@ -446,6 +570,16 @@ export async function evaluateProposedPaidUpAdultPresence(
        */
       operationallyPresent?: boolean;
     }>;
+    /**
+     * Who would OWN the booking this proposal describes (owner decision, 3 Aug
+     * 2026). Load-bearing for the same reason `operationallyPresent` is: a
+     * booking path that refuses an unfinancial member for a party they are not
+     * staying on must reproduce that violation here, or the 409 names a workflow
+     * the member cannot enter. The caller resolves it, because only the caller
+     * knows whether the proposal is a new booking (the requester owns it) or a
+     * modification (the live booking's own owner does).
+     */
+    bookingOwnerMemberId?: string | null;
   },
 ): Promise<PaidUpAdultMemberPolicyExceptionViolation | null> {
   const requirements = await evaluateNonMemberPricingRequirements(db, {
@@ -453,6 +587,7 @@ export async function evaluateProposedPaidUpAdultPresence(
     seasonYear: getSeasonYear(input.checkIn),
     checkIn: input.checkIn,
     checkOut: input.checkOut,
+    bookingOwnerMemberId: input.bookingOwnerMemberId ?? null,
     participants: input.guests.map((guest) => ({
       isMember: guest.isMember,
       memberId: guest.memberId ?? null,

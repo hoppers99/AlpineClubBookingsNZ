@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 
 /**
  * The #2543 enforcement matrix: what each of the three club modes does to a
@@ -370,6 +370,316 @@ describe("NON_MEMBER_PRICING — the paid-up-adult requirement (#2543)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// The booking-owner arm of the trigger (owner decision, 3 Aug 2026).
+// ---------------------------------------------------------------------------
+
+/** A guest row that is not a member at all — the party the gap was about. */
+const NON_MEMBER = { isMember: false, memberId: null } as const;
+
+function evaluateFor(
+  bookingOwnerMemberId: string | null,
+  members: TestMember[],
+  participants: Array<{
+    isMember: boolean;
+    memberId?: string | null;
+    operationallyPresent?: boolean;
+  }>,
+  mode: "NO_BLOCK" | "HARD_BLOCK" | "NON_MEMBER_PRICING" = "NON_MEMBER_PRICING",
+) {
+  return evaluateNonMemberPricingRequirements(makeDb(members), {
+    mode,
+    bookingOwnerMemberId,
+    lodgeId: "lodge-1",
+    seasonYear: SEASON,
+    checkIn: CHECK_IN,
+    checkOut: CHECK_OUT,
+    participants,
+  });
+}
+
+/**
+ * THE HOLE THIS ARM CLOSES. `HARD_BLOCK` refuses an unfinancial member as a
+ * PERSON: they cannot book at all, even for a party of non-members they will not
+ * join. Keyed only on who stays, `NON_MEMBER_PRICING` let exactly that booking
+ * through with no reprice, no requirement and no notice — so switching a club to
+ * the softer rule quietly opened the one case the strict rule most reliably
+ * closed, and lapsing cost a member nothing so long as they booked for others.
+ *
+ * Every test below is named so that deleting the owner arm from the trigger
+ * reddens something that says what was lost.
+ */
+describe("the paid-up-adult trigger follows the unfinancial member, not only their bed (#2543, owner decision 3 Aug 2026)", () => {
+  it("refuses an unfinancial owner who is NOT staying, booking beds for non-members", async () => {
+    const result = await evaluateFor("adult-unpaid", [UNPAID_ADULT], [
+      NON_MEMBER,
+      NON_MEMBER,
+    ]);
+
+    // Nobody's nights were repriced — the owner holds none — and the requirement
+    // still applies. That combination is the whole point of the arm.
+    expect(result?.repricedMemberIds).toEqual([]);
+    expect(result?.paidUpAdultMemberRequired).toBe(true);
+    expect(result?.hasPaidUpAdultMember).toBe(false);
+    expect(result?.violation).not.toBeNull();
+    expect(result?.violation?.reasonCode).toBe("PAID_UP_ADULT_MEMBER_REQUIRED");
+  });
+
+  it("passes an unfinancial owner who is NOT staying when a paid-up adult member IS on the party", async () => {
+    // The intended family case: the financial spouse is on the booking, so it
+    // books. The arm must not turn into a wall for them.
+    const result = await evaluateFor("adult-unpaid", [UNPAID_ADULT, PAID_ADULT], [
+      { isMember: true, memberId: "adult-paid" },
+      NON_MEMBER,
+    ]);
+
+    expect(result?.paidUpAdultMemberRequired).toBe(true);
+    expect(result?.hasPaidUpAdultMember).toBe(true);
+    expect(result?.violation).toBeNull();
+  });
+
+  it("refuses an unfinancial owner who IS staying with no paid-up adult member", async () => {
+    // Reachable through the reprice arm as well, and it must stay reachable: this
+    // is the case the rule was written for.
+    const result = await evaluateFor("adult-unpaid", [UNPAID_ADULT, EXEMPT_CHILD], [
+      { isMember: true, memberId: "adult-unpaid" },
+      { isMember: true, memberId: "child-exempt" },
+    ]);
+
+    expect(result?.repricedMemberIds).toEqual(["adult-unpaid"]);
+    expect(result?.paidUpAdultMemberRequired).toBe(true);
+    expect(result?.violation).not.toBeNull();
+  });
+
+  it("passes an unfinancial owner who IS staying alongside a paid-up adult member", async () => {
+    const result = await evaluateFor("adult-unpaid", [UNPAID_ADULT, PAID_ADULT], [
+      { isMember: true, memberId: "adult-unpaid" },
+      { isMember: true, memberId: "adult-paid" },
+    ]);
+
+    expect(result?.repricedMemberIds).toEqual(["adult-unpaid"]);
+    expect(result?.hasPaidUpAdultMember).toBe(true);
+    expect(result?.violation).toBeNull();
+  });
+
+  it("never lets an unfinancial owner satisfy their own requirement", async () => {
+    // They fail the money half of the predicate, staying or not; otherwise the arm
+    // would be vacuous.
+    const staying = await evaluateFor("adult-unpaid", [UNPAID_ADULT], [
+      { isMember: true, memberId: "adult-unpaid" },
+    ]);
+    const notStaying = await evaluateFor("adult-unpaid", [UNPAID_ADULT], [
+      NON_MEMBER,
+    ]);
+
+    expect(staying?.hasPaidUpAdultMember).toBe(false);
+    expect(notStaying?.hasPaidUpAdultMember).toBe(false);
+  });
+
+  it("emits NO rate notice when the trigger is the owner and nothing was repriced", async () => {
+    // The notice says member rates "aren't available for those nights". With the
+    // owner off the booking there are no such nights, and asserting a price nobody
+    // was charged is the dishonesty this split prevents.
+    const result = await evaluateFor("adult-unpaid", [UNPAID_ADULT], [NON_MEMBER]);
+
+    expect(result?.paidUpAdultMemberRequired).toBe(true);
+    expect(result?.memberRateNotice).toBeNull();
+  });
+
+  it("still emits the rate notice when the owner stays and IS repriced", async () => {
+    const result = await evaluateFor("adult-unpaid", [UNPAID_ADULT], [
+      { isMember: true, memberId: "adult-unpaid" },
+    ]);
+
+    expect(result?.memberRateNotice).toContain("2026/2027");
+  });
+
+  it("counts zero repriced members on an owner-triggered refusal, and names nobody", async () => {
+    // The violation shape is unchanged by the new trigger: counts, no identities.
+    // `repriced=0` is the only thing that distinguishes it, and it discloses only
+    // that the trigger was not a member of the party — which the person receiving
+    // the refusal already knows, because under this trigger they ARE the
+    // unfinancial member.
+    const result = await evaluateFor("adult-unpaid", [UNPAID_ADULT], [
+      NON_MEMBER,
+      NON_MEMBER,
+    ]);
+
+    expect(result?.violation?.requirements).toEqual({
+      kind: "PAID_UP_ADULT_MEMBER",
+      requiredPaidUpAdultMembers: 1,
+      repricedUnpaidMemberCount: 0,
+      participantCount: 2,
+    });
+    expect(JSON.stringify(result?.violation)).not.toMatch(/adult-unpaid/);
+  });
+
+  it("refuses with the same 409, the same door and the same HOLD as the reprice arm", async () => {
+    const result = await evaluateFor("adult-unpaid", [UNPAID_ADULT], [NON_MEMBER]);
+    const error = new PaidUpAdultMemberRequiredError(result!.violation!);
+
+    expect(error.status).toBe(409);
+    expect(error.code).toBe("PAID_UP_ADULT_MEMBER_REQUIRED");
+    expect(isHardStopBookingFailureCode("PAID_UP_ADULT_MEMBER_REQUIRED")).toBe(
+      false,
+    );
+
+    const body = buildPaidUpAdultRefusalBody(result!.violation!);
+    expect(body.exceptionRequestPath).toBe("/api/bookings/exception-requests");
+    expect(body.exceptionReview.capacityMode).toBe("HOLD");
+  });
+
+  it("holds the booking envelope when the arm fires on a party with no nights of its own", async () => {
+    // A HOLD over zero nights would reserve nothing while promising the member
+    // their beds. Only reachable through this arm, which can fire on a party the
+    // caller describes without per-guest ranges.
+    const result = await evaluateFor("adult-unpaid", [UNPAID_ADULT], []);
+
+    expect(result?.violation?.affectedNights).toEqual([
+      "2026-07-04",
+      "2026-07-05",
+    ]);
+  });
+
+  it("fingerprints an owner-triggered hazard apart from a repriced one, and identically for two different owners", async () => {
+    const alice = await evaluateFor("alice", [{ ...UNPAID_ADULT, id: "alice" }], [
+      NON_MEMBER,
+    ]);
+    const bob = await evaluateFor("bob", [{ ...UNPAID_ADULT, id: "bob" }], [
+      NON_MEMBER,
+    ]);
+    const repriced = await evaluateFor("adult-unpaid", [UNPAID_ADULT], [
+      { isMember: true, memberId: "adult-unpaid" },
+    ]);
+
+    // Same hazard, whoever the unfinancial booker is: a decided review is not
+    // reopened by re-saving the same party shape.
+    expect(violationFingerprint(alice!.violation!)).toBe(
+      violationFingerprint(bob!.violation!),
+    );
+    expect(violationFingerprint(alice!.violation!)).toContain("repriced=0");
+    // And a genuinely different hazard — somebody on the party being repriced —
+    // is a different question an admin has not reviewed.
+    expect(violationFingerprint(alice!.violation!)).not.toBe(
+      violationFingerprint(repriced!.violation!),
+    );
+  });
+
+  it("judges the owner from the party's own settlement batch, never a second read", async () => {
+    // One batch, so the owner and the party cannot be judged by two settlements
+    // that disagree — and the party's live standing facts stay a question about the
+    // party, since a not-staying owner could not satisfy the requirement anyway.
+    const db = makeDb([UNPAID_ADULT, PAID_ADULT]);
+    await evaluateNonMemberPricingRequirements(db, {
+      mode: "NON_MEMBER_PRICING",
+      bookingOwnerMemberId: "adult-unpaid",
+      lodgeId: "lodge-1",
+      seasonYear: SEASON,
+      checkIn: CHECK_IN,
+      checkOut: CHECK_OUT,
+      participants: [{ isMember: true, memberId: "adult-paid" }],
+    });
+
+    const subscriptionCalls = (
+      db.memberSubscription.findMany as unknown as Mock
+    ).mock.calls as Array<[{ where: { memberId: { in: string[] } } }]>;
+    expect(subscriptionCalls).toHaveLength(1);
+    expect([...subscriptionCalls[0][0].where.memberId.in].sort()).toEqual([
+      "adult-paid",
+      "adult-unpaid",
+    ]);
+
+    const memberCalls = (db.member.findMany as unknown as Mock).mock
+      .calls as Array<[{ where: { id: { in: string[] } } }]>;
+    // First read: the party's standing facts, owner excluded.
+    expect(memberCalls[0][0].where.id.in).toEqual(["adult-paid"]);
+  });
+});
+
+describe("the owner arm changes nothing it was not meant to (#2543)", () => {
+  it("leaves an all-non-member party alone when the owner is financial", async () => {
+    // The relaxation guarantee: an unconditional requirement would refuse this,
+    // and the club asked to stop turning unpaid members away rather than to start
+    // turning these away.
+    const result = await evaluateFor("adult-paid", [PAID_ADULT], [
+      NON_MEMBER,
+      NON_MEMBER,
+    ]);
+
+    expect(result?.paidUpAdultMemberRequired).toBe(false);
+    expect(result?.violation).toBeNull();
+  });
+
+  it("does not fire for an owner the subscription rule never applies to (exempt age tier)", async () => {
+    const result = await evaluateFor("child-exempt", [EXEMPT_CHILD], [NON_MEMBER]);
+
+    expect(result?.paidUpAdultMemberRequired).toBe(false);
+    expect(result?.violation).toBeNull();
+  });
+
+  it("does not fire for an owner whose membership type says NOT_REQUIRED", async () => {
+    const result = await evaluateFor(
+      "adult-unpaid",
+      [{ ...UNPAID_ADULT, behavior: "NOT_REQUIRED" }],
+      [NON_MEMBER],
+    );
+
+    expect(result?.paidUpAdultMemberRequired).toBe(false);
+    expect(result?.violation).toBeNull();
+  });
+
+  it("honours the #2041 BASED_ON_AGE_TIER dominance of a NOT_REQUIRED row for the owner too", async () => {
+    const result = await evaluateFor(
+      "youth-exempted",
+      [
+        {
+          id: "youth-exempted",
+          ageTier: "YOUTH",
+          behavior: "BASED_ON_AGE_TIER",
+          status: "NOT_REQUIRED",
+        },
+      ],
+      [NON_MEMBER],
+    );
+
+    expect(result?.paidUpAdultMemberRequired).toBe(false);
+  });
+
+  it.each([null, "", "   "])(
+    "treats a blank or absent owner id (%p) as the party-only evaluation",
+    async (ownerId) => {
+      const result = await evaluateFor(ownerId, [UNPAID_ADULT], [NON_MEMBER]);
+
+      expect(result?.paidUpAdultMemberRequired).toBe(false);
+      expect(result?.violation).toBeNull();
+    },
+  );
+
+  it.each(["NO_BLOCK", "HARD_BLOCK"] as const)(
+    "%s is provably unaffected: null before any query, even with an unfinancial owner and no paid-up adult",
+    async (mode) => {
+      mocks.peekSubscriptionLockoutMode.mockResolvedValue(mode);
+      const db = makeDb([UNPAID_ADULT]);
+
+      await expect(
+        evaluateNonMemberPricingRequirements(db, {
+          mode,
+          bookingOwnerMemberId: "adult-unpaid",
+          lodgeId: "lodge-1",
+          seasonYear: SEASON,
+          checkIn: CHECK_IN,
+          checkOut: CHECK_OUT,
+          participants: [NON_MEMBER],
+        }),
+      ).resolves.toBeNull();
+
+      expect(db.member.findMany).not.toHaveBeenCalled();
+      expect(db.memberSubscription.findMany).not.toHaveBeenCalled();
+      expect(mocks.resolveMembershipTypePoliciesForMembers).not.toHaveBeenCalled();
+    },
+  );
+});
+
+// ---------------------------------------------------------------------------
 // Tell them why.
 // ---------------------------------------------------------------------------
 
@@ -527,6 +837,39 @@ describe("evaluateProposedPaidUpAdultPresence (#2543 <-> #2365)", () => {
         checkIn: CHECK_IN,
         checkOut: CHECK_OUT,
         guests: [{ isMember: true, memberId: "adult-unpaid" }],
+      }),
+    ).resolves.toBeNull();
+  });
+
+  it("reproduces an OWNER-triggered refusal, so that door opens too", async () => {
+    // Without this the widened trigger would refuse a booking and then name a
+    // workflow the member cannot enter: the request machinery re-evaluates
+    // server-side, finds no violation on a party of non-members, and correctly
+    // declines to create a request there is nothing to review.
+    const violation = await evaluateProposedPaidUpAdultPresence(
+      makeDb([UNPAID_ADULT]),
+      {
+        lodgeId: "lodge-1",
+        checkIn: CHECK_IN,
+        checkOut: CHECK_OUT,
+        bookingOwnerMemberId: "adult-unpaid",
+        guests: [{ isMember: false, memberId: null, nights: ["2026-07-04"] }],
+      },
+    );
+
+    expect(violation?.reasonCode).toBe("PAID_UP_ADULT_MEMBER_REQUIRED");
+    expect(violation?.capacityMode).toBe("HOLD");
+    expect(violation?.affectedNights).toEqual(["2026-07-04"]);
+  });
+
+  it("finds nothing to review when the owner is financial", async () => {
+    await expect(
+      evaluateProposedPaidUpAdultPresence(makeDb([PAID_ADULT]), {
+        lodgeId: "lodge-1",
+        checkIn: CHECK_IN,
+        checkOut: CHECK_OUT,
+        bookingOwnerMemberId: "adult-paid",
+        guests: [{ isMember: false, memberId: null }],
       }),
     ).resolves.toBeNull();
   });

@@ -361,6 +361,101 @@ describe("the sixth refusal site, and the paths that were missing (#2543)", () =
   });
 });
 
+describe("the booking OWNER reaches every evaluation (#2543, owner decision 3 Aug 2026)", () => {
+  // The paid-up-adult requirement now fires when the booking OWNER is an
+  // unfinancial member, whether or not they stay. That is a property of a SET of
+  // call sites, not of behaviour: a path that forgets to pass the owner still
+  // enforces the old repriced-only rule and every behavioural test of the other
+  // paths stays green, while the one path a lapsed member reaches to book beds for
+  // non-members goes on letting them through. So the owner argument is counted
+  // against the calls, file by file, and a NEW call site added without it fails
+  // here rather than shipping a hole.
+  const EVALUATION_SITES = [
+    ["POST /api/bookings (create)", "src/app/api/bookings/route.ts", "effectiveMemberId"],
+    [
+      "POST /api/bookings/quote (preview)",
+      "src/app/api/bookings/quote/route.ts",
+      "effectiveMemberId",
+    ],
+    [
+      "POST /api/bookings/[id]/confirm-draft",
+      "src/app/api/bookings/[id]/confirm-draft/route.ts",
+      "booking.memberId",
+    ],
+    [
+      "POST /api/bookings/[id]/modify-quote",
+      "src/app/api/bookings/[id]/modify-quote/route.ts",
+      "booking.memberId",
+    ],
+    [
+      "POST /api/bookings/[id]/guests",
+      "src/app/api/bookings/[id]/guests/route.ts",
+      "booking.memberId",
+    ],
+    ["the modify APPLY path", "src/lib/booking-modify-plan.ts", "booking.memberId"],
+    [
+      "single-guest removal",
+      "src/lib/booking-guest-removal-service.ts",
+      "booking.memberId",
+    ],
+    ["group-booking join", "src/lib/group-booking.ts", "sessionUserId"],
+  ] as const;
+
+  it.each(EVALUATION_SITES)(
+    "%s passes the booking owner it already holds",
+    (name, file, ownerExpression) => {
+      const source = readRepoFile(file);
+      const calls = source.split("evaluateNonMemberPricingRequirements(").length - 1;
+      const owners = source.split("bookingOwnerMemberId:").length - 1;
+
+      expect(calls, name).toBeGreaterThan(0);
+      expect(owners, name).toBe(calls);
+      expect(source, name).toContain(`bookingOwnerMemberId: ${ownerExpression}`);
+    },
+  );
+
+  it("the waitlist passes the owner on BOTH its evaluations", () => {
+    // The confirm is where the refusal lives; the offer reads only the rate notice
+    // and is threaded so the two cannot drift.
+    const source = readRepoFile("src/lib/waitlist.ts");
+    const calls = source.split("evaluateNonMemberPricingRequirements(").length - 1;
+    const owners = source.split("bookingOwnerMemberId:").length - 1;
+
+    expect(calls).toBe(2);
+    expect(owners).toBe(calls);
+    expect(source).toContain("bookingOwnerMemberId: offerKind.memberId");
+    expect(source).toContain("bookingOwnerMemberId: offerDetails.memberId");
+  });
+
+  it("the exception-request re-evaluation resolves the owner server-side, so the widened door opens", () => {
+    // A refusal that keys on the booker must reproduce here, or the 409 names a
+    // workflow the member cannot enter. A MODIFICATION reads the LIVE booking's own
+    // `memberId` rather than trusting the requester to be it — the door must not be
+    // openable against somebody else's standing — and a NEW booking has no row yet,
+    // so the requester is who would own it.
+    const source = readRepoFile("src/lib/booking-exception-request-service.ts");
+    expect(source).toContain(
+      "bookingOwnerMemberId: await resolveProposalBookingOwner(db, presence)",
+    );
+    expect(source).toContain("async function resolveProposalBookingOwner(");
+    expect(source).toContain("select: { memberId: true }");
+    expect(source).toContain("return presence?.requestedByMemberId?.trim() || null;");
+  });
+
+  it("keeps the reprice list a statement about the party, not about the owner", () => {
+    // The owner joins the FACTS batch only. Counting a not-staying owner as
+    // repriced would inflate the violation's count and emit a rate notice about a
+    // charge nobody received.
+    const source = readRepoFile("src/lib/subscription-lockout-enforcement.ts");
+    expect(source).toContain("const repricedMemberIds = partyMemberIds");
+    expect(source).toContain("memberIds: settlementMemberIds,");
+    expect(source).toContain("where: { id: { in: partyMemberIds } }");
+    // And the notice follows the reprice, not the requirement, now that the two
+    // are different questions.
+    expect(source).toContain("repricedMemberIds.length > 0\n        ? formatUnpaidSubscriptionRateReason(");
+  });
+});
+
 describe("the mode is threaded to the money, not re-read inside the locks (#2543)", () => {
   const THREADED = [
     ["src/lib/booking-create.ts", "input.subscriptionLockoutMode", 3],

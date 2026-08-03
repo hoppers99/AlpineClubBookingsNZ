@@ -385,6 +385,12 @@ export async function POST(request: NextRequest) {
       seasonYear: getSeasonYear(checkIn),
       checkIn,
       checkOut,
+      // Owner decision, 3 Aug 2026: an unfinancial member triggers the
+      // requirement whether or not they are staying, so the quote must warn about
+      // that party too — otherwise the wizard stays silent about a booking the
+      // create path then refuses, which is the late surprise this warning exists
+      // to prevent.
+      bookingOwnerMemberId: effectiveMemberId,
       // D-12 on a party that persists NOTHING. This route plans no consent
       // columns, so operational presence is derived from the same three facts
       // `buildMemberGuestConsentWrite` would use on save: a cross-family member
@@ -417,9 +423,11 @@ export async function POST(request: NextRequest) {
       /**
        * True when saving this party WOULD be refused for having no paid-up adult
        * member on it. Derived from the same violation the write paths refuse on,
-       * not from `hasPaidUpAdultMember` alone — a party nobody is being repriced
-       * on does not owe a paid-up adult at all, and warning about one would be
-       * both wrong and alarming.
+       * not from `hasPaidUpAdultMember` alone: a party that owes no paid-up adult
+       * — nobody repriced, and a financial booker — has no missing one either, and
+       * warning about it would be both wrong and alarming. Reading the violation
+       * rather than re-deriving the trigger is also what made this flag cover the
+       * unfinancial-booker case for free when that trigger was added.
        */
       paidUpAdultMemberMissing: nonMemberPricing?.violation != null,
       nonMemberHoldDecision: {
