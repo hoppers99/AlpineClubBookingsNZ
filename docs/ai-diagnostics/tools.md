@@ -33,6 +33,13 @@ admin-permission requirement. The model may only:
 Accepted arguments become **positional query parameters** and nothing else. There
 is no code path in the substrate that concatenates caller text into SQL.
 
+`.strict()` is not quite total on its own, so the substrate does not rely on it
+alone: `__proto__`, `constructor` and `prototype` are refused by an own-property
+scan **before** the schema runs. Zod accepts a `JSON.parse`-created `__proto__` and
+silently *strips* it, which would make a call that sent one hash identically to a
+call that sent nothing — and rejection has to be total, exactly as it is for
+[page context](page-context.md).
+
 ## What AID-5 ships, and what it deliberately does not
 
 AID-5 is the **substrate**. It ships exactly one registered tool — a readiness
@@ -59,11 +66,11 @@ typed result carrying **no rows**.
 | --- | --- | --- |
 | 1 | **Registry** | the id is not a well-formed key, or names no server-owned entry |
 | 2 | **Loop budget** | no round is open, or the round/session tool-call allowance is spent |
-| 3 | **Authorize** | the caller's freshly re-read matrix lacks `view` on **any** area the tool declares |
-| 4 | **Arguments** | the entry's `.strict()` schema rejects them |
+| 3 | **Authorize** | the caller's freshly re-read matrix lacks `view` on **any** area the tool declares, or their account is locked out |
+| 4 | **Arguments** | the entry's `.strict()` schema rejects them, or they carry a reserved key |
 | 5 | **Metering** | AID-2's metering circuit breaker is open |
-| 6 | **Credential** | the dedicated role is absent, malformed, the app's own role, unverifiable, or over-privileged |
-| 7 | **Read** | the statement fails or the statement timeout cancels it |
+| 6 | **Credential** | the dedicated role is absent, malformed, carries a connection parameter that would redirect it, is the app's own role, is unverifiable, or is over-privileged |
+| 7 | **Read** | the entry's parameters do not match the `$n` its SQL references, the statement fails, or the statement timeout cancels it |
 | 8 | **Project** | the projection returns anything that is not a flat scalar, or too many fields |
 | 9 | **Size** | the projected result exceeds the tool's byte ceiling — a **refusal**, never a silent trim |
 | 10 | **Audit** | the approved-metadata row cannot be written — the evidence is then discarded |
@@ -78,8 +85,10 @@ Two ordering choices are load-bearing:
   evidence retrieval is what ADR-004 exists to prevent, so it is not an outcome
   the substrate offers.
 
-The loop budget is claimed even for a call that is about to be denied, so a caller
-cannot probe authorization for free, round after round.
+The loop budget is claimed even for a call that is about to be denied — including a
+call naming an id that is **not in the registry** — so a caller cannot probe for
+free, round after round. Without that, one provider round of sixty hallucinated ids
+would write sixty audit rows with the round budget never engaging.
 
 ## Authorization is per invocation, and withholding is not authorization
 
@@ -114,6 +123,9 @@ looser one.
 | `statement_timeout` | 5,000 ms | `SET LOCAL` per transaction **and** on the role |
 | `lock_timeout` | 2,000 ms | `SET LOCAL` per transaction |
 | `idle_in_transaction_session_timeout` | 10,000 ms | `SET LOCAL` per transaction |
+| Client-side query deadline | 10,000 ms | pg's `query_timeout` on the pool |
+| Role privilege re-verification | every 60,000 ms | the server is re-asked; the verdict is cached no longer |
+| Privilege-probe deadline | 12,000 ms | explicit race, so an unanswered probe refuses rather than hangs |
 | Tool calls per provider round | 4 | server-side session counter |
 | Tool calls per session | 16 | server-side session counter |
 | Provider rounds | AID-2's `DIAGNOSTICS_MAX_TOOL_ROUNDS` | server-side session counter |
@@ -124,6 +136,21 @@ The row cap is applied **in SQL**, as the outermost clause wrapped around the
 entry's own statement, so a tool that forgot a `LIMIT` is still bounded by the
 database. The executor asks for `rowLimit + 1` rows so it can report truncation
 honestly rather than guess at it.
+
+Because the cap is appended as the **next** `$n`, an entry must bind exactly as many
+parameters as its SQL references. One short is not an error the database raises: the
+row-cap value silently serves as the missing placeholder, so the tool's own predicate
+would be evaluated against the row cap and the result projected, hashed and audited as
+a clean success. Both a registry contract test and the executor refuse that
+mismatch — the executor before it opens a transaction.
+
+The three timeouts stack in a deliberate order: the **server's** own
+`statement_timeout` fires first, so a slow read is reported honestly as SQLSTATE
+`57014`; the client-side `query_timeout` is the backstop for a connection that can
+never reply at all (a black-holed route, a wedged pooler); and the probe deadline is
+the backstop for that. Without the client-side layer an unanswered privilege probe
+stayed pending — and because the verdict is cached, every later readiness request
+joined the same pending promise.
 
 The tool-call session (`session.ts`) is an explicit per-question object, not
 ambient state: a module-level counter would either leak between concurrent admins
@@ -148,9 +175,20 @@ credential, and it deliberately does not go through `@/lib/prisma`. A raw `pg` p
 is what allows the transaction-scoped session settings above; and the application's
 Prisma client is bound to `DATABASE_URL`, whose Compose role is a **superuser**.
 
-A PostgreSQL error message can quote the failing statement and its parameter
-values, so a driver error is never surfaced to a caller or put in an audit row: the
-SQLSTATE goes to the server log and the caller gets a fixed sentence.
+A PostgreSQL error message can quote the failing statement and its parameter values
+verbatim, so the driver's message is **discarded** rather than routed anywhere: the
+caller gets a fixed sentence, the audit row gets none of it, and the log and Sentry
+get the SQLSTATE plus the server-owned tool id. A statement timeout is logged but
+deliberately **not** bridged to Sentry — it is an expected, operator-triggerable
+outcome, and one error-level alert per heavy question is the alert-fatigue trap
+#1150 rejected.
+
+The connection string itself is refused if it carries a query parameter that would
+override what was vetted — `user`, `password`, `host`, `port`, `options`, the three
+timeouts, or `replication`. `pg` reads those in preference to the URL's own userinfo
+and over the pool's explicit options, so `?user=` would let the driver connect as the
+application role while the gate below vetted the dedicated one. The connected role is
+then re-checked against the server's own `current_user` as well.
 
 ## Results are untrusted evidence
 
@@ -203,17 +241,26 @@ the one permitted write class. Two connections, two capabilities, no overlap.
 Every reason returns no rows and carries a plain-English operator sentence that
 never echoes caller input: `unknown_tool`, `invalid_args`,
 `call_budget_exhausted`, `metering_unavailable`, `actor_unresolved`,
-`actor_read_failed`, `permission_denied`, `database_not_configured`,
-`database_role_unsafe`, `query_failed`, `result_too_large`, `redaction_failed`,
-`audit_unavailable`, `internal_error`.
+`actor_blocked`, `actor_read_failed`, `permission_denied`,
+`database_not_configured`, `database_role_unsafe`, `query_failed`,
+`result_too_large`, `redaction_failed`, `audit_unavailable`, `internal_error`.
 
 Several distinctions are deliberate. `unknown_tool` and `permission_denied` stay
 separate so a misconfigured registry and an authorization anomaly are not the same
-audit row. `actor_unresolved` (a stale or forged acting member id) and
-`actor_read_failed` (a database fault) stay separate for the same reason.
-`internal_error` exists because a collaborator that throws where its contract says
-it returns a typed refusal is a bug — and losing the audit trail to an escaping
-exception would be a worse one.
+audit row. The three actor reasons stay separate for the same reason:
+`actor_unresolved` is a stale or forged acting member id, `actor_blocked` is an
+account deliberately locked out of the admin surface (deactivated, or under a forced
+password change — the same cause page context reports as `actor_blocked`), and
+`actor_read_failed` is a database fault. They are held apart by a total map over the
+reader's failure codes, so a new code cannot compile until it has been given a reason
+of its own. `internal_error` exists because a collaborator that throws where its
+contract says it returns a typed refusal is a bug — and losing the audit trail to an
+escaping exception would be a worse one.
+
+A fault that happens **after** authorization succeeded is audited as what it was: an
+`allowed` call that then failed, with the areas it checked and the hash of the
+arguments it accepted intact. Only a fault before or during authorization is recorded
+as `denied`, which is what `audit.ts` turns into a `blocked` outcome.
 
 ## Adding a tool
 
@@ -222,7 +269,10 @@ The checklist a reviewer should hold you to:
 1. `requiredAreas` names the area(s) that already govern this data in the admin UI,
    at `view`. A cross-area tool lists **every** area (AND).
 2. `sql` is one statement, no semicolon, schema-qualified, parameterised.
-3. `bind` maps parsed arguments to parameters positionally; it never formats SQL.
+3. `bind` maps parsed arguments to parameters positionally; it never formats SQL, and
+   it returns exactly as many parameters as the SQL references (`$1..$N`, no gaps).
+   Add the entry's representative arguments to `EXAMPLE_ARGS` in `registry.test.ts` so
+   that arity is actually checked.
 4. `project` returns **only** allowlisted columns, as flat scalars.
 5. Add the table's `GRANT SELECT` to `SELECT_GRANTS` in `provision-role.ts` in the
    **same** pull request — never a blanket `ALL TABLES IN SCHEMA` grant — and an
@@ -246,7 +296,14 @@ provisions the role by running the **shipped** statements from `provision-role.t
 against a real PostgreSQL, connects as that role, and proves:
 
 - the role is a non-superuser with no DDL, replication, or RLS-bypass attribute,
-  and no membership in a privilege-escalating predefined role;
+  and no membership in a privilege-escalating predefined role — tested with
+  `pg_has_role(…, 'MEMBER')`, because the role is `NOINHERIT` and the `'USAGE'`
+  predicate reports a hand-granted membership as absent;
+- it holds no table privilege at all on the migrated schema, and although PUBLIC
+  leaves it able to EXECUTE the schema's routines, none of them is
+  `SECURITY DEFINER`;
+- it can execute no overload of `pg_read_file`, `pg_read_binary_file`, `pg_ls_dir`,
+  `pg_stat_file`, `lo_import` or `lo_export`;
 - `INSERT`, `UPDATE`, `DELETE`, and `TRUNCATE` fail with insufficient privilege
   (`42501`) even with the read-only default switched off, so the assertion proves
   the **grant** layer specifically;
@@ -262,8 +319,17 @@ against a real PostgreSQL, connects as that role, and proves:
   and from the role's own default;
 - the runtime self-check accepts the provisioned role and **refuses a real
   superuser credential**;
-- the executor's SQL row cap holds whatever the query would have returned, and a
-  long query is cancelled at the statement timeout (`57014`).
+- it also refuses that same role the moment it drifts: a hand-granted
+  `pg_read_all_data` membership (proven reachable with one `SET ROLE`), a write grant
+  on any relation, a readable relation the allowlist does not declare, EXECUTE on a
+  non-default `pg_read_file` overload, or a `SECURITY DEFINER` routine in `public`
+  that re-provisioning cannot revoke;
+- a verdict that has aged out is re-read from the server, so a role escalated while
+  the process is running stops being accepted;
+- the executor's SQL row cap holds whatever the query would have returned, a long
+  query is cancelled at the statement timeout (`57014`), and an entry that binds one
+  parameter short is refused — with the same statement shown returning rows, and the
+  wrong ones, when the guard is not there.
 
 The suite is opt-in (`RUN_CONCURRENCY_RACE_TESTS=1` plus a loopback-only,
 high-port, dedicated-name database) and `describe.skip`s itself otherwise, so it

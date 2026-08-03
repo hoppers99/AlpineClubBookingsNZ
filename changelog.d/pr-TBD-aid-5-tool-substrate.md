@@ -16,11 +16,14 @@
     not use the site's normal database connection (which, in the standard setup,
     has full administrative rights). They use a dedicated login that can only
     read, only from an explicitly listed set of tables, inside read-only
-    transactions that the database itself cuts off after five seconds. Before
-    every lookup the software asks the database what that login is actually
-    allowed to do, and refuses to run at all unless the answer is "almost
-    nothing" — so a login that was widened by hand is caught immediately rather
-    than trusted.
+    transactions that the database itself cuts off after five seconds. The
+    software does not take that on trust: it asks the database what the login is
+    actually allowed to do — including whether it can change anything, and whether
+    it can read anything outside the listed set — and refuses to run at all unless
+    the answer is "almost nothing". That answer is re-checked at least once a
+    minute while the site is running, so a login widened by hand stops being
+    accepted within about a minute, and the readiness page says so. It never falls
+    back to the site's ordinary connection.
   - **Permissions are re-checked every single time.** Each lookup names the admin
     area that already governs that data, and the operator's current permissions
     are re-read from the database for every request. A permission removed
@@ -54,4 +57,8 @@
   default permission to create temporary tables from *all* logins and handing it
   back to the ones that need it. The standard setup is unaffected. A fork whose
   application login is not a database superuser must list it in
-  `AI_DIAGNOSTICS_DB_PRESERVE_TEMP_ROLES` before running the command.
+  `AI_DIAGNOSTICS_DB_PRESERVE_TEMP_ROLES` before running the command — and that
+  login's name must be letters, digits and underscores only, which is what the
+  command can safely put into the statements it runs. A hyphenated or
+  `name@server` login (common on hosted PostgreSQL) is refused with a message
+  saying which setting to change, rather than a stack trace.

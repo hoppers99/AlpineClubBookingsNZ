@@ -55,14 +55,42 @@ therefore requires a **separate, non-superuser, SELECT-only** role, and the
 application **refuses to run any diagnostics read** without one. There is no
 fallback to `DATABASE_URL`.
 
-The refusal is not a configuration check that trusts the URL. On first use the
-application asks the **server** what privileges the connected role actually holds —
-superuser, `CREATEDB`, `CREATEROLE`, `REPLICATION`, `BYPASSRLS`, `TEMPORARY` or
-`CREATE` on the database, `CREATE` on schema `public`, `EXECUTE` on
-`pg_read_file`, and membership in any privilege-escalating predefined role — and
-refuses every tool call unless all of them are absent. A role that was hand-edited
-back towards write access is caught on the next tool call, not at the next code
-review.
+The refusal is not a configuration check that trusts the URL. The application asks
+the **server** what the connected role actually is and actually holds, and refuses
+every tool call unless the answer is the least-privilege shape ADR-007 requires:
+
+- it is the same role the connection string names (`current_user`, not the URL's
+  claim);
+- no `SUPERUSER`, `CREATEDB`, `CREATEROLE`, `REPLICATION` or `BYPASSRLS` attribute;
+- no `TEMPORARY` or `CREATE` on the database, and no `CREATE` on schema `public`;
+- no `INSERT`, `UPDATE`, `DELETE` or `TRUNCATE` on any relation in `public`, at table
+  or column level;
+- no `SELECT` on any relation in `public` that the declared allowlist does not name —
+  which in this release is **every** relation, since the allowlist is empty;
+- no membership in any privilege-escalating predefined role (tested as membership,
+  not as inherited usage: the role is `NOINHERIT`, and a `NOINHERIT` role's
+  hand-granted membership does not show up as inherited while still being one
+  `SET ROLE` away);
+- no `EXECUTE` on any overload of `pg_read_file`, `pg_read_binary_file`, `pg_ls_dir`,
+  `pg_stat_file`, `lo_import` or `lo_export`;
+- no `EXECUTE` on a `SECURITY DEFINER` routine in `public` (see "What is deliberately
+  not done").
+
+That answer is **re-read from the server at least once a minute**, not cached for the
+life of the container. A role that was hand-edited back towards write access stops
+being accepted within a minute, and the readiness screen changes with it — no restart
+required. If the server cannot be asked, the role is not trusted: the state becomes
+`unverified` and every tool call is refused. It never hangs waiting, either.
+
+The connection string is also refused outright if it carries a query parameter that
+would override what was checked — `user`, `password`, `host`, `port`, `options`,
+`statement_timeout`, `query_timeout`, `lock_timeout`,
+`idle_in_transaction_session_timeout` or `replication`. The PostgreSQL driver reads
+those in preference to the URL's own username and over the application's own pool
+settings, so a URL of the form
+`postgresql://ai_diagnostics_ro:…@host/db?user=tac_app&password=…` would otherwise
+pass the "not the application role" check and then connect as the application role.
+Ordinary parameters such as `sslmode` and `connection_limit` are unaffected.
 
 ### Provisioning
 
@@ -85,8 +113,18 @@ for a deployment that keeps a separate DBA credential.
 | --- | --- | --- |
 | `AI_DIAGNOSTICS_DB_PASSWORD` | yes (not for `--dry-run`) | The new role's password. Minimum 20 characters. Never printed or logged. |
 | `AI_DIAGNOSTICS_PROVISION_DATABASE_URL` | no | Connection that may create roles. Defaults to `DATABASE_URL`. |
-| `AI_DIAGNOSTICS_DB_ROLE` | no | Role name. Defaults to `ai_diagnostics_ro`. Refused if it equals the provisioning role. |
-| `AI_DIAGNOSTICS_DB_PRESERVE_TEMP_ROLES` | no | Comma-separated roles that must keep `TEMPORARY` on the database (see below). Defaults to the provisioning role. |
+| `AI_DIAGNOSTICS_DB_ROLE` | no | Role name. Defaults to `ai_diagnostics_ro`. Refused if it equals the provisioning role, or if it is not a supported identifier (below). |
+| `AI_DIAGNOSTICS_DB_PRESERVE_TEMP_ROLES` | no | Comma-separated roles that must keep `TEMPORARY` on the database (see below). Defaults to the provisioning role, so a deployment whose **application** role name is unsupported must set this explicitly. |
+
+**Supported identifiers.** Every role and database name the script interpolates must
+be letters, digits and underscores only, starting with a letter or underscore, at most
+63 characters. That is narrower than PostgreSQL allows: these names are also emitted as
+SQL literals inside dollar-quoted `DO $$ … $$` blocks, where a `$` would end the block
+early. A managed-provider name such as `tac-app` (AWS RDS) or `user@server` (Azure
+Database for PostgreSQL) is therefore refused, with a message naming the variable that
+carried it. Create the diagnostics role under a supported name, and for
+`AI_DIAGNOSTICS_DB_PRESERVE_TEMP_ROLES` see the `TEMPORARY` note below — a superuser
+application role does not need listing at all.
 
 Then set the connection string in the deployment environment (the Compose `.env`):
 
@@ -119,8 +157,15 @@ public code, so "which tables can Diagnostics read" is answered by reading one f
   `pg_monitor`, `pg_maintain`), each guarded by an existence check because that set
   grows with the server version.
 - Grants `CONNECT` on the database and `USAGE` on schema `public` — never `CREATE`.
-- Revokes all table, sequence, and routine privileges plus default privileges, then
-  grants back only the declared `SELECT` allowlist.
+- Revokes all table and sequence privileges plus default privileges, then grants back
+  only the declared `SELECT` allowlist.
+- Revokes the role's own routine privileges. Note what that does **not** do:
+  PostgreSQL grants `EXECUTE` on every function to `PUBLIC` by default and a `PUBLIC`
+  grant cannot be revoked for one role, so the diagnostics role can still call the
+  schema's functions. What contains that is the read-only transaction plus the runtime
+  self-check, which refuses the role if it can execute any `SECURITY DEFINER` routine
+  in `public` — the one shape that would run with its owner's privileges. This
+  schema's functions are all ordinary trigger functions, so the count is zero.
 
 **It is safe to re-run, and re-running is the intended path** for rotating the
 password and for picking up a new table grant. Because it is declarative, a re-run
@@ -173,16 +218,18 @@ every restriction at the same time.
 | `databaseState` | Meaning | Operator action |
 | --- | --- | --- |
 | `not_configured` | `AI_DIAGNOSTICS_DATABASE_URL` is not set. Nothing was contacted. | Provision the role and set the variable. |
-| `misconfigured` | Set, but unusable as configured: not a valid `postgres://` URL, no username, or it names the **same role** as `DATABASE_URL`. | Fix the connection string; it must be the dedicated role. |
-| `unverified` | Set, but the server could not be asked — unreachable host, bad password, connection limit. The role is **not** trusted. | Fix connectivity or credentials, then re-check. |
-| `over_privileged` | Reachable, and the server reports the role is **not** least-privilege. | Re-run the provisioning script; investigate how it drifted. |
-| `verified` | The server itself confirmed a non-superuser, SELECT-only role. | Nothing. |
+| `misconfigured` | Set, but unusable as configured: not a valid `postgres://` URL, no username, it names the **same role** as `DATABASE_URL`, or it carries one of the refused query parameters above. | Fix the connection string; it must be the dedicated role, with no overriding parameters. |
+| `unverified` | Set, but the server could not be asked — unreachable host, bad password, connection limit, or no answer inside the probe deadline. The role is **not** trusted. | Fix connectivity or credentials, then re-check. |
+| `over_privileged` | Reachable, and the server's answer is not acceptable: the role holds a privilege ADR-007 forbids, can read a relation the allowlist does not declare, or is not even the role the connection string names. | Re-run the provisioning script and investigate how it drifted. If the role name in the string does not match `current_user`, fix the string. |
+| `verified` | The server itself confirmed the named role is a non-superuser that can only `SELECT`, and only from the declared allowlist. | Nothing. |
 
 The response never contains the connection string, the password, or the role name.
 
 Every state except `verified` blocks readiness, and every diagnostics tool call is
-refused independently of readiness — the per-invocation credential gate is the
-control, and readiness is the operator-facing explanation of it.
+refused independently of readiness — the credential gate is the control, and readiness
+is the operator-facing explanation of it. Both read the same server answer and age it
+out on the same one-minute clock, so the screen cannot report green while the executor
+refuses.
 
 ## Connection budget
 
