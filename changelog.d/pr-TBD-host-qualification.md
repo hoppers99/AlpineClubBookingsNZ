@@ -39,4 +39,8 @@
   Their hosting hazard is still recorded for a Booking Officer to see, but the
   booking is never stopped by this policy — those requests have their own approval,
   organiser and supervision arrangements, and any change to them is a separate
-  decision.
+  decision. Everything else a club does is covered, including approving a member's
+  whole-lodge request: at a lodge set to stop uncovered bookings, that approval is
+  stopped too and the officer is told which rule stopped it, with the request left
+  exactly as it was. There is no exception link on that message, because the officer
+  reading it is already the person an exception would be asked of.

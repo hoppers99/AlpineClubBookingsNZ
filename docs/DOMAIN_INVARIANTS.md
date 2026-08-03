@@ -2673,11 +2673,19 @@ reports where each came from.
   `SAME_BOOKING_OWNER` the covering stay is on the member's own account, so the
   member may be told that another of their bookings supplies or depends on cover
   (#2576 §11) — what is withheld is the internal member id, not the fact.
-- **School and organisation workflows are excluded** (§13). They pass
-  `enforcement: "REVIEW_ONLY"`, which evaluates and records the hazard exactly as
-  the review consequence does and never refuses, and the choice travels to their
-  split siblings so one half of a #738 pair cannot be exempt while the other is
-  refused.
+- **School and organisation workflows are excluded** (§13), and only they. The one
+  approval that covers them — `approveSchoolBookingRequest`, since
+  `BookingRequestType.SCHOOL` carries school groups and organisations alike —
+  passes `enforcement: "REVIEW_ONLY"`, which evaluates and records the hazard
+  exactly as the review consequence does and never refuses, and the choice travels
+  to their split siblings so one half of a #738 pair cannot be exempt while the
+  other is refused. The MEMBER whole-lodge approval is deliberately NOT exempt: it
+  is a member-owned booking flow, which the first release covers (§2), and the §13
+  reasoning is about teachers, organisation leaders and custodians. An enforcing
+  lodge therefore refuses that approval, rolling it back untouched, and the officer
+  is told the rule with no exception door — they are the authority it leads to.
+  `adult-member-hosting-call-sites.test.ts` pins the exemption to that one site
+  tree-wide.
 - **An explicit admin decision is an approval.** D-R4's on-behalf reason still
   lets an officer make a non-compliant booking under `ENFORCED`: the reason is
   attributable and is recorded against the approved review, which is the same

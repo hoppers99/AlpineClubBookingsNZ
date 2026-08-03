@@ -2145,18 +2145,23 @@ export async function approveMemberWholeLodgeRequest(input: {
       // #2364. The requesting member owns this booking but is NOT a guest row on
       // it, and ownership never proves attendance — so a whole-lodge party of
       // NON_MEMBER-rated placeholder guests (OD-A) has nobody hosting it, and at
-      // a club running the rule that is a real hazard an admin should see. It
-      // opens PENDING and never blocks the approval; if the member adds
-      // themselves or another adult member to the party, the next reconciliation
-      // clears it with no admin action.
-      // #2569 §13 — school and organisation workflows are EXCLUDED from the
-      // enforced consequence: they run a separate officer-managed process and may
-      // be supervised by teachers, leaders or custodians who do not map onto the
-      // adult club-member host rule. The hazard is still evaluated and recorded so
-      // an officer sees it; the booking is never stopped by this policy.
-      await reconcileAdultMemberHostingReviewWithSiblings(booking.id, tx, {
-        enforcement: "REVIEW_ONLY",
-      });
+      // a club running the rule that is a real hazard an admin should see. Under
+      // the REVIEW consequence it opens PENDING and never blocks the approval; if
+      // the member adds themselves or another adult member to the party, the next
+      // reconciliation clears it with no admin action.
+      //
+      // #2569: NOT `REVIEW_ONLY`, and that is the point. A member whole-lodge
+      // request is a MEMBER-OWNED booking flow, which the owner's first release
+      // covers in as many words; the §13 exclusion names school and organisation
+      // request approvals only, and it is theirs because of teachers, organisation
+      // leaders and custodians who do not map onto the adult club-member rule —
+      // none of which is true of a member booking the whole lodge for their own
+      // party. So an enforcing lodge refuses this approval, the throw rolls it back
+      // untouched, and the route names the rule to the approving officer with no
+      // exception door, because that officer IS the authority the door leads to.
+      // Their remedies are to put a qualifying adult member in the party, move the
+      // request to another lodge, or change the lodge's setting.
+      await reconcileAdultMemberHostingReviewWithSiblings(booking.id, tx);
 
       // Receivable for the finance surfaces. Pay-on-account via the existing
       // INTERNET_BANKING source; NO PaymentLink row is created, so no tokenised
