@@ -204,6 +204,61 @@ taken.
    transaction on a database error part-way through. Only a hand-trimmed or
    partially-written file can be in that state; a bundle either tool produced cannot.
 
+### The obsolete family-group "role" column is removed (#2520)
+
+**Nothing your club does changes, and no screen changes — but this removal needs
+the same maintenance window as the section above, and if both ship together they
+share one window.**
+
+**What is being removed.** `FamilyGroupMember.role` was a per-membership label
+('MEMBER', 'ADMIN', or 'LEAD') on the family-group join table. It stopped granting
+anything in #2284, when the one power it ever gated — declaring a partner for a
+family member who has no login of their own, in one step — was re-anchored onto who
+is recorded as having confirmed that member's details. Nothing has read the label
+since, and nothing displayed it even before that. `20260803030000_contract_drop_family_group_member_role`
+drops the column.
+
+**Family groups carry no rank at all now.** Every adult login co-member of a family
+group is equal — that has been the rule since #2284, and this removes the last
+trace of the old "group admin" idea from the database.
+
+**Why the window.** The runtime code that stops using the column and the migration
+that drops it ship in the same release, by owner decision (3 Aug 2026) rather than
+carrying an obsolete column through another upgrade. So the version currently
+running still names the column — in ordinary reads, in every insert, and in a
+filter — and it cannot serve family-group pages, onboarding, family requests,
+member merge or Xero member import for the moments after the column is dropped.
+The deploy therefore takes a short planned outage:
+
+1. build and validate the new images **first**;
+2. take a fresh backup and **verify it restores**;
+3. put the site into maintenance mode / remove public traffic;
+4. stop the old app **and** every worker, scheduler and queue consumer, then check
+   nothing old is still connected;
+5. record the pre-migration checks (row count, the label values with counts, and —
+   recommended — a per-row dump, the only way to get the exact labels back later);
+6. migrate, with `ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS=1` and a
+   `BLUE_GREEN_MIGRATION_OVERRIDE_REASON` naming the window;
+7. verify the column is gone;
+8. start the replacement app and workers, smoke-test sign-in, family groups, family
+   requests and member merge, check the logs, then restore traffic.
+
+The migration itself is one metadata-only statement on a small table, so the window
+is dominated by stopping and starting the application. Full sequence, with the exact
+check queries, is in `docs/PRODUCTION_UPGRADE_RUNBOOK.md` §2.4.1.
+
+**If you need to go back.** Prefer going forward. If the new release will not start,
+the migration ships a tested reverse script beside it,
+`prisma/migrations/20260803030000_contract_drop_family_group_member_role/rollback.sql`,
+which recreates the column in exactly the shape the previous version expects and
+refills every row with `'MEMBER'`. **Do not start the old version before running it
+(or restoring the backup)** — the old version cannot run against the migrated
+database. Note that the original per-row labels cannot be restored by script:
+PostgreSQL cannot un-drop a column. Nothing reads them, so that is a record-keeping
+loss rather than a behavioural one, with one fail-closed exception noted in the
+runbook. Both directions were rehearsed against a production-shaped database before
+this shipped (`docs/PRODUCTION_UPGRADE_RUNBOOK.md` §7.2).
+
 ### Re-export configuration bundles for format version 4 (#2364)
 
 Configuration bundles now require exact **format version 4**. Version 4 adds a

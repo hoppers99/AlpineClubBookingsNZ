@@ -23,8 +23,8 @@
   with a login in a family group is equal, which is what the club's rules already
   said.
 
-  The column is deliberately left in the database for one more release. Removing
-  it is a destructive migration that is only safe to run once this release is
-  live, so it ships as the second half of #2520 in a later release. Nothing for
-  an operator to do now, and the values still stored in the column are harmless:
-  they are simply no longer consulted by anything.
+  The column itself is removed in the same release — see the following entry,
+  which is the half your operator needs to read, because it is the half that needs
+  a short maintenance window. An earlier plan left the column in the database for
+  one more release; the club chose to finish the job in one release rather than
+  carry an obsolete column through another upgrade.
