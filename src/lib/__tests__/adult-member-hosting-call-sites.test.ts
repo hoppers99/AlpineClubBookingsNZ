@@ -308,6 +308,104 @@ describe("every refusing surface answers with something the caller can act on", 
   });
 });
 
+describe("the same-owner refusal and the escalation seam (#2576 §6, §8, §9)", () => {
+  const REFUSAL_CATCHERS = sourceFilesNaming(
+    "instanceof SameOwnerCoverageWouldBreakError",
+  );
+
+  it("catches the same-owner refusal on every member self-service surface", () => {
+    // The five change classes §6 names that a member can reach: cancelling,
+    // removing a guest, adding guests (which moves the night picture), a date
+    // change and a batch edit. A path that raises it and does not catch it answers
+    // a bare 409 with no list of the member's own affected bookings — which is the
+    // whole content of the message.
+    expect(REFUSAL_CATCHERS).toEqual([
+      "src/app/api/bookings/[id]/cancel/route.ts",
+      "src/app/api/bookings/[id]/guests/[guestId]/route.ts",
+      "src/app/api/bookings/[id]/guests/route.ts",
+      "src/app/api/bookings/[id]/modify-dates/route.ts",
+      "src/app/api/bookings/[id]/modify/route.ts",
+    ]);
+  });
+
+  it("answers with the structured body, above any generic ApiError branch", () => {
+    // Same positional trap as its #2569 sibling: `SameOwnerCoverageWouldBreakError`
+    // extends `ApiError`, so below a generic branch the member loses the booking
+    // references, the lodge and the uncovered nights.
+    for (const file of REFUSAL_CATCHERS) {
+      const source = readRepoCode(file);
+      expect(source, file).toContain("buildSameOwnerCoverageRefusalBody(");
+      const shared = sharedApiErrorName(source);
+      if (shared === null) continue;
+      const generic = source.indexOf(`instanceof ${shared}`);
+      if (generic === -1) continue;
+      expect(
+        source.indexOf("instanceof SameOwnerCoverageWouldBreakError"),
+        file,
+      ).toBeLessThan(generic);
+    }
+  });
+
+  it("uses the enqueue-only seam on exactly the confirming paths that must not refuse", () => {
+    // §9 requires every confirming path to re-read the hosting facts. Most do it by
+    // reconciling inside their own transaction, which REFUSES an uncovered booking
+    // at an enforcing club. These four cannot: capacity is claimed and a charge is
+    // in flight or settled, so §8 applies instead — allow the transition, record the
+    // bounded re-evaluation with it, escalate to an urgent incident afterwards.
+    // A FIFTH file appearing here would be a booking path quietly opting out of the
+    // refusal, which is exactly the shape §13's carve-out assertion exists to catch.
+    expect(sourceFilesNaming("enqueueOwnHostingCoverageReevaluation(")).toEqual([
+      "src/app/api/admin/bookings/[id]/confirm-pending-guests/route.ts",
+      "src/app/api/payments/switch-to-internet-banking/route.ts",
+      "src/lib/adult-member-hosting-review.ts",
+      "src/lib/cron-confirm-pending.ts",
+      "src/lib/group-settlement.ts",
+    ]);
+  });
+
+  it("drains after the commit on every path that can record work", () => {
+    // A queue row with nobody draining it is §7's "immediate re-evaluation" turned
+    // into "within three hours". Every file that enqueues must also drain, and the
+    // drain must be OUTSIDE the transaction — it re-reads committed facts and sends
+    // email, neither of which is safe inside one.
+    const enqueuers = sourceFilesNaming(
+      "enqueueOwnHostingCoverageReevaluation(",
+    ).filter((file) => file !== "src/lib/adult-member-hosting-review.ts");
+    for (const file of enqueuers) {
+      expect(readRepoCode(file), file).toContain(
+        "settleHostingCoverageAfterCommit()",
+      );
+    }
+    // ...and the escalating CHANGE paths drain too, since that is where an
+    // officer's override becomes an incident and an email.
+    for (const file of [
+      "src/lib/booking-cancel.ts",
+      "src/lib/booking-batch-modification-service.ts",
+      "src/lib/booking-date-modification-service.ts",
+      "src/app/api/bookings/[id]/guests/route.ts",
+      "src/app/api/bookings/[id]/guests/[guestId]/route.ts",
+    ]) {
+      expect(readRepoCode(file), file).toContain(
+        "settleHostingCoverageAfterCommit()",
+      );
+    }
+  });
+
+  it("never drains through a transaction client", () => {
+    // The drain takes the module client by default. A call that handed it a `tx`
+    // would read the uncommitted rows it exists to re-read, and would send email
+    // from a transaction that can still roll back.
+    for (const file of sourceFilesNaming("settleHostingCoverageAfterCommit(")) {
+      const source = readRepoCode(file);
+      for (const call of source.matchAll(
+        /settleHostingCoverageAfterCommit\(([^)]*)\)/g,
+      )) {
+        expect(call[1].trim(), `${file}: ${call[0]}`).not.toMatch(/\btx\b/);
+      }
+    }
+  });
+});
+
 describe("no policy read inside a booking transaction (#2569 §7)", () => {
   it("the create path evaluates the proposed party before the creating service runs", () => {
     // `evaluateProposedAdultMemberHosting` loads the policy rows and the party's
