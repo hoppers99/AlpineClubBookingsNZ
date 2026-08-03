@@ -19,11 +19,45 @@
 // For those three, reading the source is not a shortcut; it is the only honest
 // test. Mirrors the convention in member-guest-add-call-sites.test.ts.
 import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 
 function readRepoFile(relativePath: string): string {
   return readFileSync(path.resolve(process.cwd(), relativePath), "utf8");
+}
+
+/**
+ * Every non-test source file under `src/` that names `identifier`, as sorted
+ * repo-relative POSIX paths.
+ *
+ * For assertions of the form "this wording belongs to exactly these paths". A
+ * hand-listed set of files is not that assertion: it passes when a NEW site starts
+ * using the thing, which is the only way the claim can ever be broken. Tests are
+ * excluded because they legitimately name whatever they assert about.
+ */
+function sourceFilesNaming(identifier: string): string[] {
+  const root = path.resolve(process.cwd(), "src");
+  const found: string[] = [];
+  const walk = (dir: string) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name === "__tests__") continue;
+        walk(full);
+        continue;
+      }
+      if (!/\.tsx?$/.test(entry.name) || /\.test\.tsx?$/.test(entry.name)) {
+        continue;
+      }
+      if (readFileSync(full, "utf8").includes(identifier)) {
+        found.push(
+          path.relative(process.cwd(), full).split(path.sep).join("/"),
+        );
+      }
+    }
+  };
+  walk(root);
+  return found.sort();
 }
 
 /** The five paths the issue names, and how each of them refuses. */
@@ -319,7 +353,40 @@ describe("the sixth refusal site, and the paths that were missing (#2543)", () =
     expect(subclass).toBeGreaterThan(-1);
     expect(generic).toBeGreaterThan(-1);
     expect(subclass).toBeLessThan(generic);
+    // Audience-branched, because this is the one refusal that can be delivered to
+    // somebody who does not own the booking (self-removal from another member's
+    // booking), where `repricedUnpaidMemberCount: 0` would expose the OWNER's unpaid
+    // subscription. The service decides, since only it still holds the booking row.
+    expect(source).toContain('err.audience === "OTHER_PARTY_MEMBER"');
+    expect(source).toContain(
+      "buildPaidUpAdultRefusalBodyForOtherPartyMember(err.violation)",
+    );
     expect(source).toContain("buildPaidUpAdultRefusalBody(err.violation)");
+  });
+
+  it("the removal service asks for the narrowed audience when the actor is not the owner", () => {
+    const source = readRepoFile("src/lib/booking-guest-removal-service.ts");
+    expect(source).toContain(
+      'booking.memberId === actorMemberId ? "BOOKER" : "OTHER_PARTY_MEMBER"',
+    );
+    // And it is the ONLY site that asks for it: every other gate runs for the
+    // unfinancial member themselves (or for an admin, who is exempt), so narrowing
+    // there would withhold a count from the one person it is already about.
+    const askers = sourceFilesNaming("OTHER_PARTY_MEMBER").filter(
+      // The module that declares the audience type and implements the narrowing.
+      (file) => file !== "src/lib/subscription-lockout-enforcement.ts",
+    );
+    expect(askers).toEqual([
+      "src/app/api/bookings/[id]/guests/[guestId]/route.ts",
+      "src/lib/booking-guest-removal-service.ts",
+    ]);
+    // And the narrowed builder is called from that route and nowhere else, so no
+    // other path can quietly start withholding a count from the person it is about.
+    expect(
+      sourceFilesNaming("buildPaidUpAdultRefusalBodyForOtherPartyMember").filter(
+        (file) => file !== "src/lib/subscription-lockout-enforcement.ts",
+      ),
+    ).toEqual(["src/app/api/bookings/[id]/guests/[guestId]/route.ts"]);
   });
 
   it("the modify route answers the refusal with the shared body, before the generic ApiError branch", () => {
@@ -472,16 +539,46 @@ describe("the booking OWNER reaches every evaluation (#2543, owner decision 3 Au
       // Not the frozen violation's message, which the officer's snapshot keeps.
       expect(source, file).not.toContain("error: nonMemberPricing.violation.message");
     }
-    for (const file of [
-      "src/app/api/bookings/route.ts",
-      "src/app/api/bookings/[id]/confirm-draft/route.ts",
-      "src/app/api/bookings/[id]/modify-quote/route.ts",
-      "src/lib/group-booking.ts",
-    ]) {
-      expect(readRepoFile(file), file).not.toContain(
-        "formatMissingPaidUpAdultWaitlistRefusal",
-      );
-    }
+    // The negative half is a TREE-WIDE sweep, not a hand-listed set of files.
+    // Listing four of them was the bug: it omitted `.../guests/route.ts` — the
+    // fifth entry of this file's own WRITE_PATHS — and every other refusal site
+    // tested elsewhere in this suite (the modify apply path, the removal service
+    // and its route, the modify route, the exception-request service). A later lane
+    // wiring the refusal through one of those would reach for this formatter (it is
+    // the nicer-reading sentence) and tell a member "You've kept your place on the
+    // waitlist" on a refusal with no waitlist entry behind it, and the suite would
+    // have stayed green. Enumerating the tree cannot go stale as sites are added.
+    const callers = sourceFilesNaming(
+      "formatMissingPaidUpAdultWaitlistRefusal",
+    ).filter(
+      // The module that DEFINES and exports it, which necessarily names it.
+      (file) => file !== "src/lib/policies/subscription-lockout-pricing.ts",
+    );
+    expect(callers).toEqual([
+      "src/lib/waitlist-cross-lodge.ts",
+      "src/lib/waitlist.ts",
+    ]);
+  });
+
+  it("every waitlist-confirm SUCCESS branch carries the rate notice, cross-lodge included", () => {
+    // The route has three success returns — cross-lodge promotion, the $0
+    // auto-PAID flip, and the ordinary confirm — and the cross-lodge one silently
+    // dropped the notice while the service computed it and DOMAIN_INVARIANTS said it
+    // rode the result. That branch is the one that earns it: a cross-lodge quote can
+    // differ from the member's own lodge by the whole member/non-member spread.
+    // Structural because all three build a plain object literal; a behavioural test
+    // of two of them passes just as green.
+    const source = readRepoFile(
+      "src/app/api/bookings/[id]/waitlist-confirm/route.ts",
+    );
+    const successReturns = source.split("success: true,").length - 1;
+    const notices =
+      source.split(
+        "subscriptionMemberRateNotice: result.subscriptionMemberRateNotice ?? null,",
+      ).length - 1;
+
+    expect(successReturns).toBe(3);
+    expect(notices).toBe(successReturns);
   });
 
   it("the waitlist-confirm route lets the path's own sentence win over the shared body", () => {

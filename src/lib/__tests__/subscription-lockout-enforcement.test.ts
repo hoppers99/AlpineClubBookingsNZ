@@ -44,6 +44,7 @@ import {
 import {
   PaidUpAdultMemberRequiredError,
   buildPaidUpAdultRefusalBody,
+  buildPaidUpAdultRefusalBodyForOtherPartyMember,
   evaluateNonMemberPricingRequirements,
   evaluateProposedPaidUpAdultPresence,
   loadUnpaidSubscriptionMemberIds,
@@ -790,6 +791,83 @@ describe("the refusal payload (#2543)", () => {
     expect(violationFingerprint(one!.violation!)).not.toBe(
       violationFingerprint(two!.violation!),
     );
+  });
+});
+
+describe("the refusal is audience-scoped, and only where it has to be (#2543)", () => {
+  /**
+   * The owner-arm-alone violation: nobody in the party is repriced, so
+   * `repricedUnpaidMemberCount` is 0 and the only rule that can have fired is the
+   * booking owner's. That is the exact refusal a member self-removing from somebody
+   * else's booking can receive, and the count is what points at the owner.
+   */
+  async function ownerArmOnlyViolation() {
+    const result = await evaluateFor("adult-unpaid", [UNPAID_ADULT], [NON_MEMBER]);
+    expect(result?.violation?.requirements.repricedUnpaidMemberCount).toBe(0);
+    return result!.violation!;
+  }
+
+  it("gives the booker everything, including the count that names the trigger", async () => {
+    const violation = await ownerArmOnlyViolation();
+    const body = buildPaidUpAdultRefusalBody(violation);
+
+    expect(body.violations[0]).toEqual(violation);
+    expect(body.exceptionReview.violations[0]).toEqual(violation);
+  });
+
+  it("defaults to the booker, so a throw site that says nothing cannot silently narrow", async () => {
+    const violation = await ownerArmOnlyViolation();
+    expect(new PaidUpAdultMemberRequiredError(violation).audience).toBe("BOOKER");
+    expect(
+      new PaidUpAdultMemberRequiredError(violation, "OTHER_PARTY_MEMBER").audience,
+    ).toBe("OTHER_PARTY_MEMBER");
+  });
+
+  it("withholds the trigger count from a member who does not own the booking", async () => {
+    const violation = await ownerArmOnlyViolation();
+    const body = buildPaidUpAdultRefusalBodyForOtherPartyMember(violation);
+
+    for (const shown of [body.violations[0], body.exceptionReview.violations[0]]) {
+      expect(shown.requirements).not.toHaveProperty(
+        "repricedUnpaidMemberCount",
+      );
+      // The RULE still travels, so the refusal still reads as a threshold rather
+      // than an unexplained no, and the party size is not a disclosure — the
+      // recipient is on the booking and can count it.
+      expect(shown.requirements).toMatchObject({
+        kind: "PAID_UP_ADULT_MEMBER",
+        requiredPaidUpAdultMembers: 1,
+        participantCount: 1,
+      });
+    }
+  });
+
+  it("keeps the message, the door and the HOLD promise for that member", async () => {
+    const violation = await ownerArmOnlyViolation();
+    const narrowed = buildPaidUpAdultRefusalBodyForOtherPartyMember(violation);
+    const full = buildPaidUpAdultRefusalBody(violation);
+
+    // Everything the member acts on is identical. Narrowing must not turn a
+    // reviewable refusal into a dead end.
+    expect(narrowed.error).toBe(full.error);
+    expect(narrowed.details).toBe(full.details);
+    expect(narrowed.code).toBe(full.code);
+    expect(narrowed.exceptionRequestPath).toBe(full.exceptionRequestPath);
+    expect(narrowed.exceptionReview.capacityMode).toBe("HOLD");
+    expect(narrowed.violations[0].affectedNights).toEqual(
+      violation.affectedNights,
+    );
+  });
+
+  it("never mutates the frozen violation, so the officer's snapshot and its fingerprint are untouched", async () => {
+    const violation = await ownerArmOnlyViolation();
+    const fingerprintBefore = violationFingerprint(violation);
+
+    buildPaidUpAdultRefusalBodyForOtherPartyMember(violation);
+
+    expect(violation.requirements.repricedUnpaidMemberCount).toBe(0);
+    expect(violationFingerprint(violation)).toBe(fingerprintBefore);
+    expect(fingerprintBefore).toContain("repriced=0");
   });
 });
 

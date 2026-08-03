@@ -1533,4 +1533,69 @@ describe("a pre-#2543 bundle's `enabled` key still imports to the right mode (#2
     );
     expect(plan.categories[0].errors.join(" ")).toContain("mode");
   });
+
+  it("an unrecognised mode is refused EVEN WITH a legacy boolean the hook could have derived from", async () => {
+    // The hook runs before the validation loop now, so it must NOT overwrite a mode
+    // the bundle actually states. If it did, `mode: "CHARGE_DOUBLE", enabled: true`
+    // would be silently "corrected" to HARD_BLOCK and a typo in a hand-edited file
+    // would move a club's booking policy with no error at all.
+    const zip = lockoutBundle({
+      mode: "HRD_BLOCK",
+      enabled: false,
+      financialYearEndMonthOverride: null,
+      textFallbackEnabled: true,
+      useFeeScheduleItemCodes: false,
+    });
+    const plan = await buildImportPlan(
+      stubDb({ membershipLockoutSettings: targetOnNonMemberPricing }),
+      zip,
+      { mode: "merge" },
+    );
+    expect(plan.categories[0].errors.join(" ")).toMatch(
+      /mode — "HRD_BLOCK" is not a valid SubscriptionLockoutMode/,
+    );
+  });
+
+  it.each(["merge", "overwrite"] as const)(
+    "a present null mode with NOTHING to derive from fails the dry-run — %s mode",
+    async (mode) => {
+      // The residual `mode` had while it carried no `required` rule. `mode` is now a
+      // NOT NULL column, and nothing upstream can fix this file: there is no
+      // `enabled` key for the hook to read, so the null survives to the write. On a
+      // target with no settings row the apply's create branch passes the payload
+      // unfiltered (`create: { id: "default", ...data }`), and overwrite mode passes
+      // it unfiltered on the update branch too, so Prisma gets `mode: null` against
+      // a non-nullable enum and the whole import transaction aborts on a raw driver
+      // error instead of a dry-run message. It must fail HERE.
+      const zip = lockoutBundle({
+        mode: null,
+        financialYearEndMonthOverride: null,
+        textFallbackEnabled: true,
+        useFeeScheduleItemCodes: false,
+      });
+      const plan = await buildImportPlan(stubDb({}), zip, { mode });
+      expect(plan.categories[0].errors.join(" ")).toMatch(
+        /mode — null is not allowed \(required setting\)/,
+      );
+    },
+  );
+
+  it("requiring mode costs a PRE-#2543 bundle nothing, because the key is absent rather than null", async () => {
+    // The reason `required` is safe here: `parseSingleton` skips a field that is not
+    // in the record at all, so the rule can only ever fire on a PRESENT null. A
+    // bundle exported before #2543 carries `enabled` and no `mode` key, and must
+    // still import cleanly.
+    const zip = lockoutBundle(
+      {
+        enabled: true,
+        financialYearEndMonthOverride: null,
+        textFallbackEnabled: true,
+        useFeeScheduleItemCodes: false,
+      },
+      "0.13.1",
+    );
+    const plan = await buildImportPlan(stubDb({}), zip, { mode: "overwrite" });
+    expect(plan.errors).toEqual([]);
+    expect(plan.categories[0].errors).toEqual([]);
+  });
 });
