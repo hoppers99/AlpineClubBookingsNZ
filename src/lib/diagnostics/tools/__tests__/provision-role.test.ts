@@ -32,6 +32,20 @@ function sql(overrides: Partial<typeof base> = {}): string {
   return buildAiDiagnosticsRoleSql({ ...base, ...overrides }).join("\n");
 }
 
+/**
+ * The catch-all membership sweep, located by its own `DECLARE`. It has to be picked
+ * out by something specific: the eight predefined-role revokes now query
+ * `pg_auth_members` too, so a substring search for that table would match nine
+ * statements and an assertion could pass against the wrong one.
+ */
+function findMembershipSweep(statements: string[]): string {
+  const sweep = statements.find((candidate) =>
+    candidate.includes("membership record"),
+  );
+  expect(sweep, "no catch-all membership sweep statement").toBeDefined();
+  return sweep ?? "";
+}
+
 describe("AI Diagnostics SELECT-only role provisioning SQL (#2374, ADR-007)", () => {
   it("creates the role idempotently rather than failing on a re-run", () => {
     const statements = buildAiDiagnosticsRoleSql(base);
@@ -109,35 +123,73 @@ describe("AI Diagnostics SELECT-only role provisioning SQL (#2374, ADR-007)", ()
     );
   });
 
-  it("revokes escalating predefined roles, guarded for server versions that lack them", () => {
+  it("revokes escalating predefined roles PER GRANTOR, not with a bare REVOKE", () => {
     const statements = buildAiDiagnosticsRoleSql(base);
     for (const predefined of FORBIDDEN_PREDEFINED_ROLES) {
       const statement = statements.find((candidate) =>
         candidate.includes(`'${predefined}'`),
       );
       expect(statement, `no revoke statement for ${predefined}`).toBeDefined();
-      // Guarded: a bare REVOKE of a role that does not exist on this server
-      // (pg_maintain is PostgreSQL 17+) would abort the whole provisioning run.
-      expect(statement).toContain("IF EXISTS (SELECT 1 FROM pg_catalog.pg_roles");
-      expect(statement).toContain("REVOKE %I FROM %I");
+      // A membership is recorded per grantor, and a REVOKE without GRANTED BY removes
+      // only the CURRENT role's own grant — even for a superuser. Measured on
+      // postgres:16.14: a `pg_monitor` grant made by a separate deployer role survived
+      // a superuser's bare REVOKE, which returned success with only a WARNING.
+      expect(statement).toContain("GRANTED BY %I");
+      expect(statement).toContain("pg_catalog.pg_auth_members");
+      expect(statement).toContain("grantor.oid = m.grantor");
+      // The bare form must be gone, not merely accompanied.
+      expect(statement).not.toMatch(/REVOKE %I FROM %I'/);
+      // The old existence guard is unnecessary once the revoke is driven by recorded
+      // rows: a role absent from this server (pg_maintain is PostgreSQL 17+)
+      // contributes none.
+      expect(statement).not.toContain("IF EXISTS (SELECT 1 FROM pg_catalog.pg_roles");
     }
   });
 
   it("revokes EVERY remaining role membership, not only the named ones", () => {
     const statements = buildAiDiagnosticsRoleSql(base);
-    const sweep = statements.find((candidate) =>
-      candidate.includes("pg_catalog.pg_auth_members"),
-    );
+    const sweep = findMembershipSweep(buildAiDiagnosticsRoleSql(base));
     // The named list above is a subset. A membership in an ordinary application role
     // is one `SET ROLE` from that role's privileges and is invisible to every
     // ordinary privilege check, because the role is NOINHERIT — so provisioning
     // strips the lot rather than enumerating what an operator might have granted.
-    expect(sweep, "no statement sweeps remaining role memberships").toBeDefined();
-    expect(sweep).toContain("REVOKE %I FROM %I");
     expect(sweep).toContain("'ai_diagnostics_ro'");
     // Direct grants only, which is complete: a `SET ROLE` chain always starts with a
     // direct edge from this role, so removing every direct edge removes the closure.
-    expect(sweep).toContain("SELECT DISTINCT g.rolname");
+    expect(sweep).toContain("WHERE member.rolname = 'ai_diagnostics_ro'");
+    expect(statements.length).toBeGreaterThan(0);
+  });
+
+  it("carries the GRANTOR into every membership revoke", () => {
+    // The defect this replaced: the loop selected `DISTINCT <role name>` and revoked
+    // without `GRANTED BY`, which discarded the one column the REVOKE needs. Measured
+    // on postgres:16.14 — a membership granted by a deployer role survived a
+    // superuser's bare REVOKE, the statement reported success with a WARNING, the DO
+    // block committed, and `pg_has_role(…, 'MEMBER')` stayed true.
+    const sweep = findMembershipSweep(buildAiDiagnosticsRoleSql(base));
+    expect(sweep).toContain("grantor.oid = m.grantor");
+    expect(sweep).toContain("GRANTED BY %I");
+    expect(sweep).toContain("membership.grantor");
+    // The discarding form must be gone, not merely supplemented.
+    expect(sweep).not.toContain("SELECT DISTINCT g.rolname");
+    expect(sweep).not.toMatch(/REVOKE %I FROM %I'/);
+  });
+
+  it("RE-CHECKS after the sweep and raises, so silent survival cannot commit", () => {
+    // A PostgreSQL WARNING is not a failure, and the whole point of running this list
+    // in one transaction is that a partial run must not commit. The re-check is what
+    // makes the operator guide's "rolls back" true.
+    const sweep = findMembershipSweep(buildAiDiagnosticsRoleSql(base));
+    expect(sweep).toContain("RAISE EXCEPTION");
+    expect(sweep).toContain("still a member of");
+    // Re-read from `pg_auth_members` and NOT `pg_has_role`: `pg_database_owner` is an
+    // implicit membership with no recorded row and nothing to revoke, so a
+    // `pg_has_role` re-check would make provisioning impossible for a role that owns
+    // its database instead of merely refused at runtime.
+    expect(sweep).not.toContain("pg_has_role");
+    expect(sweep.indexOf("RAISE EXCEPTION")).toBeGreaterThan(
+      sweep.indexOf("END LOOP"),
+    );
   });
 
   it("ships an EMPTY SELECT allowlist — AID-5 carries no domain tool", () => {
@@ -179,7 +231,9 @@ describe("AI Diagnostics SELECT-only role provisioning SQL (#2374, ADR-007)", ()
       // every GRANT so it cannot strip a membership this run was meant to leave in
       // place (there is none today, and the ordering keeps that true by construction).
       const statements = buildAiDiagnosticsRoleSql(base);
-      const sweep = indexOfStatement(statements, "pg_catalog.pg_auth_members");
+      // `membership record` and not the table name: the predefined-role revokes read
+      // `pg_auth_members` as well, and this must be the catch-all sweep.
+      const sweep = indexOfStatement(statements, "membership record");
       expect(indexOfStatement(statements, "NOINHERIT")).toBeLessThan(sweep);
       expect(sweep).toBeLessThan(
         indexOfStatement(statements, "GRANT CONNECT ON DATABASE"),

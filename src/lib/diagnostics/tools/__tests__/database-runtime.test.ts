@@ -51,6 +51,7 @@ const pg = vi.hoisted(() => {
     can_read_server_files: false,
     role_memberships: 0,
     forbidden_role_memberships: 0,
+    forbidden_role_names: [] as string[],
     writable_relations: 0,
     undeclared_readable_relations: 0,
     executable_security_definer_routines: 0,
@@ -303,6 +304,7 @@ describe("getDiagnosticsDatabase — the verified pool (#2374, ADR-007)", () => 
     // The named list is a subset. A membership in an ordinary application role is
     // invisible to every other column here (NOINHERIT), so the TOTAL is the gate.
     ["belongs to ANY other role", { role_memberships: 1 }],
+    ["names an escalating role", { forbidden_role_names: ["pg_read_all_data"] }],
     ["can write to a relation", { writable_relations: 1 }],
     ["can read an undeclared relation", { undeclared_readable_relations: 1 }],
     [
@@ -319,6 +321,26 @@ describe("getDiagnosticsDatabase — the verified pool (#2374, ADR-007)", () => 
       // The report travels so readiness can say "repair the role", not "check
       // connectivity" — two different operator actions.
       expect(handle.report).toBeDefined();
+    }
+  });
+
+  it("carries the escalating role NAMES into the report, filtered to our own list", async () => {
+    // Names make the alert actionable, so the report carries them — but only names
+    // that are in this repository's own eight-name constant. The SQL already restricts
+    // the rows, so the second filter cannot change a correct answer; it means a driver,
+    // a mock or a future edit cannot put arbitrary server text into what gets logged.
+    fixture.privilegeRow = {
+      ...SAFE_PRIVILEGE_ROW,
+      forbidden_role_memberships: 2,
+      forbidden_role_names: ["pg_monitor", "tac_app", "pg_read_all_data"],
+    };
+    const handle = await getDiagnosticsDatabase();
+    expect(handle.ok).toBe(false);
+    if (!handle.ok) {
+      expect(handle.report?.forbiddenRoleNames).toEqual([
+        "pg_monitor",
+        "pg_read_all_data",
+      ]);
     }
   });
 

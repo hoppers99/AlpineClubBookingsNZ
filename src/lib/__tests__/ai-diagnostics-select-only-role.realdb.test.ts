@@ -67,6 +67,13 @@ const UNGRANTED_TABLE = "aid5_privilege_ungranted";
 const APP_LIKE_ROLE = "aid5_probe_app_like";
 /** Granted to `APP_LIKE_ROLE`, so membership has to be counted through a chain. */
 const GROUP_LIKE_ROLE = "aid5_probe_group_like";
+/**
+ * A role that makes a grant the PROVISIONER did not make. PostgreSQL records a
+ * membership per grantor, and a REVOKE without `GRANTED BY` removes only the current
+ * role's own grant — so a suite where the provisioner grants everything itself cannot
+ * reach the case where the sweep silently strips nothing.
+ */
+const DEPLOYER_ROLE = "aid5_probe_deployer";
 
 /** PostgreSQL SQLSTATEs this suite asserts on. */
 const INSUFFICIENT_PRIVILEGE = "42501";
@@ -197,8 +204,18 @@ describe("diagnostics privilege proof DB safety guard (#2374)", () => {
         connectionLimit: 6,
       });
       await admin.query("BEGIN");
-      for (const statement of statements) await admin.query(statement);
-      await admin.query("COMMIT");
+      try {
+        for (const statement of statements) await admin.query(statement);
+        await admin.query("COMMIT");
+      } catch (err) {
+        // ROLLBACK so the SHARED admin client stays usable. The statement list can
+        // legitimately fail — the membership sweep raises rather than committing a
+        // role it could not fully strip — and an aborted transaction left open would
+        // make every later query in this suite fail with 25P02 instead of reporting
+        // its own result, turning one real failure into thirty misleading ones.
+        await admin.query("ROLLBACK").catch(() => {});
+        throw err;
+      }
     }
 
     /**
@@ -327,7 +344,7 @@ describe("diagnostics privilege proof DB safety guard (#2374)", () => {
           .catch(() => {});
         // Belt for the membership cases: if one of them failed part-way these roles
         // would otherwise survive the run and be granted again on the next one.
-        for (const role of [APP_LIKE_ROLE, GROUP_LIKE_ROLE]) {
+        for (const role of [APP_LIKE_ROLE, GROUP_LIKE_ROLE, DEPLOYER_ROLE]) {
           await admin.query(`DROP OWNED BY "${role}"`).catch(() => {});
           await admin.query(`DROP ROLE IF EXISTS "${role}"`).catch(() => {});
         }
@@ -705,6 +722,8 @@ describe("diagnostics privilege proof DB safety guard (#2374)", () => {
           if (!handle.ok) {
             expect(handle.reason).toBe("database_role_unsafe");
             expect(handle.report?.forbiddenRoleMemberships).toBe(1);
+            // And it says WHICH one, so the alert is actionable rather than a count.
+            expect(handle.report?.forbiddenRoleNames).toEqual(["pg_read_all_data"]);
           }
 
           // And the capability is real, not theoretical: the role cannot read the
@@ -823,6 +842,129 @@ describe("diagnostics privilege proof DB safety guard (#2374)", () => {
           await closeDiagnosticsDatabase();
         }
       });
+    });
+
+    it("STRIPS a membership granted by somebody other than the provisioner", async () => {
+      // The case this suite structurally could not reach while the provisioner made
+      // every grant itself. A membership is recorded per grantor, and
+      // `REVOKE <role> FROM <member>` without `GRANTED BY` removes only the CURRENT
+      // role's own grant — even for a superuser. So a deployer's grant survived the
+      // sweep, the DO block committed, the CLI reported success, and readiness stayed
+      // `over_privileged` for good while the documented repair claimed to have worked.
+      await withDeclaredGrantsOnly(async () => {
+        await admin.query(`CREATE ROLE "${APP_LIKE_ROLE}" NOSUPERUSER`);
+        await admin.query(`CREATE ROLE "${DEPLOYER_ROLE}" NOSUPERUSER CREATEROLE`);
+        await admin.query(
+          `GRANT "${APP_LIKE_ROLE}" TO "${DEPLOYER_ROLE}" WITH ADMIN OPTION`,
+        );
+        // The GRANT is made by the deployer, not by the provisioning role.
+        await admin.query(`SET ROLE "${DEPLOYER_ROLE}"`);
+        await admin.query(`GRANT "${APP_LIKE_ROLE}" TO "${TEST_ROLE}"`);
+        await admin.query("RESET ROLE");
+        await closeDiagnosticsDatabase();
+        try {
+          const grantor = await admin.query(
+            `SELECT grantor.rolname AS grantor
+             FROM pg_catalog.pg_auth_members m
+             JOIN pg_catalog.pg_roles granted ON granted.oid = m.roleid
+             JOIN pg_catalog.pg_roles member  ON member.oid  = m.member
+             JOIN pg_catalog.pg_roles grantor ON grantor.oid = m.grantor
+             WHERE member.rolname = $1 AND granted.rolname = $2`,
+            [TEST_ROLE, APP_LIKE_ROLE],
+          );
+          // Non-vacuous: the grant really is attributed to the deployer.
+          expect(grantor.rows[0]?.grantor).toBe(DEPLOYER_ROLE);
+          expect(grantor.rows[0]?.grantor).not.toBe(adminRole);
+
+          const refused = await getDiagnosticsDatabase();
+          expect(refused.ok).toBe(false);
+          if (!refused.ok) expect(refused.report?.roleMemberships).toBe(1);
+
+          // The old sweep's REVOKE, run verbatim by the SUPERUSER provisioner: it
+          // returns success, emits a WARNING, and changes nothing.
+          const warnings: string[] = [];
+          const bare = new PgClientCtor({ connectionString: RACE_DB_URL });
+          bare.on("notice", (notice) => {
+            warnings.push(
+              `${String(notice.severity ?? "")}: ${String(notice.message ?? "")}`,
+            );
+          });
+          await bare.connect();
+          try {
+            await bare.query(
+              `REVOKE "${APP_LIKE_ROLE}" FROM "${TEST_ROLE}"`,
+            );
+          } finally {
+            await bare.end().catch(() => {});
+          }
+          expect(warnings.join(" | ")).toContain("has not been granted membership");
+          const survived = await admin.query(
+            `SELECT pg_catalog.pg_has_role($1, $2, 'MEMBER') AS still_member`,
+            [TEST_ROLE, APP_LIKE_ROLE],
+          );
+          expect(survived.rows[0].still_member).toBe(true);
+
+          // The shipped statements, which name the grantor on every revoke and then
+          // re-check before committing.
+          await provision();
+          await closeDiagnosticsDatabase();
+          const swept = await admin.query(
+            `SELECT pg_catalog.pg_has_role($1, $2, 'MEMBER') AS still_member`,
+            [TEST_ROLE, APP_LIKE_ROLE],
+          );
+          expect(swept.rows[0].still_member).toBe(false);
+          const accepted = await getDiagnosticsDatabase();
+          expect(accepted.ok).toBe(true);
+        } finally {
+          // Cleanup names the grantor itself, so it does not depend on the behaviour
+          // under test: if the sweep regresses, this test fails on its own assertions
+          // rather than leaving a membership behind that breaks every later case.
+          await admin
+            .query(
+              `REVOKE "${APP_LIKE_ROLE}" FROM "${TEST_ROLE}" GRANTED BY "${DEPLOYER_ROLE}"`,
+            )
+            .catch(() => {});
+          for (const role of [APP_LIKE_ROLE, DEPLOYER_ROLE]) {
+            await admin.query(`DROP OWNED BY "${role}"`).catch(() => {});
+            await admin.query(`DROP ROLE IF EXISTS "${role}"`).catch(() => {});
+          }
+          await closeDiagnosticsDatabase();
+        }
+      });
+    });
+
+    it("refuses a GRANTED BY revoke from a role without the grantor's privileges", async () => {
+      // The reason the sweep's re-check is a rollback and not a warning: a provisioner
+      // that may not revoke another role's grant cannot silently half-succeed either.
+      await admin.query(`CREATE ROLE "${DEPLOYER_ROLE}" NOSUPERUSER CREATEROLE`);
+      await admin.query(`CREATE ROLE "${APP_LIKE_ROLE}" NOSUPERUSER`);
+      await admin.query(
+        `GRANT "${APP_LIKE_ROLE}" TO "${DEPLOYER_ROLE}" WITH ADMIN OPTION`,
+      );
+      await admin.query(`CREATE ROLE "${GROUP_LIKE_ROLE}" NOSUPERUSER CREATEROLE`);
+      await admin.query(
+        `GRANT "${APP_LIKE_ROLE}" TO "${GROUP_LIKE_ROLE}" WITH ADMIN OPTION`,
+      );
+      try {
+        await admin.query(`SET ROLE "${DEPLOYER_ROLE}"`);
+        await admin.query(`GRANT "${APP_LIKE_ROLE}" TO "${TEST_ROLE}"`);
+        await admin.query("RESET ROLE");
+
+        // A different admin-option holder tries to revoke the deployer's grant.
+        await admin.query(`SET ROLE "${GROUP_LIKE_ROLE}"`);
+        await expect(
+          admin.query(
+            `REVOKE "${APP_LIKE_ROLE}" FROM "${TEST_ROLE}" GRANTED BY "${DEPLOYER_ROLE}"`,
+          ),
+        ).rejects.toMatchObject({ code: INSUFFICIENT_PRIVILEGE });
+      } finally {
+        await admin.query("RESET ROLE").catch(() => {});
+        for (const role of [APP_LIKE_ROLE, DEPLOYER_ROLE, GROUP_LIKE_ROLE]) {
+          await admin.query(`DROP OWNED BY "${role}"`).catch(() => {});
+          await admin.query(`DROP ROLE IF EXISTS "${role}"`).catch(() => {});
+        }
+        await closeDiagnosticsDatabase();
+      }
     });
 
     it("REFUSES membership in a SUPERUSER role, including for server-file access", async () => {

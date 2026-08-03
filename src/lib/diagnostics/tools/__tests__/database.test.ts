@@ -209,6 +209,7 @@ const SAFE: DiagnosticsRolePrivilegeReport = {
   canReadServerFiles: false,
   roleMemberships: 0,
   forbiddenRoleMemberships: 0,
+  forbiddenRoleNames: [],
   writableRelations: 0,
   undeclaredReadableRelations: 0,
   executableSecurityDefinerRoutines: 0,
@@ -236,6 +237,19 @@ describe("isDiagnosticsRolePrivilegeSafe (#2374, ADR-007)", () => {
   it("refuses a role that is a member of any escalating predefined role", () => {
     expect(
       isDiagnosticsRolePrivilegeSafe({ ...SAFE, forbiddenRoleMemberships: 1 }),
+    ).toBe(false);
+  });
+
+  it("refuses on the predefined-role NAMES, so the alert can say which one", () => {
+    // The guide promised a refusal that names the escalation role and nothing emitted
+    // a name: readiness carries no privilege detail by design, and the log carried
+    // counts alone, which left "granted pg_read_all_data" and "granted
+    // pg_signal_backend" indistinguishable where an operator would look.
+    expect(
+      isDiagnosticsRolePrivilegeSafe({
+        ...SAFE,
+        forbiddenRoleNames: ["pg_write_all_data"],
+      }),
     ).toBe(false);
   });
 
@@ -286,7 +300,11 @@ describe("isDiagnosticsRolePrivilegeSafe (#2374, ADR-007)", () => {
     // `DiagnosticsRolePrivilegeReport` and left out of the predicate fails here.
     for (const [key, value] of Object.entries(SAFE)) {
       if (key === "roleName") continue; // The NAME is metadata, not a privilege.
-      const unsafeValue = typeof value === "boolean" ? !value : 1;
+      const unsafeValue = Array.isArray(value)
+        ? ["pg_read_all_data"]
+        : typeof value === "boolean"
+          ? !value
+          : 1;
       expect(
         isDiagnosticsRolePrivilegeSafe({ ...SAFE, [key]: unsafeValue }),
         `${key} is not part of the safety verdict`,
