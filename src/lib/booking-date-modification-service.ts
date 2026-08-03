@@ -44,6 +44,7 @@ import {
   assertBookingNotQuotePriced,
   calculateModificationSettlementOptions,
   lockedNightPricesForGuest,
+  rateSnapshotUpdateForRepricedGuest,
   type BookingModificationSettlementMethod,
   type LoadedBookingForModify,
 } from "@/lib/booking-modify";
@@ -808,8 +809,16 @@ export async function modifyBookingDates({
             stayEnd: newCheckOut,
             priceCents: priceBreakdown.guests[i].priceCents,
             // A date change re-bases every guest at current rates (#1930, E4):
-            // overwrite the rate-type snapshot with the newly priced total.
-            rateMembershipTypeId: priceBreakdown.guests[i].rateMembershipTypeId,
+            // overwrite the rate-type snapshot with the newly priced total —
+            // EXCEPT where the new range keeps nights the guest already bought,
+            // whose locked prices survive (#1036). One item code per guest
+            // cannot describe a stay that mixes locked member-rate nights with
+            // newly priced non-member ones, so there the stored snapshot stands
+            // (#2543). See `rateSnapshotUpdateForRepricedGuest`.
+            rateMembershipTypeId: rateSnapshotUpdateForRepricedGuest(
+              priceBreakdown.guests[i],
+              guestsForPricing[i]?.lockedNightPrices,
+            ),
           },
         });
         await tx.bookingGuestNight.deleteMany({

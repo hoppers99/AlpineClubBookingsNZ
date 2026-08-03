@@ -38,6 +38,7 @@ import {
   assertBookingNotQuotePriced,
   calculateModificationSettlementOptions,
   lockedNightPricesForGuest,
+  rateSnapshotUpdateForRepricedGuest,
   type BookingModificationSettlementMethod,
   type LoadedBookingForModify,
 } from "@/lib/booking-modify";
@@ -45,6 +46,12 @@ import type { SupersededPrimaryPaymentIntent } from "@/lib/booking-payment-clean
 import { createBookingModificationCredit } from "@/lib/member-credit";
 import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
 import { getSeasonYear } from "@/lib/utils";
+import type { SubscriptionLockoutMode } from "@/lib/membership-lockout-settings";
+import {
+  evaluateNonMemberPricingRequirements,
+  PaidUpAdultMemberRequiredError,
+  toSubscriptionLockoutParticipants,
+} from "@/lib/subscription-lockout-enforcement";
 import { acquireLodgeCapacityLock } from "@/lib/capacity";
 import { getDefaultLodgeId, lodgeNullTolerantScope } from "@/lib/lodges";
 import {
@@ -253,6 +260,7 @@ export async function removeBookingGuestInTransaction({
   actorRole,
   settlementMethod,
   consentAuthority,
+  subscriptionLockoutMode,
 }: {
   tx: Prisma.TransactionClient;
   bookingId: string;
@@ -260,6 +268,14 @@ export async function removeBookingGuestInTransaction({
   actorMemberId: string;
   actorRole: string;
   settlementMethod?: BookingModificationSettlementMethod;
+  /**
+   * The club's subscription-lockout mode (#2543), resolved by the caller BEFORE it
+   * opened this transaction — `resolveSubscriptionLockoutMode` can refresh the
+   * financial-year cache from Xero, which must never happen under the locks this
+   * transaction holds. Omitted, the paid-up-adult re-evaluation below falls back to
+   * a peek; a consent-authority removal never reaches it at all.
+   */
+  subscriptionLockoutMode?: SubscriptionLockoutMode;
   /**
    * Member-guest consent (#2307, epic #2305): the narrow authority that lets a
    * DECLINE or an EXPIRY reach this function at all.
@@ -494,6 +510,51 @@ export async function removeBookingGuestInTransaction({
     skipAuthorization: actorRole === "ADMIN" || Boolean(consentAuthority),
   });
 
+  // #2543 — the paid-up-adult requirement, re-evaluated over what is LEFT.
+  //
+  // The requirement used to be checked on additive writes only, so any party
+  // could reach the forbidden state in two requests: book with a paid-up adult
+  // member (allowed, the unpaid member repriced on the strength of their
+  // presence), then remove that adult. Nothing re-evaluated, and no admin review
+  // was raised.
+  //
+  // REFUSED ONLY FOR A VOLUNTARY REMOVAL. A consent DECLINE or EXPIRY must always
+  // be able to take its target off the booking — that is owner decision D-14, and
+  // refusing it would trap a member on a booking they have declined — and an ADMIN
+  // is skipped here exactly as on every other #2543 gate, because the person who
+  // would approve the override is the person doing the removal. What is left is
+  // the case the finding is about: the booking owner, or a member removing
+  // themselves, choosing to take the party's last paid-up adult member off it.
+  if (actorRole !== "ADMIN" && !consentAuthority) {
+    const nonMemberPricing = await evaluateNonMemberPricingRequirements(tx, {
+      mode: subscriptionLockoutMode,
+      lodgeId: bookingLodgeId,
+      seasonYear: getSeasonYear(booking.checkIn),
+      checkIn: booking.checkIn,
+      checkOut: booking.checkOut,
+      // Owner decision, 3 Aug 2026. It matters most on this path: an unfinancial
+      // owner who removes their OWN guest row would otherwise walk out from under
+      // the requirement entirely, leaving a party they still own and still pay for
+      // with nobody paid-up on it.
+      bookingOwnerMemberId: booking.memberId,
+      participants: toSubscriptionLockoutParticipants(remainingGuests),
+    });
+    if (nonMemberPricing?.violation) {
+      // AUDIENCE, not authorisation. This is the ONE #2543 gate whose refusal can
+      // be delivered to somebody other than the unfinancial member: a member may
+      // take their OWN guest row off a booking they do not own, and the owner arm
+      // above can then fire alone. `repricedUnpaidMemberCount: 0` would tell that
+      // member — often from another family — that the booking owner's subscription
+      // is unpaid, which they can learn nowhere else in the app. The refusal, the
+      // wording, the HOLD and the override door are unchanged; only that one count
+      // is withheld. See `PaidUpAdultRefusalAudience`.
+      throw new PaidUpAdultMemberRequiredError(
+        nonMemberPricing.violation,
+        booking.memberId === actorMemberId ? "BOOKER" : "OTHER_PARTY_MEMBER",
+      );
+    }
+  }
+
   const groupDiscountSetting = await tx.groupDiscountSetting.findUnique({
     where: { id: "default" },
   });
@@ -597,10 +658,16 @@ export async function removeBookingGuestInTransaction({
       tx.bookingGuest.update({
         where: { id: guest.id },
         // Overwrite the rate-type snapshot alongside the repriced total
-        // (#1930, E4).
+        // (#1930, E4) — unless this guest kept a locked night, in which case the
+        // stored snapshot stays, because one item code per guest cannot describe
+        // a stay that mixes locked member-rate nights with newly priced ones
+        // (#2543). See `rateSnapshotUpdateForRepricedGuest`.
         data: {
           priceCents: priceBreakdown.guests[index].priceCents,
-          rateMembershipTypeId: priceBreakdown.guests[index].rateMembershipTypeId,
+          rateMembershipTypeId: rateSnapshotUpdateForRepricedGuest(
+            priceBreakdown.guests[index],
+            guestsForPricing[index]?.lockedNightPrices,
+          ),
         },
       })
     )

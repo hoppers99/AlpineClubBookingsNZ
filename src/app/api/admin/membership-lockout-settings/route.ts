@@ -11,6 +11,7 @@ import {
 } from "@/lib/financial-year-server";
 import {
   MEMBERSHIP_LOCKOUT_SETTINGS_ID,
+  SUBSCRIPTION_LOCKOUT_MODES,
   loadPersistedMembershipLockoutSettings,
   normalizeMembershipLockoutSettings,
 } from "@/lib/membership-lockout-settings";
@@ -23,7 +24,16 @@ import { requireAdmin } from "@/lib/session-guards";
 
 const settingsSchema = z
   .object({
-    enabled: z.boolean().optional(),
+    /**
+     * #2543 — the three-way lockout policy replaced the old `enabled` boolean,
+     * which no longer exists as a column (#2561).
+     *
+     * Deliberately still `.strict()`, so an old client that sends the boolean is
+     * REFUSED rather than silently ignored. A silent ignore is the dangerous
+     * direction here — an admin would see their "turn the lockout off" click
+     * succeed while the club carried on hard-blocking members.
+     */
+    mode: z.enum(SUBSCRIPTION_LOCKOUT_MODES).optional(),
     financialYearEndMonthOverride: z
       .number()
       .int()
@@ -119,8 +129,15 @@ export async function PUT(request: NextRequest) {
     where: { id: MEMBERSHIP_LOCKOUT_SETTINGS_ID },
   });
 
+  // #2543. A save that does not name a mode must PRESERVE the stored one, so
+  // saving any other field on this panel cannot move the club's booking policy.
+  // Routed through `normalizeMembershipLockoutSettings` rather than reading
+  // `before.mode` raw so the closed vocabulary is enforced in exactly one place,
+  // and so a missing row resolves to the same default the rest of the app sees.
+  const mode = parsed.data.mode ?? normalizeMembershipLockoutSettings(before).mode;
+
   const data = {
-    enabled: parsed.data.enabled ?? before?.enabled ?? true,
+    mode,
     financialYearEndMonthOverride:
       parsed.data.financialYearEndMonthOverride !== undefined
         ? parsed.data.financialYearEndMonthOverride

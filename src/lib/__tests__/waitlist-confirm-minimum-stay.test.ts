@@ -23,6 +23,12 @@ const h = vi.hoisted(() => ({
   logAudit: vi.fn(),
   warn: vi.fn(),
   confirmCrossLodgeWaitlistOffer: vi.fn(),
+  // #2543 — the offer's persisted guest rows, read for the paid-up-adult re-check.
+  // Empty is the neutral default: no member rows means nobody is being repriced,
+  // so the requirement does not apply and every case in this file is unchanged.
+  prismaBookingGuestFindMany: vi.fn(async () => []),
+  resolveSubscriptionLockoutMode: vi.fn(async () => "NON_MEMBER_PRICING"),
+  evaluateNonMemberPricingRequirements: vi.fn(async () => null),
 }));
 
 const txClient = {
@@ -40,11 +46,30 @@ vi.mock("@/lib/prisma", () => ({
   prisma: {
     $transaction: h.transaction,
     booking: { findUnique: h.prismaBookingFindUnique },
+    // #2543: the paid-up-adult re-check reads the offer's guest rows before the
+    // claiming transaction, on the same client the minimum-stay check uses.
+    bookingGuest: { findMany: h.prismaBookingGuestFindMany },
   },
 }));
 vi.mock("@/lib/booking-policies", () => ({
   validateMinimumStay: h.validateMinimumStay,
 }));
+vi.mock("@/lib/member-subscription-eligibility", () => ({
+  resolveSubscriptionLockoutMode: h.resolveSubscriptionLockoutMode,
+}));
+// #2543: the evaluator is stubbed, but the two helpers that shape the REFUSAL are
+// the real ones — the point of the case below is that this path answers with the
+// same body and the same code as the five booking write paths, so stubbing those
+// would test nothing.
+vi.mock("@/lib/subscription-lockout-enforcement", async (importActual) => {
+  const actual = await importActual<
+    typeof import("@/lib/subscription-lockout-enforcement")
+  >();
+  return {
+    ...actual,
+    evaluateNonMemberPricingRequirements: h.evaluateNonMemberPricingRequirements,
+  };
+});
 vi.mock("@/lib/capacity", () => ({
   acquireLodgeCapacityLock: h.acquireLodgeCapacityLock,
   checkCapacityForGuestRanges: h.checkCapacityForGuestRanges,
@@ -77,6 +102,9 @@ vi.mock("@/lib/logger", () => ({
 }));
 
 import { confirmWaitlistOffer } from "@/lib/waitlist";
+// The real formatter, so this path and the cross-lodge promotion are checked
+// against one shared string rather than against two copies of it.
+import { formatMissingPaidUpAdultWaitlistRefusal } from "@/lib/policies/subscription-lockout-pricing";
 
 const LODGE = "lodge-a";
 const CHECK_IN = new Date("2026-07-10T00:00:00.000Z");
@@ -337,5 +365,98 @@ describe("confirmWaitlistOffer policy backstop inside the claim (#2363)", () => 
     const result = await confirmWaitlistOffer("booking-1", "member-1");
     expect(result.error).toContain("expired");
     expect(result.code).toBeUndefined();
+  });
+});
+
+describe("confirmWaitlistOffer paid-up-adult re-check (#2543)", () => {
+  /**
+   * THE SIXTH MONEY PATH. The offer sweep reprices a STORED booking at current
+   * rates and passes no locked night prices, so it inherits the unpaid-subscription
+   * reprice for the whole stay — but neither of the two things that make that
+   * reprice fair to the member reached this path. A party the create path would
+   * have refused with a 409 and an override door could be confirmed here and
+   * charged non-member rates instead.
+   */
+  const violation = {
+    reasonCode: "PAID_UP_ADULT_MEMBER_REQUIRED" as const,
+    policyId: "membership-lockout-settings:default",
+    policyVersion: 1,
+    policyName: "Paid-up adult member required (subscription lockout)",
+    resolvedScope: {
+      kind: "CLUB_WIDE" as const,
+      lodgeId: null,
+      effectiveLodgeId: "lodge-1",
+    },
+    affectedNights: ["2026-08-01"],
+    requirements: {
+      kind: "PAID_UP_ADULT_MEMBER" as const,
+      requiredPaidUpAdultMembers: 1,
+      repricedUnpaidMemberCount: 1,
+      participantCount: 2,
+    },
+    exceptionEligible: true,
+    capacityMode: "HOLD" as const,
+    message: "This booking needs at least one paid-up adult member staying on it.",
+  };
+
+  it("refuses without consuming the offer, and names the override door", async () => {
+    h.evaluateNonMemberPricingRequirements.mockResolvedValue({
+      repricedMemberIds: ["m-unpaid"],
+      hasPaidUpAdultMember: false,
+      paidUpAdultMemberRequired: true,
+      memberRateNotice: "notice",
+      violation,
+    } as never);
+
+    const result = await confirmWaitlistOffer("booking-1", "member-1");
+
+    expect(result.success).toBe(false);
+    expect(result.code).toBe("PAID_UP_ADULT_MEMBER_REQUIRED");
+    // The WAITLIST flavour of the shared refusal, byte-identical to the cross-lodge
+    // promotion's. The offer was rejected without being consumed, so the bare
+    // sentence would read as though the member had lost the offer AND their spot.
+    expect(result.error).toBe(formatMissingPaidUpAdultWaitlistRefusal());
+    expect(result.error).toContain("kept your place on the waitlist");
+    // ...while the frozen violation's own message is unchanged: it is hashed into
+    // exception snapshots and read by the reviewing officer, for whom the waitlist
+    // sentence is neither true nor relevant.
+    expect(result.paidUpAdultRefusal?.details).toBe(violation.message);
+    // Neither sentence names who is unpaid.
+    expect(JSON.stringify(result)).not.toMatch(/m-unpaid/);
+    // The shared refusal body, so the member is told where to ask — and told the
+    // beds are held while an officer decides.
+    expect(result.paidUpAdultRefusal?.exceptionRequestPath).toBe(
+      "/api/bookings/exception-requests",
+    );
+    expect(result.paidUpAdultRefusal?.exceptionReview.capacityMode).toBe("HOLD");
+    // The offer went BACK on the waitlist rather than being burnt: the member keeps
+    // their place and can fix the party or ask for the override.
+    expect(h.txBookingUpdateMany).toHaveBeenCalled();
+    // And the offer was never CLAIMED: the confirm audit entry is what the claiming
+    // transaction writes on success, and it is absent. (The single transaction that
+    // did run is the revert's own.)
+    expect(h.logAudit).not.toHaveBeenCalled();
+  });
+
+  it("carries the reason onto a successful confirm", async () => {
+    h.evaluateNonMemberPricingRequirements.mockResolvedValue({
+      repricedMemberIds: ["m-unpaid"],
+      hasPaidUpAdultMember: true,
+      paidUpAdultMemberRequired: true,
+      memberRateNotice: "A membership subscription on this booking isn't paid",
+      violation: null,
+    } as never);
+
+    const result = await confirmWaitlistOffer("booking-1", "member-1");
+
+    expect(result.success).toBe(true);
+    expect(result.subscriptionMemberRateNotice).toContain("isn't paid");
+  });
+
+  it("adds no key at all when nobody is repriced", async () => {
+    h.evaluateNonMemberPricingRequirements.mockResolvedValue(null as never);
+    const result = await confirmWaitlistOffer("booking-1", "member-1");
+    expect(result.success).toBe(true);
+    expect("subscriptionMemberRateNotice" in result).toBe(false);
   });
 });

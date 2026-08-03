@@ -257,6 +257,64 @@ Step 13 runs `verify_prisma_migration_status`; confirm the engine reports the
 database is up to date and that the new color passes `/api/health/ready` before
 cutover. Then let step 16 perform the cutover.
 
+### 2.4 Windowed migration deploy sequence
+
+Use this instead of the normal blue/green flow whenever any pending migration is
+declared `old_code_compatible=windowed` in the safety ledger. It applies to
+`20260803010000_contract_subscription_lockout_drop_enabled` (#2543 / #2561).
+
+**Why the normal flow does not work here.** Blue/green relies on the old colour
+continuing to serve while the new schema is applied. This migration drops a column
+the old colour's Prisma client still names, so the instant migrate commits, the old
+colour raises on every read of `MembershipLockoutSettings` — and because the
+booking gates resolve the club's lockout policy through that read, that is every
+booking write path, not just the admin screen. There is no version of this deploy
+where both colours work at once. The honest answer is a short outage you control,
+rather than an outage the members discover.
+
+**The sequence. Do not reorder it — each step exists because the next one is
+irreversible without it.**
+
+1. **Build and validate the new images first.** Finish and verify the build
+   *before* touching the database. A build that fails after the column is dropped
+   leaves you with no working release to start.
+2. **Take a fresh backup, and verify it restores.** Immediately before migrating,
+   not merely before the deploy. For an ordinary migration the rollback boundary is
+   the cutover; for this one it is the migrate step, so this backup is the last
+   point you can return to unconditionally. Follow
+   [§1.1](#11-verified-restore-tested-database-backup-with-s3-durability-confirmed).
+3. **Put the site into maintenance mode / remove user traffic.** Members must not
+   be mid-booking when the schema moves.
+4. **Stop the old app AND the background workers.** Both read this settings row.
+   Leaving the workers running produces the same errors with nobody watching, and
+   fills the logs with failures that look like the migration went wrong.
+5. **Migrate.** Run with `ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS=1` and a
+   `BLUE_GREEN_MIGRATION_OVERRIDE_REASON` that names this window — the validator
+   refuses the deploy otherwise, and refuses it regardless if the `rollback.sql`
+   is missing.
+6. **Start the new release**, confirm `/api/health/ready`, then take the site out
+   of maintenance mode.
+
+Keep steps 5-6 as short as the plan allows. The three statements are metadata-only
+on a single-row table, so the migration itself is quick; the window is dominated by
+stopping and starting the application.
+
+**Rollback path.** Two options, in order of preference:
+
+- **Forward.** If the new release starts, finish the deploy. This is almost always
+  right: the schema is already migrated and the data is intact.
+- **`rollback.sql`.** If the new release cannot start, run
+  `prisma/migrations/20260803010000_contract_subscription_lockout_drop_enabled/rollback.sql`
+  by hand as the migration role, then redeploy the previous release's images. It
+  recreates `enabled` from `mode` (`NO_BLOCK` → false, `HARD_BLOCK` and
+  `NON_MEMBER_PRICING` → true) and returns `mode` to nullable-without-default. Both
+  directions were rehearsed against a production-shaped database
+  ([§7.1](#71-windowed-migration-rehearsal-20260803010000_contract_subscription_lockout_drop_enabled)).
+  Note that `_prisma_migrations` still records the migration as applied, so rolling
+  *forward* afterwards means deleting that row or re-applying `migration.sql` by
+  hand.
+- **Restore the backup** only if the data itself is wrong, not merely the schema.
+
 ---
 
 ## 3. Post-upgrade checklist
@@ -335,12 +393,21 @@ already broken, so the boundary moves back to **step 13 (migrate)** and the
 recovery paths are forward to cutover, the migration's own `rollback.sql`, or the
 verified backup.
 
-**`v0.10.0` has one migration in that class already**, even though the ledger
-holds no `windowed` row — the value did not exist when the row was written.
-`20260707000100_backfill_org_age_tier_not_applicable` is declared
-`old_code_compatible=no`, and its `lock_impact_plan` states plainly that
-"old-color reads of the flipped rows … can error between migrate and cutover"
-(quoted in full at [§2.2](#22-agetier-not_applicable--deploy-in-a-quiet-window)).
+**The ledger now holds a real `windowed` row**, and it is not the only migration in
+that class. Check for both:
+
+- `20260803010000_contract_subscription_lockout_drop_enabled` (#2543 / #2561) is
+  declared `old_code_compatible=windowed`. It drops `MembershipLockoutSettings.enabled`,
+  so the previous release's Prisma client raises on every read of that model the
+  moment migrate commits — which means every booking write path on the old colour,
+  not just the admin panel. It ships a tested `rollback.sql` and requires the
+  maintenance-window sequence in [§2.4](#24-windowed-migration-deploy-sequence).
+- **`v0.10.0` has one migration in that class too**, declared before the value
+  existed. `20260707000100_backfill_org_age_tier_not_applicable` is
+  `old_code_compatible=no`, and its `lock_impact_plan` states plainly that
+  "old-color reads of the flipped rows … can error between migrate and cutover"
+  (quoted in full at [§2.2](#22-agetier-not_applicable--deploy-in-a-quiet-window)).
+
 So do **not** check the ledger for a `windowed` row alone: check for a `windowed`
 row **or** any `yes`/`no` row whose `lock_impact_plan` carries an old-code caveat
 (`OLD-CODE CAVEAT`, `RESIDUAL WINDOW`, `CAUTION`, "until cutover", "idle or
@@ -443,6 +510,127 @@ production window opens.
 
 > A recorded PASS here is a precondition for [§2](#2-migrate). If the rehearsal
 > has not been recorded, do not run production.
+
+### 7.1 Windowed migration rehearsal: `20260803010000_contract_subscription_lockout_drop_enabled`
+
+The repo's first `old_code_compatible=windowed` migration (#2543 / #2561) was
+rehearsed both ways before merge, as the owner directive requires. Recorded here
+because a windowed migration's rollback path is only a plan until somebody has run
+it.
+
+**Environment.** Throwaway PostgreSQL 16.14 container. The **full migration
+history** applied to an empty database, then the demo seed, giving a
+production-shaped dataset: 35 members, 19 bookings (every status), 40 booking
+guests, 13 payments, 8 member subscriptions. The contract migration was held back,
+so the starting point was the state the **expand** migration leaves:
+`enabled BOOLEAN NOT NULL DEFAULT true` plus a nullable `mode` with no default.
+
+That intermediate state is **not** a deployed release, and it matters where the
+distinction lands. Both migrations ship in this one release, so the release actually
+running in production has `enabled` and **no `mode` column and no
+`SubscriptionLockoutMode` type at all**. The intermediate is nonetheless the correct
+pre-state for the four cycles below, because it is exactly what
+`prisma migrate deploy` finds when it reaches the contract migration — the expand
+migration having just run ahead of it in the same command. Where the previously
+deployed schema *is* the thing under test — the previous release's own client — it is
+used instead, in "The windowed claim" below.
+
+**Four deploy → rollback cycles**, one per pre-state a real club can hold. Each
+applied `prisma migrate deploy`, asserted the post-state, then ran `rollback.sql`
+and asserted the restored shape. 24 assertions, all PASS:
+
+| Pre-state (previous release) | After migrate | After `rollback.sql` |
+| --- | --- | --- |
+| `enabled=false, mode=NULL` — club that deliberately switched the lockout OFF | `mode=NO_BLOCK` | `enabled=false` |
+| `enabled=true, mode=NULL` — club that never opened the panel | `mode=HARD_BLOCK` | `enabled=true` |
+| `enabled=true, mode=NON_MEMBER_PRICING` — mode already chosen | `mode=NON_MEMBER_PRICING` (not reset) | `enabled=true` |
+| `enabled=true, mode=NO_BLOCK` — chosen mode disagrees with the stale boolean | `mode=NO_BLOCK` (chosen mode wins) | `enabled=false` |
+
+Every cycle also confirmed `mode` became `NOT NULL` with
+`DEFAULT 'HARD_BLOCK'::"SubscriptionLockoutMode"`, the `enabled` column count went
+to zero, and the row's other settings were untouched
+(`financialYearEndMonthOverride = 7`, `updatedAt = 2026-05-05 09:00:00` —
+unchanged, because this is a schema migration and not an admin edit).
+
+**App-level reads on the migrated schema** (new Prisma client, through the
+functions every booking gate uses, on the club that had switched the lockout off):
+
+```
+raw row mode            = NO_BLOCK
+raw row has 'enabled'   = false
+loadMembershipLockout   = mode=NO_BLOCK yearEnd=7 textFallback=true
+resolveSubscriptionMode = NO_BLOCK
+peekSubscriptionMode    = NO_BLOCK
+enforcementActive       = false
+APP READ OK
+```
+
+**The windowed claim was verified, not assumed — and re-verified against the right
+client.** The first pass used a client generated from the expand-only intermediate
+schema, which names **both** `enabled` and `mode`. That exercises the dropped column,
+but it is not the client an operator rolls back to. So the check was re-run with a
+client generated from the previously deployed schema itself
+(`git show origin/main:prisma/schema.prisma`), which names `enabled` and **does not
+name `mode` anywhere**. Same throwaway container, migrations applied, one
+`MembershipLockoutSettings` row (`mode = NO_BLOCK`, `financialYearEndMonthOverride = 7`,
+`updatedAt = 2026-05-05 09:00:00`):
+
+- against the **migrated** schema both a read and a write fail, which is what makes
+  this migration `windowed` rather than `yes`:
+  ```
+  === previous-release client against the MIGRATED schema (mode NOT NULL, enabled dropped) ===
+  READ FAILED:  [P2022] The column `MembershipLockoutSettings.enabled` does not exist in the current database.
+  WRITE FAILED: [P2022] The column `MembershipLockoutSettings.enabled` does not exist in the current database.
+  ```
+- after `rollback.sql`, the same client reads *and writes* normally:
+  ```
+  === previous-release client against the ROLLED-BACK schema ===
+  READ OK: {"id":"default","enabled":false,"financialYearEndMonthOverride":7,
+            "textFallbackEnabled":true,"useFeeScheduleItemCodes":false,
+            "updatedByMemberId":null,"createdAt":"2026-05-05T09:00:00.000Z",
+            "updatedAt":"2026-05-05T09:00:00.000Z"}
+  WRITE OK: enabled -> true
+  ```
+  Note what the read does **not** contain: `mode`. The previous release's client never
+  names the column, which is why leaving it in place is safe — and why `rollback.sql`
+  deliberately does not drop it, since after the backfill it is the only record of
+  each club's policy.
+- the restored column is byte-identical to the one `20260626120000` created,
+  `enabled BOOLEAN NOT NULL DEFAULT true`, and the row's other values are untouched.
+- the leftovers are exactly the two inert extras, measured rather than assumed.
+  `prisma migrate diff` from the rolled-back database to the previous release's
+  datamodel reports:
+  ```
+  ALTER TABLE "MembershipLockoutSettings" DROP COLUMN "mode";
+  DROP TYPE "SubscriptionLockoutMode";
+  ```
+  That is the intended end state, not drift to chase, and `rollback.sql` says so where
+  an operator will read it. (Measured before `main`'s unrelated #2553 hold-expiry
+  migration was merged into this branch; that migration is additive and does not touch
+  `MembershipLockoutSettings`, so the two leftovers above remain the complete list.)
+
+**Backfill correctness** is additionally pinned by
+`prisma/migration-verification/20260803010000_contract_subscription_lockout_drop_enabled.ts`,
+executed against the same real PostgreSQL by
+`src/lib/__tests__/data-migration-verification.realdb.test.ts`: 5 pre-states and
+4 mutants, all detected — the inverted `CASE`, an unconditional `HARD_BLOCK`, a
+dropped `WHERE "mode" IS NULL`, and leaving `mode` nullable — plus the runner's own
+"migration not applied at all" mutant and its requirement that at least one mutant
+be caught by a row **mismatch** rather than a raised error.
+
+| Field | Value |
+| --- | --- |
+| Rehearsal environment | Throwaway PostgreSQL 16.14, full migration history + demo seed |
+| Migration | `20260803010000_contract_subscription_lockout_drop_enabled` |
+| Rehearsal date | 2026-08-03 |
+| Result | **PASS** — 4/4 deploy+rollback cycles, 24/24 assertions, 55/55 fixture assertions |
+| Notable findings | One, in the evidence rather than the migration. The first client check was generated from the expand-only intermediate schema, which is not a deployed release; re-run with the previously deployed schema's own client it fails on the migrated shape and reads *and writes* after `rollback.sql`, so the conclusion is unchanged and now rests on the right client. |
+| Rehearsed by | Lane implementation session (pre-merge, on PR #2560) |
+
+> This rehearsal used a demo-seeded database, not a production snapshot. Before the
+> production window, re-run the same two steps (migrate, then `rollback.sql`)
+> against a **restored copy of the production backup** — the settings row's real
+> value is the one thing a seed cannot supply.
 
 ---
 

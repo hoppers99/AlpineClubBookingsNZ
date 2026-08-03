@@ -54,6 +54,20 @@ It **over-collects**, because a caveat can be about the **new** colour rather th
 
 Every one of these rows is deliberately left as it was declared rather than rewritten: rewriting would falsify the record of what was declared at the time, and each row's `lock_impact_plan` already carries the real caveat. New rows use `windowed` for both cases.
 
+### The first real `windowed` row, and what it demonstrates
+
+`20260803010000_contract_subscription_lockout_drop_enabled` (#2543 / #2561) is the first migration declared `windowed` rather than back-fitted into `yes`. It is worth reading as the worked example, because it shows what the value buys and what it does not waive.
+
+It drops `MembershipLockoutSettings.enabled` in the **same release** that added the `mode` column replacing it — the owner chose one release with a maintenance window over keeping dual-read/dual-write alive for a later contract release. So `previous_expand_release` names a migration that has *not* drained, which is precisely why `yes` would be false: the previous release's Prisma client names the dropped column on every read of that model, and the booking gates resolve the club's lockout policy through that read, so the old colour cannot take a booking between migrate and cutover. That claim was verified rather than asserted — a client generated from the previous schema fails with `The column MembershipLockoutSettings.enabled does not exist in the current database`, and recovers after `rollback.sql`.
+
+Three things the declaration did **not** get out of, and should not have:
+
+- **The expand/contract paperwork still applies.** `DROP COLUMN` matches the destructive-removal pattern, so the row is `phase=contract` with a real `previous_expand_release`. `windowed` describes compatibility, not sequencing; it is not a way to skip naming what came before.
+- **`rollback.sql` is mandatory and unrescuable.** The validator fails a `windowed` row with no reverse script as a *documentation* failure, which `ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS` cannot override. Deleting the file was tried during implementation to confirm the gate really bites.
+- **The window has to be written down.** `lock_impact_plan` carries the incompatibility, the ordered deploy sequence (build images, verify a fresh backup, remove traffic, stop the old app *and* workers, migrate, start the new release), and the rollback mapping. The operator-facing version of the same sequence is in `DEPLOYMENT.md` → "Windowed migrations" and `docs/PRODUCTION_UPGRADE_RUNBOOK.md` → "Windowed migration deploy sequence"; the rehearsal transcript is recorded in that runbook's §7.1.
+
+A backfill inside the same migration also makes it data-rewriting, so it carries a verification fixture under `prisma/migration-verification/` like any other. See "Data-migration verification" below.
+
 ## Deploy Gate
 
 `scripts/run-production-blue-green-deploy.sh --internal-blue-green-deploy` calls `scripts/validate-blue-green-migrations.sh` before `prisma migrate deploy`. The validator checks pending migration SQL for:

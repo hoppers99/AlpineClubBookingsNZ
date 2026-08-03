@@ -26,6 +26,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { type LodgeOption } from "@/components/lodge-select";
+import { formatMissingPaidUpAdultRefusal } from "@/lib/policies/subscription-lockout-pricing";
 import { sumDeferredGuestPortionCents } from "@/lib/deferred-guest-portion";
 import { addDaysDateOnly, parseDateOnly } from "@/lib/date-only";
 import { formatNZWeekdayDate } from "@/lib/nzst-date";
@@ -352,6 +353,52 @@ export function ReviewStep({
               </div>
             </Alert>
           )}
+
+          {/*
+            #2543, owner decision 2 Aug 2026: under the club's
+            NON_MEMBER_PRICING mode a member whose subscription is unpaid may
+            still book, but "there still has to be at least one paid-up adult
+            member on the booking". This is that refusal, said BEFORE the member
+            fills in the rest of the wizard — the whole point of surfacing it on
+            the quote is that they find out here rather than on submit.
+
+            Owner decision 3 Aug 2026 widened WHEN the server sets this flag: the
+            requirement also fires when the person BOOKING has an unpaid
+            subscription, whether or not they are staying. That case carries no
+            rate notice — nobody's nights were repriced — so this warning is the
+            only thing standing between an unfinancial member booking beds for
+            non-members and a 409 on submit. Nothing here needed to change to
+            cover it, because the flag is the server's own answer rather than
+            anything this component re-derives.
+
+            Deliberately NOT behind a disclosure and NOT gating the button: the
+            server owns the refusal, and a Booking Officer can approve an
+            override (the violation is exception-eligible and holds the bed), so
+            a stale or missing quote must never be what decides the outcome.
+
+            The sentence is the SERVER's own — `formatMissingPaidUpAdultRefusal`,
+            the same string the write paths refuse with — so the warning and the
+            refusal can never drift into saying different things.
+          */}
+          {priceQuote.paidUpAdultMemberMissing === true && (
+            <Alert variant="warning" data-testid="paid-up-adult-missing-notice">
+              <p>{formatMissingPaidUpAdultRefusal()}</p>
+            </Alert>
+          )}
+
+          {/*
+            #2543 "tell them why". Sits directly above the totals because it
+            explains the numbers below it: somebody on this party is priced at
+            non-member rates because their subscription is unpaid. Rendered
+            VERBATIM from the quote — the server builds it, so the wording stays
+            in step with the pricing decision that produced it and is never
+            rebuilt here. Absent or null means nobody is being repriced.
+          */}
+          {priceQuote.subscriptionMemberRateNotice ? (
+            <Alert variant="warning" data-testid="subscription-member-rate-notice">
+              <p>{priceQuote.subscriptionMemberRateNotice}</p>
+            </Alert>
+          ) : null}
 
           {appliedPromo && appliedPromo.promoAdjustmentCents !== 0 ? (
             <>

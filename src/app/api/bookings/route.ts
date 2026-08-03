@@ -23,6 +23,12 @@ import {
   MembershipTypeBookingPolicyError,
   requiresPaidSubscriptionForMemberForBooking,
 } from "@/lib/membership-type-policy";
+import { resolveSubscriptionLockoutMode } from "@/lib/member-subscription-eligibility";
+import {
+  buildPaidUpAdultRefusalBody,
+  evaluateNonMemberPricingRequirements,
+  toSubscriptionLockoutParticipants,
+} from "@/lib/subscription-lockout-enforcement";
 import {
   assertLinkedBookingMembersCanBeBooked,
   BookingGuestValidationError,
@@ -667,9 +673,18 @@ export async function POST(request: NextRequest) {
     throw err;
   }
 
+  // #2543 — the club's three-way subscription-lockout policy, resolved ONCE for
+  // this request so the owner gate, the member-guest gate and the paid-up-adult
+  // requirement below cannot branch on different answers if an admin saves the
+  // setting mid-request.
+  const subscriptionLockoutMode = await resolveSubscriptionLockoutMode();
+
   // Subscription gate for the booking owner. Bypassed when the Xero module
-  // is effectively off, because subscriptions are invoiced through Xero.
+  // is effectively off, because subscriptions are invoiced through Xero, and
+  // (#2543) when the club has chosen NON_MEMBER_PRICING — there the unpaid owner
+  // books and is repriced by `resolveGuestRateMembershipTypes` instead.
   if (
+    subscriptionLockoutMode === "HARD_BLOCK" &&
     !isAuthorizedOnBehalf &&
     await requiresPaidSubscriptionForMemberForBooking(prisma, {
       memberId: effectiveMemberId,
@@ -731,7 +746,12 @@ export async function POST(request: NextRequest) {
       throw error;
     }
 
-    if (unpaidMemberGuests.length > 0) {
+    // #2543: under NON_MEMBER_PRICING an unpaid member guest is repriced, not
+    // refused. `findUnpaidMemberGuests` above still RUNS in that mode, and
+    // deliberately: it is what raises the D-8 neutral refusal for an unpaid
+    // member guest from beyond the booker's family, and that privacy boundary is
+    // not the lockout policy's to relax. Only the refusal below is mode-gated.
+    if (subscriptionLockoutMode === "HARD_BLOCK" && unpaidMemberGuests.length > 0) {
       const unpaidMemberNames = unpaidMemberGuests.map((member) => member.name);
       return NextResponse.json(
         {
@@ -747,6 +767,50 @@ export async function POST(request: NextRequest) {
           })),
         },
         { status: 403 }
+      );
+    }
+  }
+
+  // #2543 — under NON_MEMBER_PRICING the booking must contain at least one
+  // paid-up adult member. Refused when it does not, but refused with a door: the
+  // response carries the frozen, exception-eligible violation, so the member can
+  // ask a Booking Officer to allow it through the #2365 request workflow, and
+  // the HOLD capacity mode keeps their beds while that decision is pending.
+  //
+  // Skipped for an authorized on-behalf booking, exactly like the two gates
+  // above (#1442) and for the same reason as the hosting rule's D-R4: the person
+  // who would approve the override is the person making the booking.
+  if (!isAuthorizedOnBehalf) {
+    const nonMemberPricing = await evaluateNonMemberPricingRequirements(prisma, {
+      mode: subscriptionLockoutMode,
+      lodgeId: bookingLodgeId,
+      seasonYear: getSeasonYear(checkIn),
+      checkIn,
+      checkOut,
+      // Owner decision, 3 Aug 2026: the requirement follows the unfinancial
+      // member, not only their bed. The HARD_BLOCK gate above refuses this same
+      // person outright, as a person, whether or not they are staying; keyed only
+      // on the guest rows, the relaxed mode let an unfinancial member book a party
+      // of non-members with no reprice, no requirement and no notice — the one
+      // case the strict mode most reliably closes.
+      bookingOwnerMemberId: effectiveMemberId,
+      // D-12 on a PRE-PERSIST party. `guestInputs` is `consentPlan.guests`, so
+      // every cross-family member guest already carries the `memberGuestConsent`
+      // columns this request is about to write — including the PENDING status.
+      // Passing the raw list read `operationallyPresent` as absent, i.e. present,
+      // and made the requirement trivially satisfiable: name any paid-up adult
+      // member from beyond your family, and the invite need never be accepted.
+      // The D-4 sweep then removes the row and the booking stands with no
+      // paid-up adult member on it, with nothing to re-evaluate it. This
+      // evaluation is the only enforcement on the create path, so unlike #2364 —
+      // whose create-time answer is later re-derived by a reconciler that does
+      // apply consent — nothing would ever correct it.
+      participants: toSubscriptionLockoutParticipants(guestInputs),
+    });
+    if (nonMemberPricing?.violation) {
+      return NextResponse.json(
+        buildPaidUpAdultRefusalBody(nonMemberPricing.violation),
+        { status: 409 },
       );
     }
   }
@@ -843,6 +907,9 @@ export async function POST(request: NextRequest) {
         // objects diverge on a money-bearing field again.
         applyCreditCents: parsed.data.applyCreditCents,
         groupDiscount,
+        // #2543 — the mode resolved once above, handed to pricing so no path in
+        // this request can price under a regime the gates did not branch on.
+        subscriptionLockoutMode,
         memberReviewJustification,
         adultMemberHostingReason,
         lodgeId: parsed.data.lodgeId,
@@ -999,6 +1066,8 @@ export async function POST(request: NextRequest) {
       cancelIfGuestsBumped,
       applyCreditCents: parsed.data.applyCreditCents,
       groupDiscount,
+      // #2543 — see the draft branch above.
+      subscriptionLockoutMode,
       status,
       shouldBePending,
       holdDays: holdPolicy.holdDays,
@@ -1048,6 +1117,8 @@ export async function POST(request: NextRequest) {
         expectedArrivalTime,
         requestedRoomId,
         groupDiscount,
+        // #2543 — see the draft branch above.
+        subscriptionLockoutMode,
         memberReviewJustification,
         adultMemberHostingReason,
         lodgeId: parsed.data.lodgeId,

@@ -17,6 +17,7 @@ import { ADMIN_VIEW_ONLY_ACTION_REASON } from "@/hooks/use-admin-area-edit-acces
 import { buildHrefWithReturnTo } from "@/lib/internal-return-path";
 import { formatNZDate, formatNZDateTime } from "@/lib/nzst-date";
 import { formatPolicyExceptionRequestAge } from "@/lib/booking-exception-requests";
+import type { PolicyExceptionReasonCode } from "@/lib/booking-policy-exceptions";
 
 /**
  * #2526 — the Booking Officer's booking-policy exception queue.
@@ -108,13 +109,19 @@ interface QueueItem {
   summary: string | null;
 }
 
-const REASON_LABELS: Record<string, string> = {
+// Typed against the reason-code union on purpose: adding a code to the
+// #2363 allowlist without deciding its officer-facing wording fails typecheck
+// here, so a new violation class can never reach the queue as a raw enum
+// (#2543 landed second and owed exactly this entry — the recorded #2526/#2543
+// cross-lane rule).
+const REASON_LABELS: Record<PolicyExceptionReasonCode, string> = {
   MINIMUM_STAY: "Minimum stay",
   ADULT_MEMBER_HOSTING_REQUIRED: "Adult member must host",
+  PAID_UP_ADULT_MEMBER_REQUIRED: "Paid-up adult member required",
 };
 
 function reasonLabel(code: string) {
-  return REASON_LABELS[code] ?? code;
+  return (REASON_LABELS as Record<string, string>)[code] ?? code;
 }
 
 /** "ADULT" -> "Adult", so an age tier reads as words on the decision card. */

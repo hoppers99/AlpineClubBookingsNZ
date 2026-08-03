@@ -1,7 +1,10 @@
+import type {
+  PaidUpAdultMemberPolicyExceptionViolation,
+  ResolvedPolicyScope,
+} from "@/lib/booking-policy-exceptions";
 import {
   participantQualifiesAsHost,
   type HostingMemberFacts,
-  type HostingParticipant,
 } from "@/lib/policies/adult-member-hosting";
 
 /**
@@ -31,15 +34,20 @@ import {
  * re-derived, so the standing/adult/operationally-present half can never drift;
  * #2533 only ANDs the subscription-settled fact on top.
  *
- * ENFORCEMENT IS A SEPARATE, OWNER-GATED DECISION. Today an unpaid required
- * member is HARD-BLOCKED from booking (a 403 on the create, confirm-draft,
- * group-join and modify paths), not repriced. Turning that block into the soft
- * "reprice + require a paid-up adult" behaviour above is a Critical money-regime
- * change with coupled decisions (opt-in vs. replace, capacity, Xero narration)
- * that only the owner can settle. This module is the pure, reviewed foundation
- * those paths will consume once the rollout is decided; it moves no money and
- * changes no path on its own. See `docs/DOMAIN_INVARIANTS.md` →
- * "Subscription-lockout booking pricing (#2533)".
+ * ENFORCEMENT IS NOW WIRED (#2543), UNDER ONE CLUB SETTING. The club's
+ * `MembershipLockoutSettings.mode` picks between three regimes:
+ *
+ *  - `NO_BLOCK` — no subscription gate at all;
+ *  - `HARD_BLOCK` — the historical 403 on the create, confirm-draft, group-join,
+ *    guest-add and modify paths. The migration-safe DEFAULT, so no club moved;
+ *  - `NON_MEMBER_PRICING` — this module's rule: the unpaid member is repriced,
+ *    told why, and the booking must contain a paid-up adult member.
+ *
+ * This module stays PURE. It decides, it does not enforce: the mode is resolved
+ * by `member-subscription-eligibility.ts`, the facts are loaded by
+ * `subscription-lockout-facts.ts`, and `subscription-lockout-enforcement.ts` is
+ * the one place the five booking write paths call. See
+ * `docs/DOMAIN_INVARIANTS.md` → "Subscription-lockout booking pricing (#2533)".
  */
 
 // ---------------------------------------------------------------------------
@@ -174,11 +182,23 @@ export function evaluatePaidUpAdultPresence(
  * the decided soft regime (they are charged non-member rates), so it can be
  * surfaced today without misdescribing behaviour: it never promises a booking,
  * only states that member rates are unavailable and how to restore them.
+ *
+ * PARTY-SCOPED, NOT SECOND-PERSON, and that distinction is the whole point. The
+ * notice is emitted whenever ANYONE on the party is being repriced, and it is
+ * rendered to whoever is reading the quote — which is very often not that person.
+ * A paid-up adult member booking for their adult son, whose subscription is
+ * unpaid, would otherwise be told "Your subscription isn't paid" about an account
+ * in perfect standing, and the plausible response is to pay a subscription they
+ * do not owe or to ring the club about a debt that is not theirs.
+ *
+ * The privacy constraint still holds: it names nobody, because it cannot know who
+ * is reading. "Names nobody" and "asserts it is the reader" are different things,
+ * and this wording is the first without being the second.
  */
 export function formatUnpaidSubscriptionRateReason(seasonDisplay: string): string {
   return (
-    `Your ${seasonDisplay} membership subscription isn't paid, so member rates ` +
-    `aren't available to you — renew your subscription to restore member rates.`
+    `A membership subscription on this booking isn't paid for ${seasonDisplay}, ` +
+    `so member rates aren't available for those nights — renewing it restores them.`
   );
 }
 
@@ -192,6 +212,112 @@ export function formatMissingPaidUpAdultRefusal(): string {
     "Renew a subscription, or add an adult member whose subscription is paid, " +
     "and try again."
   );
+}
+
+/**
+ * The same refusal for the TWO WAITLIST paths — same-lodge `confirmWaitlistOffer`
+ * and the cross-lodge promotion — which reject the offer WITHOUT consuming it.
+ *
+ * The extra sentence exists because the bare refusal, arriving in answer to
+ * "confirm my offer", reads as though the member lost the offer AND their spot.
+ * They lost neither: both paths revert the entry to WAITLISTED and neither touches
+ * `waitlistPosition`, so the claim is literally true rather than reassuring
+ * padding. Worded like the two minimum-stay waitlist refusals it sits beside —
+ * one short second-person sentence, appended last, saying where the member now is.
+ *
+ * SCOPED TO THOSE TWO PATHS, and shared between them so they cannot drift. A
+ * booking-time refusal has no waitlist place to keep, so it must not claim one;
+ * and one refusal that reads differently depending on which lodge the sweep
+ * happened to offer is exactly the drift the shared wording exists to prevent.
+ *
+ * The frozen violation's own `message` is deliberately NOT changed: it is hashed
+ * into exception-request snapshots and rendered to the reviewing officer, where
+ * "you've kept your place on the waitlist" is neither true nor relevant. So the
+ * two differ on purpose — this is the sentence the member reads, `violation.message`
+ * is the sentence the policy records.
+ *
+ * ("...and try again" then the waitlist sentence is a slightly odd join, and it is
+ * a deliberate trade: rewriting the shared sentence would move the frozen
+ * violation message every booking path and every stored snapshot depends on.)
+ */
+export function formatMissingPaidUpAdultWaitlistRefusal(): string {
+  return `${formatMissingPaidUpAdultRefusal()} You've kept your place on the waitlist.`;
+}
+
+// ---------------------------------------------------------------------------
+// Requirement 3b — the refusal is exception-eligible (#2543 + #2363/#2365).
+// ---------------------------------------------------------------------------
+
+/**
+ * Frozen onto the violation so a snapshot names the rule it came from.
+ *
+ * The subscription lockout is ONE club-wide singleton row with no per-lodge
+ * override and no version column, so — unlike the minimum-stay and hosting
+ * policies, which are versioned rows — the identity here is a constant. That is
+ * honest rather than lazy: there is genuinely one policy, and inventing a
+ * synthetic version from `updatedAt` would make two evaluations of unchanged
+ * settings produce different snapshots and reopen reviews for no reason.
+ * `PAID_UP_ADULT_MEMBER_POLICY_VERSION` versions the RULE SHAPE, so it moves
+ * only if the rule itself is redefined.
+ */
+export const PAID_UP_ADULT_MEMBER_POLICY_ID = "membership-lockout-settings:default";
+export const PAID_UP_ADULT_MEMBER_POLICY_VERSION = 1;
+export const PAID_UP_ADULT_MEMBER_POLICY_NAME =
+  "Paid-up adult member required (subscription lockout)";
+
+/**
+ * A pending admin override HOLDS the bed (owner decision 4, 2 Aug 2026).
+ *
+ * Not configurable, and deliberately so. The member is being refused for a
+ * reason they may have no way to fix before the beds go — the club chose to
+ * charge them non-member rates rather than turn them away — so making them race
+ * for capacity while an admin reads their request would refuse them twice for
+ * one problem. An approved override then consumes the held beds like any other
+ * booking, so the club never oversells.
+ */
+export const PAID_UP_ADULT_MEMBER_CAPACITY_MODE = "HOLD" as const;
+
+/**
+ * Build the frozen #2363 violation for a party with no paid-up adult member.
+ *
+ * Pure: every field is a function of the arguments, so two evaluations of the
+ * same party are byte-identical and the #2365 request machinery can freeze,
+ * hash and re-evaluate it. `affectedNights` must already be canonical (sorted,
+ * unique, NZ date-only `YYYY-MM-DD`) — `canonicalAffectedNights` is the shared
+ * way to get there.
+ */
+export function buildPaidUpAdultMemberViolation(params: {
+  /** Canonical, sorted, unique NZ lodge nights the party covers. */
+  affectedNights: readonly string[];
+  /** The lodge this club-wide rule was resolved for. */
+  effectiveLodgeId: string;
+  /** How many participants are being repriced as unpaid non-members. */
+  repricedUnpaidMemberCount: number;
+  /** Party size. */
+  participantCount: number;
+}): PaidUpAdultMemberPolicyExceptionViolation {
+  const resolvedScope: ResolvedPolicyScope = {
+    kind: "CLUB_WIDE",
+    lodgeId: null,
+    effectiveLodgeId: params.effectiveLodgeId,
+  };
+  return {
+    reasonCode: "PAID_UP_ADULT_MEMBER_REQUIRED",
+    policyId: PAID_UP_ADULT_MEMBER_POLICY_ID,
+    policyVersion: PAID_UP_ADULT_MEMBER_POLICY_VERSION,
+    policyName: PAID_UP_ADULT_MEMBER_POLICY_NAME,
+    resolvedScope,
+    affectedNights: [...params.affectedNights],
+    requirements: {
+      kind: "PAID_UP_ADULT_MEMBER",
+      requiredPaidUpAdultMembers: 1,
+      repricedUnpaidMemberCount: params.repricedUnpaidMemberCount,
+      participantCount: params.participantCount,
+    },
+    exceptionEligible: true,
+    capacityMode: PAID_UP_ADULT_MEMBER_CAPACITY_MODE,
+    message: formatMissingPaidUpAdultRefusal(),
+  };
 }
 
 /** Re-export so consumers can name the reused #2364 shapes from one import. */

@@ -734,7 +734,7 @@ describe("SubscriptionLockoutSettingsPanel view-only gating (#1940, membership +
     stubFetchRoutes({
       "/api/admin/membership-lockout-settings": {
         settings: {
-          enabled: true,
+          mode: "HARD_BLOCK",
           financialYearEndMonthOverride: null,
           textFallbackEnabled: true,
         },

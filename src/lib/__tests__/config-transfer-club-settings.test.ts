@@ -539,7 +539,11 @@ describe("club-settings exports effective defaults for an unsaved singleton (#21
 
     // A nullable column whose default IS null still exports as null.
     expect(readJson(files, "membership-lockout-settings")).toEqual({
-      enabled: DEFAULT_MEMBERSHIP_LOCKOUT_SETTINGS.enabled,
+      // #2543/#2561: the three-way `mode` REPLACED the boolean `enabled`, whose
+      // column was backfilled into it and dropped in the same release. A bundle
+      // exported now carries the mode alone — `toEqual` is exact, so this fails if
+      // the legacy key ever creeps back into the exported field list.
+      mode: DEFAULT_MEMBERSHIP_LOCKOUT_SETTINGS.mode,
       financialYearEndMonthOverride: null,
       textFallbackEnabled:
         DEFAULT_MEMBERSHIP_LOCKOUT_SETTINGS.textFallbackEnabled,
@@ -1371,5 +1375,227 @@ describe("#2200 singleton dry-run validation (bounds, required, enum)", () => {
     expect(plan.errors.join(" ")).toMatch(
       /nonMemberHoldDays — .*out of range.*1–365/,
     );
+  });
+});
+
+describe("a pre-#2543 bundle's `enabled` key still imports to the right mode (#2543/#2561)", () => {
+  /**
+   * BUNDLE-FORMAT compatibility, which outlives the column. #2561 dropped `enabled`
+   * from the database, but bundle FILES exported before #2543 are still on
+   * operators' disks and in their backups, and each still records a real decision:
+   * whether that club gated bookings on unpaid subscriptions.
+   *
+   * `enabled` is no longer an exported field, so without the reconcile hook it would
+   * be an unknown key — silently dropped, with the target keeping its own mode while
+   * the dry-run reported no change to the policy. A club importing a pre-#2543
+   * bundle to turn the lockout OFF would be told it worked while every unpaid member
+   * went on being refused. These cases are the guarantee that does not happen.
+   */
+  function lockoutBundle(
+    row: Record<string, unknown>,
+    appVersion = "0.13.2",
+  ) {
+    return buildBundle({
+      entries: [
+        {
+          path: "club-settings/membership-lockout-settings.json",
+          category: "club-settings",
+          rowCount: 1,
+          bytes: strToU8(JSON.stringify(row)),
+        },
+      ],
+      appVersion,
+      prismaMigration: null,
+      includedCategories: ["club-settings"],
+      doorCodesIncluded: false,
+      generatedAt: "2026-07-08T00:00:00.000Z",
+    });
+  }
+
+  const targetOnNonMemberPricing = {
+    ...DEFAULT_MEMBERSHIP_LOCKOUT_SETTINGS,
+    mode: "NON_MEMBER_PRICING",
+  };
+
+  it.each(["merge", "overwrite"] as const)(
+    "a PRE-#2543 bundle (enabled only) writes the derived mode — %s mode",
+    async (mode) => {
+      // Before the reconcile hook: `enabled = false` was written, the dry-run said
+      // "changed: enabled", the operator believed the lockout was off, and every
+      // unpaid member went on being repriced and refused. Members over-charged,
+      // silently, against a dry-run that said otherwise.
+      const zip = lockoutBundle(
+        {
+          enabled: false,
+          financialYearEndMonthOverride: null,
+          textFallbackEnabled: true,
+          useFeeScheduleItemCodes: false,
+        },
+        "0.13.1",
+      );
+
+      const plan = await buildImportPlan(
+        stubDb({ membershipLockoutSettings: targetOnNonMemberPricing }),
+        zip,
+        { mode },
+      );
+      const item = plan.categories[0].items.find(
+        (i) => i.entity === "membership-lockout-settings",
+      );
+      expect(item?.action).toBe("update");
+      // The dry-run TELLS the operator the policy is moving, and names the field
+      // that actually exists. `enabled` is no longer a column, so it can never
+      // appear here — if it did, the apply would raise on an unknown Prisma field.
+      expect(item?.changedFields).toContain("mode");
+      expect(item?.changedFields).not.toContain("enabled");
+
+      const { files } = readBundle(zip);
+      const { tx, delegates } = stubTx({
+        membershipLockoutSettings: targetOnNonMemberPricing,
+      });
+      await clubSettingsImporter.apply(applyCtx(tx, files, mode));
+      const upsertArgs =
+        delegates.membershipLockoutSettings.upsert.mock.calls[0][0];
+      // The boolean's MEANING lands on the column that exists.
+      expect(upsertArgs.update).toEqual(
+        expect.objectContaining({ mode: "NO_BLOCK" }),
+      );
+      // ...and the dropped column's name never reaches Prisma.
+      expect(upsertArgs.update).not.toHaveProperty("enabled");
+      expect(upsertArgs.create).not.toHaveProperty("enabled");
+    },
+  );
+
+  it("a null mode in MERGE mode still writes a mode derived from the boolean", async () => {
+    // A source club that upgraded to the expand release but never opened the panel
+    // exported `mode: null, enabled: false`. Merge mode drops the null, so without
+    // the hook the target would be left on its own NON_MEMBER_PRICING while the
+    // bundle plainly said the lockout was off.
+    const zip = lockoutBundle({
+      mode: null,
+      enabled: false,
+      financialYearEndMonthOverride: null,
+      textFallbackEnabled: true,
+      useFeeScheduleItemCodes: false,
+    });
+
+    const { files } = readBundle(zip);
+    const { tx, delegates } = stubTx({
+      membershipLockoutSettings: targetOnNonMemberPricing,
+    });
+    await clubSettingsImporter.apply(applyCtx(tx, files, "merge"));
+    const upsertArgs = delegates.membershipLockoutSettings.upsert.mock.calls[0][0];
+    expect(upsertArgs.update).toEqual(
+      expect.objectContaining({ mode: "NO_BLOCK" }),
+    );
+    expect(upsertArgs.update).not.toHaveProperty("enabled");
+  });
+
+  it("a recognised mode in the bundle WINS over a stale legacy boolean beside it", async () => {
+    // A post-#2543 expand-release bundle can carry both keys, and they can disagree
+    // (that release wrote the boolean from the mode, but a hand-edited file need
+    // not). The mode is the authority; the boolean is ignored rather than mapped.
+    const zip = lockoutBundle({
+      mode: "NON_MEMBER_PRICING",
+      enabled: false,
+      financialYearEndMonthOverride: null,
+      textFallbackEnabled: true,
+      useFeeScheduleItemCodes: false,
+    });
+
+    const { files } = readBundle(zip);
+    const { tx, delegates } = stubTx({
+      membershipLockoutSettings: {
+        ...DEFAULT_MEMBERSHIP_LOCKOUT_SETTINGS,
+        mode: "NO_BLOCK",
+      },
+    });
+    await clubSettingsImporter.apply(applyCtx(tx, files, "merge"));
+    const upsertArgs = delegates.membershipLockoutSettings.upsert.mock.calls[0][0];
+    expect(upsertArgs.update).toEqual(
+      expect.objectContaining({ mode: "NON_MEMBER_PRICING" }),
+    );
+    expect(upsertArgs.update).not.toHaveProperty("enabled");
+  });
+
+  it("an UNRECOGNISED mode string is refused by the dry-run, not silently trusted", async () => {
+    const zip = lockoutBundle({
+      mode: "CHARGE_DOUBLE",
+      enabled: true,
+      financialYearEndMonthOverride: null,
+      textFallbackEnabled: true,
+      useFeeScheduleItemCodes: false,
+    });
+    const plan = await buildImportPlan(
+      stubDb({ membershipLockoutSettings: targetOnNonMemberPricing }),
+      zip,
+      { mode: "merge" },
+    );
+    expect(plan.categories[0].errors.join(" ")).toContain("mode");
+  });
+
+  it("an unrecognised mode is refused EVEN WITH a legacy boolean the hook could have derived from", async () => {
+    // The hook runs before the validation loop now, so it must NOT overwrite a mode
+    // the bundle actually states. If it did, `mode: "CHARGE_DOUBLE", enabled: true`
+    // would be silently "corrected" to HARD_BLOCK and a typo in a hand-edited file
+    // would move a club's booking policy with no error at all.
+    const zip = lockoutBundle({
+      mode: "HRD_BLOCK",
+      enabled: false,
+      financialYearEndMonthOverride: null,
+      textFallbackEnabled: true,
+      useFeeScheduleItemCodes: false,
+    });
+    const plan = await buildImportPlan(
+      stubDb({ membershipLockoutSettings: targetOnNonMemberPricing }),
+      zip,
+      { mode: "merge" },
+    );
+    expect(plan.categories[0].errors.join(" ")).toMatch(
+      /mode — "HRD_BLOCK" is not a valid SubscriptionLockoutMode/,
+    );
+  });
+
+  it.each(["merge", "overwrite"] as const)(
+    "a present null mode with NOTHING to derive from fails the dry-run — %s mode",
+    async (mode) => {
+      // The residual `mode` had while it carried no `required` rule. `mode` is now a
+      // NOT NULL column, and nothing upstream can fix this file: there is no
+      // `enabled` key for the hook to read, so the null survives to the write. On a
+      // target with no settings row the apply's create branch passes the payload
+      // unfiltered (`create: { id: "default", ...data }`), and overwrite mode passes
+      // it unfiltered on the update branch too, so Prisma gets `mode: null` against
+      // a non-nullable enum and the whole import transaction aborts on a raw driver
+      // error instead of a dry-run message. It must fail HERE.
+      const zip = lockoutBundle({
+        mode: null,
+        financialYearEndMonthOverride: null,
+        textFallbackEnabled: true,
+        useFeeScheduleItemCodes: false,
+      });
+      const plan = await buildImportPlan(stubDb({}), zip, { mode });
+      expect(plan.categories[0].errors.join(" ")).toMatch(
+        /mode — null is not allowed \(required setting\)/,
+      );
+    },
+  );
+
+  it("requiring mode costs a PRE-#2543 bundle nothing, because the key is absent rather than null", async () => {
+    // The reason `required` is safe here: `parseSingleton` skips a field that is not
+    // in the record at all, so the rule can only ever fire on a PRESENT null. A
+    // bundle exported before #2543 carries `enabled` and no `mode` key, and must
+    // still import cleanly.
+    const zip = lockoutBundle(
+      {
+        enabled: true,
+        financialYearEndMonthOverride: null,
+        textFallbackEnabled: true,
+        useFeeScheduleItemCodes: false,
+      },
+      "0.13.1",
+    );
+    const plan = await buildImportPlan(stubDb({}), zip, { mode: "overwrite" });
+    expect(plan.errors).toEqual([]);
+    expect(plan.categories[0].errors).toEqual([]);
   });
 });

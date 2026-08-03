@@ -69,6 +69,13 @@ import {
 } from "@/lib/member-guest-probe-guard";
 import type { MemberGuestAddActor } from "@/lib/member-guest-consent";
 import { findUnpaidMemberGuestNames } from "@/lib/booking-member-guest-subscriptions";
+import { resolveSubscriptionLockoutMode } from "@/lib/member-subscription-eligibility";
+import {
+  buildPaidUpAdultRefusalBody,
+  evaluateNonMemberPricingRequirements,
+  PaidUpAdultMemberRequiredError,
+  toSubscriptionLockoutParticipants,
+} from "@/lib/subscription-lockout-enforcement";
 import {
   ADULT_SUPERVISION_REVIEW_REASON,
   requiresAdultSupervisionReview,
@@ -238,6 +245,13 @@ export async function POST(
     ? { kind: "ADMIN", adminMemberId: session.user.id }
     : { kind: "MEMBER" };
 
+  // #2543 — read the lockout policy HERE, outside the transaction, for exactly
+  // the reason stated above: the gate below runs after `acquireLodgeCapacityLock`
+  // and `resolveSubscriptionLockoutMode` can reseed the financial-year cache from
+  // Xero. A provider call under the capacity lock is forbidden, so the read moves
+  // out and only the decision stays in.
+  const subscriptionLockoutMode = await resolveSubscriptionLockoutMode();
+
   try {
     const result = await prisma.$transaction(async (tx) => {
       // Lock the booking's lodge before re-reading it; the booking's lodge
@@ -403,11 +417,52 @@ export async function POST(
           guests: normalizedNewGuests,
         });
 
-        if (unpaidMemberGuests.length > 0) {
+        // #2543: mode-gated exactly as on the four sibling paths. The call above
+        // still runs under NON_MEMBER_PRICING so the D-8 cross-family refusal is
+        // untouched; only this refusal is the lockout policy's to relax.
+        if (
+          subscriptionLockoutMode === "HARD_BLOCK" &&
+          unpaidMemberGuests.length > 0
+        ) {
           throw new ApiError(
             `The following member guests have unpaid subscriptions: ${unpaidMemberGuests.join(", ")}. All member guests must have a paid subscription before booking.`,
             403
           );
+        }
+
+        // #2543 — the paid-up-adult requirement over the party AFTER the add.
+        // Adding a guest is a booking write, so a booking that was legal when it
+        // was made can be pushed out of compliance by an add, and the same
+        // exception-request door opens.
+        const nonMemberPricing = await evaluateNonMemberPricingRequirements(tx, {
+          mode: subscriptionLockoutMode,
+          lodgeId: bookingLodgeId,
+          seasonYear,
+          checkIn: booking.checkIn,
+          checkOut: booking.checkOut,
+          // Owner decision, 3 Aug 2026: an unfinancial owner triggers the
+          // requirement whether or not they hold a bed on the booking they are
+          // adding to.
+          bookingOwnerMemberId: booking.memberId,
+          // D-12 over the whole post-add party. `toSubscriptionLockoutParticipants`
+          // reads a persisted row's `consentStatus` and a pre-persist row's planned
+          // `memberGuestConsent.consentStatus`, which is exactly the two shapes
+          // here, so both lists go through the one helper rather than each
+          // inventing its own mapping. A cross-family member guest is added PENDING
+          // — they have not accepted yet — so they must not be the paid-up adult
+          // who satisfies the requirement; otherwise the rule is trivially
+          // satisfiable, since the invite need never be accepted. A family-scope
+          // add carries no consent columns at all, and absent means present,
+          // exactly as #2364 has it. An added guest carries no per-guest stay range
+          // on this route, so a null envelope falls back to the booking's, which is
+          // what the participant mapper does.
+          participants: toSubscriptionLockoutParticipants([
+            ...booking.guests,
+            ...normalizedNewGuests,
+          ]),
+        });
+        if (nonMemberPricing?.violation) {
+          throw new PaidUpAdultMemberRequiredError(nonMemberPricing.violation);
         }
       }
 
@@ -502,6 +557,10 @@ export async function POST(
           seasons: seasonRateData,
           groupDiscount: toGroupDiscountConfig(groupDiscountSetting),
           seasonYear,
+          // #2543 — the mode this request already resolved. This call runs inside
+          // the transaction holding the per-lodge capacity lock, so being handed
+          // the mode also removes a second pooled connection from under the lock.
+          subscriptionLockoutMode,
           // Finding 2 (privacy re-review of MG3 #2308).
           skipAuthorization: isAdmin,
         });
@@ -1042,6 +1101,15 @@ export async function POST(
     }
     if (err instanceof ApiError) {
       return NextResponse.json({ error: err.message }, { status: err.status });
+    }
+    // #2543 — must be tested BEFORE the shared-ApiError branch below (it is a
+    // subclass): the refusal carries the frozen exception evidence that tells
+    // the member they may ask a Booking Officer, and the generic branch would
+    // flatten it to a bare sentence and close that door.
+    if (err instanceof PaidUpAdultMemberRequiredError) {
+      return NextResponse.json(buildPaidUpAdultRefusalBody(err.violation), {
+        status: err.status,
+      });
     }
     // Shared-lib domain errors (e.g. the #1032 quote-priced edit block from
     // assertBookingNotQuotePriced) are the shared ApiError class, distinct

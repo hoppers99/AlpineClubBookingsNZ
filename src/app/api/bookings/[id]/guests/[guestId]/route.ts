@@ -19,6 +19,12 @@ import {
   getMembershipTypeBookingPolicyErrorBody,
   MembershipTypeBookingPolicyError,
 } from "@/lib/membership-type-policy";
+import { resolveSubscriptionLockoutMode } from "@/lib/member-subscription-eligibility";
+import {
+  buildPaidUpAdultRefusalBody,
+  buildPaidUpAdultRefusalBodyForOtherPartyMember,
+  PaidUpAdultMemberRequiredError,
+} from "@/lib/subscription-lockout-enforcement";
 import {
   createModificationAdditionalPaymentIntent,
   drainSupersededPrimaryIntents,
@@ -94,6 +100,12 @@ export async function DELETE(
   const notifyMember =
     managementRole !== "ADMIN" ? true : rawNotifyMember !== false;
 
+  // #2543 — read BEFORE the transaction opens: the removal re-evaluates the
+  // paid-up-adult requirement over what is left, and resolving the mode inside
+  // the transaction would both take a second pooled connection under its locks
+  // and let the financial-year refresh reach Xero from there.
+  const subscriptionLockoutMode = await resolveSubscriptionLockoutMode();
+
   try {
     const result = await prisma.$transaction((tx) =>
       removeBookingGuestInTransaction({
@@ -103,6 +115,7 @@ export async function DELETE(
         actorMemberId: session.user.id,
         actorRole: authorizationRoleFromAccessRoles(session.user),
         settlementMethod,
+        subscriptionLockoutMode,
       })
     );
 
@@ -386,6 +399,24 @@ export async function DELETE(
     }
     if (err instanceof BookingGuestRemovalError) {
       return NextResponse.json({ error: err.message }, { status: err.status });
+    }
+    // #2543 — handled BEFORE the generic `ApiError` branch below, which would
+    // otherwise reduce this refusal to a bare message and drop the frozen
+    // violation, the HOLD promise and the path to ask a Booking Officer. Same
+    // body as the other five paths.
+    if (err instanceof PaidUpAdultMemberRequiredError) {
+      // The one refusal in the tree that can be delivered to somebody who does NOT
+      // own the booking: a member may take their own guest row off another member's
+      // booking, and the #2543 owner arm can then fire alone, where
+      // `repricedUnpaidMemberCount: 0` would expose the OWNER's unpaid subscription.
+      // The service decides the audience, because only it still holds the booking
+      // row by the time this catch runs (see `PaidUpAdultRefusalAudience`).
+      return NextResponse.json(
+        err.audience === "OTHER_PARTY_MEMBER"
+          ? buildPaidUpAdultRefusalBodyForOtherPartyMember(err.violation)
+          : buildPaidUpAdultRefusalBody(err.violation),
+        { status: err.status },
+      );
     }
     // Shared-lib domain errors (e.g. the #1032 quote-priced edit block from
     // assertBookingNotQuotePriced) carry intentional user-facing messages.

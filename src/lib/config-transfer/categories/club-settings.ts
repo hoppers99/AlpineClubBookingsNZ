@@ -116,6 +116,27 @@ interface SingletonSpec {
    * `DEFAULTS_INTENTIONALLY_PARTIAL` — not an oversight.
    */
   defaults: () => Record<string, unknown>;
+  /**
+   * Last chance to make a bundle's fields CONSISTENT WITH EACH OTHER before they
+   * are diffed and written (#2543).
+   *
+   * Needed only where a legacy bundle key encodes a decision the current column
+   * spells differently, so a bundle can carry a shape the app's own writer could
+   * never produce. Runs inside `parseSingleton`, i.e. on the one path both the
+   * dry-run and the apply use, so the plan can never promise something different
+   * from what lands.
+   *
+   * RUNS BEFORE THE FIELD VALIDATION LOOP, and that order is load-bearing: it is
+   * what lets a derived field still carry `constraints.required`. Run afterwards, a
+   * spec could not require the derived field at all — the loop would reject the
+   * legacy shape before the hook had a chance to fill it in — so the field would
+   * have to stay unconstrained and a `null` in a hand-edited bundle would sail past
+   * the dry-run into a write-time Prisma exception. A hook therefore receives
+   * UNVALIDATED input and must behave itself: derive only from a value it has
+   * type-checked, and leave anything it does not recognise exactly as it found it,
+   * so the loop below still gets to refuse it.
+   */
+  reconcile?: (incoming: Record<string, unknown>) => Record<string, unknown>;
 }
 
 /**
@@ -504,23 +525,85 @@ export const SINGLETONS: SingletonSpec[] = [
     // per-club billing preference exactly like `enabled`/`textFallbackEnabled`.
     // It was added after this list was written and had silently never travelled;
     // added here per the #2178 audit (should-travel).
+    // #2543/#2561: `mode` replaced the legacy `enabled` boolean, and that COLUMN is
+    // gone — so `enabled` is not a field here. It is still a BUNDLE KEY, though, and
+    // that distinction is the whole of the hook below.
     fields: [
-      "enabled", "financialYearEndMonthOverride", "textFallbackEnabled",
+      "mode", "financialYearEndMonthOverride", "textFallbackEnabled",
       "useFeeScheduleItemCodes",
     ],
     // financialYearEndMonthOverride is nullable (Int?) — null (= follow Xero's
     // accounting year) is a legitimate value, so it carries no `required`; its
     // 1–12 month bound still applies when a value is present, mirroring the admin
     // route (membership-lockout-settings): z.number().int().min(1).max(12)
-    // .nullable(). The three booleans are non-null (@default) and fail on a
-    // present null (#2200).
+    // .nullable(). The two booleans are non-null (@default) and fail on a present
+    // null (#2200).
+    //
+    // `mode` IS required, because its column is now NOT NULL (#2543/#2561) and
+    // #2200's rule is that a present null on such a column fails the dry-run rather
+    // than the write. It costs a pre-#2543 bundle nothing: `parseSingleton` skips an
+    // ABSENT key before the null check (`if (!(field in record)) continue`), so
+    // `required` can only ever fire on a key that is present and null — and a bundle
+    // that carries `mode: null` alongside `enabled` has already had a real mode
+    // derived for it by the `reconcile` hook below, which runs first. What is left
+    // for this rule to catch is the shape nothing else can: `mode: null` with no
+    // `enabled` key to derive from, in a hand-trimmed or partially-written file.
+    // Without it that file passed the dry-run reporting a policy change and then
+    // aborted the whole import transaction on `mode: null` against a non-nullable
+    // enum — an unfiltered `create: { id: "default", ...data }` on a target with no
+    // row, or the wholesale `update` overwrite mode performs.
     constraints: {
-      enabled: { required: true },
       financialYearEndMonthOverride: { min: 1, max: 12 },
+      mode: { required: true },
       textFallbackEnabled: { required: true },
       useFeeScheduleItemCodes: { required: true },
     },
     defaults: () => DEFAULT_MEMBERSHIP_LOCKOUT_SETTINGS,
+    // BUNDLE-FORMAT compatibility, which outlives the column (#2543/#2561).
+    //
+    // A bundle exported before #2543 carries `enabled` and no `mode`. The column it
+    // was named after has been dropped, but the FILE still exists on operators'
+    // disks and in their backups, and it still records a real decision: whether that
+    // club gated bookings on unpaid subscriptions. So the key is read here and
+    // mapped to the mode it means (`true -> HARD_BLOCK`, `false -> NO_BLOCK`), the
+    // same mapping the migration applied to live rows.
+    //
+    // WHY A HOOK AND NOT A FIELD. Without this, `enabled` would be an unknown key:
+    // `parseSingleton` only type-checks names in `fields`, and both the plan and the
+    // apply build their Prisma payload from `fields`, so the key would be silently
+    // dropped and the target would KEEP ITS OWN mode while the dry-run reported no
+    // change to the policy. A club importing a pre-#2543 bundle to turn the lockout
+    // off would be told it worked while every unpaid member went on being refused.
+    // Deriving `mode` here puts the value on a field that does travel.
+    //
+    // The reverse branch is gone with the column: there is no longer a boolean to
+    // re-derive, and writing one would name a column that does not exist.
+    //
+    // IT DERIVES ONLY INTO AN ABSENT-OR-NULL `mode`, and never over a value the
+    // bundle actually states. A present `mode` — including a hand-edited
+    // `"HRD_BLOCK"` — is handed to the validation loop untouched, where the DMMF
+    // enum check refuses it by name, so a bundle cannot invent a fourth policy and a
+    // typo cannot be silently "corrected" into whatever the legacy boolean said.
+    // That is also why the test is written out here rather than deferred to
+    // `isSubscriptionLockoutMode`: the two answers differ on exactly the strings
+    // this branch must not touch.
+    reconcile: (incoming) => {
+      const stated = "mode" in incoming && incoming.mode !== null;
+      if (stated) {
+        return incoming;
+      }
+      if (typeof incoming.enabled === "boolean") {
+        return {
+          ...incoming,
+          mode: incoming.enabled ? "HARD_BLOCK" : "NO_BLOCK",
+        };
+      }
+      // `mode` is absent or null with nothing to derive from. Absent means "this
+      // bundle says nothing about the policy", which merge mode honours by leaving
+      // the target's own mode alone; a present null is a broken file, and
+      // `constraints.mode.required` above fails the dry-run on it.
+      return incoming;
+    },
   },
   {
     entity: "membership-cancellation-setting",
@@ -677,6 +760,9 @@ for (const s of SINGLETONS) {
  * the REAL Prisma model column types (via dmmf) — a hand-edited value of the
  * wrong shape fails the dry-run as an error instead of a write-time Prisma
  * exception mid-transaction. Returns null (with errors pushed) on failure.
+ *
+ * A spec's `reconcile` hook runs before that type-check, so what is validated is
+ * exactly what will be written, and a derived field can still be `required`.
  */
 function parseSingleton(
   spec: SingletonSpec,
@@ -697,7 +783,13 @@ function parseSingleton(
     errors.push(`${file}: must be a JSON object`);
     return null;
   }
-  const record = incoming as Record<string, unknown>;
+  // The spec's own legacy-key reconciliation runs FIRST, so a field it derives can
+  // still carry `constraints.required` and the loop below judges the record that
+  // will actually be written. See `SingletonSpec.reconcile` for why that order is
+  // the one that closes the hole rather than opening one.
+  const record = spec.reconcile
+    ? spec.reconcile(incoming as Record<string, unknown>)
+    : (incoming as Record<string, unknown>);
   const modelName = spec.delegate[0].toUpperCase() + spec.delegate.slice(1);
   const model = Prisma.dmmf.datamodel.models.find((m) => m.name === modelName);
   let ok = true;
@@ -760,7 +852,8 @@ function parseSingleton(
       ok = false;
     }
   }
-  return ok ? record : null;
+  if (!ok) return null;
+  return record;
 }
 
 function delegateOf(db: ReadDb | TxDb, name: string): SingletonDelegate {

@@ -120,7 +120,14 @@ export const DEFAULT_MEMBERSHIP_NOMINATION_SETTINGS = {
 
 /** `MembershipLockoutSettings` — read by `normalizeMembershipLockoutSettings`. */
 export const DEFAULT_MEMBERSHIP_LOCKOUT_SETTINGS = {
-  enabled: true,
+  /**
+   * #2543 three-way lockout policy. HARD_BLOCK is the safe default — it is
+   * exactly the behaviour the old `enabled: true` boolean produced, so a fresh
+   * install and every existing club start where they already were. It matches the
+   * database default, which the migration set when it made the column mandatory
+   * and dropped the boolean (#2561).
+   */
+  mode: "HARD_BLOCK",
   /** Null = follow the connected Xero organisation's accounting financial year. */
   financialYearEndMonthOverride: null,
   textFallbackEnabled: true,

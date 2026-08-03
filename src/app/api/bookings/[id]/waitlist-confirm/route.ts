@@ -47,9 +47,27 @@ export async function POST(
       // fine when it was made and the club's state moved under it — and it is
       // retryable: confirming again re-reads everything and runs the guard.
       : result.code === "CONFIRM_RETRY" ? 409
+      // #2543: 409, not 400 — the booking IS permitted, by a Booking Officer,
+      // through the exception-request workflow; it is the state of the party that
+      // conflicts. Same status and same body as the five booking write paths, and
+      // it keeps the code out of the hard-stop family that may not enter review.
+      : result.code === "PAID_UP_ADULT_MEMBER_REQUIRED" ? 409
       : 400;
     return NextResponse.json(
       {
+        // #2543 — the shared refusal body (frozen violation, HOLD promise, and
+        // the path to ask a Booking Officer), spread so this path answers the
+        // paid-up-adult refusal in exactly the shape the five booking write paths
+        // do. Present on that refusal only.
+        ...(result.paidUpAdultRefusal ?? {}),
+        // AFTER the spread, and the order is load-bearing. The shared body carries
+        // its own `error` — the frozen violation's message — and spreading it last
+        // silently discarded whatever this path had put there. Both waitlist paths
+        // refuse with a sentence the booking paths cannot use (they reject the offer
+        // without consuming it, so the member is told they kept their waitlist
+        // place), and that sentence is the one the member must read. The body's
+        // remaining fields are unaffected: `details`, `violations` and
+        // `exceptionReview` still carry the policy's own wording for the officer.
         error: result.error,
         // Price drift on a cross-lodge offer (ADR-004): the client shows
         // the refreshed figure so the member can re-confirm knowingly.
@@ -82,6 +100,18 @@ export async function POST(
         result.newStatus === BookingStatus.PAYMENT_PENDING &&
         (newBooking?.finalPriceCents ?? 0) > 0,
       requiresSetup: result.newStatus === BookingStatus.PENDING,
+      // #2543 — the same "why" the two same-lodge branches below return. This
+      // branch is the one it matters most on: a cross-lodge quote can differ from
+      // the member's own lodge by the whole member/non-member spread, and the
+      // promotion has just charged them the non-member side of it.
+      // `confirmCrossLodgeWaitlistOffer` computes the sentence and puts it on the
+      // success result, and DOMAIN_INVARIANTS records that it rides that result —
+      // dropping it here made the field dead on the one path that earns it, and
+      // made the cross-lodge answer differ from the same-lodge answer for no
+      // reason. The sentence the member actually reads before deciding is in the
+      // OFFER email (both flavours go through one send site in `waitlist.ts`), so
+      // this is the API contract being consistent rather than the only channel.
+      subscriptionMemberRateNotice: result.subscriptionMemberRateNotice ?? null,
     });
   }
 
@@ -232,6 +262,9 @@ export async function POST(
       success: true,
       status: "PAID",
       requiresPayment: false,
+      // #2543 — why the confirmed figure is what it is, when somebody on this
+      // booking is priced as a non-member for an unpaid subscription.
+      subscriptionMemberRateNotice: result.subscriptionMemberRateNotice ?? null,
     });
   }
 
@@ -254,5 +287,7 @@ export async function POST(
     status: result.newStatus,
     requiresPayment: result.newStatus === BookingStatus.PAYMENT_PENDING && booking.finalPriceCents > 0,
     requiresSetup: result.newStatus === BookingStatus.PENDING,
+    // #2543 — see the $0 branch above.
+    subscriptionMemberRateNotice: result.subscriptionMemberRateNotice ?? null,
   });
 }

@@ -832,6 +832,15 @@ describe("consent columns have exactly one writer", () => {
       // message for the same event.
       "src/app/api/bookings/[id]/guests/[guestId]/route.ts":
         "the guest-removal route reads the removed row's consent state to decide who is owed a withdrawal notice",
+      // --- #2543's paid-up-adult requirement on the guests route. A READER
+      // through the shared D-12 predicate: a newly added adult member guest
+      // only satisfies the requirement once their invite is accepted, so the
+      // route reads `consentStatus` for the adds it is about to persist. It
+      // composes no consent shape and writes no consent column — the write
+      // plan still comes from `buildMemberGuestConsentWrite` via the shared
+      // add policy, exactly as before this lane.
+      "src/app/api/bookings/[id]/guests/route.ts":
+        "the guest-add route reads consent presence so a pending invite cannot stand in as the paid-up adult member",
       // --- #2550's naming-reminder sweep. A READER through the shared D-12
       // predicate only: the emailed headcount filters the party on
       // `OPERATIONALLY_PRESENT_GUEST_WHERE` so a pending or lapsed member-guest
@@ -852,6 +861,44 @@ describe("consent columns have exactly one writer", () => {
       // `adultMemberHosting*` columns on Booking.
       "src/lib/adult-member-hosting-review.ts":
         "the hosting evaluator reads consent to decide whether a member guest is present enough to host",
+      // --- #2543's paid-up-adult requirement, the other four sites the D-12 half
+      // of it reaches. All four apply the SAME rule for the same reason: a member
+      // guest whose invite is still PENDING holds a bed and nothing else, so they
+      // cannot stand in as the party's paid-up adult member — otherwise the
+      // requirement is trivially satisfiable, since the invite need never be
+      // accepted.
+      //
+      // The shared mapper. A READER that never touches a database: it takes
+      // whatever guest shape a caller holds and normalises the one fact, reading a
+      // persisted row's `consentStatus` and a pre-persist row's planned
+      // `memberGuestConsent.consentStatus` through `isOperationallyPresentConsent`.
+      // Centralised here precisely because reading the wrong field name silently
+      // made every persisted row look present. It composes no consent shape and
+      // writes no consent column.
+      "src/lib/subscription-lockout-enforcement.ts":
+        "the shared participant mapper reads consent presence so a pending invite cannot stand in as the paid-up adult member",
+      // The edit PREVIEW. A READER: it maps the rows already on the booking to
+      // their stored `consentStatus` so the preview refuses exactly what the save
+      // refuses. It persists nothing at all — it is a quote.
+      "src/app/api/bookings/[id]/modify-quote/route.ts":
+        "the edit preview reads each existing row's stored consent state so the preview and the save judge one party the same way",
+      // The edit APPLY. The one of the four that does WRITE consent columns, and it
+      // is not a new write: `...(g.memberGuestConsent ?? {})` on an added guest
+      // predates this lane and still spreads a shape composed by
+      // `buildMemberGuestConsentWrite` via `planMemberGuestConsentWrites`. What
+      // #2543 added is a READ of the same two facts — a stored row's
+      // `consentStatus`, and the status the planner has just decided for a row
+      // being added — so the apply path judges presence exactly as the preview
+      // does. It composes no consent shape of its own.
+      "src/lib/booking-modify-plan.ts":
+        "the edit apply path reads stored and just-planned consent state for the paid-up-adult test, and writes only the shape the shared planner composed",
+      // The override door. A READER, and the narrowest kind: one `where`/`select`
+      // pair asking which of a live booking's member rows are operationally
+      // present, so a party refused by a booking path reproduces the SAME violation
+      // when it is re-submitted as an exception request. Without it the 409 would
+      // name a workflow the member cannot enter. It writes no consent column.
+      "src/lib/booking-exception-request-service.ts":
+        "the exception-request re-evaluation reads a live booking's consent state so a refusal can actually be reviewed",
     };
 
     const mentions = productionFilesUnder("src")

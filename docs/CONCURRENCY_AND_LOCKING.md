@@ -227,6 +227,41 @@ policy writer takes a per-lodge capacity lock and no booking path takes the
 policy-set key, so the keyspaces are disjoint and cannot deadlock in either
 order.
 
+#### Which client reads the subscription-lockout mode (#2543)
+
+The same rule, reached differently. `peekSubscriptionLockoutMode()` takes no `db`
+and reads two uncached settings rows (`loadEffectiveModuleFlags` and
+`loadMembershipLockoutSettings`) through the module client, so it cannot be handed
+a `tx` — which means an in-transaction caller must not call it at all. Instead the
+mode is **resolved once per request, outside the transaction, and passed down as a
+value**:
+
+- `resolveGuestRateMembershipTypes` and
+  `priceBookingGuestsWithMembershipTypePolicy` take
+  `subscriptionLockoutMode`, and it is threaded from every booking write path
+  through `createDraftBooking` / `createConfirmedBooking` /
+  `createWaitlistedBooking` (shared `BaseInput`), `prepareGuestPlan`,
+  `calculateModifiedPricing`, `removeBookingGuestInTransaction`, the guest-add
+  route, `modify-quote`, the quote route and the waitlist sweep.
+- The pricing gate is reached from inside `booking-create.ts`,
+  `booking-modify-plan.ts`, `booking-date-modification-service.ts`,
+  `booking-guest-removal-service.ts`, `waitlist.ts`, `waitlist-cross-lodge.ts`,
+  `booking-request-shared.ts`, `group-booking.ts` and the guest-add route — every
+  one of them holding a per-lodge capacity lock and often `lock(1)` as well. An
+  independent settings read there is exactly the second-pool-connection shape the
+  hosting rule above forbids, and it applied to EVERY club in EVERY mode, because
+  the read happens before the mode is known.
+- `peekSubscriptionLockoutMode()` remains the fallback for a caller that genuinely
+  holds no mode. It exists at all (rather than `resolveSubscriptionLockoutMode`)
+  because the latter refreshes the financial-year cache, which can reach Xero —
+  a provider call the booking rules forbid outright inside a transaction.
+
+The mode is also passed for a second, non-pool reason: two independent reads in
+one request can disagree if an admin saves the panel between them, which on
+`modify-quote` (seven or more pricing passes, two of them differenced into the
+member's settlement delta) is a money error rather than a nuisance. See
+`docs/DOMAIN_INVARIANTS.md` → "Subscription-lockout booking pricing".
+
 ### Composition: application-approval mapping (E10, #1936)
 
 The membership-application approval transaction is the one writer that composes

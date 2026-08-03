@@ -19,6 +19,9 @@ import {
   priceBookingGuestsWithMembershipTypePolicy,
 } from "@/lib/membership-type-policy";
 import { getMemberCreditBalance } from "@/lib/member-credit";
+import { resolveSubscriptionLockoutMode } from "@/lib/member-subscription-eligibility";
+import { evaluateNonMemberPricingRequirements } from "@/lib/subscription-lockout-enforcement";
+import { getSeasonYear } from "@/lib/utils";
 import { applyRateLimit, rateLimiters } from "@/lib/rate-limit";
 import { z } from "zod";
 import { bookableAgeTierEnum } from "@/lib/age-tier-schema";
@@ -314,6 +317,12 @@ export async function POST(request: NextRequest) {
   const gds = await prisma.groupDiscountSetting.findUnique({ where: { id: "default" } });
   const groupDiscount = toGroupDiscountConfig(gds);
 
+  // #2543 — resolved ONCE for this request. The quote prices the party and then
+  // explains the price; both must be judged against the same mode, or an admin
+  // saving the panel between the two calls makes the notice describe a regime the
+  // number was not computed under.
+  const subscriptionLockoutMode = await resolveSubscriptionLockoutMode();
+
   try {
     const price = await priceBookingGuestsWithMembershipTypePolicy(prisma, {
       // Finding 2 (privacy re-review of MG3 #2308).
@@ -324,6 +333,7 @@ export async function POST(request: NextRequest) {
       guests,
       seasons: seasonData,
       groupDiscount,
+      subscriptionLockoutMode,
     });
     // Deferred non-member "guest portion" (#2003): when a split creates a
     // provisional non-member child, its charge is the non-member SUBSET priced
@@ -362,11 +372,64 @@ export async function POST(request: NextRequest) {
       holdEnabled: holdPolicy.enabled,
     });
 
+    // #2543 — "tell them why". The quote is the screen on which the member sees
+    // the number, so it is the screen that owes them the explanation for it.
+    // Null unless the club runs NON_MEMBER_PRICING and somebody on this party is
+    // being repriced; the quote is otherwise untouched. Read-only: the
+    // evaluation performs no writes and, because it also reports whether a
+    // paid-up adult is present, the quote can warn BEFORE the member fills in
+    // the rest of the wizard and gets refused at the end.
+    const nonMemberPricing = await evaluateNonMemberPricingRequirements(prisma, {
+      mode: subscriptionLockoutMode,
+      lodgeId: quoteLodgeId,
+      seasonYear: getSeasonYear(checkIn),
+      checkIn,
+      checkOut,
+      // Owner decision, 3 Aug 2026: an unfinancial member triggers the
+      // requirement whether or not they are staying, so the quote must warn about
+      // that party too — otherwise the wizard stays silent about a booking the
+      // create path then refuses, which is the late surprise this warning exists
+      // to prevent.
+      bookingOwnerMemberId: effectiveMemberId,
+      // D-12 on a party that persists NOTHING. This route plans no consent
+      // columns, so operational presence is derived from the same three facts
+      // `buildMemberGuestConsentWrite` would use on save: a cross-family member
+      // guest lands PENDING exactly when the module is on, the club requires
+      // approval, and the actor is a member rather than an admin acting on their
+      // behalf. Without this the preview would stay silent about a party the
+      // create path then refuses — which is precisely the late surprise the
+      // early warning exists to prevent.
+      participants: guests.map((guest) => ({
+        isMember: guest.isMember,
+        memberId: guest.memberId ?? null,
+        stayStart: guest.stayStart ?? null,
+        stayEnd: guest.stayEnd ?? null,
+        nights: guest.nights ?? null,
+        operationallyPresent: !(
+          guest.crossFamilyMemberGuest === true &&
+          memberGuestPolicy.wideningEnabled &&
+          memberGuestPolicy.approvalRequired &&
+          !isAuthorizedOnBehalf
+        ),
+      })),
+    });
+
     return NextResponse.json({
       ...price,
       availableCreditCents,
       deferredGuestPortionCents,
       groupDiscountApplied,
+      subscriptionMemberRateNotice: nonMemberPricing?.memberRateNotice ?? null,
+      /**
+       * True when saving this party WOULD be refused for having no paid-up adult
+       * member on it. Derived from the same violation the write paths refuse on,
+       * not from `hasPaidUpAdultMember` alone: a party that owes no paid-up adult
+       * — nobody repriced, and a financial booker — has no missing one either, and
+       * warning about it would be both wrong and alarming. Reading the violation
+       * rather than re-deriving the trigger is also what made this flag cover the
+       * unfinancial-booker case for free when that trigger was added.
+       */
+      paidUpAdultMemberMissing: nonMemberPricing?.violation != null,
       nonMemberHoldDecision: {
         enabled: holdPolicy.enabled,
         holdDays: holdPolicy.holdDays,

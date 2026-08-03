@@ -125,7 +125,7 @@ describe("getNonSubscriptionFeeItemCodes (#2109)", () => {
 describe("buildSubscriptionInvoiceMatchOptions (#2109)", () => {
   it("off: uses only the flat item code, single-code behaviour", async () => {
     mocks.lockoutFindUnique.mockResolvedValue({
-      enabled: true,
+      mode: "HARD_BLOCK",
       financialYearEndMonthOverride: null,
       textFallbackEnabled: true,
       useFeeScheduleItemCodes: false,
@@ -148,7 +148,7 @@ describe("buildSubscriptionInvoiceMatchOptions (#2109)", () => {
 
   it("on: unions fee-schedule codes with the flat code, flat still primary", async () => {
     mocks.lockoutFindUnique.mockResolvedValue({
-      enabled: true,
+      mode: "HARD_BLOCK",
       financialYearEndMonthOverride: null,
       textFallbackEnabled: false,
       useFeeScheduleItemCodes: true,

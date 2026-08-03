@@ -27,6 +27,12 @@ vi.mock("@/lib/prisma", () => ({
   prisma: {
     $transaction: mocks.transaction,
     booking: { findUnique: mocks.bookingFindUnique },
+    // #2543: after the sweep commits, the offer email's "why is this the price"
+    // sentence is resolved from the offer's guest rows. Empty is the neutral answer
+    // — no member rows means nobody is repriced and the notice stays null — and it
+    // keeps this suite from exercising the graceful-degradation branch instead of
+    // the real read.
+    bookingGuest: { findMany: async () => [] },
   },
 }));
 vi.mock("@/lib/lodges", () => ({

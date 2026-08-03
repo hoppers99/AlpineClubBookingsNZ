@@ -306,6 +306,10 @@ export async function createDraftBooking(input: DraftBookingInput): Promise<Book
       guests: guestInputs,
       seasons: seasonData,
       groupDiscount,
+      // #2543 — the mode this request resolved, so the price cannot be computed
+      // under a different regime than the gate that let the booking through, and
+      // no settings read happens under the capacity lock.
+      subscriptionLockoutMode: input.subscriptionLockoutMode,
       // Finding 2 (privacy re-review of MG3 #2308): an on-behalf create keeps the
       // detailed membership-type refusal naming the blocked member.
       skipAuthorization: isOnBehalf,
@@ -801,6 +805,8 @@ export async function createConfirmedBooking(input: ConfirmedBookingInput): Prom
         guests: guestInputs,
         seasons: seasonData,
         groupDiscount,
+        // #2543 — see the draft path above.
+        subscriptionLockoutMode: input.subscriptionLockoutMode,
         // Finding 2 (privacy re-review of MG3 #2308).
         skipAuthorization: isOnBehalf,
       });
@@ -1589,6 +1595,8 @@ export async function createWaitlistedBooking(input: WaitlistedBookingInput): Pr
     guests: guestInputs,
     seasons: seasonData,
     groupDiscount,
+    // #2543 — see the draft path above.
+    subscriptionLockoutMode: input.subscriptionLockoutMode,
     // Finding 2 (privacy re-review of MG3 #2308).
     skipAuthorization: isOnBehalf,
   });

@@ -53,18 +53,34 @@ function violation(
 }
 
 describe("booking-policy exception registry (#2363)", () => {
-  it("is a closed two-reason soft-policy allowlist disjoint from hard stops", () => {
+  it("is a closed three-reason soft-policy allowlist disjoint from hard stops", () => {
+    // #2543 added the third: a party the club is repricing for unpaid
+    // subscriptions must carry a paid-up adult member, and that refusal is
+    // exception-eligible so a Booking Officer can allow it through. It is
+    // deliberately NOT a hard stop — the assertions below are what enforce that
+    // the two families stay disjoint.
     expect(POLICY_EXCEPTION_REASON_CODES).toEqual([
       "MINIMUM_STAY",
       "ADULT_MEMBER_HOSTING_REQUIRED",
+      "PAID_UP_ADULT_MEMBER_REQUIRED",
     ]);
-    expect(new Set(POLICY_EXCEPTION_REASON_CODES).size).toBe(2);
+    expect(new Set(POLICY_EXCEPTION_REASON_CODES).size).toBe(3);
     for (const code of HARD_STOP_BOOKING_FAILURE_CODES) {
       expect(isHardStopBookingFailureCode(code)).toBe(true);
       expect(isPolicyExceptionReasonCode(code)).toBe(false);
     }
     expect(isPolicyExceptionReasonCode("CAPACITY_EXCEEDED")).toBe(false);
     expect(isPolicyExceptionReasonCode("MINIMUM_STAY")).toBe(true);
+    expect(isPolicyExceptionReasonCode("PAID_UP_ADULT_MEMBER_REQUIRED")).toBe(
+      true,
+    );
+    // The subscription hard stops keep their meaning: HARD_BLOCK still refuses
+    // outright and may never enter review, which is what makes #2543's new code a
+    // genuinely separate regime rather than a softening of those two.
+    expect(isPolicyExceptionReasonCode("SUBSCRIPTION_REQUIRED")).toBe(false);
+    expect(isPolicyExceptionReasonCode("GUEST_SUBSCRIPTION_REQUIRED")).toBe(
+      false,
+    );
     expect(HARD_STOP_BOOKING_FAILURE_CODES).toEqual(
       expect.arrayContaining([
         "CAPACITY_EXCEEDED",

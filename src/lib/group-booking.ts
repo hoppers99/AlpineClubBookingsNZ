@@ -69,11 +69,16 @@ import {
   type BookingGuestInput,
 } from "@/lib/booking-guests";
 import { findUnpaidMemberGuests } from "@/lib/booking-member-guest-subscriptions";
+import { resolveSubscriptionLockoutMode } from "@/lib/member-subscription-eligibility";
 import {
   assertMembershipTypeBookingAllowed,
   priceBookingGuestsWithMembershipTypePolicy,
   requiresPaidSubscriptionForMemberForBooking,
 } from "@/lib/membership-type-policy";
+import {
+  buildPaidUpAdultRefusalBody,
+  evaluateNonMemberPricingRequirements,
+} from "@/lib/subscription-lockout-enforcement";
 import {
   calculateBookingHoldDecision,
   toGroupDiscountConfig,
@@ -122,6 +127,14 @@ export class GroupBookingError extends Error {
   /** Frozen soft-policy facts; present only on the still-blocking 400 path. */
   violations?: PolicyExceptionViolation[];
   exceptionReview?: AggregatedPolicyExceptions;
+  /**
+   * Where the member goes to ask for an override (#2543). Carried through the
+   * error so the join route serialises the same field the other four refusal
+   * paths return: "you were refused but you may ask" is useless advice if the
+   * caller cannot find the door, and a client written against the shared refusal
+   * body would otherwise render no link on this path alone.
+   */
+  exceptionRequestPath?: string;
 
   constructor(
     message: string,
@@ -131,6 +144,7 @@ export class GroupBookingError extends Error {
       details?: unknown;
       violations?: PolicyExceptionViolation[];
       exceptionReview?: AggregatedPolicyExceptions;
+      exceptionRequestPath?: string;
     }
   ) {
     super(message);
@@ -140,6 +154,7 @@ export class GroupBookingError extends Error {
     this.details = options?.details;
     this.violations = options?.violations;
     this.exceptionReview = options?.exceptionReview;
+    this.exceptionRequestPath = options?.exceptionRequestPath;
   }
 }
 
@@ -700,14 +715,20 @@ export async function joinGroupBookingAsMember(
     seasonYear,
   });
 
+  // #2543 — the club's three-way lockout policy, resolved once for this join so
+  // the owner refusal, the member-guest refusal and the paid-up-adult
+  // requirement all branch on the same answer.
+  const subscriptionLockoutMode = await resolveSubscriptionLockoutMode();
+
   // Same eligibility gates as POST /api/bookings (skipped for admins).
   if (sessionRole !== "ADMIN") {
     if (
-      await requiresPaidSubscriptionForMemberForBooking(prisma, {
+      subscriptionLockoutMode === "HARD_BLOCK" &&
+      (await requiresPaidSubscriptionForMemberForBooking(prisma, {
         memberId: sessionUserId,
         seasonYear,
         ageTier: joiner.ageTier,
-      })
+      }))
     ) {
       const paidSub = await prisma.memberSubscription.findFirst({
         where: { memberId: sessionUserId, seasonYear, status: "PAID" },
@@ -727,7 +748,12 @@ export async function joinGroupBookingAsMember(
       checkIn,
       guests,
     });
-    if (unpaidMemberGuests.length > 0) {
+    // #2543: mode-gated like the four sibling paths — the call above still runs
+    // under NON_MEMBER_PRICING so the D-8 cross-family refusal is unaffected.
+    if (
+      subscriptionLockoutMode === "HARD_BLOCK" &&
+      unpaidMemberGuests.length > 0
+    ) {
       throw new GroupBookingError(
         `The following member guests have unpaid subscriptions: ${unpaidMemberGuests
           .map((m) => m.name)
@@ -735,6 +761,36 @@ export async function joinGroupBookingAsMember(
         403,
         { code: "GUEST_SUBSCRIPTION_REQUIRED", details: unpaidMemberGuests }
       );
+    }
+
+    // #2543 — the paid-up-adult requirement over the JOINER's own booking. A
+    // group joiner creates their own booking under their own name, so "at least
+    // one paid-up adult member on the booking" is judged over their party alone:
+    // the organiser's adults are on a different booking and deliberately do not
+    // count, exactly as they do not count for the #2364 hosting rule.
+    const nonMemberPricing = await evaluateNonMemberPricingRequirements(prisma, {
+      mode: subscriptionLockoutMode,
+      lodgeId: groupLodgeId,
+      seasonYear,
+      checkIn,
+      checkOut,
+      // Owner decision, 3 Aug 2026: the joiner OWNS the booking they are creating,
+      // so an unfinancial joiner triggers the requirement even when every bed they
+      // are claiming is for a linked family member. The HARD_BLOCK gate above
+      // refuses that same joiner as a person.
+      bookingOwnerMemberId: sessionUserId,
+      participants: guests,
+    });
+    if (nonMemberPricing?.violation) {
+      const refusal = buildPaidUpAdultRefusalBody(nonMemberPricing.violation);
+      throw new GroupBookingError(nonMemberPricing.violation.message, 409, {
+        code: refusal.code,
+        details: refusal.details,
+        violations: refusal.exceptionReview.violations,
+        exceptionReview: refusal.exceptionReview,
+        // The one field the other four paths return and this one used to drop.
+        exceptionRequestPath: refusal.exceptionRequestPath,
+      });
     }
 
     const { validateMinimumStay, formatViolationsDetail } = await import(

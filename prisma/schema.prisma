@@ -5941,10 +5941,34 @@ model MembershipNominationSettings {
 // (account code / item code) are NOT stored here; they remain in the
 // XeroAccountMapping "subscriptionIncome" row so there is a single source of
 // truth shared with the Xero mappings panel.
+// How a club treats a member whose season subscription is required but unpaid
+// when they try to book (#2543). Replaced the old boolean `enabled` toggle, which
+// was backfilled into this enum and dropped in the same release (#2561):
+//   NO_BLOCK           - no subscription gate at all; they book at member rates.
+//   HARD_BLOCK         - the historical behaviour: 403 SUBSCRIPTION_REQUIRED /
+//                        GUEST_SUBSCRIPTION_REQUIRED. The effective default, so
+//                        every existing club is unchanged until an admin moves.
+//   NON_MEMBER_PRICING - they may book, but their own nights price at the
+//                        built-in NON_MEMBER rate and the booking must contain at
+//                        least one paid-up adult member (else it is refused with
+//                        an admin-override request path).
+enum SubscriptionLockoutMode {
+  NO_BLOCK
+  HARD_BLOCK
+  NON_MEMBER_PRICING
+}
+
 model MembershipLockoutSettings {
-  id                            String   @id @default("default")
-  // Master toggle. When false, no booking is blocked for an unpaid subscription.
-  enabled                       Boolean  @default(true)
+  id                            String                  @id @default("default")
+  // Three-way lockout policy (#2543), and the ONLY record of it: the legacy
+  // boolean `enabled` this replaced was backfilled into this column and dropped
+  // in the same release, as an explicit maintenance-window migration (owner
+  // directive on #2561). MANDATORY, defaulting to HARD_BLOCK — the behaviour the
+  // old `enabled = true` default produced — so a fresh install starts where every
+  // existing club already was. Read it through
+  // `loadMembershipLockoutSettings`/`resolveSubscriptionLockoutMode` rather than
+  // directly, so the closed vocabulary is enforced in one place.
+  mode                          SubscriptionLockoutMode @default(HARD_BLOCK)
   // Membership financial year-end month (1-12). Null = follow the connected
   // Xero organisation's accounting financial year. A value overrides it when the
   // membership subscription year differs from the accounting year.

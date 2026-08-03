@@ -6,6 +6,9 @@ import { normalizeGuestStayRange } from "@/lib/booking-guest-stay-range-input";
 import { getStayNights } from "@/lib/policies/pricing";
 import { validateMinimumStay } from "@/lib/booking-policies";
 import { evaluateProposedAdultMemberHosting } from "@/lib/adult-member-hosting-review";
+import { evaluateProposedPaidUpAdultPresence } from "@/lib/subscription-lockout-enforcement";
+import { computeMemberGuestBoundary } from "@/lib/booking-guests";
+import { isOperationallyPresentConsent } from "@/lib/member-guest-consent";
 import { acquireLodgeCapacityLock, checkCapacityForGuestRanges } from "@/lib/capacity";
 import {
   releasePolicyExceptionReservation,
@@ -565,7 +568,19 @@ export function parseStoredExceptionDelta(
  */
 export type PolicyEvaluationDb = Pick<
   typeof prisma,
-  "booking" | "member" | "adultMemberHostingPolicy" | "lodge" | "minimumStayPolicy"
+  | "booking"
+  | "member"
+  | "adultMemberHostingPolicy"
+  | "lodge"
+  | "minimumStayPolicy"
+  // #2543: the paid-up-adult evaluation reads subscription facts
+  // (SubscriptionLockoutDb) and its D-12 presence derivation reads the
+  // requester's family boundary and the live rows' stored consent status.
+  | "memberSubscription"
+  | "membershipType"
+  | "seasonalMembershipAssignment"
+  | "familyGroupMember"
+  | "bookingGuest"
 >;
 
 /**
@@ -580,6 +595,28 @@ export async function evaluateProposalPartyViolations(
   db: PolicyEvaluationDb,
   lodgeId: string,
   party: ProposalParty,
+  /**
+   * Who is asking, and about which booking (#2543). Optional, and used ONLY by the
+   * paid-up-adult evaluation below — the hosting evaluation is left byte-identical.
+   *
+   * It exists to make the override door actually open. A booking path refuses a
+   * party because its only paid-up adult member is a cross-family member guest
+   * whose invite is still PENDING (D-12: they hold a bed and nothing else, and may
+   * never accept). The member then submits the SAME party here. Without these
+   * facts this re-evaluation counted that PENDING adult as present, found no
+   * violation, and the request machinery correctly refused to create a request
+   * there was nothing to review — so the 409's promised door led nowhere.
+   *
+   * `ProposalGuest` deliberately does NOT carry the fact: the proposal is frozen
+   * and hashed, and adding a field would change every existing proposal hash. It
+   * is derived here instead.
+   */
+  presence?: {
+    /** The member submitting the request; their family boundary decides scope. */
+    requestedByMemberId?: string | null;
+    /** For a MODIFICATION proposal: the live booking whose rows already exist. */
+    bookingId?: string | null;
+  },
 ): Promise<PolicyExceptionViolation[]> {
   const checkIn = parseDateOnly(party.checkIn);
   const checkOut = parseDateOnly(party.checkOut);
@@ -606,7 +643,132 @@ export async function evaluateProposalPartyViolations(
     violations.push(hosting);
   }
 
+  // #2543 — the paid-up-adult requirement. Registering it HERE is what turns
+  // the booking refusal into an actual door: the member re-submits the same
+  // party to `POST /api/bookings/exception-requests`, this re-evaluation
+  // (server-side, never the client's claim) reproduces the violation, and the
+  // #2365 machinery freezes it, HOLDs the beds and queues it for a Booking
+  // Officer. Without this line the refusal would name a workflow the member
+  // could not enter.
+  const operationallyPresentFor = await resolveProposalOperationalPresence(
+    db,
+    party,
+    presence,
+  );
+  const paidUpAdult = await evaluateProposedPaidUpAdultPresence(db, {
+    lodgeId,
+    checkIn,
+    checkOut,
+    bookingOwnerMemberId: await resolveProposalBookingOwner(db, presence),
+    guests: party.guests.map((guest) => ({
+      ...guest,
+      operationallyPresent: operationallyPresentFor(guest.memberId),
+    })),
+  });
+  if (paidUpAdult) {
+    violations.push(paidUpAdult);
+  }
+
   return violations;
+}
+
+/**
+ * Who would OWN the booking a proposal describes (#2543, owner decision 3 Aug
+ * 2026).
+ *
+ * The second half of making the override door real. The paid-up-adult requirement
+ * also fires when the booking OWNER is an unfinancial member, staying or not; a
+ * booking path that refused on that trigger must reproduce the SAME violation
+ * here, or the request machinery finds nothing to review, refuses to create a
+ * request, and the 409 names a workflow the member cannot enter.
+ *
+ * A MODIFICATION reads the live booking's own `memberId` rather than trusting the
+ * requester to be it: that is the member the booking paths judge, and reading it
+ * server-side is what stops the door being opened against somebody else's
+ * standing. A NEW booking has no row yet, so the requester is who would own it.
+ * `ProposalGuest` deliberately does not carry the fact, exactly as with D-12
+ * presence — the proposal is frozen and hashed, and a new field would change every
+ * existing proposal hash.
+ */
+async function resolveProposalBookingOwner(
+  db: PolicyEvaluationDb,
+  presence:
+    | { requestedByMemberId?: string | null; bookingId?: string | null }
+    | undefined,
+): Promise<string | null> {
+  if (presence?.bookingId) {
+    const booking = await db.booking.findUnique({
+      where: { id: presence.bookingId },
+      select: { memberId: true },
+    });
+    return booking?.memberId ?? null;
+  }
+  return presence?.requestedByMemberId?.trim() || null;
+}
+
+/**
+ * D-12 operational presence for each member in a PROPOSED party (#2543).
+ *
+ * Returns a lookup that answers `undefined` — i.e. "absent, so present", the #2364
+ * default — whenever there is nothing to go on, so a caller that supplies no
+ * context gets exactly the previous behaviour.
+ *
+ * The rule, in two halves:
+ *
+ *  - a member guest BEYOND the requester's family boundary is invited PENDING when
+ *    the booking is eventually made, so they are not yet present. This is the case
+ *    the booking paths refuse on, and reproducing it here is the whole point;
+ *  - EXCEPT where a live row for that member on this booking is already
+ *    operationally present (a CONFIRMED cross-family guest, or a family-scope row
+ *    with no consent status at all), in which case they are present. Without this
+ *    half a modification proposal would raise a violation for a party the booking
+ *    path allows, and an admin would be asked to review something that needed no
+ *    review.
+ */
+async function resolveProposalOperationalPresence(
+  db: PolicyEvaluationDb,
+  party: ProposalParty,
+  presence:
+    | { requestedByMemberId?: string | null; bookingId?: string | null }
+    | undefined,
+): Promise<(memberId: string | null) => boolean | undefined> {
+  const requestedByMemberId = presence?.requestedByMemberId?.trim();
+  if (!requestedByMemberId) return () => undefined;
+
+  const memberIds = [
+    ...new Set(
+      party.guests
+        .map((guest) => guest.memberId?.trim())
+        .filter((id): id is string => Boolean(id)),
+    ),
+  ];
+  if (memberIds.length === 0) return () => undefined;
+
+  const boundary = await computeMemberGuestBoundary(
+    db,
+    requestedByMemberId,
+    memberIds,
+  );
+
+  const alreadyPresent = new Set<string>();
+  if (presence?.bookingId) {
+    const liveRows = await db.bookingGuest.findMany({
+      where: { bookingId: presence.bookingId },
+      select: { memberId: true, consentStatus: true },
+    });
+    for (const row of liveRows) {
+      if (row.memberId && isOperationallyPresentConsent(row.consentStatus)) {
+        alreadyPresent.add(row.memberId);
+      }
+    }
+  }
+
+  return (memberId) => {
+    const id = memberId?.trim();
+    if (!id) return undefined;
+    if (boundary.scopeByMemberId.get(id) !== "BEYOND_FAMILY") return undefined;
+    return alreadyPresent.has(id) ? true : false;
+  };
 }
 
 interface FrozenProposal {
@@ -750,6 +912,9 @@ export async function createNewBookingExceptionRequest(
     prisma,
     input.lodgeId,
     proposedParty,
+    // #2543 — no live booking exists yet, so every cross-family member guest in the
+    // proposal is somebody who would be invited PENDING.
+    { requestedByMemberId: input.requestedByMemberId },
   );
 
   const frozen = freezeProposal(
@@ -894,6 +1059,13 @@ export async function createModificationExceptionRequest(
     prisma,
     input.lodgeId,
     input.proposed,
+    // #2543 — a modification: rows already on the booking are judged by their
+    // stored consent status, and only the ones this proposal would newly invite
+    // count as not-yet-present.
+    {
+      requestedByMemberId: input.requestedByMemberId,
+      bookingId: input.bookingId,
+    },
   );
 
   const frozen = freezeProposal(

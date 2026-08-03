@@ -75,6 +75,13 @@ export async function sendWaitlistOfferEmail(
   // Cross-lodge offer (ADR-004): names the alternate lodge the member is
   // being offered. Null for same-lodge offers, which render as before.
   crossLodgeOffer?: { lodgeName: string | null } | null,
+  // #2543: the "why is this the price" sentence, when the club runs
+  // NON_MEMBER_PRICING and somebody on this booking is priced as a non-member
+  // because their season subscription is unpaid. The offer-time reprice can raise
+  // the stored figure by the whole member/non-member spread, and this email states
+  // that figure, so the explanation belongs with it. Null on every other offer,
+  // which renders exactly as before.
+  subscriptionMemberRateNotice?: string | null,
 ) {
   await sendEmail({
     to: email,
@@ -88,6 +95,7 @@ export async function sendWaitlistOfferEmail(
       bookingId,
       priceCents,
       crossLodgeOffer,
+      subscriptionMemberRateNotice,
     ),
     bookingContext: bookingOwnerEmailContext(
       bookingContext.bookingId,
@@ -105,6 +113,9 @@ export async function sendWaitlistOfferEmail(
       bookingId,
       ...(crossLodgeOffer
         ? { offeredLodgeName: crossLodgeOffer.lodgeName }
+        : {}),
+      ...(subscriptionMemberRateNotice
+        ? { subscriptionMemberRateNotice }
         : {}),
     },
     lodgeId,

@@ -19,6 +19,11 @@ import {
   type HostingParticipant,
   type ResolvedAdultMemberHostingPolicy,
 } from "@/lib/policies/adult-member-hosting";
+import {
+  loadUnpaidSubscriptionMemberIds,
+  type SubscriptionLockoutDb,
+} from "@/lib/subscription-lockout-enforcement";
+import { getSeasonYear } from "@/lib/utils";
 
 /**
  * Booking-side integration for the adult-member hosting policy (#2364).
@@ -49,10 +54,25 @@ import {
  * right row).
  */
 
-/** The narrow client this service needs; a `Prisma.TransactionClient` satisfies it. */
+/**
+ * The narrow client this service needs; a `Prisma.TransactionClient` satisfies it.
+ *
+ * The member/subscription/membership-type delegates are #2543's: under a club
+ * running `NON_MEMBER_PRICING` a member with an unpaid subscription stops
+ * counting as a host, and that fact has to be read before the evaluator runs.
+ * They are part of the required shape rather than optional because a caller that
+ * quietly could not read them would silently restore the unpaid member as a
+ * host — a rule that is off when nobody notices is worse than no rule.
+ */
 export type AdultMemberHostingReviewDb = Pick<
   PrismaClient,
-  "booking" | "adultMemberHostingPolicy" | "lodge"
+  | "booking"
+  | "adultMemberHostingPolicy"
+  | "lodge"
+  | "member"
+  | "memberSubscription"
+  | "seasonalMembershipAssignment"
+  | "membershipType"
 >;
 
 /** The narrow client the policy read needs on its own. */
@@ -302,13 +322,45 @@ export async function evaluateBookingAdultMemberHosting(
   // turned the rule on should pay nothing for it.
   const participants =
     resolved.mode === "ADMIN_REVIEW_REQUIRED"
-      ? [
-          ...toHostingParticipants(booking),
-          ...(await loadSiblingHosts(booking, db)),
-        ]
+      ? await withSubscriptionSettlement(
+          [
+            ...toHostingParticipants(booking),
+            ...(await loadSiblingHosts(booking, db)),
+          ],
+          db,
+          getSeasonYear(booking.checkIn),
+        )
       : [];
   const violation = evaluateAdultMemberHostingWithPolicy(participants, resolved);
   return { violation, resolved };
+}
+
+/**
+ * Stamp #2543's `subscriptionSettled` onto participants, so a member the club is
+ * charging as a non-member stops counting as a host.
+ *
+ * A NO-OP outside `NON_MEMBER_PRICING`: `loadUnpaidSubscriptionMemberIds`
+ * returns an empty set without querying, the field stays absent, and the
+ * hosting answer is byte-identical to pre-#2543 for every club that has not
+ * opted in. It also runs only once the policy has already resolved to
+ * ADMIN_REVIEW_REQUIRED, so a club with hosting off pays nothing either.
+ */
+async function withSubscriptionSettlement(
+  participants: HostingParticipant[],
+  db: SubscriptionLockoutDb,
+  seasonYear: number,
+): Promise<HostingParticipant[]> {
+  const unpaid = await loadUnpaidSubscriptionMemberIds(db, {
+    memberIds: participants.map((participant) => participant.member?.id),
+    seasonYear,
+  });
+  if (unpaid.size === 0) return participants;
+  return participants.map((participant) => {
+    const memberId = participant.member?.id;
+    return memberId && unpaid.has(memberId)
+      ? { ...participant, subscriptionSettled: false }
+      : participant;
+  });
 }
 
 /**
@@ -610,7 +662,16 @@ export async function recordAdultMemberHostingReviewDecision(
  * and two snapshots of the same booking are always comparable.
  */
 export async function evaluateProposedAdultMemberHosting(
-  db: Pick<PrismaClient, "member" | "adultMemberHostingPolicy" | "lodge">,
+  db: Pick<
+    PrismaClient,
+    // #2543 adds the subscription/membership-type reads the host bridge needs.
+    | "member"
+    | "adultMemberHostingPolicy"
+    | "lodge"
+    | "memberSubscription"
+    | "seasonalMembershipAssignment"
+    | "membershipType"
+  >,
   input: {
     lodgeId: string;
     checkIn: Date;
@@ -656,7 +717,16 @@ export async function evaluateProposedAdultMemberHosting(
     nights: proposedGuestNights(guest, input.checkIn, input.checkOut),
   }));
 
-  return evaluateAdultMemberHostingWithPolicy(participants, resolved);
+  return evaluateAdultMemberHostingWithPolicy(
+    // #2543 — the same bridge the persisted path applies, so a proposed party
+    // and the booking it becomes cannot disagree about who may host.
+    await withSubscriptionSettlement(
+      participants,
+      db,
+      getSeasonYear(input.checkIn),
+    ),
+    resolved,
+  );
 }
 
 function proposedGuestNights(

@@ -28,6 +28,14 @@ import {
   toGroupDiscountConfig,
 } from "@/lib/policies/booking-route-decisions";
 import { getSeasonYear } from "@/lib/utils";
+import type { SubscriptionLockoutMode } from "@/lib/membership-lockout-settings";
+import { resolveSubscriptionLockoutMode } from "@/lib/member-subscription-eligibility";
+import {
+  buildPaidUpAdultRefusalBody,
+  evaluateNonMemberPricingRequirements,
+  toSubscriptionLockoutParticipants,
+} from "@/lib/subscription-lockout-enforcement";
+import { formatMissingPaidUpAdultWaitlistRefusal } from "@/lib/policies/subscription-lockout-pricing";
 
 export const WAITLIST_OFFER_HOURS =
   Number(process.env.WAITLIST_OFFER_HOURS) || 48;
@@ -113,7 +121,14 @@ async function repriceWaitlistCandidate(
   // Lodge whose seasons price this entry (multi-lodge): the candidate's
   // own lodge. Upstream #1035 priced club-wide; per-lodge seasons make
   // that a lodge-scoped read here.
-  lodgeId: string
+  lodgeId: string,
+  // #2543 — the club's mode, resolved by the sweep BEFORE it opened this
+  // transaction. This reprice inherits the unpaid-subscription reprice like every
+  // other pricing call, and it passes no locked night prices, so the WHOLE stay
+  // re-bases at current rates; being handed the mode keeps that consistent with
+  // the offer the member is about to be sent and keeps a settings read out from
+  // under the per-lodge capacity lock this transaction holds.
+  subscriptionLockoutMode?: SubscriptionLockoutMode,
 ): Promise<number> {
   try {
     const seasonRateData = await loadSeasonRateData(tx, lodgeId);
@@ -138,6 +153,7 @@ async function repriceWaitlistCandidate(
       seasons: seasonRateData,
       groupDiscount: toGroupDiscountConfig(groupDiscountSetting),
       seasonYear: getSeasonYear(candidate.checkIn),
+      subscriptionLockoutMode,
       // Finding 2 (privacy re-review of MG3 #2308). An unattended sweep with no
       // member on the other end of the response: there is nobody to collapse the
       // refusal FOR, and the operator reading the failure needs the name.
@@ -255,6 +271,11 @@ export async function processWaitlistForDates(freedDates: {
     offeredPriceCents: number | null;
   };
   let offerDetails = null as OfferDetails | null;
+
+  // #2543 — resolved ONCE, before the transaction below takes the per-lodge
+  // capacity lock. `resolveSubscriptionLockoutMode` can refresh the
+  // financial-year cache from Xero, which must never happen inside it.
+  const subscriptionLockoutMode = await resolveSubscriptionLockoutMode();
 
   try {
     await prisma.$transaction(async (tx) => {
@@ -423,6 +444,7 @@ export async function processWaitlistForDates(freedDates: {
             tx,
             candidate,
             offerLodgeId,
+            subscriptionLockoutMode,
           );
         }
 
@@ -490,6 +512,40 @@ export async function processWaitlistForDates(freedDates: {
 
   // Send emails after transaction commits
   if (offerDetails) {
+    // #2543 — "tell them why", on the surface the member actually reads BEFORE
+    // deciding. The reprice above can raise a stored waitlisted price by the whole
+    // member/non-member spread, and the offer email states that number; without
+    // this the member is shown a bigger figure and no reason for it. Evaluated
+    // after the commit, on the module client, so no read is added under the
+    // capacity lock; a failure degrades to the old wording rather than losing the
+    // offer, because an offer must never be blocked by an explanatory sentence.
+    let subscriptionMemberRateNotice: string | null = null;
+    try {
+      const nonMemberPricing = await evaluateNonMemberPricingRequirements(prisma, {
+        mode: subscriptionLockoutMode,
+        lodgeId: offerDetails.offeredLodgeId ?? offerDetails.lodgeId ?? "",
+        seasonYear: getSeasonYear(offerDetails.checkIn),
+        checkIn: offerDetails.checkIn,
+        checkOut: offerDetails.checkOut,
+        // Owner decision, 3 Aug 2026. Threaded for consistency with the confirm
+        // path below, which is where the refusal lives; this call reads only the
+        // rate notice, and that notice is keyed on an actual reprice, so an
+        // unfinancial owner who holds no bed changes nothing here.
+        bookingOwnerMemberId: offerDetails.memberId,
+        participants: toSubscriptionLockoutParticipants(
+          await prisma.bookingGuest.findMany({
+            where: { bookingId: offerDetails.bookingId },
+          }),
+        ),
+      });
+      subscriptionMemberRateNotice = nonMemberPricing?.memberRateNotice ?? null;
+    } catch (err) {
+      logger.error(
+        { err, bookingId: offerDetails.bookingId },
+        "Failed to resolve the #2543 member-rate notice for a waitlist offer",
+      );
+    }
+
     sendWaitlistOfferEmail(
       {
         bookingId: offerDetails.bookingId,
@@ -510,7 +566,10 @@ export async function processWaitlistForDates(freedDates: {
       offerDetails.offeredLodgeId ?? offerDetails.lodgeId,
       offerDetails.offeredLodgeId
         ? { lodgeName: offerDetails.offeredLodgeName }
-        : null
+        : null,
+      // #2543 — why the price is what it is, when somebody on this booking is
+      // being priced as a non-member. Null for every other offer.
+      subscriptionMemberRateNotice
     ).catch((err) => logger.error({ err }, "Failed to send waitlist offer email"));
 
     sendAdminWaitlistOfferAlert({
@@ -641,8 +700,23 @@ export async function confirmWaitlistOffer(
   // "DUPLICATE_STAY" forwarded from the cross-lodge path,
   // "MINIMUM_STAY_VIOLATION" from the policy re-check below, or
   // "CONFIRM_RETRY" when the offer changed under the pre-read and the claim
-  // refused without writing anything (the route answers 409 — retry).
+  // refused without writing anything (the route answers 409 — retry), or
+  // "PAID_UP_ADULT_MEMBER_REQUIRED" from the #2543 re-check below.
   code?: string;
+  /**
+   * The shared #2543 refusal body — frozen violation, HOLD promise and the path
+   * to ask a Booking Officer — present ONLY on the paid-up-adult refusal, so this
+   * path answers with the same shape as the five booking write paths instead of a
+   * bare message the member cannot act on.
+   */
+  paidUpAdultRefusal?: ReturnType<typeof buildPaidUpAdultRefusalBody>;
+  /**
+   * #2543 "tell them why": non-null when this offer prices somebody at non-member
+   * rates for an unpaid season subscription. Returned so the confirming member
+   * sees the reason alongside the figure they just accepted, matching the offer
+   * email.
+   */
+  subscriptionMemberRateNotice?: string | null;
 }> {
   const offerKind = await prisma.booking.findUnique({
     where: { id: bookingId },
@@ -666,6 +740,8 @@ export async function confirmWaitlistOffer(
   // flag — not the presence of the check in the source — is what the claiming
   // transaction treats as evidence that the policy was evaluated.
   let minimumStayCheckedOffer = false;
+  // #2543 — set by the pre-transaction check below and returned on success.
+  let subscriptionMemberRateNotice: string | null = null;
 
   // #2363, same-lodge offer: evaluate the booking's own lodge against the
   // current policy set. Deliberately OUTSIDE the transaction below, like every
@@ -728,6 +804,62 @@ export async function confirmWaitlistOffer(
         code: "MINIMUM_STAY_VIOLATION",
       };
     }
+    // #2543 — the paid-up-adult requirement, on the sixth money path.
+    //
+    // The sweep above rewrites this stored booking's money at current rates and
+    // inherits the unpaid-subscription reprice, but neither of the two things that
+    // make that reprice FAIR to the member reached this path: the explanation, and
+    // the refusal when no paid-up adult member is on the booking. So a party the
+    // create path would have refused with a 409 and an override door could be
+    // confirmed here and charged non-member rates instead — the reprice was
+    // universal, the safeguards were wired to five hand-picked routes.
+    //
+    // Same shape as the minimum-stay check above, deliberately: evaluated OUTSIDE
+    // the transaction (which holds the per-lodge capacity lock), and it fails
+    // closed WITHOUT consuming the offer, so the member keeps their place and can
+    // fix the party or ask a Booking Officer instead of the offer being burnt.
+    const nonMemberPricing = await evaluateNonMemberPricingRequirements(prisma, {
+      mode: await resolveSubscriptionLockoutMode(),
+      lodgeId: offerLodgeId,
+      seasonYear: getSeasonYear(offerKind.checkIn),
+      checkIn: offerKind.checkIn,
+      checkOut: offerKind.checkOut,
+      // Owner decision, 3 Aug 2026. The guard above has already established that
+      // this offer belongs to `memberId`, so the booking's owner is the member
+      // confirming it.
+      bookingOwnerMemberId: offerKind.memberId,
+      participants: toSubscriptionLockoutParticipants(
+        await prisma.bookingGuest.findMany({ where: { bookingId } }),
+      ),
+    });
+    if (nonMemberPricing?.violation) {
+      logger.warn(
+        { bookingId, offerLodgeId },
+        "Waitlist confirm refused: no paid-up adult member on the booking (#2543)",
+      );
+      await revertSameLodgeOfferToWaitlisted(bookingId, offerLodgeId, {
+        checkIn: offerKind.checkIn,
+        checkOut: offerKind.checkOut,
+      }).catch((err) =>
+        logger.error(
+          { err, bookingId },
+          "Failed to revert waitlist offer after a paid-up-adult refusal",
+        ),
+      );
+      return {
+        success: false,
+        // The waitlist flavour of the shared refusal: identical to the cross-lodge
+        // promotion's, and distinct from the booking-time paths' because this one
+        // rejected the offer WITHOUT consuming it, and the member needs telling.
+        error: formatMissingPaidUpAdultWaitlistRefusal(),
+        code: "PAID_UP_ADULT_MEMBER_REQUIRED",
+        paidUpAdultRefusal: buildPaidUpAdultRefusalBody(
+          nonMemberPricing.violation,
+        ),
+      };
+    }
+    subscriptionMemberRateNotice = nonMemberPricing?.memberRateNotice ?? null;
+
     minimumStayCheckedOffer = true;
   }
 
@@ -920,7 +1052,14 @@ export async function confirmWaitlistOffer(
     });
   }
 
-  return result;
+  // #2543 — carry the "why" onto the confirm response too, so the member who has
+  // just accepted a repriced offer sees the same explanation the offer email gave
+  // them rather than only a higher number. Spread conditionally: every other
+  // outcome keeps its exact previous shape, so a caller (or a test) comparing the
+  // whole object sees no new key on a refusal or a paid-up party.
+  return subscriptionMemberRateNotice
+    ? { ...result, subscriptionMemberRateNotice }
+    : result;
 }
 
 /**

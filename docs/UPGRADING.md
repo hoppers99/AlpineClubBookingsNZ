@@ -96,6 +96,114 @@ as a red flag and check the release notes before deploying.
 
 ## Unreleased
 
+### The subscription booking lockout becomes a three-way choice (#2543)
+
+**Your club's booking behaviour does not change on this upgrade — but this release
+needs a maintenance window.** Read this section before scheduling it.
+
+**Two migrations, completing the change in one release.** The owner chose to finish
+this in a single release rather than keep temporary dual-read/dual-write
+compatibility alive for a later contract release (#2561):
+
+- `20260803000000_subscription_lockout_three_way_mode` — additive: creates the
+  `SubscriptionLockoutMode` type and adds a nullable `mode` column to the
+  single-row cold `MembershipLockoutSettings` table. Ledgered `expand` /
+  `old_code_compatible=yes`.
+- `20260803010000_contract_subscription_lockout_drop_enabled` — backfills `mode`
+  from the old `enabled` boolean (`true` → **Stop them booking**, `false` → **Let
+  them book normally**), makes `mode` mandatory with a `HARD_BLOCK` default, and
+  **drops `enabled`**. Ledgered `contract` /
+  **`old_code_compatible=windowed`**.
+
+**Your setting carries over exactly.** Whatever the old on/off switch said is
+written into the new three-way setting by the backfill, so no club's booking
+behaviour moves and no booking is repriced. A club that had deliberately switched
+the lockout OFF stays off — that mapping is pinned against real rows by a
+verification fixture whose mutants include the one that would silently hard-block
+those clubs.
+
+**Why the window.** Once `enabled` is dropped, the previous release can no longer
+read the settings row at all — and because the booking gates resolve the lockout
+policy through that read, the old version cannot take a booking. There is no
+ordering that keeps both versions working, so this deploy is a short planned
+outage rather than a rolling cutover:
+
+1. build and validate the new images **first**;
+2. take a fresh backup and **verify it restores**;
+3. put the site into maintenance mode / remove user traffic;
+4. stop the old app **and** the background workers;
+5. migrate, with `ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS=1` and a
+   `BLUE_GREEN_MIGRATION_OVERRIDE_REASON` naming the window;
+6. start the new release.
+
+The migration itself is quick — three metadata-only statements on a single-row
+table — so the window is dominated by stopping and starting the application.
+
+**If you need to go back.** Prefer going forward: the schema is migrated and the
+data is intact. If the new release will not start, the migration ships a tested
+reverse script beside it,
+`prisma/migrations/20260803010000_contract_subscription_lockout_drop_enabled/rollback.sql`,
+which recreates `enabled` from the mode (**Let them book normally** → false, the
+other two → true) and lets the previous release run again. Both directions were
+rehearsed against a production-shaped database before this shipped; the transcript
+is in `docs/PRODUCTION_UPGRADE_RUNBOOK.md` §7.1, and the full sequence is in
+`DEPLOYMENT.md` → "Windowed migrations".
+
+See also point 3 below on configuration bundles.
+
+**The new third option is opt-in and money-affecting.** Once upgraded, an admin
+can change **Admin → Subscription Lockout → Booking lockout** from the previous
+on/off toggle to one of three answers, the third of which is new: *let an unpaid
+member book, at non-member rates*. Choosing it charges that member's own nights at
+the club's existing non-member rate (the same rate rows and the same Xero item
+code as any other non-member — no new invoice type), tells them why on the quote,
+and requires a paid-up adult member on the booking, refusing with a
+Booking-Officer override path (which holds the bed) when there is none. That
+requirement applies to any booking where somebody is being repriced, **and to any
+booking made by a member whose own subscription is unpaid, whether or not they are
+staying on it** — otherwise the softer option would let a member who has let their
+subscription lapse go on booking beds for other people with no friction at all,
+which is the one thing today's hard block reliably stops. Read
+`docs/guides/subscription-lockout.md` → "What 'non-member rates' does to a
+booking" before switching a live club, and tell your treasurer first. Reversing it
+is a settings change, not a migration, and does not re-price bookings already
+taken.
+
+**Three things to tell people before you switch a live club to the third option.**
+
+1. **Two narrow cases start being refused that go through today**, because the
+   paid-up-adult requirement is judged over the WHOLE party while the pre-existing
+   subscription checks looked only at the guests a request was adding: confirming a
+   draft that carries an unfinancial member guest (confirm-draft has no member-guest
+   subscription check today at all), and editing a booking that already carries an
+   unfinancial member. Both answer 409 with the Booking-Officer override path and a
+   hold on the bed, so they are reviewable rather than blocked - but they are new
+   refusals, and the plain claim "this only ever relaxes things" is not true of them.
+   No previously-blocking refusal becomes stricter. The member booking for other
+   people while their own subscription is unpaid is NOT a third case: they are
+   refused outright today, and under the new option get the same 409 with the
+   override path and the bed held.
+2. **Invoice wording changes for two classes of guest.** A hut-fee line's
+   "(ADULT, Member)" label now follows the RATE the guest was charged rather than the
+   membership flag, so a repriced member reads as "Non-member" - which is the point,
+   since the line has always been coded to the non-member item at the non-member
+   amount. The same change applies to any membership type your club has deliberately
+   configured onto non-member rates. Wording only: no amount, item code, account code
+   or Xero idempotency key moves, so nothing re-syncs and no reconciliation breaks.
+3. **Re-export your configuration bundles after upgrading, before importing one into
+   an upgraded club.** A bundle exported before this release carries only the old
+   on/off boolean. The importer still derives the new three-way setting from it, and
+   that compatibility is deliberate and tested — bundle files outlive the column, and
+   an old bundle still records a real decision about whether the club gated bookings.
+   A bundle exported from an upgraded club carries the mode itself and is
+   unambiguous. There is no format-version bump for this. One case the importer now
+   refuses outright, at the dry-run rather than mid-import: a bundle whose
+   `membership-lockout-settings.json` states `"mode": null` and carries no old
+   boolean either. Nothing can tell what policy that file means, and the column is
+   not nullable, so the plan reports it as an error instead of aborting the import
+   transaction on a database error part-way through. Only a hand-trimmed or
+   partially-written file can be in that state; a bundle either tool produced cannot.
+
 ### Re-export configuration bundles for format version 4 (#2364)
 
 Configuration bundles now require exact **format version 4**. Version 4 adds a

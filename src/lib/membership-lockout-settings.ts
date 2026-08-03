@@ -6,9 +6,41 @@ import { prisma } from "@/lib/prisma";
 // pattern as membership-nomination-settings.ts.
 export const MEMBERSHIP_LOCKOUT_SETTINGS_ID = "default";
 
+/**
+ * The three answers a club can give about a member whose season subscription is
+ * required but unpaid (#2543). Mirrors the Prisma `SubscriptionLockoutMode`
+ * enum without importing it, so the pure policy modules and the settings layer
+ * can name one type.
+ */
+export type SubscriptionLockoutMode =
+  | "NO_BLOCK"
+  | "HARD_BLOCK"
+  | "NON_MEMBER_PRICING";
+
+export const SUBSCRIPTION_LOCKOUT_MODES = [
+  "NO_BLOCK",
+  "HARD_BLOCK",
+  "NON_MEMBER_PRICING",
+] as const satisfies readonly SubscriptionLockoutMode[];
+
+export function isSubscriptionLockoutMode(
+  value: unknown,
+): value is SubscriptionLockoutMode {
+  return (
+    typeof value === "string" &&
+    (SUBSCRIPTION_LOCKOUT_MODES as readonly string[]).includes(value)
+  );
+}
+
 export interface MembershipLockoutSettings {
-  /** Master toggle. When false, no booking is blocked for an unpaid subscription. */
-  enabled: boolean;
+  /**
+   * How an unpaid member is treated at booking time (#2543):
+   *  - `NO_BLOCK` — no subscription gate at all;
+   *  - `HARD_BLOCK` — refuse the booking (the pre-#2543 `enabled: true`);
+   *  - `NON_MEMBER_PRICING` — allow it, price the unpaid member at non-member
+   *    rates, and require a paid-up adult member on the booking.
+   */
+  mode: SubscriptionLockoutMode;
   /**
    * Membership financial year-end month (1-12), or null to follow the connected
    * Xero organisation's accounting financial year.
@@ -30,7 +62,14 @@ export interface MembershipLockoutSettings {
 }
 
 export interface PersistedMembershipLockoutSettings {
-  enabled: boolean | null;
+  /**
+   * The stored mode. NOT NULL in the database since #2561 backfilled it and
+   * dropped the legacy boolean, so a null here means only one thing: no settings
+   * row exists at all. Typed loosely (`string`) because config-transfer hands this
+   * shape a value straight out of a bundle file, which may be hand-edited;
+   * `coerceLockoutMode` refuses anything outside the closed vocabulary.
+   */
+  mode?: SubscriptionLockoutMode | string | null;
   financialYearEndMonthOverride: number | null;
   textFallbackEnabled: boolean | null;
   useFeeScheduleItemCodes: boolean | null;
@@ -53,12 +92,40 @@ function coerceYearEndOverride(
   return rounded >= 1 && rounded <= 12 ? rounded : null;
 }
 
+/**
+ * Resolve the stored three-way mode (#2543).
+ *
+ * `mode` is MANDATORY in the database (#2561 backfilled it from the legacy
+ * `enabled` boolean and dropped that column in the same release), so there is no
+ * fallback ladder any more: a recognised value wins, and the default answers the
+ * only two cases left.
+ *
+ *  1. a recognised `mode` — every settings row has one;
+ *  2. otherwise the default, HARD_BLOCK. Reached when there is NO ROW at all (a
+ *     fresh install before an admin has saved the panel), or when the value did
+ *     not survive validation.
+ *
+ * An unrecognised `mode` string is NOT trusted — a config bundle is a file an
+ * operator can hand-edit, and a fourth policy invented there would be read by
+ * every booking gate. It falls back to HARD_BLOCK, which refuses rather than
+ * relaxes, so a malformed value cannot quietly open the gate.
+ */
+function coerceLockoutMode(
+  persisted: Partial<PersistedMembershipLockoutSettings> | null | undefined,
+  fallback: SubscriptionLockoutMode,
+): SubscriptionLockoutMode {
+  if (isSubscriptionLockoutMode(persisted?.mode)) {
+    return persisted.mode;
+  }
+  return fallback;
+}
+
 export function normalizeMembershipLockoutSettings(
   persisted?: Partial<PersistedMembershipLockoutSettings> | null,
 ): MembershipLockoutSettings {
   const defaults = getDefaultMembershipLockoutSettings();
   return {
-    enabled: persisted?.enabled ?? defaults.enabled,
+    mode: coerceLockoutMode(persisted, defaults.mode),
     financialYearEndMonthOverride: coerceYearEndOverride(
       persisted?.financialYearEndMonthOverride,
     ),

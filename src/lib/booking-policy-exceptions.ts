@@ -12,6 +12,7 @@ import { ApiError } from "@/lib/api-error";
 export const POLICY_EXCEPTION_REASON_CODES = [
   "MINIMUM_STAY",
   "ADULT_MEMBER_HOSTING_REQUIRED",
+  "PAID_UP_ADULT_MEMBER_REQUIRED",
 ] as const;
 
 export type PolicyExceptionReasonCode =
@@ -132,9 +133,42 @@ export type AdultMemberHostingPolicyExceptionViolation = FrozenExceptionFacts & 
   };
 };
 
+/**
+ * The party has no paid-up adult member on it, under the club's
+ * `NON_MEMBER_PRICING` subscription-lockout policy (#2543).
+ *
+ * A PARTY-LEVEL rule, unlike its per-night neighbour above, because that is
+ * literally the club's rule: "there still has to be at least one paid-up adult
+ * member on the booking". Per-night coverage of non-member guests remains
+ * `ADULT_MEMBER_HOSTING_REQUIRED`'s job, and the two compose — under
+ * `NON_MEMBER_PRICING` an unpaid member also stops satisfying that rule's host
+ * predicate, so a party can trip both and an admin sees both.
+ *
+ * `requirements` deliberately carries COUNTS AND NO IDENTITIES. Every other
+ * field of this shape is rendered straight back to the member who was refused,
+ * and naming which member is unpaid would turn a booking refusal into a
+ * financial-status oracle — the same disclosure the D-8 cross-family collapse
+ * closed on the member-guest paths. An admin does not need it either: the queue
+ * shows the whole proposed party and the live subscription screens are one click
+ * away.
+ */
+export type PaidUpAdultMemberPolicyExceptionViolation = FrozenExceptionFacts & {
+  reasonCode: "PAID_UP_ADULT_MEMBER_REQUIRED";
+  requirements: {
+    kind: "PAID_UP_ADULT_MEMBER";
+    /** The rule is satisfied by one; stated so the shape reads as a threshold. */
+    requiredPaidUpAdultMembers: 1;
+    /** How many participants the club is repricing as non-members tonight. */
+    repricedUnpaidMemberCount: number;
+    /** Party size, so an admin can see the refusal in proportion. */
+    participantCount: number;
+  };
+};
+
 export type PolicyExceptionViolation =
   | MinimumStayPolicyExceptionViolation
-  | AdultMemberHostingPolicyExceptionViolation;
+  | AdultMemberHostingPolicyExceptionViolation
+  | PaidUpAdultMemberPolicyExceptionViolation;
 
 export interface AggregatedPolicyExceptions {
   violations: PolicyExceptionViolation[];

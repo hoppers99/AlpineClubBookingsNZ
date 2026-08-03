@@ -24,6 +24,25 @@ const mocks = vi.hoisted(() => ({
   evaluateHosting: vi.fn(),
   // #2525 FIX 4: the admission check the hold path runs before reserving.
   checkCapacity: vi.fn(),
+  // #2543: the two reads the D-12 presence derivation makes — the requester's
+  // family boundary, and the live rows' stored consent status on a modification.
+  familyGroupMemberFindMany: vi.fn(async () => []),
+  bookingGuestFindMany: vi.fn(async () => []),
+  /**
+   * #2543 owner arm (owner decision, 3 Aug 2026): the paid-up-adult requirement
+   * also fires when the BOOKING OWNER is an unfinancial member, so a MODIFICATION
+   * proposal reads the live booking's own `memberId` to find out who that is —
+   * deliberately server-side rather than trusting the requester to be the owner.
+   *
+   * Defaults to a booking with no member owner, which is the neutral answer: the
+   * owner arm cannot fire, and every existing expectation in this suite is judged
+   * exactly as it was before the arm existed.
+   */
+  bookingFindUnique: vi.fn(
+    async (): Promise<{ memberId: string | null } | null> => ({
+      memberId: null,
+    }),
+  ),
   // #2526: request-time member-guest authorisation.
   resolveLinkedMembers: vi.fn(),
   assertMembersBookable: vi.fn(),
@@ -55,6 +74,18 @@ vi.mock("@/lib/prisma", () => {
       update: (...a: unknown[]) => mocks.bookingUpdate(...a),
       create: (...a: unknown[]) => mocks.bookingCreate(...a),
       updateMany: (...a: unknown[]) => mocks.bookingUpdateMany(...a),
+      // #2543 owner arm: a modification proposal reads the live booking's owner.
+      findUnique: () => mocks.bookingFindUnique(),
+    },
+    // #2543 — the D-12 presence derivation resolves the requester's family
+    // boundary and, for a modification, reads the live rows' consent status. Both
+    // are ordinary reads on the same client; stubbing them keeps the suite honest
+    // about what the service really touches.
+    familyGroupMember: {
+      findMany: () => mocks.familyGroupMemberFindMany(),
+    },
+    bookingGuest: {
+      findMany: () => mocks.bookingGuestFindMany(),
     },
   };
   return {
@@ -173,6 +204,11 @@ function newBookingInput(overrides: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // #2543: a requester with no family links, and no live rows, is the neutral
+  // default — every existing case in this file predates the derivation.
+  mocks.familyGroupMemberFindMany.mockResolvedValue([]);
+  mocks.bookingGuestFindMany.mockResolvedValue([]);
+  mocks.bookingFindUnique.mockResolvedValue({ memberId: null });
   mocks.validateMinimumStay.mockResolvedValue({ valid: false, violations: [minStayViolation()] });
   mocks.loadMemberGuestPolicy.mockResolvedValue({
     wideningEnabled: false,

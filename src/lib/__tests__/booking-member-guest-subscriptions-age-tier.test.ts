@@ -4,12 +4,24 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // findUnpaidMemberGuests consults enforcement + age-tier settings + the
 // membership-type policy. Mock those so we can drive the BASED_ON_AGE_TIER
 // NOT_REQUIRED-row dominance (#2041) deterministically.
+//
+// #2543 moved the shared rule into `subscription-lockout-facts.ts`, which reads
+// the real age-tier rule from `@/lib/policies/subscription` rather than the
+// re-export on `member-subscription-eligibility`. So the tiers are driven by real
+// SETTINGS ROWS here instead of by a stubbed predicate — a strictly stronger
+// arrangement, because the rule under test is now the one production runs
+// (including its missing-row default of "required").
 vi.mock("@/lib/member-subscription-eligibility", () => ({
   isSubscriptionEnforcementActive: vi.fn(async () => true),
-  requiresPaidSubscriptionForAgeTier: (tier: string) =>
-    tier === "YOUTH" || tier === "ADULT",
 }));
-vi.mock("@/lib/age-tier", () => ({ getAgeTierSettings: vi.fn(async () => []) }));
+vi.mock("@/lib/age-tier", () => ({
+  getAgeTierSettings: vi.fn(async () => [
+    { tier: "INFANT", subscriptionRequiredForBooking: false },
+    { tier: "CHILD", subscriptionRequiredForBooking: false },
+    { tier: "YOUTH", subscriptionRequiredForBooking: true },
+    { tier: "ADULT", subscriptionRequiredForBooking: true },
+  ]),
+}));
 
 const mockResolvePolicies = vi.fn();
 vi.mock("@/lib/membership-type-policy", () => ({

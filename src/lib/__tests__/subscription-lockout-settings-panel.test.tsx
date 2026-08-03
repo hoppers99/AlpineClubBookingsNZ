@@ -41,7 +41,7 @@ function stubFetch(
     if (url.includes("membership-lockout-settings")) {
       body = {
         settings: {
-          enabled: false,
+          mode: "NO_BLOCK",
           financialYearEndMonthOverride: null,
           textFallbackEnabled: false,
           useFeeScheduleItemCodes: false,
@@ -204,7 +204,7 @@ describe("SubscriptionLockoutSettingsPanel — item-code matching mode (#2109)",
       if (url.includes("membership-lockout-settings")) {
         body = {
           settings: {
-            enabled: false,
+            mode: "NO_BLOCK",
             financialYearEndMonthOverride: null,
             textFallbackEnabled: false,
             useFeeScheduleItemCodes: overrides.useFeeScheduleItemCodes ?? true,

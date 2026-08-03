@@ -38,6 +38,7 @@ import {
   getAuthenticatedXeroClient,
 } from "./xero-api-client";
 import {
+  describeGuestRateMembershipLabel,
   getAccountMapping,
   getHutFeeItemCodeMap,
   isHutFeeResolverConfigured,
@@ -227,7 +228,10 @@ export function buildInvoiceLineItems(
   ): LineItem => {
     const description = [
       `${guest.firstName} ${guest.lastName}`,
-      `(${guest.ageTier}${guest.isMember ? ", Member" : ", Non-member"})`,
+      // #2543: the label follows the RATE snapshot, so it agrees with the item
+      // code `applyCodes` resolves from the same field. See
+      // `describeGuestRateMembershipLabel`.
+      `(${guest.ageTier}, ${describeGuestRateMembershipLabel(itemCodeResolver, guest)})`,
       `${run.nightCount} night${run.nightCount !== 1 ? "s" : ""}`,
       `${formatDate(run.startDate)} - ${formatDate(run.endExclusive)}`,
     ].join(" - ");
@@ -255,7 +259,8 @@ export function buildInvoiceLineItems(
         // than dividing by zero in the even split.
         const description = [
           `${guest.firstName} ${guest.lastName}`,
-          `(${guest.ageTier}${guest.isMember ? ", Member" : ", Non-member"})`,
+          // #2543 — same rate-driven label as `runToLineItem`.
+          `(${guest.ageTier}, ${describeGuestRateMembershipLabel(itemCodeResolver, guest)})`,
           `${nights} night${nights !== 1 ? "s" : ""}`,
           `${formatDate(checkIn)} - ${formatDate(checkOut)}`,
         ].join(" - ");

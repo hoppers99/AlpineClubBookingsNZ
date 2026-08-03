@@ -64,7 +64,7 @@ describe("membership lockout settings route guards (#1940)", () => {
     mocks.findUnique.mockResolvedValue(null);
     mocks.upsert.mockResolvedValue({
       id: "default",
-      enabled: true,
+      mode: "HARD_BLOCK",
       financialYearEndMonthOverride: null,
       textFallbackEnabled: true,
       useFeeScheduleItemCodes: false,
@@ -89,9 +89,9 @@ describe("membership lockout settings route guards (#1940)", () => {
     mocks.requireAdmin.mockResolvedValueOnce({ ok: false, response: forbidden });
 
     // A denied write is rejected before the body is ever parsed/persisted.
-    expect((await putLockoutSettings(request({ enabled: false }))).status).toBe(
-      403,
-    );
+    expect(
+      (await putLockoutSettings(request({ mode: "NO_BLOCK" }))).status,
+    ).toBe(403);
     expect(mocks.requireAdmin).toHaveBeenCalledWith({
       permission: { area: "membership", level: "edit" },
     });
@@ -99,11 +99,74 @@ describe("membership lockout settings route guards (#1940)", () => {
   });
 
   it("persists the update for a membership edit admin", async () => {
-    const response = await putLockoutSettings(request({ enabled: false }));
+    const response = await putLockoutSettings(request({ mode: "NO_BLOCK" }));
 
     expect(response.status).toBe(200);
     expect(mocks.upsert).toHaveBeenCalledTimes(1);
     expect(mocks.auditLogCreate).toHaveBeenCalled();
+  });
+
+  // ---------------------------------------------------------------------------
+  // #2543 — the three-way mode, now the only column (#2561 dropped the boolean).
+  // ---------------------------------------------------------------------------
+
+  it.each(["NO_BLOCK", "HARD_BLOCK", "NON_MEMBER_PRICING"] as const)(
+    "persists mode %s, and writes NO legacy column with it",
+    async (mode) => {
+      const response = await putLockoutSettings(request({ mode }));
+
+      expect(response.status).toBe(200);
+      const upsertArgs = mocks.upsert.mock.calls[0][0];
+      expect(upsertArgs.update).toEqual(expect.objectContaining({ mode }));
+      expect(upsertArgs.create).toEqual(expect.objectContaining({ mode }));
+      // Asserted as an ABSENCE, deliberately. The dual write is gone with the
+      // column, and reintroducing it would make Prisma raise on an unknown field
+      // at runtime — a 500 on the admin panel — rather than fail a type check,
+      // because these mocks accept any shape.
+      expect(upsertArgs.update).not.toHaveProperty("enabled");
+      expect(upsertArgs.create).not.toHaveProperty("enabled");
+    },
+  );
+
+  it("refuses a legacy `enabled` body rather than silently ignoring it", async () => {
+    // Still valuable after the column is dropped (#2561), and arguably more so: the
+    // schema is .strict(), and a silent ignore is the dangerous direction — an old
+    // client's "turn the lockout off" click would report success while the club
+    // carried on hard-blocking members.
+    const response = await putLockoutSettings(request({ enabled: false }));
+
+    expect(response.status).toBe(400);
+    expect(mocks.upsert).not.toHaveBeenCalled();
+  });
+
+  it("refuses a mode outside the three-way vocabulary", async () => {
+    const response = await putLockoutSettings(request({ mode: "MAYBE_BLOCK" }));
+
+    expect(response.status).toBe(400);
+    expect(mocks.upsert).not.toHaveBeenCalled();
+  });
+
+  it("an unrelated field save PRESERVES the stored mode", async () => {
+    // This club deliberately switched the lockout OFF. Saving a DIFFERENT field on
+    // the same panel must not resurrect it — the regression this case exists to
+    // catch is `before.mode ?? "HARD_BLOCK"`, which would, and which survives the
+    // #2561 drop unchanged as a hazard.
+    mocks.findUnique.mockResolvedValue({
+      id: "default",
+      mode: "NO_BLOCK",
+      financialYearEndMonthOverride: null,
+      textFallbackEnabled: true,
+      useFeeScheduleItemCodes: false,
+    });
+
+    const response = await putLockoutSettings(
+      request({ useFeeScheduleItemCodes: true }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(mocks.upsert.mock.calls[0][0].update).toEqual(
+      expect.objectContaining({ mode: "NO_BLOCK", useFeeScheduleItemCodes: true }),
+    );
   });
 
   it("accepts and persists useFeeScheduleItemCodes (#2109)", async () => {
