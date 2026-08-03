@@ -25,6 +25,13 @@ import {
 // break the `instanceof` check below. booking-create re-exports the same class.
 import { DuplicateStayConflictError } from "@/lib/booking-create-types";
 import { getNonMemberHoldDays } from "@/lib/cancellation";
+import { resolveSubscriptionLockoutMode } from "@/lib/member-subscription-eligibility";
+import {
+  buildPaidUpAdultRefusalBody,
+  evaluateNonMemberPricingRequirements,
+  toSubscriptionLockoutParticipants,
+} from "@/lib/subscription-lockout-enforcement";
+import { getSeasonYear } from "@/lib/utils";
 import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
 import { logAudit } from "@/lib/audit";
 import { recordBookingEvent } from "@/lib/booking-events";
@@ -164,6 +171,24 @@ export interface CrossLodgeConfirmResult {
   // (e.g. "DUPLICATE_STAY"). The price-drift rejection is signalled by
   // `updatedPriceCents` instead and needs no code here.
   code?: string;
+  /**
+   * The shared #2543 refusal body — frozen violation, HOLD promise and the path
+   * to ask a Booking Officer — present ONLY on the paid-up-adult refusal.
+   *
+   * Named identically to the same-lodge result's field on purpose: the
+   * waitlist-confirm route spreads whichever one it gets, so promoting a
+   * cross-lodge offer answers this refusal in exactly the shape the booking write
+   * paths do, with no route change and no second mapping to keep in step.
+   */
+  paidUpAdultRefusal?: ReturnType<typeof buildPaidUpAdultRefusalBody>;
+  /**
+   * #2543 "tell them why": non-null when the promoted booking prices somebody at
+   * non-member rates for an unpaid season subscription. The cross-lodge quote can
+   * differ from the member's own lodge by the whole member/non-member spread, so
+   * the figure they have just accepted is exactly the one that owes an
+   * explanation.
+   */
+  subscriptionMemberRateNotice?: string | null;
 }
 
 // Shared by the pre-flight (Phase 1) guard and the in-transaction guard's
@@ -239,6 +264,12 @@ export async function confirmCrossLodgeWaitlistOffer(
   // merges with the club-wide set, so a lodge the member never chose can carry
   // rules their own lodge does not. Only an offer this member owns is
   // evaluated; Phase 1 re-derives ownership, status and expiry regardless.
+  //
+  // #2543 — set by the paid-up-adult check in Phase 0b below and returned on
+  // success, so the member who has just accepted a repriced cross-lodge offer sees
+  // the same explanation the offer email gave them rather than only a bigger
+  // number. Null unless somebody on the promoted party is being repriced.
+  let crossLodgeRateNotice: string | null = null;
   const preflight = await prisma.booking.findUnique({
     where: { id: bookingId },
     select: {
@@ -311,6 +342,84 @@ export async function confirmCrossLodgeWaitlistOffer(
         code: "MINIMUM_STAY_VIOLATION",
       };
     }
+
+    // Phase 0b — #2543's paid-up-adult requirement, on the path that PROMOTES a
+    // queue entry to a booking at another lodge.
+    //
+    // This path reached none of it. `confirmWaitlistOffer` gained the gate because
+    // the sweep re-bases a stored waitlisted price at current rates and inherits
+    // the unpaid-subscription reprice; the cross-lodge promotion does the same
+    // thing and then calls `createConfirmedBooking` DIRECTLY, so the create
+    // route's own gate never runs either. A party the create route would have
+    // refused with a 409 and an override door could therefore be promoted here
+    // and charged non-member rates instead — the reprice was universal, the
+    // safeguards were not. Same defect the removal and modify-apply paths had, and
+    // it is a consistency defect rather than a fresh policy question: the owner
+    // decided the rule.
+    //
+    // Evaluated against the OFFERED lodge, like the minimum-stay check above it,
+    // because that is the lodge the booking will exist at; club-wide as the rule
+    // is, that is what the violation's `effectiveLodgeId` should name.
+    //
+    // Deliberately OUTSIDE any transaction, for both house reasons:
+    // `resolveSubscriptionLockoutMode` can reseed the financial-year cache from
+    // Xero, and Phase 1 below holds the offered lodge's capacity lock.
+    const nonMemberPricing = await evaluateNonMemberPricingRequirements(prisma, {
+      mode: await resolveSubscriptionLockoutMode(),
+      lodgeId: offeredLodgeId,
+      seasonYear: getSeasonYear(preflight.checkIn),
+      checkIn: preflight.checkIn,
+      checkOut: preflight.checkOut,
+      // Owner decision, 3 Aug 2026: the requirement follows the unfinancial
+      // member, not only their bed. The enclosing condition has already
+      // established that this offer belongs to `memberId`, so the entry's owner is
+      // the member promoting it — and stays the owner of the booking Phase 2
+      // creates, which is passed `effectiveMemberId: memberId`.
+      bookingOwnerMemberId: preflight.memberId,
+      participants: toSubscriptionLockoutParticipants(
+        await prisma.bookingGuest.findMany({ where: { bookingId } }),
+      ),
+    });
+    if (nonMemberPricing?.violation) {
+      logger.warn(
+        { bookingId, offeredLodgeId },
+        "Cross-lodge waitlist confirm refused: no paid-up adult member on the booking (#2543)",
+      );
+      // Fail closed WITHOUT consuming the offer, exactly as the minimum-stay
+      // branch above does, so the member keeps their place and can fix the party
+      // or ask a Booking Officer instead of the offer being burnt.
+      try {
+        await prisma.$transaction(async (tx) => {
+          await acquireLodgeCapacityLock(tx, offeredLodgeId);
+          const current = await tx.booking.findUnique({
+            where: { id: bookingId },
+            select: { id: true, status: true, checkIn: true, checkOut: true },
+          });
+          if (current?.status !== BookingStatus.WAITLIST_OFFERED) return;
+          await revertOfferToWaitlisted(tx, current);
+        });
+      } catch (err) {
+        logger.error(
+          { err, bookingId },
+          "Failed to revert cross-lodge offer after a paid-up-adult refusal",
+        );
+      }
+      return {
+        success: false,
+        // The violation's own sentence, byte-identical to the one every other
+        // path refuses with. Deliberately NOT extended with this path's "you've
+        // been returned to the waitlist" wording: the same-lodge confirm reverts
+        // and answers with the bare shared sentence too, and one refusal that
+        // reads differently depending on which lodge was offered is exactly the
+        // drift the shared body exists to prevent.
+        error: nonMemberPricing.violation.message,
+        code: "PAID_UP_ADULT_MEMBER_REQUIRED",
+        paidUpAdultRefusal: buildPaidUpAdultRefusalBody(
+          nonMemberPricing.violation,
+        ),
+      };
+    }
+    crossLodgeRateNotice = nonMemberPricing?.memberRateNotice ?? null;
   }
 
   // Phase 1 — validate the offer and re-check the quote under the offered
@@ -671,5 +780,12 @@ export async function confirmCrossLodgeWaitlistOffer(
     success: true,
     newStatus: newBooking.status,
     newBookingId: newBooking.id,
+    // #2543 — carry the "why" onto the confirm response, exactly as the same-lodge
+    // path does. Spread conditionally so every other outcome keeps its previous
+    // shape and a caller (or a test) comparing the whole object sees no new key on
+    // a refusal or a paid-up party.
+    ...(crossLodgeRateNotice
+      ? { subscriptionMemberRateNotice: crossLodgeRateNotice }
+      : {}),
   };
 }

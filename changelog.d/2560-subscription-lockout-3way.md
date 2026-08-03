@@ -65,8 +65,11 @@
   somebody owes. The paid-up-adult requirement is checked wherever the party can
   change — including when somebody is REMOVED, so a booking cannot be approved on
   the strength of a paid-up adult and then have that adult taken off in a second
-  step — and when a waitlist offer is confirmed. A member who declines a member-guest
-  invite can always still be taken off a booking; that is never blocked.
+  step — and when a waitlist offer is confirmed, including an offer for a different
+  lodge. A refused waitlist offer is **not used up**: the entry goes back on the
+  waitlist at its place, so the member can fix the party or ask a Booking Officer
+  instead of losing their turn. A member who declines a member-guest invite can
+  always still be taken off a booking; that is never blocked.
 
   **Two narrow cases become reviewable where they used to just go through**, and both
   are worth knowing before you switch a live club. Because the paid-up-adult

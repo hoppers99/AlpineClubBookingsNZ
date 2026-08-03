@@ -427,6 +427,22 @@ describe("the booking OWNER reaches every evaluation (#2543, owner decision 3 Au
     expect(source).toContain("bookingOwnerMemberId: offerDetails.memberId");
   });
 
+  it("the cross-lodge promotion passes the owner too", () => {
+    // The seventh money path, and the one that reached NONE of the rule: it calls
+    // `createConfirmedBooking` directly, so the create route's gate never ran, while
+    // the offer sweep had already re-based the stored price and inherited the
+    // reprice. `confirmWaitlistOffer` had the same defect and was fixed; leaving its
+    // cross-lodge twin unfixed would mean the answer depended on which lodge the
+    // sweep happened to offer.
+    const source = readRepoFile("src/lib/waitlist-cross-lodge.ts");
+    const calls = source.split("evaluateNonMemberPricingRequirements(").length - 1;
+    const owners = source.split("bookingOwnerMemberId:").length - 1;
+
+    expect(calls).toBe(1);
+    expect(owners).toBe(calls);
+    expect(source).toContain("bookingOwnerMemberId: preflight.memberId");
+  });
+
   it("the exception-request re-evaluation resolves the owner server-side, so the widened door opens", () => {
     // A refusal that keys on the booker must reproduce here, or the 409 names a
     // workflow the member cannot enter. A MODIFICATION reads the LIVE booking's own
@@ -503,5 +519,31 @@ describe("the mode is threaded to the money, not re-read inside the locks (#2543
     expect(modeRead).toBeGreaterThan(-1);
     expect(transaction).toBeGreaterThan(-1);
     expect(modeRead).toBeLessThan(transaction);
+  });
+
+  it("the cross-lodge promotion evaluates and reads the mode before its first lock", () => {
+    // Phase 0b sits with Phase 0's minimum-stay check, ahead of the Phase 1
+    // transaction that takes the offered lodge's capacity lock — the house pattern,
+    // and load-bearing twice over: `resolveSubscriptionLockoutMode` can reseed the
+    // financial-year cache from Xero, and the party read would otherwise take a
+    // second pool connection underneath that lock.
+    const source = readRepoFile("src/lib/waitlist-cross-lodge.ts");
+    const modeRead = source.indexOf("await resolveSubscriptionLockoutMode()");
+    const evaluation = source.indexOf(
+      "await evaluateNonMemberPricingRequirements(prisma, {",
+    );
+    const phaseOne = source.indexOf(
+      "// Phase 1 — validate the offer and re-check the quote",
+    );
+
+    expect(modeRead).toBeGreaterThan(-1);
+    expect(evaluation).toBeGreaterThan(-1);
+    expect(phaseOne).toBeGreaterThan(-1);
+    expect(evaluation).toBeLessThan(phaseOne);
+    // Fails closed WITHOUT consuming the offer, exactly as the minimum-stay branch
+    // beside it does, so the member keeps their place.
+    expect(source).toContain("revertOfferToWaitlisted(tx, current)");
+    expect(source).toContain('code: "PAID_UP_ADULT_MEMBER_REQUIRED"');
+    expect(source).toContain("paidUpAdultRefusal: buildPaidUpAdultRefusalBody(");
   });
 });

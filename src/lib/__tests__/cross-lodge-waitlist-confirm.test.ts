@@ -27,6 +27,12 @@ const mocks = vi.hoisted(() => ({
   getNonMemberHoldDays: vi.fn(),
   recordBookingEvent: vi.fn(),
   logAudit: vi.fn(),
+  // #2543 Phase 0b reads the promoted party on the MODULE client, outside any
+  // transaction, before the offered lodge's lock is taken — exactly as Phase 0's
+  // minimum-stay check does.
+  prismaBookingGuestFindMany: vi.fn(),
+  resolveSubscriptionLockoutMode: vi.fn(),
+  evaluateNonMemberPricing: vi.fn(),
 }));
 
 const txClient = {
@@ -44,8 +50,36 @@ vi.mock("@/lib/prisma", () => ({
   prisma: {
     $transaction: mocks.transaction,
     booking: { findUnique: mocks.prismaBookingFindUnique },
+    // #2543: the promoted party, read outside the transaction.
+    bookingGuest: { findMany: mocks.prismaBookingGuestFindMany },
   },
 }));
+vi.mock("@/lib/member-subscription-eligibility", () => ({
+  resolveSubscriptionLockoutMode: mocks.resolveSubscriptionLockoutMode,
+  // The enforcement module's own fallback reader. Never reached here: this suite
+  // always supplies a resolved mode, which is the property that keeps a policy
+  // read out from under the offered lodge's capacity lock.
+  peekSubscriptionLockoutMode: vi.fn(async () => "HARD_BLOCK"),
+}));
+/**
+ * #2543 — only the EVALUATOR is doubled. `toSubscriptionLockoutParticipants` and
+ * `buildPaidUpAdultRefusalBody` stay real, so the refusal body this path returns is
+ * the genuine shared one rather than a fixture that could drift from it.
+ *
+ * The evaluator's own semantics — who is repriced, who counts as a paid-up adult,
+ * and the two triggers — are pinned exhaustively against real facts in
+ * `subscription-lockout-enforcement.test.ts`. What this suite owns is the WIRING
+ * that decides whether those answers ever reach a cross-lodge promotion: the
+ * arguments passed, and what happens to the offer on a refusal. So the cells below
+ * are driven by the four result shapes the real evaluator produces for them.
+ */
+vi.mock("@/lib/subscription-lockout-enforcement", async (importOriginal) => {
+  const actual =
+    await importOriginal<
+      typeof import("@/lib/subscription-lockout-enforcement")
+    >();
+  return { ...actual, evaluateNonMemberPricingRequirements: mocks.evaluateNonMemberPricing };
+});
 vi.mock("@/lib/booking-policies", () => ({
   validateMinimumStay: mocks.validateMinimumStay,
 }));
@@ -116,6 +150,12 @@ beforeEach(() => {
   mocks.bookingUpdate.mockResolvedValue({});
   // Default: no duplicate stay.
   mocks.bookingFindFirst.mockResolvedValue(null);
+  // #2543 defaults: a club in the relaxed mode, an empty promoted party, and
+  // nothing for the requirement to bite on. Every pre-#2543 expectation in this
+  // file is therefore judged exactly as it was before the gate existed.
+  mocks.resolveSubscriptionLockoutMode.mockResolvedValue("NON_MEMBER_PRICING");
+  mocks.prismaBookingGuestFindMany.mockResolvedValue([]);
+  mocks.evaluateNonMemberPricing.mockResolvedValue(null);
 });
 
 describe("confirmCrossLodgeWaitlistOffer duplicate-stay guard (M3)", () => {
@@ -378,4 +418,302 @@ describe("confirmCrossLodgeWaitlistOffer minimum-stay guard (#2363)", () => {
     expect(mocks.createConfirmedBooking).toHaveBeenCalledTimes(1);
     expect(result.code).toBeUndefined();
   });
+});
+
+/**
+ * #2543's paid-up-adult requirement on the CROSS-LODGE promotion (owner arm:
+ * owner decision, 3 Aug 2026).
+ *
+ * This path reached none of the rule. The offer sweep re-bases a stored waitlisted
+ * price at current rates and inherits the unpaid-subscription reprice, and the
+ * promotion then calls `createConfirmedBooking` DIRECTLY — so the create route's
+ * own gate never ran either. A party the create route would have refused with a 409
+ * and an override door could be promoted here and charged non-member rates
+ * instead: the reprice was universal, the safeguards were wired to hand-picked
+ * routes. Same defect the removal and modify-apply paths had.
+ */
+describe("confirmCrossLodgeWaitlistOffer paid-up-adult requirement (#2543)", () => {
+  /** What the real evaluator returns for a party it is repricing and refusing. */
+  const repricedRefusal = {
+    repricedMemberIds: ["member-unpaid"],
+    hasPaidUpAdultMember: false,
+    paidUpAdultMemberRequired: true,
+    memberRateNotice: "A membership subscription on this booking isn't paid",
+    violation: {
+      reasonCode: "PAID_UP_ADULT_MEMBER_REQUIRED" as const,
+      policyId: "membership-lockout-settings:default",
+      policyVersion: 1,
+      policyName: "Paid-up adult member required (subscription lockout)",
+      resolvedScope: {
+        kind: "CLUB_WIDE" as const,
+        lodgeId: null,
+        effectiveLodgeId: "lodge-b",
+      },
+      affectedNights: ["2026-08-10", "2026-08-11"],
+      requirements: {
+        kind: "PAID_UP_ADULT_MEMBER" as const,
+        requiredPaidUpAdultMembers: 1 as const,
+        repricedUnpaidMemberCount: 1,
+        participantCount: 2,
+      },
+      exceptionEligible: true,
+      capacityMode: "HOLD" as const,
+      message:
+        "This booking needs at least one paid-up adult member staying on it.",
+    },
+  };
+
+  /**
+   * The OWNER arm's shape: nobody on the party is repriced (the unfinancial member
+   * is the booker and takes no bed here), so there is no rate notice to give — and
+   * the requirement bites anyway. This is the cell the widened trigger added, and
+   * the one a cross-lodge promotion could otherwise be used to walk around.
+   */
+  const ownerRefusal = {
+    ...repricedRefusal,
+    repricedMemberIds: [] as string[],
+    memberRateNotice: null,
+    violation: {
+      ...repricedRefusal.violation,
+      requirements: {
+        ...repricedRefusal.violation.requirements,
+        repricedUnpaidMemberCount: 0,
+      },
+    },
+  };
+
+  /** Repriced, but a paid-up adult IS on the party: it promotes, and is told why. */
+  const repricedAndCompliant = {
+    repricedMemberIds: ["member-unpaid"],
+    hasPaidUpAdultMember: true,
+    paidUpAdultMemberRequired: true,
+    memberRateNotice: "A membership subscription on this booking isn't paid",
+    violation: null,
+  };
+
+  /** Reaches Phase 2, so a compliant party is shown to get all the way through. */
+  function letPhase1Pass() {
+    mocks.bookingFindFirst.mockResolvedValue(null);
+    mocks.checkCapacityForGuestRanges.mockResolvedValue({ available: true });
+    mocks.seasonFindMany.mockResolvedValue([
+      {
+        id: "season-1",
+        startDate: new Date("2026-08-01"),
+        endDate: new Date("2026-08-31"),
+        type: "STANDARD",
+        membershipTypeRates: [],
+      },
+    ]);
+    mocks.groupDiscountFindUnique.mockResolvedValue(null);
+    mocks.priceBooking.mockResolvedValue({ totalPriceCents: 34_000 });
+  }
+
+  function createdBooking() {
+    return {
+      type: "created",
+      booking: {
+        id: "new-booking",
+        status: BookingStatus.PAYMENT_PENDING,
+        finalPriceCents: 34_000,
+        checkIn: CHECK_IN,
+        checkOut: CHECK_OUT,
+      },
+    };
+  }
+
+  it.each([
+    ["somebody staying is repriced", repricedRefusal],
+    ["the BOOKER is unfinancial and takes no bed", ownerRefusal],
+  ])(
+    "refuses the promotion when %s and no paid-up adult member is on the party",
+    async (_case, evaluation) => {
+      mocks.evaluateNonMemberPricing.mockResolvedValue(evaluation);
+
+      const result = await confirmCrossLodgeWaitlistOffer("entry-1", "member-1");
+
+      expect(result.success).toBe(false);
+      expect(result.code).toBe("PAID_UP_ADULT_MEMBER_REQUIRED");
+      // The shared sentence every other path refuses with, byte-identical.
+      expect(result.error).toBe(evaluation.violation.message);
+      // Nothing was priced, claimed or created for a party the rule refuses.
+      expect(mocks.createConfirmedBooking).not.toHaveBeenCalled();
+      expect(mocks.checkCapacityForGuestRanges).not.toHaveBeenCalled();
+    },
+  );
+
+  it("fails closed WITHOUT consuming the offer, so the member keeps their place", async () => {
+    mocks.evaluateNonMemberPricing.mockResolvedValue(repricedRefusal);
+
+    const result = await confirmCrossLodgeWaitlistOffer("entry-1", "member-1");
+
+    expect(result.success).toBe(false);
+    // Reverted to WAITLISTED under the OFFERED lodge's lock, exactly as the
+    // minimum-stay branch beside it does: the member can fix the party or ask a
+    // Booking Officer instead of the offer being burnt.
+    expect(mocks.acquireLodgeCapacityLock).toHaveBeenCalledWith(
+      expect.anything(),
+      "lodge-b",
+    );
+    expect(mocks.bookingUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: "entry-1" },
+        data: expect.objectContaining({
+          status: BookingStatus.WAITLISTED,
+          waitlistOfferedLodgeId: null,
+          waitlistOfferedPriceCents: null,
+        }),
+      }),
+    );
+    expect(mocks.reconcileBedAllocations).toHaveBeenCalledTimes(1);
+  });
+
+  it("carries the override door and the HOLD promise, in the shared shape", async () => {
+    // Built by the REAL `buildPaidUpAdultRefusalBody`, so this path cannot answer
+    // the same refusal in a different shape from the booking write paths — and the
+    // waitlist-confirm route spreads it into a 409 with no cross-lodge special case.
+    mocks.evaluateNonMemberPricing.mockResolvedValue(repricedRefusal);
+
+    const result = await confirmCrossLodgeWaitlistOffer("entry-1", "member-1");
+
+    expect(result.paidUpAdultRefusal?.code).toBe(
+      "PAID_UP_ADULT_MEMBER_REQUIRED",
+    );
+    expect(result.paidUpAdultRefusal?.exceptionRequestPath).toBe(
+      "/api/bookings/exception-requests",
+    );
+    expect(result.paidUpAdultRefusal?.exceptionReview.capacityMode).toBe("HOLD");
+  });
+
+  it("names no identities on the wire", async () => {
+    mocks.evaluateNonMemberPricing.mockResolvedValue(repricedRefusal);
+
+    const wire = JSON.stringify(
+      await confirmCrossLodgeWaitlistOffer("entry-1", "member-1"),
+    );
+
+    expect(wire).not.toContain("member-unpaid");
+  });
+
+  it("judges the OFFERED lodge, the entry's owner, and the promoted party", async () => {
+    mocks.prismaBookingGuestFindMany.mockResolvedValue([
+      { isMember: true, memberId: "member-1", consentStatus: null },
+    ]);
+    mocks.evaluateNonMemberPricing.mockResolvedValue(null);
+
+    await confirmCrossLodgeWaitlistOffer("entry-1", "member-1");
+
+    expect(mocks.evaluateNonMemberPricing).toHaveBeenCalledTimes(1);
+    const input = mocks.evaluateNonMemberPricing.mock.calls[0][1];
+    expect(input).toEqual(
+      expect.objectContaining({
+        // The lodge the booking will exist at, not the one the member queued at —
+        // matching the minimum-stay check above it.
+        lodgeId: "lodge-b",
+        mode: "NON_MEMBER_PRICING",
+        seasonYear: 2026,
+        checkIn: CHECK_IN,
+        checkOut: CHECK_OUT,
+        // Owner decision, 3 Aug 2026: the entry's owner, who stays the owner of
+        // the booking Phase 2 creates.
+        bookingOwnerMemberId: "member-1",
+      }),
+    );
+    // The party was read on the MODULE client, and mapped through the shared D-12
+    // participant mapper rather than passed raw.
+    expect(mocks.prismaBookingGuestFindMany).toHaveBeenCalledWith({
+      where: { bookingId: "entry-1" },
+    });
+    expect(input.participants).toEqual([
+      expect.objectContaining({
+        isMember: true,
+        memberId: "member-1",
+        operationallyPresent: true,
+      }),
+    ]);
+  });
+
+  it("promotes a repriced party that HAS a paid-up adult member, and tells them why", async () => {
+    letPhase1Pass();
+    mocks.evaluateNonMemberPricing.mockResolvedValue(repricedAndCompliant);
+    mocks.createConfirmedBooking.mockResolvedValue(createdBooking());
+
+    const result = await confirmCrossLodgeWaitlistOffer("entry-1", "member-1");
+
+    expect(result.success).toBe(true);
+    expect(result.newBookingId).toBe("new-booking");
+    // The cross-lodge quote can differ from the member's own lodge by the whole
+    // member/non-member spread, so the figure they have just accepted owes them
+    // the reason — the same sentence the offer email carried.
+    expect(result.subscriptionMemberRateNotice).toContain("isn't paid");
+  });
+
+  it("adds no notice key at all when nobody is repriced", async () => {
+    // Every other outcome keeps its exact previous shape, so a caller comparing
+    // the whole object sees no new key on a party nobody is being repriced on.
+    letPhase1Pass();
+    mocks.evaluateNonMemberPricing.mockResolvedValue(null);
+    mocks.createConfirmedBooking.mockResolvedValue(createdBooking());
+
+    const result = await confirmCrossLodgeWaitlistOffer("entry-1", "member-1");
+
+    expect(result.success).toBe(true);
+    expect("subscriptionMemberRateNotice" in result).toBe(false);
+  });
+
+  it("resolves the club's mode ONCE, and before any capacity lock is taken", async () => {
+    // `resolveSubscriptionLockoutMode` reseeds the financial-year cache and can
+    // reach Xero; underneath the offered lodge's capacity lock that is the one
+    // thing the booking rules forbid outright. The resolved mode is passed in, so
+    // the evaluation takes no second pool connection either.
+    mocks.evaluateNonMemberPricing.mockResolvedValue(repricedRefusal);
+
+    await confirmCrossLodgeWaitlistOffer("entry-1", "member-1");
+
+    expect(mocks.resolveSubscriptionLockoutMode).toHaveBeenCalledTimes(1);
+    expect(
+      mocks.resolveSubscriptionLockoutMode.mock.invocationCallOrder[0],
+    ).toBeLessThan(mocks.acquireLodgeCapacityLock.mock.invocationCallOrder[0]);
+  });
+
+  it("does not run the check for a stranger, an already-expired offer, or a non-offered entry", async () => {
+    // Same preconditions as the minimum-stay check it sits beside: the gate must
+    // not answer anything about an offer this caller does not own.
+    mocks.prismaBookingFindUnique.mockResolvedValue(offeredEntry());
+    await confirmCrossLodgeWaitlistOffer("entry-1", "member-2");
+    expect(mocks.evaluateNonMemberPricing).not.toHaveBeenCalled();
+
+    mocks.prismaBookingFindUnique.mockResolvedValue(
+      offeredEntry({ waitlistOfferExpiresAt: new Date(Date.now() - 1_000) }),
+    );
+    await confirmCrossLodgeWaitlistOffer("entry-1", "member-1");
+    expect(mocks.evaluateNonMemberPricing).not.toHaveBeenCalled();
+
+    mocks.prismaBookingFindUnique.mockResolvedValue(
+      offeredEntry({ status: BookingStatus.WAITLISTED }),
+    );
+    await confirmCrossLodgeWaitlistOffer("entry-1", "member-1");
+    expect(mocks.evaluateNonMemberPricing).not.toHaveBeenCalled();
+  });
+
+  it.each(["NO_BLOCK", "HARD_BLOCK"] as const)(
+    "is a no-op under %s: the promotion is untouched",
+    async (mode) => {
+      mocks.resolveSubscriptionLockoutMode.mockResolvedValue(mode);
+      // What the real evaluator does outside NON_MEMBER_PRICING, before any query.
+      mocks.evaluateNonMemberPricing.mockResolvedValue(null);
+      letPhase1Pass();
+      mocks.createConfirmedBooking.mockRejectedValue(new Error("boom"));
+
+      const result = await confirmCrossLodgeWaitlistOffer("entry-1", "member-1");
+
+      // It got all the way to Phase 2, so the gate let it through untouched.
+      expect(mocks.createConfirmedBooking).toHaveBeenCalledTimes(1);
+      expect(result.code).toBeUndefined();
+      // ...and the mode the gate branched on is the one the club is in.
+      expect(mocks.evaluateNonMemberPricing).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ mode }),
+      );
+    },
+  );
 });

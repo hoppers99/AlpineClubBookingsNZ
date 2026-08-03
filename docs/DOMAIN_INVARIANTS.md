@@ -2839,6 +2839,21 @@ requirement with nobody repriced, and the notice claims member rates "aren't
 available for those nights" — a statement about a price nobody was charged. That
 party gets the refusal (or the quote's early warning) and no rate notice.
 
+**The cross-lodge promotion is the seventh money path, and reached none of the
+rule.** `confirmCrossLodgeWaitlistOffer` calls `createConfirmedBooking` DIRECTLY,
+so the create route's gate never ran, while the offer sweep had already re-based
+the entry's stored price at current rates and inherited the reprice — a party the
+create route would have refused could be promoted here and charged non-member
+rates instead. Fixed as Phase 0b, with the same semantics as its same-lodge twin:
+the mode and the party are read before Phase 1 opens the transaction that holds the
+offered lodge's capacity lock; the requirement is judged against the OFFERED lodge,
+since that is where the booking will exist; a violation fails closed WITHOUT
+consuming the offer (the entry reverts to `WAITLISTED` so the member keeps their
+place) and answers with the shared refusal body, which the waitlist-confirm route
+already maps to a 409 with no cross-lodge special case. The rate notice rides the
+success result too, because a cross-lodge quote can differ from the member's own
+lodge by the whole member/non-member spread.
+
 **Every write path passes the owner**, because the requirement is a property of a
 set of call sites rather than of behaviour: a path that forgets it silently
 enforces the old repriced-only rule while every other path's tests stay green.

@@ -104,10 +104,13 @@ This option moves money, so it is worth reading before you pick it.
   exactly as before: an all-non-member group, a family whose only member row is a
   child, and a paid-up youth member booking their own bed are all untouched.
 - **It is re-checked when somebody is removed, and when a waitlist offer is
-  confirmed** — not only when guests are added. Otherwise a booking could be
-  allowed because a paid-up adult was on it, and that adult taken off a moment
-  later. A member who declines a member-guest invite can always still be taken off
-  a booking; that is never blocked.
+  confirmed** — not only when guests are added, and including an offer for a
+  *different* lodge. Otherwise a booking could be allowed because a paid-up adult
+  was on it, and that adult taken off a moment later. A member who declines a
+  member-guest invite can always still be taken off a booking; that is never
+  blocked. If a waitlist offer is refused for this reason the offer is **not used
+  up** — the entry goes back on the waitlist at its place, so the member can fix
+  the party or ask a Booking Officer instead of losing their turn.
 - **Two things start being refused that go through today.** Because this
   requirement looks at the whole booking while the old subscription checks looked
   only at guests being added, confirming a draft that carries an unfinancial member
