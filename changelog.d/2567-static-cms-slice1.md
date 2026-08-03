@@ -42,7 +42,12 @@
   a clear error. Those addresses could be created before and appeared to work, but
   under whole-page caching they would have been served with a security token that no
   longer matched, so nothing on the page would run. If you already have such a page
-  it now shows "page not found" until you rename it.
+  it now shows "page not found" until you rename it. It also stops being advertised —
+  the site menu drops it and a Book Now button aimed at it goes back to the normal
+  booking flow — so no link points at the dead address, which is also why it is worth
+  looking for one after upgrading: `CONFIGURATION.md` ("Some slugs are refused, and the
+  list grew") lists the reserved words, and Admin > Page Content still shows the page
+  with its address, ready to rename.
 
   The home page, Join, Contact and the membership application form are deliberately
   unchanged for now; they follow in a later step once this one has been measured on

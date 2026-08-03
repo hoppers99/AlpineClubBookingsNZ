@@ -3,6 +3,7 @@ import "server-only";
 import { buildBookingLoginPath } from "@/lib/auth-redirect";
 import { DEFAULT_PUBLIC_CONTENT_SETTINGS } from "@/config/club-settings-defaults";
 import { prisma } from "@/lib/prisma";
+import { isCmsServablePageSlug } from "@/lib/public-website-paths";
 
 /**
  * Resolved public "Book Now" button state (E3 #1929).
@@ -81,7 +82,7 @@ async function resolveBookNowChoice(): Promise<BookNowChoice> {
       select: {
         showBookNow: true,
         bookNowTarget: true,
-        bookNowPage: { select: { path: true, published: true } },
+        bookNowPage: { select: { slug: true, path: true, published: true } },
       },
     });
 
@@ -102,15 +103,24 @@ async function resolveBookNowChoice(): Promise<BookNowChoice> {
 
     if (!settings.showBookNow) return { show: false, pageHref: null };
 
+    // The servability check is the #2352 slice-1 half (added by that slice's
+    // security review). Slice 1 reserved every first segment belonging to another
+    // route group, so a page at `/lodge/booking-info` — a legal target when it was
+    // chosen — is no longer served by the catch-all. The row is untouched and still
+    // published, so without this the button would point every visitor at a 404.
+    // Treating it as a dead target is exactly the case #1929's fail-open contract
+    // already covers, alongside a deleted or unpublished page.
     if (
       settings.bookNowTarget === "PAGE" &&
       settings.bookNowPage?.published &&
-      settings.bookNowPage.path
+      settings.bookNowPage.path &&
+      isCmsServablePageSlug(settings.bookNowPage.slug)
     ) {
       return { show: true, pageHref: settings.bookNowPage.path };
     }
 
-    // BOOKING_FLOW, or a PAGE target whose page is missing/unpublished: fail open.
+    // BOOKING_FLOW, or a PAGE target whose page is missing, unpublished or at an
+    // address the public website no longer serves: fail open.
     return { show: true, pageHref: null };
   } catch {
     // Deliberately still FAIL-OPEN, and deliberately out of step with the

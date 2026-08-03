@@ -2260,6 +2260,18 @@ permanently (D7).
   `/dashboard` and `/admin`, which D1 keeps per-request: `isCmsServablePageSlug()`
   (`src/lib/public-website-paths.ts`) makes the admin write and the catch-all's
   loader both refuse those slugs.
+- **The same predicate now filters what ADVERTISES a page, which the first pass
+  missed** (slice-1 security re-review). Refusing to serve a row is not the whole
+  answer while the site still links to it: a page saved at `/lodge/history` before
+  this slice stays `published` with its menu title intact, so
+  `listWebsiteMenuPages()` kept it in the public header and the mobile drawer, and
+  an admin-chosen Book Now target at such an address kept the button pointing there
+  — a nav link to a 404 on every public page, with no signal to the visitor or the
+  operator. Both readers now apply `isCmsServablePageSlug()`
+  (`src/lib/page-content-html.ts`, `src/lib/book-now-config.ts`), so an address the
+  site will not serve is an address the site does not offer; the Book Now case
+  reuses #1929's existing fail-open to the booking flow. Finding the affected row
+  is an operator step, and `CONFIGURATION.md` carries the query for it.
 - One residual is recorded rather than claimed closed: a 404 the catch-all raises for
   an address outside that set is still stored as a 404 entry carrying the generating
   request's nonce, so the not-found DOCUMENT served from the store afterwards has a

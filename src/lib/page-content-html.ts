@@ -4,6 +4,7 @@ import sanitizeHtml from "sanitize-html";
 import { prisma } from "@/lib/prisma";
 import { deriveAltFromImageSrc } from "@/lib/image-alt";
 import type { EditablePageRecord } from "@/lib/page-content";
+import { isCmsServablePageSlug } from "@/lib/public-website-paths";
 
 // Hardcoded literal regexes (not a dynamic `new RegExp`) so the pattern can
 // never be shaped by input and there is no non-literal-RegExp/ReDoS surface.
@@ -337,6 +338,30 @@ export async function listEditablePageContent() {
   return records.map(toEditablePageRecord);
 }
 
+/**
+ * The pages the public header and mobile drawer link to.
+ *
+ * Three filters, and the third arrived with the #2352 slice-1 review:
+ *
+ *  1. `published` — a hidden page is not advertised.
+ *  2. A non-empty `menuTitle` — the admin's way of keeping a published page out
+ *     of the navigation.
+ *  3. {@link isCmsServablePageSlug} — the page must be one the
+ *     `(website)/[...slug]` catch-all will actually serve.
+ *
+ * Without the third, slice 1 could leave a nav link pointing at a 404. That
+ * slice reserved every first segment belonging to another route group, so an
+ * existing row at `/lodge/history` or `/notices/archive` — legal when it was
+ * saved — stopped being served. The row is untouched and still `published`, so
+ * filters 1 and 2 both passed it and the header kept advertising it, with no
+ * signal to the visitor or the operator. An address the site will not serve is
+ * not an address the site should link to.
+ *
+ * This does not repair the row; the operator still has to rename it (see
+ * `CONFIGURATION.md` → "Some slugs are refused, and the list grew" for the query
+ * that finds them). It stops the site promising a page it cannot deliver in the
+ * meantime.
+ */
 export async function listWebsiteMenuPages() {
   const records = await prisma.pageContent.findMany({
     // Hidden (unpublished) pages drop out of the public navigation.
@@ -352,5 +377,8 @@ export async function listWebsiteMenuPages() {
     },
   });
 
-  return records.filter((record) => record.menuTitle.trim().length > 0);
+  return records.filter(
+    (record) =>
+      record.menuTitle.trim().length > 0 && isCmsServablePageSlug(record.slug),
+  );
 }

@@ -100,7 +100,7 @@ describe("getBookNowVariants fail-open matrix (E3 #1929)", () => {
     findUnique.mockResolvedValue({
       showBookNow: true,
       bookNowTarget: "PAGE",
-      bookNowPage: { path: "/how-to-book", published: true },
+      bookNowPage: { slug: "how-to-book", path: "/how-to-book", published: true },
     });
     expect(await bookNowFor(true)).toEqual({
       show: true,
@@ -120,12 +120,39 @@ describe("getBookNowVariants fail-open matrix (E3 #1929)", () => {
     findUnique.mockResolvedValue({
       showBookNow: true,
       bookNowTarget: "PAGE",
-      bookNowPage: { path: "/how-to-book", published: false },
+      bookNowPage: { slug: "how-to-book", path: "/how-to-book", published: false },
     });
     expect(await bookNowFor(true)).toEqual({
       show: true,
       href: "/book",
       label: MEMBER_BOOK_NOW_LABEL,
+    });
+  });
+
+  // #2352 slice-1 review. The slice reserved every first segment owned by another
+  // route group, so a target chosen before that rule existed can still be
+  // published while the catch-all no longer serves it. Pointing the public button
+  // at a 404 is worse than the default booking flow, and this is the same dead
+  // target #1929's contract already fails open for.
+  it("fails open when the PAGE target sits under a reserved prefix", async () => {
+    findUnique.mockResolvedValue({
+      showBookNow: true,
+      bookNowTarget: "PAGE",
+      bookNowPage: {
+        slug: "lodge/booking-info",
+        path: "/lodge/booking-info",
+        published: true,
+      },
+    });
+    expect(await bookNowFor(true)).toEqual({
+      show: true,
+      href: "/book",
+      label: MEMBER_BOOK_NOW_LABEL,
+    });
+    expect(await bookNowFor(false)).toEqual({
+      show: true,
+      href: "/login?next=/book",
+      label: ANONYMOUS_BOOK_NOW_LABEL,
     });
   });
 
@@ -173,7 +200,7 @@ describe("public Book Now CTA label (#2430)", () => {
       {
         showBookNow: true,
         bookNowTarget: "PAGE",
-        bookNowPage: { path: "/how-to-book", published: true },
+        bookNowPage: { slug: "how-to-book", path: "/how-to-book", published: true },
       },
     ];
 
@@ -214,7 +241,11 @@ describe("getBookNowVariants resolves both forms from one read (#2352 D2)", () =
     findUnique.mockResolvedValue({
       showBookNow: true,
       bookNowTarget: "PAGE",
-      bookNowPage: { path: "/how-booking-works", published: true },
+      bookNowPage: {
+        slug: "how-booking-works",
+        path: "/how-booking-works",
+        published: true,
+      },
     });
 
     const variants = await getBookNowVariants();

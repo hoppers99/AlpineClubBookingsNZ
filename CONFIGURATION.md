@@ -633,6 +633,30 @@ menu.
     token that no longer matched, so nothing on it would run. If you have such a
     page from an earlier release it now answers "page not found" — rename it and
     the content comes back.
+  - **Check for one after upgrading, because the page keeps its content and only
+    loses its address.** A page in that position is no longer advertised anywhere
+    — the site menu drops it, and a Book Now button pointing at it reverts to the
+    normal booking flow — so nothing links to a dead address, but nothing tells
+    you it is there either. Admin > Page Content still lists it with its address,
+    and this query names them outright:
+
+    ```sql
+    SELECT slug, title, published FROM "PageContent"
+    WHERE split_part(slug, '/', 1) IN (
+      'admin', 'api', 'asset-not-found', 'book', 'booking-requests', 'bookings',
+      'calendar', 'change-password', 'chores', 'confirm-email-change',
+      'dashboard', 'display', 'family-invite', 'finance', 'forgot-password',
+      'induction', 'lodge', 'lodge-instructions', 'login',
+      'membership-cancellation', 'nominations', 'notices', 'pay', 'profile',
+      'register', 'reset-password', 'school-bookings', 'verify-email'
+    );
+    ```
+
+    The list is `NON_WEBSITE_ROOT_SEGMENTS` in
+    `src/lib/public-website-paths.ts`; read it there if you are on a later
+    release, because it grows whenever the application claims a new top-level
+    address. Renaming the page in Admin > Page Content is the whole fix — the
+    content, header and menu title come with it.
 - Page HTML supports embed tokens that render interactive sections across
   PageContent-backed public routes, including code-backed starter routes.
   Supported tokens are `{{committee-members-cards}}`,
@@ -750,7 +774,10 @@ Admin > Page Content panel (`PublicContentSettings`):
 - **Target** — *booking flow* (the default: a logged-in member goes to `/book`,
   a guest is sent through login) or a chosen **published content page**.
 - A page target that becomes unpublished or is deleted **fails open** to the
-  booking flow, so the button is never dead. So does a database error reading
+  booking flow, so the button is never dead. Since #2352 slice 1 so does a target
+  whose address is now reserved (see "Some slugs are refused, and the list grew"
+  above) — the page is published but no longer served, so the button goes back to
+  the booking flow rather than pointing at a 404. So does a database error reading
   the settings row: `getBookNowVariants`'s catch shows the button (#1929's
   contract, deliberately unchanged by #2430 — the no-row branch fails closed
   because that is a club's absent choice, whereas an outage is not). The

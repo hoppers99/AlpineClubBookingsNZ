@@ -2008,7 +2008,11 @@ With them gone, each route in the group states its own mode:
   per-release nonce to exactly that set. A page stored outside it would carry a
   nonce no later response names, so `isCmsServablePageSlug()`
   (`src/lib/public-website-paths.ts`) makes both the catch-all's loader and the
-  admin slug validator refuse the difference. `/pay` was the live shape.
+  admin slug validator refuse the difference. `/pay` was the live shape. The same
+  predicate also filters the two surfaces that ADVERTISE a page — the site menu
+  (`listWebsiteMenuPages()`) and the Book Now page target — so a row saved before
+  the rule existed stops being linked to rather than pointing every visitor at a
+  404 (slice-1 security re-review).
 - Every other route in the group declares `export const dynamic = "force-dynamic"`.
   For `/`, `/join`, `/contact` and `/join/apply` that is a hold pending #2352
   slices 2 and 3; for `/hut-leader-instructions`, `/join/[code]` and
