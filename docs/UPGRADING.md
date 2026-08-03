@@ -196,7 +196,13 @@ taken.
    that compatibility is deliberate and tested — bundle files outlive the column, and
    an old bundle still records a real decision about whether the club gated bookings.
    A bundle exported from an upgraded club carries the mode itself and is
-   unambiguous. There is no format-version bump for this.
+   unambiguous. There is no format-version bump for this. One case the importer now
+   refuses outright, at the dry-run rather than mid-import: a bundle whose
+   `membership-lockout-settings.json` states `"mode": null` and carries no old
+   boolean either. Nothing can tell what policy that file means, and the column is
+   not nullable, so the plan reports it as an error instead of aborting the import
+   transaction on a database error part-way through. Only a hand-trimmed or
+   partially-written file can be in that state; a bundle either tool produced cannot.
 
 ### Re-export configuration bundles for format version 4 (#2364)
 
