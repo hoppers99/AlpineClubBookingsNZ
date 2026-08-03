@@ -67,10 +67,16 @@ every tool call unless the answer is the least-privilege shape ADR-007 requires:
   or column level;
 - no `SELECT` on any relation in `public` that the declared allowlist does not name —
   which in this release is **every** relation, since the allowlist is empty;
-- no membership in any privilege-escalating predefined role (tested as membership,
-  not as inherited usage: the role is `NOINHERIT`, and a `NOINHERIT` role's
-  hand-granted membership does not show up as inherited while still being one
-  `SET ROLE` away);
+- no membership in **any** other role — not a shortlist of dangerous ones, a total of
+  zero. A member of any role is one `SET ROLE` away from that role's privileges, and
+  because this role is `NOINHERIT` the membership shows up in nothing else the server
+  is asked: `GRANT tac_app TO ai_diagnostics_ro` leaves every other answer above
+  clean, and one `SET ROLE tac_app` then reads `IntegrationCredential` and writes
+  `Booking`. Membership is tested as membership rather than as inherited usage for the
+  same reason, and it is counted through chains as well as direct grants, because
+  `SET ROLE` reaches a role granted two hops away. The refusal still names a
+  privilege-escalating predefined role (`pg_read_all_data` and the rest) separately
+  when that is what happened, because it is a more useful sentence than a count;
 - no `EXECUTE` on any overload of `pg_read_file`, `pg_read_binary_file`, `pg_ls_dir`,
   `pg_stat_file`, `lo_import` or `lo_export`;
 - no `EXECUTE` on a `SECURITY DEFINER` routine in `public` (see "What is deliberately
@@ -138,10 +144,11 @@ stays not-ready; there is no unsafe default.
 ### What provisioning does
 
 It runs one transaction, so a failure part-way leaves no partially privileged role
-behind. The statements are **declarative, not additive**: every table, sequence, and
-routine privilege is revoked from the role before the declared allowlist is granted
-back. The allowlist lives in `src/lib/diagnostics/tools/provision-role.ts`, in
-public code, so "which tables can Diagnostics read" is answered by reading one file.
+behind. The statements are **declarative, not additive**: every role membership, and
+every table, sequence, and routine privilege, is revoked from the role before the
+declared allowlist is granted back. The allowlist lives in
+`src/lib/diagnostics/tools/provision-role.ts`, in public code, so "which tables can
+Diagnostics read" is answered by reading one file.
 
 - Creates the role if absent, then pins its attributes whether it was just created
   or already existed with drifted attributes: `NOSUPERUSER`, `NOCREATEDB`,
@@ -156,6 +163,14 @@ public code, so "which tables can Diagnostics read" is answered by reading one f
   `pg_write_server_files`, `pg_execute_server_program`, `pg_signal_backend`,
   `pg_monitor`, `pg_maintain`), each guarded by an existence check because that set
   grows with the server version.
+- Then revokes **every remaining membership**, whatever it is in. That is the actual
+  control; the named list above documents what it is for. Only the direct grants need
+  revoking — a chain always starts with one — so stripping them removes the two-hop
+  case too. If the provisioning credential does not hold `ADMIN OPTION` on a role the
+  diagnostics role was granted, this `REVOKE` fails, the whole transaction rolls back,
+  and the script prints the server's message: that credential cannot provision a role
+  the runtime would accept, so the failure is the right answer rather than a
+  half-restricted role.
 - Grants `CONNECT` on the database and `USAGE` on schema `public` — never `CREATE`.
 - Revokes all table and sequence privileges plus default privileges, then grants back
   only the declared `SELECT` allowlist.
@@ -169,7 +184,8 @@ public code, so "which tables can Diagnostics read" is answered by reading one f
 
 **It is safe to re-run, and re-running is the intended path** for rotating the
 password and for picking up a new table grant. Because it is declarative, a re-run
-also **removes** a grant somebody added by hand — that is deliberate.
+also **removes** a grant, or a role membership, somebody added by hand — that is
+deliberate.
 
 ### One collateral change to shared database state
 

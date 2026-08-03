@@ -40,6 +40,15 @@ silently *strips* it, which would make a call that sent one hash identically to 
 call that sent nothing — and rejection has to be total, exactly as it is for
 [page context](page-context.md).
 
+The scan walks **every depth**, arrays included, and not only the top level. Zod
+strips a nested `__proto__` just as readily: measured on zod 4.4.3, a schema of
+`{ filters: { status? } }` with both objects `.strict()` accepted
+`{"filters":{"__proto__":{…},"status":"open"}}` and returned
+`{"filters":{"status":"open"}}`, whose canonical hash is byte-identical to the same
+call without the key. A `filters` object is the natural shape for the first tool pack,
+so an author adding a nested or record-shaped argument inherits the refusal rather
+than having to remember it.
+
 ## What AID-5 ships, and what it deliberately does not
 
 AID-5 is the **substrate**. It ships exactly one registered tool — a readiness
@@ -296,9 +305,9 @@ provisions the role by running the **shipped** statements from `provision-role.t
 against a real PostgreSQL, connects as that role, and proves:
 
 - the role is a non-superuser with no DDL, replication, or RLS-bypass attribute,
-  and no membership in a privilege-escalating predefined role — tested with
-  `pg_has_role(…, 'MEMBER')`, because the role is `NOINHERIT` and the `'USAGE'`
-  predicate reports a hand-granted membership as absent;
+  and no membership in **any** role — tested with `pg_has_role(…, 'MEMBER')`, because
+  the role is `NOINHERIT` and the `'USAGE'` predicate reports a hand-granted
+  membership as absent;
 - it holds no table privilege at all on the migrated schema, and although PUBLIC
   leaves it able to EXECUTE the schema's routines, none of them is
   `SECURITY DEFINER`;
@@ -313,17 +322,19 @@ against a real PostgreSQL, connects as that role, and proves:
 - the encrypted credential store and every un-granted table are unreadable, a
   table created after provisioning is unreadable, and the role cannot grant itself
   access;
-- re-running the provisioning statements **revokes** a hand-added grant, and is
-  otherwise idempotent;
+- re-running the provisioning statements **revokes** a hand-added grant and a
+  hand-added role membership, and is otherwise idempotent;
 - a granted `INSERT` is still refused inside the read-only transaction (`25006`)
   and from the role's own default;
 - the runtime self-check accepts the provisioned role and **refuses a real
   superuser credential**;
 - it also refuses that same role the moment it drifts: a hand-granted
-  `pg_read_all_data` membership (proven reachable with one `SET ROLE`), a write grant
-  on any relation, a readable relation the allowlist does not declare, EXECUTE on a
-  non-default `pg_read_file` overload, or a `SECURITY DEFINER` routine in `public`
-  that re-provisioning cannot revoke;
+  `pg_read_all_data` membership (proven reachable with one `SET ROLE`), a membership in
+  an **ordinary** application role or in a superuser role — neither of which any other
+  column of the self-check can see, both proven reachable with one `SET ROLE`, and both
+  stripped by re-provisioning — a write grant on any relation, a readable relation the
+  allowlist does not declare, EXECUTE on a non-default `pg_read_file` overload, or a
+  `SECURITY DEFINER` routine in `public` that re-provisioning cannot revoke;
 - a verdict that has aged out is re-read from the server, so a role escalated while
   the process is running stops being accepted;
 - the executor's SQL row cap holds whatever the query would have returned, a long

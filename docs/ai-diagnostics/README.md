@@ -367,9 +367,10 @@ accepted; those become positional parameters and nothing else.
   allowlist today — inside `BEGIN READ ONLY` under a statement timeout. The
   application asks the **server** what privileges the role holds and refuses every
   tool call unless superuser, `CREATEDB`, `CREATEROLE`, `REPLICATION`, `BYPASSRLS`,
-  database `TEMPORARY`/`CREATE`, schema `CREATE`, `pg_read_file` execute, and every
-  privilege-escalating predefined role are all absent. There is no fallback to
-  `DATABASE_URL`, and a URL naming the application's own role is refused outright.
+  database `TEMPORARY`/`CREATE`, schema `CREATE`, `pg_read_file` execute, any write or
+  undeclared read privilege, and membership in **any** other role are all absent.
+  There is no fallback to `DATABASE_URL`, and a URL naming the application's own role
+  is refused outright.
 - **Ten ordered fail-closed gates**, every one returning no rows: registry, loop
   budget, fresh authorization, arguments, metering, credential, read, projection,
   size, audit. Authorization runs **before** argument parsing so the difference

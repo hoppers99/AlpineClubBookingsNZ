@@ -18,12 +18,13 @@
     read, only from an explicitly listed set of tables, inside read-only
     transactions that the database itself cuts off after five seconds. The
     software does not take that on trust: it asks the database what the login is
-    actually allowed to do — including whether it can change anything, and whether
-    it can read anything outside the listed set — and refuses to run at all unless
-    the answer is "almost nothing". That answer is re-checked at least once a
-    minute while the site is running, so a login widened by hand stops being
-    accepted within about a minute, and the readiness page says so. It never falls
-    back to the site's ordinary connection.
+    actually allowed to do — including whether it can change anything, whether it
+    can read anything outside the listed set, and whether it has been added to any
+    other database login's group (which would let it borrow that login's powers) —
+    and refuses to run at all unless the answer is "almost nothing". That answer
+    is re-checked at least once a minute while the site is running, so a login
+    widened by hand stops being accepted within about a minute, and the readiness
+    page says so. It never falls back to the site's ordinary connection.
   - **Permissions are re-checked every single time.** Each lookup names the admin
     area that already governs that data, and the operator's current permissions
     are re-read from the database for every request. A permission removed
