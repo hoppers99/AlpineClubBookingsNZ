@@ -24,6 +24,10 @@
   tenth of the club's published pages, so a club with fewer than ten pages allows
   none). When that happens the deploy is labelled as finished with a warning and
   the failing page is printed for follow-up rather than passed over quietly.
+  Anything else the check wants to raise — a page an admin unpublished while the
+  deploy was running, a setting it could not read, or an allowance someone widened
+  for the day — is repeated at the very end of the deploy too, even when the check
+  otherwise passed, so it is not lost among the startup logs.
 
   Both copies of the application that can serve the public site are warmed, not
   just the new one, because the second copy takes over if the first ever stops

@@ -195,9 +195,10 @@ and then served from a cache. Four operational facts:
 - **The new release is warmed and VERIFIED before traffic moves to it** (#2566,
   owner decision Option 4). Step 16 of 20 in the blue/green engine renders the
   release's approved public website routes and every published Page Content address
-  on the new colour, proves the page cache really was populated, then blocks the
-  cutover if a critical page failed. See "Pre-cutover warm-up gate" below for what
-  it checks, what it tolerates, and what to do when it refuses.
+  on the new colour, proves the page cache really was populated for the addresses
+  this release stores, then blocks the cutover if a critical page failed. See
+  "Pre-cutover warm-up gate" below for what it checks, what it tolerates, and what
+  to do when it refuses.
 - **The five-minute backstop bounds when a REBUILD is triggered, not when a visitor
   first sees fresh content.** An admin edit is genuinely instant — it clears the
   stored copy outright, so the next request has to render again. A change with no
@@ -261,12 +262,27 @@ the other.
 
 **What blocks the cutover.** Any failure on a critical public route — the home page,
 `/join`, `/join/apply`, `/contact`, and the Book Now page target when the club has
-configured one. Also: a server error, an unexpected 404 or redirect, a redirect to
+configured one.
+
+What counts as a failure depends on how this release renders the address, and today
+that split matters: `/`, `/join`, `/join/apply` and `/contact` are `force-dynamic`
+under #2352 slice 1, so for them the gate proves the page RENDERS and proves it
+reports no cache. **Store verification — a second request that must come back
+`x-nextjs-cache: HIT` or `STALE` — therefore applies only to the published Page
+Content pages and the configured Book Now page target**, which the ISR catch-all
+serves. When #2352 slice 2 or 3 converts the critical routes into stored pages, their
+declarations in `src/lib/deploy/warmup-route-policy.ts` are updated in the same PR
+(the gate refuses to cut over while a declaration and the build output disagree, in
+either direction), and from that release on a critical page that renders but is never
+proved stored blocks the cutover as well.
+
+The failures themselves: a server error, an unexpected 404 or redirect, a redirect to
 login, an empty or non-HTML response, a page that renders but is never stored, a
 per-request page that has started being stored, a policy/nonce mismatch, a release
 that does not identify itself as the one being deployed, and any failure to discover
 the routes at all — including an approved public address that the critical list does
-not name. The critical route list is written out explicitly in
+not name. On a critical route each of those stops the cutover outright; on a published
+content page the tolerance below decides. The critical route list is written out explicitly in
 `src/lib/deploy/warmup-route-policy.ts` so it is reviewable rather than inferred, and
 the census cross-check above is what keeps "explicit" from becoming "out of date".
 
@@ -283,13 +299,21 @@ oversight. The deploy then completes labelled **with a warning**, the failed pat
 its response are printed, and the operator is expected to raise or link a follow-up
 issue for it before closing the deploy out.
 
-That label is not left at step 16. Every warm-up warning — a tolerated page failure, a
-skipped gate, a disabled gate, or a release the gate could not identify — is
-accumulated and **re-printed after the completion banner**, and the final line reads
-"Blue/green deploy complete WITH WARNINGS" rather than "complete". There is no deploy
-log file, so the operator's terminal is the only record: without this, four more steps,
-the container table and 80 lines of application logs scroll past between the warning
-and the last thing on screen.
+That label is not left at step 16. Every warm-up warning is accumulated and
+**re-printed after the completion banner**, and the final line reads "Blue/green
+deploy complete WITH WARNINGS" rather than "complete". There is no deploy log file, so
+the operator's terminal is the only record: without this, four more steps, the
+container table and 80 lines of application logs scroll past between the warning and
+the last thing on screen.
+
+"Every warning" means the summary's own WARNINGS block, read out of the report rather
+than inferred from the verdict — so a gate that returned a plain **pass** and still
+warned about something is carried to the end too. That is a real case rather than a
+theoretical one: a page unpublished between discovery and warming, a Book Now setting
+the gate could not read, an image carrying no release identifier, a deploy that could
+not say which commit it is releasing, or a tolerance the operator widened all pass the
+gate and all still need recording. A clean run adds nothing and the banner still reads
+"complete".
 
 **What it skips.** A club whose site-style setup is not finished. Every public
 address answers the "Site setup in progress" holding screen until then, so there is
@@ -301,7 +325,7 @@ Settings, all optional and all read by `scripts/run-production-blue-green-deploy
 | --- | --- | --- | --- |
 | `DEPLOY_WARMUP_CONCURRENCY` | `3` | `1`-`8` | Requests in flight at once. Kept small so the release is not under its heaviest load of the day moments before it takes traffic. |
 | `DEPLOY_WARMUP_REQUEST_TIMEOUT_SECONDS` | `20` | `1`-`120` | Per-request ceiling. A cold render is 1-2s on an idle host and up to ~13s on a CPU-starved one. |
-| `DEPLOY_WARMUP_TOTAL_TIMEOUT_SECONDS` | `240` | `5`-`1800` | Whole-gate ceiling. Addresses it never reached count as failures. |
+| `DEPLOY_WARMUP_TOTAL_TIMEOUT_SECONDS` | `240` | `5`-`1800` | Whole-gate ceiling, applied **per warmed service** — the default pair therefore costs up to 480s. Addresses it never reached, and stored pages it never got to verify, count as failures. |
 | `DEPLOY_WARMUP_MAX_FAILED_CMS_ROUTES` | `1` | `0`-`100` | The count half of the tolerance. |
 | `DEPLOY_WARMUP_MAX_FAILED_CMS_PERCENT` | `10` | `0`-`100` | The percentage half. |
 | `DEPLOY_WARMUP_SERVICES` | target colour + `app` | one or more app service names | Which app services to warm. A value that resolves to no services is refused rather than treated as "nothing to check". |

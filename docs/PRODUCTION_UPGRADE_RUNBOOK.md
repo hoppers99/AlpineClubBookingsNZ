@@ -184,11 +184,13 @@ matter for this upgrade:
   the cron leader on the new release, both before cutover.**
 - **Step 16/20 — "Warming the new release and verifying its page cache before
   cutover".** The #2566 gate: it renders every eligible public page on the new
-  colour, proves the page cache was populated, and REFUSES the cutover on any
-  critical-page failure. Still fully reversible — no traffic has moved. It also
-  lengthens the migrate-to-cutover window by the time it takes (bounded by
-  `DEPLOY_WARMUP_TOTAL_TIMEOUT_SECONDS`, 240s by default), which matters for
-  [§2.2](#22-agetier-not_applicable--deploy-in-a-quiet-window).
+  colour, proves the page cache was populated for the addresses this release stores,
+  and REFUSES the cutover on any critical-page failure. Still fully reversible — no
+  traffic has moved. It also lengthens the migrate-to-cutover window by the time it
+  takes, and `DEPLOY_WARMUP_TOTAL_TIMEOUT_SECONDS` (240s by default) bounds **one
+  service's run**: the gate runs once per warmed service, which by default is the new
+  colour **and** the `app` cron leader, so the default worst case is 2 x 240s = 480s.
+  That matters for [§2.2](#22-agetier-not_applicable--deploy-in-a-quiet-window).
 - **Step 17/20 — "Switching Caddy upstream to target web service".** This is
   the **cutover**: Caddy is repointed to the new color, external/internal health
   is verified, then the previous color's connections are drained. Everything
@@ -308,7 +310,9 @@ stopping and starting the application.
 
 **The warm-up gate (step 16) runs inside this window too**, and it adds the time it
 takes to render every public page — bounded by `DEPLOY_WARMUP_TOTAL_TIMEOUT_SECONDS`
-(240s by default). Budget for it rather than switching it off: in a window where the
+(240s by default) **per warmed service**. The gate runs once per service, so budget
+480s for the default pair (the new colour and the `app` cron leader), not 240s. Budget
+for it rather than switching it off: in a window where the
 old colour is already broken, "does the new release actually serve its public pages?"
 is the most valuable question you can ask before opening the site again, and the
 answer arrives while members are still held out. If the window is genuinely too tight,
