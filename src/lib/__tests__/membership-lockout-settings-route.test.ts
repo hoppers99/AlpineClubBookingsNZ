@@ -64,7 +64,7 @@ describe("membership lockout settings route guards (#1940)", () => {
     mocks.findUnique.mockResolvedValue(null);
     mocks.upsert.mockResolvedValue({
       id: "default",
-      enabled: true,
+      mode: "HARD_BLOCK",
       financialYearEndMonthOverride: null,
       textFallbackEnabled: true,
       useFeeScheduleItemCodes: false,
@@ -107,33 +107,30 @@ describe("membership lockout settings route guards (#1940)", () => {
   });
 
   // ---------------------------------------------------------------------------
-  // #2543 — the three-way mode replaces the boolean, and writes both columns.
+  // #2543 — the three-way mode, now the only column (#2561 dropped the boolean).
   // ---------------------------------------------------------------------------
 
-  it.each([
-    ["NO_BLOCK", false],
-    ["HARD_BLOCK", true],
-    ["NON_MEMBER_PRICING", true],
-  ] as const)(
-    "persists mode %s and keeps the legacy enabled column in step (%s)",
-    async (mode, expectedEnabled) => {
+  it.each(["NO_BLOCK", "HARD_BLOCK", "NON_MEMBER_PRICING"] as const)(
+    "persists mode %s, and writes NO legacy column with it",
+    async (mode) => {
       const response = await putLockoutSettings(request({ mode }));
 
       expect(response.status).toBe(200);
       const upsertArgs = mocks.upsert.mock.calls[0][0];
-      // Both columns, every save: `enabled` is not dropped until a later contract
-      // release, so a draining old colour must keep finding a truthful value.
-      expect(upsertArgs.update).toEqual(
-        expect.objectContaining({ mode, enabled: expectedEnabled }),
-      );
-      expect(upsertArgs.create).toEqual(
-        expect.objectContaining({ mode, enabled: expectedEnabled }),
-      );
+      expect(upsertArgs.update).toEqual(expect.objectContaining({ mode }));
+      expect(upsertArgs.create).toEqual(expect.objectContaining({ mode }));
+      // Asserted as an ABSENCE, deliberately. The dual write is gone with the
+      // column, and reintroducing it would make Prisma raise on an unknown field
+      // at runtime — a 500 on the admin panel — rather than fail a type check,
+      // because these mocks accept any shape.
+      expect(upsertArgs.update).not.toHaveProperty("enabled");
+      expect(upsertArgs.create).not.toHaveProperty("enabled");
     },
   );
 
   it("refuses a legacy `enabled` body rather than silently ignoring it", async () => {
-    // The schema is .strict(). A silent ignore is the dangerous direction: an old
+    // Still valuable after the column is dropped (#2561), and arguably more so: the
+    // schema is .strict(), and a silent ignore is the dangerous direction — an old
     // client's "turn the lockout off" click would report success while the club
     // carried on hard-blocking members.
     const response = await putLockoutSettings(request({ enabled: false }));
@@ -149,15 +146,14 @@ describe("membership lockout settings route guards (#1940)", () => {
     expect(mocks.upsert).not.toHaveBeenCalled();
   });
 
-  it("an unrelated field save reads an un-migrated row's mode through the legacy boolean", async () => {
-    // The row predates #2543: `mode` is null, `enabled` is false (this club
-    // deliberately switched the lockout OFF). Saving a DIFFERENT field must not
-    // resurrect the lockout — the regression this case exists to catch is
-    // `before.mode ?? "HARD_BLOCK"`, which would.
+  it("an unrelated field save PRESERVES the stored mode", async () => {
+    // This club deliberately switched the lockout OFF. Saving a DIFFERENT field on
+    // the same panel must not resurrect it — the regression this case exists to
+    // catch is `before.mode ?? "HARD_BLOCK"`, which would, and which survives the
+    // #2561 drop unchanged as a hazard.
     mocks.findUnique.mockResolvedValue({
       id: "default",
-      mode: null,
-      enabled: false,
+      mode: "NO_BLOCK",
       financialYearEndMonthOverride: null,
       textFallbackEnabled: true,
       useFeeScheduleItemCodes: false,
@@ -169,7 +165,7 @@ describe("membership lockout settings route guards (#1940)", () => {
 
     expect(response.status).toBe(200);
     expect(mocks.upsert.mock.calls[0][0].update).toEqual(
-      expect.objectContaining({ mode: "NO_BLOCK", enabled: false }),
+      expect.objectContaining({ mode: "NO_BLOCK", useFeeScheduleItemCodes: true }),
     );
   });
 

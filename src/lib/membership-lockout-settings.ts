@@ -32,26 +32,6 @@ export function isSubscriptionLockoutMode(
   );
 }
 
-/**
- * The value to write to the LEGACY `enabled` column for a given mode (#2543).
- *
- * `enabled` is not dropped in the release that adds `mode` — a draining old
- * colour is still reading it — so every save writes both, and this is the one
- * definition of how they correspond. See `MembershipLockoutSettings.enabled` in
- * `prisma/schema.prisma`.
- *
- * `NON_MEMBER_PRICING` maps to `true`, i.e. to the old hard block, and that is
- * the deliberate direction. Old code cannot reprice anybody; if a club is rolled
- * back onto it, refusing an unpaid member is the honest fallback, whereas `false`
- * would let them book at full member rates — the one outcome the club has
- * explicitly decided against.
- */
-export function legacyEnabledForLockoutMode(
-  mode: SubscriptionLockoutMode,
-): boolean {
-  return mode !== "NO_BLOCK";
-}
-
 export interface MembershipLockoutSettings {
   /**
    * How an unpaid member is treated at booking time (#2543):
@@ -83,19 +63,13 @@ export interface MembershipLockoutSettings {
 
 export interface PersistedMembershipLockoutSettings {
   /**
-   * Null for any club that has not saved the panel since #2543 — the migration
-   * adds the column without a backfill. `normalizeMembershipLockoutSettings`
-   * resolves the null from `enabled`.
+   * The stored mode. NOT NULL in the database since #2561 backfilled it and
+   * dropped the legacy boolean, so a null here means only one thing: no settings
+   * row exists at all. Typed loosely (`string`) because config-transfer hands this
+   * shape a value straight out of a bundle file, which may be hand-edited;
+   * `coerceLockoutMode` refuses anything outside the closed vocabulary.
    */
   mode?: SubscriptionLockoutMode | string | null;
-  /**
-   * LEGACY, superseded by `mode` (#2543), and still a live column for the
-   * duration of the expand/contract window. Two readers depend on it:
-   * an un-backfilled row (every club, until an admin next saves) and a
-   * config-transfer bundle exported before #2543. Both are mapped in
-   * `coerceLockoutMode`.
-   */
-  enabled?: boolean | null;
   financialYearEndMonthOverride: number | null;
   textFallbackEnabled: boolean | null;
   useFeeScheduleItemCodes: boolean | null;
@@ -105,17 +79,7 @@ export interface PersistedMembershipLockoutSettings {
 }
 
 function getDefaultMembershipLockoutSettings(): MembershipLockoutSettings {
-  // Field-by-field rather than a spread: the defaults constant also carries the
-  // legacy `enabled` value for config-transfer's benefit, and that column is not
-  // part of the resolved settings any application code should see.
-  return {
-    mode: DEFAULT_MEMBERSHIP_LOCKOUT_SETTINGS.mode,
-    financialYearEndMonthOverride:
-      DEFAULT_MEMBERSHIP_LOCKOUT_SETTINGS.financialYearEndMonthOverride,
-    textFallbackEnabled: DEFAULT_MEMBERSHIP_LOCKOUT_SETTINGS.textFallbackEnabled,
-    useFeeScheduleItemCodes:
-      DEFAULT_MEMBERSHIP_LOCKOUT_SETTINGS.useFeeScheduleItemCodes,
-  };
+  return { ...DEFAULT_MEMBERSHIP_LOCKOUT_SETTINGS };
 }
 
 function coerceYearEndOverride(
@@ -131,21 +95,20 @@ function coerceYearEndOverride(
 /**
  * Resolve the stored three-way mode (#2543).
  *
- * Three inputs, in priority order, and the order is the whole point:
+ * `mode` is MANDATORY in the database (#2561 backfilled it from the legacy
+ * `enabled` boolean and dropped that column in the same release), so there is no
+ * fallback ladder any more: a recognised value wins, and the default answers the
+ * only two cases left.
  *
- *  1. a recognised `mode` — set once an admin has saved the panel, or once a
- *     post-#2543 config bundle has been imported;
- *  2. otherwise the legacy `enabled` boolean, mapped `true -> HARD_BLOCK`,
- *     `false -> NO_BLOCK`. THIS IS THE PATH EVERY EXISTING CLUB TAKES on the
- *     release that ships #2543: the migration adds `mode` without a backfill, so
- *     `mode` is null until somebody chooses one. Defaulting a null to HARD_BLOCK
- *     instead would turn the lockout back ON for every club that had
- *     deliberately switched it off — a money-affecting behaviour change nobody
- *     asked for. It is also the path an old config-transfer bundle takes;
- *  3. otherwise (no row at all) the default, HARD_BLOCK.
+ *  1. a recognised `mode` — every settings row has one;
+ *  2. otherwise the default, HARD_BLOCK. Reached when there is NO ROW at all (a
+ *     fresh install before an admin has saved the panel), or when the value did
+ *     not survive validation.
  *
- * An unrecognised `mode` string falls through to the same ladder rather than
- * being trusted, so a hand-edited bundle cannot invent a fourth policy.
+ * An unrecognised `mode` string is NOT trusted — a config bundle is a file an
+ * operator can hand-edit, and a fourth policy invented there would be read by
+ * every booking gate. It falls back to HARD_BLOCK, which refuses rather than
+ * relaxes, so a malformed value cannot quietly open the gate.
  */
 function coerceLockoutMode(
   persisted: Partial<PersistedMembershipLockoutSettings> | null | undefined,
@@ -153,9 +116,6 @@ function coerceLockoutMode(
 ): SubscriptionLockoutMode {
   if (isSubscriptionLockoutMode(persisted?.mode)) {
     return persisted.mode;
-  }
-  if (typeof persisted?.enabled === "boolean") {
-    return persisted.enabled ? "HARD_BLOCK" : "NO_BLOCK";
   }
   return fallback;
 }

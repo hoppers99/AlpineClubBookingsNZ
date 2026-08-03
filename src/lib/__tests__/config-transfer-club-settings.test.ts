@@ -539,11 +539,11 @@ describe("club-settings exports effective defaults for an unsaved singleton (#21
 
     // A nullable column whose default IS null still exports as null.
     expect(readJson(files, "membership-lockout-settings")).toEqual({
-      // #2543: the three-way `mode` supersedes the boolean `enabled`, and both
-      // travel while the legacy column exists — so both must appear here with
-      // their effective values, HARD_BLOCK and its legacy equivalent `true`.
+      // #2543/#2561: the three-way `mode` REPLACED the boolean `enabled`, whose
+      // column was backfilled into it and dropped in the same release. A bundle
+      // exported now carries the mode alone — `toEqual` is exact, so this fails if
+      // the legacy key ever creeps back into the exported field list.
       mode: DEFAULT_MEMBERSHIP_LOCKOUT_SETTINGS.mode,
-      enabled: DEFAULT_MEMBERSHIP_LOCKOUT_SETTINGS.enabled,
       financialYearEndMonthOverride: null,
       textFallbackEnabled:
         DEFAULT_MEMBERSHIP_LOCKOUT_SETTINGS.textFallbackEnabled,
@@ -1378,13 +1378,18 @@ describe("#2200 singleton dry-run validation (bounds, required, enum)", () => {
   });
 });
 
-describe("membership-lockout (mode, enabled) is reconciled on import (#2543)", () => {
+describe("a pre-#2543 bundle's `enabled` key still imports to the right mode (#2543/#2561)", () => {
   /**
-   * An absent-or-null `mode` is not "no opinion" — it MEANS "resolve the policy
-   * from the legacy `enabled` boolean". The importer writes only fields physically
-   * present in the bundle and, in the default merge mode, drops any whose value is
-   * null. `enabled` is non-null so it always travelled; `mode` did not. The net
-   * effect was that the target KEPT ITS OWN `mode`, and `mode` wins at read time.
+   * BUNDLE-FORMAT compatibility, which outlives the column. #2561 dropped `enabled`
+   * from the database, but bundle FILES exported before #2543 are still on
+   * operators' disks and in their backups, and each still records a real decision:
+   * whether that club gated bookings on unpaid subscriptions.
+   *
+   * `enabled` is no longer an exported field, so without the reconcile hook it would
+   * be an unknown key — silently dropped, with the target keeping its own mode while
+   * the dry-run reported no change to the policy. A club importing a pre-#2543
+   * bundle to turn the lockout OFF would be told it worked while every unpaid member
+   * went on being refused. These cases are the guarantee that does not happen.
    */
   function lockoutBundle(
     row: Record<string, unknown>,
@@ -1410,7 +1415,6 @@ describe("membership-lockout (mode, enabled) is reconciled on import (#2543)", (
   const targetOnNonMemberPricing = {
     ...DEFAULT_MEMBERSHIP_LOCKOUT_SETTINGS,
     mode: "NON_MEMBER_PRICING",
-    enabled: true,
   };
 
   it.each(["merge", "overwrite"] as const)(
@@ -1439,29 +1443,34 @@ describe("membership-lockout (mode, enabled) is reconciled on import (#2543)", (
         (i) => i.entity === "membership-lockout-settings",
       );
       expect(item?.action).toBe("update");
-      // The dry-run now TELLS the operator the policy is moving, not just a boolean.
+      // The dry-run TELLS the operator the policy is moving, and names the field
+      // that actually exists. `enabled` is no longer a column, so it can never
+      // appear here — if it did, the apply would raise on an unknown Prisma field.
       expect(item?.changedFields).toContain("mode");
-      expect(item?.changedFields).toContain("enabled");
+      expect(item?.changedFields).not.toContain("enabled");
 
       const { files } = readBundle(zip);
       const { tx, delegates } = stubTx({
         membershipLockoutSettings: targetOnNonMemberPricing,
       });
       await clubSettingsImporter.apply(applyCtx(tx, files, mode));
-      expect(delegates.membershipLockoutSettings.upsert).toHaveBeenCalledWith(
-        expect.objectContaining({
-          update: expect.objectContaining({ mode: "NO_BLOCK", enabled: false }),
-        }),
+      const upsertArgs =
+        delegates.membershipLockoutSettings.upsert.mock.calls[0][0];
+      // The boolean's MEANING lands on the column that exists.
+      expect(upsertArgs.update).toEqual(
+        expect.objectContaining({ mode: "NO_BLOCK" }),
       );
+      // ...and the dropped column's name never reaches Prisma.
+      expect(upsertArgs.update).not.toHaveProperty("enabled");
+      expect(upsertArgs.create).not.toHaveProperty("enabled");
     },
   );
 
   it("a null mode in MERGE mode still writes a mode derived from the boolean", async () => {
-    // The inconsistent-pair path: a source club that upgraded but never opened the
-    // panel exports `mode: null, enabled: false`. Merge mode drops the null, so the
-    // target was left on `mode = NON_MEMBER_PRICING, enabled = false` — a pair no
-    // admin save can produce, and one that breaks the rollback guarantee, because an
-    // old colour reads `enabled = false` and applies no lockout at all.
+    // A source club that upgraded to the expand release but never opened the panel
+    // exported `mode: null, enabled: false`. Merge mode drops the null, so without
+    // the hook the target would be left on its own NON_MEMBER_PRICING while the
+    // bundle plainly said the lockout was off.
     const zip = lockoutBundle({
       mode: null,
       enabled: false,
@@ -1475,17 +1484,17 @@ describe("membership-lockout (mode, enabled) is reconciled on import (#2543)", (
       membershipLockoutSettings: targetOnNonMemberPricing,
     });
     await clubSettingsImporter.apply(applyCtx(tx, files, "merge"));
-    expect(delegates.membershipLockoutSettings.upsert).toHaveBeenCalledWith(
-      expect.objectContaining({
-        update: expect.objectContaining({ mode: "NO_BLOCK", enabled: false }),
-      }),
+    const upsertArgs = delegates.membershipLockoutSettings.upsert.mock.calls[0][0];
+    expect(upsertArgs.update).toEqual(
+      expect.objectContaining({ mode: "NO_BLOCK" }),
     );
+    expect(upsertArgs.update).not.toHaveProperty("enabled");
   });
 
-  it("a recognised mode is authoritative and re-derives the legacy boolean", async () => {
-    // The pair can never be stored inconsistent, whichever half the bundle got
-    // right. NON_MEMBER_PRICING maps to enabled=true deliberately: a rollback onto
-    // old code then REFUSES an unpaid member rather than charging them member rates.
+  it("a recognised mode in the bundle WINS over a stale legacy boolean beside it", async () => {
+    // A post-#2543 expand-release bundle can carry both keys, and they can disagree
+    // (that release wrote the boolean from the mode, but a hand-edited file need
+    // not). The mode is the authority; the boolean is ignored rather than mapped.
     const zip = lockoutBundle({
       mode: "NON_MEMBER_PRICING",
       enabled: false,
@@ -1499,18 +1508,14 @@ describe("membership-lockout (mode, enabled) is reconciled on import (#2543)", (
       membershipLockoutSettings: {
         ...DEFAULT_MEMBERSHIP_LOCKOUT_SETTINGS,
         mode: "NO_BLOCK",
-        enabled: false,
       },
     });
     await clubSettingsImporter.apply(applyCtx(tx, files, "merge"));
-    expect(delegates.membershipLockoutSettings.upsert).toHaveBeenCalledWith(
-      expect.objectContaining({
-        update: expect.objectContaining({
-          mode: "NON_MEMBER_PRICING",
-          enabled: true,
-        }),
-      }),
+    const upsertArgs = delegates.membershipLockoutSettings.upsert.mock.calls[0][0];
+    expect(upsertArgs.update).toEqual(
+      expect.objectContaining({ mode: "NON_MEMBER_PRICING" }),
     );
+    expect(upsertArgs.update).not.toHaveProperty("enabled");
   });
 
   it("an UNRECOGNISED mode string is refused by the dry-run, not silently trusted", async () => {

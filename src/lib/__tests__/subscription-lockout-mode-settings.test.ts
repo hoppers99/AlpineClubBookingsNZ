@@ -1,15 +1,24 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import path from "node:path";
 
 /**
- * The three-way subscription-lockout SETTING (#2543): how it is stored, how a
- * null resolves, and how the club-wide mode is derived.
+ * The three-way subscription-lockout SETTING (#2543): how it is stored, and how
+ * the club-wide mode is derived from it.
  *
- * The single most important property under test is that NOTHING MOVED. The
- * migration adds `mode` without a backfill, so on the release that ships #2543
- * every club's row holds `mode = null` and the legacy `enabled` boolean is what
- * decides their policy. A club that had deliberately switched the lockout off
- * must still be off; a club that had it on must still hard-block. Money and
- * booking access both hang off this, so each direction has its own case.
+ * `mode` IS MANDATORY. The owner directive on #2561 completed this change in one
+ * release: the migration backfilled `mode` from the legacy `enabled` boolean
+ * (`true -> HARD_BLOCK`, `false -> NO_BLOCK`) and dropped that column in the same
+ * maintenance window, so there is no dual-read path left and no null to resolve
+ * except "no settings row exists at all".
+ *
+ * That the OLD boolean's meaning survived the drop is proven where it can
+ * actually be proven — against real rows, by
+ * `prisma/migration-verification/20260803010000_contract_subscription_lockout_drop_enabled.ts`,
+ * whose mutants cover the inverted mapping and the unconditional HARD_BLOCK. It
+ * is deliberately NOT re-asserted here: this module can no longer see the column,
+ * so a unit test claiming to check the mapping would be checking a fixture of its
+ * own making.
  */
 
 const mocks = vi.hoisted(() => ({
@@ -33,7 +42,6 @@ vi.mock("@/lib/financial-year-server", () => ({
 import {
   SUBSCRIPTION_LOCKOUT_MODES,
   isSubscriptionLockoutMode,
-  legacyEnabledForLockoutMode,
   loadMembershipLockoutSettings,
   normalizeMembershipLockoutSettings,
 } from "@/lib/membership-lockout-settings";
@@ -43,12 +51,11 @@ import {
   resolveSubscriptionLockoutMode,
 } from "@/lib/member-subscription-eligibility";
 
-/** A row as it exists on the release that ships #2543: `mode` not yet chosen. */
-function unmigratedRow(enabled: boolean) {
+/** A settings row as it exists post-#2561: `mode` stored, no legacy boolean. */
+function storedRow(mode: (typeof SUBSCRIPTION_LOCKOUT_MODES)[number]) {
   return {
     id: "default",
-    mode: null,
-    enabled,
+    mode,
     financialYearEndMonthOverride: null,
     textFallbackEnabled: true,
     useFeeScheduleItemCodes: false,
@@ -98,86 +105,73 @@ describe("normalizeMembershipLockoutSettings resolves the stored mode (#2543)", 
     ).toBe("NON_MEMBER_PRICING");
   });
 
-  // THE case this ladder exists for. Regression guard: resolving a null `mode`
-  // straight to the HARD_BLOCK default would silently switch the lockout back ON
-  // for every club that had turned it off.
-  it("a null mode falls back to the legacy boolean: false -> NO_BLOCK", () => {
-    expect(normalizeMembershipLockoutSettings(unmigratedRow(false)).mode).toBe(
-      "NO_BLOCK",
-    );
-  });
+  it.each(SUBSCRIPTION_LOCKOUT_MODES)(
+    "reads a stored %s back unchanged",
+    (mode) => {
+      expect(normalizeMembershipLockoutSettings(storedRow(mode)).mode).toBe(mode);
+    },
+  );
 
-  it("a null mode falls back to the legacy boolean: true -> HARD_BLOCK", () => {
-    expect(normalizeMembershipLockoutSettings(unmigratedRow(true)).mode).toBe(
-      "HARD_BLOCK",
-    );
-  });
-
-  it("a chosen mode beats a stale legacy boolean", () => {
-    // A draining old colour can still write `enabled`, so the two columns can
-    // disagree. `mode` is the authority once it is set.
-    expect(
-      normalizeMembershipLockoutSettings({
-        mode: "NON_MEMBER_PRICING",
-        enabled: false,
-      }).mode,
-    ).toBe("NON_MEMBER_PRICING");
-  });
-
-  it("an unrecognised mode string is not trusted; it re-enters the ladder", () => {
-    // A hand-edited config bundle cannot invent a fourth policy.
-    expect(
-      normalizeMembershipLockoutSettings({ mode: "SOMETIMES", enabled: false })
-        .mode,
-    ).toBe("NO_BLOCK");
+  it("an unrecognised mode string is not trusted; it falls back to HARD_BLOCK", () => {
+    // A config bundle is a file an operator can hand-edit, and a fourth policy
+    // invented there would be read by every booking gate. Falling back to
+    // HARD_BLOCK refuses rather than relaxes, so a malformed value cannot quietly
+    // open the gate.
     expect(normalizeMembershipLockoutSettings({ mode: "SOMETIMES" }).mode).toBe(
       "HARD_BLOCK",
     );
   });
 
   it("no row at all is HARD_BLOCK — a fresh install starts where clubs already were", () => {
+    // The ONLY remaining null case, now that the column is NOT NULL: no settings
+    // row exists yet.
     expect(normalizeMembershipLockoutSettings(null).mode).toBe("HARD_BLOCK");
     expect(normalizeMembershipLockoutSettings(undefined).mode).toBe("HARD_BLOCK");
     expect(normalizeMembershipLockoutSettings({}).mode).toBe("HARD_BLOCK");
+    expect(normalizeMembershipLockoutSettings({ mode: null }).mode).toBe(
+      "HARD_BLOCK",
+    );
   });
 
-  it("does not leak the legacy column into the resolved settings", () => {
-    // Application code must read `mode`. A lingering `enabled` on the resolved
-    // shape is an invitation for a caller to branch on the wrong one.
-    expect(
-      normalizeMembershipLockoutSettings(unmigratedRow(true)),
-    ).not.toHaveProperty("enabled");
-  });
-});
-
-describe("legacyEnabledForLockoutMode keeps the dropped-later column truthful (#2543)", () => {
-  it.each([
-    ["NO_BLOCK", false],
-    ["HARD_BLOCK", true],
-    // NON_MEMBER_PRICING maps to the old hard block deliberately: old code cannot
-    // reprice, so if a club is rolled back onto it, refusing an unpaid member is
-    // honest, whereas `false` would hand them full member rates — the one outcome
-    // the club has explicitly decided against.
-    ["NON_MEMBER_PRICING", true],
-  ] as const)("%s -> enabled=%s", (mode, expected) => {
-    expect(legacyEnabledForLockoutMode(mode)).toBe(expected);
+  it("matches the database default, so a fresh row and a missing row agree", () => {
+    // The migration set DEFAULT 'HARD_BLOCK' on the column. If the two ever
+    // disagreed, a club's policy would change the first time any row was written.
+    const schema = readFileSync(
+      path.resolve(process.cwd(), "prisma/schema.prisma"),
+      "utf8",
+    );
+    expect(schema).toContain(
+      "mode                          SubscriptionLockoutMode @default(HARD_BLOCK)",
+    );
+    expect(normalizeMembershipLockoutSettings(null).mode).toBe("HARD_BLOCK");
   });
 
-  it("round-trips every mode that the boolean can represent", () => {
-    for (const mode of ["NO_BLOCK", "HARD_BLOCK"] as const) {
-      expect(
-        normalizeMembershipLockoutSettings({
-          mode: null,
-          enabled: legacyEnabledForLockoutMode(mode),
-        }).mode,
-      ).toBe(mode);
-    }
+  it("no longer accepts or resolves a legacy boolean (#2561)", () => {
+    // The dual-read path is GONE, not merely unused. Passing the dropped column's
+    // name must not resurrect it as a second source of truth: an old bundle's
+    // boolean is mapped by config-transfer's reconcile hook, on the way in, and
+    // nowhere else.
+    const withStrayKey = { enabled: false } as Parameters<
+      typeof normalizeMembershipLockoutSettings
+    >[0];
+    expect(normalizeMembershipLockoutSettings(withStrayKey).mode).toBe(
+      "HARD_BLOCK",
+    );
+    expect(normalizeMembershipLockoutSettings(storedRow("NO_BLOCK"))).not.toHaveProperty(
+      "enabled",
+    );
+    const source = readFileSync(
+      path.resolve(process.cwd(), "src/lib/membership-lockout-settings.ts"),
+      "utf8",
+    );
+    expect(source).not.toContain("legacyEnabledForLockoutMode");
+    expect(source).not.toContain("persisted?.enabled");
   });
 });
 
 describe("resolveSubscriptionLockoutMode (#2543)", () => {
   it.each(SUBSCRIPTION_LOCKOUT_MODES)("returns the stored %s", async (mode) => {
-    mocks.findUnique.mockResolvedValue({ ...unmigratedRow(true), mode });
+    mocks.findUnique.mockResolvedValue({ ...storedRow("HARD_BLOCK"), mode });
     await expect(resolveSubscriptionLockoutMode()).resolves.toBe(mode);
   });
 
@@ -186,7 +180,7 @@ describe("resolveSubscriptionLockoutMode (#2543)", () => {
     // ever reach PAID. Neither refusing them nor repricing them would be honest.
     mocks.loadEffectiveModuleFlags.mockResolvedValue({ xeroIntegration: false });
     mocks.findUnique.mockResolvedValue({
-      ...unmigratedRow(true),
+      ...storedRow("HARD_BLOCK"),
       mode: "NON_MEMBER_PRICING",
     });
 
@@ -204,23 +198,24 @@ describe("resolveSubscriptionLockoutMode (#2543)", () => {
    * request-path reseed at all. After a container restart, `getSeasonYear` and
    * `computeAgeTier` then resolve against the module-level March default instead of
    * the club's real year-end month, and the rate resolved for a booking can differ
-   * from the correct one. `NO_BLOCK` is exactly what an existing club with
-   * `enabled = false` resolves to through the legacy fallback, so this is the
+   * from the correct one. `NO_BLOCK` is exactly what the #2561 migration
+   * backfilled for every existing club that had `enabled = false`, so this is the
    * ordinary case, not an exotic one.
    */
   it.each(["HARD_BLOCK", "NON_MEMBER_PRICING", "NO_BLOCK"] as const)(
     "reseeds the financial-year cache with Xero on, in %s",
     async (mode) => {
-      mocks.findUnique.mockResolvedValue({ ...unmigratedRow(true), mode });
+      mocks.findUnique.mockResolvedValue({ ...storedRow("HARD_BLOCK"), mode });
       await resolveSubscriptionLockoutMode();
       expect(mocks.refreshFinancialYearConfig).toHaveBeenCalledTimes(1);
     },
   );
 
-  it("reseeds for a club whose LEGACY boolean resolves NO_BLOCK", async () => {
-    // The un-backfilled row every existing club has on this release: mode null,
-    // enabled false. This is the case the narrowed gate silently dropped.
-    mocks.findUnique.mockResolvedValue(unmigratedRow(false));
+  it("reseeds for a club that has switched the lockout OFF", async () => {
+    // The case the narrowed gate silently dropped. Post-#2561 this club stores
+    // NO_BLOCK outright — the migration backfilled it from their `enabled = false`
+    // — rather than resolving it through a fallback.
+    mocks.findUnique.mockResolvedValue(storedRow("NO_BLOCK"));
     await expect(resolveSubscriptionLockoutMode()).resolves.toBe("NO_BLOCK");
     expect(mocks.refreshFinancialYearConfig).toHaveBeenCalledTimes(1);
   });
@@ -242,7 +237,7 @@ describe("peekSubscriptionLockoutMode is the in-transaction reader (#2543)", () 
   // outright, so the in-transaction reader must not be able to make one.
   it("never reseeds the financial-year cache", async () => {
     mocks.findUnique.mockResolvedValue({
-      ...unmigratedRow(true),
+      ...storedRow("HARD_BLOCK"),
       mode: "NON_MEMBER_PRICING",
     });
 
@@ -254,7 +249,7 @@ describe("peekSubscriptionLockoutMode is the in-transaction reader (#2543)", () 
 
   it("agrees with resolveSubscriptionLockoutMode on every input", async () => {
     for (const mode of SUBSCRIPTION_LOCKOUT_MODES) {
-      mocks.findUnique.mockResolvedValue({ ...unmigratedRow(true), mode });
+      mocks.findUnique.mockResolvedValue({ ...storedRow("HARD_BLOCK"), mode });
       expect(await peekSubscriptionLockoutMode()).toBe(
         await resolveSubscriptionLockoutMode(),
       );
@@ -271,7 +266,7 @@ describe("isSubscriptionEnforcementActive spans both enforcing modes (#2543)", (
     ["HARD_BLOCK", true],
     ["NON_MEMBER_PRICING", true],
   ] as const)("%s -> %s", async (mode, expected) => {
-    mocks.findUnique.mockResolvedValue({ ...unmigratedRow(true), mode });
+    mocks.findUnique.mockResolvedValue({ ...storedRow("HARD_BLOCK"), mode });
     await expect(isSubscriptionEnforcementActive()).resolves.toBe(expected);
   });
 });

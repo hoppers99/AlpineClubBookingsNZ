@@ -12,7 +12,6 @@ import {
 import {
   MEMBERSHIP_LOCKOUT_SETTINGS_ID,
   SUBSCRIPTION_LOCKOUT_MODES,
-  legacyEnabledForLockoutMode,
   loadPersistedMembershipLockoutSettings,
   normalizeMembershipLockoutSettings,
 } from "@/lib/membership-lockout-settings";
@@ -26,12 +25,13 @@ import { requireAdmin } from "@/lib/session-guards";
 const settingsSchema = z
   .object({
     /**
-     * #2543 — the three-way lockout policy replaces the old `enabled` boolean.
-     * Deliberately NOT accepting `enabled` any more: the schema is `.strict()`,
-     * so an old client that still sends the boolean is REFUSED rather than
-     * silently ignored. A silent ignore is the dangerous direction here — an
-     * admin would see their "turn the lockout off" click succeed while the club
-     * carried on hard-blocking members.
+     * #2543 — the three-way lockout policy replaced the old `enabled` boolean,
+     * which no longer exists as a column (#2561).
+     *
+     * Deliberately still `.strict()`, so an old client that sends the boolean is
+     * REFUSED rather than silently ignored. A silent ignore is the dangerous
+     * direction here — an admin would see their "turn the lockout off" click
+     * succeed while the club carried on hard-blocking members.
      */
     mode: z.enum(SUBSCRIPTION_LOCKOUT_MODES).optional(),
     financialYearEndMonthOverride: z
@@ -129,20 +129,15 @@ export async function PUT(request: NextRequest) {
     where: { id: MEMBERSHIP_LOCKOUT_SETTINGS_ID },
   });
 
-  // #2543. Resolve the unchanged mode through `normalizeMembershipLockoutSettings`
-  // rather than reading `before.mode` directly: `mode` is null for every club
-  // that has not saved this panel since the #2543 migration, and the normaliser
-  // is what maps that null through the legacy `enabled` boolean. Reading the
-  // column raw and defaulting a null to HARD_BLOCK would turn the lockout back ON
-  // for a club that had switched it off, the moment an admin saved any OTHER
-  // field on this panel.
+  // #2543. A save that does not name a mode must PRESERVE the stored one, so
+  // saving any other field on this panel cannot move the club's booking policy.
+  // Routed through `normalizeMembershipLockoutSettings` rather than reading
+  // `before.mode` raw so the closed vocabulary is enforced in exactly one place,
+  // and so a missing row resolves to the same default the rest of the app sees.
   const mode = parsed.data.mode ?? normalizeMembershipLockoutSettings(before).mode;
 
   const data = {
     mode,
-    // The legacy column is written in step with `mode` for as long as it exists;
-    // see `legacyEnabledForLockoutMode`.
-    enabled: legacyEnabledForLockoutMode(mode),
     financialYearEndMonthOverride:
       parsed.data.financialYearEndMonthOverride !== undefined
         ? parsed.data.financialYearEndMonthOverride

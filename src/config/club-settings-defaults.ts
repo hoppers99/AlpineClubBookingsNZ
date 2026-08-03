@@ -123,16 +123,11 @@ export const DEFAULT_MEMBERSHIP_LOCKOUT_SETTINGS = {
   /**
    * #2543 three-way lockout policy. HARD_BLOCK is the safe default — it is
    * exactly the behaviour the old `enabled: true` boolean produced, so a fresh
-   * install and every existing club start where they already were.
+   * install and every existing club start where they already were. It matches the
+   * database default, which the migration set when it made the column mandatory
+   * and dropped the boolean (#2561).
    */
   mode: "HARD_BLOCK",
-  /**
-   * LEGACY, superseded by `mode` (#2543). Still listed because the column still
-   * exists for the expand/contract window and config-transfer exports the
-   * effective value of every column that travels; `true` is the effective legacy
-   * value of the `HARD_BLOCK` default above. Application code reads `mode`.
-   */
-  enabled: true,
   /** Null = follow the connected Xero organisation's accounting financial year. */
   financialYearEndMonthOverride: null,
   textFallbackEnabled: true,

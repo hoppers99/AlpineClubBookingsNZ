@@ -18,10 +18,7 @@ import {
 } from "@/config/club-settings-defaults";
 import { DEFAULT_MEMBER_FIELDS_SETTINGS } from "@/config/member-fields";
 import { DEFAULT_LOGIN_SECURITY_POLICY } from "@/lib/password-policy";
-import {
-  isSubscriptionLockoutMode,
-  legacyEnabledForLockoutMode,
-} from "@/lib/membership-lockout-settings";
+import { isSubscriptionLockoutMode } from "@/lib/membership-lockout-settings";
 import {
   CLUB_MODULE_SETTINGS_COLUMN_SELECT,
   DEFAULT_MODULE_SETTINGS,
@@ -518,69 +515,56 @@ export const SINGLETONS: SingletonSpec[] = [
     // per-club billing preference exactly like `enabled`/`textFallbackEnabled`.
     // It was added after this list was written and had silently never travelled;
     // added here per the #2178 audit (should-travel).
-    // #2543: `mode` supersedes `enabled`, and BOTH travel for the duration of the
-    // expand/contract window. That is not redundancy — the pair is exactly what
-    // makes bundles portable in both directions:
-    //   * a pre-#2543 bundle carries `enabled` only, and the `reconcile` hook below
-    //     DERIVES `mode` from it, so a club that had the lockout OFF lands on
-    //     NO_BLOCK rather than on whatever the target happened to be storing;
-    //   * a post-#2543 bundle carries both. `mode` wins at read time, and the
-    //     legacy boolean is re-derived from it so the pair can never be stored
-    //     inconsistent — that boolean is what an old colour reads during a cutover.
-    // `enabled` leaves this list with the contract release that drops the column.
-    //
-    // WHY A HOOK RATHER THAN TWO ORDINARY FIELDS. An absent-or-null `mode` is not
-    // "no opinion", it MEANS "resolve the policy from the legacy boolean"
-    // (`coerceLockoutMode`) — and the importer writes only fields physically
-    // present in the bundle, dropping null-valued ones altogether in the default
-    // merge mode. `enabled` is non-null so it always travelled; `mode` did not.
-    // The net effect, before this hook, was that the target KEPT ITS OWN `mode`
-    // and `mode` won at read time:
-    //   * a pre-#2543 bundle carrying `enabled: false` imported onto a club storing
-    //     NON_MEMBER_PRICING wrote only `enabled = false`. The dry-run said
-    //     "changed: enabled", so the operator believed the lockout was off, while
-    //     every unpaid member went on being repriced and refused — members
-    //     over-charged, silently, against a dry-run that said otherwise;
-    //   * a post-#2543 bundle from a club that had never opened the panel exports
-    //     `mode: null, enabled: false`; merge mode dropped the null and left the
-    //     target on `mode = NON_MEMBER_PRICING, enabled = false` — an inconsistent
-    //     pair no admin save can produce, and one that breaks the rollback
-    //     guarantee, because an old colour reads `enabled = false` and applies no
-    //     lockout at all. That is the single outcome
-    //     `legacyEnabledForLockoutMode` exists to prevent.
-    // Reconciling on import fixes both directions and needs no format-version bump:
-    // an old bundle now imports to the right policy rather than to a guess, so
-    // there is nothing for a version gate to refuse.
+    // #2543/#2561: `mode` replaced the legacy `enabled` boolean, and that COLUMN is
+    // gone — so `enabled` is not a field here. It is still a BUNDLE KEY, though, and
+    // that distinction is the whole of the hook below.
     fields: [
-      "mode", "enabled", "financialYearEndMonthOverride", "textFallbackEnabled",
+      "mode", "financialYearEndMonthOverride", "textFallbackEnabled",
       "useFeeScheduleItemCodes",
     ],
     // financialYearEndMonthOverride is nullable (Int?) — null (= follow Xero's
     // accounting year) is a legitimate value, so it carries no `required`; its
     // 1–12 month bound still applies when a value is present, mirroring the admin
     // route (membership-lockout-settings): z.number().int().min(1).max(12)
-    // .nullable(). `mode` is likewise nullable (#2543 — null means "resolve from
-    // the legacy boolean"), so it too carries no `required`. The three booleans
-    // are non-null (@default) and fail on a present null (#2200).
+    // .nullable(). The two booleans are non-null (@default) and fail on a present
+    // null (#2200).
+    //
+    // `mode` carries NO `required` even though its column is now NOT NULL, and that
+    // is deliberate rather than an oversight: a PRE-#2543 bundle legitimately has no
+    // `mode` key at all, and the hook below derives one from the boolean it does
+    // carry. Requiring it here would refuse every bundle exported before #2543 —
+    // exactly the compatibility this hook exists to provide.
     constraints: {
-      enabled: { required: true },
       financialYearEndMonthOverride: { min: 1, max: 12 },
       textFallbackEnabled: { required: true },
       useFeeScheduleItemCodes: { required: true },
     },
     defaults: () => DEFAULT_MEMBERSHIP_LOCKOUT_SETTINGS,
-    // #2543 — see the note above `fields`. A recognised `mode` is authoritative and
-    // the legacy boolean is re-derived from it; otherwise the mode is derived from
-    // the boolean so it is WRITTEN rather than left at the target's stale value.
-    // An unrecognised `mode` string is treated as absent, exactly as
+    // BUNDLE-FORMAT compatibility, which outlives the column (#2543/#2561).
+    //
+    // A bundle exported before #2543 carries `enabled` and no `mode`. The column it
+    // was named after has been dropped, but the FILE still exists on operators'
+    // disks and in their backups, and it still records a real decision: whether that
+    // club gated bookings on unpaid subscriptions. So the key is read here and
+    // mapped to the mode it means (`true -> HARD_BLOCK`, `false -> NO_BLOCK`), the
+    // same mapping the migration applied to live rows.
+    //
+    // WHY A HOOK AND NOT A FIELD. Without this, `enabled` would be an unknown key:
+    // `parseSingleton` only type-checks names in `fields`, and both the plan and the
+    // apply build their Prisma payload from `fields`, so the key would be silently
+    // dropped and the target would KEEP ITS OWN mode while the dry-run reported no
+    // change to the policy. A club importing a pre-#2543 bundle to turn the lockout
+    // off would be told it worked while every unpaid member went on being refused.
+    // Deriving `mode` here puts the value on a field that does travel.
+    //
+    // The reverse branch is gone with the column: there is no longer a boolean to
+    // re-derive, and writing one would name a column that does not exist. An
+    // unrecognised `mode` string is left alone rather than mapped, exactly as
     // `coerceLockoutMode` treats it, so a hand-edited bundle cannot invent a fourth
-    // policy or slip past this hook.
+    // policy — the dry-run's enum validation refuses it instead.
     reconcile: (incoming) => {
       if (isSubscriptionLockoutMode(incoming.mode)) {
-        return {
-          ...incoming,
-          enabled: legacyEnabledForLockoutMode(incoming.mode),
-        };
+        return incoming;
       }
       if (typeof incoming.enabled === "boolean") {
         return {
