@@ -24,8 +24,19 @@
  * logged, or put in an audit row. Setup surfaces read metadata-only state.
  *
  * Fail-closed readiness: diagnostics is usable only when the module is ON AND a
- * usable dedicated key is stored AND a positive monthly budget is set. Any of
- * those missing — or any DB fault while resolving them — resolves to NOT ready.
+ * usable dedicated key is stored AND a positive monthly budget is set AND the
+ * dedicated SELECT-only database role is provisioned and VERIFIED least-privilege.
+ * Any of those missing — or any DB fault while resolving them — resolves to NOT
+ * ready.
+ *
+ * The database gate arrived with AID-5 (#2374). It is a readiness gate and not
+ * merely a warning because epic #2369 and ADR-007 both make the separate
+ * non-superuser credential MANDATORY: the product's whole evidence path is
+ * supposed to be structurally incapable of writing, and a deployment that has not
+ * provisioned the role has not established that. The module ships default-off, so
+ * no existing deployment changes behaviour — an operator turning Diagnostics on
+ * runs `npm run diagnostics:provision-role` as part of setup, which is exactly the
+ * documented step ADR-007 §3 calls for, and this endpoint is what tells them so.
  */
 
 import {
@@ -34,6 +45,10 @@ import {
 } from "@/lib/integration-credentials";
 import { prisma } from "@/lib/prisma";
 import { loadDiagnosticsBudgetCents } from "@/lib/ai-diagnostics-usage";
+import {
+  checkDiagnosticsDatabaseReadiness,
+  type DiagnosticsDatabaseState,
+} from "@/lib/diagnostics/tools/database";
 
 /**
  * DEDICATED provider namespace — deliberately NOT the page-help "anthropic"
@@ -114,6 +129,16 @@ export type DiagnosticsBlocker =
   | "credential_not_configured"
   | "credential_needs_reentry"
   | "budget_not_set"
+  /** `AI_DIAGNOSTICS_DATABASE_URL` is not set (AID-5, #2374). */
+  | "database_not_configured"
+  /**
+   * The credential is set but is not a usable least-privilege role: malformed,
+   * pointing at the application's own role, unreachable, or the server reports it
+   * is not SELECT-only. Deliberately ONE blocker for all four — every one of them
+   * is "an operator must fix the diagnostics role", and the distinct
+   * `databaseState` below says which.
+   */
+  | "database_role_unsafe"
   | "resolve_error";
 
 export interface DiagnosticsReadiness {
@@ -122,6 +147,12 @@ export interface DiagnosticsReadiness {
   moduleEnabled: boolean;
   keyState: DiagnosticsKeyState;
   monthlyBudgetCents: number;
+  /**
+   * VERIFIED state of the dedicated SELECT-only role (AID-5, #2374) — the server
+   * is asked what privileges the role actually holds, not merely whether the
+   * environment variable is set.
+   */
+  databaseState: DiagnosticsDatabaseState;
   /** Ordered, plain-English reasons the product is not ready (empty when ready). */
   blockers: DiagnosticsBlocker[];
 }
@@ -144,9 +175,11 @@ export async function getDiagnosticsReadiness(modules: {
 }): Promise<DiagnosticsReadiness> {
   const moduleEnabled = modules.aiDiagnostics === true;
   try {
-    const [setup, monthlyBudgetCents] = await Promise.all([
+    const [setup, monthlyBudgetCents, database] = await Promise.all([
       getDiagnosticsSetupState(),
       loadDiagnosticsBudgetCents(),
+      // Never throws; "we could not tell" resolves to `unverified`, which blocks.
+      checkDiagnosticsDatabaseReadiness(),
     ]);
 
     const blockers: DiagnosticsBlocker[] = [];
@@ -157,22 +190,29 @@ export async function getDiagnosticsReadiness(modules: {
       blockers.push("credential_needs_reentry");
     }
     if (monthlyBudgetCents <= 0) blockers.push("budget_not_set");
+    if (database.state === "not_configured") {
+      blockers.push("database_not_configured");
+    } else if (database.state !== "verified") {
+      blockers.push("database_role_unsafe");
+    }
 
     return {
       ready: blockers.length === 0,
       moduleEnabled,
       keyState: setup.state,
       monthlyBudgetCents,
+      databaseState: database.state,
       blockers,
     };
   } catch {
-    // Fail closed: if we cannot resolve the credential state or the budget we
-    // cannot prove the product is configured, so it is not ready.
+    // Fail closed: if we cannot resolve the credential state, the budget or the
+    // database role we cannot prove the product is configured, so it is not ready.
     return {
       ready: false,
       moduleEnabled,
       keyState: "not_configured",
       monthlyBudgetCents: 0,
+      databaseState: "unverified",
       blockers: ["resolve_error"],
     };
   }

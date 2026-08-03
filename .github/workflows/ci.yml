@@ -316,6 +316,23 @@ jobs:
           CONCURRENCY_RACE_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:55442/concurrency_race_1881
         run: npx vitest run src/lib/__tests__/concurrency-lock-races.realdb.test.ts
 
+      # #2374 (AID-5): PROVE the dedicated SELECT-only AI Diagnostics database
+      # role cannot write, cannot run DDL, cannot create a TEMP table, cannot read
+      # the encrypted credential store, and is cancelled at its statement timeout.
+      # ADR-007's claims are all claims about PostgreSQL's own behaviour, so a mock
+      # cannot establish any of them. The suite provisions the role by running the
+      # SHIPPED statements from `provision-role.ts` against the already-migrated
+      # race database above, then connects AS that role. It gets its own step (and
+      # its own vitest process) because it provisions/drops a cluster role and
+      # revokes `TEMPORARY ... FROM PUBLIC` for the duration of its run. It
+      # describe.skip's itself without the env vars, so this step MUST stay wired —
+      # `review-findings-contracts.test.ts` fails if it goes missing.
+      - name: Prove the SELECT-only diagnostics role against dedicated PostgreSQL
+        env:
+          RUN_CONCURRENCY_RACE_TESTS: "1"
+          CONCURRENCY_RACE_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:55442/concurrency_race_1881
+        run: npx vitest run src/lib/__tests__/ai-diagnostics-select-only-role.realdb.test.ts
+
       # E8 (#1934): real-Postgres behavior of the member-grouping cutover
       # migration (legacy-rule deactivation, shape-dedupe, backfill, mode seed,
       # idempotent re-run). Self-provisions a throwaway schema (needs PG 15+
