@@ -26,6 +26,9 @@ const clubPolicy = {
   lodgeId: null,
   mode: "ADMIN_REVIEW_REQUIRED",
   capacityMode: "HOLD",
+  hostScopeSameBooking: null,
+  hostScopeAnyMemberAtLodge: null,
+  hostScopeNominatedHost: null,
   version: 2,
 };
 const lodgePolicy = {
@@ -34,12 +37,19 @@ const lodgePolicy = {
   lodgeId: lodge.id,
   mode: "INHERIT",
   capacityMode: "NO_HOLD",
+  hostScopeSameBooking: null,
+  hostScopeAnyMemberAtLodge: null,
+  hostScopeNominatedHost: null,
   version: 1,
 };
 
 const EMPTY_MIN_STAY =
   "scope,name,startDate,endDate,triggerDays,minimumNights,capacityMode,active\n";
-const HEADER = "scope,mode,capacityMode\n";
+// #2569 added the fourth column. A BLANK `hostScopes` cell is the explicit
+// inherit option, and that is what every fixture below uses unless it is
+// specifically about the new setting — which is how these tests also assert the
+// migration promise: a bundle that says nothing about who counts changes nothing.
+const HEADER = "scope,mode,capacityMode,hostScopes\n";
 
 function db(hosting: unknown[] = [clubPolicy, lodgePolicy]): ReadDb {
   return {
@@ -117,12 +127,28 @@ describe("adult-member hosting configuration transfer (#2364)", () => {
     } as ExportContext);
     const entry = entries.find((e) => e.path === ADULT_MEMBER_HOSTING_FILE)!;
     const parsed = parseCsv(strFromU8(entry.bytes));
-    expect(parsed.headers).toEqual(["scope", "mode", "capacityMode"]);
+    expect(parsed.headers).toEqual([
+      "scope",
+      "mode",
+      "capacityMode",
+      "hostScopes",
+    ]);
     expect(parsed.headers).not.toContain("id");
     expect(parsed.headers).not.toContain("version");
     expect(parsed.rows).toEqual([
-      { scope: "club-wide", mode: "ADMIN_REVIEW_REQUIRED", capacityMode: "HOLD" },
-      { scope: "lodge:tukino", mode: "INHERIT", capacityMode: "NO_HOLD" },
+      {
+        scope: "club-wide",
+        mode: "ADMIN_REVIEW_REQUIRED",
+        capacityMode: "HOLD",
+        // Blank, because the row's three columns are NULL: it did not decide.
+        hostScopes: "",
+      },
+      {
+        scope: "lodge:tukino",
+        mode: "INHERIT",
+        capacityMode: "NO_HOLD",
+        hostScopes: "",
+      },
     ]);
   });
 
@@ -158,7 +184,7 @@ describe("adult-member hosting configuration transfer (#2364)", () => {
   it("plans a create, an update and a delete against a divergent target", async () => {
     const plan = await bookingPoliciesImporter.plan(
       planContext(
-        `${HEADER}club-wide,DISABLED,NO_HOLD\n`,
+        `${HEADER}club-wide,DISABLED,NO_HOLD,\n`,
         db([clubPolicy, lodgePolicy]),
       ),
     );
@@ -199,11 +225,11 @@ describe("adult-member hosting configuration transfer (#2364)", () => {
 
   it("refuses an unknown lodge slug, a club-wide INHERIT and a duplicate scope", async () => {
     for (const [csv, pattern] of [
-      [`${HEADER}lodge:nowhere,DISABLED,HOLD\n`, /does not exist/],
-      [`${HEADER}club-wide,INHERIT,HOLD\n`, /cannot inherit/],
-      [`${HEADER}club-wide,DISABLED,HOLD\nclub-wide,DISABLED,NO_HOLD\n`, /duplicate row/],
-      [`${HEADER}club-wide,SOMETHING,HOLD\n`, /mode/],
-      [`${HEADER}club-wide,DISABLED,MAYBE\n`, /capacityMode/],
+      [`${HEADER}lodge:nowhere,DISABLED,HOLD,\n`, /does not exist/],
+      [`${HEADER}club-wide,INHERIT,HOLD,\n`, /cannot inherit/],
+      [`${HEADER}club-wide,DISABLED,HOLD,\nclub-wide,DISABLED,NO_HOLD,\n`, /duplicate row/],
+      [`${HEADER}club-wide,SOMETHING,HOLD,\n`, /mode/],
+      [`${HEADER}club-wide,DISABLED,MAYBE,\n`, /capacityMode/],
     ] as Array<[string, RegExp]>) {
       const plan = await bookingPoliciesImporter.plan(planContext(csv));
       expect(plan.errors.join(" ")).toMatch(pattern);
@@ -219,17 +245,31 @@ describe("adult-member hosting configuration transfer (#2364)", () => {
     const { tx, create, updateMany, deleteMany } = txDouble();
     const result = await bookingPoliciesImporter.apply(
       applyContext(
-        `${HEADER}club-wide,DISABLED,NO_HOLD\nlodge:tukino,ADMIN_REVIEW_REQUIRED,HOLD\n`,
+        `${HEADER}club-wide,DISABLED,NO_HOLD,\nlodge:tukino,ADMIN_REVIEW_REQUIRED,HOLD,\n`,
         tx,
       ),
     );
     expect(updateMany).toHaveBeenCalledWith({
       where: { id: "hosting-club", version: 2 },
-      data: { mode: "DISABLED", capacityMode: "NO_HOLD", version: 3 },
+      data: {
+        mode: "DISABLED",
+        capacityMode: "NO_HOLD",
+        hostScopeSameBooking: null,
+        hostScopeAnyMemberAtLodge: null,
+        hostScopeNominatedHost: null,
+        version: 3,
+      },
     });
     expect(updateMany).toHaveBeenCalledWith({
       where: { id: "hosting-lodge", version: 1 },
-      data: { mode: "ADMIN_REVIEW_REQUIRED", capacityMode: "HOLD", version: 2 },
+      data: {
+        mode: "ADMIN_REVIEW_REQUIRED",
+        capacityMode: "HOLD",
+        hostScopeSameBooking: null,
+        hostScopeAnyMemberAtLodge: null,
+        hostScopeNominatedHost: null,
+        version: 2,
+      },
     });
     expect(create).not.toHaveBeenCalled();
     expect(deleteMany).not.toHaveBeenCalled();
@@ -239,7 +279,7 @@ describe("adult-member hosting configuration transfer (#2364)", () => {
   it("creates a row with the scope key the CHECK constraint demands", async () => {
     const { tx, create } = txDouble([]);
     await bookingPoliciesImporter.apply(
-      applyContext(`${HEADER}lodge:tukino,DISABLED,HOLD\n`, tx),
+      applyContext(`${HEADER}lodge:tukino,DISABLED,HOLD,\n`, tx),
     );
     expect(create).toHaveBeenCalledWith({
       data: {
@@ -248,6 +288,9 @@ describe("adult-member hosting configuration transfer (#2364)", () => {
         version: 1,
         mode: "DISABLED",
         capacityMode: "HOLD",
+        hostScopeSameBooking: null,
+        hostScopeAnyMemberAtLodge: null,
+        hostScopeNominatedHost: null,
       },
       select: { id: true },
     });
@@ -260,8 +303,52 @@ describe("adult-member hosting configuration transfer (#2364)", () => {
     ).mockResolvedValue({ count: 0 });
     await expect(
       bookingPoliciesImporter.apply(
-        applyContext(`${HEADER}club-wide,DISABLED,NO_HOLD\n`, tx),
+        applyContext(`${HEADER}club-wide,DISABLED,NO_HOLD,\n`, tx),
       ),
     ).rejects.toThrow(/changed during import/);
+  });
+
+  it("carries an explicit host-scope set, and refuses the shapes the card refuses (#2569)", async () => {
+    const { tx, updateMany } = txDouble();
+    await bookingPoliciesImporter.apply(
+      applyContext(
+        `${HEADER}club-wide,ADMIN_REVIEW_REQUIRED,HOLD,SAME_BOOKING\nlodge:tukino,INHERIT,NO_HOLD,\n`,
+        tx,
+      ),
+    );
+    // The club decided; the lodge inherits. Two rows, two different meanings for
+    // the same three columns.
+    expect(updateMany).toHaveBeenCalledWith({
+      where: { id: "hosting-club", version: 2 },
+      data: {
+        mode: "ADMIN_REVIEW_REQUIRED",
+        capacityMode: "HOLD",
+        hostScopeSameBooking: true,
+        hostScopeAnyMemberAtLodge: false,
+        hostScopeNominatedHost: false,
+        version: 3,
+      },
+    });
+
+    for (const [csv, pattern] of [
+      // An unknown name is a typo, not a scope to ignore.
+      [`${HEADER}club-wide,DISABLED,HOLD,SAME_BOOKINGS\n`, /is not one of/],
+      [
+        `${HEADER}club-wide,DISABLED,HOLD,SAME_BOOKING|SAME_BOOKING\n`,
+        /duplicate SAME_BOOKING/,
+      ],
+      // The same two refusals the admin route gives, deliberately: a transfer is
+      // the one path that could otherwise store a setting the UI forbids.
+      [
+        `${HEADER}club-wide,DISABLED,HOLD,ANY_MEMBER_AT_LODGE\n`,
+        /cannot be used yet/,
+      ],
+    ] as Array<[string, RegExp]>) {
+      const plan = await bookingPoliciesImporter.plan(planContext(csv));
+      expect(plan.errors.join(" ")).toMatch(pattern);
+      expect(
+        plan.items.filter((i) => i.entity === "adult-member-hosting-policy"),
+      ).toEqual([]);
+    }
   });
 });

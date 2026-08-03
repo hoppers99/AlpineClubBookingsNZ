@@ -369,8 +369,13 @@ describe("adult-member hosting evaluation (#2364)", () => {
       RESOLVED_LODGE,
     );
     expect(violation!.requirements.qualifyingHostsByNight).toEqual([
-      { night: "2026-07-04", memberIds: ["member-m1", "member-m2"] },
-      { night: "2026-07-05", memberIds: [] },
+      {
+        night: "2026-07-04",
+        memberIds: ["member-m1", "member-m2"],
+        // #2569 §11 — WHICH scope supplied the cover, not just that it exists.
+        coveredByScopes: ["SAME_BOOKING"],
+      },
+      { night: "2026-07-05", memberIds: [], coveredByScopes: [] },
     ]);
   });
 

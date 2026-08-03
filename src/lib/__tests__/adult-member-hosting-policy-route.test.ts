@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
   requireAdmin: vi.fn(),
   transaction: vi.fn(),
   findUnique: vi.fn(),
+  findMany: vi.fn(),
   create: vi.fn(),
   updateMany: vi.fn(),
   lodgeFindUnique: vi.fn(),
@@ -21,7 +22,14 @@ vi.mock("@/lib/public-content-revalidation", () => ({
 vi.mock("@/lib/prisma", () => ({
   prisma: {
     $transaction: mocks.transaction,
-    adultMemberHostingPolicy: { findUnique: mocks.findUnique },
+    adultMemberHostingPolicy: {
+      findUnique: mocks.findUnique,
+      // #2569 — the GET and the save body both read BOTH candidate rows, because
+      // the card shows what is EFFECTIVE at the scope and only the resolver can
+      // say that. `findMany` is fed from whatever `findUnique` was given, so every
+      // existing test keeps describing its fixture in one place.
+      findMany: mocks.findMany,
+    },
   },
 }));
 
@@ -37,6 +45,12 @@ const stored = {
   lodgeId: null,
   mode: "ADMIN_REVIEW_REQUIRED",
   capacityMode: "HOLD",
+  // #2569 — an existing row carries NULL host scopes, which is what makes the
+  // upgrade a no-op: the resolver reads them as "this row did not decide" and
+  // falls back to the built-in same-booking-only default.
+  hostScopeSameBooking: null,
+  hostScopeAnyMemberAtLodge: null,
+  hostScopeNominatedHost: null,
   version: 4,
 };
 
@@ -68,6 +82,12 @@ describe("adult-member hosting policy route (#2364)", () => {
     });
     mocks.executeRaw.mockResolvedValue(1);
     mocks.lodgeFindUnique.mockResolvedValue({ id: "lodge-1", active: true });
+    // Mirror the singleton read into the two-row read the effective view needs.
+    mocks.findUnique.mockResolvedValue(null);
+    mocks.findMany.mockImplementation(async () => {
+      const row = await mocks.findUnique();
+      return row ? [row] : [];
+    });
     mocks.transaction.mockImplementation(
       async (fn: (tx: unknown) => Promise<unknown>) =>
         fn({
@@ -108,7 +128,22 @@ describe("adult-member hosting policy route (#2364)", () => {
   it("reports a stored row as configured", async () => {
     mocks.findUnique.mockResolvedValue(stored);
     const body = await (await GET(get())).json();
-    expect(body).toMatchObject({ ...stored, configured: true });
+    expect(body).toMatchObject({
+      ...stored,
+      configured: true,
+      // The row did not decide the second dimension, so it inherits (#2569 §2).
+      hostScopes: null,
+      effective: {
+        mode: "ADMIN_REVIEW_REQUIRED",
+        modeSource: "CLUB_WIDE",
+        hostScopes: {
+          sameBooking: true,
+          anyMemberAtLodge: false,
+          nominatedHost: false,
+        },
+        hostScopeSource: "BUILT_IN_DEFAULT",
+      },
+    });
   });
 
   it("gates reads on bookings:view and writes on bookings:edit", async () => {
@@ -156,7 +191,11 @@ describe("adult-member hosting policy route (#2364)", () => {
     });
 
     await PUT(put({ mode: "DISABLED", capacityMode: "NO_HOLD" }));
-    expect(order).toEqual(["lock", "read"]);
+    // The second read is #2569's: after the write commits, the response is built
+    // from a FRESH resolution of both candidate rows, because a lodge saving
+    // "inherit" has to be told what it is now inheriting. It happens AFTER the
+    // transaction, so the lock-before-read ordering this test guards is unchanged.
+    expect(order).toEqual(["lock", "read", "read"]);
   });
 
   it("creates a first row at version 1 when the editor knew of none", async () => {
@@ -172,6 +211,11 @@ describe("adult-member hosting policy route (#2364)", () => {
         lodgeId: null,
         mode: "ADMIN_REVIEW_REQUIRED",
         capacityMode: "HOLD",
+        // Absent `hostScopes` means "this row does not decide the second
+        // dimension", stored as all three NULL — the inherit option (#2569 §2).
+        hostScopeSameBooking: null,
+        hostScopeAnyMemberAtLodge: null,
+        hostScopeNominatedHost: null,
         version: 1,
       },
     });
@@ -209,7 +253,14 @@ describe("adult-member hosting policy route (#2364)", () => {
     expect(ok.status).toBe(200);
     expect(mocks.updateMany).toHaveBeenCalledWith({
       where: { scopeKey: "club-wide", version: 4 },
-      data: { mode: "DISABLED", capacityMode: "HOLD", version: 5 },
+      data: {
+        mode: "DISABLED",
+        capacityMode: "HOLD",
+        hostScopeSameBooking: null,
+        hostScopeAnyMemberAtLodge: null,
+        hostScopeNominatedHost: null,
+        version: 5,
+      },
     });
     expect(await ok.json()).toMatchObject({ version: 5, configured: true });
   });

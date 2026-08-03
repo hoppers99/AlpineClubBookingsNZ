@@ -52,13 +52,38 @@ vi.mock("../policy-scope-select", () => ({
 
 import { AdultMemberHostingSection } from "../adult-member-hosting-section";
 
+/**
+ * #2569 — the card refuses to render a row without an `effective` block, because
+ * that block IS what it displays as in force; guessing the inheritance in the
+ * component is the one thing it must never do. So every fixture carries one, and
+ * `effectiveFor` builds the shape the server actually returns.
+ */
+function effectiveFor(
+  mode: "DISABLED" | "ADMIN_REVIEW_REQUIRED" | "ENFORCED",
+  modeSource: "LODGE" | "CLUB_WIDE" | "BUILT_IN_DEFAULT",
+) {
+  return {
+    mode,
+    modeSource,
+    hostScopes: {
+      sameBooking: true,
+      anyMemberAtLodge: false,
+      nominatedHost: false,
+    },
+    hostScopeSource: "BUILT_IN_DEFAULT" as const,
+    preview: "Preview sentence.",
+  };
+}
+
 const UNCONFIGURED_CLUB = {
   scopeKey: "club-wide",
   lodgeId: null,
   mode: "DISABLED",
   capacityMode: null,
+  hostScopes: null,
   version: 0,
   configured: false,
+  effective: effectiveFor("DISABLED", "BUILT_IN_DEFAULT"),
 };
 
 const CONFIGURED_CLUB = {
@@ -66,8 +91,10 @@ const CONFIGURED_CLUB = {
   lodgeId: null,
   mode: "ADMIN_REVIEW_REQUIRED",
   capacityMode: "HOLD",
+  hostScopes: null,
   version: 4,
   configured: true,
+  effective: effectiveFor("ADMIN_REVIEW_REQUIRED", "CLUB_WIDE"),
 };
 
 function json(body: unknown, status = 200) {
@@ -155,6 +182,9 @@ describe("adult-member hosting settings card (#2364)", () => {
     expect(JSON.parse(String(put[1]!.body))).toEqual({
       mode: "DISABLED",
       capacityMode: "HOLD",
+      // #2569 — always sent, including null: null IS "inherit the club's choice",
+      // so omitting it would leave the route guessing.
+      hostScopes: null,
       version: 4,
     });
     // Re-seeded from the RESPONSE: revision 5, not the 4 that was submitted.
@@ -183,6 +213,7 @@ describe("adult-member hosting settings card (#2364)", () => {
     expect(JSON.parse(String(put[1]!.body))).toEqual({
       mode: "DISABLED",
       capacityMode: "HOLD",
+      hostScopes: null,
     });
   });
 
@@ -194,8 +225,10 @@ describe("adult-member hosting settings card (#2364)", () => {
             lodgeId: "lodge-1",
             mode: "INHERIT",
             capacityMode: "NO_HOLD",
+            hostScopes: null,
             version: 2,
             configured: true,
+            effective: effectiveFor("ADMIN_REVIEW_REQUIRED", "CLUB_WIDE"),
           })
         : json(CONFIGURED_CLUB),
     );

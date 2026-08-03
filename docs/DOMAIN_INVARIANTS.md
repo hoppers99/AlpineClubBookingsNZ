@@ -2612,6 +2612,74 @@ proposal state and capacity reservation from `HOLD` all belong to #2365; the
 capacity mode is frozen onto the snapshot and aggregated here, and reserves
 nothing.
 
+**Owner decision (3 Aug 2026), #2569: two independent dimensions.** The policy is
+no longer one setting. A club configures a CONSEQUENCE and a HOST-QUALIFICATION
+scope set, each with a club-wide default and a per-lodge override that carries an
+explicit inherit option, and the two are resolved SEPARATELY — a lodge may
+override one while inheriting the other, so `ResolvedAdultMemberHostingPolicy`
+reports where each came from.
+
+- **Three consequences.** `DISABLED`, `ADMIN_REVIEW_REQUIRED` (unchanged: the
+  booking is made and an officer is asked to look) and `ENFORCED` (the booking is
+  refused). `ENFORCED` raises `AdultMemberHostingRequiredError` — HTTP 409,
+  `exceptionEligible`, carrying the SAME frozen violation the review mode records,
+  aggregated by the same `aggregatePolicyExceptionViolations` and re-derived
+  server-side when the member walks through the #2365 door. There is no second
+  refusal path and no second reason code; only whether the booking is allowed to
+  exist while it waits differs. The refusal is thrown from inside the mutation
+  transaction, so a modification that would break the rule rolls back.
+- **`INHERIT` remains lodge-only for the consequence**, and the second dimension
+  inherits by a different mechanism: all three host-scope columns NULL TOGETHER
+  means "this row did not decide". The database CHECK holds them to all-null or
+  all-set, so a half-configured scope set cannot exist for the resolver to guess
+  at, and a NULL set on the club row resolves to the built-in default.
+- **The built-in default is same-booking only, and that is what makes the upgrade
+  a no-op.** Every pre-#2569 row carries NULL scope columns, so every existing
+  club keeps judging exactly the coverage it judged before. Nothing is broadened
+  to any-member-at-the-lodge, no club is moved onto `ENFORCED`, and the
+  member-facing review sentence is byte-identical for a club on the default set.
+- **OR across enabled scopes, decided per night.** A non-member guest-night is
+  compliant where AT LEAST ONE enabled scope supplies eligible adult-member cover
+  for that exact night; different nights may be covered by different scopes and
+  different members, and EVERY such night must be covered. The seam is
+  `HostingParticipant.hostScope` (absent means `SAME_BOOKING`): the evaluator
+  counts a host only where the club has that host's scope switched on, so a wider
+  scope is added by stamping its participants rather than by changing the rule. A
+  #738 split sibling is deliberately `SAME_BOOKING` — a split pair is one party
+  the database stores as two rows, not a second booking at the lodge.
+- **An active policy with no scope enabled is refused, not interpreted.** The
+  admin route and config transfer both refuse it, and the evaluator throws
+  `EmptyAdultMemberHostScopeSetError` rather than treating it as permissive
+  (which would drop the club's rule) or as universal (which would flag or refuse
+  every booking).
+- **Host identities are never disclosed to the booking owner.** Member-facing
+  refusal bodies are built by `buildAdultMemberHostingRefusalBody`, which strips
+  `qualifyingHostsByNight[].memberIds` while keeping the nights and the scopes
+  that covered them. The frozen snapshot an officer reviews keeps the ids in full
+  for validation and audit. Applied under every scope, not only the wide one: a
+  redaction that fires under one setting is a redaction nobody tests.
+- **School and organisation workflows are excluded** (§13). They pass
+  `enforcement: "REVIEW_ONLY"`, which evaluates and records the hazard exactly as
+  the review consequence does and never refuses, and the choice travels to their
+  split siblings so one half of a #738 pair cannot be exempt while the other is
+  refused.
+- **An explicit admin decision is an approval.** D-R4's on-behalf reason still
+  lets an officer make a non-compliant booking under `ENFORCED`: the reason is
+  attributable and is recorded against the approved review, which is the same
+  authority the exception door leads to.
+
+**Scope boundary (#2569).** This decision's SETTINGS model is complete and
+resolved; the loaders that FIND a host under the two wider scopes are not.
+`IMPLEMENTED_ADULT_MEMBER_HOST_SCOPES` is the single authority for which scopes
+can be saved, and the admin route, config transfer and the settings card all
+refuse the others — stored-and-ignored was rejected because a club would then
+believe it had widened who counts while the evaluator found nobody, and every
+affected booking would be reviewed or refused for cover the club thinks it has.
+The lodge-presence scope needs its cross-booking query AND the re-evaluation §5
+requires when the last unrelated adult leaves; the nominated-host scope needs the
+nomination model, candidate search, notification and host-change dependency
+handling of §6 to §12. Both are carried forward as filed issues.
+
 ### Subscription-lockout booking pricing (#2533)
 
 **Owner decision (2 Aug 2026), extending the #2364 lapsed-member framing.** The
