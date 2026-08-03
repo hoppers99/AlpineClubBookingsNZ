@@ -26,6 +26,9 @@ page — see [Family billing](#family-billing) below.
 - You want to see how a whole family connects: each member's detail page draws a
   read-only **family tree** from the recorded parent and partner links — see
   [Members](members.md#the-member-detail-page).
+- Two members share a name, or a group has adults of very different generations,
+  and you need to be sure which record you are about to link, approve, create or
+  remove — see [Ages shown while you confirm a member](#ages-shown-while-you-confirm-a-member).
 
 ## Step-by-step
 
@@ -57,6 +60,68 @@ page — see [Family billing](#family-billing) below.
    save. When you opened the editor from this page, closing or saving puts the
    keyboard cursor back on the button you started from.
 
+### Ages shown while you confirm a member
+
+Wherever you are acting on **one specific member record**, that member's
+calculated age is shown next to their name. It is there for one reason: so a
+19-year-old and a 47-year-old who share a surname, an email address and the
+**ADULT** age tier cannot be mistaken for each other.
+
+Where the age appears:
+
+- the suggested matches and the member search on a pending request
+- the picker of member records, and the **Selected member record** panel you
+  confirm before approving
+- the requester panel, and the person a request asks you to add
+- the **New non-login adult / dependant will be created** panels, so a
+  create-versus-link decision is made with the age in front of you
+- the removal confirmation for the member being taken out of a group
+- the partner a **New Family Group** approval would invite
+- the member pills and the member search inside a group's editor
+- the **Shared email & login** picker, which decides which of two adults sharing
+  a surname *and* an email address keeps the login
+- the members of a suggestion on the
+  [Family Suggestions](family-suggestions.md) page
+
+Where it deliberately does **not** appear: the ordinary groups table on this
+page, and any member-facing or public screen. Those are routine views with no
+action attached to an individual member, so they stay as they are.
+
+How the age reads:
+
+| Situation | Shown as |
+| --- | --- |
+| Aged 5 or over | `19 years`, `47 years` |
+| Under 5 | `3 years 8 months` (completed years and months) |
+| No usable date of birth recorded | `Age unavailable` |
+
+Points worth knowing:
+
+- The age is **calculated fresh every time you load the screen**, on the New
+  Zealand calendar date. Nothing stores it, because it would be wrong the next
+  day. A birthday today counts today, not tomorrow.
+- It is worked out on the **server**. Your browser is sent the age, not the date
+  of birth, so a family group screen never carries a member's birth date.
+- Only an admin with **membership view** (or **membership edit**) sees it. An
+  admin whose role covers an unrelated area does not receive it at all.
+- The age is always **plain visible text**, never something you have to hover to
+  see, so it works on a phone and with a keyboard.
+- The existing **age tier** badge stays where it was. The age sits beside it —
+  the tier tells you the pricing/eligibility class, the age tells you which
+  person this is.
+- The two are worked out **as at different dates**, so they can look like they
+  disagree and still both be right. The age is as at today. An age tier is fixed
+  at the **season start** (1 April) and stays put until the next season rollover,
+  so a member whose birthday has passed since 1 April can show an age above their
+  tier's range — `5 years` beside **Infant (0-4)**, or `18 years` beside
+  **YOUTH**. Where a tier label with a numeric range is shown next to an age, the
+  screen says "as at season start" so the pair reads as two facts rather than as
+  a broken record. Nothing needs correcting.
+- One remaining place still shows the full date of birth: the **date of birth the
+  requester typed** on a child or adult request, which is what you check the
+  candidate record against. That is the request's own declared value, not a
+  stored member record.
+
 ### Family billing
 
 Whether families are billed together is not set here — it is the club-level
@@ -77,7 +142,7 @@ Whether families are billed together is not set here — it is the club-level
 | --- | --- | --- |
 | Search / Min members / Max members / Has pending requests | Filter the groups list | **Reset** restores them; it remains visible and is disabled at defaults |
 | Group Name | The family group's name | Required |
-| Members | The members in the group | At least one required; primary active members |
+| Members | The members in the group | At least one required; primary active members. Each shows its calculated age (#2568) |
 | Approve / Reject (request queue) | Action a pending family-link request | Child/group-create approvals offer a member-email choice |
 | Revoke (partner invite) | Disable an unclaimed partner invitation link | Fails gracefully if just claimed |
 | Delete (group) | Remove the group and unlink its members | Members are not deleted |
@@ -88,6 +153,8 @@ Whether families are billed together is not set here — it is the club-level
 | --- | --- | --- |
 | The request queue is read-only ("… can view family group requests but cannot approve or reject them") | Your admin role has membership view but not edit | Ask a full admin for membership edit access |
 | I can't approve a child/adult request | No member record is linked | Choose the member record to link, or create a new non-login member |
+| A member shows **Age unavailable** | No date of birth is recorded for them, or the recorded value is unusable | Record the date of birth on the member's detail page; the age appears on the next load |
+| Two candidates show the same age | They really are the same age — age alone cannot separate them | Use the email address, the age tier, and the **has login / no login** note on the same row |
 | "Family links are limited to 4 generations…" | Approving would make the family chain longer than great-grandparent → grandparent → parent → child | Link the member under a nearer relative, or unlink a generation that no longer needs recording |
 | "Cannot link a parent or ancestor as a dependant" | The chosen member is already further up this family, so the link would loop back on itself | Check who is already recorded as whose parent on the member detail pages |
 | "No parent or ancestor in this family has a real email address to inherit" | Nobody up the chain has a real (non-placeholder) address, so club email would go nowhere | Record an email address for the requester first, or choose **Use child's own email** to approve without inheriting |

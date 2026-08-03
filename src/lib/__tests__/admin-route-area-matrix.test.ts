@@ -236,6 +236,8 @@ const EXPECTED_ROUTE_AREAS: Record<string, AdminPermissionArea> = {
   "/api/admin/family-groups": "membership",
   "/api/admin/family-groups/[id]": "membership",
   "/api/admin/family-groups/[id]/login-holder": "membership",
+  // #2568: identity-confirmation member lookup for the family-group workflows.
+  "/api/admin/family-groups/member-search": "membership",
   "/api/admin/family-groups/partner-invites": "membership",
   "/api/admin/family-groups/requests": "membership",
   "/api/admin/family-suggestions": "membership",

@@ -9,6 +9,7 @@ import { FieldHint, useFieldHint } from "@/components/ui/field-hint";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { AgeTierBadge } from "@/components/admin/family-groups/age-tier-badge";
+import { MemberAgeChip } from "@/components/admin/family-groups/member-age-display";
 import { FamilyGroupLoginHolderSection } from "@/components/admin/family-groups/login-holder-section";
 import { FamilyGroupRequestReviewSection } from "@/components/admin/family-groups/request-review-section";
 import {
@@ -23,7 +24,7 @@ import {
   type FamilyGroupDetail,
   type FamilyGroupMemberRow,
   type FamilyGroupRequest,
-  type MemberOption,
+  type MemberIdentityOption,
   type SharedEmailCluster,
 } from "@/lib/admin-family-group-ui-helpers";
 import { useDebouncedMemberSearch } from "@/hooks/use-debounced-member-search";
@@ -64,7 +65,9 @@ export function FamilyGroupEditor({
   const [formName, setFormName] = useState("");
   // #2257 — the example lives UNDER the field, not inside it as grey pseudo-content.
   const groupNameHint = useFieldHint();
-  const [selectedMembers, setSelectedMembers] = useState<MemberOption[]>([]);
+  // #2568: the pending member set keeps each member's age label, so the pills an
+  // admin is about to save (or remove) name a specific person unambiguously.
+  const [selectedMembers, setSelectedMembers] = useState<MemberIdentityOption[]>([]);
   const [memberSearch, setMemberSearch] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -85,10 +88,16 @@ export function FamilyGroupEditor({
     [group?.members]
   );
 
-  const { results: rawSearchResults, searching } = useDebouncedMemberSearch<MemberOption>({
-    query: memberSearch,
-    params: { type: "primary", active: "true", pageSize: "10" },
-  });
+  // #2568: the family-group lookup rather than the members admin search — every
+  // row carries the calculated age needed to link the right person, and no date
+  // of birth. Its own filters cover active/non-archived and the ten-row cap, so
+  // no `active`/`pageSize` parameters are sent (`type=primary` was never a
+  // parameter the members endpoint parsed, so nothing is lost by dropping it).
+  const { results: rawSearchResults, searching } =
+    useDebouncedMemberSearch<MemberIdentityOption>({
+      query: memberSearch,
+      endpoint: "/api/admin/family-groups/member-search",
+    });
   const searchResults = useMemo(() => {
     const selectedIds = new Set(selectedMembers.map((member) => member.id));
     return rawSearchResults
@@ -98,6 +107,7 @@ export function FamilyGroupEditor({
         firstName: member.firstName,
         lastName: member.lastName,
         email: member.email,
+        ageLabel: member.ageLabel,
       }));
   }, [rawSearchResults, selectedMembers]);
 
@@ -133,6 +143,7 @@ export function FamilyGroupEditor({
           firstName: member.firstName,
           lastName: member.lastName,
           email: member.email,
+          ageLabel: member.ageLabel,
         }))
       );
 
@@ -169,7 +180,7 @@ export function FamilyGroupEditor({
     if (error) scrollToError(errorRef);
   }, [error, scrollToError]);
 
-  function addMember(member: MemberOption) {
+  function addMember(member: MemberIdentityOption) {
     // Defence-in-depth: a view-only (or still-resolving) admin must not mutate
     // the pending member set even if a control slips past the disabled gate.
     if (!canEdit) return;
@@ -437,10 +448,16 @@ export function FamilyGroupEditor({
                     <Badge
                       key={member.id}
                       variant="secondary"
-                      className="flex items-center gap-1 px-2 py-1"
+                      // #2568: `flex-wrap` and `max-w-full` so a long name plus
+                      // an age tier plus an age stays inside the pill on a phone
+                      // instead of overflowing the row.
+                      className="flex max-w-full flex-wrap items-center gap-1 px-2 py-1"
                     >
-                      {getMemberName(member)}
+                      <span className="break-words">{getMemberName(member)}</span>
                       {memberInfo?.ageTier && <AgeTierBadge tier={memberInfo.ageTier} />}
+                      {/* Identity-sensitive: this pill's X removes this member
+                          from the group (#2568). */}
+                      <MemberAgeChip ageLabel={member.ageLabel ?? memberInfo?.ageLabel} />
                       <button
                         type="button"
                         onClick={() => removeMember(member.id)}
@@ -478,8 +495,15 @@ export function FamilyGroupEditor({
                       disabled={canEdit !== true}
                       className="w-full px-3 py-2 text-left text-sm hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
                     >
-                      <span className="font-medium">{getMemberName(member)}</span>
-                      <span className="ml-2 text-muted-foreground">{member.email}</span>
+                      {/* #2568: linking an existing member is identity-sensitive,
+                          so the age is on the row being clicked. */}
+                      <span className="flex flex-wrap items-center gap-2">
+                        <span className="break-words font-medium">{getMemberName(member)}</span>
+                        <MemberAgeChip ageLabel={member.ageLabel} />
+                      </span>
+                      <span className="block break-words text-muted-foreground">
+                        {member.email}
+                      </span>
                     </button>
                   ))}
                 </div>

@@ -138,8 +138,12 @@ export function FamilyGroupRequestReviewSection({
     try {
       const ageTierSearchFilter =
         request.type === "CHILD_REQUEST" ? "&ageTierIn=INFANT,CHILD,YOUTH" : "";
+      // #2568: the family-group lookup, not the members admin search. It answers
+      // with each candidate's CALCULATED AGE and no date of birth, and restricts
+      // itself to active, non-archived members capped at ten rows — the filters
+      // the members endpoint had to be told about in the query string.
       const res = await fetch(
-        `/api/admin/members?q=${encodeURIComponent(query)}&active=true&pageSize=10${ageTierSearchFilter}`
+        `/api/admin/family-groups/member-search?q=${encodeURIComponent(query)}${ageTierSearchFilter}`
       );
       const data = await res.json().catch(() => ({}));
 

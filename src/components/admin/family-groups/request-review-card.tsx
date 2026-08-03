@@ -18,6 +18,10 @@ import {
   type RequestMemberMatch,
 } from "@/lib/admin-family-group-ui-helpers";
 import { AgeTierBadge } from "@/components/admin/family-groups/age-tier-badge";
+import {
+  MemberAgeChip,
+  MemberAgeLine,
+} from "@/components/admin/family-groups/member-age-display";
 
 export interface FamilyGroupRequestReviewCardProps {
   request: FamilyGroupRequest;
@@ -98,10 +102,23 @@ export function FamilyGroupRequestReviewCard({
             {getFamilyGroupRequestSummary(request)}
           </p>
         </div>
-        <div className="rounded-lg bg-muted px-3 py-2 text-sm">
+        {/* #2568: the person MAKING the request, named as such and carrying
+            their own age — on a join request they are also the person being
+            added, so this is an identity check, not decoration. `min-w-0` plus
+            `break-words` keeps a long name inside the panel on a narrow screen
+            instead of stretching the row. */}
+        <div className="min-w-0 rounded-lg bg-muted px-3 py-2 text-sm">
           <p className="font-medium text-foreground">Requester</p>
-          <p className="text-muted-foreground">{getMemberName(request.requester)}</p>
-          <p className="text-xs text-muted-foreground">{request.requester.email}</p>
+          <p className="break-words text-muted-foreground">
+            {getMemberName(request.requester)}
+          </p>
+          <p className="break-words text-xs text-muted-foreground">
+            {request.requester.email}
+          </p>
+          <MemberAgeLine
+            ageLabel={request.requester.ageLabel}
+            className="text-xs text-muted-foreground"
+          />
         </div>
       </div>
 
@@ -117,13 +134,18 @@ export function FamilyGroupRequestReviewCard({
             {getMemberName(request.requester)} will become the group admin.
           </p>
           {request.invitedMember ? (
-            <p>
-              Partner to invite on approval:{" "}
-              <span className="font-medium text-foreground">
-                {getMemberName(request.invitedMember)}
-              </span>{" "}
-              ({request.invitedMember.email})
-            </p>
+            <>
+              <p>
+                Partner to invite on approval:{" "}
+                <span className="font-medium text-foreground">
+                  {getMemberName(request.invitedMember)}
+                </span>{" "}
+                ({request.invitedMember.email})
+              </p>
+              {/* #2568: approving this creates a real invitation for that
+                  specific member record, so the admin confirms who it is. */}
+              <MemberAgeLine ageLabel={request.invitedMember.ageLabel} />
+            </>
           ) : (
             <p>No partner invitation requested.</p>
           )}
@@ -136,8 +158,8 @@ export function FamilyGroupRequestReviewCard({
         <div className="mt-4 space-y-3">
           <div className="rounded-lg bg-muted p-3 text-sm text-muted-foreground">
             <p>
-              Requested {request.type === "ADULT_REQUEST" ? "adult" : "member"}:{" "}
-              <span className="font-medium text-foreground">
+              Person to add ({request.type === "ADULT_REQUEST" ? "adult" : "member"}):{" "}
+              <span className="break-words font-medium text-foreground">
                 {getFamilyGroupRequestSubjectName(request)}
               </span>
             </p>
@@ -149,13 +171,32 @@ export function FamilyGroupRequestReviewCard({
                   : request.childDateOfBirth
               )}
             </p>
+            {/* #2568: the same declared date of birth as an age, so it can be
+                compared with a candidate record's age without arithmetic. */}
+            <MemberAgeLine
+              ageLabel={
+                request.type === "ADULT_REQUEST"
+                  ? request.requestedAgeLabel
+                  : request.childAgeLabel
+              }
+            />
             {request.type === "ADULT_REQUEST" && (
               <p>Shared email: {request.requestedEmail || request.requester.email}</p>
             )}
             {request.type === "CHILD_REQUEST" && (
               request.requestedAgeTier ? (
                 <p>
-                  Requested age tier:{" "}
+                  {/* #2568: the age above and this tier answer DIFFERENT
+                      questions, and the tier label carries numeric ranges, so
+                      the basis is stated rather than left to be inferred. Age is
+                      as at today; an age tier is fixed at the season start
+                      (1 April by default) and holds until the next rollover — so
+                      a child who has had a birthday since then legitimately
+                      reads "5 years" beside "Infant (0-4)". Unlabelled, that
+                      pairing looks like a corrupt record and invites an admin to
+                      "correct" a tier that is right by club policy. */}
+                  Requested age tier{" "}
+                  <span className="whitespace-nowrap">(as at season start)</span>:{" "}
                   <span className="font-medium text-foreground">
                     {request.requestedAgeTierLabel ?? request.requestedAgeTier}
                   </span>
@@ -195,6 +236,10 @@ export function FamilyGroupRequestReviewCard({
                   {getMemberName(candidate)}
                   {" - "}
                   {candidate.ageTier}
+                  {/* #2568: an <option> cannot hold markup, so the age goes in
+                      as plain text — the picker is where two same-named records
+                      are actually told apart. */}
+                  {candidate.ageLabel ? ` - ${candidate.ageLabel}` : ""}
                   {candidate.canLogin ? " - has login" : " - no login"}
                   {candidate.alreadyInGroup ? " - already in group" : ""}
                   {!candidate.active ? " - inactive" : ""}
@@ -255,18 +300,22 @@ export function FamilyGroupRequestReviewCard({
                       : "border-border bg-card hover:bg-accent"
                   }`}
                 >
+                  {/* #2568: age sits next to the name and the age tier, where
+                      the admin is looking — a suggested match is where the wrong
+                      generation gets picked. The row wraps, so a long name
+                      pushes the badges down rather than off the card. */}
                   <span className="flex flex-wrap items-center gap-2 font-medium text-foreground">
-                    {getMemberName(candidate)}
+                    <span className="break-words">{getMemberName(candidate)}</span>
                     <AgeTierBadge tier={candidate.ageTier} />
+                    <MemberAgeChip ageLabel={candidate.ageLabel} />
                     {requestSelection === candidate.id && (
                       <Badge variant="secondary" className="bg-warning-3 text-warning-11 border-warning-6">
                         Selected
                       </Badge>
                     )}
                   </span>
-                  <span className="mt-1 block text-xs text-muted-foreground">
+                  <span className="mt-1 block break-words text-xs text-muted-foreground">
                     {candidate.email}
-                    {candidate.dateOfBirth ? ` - DOB ${formatFamilyGroupDate(candidate.dateOfBirth)}` : ""}
                     {candidate.canLogin ? " - has login" : " - no login"}
                     {candidate.alreadyInGroup ? " - already in this group" : ""}
                   </span>
@@ -286,15 +335,20 @@ export function FamilyGroupRequestReviewCard({
       {showRemovalDetails && request.type === "REMOVAL_REQUEST" && (
         <div className="mt-4 rounded-lg bg-muted p-3 text-sm text-muted-foreground">
           <p>
-            Remove member:{" "}
-            <span className="font-medium text-foreground">
+            Member to remove:{" "}
+            <span className="break-words font-medium text-foreground">
               {request.subjectMember ? getMemberName(request.subjectMember) : "Unknown member"}
             </span>
           </p>
           {request.subjectMember && (
-            <p>
-              {request.subjectMember.email} - {request.subjectMember.ageTier}
-            </p>
+            <>
+              <p className="break-words">
+                {request.subjectMember.email} - {request.subjectMember.ageTier}
+              </p>
+              {/* #2568: removal is the action hardest to notice going wrong, so
+                  the age is stated on the confirmation itself. */}
+              <MemberAgeLine ageLabel={request.subjectMember.ageLabel} />
+            </>
           )}
           {request.requestNotes && <p>Notes: {request.requestNotes}</p>}
         </div>
@@ -302,16 +356,23 @@ export function FamilyGroupRequestReviewCard({
 
       {requiresMemberChoice && selectedCandidate && (
         <div className="mt-4 rounded-lg border border-warning-6 bg-warning-3/60 p-3">
-          <p className="text-sm font-medium text-foreground">Selected member record</p>
-          <p className="mt-1 text-sm text-muted-foreground">
+          <p className="text-sm font-medium text-foreground">
+            Selected member record — check this is the right person
+          </p>
+          <p className="mt-1 break-words text-sm text-muted-foreground">
             {getMemberName(selectedCandidate)}
           </p>
-          <p className="text-xs text-muted-foreground">
+          {/* #2568: the last panel before Approve, so the age is stated on its
+              own line rather than buried in the dash-separated run. */}
+          <MemberAgeLine
+            ageLabel={selectedCandidate.ageLabel}
+            className="text-sm text-muted-foreground"
+          />
+          <p className="break-words text-xs text-muted-foreground">
             {selectedCandidate.email}
             {" - "}
             {selectedCandidate.ageTier}
             {selectedCandidate.canLogin ? " - has login" : " - no login"}
-            {selectedCandidate.dateOfBirth ? ` - DOB ${formatFamilyGroupDate(selectedCandidate.dateOfBirth)}` : ""}
             {selectedCandidate.alreadyInGroup ? " - already in this group" : ""}
             {!selectedCandidate.active ? " - inactive" : ""}
           </p>
@@ -349,15 +410,22 @@ export function FamilyGroupRequestReviewCard({
           <p className="text-sm font-medium text-foreground">
             New non-login adult will be created
           </p>
-          <p className="mt-1 text-sm text-muted-foreground">
+          <p className="mt-1 break-words text-sm text-muted-foreground">
             {getFamilyGroupRequestSubjectName(request)}
           </p>
-          <p className="text-xs text-muted-foreground">
+          <p className="break-words text-xs text-muted-foreground">
             {request.requestedEmail || request.requester.email}
             {request.requestedDateOfBirth
               ? ` - DOB ${formatFamilyGroupDate(request.requestedDateOfBirth)}`
               : ""}
           </p>
+          {/* #2568: creating a brand-new record is the decision a duplicate
+              hides behind, so the age of the person about to be created is
+              stated here as well. */}
+          <MemberAgeLine
+            ageLabel={request.requestedAgeLabel}
+            className="text-xs text-muted-foreground"
+          />
         </div>
       )}
 
@@ -366,15 +434,25 @@ export function FamilyGroupRequestReviewCard({
           <p className="text-sm font-medium text-foreground">
             New non-login dependant will be created
           </p>
-          <p className="mt-1 text-sm text-muted-foreground">
+          <p className="mt-1 break-words text-sm text-muted-foreground">
             {getFamilyGroupRequestSubjectName(request)}
           </p>
-          <p className="text-xs text-muted-foreground">
+          <p className="break-words text-xs text-muted-foreground">
             {request.childDateOfBirth
               ? `DOB ${formatFamilyGroupDate(request.childDateOfBirth)}`
               : "DOB not provided"}
-            {request.requestedAgeTierLabel ? ` - ${request.requestedAgeTierLabel}` : ""}
+            {/* #2568: same basis note as the tier line above — the ranged tier
+                label is as at the season start, the age below it is as at
+                today. */}
+            {request.requestedAgeTierLabel
+              ? ` - ${request.requestedAgeTierLabel} as at season start`
+              : ""}
           </p>
+          {/* #2568: see the adult branch above — same create-versus-link risk. */}
+          <MemberAgeLine
+            ageLabel={request.childAgeLabel}
+            className="text-xs text-muted-foreground"
+          />
         </div>
       )}
 

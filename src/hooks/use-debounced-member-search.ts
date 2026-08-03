@@ -54,7 +54,14 @@ const NO_RESULTS: never[] = [];
  */
 export function useDebouncedMemberSearch<TMember>(options: {
   query: string;
-  /** Extra /api/admin/members query parameters sent alongside `q`. */
+  /**
+   * The endpoint to search. Defaults to `/api/admin/members`; the only other
+   * caller today is the family-group member lookup (#2568), which answers with a
+   * calculated age instead of a date of birth. Any alternative must keep the
+   * same response shape — a `members` array and an optional numeric `total`.
+   */
+  endpoint?: string;
+  /** Extra query parameters sent alongside `q`. */
   params?: Readonly<Record<string, string>>;
   /** Gate beyond the length check (e.g. only while an assign panel is open). */
   enabled?: boolean;
@@ -75,7 +82,12 @@ export function useDebouncedMemberSearch<TMember>(options: {
   /** True while the query is long enough and `enabled` holds. */
   active: boolean;
 } {
-  const { query, enabled = true, errorFallback = "Failed to search members" } = options;
+  const {
+    query,
+    enabled = true,
+    endpoint = "/api/admin/members",
+    errorFallback = "Failed to search members",
+  } = options;
   const [results, setResults] = useState<TMember[]>([]);
   const [total, setTotal] = useState(0);
   const [searching, setSearching] = useState(false);
@@ -112,7 +124,7 @@ export function useDebouncedMemberSearch<TMember>(options: {
     setSearching(true);
     const timer = setTimeout(async () => {
       try {
-        const res = await fetch(`/api/admin/members?${paramsKey}`);
+        const res = await fetch(`${endpoint}?${paramsKey}`);
         const data = await res.json().catch(() => ({}));
         if (!res.ok) {
           throw new Error(data.error || errorFallback);
@@ -146,7 +158,7 @@ export function useDebouncedMemberSearch<TMember>(options: {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [active, paramsKey, errorFallback]);
+  }, [active, endpoint, paramsKey, errorFallback]);
 
   // Derive the inactive state at render time (the effect's own clear only
   // lands after paint): clearing the query — e.g. a picker resetting itself

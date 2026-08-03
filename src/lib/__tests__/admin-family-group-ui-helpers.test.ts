@@ -7,6 +7,7 @@ import {
   getFamilyGroupRequestSummary,
   getFamilyGroupRequestTypeLabel,
   mapFamilyGroupRequestSearchResults,
+  mergeFamilyGroupRequestCandidates,
   type FamilyGroupMemberRow,
   type FamilyGroupRequest,
 } from "@/lib/admin-family-group-ui-helpers";
@@ -47,7 +48,8 @@ const baseRequest: FamilyGroupRequest = {
       ageTier: "CHILD",
       active: true,
       canLogin: false,
-      dateOfBirth: "2018-01-01",
+      // #2568: matches carry the server-calculated age, never a birth date.
+      ageLabel: "8 years",
       alreadyInGroup: false,
       parentLinks: [],
     },
@@ -92,7 +94,7 @@ describe("admin-family-group-ui-helpers", () => {
         ageTier: "CHILD",
         active: true,
         canLogin: false,
-        dateOfBirth: "2018-01-01",
+        ageLabel: "8 years",
       },
       {
         id: "parent-1",
@@ -114,10 +116,45 @@ describe("admin-family-group-ui-helpers", () => {
         ageTier: "CHILD",
         active: true,
         canLogin: false,
-        dateOfBirth: "2018-01-01",
+        ageLabel: "8 years",
         parentLinks: [],
         alreadyInGroup: false,
       },
+    ]);
+  });
+
+  it("keeps a searched row's parent links when it overwrites the same candidate", () => {
+    // A search row wins over the same id from `matchingMembers`, so a search
+    // response without `parentLinks` silently emptied the child-request
+    // notification-recipient choices. The endpoint returns them; this pins that
+    // the merge does not throw them away.
+    const searched = mapFamilyGroupRequestSearchResults(baseRequest, [
+      {
+        id: "child-1",
+        firstName: "Bea",
+        lastName: "Child",
+        email: "bea@example.com",
+        ageTier: "CHILD",
+        active: true,
+        canLogin: false,
+        ageLabel: "8 years",
+        parentLinks: [
+          {
+            id: "ann-1",
+            firstName: "Ann",
+            lastName: "Parent",
+            email: "ann@example.com",
+            parentLinkType: "PRIMARY",
+          },
+        ],
+      },
+    ]);
+
+    const merged = mergeFamilyGroupRequestCandidates(baseRequest, searched);
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0].parentLinks).toEqual([
+      expect.objectContaining({ id: "ann-1", parentLinkType: "PRIMARY" }),
     ]);
   });
 
