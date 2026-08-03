@@ -28,6 +28,21 @@ const mockBookingUpdate = vi.fn();
 const mockBookingUpdateMany = vi.fn();
 const mockBookingCreate = vi.fn();
 const mockExecuteRaw = vi.fn().mockResolvedValue(undefined);
+/**
+ * #2543: both waitlist paths now read the offered booking's party on the MODULE
+ * client, outside the claiming transaction — the offer, to word the "why you are
+ * being charged non-member rates" sentence on the email, and the confirm, to
+ * re-check the paid-up-adult requirement before it turns a queue placeholder into
+ * a capacity-holding booking.
+ *
+ * Defaults to an empty party, which is the neutral answer for every fixture in
+ * this file: nobody is repriced, so no notice is worded and no requirement bites.
+ * Absent altogether, the confirm path throws on `undefined.findMany` — and that
+ * is the honest failure mode, because the read is deliberately NOT wrapped there:
+ * a database hiccup must fail the confirm closed rather than silently skip a
+ * money guard.
+ */
+const mockBookingGuestFindMany = vi.fn().mockResolvedValue([]);
 
 const mockTx = {
   $executeRaw: mockExecuteRaw,
@@ -71,6 +86,10 @@ vi.mock("@/lib/prisma", () => ({
       update: (...args: unknown[]) => mockBookingUpdate(...args),
       updateMany: (...args: unknown[]) => mockBookingUpdateMany(...args),
       create: (...args: unknown[]) => mockBookingCreate(...args),
+    },
+    // #2543: the party read both waitlist paths make on the module client.
+    bookingGuest: {
+      findMany: (...args: unknown[]) => mockBookingGuestFindMany(...args),
     },
   },
 }));
@@ -175,6 +194,10 @@ beforeEach(() => {
   mockPrismaTransaction.mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) => fn(mockTx));
   mockTx.bookingGuest.update.mockReset();
   mockTx.bookingGuest.update.mockResolvedValue({});
+  // #2543: an empty party by default, so no fixture is repriced and no
+  // paid-up-adult requirement bites unless a test sets one up.
+  mockBookingGuestFindMany.mockReset();
+  mockBookingGuestFindMany.mockResolvedValue([]);
   mockTx.groupDiscountSetting.findUnique.mockReset();
   mockTx.groupDiscountSetting.findUnique.mockResolvedValue(null);
   mockLoadSeasonRateData.mockReset();
@@ -409,7 +432,25 @@ describe("processWaitlistForDates", () => {
       // rows with no lodgeId (club identity fallback); no cross-lodge
       // block for a same-lodge offer.
       undefined,
+      null,
+      // #2543's twelfth argument: the sentence explaining that somebody on the
+      // booking is priced as a non-member because their subscription is unpaid.
+      // The offer sweep re-bases a stored waitlisted price at current rates — which
+      // is exactly what this test pins — so the offer email had to gain the reason
+      // as well as the figure, or a member would be shown a bigger number and no
+      // explanation for it. NULL here, and for the right reason rather than by
+      // accident: this party is not repriced for an unpaid subscription, so there
+      // is nothing to explain.
       null
+    );
+    // ...and "for the right reason" is asserted, not asserted-about. The notice is
+    // wrapped in a try/catch that degrades to null rather than losing an offer, so
+    // a broken evaluation and a genuinely empty answer both arrive as null. This
+    // pins the clean one.
+    const { default: logger } = await import("@/lib/logger");
+    expect(logger.error).not.toHaveBeenCalledWith(
+      expect.anything(),
+      "Failed to resolve the #2543 member-rate notice for a waitlist offer",
     );
   });
 
@@ -462,6 +503,9 @@ describe("processWaitlistForDates", () => {
       "booking1",
       16000,
       undefined,
+      null,
+      // #2543's twelfth argument — the unpaid-subscription rate reason. Null:
+      // nobody on this party is repriced.
       null
     );
   });
@@ -568,6 +612,9 @@ describe("processWaitlistForDates", () => {
       "booking1",
       20000,
       undefined,
+      null,
+      // #2543's twelfth argument — the unpaid-subscription rate reason. Null:
+      // nobody on this party is repriced.
       null
     );
   });
