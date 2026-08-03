@@ -553,6 +553,93 @@ test.describe("a mistyped member-area address", () => {
 });
 
 /**
+ * The headers those same stored 404s left with (#2578), on a real server because that
+ * is the only place the question can be answered.
+ *
+ * The unit suite asserts what the PROXY writes. What reaches the wire is decided by
+ * Next: it writes its own `Cache-Control` only when the response does not already carry
+ * one (`send-payload.js`), so a proxy that skips a path hands the framework's value to
+ * the visitor — which is exactly how these three URLs came to ship
+ * `s-maxage=15, stale-while-revalidate=31535985` with no `Vary`. Measured on a
+ * container build of slice 1; the pre-slice-1 baseline answered `private, no-cache,
+ * no-store` on all four of the addresses below.
+ *
+ * `/pay`, `/dashboard/nope` and `/admin/typo` are outside the public-website territory
+ * and are served from the page store anyway, because the CMS catch-all claims every URL
+ * no other route claims. `/definitely-missing` is the in-territory control that was
+ * always correct — it is what showed the fault was keyed on territory rather than being
+ * a general 404 problem, and a regression that broke both would otherwise look like a
+ * broken test rather than a broken invariant.
+ *
+ * The cookie half is driven with a stale `signed-in-hint` on an ANONYMOUS request, which
+ * makes the proxy clear it: a real `Set-Cookie` on a response any visitor can provoke,
+ * which is what makes the combination reachable by a shared cache at all.
+ */
+test.describe("out-of-territory 404 cache headers", () => {
+  const MEASURED = [
+    "/pay",
+    "/dashboard/nope",
+    "/admin/typo",
+    // The in-territory control.
+    "/definitely-missing",
+  ];
+
+  for (const address of MEASURED) {
+    test(`${address} is never offered to a shared cache`, async ({ request }) => {
+      // Twice, because the first request GENERATES and the second is served from the
+      // store — and it was the stored answer that carried the directive.
+      await request.get(address);
+      const second = await request.get(address);
+      const cacheControl = second.headers()["cache-control"] ?? "";
+
+      expect(second.status(), "still a proper 404").toBe(404);
+      expect(cacheControl, "every one of these must carry a directive").toBeTruthy();
+      expect(cacheControl).toContain("private");
+      expect(cacheControl).toContain("no-store");
+      expect(cacheControl).not.toContain("s-maxage");
+      expect(cacheControl).not.toContain("stale-while-revalidate");
+    });
+
+    test(`${address} never pairs a Set-Cookie with a shared-cache directive`, async ({
+      request,
+    }) => {
+      const response = await request.get(address, {
+        headers: { cookie: "signed-in-hint=1" },
+      });
+      const cacheControl = response.headers()["cache-control"] ?? "";
+      const setCookie = response.headers()["set-cookie"] ?? "";
+
+      // The premise of the case: if the proxy stopped correcting the stale hint here,
+      // the assertion below would pass for the wrong reason.
+      expect(setCookie, "the stale hint must be corrected on this response").toContain(
+        "signed-in-hint",
+      );
+      expect(cacheControl).not.toContain("s-maxage");
+      expect(cacheControl).not.toContain("public");
+      expect(cacheControl).toContain("private");
+    });
+  }
+
+  test("a real asset keeps its own caching and carries no marker cookie", async ({
+    request,
+  }) => {
+    // The shape deliberately left OUT of the override: a file the filesystem serves
+    // cannot come from the page store, so there is no shared-cache directive to strip
+    // — and overriding would cost the club logo its browser caching on every public
+    // page view. The cookie is withheld instead, so nothing pairs a `Set-Cookie` with
+    // whatever directive that layer chose.
+    // The same real file `asset-url-404.spec.ts` uses: `public/branding/*` ships
+    // `.example` names, and a request for one is served by the filesystem.
+    const response = await request.get("/branding/favicon.example.ico", {
+      headers: { cookie: "signed-in-hint=1" },
+    });
+
+    expect(response.status(), "the shipped branding asset must exist").toBe(200);
+    expect(response.headers()["set-cookie"] ?? "").not.toContain("signed-in-hint");
+  });
+});
+
+/**
  * F4, and the verification of `revalidatePublicSite()` the reconciliation asked
  * for (#2352 F3).
  *

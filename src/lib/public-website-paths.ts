@@ -65,6 +65,14 @@
  * of the five", and an earlier wording of this paragraph asserted a plain "if and only
  * if" that they falsify. Tracked on #2570; not closed here.
  *
+ * **What WAS closed for those documents is their HEADERS (#2578).** A stored
+ * out-of-territory 404 shipped the framework's own `s-maxage` with no `Vary`, because
+ * `src/proxy.ts` keyed its private-only cache-control override on
+ * {@link isPublicWebsitePath} and these addresses sit outside it. That override now
+ * covers both territories, so a `false` from this predicate decides a NONCE and
+ * nothing about caching. Do not reason from "not a public website path" to "the
+ * framework's own cache header is the right one for it".
+ *
  * ## Percent-encoded addresses: this file matches RAW, and that IS the mirror
  *
  * Every comparison below is against raw URL segments. That looks like a bypass —

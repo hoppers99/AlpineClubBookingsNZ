@@ -1083,11 +1083,23 @@ to **any** scoped policy this app adds in future, not just these (#2279):
 
 ## Anonymous Public-Page Caching - 2026-07-29
 
-Issue #2322, narrowed by the #2404 re-review. `src/proxy.ts` relaxes
-`Cache-Control` to `private, max-age=60, stale-while-revalidate=300` on a
-**closed allow list** of public pages — currently the home page `/` alone — when the
-request is a `GET` carrying no session cookie. Every other response keeps the
-framework default (`private, no-cache, no-store`).
+Issue #2322, narrowed by the #2404 re-review and widened in reach by #2578.
+`src/proxy.ts` relaxes `Cache-Control` to
+`private, max-age=60, stale-while-revalidate=300` on a **closed allow list** of
+public pages — currently the home page `/` alone — when the request is a `GET`
+carrying no session cookie. Every other page-shaped `GET` is sent
+`private, no-cache, no-store, max-age=0, must-revalidate` explicitly.
+
+**Explicitly, not "left to the framework", and #2578 is why that distinction is
+the whole of it.** Next writes its own `Cache-Control` only when the response does
+not already carry one, so a path the proxy skips ships whatever the framework
+computed — and `getCacheControlHeader()`
+(`next/dist/server/lib/cache-control.js`) returns `private, no-cache, no-store`
+only for `revalidate === 0`. A route served from a prerender returns
+`s-maxage=<revalidate>` (or `s-maxage=31536000` when `revalidate` is absent) with
+`stale-while-revalidate=<expireTime − revalidate>` beside it. So "skipped" and
+"private" are the same thing only for as long as every route on that path is
+dynamic.
 
 The security-relevant properties:
 
@@ -1125,6 +1137,52 @@ The security-relevant properties:
   directives), so `s-maxage` was storing nothing anywhere, and `max-age` earns
   the whole of the measured benefit on its own. The reason it is not merely
   unused but actively withheld is below.
+- **The explicit directive covers BOTH territories, and keying it on the public
+  website was a live defect (#2578).** The rule was written as "every
+  public-website path except `/`", on the reasoning that the CMS catch-all is the
+  only route carrying a `revalidate` export and it lives inside the public
+  website. The catch-all claims every URL no other route claims, which includes
+  addresses whose first segment belongs to another route group — so `/pay`,
+  `/dashboard/nope` and `/admin/typo` were answered from the page store while the
+  proxy, having classified them as not-the-website, left the framework's
+  `s-maxage=15, stale-while-revalidate=31535985` on them, with no `Vary` and
+  possibly with the D2 marker `Set-Cookie` beside it. Measured on a container
+  build of slice 1, against a pre-slice-1 baseline that answered
+  `private, no-cache, no-store` on the same four URLs. Middleware runs before
+  routing and cannot tell `/dashboard/nope` from `/dashboard/bookings`, so the
+  fix is the rule that does not need to know which route answers: **an address
+  outside the public website is never invited into a shared cache either.** On a
+  real member or admin page the value is byte-identical to Next's own
+  `revalidate === 0` default, so nothing a member is served changes. It covers GET
+  **and HEAD**: a HEAD for a page is routed exactly as the GET is and takes the same
+  framework directive, so restricting the rule to GET would make it true of bodies
+  and false of headers.
+- **Two shapes deliberately keep another layer's directive, and the marker cookie
+  is withheld on exactly those.** `/api/*` is one: the optional catch-all
+  `api/[[...unmatched]]` claims the whole namespace so no `/api` address can come
+  from the page store, the handlers there choose their own directives on purpose
+  (`/api/skifield-conditions` answers `public, max-age=600,
+  stale-while-revalidate=1800`), and a middleware header WINS over a route
+  handler's — `sendResponse()` appends the handler's value only when the name is
+  not already set. Asset-shaped URLs are the other: a real file is served by the
+  filesystem under `send`'s set-if-absent `public, max-age=…`, and a miss is
+  terminated at `/asset-not-found` with no document, so again there is no
+  shared-cache directive to strip — and overriding would replace the club logo's
+  and favicon's browser caching with `no-store` on every public page view. Both
+  are answered by one predicate in the proxy (`isPageShapedPath()`), which also
+  gates the D2 `Set-Cookie`, so the invariant holds structurally: **the proxy
+  never emits a `Set-Cookie` on a response whose `Cache-Control` it has left to
+  another layer.** The hint is NOT suppressed out of territory generally —
+  `/login` and the member area are where the session state changes, so
+  suppressing there would take the correction off the responses that need it —
+  and it does not have to be, because those responses now carry `private` rather
+  than a shared-cache directive.
+- **A response the proxy returns itself is sealed too.** The #2420 holding screen
+  already sends `no-store` with a `Retry-After`; a module gate's 404 for a page
+  path carried no directive at all, which RFC 9111 lets a shared cache store
+  heuristically, so it now gets the private-only value set-if-absent. `/api` gate
+  responses are excluded by the same predicate, which is what keeps #2405's
+  module-state parity — a directive there would read as "the module is off".
 
 The relaxed value survives the framework default because Next writes its own
 `Cache-Control` only when the response does not already carry one
@@ -2398,6 +2456,21 @@ permanently (D7).
   page until the next admin save or deploy, not a readable "page not found". No data
   is exposed and the HTTP status stays correct, but "documented wart" was assessed
   against the gentler description.
+
+  **The same stored documents also shipped a shared-cache directive, and THAT half is
+  closed rather than accepted (#2578).** Because the response came out of the page
+  store, the framework's own `s-maxage=15, stale-while-revalidate=31535985` reached the
+  wire with no `Vary` — and could do so alongside the D2 marker `Set-Cookie` — on
+  addresses the proxy had classified as not-the-public-website. Measured on the same
+  container build, on `/pay`, `/dashboard/nope` and `/admin/typo`, against a
+  pre-slice-1 baseline that answered `private, no-cache, no-store` on all four
+  addresses. The proxy now writes the private-only directive for every page-shaped GET
+  in either territory, so no out-of-territory address is invited into a shared cache
+  whichever route answers it, and no `Set-Cookie` of ours ever leaves beside a
+  shared-cache directive. See "Anonymous Public-Page Caching" above for the rule and
+  its two deliberate exclusions. The nonce residual described here is untouched by
+  that fix: same store, same blank document, same accepted trade — only its headers
+  changed.
 
   The owner chose option 2 on 3 Aug (stop storing those documents), and the mechanism
   it named does not exist on next@16.2.12: with `cacheComponents` off, an on-demand
