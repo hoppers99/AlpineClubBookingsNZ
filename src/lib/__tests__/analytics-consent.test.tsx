@@ -5,7 +5,7 @@ import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AnalyticsConsent } from "@/components/analytics-consent";
 import { ANALYTICS_PREFERENCES_ATTRIBUTE, ANALYTICS_PREFERENCES_OPEN_EVENT } from "@/lib/analytics-preferences-channel";
-import type { AnalyticsRuntimeConfig } from "@/lib/analytics-settings";
+import type { AnalyticsRuntimeConfig } from "@/lib/analytics-settings-shared";
 
 /**
  * The public Google Analytics runtime (#2573): the prior-consent guarantee, the
@@ -44,6 +44,7 @@ const BANNER_ON: AnalyticsRuntimeConfig = {
   consentBannerEnabled: true,
   bannerMessage: "We use optional Google Analytics on this website.",
   consentRevision: 1,
+  privacyPolicyPath: "/privacy",
 };
 
 const BANNER_OFF: AnalyticsRuntimeConfig = {
@@ -296,6 +297,144 @@ describe("banner disabled", () => {
   });
 });
 
+describe("leaving the public website", () => {
+  /*
+    The runtime is mounted by the two public WEBSITE layouts only, and the public
+    header's own links are soft navigations into groups that mount nothing — "Log In"
+    to `/login`, "Dashboard" and "Book Now" to the member area. React unmounts this
+    component there, and unmounting a `<Script>` cannot unload an executed library, so
+    an unmount that left the tag enabled would keep collecting across exactly the
+    routes owner section 7 excludes.
+  */
+  it("disables the tag on unmount, because unmounting cannot unload it", async () => {
+    const { unmount } = render(<AnalyticsConsent config={BANNER_OFF} />);
+    await waitFor(() => expect(analyticsLoader()).not.toBeNull());
+    expect(
+      (window as unknown as Record<string, unknown>)["ga-disable-G-TEST123456"],
+    ).toBe(false);
+
+    unmount();
+
+    expect(
+      (window as unknown as Record<string, unknown>)["ga-disable-G-TEST123456"],
+    ).toBe(true);
+    expect(consentCalls().at(-1)).toEqual([
+      "consent",
+      "update",
+      {
+        ad_storage: "denied",
+        ad_user_data: "denied",
+        ad_personalization: "denied",
+        analytics_storage: "denied",
+      },
+    ]);
+  });
+
+  it("queues nothing on unmount when it never bootstrapped gtag", () => {
+    // Banner showing, storage not yet resolved… but more to the point: a component
+    // that never created `window.dataLayer` must not create one on the way out.
+    const { unmount } = render(<AnalyticsConsent config={null} />);
+    unmount();
+
+    expect(window.dataLayer).toBeUndefined();
+  });
+});
+
+describe("an opt-out in another tab", () => {
+  it("is honoured here too, rather than only in the tab that made it", async () => {
+    // The choice is stored per BROWSER, so it has to take effect in every tab of it.
+    // Without this the other tab's resident tag keeps sending the events GA4 collects
+    // on its own, while the panel has just promised collection stopped.
+    render(<AnalyticsConsent config={BANNER_OFF} />);
+    await waitFor(() => expect(analyticsLoader()).not.toBeNull());
+
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ choice: "declined", revision: 1, source: "preferences" }),
+    );
+    fireEvent(
+      window,
+      new StorageEvent("storage", { key: STORAGE_KEY }),
+    );
+
+    await waitFor(() => expect(analyticsLoader()).toBeNull());
+    expect(
+      (window as unknown as Record<string, unknown>)["ga-disable-G-TEST123456"],
+    ).toBe(true);
+    expect(consentCalls().at(-1)?.[2]).toMatchObject({
+      analytics_storage: "denied",
+    });
+  });
+
+  it("works in the other direction, so an Accept elsewhere needs no reload", async () => {
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ choice: "declined", revision: 1, source: "banner" }),
+    );
+    render(<AnalyticsConsent config={BANNER_ON} />);
+    await waitFor(() =>
+      expect(
+        document.documentElement.getAttribute(ANALYTICS_PREFERENCES_ATTRIBUTE),
+      ).toBe("available"),
+    );
+    expect(analyticsLoader()).toBeNull();
+
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ choice: "accepted", revision: 1, source: "preferences" }),
+    );
+    fireEvent(window, new StorageEvent("storage", { key: STORAGE_KEY }));
+
+    await waitFor(() => expect(analyticsLoader()).not.toBeNull());
+  });
+
+  it("ignores a write to an unrelated storage key", async () => {
+    render(<AnalyticsConsent config={BANNER_OFF} />);
+    await waitFor(() => expect(analyticsLoader()).not.toBeNull());
+
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ choice: "declined", revision: 1, source: "preferences" }),
+    );
+    fireEvent(window, new StorageEvent("storage", { key: "theme" }));
+
+    // Not re-read, so the tag is untouched: this is what stops an unrelated key's
+    // churn re-running the decision on every tab.
+    expect(analyticsLoader()).not.toBeNull();
+  });
+});
+
+describe("the privacy policy, linked at the point of the decision", () => {
+  it("is linked from the banner and from the preferences panel", async () => {
+    render(<AnalyticsConsent config={BANNER_ON} />);
+
+    const banner = await screen.findByRole("dialog", {
+      name: "Analytics cookie consent",
+    });
+    const bannerLink = banner.querySelector('a[href="/privacy"]');
+    expect(bannerLink?.textContent).toBe("Privacy policy");
+
+    fireEvent(window, new CustomEvent(ANALYTICS_PREFERENCES_OPEN_EVENT));
+    const panel = await screen.findByRole("dialog", {
+      name: /Analytics preferences/,
+    });
+    expect(panel.querySelector('a[href="/privacy"]')).not.toBeNull();
+  });
+
+  it("links nothing when the club has no published privacy policy", async () => {
+    // A consent banner must not offer a link to a 404, and the admin panel is where
+    // the club is told to publish one.
+    render(
+      <AnalyticsConsent config={{ ...BANNER_ON, privacyPolicyPath: null }} />,
+    );
+
+    const banner = await screen.findByRole("dialog", {
+      name: "Analytics cookie consent",
+    });
+    expect(banner.querySelector("a")).toBeNull();
+  });
+});
+
 describe("the public preferences control", () => {
   async function openPanel(config: AnalyticsRuntimeConfig) {
     render(<AnalyticsConsent config={config} />);
@@ -312,13 +451,25 @@ describe("the public preferences control", () => {
     expect(await openPanel(BANNER_ON)).toBeTruthy();
   });
 
-  it("is offered on a route analytics does not run on, so opting out is always reachable", async () => {
-    // A visitor who wants to switch analytics off should not have to find a tracked
-    // page first. Only the banner and the tag are route-gated.
-    mockPathname.value = "/dashboard";
-    expect(await openPanel(BANNER_OFF)).toBeTruthy();
-    expect(analyticsLoader()).toBeNull();
-  });
+  it.each([
+    // A page where the runtime really is mounted but analytics is ineligible: the
+    // three (website-dynamic) pages carry a PIN or a token, so the tag never runs
+    // there — and those are the visitors most likely to want the opt-out.
+    "/join/verify/tok_secret123",
+    "/hut-leader-instructions",
+    "/dashboard",
+  ])(
+    "is offered on %s, a route analytics does not run on, so opting out is always reachable",
+    async (pathname) => {
+      // A visitor who wants to switch analytics off should not have to find a tracked
+      // page first. Only the banner and the tag are route-gated — pinned here because
+      // "restoring" a route gate on availability would silently delete the visitor's
+      // only opt-out in banner-off mode.
+      mockPathname.value = pathname;
+      expect(await openPanel(BANNER_OFF)).toBeTruthy();
+      expect(analyticsLoader()).toBeNull();
+    },
+  );
 
   it("records an opt-out, sets Google's kill switch, and unmounts the tag", async () => {
     await openPanel(BANNER_OFF);

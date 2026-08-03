@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import Script from "next/script";
 import { usePathname } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -20,6 +21,7 @@ import {
   type StoredConsent,
 } from "@/lib/analytics-consent-decision";
 import {
+  ANALYTICS_CONSENT_STORAGE_KEY,
   readStoredConsent,
   writeStoredConsent,
 } from "@/lib/analytics-consent-storage";
@@ -33,7 +35,7 @@ import {
   ANALYTICS_PREFERENCES_AVAILABILITY_EVENT,
   ANALYTICS_PREFERENCES_OPEN_EVENT,
 } from "@/lib/analytics-preferences-channel";
-import type { AnalyticsRuntimeConfig } from "@/lib/analytics-settings";
+import type { AnalyticsRuntimeConfig } from "@/lib/analytics-settings-shared";
 
 /**
  * The public Google Analytics runtime: the consent banner, the tag, the visitor
@@ -68,6 +70,16 @@ import type { AnalyticsRuntimeConfig } from "@/lib/analytics-settings";
  * de-duplicated against the last value actually sent. The referrer is sanitised too:
  * gtag would otherwise hand Google `document.referrer` verbatim, which for a visitor
  * arriving from `/pay/<token>` is the payment token.
+ *
+ * ## Leaving the public website
+ *
+ * This component is mounted by the two public WEBSITE layouts and by nothing else,
+ * so a soft navigation into the member area, the admin area or the login/recovery
+ * group unmounts it. Unmounting a `<Script>` cannot unload an executed library, so
+ * the unmount effect below sets Google's per-ID kill switch and queues a denial —
+ * without it the tag would stay resident and keep collecting on precisely the routes
+ * owner section 7 excludes. The visitor's own opt-out is propagated the same way
+ * across other open tabs, over the `storage` event.
  *
  * ## No inline script, deliberately
  *
@@ -176,6 +188,38 @@ function setGaDisableFlag(measurementId: string, disabled: boolean) {
   ] = disabled;
 }
 
+/**
+ * The club's canonical privacy policy, linked AT THE POINT OF THE DECISION (owner
+ * decision section 2 item 4, clarification 5).
+ *
+ * A visitor being asked to make a privacy choice has to be able to read what the
+ * club collects before answering, and until this existed there was no route to it
+ * while the banner was asking: the banner is `fixed … bottom-0`, so it covers the
+ * footer where the site's only Privacy Policy link lives, and the banner message
+ * itself is plain text, so a URL an admin pastes into it is inert by design.
+ *
+ * `path` is `null` when the club has no PUBLISHED privacy page, and then this
+ * renders nothing: a consent banner must not offer a link to a 404. There is no
+ * Google-Analytics-specific URL setting — the path is the existing canonical
+ * `/privacy` page, resolved server-side, the same one the footer links.
+ */
+function PrivacyPolicyLink({ path }: { path: string | null }) {
+  if (!path) {
+    return null;
+  }
+  return (
+    <>
+      {" "}
+      <Link
+        href={path}
+        className="underline underline-offset-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        Privacy policy
+      </Link>
+    </>
+  );
+}
+
 export function AnalyticsConsent({
   config,
   nonce,
@@ -234,6 +278,42 @@ export function AnalyticsConsent({
   }, [config, consentRevision]);
 
   /*
+    The visitor's choice is stored per BROWSER, so it has to take effect in every
+    tab of it — not only the one the choice was made in.
+
+    Without this, a visitor with two public pages open who selects "Turn analytics
+    off" in one of them has stopped collection in that tab only: the other tab
+    re-reads nothing, its `ga-disable-<id>` flag stays false, and its resident tag
+    carries on sending the automatically-collected events (engagement, scroll,
+    outbound clicks, form interactions) for the life of the tab — while the
+    preferences panel has just told them "Switching analytics off stops further
+    collection from this browser". Owner section 5 asks for further collection to be
+    prevented "as far as the supported implementation permits", and the `storage`
+    event is supported, so per-tab-only is short of that rather than at its limit.
+
+    `storage` fires in the OTHER tabs of the same origin, never in the one that
+    wrote, which is exactly the gap. A `null` key means the whole store was cleared
+    (`localStorage.clear()`), so that re-reads too. The re-read feeds the same
+    decision path as any other change, so the consent effect below denies consent
+    and sets Google's kill switch in the other tab with no further work. It fixes
+    the symmetric direction as well: an Accept or Decline in one tab is now honoured
+    in the others without a reload.
+  */
+  useEffect(() => {
+    if (!config) return;
+    const onStorage = (event: StorageEvent) => {
+      if (event.key !== null && event.key !== ANALYTICS_CONSENT_STORAGE_KEY) {
+        return;
+      }
+      setStored(readStoredConsent());
+    };
+    window.addEventListener("storage", onStorage);
+    return () => {
+      window.removeEventListener("storage", onStorage);
+    };
+  }, [config]);
+
+  /*
     Consent signalling and tag configuration, in ONE effect declared BEFORE the
     page-view effect below — the order is load-bearing.
 
@@ -273,6 +353,47 @@ export function AnalyticsConsent({
       configuredMeasurementIdRef.current = measurementId;
     }
   }, [analyticsAllowed, hydrated, measurementId]);
+
+  /*
+    UNMOUNTING has to disable the tag, because it cannot unload it.
+
+    `next/script` unmounting removes an element; it does not — and cannot — unload a
+    library the browser has already executed. So without this the tag stays resident
+    with `ga-disable-<id> === false` and no denial queued, and it keeps sending the
+    events GA4 collects on its own.
+
+    That is not a hypothetical: this runtime is mounted by the two PUBLIC WEBSITE
+    layouts only. The `(public)`, `(authenticated)`, `(admin)`, `(finance)` and
+    `(lodge)` groups mount nothing analytics-related, and the public header's own
+    primary calls to action are `next/link` soft navigations straight into them —
+    "Log In" to `/login` for a visitor, "Dashboard" or "Book Now" to `/dashboard`
+    and `/book` for a signed-in member. React unmounts this component on that
+    navigation, so a tag left enabled would go on collecting across exactly the
+    "authenticated member or dashboard routes" and "login recovery routes" that owner
+    section 7 excludes — and `form_start`/`form_submit` carry the form's resolved
+    action URL, i.e. a member-area address. A full page load into those groups was
+    always clean; the soft navigation was not.
+
+    Its own effect, keyed on `measurementId` alone, so the cleanup runs on UNMOUNT
+    and on a changed measurement ID — not on every consent flip, where the effect
+    above already re-states the correct position and an extra denial would only add
+    noise to the queue. On a changed ID the closure disables the OLD id, which is the
+    right one to disable; the effect above then enables the new one if allowed. On a
+    cross-group remount the new instance sets the flag from its own route
+    eligibility, so leaving it disabled here is always the safe order.
+
+    Guarded on `consentDefaultPushedRef`: if this instance never bootstrapped gtag
+    (no measurement ID, or storage never resolved) there is no tag of ours to
+    disable, and creating `window.dataLayer` on the way out would be pure noise.
+  */
+  useEffect(() => {
+    if (!measurementId) return;
+    return () => {
+      if (!consentDefaultPushedRef.current) return;
+      setGaDisableFlag(measurementId, true);
+      ensureGtag()("consent", "update", consentCategories(false));
+    };
+  }, [measurementId]);
 
   /*
     One sanitised page view per eligible navigation, never a duplicate.
@@ -399,9 +520,12 @@ export function AnalyticsConsent({
             />
             {/* Admin-authored plain text, rendered as a React text child. Never
                 dangerouslySetInnerHTML: HTML or Markdown in the saved message is
-                shown literally rather than interpreted. */}
+                shown literally rather than interpreted. A URL pasted into the
+                message is therefore inert, which is why the policy link beside it
+                is code-rendered from the canonical configuration. */}
             <p className="flex-1 text-sm leading-6 text-muted-foreground">
               {config.bannerMessage}
+              <PrivacyPolicyLink path={config.privacyPolicyPath} />
             </p>
             <div className="flex shrink-0 flex-wrap gap-2">
               <Button type="button" onClick={() => record("accepted", "banner")}>
@@ -447,6 +571,7 @@ export function AnalyticsConsent({
             <p>
               Switching analytics off stops further collection from this browser. It
               does not remove information already sent to Google.
+              <PrivacyPolicyLink path={config.privacyPolicyPath} />
             </p>
           </div>
           <DialogFooter>

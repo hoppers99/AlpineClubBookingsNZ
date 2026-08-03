@@ -27,8 +27,25 @@
 
 /**
  * Set on `<html>` by the analytics runtime while a preferences control should be
- * offered: the module is on, the integration is validly configured, and the
- * current route is analytics-eligible. Absent means "offer nothing".
+ * offered: the analytics module is on and the integration is validly configured.
+ * Absent means "offer nothing".
+ *
+ * It is deliberately NOT route-gated, and the distinction matters enough to state
+ * here because this docblock is the contract between the two sides. Only the BANNER
+ * and the TAG are route-gated; the opt-out is offered wherever the runtime is
+ * mounted, INCLUDING a route analytics does not run on, because a visitor who wants
+ * to switch analytics off must not have to find a tracked page first — and in
+ * banner-off mode this control is their only route to it at all (owner decision
+ * section 5, clarification 1). Adding `routeEligible` to `preferencesAvailable` in
+ * `src/components/analytics-consent.tsx` would delete the link from
+ * `/hut-leader-instructions`, `/join/[code]` and `/join/verify/[token]` — the pages
+ * where the runtime is mounted but ineligible.
+ *
+ * What IS true about reach: the runtime is mounted by the two public WEBSITE layouts
+ * only, so the attribute is published on every `(website)` and `(website-dynamic)`
+ * page and on none of the `(public)` group's login, recovery and token pages, which
+ * render the footer with no runtime beneath it. Not mounting the runtime there is the
+ * privacy call (that whole group is on section 7's exclusion list) and it stays.
  *
  * The attribute exists so mount ORDER does not matter. The footer link mounts
  * before the runtime (it is higher in the tree), so it cannot rely on catching the

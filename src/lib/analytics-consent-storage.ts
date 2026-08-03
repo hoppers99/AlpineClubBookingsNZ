@@ -88,8 +88,11 @@ export function readStoredConsent(): StoredConsent | null {
         };
       }
     } catch {
-      // Fall through to the legacy read: a corrupt v2 value is no record.
+      // Unparseable JSON: fall through to the `return null` below.
     }
+    // A v2 value that is PRESENT but corrupt or unrecognised is "no record", and
+    // deliberately does NOT fall through to the legacy read: a v1 value left beside
+    // it is older, and reading it would resurrect a choice the v2 write superseded.
     return null;
   }
 

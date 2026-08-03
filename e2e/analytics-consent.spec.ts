@@ -235,6 +235,99 @@ test.describe("Google Analytics consent (anonymous visitor)", () => {
     await expect(banner(page)).toBeHidden();
   });
 
+  test("a soft navigation off the public website disables the resident tag", async ({
+    page,
+  }) => {
+    /*
+      The gap this closes, in the browser rather than in theory: the runtime is
+      mounted by the public WEBSITE layouts only, so clicking the header's own
+      "Log In" link is a client-side navigation into a route group that mounts
+      nothing analytics-related. React unmounts the runtime there — and unmounting
+      a script element cannot unload a library the browser has already executed,
+      so before the unmount effect the tag stayed resident with its kill switch
+      OFF and went on collecting across the login, recovery and member routes the
+      owner's section 7 excludes.
+
+      What is asserted is the state Google's own library reads: `ga-disable-<id>`
+      must be true once the runtime has gone. The fake measurement id means the
+      real library never executes here, so "no further collect request" would pass
+      vacuously and is deliberately not the assertion — though any request that
+      did leave after the navigation would still fail the count below.
+    */
+    await saveAnalyticsSettings(admin, {
+      measurementId: FAKE_MEASUREMENT_ID,
+      consentBannerEnabled: false,
+      bannerMessage: BANNER_MESSAGE,
+    });
+
+    const googleRequests = recordGoogleRequests(page);
+    await page.goto("/");
+    await expect(banner(page)).toBeHidden();
+    await expect
+      .poll(() => googleRequests.length, { timeout: 15_000 })
+      .toBeGreaterThan(0);
+    // Collecting: the loader is present and the per-id kill switch is off.
+    await expect(page.locator("#ga4-loader")).toHaveCount(1);
+    await expect
+      .poll(() =>
+        page.evaluate(
+          (id) =>
+            (window as unknown as Record<string, unknown>)[`ga-disable-${id}`],
+          FAKE_MEASUREMENT_ID,
+        ),
+      )
+      .toBe(false);
+
+    const requestsBefore = googleRequests.length;
+    // A marker on the document, so the assertions below can state WHICH kind of
+    // navigation happened rather than assume it. A full document load wipes it —
+    // and a full load was always clean, so it would prove nothing about the fix.
+    await page.evaluate(() => {
+      (window as unknown as Record<string, unknown>).__analyticsNavProbe = true;
+    });
+
+    // The header's own CTA, clicked as a visitor would.
+    const logIn = page
+      .getByRole("banner")
+      .getByRole("link", { name: "Log In" })
+      .first();
+    await expect(logIn).toBeVisible();
+    await logIn.click();
+    await expect(page).toHaveURL(/\/login$/);
+
+    // Asserted, not assumed: `/login` is in a different route GROUP but under the
+    // same root layout, so Next transitions to it client-side. If this ever fails,
+    // the framework has started hard-navigating between the groups — worth knowing,
+    // because then this whole class of leak cannot occur but nothing here proves
+    // the fix any more either.
+    expect(
+      await page.evaluate(
+        () =>
+          (window as unknown as Record<string, unknown>).__analyticsNavProbe ===
+          true,
+      ),
+      "expected a client-side navigation into /login, not a full document load",
+    ).toBe(true);
+
+    // The runtime is gone from the tree…
+    await expect(page.locator("#ga4-loader")).toHaveCount(0);
+    // …and it turned the tag off on its way out. This is the assertion the fix
+    // exists for: the same document, the library still resident, collection off.
+    await expect
+      .poll(() =>
+        page.evaluate(
+          (id) =>
+            (window as unknown as Record<string, unknown>)[`ga-disable-${id}`],
+          FAKE_MEASUREMENT_ID,
+        ),
+      )
+      .toBe(true);
+    expect(
+      googleRequests.length,
+      "no further request may reach Google after leaving the public website",
+    ).toBe(requestsBefore);
+  });
+
   test("banner disabled: analytics loads without asking, and the footer opt-out still works", async ({
     page,
   }) => {
