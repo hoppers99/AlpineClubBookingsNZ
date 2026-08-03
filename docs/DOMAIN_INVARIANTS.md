@@ -2629,14 +2629,26 @@ reports where each came from.
   exist while it waits differs. The refusal is thrown from inside the mutation
   transaction, so a modification that would break the rule rolls back.
 - **`INHERIT` remains lodge-only for the consequence**, and the second dimension
-  inherits by a different mechanism: all three host-scope columns NULL TOGETHER
+  inherits by a different mechanism: both host-scope columns NULL TOGETHER
   means "this row did not decide". The database CHECK holds them to all-null or
   all-set, so a half-configured scope set cannot exist for the resolver to guess
   at, and a NULL set on the club row resolves to the built-in default.
+- **Two scopes, and these two** (owner decisions, 3 Aug 2026). `SAME_BOOKING` is
+  the pre-#2569 rule kept verbatim. `SAME_BOOKING_OWNER` counts a qualifying adult
+  member attending another eligible booking with the EXACT same `Booking.memberId`,
+  at the same lodge on the same night (#2576) — one account's own bookings covering
+  each other, never `createdById`, a shared email, a Family Group link or
+  `parentBookingId` alone. The spec's third scope, `ANY_MEMBER_AT_LODGE`, is
+  REMOVED (#2575): a booking must not become compliant because an unrelated member
+  happens to be at the lodge. The originally planned `NOMINATED_HOST` workflow is
+  REMOVED with it (#2576) — no nomination, invitation, acceptance or host-search
+  machinery exists or is planned. Both are removals rather than deferrals, so there
+  is deliberately no hidden, reserved or refused value for either in the database
+  or the application; bringing one back means re-deciding it.
 - **The built-in default is same-booking only, and that is what makes the upgrade
   a no-op.** Every pre-#2569 row carries NULL scope columns, so every existing
   club keeps judging exactly the coverage it judged before. Nothing is broadened
-  to any-member-at-the-lodge, no club is moved onto `ENFORCED`, and the
+  to same-owner coverage, no club is moved onto `ENFORCED`, and the
   member-facing review sentence is byte-identical for a club on the default set.
 - **OR across enabled scopes, decided per night.** A non-member guest-night is
   compliant where AT LEAST ONE enabled scope supplies eligible adult-member cover
@@ -2656,8 +2668,11 @@ reports where each came from.
   refusal bodies are built by `buildAdultMemberHostingRefusalBody`, which strips
   `qualifyingHostsByNight[].memberIds` while keeping the nights and the scopes
   that covered them. The frozen snapshot an officer reviews keeps the ids in full
-  for validation and audit. Applied under every scope, not only the wide one: a
-  redaction that fires under one setting is a redaction nobody tests.
+  for validation and audit. Applied under every scope, not only the wider one: a
+  redaction that fires under one setting is a redaction nobody tests. Under
+  `SAME_BOOKING_OWNER` the covering stay is on the member's own account, so the
+  member may be told that another of their bookings supplies or depends on cover
+  (#2576 §11) — what is withheld is the internal member id, not the fact.
 - **School and organisation workflows are excluded** (§13). They pass
   `enforcement: "REVIEW_ONLY"`, which evaluates and records the hazard exactly as
   the review consequence does and never refuses, and the choice travels to their
@@ -2668,17 +2683,32 @@ reports where each came from.
   attributable and is recorded against the approved review, which is the same
   authority the exception door leads to.
 
-**Scope boundary (#2569).** This decision's SETTINGS model is complete and
-resolved; the loaders that FIND a host under the two wider scopes are not.
-`IMPLEMENTED_ADULT_MEMBER_HOST_SCOPES` is the single authority for which scopes
-can be saved, and the admin route, config transfer and the settings card all
-refuse the others — stored-and-ignored was rejected because a club would then
-believe it had widened who counts while the evaluator found nobody, and every
-affected booking would be reviewed or refused for cover the club thinks it has.
-The lodge-presence scope needs its cross-booking query AND the re-evaluation §5
-requires when the last unrelated adult leaves; the nominated-host scope needs the
-nomination model, candidate search, notification and host-change dependency
-handling of §6 to §12. Both are carried forward as filed issues.
+**Same-owner coverage (#2576).** `SAME_BOOKING_OWNER` reuses every definition
+`SAME_BOOKING` already has — qualifying adult member, exact guest-night, membership
+standing, age, member-guest consent, exceptions, reason and evidence structures —
+and adds only WHERE the host may be. Its rules:
+
+- **The relationship is the exact `Booking.memberId`.** An administrator entering
+  bookings on behalf of different members never links them.
+- **Only genuinely confirmed active attendance counts.** Drafts, holds,
+  payment-pending, waitlist entries and offers, bookings awaiting review or an
+  exception, bumped, cancelled, archived and expired bookings supply nothing, read
+  through the canonical lifecycle helpers rather than a second status list.
+- **Exact lodge and exact NZ lodge-night.** Lodge A on Friday covers neither Lodge
+  B on Friday nor Lodge A on Saturday, so a stay may be partly covered.
+- **Coverage is existential, not an assignment.** Evidence records the source
+  booking observed at evaluation time; it never becomes a stored authorisation, so
+  another eligible source keeps the dependent booking compliant with no incident
+  and no loss-of-coverage message.
+- **Re-evaluation stays bounded** to the same `memberId`, lodge and nights. The
+  lodge-wide sweep #2575 rejected is not built.
+
+The SETTINGS surface for this scope — enum, column, resolver, admin card, API,
+config transfer — ships with the rules above; the loader that finds a same-owner
+host, and the self-service change and officer-override handling of #2576 §6 to §9,
+land in the same PR. Until they do the scope is recognised but supplies no cover,
+which is why the seam is marked in `evaluateAdultMemberHostingWithPolicy` and the
+PR stays draft.
 
 ### Subscription-lockout booking pricing (#2533)
 

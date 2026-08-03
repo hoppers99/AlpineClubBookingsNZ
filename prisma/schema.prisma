@@ -3223,20 +3223,30 @@ model AdultMemberHostingPolicy {
   // combined with OR: a non-member guest-night is compliant where AT LEAST ONE
   // enabled scope supplies eligible adult-member coverage for that exact night.
   //
-  // ALL THREE ARE NULLABLE TOGETHER, and the migration's CHECK holds them to
-  // all-null or all-set. NULL means "this scope did not decide", which is what
-  // makes the second dimension inherit the same way the first one does:
+  // TWO COLUMNS, AND THESE TWO. The spec named three scopes; the owner's
+  // decisions of 3 Aug 2026 settled the model at two. The lodge-wide "any adult
+  // member staying at the lodge" scope is REMOVED (#2575) — a booking must not
+  // become compliant because an unrelated member happens to be at the lodge — and
+  // the nominated-host scope is REPLACED (#2576) by SAME_BOOKING_OWNER: coverage
+  // from a qualifying adult member attending another eligible booking with the
+  // exact same `Booking.memberId`. Neither removal is a deferral, so there is no
+  // reserved column for either: nothing here can be switched on without
+  // re-deciding the policy.
   //
-  //   - a lodge row with all three NULL inherits the club's scope set (the
+  // BOTH ARE NULLABLE TOGETHER, and the migration's CHECK holds them to all-null
+  // or all-set. NULL means "this scope did not decide", which is what makes the
+  // second dimension inherit the same way the first one does:
+  //
+  //   - a lodge row with both NULL inherits the club's scope set (the
   //     "Inherit club host scopes" option), whatever its own `mode` says;
   //   - a lodge row with them set is that lodge's custom scope set;
-  //   - the club row with all three NULL means the club never decided, which
+  //   - the club row with both NULL means the club never decided, which
   //     resolves to the BUILT-IN DEFAULT — same-booking only.
   //
   // That built-in default is what makes the upgrade a no-op (#2569 §15): every
   // existing row keeps NULL, so every existing club keeps judging exactly the
-  // same-booking coverage it judged before, and nothing is silently broadened to
-  // any-member-at-the-lodge. A club opts into the wider scopes by saving them.
+  // same-booking coverage it judged before, and no club is silently widened to
+  // same-owner coverage. A club opts in by saving it.
   //
   // Nullable rather than `Boolean @default(...)` deliberately. A default would
   // make "the club has not decided" indistinguishable from "the club chose
@@ -3244,8 +3254,7 @@ model AdultMemberHostingPolicy {
   // admin card, and would also mean a draining old colour's INSERT silently
   // asserted a decision it never made.
   hostScopeSameBooking      Boolean?
-  hostScopeAnyMemberAtLodge Boolean?
-  hostScopeNominatedHost    Boolean?
+  hostScopeSameBookingOwner Boolean?
 
   // Stable policy revision and compare-and-swap token, managed by the
   // AdultMemberHostingPolicy_version trigger. Same contract as

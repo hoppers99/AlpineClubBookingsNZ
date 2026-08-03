@@ -12,11 +12,9 @@ import {
   lockAdultMemberHostingPolicySet,
 } from "@/lib/adult-member-hosting-policy-set";
 import {
-  ADULT_MEMBER_HOST_SCOPE_LABELS,
   describeAdultMemberHostingPolicy,
   hostScopeSetIsEmpty,
   resolveAdultMemberHostingPolicy,
-  unavailableHostScopes,
   type AdultMemberHostScopeSet,
 } from "@/lib/policies/adult-member-hosting";
 
@@ -40,18 +38,22 @@ const CLUB_SCOPE_KEY = "club-wide";
  * `null` is the explicit `Inherit club host scopes` option — for a LODGE it means
  * "follow whatever the club decides", and for the CLUB it means "we have not
  * decided", which resolves to the built-in same-booking-only default. It is stored
- * as all three columns NULL, which the database CHECK holds together.
+ * as both columns NULL, which the database CHECK holds together.
  *
  * ABSENT is treated as `null` as well, so a caller that predates #2569 (and the
  * route tests written against it) keeps its exact meaning: no scope decision on
  * this row.
+ *
+ * STRICT, so a body naming a scope this build does not have — including the two
+ * the owner removed from the model (#2575, #2576) — is a 400 rather than a silently
+ * dropped key that would save a set the operator did not choose.
  */
 const hostScopesSchema = z
   .object({
     sameBooking: z.boolean(),
-    anyMemberAtLodge: z.boolean(),
-    nominatedHost: z.boolean(),
+    sameBookingOwner: z.boolean(),
   })
+  .strict()
   .nullable();
 
 const writeSchema = z.object({
@@ -119,20 +121,17 @@ export async function GET(request: NextRequest) {
 /** The stored scope set, or null where this row did not decide (#2569 §2). */
 function storedHostScopes(policy: {
   hostScopeSameBooking: boolean | null;
-  hostScopeAnyMemberAtLodge: boolean | null;
-  hostScopeNominatedHost: boolean | null;
+  hostScopeSameBookingOwner: boolean | null;
 }): AdultMemberHostScopeSet | null {
   if (
     policy.hostScopeSameBooking === null ||
-    policy.hostScopeAnyMemberAtLodge === null ||
-    policy.hostScopeNominatedHost === null
+    policy.hostScopeSameBookingOwner === null
   ) {
     return null;
   }
   return {
     sameBooking: policy.hostScopeSameBooking,
-    anyMemberAtLodge: policy.hostScopeAnyMemberAtLodge,
-    nominatedHost: policy.hostScopeNominatedHost,
+    sameBookingOwner: policy.hostScopeSameBookingOwner,
   };
 }
 
@@ -217,29 +216,11 @@ export async function PUT(request: NextRequest) {
         { status: 400 },
       );
     }
-    const unavailable = unavailableHostScopes(hostScopes);
-    if (unavailable.length > 0) {
-      // Refused rather than stored-and-ignored: see
-      // `IMPLEMENTED_ADULT_MEMBER_HOST_SCOPES`. A club that saved one of these
-      // would believe it had widened who counts while the evaluator found nobody,
-      // and every affected booking would be reviewed or refused for missing cover
-      // the club thinks it has.
-      return NextResponse.json(
-        {
-          error:
-            `Not available yet: ${unavailable
-              .map((scope) => ADULT_MEMBER_HOST_SCOPE_LABELS[scope])
-              .join(", ")}. Only "${ADULT_MEMBER_HOST_SCOPE_LABELS.SAME_BOOKING}" can be used at the moment.`,
-        },
-        { status: 400 },
-      );
-    }
   }
 
   const scopeColumns = {
     hostScopeSameBooking: hostScopes ? hostScopes.sameBooking : null,
-    hostScopeAnyMemberAtLodge: hostScopes ? hostScopes.anyMemberAtLodge : null,
-    hostScopeNominatedHost: hostScopes ? hostScopes.nominatedHost : null,
+    hostScopeSameBookingOwner: hostScopes ? hostScopes.sameBookingOwner : null,
   };
 
   const scopeKey = scopeKeyFor(lodgeId);
@@ -300,9 +281,8 @@ export async function PUT(request: NextRequest) {
         // revision trigger, which now compares these columns too, would keep the
         // old token and leave another admin's editor believing it was current.
         existing.hostScopeSameBooking === scopeColumns.hostScopeSameBooking &&
-        existing.hostScopeAnyMemberAtLodge ===
-          scopeColumns.hostScopeAnyMemberAtLodge &&
-        existing.hostScopeNominatedHost === scopeColumns.hostScopeNominatedHost
+        existing.hostScopeSameBookingOwner ===
+          scopeColumns.hostScopeSameBookingOwner
       ) {
         // Nothing material changed. Return the row untouched rather than write
         // it: the revision trigger would hold the token anyway, but a no-op

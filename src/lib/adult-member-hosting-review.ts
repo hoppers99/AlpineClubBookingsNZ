@@ -129,13 +129,16 @@ export async function loadAdultMemberHostingPolicy(
       capacityMode: true,
       version: true,
       // #2569's second dimension. Named explicitly because this select is
-      // narrowed: omitting them would hand the resolver three `undefined`s,
-      // which it reads as "this row did not decide" — so a lodge with a custom
-      // scope set would silently fall back to the club's, or to the built-in
-      // default, and the club's rule would be quietly widened or narrowed.
+      // narrowed: omitting them would hand the resolver `undefined`s, which it
+      // reads as "this row did not decide" — so a lodge with a custom scope set
+      // would silently fall back to the club's, or to the built-in default, and
+      // the club's rule would be quietly widened or narrowed. The db parameter is
+      // a hand-written narrow interface, so a stale column name here is NOT a
+      // typecheck error — it is a runtime Prisma validation failure on every
+      // booking write path. `adult-member-hosting-call-sites.test.ts` pins the
+      // selected set against the schema for that reason.
       hostScopeSameBooking: true,
-      hostScopeAnyMemberAtLodge: true,
-      hostScopeNominatedHost: true,
+      hostScopeSameBookingOwner: true,
     },
   });
   return resolveAdultMemberHostingPolicy(rows, effectiveLodgeId);
@@ -866,19 +869,14 @@ export class AdultMemberHostingRequiredError extends ApiError {
 /**
  * Strip the identities of the adult members whose stays cover each night.
  *
- * REQUIRED, NOT DEFENSIVE (#2569 §5). Under the `ANY_MEMBER_AT_LODGE` scope a
- * night can be covered by an adult member on somebody else's booking, who has not
- * been nominated, is not related to the booking owner and is not taking
- * responsibility for anybody. The owner's decision is explicit that such a
- * member's identity is never disclosed to the booking owner: the member-facing
- * answer says only that adult-member cover is or is not present. `memberIds` is
- * exactly that identity, so it is dropped from every member-facing body while the
- * frozen snapshot the officer reviews keeps it in full for validation, dependency
- * tracking and audit.
- *
- * Applied to EVERY scope rather than only to the wide one, because a member-facing
- * body has no business carrying member ids under any scope, and a redaction that
- * only fires under one setting is a redaction nobody tests.
+ * REQUIRED, NOT DEFENSIVE (#2576 §11). A member-facing body has no business
+ * carrying member ids under any scope: `memberIds` is an internal identity the
+ * frozen snapshot keeps in full for validation and audit, and the member-facing
+ * answer says only that adult-member cover is or is not present. Under
+ * `SAME_BOOKING_OWNER` the covering stay is on the member's OWN account, so the
+ * privacy stake is lower than the removed lodge-wide scope's was — but the rule is
+ * applied to EVERY scope rather than only where it bites, because a redaction that
+ * fires under one setting is a redaction nobody tests.
  *
  * The night list and the per-night scope list are kept: "this night is covered,
  * by an adult member on this booking" is the advice §17 asks for, and neither

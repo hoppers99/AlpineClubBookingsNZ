@@ -29,11 +29,10 @@ export type AdultMemberHostingModeValue =
   | "ADMIN_REVIEW_REQUIRED"
   | "ENFORCED"
 
-/** The three independent host scopes (#2569 §2); null is the inherit option. */
+/** The two independent host scopes (#2569 §2); null is the inherit option. */
 export interface AdultMemberHostScopeSetValue {
   sameBooking: boolean
-  anyMemberAtLodge: boolean
-  nominatedHost: boolean
+  sameBookingOwner: boolean
 }
 
 /**

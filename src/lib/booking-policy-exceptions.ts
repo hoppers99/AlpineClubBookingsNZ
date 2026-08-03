@@ -119,31 +119,46 @@ export type QualifyingHostsForNight = {
 };
 
 /**
- * The three ways a club may let an adult member supply coverage (#2569 §2).
+ * The ways a club may let an adult member supply coverage (#2569 §2).
  *
- * INDEPENDENT and combined with OR: a club or lodge enables any one or any
- * combination, and a non-member guest-night is compliant where AT LEAST ONE
- * enabled scope supplies eligible adult-member coverage for that exact night.
- * Different nights of one booking may be covered by different scopes and by
- * different members.
+ * INDEPENDENT and combined with OR: a club or lodge enables either or both, and a
+ * non-member guest-night is compliant where AT LEAST ONE enabled scope supplies
+ * eligible adult-member coverage for that exact night. Different nights of one
+ * booking may be covered by different scopes and by different members.
  *
  *  - `SAME_BOOKING` — an eligible adult member staying on the same booking. The
  *    pre-#2569 rule, preserved verbatim as one available scope (§4) and the
  *    built-in default, so an upgrade moves no club's behaviour (§15).
- *  - `ANY_MEMBER_AT_LODGE` — any eligible adult member with a capacity-holding
- *    stay at the same lodge that night, on any booking. A lodge-PRESENCE rule,
- *    not a nominated-host relationship: nobody is assigned responsibility, and
- *    the unrelated member's identity is never disclosed to the booking owner (§5).
- *  - `NOMINATED_HOST` — an eligible adult member the booking owner nominated,
- *    drawn only from themselves, their Family Group, or the same booking (§6).
+ *  - `SAME_BOOKING_OWNER` — an eligible adult member attending another eligible
+ *    booking whose `Booking.memberId` is EXACTLY the same, at the same lodge on
+ *    the same night (#2576). One account's own split bookings covering each other,
+ *    and nothing wider: not `createdById`, not a shared email, not a Family Group
+ *    link, not `parentBookingId` alone, and never another account's booking.
+ *
+ * TWO SCOPES, AND THESE TWO (owner decisions, 3 Aug 2026). The spec named three,
+ * and both of the others were settled out of the product model before any of them
+ * shipped:
+ *
+ *  - `ANY_MEMBER_AT_LODGE` is REMOVED (#2575). Letting one booking become
+ *    compliant because an unrelated adult member happens to be staying at the same
+ *    lodge creates dependencies between otherwise unrelated bookings, and the
+ *    owner's decision is that the product should not allow it.
+ *  - `NOMINATED_HOST` is REPLACED (#2576) by `SAME_BOOKING_OWNER`. The narrower
+ *    same-account rule answers the cross-booking case the club actually has (a
+ *    member with two bookings at one lodge) without a nomination, invitation,
+ *    acceptance or host-search workflow.
+ *
+ * Neither is deferred or dormant: there is deliberately no hidden, refused or
+ * reserved value for either anywhere in the database or the application, so a
+ * future lane cannot switch one on by editing a registry. Rebuilding either would
+ * mean re-deciding it.
  *
  * Declared here, beside the violation shape that reports them, so the evaluator,
  * the policy row, the admin route and the frozen snapshot all name one list.
  */
 export const ADULT_MEMBER_HOST_SCOPES = [
   "SAME_BOOKING",
-  "ANY_MEMBER_AT_LODGE",
-  "NOMINATED_HOST",
+  "SAME_BOOKING_OWNER",
 ] as const;
 
 export type AdultMemberHostScope = (typeof ADULT_MEMBER_HOST_SCOPES)[number];

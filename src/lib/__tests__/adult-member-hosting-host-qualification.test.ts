@@ -19,10 +19,10 @@ import {
   aggregatePolicyExceptionViolations,
 } from "@/lib/booking-policy-exceptions";
 import {
+  ADULT_MEMBER_HOST_SCOPE_DESCRIPTIONS,
   ADULT_MEMBER_HOST_SCOPE_LABELS,
   DEFAULT_ADULT_MEMBER_HOST_SCOPES,
   EmptyAdultMemberHostScopeSetError,
-  IMPLEMENTED_ADULT_MEMBER_HOST_SCOPES,
   PUBLIC_GROUP_JOIN_ADULT_MEMBER_HOSTING_MESSAGE,
   describeAdultMemberHostingPolicy,
   formatAdultMemberHostingWaitlistRefusal,
@@ -33,7 +33,6 @@ import {
   hostScopeSetIsEmpty,
   hostingModeIsActive,
   resolveAdultMemberHostingPolicy,
-  unavailableHostScopes,
   type AdultMemberHostScopeSet,
   type AdultMemberHostingPolicyLike,
   type HostingParticipant,
@@ -43,7 +42,7 @@ import {
   buildAdultMemberHostingRefusalBody,
 } from "@/lib/adult-member-hosting-review";
 
-/** A row as it exists BEFORE this issue: the three scope columns are NULL. */
+/** A row as it exists BEFORE this issue: both scope columns are NULL. */
 function legacyRow(
   overrides: Partial<AdultMemberHostingPolicyLike> = {},
 ): AdultMemberHostingPolicyLike {
@@ -55,8 +54,7 @@ function legacyRow(
     capacityMode: "NO_HOLD",
     version: 4,
     hostScopeSameBooking: null,
-    hostScopeAnyMemberAtLodge: null,
-    hostScopeNominatedHost: null,
+    hostScopeSameBookingOwner: null,
     ...overrides,
   };
 }
@@ -64,29 +62,15 @@ function legacyRow(
 function scopeColumns(scopes: AdultMemberHostScopeSet) {
   return {
     hostScopeSameBooking: scopes.sameBooking,
-    hostScopeAnyMemberAtLodge: scopes.anyMemberAtLodge,
-    hostScopeNominatedHost: scopes.nominatedHost,
+    hostScopeSameBookingOwner: scopes.sameBookingOwner,
   };
 }
 
 const SCOPES = {
-  sameBookingOnly: {
-    sameBooking: true,
-    anyMemberAtLodge: false,
-    nominatedHost: false,
-  },
-  lodgeOnly: {
-    sameBooking: false,
-    anyMemberAtLodge: true,
-    nominatedHost: false,
-  },
-  nominatedOnly: {
-    sameBooking: false,
-    anyMemberAtLodge: false,
-    nominatedHost: true,
-  },
-  all: { sameBooking: true, anyMemberAtLodge: true, nominatedHost: true },
-  none: { sameBooking: false, anyMemberAtLodge: false, nominatedHost: false },
+  sameBookingOnly: { sameBooking: true, sameBookingOwner: false },
+  sameOwnerOnly: { sameBooking: false, sameBookingOwner: true },
+  all: { sameBooking: true, sameBookingOwner: true },
+  none: { sameBooking: false, sameBookingOwner: false },
 } satisfies Record<string, AdultMemberHostScopeSet>;
 
 function adult(
@@ -156,14 +140,14 @@ describe("host-qualification resolution is a second, independent dimension", () 
           // that read the scope set only inside its non-INHERIT branch would
           // silently drop this lodge's decision.
           mode: "INHERIT",
-          ...scopeColumns(SCOPES.nominatedOnly),
+          ...scopeColumns(SCOPES.sameOwnerOnly),
         }),
       ],
       "lodge-1",
     );
     expect(resolved.mode).toBe("ENFORCED");
     expect(resolved.resolvedScope.kind).toBe("CLUB_WIDE");
-    expect(resolved.hostScopes).toEqual(SCOPES.nominatedOnly);
+    expect(resolved.hostScopes).toEqual(SCOPES.sameOwnerOnly);
     expect(resolved.hostScopeSource).toBe("LODGE");
   });
 
@@ -192,8 +176,7 @@ describe("host-qualification resolution is a second, independent dimension", () 
       [
         legacyRow({
           hostScopeSameBooking: true,
-          hostScopeAnyMemberAtLodge: null,
-          hostScopeNominatedHost: null,
+          hostScopeSameBookingOwner: null,
         }),
       ],
       "lodge-1",
@@ -223,11 +206,14 @@ describe("the evaluator counts a host only under an ENABLED scope, per night", (
       "lodge-1",
     );
 
-  it("ignores a nominated host while that scope is off, and counts them when it is on", () => {
+  it("ignores a same-owner host while that scope is off, and counts them when it is on", () => {
     const party = [
-      // Stamped NOMINATED_HOST: staying at the lodge on another booking, offered
-      // as this booking's nominated host.
-      adult("h1", ["2026-07-04"], { hostScope: "NOMINATED_HOST", hostOnly: true }),
+      // Stamped SAME_BOOKING_OWNER: an adult member attending another booking with
+      // the same `Booking.memberId`, at this lodge on this night (#2576 s1).
+      adult("h1", ["2026-07-04"], {
+        hostScope: "SAME_BOOKING_OWNER",
+        hostOnly: true,
+      }),
       nonMember("g1", ["2026-07-04"]),
     ];
 
@@ -240,7 +226,7 @@ describe("the evaluator counts a host only under an ENABLED scope, per night", (
 
     const on = evaluateAdultMemberHostingWithPolicy(
       party,
-      resolvedWith("ADMIN_REVIEW_REQUIRED", SCOPES.nominatedOnly),
+      resolvedWith("ADMIN_REVIEW_REQUIRED", SCOPES.sameOwnerOnly),
     );
     expect(on).toBeNull();
   });
@@ -248,11 +234,11 @@ describe("the evaluator counts a host only under an ENABLED scope, per night", (
   it("ORs across scopes night by night, so different nights are covered differently", () => {
     const violation = evaluateAdultMemberHostingWithPolicy(
       [
-        // Monday covered on the same booking; Tuesday by an unrelated member at
-        // the lodge; Wednesday by nobody.
+        // Monday covered on the same booking; Tuesday by an adult member on
+        // another booking on the same account; Wednesday by nobody.
         adult("a1", ["2026-07-04"]),
         adult("a2", ["2026-07-05"], {
-          hostScope: "ANY_MEMBER_AT_LODGE",
+          hostScope: "SAME_BOOKING_OWNER",
           hostOnly: true,
         }),
         nonMember("g1", ["2026-07-04", "2026-07-05", "2026-07-06"]),
@@ -273,7 +259,7 @@ describe("the evaluator counts a host only under an ENABLED scope, per night", (
       {
         night: "2026-07-05",
         memberIds: ["member-a2"],
-        coveredByScopes: ["ANY_MEMBER_AT_LODGE"],
+        coveredByScopes: ["SAME_BOOKING_OWNER"],
       },
       { night: "2026-07-06", memberIds: [], coveredByScopes: [] },
     ]);
@@ -291,18 +277,19 @@ describe("the evaluator counts a host only under an ENABLED scope, per night", (
     // which is the proof the default is a real scope rather than a bypass.
     const notCovered = evaluateAdultMemberHostingWithPolicy(
       [adult("a1", ["2026-07-04"]), nonMember("g1", ["2026-07-04"])],
-      resolvedWith("ADMIN_REVIEW_REQUIRED", SCOPES.lodgeOnly),
+      resolvedWith("ADMIN_REVIEW_REQUIRED", SCOPES.sameOwnerOnly),
     );
     expect(notCovered).not.toBeNull();
   });
 
   it("still applies every eligibility rule to a host offered under a wider scope", () => {
-    // A wider scope changes WHERE a host may be, never WHO qualifies: a lapsed
-    // member, a youth and an unaccepted invite are refused under scope 2 exactly
-    // as they are on the same booking.
+    // A wider scope changes WHERE a host may be, never WHO qualifies (#2576 s13:
+    // one shared definition of an eligible adult member): a lapsed member, a youth,
+    // an unaccepted invite and an unpaid subscription are refused on another booking
+    // of the same account exactly as they are on this one.
     for (const disqualified of [
       adult("x", ["2026-07-04"], {
-        hostScope: "ANY_MEMBER_AT_LODGE",
+        hostScope: "SAME_BOOKING_OWNER",
         hostOnly: true,
         member: {
           id: "member-x",
@@ -313,7 +300,7 @@ describe("the evaluator counts a host only under an ENABLED scope, per night", (
         },
       }),
       adult("y", ["2026-07-04"], {
-        hostScope: "ANY_MEMBER_AT_LODGE",
+        hostScope: "SAME_BOOKING_OWNER",
         hostOnly: true,
         member: {
           id: "member-y",
@@ -324,12 +311,12 @@ describe("the evaluator counts a host only under an ENABLED scope, per night", (
         },
       }),
       adult("z", ["2026-07-04"], {
-        hostScope: "ANY_MEMBER_AT_LODGE",
+        hostScope: "SAME_BOOKING_OWNER",
         hostOnly: true,
         operationallyPresent: false,
       }),
       adult("w", ["2026-07-04"], {
-        hostScope: "ANY_MEMBER_AT_LODGE",
+        hostScope: "SAME_BOOKING_OWNER",
         hostOnly: true,
         subscriptionSettled: false,
       }),
@@ -429,7 +416,7 @@ describe("the ENFORCED consequence", () => {
     const violation = evaluateAdultMemberHostingWithPolicy(
       [
         adult("a2", ["2026-07-05"], {
-          hostScope: "ANY_MEMBER_AT_LODGE",
+          hostScope: "SAME_BOOKING_OWNER",
           hostOnly: true,
         }),
         nonMember("g1", ["2026-07-04", "2026-07-05"]),
@@ -448,10 +435,10 @@ describe("the ENFORCED consequence", () => {
       ),
     ).toEqual(["member-a2"]);
 
-    // The member-facing body does not: under the lodge-presence scope this could
-    // be an unrelated member on somebody else's booking, and §5 forbids
-    // disclosing them. The nights and the covering scopes survive, because those
-    // are the advice §17 asks for and neither names a person.
+    // The member-facing body does not: a member id is an internal identity that no
+    // member-facing body carries under any scope (#2576 §11). The nights and the
+    // covering scopes survive, because those are the advice §17 asks for and
+    // neither names a person.
     const body = buildAdultMemberHostingRefusalBody(violation);
     const published = body.violations[0] as typeof violation;
     expect(
@@ -464,7 +451,7 @@ describe("the ENFORCED consequence", () => {
     ).toEqual(["2026-07-04", "2026-07-05"]);
     expect(
       published.requirements.qualifyingHostsByNight[1].coveredByScopes,
-    ).toEqual(["ANY_MEMBER_AT_LODGE"]);
+    ).toEqual(["SAME_BOOKING_OWNER"]);
   });
 });
 
@@ -508,7 +495,7 @@ describe("the refusal reaches every refusing surface in a shape that fits it", (
     expect(message).not.toMatch(/guest night/i);
     expect(message).not.toMatch(/exception/i);
     expect(message).not.toMatch(/Booking Officer/i);
-    expect(message).not.toMatch(/nominate/i);
+    expect(message).not.toMatch(/another booking/i);
 
     // It is also NOT the member-facing refusal, which names all four ways out —
     // three of which a non-login contact cannot take.
@@ -550,12 +537,12 @@ describe("the upgrade moves nobody (§15)", () => {
 
   it("evaluates a legacy row exactly as same-booking-only, whatever else is stored", () => {
     const legacy = resolveAdultMemberHostingPolicy([legacyRow()], "lodge-1");
-    // An unrelated adult at the lodge does NOT quietly start covering guests
-    // just because #2569 shipped. That is the "do not silently broaden" rule.
+    // An adult on ANOTHER of this member's bookings does NOT quietly start covering
+    // guests just because #2569 shipped. That is the "do not silently broaden" rule.
     const violation = evaluateAdultMemberHostingWithPolicy(
       [
         adult("a2", ["2026-07-04"], {
-          hostScope: "ANY_MEMBER_AT_LODGE",
+          hostScope: "SAME_BOOKING_OWNER",
           hostOnly: true,
         }),
         nonMember("g1", ["2026-07-04"]),
@@ -567,14 +554,14 @@ describe("the upgrade moves nobody (§15)", () => {
   });
 });
 
-describe("scope-set helpers and the availability gate", () => {
+describe("scope-set helpers and the settled scope model", () => {
   it("lists enabled scopes in the canonical order, whatever order the flags are read in", () => {
     expect(enabledHostScopeList(SCOPES.all)).toEqual([
       ...ADULT_MEMBER_HOST_SCOPES,
     ]);
     expect(enabledHostScopeList(SCOPES.none)).toEqual([]);
-    expect(enabledHostScopeList(SCOPES.nominatedOnly)).toEqual([
-      "NOMINATED_HOST",
+    expect(enabledHostScopeList(SCOPES.sameOwnerOnly)).toEqual([
+      "SAME_BOOKING_OWNER",
     ]);
   });
 
@@ -587,17 +574,30 @@ describe("scope-set helpers and the availability gate", () => {
     expect(hostScopeSetIsEmpty(SCOPES.sameBookingOnly)).toBe(false);
   });
 
-  it("names the scopes this build cannot evaluate, so they are refused rather than stored", () => {
-    expect([...IMPLEMENTED_ADULT_MEMBER_HOST_SCOPES]).toEqual(["SAME_BOOKING"]);
-    expect(unavailableHostScopes(SCOPES.sameBookingOnly)).toEqual([]);
-    expect(unavailableHostScopes(SCOPES.all)).toEqual([
-      "ANY_MEMBER_AT_LODGE",
-      "NOMINATED_HOST",
+  it("holds the model to the two scopes the owner settled on", () => {
+    // The spec named three. #2575 REMOVED the lodge-wide scope and #2576 REPLACED
+    // the nominated-host scope with same-owner coverage, both as removals rather
+    // than deferrals - so this list is the whole product model, and a value coming
+    // back has to come back through a decision rather than a typo.
+    expect([...ADULT_MEMBER_HOST_SCOPES]).toEqual([
+      "SAME_BOOKING",
+      "SAME_BOOKING_OWNER",
     ]);
-    // Every scope has a label, or the refusal sentence would name an enum value.
+    // Every scope has a label and an administrator-facing sentence, or the settings
+    // card and the refusal wording would name an enum value.
     for (const scope of ADULT_MEMBER_HOST_SCOPES) {
       expect(ADULT_MEMBER_HOST_SCOPE_LABELS[scope]).toBeTruthy();
+      expect(ADULT_MEMBER_HOST_SCOPE_DESCRIPTIONS[scope]).toBeTruthy();
     }
+    // The owner's own words for the new scope (#2576 §12), so a later edit that
+    // reads more loosely than the rule is caught here.
+    expect(ADULT_MEMBER_HOST_SCOPE_LABELS.SAME_BOOKING_OWNER).toBe(
+      "Another booking on the same account",
+    );
+    expect(ADULT_MEMBER_HOST_SCOPE_DESCRIPTIONS.SAME_BOOKING_OWNER).toBe(
+      "Allow a qualifying adult member on another confirmed booking owned by " +
+        "the same member account to provide coverage for the same lodge and nights.",
+    );
   });
 
   it("says which consequences actually evaluate the rule", () => {
@@ -610,15 +610,12 @@ describe("scope-set helpers and the availability gate", () => {
 describe("the plain-English preview the settings card shows (§16)", () => {
   it("states the consequence and the coverage, and never a person", () => {
     expect(
-      describeAdultMemberHostingPolicy("ENFORCED", {
-        sameBooking: true,
-        anyMemberAtLodge: false,
-        nominatedHost: true,
-      }),
+      describeAdultMemberHostingPolicy("ENFORCED", SCOPES.all),
     ).toBe(
       "This lodge stops bookings where non-member guests are not covered. " +
         "Coverage may be supplied by an adult member staying on this booking or " +
-        "an adult member you nominate who is staying at the lodge.",
+        "an adult member staying at the same lodge that night on another booking " +
+        "on your account.",
     );
     expect(
       describeAdultMemberHostingPolicy(

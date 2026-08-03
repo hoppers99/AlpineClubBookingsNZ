@@ -25,7 +25,6 @@ import {
 import {
   enabledHostScopeList,
   hostScopeSetIsEmpty,
-  unavailableHostScopes,
 } from "@/lib/policies/adult-member-hosting";
 import { folderLodgeSlug, lodgeFolderSegments } from "./lodge-config";
 import { asStr, RowValidator } from "../values";
@@ -54,8 +53,7 @@ const DATA_FIELDS = [
   "mode",
   "capacityMode",
   "hostScopeSameBooking",
-  "hostScopeAnyMemberAtLodge",
-  "hostScopeNominatedHost",
+  "hostScopeSameBookingOwner",
 ] as const;
 
 /**
@@ -63,9 +61,9 @@ const DATA_FIELDS = [
  *
  * A `|`-separated list of enabled scope names, or BLANK for the explicit inherit
  * option — a lodge following the club, or a club that never decided. One cell
- * rather than three booleans because the database holds the three columns to
- * all-NULL or all-set: three cells could disagree with that in a hand-edited file,
- * and the importer would then have to guess which half the operator meant.
+ * rather than one column per scope because the database holds the columns to
+ * all-NULL or all-set: separate cells could disagree with that in a hand-edited
+ * file, and the importer would then have to guess which half the operator meant.
  *
  * Blank round-trips as blank, so exporting and re-importing a club that has never
  * touched the second dimension changes nothing — which is what keeps a transfer
@@ -75,42 +73,38 @@ const HOST_SCOPE_CELL_SEPARATOR = "|";
 
 function serialiseHostScopes(policy: {
   hostScopeSameBooking: boolean | null;
-  hostScopeAnyMemberAtLodge: boolean | null;
-  hostScopeNominatedHost: boolean | null;
+  hostScopeSameBookingOwner: boolean | null;
 }): string {
   if (
     policy.hostScopeSameBooking === null ||
-    policy.hostScopeAnyMemberAtLodge === null ||
-    policy.hostScopeNominatedHost === null
+    policy.hostScopeSameBookingOwner === null
   ) {
     return "";
   }
   return enabledHostScopeList({
     sameBooking: policy.hostScopeSameBooking,
-    anyMemberAtLodge: policy.hostScopeAnyMemberAtLodge,
-    nominatedHost: policy.hostScopeNominatedHost,
+    sameBookingOwner: policy.hostScopeSameBookingOwner,
   }).join(HOST_SCOPE_CELL_SEPARATOR);
 }
 
 type HostScopeColumns = {
   hostScopeSameBooking: boolean | null;
-  hostScopeAnyMemberAtLodge: boolean | null;
-  hostScopeNominatedHost: boolean | null;
+  hostScopeSameBookingOwner: boolean | null;
 };
 
 const INHERITED_HOST_SCOPE_COLUMNS: HostScopeColumns = {
   hostScopeSameBooking: null,
-  hostScopeAnyMemberAtLodge: null,
-  hostScopeNominatedHost: null,
+  hostScopeSameBookingOwner: null,
 };
 
 /**
  * Parse the cell, pushing a sentence per problem rather than throwing.
  *
  * Refuses in the DRY RUN exactly what the admin route refuses on save: an unknown
- * name, a duplicate, an empty explicit set, and a scope this build cannot evaluate
- * yet. A transfer is the one path that could otherwise write a setting the UI will
- * not let an operator choose, so the two refusals are kept deliberately identical.
+ * name — which is how a bundle written against the removed `ANY_MEMBER_AT_LODGE`
+ * or `NOMINATED_HOST` scopes is caught — a duplicate, and an empty explicit set. A
+ * transfer is the one path that could otherwise write a setting the UI will not let
+ * an operator choose, so the two refusals are kept deliberately identical.
  */
 function parseHostScopeCell(
   raw: unknown,
@@ -140,8 +134,7 @@ function parseHostScopeCell(
 
   const scopes = {
     sameBooking: seen.has("SAME_BOOKING"),
-    anyMemberAtLodge: seen.has("ANY_MEMBER_AT_LODGE"),
-    nominatedHost: seen.has("NOMINATED_HOST"),
+    sameBookingOwner: seen.has("SAME_BOOKING_OWNER"),
   };
   if (hostScopeSetIsEmpty(scopes)) {
     errors.push(
@@ -149,17 +142,9 @@ function parseHostScopeCell(
     );
     return null;
   }
-  const unavailable = unavailableHostScopes(scopes);
-  if (unavailable.length > 0) {
-    errors.push(
-      `${file} row ${rowNumber}: hostScopes — ${unavailable.join(", ")} cannot be used yet; only SAME_BOOKING is available`,
-    );
-    return null;
-  }
   return {
     hostScopeSameBooking: scopes.sameBooking,
-    hostScopeAnyMemberAtLodge: scopes.anyMemberAtLodge,
-    hostScopeNominatedHost: scopes.nominatedHost,
+    hostScopeSameBookingOwner: scopes.sameBookingOwner,
   };
 }
 
@@ -223,8 +208,7 @@ async function loadCurrent(db: ReadDb): Promise<{
         mode: true,
         capacityMode: true,
         hostScopeSameBooking: true,
-        hostScopeAnyMemberAtLodge: true,
-        hostScopeNominatedHost: true,
+        hostScopeSameBookingOwner: true,
         version: true,
       },
     }),

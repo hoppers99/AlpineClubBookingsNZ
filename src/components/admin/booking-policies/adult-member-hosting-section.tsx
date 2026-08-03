@@ -41,29 +41,27 @@ const ENDPOINT = "/api/admin/booking-policies/adult-member-hosting"
 const UNLOADED_SCOPE = "__unloaded__"
 
 /**
- * The scopes this build can actually evaluate. Mirrors
- * `IMPLEMENTED_ADULT_MEMBER_HOST_SCOPES` on the server, which is the authority —
- * the route refuses the others whatever this component sends. Repeated here so the
- * checkbox is visibly unavailable with a reason, rather than looking selectable and
- * failing on save.
+ * The checkbox wording, taken from the server's own
+ * `ADULT_MEMBER_HOST_SCOPE_LABELS` / `..._DESCRIPTIONS` (#2576 §12). Repeated as
+ * literals rather than imported because this is a client component and those live
+ * beside the evaluator; the route tests assert the two agree.
  */
-const HOST_SCOPE_AVAILABLE: Record<keyof AdultMemberHostScopeSetValue, boolean> = {
-  sameBooking: true,
-  anyMemberAtLodge: false,
-  nominatedHost: false,
-}
-
 const HOST_SCOPE_LABELS: Record<keyof AdultMemberHostScopeSetValue, string> = {
   sameBooking: "Eligible adult member on the same booking",
-  anyMemberAtLodge: "Any eligible adult member staying at the lodge",
-  nominatedHost: "Nominated responsible adult member",
+  sameBookingOwner: "Another booking on the same account",
 }
 
-const HOST_SCOPE_ORDER = [
-  "sameBooking",
-  "anyMemberAtLodge",
-  "nominatedHost",
-] as const
+const HOST_SCOPE_DESCRIPTIONS: Record<
+  keyof AdultMemberHostScopeSetValue,
+  string
+> = {
+  sameBooking:
+    "Count a qualifying adult member who is staying on the booking itself for the nights they are there.",
+  sameBookingOwner:
+    "Allow a qualifying adult member on another confirmed booking owned by the same member account to provide coverage for the same lodge and nights.",
+}
+
+const HOST_SCOPE_ORDER = ["sameBooking", "sameBookingOwner"] as const
 
 const SOURCE_LABELS: Record<string, string> = {
   LODGE: "set for this lodge",
@@ -117,8 +115,7 @@ function scopeSetsEqual(
   if (a === null || b === null) return a === b
   return (
     a.sameBooking === b.sameBooking &&
-    a.anyMemberAtLodge === b.anyMemberAtLodge &&
-    a.nominatedHost === b.nominatedHost
+    a.sameBookingOwner === b.sameBookingOwner
   )
 }
 
@@ -183,8 +180,7 @@ export function AdultMemberHostingSection() {
   const [customScopeSeed, setCustomScopeSeed] =
     useState<AdultMemberHostScopeSetValue>({
       sameBooking: true,
-      anyMemberAtLodge: false,
-      nominatedHost: false,
+      sameBookingOwner: false,
     })
   const scopeRef = useRef(scopeLodgeId)
   const modeHint = useFieldHint()
@@ -278,8 +274,7 @@ export function AdultMemberHostingSection() {
       draft.capacityMode !== "" &&
       (draft.hostScopes === null ||
         draft.hostScopes.sameBooking ||
-        draft.hostScopes.anyMemberAtLodge ||
-        draft.hostScopes.nominatedHost),
+        draft.hostScopes.sameBookingOwner),
   })
 
   const { draft, editing, saving, dirty, valid, error, success } = section
@@ -479,11 +474,7 @@ export function AdultMemberHostingSection() {
                         type="checkbox"
                         className="mt-1"
                         checked={draft.hostScopes?.[key] ?? false}
-                        disabled={
-                          !editing ||
-                          draft.hostScopes === null ||
-                          !HOST_SCOPE_AVAILABLE[key]
-                        }
+                        disabled={!editing || draft.hostScopes === null}
                         onChange={(event) =>
                           section.setDraft({
                             hostScopes: draft.hostScopes
@@ -495,17 +486,11 @@ export function AdultMemberHostingSection() {
                           })
                         }
                       />
-                      <span
-                        className={
-                          HOST_SCOPE_AVAILABLE[key]
-                            ? undefined
-                            : "text-muted-foreground"
-                        }
-                      >
+                      <span>
                         {HOST_SCOPE_LABELS[key]}
-                        {HOST_SCOPE_AVAILABLE[key]
-                          ? null
-                          : " — not available yet"}
+                        <span className="block text-muted-foreground">
+                          {HOST_SCOPE_DESCRIPTIONS[key]}
+                        </span>
                       </span>
                     </label>
                   ))}

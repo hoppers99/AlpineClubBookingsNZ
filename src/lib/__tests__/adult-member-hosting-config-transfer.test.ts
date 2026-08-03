@@ -27,8 +27,7 @@ const clubPolicy = {
   mode: "ADMIN_REVIEW_REQUIRED",
   capacityMode: "HOLD",
   hostScopeSameBooking: null,
-  hostScopeAnyMemberAtLodge: null,
-  hostScopeNominatedHost: null,
+  hostScopeSameBookingOwner: null,
   version: 2,
 };
 const lodgePolicy = {
@@ -38,8 +37,7 @@ const lodgePolicy = {
   mode: "INHERIT",
   capacityMode: "NO_HOLD",
   hostScopeSameBooking: null,
-  hostScopeAnyMemberAtLodge: null,
-  hostScopeNominatedHost: null,
+  hostScopeSameBookingOwner: null,
   version: 1,
 };
 
@@ -255,8 +253,7 @@ describe("adult-member hosting configuration transfer (#2364)", () => {
         mode: "DISABLED",
         capacityMode: "NO_HOLD",
         hostScopeSameBooking: null,
-        hostScopeAnyMemberAtLodge: null,
-        hostScopeNominatedHost: null,
+        hostScopeSameBookingOwner: null,
         version: 3,
       },
     });
@@ -266,8 +263,7 @@ describe("adult-member hosting configuration transfer (#2364)", () => {
         mode: "ADMIN_REVIEW_REQUIRED",
         capacityMode: "HOLD",
         hostScopeSameBooking: null,
-        hostScopeAnyMemberAtLodge: null,
-        hostScopeNominatedHost: null,
+        hostScopeSameBookingOwner: null,
         version: 2,
       },
     });
@@ -289,8 +285,7 @@ describe("adult-member hosting configuration transfer (#2364)", () => {
         mode: "DISABLED",
         capacityMode: "HOLD",
         hostScopeSameBooking: null,
-        hostScopeAnyMemberAtLodge: null,
-        hostScopeNominatedHost: null,
+        hostScopeSameBookingOwner: null,
       },
       select: { id: true },
     });
@@ -308,6 +303,26 @@ describe("adult-member hosting configuration transfer (#2364)", () => {
     ).rejects.toThrow(/changed during import/);
   });
 
+  it("carries same-owner coverage as a saveable set (#2576)", async () => {
+    const { tx, updateMany } = txDouble();
+    await bookingPoliciesImporter.apply(
+      applyContext(
+        `${HEADER}club-wide,ADMIN_REVIEW_REQUIRED,HOLD,SAME_BOOKING|SAME_BOOKING_OWNER\nlodge:tukino,INHERIT,NO_HOLD,\n`,
+        tx,
+      ),
+    );
+    expect(updateMany).toHaveBeenCalledWith({
+      where: { id: "hosting-club", version: 2 },
+      data: {
+        mode: "ADMIN_REVIEW_REQUIRED",
+        capacityMode: "HOLD",
+        hostScopeSameBooking: true,
+        hostScopeSameBookingOwner: true,
+        version: 3,
+      },
+    });
+  });
+
   it("carries an explicit host-scope set, and refuses the shapes the card refuses (#2569)", async () => {
     const { tx, updateMany } = txDouble();
     await bookingPoliciesImporter.apply(
@@ -317,15 +332,14 @@ describe("adult-member hosting configuration transfer (#2364)", () => {
       ),
     );
     // The club decided; the lodge inherits. Two rows, two different meanings for
-    // the same three columns.
+    // the same pair of columns.
     expect(updateMany).toHaveBeenCalledWith({
       where: { id: "hosting-club", version: 2 },
       data: {
         mode: "ADMIN_REVIEW_REQUIRED",
         capacityMode: "HOLD",
         hostScopeSameBooking: true,
-        hostScopeAnyMemberAtLodge: false,
-        hostScopeNominatedHost: false,
+        hostScopeSameBookingOwner: false,
         version: 3,
       },
     });
@@ -337,11 +351,19 @@ describe("adult-member hosting configuration transfer (#2364)", () => {
         `${HEADER}club-wide,DISABLED,HOLD,SAME_BOOKING|SAME_BOOKING\n`,
         /duplicate SAME_BOOKING/,
       ],
-      // The same two refusals the admin route gives, deliberately: a transfer is
-      // the one path that could otherwise store a setting the UI forbids.
+      // The scopes the owner removed from the model (#2575, #2576) are unknown
+      // NAMES now, not refused-but-recognised ones — a bundle written against the
+      // old model is rejected in the dry run rather than half-applied.
       [
         `${HEADER}club-wide,DISABLED,HOLD,ANY_MEMBER_AT_LODGE\n`,
-        /cannot be used yet/,
+        /is not one of/,
+      ],
+      [`${HEADER}club-wide,DISABLED,HOLD,NOMINATED_HOST\n`, /is not one of/],
+      // An explicit set naming nothing is the one shape the cell cannot mean: blank
+      // is inherit, so `SAME_BOOKING|` is an operator half-way through an edit.
+      [
+        `${HEADER}club-wide,DISABLED,HOLD,SAME_BOOKING|\n`,
+        /is not one of/,
       ],
     ] as Array<[string, RegExp]>) {
       const plan = await bookingPoliciesImporter.plan(planContext(csv));

@@ -683,14 +683,12 @@ function publicAdultMemberHostingCopy(
   if (!hostingModeIsActive(resolved.mode)) return null;
 
   // WORDED FOR THE SCOPES ACTUALLY IN FORCE, so the public sentence cannot
-  // promise a narrower rule than the club applies. Only the same-booking scope
-  // can be saved today (`IMPLEMENTED_ADULT_MEMBER_HOST_SCOPES`), so in practice
-  // this is the first branch; the fallback exists so the copy stays true the day
-  // a wider scope is switched on rather than quietly under-stating the rule.
+  // promise a narrower rule than the club applies. A club on the built-in default
+  // takes the first branch; the second is the honest public wording once same-owner
+  // coverage is switched on, and it deliberately does not mention accounts or
+  // bookings — a public page is read by people who have neither.
   const coverage =
-    resolved.hostScopes.sameBooking &&
-    !resolved.hostScopes.anyMemberAtLodge &&
-    !resolved.hostScopes.nominatedHost
+    resolved.hostScopes.sameBooking && !resolved.hostScopes.sameBookingOwner
       ? "to stay with an adult member on the same booking"
       : "to be covered by an adult member staying at the lodge";
 
