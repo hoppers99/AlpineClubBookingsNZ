@@ -74,10 +74,43 @@
 --   2. The verified backup taken immediately before migrating. Use it if the dump
 --      was skipped and the labels genuinely matter.
 --
--- After running this, redeploy the previous release's images. Do not run
--- `prisma migrate deploy` again until you intend to roll forward: the migration
--- will still be recorded as applied in `_prisma_migrations`, so rolling forward
--- means either deleting that row or re-applying migration.sql by hand.
+-- IF THIS RELEASE ALSO CARRIED 20260803010000_contract_subscription_lockout_drop_enabled
+-- — the sibling windowed migration, applied in the same window — RUN BOTH REVERSE
+-- SCRIPTS, in the reverse of the order they were applied: this one first, then
+-- 20260803010000's. This one alone is not enough. The family surface comes back but
+-- "MembershipLockoutSettings"."enabled" is still dropped, the previous release's
+-- client names it on every read of that model, and the booking gates resolve the
+-- club's lockout policy through that read, so every booking write path still fails
+-- while the family pages look healthy. Rehearsed in that order; the two touch
+-- different tables so neither order can corrupt the other.
+--
+-- After running this, redeploy the previous release's images.
+--
+-- ROLLING FORWARD AFTER THIS SCRIPT, measured on a throwaway PostgreSQL 16 in the
+-- runbook §7.2 rehearsal rather than reasoned about:
+--
+--   * `_prisma_migrations` still records this migration as applied, and NOTHING in
+--     the deploy path notices. `prisma migrate status` answers "Database schema is
+--     up to date!", `prisma migrate deploy` answers "No pending migrations to
+--     apply.", and the deploy script's own drift gate
+--     (`migrate diff --from-migrations prisma/migrations --to-schema
+--     prisma/schema.prisma`) reports "No difference detected" — it compares
+--     committed history to the schema file and never reads the live database. The
+--     one command that sees the restored column is
+--     `prisma migrate diff --exit-code --from-config-datasource --to-schema
+--     prisma/schema.prisma`, which exits 2.
+--   * To roll forward, RE-APPLY migration.sql BY HAND as the migration role. The
+--     history row is already correct, so that leaves history, schema and database
+--     in agreement with nothing to clear up. Deleting the `_prisma_migrations` row
+--     and migrating again also works, and was rehearsed, but it edits the migration
+--     history for no gain.
+--   * You do NOT have to roll forward before starting the replacement release: the
+--     replacement client reads and writes this table normally against the restored
+--     shape, because the column is NOT NULL with a constant default and an insert
+--     that omits it takes that default.
+--   * This script is NOT idempotent. A second run fails with `column "role" of
+--     relation "FamilyGroupMember" already exists`, which is the safe direction —
+--     a loud refusal rather than a silent double-apply.
 
 -- 1. Recreate the column in the exact shape the previous release's client expects.
 --    The constant default repopulates every existing row in this one statement.

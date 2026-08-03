@@ -5306,9 +5306,14 @@ The four powers over a non-login member, and how #2284 settled each:
   - So the ledger row is `old_code_compatible=**windowed**`, not `yes`: it says in
     writing that the previous release *will* break, and it carries the full ordered
     maintenance-window plan. `previous_expand_release` names an adjacent migration
-    in the same release, because the runtime half shipped no migration of its own —
-    the same thing the #2130 contract row (`20260721130000`) did, for the same
-    reason.
+    in the same release, because **no truthful value exists**: the runtime half
+    shipped no migration of its own, so there is no folder from it to name, and the
+    field is single-valued and checked only for non-emptiness. The real precondition
+    is written out in the row's `lock_impact_plan` instead. That last part is the
+    practice the #2130 contract row (`20260721130000`) established — its own single
+    field could not express two expand releases either, so it named one and
+    explained both in the plan column — but #2130's field names a *real, already
+    deployed* expand release, which this one's cannot.
   - The rollback boundary moves back to the **migrate step**, so
     `rollback.sql` ships beside the migration and was rehearsed both ways. It
     restores the column's exact shape (`TEXT NOT NULL DEFAULT 'MEMBER'`) but not

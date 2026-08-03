@@ -23,8 +23,8 @@
   with a login in a family group is equal, which is what the club's rules already
   said.
 
-  The column itself is removed in the same release — see the following entry,
-  which is the half your operator needs to read, because it is the half that needs
+  The column itself is removed in the same release — see the #2520 entry, which is
+  the half your operator needs to read, because it is the half that needs
   a short maintenance window. An earlier plan left the column in the database for
   one more release; the club chose to finish the job in one release rather than
   carry an obsolete column through another upgrade.

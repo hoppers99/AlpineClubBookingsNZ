@@ -33,7 +33,15 @@
 //     not hypothetical — a retired audit script kept a
 //     `SELECT "role" … FROM "FamilyGroupMember"` snapshot query and an
 //     `INSERT … ("role") …` fixture right through #2284, invisible to any
-//     delegate scan.
+//     delegate scan. Because that scan is now the ONLY thing covering raw SQL,
+//     three holes it shipped with in #2565 were closed here rather than left to
+//     be discovered: it matched the quoted `"role"` only (unquoted `role` is
+//     equally valid Postgres and is what 20260407120000's own INSERT column list
+//     writes), it looked only 500 characters either side of the table name (a
+//     realistic joined query puts the predicate further away than that), and it
+//     opened `.ts`/`.tsx` only while claiming to cover the heredocs. The scan is
+//     now statement-scoped, matches the column quoted or not, and reads `.sh`
+//     and `.sql` too.
 //   * THE GENERATED CLIENT'S SHAPE. This is the owner-required proof that the
 //     replacement runtime cannot name the dropped column, asserted against the
 //     generated client rather than inferred from source. It is also the assertion
@@ -60,16 +68,22 @@ const SCAN_DIRS = [
 ];
 const SCHEMA_PATH = path.join(REPO_ROOT, "prisma", "schema.prisma");
 const DROP_MIGRATION = "20260803030000_contract_drop_family_group_member_role";
+const DROP_MIGRATION_PREFIX = DROP_MIGRATION.slice(0, 14);
 const MIGRATION_DIR = path.join(REPO_ROOT, "prisma", "migrations", DROP_MIGRATION);
 
-function walk(dir: string, files: string[] = []): string[] {
+// Raw SQL is not confined to TypeScript, so the raw-SQL scan is not either:
+// `.sh` carries the psql heredocs in scripts/ (four scripts invoke psql today)
+// and `.sql` is anything handwritten outside the Prisma migration history.
+const RAW_SQL_EXTENSIONS = /\.(ts|tsx|sh|sql)$/;
+
+function walk(dir: string, extensions: RegExp, files: string[] = []): string[] {
   if (!fs.existsSync(dir)) return files;
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
       if (entry.name === "node_modules") continue;
-      walk(full, files);
-    } else if (/\.(ts|tsx)$/.test(entry.name) && !entry.name.endsWith(".d.ts")) {
+      walk(full, extensions, files);
+    } else if (extensions.test(entry.name) && !entry.name.endsWith(".d.ts")) {
       files.push(full);
     }
   }
@@ -84,19 +98,21 @@ function isTestFile(relPath: string): boolean {
   );
 }
 
+/** A stretch of candidate SQL, and where in its file it starts. */
+type SqlChunk = { text: string; offset: number };
+
 /**
- * `text` with `//` and block comments blanked out, newline-for-newline so
- * reported line numbers stay true. String and template bodies are KEPT, because
- * the raw-SQL scan needs them: the SQL lives inside them.
+ * Every string / template literal in TypeScript `text`, delimiters included and
+ * offsets kept so an offender can still be reported at its real line.
  *
- * Comments are stripped so a comment explaining why the column is gone cannot
- * fail the guard that proves it is gone.
+ * Raw SQL always lives inside a literal, so scanning literals rather than whole
+ * files is what lets the column pattern below be broad without drowning in false
+ * positives: `member.role` in ordinary code is not a literal, while
+ * `SELECT fgm.role FROM "FamilyGroupMember" fgm` is. Delimiters are kept because
+ * the table name the scan keys on is itself a quoted SQL identifier.
  */
-function withoutJsComments(text: string): string {
-  let out = "";
-  const keepNewlines = (chunk: string) => {
-    for (const ch of chunk) if (ch === "\n") out += "\n";
-  };
+function stringLiterals(text: string): SqlChunk[] {
+  const out: SqlChunk[] = [];
   for (let i = 0; i < text.length; i += 1) {
     const ch = text[i];
     if (ch === "/" && text[i + 1] === "/") {
@@ -108,7 +124,6 @@ function withoutJsComments(text: string): string {
     if (ch === "/" && text[i + 1] === "*") {
       const close = text.indexOf("*/", i + 2);
       if (close === -1) break;
-      keepNewlines(text.slice(i, close + 2));
       i = close + 1;
       continue;
     }
@@ -119,11 +134,71 @@ function withoutJsComments(text: string): string {
         if (text[i] === "\\") i += 1;
         i += 1;
       }
-      out += text.slice(openedAt, i + 1);
+      out.push({ text: text.slice(openedAt, i + 1), offset: openedAt });
       continue;
     }
-    out += ch;
   }
+  return out;
+}
+
+/**
+ * `text` with SQL comments (`--` to end of line, and block comments) replaced by
+ * spaces — same length, newlines kept, so offsets and reported lines stay true.
+ * Single-quoted SQL literals are skipped so a `--` inside one is not mistaken for
+ * a comment.
+ *
+ * Applied to `.sql` files and to extracted TypeScript literals, so a SQL comment
+ * that explains why the column is gone cannot fail the guard that proves it is
+ * gone. NOT applied to `.sh`, where `--` is far more often an option separator
+ * (`psql --quiet`, `docker compose exec --`) than a comment: blanking there would
+ * hide SQL on the same line, and failing closed on a shell comment that names
+ * both the table and the column is the cheaper mistake.
+ */
+function blankSqlComments(text: string): string {
+  const out = text.split("");
+  for (let i = 0; i < text.length; i += 1) {
+    if (text[i] === "-" && text[i + 1] === "-") {
+      while (i < text.length && text[i] !== "\n") {
+        out[i] = " ";
+        i += 1;
+      }
+      continue;
+    }
+    if (text[i] === "/" && text[i + 1] === "*") {
+      const close = text.indexOf("*/", i + 2);
+      const end = close === -1 ? text.length : close + 2;
+      for (let j = i; j < end; j += 1) if (out[j] !== "\n") out[j] = " ";
+      i = end - 1;
+      continue;
+    }
+    if (text[i] === "'") {
+      i += 1;
+      while (i < text.length && text[i] !== "'") i += 1;
+      continue;
+    }
+  }
+  return out.join("");
+}
+
+/**
+ * `chunk` split into statements on `;`, offsets preserved.
+ *
+ * Statement scope replaced the old fixed 500-character window either side of the
+ * table name. That window was a measured hole: a realistic joined query puts
+ * `fgm."role" = 'ADMIN'` in a WHERE clause more than 500 characters below the
+ * table in the FROM, and passed. A statement is the unit PostgreSQL actually
+ * runs, so it is the right unit to ask "does this statement name both?".
+ */
+function sqlStatements(chunk: SqlChunk): SqlChunk[] {
+  const out: SqlChunk[] = [];
+  let start = 0;
+  for (let i = 0; i < chunk.text.length; i += 1) {
+    if (chunk.text[i] === ";") {
+      out.push({ text: chunk.text.slice(start, i), offset: chunk.offset + start });
+      start = i + 1;
+    }
+  }
+  out.push({ text: chunk.text.slice(start), offset: chunk.offset + start });
   return out;
 }
 
@@ -163,19 +238,60 @@ function codeOnly(text: string): string {
   return out;
 }
 
-type SourceFile = { rel: string; raw: string };
+type SqlSource = { rel: string; raw: string; statements: SqlChunk[] };
 
-function productionSources(): SourceFile[] {
-  const out: SourceFile[] = [];
+/**
+ * True for committed migration SQL that is allowed to name the column: the
+ * statements that CREATED it, the backfill that wrote its labels, and the DROP
+ * plus its `rollback.sql`. Applied history is immutable, and the drop pair has to
+ * name the column to do its job.
+ *
+ * The cut is the drop migration's own timestamp prefix, not the whole of
+ * `prisma/migrations/`, so a NEW migration naming the dropped column still fails
+ * this scan.
+ */
+function isHistoricalMigrationSql(rel: string): boolean {
+  const match = /^prisma\/migrations\/(\d{14})_[^/]*\/[^/]+\.sql$/.exec(rel);
+  return match !== null && match[1] <= DROP_MIGRATION_PREFIX;
+}
+
+/**
+ * Every candidate SQL statement in non-test production sources, keyed to its
+ * file. TypeScript contributes its string/template literals; `.sh` contributes
+ * the whole file (a heredoc is not a literal any parser here would find); `.sql`
+ * contributes the whole file with its comments blanked.
+ */
+function rawSqlSources(): SqlSource[] {
+  const out: SqlSource[] = [];
   for (const dir of SCAN_DIRS) {
-    for (const file of walk(dir)) {
+    for (const file of walk(dir, RAW_SQL_EXTENSIONS)) {
       const rel = path.relative(REPO_ROOT, file).split(path.sep).join("/");
-      if (isTestFile(rel)) continue;
-      out.push({ rel, raw: withoutJsComments(fs.readFileSync(file, "utf8")) });
+      if (isTestFile(rel) || isHistoricalMigrationSql(rel)) continue;
+      const raw = fs.readFileSync(file, "utf8");
+      const chunks: SqlChunk[] = rel.endsWith(".sh")
+        ? [{ text: raw, offset: 0 }]
+        : rel.endsWith(".sql")
+          ? [{ text: blankSqlComments(raw), offset: 0 }]
+          : stringLiterals(raw).map((literal) => ({
+              text: blankSqlComments(literal.text),
+              offset: literal.offset,
+            }));
+      out.push({ rel, raw, statements: chunks.flatMap(sqlStatements) });
     }
   }
   return out;
 }
+
+const TABLE_REFERENCE = /"FamilyGroupMember"/;
+// `role` as a column reference, quoted or not, optionally table-qualified
+// (`fgm."role"`, `fgm.role`). PostgreSQL folds an unquoted identifier to lower
+// case, so `SELECT role FROM "FamilyGroupMember"` is exactly as valid as the
+// quoted form — and this repo's own history writes it that way, in
+// 20260407120000's INSERT column list. Matching only `"role"` was a measured hole.
+// Deliberately broad: `roleId`, `accessRole` and `familyGroupRoles` do not match,
+// but ordinary prose that says "role" inside a SQL statement naming the table
+// will. That is fail-closed and the wording is free to change.
+const ROLE_COLUMN = /(^|[^\w"])"?role"?(?![\w"])/i;
 
 describe("#2520 FamilyGroupMember.role is dropped", () => {
   // ---------------------------------------------------------------------------
@@ -287,29 +403,30 @@ describe("#2520 FamilyGroupMember.role is dropped", () => {
 
   it("no raw SQL names the dropped column", () => {
     // Comments are stripped, but STRING BODIES ARE NOT — that is the point, since
-    // the SQL lives in them. So prose inside a SQL template literal must not
-    // write the quoted identifier; say `role column`, not the quoted form.
+    // the SQL lives in them. So prose inside a SQL statement that names the table
+    // must not use the word "role"; say "the retired rank label", or move the
+    // sentence into a comment, which is blanked.
     const offenders: string[] = [];
-    for (const { rel, raw } of productionSources()) {
-      const table = /"FamilyGroupMember"/g;
-      let m: RegExpExecArray | null;
-      while ((m = table.exec(raw)) !== null) {
-        const window = raw.slice(
-          Math.max(0, m.index - 500),
-          Math.min(raw.length, m.index + 500),
-        );
-        if (/"role"/.test(window)) {
-          offenders.push(`${rel}:${raw.slice(0, m.index).split("\n").length}`);
-        }
+    for (const { rel, raw, statements } of rawSqlSources()) {
+      for (const statement of statements) {
+        if (!TABLE_REFERENCE.test(statement.text)) continue;
+        const hit = ROLE_COLUMN.exec(statement.text);
+        if (!hit) continue;
+        const line = raw.slice(0, statement.offset + hit.index).split("\n").length;
+        offenders.push(`${rel}:${line}`);
       }
     }
     expect(
       offenders,
-      'Raw SQL naming "FamilyGroupMember" must not name the dropped "role" ' +
-        "column. Raw SQL is the one surface the removed Prisma field does not " +
-        "protect: the compiler cannot see a column name inside a string, so this " +
-        "scan is the only thing standing between a stray $queryRaw or psql " +
-        "heredoc and a Postgres 42703 in production.",
+      'Raw SQL naming "FamilyGroupMember" must not name the dropped role ' +
+        "column, quoted or unquoted. Raw SQL is the one surface the removed " +
+        "Prisma field does not protect: the compiler cannot see a column name " +
+        "inside a string or a psql heredoc, so this scan is the only thing " +
+        "standing between a stray $queryRaw, $executeRaw or shell heredoc and a " +
+        "Postgres 42703 in production. It reads .ts, .tsx, .sh and .sql under " +
+        "src/, prisma/ and scripts/, statement by statement; committed migration " +
+        `SQL at or before ${DROP_MIGRATION_PREFIX} is exempt because applied ` +
+        "history is immutable and the drop pair has to name the column.",
     ).toEqual([]);
   });
 
@@ -317,10 +434,73 @@ describe("#2520 FamilyGroupMember.role is dropped", () => {
     // If the scan matched no "FamilyGroupMember" raw SQL anywhere it would pass
     // vacuously forever, so prove the surface is still there. The retired audit
     // script's fixture INSERT is the standing example.
-    const withTable = productionSources().filter(({ raw }) =>
-      /"FamilyGroupMember"/.test(raw),
+    const withTable = rawSqlSources().filter(({ statements }) =>
+      statements.some((statement) => TABLE_REFERENCE.test(statement.text)),
     );
     expect(withTable.length).toBeGreaterThan(0);
+  });
+
+  it("the raw-SQL scan catches the shapes that once slipped past it", () => {
+    // Pins the three holes closed rather than trusting the regex by eye. Each
+    // fixture is a shape a probe file proved passed the #2565 version of this
+    // scan: an unquoted column, a predicate more than 500 characters from the
+    // table name, and a psql heredoc in a shell script.
+    const scan = (rel: string, text: string): number => {
+      const chunks: SqlChunk[] = rel.endsWith(".sh")
+        ? [{ text, offset: 0 }]
+        : rel.endsWith(".sql")
+          ? [{ text: blankSqlComments(text), offset: 0 }]
+          : stringLiterals(text).map((literal) => ({
+              text: blankSqlComments(literal.text),
+              offset: literal.offset,
+            }));
+      return chunks
+        .flatMap(sqlStatements)
+        .filter(
+          (statement) =>
+            TABLE_REFERENCE.test(statement.text) && ROLE_COLUMN.test(statement.text),
+        ).length;
+    };
+
+    // (1) unquoted column — valid Postgres, and what 20260407120000 itself writes.
+    expect(
+      scan(
+        "src/probe.ts",
+        `prisma.$queryRawUnsafe('SELECT id, role FROM "FamilyGroupMember"');`,
+      ),
+    ).toBe(1);
+
+    // (2) the predicate far from the table name: >500 characters apart.
+    const padding = Array.from(
+      { length: 12 },
+      (_, i) => `  JOIN "Member" m${i} ON m${i}."id" = fgm."memberId" AND m${i}."active"\n`,
+    ).join("");
+    expect(padding.length).toBeGreaterThan(500);
+    expect(
+      scan(
+        "src/probe.ts",
+        "prisma.$queryRaw`\n  SELECT fgm.\"id\"\n  FROM \"FamilyGroupMember\" fgm\n" +
+          padding +
+          "  WHERE fgm.\"role\" = 'ADMIN'\n`;",
+      ),
+    ).toBe(1);
+
+    // (3) a psql heredoc in a shell script — a file type the scan never opened.
+    expect(
+      scan(
+        "scripts/probe.sh",
+        `psql <<'SQL'\nSELECT "id", "role" FROM "FamilyGroupMember" WHERE "role" = 'ADMIN';\nSQL`,
+      ),
+    ).toBe(1);
+
+    // And it stays quiet on the near misses, so the broad pattern is not a
+    // standing false positive: a different column ending in the word, a
+    // different model's role, and the table with no column reference at all.
+    expect(scan("src/probe.ts", `'SELECT "roleId" FROM "FamilyGroupMember"'`)).toBe(0);
+    expect(
+      scan("src/probe.ts", `'SELECT "accessRole" FROM "FamilyGroupMember"'`),
+    ).toBe(0);
+    expect(scan("src/probe.ts", `'SELECT COUNT(*) FROM "FamilyGroupMember"'`)).toBe(0);
   });
 
   it("member-merge carries no vestigial role-merging behaviour", () => {

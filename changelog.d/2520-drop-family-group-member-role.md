@@ -1,8 +1,8 @@
 - **The obsolete family-group rank column is now removed from the database
-  (#2520).** The entry above describes the change itself: a family-group
-  membership no longer records a rank, because every adult with a login in a
-  family group is equal. That entry stopped the club's software using the value.
-  This one removes the column that stored it.
+  (#2520).** The #2565 entry in this release describes the change itself: a
+  family-group membership no longer records a rank, because every adult with a
+  login in a family group is equal. That entry stopped the club's software using
+  the value. This one removes the column that stored it.
 
   **Nothing your club does changes and no screen changes.** Nothing has read the
   value since the power it once gated was re-anchored elsewhere, and nothing ever
@@ -22,7 +22,10 @@
 
   **If your operator is also applying the subscription-lockout change in this
   release, the two share one maintenance window** — not two. The site goes down
-  once, both changes are applied in the same step, and it comes back up.
+  once, both changes are applied in the same step, and it comes back up. One thing
+  for them to note before the day: if that combined upgrade ever has to be undone,
+  it takes both changes' reverse scripts, not one. The upgrade notes say which
+  order.
 
   One thing to know rather than to act on: the old rank values themselves cannot be
   put back by script once removed, because a database cannot un-remove a column. The

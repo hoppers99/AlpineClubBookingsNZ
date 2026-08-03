@@ -547,10 +547,20 @@ says which governs when:
    counts, the column-exists confirmation, the proof that the replacement runtime
    cannot name the column, and the recommended per-row dump. After migrate those
    values are unrecoverable.
-6. **Migrate**, with the acknowledgement above and a
-   `BLUE_GREEN_MIGRATION_OVERRIDE_REASON` naming this window. The validator refuses
-   the deploy without it — and refuses it regardless if the migration ships no
-   `rollback.sql`.
+6. **Run the safety validator, then migrate** — two commands, in that order. The
+   validator is `scripts/validate-blue-green-migrations.sh`, a **separate script**
+   that `prisma migrate deploy` knows nothing about: the only thing that runs it
+   automatically is `scripts/run-production-blue-green-deploy.sh`, which performs
+   the whole ordinary cutover this window replaces. So in a hand-run window the
+   operator runs it or nothing does, and passing
+   `ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS` to Prisma alone achieves nothing. It
+   refuses without the acknowledgement above and a
+   `BLUE_GREEN_MIGRATION_OVERRIDE_REASON` naming this window, and refuses
+   regardless if the migration ships no `rollback.sql`. Then migrate through the
+   dedicated compose service the deploy script uses,
+   `docker compose --profile migrate run --rm migrate` — not `npx`, which this host
+   is not documented as having and which is deliberately removed from the runtime
+   image. Exact commands: `docs/PRODUCTION_UPGRADE_RUNBOOK.md` §2.4.1 step 9.
 7. **Verify the migrate step**: the dropped column is gone and
    `_prisma_migrations` records each migration once.
 8. **Start the replacement release and replacement workers only**, confirm
@@ -566,9 +576,28 @@ the previous release's images. **Never restart the previous release before runni
 the reverse script or restoring the backup**: after the drop commits, its client
 names a column that no longer exists, so re-pointing traffic at it does not restore
 service. Restore from backup only if the **data** is wrong rather than the schema.
-Note that `_prisma_migrations` still records the migration as applied after a
-`rollback.sql`, so rolling forward later means clearing that row or re-applying
-`migration.sql` by hand.
+
+**When both windowed migrations were applied in the one window, roll back BOTH, in
+the reverse of the order they were applied** — `20260803030000` first, then
+`20260803010000`. One is not enough: whichever you skip leaves its column missing
+and the previous release still broken, and if you skip `20260803010000` what stays
+broken is every booking write path, while the family-group pages look fine and
+suggest the rollback worked. The two touch different tables, so the order cannot
+corrupt anything; it is the rule to follow because it generalises. Rehearsed both
+scripts in that order.
+
+**After a `rollback.sql` the migration history lies, and nothing in the deploy path
+notices.** `_prisma_migrations` still records the migration as applied, so
+`prisma migrate status`, `prisma migrate deploy` and the deploy script's own drift
+gate all report a clean database — measured, not assumed. The one command that sees
+the leftover column is
+`prisma migrate diff --exit-code --from-config-datasource --to-schema prisma/schema.prisma`.
+Rolling forward later is best done by re-applying `migration.sql` by hand, which
+leaves the already-correct history row alone; deleting the `_prisma_migrations` row
+and migrating again works too but edits the history for no gain. You do not have to
+roll the schema forward before starting the replacement release: the replacement
+client works against the rolled-back schema, because the restored column is
+`NOT NULL` with a constant default.
 
 Full step-by-step, including the rehearsal evidence for both current windowed
 migrations, is in `docs/PRODUCTION_UPGRADE_RUNBOOK.md` → "Windowed migration deploy

@@ -16,10 +16,18 @@
 --
 -- previous_expand_release. 20260803010000_contract_subscription_lockout_drop_enabled.
 -- The RUNTIME half this contracts against is PR #2565, which shipped NO migration
--- of its own, so there is no folder from it to name — the same situation the #2130
--- contract row (20260721130000) handled by naming an adjacent migration. The
--- adjacent migration named here is the sibling WINDOWED migration in this same
--- release, which is the row an operator planning this window has to read anyway.
+-- of its own, so there is NO FOLDER FROM IT TO NAME and no truthful value exists
+-- for this field. The migration named instead is the sibling WINDOWED migration in
+-- this same release, which is the row an operator planning this window has to read
+-- anyway, and the real precondition is written out in the ledger row's
+-- lock_impact_plan. Recording the real precondition in the plan column when the
+-- single field cannot carry it is the practice the #2130 contract row
+-- (20260721130000) established — but that row's field names a REAL, ALREADY
+-- DEPLOYED expand release (20260717140000_pricing_rekey_by_membership_type) and is
+-- declared old_code_compatible=yes on the strength of it, so it is not a precedent
+-- for naming an unrelated migration from the same undeployed release. This is the
+-- first row where no expand-release folder exists at all, which is exactly why the
+-- honest declaration here is `windowed`.
 --
 -- OWNER DIRECTIVE, 3 Aug 2026 (#2520). The original plan was two releases: deploy
 -- #2565, let it soak seven days, then drop. The owner superseded that — the drop

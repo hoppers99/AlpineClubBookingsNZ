@@ -139,6 +139,13 @@ outage rather than a rolling cutover:
 The migration itself is quick — three metadata-only statements on a single-row
 table — so the window is dominated by stopping and starting the application.
 
+**If the #2520 family-group change below is also pending, use its order, not this
+one.** The two lists differ in one place: this one takes the backup at step 2,
+before traffic is removed; the #2520 list takes it after the app and every worker
+have stopped. The later position is the safer of the two — no booking or payment
+can land between the snapshot and the migration — and it is the order the owner
+directed. The list above stands as written for a window carrying only this change.
+
 **If you need to go back.** Prefer going forward: the schema is migrated and the
 data is intact. If the new release will not start, the migration ships a tested
 reverse script beside it,
@@ -230,18 +237,30 @@ filter — and it cannot serve family-group pages, onboarding, family requests,
 member merge or Xero member import for the moments after the column is dropped.
 The deploy therefore takes a short planned outage:
 
-1. build and validate the new images **first**;
-2. take a fresh backup and **verify it restores**;
-3. put the site into maintenance mode / remove public traffic;
-4. stop the old app **and** every worker, scheduler and queue consumer, then check
+1. build and validate the new images **first**, and confirm the image carries both
+   halves — the new code and the migration;
+2. put the site into maintenance mode / remove public traffic;
+3. stop the old app **and** every worker, scheduler and queue consumer, then check
    nothing old is still connected;
+4. take a fresh backup and **verify it restores** — in that position, *after*
+   everything that writes has stopped, so nothing lands between the snapshot and
+   the migration;
 5. record the pre-migration checks (row count, the label values with counts, and —
    recommended — a per-row dump, the only way to get the exact labels back later);
-6. migrate, with `ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS=1` and a
-   `BLUE_GREEN_MIGRATION_OVERRIDE_REASON` naming the window;
+6. run the repository's migration safety check — `ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS=1`
+   and a `BLUE_GREEN_MIGRATION_OVERRIDE_REASON` naming the window go on **that**
+   command, which is a separate script, not on the migrate command — then migrate;
 7. verify the column is gone;
 8. start the replacement app and workers, smoke-test sign-in, family groups, family
    requests and member merge, check the logs, then restore traffic.
+
+**The order of steps 2 to 4 matters and is the owner's, not a preference.** The
+backup comes after the site is quiet, not before it. A backup taken while the site
+is still serving does not contain the bookings, payments and member changes made
+between the snapshot and the shutdown — and for a windowed change that backup is
+the last unconditional way back, so anything missing from it is lost if it is ever
+needed. This is also the order that governs when both windowed changes in this
+release are applied together.
 
 The migration itself is one metadata-only statement on a small table, so the window
 is dominated by stopping and starting the application. Full sequence, with the exact
@@ -253,11 +272,33 @@ the migration ships a tested reverse script beside it,
 which recreates the column in exactly the shape the previous version expects and
 refills every row with `'MEMBER'`. **Do not start the old version before running it
 (or restoring the backup)** — the old version cannot run against the migrated
-database. Note that the original per-row labels cannot be restored by script:
-PostgreSQL cannot un-drop a column. Nothing reads them, so that is a record-keeping
-loss rather than a behavioural one, with one fail-closed exception noted in the
-runbook. Both directions were rehearsed against a production-shaped database before
-this shipped (`docs/PRODUCTION_UPGRADE_RUNBOOK.md` §7.2).
+database.
+
+**If both changes in this release were applied in the one window, going back needs
+BOTH reverse scripts, in the reverse of the order they were applied** — this one
+first, then the subscription-lockout one
+(`prisma/migrations/20260803010000_contract_subscription_lockout_drop_enabled/rollback.sql`).
+Running only this one is the trap: the family-group pages come back and look
+healthy, but the subscription-lockout column is still missing, so the old version
+cannot take a booking at all. Both, in that order, were rehearsed together.
+
+**Two things about going forward again after a reverse script**, both measured
+rather than assumed. The new release **works** on the reversed-out database, so a
+rollback does not have to be undone before the new version can start. But the
+migration history still records the change as applied, so `prisma migrate status`
+and `prisma migrate deploy` will both report the database up to date when it is not;
+the runbook names the one command that sees the difference, and the tidy-up is to
+re-apply the migration by hand once things are calm.
+
+**One record-keeping point.** The original per-row labels cannot be restored by
+script: PostgreSQL cannot un-drop a column. Nothing reads them, so that is a
+record-keeping loss rather than a behavioural one, with one fail-closed exception
+noted in the runbook.
+
+Every path above was rehearsed against a production-shaped database before this
+shipped — the migration, the reverse script, the exact-value restore, both ways of
+going forward again, and the combined two-change rollback in order
+(`docs/PRODUCTION_UPGRADE_RUNBOOK.md` §7.2).
 
 ### Re-export configuration bundles for format version 4 (#2364)
 
