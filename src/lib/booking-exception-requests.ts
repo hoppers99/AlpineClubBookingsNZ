@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 
+import { startOfDateOnlyForTimeZone } from "@/lib/date-only";
 import {
   aggregatePolicyExceptionViolations,
   sortPolicyExceptionViolations,
@@ -39,22 +40,27 @@ export const POLICY_EXCEPTION_REQUEST_STATUSES = [
   "REJECTED",
   "CANCELLED",
   "SUPERSEDED",
+  // #2553: the provisional hold ran out before anybody decided the request.
+  "EXPIRED",
 ] as const;
 
 export type PolicyExceptionRequestStatus =
   (typeof POLICY_EXCEPTION_REQUEST_STATUSES)[number];
 
 /**
- * The three statuses that release a held request's provisional reservation and
+ * The four statuses that release a held request's provisional reservation and
  * admit no further transition. APPROVED is deliberately NOT terminal here: an
  * approval releases its reservation by turning it into the executed booking's
  * own beds INSIDE the same transaction, which is a different discipline from the
- * plain release the rejected/withdrawn/replaced outcomes perform.
+ * plain release the rejected/withdrawn/replaced/expired outcomes perform.
  */
 export const TERMINAL_RELEASING_STATUSES = [
   "REJECTED",
   "CANCELLED",
   "SUPERSEDED",
+  // #2553: the reaper's release runs the SAME atomic path as the other three
+  // (guarded version CAS then request-scoped delete, under global -> lodge).
+  "EXPIRED",
 ] as const satisfies readonly PolicyExceptionRequestStatus[];
 
 export function isTerminalReleasingStatus(
@@ -78,8 +84,92 @@ export function isPolicyExceptionTransitionAllowed(
     to === "APPROVED" ||
     to === "REJECTED" ||
     to === "CANCELLED" ||
-    to === "SUPERSEDED"
+    to === "SUPERSEDED" ||
+    to === "EXPIRED"
   );
+}
+
+// ---------------------------------------------------------------------------
+// Provisional-hold time to live (#2553)
+// ---------------------------------------------------------------------------
+
+/**
+ * How long a HOLD-mode policy-exception request may keep the beds it reserved
+ * before the reaper releases them (#2553).
+ *
+ * Seven days is the officer-review window the club actually works to: long
+ * enough that a request raised on a Friday survives a whole week of Booking
+ * Officer availability, short enough that an abandoned request cannot phantom-
+ * block a lodge for a season. It is a CONSTANT rather than a setting on purpose:
+ * the deadline is stamped onto each request at creation and never rewritten, so
+ * a hold's expiry is a stable, auditable fact rather than something a later
+ * settings edit can move under a member.
+ */
+export const POLICY_EXCEPTION_HOLD_TTL_DAYS = 7;
+
+/**
+ * The floor on that window. A request raised the day before (or during) the
+ * nights it wants is capped at the first held night by the rule below, which on
+ * its own could produce a deadline in the PAST — the very next cron run would
+ * then reap a request nobody has had a chance to look at. Every request gets at
+ * least this long, whatever its lead time.
+ */
+export const POLICY_EXCEPTION_HOLD_MIN_TTL_HOURS = 24;
+
+const HOUR_MS = 60 * 60 * 1000;
+const DAY_MS = 24 * HOUR_MS;
+
+/**
+ * The moment a request's provisional hold runs out — pure, deterministic, and
+ * the single definition both the request-creation path and the reaper use.
+ *
+ * Three rules, in plain English: a hold lasts {@link POLICY_EXCEPTION_HOLD_TTL_DAYS}
+ * days; it never outlives the start of the first night it is holding (past that
+ * point the stay has begun and an unactioned request is moot, so the beds should
+ * go back into the pool); and it always lasts at least
+ * {@link POLICY_EXCEPTION_HOLD_MIN_TTL_HOURS}, so a late request still gets a
+ * real review window.
+ *
+ * `firstHeldNight` is an NZ date-only lodge night (`YYYY-MM-DD`) — the earliest
+ * night in the reservation footprint. Absent (a HOLD aggregate whose footprint
+ * did not grow, or the reaper's fallback for a row written before the column
+ * existed) the cap simply does not apply.
+ */
+export function computePolicyExceptionHoldExpiry(input: {
+  createdAt: Date;
+  firstHeldNight?: string | null;
+  ttlDays?: number;
+}): Date {
+  const ttlDays = input.ttlDays ?? POLICY_EXCEPTION_HOLD_TTL_DAYS;
+  const createdMs = input.createdAt.getTime();
+  const ttlDeadline = createdMs + ttlDays * DAY_MS;
+  const floor = createdMs + POLICY_EXCEPTION_HOLD_MIN_TTL_HOURS * HOUR_MS;
+
+  let deadline = ttlDeadline;
+  if (input.firstHeldNight) {
+    const nightStart = startOfDateOnlyForTimeZone(input.firstHeldNight);
+    if (!Number.isNaN(nightStart.getTime())) {
+      deadline = Math.min(deadline, nightStart.getTime());
+    }
+  }
+
+  return new Date(Math.max(deadline, floor));
+}
+
+/**
+ * The earliest night in a reservation footprint, as a `YYYY-MM-DD` string, or
+ * null when the footprint reserves nothing. `computeProposalReservation` already
+ * returns its nights sorted, but this does not assume that.
+ */
+export function firstReservedNight(
+  reservation: readonly NightReservation[],
+): string | null {
+  let earliest: string | null = null;
+  for (const entry of reservation) {
+    if (entry.beds <= 0) continue;
+    if (earliest === null || entry.night < earliest) earliest = entry.night;
+  }
+  return earliest;
 }
 
 // ---------------------------------------------------------------------------

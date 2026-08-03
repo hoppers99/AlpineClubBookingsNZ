@@ -215,6 +215,84 @@ describe("executeMemberMerge", () => {
     expect(memberSpy.delete).toHaveBeenCalledWith({ where: { id: LOSER_ID } });
   });
 
+  it("resolves family-group memberships without touching the retired role column (#2520)", async () => {
+    // #2520 removed the `maxFamilyRole` upgrade from resolveFamilyGroupMembers.
+    // Everything else it does must be bit-for-bit unchanged, so this pins the
+    // real behaviour: a colliding membership is DROPPED (after re-pointing the
+    // family's billing membership at the surviving row, so billing never dangles
+    // at a deleted row), and a non-colliding membership is MOVED. The removed
+    // write is pinned negatively — `update` must never be called, because the
+    // only reason it ever was is gone.
+    const SHARED_GROUP = "group-shared";
+    const LOSER_ONLY_GROUP = "group-loser-only";
+    const loserSharedRow = { id: "fgm-loser-shared", familyGroupId: SHARED_GROUP };
+    const loserOnlyRow = { id: "fgm-loser-only", familyGroupId: LOSER_ONLY_GROUP };
+    const masterSharedRow = { id: "fgm-master-shared", familyGroupId: SHARED_GROUP };
+
+    const familyGroupMember = {
+      ...defaultDelegate(),
+      findMany: vi.fn(({ where }: { where: { memberId?: string } }) =>
+        Promise.resolve(
+          where?.memberId === LOSER_ID
+            ? [loserSharedRow, loserOnlyRow]
+            : where?.memberId === MASTER_ID
+              ? [masterSharedRow]
+              : [],
+        ),
+      ),
+      deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
+      updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+    };
+    const familyGroup = { ...defaultDelegate(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) };
+    const { client } = makeClient({ familyGroupMember, familyGroup });
+
+    await executeMemberMerge({
+      masterId: MASTER_ID,
+      loserId: LOSER_ID,
+      actorMemberId: ACTOR_ID,
+      previewToken: validToken(),
+      confirmationText: "MERGE Dup Person",
+      db: client as never,
+    });
+
+    // The colliding loser row is deleted; the non-colliding one is not.
+    expect(familyGroupMember.deleteMany).toHaveBeenCalledWith({
+      where: { id: { in: [loserSharedRow.id] } },
+    });
+    // Family billing that pointed at the dropped row is re-pointed at the survivor.
+    expect(familyGroup.updateMany).toHaveBeenCalledWith({
+      where: { billingMembershipId: loserSharedRow.id },
+      data: { billingMembershipId: masterSharedRow.id },
+    });
+    // Surviving loser memberships are re-pointed at the master.
+    expect(familyGroupMember.updateMany).toHaveBeenCalledWith({
+      where: { memberId: LOSER_ID },
+      data: { memberId: MASTER_ID },
+    });
+    // The retired column is neither written…
+    expect(familyGroupMember.update).not.toHaveBeenCalled();
+    for (const [arg] of familyGroupMember.updateMany.mock.calls) {
+      expect((arg as { data: Record<string, unknown> }).data).not.toHaveProperty("role");
+    }
+    // …nor projected. Every read of the delegate during a merge must be
+    // narrowed, and none may name `role`. There are three: this resolver's two,
+    // plus `collectMovedIdSample`'s generic per-spec `select: { id: true }` scan.
+    const selects = familyGroupMember.findMany.mock.calls.map(
+      ([arg]) => (arg as { select?: Record<string, unknown> }).select,
+    );
+    expect(selects.length).toBeGreaterThanOrEqual(2);
+    for (const select of selects) {
+      expect(select).toBeDefined();
+      expect(select).not.toHaveProperty("role");
+    }
+    // The resolver's own two reads take exactly the two columns it uses.
+    const resolverSelects = selects.filter((s) => s && "familyGroupId" in s);
+    expect(resolverSelects).toHaveLength(2);
+    for (const select of resolverSelects) {
+      expect(Object.keys(select!).sort()).toEqual(["familyGroupId", "id"]);
+    }
+  });
+
   it("nulls the loser's googleSub before delete and never transfers it to the master (#2035)", async () => {
     // Loser carries a linked Google account; master has none. googleSub is a
     // scalar @unique excluded from the field-fill lists, so the master must NOT

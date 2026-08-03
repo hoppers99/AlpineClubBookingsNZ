@@ -518,7 +518,9 @@ linking directly to the filtered audit record.
 ## Booking Modification Lifecycle
 
 Known change request statuses: `REQUESTED`, `APPROVED`, `REJECTED`, and — for a
-`POLICY_EXCEPTION`-kind request only (#2365) — `CANCELLED` and `SUPERSEDED`.
+`POLICY_EXCEPTION`-kind request only — `CANCELLED` and `SUPERSEDED` (#2365) plus
+`EXPIRED` (#2553, written by the hold-reaper cron). This sentence is the status
+census: a narrowed type or filter list copied from it must carry all six.
 
 ```text
 member/admin starts edit -> quoted delta -> local booking mutation
@@ -539,7 +541,8 @@ the structured evidence it asks an admin to allow (`frozenEvidence`, the #2363
 HOLD-if-any-HOLD aggregate) plus the denormalised `aggregateCapacityMode`, a
 required `memberMessage` (trimmed, <=1000 chars), and attempt/conflict metadata
 (`attemptCount`, `conflictCount`, `lastConflictAt`, `lastConflictReason`). Its
-lifecycle adds two terminal outcomes to the shared enum:
+lifecycle adds three terminal outcomes to the shared enum (`CANCELLED` and
+`SUPERSEDED` with #2365, `EXPIRED` with #2553):
 
 ```text
 POLICY_EXCEPTION request -> REQUESTED
@@ -548,6 +551,8 @@ POLICY_EXCEPTION request -> REQUESTED
   REQUESTED -> REJECTED   (declined)
   REQUESTED -> CANCELLED  (member withdrew the proposal before a decision)
   REQUESTED -> SUPERSEDED (a newer proposal, or live-booking drift, replaced it)
+  REQUESTED -> EXPIRED    (#2553: nobody decided it before its capacity hold's
+                           deadline, so the reaper cron released the beds)
 ```
 
 Every non-`REQUESTED` state is terminal (a guarded `updateMany` on
@@ -563,13 +568,14 @@ hold lands with the Booking Officer approval screen (#2526).
 **The provisional-reservation and atomic approve-and-execute lane is built
 (#2525).** Each held request materialises its footprint as
 `PolicyExceptionReservationNight` rows that the canonical capacity calculation
-counts as occupancy, so a pending request cannot be oversold. The three
-releasing transitions — `REJECTED`, `CANCELLED`, `SUPERSEDED` — delete those rows
-in the SAME guarded transaction that writes the status, under the
+counts as occupancy, so a pending request cannot be oversold. The four
+releasing transitions — `REJECTED`, `CANCELLED`, `SUPERSEDED`, `EXPIRED` — delete
+those rows in the SAME guarded transaction that writes the status, under the
 global -> per-lodge lock order: the member-owned CANCELLED and SUPERSEDED in
-`booking-exception-request-service.ts`, and the officer REJECTED in
-`resolvePolicyExceptionRequestTerminal` (`booking-exception-execution.ts`). A lost
-claim releases nothing. `REQUESTED -> APPROVED` is different: it does
+`booking-exception-request-service.ts`, and the officer REJECTED plus the reaper's
+EXPIRED in `resolvePolicyExceptionRequestTerminal`
+(`booking-exception-execution.ts`). A lost claim releases nothing.
+`REQUESTED -> APPROVED` is different: it does
 not "release then create". Inside ONE transaction the approval reauthorizes from
 fresh DB roles, re-reads under the global -> per-lodge locks, re-checks the
 proposal hash and `classifyPolicyExceptionDrift` (a disappeared reviewed rule
@@ -583,6 +589,36 @@ executed booking's own beds with no mark-approved-then-call-service gap. Provide
 work and the member approval/rejection notice run after commit. See
 `docs/CONCURRENCY_AND_LOCKING.md` -> "Provisional reservations for held
 policy-exception requests".
+
+**An abandoned hold expires (#2553).** A request nobody ever decides used to hold
+its beds forever. Every request that actually reserves beds is therefore stamped
+at creation with an immutable `holdExpiresAt`: seven days
+(`POLICY_EXCEPTION_HOLD_TTL_DAYS`), never past the start of the first night it is
+holding, and never less than 24 hours
+(`POLICY_EXCEPTION_HOLD_MIN_TTL_HOURS`) so a late request still gets a real
+review window. The deadline is stamped once and never rewritten, so a member's
+expiry date cannot move under them. The `policy-exception-hold-reaper` cron
+(`src/lib/cron-policy-exception-hold-reaper.ts`, every 3 hours in the general
+cycle) then closes each past-deadline hold through
+`resolvePolicyExceptionRequestTerminal` with `to: "EXPIRED"` — the SAME guarded
+claim and atomic release the other three terminal outcomes use, so there is no
+second release implementation to drift. Three things bound it: it only scans
+`REQUESTED` + `POLICY_EXCEPTION` + `HOLD`-aggregate rows that still have live
+`PolicyExceptionReservationNight` rows, so a request stranding no capacity (a
+`NO_HOLD` aggregate, or a HOLD aggregate whose incremental footprint came out
+empty) is never closed by a cron; the `version` CAS means a decision landing in
+the same window wins and the reaper releases nothing; and a past-deadline row the
+shared transition refuses outright (not a policy-exception row, or an unparsable
+`proposalSnapshot`) is counted as `unresolvable` and logged at warn, because
+unlike a lost claim it can never self-heal. Each expiry leaves three records: the
+`EXPIRED` status the member and officer surfaces read, a
+`booking-policy-exception-request.expired` audit row, and a
+`policy-exception-request-expired` courtesy email to the member who raised it.
+Both side effects run strictly AFTER the release commits and neither can affect
+it — a failed audit write or a bounced email is logged and swallowed, so it can
+never roll back a release, re-run one, or stop the reaper closing the run's other
+holds. The member's one-open-request slot is freed, so a lapse never locks them
+out of raising a fresh proposal.
 
 **Member request surfaces (#2524, wired to #2525).** #2524 builds the
 request-CREATION half of that flow (creation, member cancel, member supersede, the
@@ -1653,7 +1689,7 @@ member requests partner by email (registered login adult) -> PENDING + email to 
 target confirms from profile -> CONFIRMED (one-confirmed-partner invariant re-checked under advisory lock; other PENDING requests involving either member pruned)
 target declines -> row hard-deleted (no email), initiator may re-request
 initiator withdraws own PENDING -> row hard-deleted
-family-group ADMIN declares a NO-LOGIN adult member of their group -> CONFIRMED in one step (no consent round-trip; "one login manages the family")
+the adult recorded as having confirmed a NO-LOGIN adult co-member's details declares them -> CONFIRMED in one step (no consent round-trip; "one login manages the family"). Gated on Member.detailsConfirmedByMemberId naming the initiator AND the pair still sharing a family group (#2284 re-anchored this off the retired FamilyGroupMember.role ADMIN value, which #2520 finished retiring); the voucher pointer is self-assignable by any adult login co-member, so this is an equal-adults gate, not a group-lead privilege
 admin assigns directly (admin member-detail card) -> CONFIRMED immediately, assignedByAdminId recorded; an existing PENDING for the pair is promoted; both members emailed unless the admin chose not to notify (#1769a)
 unregistered partner claims a createPartnerLink invite token -> CONFIRMED inside the claim transaction (claim = consent)
 either CONFIRMED partner removes the link -> row hard-deleted, other partner emailed

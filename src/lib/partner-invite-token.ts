@@ -224,9 +224,10 @@ export async function claimPartnerInviteToken(params: {
       create: {
         familyGroupId: token.familyGroupId,
         memberId: member.id,
-        role: "MEMBER",
       },
       update: {},
+      // Result discarded — narrow the implicit RETURNING (#2130 house rule).
+      select: { id: true },
     });
 
     // Record the join as an already-accepted ADULT_INVITE so the family-group

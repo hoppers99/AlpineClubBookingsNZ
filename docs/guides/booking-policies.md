@@ -114,8 +114,15 @@ rules — see
    **Trigger Days** (Sun–Sat) activate it. Choose **Exception capacity
    handling** explicitly:
 
-   - **Hold requested capacity during review** means the planned exception
-     review will reserve the affected beds while the club decides.
+   - **Hold requested capacity while it waits** means an exception request
+     reserves the affected beds while the club decides — but not forever. The
+     hold ends when the request is decided or when its deadline passes: 7 days
+     after the request is raised, never past the start of the first night held,
+     and never less than 24 hours. Once the deadline passes, the beds go back to
+     the pool automatically and the request is marked **Expired**, so a request
+     nobody decides cannot block the lodge indefinitely. The member who raised it
+     is emailed when that happens, so they know to raise a fresh request rather
+     than assume theirs is still waiting.
    - **Do not hold capacity until approval** means an exception request will
      reserve no beds until it is approved.
 
@@ -271,9 +278,9 @@ because there is nowhere to ask yet.
 | Summer seasons only | Group Discount | Restrict the group discount to summer | on | — |
 | Minimum nights | Minimum Stay | Nights required when a trigger day is included | 2 | Minimum 2 |
 | Trigger days | Minimum Stay | Which weekdays activate the rule | Sat | At least one day |
-| Exception capacity handling | Minimum Stay | Whether a future exception request holds the affected capacity during review | Existing rows: Hold | Required on create; Hold wins when several eligible rules apply |
+| Exception capacity handling | Minimum Stay | Whether a future exception request holds the affected capacity while it waits | Existing rows: Hold | Required on create; Hold wins when several eligible rules apply; a hold ends when the request is decided or its deadline passes (7 days, never past the first night held, never under 24 hours) |
 | Non-member guests without an adult member | Adult Member Hosting | Allowed, or sent to an admin to review | Allowed (club); Use the club-wide setting (lodge) | The club-wide scope cannot inherit |
-| Exception capacity handling | Adult Member Hosting | Whether a future exception request holds the affected capacity during review | None — you must choose | Required on every save |
+| Exception capacity handling | Adult Member Hosting | Whether a future exception request holds the affected capacity while it waits | None — you must choose | Required on every save; the same hold deadline applies |
 | Paid-up adult member required | Configured on [Subscription Lockout](subscription-lockout.md), not here | Refuses a booking with no paid-up adult member on it, when either somebody staying is being repriced for an unpaid subscription or the member who made the booking has one | Off (only applies when you choose "let them book, at non-member rates") | Always holds the bed while a request is pending; not configurable |
 | Show indicative pricing | Public Requests | Price shown on the public request form | off | — |
 | Quote response window | Public Requests | Days a quote link stays valid | 14 | 1–60 days |

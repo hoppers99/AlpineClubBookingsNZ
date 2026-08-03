@@ -1697,8 +1697,12 @@ export async function approveMemberApplication(
         data: {
           familyGroupId,
           memberId: applicantMember.id,
-          role: "ADMIN",
         },
+        // Result discarded — narrow the implicit RETURNING (#2130 house rule).
+        // This one is inside approveMemberApplication's transaction, so an
+        // unnarrowed write naming a dropped column would abort the whole
+        // approval rather than degrade one field.
+        select: { id: true },
       });
     }
 
@@ -1848,9 +1852,10 @@ export async function approveMemberApplication(
             create: {
               familyGroupId,
               memberId: target.id,
-              role: "MEMBER",
             },
             update: {},
+            // Result discarded — narrow the implicit RETURNING (#2130 house rule).
+            select: { id: true },
           });
         }
         continue;
@@ -1938,8 +1943,9 @@ export async function approveMemberApplication(
           data: {
             familyGroupId,
             memberId: dependent.id,
-            role: "MEMBER",
           },
+          // Result discarded — narrow the implicit RETURNING (#2130 house rule).
+          select: { id: true },
         });
       }
     }

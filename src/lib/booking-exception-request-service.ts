@@ -23,8 +23,10 @@ import {
 import {
   canonicalizeProposalParty,
   canonicalizeProposalSnapshot,
+  computePolicyExceptionHoldExpiry,
   computeProposalHash,
   computeProposalReservation,
+  firstReservedNight,
   freezePolicyExceptionEvidence,
   modificationExceptionOpenStateKey,
   newBookingExceptionOpenStateKey,
@@ -796,6 +798,25 @@ export async function createModificationExceptionRequest(
   const reservesBeds = reservationFootprint.length > 0;
   const mutatesReservation = reservesBeds || Boolean(input.supersedeRequestId);
 
+  // #2553: a request that actually keeps real beds while it waits gets a
+  // deadline. Stamped once, at creation, from the frozen footprint's earliest
+  // night, and never rewritten — the reaper's clock is therefore an immutable
+  // fact of the request rather than something a later write can move.
+  //
+  // The gate is `reservesBeds`, NOT `holdsCapacity`: a HOLD aggregate whose
+  // incremental footprint is EMPTY (a pure shrink, or a reshuffle that adds no
+  // bed on any night) writes no `PolicyExceptionReservationNight` row and
+  // therefore strands nothing. Giving it a TTL would let a cron silently close a
+  // live request nobody has decided, which is a member-visible change this issue
+  // never asked for. NULL is exactly "no capacity is at stake here", so the
+  // reaper leaves it in the officer queue until a human decides it.
+  const holdExpiresAt = reservesBeds
+    ? computePolicyExceptionHoldExpiry({
+        createdAt: new Date(),
+        firstHeldNight: firstReservedNight(reservationFootprint),
+      })
+    : null;
+
   // The full proposed party as capacity-engine guest ranges (explicit per-night
   // sets), for the pre-reservation admission check (#2525 FIX 4).
   const proposedParty = (frozen.snapshot as ModificationProposalSnapshot).proposed;
@@ -887,6 +908,7 @@ export async function createModificationExceptionRequest(
           aggregateCapacityMode: frozen.aggregateCapacityMode,
           memberMessage,
           openStateKey,
+          holdExpiresAt,
         },
         select: { id: true, status: true },
       });
@@ -1003,6 +1025,10 @@ export type ExceptionQueueStatusFilter =
   | "REJECTED"
   | "CANCELLED"
   | "SUPERSEDED"
+  // #2553: a request the hold reaper closed. Accepted by the admin queue route's
+  // own filter too, so the type and the route agree; the officer SCREEN that
+  // surfaces an "Expired" tab is #2526.
+  | "EXPIRED"
   | "ALL";
 
 export interface UnifiedExceptionQueueItem {

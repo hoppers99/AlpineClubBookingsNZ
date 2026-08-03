@@ -22,7 +22,10 @@ children of epic #2369 are built. The subsystem is **off by default** and
 deployment-local. **AID-2 (#2371) is the first implementation child to land** —
 the capability, configuration, metering, and rate-limit foundation described in
 [the delivered-capability section](#delivered-capability-budget-metering-rate-limits-and-configuration-aid-2-2371)
-below.
+below. **AID-4 (#2373) has since landed the
+[typed structured page context](page-context.md)** — the typed selector,
+route registry, permission-checked server re-fetch, and evidence render for the
+page an admin is looking at.
 
 ## Governance: these contracts are binding
 
@@ -104,6 +107,7 @@ child; the existing repository-wide documents they extend are linked.
 | Area | Planned subsystem doc (owner) | Existing docs it extends |
 | --- | --- | --- |
 | **Architecture** | `docs/ai-diagnostics/architecture.md` — runtime shape, the tool substrate, the deployed-knowledge bundle, and data flows (AID-2 #2371 / AID-5 #2374) | [`ARCHITECTURE.md`](../ARCHITECTURE.md), [`DOMAIN_INVARIANTS.md`](../DOMAIN_INVARIANTS.md) |
+| **Page context** | [`page-context.md`](page-context.md) — the typed selector, the route registry, the permission-checked server re-fetch, the personal-detail opt-in, and the evidence block (AID-4 #2373, **delivered**) | [ADR-002](decisions/ADR-002-admission-and-per-tool-authorization-lattice.md), [ADR-003](decisions/ADR-003-untrusted-evidence-classes.md), [ADR-004](decisions/ADR-004-sensitive-context-retention-redaction-audit-metadata.md) |
 | **Security / privacy** | This hub's [threat model](threat-model.md) and [ADRs](decisions/) (AID-1, this issue); release hardening notes (AID-8 #2379) | [`SECURITY.md`](../SECURITY.md), [`SECURITY-ATTACK-SURFACE.md`](../SECURITY-ATTACK-SURFACE.md), [`agents/PROMPT_INJECTION_GUIDE.md`](../agents/PROMPT_INJECTION_GUIDE.md) |
 | **Deployment / operator** | `docs/ai-diagnostics/deployment.md` — enabling the module, the SELECT-only DB role, the credential, budget/limits, disclosure and zero-retention, the private overlay (AID-2 #2371 / AID-5 #2374 / AID-8 #2379) | [`../../DEPLOYMENT.md`](../../DEPLOYMENT.md), [`ONGOING_DEVELOPMENT_WORKFLOW.md`](../ONGOING_DEVELOPMENT_WORKFLOW.md) |
 | **UX** | `docs/ai-diagnostics/ux.md` — the Diagnostics shell, inert-text answer render + strict CSP (ADR-008), evidence citations, permission-scoped answers, fallbacks (AID-7 #2378) | [`UX_FLOW_MAP.md`](../UX_FLOW_MAP.md) |
@@ -355,5 +359,9 @@ The money-safety invariant — that no burst of concurrent reservers can push
   implements it.
 - Keep Diagnostics config deployment-local and out of config-transfer bundles
   unless ADR-006 is superseded by an owner decision.
+- Do not add a page-context route whose `requiredAreas` are weaker than the
+  admin route lattice's own requirement for that path, and do not widen a
+  route's token allowlists without a reason — see
+  [page context](page-context.md); `registry.test.ts` enforces the first.
 - When a child ships a subsystem document from the plan above, replace its
   `code-font` placeholder with a real link in the same PR.

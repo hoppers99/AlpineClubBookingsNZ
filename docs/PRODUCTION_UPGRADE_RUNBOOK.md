@@ -605,11 +605,9 @@ name `mode` anywhere**. Same throwaway container, migrations applied, one
   DROP TYPE "SubscriptionLockoutMode";
   ```
   That is the intended end state, not drift to chase, and `rollback.sql` says so where
-  an operator will read it. (Run against this branch's own base schema. Run against
-  `origin/main` as it stands today the same diff also lists
-  `BookingChangeRequestStatus`'s `EXPIRED` value and `BookingChangeRequest.holdExpiresAt`
-  — unrelated migrations `main` has taken on since this branch was cut, which disappear
-  when it is rebased.)
+  an operator will read it. (Measured before `main`'s unrelated #2553 hold-expiry
+  migration was merged into this branch; that migration is additive and does not touch
+  `MembershipLockoutSettings`, so the two leftovers above remain the complete list.)
 
 **Backfill correctness** is additionally pinned by
 `prisma/migration-verification/20260803010000_contract_subscription_lockout_drop_enabled.ts`,

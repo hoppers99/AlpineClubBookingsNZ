@@ -178,6 +178,21 @@ export function getAdminCronJobDefinitions(
     ),
     defineCronJob(
       {
+        // #2553: releases the beds an abandoned HOLD-mode policy-exception
+        // request reserved once its hold deadline passes, and marks the request
+        // EXPIRED. An operator seeing this row is how they know abandoned holds
+        // are (or are not) being returned to the pool.
+        jobName: "policy-exception-hold-reaper",
+        label: "Policy-exception hold reaper",
+        schedule: "0 */3 * * *",
+        timezone: nzTimezone,
+        expectedLocalTime: "Every 3 hours at minute 0 in Pacific/Auckland",
+        staleAfterMinutes: THREE_HOURLY_STALE_AFTER_MINUTES,
+      },
+      globalDisabledReason
+    ),
+    defineCronJob(
+      {
         jobName: "additional-payment-reminders",
         label: "Outstanding additional payment reminders",
         schedule: "0 */3 * * *",

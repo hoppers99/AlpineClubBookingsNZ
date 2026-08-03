@@ -528,6 +528,12 @@ const REQUIRED_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, string[]>
     "withdrawnHeading",
     "withdrawnContextNote",
   ],
+  // #2553: the courtesy notice when a bed-holding policy-exception request runs
+  // out of time. The stay dates say WHICH request lapsed (a member can have had
+  // several over one booking) and the deadline says WHY it closed — an override
+  // that dropped it would tell a member their request is gone with no reason,
+  // which is the whole gap this notice exists to close.
+  "policy-exception-request-expired": ["checkIn", "checkOut", "expiresAt"],
 };
 
 const TEMPLATE_TRIGGER_METADATA: Partial<
@@ -861,6 +867,12 @@ const TEMPLATE_TRIGGER_METADATA: Partial<
       "A member guest came OFF a booking somebody else made — a consent request nobody had answered yet was called off, a settled member guest was taken off, or the booking-request pipeline swapped them out at approval (MG4-D-b). One template for all three; the composed opening sentence says which. NOT sent when a request simply lapses on its own — that is member-guest-consent-expired",
     frequency:
       "Once per member guest removed from a booking they had been told about. Ignores the per-action notify tick and the member's notification preferences (D-16); still withheld by the per-booking 'No emails' switch",
+  },
+  "policy-exception-request-expired": {
+    triggerSummary:
+      "A member's policy-exception request was holding real beds and nobody decided it before its hold deadline, so the hold-reaper cron released the beds and closed the request as Expired (#2553)",
+    frequency:
+      "Once per lapsed request, sent AFTER the release has committed so a mail failure can never roll back or repeat a capacity release. Not gated on a personal notification preference — it reports something the club's own job did to the member's request, and the member has no other signal that it happened; still withheld by the per-booking 'No emails' switch",
   },
 };
 
