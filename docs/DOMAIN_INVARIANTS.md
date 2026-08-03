@@ -5084,6 +5084,45 @@ a **custodian occupancy** (#2286). The invariants:
 Hard delete must remain limited to records that pass the eligibility checks for
 no durable booking, financial, family, Xero, or membership-history blockers.
 
+### Calculated age on identity-sensitive Family Group workflows (#2568)
+
+An administrator linking, approving, creating, editing or removing a Family Group
+member sees that member's **calculated age** beside their name. The invariants:
+
+- **One helper.** `src/lib/member-age.ts` is the only place age is derived, and
+  `src/lib/__tests__/member-identity-age-surfaces.test.ts` pins the complete list
+  of modules that call it or carry its `ageLabel` output. A new screen showing an
+  age fails that census first.
+- **Nothing is stored.** Age changes on its own every day, so there is no age
+  column and no cached value; it is recomputed on every read. `Member.ageTier`
+  remains a separate, deliberately stored classification and is never used to
+  infer an age.
+- **Date-only on the New Zealand calendar.** A date of birth is a calendar day.
+  `Date` inputs are read through the club time zone, exactly as the family-group
+  screens already RENDER a date of birth, and the default reference date is the
+  club's calendar day — never the UTC or browser date, which would move a
+  birthday by one day for half of every NZ day. The reference date is injectable
+  so tests are deterministic.
+- **A 29 February anniversary clamps to the last day of the month**, so a
+  leap-day member turns over on 28 February in a non-leap year. A future or
+  unparseable date of birth has no age and reads `Age unavailable` — never
+  "0 years", which would look like a real infant.
+- **Under five shows completed years AND months**; five and over shows completed
+  years only.
+- **The browser is sent the age, not the birth date.** Every family-group payload
+  that needs identity information carries a finished `ageLabel` string and no
+  `dateOfBirth`. The one date of birth still rendered is the value the REQUESTER
+  declared on a child or adult request — the request's own data, which the admin
+  checks a candidate record against, not a stored member record.
+- **Membership permission, verified server-side, on every request.**
+  `GET /api/admin/family-groups/member-search` and
+  `GET /api/admin/family-groups/[id]` both name `membership:view` explicitly
+  rather than inferring it from the request path. An administrator whose role
+  covers an unrelated area receives no identity information at all.
+- **Routine views stay routine.** The `GET /api/admin/family-groups` list — the
+  ordinary Family Group overview — carries neither a date of birth nor an age,
+  and no member-facing or public surface carries either.
+
 ### Member profile merge (E11 #1937)
 
 Two duplicate member records may be merged into one by a **Full Admin only**. The
