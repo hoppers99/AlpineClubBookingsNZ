@@ -174,8 +174,34 @@ describe("analytics route policy — credential-shaped addresses the catch-all c
     }
   });
 
+  it("refuses a HYPHENATED opaque identifier, UUIDs included", () => {
+    // The hole this closes: the first cut exempted any segment containing a hyphen,
+    // so a canonical UUID — the most common token format there is — matched the slug
+    // pattern chunk for chunk and was reported to Google verbatim. Inserting three
+    // hyphens into a hex token defeated the check outright.
+    for (const path of [
+      "/s/550e8400-e29b-41d4-a716-446655440000",
+      "/550e8400-e29b-41d4-a716-446655440000",
+      "/t/9f8e7d6c-5b4a-3928-1706",
+      "/pages/a1b2c3d4-e5f6-a7b8",
+    ]) {
+      expect(isAnalyticsEligiblePath(path), path).toBe(false);
+      expect(buildAnalyticsPageLocation("https://club.test", path), path).toBeNull();
+    }
+  });
+
+  it("refuses a long pure-digit segment, which carries no letter to notice", () => {
+    expect(isAnalyticsEligiblePath("/b/123456789012345678")).toBe(false);
+    expect(isAnalyticsEligiblePath("/1234567")).toBe(false);
+    // …while a year, a decade or a room number is still a title.
+    expect(isAnalyticsEligiblePath("/2026")).toBe(true);
+    expect(isAnalyticsEligiblePath("/trips/1926")).toBe(true);
+  });
+
   it("does not refuse a real page slug that merely contains a digit", () => {
-    // Hyphenated words, short segments and digit-free words are all unaffected.
+    // Hyphenated words, short segments and digit-free words are all unaffected —
+    // including the ones the tightened identifier test has to walk past: a
+    // hyphen-joined title is long, mixes letters and digits, and must stay eligible.
     for (const path of [
       "/trips/2026",
       "/trips-2026",
@@ -183,6 +209,12 @@ describe("analytics route policy — credential-shaped addresses the catch-all c
       "/accommodation",
       "/lodge-2-photos",
       "/notice-2026-agm",
+      "/agm-2026-notes-v2",
+      "/winter-programme-2026",
+      "/pinnacle-ridge-lodge-2026-season",
+      "/e2e-test-page",
+      "/covid19-update",
+      "/top-10-trips-2026",
     ]) {
       expect(isAnalyticsEligiblePath(path), path).toBe(true);
     }

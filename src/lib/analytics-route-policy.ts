@@ -64,39 +64,108 @@ const CMS_SEGMENT_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const MAX_CMS_SEGMENT_LENGTH = 60;
 
 /**
- * An OPAQUE IDENTIFIER shaped like a slug: one unbroken run of lowercase letters and
- * digits, long enough to be a token rather than a word.
+ * An OPAQUE IDENTIFIER shaped like a slug — a token, cuid, UUID or numeric id that
+ * {@link CMS_SEGMENT_PATTERN} would otherwise wave through.
  *
- * {@link CMS_SEGMENT_PATTERN} alone does not catch these, and that is a real gap
- * rather than a theoretical one: `/t/9f8e7d6c5b4a39281706` and
- * `/cm5x9q2ab000108l3f4g5h6i` are both valid lowercase-alphanumeric segments, so the
- * pattern admits them — and if a link of either shape ever exists in the wild, the
- * catch-all serves its 404 and the address would have been reported to Google with
- * the identifier intact. A lowercase hex token, a cuid and a base32 code are all
- * exactly this shape.
+ * That pattern alone does not catch these, and it is a real gap rather than a
+ * theoretical one: `/t/9f8e7d6c5b4a39281706`, `/cm5x9q2ab000108l3f4g5h6i`,
+ * `/550e8400-e29b-41d4-a716-446655440000` and `/123456789012345678` are all valid
+ * lowercase-alphanumeric hyphen-joined segments, so the pattern admits them — and if
+ * a link of any of those shapes exists in the wild, the catch-all serves its 404 and
+ * the address would have been reported to Google with the identifier intact.
  *
- * The three conditions together are what keep real page titles out of it:
- *  • **no hyphen** — an admin-authored slug is hyphen-joined words
- *    (`annual-general-meeting`, `trips-2026`), so any hyphen exempts the segment;
- *  • **at least 12 characters** — `contact`, `join`, `lodges`, `2026` are shorter;
- *  • **letters AND digits mixed** — `newsletter`, `accommodation` and
- *    `membership` carry no digit, and `2026` carries no letter.
+ * Four independent conditions, any one of which condemns a segment. Each is written
+ * to refuse identifiers WITHOUT refusing the hyphen-joined words an admin actually
+ * types (`annual-general-meeting`, `trips-2026`, `notice-2026-agm`):
  *
- * The residue is a page whose slug is one long unhyphenated word containing a digit
- * (`newsletter2026`), which loses its page views. That is the trade this module makes
- * everywhere and it is stated in the header: a missing page view is a reporting gap,
- * a sent token is a disclosure.
+ *  1. **Canonical UUID shape** — 8-4-4-4-12 lowercase hex. Matched exactly rather
+ *     than by randomness, because it is the single most common token format there
+ *     is and no page title looks like it. The earlier version of this function
+ *     exempted ANY segment containing a hyphen, which handed a pass to every UUID.
+ *  2. **A long run of pure digits** — a page slug segment is a title, not a number;
+ *     `2026` and `2026-agm` are well under the threshold, and `123456789012345678`
+ *     carries no letter for condition 3 or 4 to notice.
+ *  3. **An unbroken alphanumeric run** of at least
+ *     {@link OPAQUE_IDENTIFIER_MIN_LENGTH} characters mixing letters and digits —
+ *     the lowercase hex token, the cuid, the base32 code.
+ *  4. **A hyphen-joined segment containing a RANDOM-LOOKING chunk** — see
+ *     {@link chunkLooksRandom}. This is what catches the non-canonical hyphenated
+ *     token (`9f8e7d6c-5b4a-3928-1706`) while leaving real titles alone.
+ *
+ * Two residues, both accepted and both in the same direction as the rest of this
+ * module — a missing page view is a reporting gap, a sent token is a disclosure:
+ *  • a page whose slug is one long unhyphenated word containing a digit
+ *    (`newsletter2026`) loses its page views (condition 3);
+ *  • a hyphenated token whose every chunk happens to be pure letters or pure digits
+ *    (`abcd-1234-efab-5678`) is NOT caught, because nothing structural distinguishes
+ *    it from `annual-2026-report-2025`. Telling those apart would need a dictionary,
+ *    and gate 1 already excludes every token-bearing route this application actually
+ *    serves; condition 4 is the belt for an address no route claims.
  */
 const OPAQUE_IDENTIFIER_MIN_LENGTH = 12;
 
+/** 8-4-4-4-12 lowercase hex: `crypto.randomUUID()` and every other UUID v1-v8. */
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/**
+ * A pure-digit segment longer than six characters is an identifier, not a year or an
+ * ordinal. `2026`, `1926` and `100` stay eligible; `123456789012345678` does not.
+ */
+const LONG_NUMERIC_SEGMENT_PATTERN = /^[0-9]{7,}$/;
+
+/**
+ * Does this hyphen-separated chunk look like a slice of an identifier rather than a
+ * word?
+ *
+ * The signal is ALTERNATION between letters and digits, which is what random
+ * base-N text does and what English does not. A word carrying a year or a version
+ * (`newsletter2026`, `covid19`, `part2`, `mp3`) alternates once — letters then
+ * digits, or digits then letters. A hex or base32 chunk alternates repeatedly
+ * (`9f8e7d6c` alternates seven times; `550e8400` twice).
+ *
+ * Short chunks are exempt outright: `2b`, `v2`, `e2e` and `b2b` are qualifiers
+ * people really write, and at three characters or fewer there is not enough shape
+ * to judge. Pure letters and pure digits are exempt too — condition 2 of
+ * {@link looksLikeOpaqueIdentifier} handles a long number, and a run of letters is
+ * a word by any available measure.
+ */
+function chunkLooksRandom(chunk: string): boolean {
+  if (chunk.length < 4) return false;
+  if (!/[a-z]/.test(chunk) || !/[0-9]/.test(chunk)) return false;
+
+  let alternations = 0;
+  for (let index = 1; index < chunk.length; index += 1) {
+    const wasDigit = /[0-9]/.test(chunk[index - 1]);
+    const isDigit = /[0-9]/.test(chunk[index]);
+    if (wasDigit !== isDigit) alternations += 1;
+  }
+  return alternations >= 2;
+}
+
 function looksLikeOpaqueIdentifier(segment: string): boolean {
-  if (segment.includes("-")) {
-    return false;
+  if (UUID_PATTERN.test(segment)) {
+    return true;
   }
-  if (segment.length < OPAQUE_IDENTIFIER_MIN_LENGTH) {
-    return false;
+  if (LONG_NUMERIC_SEGMENT_PATTERN.test(segment)) {
+    return true;
   }
-  return /[a-z]/.test(segment) && /[0-9]/.test(segment);
+
+  const chunks = segment.split("-");
+  if (chunks.length === 1) {
+    return (
+      segment.length >= OPAQUE_IDENTIFIER_MIN_LENGTH &&
+      /[a-z]/.test(segment) &&
+      /[0-9]/.test(segment)
+    );
+  }
+
+  // Hyphen-joined. Judged on the de-hyphenated length so `trips-2026` (9) stays a
+  // title while `9f8e7d6c-5b4a-3928-1706` (20) is long enough to be a token.
+  return (
+    segment.replace(/-/g, "").length >= OPAQUE_IDENTIFIER_MIN_LENGTH &&
+    chunks.some(chunkLooksRandom)
+  );
 }
 
 /** More segments than this is not a page hierarchy an admin authored. */
