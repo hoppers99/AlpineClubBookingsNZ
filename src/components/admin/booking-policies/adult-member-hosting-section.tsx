@@ -23,7 +23,11 @@ import {
 } from "@/components/admin/view-only-action"
 import { PolicyFeedback } from "./policy-feedback"
 import { PolicyScopeSelect, usePolicyScopeLodgeName } from "./policy-scope-select"
-import type { AdultMemberHostingPolicy } from "./types"
+import type {
+  AdultMemberHostingModeValue,
+  AdultMemberHostingPolicy,
+  AdultMemberHostScopeSetValue,
+} from "./types"
 
 const ENDPOINT = "/api/admin/booking-policies/adult-member-hosting"
 
@@ -36,23 +40,86 @@ const ENDPOINT = "/api/admin/booking-policies/adult-member-hosting"
  */
 const UNLOADED_SCOPE = "__unloaded__"
 
+/**
+ * The scopes this build can actually evaluate. Mirrors
+ * `IMPLEMENTED_ADULT_MEMBER_HOST_SCOPES` on the server, which is the authority —
+ * the route refuses the others whatever this component sends. Repeated here so the
+ * checkbox is visibly unavailable with a reason, rather than looking selectable and
+ * failing on save.
+ */
+const HOST_SCOPE_AVAILABLE: Record<keyof AdultMemberHostScopeSetValue, boolean> = {
+  sameBooking: true,
+  anyMemberAtLodge: false,
+  nominatedHost: false,
+}
+
+const HOST_SCOPE_LABELS: Record<keyof AdultMemberHostScopeSetValue, string> = {
+  sameBooking: "Eligible adult member on the same booking",
+  anyMemberAtLodge: "Any eligible adult member staying at the lodge",
+  nominatedHost: "Nominated responsible adult member",
+}
+
+const HOST_SCOPE_ORDER = [
+  "sameBooking",
+  "anyMemberAtLodge",
+  "nominatedHost",
+] as const
+
+const SOURCE_LABELS: Record<string, string> = {
+  LODGE: "set for this lodge",
+  CLUB_WIDE: "inherited from the club",
+  BUILT_IN_DEFAULT: "the built-in default (nothing saved)",
+}
+
 interface HostingDraft {
-  mode: "INHERIT" | "DISABLED" | "ADMIN_REVIEW_REQUIRED"
+  mode: AdultMemberHostingModeValue
   /** Empty until an admin chooses: new policies get no automatic mode (D-R6). */
   capacityMode: "" | "HOLD" | "NO_HOLD"
+  /**
+   * null is the explicit inherit option (#2569 §2). Kept as its own field rather
+   * than folded into `mode`, because the two dimensions are independent: a lodge
+   * may override the consequence while inheriting the scopes, or the reverse.
+   */
+  hostScopes: AdultMemberHostScopeSetValue | null
   /** CAS token; absent (null) means "no row is stored for this scope yet". */
   version: number | null
   /** Whether a row is actually persisted, as reported by the GET (#2142). */
   configured: boolean
 }
 
+/**
+ * The scope set the checkboxes show while "inherit" is selected.
+ *
+ * The effective set, so switching to "custom" starts from what is actually in
+ * force rather than from an arbitrary default the admin never chose — and so
+ * ticking one extra box does not silently drop the club's other choices.
+ */
+function customScopeStartingPoint(
+  policy: AdultMemberHostingPolicy,
+): AdultMemberHostScopeSetValue {
+  return policy.hostScopes ?? policy.effective.hostScopes
+}
+
 function toDraft(policy: AdultMemberHostingPolicy): HostingDraft {
   return {
     mode: policy.mode,
     capacityMode: policy.capacityMode ?? "",
+    hostScopes: policy.hostScopes,
     version: policy.configured ? policy.version : null,
     configured: policy.configured,
   }
+}
+
+function scopeSetsEqual(
+  a: AdultMemberHostScopeSetValue | null,
+  b: AdultMemberHostScopeSetValue | null,
+): boolean {
+  if (a === null || b === null) return a === b
+  return (
+    a.sameBooking === b.sameBooking &&
+    a.anyMemberAtLodge === b.anyMemberAtLodge &&
+    a.nominatedHost === b.nominatedHost
+  )
 }
 
 /** Accept only a complete server row that is safe to render and re-seed. */
@@ -62,8 +129,18 @@ function parsePolicy(value: unknown): AdultMemberHostingPolicy | null {
   if (
     row.mode !== "INHERIT" &&
     row.mode !== "DISABLED" &&
-    row.mode !== "ADMIN_REVIEW_REQUIRED"
+    row.mode !== "ADMIN_REVIEW_REQUIRED" &&
+    row.mode !== "ENFORCED"
   ) {
+    return null
+  }
+  if (row.hostScopes !== null && typeof row.hostScopes !== "object") return null
+  // The effective block is what the card DISPLAYS as in force. A row without it
+  // is not safe to render: the card would either show nothing or fall back to
+  // guessing the inheritance, which is the one thing it must never do.
+  const effective = row.effective
+  if (!effective || typeof effective !== "object") return null
+  if (typeof (effective as Record<string, unknown>).preview !== "string") {
     return null
   }
   if (
@@ -95,6 +172,20 @@ export function AdultMemberHostingSection() {
   const [scopeLodgeId, setScopeLodgeId] = useState<string | null>(null)
   const scopeLodgeName = usePolicyScopeLodgeName(scopeLodgeId)
   const [loadedScope, setLoadedScope] = useState<string | null>(UNLOADED_SCOPE)
+  /**
+   * The server's resolved view of this scope (#2569 §16). Held beside the draft
+   * rather than inside it: it is not editable, and it is refreshed by whatever the
+   * server says after each load and each save.
+   */
+  const [effective, setEffective] =
+    useState<AdultMemberHostingPolicy["effective"] | null>(null)
+  /** The scope set the checkboxes hold while "inherit" is selected. */
+  const [customScopeSeed, setCustomScopeSeed] =
+    useState<AdultMemberHostScopeSetValue>({
+      sameBooking: true,
+      anyMemberAtLodge: false,
+      nominatedHost: false,
+    })
   const scopeRef = useRef(scopeLodgeId)
   const modeHint = useFieldHint()
   const capacityHint = useFieldHint()
@@ -128,6 +219,8 @@ export function AdultMemberHostingSection() {
         throw new Error("Failed to read the adult-member hosting policy")
       }
       setLoadedScope(scope)
+      setEffective(policy.effective)
+      setCustomScopeSeed(customScopeStartingPoint(policy))
       return toDraft(policy)
     },
     save: async (draft) => {
@@ -138,6 +231,10 @@ export function AdultMemberHostingSection() {
         body: JSON.stringify({
           mode: draft.mode,
           capacityMode: draft.capacityMode,
+          // Always sent, including null: null IS the inherit choice, so omitting
+          // it would make "inherit the club's scopes" indistinguishable from "do
+          // not mention the scopes", and the route would have to guess.
+          hostScopes: draft.hostScopes,
           // Only sent when a row is stored: absent means "I believe there is
           // nothing here yet", which the route checks rather than assumes.
           ...(draft.version !== null ? { version: draft.version } : {}),
@@ -158,6 +255,8 @@ export function AdultMemberHostingSection() {
       }
       const policy = parsePolicy(await res.json().catch(() => null))
       if (!policy) throw new Error("Saved, but the response could not be read")
+      setEffective(policy.effective)
+      setCustomScopeSeed(customScopeStartingPoint(policy))
       return toDraft(policy)
     },
     successMessage: "Adult-member hosting policy saved",
@@ -168,10 +267,19 @@ export function AdultMemberHostingSection() {
     isDirty: (draft, saved) =>
       !draft.configured ||
       draft.mode !== saved.mode ||
-      draft.capacityMode !== saved.capacityMode,
+      draft.capacityMode !== saved.capacityMode ||
+      !scopeSetsEqual(draft.hostScopes, saved.hostScopes),
     // Capacity mode is required on every write, so a first save cannot happen
-    // until the admin has actually chosen one (D-R6).
-    isValid: (draft) => draft.capacityMode !== "",
+    // until the admin has actually chosen one (D-R6). #2569 adds the second
+    // condition: a CUSTOM scope set with nothing ticked has no valid reading, so
+    // the Save button is unreachable rather than the save being refused by the
+    // route with a sentence the admin has to go and read.
+    isValid: (draft) =>
+      draft.capacityMode !== "" &&
+      (draft.hostScopes === null ||
+        draft.hostScopes.sameBooking ||
+        draft.hostScopes.anyMemberAtLodge ||
+        draft.hostScopes.nominatedHost),
   })
 
   const { draft, editing, saving, dirty, valid, error, success } = section
@@ -259,11 +367,10 @@ export function AdultMemberHostingSection() {
                     : "Adult Member Hosting"}
                 </CardTitle>
                 <CardDescription>
-                  Ask that an adult member is staying on the same booking as any
-                  non-member guest, on every night that guest is there. Bookings
-                  that do not meet it are still made — they are sent to an admin
-                  to look at, and the review clears itself if an adult member is
-                  added later.
+                  Ask that every night a non-member guest stays is covered by an
+                  adult member. Two separate settings: what happens when it is
+                  not, and which adult members count. A recorded review clears
+                  itself if cover is added later.
                   {scopeLodgeName ? (
                     <>
                       {" "}
@@ -310,13 +417,113 @@ export function AdultMemberHostingSection() {
                     Allowed — no adult member needed
                   </option>
                   <option value="ADMIN_REVIEW_REQUIRED">
-                    Send the booking to an admin to review
+                    Allow the booking, but send it to a Booking Officer to review
+                  </option>
+                  <option value="ENFORCED">
+                    Stop the booking unless it is corrected or an exception is
+                    approved
                   </option>
                 </select>
                 <FieldHint {...modeHint.hintProps}>
-                  A qualifying adult member has to be on the booking as a guest
-                  in their own right. Owning the booking is not enough, and
-                  child or youth members do not count.
+                  Choose what happens when a non-member guest has no adult member
+                  cover. Reviewing still makes the booking and asks an officer to
+                  look; stopping it means the member has to add cover, change the
+                  guests or dates, pick another lodge, or ask a Booking Officer to
+                  approve an exception. An exception request for a new booking
+                  does not hold any beds.
+                </FieldHint>
+              </div>
+
+              <div className="space-y-3 max-w-md">
+                <Label htmlFor="hostingScopeSource">
+                  Adult members who count
+                </Label>
+                <select
+                  id="hostingScopeSource"
+                  value={draft.hostScopes === null ? "INHERIT" : "CUSTOM"}
+                  disabled={!editing}
+                  onChange={(event) =>
+                    section.setDraft({
+                      hostScopes:
+                        event.target.value === "INHERIT"
+                          ? null
+                          : { ...customScopeSeed },
+                    })
+                  }
+                  className="h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm disabled:bg-muted disabled:text-muted-foreground"
+                >
+                  <option value="INHERIT">
+                    {scopeLodgeId
+                      ? "Inherit the club-wide choice of who counts"
+                      : "Use the built-in default (adult member on the same booking)"}
+                  </option>
+                  <option value="CUSTOM">
+                    {scopeLodgeId
+                      ? "Choose who counts for this lodge"
+                      : "Choose who counts club-wide"}
+                  </option>
+                </select>
+
+                <fieldset
+                  className="space-y-2"
+                  disabled={!editing || draft.hostScopes === null}
+                >
+                  {HOST_SCOPE_ORDER.map((key) => (
+                    <label
+                      key={key}
+                      className="flex items-start gap-2 text-sm"
+                      htmlFor={`hostScope-${key}`}
+                    >
+                      <input
+                        id={`hostScope-${key}`}
+                        type="checkbox"
+                        className="mt-1"
+                        checked={draft.hostScopes?.[key] ?? false}
+                        disabled={
+                          !editing ||
+                          draft.hostScopes === null ||
+                          !HOST_SCOPE_AVAILABLE[key]
+                        }
+                        onChange={(event) =>
+                          section.setDraft({
+                            hostScopes: draft.hostScopes
+                              ? {
+                                  ...draft.hostScopes,
+                                  [key]: event.target.checked,
+                                }
+                              : draft.hostScopes,
+                          })
+                        }
+                      />
+                      <span
+                        className={
+                          HOST_SCOPE_AVAILABLE[key]
+                            ? undefined
+                            : "text-muted-foreground"
+                        }
+                      >
+                        {HOST_SCOPE_LABELS[key]}
+                        {HOST_SCOPE_AVAILABLE[key]
+                          ? null
+                          : " — not available yet"}
+                      </span>
+                    </label>
+                  ))}
+                </fieldset>
+                <FieldHint id="hostingScopeHint">
+                  These are independent: a night counts as covered when at least
+                  one ticked kind of adult member covers it, and different nights
+                  may be covered by different people. A qualifying adult member has
+                  to be staying in their own right — owning the booking is not
+                  enough, and child or youth members do not count. One adult can
+                  cover any number of non-member guests; there is no ratio.
+                  {draft.mode === "DISABLED" ? (
+                    <>
+                      {" "}
+                      The requirement is off at the moment, so these are saved but
+                      not applied.
+                    </>
+                  ) : null}
                 </FieldHint>
               </div>
 
@@ -358,6 +565,25 @@ export function AdultMemberHostingSection() {
                   return to the pool and the request is marked Expired.
                 </FieldHint>
               </div>
+
+              {effective ? (
+                <div className="rounded-md border bg-muted p-3 text-sm space-y-1">
+                  <p className="font-medium">In force here now</p>
+                  <p>{effective.preview}</p>
+                  <p className="text-muted-foreground">
+                    Consequence:{" "}
+                    {SOURCE_LABELS[effective.modeSource] ?? effective.modeSource}.
+                    Who counts:{" "}
+                    {SOURCE_LABELS[effective.hostScopeSource] ??
+                      effective.hostScopeSource}
+                    {" — "}
+                    {HOST_SCOPE_ORDER.filter((key) => effective.hostScopes[key])
+                      .map((key) => HOST_SCOPE_LABELS[key])
+                      .join("; ") || "nobody counts"}
+                    .
+                  </p>
+                </div>
+              ) : null}
 
               <p className="text-sm text-muted-foreground">
                 {draft.configured
