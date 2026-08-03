@@ -17,6 +17,13 @@
   refusal — and a non-member joining a group booking is simply pointed back to the
   organiser, because there is no account for them to ask from.
 
+  **The exception queue now tells you which of the two happened.** "Adult member
+  must host" used to look the same whether the booking had been made and flagged for
+  you or refused outright, which are opposite situations — in the second there is no
+  booking at all until you approve, and somebody is waiting for a bed. Each request
+  now says which, in a sentence, taken from the evidence frozen at the time rather
+  than from today's setting.
+
   **Who counts as an adult member is now a choice.** "An eligible adult member on
   the same booking" is the rule the club has always had and stays the default. The
   new option is **another booking on the same account**: a qualifying adult member

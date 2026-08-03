@@ -95,6 +95,11 @@ interface QueueItem {
   aggregateCapacityMode: "HOLD" | "NO_HOLD" | null;
   reasonCodes: string[];
   policyRefs: PolicyRef[];
+  /**
+   * What the club's hosting setting DID about the hosting violation, frozen at the
+   * time (#2569). Null where the request carries no hosting reason.
+   */
+  hostingConsequence: "ADMIN_REVIEW_REQUIRED" | "ENFORCED" | null;
   affectedNights: string[];
   proposedCheckIn: string | null;
   proposedCheckOut: string | null;
@@ -122,6 +127,32 @@ const REASON_LABELS: Record<PolicyExceptionReasonCode, string> = {
 
 function reasonLabel(code: string) {
   return (REASON_LABELS as Record<string, string>)[code] ?? code;
+}
+
+/**
+ * Whether the adult-member rule refused this or merely flagged it (#2569).
+ *
+ * The reason label is the same either way, and the difference is the whole
+ * character of the decision: under the enforcing consequence there is no booking
+ * (or no change) until an officer approves, and under the review consequence there
+ * already is one and the officer is recording a view of it. An officer who reads the
+ * second while it is the first leaves a member without a bed and does not know it.
+ *
+ * Says nothing about beds: the badge in the header already reports the hold, and
+ * saying it twice from two different derivations is how the two come to disagree.
+ */
+function hostingConsequenceSentence(
+  consequence: "ADMIN_REVIEW_REQUIRED" | "ENFORCED",
+  source: "NEW_BOOKING" | "MODIFICATION",
+): string {
+  if (consequence === "ENFORCED") {
+    return source === "NEW_BOOKING"
+      ? "The adult-member rule refused this booking, so it does not exist yet. Approving the exception is what allows it to be made."
+      : "The adult-member rule refused this change, so the booking still stands as it was. Approving the exception is what allows the change.";
+  }
+  return source === "NEW_BOOKING"
+    ? "The adult-member rule allowed the booking and asked for a look, so it already exists. Your decision records what the club makes of it."
+    : "The adult-member rule allowed the change and asked for a look. Your decision records what the club makes of it.";
 }
 
 /** "ADULT" -> "Adult", so an age tier reads as words on the decision card. */
@@ -455,6 +486,14 @@ export function PolicyExceptionRequestsPanel({
                               <li key={code}>{reasonLabel(code)}</li>
                             ))}
                       </ul>
+                      {item.hostingConsequence ? (
+                        <p className="mt-2 text-muted-foreground">
+                          {hostingConsequenceSentence(
+                            item.hostingConsequence,
+                            item.source,
+                          )}
+                        </p>
+                      ) : null}
                       {item.affectedNights.length > 0 ? (
                         <p className="mt-2 text-muted-foreground">
                           Nights affected: {item.affectedNights.join(", ")}

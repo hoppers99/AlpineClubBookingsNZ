@@ -23,6 +23,7 @@ import {
 import { loadMemberGuestAddPolicy } from "@/lib/member-guest-add-policy";
 import type { PrismaTransactionClient } from "@/lib/db-transaction";
 import {
+  type AdultMemberHostingConsequence,
   type PolicyExceptionCapacityMode,
   type PolicyExceptionReasonCode,
   type PolicyExceptionViolation,
@@ -1384,6 +1385,13 @@ export interface UnifiedExceptionQueueItem {
   reasonCodes: PolicyExceptionReasonCode[];
   /** Every covered policy at the frozen revision — the reviewed evidence. */
   policyRefs: ExceptionQueuePolicyRef[];
+  /**
+   * What the club's hosting setting DID about this violation at the time (#2569),
+   * or null where the request carries no hosting reason. See
+   * `frozenHostingConsequence`: the queue has to distinguish a booking that was
+   * made and flagged from one that was refused outright.
+   */
+  hostingConsequence: AdultMemberHostingConsequence | null;
   affectedNights: string[];
   /** The proposed stay envelope as frozen, so the queue shows what it decides. */
   proposedCheckIn: string | null;
@@ -1444,6 +1452,42 @@ function frozenPolicyRefs(value: unknown): ExceptionQueuePolicyRef[] {
       typeof (ref as ExceptionQueuePolicyRef).policyId === "string" &&
       typeof (ref as ExceptionQueuePolicyRef).policyVersion === "number",
   );
+}
+
+/**
+ * The hosting CONSEQUENCE frozen onto this request's evidence, or null where the
+ * request has no hosting reason (#2569).
+ *
+ * The officer queue needs it because the same reason code means two different
+ * things. Under `ADMIN_REVIEW_REQUIRED` the booking was MADE and an officer is
+ * asked to look at it; under `ENFORCED` it was REFUSED and exists only as this
+ * request. "Adult member must host" describes both, and an officer who reads it as
+ * the first while it is the second believes a member has a booking they do not
+ * have — and will not treat the queue as the thing standing between them and a bed.
+ *
+ * Read off the FROZEN violation rather than the live policy row, deliberately: the
+ * club may have changed the setting since, and what the officer is deciding is what
+ * happened at the time. A snapshot frozen before #2569 carries no consequence, and
+ * absent reads as the only one that existed then, `ADMIN_REVIEW_REQUIRED`.
+ */
+function frozenHostingConsequence(
+  value: unknown,
+): AdultMemberHostingConsequence | null {
+  if (!value || typeof value !== "object") return null;
+  const violations = (value as { violations?: unknown }).violations;
+  if (!Array.isArray(violations)) return null;
+  for (const violation of violations) {
+    if (!violation || typeof violation !== "object") continue;
+    const row = violation as {
+      reasonCode?: unknown;
+      consequence?: unknown;
+    };
+    if (row.reasonCode !== "ADULT_MEMBER_HOSTING_REQUIRED") continue;
+    return row.consequence === "ENFORCED"
+      ? "ENFORCED"
+      : "ADMIN_REVIEW_REQUIRED";
+  }
+  return null;
 }
 
 /** The frozen proposed party's envelope + size, read defensively. */
@@ -1533,6 +1577,7 @@ export async function readUnifiedExceptionQueue(input: {
         aggregateCapacityMode: row.aggregateCapacityMode,
         reasonCodes: frozenReasonCodes(row.frozenEvidence),
         policyRefs: frozenPolicyRefs(row.frozenEvidence),
+        hostingConsequence: frozenHostingConsequence(row.frozenEvidence),
         affectedNights: frozenAffectedNights(row.frozenEvidence),
         proposedCheckIn: proposedPartyFacts(row.proposalSnapshot).checkIn,
         proposedCheckOut: proposedPartyFacts(row.proposalSnapshot).checkOut,
@@ -1567,6 +1612,7 @@ export async function readUnifiedExceptionQueue(input: {
         aggregateCapacityMode: row.aggregateCapacityMode,
         reasonCodes: frozenReasonCodes(row.frozenEvidence),
         policyRefs: frozenPolicyRefs(row.frozenEvidence),
+        hostingConsequence: frozenHostingConsequence(row.frozenEvidence),
         affectedNights: frozenAffectedNights(row.frozenEvidence),
         proposedCheckIn: proposedPartyFacts(row.proposalSnapshot).checkIn,
         proposedCheckOut: proposedPartyFacts(row.proposalSnapshot).checkOut,

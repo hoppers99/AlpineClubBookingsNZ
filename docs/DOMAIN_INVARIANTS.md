@@ -2690,6 +2690,14 @@ reports where each came from.
   lets an officer make a non-compliant booking under `ENFORCED`: the reason is
   attributable and is recorded against the approved review, which is the same
   authority the exception door leads to.
+- **The officer queue says which consequence produced the request.** The reason
+  label is the same under both, and the situations are opposite: under `ENFORCED`
+  there is no booking (or no change) until the officer approves, under
+  `ADMIN_REVIEW_REQUIRED` there already is one and the officer is recording a view
+  of it. The queue reads the consequence off the FROZEN violation, never the live
+  policy row — the club may have changed the setting since, and the decision is
+  about what happened at the time — and says nothing about beds, because the card's
+  own badge derives the hold and two derivations of one fact drift.
 
 **Same-owner coverage (#2576).** `SAME_BOOKING_OWNER` reuses every definition
 `SAME_BOOKING` already has — qualifying adult member, exact guest-night, membership
