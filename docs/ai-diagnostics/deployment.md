@@ -98,7 +98,7 @@ would override what was checked — `user`, `password`, `host`, `port`, `options
 `idle_in_transaction_session_timeout` or `replication`. The PostgreSQL driver reads
 those in preference to the URL's own username and over the application's own pool
 settings, so a URL of the form
-`postgresql://ai_diagnostics_ro:…@host/db?user=tac_app&password=…` would otherwise
+`postgresql://ai_diagnostics_ro:***@host/db?user=tac_app&password=***` would otherwise
 pass the "not the application role" check and then connect as the application role.
 Ordinary parameters such as `sslmode` and `connection_limit` are unaffected.
 
@@ -139,7 +139,7 @@ application role does not need listing at all.
 Then set the connection string in the deployment environment (the Compose `.env`):
 
 ```
-AI_DIAGNOSTICS_DATABASE_URL=postgresql://ai_diagnostics_ro:<password>@postgres:5432/tacbookings?connection_limit=3
+AI_DIAGNOSTICS_DATABASE_URL=postgresql://ai_diagnostics_ro:<your-password>@postgres:5432/tacbookings?connection_limit=3
 ```
 
 Compose passes it through to the app containers. Leave it empty and Diagnostics
