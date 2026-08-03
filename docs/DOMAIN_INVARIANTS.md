@@ -4431,7 +4431,24 @@ Only `origin + pathname` is ever sent as page-location information, and only for
 an eligible route. Never a query string, never a fragment, and never a reset
 token, invitation token, verification code, PIN, email address, member id,
 booking id or payment id — including in the referrer, which is sanitised before
-Google sees it. Client-side navigation sends exactly one page view per address.
+Google sees it.
+
+The application sends **exactly one sanitised page view per address** across
+client-side navigation: `send_page_view: false` suppresses the one the `config`
+call would send, and the manual event is de-duplicated against the last location
+actually sent. End to end that holds only if the GA property's enhanced-measurement
+option **“Page changes based on browser history events”** is switched off — it is a
+Google-side setting, on by default for a new web stream and not controllable from
+`gtag`, so with it on Google adds a page view of its own on every soft navigation.
+The setup panel and `docs/guides/integrations.md` tell the administrator to turn it
+off; the application cannot.
+
+Leaving the public website is part of the same guarantee. The runtime is mounted by
+the public website layouts only, so a soft navigation into the member, admin or
+login/recovery groups unmounts it — and because unmounting a script element cannot
+unload an executed library, the unmount sets Google's per-id kill switch and queues
+a denial. A visitor's opt-out is propagated to other open tabs the same way, over
+the `storage` event.
 
 The per-browser choice (`analytics-consent.v2`) stores the applicable consent
 revision and which surface recorded it, and is honoured on revisit. Only the

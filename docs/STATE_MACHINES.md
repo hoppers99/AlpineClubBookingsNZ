@@ -2233,8 +2233,14 @@ and that every refusal renders a visible friendly message via the
 
 Client-side state machine for GA4 consent (issue #975, reshaped by #2573). The
 module must be enabled AND a valid GA4 measurement id must be stored in
-`AnalyticsSettings` AND the route must be analytics-eligible before anything
-renders at all. There is no environment-variable path.
+`AnalyticsSettings` before anything renders at all, and the route must also be
+analytics-eligible before the BANNER or the TAG appears. There is no
+environment-variable path.
+
+Route eligibility gates the banner and the tag; it deliberately does **not** gate
+the public **Analytics preferences** control, which is offered wherever the runtime
+is mounted — including a public page analytics does not run on — because in
+banner-off mode it is the visitor's only way to opt out.
 
 The club chooses one of two modes at Admin → Integrations → Google Analytics.
 

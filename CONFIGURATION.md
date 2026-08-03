@@ -2128,6 +2128,63 @@ build-time `NEXT_PUBLIC_*` inlining, so changing keys in the wizard takes effect
 without a rebuild. The webhook route stays **fail-closed**: with no stored signing
 secret it rejects every event.
 
+## Google Analytics
+
+> See the [Integrations guide](docs/guides/integrations.md) for the operator
+> walkthrough, and [`docs/UPGRADING.md`](docs/UPGRADING.md) for the cutover.
+
+**The Google Analytics configuration is DB-only (#2573).** The GA4 measurement id,
+the consent-banner mode and the banner wording live **only** in the
+`AnalyticsSettings` singleton, entered in-app at **Admin → Setup & Configuration →
+Integrations → Google Analytics** (finance **view** to see the status, finance
+**edit** to change it). Saving takes effect promptly — the public configuration
+cache is invalidated on write — and needs no restart or redeploy.
+
+`NEXT_PUBLIC_GA_MEASUREMENT_ID` is **not read at all** any more. There is no
+environment fallback and its value is **not** imported into the database, so
+analytics is inactive from the moment this release deploys until an admin saves a
+valid measurement id in-app. That hard cutover is deliberate, so no club's website
+starts tracking under a configuration nobody has reviewed. Remove the variable from
+your environment.
+
+Admin → **Modules** remains the master switch: with the `analytics` module off there
+is no Integrations card, the configuration API answers 404, and no tag loads.
+
+Two consent modes, chosen by the club:
+
+- **Show the consent banner** (the default, and the option the setup screen
+  recommends). Nothing whatsoever is sent to Google — no tag, no request, no
+  cookieless ping, no consent-status signal — until a visitor selects **Accept**.
+  Declining or dismissing the banner leaves analytics off.
+- **Do not show the consent banner.** The tag loads automatically on eligible
+  public pages. A decline recorded while the banner was showing is invalidated once;
+  a later opt-out through the public **Analytics preferences** link is always
+  honoured. The setup screen warns the admin before this mode is saved.
+
+Advertising storage, advertising user data and advertising personalisation stay
+**denied** in both modes, and Google's advanced consent mode is not implemented.
+
+Everything **fails closed**: no measurement id, an invalid one, a disabled module or
+a database read failure all mean no analytics, and the public website still renders
+normally.
+
+Two things are fixed in application code and are **not** configurable: where
+analytics may run (the public website only — never admin pages, signed-in member
+pages, or any address carrying a token, PIN or personal identifier) and what is sent
+about the address (origin and pathname only, never a query string or fragment, with
+the referrer sanitised too).
+
+One **Google-side** setting matters and the application cannot reach it: switch
+**Page changes based on browser history events** off under Enhanced measurement in
+your GA4 web stream. The app sends one sanitised page view per address itself; left
+on, Google adds its own on every client-side navigation and views are double
+counted.
+
+The application never states whether a chosen configuration is legally compliant.
+Whichever mode a club picks, its privacy policy should disclose the use of Google
+Analytics; the setup screen warns when no privacy policy page is published, and
+while one is published the consent banner and the preferences panel link it.
+
 ## AI help assistant
 
 > See the [AI Help Assistant guide](docs/guides/ai-help.md) for the operator

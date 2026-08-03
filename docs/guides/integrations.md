@@ -79,12 +79,23 @@ admin completes the steps below. No restart or redeploy is needed.
    labels are set by the application.
 6. Select **Save**. The status chip on the card then reads **Configured with
    consent banner** or **Configured without consent banner**.
+7. In Google Analytics, open **Admin → Data streams → your web stream → Enhanced
+   measurement** and switch **Page changes based on browser history events** off.
+   This application sends one page view per address itself, with the address
+   stripped of anything after a `?` or a `#`. Left on, Google adds a page view of
+   its own each time a visitor moves between pages, so views are counted twice.
+   The option is Google's and is on by default for a new stream; nothing in this
+   application can change it.
 
 Two things the application deliberately does not do: it never claims a consent
 mode is legally compliant, and it does not decide your privacy disclosures for
 you. Whichever mode you pick, your privacy policy should say that the club uses
 Google Analytics — the setup screen warns you if no privacy policy page is
-published, and links you to [Website pages](page-content.md).
+published, and links you to [Website pages](page-content.md). Publishing that page
+also matters to the visitor: while it is published, the consent banner and the
+public **Analytics preferences** panel link it, so somebody deciding whether to
+allow analytics can read the policy first. While it is not, they show no link
+rather than one to a missing page.
 
 **Ask visitors to choose again** is a separate action on the same screen, offered
 only while the banner is on. It clears every visitor's stored banner choice so

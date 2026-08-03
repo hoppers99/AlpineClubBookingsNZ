@@ -41,9 +41,15 @@
   **Visitors can change their mind either way.** An **Analytics preferences** link
   now appears in the website footer whenever analytics is set up, in both modes.
   It shows the visitor's current choice and lets them switch analytics on or off.
-  Turning it off stops further collection from that browser straight away; it
-  does not, and the panel does not pretend it does, remove anything already sent
-  to Google.
+  Turning it off stops further collection from that browser straight away — in
+  every tab they have open, not just the one they changed it in; it does not, and
+  the panel does not pretend it does, remove anything already sent to Google.
+
+  **Visitors can read the privacy policy before deciding.** While the club has a
+  published privacy policy page, both the banner and the preferences panel link
+  it, because the banner sits over the footer while it is asking. With no published
+  policy they show no link rather than one to a missing page, and the setup screen
+  tells the administrator so.
 
   **Changing the wording no longer resets anybody's choice.** If you want every
   visitor asked again — after a change of policy, say — there is a separate **Ask
@@ -55,10 +61,19 @@
   runs on the public website only. It never runs on admin pages, on signed-in
   member pages, or on any page whose address carries a one-time link, a PIN or
   someone's details — and the addresses it does report are sent without the extra
-  information that can follow a `?` or a `#` in a web address. Advertising
-  categories stay switched off in both modes. If the club is not set up, is set up
-  wrongly, or the database cannot be read, analytics simply does not run and the
-  website carries on as normal.
+  information that can follow a `?` or a `#` in a web address. Following a link
+  from the public website into the member area or the login pages switches the
+  measurement off as the visitor leaves, rather than letting it carry on in the
+  background. Advertising categories stay switched off in both modes. If the club
+  is not set up, is set up wrongly, or the database cannot be read, analytics
+  simply does not run and the website carries on as normal.
+
+  **One setting to change on Google's side.** In your GA4 web stream, switch
+  **Page changes based on browser history events** off under Enhanced measurement.
+  This application sends one page view per page itself, with the address trimmed;
+  left on, Google adds its own as visitors move around the site and pages are
+  counted twice. The setup screen and the operator guide both say so — it is a
+  Google setting, so nothing here can change it for you.
 
   One thing this release deliberately does not do: it does not tell you whether
   your chosen setting meets your legal obligations. Whichever mode you pick, your
