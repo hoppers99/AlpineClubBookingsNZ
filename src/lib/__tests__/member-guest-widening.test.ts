@@ -220,12 +220,33 @@ const CALL_SITES = [
     /** Passes NO options — owner decision MG1-D-a keeps the join family-scoped. */
     skipAuthorizationModes: [false],
   },
+  {
+    name: "booking-exception-approval.ts (new-booking executor)",
+    file: "src/lib/booking-exception-approval.ts",
+    /**
+     * #2526: hard-coded `skipAuthorization: false`. The officer approving a
+     * booking-policy exception reviewed minimum stay / adult-member hosting, not
+     * the family boundary, so the party is authorised as the REQUESTING MEMBER
+     * even though the actor is an admin. There is deliberately no skipping mode.
+     */
+    skipAuthorizationModes: [false],
+  },
+  {
+    name: "booking-exception-request-service.ts (request creation)",
+    file: "src/lib/booking-exception-request-service.ts",
+    /**
+     * #2526: hard-coded `skipAuthorization: false`. A member's own exception
+     * request is refused at submission if it names a member they may not book, so
+     * an officer never reviews a party that cannot be executed.
+     */
+    skipAuthorizationModes: [false],
+  },
 ] as const;
 
-/** How many of the seven can reach the `skipAuthorization` branch. */
+/** How many of the nine can reach the `skipAuthorization` branch. */
 const CALL_SITES_THAT_CAN_SKIP = 6;
 
-/** The seven files that call the helper. */
+/** The nine files that call the helper. */
 const CALL_SITE_FILES = CALL_SITES.map((site) => site.file);
 
 /**
@@ -544,12 +565,13 @@ describe("call-site survey", () => {
     ].sort();
   }
 
-  it("still has exactly seven call-site files, six of which can skip authorization", () => {
+  it("still has exactly nine call-site files, six of which can skip authorization", () => {
     // SET EQUALITY, not "each declared file still contains the call". The weaker
-    // form only proves the seven known files have not stopped calling it: a
-    // planted EIGHTH caller passes it untouched, and an eighth caller is a
-    // consent decision nobody made. The count was re-measured against `main` at
-    // ae0e6f64 with #2335 / #2332 / #2316 still open, and is unchanged at seven.
+    // form only proves the known files have not stopped calling it: a planted
+    // EXTRA caller passes it untouched, and an extra caller is a consent decision
+    // nobody made. The count was re-measured against `main` at ae0e6f64 with
+    // #2335 / #2332 / #2316 still open and stood at seven; #2526 adds the two
+    // booking-policy-exception sites, both of which enforce authorization.
     expect(allCallers()).toEqual([...CALL_SITE_FILES].sort());
     expect(new Set(CALL_SITE_FILES).size).toBe(CALL_SITE_FILES.length);
     expect(
@@ -575,6 +597,12 @@ describe("call-site survey", () => {
       if (/skipAuthorization:\s*true\b/.test(call)) {
         // A literal true: the site can ONLY skip.
         expect([...site.skipAuthorizationModes], site.name).toEqual([true]);
+      } else if (/skipAuthorization:\s*false\b/.test(call)) {
+        // A literal false (#2526): the option is passed, but authorization is
+        // ALWAYS enforced — the same guarantee as passing no option at all, and
+        // written explicitly because these two sites run with an ADMIN actor and
+        // a reader has to be able to see that the family boundary still applies.
+        expect([...site.skipAuthorizationModes], site.name).toEqual([false]);
       } else if (/skipAuthorization/.test(call)) {
         // A runtime flag: BOTH modes are reachable, so both must be exercised.
         expect([...site.skipAuthorizationModes].sort(), site.name).toEqual([false, true]);

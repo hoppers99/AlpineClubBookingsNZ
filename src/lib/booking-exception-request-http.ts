@@ -2,6 +2,11 @@ import { NextResponse } from "next/server";
 
 import { PolicyExceptionMemberMessageError } from "@/lib/booking-exception-requests";
 import {
+  BookingGuestValidationError,
+  getBookingGuestValidationErrorResponse,
+} from "@/lib/booking-guests";
+import { BookingGuestStayRangeValidationError } from "@/lib/booking-guest-stay-range-input";
+import {
   LostSupersedeClaimError,
   NoEligiblePolicyExceptionError,
   OpenExceptionRequestConflictError,
@@ -31,6 +36,22 @@ export function mapExceptionRequestError(error: unknown): NextResponse {
   // capacity conflict, mapped like the other request-creation conflicts.
   if (error instanceof PolicyExceptionCapacityUnavailableError) {
     return NextResponse.json({ error: error.message }, { status: 409 });
+  }
+  // #2526: a member id the requester may not book, or a member whose profile is
+  // not complete enough. Refused HERE rather than freezing a party the approval
+  // could never execute — and refused with the SAME body the member's own
+  // booking path returns, including D-8's neutral collapse, so a request route
+  // is not a channel for facts the booking route withholds.
+  if (error instanceof BookingGuestValidationError) {
+    return NextResponse.json(getBookingGuestValidationErrorResponse(error), {
+      status: error.status,
+    });
+  }
+  // #2526: the proposed stay ranges are not a shape the canonical planner would
+  // accept (a Date In with no Date Out, an empty night set). Refused at
+  // submission rather than frozen as a proposal that cannot be applied.
+  if (error instanceof BookingGuestStayRangeValidationError) {
+    return NextResponse.json({ error: error.message }, { status: 400 });
   }
   throw error;
 }

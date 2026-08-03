@@ -1,4 +1,14 @@
-export type BookingRequestsTab = "approvals" | "changes" | "public";
+/**
+ * `exceptions` (#2526) is the Booking Officer's booking-policy exception queue —
+ * a distinct tab from `changes` because the two decide different things: a
+ * locked-period change request is an acknowledgement an admin then applies by
+ * hand, while approving a policy exception EXECUTES the reviewed proposal.
+ */
+export type BookingRequestsTab =
+  | "approvals"
+  | "changes"
+  | "exceptions"
+  | "public";
 
 type SearchParamValue = string | string[] | undefined;
 

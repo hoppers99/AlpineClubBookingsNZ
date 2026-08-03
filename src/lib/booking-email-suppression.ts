@@ -74,6 +74,10 @@ export const ALWAYS_BOOKING_SCOPED_TEMPLATE_NAMES: ReadonlySet<string> =
     // src/lib/email/booking.ts — every sender, all take { bookingId }
     "booking-confirmed",
     "booking-pending",
+    // #2526: member-facing notice that an approved booking-policy exception has
+    // created their booking. Always carries the real bookingId, so the
+    // per-booking "No emails" switch withholds it like every other booking mail.
+    "booking-policy-exception-approved",
     "booking-bumped",
     "booking-guests-cancelled",
     "booking-cancelled",

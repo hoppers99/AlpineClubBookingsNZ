@@ -30,12 +30,24 @@ import {
  * own work). Member-created bookings that trip the rule require a written
  * justification and land with adminReviewStatus = PENDING so an admin can
  * decide via the booking requests queue.
+ *
+ * The one on-behalf create that does NOT auto-approve is a policy-exception
+ * approval (`reviewedMemberProposal`): the officer reviewed a named set of rules
+ * and adult supervision was not among them, so it takes the member path.
  */
 export function resolveAdminReviewFields(args: {
   guests: BookingGuestInput[];
   isOnBehalf: boolean;
   sessionUserId: string;
   memberReviewJustification: string | undefined;
+  /**
+   * #2526: this on-behalf create is EXECUTING A MEMBER'S ALREADY-REVIEWED
+   * proposal (an approved booking-policy exception), so only the rules on the
+   * officer's card were reviewed. Adult supervision is not one of them, so it
+   * opens PENDING with the member's own words, exactly as a member self-create
+   * does, instead of being stamped approved by an officer who was never shown it.
+   */
+  reviewedMemberProposal?: boolean;
 }): {
   requiresAdminReview: boolean;
   adminReviewReason: string | null;
@@ -60,7 +72,15 @@ export function resolveAdminReviewFields(args: {
     };
   }
 
-  if (args.isOnBehalf) {
+  // #2526: an on-behalf create that is EXECUTING A MEMBER'S REVIEWED PROPOSAL
+  // (a policy-exception approval) must not auto-approve this review. The rule is
+  // adult supervision, which is neither policy-exception reason code, so the
+  // officer's card never mentioned it and the drift gate cannot evaluate it.
+  // Auto-approving there would un-park a party of minors with no adult in the
+  // officer's name, defeating the #1422 check-in block, and would drop the
+  // member's own words. Member parity instead: PENDING, blocked, justification
+  // kept.
+  if (args.isOnBehalf && !args.reviewedMemberProposal) {
     return {
       requiresAdminReview: true,
       adminReviewReason: ADULT_SUPERVISION_REVIEW_REASON,

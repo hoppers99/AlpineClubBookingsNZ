@@ -168,6 +168,17 @@ export async function GET() {
       memberMessage: true,
       createdAt: true,
       reviewedAt: true,
+      // #2526: the officer's decision note. A refusal is written FOR the member
+      // — "the lodge is full that weekend every year" — so withholding it would
+      // leave them with a bare REJECTED and nothing to act on.
+      adminNotes: true,
+      // Why an approval has not happened yet, when it has already been tried and
+      // kept pending on capacity. Without it a member watching a REQUESTED row
+      // has no way to tell "nobody has looked" from "the lodge is full".
+      lastConflictReason: true,
+      lastConflictAt: true,
+      // The booking an approval created, so the member's own list links to it.
+      createdBookingId: true,
       supersededByRequestId: true,
     },
     orderBy: { createdAt: "desc" },

@@ -1,3 +1,4 @@
+import logger from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
 import { acquireLodgeCapacityLock } from "@/lib/capacity";
 import { releasePolicyExceptionReservation } from "@/lib/booking-exception-reservations";
@@ -76,15 +77,343 @@ async function acquireGlobalBookingLock(
 export interface LoadedPolicyExceptionRequest {
   id: string;
   status: PolicyExceptionRequestStatus;
-  kind: "LOCKED_PERIOD" | "POLICY_EXCEPTION";
+  /**
+   * The BookingChangeRequest discriminator. `null` for a NEW_BOOKING request,
+   * which lives in its own table and has no such column (#2526).
+   */
+  kind: "LOCKED_PERIOD" | "POLICY_EXCEPTION" | null;
   version: number;
-  bookingId: string;
+  /** The live booking a MODIFICATION targets; `null` for a NEW_BOOKING request. */
+  bookingId: string | null;
   requestedByMemberId: string;
   proposalSnapshot: ExceptionProposalSnapshot;
   proposalHash: string;
   frozenEvidence: unknown;
   aggregateCapacityMode: PolicyExceptionCapacityMode | null;
 }
+
+/** The raw stored row a store hands back, before the engine parses its JSON. */
+export interface StoredPolicyExceptionRequestRow {
+  id: string;
+  status: PolicyExceptionRequestStatus;
+  kind: "LOCKED_PERIOD" | "POLICY_EXCEPTION" | null;
+  version: number;
+  bookingId: string | null;
+  requestedByMemberId: string;
+  proposalSnapshot: unknown;
+  proposalHash: string | null;
+  frozenEvidence: unknown;
+  aggregateCapacityMode: PolicyExceptionCapacityMode | null;
+}
+
+// ---------------------------------------------------------------------------
+// Request store (#2526): the two tables an exception request can live in
+// ---------------------------------------------------------------------------
+
+/**
+ * The row-level operations the approval algorithm performs, factored out so the
+ * SAME algorithm decides both request flavours (#2526).
+ *
+ * A MODIFICATION request is a `POLICY_EXCEPTION` row on the shared
+ * `BookingChangeRequest` table; a NEW_BOOKING request is a row on its own
+ * `NewBookingPolicyExceptionRequest` table (it cannot live on the shared one —
+ * `bookingId` there is a required FK and a new booking has no row yet). Only the
+ * five reads/writes below differ; the lock order, the fresh-role
+ * reauthorization, the guarded CAS discipline, the drift gate, the capacity
+ * recheck and the post-commit hand-off are identical, and duplicating them per
+ * table is exactly how the two would drift apart.
+ */
+export interface PolicyExceptionRequestStore {
+  /** Which table this store reads. */
+  readonly source: "MODIFICATION" | "NEW_BOOKING";
+  /**
+   * Whether a HELD request in this store actually reserves beds while pending.
+   *
+   * The whole reason the HOLD capacity recheck happens AFTER the claim is that a
+   * holding request's own reservation would otherwise count against itself. A
+   * store that reserves nothing has no such problem, so it is rechecked BEFORE
+   * the claim like a NO_HOLD request — which is what lets a conflict be RECORDED
+   * (conflictCount / lastConflictAt / lastConflictReason) and committed, instead
+   * of being thrown away with the rolled-back transaction (#2526 review). The
+   * officer card and the member's own list read exactly those fields to explain
+   * why a request is still pending.
+   */
+  readonly holdsReservation: boolean;
+  /** Immutable pre-read used only to resolve the lodge for the lock. */
+  preRead(
+    tx: PrismaTransactionClient,
+    requestId: string,
+  ): Promise<{ proposalSnapshot: unknown } | null>;
+  /**
+   * Full fresh read under the locks, with the stored JSON left UNPARSED — the
+   * engine owns the parse so "row is missing / wrong kind" (notFound) stays
+   * distinguishable from "row is there but its snapshot will not parse"
+   * (tampered), and both stores answer the two cases identically.
+   */
+  read(
+    tx: PrismaTransactionClient,
+    requestId: string,
+  ): Promise<StoredPolicyExceptionRequestRow | null>;
+  /** Guarded conflict bump; returns how many rows moved (1 = claimed). */
+  recordConflict(
+    tx: PrismaTransactionClient,
+    args: { requestId: string; expectedVersion: number; message: string },
+  ): Promise<number>;
+  /** Guarded REQUESTED -> APPROVED CAS; returns how many rows moved. */
+  claimApproved(
+    tx: PrismaTransactionClient,
+    args: { requestId: string; expectedVersion: number; actorMemberId: string },
+  ): Promise<number>;
+  /** Guarded REQUESTED -> terminal CAS; returns how many rows moved. */
+  claimTerminal(
+    tx: PrismaTransactionClient,
+    args: {
+      requestId: string;
+      expectedVersion: number;
+      to: PolicyExceptionTerminalStatus;
+      actorMemberId?: string;
+      supersededByRequestId?: string;
+      adminNotes?: string;
+    },
+  ): Promise<number>;
+  /** Release the provisional reservation; returns rows deleted. */
+  releaseReservation(
+    tx: PrismaTransactionClient,
+    requestId: string,
+  ): Promise<number>;
+}
+
+/**
+ * MODIFICATION requests: `POLICY_EXCEPTION` rows on `BookingChangeRequest`. The
+ * `kind` guard is on EVERY read and claim so a locked-period row sharing the
+ * table can never be reached by this workflow.
+ */
+export const modificationExceptionRequestStore: PolicyExceptionRequestStore = {
+  source: "MODIFICATION",
+  holdsReservation: true,
+
+  async preRead(tx, requestId) {
+    const row = await tx.bookingChangeRequest.findUnique({
+      where: { id: requestId },
+      select: { proposalSnapshot: true, kind: true },
+    });
+    if (!row || row.kind !== "POLICY_EXCEPTION") return null;
+    return { proposalSnapshot: row.proposalSnapshot };
+  },
+
+  async read(tx, requestId) {
+    const row = await tx.bookingChangeRequest.findUnique({
+      where: { id: requestId },
+      select: {
+        id: true,
+        status: true,
+        kind: true,
+        version: true,
+        bookingId: true,
+        requestedByMemberId: true,
+        proposalSnapshot: true,
+        proposalHash: true,
+        frozenEvidence: true,
+        aggregateCapacityMode: true,
+      },
+    });
+    if (!row || row.kind !== "POLICY_EXCEPTION") return null;
+    return {
+      id: row.id,
+      status: row.status as PolicyExceptionRequestStatus,
+      kind: row.kind,
+      version: row.version,
+      bookingId: row.bookingId,
+      requestedByMemberId: row.requestedByMemberId,
+      proposalSnapshot: row.proposalSnapshot,
+      proposalHash: row.proposalHash,
+      frozenEvidence: row.frozenEvidence,
+      aggregateCapacityMode: row.aggregateCapacityMode,
+    };
+  },
+
+  async recordConflict(tx, { requestId, expectedVersion, message }) {
+    const bumped = await tx.bookingChangeRequest.updateMany({
+      where: { id: requestId, status: "REQUESTED", version: expectedVersion },
+      data: {
+        version: { increment: 1 },
+        conflictCount: { increment: 1 },
+        lastConflictAt: new Date(),
+        lastConflictReason: message.slice(0, 500),
+      },
+    });
+    return bumped.count;
+  },
+
+  async claimApproved(tx, { requestId, expectedVersion, actorMemberId }) {
+    const claim = await tx.bookingChangeRequest.updateMany({
+      where: {
+        id: requestId,
+        status: "REQUESTED",
+        version: expectedVersion,
+        kind: "POLICY_EXCEPTION",
+      },
+      data: {
+        status: "APPROVED",
+        version: { increment: 1 },
+        reviewedByMemberId: actorMemberId,
+        reviewedAt: new Date(),
+        // Free the #2524 one-open-request slot on APPROVAL too. APPROVED is a
+        // terminal status, so leaving `openStateKey` non-null would PERMANENTLY
+        // block the member from ever opening another policy-exception request on
+        // this booking — createModification's NULL-distinct unique index would
+        // reject it with P2002. The terminal-release path nulls it; the approve
+        // path must mirror that or the member is locked out for good.
+        openStateKey: null,
+      },
+    });
+    return claim.count;
+  },
+
+  async claimTerminal(
+    tx,
+    { requestId, expectedVersion, to, actorMemberId, supersededByRequestId, adminNotes },
+  ) {
+    const now = new Date();
+    const claim = await tx.bookingChangeRequest.updateMany({
+      where: {
+        id: requestId,
+        status: "REQUESTED",
+        version: expectedVersion,
+        kind: "POLICY_EXCEPTION",
+      },
+      data: {
+        status: to,
+        version: { increment: 1 },
+        // Free the #2524 one-open-request slot: a terminal request no longer
+        // holds it, so the member may open a fresh proposal. Matches the request
+        // service's own member cancel/supersede claims, which NULL it too.
+        openStateKey: null,
+        ...(to === "REJECTED"
+          ? { reviewedByMemberId: actorMemberId ?? null, reviewedAt: now }
+          : {}),
+        ...(to === "CANCELLED" ? { cancelledAt: now } : {}),
+        ...(to === "SUPERSEDED" && supersededByRequestId
+          ? { supersededByRequestId }
+          : {}),
+        ...(adminNotes !== undefined ? { adminNotes: adminNotes || null } : {}),
+      },
+    });
+    return claim.count;
+  },
+
+  releaseReservation(tx, requestId) {
+    return releasePolicyExceptionReservation(tx, requestId);
+  },
+};
+
+/**
+ * NEW_BOOKING requests: rows on `NewBookingPolicyExceptionRequest`.
+ *
+ * `releaseReservation` is a no-op returning 0 — the provisional-reservation
+ * ledger is keyed on `BookingChangeRequest`, so a new-booking request holds no
+ * beds while pending (tracked separately; the approval's own capacity recheck
+ * and the canonical create service's hard refusal are what keep it from
+ * overselling).
+ */
+export const newBookingExceptionRequestStore: PolicyExceptionRequestStore = {
+  source: "NEW_BOOKING",
+  // Nothing is reserved, so nothing can count against itself: this store's
+  // capacity recheck runs BEFORE the claim and records its conflict.
+  holdsReservation: false,
+
+  async preRead(tx, requestId) {
+    const row = await tx.newBookingPolicyExceptionRequest.findUnique({
+      where: { id: requestId },
+      select: { proposalSnapshot: true },
+    });
+    return row ? { proposalSnapshot: row.proposalSnapshot } : null;
+  },
+
+  async read(tx, requestId) {
+    const row = await tx.newBookingPolicyExceptionRequest.findUnique({
+      where: { id: requestId },
+      select: {
+        id: true,
+        status: true,
+        version: true,
+        requestedByMemberId: true,
+        proposalSnapshot: true,
+        proposalHash: true,
+        frozenEvidence: true,
+        aggregateCapacityMode: true,
+      },
+    });
+    if (!row) return null;
+    return {
+      id: row.id,
+      status: row.status as PolicyExceptionRequestStatus,
+      kind: null,
+      version: row.version,
+      bookingId: null,
+      requestedByMemberId: row.requestedByMemberId,
+      proposalSnapshot: row.proposalSnapshot,
+      proposalHash: row.proposalHash,
+      frozenEvidence: row.frozenEvidence,
+      aggregateCapacityMode: row.aggregateCapacityMode,
+    };
+  },
+
+  async recordConflict(tx, { requestId, expectedVersion, message }) {
+    const bumped = await tx.newBookingPolicyExceptionRequest.updateMany({
+      where: { id: requestId, status: "REQUESTED", version: expectedVersion },
+      data: {
+        version: { increment: 1 },
+        conflictCount: { increment: 1 },
+        lastConflictAt: new Date(),
+        lastConflictReason: message.slice(0, 500),
+      },
+    });
+    return bumped.count;
+  },
+
+  async claimApproved(tx, { requestId, expectedVersion, actorMemberId }) {
+    const claim = await tx.newBookingPolicyExceptionRequest.updateMany({
+      where: { id: requestId, status: "REQUESTED", version: expectedVersion },
+      data: {
+        status: "APPROVED",
+        version: { increment: 1 },
+        reviewedByMemberId: actorMemberId,
+        reviewedAt: new Date(),
+        openStateKey: null,
+      },
+    });
+    return claim.count;
+  },
+
+  async claimTerminal(
+    tx,
+    { requestId, expectedVersion, to, actorMemberId, supersededByRequestId, adminNotes },
+  ) {
+    const now = new Date();
+    const claim = await tx.newBookingPolicyExceptionRequest.updateMany({
+      where: { id: requestId, status: "REQUESTED", version: expectedVersion },
+      data: {
+        status: to,
+        version: { increment: 1 },
+        openStateKey: null,
+        ...(to === "REJECTED"
+          ? { reviewedByMemberId: actorMemberId ?? null, reviewedAt: now }
+          : {}),
+        ...(to === "CANCELLED" ? { cancelledAt: now } : {}),
+        ...(to === "SUPERSEDED" && supersededByRequestId
+          ? { supersededByRequestId }
+          : {}),
+        ...(adminNotes !== undefined ? { adminNotes: adminNotes || null } : {}),
+      },
+    });
+    return claim.count;
+  },
+
+  async releaseReservation() {
+    return 0;
+  },
+};
 
 /** The confirmed override the executor must apply: exactly the reviewed
  * soft-violations that STILL trip unchanged, plus the ones that DISAPPEARED (for
@@ -95,6 +424,21 @@ export interface ConfirmedOverride {
   /** Reviewed violations that no longer trip — record resolution, no override. */
   clearedReviewed: PolicyExceptionDriftResult["clearedReviewed"];
 }
+
+/**
+ * What a live-integrity check answers. `true` / `false` keep the original boolean
+ * contract; the object form names the failure so the caller can report it
+ * truthfully.
+ *
+ *  - `drift` — the live booking (or the replayed delta) no longer reproduces the
+ *    reviewed proposal. Resubmission is the remedy AND the reason is true.
+ *  - `unreplayable` — the request carries no replayable delta at all (a row
+ *    written before the format existed, or one hand-edited into nonsense).
+ *    Resubmission is still the remedy, but nothing about the booking moved.
+ */
+export type PolicyExceptionIntegrityResult =
+  | boolean
+  | { intact: boolean; reason?: "drift" | "unreplayable" };
 
 export interface PolicyExceptionApprovalHooks {
   /** Re-read the actor's CURRENT roles/permissions from the DB (never the
@@ -128,17 +472,31 @@ export interface PolicyExceptionApprovalHooks {
   /** Optional live-proposal integrity check beyond the tamper hash — for a
    * MODIFICATION, prove the live booking's base footprint still matches the
    * frozen `base` party (#2524 owns the booking->party mapping). Absent => the
-   * tamper hash is the only integrity gate. */
+   * tamper hash is the only integrity gate.
+   *
+   * A bare `false` is still accepted (it means "drift"); returning the richer
+   * result lets the hook say WHICH kind of failure it was, so a request that
+   * simply predates the replayable-delta format is not reported to the officer
+   * and the member as a live booking that changed (#2526 review). */
   verifyLiveProposalIntegrity?(
     snapshot: ExceptionProposalSnapshot,
     tx: PrismaTransactionClient,
-  ): Promise<boolean>;
+  ): Promise<PolicyExceptionIntegrityResult>;
   /** Post-commit member notification of the approval outcome. Optional. */
   notifyApproved?(request: LoadedPolicyExceptionRequest): Promise<void>;
 }
 
 export type ApprovePolicyExceptionResult =
-  | { outcome: "executed"; requestId: string }
+  | {
+      outcome: "executed";
+      requestId: string;
+      /**
+       * The transaction committed, but the post-commit provider/notification
+       * work threw. The approval IS done; only the follow-ups failed (#2526
+       * review). Never a reason to report the request as still pending.
+       */
+      followUpFailed?: boolean;
+    }
   | { outcome: "notFound" }
   | { outcome: "notAuthorized" }
   | { outcome: "claimLost" }
@@ -254,10 +612,17 @@ export async function approveAndExecutePolicyExceptionRequest(params: {
   expectedVersion: number;
   actorMemberId: string;
   hooks: PolicyExceptionApprovalHooks;
+  /**
+   * Which table the request lives in (#2526). Defaults to the MODIFICATION store
+   * (`POLICY_EXCEPTION` rows on `BookingChangeRequest`), which is what every
+   * pre-#2526 caller means.
+   */
+  store?: PolicyExceptionRequestStore;
   db?: ApprovalDb;
 }): Promise<ApprovePolicyExceptionResult> {
   const db = params.db ?? prisma;
   const { requestId, expectedVersion, actorMemberId, hooks } = params;
+  const store = params.store ?? modificationExceptionRequestStore;
 
   // Captured inside the transaction so provider work fires strictly AFTER commit.
   let canonicalDeferred: (() => Promise<void>) | null = null;
@@ -268,13 +633,8 @@ export async function approveAndExecutePolicyExceptionRequest(params: {
     result = await db.$transaction(
     async (tx): Promise<ApprovePolicyExceptionResult> => {
       // (1) Pre-read the immutable frozen lodge, then lock global -> per-lodge.
-      const preRead = await tx.bookingChangeRequest.findUnique({
-        where: { id: requestId },
-        select: { proposalSnapshot: true, kind: true },
-      });
-      if (!preRead || preRead.kind !== "POLICY_EXCEPTION") {
-        return { outcome: "notFound" };
-      }
+      const preRead = await store.preRead(tx, requestId);
+      if (!preRead) return { outcome: "notFound" };
       const preSnapshot = parseProposalSnapshot(preRead.proposalSnapshot);
       if (!preSnapshot) return { outcome: "notFound" };
 
@@ -286,22 +646,10 @@ export async function approveAndExecutePolicyExceptionRequest(params: {
       if (!authorized) return { outcome: "notAuthorized" };
 
       // (3) Re-read the request FRESH under the locks.
-      const row = await tx.bookingChangeRequest.findUnique({
-        where: { id: requestId },
-        select: {
-          id: true,
-          status: true,
-          kind: true,
-          version: true,
-          bookingId: true,
-          requestedByMemberId: true,
-          proposalSnapshot: true,
-          proposalHash: true,
-          frozenEvidence: true,
-          aggregateCapacityMode: true,
-        },
-      });
-      if (!row || row.kind !== "POLICY_EXCEPTION") return { outcome: "notFound" };
+      // `read` returns null only for a missing or wrong-kind row (notFound); an
+      // unparseable snapshot comes back as a row and is reported as tampering.
+      const row = await store.read(tx, requestId);
+      if (!row) return { outcome: "notFound" };
       if (row.status !== "REQUESTED" || row.version !== expectedVersion) {
         return { outcome: "claimLost" };
       }
@@ -328,9 +676,19 @@ export async function approveAndExecutePolicyExceptionRequest(params: {
         return { outcome: "proposalDrift", message: PROPOSAL_TAMPERED_MESSAGE };
       }
       if (hooks.verifyLiveProposalIntegrity) {
-        const intact = await hooks.verifyLiveProposalIntegrity(snapshot, tx);
+        const integrity = await hooks.verifyLiveProposalIntegrity(snapshot, tx);
+        const intact =
+          typeof integrity === "boolean" ? integrity : integrity.intact;
         if (!intact) {
-          return { outcome: "proposalDrift", message: PROPOSAL_DRIFT_MESSAGE };
+          const reason =
+            typeof integrity === "boolean" ? "drift" : integrity.reason ?? "drift";
+          return {
+            outcome: "proposalDrift",
+            message:
+              reason === "unreplayable"
+                ? PROPOSAL_UNREPLAYABLE_MESSAGE
+                : PROPOSAL_DRIFT_MESSAGE,
+          };
         }
       } else if (snapshot.kind === "MODIFICATION") {
         // FAIL CLOSED (#2525): for a MODIFICATION the live booking may have
@@ -360,56 +718,42 @@ export async function approveAndExecutePolicyExceptionRequest(params: {
         };
       }
 
-      // (6) NO_HOLD capacity recheck. A conflict keeps it PENDING (does not fail).
-      // A HOLD request holds its own beds, so it CANNOT be rechecked here (its own
-      // reservation would count against it); it is rechecked at (8b) below, after
-      // the release frees those beds.
-      if (row.aggregateCapacityMode === "NO_HOLD") {
+      // (6) Pre-claim capacity recheck. A conflict keeps it PENDING (does not
+      // fail) and RECORDS the reason, which is only possible before the claim —
+      // the post-claim path at (8b) signals by rolling the transaction back, and
+      // a rollback discards any conflict row written inside it.
+      //
+      // Reached whenever this request holds no beds of its own: a NO_HOLD
+      // aggregate, or ANY request in a store that reserves nothing (a new-booking
+      // request, whose reservation ledger does not exist — #2526 review). Only a
+      // request that genuinely holds beds has to wait for (8b), because only its
+      // own reservation could count against it.
+      if (row.aggregateCapacityMode === "NO_HOLD" || !store.holdsReservation) {
         const capacity = await hooks.recheckCapacity(snapshot, tx);
         if (!capacity.ok) {
           const message = capacity.message ?? CAPACITY_CONFLICT_MESSAGE;
-          const bumped = await tx.bookingChangeRequest.updateMany({
-            where: { id: requestId, status: "REQUESTED", version: expectedVersion },
-            data: {
-              version: { increment: 1 },
-              conflictCount: { increment: 1 },
-              lastConflictAt: new Date(),
-              lastConflictReason: message.slice(0, 500),
-            },
+          const bumped = await store.recordConflict(tx, {
+            requestId,
+            expectedVersion,
+            message,
           });
-          if (bumped.count !== 1) return { outcome: "claimLost" };
+          if (bumped !== 1) return { outcome: "claimLost" };
           return { outcome: "keptPendingCapacity", message };
         }
       }
 
       // (7) Guarded version CAS claim REQUESTED -> APPROVED. Lost => no effect.
-      const claim = await tx.bookingChangeRequest.updateMany({
-        where: {
-          id: requestId,
-          status: "REQUESTED",
-          version: expectedVersion,
-          kind: "POLICY_EXCEPTION",
-        },
-        data: {
-          status: "APPROVED",
-          version: { increment: 1 },
-          reviewedByMemberId: actorMemberId,
-          reviewedAt: new Date(),
-          // Free the #2524 one-open-request slot on APPROVAL too. APPROVED is a
-          // terminal status, so leaving `openStateKey` non-null would PERMANENTLY
-          // block the member from ever opening another policy-exception request on
-          // this booking — createModification's NULL-distinct unique index would
-          // reject it with P2002. The terminal-release path nulls it; the approve
-          // path must mirror that or the member is locked out for good.
-          openStateKey: null,
-        },
+      const claim = await store.claimApproved(tx, {
+        requestId,
+        expectedVersion,
+        actorMemberId,
       });
-      if (claim.count !== 1) return { outcome: "claimLost" };
+      if (claim !== 1) return { outcome: "claimLost" };
 
       // (8) Release the provisional reservation, atomic with the claim. For a
       // HOLD request the freed beds are immediately re-taken by the executed
       // booking below; for NO_HOLD nothing was reserved (count 0).
-      await releasePolicyExceptionReservation(tx, requestId);
+      await store.releaseReservation(tx, requestId);
 
       // (8b) HOLD capacity recheck (#2525). NO_HOLD was rechecked at (6) before
       // the claim; a HOLD request holds its own beds, so it is rechecked HERE —
@@ -419,7 +763,7 @@ export async function approveAndExecutePolicyExceptionRequest(params: {
       // turns into a graceful `keptPendingCapacity`, leaving the request REQUESTED
       // and pending exactly like the NO_HOLD conflict. The engine asserts capacity
       // itself rather than trusting the executor seam to be a hard refusal.
-      if (row.aggregateCapacityMode !== "NO_HOLD") {
+      if (row.aggregateCapacityMode !== "NO_HOLD" && store.holdsReservation) {
         const capacity = await hooks.recheckCapacity(snapshot, tx);
         if (!capacity.ok) {
           throw new KeptPendingCapacitySignal(
@@ -450,18 +794,63 @@ export async function approveAndExecutePolicyExceptionRequest(params: {
     // the lodge no longer fits the proposal. Surface it as the graceful
     // pending outcome; the request is untouched (still REQUESTED at its version).
     if (error instanceof KeptPendingCapacitySignal) {
+      // The rollback undid the claim and the release — and it would also have
+      // undone a conflict row written inside that transaction, which is why the
+      // conflict is recorded HERE, in its own committed transaction (#2526
+      // review). Guarded on the same `expectedVersion`, so it is a no-op if the
+      // row has since moved; a failure to record must never turn an honest
+      // kept-pending answer into an error, so it is logged and swallowed.
+      try {
+        await db.$transaction((tx) =>
+          store.recordConflict(tx, {
+            requestId,
+            expectedVersion,
+            message: error.capacityMessage,
+          }),
+        );
+      } catch (recordError) {
+        logger.error(
+          { err: recordError, requestId },
+          "Failed to record a kept-pending capacity conflict after rollback",
+        );
+      }
       return { outcome: "keptPendingCapacity", message: error.capacityMessage };
     }
     throw error;
   }
 
   // (10) Post-commit provider work + member notification, only on execution.
+  //
+  // THE TRANSACTION HAS ALREADY COMMITTED. The request is APPROVED and the
+  // booking exists, so a failure here can never mean "the approval did not
+  // happen" — and reporting it as one is exactly the false keep-pending this
+  // workflow exists to make impossible (#2526 review). The canonical services'
+  // post-commit thunks await unguarded provider/audit calls, so a transient
+  // failure is a real possibility. Contain it: the outcome stays `executed` and
+  // carries `followUpFailed`, which the route reports as "approved, but some
+  // follow-up work failed".
   if (result.outcome === "executed") {
+    const followUpErrors: unknown[] = [];
     if (canonicalDeferred) {
-      await (canonicalDeferred as () => Promise<void>)();
+      try {
+        await (canonicalDeferred as () => Promise<void>)();
+      } catch (error) {
+        followUpErrors.push(error);
+      }
     }
     if (hooks.notifyApproved && approvedRequest) {
-      await hooks.notifyApproved(approvedRequest);
+      try {
+        await hooks.notifyApproved(approvedRequest);
+      } catch (error) {
+        followUpErrors.push(error);
+      }
+    }
+    if (followUpErrors.length > 0) {
+      logger.error(
+        { errs: followUpErrors, requestId },
+        "Booking-policy exception approval committed, but post-commit follow-up work failed",
+      );
+      return { ...result, followUpFailed: true };
     }
   }
   return result;
@@ -533,6 +922,8 @@ export async function resolvePolicyExceptionRequestTerminal(params: {
   actorMemberId?: string;
   supersededByRequestId?: string;
   adminNotes?: string;
+  /** Which table the request lives in (#2526). Defaults to MODIFICATION. */
+  store?: PolicyExceptionRequestStore;
   db?: ApprovalDb;
 }): Promise<ResolveTerminalResult> {
   const db = params.db ?? prisma;
@@ -544,13 +935,14 @@ export async function resolvePolicyExceptionRequestTerminal(params: {
     supersededByRequestId,
     adminNotes,
   } = params;
+  const store = params.store ?? modificationExceptionRequestStore;
 
   return db.$transaction(async (tx): Promise<ResolveTerminalResult> => {
-    const preRead = await tx.bookingChangeRequest.findUnique({
-      where: { id: requestId },
-      select: { proposalSnapshot: true, kind: true },
-    });
-    if (!preRead || preRead.kind !== "POLICY_EXCEPTION") {
+    // The store's own preRead applies the kind guard, so null covers BOTH a
+    // missing row and a row of the wrong kind — the one combined refusal the
+    // ResolveTerminalRefusal doc promises.
+    const preRead = await store.preRead(tx, requestId);
+    if (!preRead) {
       return { claimed: false, released: 0, refused: "not-policy-exception" };
     }
     const snapshot = parseProposalSnapshot(preRead.proposalSnapshot);
@@ -561,34 +953,17 @@ export async function resolvePolicyExceptionRequestTerminal(params: {
     await acquireGlobalBookingLock(tx);
     await acquireLodgeCapacityLock(tx, snapshot.lodgeId);
 
-    const now = new Date();
-    const claim = await tx.bookingChangeRequest.updateMany({
-      where: {
-        id: requestId,
-        status: "REQUESTED",
-        version: expectedVersion,
-        kind: "POLICY_EXCEPTION",
-      },
-      data: {
-        status: to,
-        version: { increment: 1 },
-        // Free the #2524 one-open-request slot: a terminal request no longer
-        // holds it, so the member may open a fresh proposal. Matches the request
-        // service's own member cancel/supersede claims, which NULL it too.
-        openStateKey: null,
-        ...(to === "REJECTED"
-          ? { reviewedByMemberId: actorMemberId ?? null, reviewedAt: now }
-          : {}),
-        ...(to === "CANCELLED" ? { cancelledAt: now } : {}),
-        ...(to === "SUPERSEDED" && supersededByRequestId
-          ? { supersededByRequestId }
-          : {}),
-        ...(adminNotes !== undefined ? { adminNotes: adminNotes || null } : {}),
-      },
+    const claim = await store.claimTerminal(tx, {
+      requestId,
+      expectedVersion,
+      to,
+      actorMemberId,
+      supersededByRequestId,
+      adminNotes,
     });
-    if (claim.count !== 1) return { claimed: false, released: 0 };
+    if (claim !== 1) return { claimed: false, released: 0 };
 
-    const released = await releasePolicyExceptionReservation(tx, requestId);
+    const released = await store.releaseReservation(tx, requestId);
     return { claimed: true, released };
   });
 }
@@ -601,6 +976,14 @@ export const PROPOSAL_TAMPERED_MESSAGE =
   "This request's stored proposal no longer matches its signature. Please resubmit the request.";
 export const PROPOSAL_DRIFT_MESSAGE =
   "The live booking has changed since this request was made. Please resubmit the request.";
+/**
+ * The request carries no replayable proposal at all — a row written before the
+ * replayable-delta format existed, or one edited into nonsense. The remedy is the
+ * same resubmission, but nothing about the booking moved, so saying so would send
+ * an officer looking for an edit that never happened (#2526 review).
+ */
+export const PROPOSAL_UNREPLAYABLE_MESSAGE =
+  "This request was made before the current approval format and cannot be applied. Ask the member to resubmit it; nothing about the booking has changed.";
 export const POLICY_DRIFT_MESSAGE =
   "The booking policies have changed since this request was reviewed. Please resubmit the request so an admin can review the current situation.";
 export const CAPACITY_CONFLICT_MESSAGE =

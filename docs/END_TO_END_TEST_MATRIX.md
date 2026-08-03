@@ -47,10 +47,34 @@ transition yet. Its required matrix is:
 | Member edit panel | The advisory banner never gates Save; a refused save names the rule and nights instead of a generic failure | `edit-booking-panel-minimum-stay` |
 | Config transfer | Exact format-v3 CSV schema, full replace-set preview/apply, header-only clear, malformed input never clears, version/fingerprint drift refusal, config-import then policy-set lock order | `config-transfer-booking-policies` plus the config-transfer orchestrator/integration suites |
 
-There is no dedicated Playwright case by design: until #2365 adds a combined
-review interaction, browser automation could only re-test the existing hard
-block. #2365 must add browser and service coverage for request persistence,
-approval/revalidation, capacity reservation, and mixed soft-plus-hard ordering.
+Since #2526 the exception WORKFLOW does have browser coverage: the rows above
+stay service-level (they are policy evaluation, not a journey), and the
+request -> approve -> execute journey is covered by
+`e2e/policy-exception-approval.spec.ts` plus the multi-lodge
+`e2e/multi-lodge/policy-exception-second-lodge.spec.ts`. Its required matrix is:
+
+| Surface | Required behavior | Automated evidence |
+| --- | --- | --- |
+| Officer queue | Every open request from BOTH stores in one age-ordered list, showing the plain-English request age, the frozen evidence at its reviewed policy revision, whether the request holds beds, and the last kept-pending conflict; `bookings: view` reads it, `bookings: edit` decides it | `booking-exception-request-service`, `admin-route-area-matrix`, `decision-route`, Playwright `e2e/policy-exception-approval.spec.ts` (queue screen assertions) |
+| Approve = execute | Approval claims the request AND runs the canonical booking service in ONE transaction; a new-booking approval returns the booking it created; a stale `expectedVersion` loses the guarded CAS (409) and cannot re-approve | `booking-exception-approval`, `booking-exception-execution`, `decision-route`, Playwright happy path |
+| Capacity | The recheck uses the FULL proposed party and EXCLUDES the live booking; `confirmOverCapacity`/`adminOverride` are never passed; `capacityExceeded` is thrown so the approval rolls back | `booking-exception-approval` (recheck + executor contracts) |
+| Kept pending, never false | A NO_HOLD request the lodge can no longer fit stays `REQUESTED` with the conflict recorded and NO booking created; the answer says "still pending", never "approved" | `decision-route`, Playwright NO_HOLD conflict case |
+| Kept pending, always explained | A conflict is recorded (`conflictCount`, `lastConflictAt`, `lastConflictReason`) for EVERY store: before the claim where the request reserves nothing (`holdsReservation: false`), in its own transaction after the rollback where it does | `booking-exception-execution` (HOLD conflict-bump ordering, new-booking pre-claim recheck) |
+| Committed, never "pending" | A throw in the post-commit phase returns `executed` + `followUpFailed`, and the route answers 200/APPROVED with the follow-up warning; a clean run carries no flag | `booking-exception-execution` (post-commit containment + mutation guard), `decision-route` |
+| Proposal integrity | The stored member delta is replayed against the LIVE booking and must hash to the frozen proposal; live drift, a tampered delta and a vanished booking fail closed as drift, while a row with no replayable delta fails closed with its OWN message | `booking-exception-approval` (integrity hook) |
+| One planner, one party | The frozen party is produced by the SHARED canonical stay-range resolver that `resolveTargetDates` and `prepareGuestPlan` call, so a global range-input flag, a partial `guestStayRanges` and a stored sparse night set (#713) resolve identically at freeze and at execution | `booking-modification-stay-ranges` (resolver vs frozen proposal, incl. the mixed dates + partial-range case), `booking-batch-modification-*` and `booking-edit-guest-ranges` (planner behaviour preserved) |
+| Guest rules survive the borrowed role | `reviewedMemberProposal` keeps the reviewed minimum-stay override but hands back the beyond-family refusal, consent step, D-8 profile gate, cross-family marker, unpaid-subscription check and the adult-supervision review; the new-booking executor runs the full resolve/assert/normalise/consent pipeline and dispatches its notices after commit | `booking-exception-reviewed-proposal-guards`, `booking-exception-approval` (pipeline arguments + refusal rollback), `member-guest-widening` (call-site census) |
+| Refund choice | A price-reducing change on a settled booking answers `needsSettlementMethod` with an actionable message, never kept-pending, and the officer's choice reaches the executor | `decision-route`, panel decision form |
+| The reviewed party is visible | The detail endpoint describes every proposed guest (name, age tier, member, beyond-family from the LIVE boundary, nights held) and the card loads it before the decision | `decision-route` (GET), panel |
+| Authorization + reason | Fresh-DB reauthorization (`bookings: edit`, active, no forced password change) inside the approval transaction; approve requires explicit confirmation; an adult-member hosting override and every refusal require a written reason | `booking-exception-approval`, `decision-route`, Playwright unconfirmed-approve and reason-less-refusal cases |
+| Multi-lodge | A request raised at the second lodge is queued against THAT lodge and its approval creates the booking there, never at the club default | `booking-exception-approval` (the frozen lodge reaches BOTH the capacity recheck and the canonical create), Playwright `e2e/multi-lodge/policy-exception-second-lodge.spec.ts` (present at the second lodge and absent at the default one) |
+
+The remaining gap is not a coverage choice but a missing surface: **there is no
+member-facing exception UI yet.** The request/list/cancel/supersede paths exist
+only as APIs (#2524), so the browser specs drive request creation through the
+public API rather than the wizard, and this suite is about approval semantics
+rather than form mechanics. The member screens and their own browser coverage are
+#2562; `docs/user-guide/booking-a-stay.md` states the position plainly until then.
 
 The #2364 adult-member hosting policy is covered the same way and for the same
 reason: it adds no member journey and no booking-state transition, so there is

@@ -77,6 +77,19 @@ interface BaseInput {
    * silently auto-approved, which is what D-R4 forbids.
    */
   adultMemberHostingReason?: string;
+  /**
+   * This create is EXECUTING A MEMBER'S ALREADY-REVIEWED proposal — an approved
+   * booking-policy exception (#2526) — rather than an admin composing a booking.
+   *
+   * `isOnBehalf` is true either way (an officer really is acting for the member),
+   * but only the SECOND case entitles the actor to decide rules on the member's
+   * behalf. The officer reviewed the reason codes on the request's card; adult
+   * supervision is not one of them, so with this set the supervision review opens
+   * PENDING with the member's own words instead of being auto-approved in the
+   * officer's name. Absent for every other caller, which keeps on-behalf creates
+   * byte-identical.
+   */
+  reviewedMemberProposal?: boolean;
   // Group booking (shareable join code): when set, the created (primary)
   // booking is linked to the organiser's booking via parentBookingId, so a
   // joiner's stay is grouped with the event. Existing callers leave this

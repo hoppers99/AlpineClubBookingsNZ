@@ -1030,8 +1030,23 @@ do **not** yet hold a provisional reservation — their approval-time capacity
 recheck (the NO_HOLD path) is what prevents overbooking until the new-booking
 executor and its reservation shape land with the admin approval route (#2526).
 `computeProposalReservation` already returns the FULL proposal for a `NEW_BOOKING`
-snapshot, so wiring that hold later is additive. The binding lock contract every
-writer follows:
+snapshot, so wiring that hold later is additive.
+
+Since #2526 the approval algorithm itself is table-agnostic: it takes a
+`PolicyExceptionRequestStore` (`booking-exception-execution.ts`) with a
+modification implementation and a new-booking one, and the two share every
+concurrency-relevant step — the same pre-read-for-the-lock, the same global →
+per-lodge order, the same fresh-role reauthorization, the same guarded `version`
+CAS, the same drift gate, the same capacity recheck and the same post-commit
+ordering. The new-booking store's `releaseReservation` is a deliberate no-op
+returning 0, because that flavour holds no beds; its safety comes from the
+approval's own capacity recheck plus the canonical create service's HARD refusal
+(`createConfirmedBooking`'s `capacityExceeded` outcome is thrown by
+`booking-exception-approval.ts`, which aborts the transaction rather than
+committing a claim with no booking behind it). Factoring the store out — rather
+than copying the algorithm per table — is what keeps the two flavours from
+drifting apart on any of those steps. The binding lock contract every writer
+follows:
 
 - **No new advisory-lock family.** A reservation write or release, and the
   approval that turns a reservation into the executed booking, is a capacity and
