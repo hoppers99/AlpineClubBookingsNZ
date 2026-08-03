@@ -61,6 +61,42 @@ const EMPTY_RESULT: HostingCoverageDrainResult = {
   failed: 0,
 };
 
+/**
+ * Drain the queue immediately after a caller's transaction has committed, and never
+ * let a problem in the drain surface as a failure of the change that committed
+ * (#2576 §7's "immediate re-evaluation", §8's "re-read current facts after commit").
+ *
+ * BEST-EFFORT ON PURPOSE, AND THE CRON IS THE AUTHORITY. The authoritative change
+ * is already committed and must not be undone by a follow-up problem — an officer's
+ * cancellation does not un-cancel because an email bounced — so every failure here
+ * is logged and swallowed. The queue row is still unprocessed, so the general cron
+ * sweep re-runs it; the cost of the inline attempt failing is a delay, never a lost
+ * obligation.
+ *
+ * MUST BE CALLED AFTER THE COMMIT, never inside the transaction. Inside, it would
+ * read the uncommitted rows it exists to re-read, and it would send email from a
+ * transaction that can still roll back. Callers place it after their
+ * `prisma.$transaction(...)` returns.
+ *
+ * A no-op when the queue is empty — one indexed read that returns nothing — so a
+ * club that is not on this scope pays a single cheap query per mutation, and only
+ * on the paths that can escalate.
+ */
+export async function settleHostingCoverageAfterCommit(
+  options: { limit?: number } = {},
+  db: typeof prisma = prisma,
+): Promise<HostingCoverageDrainResult> {
+  try {
+    return await drainHostingCoverageReevaluations(options, db);
+  } catch (err) {
+    logger.error(
+      { err },
+      "Inline same-owner hosting coverage drain failed; leaving it to the cron sweep",
+    );
+    return { ...EMPTY_RESULT };
+  }
+}
+
 export async function drainHostingCoverageReevaluations(
   options: { limit?: number; maxAttempts?: number } = {},
   db: typeof prisma = prisma,

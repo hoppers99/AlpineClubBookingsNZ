@@ -21,6 +21,11 @@ const mocks = vi.hoisted(() => ({
   upsertPaymentIntentTransaction: vi.fn(),
   createStructuredAuditLog: vi.fn(),
   getAuditRequestContext: vi.fn(),
+  // #2576: no hosting policy row, so the rule resolves off and the coverage
+  // machinery is a no-op. Present because the production path reads them.
+  adultMemberHostingPolicyFindMany: vi.fn().mockResolvedValue([]),
+  hostingCoverageReevaluationCreate: vi.fn().mockResolvedValue({ id: "hcr_1" }),
+  hostingCoverageReevaluationFindMany: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock("@/lib/session-guards", () => ({ requireAdmin: mocks.requireAdmin }));
@@ -33,6 +38,10 @@ vi.mock("@/lib/prisma", () => ({
       updateMany: mocks.bookingUpdateMany,
     },
     payment: { upsert: mocks.paymentUpsert },
+    // #2576 §8: the post-commit drain reads this and finds nothing.
+    hostingCoverageReevaluation: {
+      findMany: mocks.hostingCoverageReevaluationFindMany,
+    },
     $transaction: mocks.transaction,
   },
 }));
@@ -84,6 +93,13 @@ const txClient = {
     updateMany: mocks.bookingUpdateMany,
   },
   payment: { upsert: mocks.paymentUpsert },
+  // #2576 §9: the officer's confirmation records the bounded same-owner hosting
+  // re-evaluation inside this transaction. No policy row, so the rule resolves off
+  // and the enqueue is a no-op — which is what every expectation here assumes.
+  adultMemberHostingPolicy: { findMany: mocks.adultMemberHostingPolicyFindMany },
+  hostingCoverageReevaluation: {
+    create: mocks.hostingCoverageReevaluationCreate,
+  },
 };
 
 function makeRequest(body?: Record<string, unknown>) {

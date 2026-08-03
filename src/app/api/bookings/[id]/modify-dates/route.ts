@@ -5,6 +5,10 @@ import {
   AdultMemberHostingRequiredError,
   buildAdultMemberHostingRefusalBody,
 } from "@/lib/adult-member-hosting-review";
+import {
+  SameOwnerCoverageWouldBreakError,
+  buildSameOwnerCoverageRefusalBody,
+} from "@/lib/adult-member-hosting-same-owner";
 import { ApiError } from "@/lib/api-error";
 import { MinimumStayPolicyViolationError } from "@/lib/booking-policy-exceptions";
 import { auth } from "@/lib/auth";
@@ -263,6 +267,15 @@ export async function PUT(
         buildAdultMemberHostingRefusalBody(err.violation),
         { status: err.status },
       );
+    }
+    // #2576 §6, and ABOVE the generic ApiError branch below for the same reason
+    // as its neighbour: a date change that would leave another booking on the
+    // member's own account without adult-member cover is refused, and the body is
+    // what names the affected booking, its lodge and the uncovered nights.
+    if (err instanceof SameOwnerCoverageWouldBreakError) {
+      return NextResponse.json(buildSameOwnerCoverageRefusalBody(err), {
+        status: err.status,
+      });
     }
     if (err instanceof ApiError) {
       return NextResponse.json({ error: err.message }, { status: err.status });

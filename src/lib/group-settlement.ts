@@ -41,6 +41,8 @@ import {
 } from "@/lib/stripe";
 import { acquireLodgeCapacityLock, checkCapacityForGuestRanges } from "@/lib/capacity";
 import { bookingHasCapacityOverride } from "@/lib/booking-status";
+import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
+import { enqueueOwnHostingCoverageReevaluation } from "@/lib/adult-member-hosting-review";
 import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
 import { recordBookingEvent } from "@/lib/booking-events";
 import {
@@ -634,6 +636,20 @@ async function commitChildrenToConfirmed(
         db: tx,
         previousRange: { checkIn: fresh.checkIn, checkOut: fresh.checkOut },
       });
+      // #2576 §9. "Split-booking creation" and organiser settlement both land here:
+      // this is the one place a group child is committed CONFIRMED, so it is where
+      // the hosting facts have to be re-read at confirmation. Recorded inside this
+      // transaction, which holds the child's own per-lodge capacity lock — the same
+      // key every coverage-removing path takes — so the confirm-while-source-removed
+      // race cannot interleave.
+      //
+      // NEVER REFUSED: the organiser has paid, or is about to, for everybody. §8
+      // covers it ("payment or booking lifecycle", "automated status transitions"),
+      // and a child that turns out to be uncovered becomes an urgent incident on the
+      // officer queue instead of a settlement that fails for the whole group.
+      await enqueueOwnHostingCoverageReevaluation(fresh.id, tx, {
+        cause: "SYSTEM_CHANGE",
+      });
       committed.push({
         id: fresh.id,
         finalPriceCents: fresh.finalPriceCents ?? child.finalPriceCents,
@@ -704,6 +720,11 @@ async function settleConfirmedChildrenAndNotify(
     enqueueChildInvoices: boolean;
   }
 ): Promise<GroupSettlementAppliedResult> {
+  // #2576 §9: drain whatever `commitChildrenToConfirmed` recorded for these
+  // children before this settlement runs. Best-effort; the cron sweep is the
+  // authority on completion.
+  await settleHostingCoverageAfterCommit();
+
   const settled = await prisma.$transaction(async (tx) => {
     // #1881 two-tier protocol. This path flips CONFIRMED -> PAID (no net-new
     // capacity claim — both statuses already hold beds) AND flips the settlement

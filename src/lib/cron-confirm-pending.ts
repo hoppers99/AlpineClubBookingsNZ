@@ -7,6 +7,8 @@ import {
   Prisma,
 } from "@prisma/client";
 
+import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
+import { enqueueOwnHostingCoverageReevaluation } from "@/lib/adult-member-hosting-review";
 import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
 import { recordBookingEvent } from "@/lib/booking-events";
 import { bookingHasCapacityOverride } from "@/lib/booking-status";
@@ -794,6 +796,24 @@ async function resolveHoldWindowUnderLock(
       );
       return { type: "already_processed" };
     }
+
+    // #2576 §9. This is "payment completion" on the owner's list of paths that must
+    // re-read the hosting facts at confirmation, and it is the one that CANNOT
+    // refuse: the claim is what reserves the bed before the saved-card charge, so
+    // throwing here would fail the cron item rather than tell anybody anything, and
+    // §8 names automated status transitions and payment lifecycle among the changes
+    // that cannot reasonably be blocked. So the obligation to look is recorded with
+    // the claim — inside this transaction, under the same per-lodge capacity lock
+    // every coverage-removing path takes, which is what closes §9's confirm-while-
+    // source-removed race — and the drain re-reads the committed facts afterwards.
+    //
+    // Safe against the RELEASE below (a charge that does not complete puts the
+    // booking back to PENDING): `reconcileSameOwnerCoverageIncident` opens an
+    // incident only for a booking whose status is confirmed active attendance, so a
+    // released claim drains to nothing rather than to a false emergency.
+    await enqueueOwnHostingCoverageReevaluation(booking.id, tx, {
+      cause: "SYSTEM_CHANGE",
+    });
 
     // #1967 FIX-6: the auto-charge claim supersedes any outstanding /pay link
     // (e.g. one minted while no card was on file, before a card appeared on
@@ -1626,6 +1646,12 @@ export async function confirmPendingBookings(): Promise<CronConfirmResult> {
       }
     }
   }
+
+  // #2576 §8/§9: settle whatever the claims above queued, now that every charge has
+  // either completed or been released. Once per cycle rather than once per booking —
+  // the drain is bounded and idempotent, and the general cron sweep runs it again
+  // anyway, so this is the "immediate" attempt and not the guarantee.
+  await settleHostingCoverageAfterCommit();
 
   return result;
 }

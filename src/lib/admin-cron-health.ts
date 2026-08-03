@@ -228,6 +228,24 @@ export function getAdminCronJobDefinitions(
     ),
     defineCronJob(
       {
+        // #2576: the backstop for the same-owner hosting-coverage queue. Escalating
+        // change paths drain it inline after their own commit; this sweep is the
+        // authority on completion, so a process that died mid-drain, a redeployment
+        // or a transient email failure cannot leave a confirmed booking without the
+        // adult-member cover its club requires and nobody told. A silent failure
+        // here is therefore invisible unless it is tracked, which is what this
+        // definition is for.
+        jobName: "hosting-coverage-reevaluation",
+        label: "Hosting coverage re-evaluation",
+        schedule: "0 */3 * * *",
+        timezone: nzTimezone,
+        expectedLocalTime: "Every 3 hours at minute 0 in Pacific/Auckland",
+        staleAfterMinutes: THREE_HOURLY_STALE_AFTER_MINUTES,
+      },
+      globalDisabledReason
+    ),
+    defineCronJob(
+      {
         jobName: "school-attendee-confirmations",
         label: "School attendee confirmations",
         schedule: "0 */3 * * *",

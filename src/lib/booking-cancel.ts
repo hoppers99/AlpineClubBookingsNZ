@@ -53,6 +53,7 @@ import {
   hostingCoverageActorOptions,
   reconcileAdultMemberHostingReviewWithSiblings,
 } from "@/lib/adult-member-hosting-review";
+import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
 import { acquireLodgeCapacityLock } from "@/lib/capacity";
 import { bookingStayHasStarted } from "@/lib/booking-edit-policy";
 
@@ -230,6 +231,14 @@ export async function cancelBooking(
         "Failed to clean up group booking on organiser cancel"
       )
     );
+
+    // #2576 §7/§8. The cancellation reconciled the account's other bookings inside
+    // its transaction and, where it was an officer's cancellation that took cover
+    // away, recorded the bounded re-evaluation as a queue row that committed with
+    // it. This is the "immediate re-evaluation" half: re-read the now-committed
+    // facts, open or resolve the incident, and notify the owner once. Best-effort —
+    // the cancellation is done, and the cron sweep is the authority on completion.
+    await settleHostingCoverageAfterCommit();
   }
 
   return result;

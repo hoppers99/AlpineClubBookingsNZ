@@ -57,6 +57,7 @@ import {
   hostingCoverageActorOptions,
   reconcileAdultMemberHostingReviewWithSiblings,
 } from "@/lib/adult-member-hosting-review";
+import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
 import logger from "@/lib/logger";
 import { createBookingModificationCredit } from "@/lib/member-credit";
 import {
@@ -1025,6 +1026,15 @@ export async function modifyBookingBatch({
   // owns the commit, so it is handed back as `deferredPostCommit` — no provider
   // call fires inside the still-open approval transaction.
   const runPostCommit = async (): Promise<BatchModificationResponse> => {
+    // #2576 §7/§8, FIRST. The edit reconciled the account's other bookings inside
+    // the transaction; where an officer's edit took cover away, the bounded
+    // re-evaluation committed with it as a queue row. Draining it here is the
+    // "immediate re-evaluation" the owner asked for, and it comes before the
+    // settlement and email work because a confirmed booking the club's own rule
+    // would refuse is the more urgent of the two. Best-effort: the edit is
+    // committed, and the cron sweep is the authority on completion.
+    await settleHostingCoverageAfterCommit();
+
     // AFTER the commit, and before the settlement work below, so a cross-family
     // guest is asked as promptly as the booking-modified email is sent. Awaited: an
     // unsent consent request leaves a bed held (D-4) for a member nobody asked.

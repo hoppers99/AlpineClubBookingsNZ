@@ -496,6 +496,9 @@ describe("getStuckStateDashboard", () => {
     const deps = buildDeps({
       db: {
         paymentRecoveryOperation: { count: vi.fn().mockResolvedValue(0) },
+        // #2576: active same-owner hosting-coverage incidents. Zero, so this
+        // suite's expectations are unchanged.
+        hostingCoverageIncident: { count: vi.fn().mockResolvedValue(0) },
         booking: {
           findMany: vi.fn().mockResolvedValue([]),
           count: vi.fn().mockResolvedValue(0),
@@ -535,6 +538,9 @@ describe("getStuckStateDashboard", () => {
     const deps = buildDeps({
       db: {
         paymentRecoveryOperation: { count: vi.fn().mockResolvedValue(0) },
+        // #2576: active same-owner hosting-coverage incidents. Zero, so this
+        // suite's expectations are unchanged.
+        hostingCoverageIncident: { count: vi.fn().mockResolvedValue(0) },
         booking: {
           findMany: vi.fn().mockResolvedValue([]),
           count: bookingCount,

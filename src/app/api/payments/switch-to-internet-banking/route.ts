@@ -17,6 +17,8 @@ import {
   checkCapacityForGuestRanges,
 } from "@/lib/capacity";
 import { bookingHasCapacityOverride } from "@/lib/booking-status";
+import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
+import { enqueueOwnHostingCoverageReevaluation } from "@/lib/adult-member-hosting-review";
 import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
 import { loadEffectiveModuleFlags } from "@/lib/module-settings";
 import { buildInternetBankingPaymentReference } from "@/lib/booking-payment-methods";
@@ -324,6 +326,20 @@ export async function POST(request: NextRequest) {
         bookingId: booking.id,
         db: tx,
       });
+      // #2576 §9. "Payment completion" on the owner's list: this claim confirms the
+      // booking, so the hosting facts have to be re-read against it. Recorded inside
+      // the transaction — under the same per-lodge capacity lock every
+      // coverage-removing path takes, which is what closes the confirm-while-source-
+      // removed race — and drained after commit.
+      //
+      // ESCALATED RATHER THAN REFUSED, deliberately, and this is the one member-
+      // facing confirmation where that is right: the member is not changing the
+      // party or the nights, they are choosing how to pay for a booking that already
+      // exists and already holds beds. Refusing here would leave them unable to pay
+      // for it, which is not one of the three actions §6 tells a member to take.
+      await enqueueOwnHostingCoverageReevaluation(booking.id, tx, {
+        cause: "SYSTEM_CHANGE",
+      });
     }
 
     await recordInternetBankingPaymentTransaction({
@@ -375,6 +391,10 @@ export async function POST(request: NextRequest) {
       { status: 409 },
     );
   }
+
+  // #2576 §9: drain the re-evaluation the claim above recorded, now that the
+  // confirmation has committed. Best-effort; the cron sweep is the authority.
+  await settleHostingCoverageAfterCommit();
 
   try {
     const queued = await enqueueXeroBookingInvoiceOperation(booking.id, {

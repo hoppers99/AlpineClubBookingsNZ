@@ -666,16 +666,14 @@ export function evaluateAdultMemberHostingWithPolicy(
   // therefore be covered by different scopes and different members, because the
   // decision is taken per night rather than per booking.
   //
-  // ── STAGE-B SEAM (#2576): SAME_BOOKING_OWNER coverage arrives here ──────────
-  // This loop is scope-agnostic: it counts whatever `participant.hostScope` says,
-  // so same-owner coverage is added by a LOADER that stamps the qualifying adult
-  // members attending other bookings with the same `Booking.memberId` as
-  // `hostScope: "SAME_BOOKING_OWNER"` participants, not by changing the rule
-  // below. That loader is the next commit on this branch; until it lands the scope
-  // is RECOGNISED (saveable, resolved, previewed, reported in the frozen snapshot)
-  // but supplies no hosts, so a club that enabled it would see its non-member
-  // nights judged on same-booking coverage alone. That is the one state this
-  // branch must not ship in — the PR stays draft until the loader is here.
+  // WHY SAME_BOOKING_OWNER NEEDED NO CHANGE HERE (#2576 §13). This loop is
+  // scope-agnostic: it counts whatever `participant.hostScope` says. Same-owner
+  // coverage therefore arrives as a LOADER — `loadSameBookingOwnerHosts` stamps the
+  // qualifying adult members attending other bookings with the same
+  // `Booking.memberId` as `hostScope: "SAME_BOOKING_OWNER"` participants — and not
+  // as a second branch of the rule. That is exactly what §13 asks for: one
+  // definition of a qualifying adult member, one exact-night test, one evidence
+  // shape, with the scope deciding only WHOSE attendance is admissible.
   const hostsByNight = new Map<string, Set<string>>();
   const scopesByNight = new Map<string, Set<AdultMemberHostScope>>();
   for (const participant of participants) {

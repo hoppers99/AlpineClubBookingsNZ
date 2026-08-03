@@ -27,6 +27,7 @@ import type {
   AggregatedPolicyExceptions,
 } from "@/lib/booking-policy-exceptions";
 import { aggregatePolicyExceptionViolations } from "@/lib/booking-policy-exceptions";
+import { isHostingCoverageSourceBookingStatus } from "@/lib/booking-status";
 import {
   addDaysDateOnly,
   eachDateOnlyInRange,
@@ -1237,6 +1238,73 @@ async function settleSameOwnerDependentCoverage(
 }
 
 /**
+ * Record the re-evaluation this booking's OWN nights need, without evaluating and
+ * without refusing anything (#2576 §8, §9).
+ *
+ * FOR THE CONFIRMING PATHS THAT MUST NOT BE REFUSED, and there are exactly two
+ * shapes of those: the saved-card auto-charge cron and the group-settlement
+ * confirmations. §8 names both — "payment or booking lifecycle failure",
+ * "automated status transitions" — among the changes that "cannot reasonably be
+ * blocked", and the reason is concrete rather than philosophical: by the time
+ * either runs, capacity is claimed and a charge is either in flight or settled, so
+ * throwing would leave money and beds pointing at a booking the club just refused.
+ * §9's answer for them is the same as §8's: allow the transition, then re-read the
+ * facts after commit and escalate to an urgent incident.
+ *
+ * WHY IT ENQUEUES RATHER THAN EVALUATES. Evaluating here would answer the question
+ * against UNCOMMITTED rows, and the confirming transaction is exactly the one whose
+ * commit decides the answer. The queue row commits WITH the confirmation — so the
+ * obligation to look cannot be lost — and the drain re-reads afterwards. It also
+ * keeps a background sweep, not a money transaction, as the thing that sends the
+ * owner's email.
+ *
+ * The item names this booking's owner, lodge and own nights and nothing else, so it
+ * is bounded by construction the same way every other item is (§10); the drain will
+ * pick up any OTHER booking of the same owner over those nights as a matter of
+ * course, which is correct — a confirmation adds attendance, and attendance can
+ * RESTORE cover as easily as remove it.
+ *
+ * Returns the queued item id, or null when nothing was queued: the club is not
+ * enforcing, the scope is off, or the booking has gone.
+ */
+export async function enqueueOwnHostingCoverageReevaluation(
+  bookingId: string,
+  db: AdultMemberHostingReviewDb,
+  context: HostingCoverageChangeContext = { cause: "SYSTEM_CHANGE" },
+): Promise<string | null> {
+  const booking = (await db.booking.findUnique({
+    where: { id: bookingId },
+    select: {
+      id: true,
+      memberId: true,
+      lodgeId: true,
+      checkIn: true,
+      checkOut: true,
+    },
+  })) as CoverageOwnerFacts | null;
+  if (!booking) return null;
+
+  const resolved = await loadAdultMemberHostingPolicy(booking.lodgeId, db);
+  if (resolved.mode !== "ENFORCED") return null;
+  if (!resolved.hostScopes.sameBookingOwner) return null;
+
+  return enqueueHostingCoverageReevaluation(
+    {
+      memberId: booking.memberId,
+      lodgeId: booking.lodgeId,
+      nights: eachDateOnlyInRange(booking.checkIn, booking.checkOut).map(
+        formatDateOnly,
+      ),
+      cause: context.cause,
+      sourceBookingId: booking.id,
+      actorMemberId: context.actorMemberId ?? null,
+      reason: context.reason ?? null,
+    },
+    db,
+  );
+}
+
+/**
  * Look at every same-owner booking this change could have touched, and report two
  * things: which are NEWLY uncovered, and which are already carrying an open
  * incident (#2576 §6, §7, §14).
@@ -1451,9 +1519,35 @@ export async function reconcileSameOwnerCoverageIncident(
 
   const booking = await db.booking.findUnique({
     where: { id: params.bookingId },
-    select: { lodgeId: true },
+    select: { lodgeId: true, status: true, deletedAt: true },
   });
   if (!booking) return { action: "none" };
+
+  // AN INCIDENT IS ONLY EVER OPENED FOR A BOOKING THE CLUB HAS ACCEPTED (§7, §16:
+  // "where a booking BECOMES UNCOVERED AFTER CONFIRMATION").
+  //
+  // NOT TIDINESS — this is the guard that stops a false urgent incident, and the
+  // shape that produces one is real. The saved-card auto-charge claims a booking
+  // PENDING -> CONFIRMED, queues this re-evaluation with the claim, and RELEASES it
+  // back to PENDING if the charge does not complete. Without this test the drain
+  // would arrive after the release, find an uncovered PENDING booking, and put a
+  // stay nobody has confirmed in front of an officer as an emergency. The same
+  // applies to every DRAFT, AWAITING_REVIEW or waitlisted booking the bounded read
+  // legitimately returns: uncovered is a normal, permitted state for those, they
+  // carry a pending hosting review already, and they will be refused at their own
+  // confirmation (§9) if the cover has not come back.
+  //
+  // It does NOT resolve an incident that is already open. A CONFIRMED booking that
+  // regressed to PENDING still holds its beds and its problem, and reporting that as
+  // `COVERAGE_RESTORED` would tell an officer cover came back when nothing of the
+  // kind happened. The row stays, and the next reconciliation of a re-confirmed
+  // booking updates it.
+  if (
+    booking.deletedAt != null ||
+    !isHostingCoverageSourceBookingStatus(String(booking.status))
+  ) {
+    return { action: "none" };
+  }
 
   return openOrUpdateHostingCoverageIncident(
     {

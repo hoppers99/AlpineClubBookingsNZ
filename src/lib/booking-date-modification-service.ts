@@ -25,6 +25,7 @@ import {
   hostingCoverageActorOptions,
   reconcileAdultMemberHostingReviewWithSiblings,
 } from "@/lib/adult-member-hosting-review";
+import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
 import {
   createModificationAdditionalPaymentIntent,
   executeBookingModificationRefund,
@@ -1038,6 +1039,11 @@ export async function modifyBookingDates({
       })
     : null;
 
+  // #2576 §7/§8: drain the bounded re-evaluation this edit committed, if any, now
+  // that the dates really are what the queue row says they are. Best-effort; the
+  // cron sweep is the authority on completion.
+  await settleHostingCoverageAfterCommit();
+
   await dispatchDatePostTransactionSideEffects({
     bookingId,
     actorMemberId: actor.id,
@@ -1683,6 +1689,11 @@ export async function adminShiftBookingDates({
   }).catch((err) =>
     logger.error({ err, bookingId }, "Failed to process waitlist after admin date shift"),
   );
+
+  // #2576 §7/§8. An officer's date shift is never refused, so this is the path on
+  // which the escalation actually happens: the shift committed a bounded
+  // re-evaluation row, and this opens the urgent incident and notifies the owner.
+  await settleHostingCoverageAfterCommit();
 
   return {
     booking: result.booking,

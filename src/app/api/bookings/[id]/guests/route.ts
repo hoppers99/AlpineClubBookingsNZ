@@ -93,6 +93,11 @@ import {
   hostingCoverageActorOptions,
   reconcileAdultMemberHostingReviewWithSiblings,
 } from "@/lib/adult-member-hosting-review";
+import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
+import {
+  SameOwnerCoverageWouldBreakError,
+  buildSameOwnerCoverageRefusalBody,
+} from "@/lib/adult-member-hosting-same-owner";
 import { getSeasonYear } from "@/lib/utils";
 import {
   authorizationRoleFromAccessRoles,
@@ -901,6 +906,11 @@ export async function POST(
       };
     });
 
+    // #2576 §7/§8: drain the bounded re-evaluation this add committed, if any.
+    // Adding guests can move an account's cover in either direction, so this both
+    // opens incidents and resolves ones the add has just fixed.
+    await settleHostingCoverageAfterCommit();
+
     // AFTER the commit, and awaited rather than fire-and-forget: an unsent consent
     // request leaves a PENDING row holding a bed (D-4) that nobody was ever asked
     // about, and a `void` promise is what a serverless freeze after the response
@@ -1136,6 +1146,14 @@ export async function POST(
         buildAdultMemberHostingRefusalBody(err.violation),
         { status: err.status },
       );
+    }
+    // #2576 §6, ABOVE the shared-ApiError branch below: this refusal is a
+    // subclass, and answered generically the member loses the list of their own
+    // bookings, lodges and nights that tells them what to fix.
+    if (err instanceof SameOwnerCoverageWouldBreakError) {
+      return NextResponse.json(buildSameOwnerCoverageRefusalBody(err), {
+        status: err.status,
+      });
     }
     // Shared-lib domain errors (e.g. the #1032 quote-priced edit block from
     // assertBookingNotQuotePriced) are the shared ApiError class, distinct

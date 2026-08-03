@@ -3,6 +3,11 @@ import {
   AdultMemberHostingRequiredError,
   buildAdultMemberHostingRefusalBody,
 } from "@/lib/adult-member-hosting-review";
+import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
+import {
+  SameOwnerCoverageWouldBreakError,
+  buildSameOwnerCoverageRefusalBody,
+} from "@/lib/adult-member-hosting-same-owner";
 import { ApiError } from "@/lib/api-error";
 import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
@@ -122,6 +127,14 @@ export async function DELETE(
         subscriptionLockoutMode,
       })
     );
+
+    // #2576 §7/§8. Removing the qualifying adult member is the change class the
+    // owner names first. A member's removal that would strand another of their
+    // bookings was already refused inside the transaction above; an officer's was
+    // allowed and recorded a bounded re-evaluation row, and this is where that
+    // becomes an urgent incident and an email to the owner. Best-effort — the
+    // removal is committed, and the cron sweep is the authority on completion.
+    await settleHostingCoverageAfterCommit();
 
     /**
      * MG4 (#2309): tell a member guest their place has gone.
@@ -439,6 +452,15 @@ export async function DELETE(
         buildAdultMemberHostingRefusalBody(err.violation),
         { status: err.status },
       );
+    }
+    // #2576 §6 — the OTHER direction of the same removal, and the same ordering
+    // rule for the same reason: taking the adult member off THIS booking can leave
+    // ANOTHER booking on the member's own account without cover, and the body is
+    // what names which booking, which lodge and which nights.
+    if (err instanceof SameOwnerCoverageWouldBreakError) {
+      return NextResponse.json(buildSameOwnerCoverageRefusalBody(err), {
+        status: err.status,
+      });
     }
     // Shared-lib domain errors (e.g. the #1032 quote-priced edit block from
     // assertBookingNotQuotePriced) carry intentional user-facing messages.
