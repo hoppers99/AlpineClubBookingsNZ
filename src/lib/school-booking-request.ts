@@ -1209,7 +1209,14 @@ export async function approveSchoolBookingRequest(input: {
       // the first unrelated edit. PENDING, never APPROVED: approving the
       // REQUEST is not the explicit, reasoned acceptance of a hosting exception
       // that D-R4 requires, and approval is never blocked by it.
-      await reconcileAdultMemberHostingReviewWithSiblings(booking.id, tx);
+      // #2569 §13 — school and organisation workflows are EXCLUDED from the
+      // enforced consequence: they run a separate officer-managed process and may
+      // be supervised by teachers, leaders or custodians who do not map onto the
+      // adult club-member host rule. The hazard is still evaluated and recorded so
+      // an officer sees it; the booking is never stopped by this policy.
+      await reconcileAdultMemberHostingReviewWithSiblings(booking.id, tx, {
+        enforcement: "REVIEW_ONLY",
+      });
 
       await tx.payment.create({
         data: {
@@ -2142,7 +2149,14 @@ export async function approveMemberWholeLodgeRequest(input: {
       // opens PENDING and never blocks the approval; if the member adds
       // themselves or another adult member to the party, the next reconciliation
       // clears it with no admin action.
-      await reconcileAdultMemberHostingReviewWithSiblings(booking.id, tx);
+      // #2569 §13 — school and organisation workflows are EXCLUDED from the
+      // enforced consequence: they run a separate officer-managed process and may
+      // be supervised by teachers, leaders or custodians who do not map onto the
+      // adult club-member host rule. The hazard is still evaluated and recorded so
+      // an officer sees it; the booking is never stopped by this policy.
+      await reconcileAdultMemberHostingReviewWithSiblings(booking.id, tx, {
+        enforcement: "REVIEW_ONLY",
+      });
 
       // Receivable for the finance surfaces. Pay-on-account via the existing
       // INTERNET_BANKING source; NO PaymentLink row is created, so no tokenised

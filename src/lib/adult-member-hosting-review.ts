@@ -6,7 +6,12 @@ import {
   type PrismaClient,
 } from "@prisma/client";
 
-import type { AdultMemberHostingPolicyExceptionViolation } from "@/lib/booking-policy-exceptions";
+import { ApiError } from "@/lib/api-error";
+import type {
+  AdultMemberHostingPolicyExceptionViolation,
+  AggregatedPolicyExceptions,
+} from "@/lib/booking-policy-exceptions";
+import { aggregatePolicyExceptionViolations } from "@/lib/booking-policy-exceptions";
 import { eachDateOnlyInRange, formatDateOnly } from "@/lib/date-only";
 import { getDefaultLodgeId } from "@/lib/lodges";
 import { isOperationallyPresentConsent } from "@/lib/member-guest-consent";
@@ -14,6 +19,7 @@ import { prisma } from "@/lib/prisma";
 import {
   adultMemberHostingReviewChanged,
   evaluateAdultMemberHostingWithPolicy,
+  hostingModeIsActive,
   resolveAdultMemberHostingPolicy,
   type EffectiveAdultMemberHostingMode,
   type HostingParticipant,
@@ -122,6 +128,14 @@ export async function loadAdultMemberHostingPolicy(
       mode: true,
       capacityMode: true,
       version: true,
+      // #2569's second dimension. Named explicitly because this select is
+      // narrowed: omitting them would hand the resolver three `undefined`s,
+      // which it reads as "this row did not decide" — so a lodge with a custom
+      // scope set would silently fall back to the club's, or to the built-in
+      // default, and the club's rule would be quietly widened or narrowed.
+      hostScopeSameBooking: true,
+      hostScopeAnyMemberAtLodge: true,
+      hostScopeNominatedHost: true,
     },
   });
   return resolveAdultMemberHostingPolicy(rows, effectiveLodgeId);
@@ -320,17 +334,16 @@ export async function evaluateBookingAdultMemberHosting(
   // Skip the sibling read entirely while the policy is off: it is the only
   // query this evaluation adds to every booking write, and a club that has not
   // turned the rule on should pay nothing for it.
-  const participants =
-    resolved.mode === "ADMIN_REVIEW_REQUIRED"
-      ? await withSubscriptionSettlement(
-          [
-            ...toHostingParticipants(booking),
-            ...(await loadSiblingHosts(booking, db)),
-          ],
-          db,
-          getSeasonYear(booking.checkIn),
-        )
-      : [];
+  const participants = hostingModeIsActive(resolved.mode)
+    ? await withSubscriptionSettlement(
+        [
+          ...toHostingParticipants(booking),
+          ...(await loadSiblingHosts(booking, db)),
+        ],
+        db,
+        getSeasonYear(booking.checkIn),
+      )
+    : [];
   const violation = evaluateAdultMemberHostingWithPolicy(participants, resolved);
   return { violation, resolved };
 }
@@ -409,6 +422,38 @@ export type HostingReviewOutcome = (
 };
 
 /**
+ * How this caller wants the ENFORCED consequence applied (#2569 §1 and §13).
+ *
+ * `REFUSE` — the default, and what "stop booking unless corrected or an exception
+ * is approved" means: an ENFORCED violation throws
+ * `AdultMemberHostingRequiredError` from inside the caller's transaction, so the
+ * non-compliant write rolls back and no review row is written for a booking that
+ * does not exist. Default rather than opt-in deliberately: a write path added
+ * later inherits the club's rule instead of quietly escaping it.
+ *
+ * `REVIEW_ONLY` — evaluate and record exactly as the review consequence does, and
+ * never refuse. Reserved for the SCHOOL AND ORGANISATION workflows, which §13
+ * excludes from this expanded enforcement in as many words: those bookings run a
+ * separate officer-managed process and may be supervised by teachers, leaders or
+ * custodians who do not map onto the adult club-member host rule at all. They keep
+ * the pre-#2569 behaviour — the hazard is still recorded and surfaced, so an
+ * officer sees it, but the booking is never stopped by this policy.
+ */
+export type HostingEnforcement = "REFUSE" | "REVIEW_ONLY";
+
+export interface HostingReconcileOptions {
+  /**
+   * Status to use when a hazard is opened for the FIRST time on this booking.
+   * Defaults to PENDING. `APPROVED` requires `decision`, so an admin path
+   * cannot auto-approve without recording who decided and why (D-R4).
+   */
+  openedStatus?: AdminReviewStatus;
+  decision?: { reason: string; byMemberId: string } | null;
+  /** See `HostingEnforcement`. Defaults to `REFUSE`. */
+  enforcement?: HostingEnforcement;
+}
+
+/**
  * Bring a booking's hosting review into line with its CURRENT authoritative
  * facts, and report what changed.
  *
@@ -436,15 +481,7 @@ export type HostingReviewOutcome = (
 export async function reconcileAdultMemberHostingReview(
   bookingId: string,
   db: AdultMemberHostingReviewDb,
-  options: {
-    /**
-     * Status to use when a hazard is opened for the FIRST time on this booking.
-     * Defaults to PENDING. `APPROVED` requires `decision`, so an admin path
-     * cannot auto-approve without recording who decided and why (D-R4).
-     */
-    openedStatus?: AdminReviewStatus;
-    decision?: { reason: string; byMemberId: string } | null;
-  } = {},
+  options: HostingReconcileOptions = {},
 ): Promise<HostingReviewOutcome> {
   const booking = (await db.booking.findUnique({
     where: { id: bookingId },
@@ -465,6 +502,33 @@ export async function reconcileAdultMemberHostingReview(
     db,
   );
   const mode = resolved.mode;
+
+  // The ENFORCED consequence (#2569 §1): do not confirm a non-compliant booking.
+  //
+  // BEFORE any review write, and therefore before the caller's transaction can
+  // commit. Throwing here rather than recording a review is the difference the
+  // owner asked for: under review the booking exists and waits for an officer,
+  // under enforced it never existed, and the member is handed the same
+  // exception door instead. The write the caller just made rolls back with the
+  // throw, so a modification that would have broken the rule leaves no trace.
+  //
+  // `REVIEW_ONLY` is the school/organisation carve-out (§13) — see
+  // `HostingEnforcement`.
+  //
+  // AN EXPLICIT DECISION IS AN APPROVAL, so it is not refused. `options.decision`
+  // is only ever set by a path that captured an admin's on-behalf reason (D-R4),
+  // which is an officer approving this exact party with an attributable reason —
+  // the same authority the exception door leads to. Refusing it would mean an
+  // officer could approve a hosting exception for a booking they may not make.
+  if (
+    violation !== null &&
+    mode === "ENFORCED" &&
+    (options.enforcement ?? "REFUSE") === "REFUSE" &&
+    !options.decision
+  ) {
+    throw new AdultMemberHostingRequiredError(violation);
+  }
+
   const previous = parseStoredHostingReview(booking.adultMemberHostingReview);
   // `!= null` on purpose: a narrowed select, a partially-hydrated row or a test
   // double can leave the field UNDEFINED, and treating that as "a status is
@@ -559,16 +623,20 @@ export async function reconcileAdultMemberHostingReview(
 export async function reconcileAdultMemberHostingReviewWithSiblings(
   bookingId: string,
   db: AdultMemberHostingReviewDb,
-  options: {
-    openedStatus?: AdminReviewStatus;
-    decision?: { reason: string; byMemberId: string } | null;
-  } = {},
+  options: HostingReconcileOptions = {},
 ): Promise<HostingReviewOutcome> {
   const outcome = await reconcileAdultMemberHostingReview(bookingId, db, options);
-  if (outcome.mode !== "ADMIN_REVIEW_REQUIRED") return outcome;
+  if (outcome.mode === null || !hostingModeIsActive(outcome.mode)) return outcome;
 
   for (const siblingId of await loadHostingSiblingIds(bookingId, db)) {
-    await reconcileAdultMemberHostingReview(siblingId, db);
+    // DEFAULT options, except that the caller's enforcement choice travels: an
+    // admin's on-behalf decision belongs to the booking they were making and
+    // never to a row reached through it, but a school booking's §13 carve-out
+    // has to reach its split sibling too — otherwise one half of a #738 pair is
+    // exempt and the other is refused, for the same party.
+    await reconcileAdultMemberHostingReview(siblingId, db, {
+      ...(options.enforcement ? { enforcement: options.enforcement } : {}),
+    });
   }
   return outcome;
 }
@@ -687,7 +755,7 @@ export async function evaluateProposedAdultMemberHosting(
   },
 ): Promise<AdultMemberHostingPolicyExceptionViolation | null> {
   const resolved = await loadAdultMemberHostingPolicy(input.lodgeId, db);
-  if (resolved.mode !== "ADMIN_REVIEW_REQUIRED") return null;
+  if (!hostingModeIsActive(resolved.mode)) return null;
 
   const memberIds = [
     ...new Set(
@@ -754,4 +822,113 @@ function proposedGuestNights(
   // booking's own date validation owns that refusal.
   if (endExclusive <= start) return [];
   return eachDateOnlyInRange(start, endExclusive).map(formatDateOnly);
+}
+
+/**
+ * The refusal the ENFORCED consequence raises (#2569 §1).
+ *
+ * DELIBERATELY THE SAME SHAPE AS `PaidUpAdultMemberRequiredError` (#2543/#2560),
+ * down to the status code and the reasoning behind it: 409, not 403. A 403 says
+ * "you may not do this"; this booking IS permitted, by a Booking Officer, through
+ * the #2365 exception-request workflow — the state of the party is what conflicts.
+ * It also keeps `ADULT_MEMBER_HOSTING_REQUIRED` out of the
+ * `HARD_STOP_BOOKING_FAILURE_CODES` family, which is exactly the set of refusals
+ * that may NOT enter exception review.
+ *
+ * NOT A SECOND REFUSAL PATH. The violation it carries is the same frozen
+ * `AdultMemberHostingPolicyExceptionViolation` the review mode records, produced
+ * by the same evaluator, aggregated by the same `aggregatePolicyExceptionViolations`
+ * and re-derived server-side by `collectProposalPolicyViolations` when the member
+ * walks through the exception door. Nothing about the officer queue, the frozen
+ * snapshot or the override machinery is forked for the enforced mode — only
+ * whether the booking is allowed to exist while it waits.
+ *
+ * WHY IT IS AN ApiError. It is thrown from inside the mutation transactions that
+ * every booking write path already runs, so the throw rolls the non-compliant
+ * write back — which is what "do not confirm a non-compliant booking" means in
+ * practice — and every route that already handles `ApiError` answers 409 with the
+ * message rather than a 500. Routes that want to hand the member the exception
+ * door as well add a typed branch and return `buildAdultMemberHostingRefusalBody`.
+ */
+export class AdultMemberHostingRequiredError extends ApiError {
+  readonly code = "ADULT_MEMBER_HOSTING_REQUIRED";
+  readonly violation: AdultMemberHostingPolicyExceptionViolation;
+  readonly exceptionReview: AggregatedPolicyExceptions;
+
+  constructor(violation: AdultMemberHostingPolicyExceptionViolation) {
+    super(violation.message, 409);
+    this.name = "AdultMemberHostingRequiredError";
+    this.violation = violation;
+    this.exceptionReview = aggregatePolicyExceptionViolations([violation]);
+  }
+}
+
+/**
+ * Strip the identities of the adult members whose stays cover each night.
+ *
+ * REQUIRED, NOT DEFENSIVE (#2569 §5). Under the `ANY_MEMBER_AT_LODGE` scope a
+ * night can be covered by an adult member on somebody else's booking, who has not
+ * been nominated, is not related to the booking owner and is not taking
+ * responsibility for anybody. The owner's decision is explicit that such a
+ * member's identity is never disclosed to the booking owner: the member-facing
+ * answer says only that adult-member cover is or is not present. `memberIds` is
+ * exactly that identity, so it is dropped from every member-facing body while the
+ * frozen snapshot the officer reviews keeps it in full for validation, dependency
+ * tracking and audit.
+ *
+ * Applied to EVERY scope rather than only to the wide one, because a member-facing
+ * body has no business carrying member ids under any scope, and a redaction that
+ * only fires under one setting is a redaction nobody tests.
+ *
+ * The night list and the per-night scope list are kept: "this night is covered,
+ * by an adult member on this booking" is the advice §17 asks for, and neither
+ * field names a person.
+ */
+function withheldHostIdentities(
+  violation: AdultMemberHostingPolicyExceptionViolation,
+): AdultMemberHostingPolicyExceptionViolation {
+  return {
+    ...violation,
+    requirements: {
+      ...violation.requirements,
+      qualifyingHostsByNight: violation.requirements.qualifyingHostsByNight.map(
+        (night) => ({
+          night: night.night,
+          memberIds: [],
+          ...(night.coveredByScopes
+            ? { coveredByScopes: night.coveredByScopes }
+            : {}),
+        }),
+      ),
+    },
+  };
+}
+
+/**
+ * The member-facing body for an ENFORCED hosting refusal.
+ *
+ * Mirrors `buildPaidUpAdultRefusalBody` (#2543) so the two refusals a party can
+ * trip at once are described the same way, and so a client can rely on
+ * `exceptionReview.capacityMode` to know whether asking for an override keeps the
+ * beds. Host identities are withheld — see `withheldHostIdentities`.
+ *
+ * `exceptionRequestPath` states where the member goes next rather than leaving the
+ * client to know: "you were refused but you may ask" is useless advice if the
+ * caller cannot find the door. For a NEW booking that door reserves nothing — the
+ * request holds no beds and capacity is checked again at approval (#2569 §1) —
+ * which is what `exceptionReview.capacityMode` reports honestly.
+ */
+export function buildAdultMemberHostingRefusalBody(
+  violation: AdultMemberHostingPolicyExceptionViolation,
+) {
+  const redacted = withheldHostIdentities(violation);
+  const exceptionReview = aggregatePolicyExceptionViolations([redacted]);
+  return {
+    error: redacted.message,
+    code: "ADULT_MEMBER_HOSTING_REQUIRED" as const,
+    details: redacted.message,
+    violations: exceptionReview.violations,
+    exceptionReview,
+    exceptionRequestPath: "/api/bookings/exception-requests",
+  };
 }

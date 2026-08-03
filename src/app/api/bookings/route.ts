@@ -95,7 +95,10 @@ import {
 } from "@/lib/date-only";
 import { resolveOptionalActiveLodgeId } from "@/lib/lodges";
 import { aggregatePolicyExceptionViolations } from "@/lib/booking-policy-exceptions";
-import { evaluateProposedAdultMemberHosting } from "@/lib/adult-member-hosting-review";
+import {
+  buildAdultMemberHostingRefusalBody,
+  evaluateProposedAdultMemberHosting,
+} from "@/lib/adult-member-hosting-review";
 import {
   hasAccessRole,
   hasAdminAccess,
@@ -853,14 +856,23 @@ export async function POST(request: NextRequest) {
   // reconciler writes inside the transaction is derived from the persisted guest
   // rows, so it references real BookingGuest ids and stays comparable with every
   // later evaluation.
-  if (isAuthorizedOnBehalf && !adultMemberHostingReason) {
+  //
+  // #2569 — evaluated for EVERY booker now, not only for an on-behalf admin,
+  // because the ENFORCED consequence refuses the ordinary member's booking too.
+  // One evaluation serves both outcomes: the violation carries the club's
+  // `consequence`, so the branch below reads the club's setting rather than
+  // re-resolving it. A club on DISABLED pays one narrow policy read and no member
+  // read, and a club on ADMIN_REVIEW_REQUIRED behaves exactly as it did before —
+  // the answer is used for the on-behalf gate and otherwise discarded, with the
+  // stored snapshot still coming from the reconciler inside the transaction.
+  if (!adultMemberHostingReason) {
     const hostingViolation = await evaluateProposedAdultMemberHosting(prisma, {
       lodgeId: bookingLodgeId,
       checkIn,
       checkOut,
       guests: guestInputs,
     });
-    if (hostingViolation) {
+    if (hostingViolation && isAuthorizedOnBehalf) {
       const exceptionReview = aggregatePolicyExceptionViolations([
         hostingViolation,
       ]);
@@ -873,6 +885,18 @@ export async function POST(request: NextRequest) {
           violations: exceptionReview.violations,
           exceptionReview,
         },
+        { status: 409 },
+      );
+    }
+    // The ENFORCED refusal (#2569 §1), pre-transaction like every other booking
+    // check here. The reconciler would refuse this booking anyway from inside the
+    // creating transaction, but refusing before it opens means the member is not
+    // charged for a capacity lock and a full write that is about to roll back —
+    // and it is the only place the member can be handed the exception door with
+    // the party they actually submitted.
+    if (hostingViolation?.consequence === "ENFORCED") {
+      return NextResponse.json(
+        buildAdultMemberHostingRefusalBody(hostingViolation),
         { status: 409 },
       );
     }
