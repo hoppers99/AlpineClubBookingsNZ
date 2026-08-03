@@ -229,12 +229,22 @@ describe("with setup complete, metadata is exactly as before", () => {
 
 /**
  * The behavioural cases above only cover the pages that exist today. This is
- * what stops a NEW `(website)` page reopening the hole: any page that exports
+ * what stops a NEW public page reopening the hole: any page that exports
  * `generateMetadata` must route through the shared helper.
+ *
+ * BOTH public route groups are walked. The D1 narrowing (3 Aug 2026) moved
+ * `/hut-leader-instructions`, `/join/[code]` and `/join/verify/[token]` into
+ * `src/app/(website-dynamic)`, and walking `(website)` alone would have left half
+ * the public website uncovered: the render-mode census forces a new page there to be
+ * placed deliberately, but nothing would have required its HEAD to be gated, so a
+ * `generateMetadata` reading club content could have disclosed a real `<title>`
+ * pre-setup while the chrome suppressed the body. Same shape as
+ * `setup-gate.test.ts`'s `PUBLIC_WEBSITE_GROUPS`.
  */
-describe("every (website) page keeps the head gated", () => {
+const PUBLIC_WEBSITE_GROUPS = ["src/app/(website)", "src/app/(website-dynamic)"];
+
+describe("every public website page keeps the head gated", () => {
   it("calls setupInProgressMetadata() from each generateMetadata", () => {
-    const websiteDir = path.join(process.cwd(), "src/app/(website)");
     const pages: string[] = [];
 
     const walk = (dir: string) => {
@@ -248,7 +258,9 @@ describe("every (website) page keeps the head gated", () => {
       }
     };
 
-    walk(websiteDir);
+    for (const group of PUBLIC_WEBSITE_GROUPS) {
+      walk(path.join(process.cwd(), group));
+    }
 
     const ungated = pages.filter((file) => {
       const source = readFileSync(file, "utf8");
@@ -263,7 +275,16 @@ describe("every (website) page keeps the head gated", () => {
     expect(ungated.map((file) => path.relative(process.cwd(), file))).toEqual(
       [],
     );
-    // Guards the walk itself: an empty page list would pass vacuously.
+    // Guards the walk itself: an empty page list would pass vacuously, and so would
+    // one that silently covered only the first group.
     expect(pages.length).toBeGreaterThan(3);
+    for (const group of PUBLIC_WEBSITE_GROUPS) {
+      expect(
+        pages.filter((file) =>
+          path.relative(process.cwd(), file).split(path.sep).join("/").startsWith(group),
+        ).length,
+        `${group} contributed no pages to the walk`,
+      ).toBeGreaterThan(0);
+    }
   });
 });

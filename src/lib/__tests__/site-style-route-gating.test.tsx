@@ -91,6 +91,24 @@ vi.mock("@/components/website-header", () => ({
   WebsiteHeader: () => <header>Website header</header>,
 }));
 
+// The shared public chrome's own dependencies, none of which this file is about.
+// `email-message-settings` is only read by the pre-setup branch (the DB-first
+// contact address, C6 #1985), and the two components are chrome the header/footer
+// stubs already stand in for.
+vi.mock("@/lib/email-message-settings", () => ({
+  loadEmailMessageSettings: vi.fn(async () => ({
+    contactEmail: "info@example.org",
+  })),
+}));
+
+vi.mock("@/components/site-banners", () => ({
+  SiteBanners: () => null,
+}));
+
+vi.mock("@/components/analytics-consent", () => ({
+  AnalyticsConsent: () => null,
+}));
+
 vi.mock("@/components/website-footer", () => ({
   WebsiteFooter: () => <footer>Website footer</footer>,
 }));
@@ -128,8 +146,28 @@ vi.mock("@/components/report-issue-widget", () => ({
   ReportIssueWidget: () => null,
 }));
 
-import WebsiteLayout from "@/app/(website)/layout";
+import { WebsiteChrome } from "@/components/website/website-chrome";
 import AdminLayout from "@/app/(admin)/layout";
+
+/**
+ * The public website's pre-setup gating, asserted where the branch now LIVES.
+ *
+ * It used to render `(website)/layout.tsx` directly. The D1 narrowing (3 Aug 2026)
+ * extracted the whole chrome — holding screen included — into `WebsiteChrome`, and
+ * the layout became three lines that resolve a nonce and compose it. Rendering the
+ * layout through React Testing Library therefore stopped working entirely: it
+ * returns an async server component, which RTL cannot render, so every assertion in
+ * this file failed against an empty `<body><div /></body>` rather than against the
+ * behaviour. That is why these cases render the chrome.
+ *
+ * Nothing is lost by moving down one level, and one thing is gained: the chrome is
+ * composed by BOTH public route groups, so these cases now cover the three
+ * `(website-dynamic)` pages as well. The layouts' own remaining job — which nonce
+ * each hands the chrome, and that neither grows chrome of its own — is held by
+ * `scripts/ci/check-website-render-modes.mjs`, which is a source-level check and
+ * needs no renderer.
+ */
+const NONCE = "test-release-nonce";
 
 describe("site style route-group gating", () => {
   beforeEach(() => {
@@ -155,7 +193,9 @@ describe("site style route-group gating", () => {
   });
 
   it("holds the website route group until setup is complete", async () => {
-    render(await WebsiteLayout({ children: <p>Website child</p> }));
+    render(
+      await WebsiteChrome({ nonce: NONCE, children: <p>Website child</p> }),
+    );
 
     expect(screen.getByText("Site setup in progress")).toBeTruthy();
     expect(screen.queryByText("Website child")).toBeNull();
@@ -170,7 +210,7 @@ describe("site style route-group gating", () => {
     // cacheable, stamped `public, max-age=60, stale-while-revalidate=300`. A
     // launch-state lie pinned in every visitor's cache for a minute.
     //
-    // The layout is only allowed to paint that screen on a POSITIVE answer. The
+    // The chrome is only allowed to paint that screen on a POSITIVE answer. The
     // proxy gate keeps failing closed on the same input, and that asymmetry is
     // the point: 503 is a true statement about an unreadable database, a 200
     // holding screen is not.
@@ -184,7 +224,9 @@ describe("site style route-group gating", () => {
       values: {},
     });
 
-    render(await WebsiteLayout({ children: <p>Website child</p> }));
+    render(
+      await WebsiteChrome({ nonce: NONCE, children: <p>Website child</p> }),
+    );
 
     expect(screen.queryByText("Site setup in progress")).toBeNull();
     expect(screen.getByText("Website child")).toBeTruthy();
@@ -200,7 +242,9 @@ describe("site style route-group gating", () => {
       values: {},
     });
 
-    render(await WebsiteLayout({ children: <p>Website child</p> }));
+    render(
+      await WebsiteChrome({ nonce: NONCE, children: <p>Website child</p> }),
+    );
 
     expect(screen.getByText("Website child")).toBeTruthy();
     expect(screen.getByText("Website header")).toBeTruthy();
