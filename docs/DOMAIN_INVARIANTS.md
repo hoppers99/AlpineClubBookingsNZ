@@ -3751,7 +3751,14 @@ invariants hold in addition to every #2365/#2524/#2525 invariant above:
   build, so the two are the same arithmetic rather than two that agree by
   inspection: `resolveModificationStayRanges`
   (`src/lib/booking-modification-stay-ranges.ts`) is called by
-  `resolveTargetDates`, by `prepareGuestPlan`, and by the freeze. It owns the
+  `resolveTargetDates`, by `prepareGuestPlan`, by the freeze, and — since #2563 —
+  by the modification PREVIEW (`POST /api/bookings/[id]/modify-quote`), which
+  until then assembled its own copy of the same rules. Four surfaces, one
+  implementation: the price a member is quoted, the party an officer approves and
+  the party the save writes are the same arithmetic, and the route keeps only the
+  presentation half (mapping the resolver's structured range error onto its 400
+  body, with the resolver's own wording so preview and save refuse identically).
+  It owns the
   planner's real semantics — the range-input flag is GLOBAL (ANY range anywhere
   switches the whole request into a mode where every guest without their own
   entry keeps their STORED range and night set, and the dates-moved reset never

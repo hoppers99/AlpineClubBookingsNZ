@@ -743,13 +743,16 @@ export async function prepareGuestPlan(
     throw new ApiError("Booking must have at least one guest", 400);
   }
 
-  // The SHARED canonical stay-range resolution (#2526). `resolveTargetDates`
-  // already ran the identical call to derive `newCheckIn`/`newCheckOut`, and the
-  // policy-exception workflow runs it to freeze the party an officer reviews — so
-  // all three agree by construction rather than by inspection. Passing the
-  // resolved envelope as `requested` keeps an in-progress edit (whose check-in is
-  // pinned to the stored one) resolving against the envelope actually being
-  // applied.
+  // The SHARED canonical stay-range resolution (#2526, #2563). `resolveTargetDates`
+  // already ran the identical call to derive `newCheckIn`/`newCheckOut`, the
+  // policy-exception workflow runs it to freeze the party an officer reviews, and
+  // the modification PREVIEW (`POST /api/bookings/[id]/modify-quote`) runs it to
+  // quote the price — so all four agree by construction rather than by inspection.
+  // Keep this count in step with `docs/DOMAIN_INVARIANTS.md` ("Four surfaces, one
+  // implementation"); a stale enumeration here is how the #2526 divergence sat
+  // unnoticed. Passing the resolved envelope as `requested` keeps an in-progress
+  // edit (whose check-in is pinned to the stored one) resolving against the
+  // envelope actually being applied.
   const resolvedRanges = resolveStayRangesOrApiError({
     booking: { checkIn: booking.checkIn, checkOut: booking.checkOut },
     guests: remainingGuests,
