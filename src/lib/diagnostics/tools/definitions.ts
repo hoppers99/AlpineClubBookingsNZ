@@ -25,7 +25,8 @@
 import type { AdminPermissionMatrix } from "@/lib/admin-permissions";
 
 import { hasAllAreaViews } from "../page-context/authorize";
-import { DIAGNOSTICS_TOOLS, type DiagnosticsToolInputSchema } from "./registry";
+import type { DiagnosticsToolInputSchema } from "./define";
+import { DIAGNOSTICS_TOOLS } from "./registry";
 
 export interface DiagnosticsToolProviderDefinition {
   name: string;

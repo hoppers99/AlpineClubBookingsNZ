@@ -14,14 +14,44 @@ import { canonicalStringify, sha256Hex } from "@/lib/diagnostics/knowledge/hash"
 import { readSqlPlaceholderNumbers } from "../database";
 import {
   defineDiagnosticsTool,
-  DIAGNOSTICS_SUBSTRATE_PROBE_TOOL_ID,
-  DIAGNOSTICS_TOOLS,
-  type DiagnosticsToolEntry,
-  findDiagnosticsTool,
+  DIAGNOSTICS_TOOL_EVIDENCE_SOURCES,
   FORBIDDEN_TOOL_SQL_PATTERNS,
   isValidDiagnosticsToolId,
+  type DiagnosticsSelectOnlyToolEntry,
+  type DiagnosticsToolEntry,
+} from "../define";
+import {
+  DIAGNOSTICS_BACKGROUND_JOB_HEALTH_TOOL_ID,
+  DIAGNOSTICS_DEPLOYMENT_TOOL_ID,
+  DIAGNOSTICS_READINESS_TOOL_ID,
+  DIAGNOSTICS_USAGE_HEALTH_TOOL_ID,
+} from "../packs/support-system";
+import {
+  DIAGNOSTICS_SUPPORT_CORRELATION_TOOLS,
+} from "../packs/support-correlation";
+import {
+  DIAGNOSTICS_SUBSTRATE_PROBE_TOOL_ID,
+  DIAGNOSTICS_TOOLS,
+  findDiagnosticsTool,
 } from "../registry";
 import { DIAGNOSTICS_TOOL_BOUNDS } from "../types";
+
+/**
+ * Only the `select_only_sql` entries carry SQL, so the statement-shaped contracts
+ * below iterate this list rather than the whole registry.
+ *
+ * What stops that narrowing from silently skipping an entry that should have been
+ * checked is the evidence-source contract test, which runs over the WHOLE registry
+ * and asserts that anything not declaring `select_only_sql` exposes no `sql`, no
+ * `bind` and no `readEvidence` handle at all. The permission, argument, projection
+ * and bound contracts still run over every entry regardless of source; the
+ * server-owned entries' own evidence sources are covered in
+ * `packs/__tests__/support-system.test.ts`.
+ */
+const SQL_TOOLS: readonly DiagnosticsSelectOnlyToolEntry[] = DIAGNOSTICS_TOOLS.filter(
+  (tool): tool is DiagnosticsSelectOnlyToolEntry =>
+    tool.source === "select_only_sql",
+);
 
 const AREA_KEYS = new Set(ADMIN_PERMISSION_AREAS.map((area) => area.key));
 
@@ -33,6 +63,18 @@ const AREA_KEYS = new Set(ADMIN_PERMISSION_AREAS.map((area) => area.key));
  */
 const EXAMPLE_ARGS: Record<string, unknown> = {
   [DIAGNOSTICS_SUBSTRATE_PROBE_TOOL_ID]: {},
+  [DIAGNOSTICS_READINESS_TOOL_ID]: {},
+  [DIAGNOSTICS_DEPLOYMENT_TOOL_ID]: {},
+  [DIAGNOSTICS_USAGE_HEALTH_TOOL_ID]: {},
+  [DIAGNOSTICS_BACKGROUND_JOB_HEALTH_TOOL_ID]: {},
+  // The AID-6A correlation entries all take the same argument shape, and every one
+  // of them needs a row here or its parameter arity goes unchecked.
+  ...Object.fromEntries(
+    DIAGNOSTICS_SUPPORT_CORRELATION_TOOLS.map((tool) => [
+      tool.id,
+      { window: "1h", requestId: "req-abc-123" },
+    ]),
+  ),
 };
 
 /**
@@ -53,6 +95,7 @@ function nestedArgumentFixture<TArgs>(argsSchema: z.ZodType<TArgs>) {
     description:
       "Test-only entry with a nested argument shape, used to pin the depth-total reserved-key scan.",
     requiredAreas: ["support"],
+    source: "select_only_sql",
     argsSchema,
     inputSchema: {
       type: "object",
@@ -61,7 +104,7 @@ function nestedArgumentFixture<TArgs>(argsSchema: z.ZodType<TArgs>) {
     },
     sql: "SELECT true AS ok",
     bind: () => [],
-    project: (row) => ({ ok: row.ok === true }),
+    project: (row: Record<string, unknown>) => ({ ok: row.ok === true }),
     rowLimit: 1,
     byteLimit: 64,
     surfacesPersonalData: false,
@@ -186,6 +229,24 @@ describe("diagnostics tool registry contract (#2374)", () => {
   );
 
   it.each(DIAGNOSTICS_TOOLS.map((tool) => [tool.id, tool] as const))(
+    "%s declares one of the two known evidence sources, and matches its shape",
+    (_id, tool) => {
+      // The discriminant is the registry's, not an argument's, and there are exactly
+      // two kinds. A SQL entry carries a statement; a server-owned entry exposes no
+      // handle on its source at all, so the only way to reach it is through the
+      // closure `parseArgs` returns after the schema has accepted the arguments.
+      expect(DIAGNOSTICS_TOOL_EVIDENCE_SOURCES).toContain(tool.source);
+      if (tool.source === "select_only_sql") {
+        expect(typeof tool.sql).toBe("string");
+      } else {
+        expect("sql" in tool).toBe(false);
+        expect("readEvidence" in tool).toBe(false);
+        expect("bind" in tool).toBe(false);
+      }
+    },
+  );
+
+  it.each(DIAGNOSTICS_TOOLS.map((tool) => [tool.id, tool] as const))(
     "%s requires at least one real admin area, and never `edit`",
     (_id, tool) => {
       // ADR-002 §2: a tool that required nothing would be a tool anyone may run.
@@ -199,7 +260,7 @@ describe("diagnostics tool registry contract (#2374)", () => {
     },
   );
 
-  it.each(DIAGNOSTICS_TOOLS.map((tool) => [tool.id, tool] as const))(
+  it.each(SQL_TOOLS.map((tool) => [tool.id, tool] as const))(
     "%s carries exactly one SELECT statement",
     (_id, tool) => {
       const trimmed = tool.sql.trim();
@@ -211,7 +272,31 @@ describe("diagnostics tool registry contract (#2374)", () => {
     },
   );
 
-  it.each(DIAGNOSTICS_TOOLS.map((tool) => [tool.id, tool] as const))(
+  it.each(
+    SQL_TOOLS.filter((tool) => tool.rowLimit > 1).map(
+      (tool) => [tool.id, tool] as const,
+    ),
+  )(
+    "%s can return several rows, so it orders them deterministically",
+    (_id, tool) => {
+      // Checklist item 7, enforced rather than trusted, and only meaningful once a
+      // pack registers a multi-row entry — AID-6A's correlation tools are the first.
+      // Without a total `ORDER BY`, PostgreSQL may hand identical evidence back in a
+      // different order run to run, and the audit `resultHash` — the hash of the
+      // projected rows IN ORDER — would then differ for the same answer, which
+      // destroys the one question that hash exists to settle.
+      expect(tool.sql.toUpperCase()).toContain("ORDER BY");
+      // At least two ordering keys, because the leading key of a time-ordered read is
+      // never unique: a tiebreaker is what makes the order total.
+      const orderBy = tool.sql.slice(tool.sql.toUpperCase().lastIndexOf("ORDER BY"));
+      expect(
+        orderBy.split(",").length,
+        `${tool.id} orders by one key only: ${orderBy}`,
+      ).toBeGreaterThan(1);
+    },
+  );
+
+  it.each(SQL_TOOLS.map((tool) => [tool.id, tool] as const))(
     "%s contains no mutating, DDL, file-reading or locking SQL",
     (_id, tool) => {
       for (const pattern of FORBIDDEN_TOOL_SQL_PATTERNS) {
@@ -261,7 +346,7 @@ describe("diagnostics tool registry contract (#2374)", () => {
     ).toBe(true);
   });
 
-  it.each(DIAGNOSTICS_TOOLS.map((tool) => [tool.id, tool] as const))(
+  it.each(SQL_TOOLS.map((tool) => [tool.id, tool] as const))(
     "%s has balanced parentheses so the executor's LIMIT wrapper still parses",
     (_id, tool) => {
       // The row cap is applied by wrapping the entry's SQL in
@@ -391,7 +476,7 @@ describe("diagnostics tool registry contract (#2374)", () => {
     expect(tool.parseArgs(cyclic).ok).toBe(false);
   });
 
-  it.each(DIAGNOSTICS_TOOLS.map((tool) => [tool.id, tool] as const))(
+  it.each(SQL_TOOLS.map((tool) => [tool.id, tool] as const))(
     "%s binds exactly the parameters its SQL references — $1..$N, no gaps",
     (_id, tool) => {
       // The executor appends the row cap as `$${params.length + 1}`, which is
@@ -407,12 +492,14 @@ describe("diagnostics tool registry contract (#2374)", () => {
       ).toBeDefined();
       const binding = tool.parseArgs(example);
       expect(binding.ok, `${tool.id} rejected its own EXAMPLE_ARGS`).toBe(true);
-      if (!binding.ok) return;
+      if (!binding.ok || binding.source !== "select_only_sql") return;
 
       const referenced = [...new Set(readSqlPlaceholderNumbers(tool.sql))].sort(
         (a, b) => a - b,
       );
-      expect(referenced).toEqual(binding.params.map((_value, index) => index + 1));
+      expect(referenced).toEqual(
+        binding.params.map((_value: unknown, index: number) => index + 1),
+      );
     },
   );
 
@@ -474,7 +561,9 @@ describe("diagnostics tool registry contract (#2374)", () => {
 });
 
 describe("the substrate readiness probe (#2374)", () => {
-  const probe = findDiagnosticsTool(DIAGNOSTICS_SUBSTRATE_PROBE_TOOL_ID);
+  const registered = findDiagnosticsTool(DIAGNOSTICS_SUBSTRATE_PROBE_TOOL_ID);
+  const probe =
+    registered?.source === "select_only_sql" ? registered : undefined;
 
   it("is registered under support:view and surfaces no personal data", () => {
     expect(probe).toBeDefined();
@@ -502,7 +591,9 @@ describe("the substrate readiness probe (#2374)", () => {
   it("takes no arguments and binds no parameters", () => {
     const binding = probe?.parseArgs({});
     expect(binding?.ok).toBe(true);
-    if (binding?.ok) expect(binding.params).toEqual([]);
+    if (binding?.ok && binding.source === "select_only_sql") {
+      expect(binding.params).toEqual([]);
+    }
   });
 
   it("projects only the flat scalars it declares, dropping any other column", () => {

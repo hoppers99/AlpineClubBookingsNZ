@@ -14,12 +14,17 @@
  * DECLARATIVE, NOT ADDITIVE. Re-running the statements is safe and is the
  * intended way to rotate the password — but it also REVOKES every role
  * membership, and every table, sequence and routine privilege, from the role before
- * granting the (currently empty) allowlist back. That is the point: the grant
- * allowlist lives here, in public code, so "which tables can Diagnostics read" is
- * answerable by reading one file. A tool pack (AID-6A/B/C, #2375-#2377) that needs
- * a new table adds its grant to `SELECT_GRANTS` in the same pull request as the
- * tool — and an operator re-provisions as part of that upgrade. ADR-007's
- * "deliberate friction" is exactly this.
+ * granting the declared allowlist back. That is the point: the grant allowlist lives
+ * here, in public code, so "which tables — and which COLUMNS of them — can
+ * Diagnostics read" is answerable by reading one file. A tool pack (AID-6A/B/C,
+ * #2375-#2377) that needs a new relation adds its grant to `SELECT_GRANTS` in the
+ * same pull request as the tool — and an operator re-provisions as part of that
+ * upgrade. ADR-007's "deliberate friction" is exactly this.
+ *
+ * The revoke-then-grant ORDER is what makes a narrowing safe as well as a widening:
+ * a release that removes a column from an allowlist entry has its old, wider grant
+ * revoked by `REVOKE ALL PRIVILEGES ON ALL TABLES` before the narrower one is
+ * granted, so re-provisioning genuinely tightens rather than accumulating.
  *
  * WHAT IT DOES *NOT* DO, deliberately:
  *  - It does not revoke `CREATE ON SCHEMA public FROM PUBLIC`. PostgreSQL 15+
@@ -74,21 +79,76 @@ export const FORBIDDEN_PREDEFINED_ROLES = [
   "pg_maintain",
 ] as const;
 
+/** One entry on the SELECT allowlist. */
+export interface AiDiagnosticsSelectGrant {
+  schema: string;
+  relation: string;
+  /**
+   * The COLUMNS the diagnostics role may read, or `undefined` for the whole
+   * relation.
+   *
+   * A column list is the stronger grant and should be the default for anything but
+   * a relation whose every column is appropriate diagnostics evidence: PostgreSQL
+   * then refuses `SELECT "ipAddress" FROM "AuditLog"` as the diagnostics role
+   * (42501), so the projection in a registry entry stops being the only thing
+   * standing between this credential and a column — a future tool, a projection
+   * bug, or a psql session opened with the credential all hit the server's own
+   * refusal. `database.ts` verifies the granted columns against this list and
+   * refuses the role if a wider grant appears.
+   *
+   * The tool pack that adds an entry documents which tools use it and which fields
+   * they project (see `docs/ai-diagnostics/tools.md`).
+   */
+  columns?: readonly string[];
+}
+
 /**
- * The SELECT allowlist — EMPTY in AID-5. This substrate ships no domain tool
- * (epic #2369 fixes that boundary: AID-6A/B/C add the tools), so it needs no
- * table privilege at all: the readiness probe reads no relation. An empty
- * allowlist is the strongest possible starting point, and it makes the privilege
- * proof unambiguous — every table in the schema, including `IntegrationCredential`,
- * is unreadable by this role today.
+ * The SELECT allowlist. EMPTY in AID-5 — the substrate's readiness probe reads no
+ * relation at all — and extended by each tool pack, in the same pull request as
+ * the tool that needs it, NEVER as a blanket `ALL TABLES IN SCHEMA` grant.
+ * Secret-bearing relations (credentials, tokens, password/2FA, sessions) and raw
+ * provider-payload stores are permanently out of scope (ADR-007 §1).
  *
- * A tool pack appends `{ schema: "public", relation: "SomeTable" }` here, in the
- * same pull request as the tool that needs it, and NEVER a blanket
- * `ALL TABLES IN SCHEMA` grant. Secret-bearing relations (credentials, tokens,
- * password/2FA, sessions) and raw provider-payload stores are permanently out of
- * scope (ADR-007 §1).
+ * AID-6A (#2375) adds exactly ONE relation, by COLUMN:
+ *
+ *  - `AuditLog`, for the five audit-correlation tools
+ *    (`diagnostics.{system,booking,membership,finance,lodge}_event_correlation`).
+ *    The eight columns granted are the ones those tools project: the row's own id
+ *    (the evidence reference, and the tiebreaker that makes the ordering total),
+ *    the stable `action`, `category`, `severity` and `outcome` codes, `entityType`
+ *    (WHAT kind of record, never WHICH one), `requestId` (the correlation key), and
+ *    `createdAt`.
+ *
+ *    Everything else on that table is deliberately absent, and each omission is a
+ *    thing this credential must not be able to read: `ipAddress` and `userAgent`
+ *    (network and device identifiers), `memberId`, `actorMemberId`,
+ *    `subjectMemberId` and `targetId` (people), `entityId` (often a member id —
+ *    per-record evidence is AID-6B/#2376 and AID-6C/#2377 work under their own area
+ *    permission and privacy review), `summary` and `details` (free text), `metadata`
+ *    (arbitrary JSON), and the retention bookkeeping columns, which are of no
+ *    diagnostic use.
+ *
+ * AID-6A's other four tools — readiness, deployment evidence, budget/usage health
+ * and background-job health — need NO grant: they read fixed first-party
+ * calculations the application already owns (`packs/support-evidence.ts`), which is
+ * also the only way readiness can report on the diagnostics credential itself.
  */
-export const SELECT_GRANTS: readonly { schema: string; relation: string }[] = [];
+export const SELECT_GRANTS: readonly AiDiagnosticsSelectGrant[] = [
+  {
+    schema: "public",
+    relation: "AuditLog",
+    columns: [
+      "id",
+      "action",
+      "category",
+      "severity",
+      "outcome",
+      "entityType",
+      "requestId",
+      "createdAt",
+    ],
+  },
+];
 
 export interface AiDiagnosticsRoleProvisionInput {
   /** The dedicated role to create/repair. Lowercase identifier. */
@@ -120,7 +180,7 @@ export interface AiDiagnosticsRoleProvisionInput {
    * actually holds are re-verified against the server on every tool call, so an
    * override here cannot widen anything.
    */
-  selectGrants?: readonly { schema: string; relation: string }[];
+  selectGrants?: readonly AiDiagnosticsSelectGrant[];
 }
 
 /**
@@ -414,10 +474,29 @@ $$;`);
     `ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON SEQUENCES FROM ${role};`,
     `ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON ROUTINES FROM ${role};`,
   );
+  // The table revoke above also clears COLUMN privileges — PostgreSQL's REVOKE
+  // reference states it explicitly ("when revoking privileges on a table, the
+  // corresponding column privileges (if any) are automatically revoked on each
+  // column of the table, as well"), and the real-PostgreSQL proof asserts it by
+  // hand-granting an extra column and re-provisioning. That is what lets an
+  // allowlist entry be NARROWED in a later release rather than only widened.
   for (const grant of input.selectGrants ?? SELECT_GRANTS) {
-    statements.push(
-      `GRANT SELECT ON ${quoteIdentifier(grant.schema)}.${quoteIdentifier(grant.relation)} TO ${role};`,
-    );
+    const target = `${quoteIdentifier(grant.schema)}.${quoteIdentifier(grant.relation)}`;
+    if (grant.columns === undefined) {
+      statements.push(`GRANT SELECT ON ${target} TO ${role};`);
+      continue;
+    }
+    // A COLUMN grant, and the empty list is a REFUSAL rather than a silent
+    // widening: `GRANT SELECT () ON …` is not valid SQL, and quietly emitting the
+    // whole-relation form for `columns: []` would turn a mistake in the allowlist
+    // into exactly the blanket grant that allowlist exists to prevent.
+    if (grant.columns.length === 0) {
+      throw new Error(
+        `Refusing to build provisioning SQL for ${grant.schema}.${grant.relation}: a column allowlist must name at least one column, or be omitted for a whole-relation grant.`,
+      );
+    }
+    const columns = grant.columns.map(quoteIdentifier).join(", ");
+    statements.push(`GRANT SELECT (${columns}) ON ${target} TO ${role};`);
   }
 
   return statements;
