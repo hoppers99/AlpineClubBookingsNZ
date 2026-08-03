@@ -170,19 +170,26 @@ Migrate via the supported blue/green deploy path. Run from the production host:
 ```
 
 The script re-enters itself with `--internal-blue-green-deploy` and runs a
-19-step engine (`scripts/run-production-blue-green-deploy.sh`). The steps that
+20-step engine (`scripts/run-production-blue-green-deploy.sh`). The steps that
 matter for this upgrade:
 
-- **Step 12/19 — "Validating Prisma schema against committed migrations".**
+- **Step 12/20 — "Validating Prisma schema against committed migrations".**
   This runs `validate_pending_migrations_blue_green_safe`, which calls
   `scripts/validate-blue-green-migrations.sh` against every pending migration.
   This is the gate. It must pass green (see [§2.1](#21-the-validator-gate-is-expected-green)).
-- **Step 13/19 — "Running Prisma migrations".** `prisma migrate deploy` runs
+- **Step 13/20 — "Running Prisma migrations".** `prisma migrate deploy` runs
   through the `migrate` service, applying the pending migrations to the shared
   Postgres **while the old color can still be serving traffic**.
-- **Step 14/19 / Step 15/19 — starts the new (target) web color and refreshes
+- **Step 14/20 / Step 15/20 — starts the new (target) web color and refreshes
   the cron leader on the new release, both before cutover.**
-- **Step 16/19 — "Switching Caddy upstream to target web service".** This is
+- **Step 16/20 — "Warming the new release and verifying its page cache before
+  cutover".** The #2566 gate: it renders every eligible public page on the new
+  colour, proves the page cache was populated, and REFUSES the cutover on any
+  critical-page failure. Still fully reversible — no traffic has moved. It also
+  lengthens the migrate-to-cutover window by the time it takes (bounded by
+  `DEPLOY_WARMUP_TOTAL_TIMEOUT_SECONDS`, 240s by default), which matters for
+  [§2.2](#22-agetier-not_applicable--deploy-in-a-quiet-window).
+- **Step 17/20 — "Switching Caddy upstream to target web service".** This is
   the **cutover**: Caddy is repointed to the new color, external/internal health
   is verified, then the previous color's connections are drained. Everything
   before this step is reversible by aborting; see [§4](#4-rollback-plan).
@@ -244,7 +251,7 @@ and the Wave-4 operator reminder:
 
 **Operator action for `v0.10.0`:** schedule this production window at **low
 member-admin traffic**, and minimise the gap between step 13 (migrate) and step
-16 (cutover) so the window where the old color could read a flipped
+17 (cutover) so the window where the old color could read a flipped
 `NOT_APPLICABLE` row is as short as possible. If you cannot deploy in a quiet
 window, the documented fallback is to defer only
 `20260707000100_backfill_org_age_tier_not_applicable` until the old color has
@@ -255,7 +262,7 @@ idempotent and safe to run once the new code is serving all traffic.
 
 Step 13 runs `verify_prisma_migration_status`; confirm the engine reports the
 database is up to date and that the new color passes `/api/health/ready` before
-cutover. Then let step 16 perform the cutover.
+cutover. Then let the warm-up gate (step 16) pass and step 17 perform the cutover.
 
 ### 2.4 Windowed migration deploy sequence
 
@@ -298,6 +305,14 @@ irreversible without it.**
 Keep steps 5-6 as short as the plan allows. The three statements are metadata-only
 on a single-row table, so the migration itself is quick; the window is dominated by
 stopping and starting the application.
+
+**The warm-up gate (step 16) runs inside this window too**, and it adds the time it
+takes to render every public page — bounded by `DEPLOY_WARMUP_TOTAL_TIMEOUT_SECONDS`
+(240s by default). Budget for it rather than switching it off: in a window where the
+old colour is already broken, "does the new release actually serve its public pages?"
+is the most valuable question you can ask before opening the site again, and the
+answer arrives while members are still held out. If the window is genuinely too tight,
+lower the timeout and the concurrency rather than disabling the gate.
 
 **Rollback path.** Two options, in order of preference:
 
@@ -384,7 +399,7 @@ deployment.
 
 Rollback follows `docs/BLUE_GREEN_MIGRATION_POLICY.md`. The policy's whole point
 is that migrations preserve old-code/new-schema compatibility until the previous
-color drains, which makes the rollback boundary the **cutover (step 16)**.
+color drains, which makes the rollback boundary the **cutover (step 17)**.
 
 That boundary holds only while every pending migration really is old-code
 compatible. It does **not** hold for a migration the ledger declares
@@ -414,11 +429,11 @@ row **or** any `yes`/`no` row whose `lock_impact_plan` carries an old-code cavea
 routed"). `docs/BLUE_GREEN_MIGRATION_POLICY.md` → "Historical note" gives the
 class rule and a starting-point filter.
 
-### Before cutover (up to and including step 13/14/15)
+### Before cutover (up to and including step 13/14/15/16)
 
 The **old color is still serving traffic**. The rest of this set is
 expand-shaped and old-code-compatible, so if the new color fails to come up
-healthy, or you abort before step 16, you can stop the deploy and leave the old
+healthy, or the warm-up gate refuses, or you abort before step 17, you can stop the deploy and leave the old
 color serving the already-migrated (backward-compatible) schema. This is a
 blocked upgrade, not an outage. No traffic ever reached the new color.
 
@@ -433,7 +448,7 @@ offers the fallback of deferring that single migration until the old color has
 fully drained: taking it keeps the whole window inside the ordinary
 abort-is-safe boundary.
 
-### After cutover (step 16 onward)
+### After cutover (step 17 onward)
 
 Traffic is on the new color. To fall back you re-point Caddy to the previous
 color (the engine restores the previous upstream file on a failed reload; a
@@ -481,7 +496,8 @@ restore service, and escalate to the owner before any data-repair action.
       durability confirmed (#1361), module-flip prediction captured, in-flight
       inductions listed, from/to versions pinned, staging rehearsal recorded.
 - [ ] [§2](#2-migrate) migrate: validator gate green (step 12), migrations
-      applied (step 13), AgeTier quiet-window observed, cutover clean (step 16).
+      applied (step 13), AgeTier quiet-window observed, warm-up gate green (step
+      16), cutover clean (step 17).
 - [ ] [§3](#3-post-upgrade-checklist) post-upgrade: modules re-enabled,
       access-role audit run if applicable, money/Xero spot-check clean, all four
       critical journeys pass, fork automation repointed off the removed cancel
@@ -651,7 +667,7 @@ Fill this in live during the production window.
 | In-flight inductions affected (count) | _<...>_ |
 | Validator gate result (step 12) | _<green / details>_ |
 | AgeTier plan (quiet window / deferred backfill) | _<...>_ |
-| Cutover time (step 16) | _<HH:MM TZ>_ |
+| Cutover time (step 17) | _<HH:MM TZ>_ |
 | Modules re-enabled | _<list>_ |
 | Access-role audit run / result | _<n/a or PASS>_ |
 | Money + Xero spot-check | _<clean / notes>_ |

@@ -192,11 +192,12 @@ and then served from a cache. Four operational facts:
   separately), so a per-process value was never self-consistent even on a single
   container — it made the analytics scripts on public pages fail their own policy.
   See `src/lib/release-nonce.ts`.
-- **Warming the new colour before cutover is not implemented yet.** The owner
-  approved it (#2352 D6) and the blue/green script has the slot for it between the
-  target-health step and the Caddy switch; it lands with slice 2, when `/` becomes
-  static and there is a fixed list of addresses worth warming. Until then the first
-  visitor to each CMS page after a deploy pays one cold render.
+- **The new release is warmed and VERIFIED before traffic moves to it** (#2566,
+  owner decision Option 4). Step 16 of 20 in the blue/green engine renders every
+  eligible public page on the new colour and proves the page cache really was
+  populated, then blocks the cutover if a critical page failed. See "Pre-cutover
+  warm-up gate" below for what it checks, what it tolerates, and what to do when it
+  refuses.
 - **The five-minute backstop bounds when a REBUILD is triggered, not when a visitor
   first sees fresh content.** An admin edit is genuinely instant — it clears the
   stored copy outright, so the next request has to render again. A change with no
@@ -215,6 +216,86 @@ cannot reach one: a CDN or corporate proxy holding a stale copy would make "an e
 appears immediately" false for those visitors with no expiry an admin can wait out.
 `src/proxy.ts` sets that header explicitly — the `revalidate` export otherwise makes
 Next fill in an `s-maxage` of its own.
+
+## Pre-cutover warm-up gate
+
+Step 16 of 20 in the blue/green engine, added by #2566 (owner decision Option 4). It
+runs after the migrations, after the new colour and the cron leader are both healthy,
+and **before** Caddy is repointed. If it refuses, no traffic ever reaches the new
+release and the old colour keeps serving.
+
+What it does, in order:
+
+- reads the new release's own build output to establish which public addresses it
+  stores and which it renders per request
+- reads the club's published Page Content rows for the addresses to warm, and the
+  configured Book Now page target
+- requests each address **on the new container itself**, over its own loopback
+  origin, with the production `Host` header — never through the public domain, which
+  would warm whichever colour is currently live
+- requests each stored page a second time and requires the release to report it as
+  served **from its cache** (`x-nextjs-cache`). A 200 is not accepted as proof
+- checks that the served document's inline scripts still match the security policy
+  served with them, which is what a page that renders but never comes alive looks
+  like
+- prints a summary naming every count, every failed path with its HTTP result, and
+  the verdict
+
+It runs once per web instance that can serve public traffic: the new colour **and**
+the `app` cron leader, because the Caddy config lists `app` as the second upstream
+and it therefore serves public pages whenever the new colour fails a health probe.
+Each instance keeps its own in-memory page cache, so warming one says nothing about
+the other.
+
+**What blocks the cutover.** Any failure on a critical public route — the home page,
+`/join`, `/join/apply`, `/contact`, and the Book Now page target when the club has
+configured one. Also: a server error, an unexpected 404 or redirect, a redirect to
+login, an empty or non-HTML response, a page that renders but is never stored, a
+per-request page that has started being stored, a policy/nonce mismatch, a release
+that does not identify itself as the one being deployed, and any failure to discover
+the routes at all. The critical route list is written out explicitly in
+`src/lib/deploy/warmup-route-policy.ts` so it is reviewable rather than inferred.
+
+**What it tolerates.** An isolated failure on one published content page, and only
+when the failure is genuinely isolated: at most **one** failed page **and** at most
+**10%** of the published pages discovered. Both conditions must hold, so a club with
+fewer than ten published pages tolerates none — that is deliberate, not an
+oversight. The deploy then completes labelled **with a warning**, the failed path and
+its response are printed, and the operator is expected to raise or link a follow-up
+issue for it before closing the deploy out.
+
+**What it skips.** A club whose site-style setup is not finished. Every public
+address answers the "Site setup in progress" holding screen until then, so there is
+nothing to warm; the gate says so and the deploy continues.
+
+Settings, all optional and all read by `scripts/run-production-blue-green-deploy.sh`:
+
+| Variable | Default | Effect |
+| --- | --- | --- |
+| `DEPLOY_WARMUP_CONCURRENCY` | `3` | Requests in flight at once. Kept small so the release is not under its heaviest load of the day moments before it takes traffic. |
+| `DEPLOY_WARMUP_REQUEST_TIMEOUT_SECONDS` | `20` | Per-request ceiling. A cold render is 1-2s on an idle host and up to ~13s on a CPU-starved one. |
+| `DEPLOY_WARMUP_TOTAL_TIMEOUT_SECONDS` | `240` | Whole-gate ceiling. Addresses it never reached count as failures. |
+| `DEPLOY_WARMUP_MAX_FAILED_CMS_ROUTES` | `1` | The count half of the tolerance. |
+| `DEPLOY_WARMUP_MAX_FAILED_CMS_PERCENT` | `10` | The percentage half. |
+| `DEPLOY_WARMUP_SERVICES` | target colour + `app` | Which app services to warm. |
+| `DEPLOY_WARMUP_ENABLED` | `1` | Set to `0` to skip the gate entirely. Refused unless `DEPLOY_WARMUP_OVERRIDE_REASON` is also set, and the reason is printed in the deploy log. |
+
+Widening the tolerance is allowed and recorded in the summary; it is never silent.
+
+**When the gate refuses.** Nothing has changed for members — the old colour is still
+serving and the schema migrations have already been applied in a
+backward-compatible way, so this is a blocked upgrade rather than an outage. Read
+the failed paths in the summary, open the same addresses on the old colour to see
+whether the fault is new, and check `docker compose logs app_blue` (or `app_green`)
+for the render error. Fix forward and re-run the deploy; the gate is idempotent and
+warming is safe to repeat. If the gate itself is the problem at an unrecoverable
+moment, `DEPLOY_WARMUP_ENABLED=0` with a written reason is the documented escape
+hatch — the deploy then cuts over unwarmed and unverified, which is exactly the state
+this gate exists to prevent, so use it knowingly.
+
+The gate is exercised end to end against a production-mode stack by
+`e2e/deploy-warmup.spec.ts`, and its rules by the unit suites in
+`src/lib/deploy/__tests__/`.
 
 ## Prerequisites
 
@@ -408,6 +489,8 @@ The internal deployment engine in the same script:
 - runs Prisma migrations through the `migrate` service
 - starts the inactive color slot with `CRON_ENABLED=false`
 - waits for `/api/health/ready`
+- warms the new release's public pages and verifies its page cache, refusing to
+  continue if a critical page failed (see "Pre-cutover warm-up gate")
 - updates Caddy upstream routing
 - verifies the public domain is serving the target runtime through
   `/api/deploy/runtime-status`, authenticated with the existing `CRON_SECRET`
