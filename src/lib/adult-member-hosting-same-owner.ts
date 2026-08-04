@@ -1,4 +1,5 @@
 import { Prisma } from "@prisma/client";
+import { z } from "zod";
 
 import { ApiError } from "@/lib/api-error";
 import { formatBookingReference } from "@/lib/booking-reference";
@@ -132,6 +133,51 @@ export function sameOwnerCoverageDependentWhere(booking: {
   };
 }
 
+/**
+ * The officer's explicit confirmation and mandatory reason, as it arrives on the
+ * wire (#2576 §7).
+ *
+ * `acknowledged: z.literal(true)` rather than a boolean, following the house shape
+ * the `no-emails` admin route uses: the only value that means anything is `true`, so
+ * a client that sends `false` is told its request is malformed rather than having a
+ * silent no-op accepted. The reason has a real minimum length because "ok" is not an
+ * answer anybody can audit — the same standard D-R4 already applies to a hosting
+ * decision and an exception approval.
+ *
+ * OPTIONAL IN EVERY SHAPE THAT CARRIES IT. A first submission has no override, and
+ * that is the normal case: the officer is asked only when the change would actually
+ * strand a booking, so demanding the field up front would put a reason prompt in
+ * front of every officer edit at an enforcing lodge.
+ */
+export const hostingCoverageOverrideSchema = z.object({
+  acknowledged: z.literal(true),
+  reason: z.string().trim().min(10).max(500),
+});
+
+export type HostingCoverageOverrideInput = z.infer<
+  typeof hostingCoverageOverrideSchema
+>;
+
+/**
+ * Pull the override off an already-parsed request body without making every route
+ * restate the shape.
+ *
+ * Returns `null` for anything that is not a complete, valid override — a missing
+ * field, `acknowledged: false`, a too-short reason. Failing to `null` rather than
+ * throwing is deliberate: the consequence of an incomplete override is that the
+ * officer is ASKED for one, with the affected bookings and nights, which is a better
+ * answer than a 400 about a field they have not seen yet.
+ */
+export function readHostingCoverageOverride(
+  body: unknown,
+): HostingCoverageOverrideInput | null {
+  if (!body || typeof body !== "object") return null;
+  const raw = (body as { hostingCoverageOverride?: unknown })
+    .hostingCoverageOverride;
+  const parsed = hostingCoverageOverrideSchema.safeParse(raw);
+  return parsed.success ? parsed.data : null;
+}
+
 /** One same-owner booking a change would leave without required cover. */
 export interface StrandedCoverageBooking {
   bookingId: string;
@@ -149,14 +195,24 @@ export interface StrandedCoverageBooking {
  * follows is the evidence §6 asks for "where appropriate and safe": the affected
  * booking reference, its lodge and the uncovered dates.
  *
- * SAFE HERE BECAUSE OF THE RELATIONSHIP ITSELF. Every booking in this list has
- * the same `Booking.memberId` as the one being changed, so it is the member's
- * own booking on their own account — which §11 states plainly is something the
- * owner may see. Nothing from another account can reach this list, because
- * nothing in `sameOwnerCoverageDependentWhere` can match another account's
- * booking. No person is named: not the covering adult member, not a guest. The
- * member is told which of their bookings, which lodge and which nights, which is
- * exactly what they need to fix it.
+ * SAFE ONLY WHEN THE ACTOR IS THE OWNER, AND THE CALLER MUST HAVE ESTABLISHED
+ * THAT. Every booking in this list has the same `Booking.memberId` as the one
+ * being CHANGED — that is guaranteed by `sameOwnerCoverageDependentWhere`, which
+ * cannot match another account's booking. It does NOT follow that the list is safe
+ * to show whoever made the change, and conflating the two is a real disclosure:
+ * the guest DELETE route deliberately admits a member from ANOTHER account (a
+ * member-linked guest removing their own row, `booking-guest-removal-service.ts`'s
+ * `isSelfRemoval`), so an actor who is not the owner can reach a refusal about the
+ * owner's other booking. §6 and §11 both forbid that in as many words: "do not
+ * expose information from a booking belonging to another account."
+ *
+ * `settleSameOwnerDependentCoverage` therefore raises this refusal only after
+ * checking that the acting member IS the booking owner, and escalates instead of
+ * refusing for any other actor. That check is the precondition of this function;
+ * it is not re-derivable here, because nothing in the stranded rows records who
+ * asked. No person is ever named either way: not the covering adult member, not a
+ * guest. The owner is told which of their bookings, which lodge and which nights,
+ * which is exactly what they need to fix it.
  */
 export function formatStrandedCoverageMessage(
   stranded: readonly StrandedCoverageBooking[],
@@ -221,6 +277,95 @@ export function buildSameOwnerCoverageRefusalBody(
     // Structured beside the sentence so a client can render its own list
     // without parsing prose. Same-account only — see
     // `formatStrandedCoverageMessage`.
+    strandedBookings: error.stranded.map((row) => ({
+      bookingId: row.bookingId,
+      reference: row.reference,
+      lodgeName: row.lodgeName,
+      nights: row.nights,
+    })),
+  };
+}
+
+/**
+ * The member-facing sentence for the OFFICER's unconfirmed change (#2576 §7).
+ *
+ * Separate wording from the member's refusal because the answer is different: the
+ * officer is not being told to go and fix another booking, they are being told the
+ * change is authorised but has to be confirmed and explained first.
+ */
+export function formatCoverageOverrideRequiredMessage(
+  stranded: readonly StrandedCoverageBooking[],
+): string {
+  const opening =
+    "This change would leave another booking on this account without the " +
+    "required adult member coverage for one or more nights. It is allowed with " +
+    "a Booking Officer override: confirm the change and record a reason, and " +
+    "the affected booking will stay confirmed with its beds and payments and be " +
+    "raised as an urgent hosting-compliance incident.";
+  if (stranded.length === 0) return opening;
+
+  const detail = stranded
+    .map(
+      (row) =>
+        `booking ${row.reference} at ${row.lodgeName} on ` +
+        `${row.nights.join(", ")}`,
+    )
+    .join("; ");
+  return `${opening} Affected: ${detail}.`;
+}
+
+/**
+ * The refusal an OFFICER-capable surface raises when their change would strand a
+ * dependent booking and they have not confirmed the override (#2576 §7).
+ *
+ * WHY AN OFFICER IS STOPPED AT ALL, given that §8 lists "authorised officer
+ * action" among the changes that "cannot reasonably be blocked". Because §7 is
+ * explicit that the override "must require: the appropriate current permission; an
+ * explicit confirmation; a mandatory reason; identification of the affected
+ * bookings and nights; a full audit event" — and an override that is never asked
+ * for cannot carry a confirmation or a reason. This refusal IS the confirmation
+ * step: it is not a block on the officer's change, it is a block on the
+ * UNCONFIRMED one. The officer re-submits with `hostingCoverageOverride`, the
+ * change proceeds, and the incident records who overrode it and why.
+ *
+ * NOTHING AUTOMATED IS EVER GATED BY IT. Only the surfaces that go through
+ * `hostingCoverageActorOptions` with a live officer session can raise it. The cron
+ * sweeps, the group-settlement reaper, the payment lifecycle, the Xero inbound
+ * effects and the membership sweeps all pass `ESCALATE` and are never refused, so
+ * §8's list is honoured exactly.
+ *
+ * 409 for the same reason its two siblings are: the change is permitted, what
+ * conflicts is the state of another booking.
+ */
+export class SameOwnerCoverageOverrideRequiredError extends ApiError {
+  readonly code = "SAME_OWNER_COVERAGE_OVERRIDE_REQUIRED";
+  readonly stranded: readonly StrandedCoverageBooking[];
+
+  constructor(stranded: readonly StrandedCoverageBooking[]) {
+    super(formatCoverageOverrideRequiredMessage(stranded), 409);
+    this.name = "SameOwnerCoverageOverrideRequiredError";
+    this.stranded = stranded;
+  }
+}
+
+/**
+ * The officer-facing body for the override prompt.
+ *
+ * `requiresOverrideReason` is the machine-readable flag a client keys on to show
+ * the confirmation dialog, rather than having to match on prose. The stranded list
+ * is the same shape the member's refusal carries and is safe for this audience for
+ * a stronger reason: §11 says administrators "may see the full authorised evidence
+ * under existing booking permissions", and this body is only ever produced for an
+ * actor who has already passed the officer authorisation gate.
+ */
+export function buildSameOwnerCoverageOverrideRequiredBody(
+  error: SameOwnerCoverageOverrideRequiredError,
+) {
+  return {
+    error: error.message,
+    code: error.code,
+    details: error.message,
+    requiresOverrideReason: true as const,
     strandedBookings: error.stranded.map((row) => ({
       bookingId: row.bookingId,
       reference: row.reference,

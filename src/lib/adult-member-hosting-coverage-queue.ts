@@ -103,15 +103,36 @@ export async function enqueueHostingCoverageReevaluation(
  * throws every time therefore still counts up, and `maxAttempts` retires it —
  * whereas incrementing on failure loses the count whenever the process dies mid
  * item, which is the failure mode most likely to be repeated.
+ *
+ * `memberId` AND `lodgeId` NARROW THE CLAIM, AND THE INLINE DRAIN ALWAYS SUPPLIES
+ * THEM. An unfiltered claim is right for the cron and wrong inside a member's
+ * request: after an officer's bulk cancellation or a membership sweep leaves a
+ * backlog, the next unrelated member's guest edit would claim up to 25 items
+ * belonging to OTHER owners at OTHER lodges, fan each out to as many as 25
+ * dependents, and await a multi-query reconciliation plus a synchronous
+ * loss-of-cover email for each — all before answering a request that had nothing to
+ * do with any of it. Correctness survived (failures are swallowed and the cron
+ * re-runs the items) but the route could hang. Filtered, the inline drain does
+ * exactly the work its own transaction created.
  */
 export async function claimHostingCoverageReevaluations(
-  options: { limit?: number; maxAttempts?: number } = {},
+  options: {
+    limit?: number;
+    maxAttempts?: number;
+    memberId?: string | null;
+    lodgeId?: string | null;
+  } = {},
   db: HostingCoverageQueueDb,
 ): Promise<HostingCoverageReevaluationItem[]> {
   const limit = options.limit ?? 25;
   const maxAttempts = options.maxAttempts ?? 5;
   const candidates = await db.hostingCoverageReevaluation.findMany({
-    where: { processedAt: null, attempts: { lt: maxAttempts } },
+    where: {
+      processedAt: null,
+      attempts: { lt: maxAttempts },
+      ...(options.memberId ? { memberId: options.memberId } : {}),
+      ...(options.lodgeId ? { lodgeId: options.lodgeId } : {}),
+    },
     orderBy: { enqueuedAt: "asc" },
     take: limit,
     select: {

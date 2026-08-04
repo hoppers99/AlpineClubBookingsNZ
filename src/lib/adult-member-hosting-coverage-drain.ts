@@ -81,13 +81,49 @@ const EMPTY_RESULT: HostingCoverageDrainResult = {
  * A no-op when the queue is empty — one indexed read that returns nothing — so a
  * club that is not on this scope pays a single cheap query per mutation, and only
  * on the paths that can escalate.
+ *
+ * SCOPED TO THE BOOKING THAT WAS JUST WRITTEN, AND THAT IS NOT AN OPTIMISATION.
+ * Callers pass `bookingId`; this resolves its owner and lodge and claims only their
+ * items, with a small limit. An unfiltered inline claim meant that after an
+ * officer's bulk cancellation or a membership sweep left a backlog, the next
+ * unrelated member's guest edit would run up to 25 OTHER owners' reconciliations —
+ * each fanning out to as many as 25 dependents, each able to send a synchronous
+ * loss-of-cover email — inside their request, before it answered. The cron drains
+ * everything; a member's request drains only what their own transaction created.
+ *
+ * A caller that cannot name a booking (it was hard-deleted, or the work is a
+ * member-level fan-out across lodges) may pass nothing and gets the unfiltered
+ * claim, still capped: the obligation is real and the cron is only three hours away
+ * at worst, but immediate is better.
  */
 export async function settleHostingCoverageAfterCommit(
-  options: { limit?: number } = {},
+  options: {
+    /** The booking whose transaction just committed; scopes the claim. */
+    bookingId?: string | null;
+    memberId?: string | null;
+    lodgeId?: string | null;
+    limit?: number;
+  } = {},
   db: typeof prisma = prisma,
 ): Promise<HostingCoverageDrainResult> {
   try {
-    return await drainHostingCoverageReevaluations(options, db);
+    let { memberId, lodgeId } = options;
+    if (options.bookingId && !memberId && !lodgeId) {
+      const booking = await db.booking.findUnique({
+        where: { id: options.bookingId },
+        select: { memberId: true, lodgeId: true },
+      });
+      memberId = booking?.memberId ?? null;
+      lodgeId = booking?.lodgeId ?? null;
+    }
+    return await drainHostingCoverageReevaluations(
+      {
+        limit: options.limit ?? INLINE_DRAIN_LIMIT,
+        ...(memberId ? { memberId } : {}),
+        ...(lodgeId ? { lodgeId } : {}),
+      },
+      db,
+    );
   } catch (err) {
     logger.error(
       { err },
@@ -97,8 +133,22 @@ export async function settleHostingCoverageAfterCommit(
   }
 }
 
+/**
+ * How many items one member's request will settle inline.
+ *
+ * Small on purpose. A single change can legitimately produce one item; a handful
+ * covers the split-booking and group shapes where one commit touches several. Beyond
+ * that the work is somebody else's backlog and belongs to the cron.
+ */
+const INLINE_DRAIN_LIMIT = 5;
+
 export async function drainHostingCoverageReevaluations(
-  options: { limit?: number; maxAttempts?: number } = {},
+  options: {
+    limit?: number;
+    maxAttempts?: number;
+    memberId?: string | null;
+    lodgeId?: string | null;
+  } = {},
   db: typeof prisma = prisma,
 ): Promise<HostingCoverageDrainResult> {
   const items = await claimHostingCoverageReevaluations(options, db);
