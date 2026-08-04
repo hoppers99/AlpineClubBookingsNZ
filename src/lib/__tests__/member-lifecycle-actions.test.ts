@@ -125,6 +125,33 @@ vi.mock("@/lib/xero-api-errors", () => ({
 vi.mock("@/lib/logger", () => ({
   default: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
 }));
+// #2576 §8: the lifecycle change records the coverage re-evaluation it owes.
+const hostingMocks = vi.hoisted(() => ({
+  fanout: vi.fn(async (..._args: unknown[]) => 1),
+  drain: vi.fn(async (..._args: unknown[]) => undefined),
+}));
+
+// #2576 §8. "Membership becoming inactive, lapsed, cancelled or archived" is the FIRST
+// change class the owner's decision names, and only the evaluator half of it was
+// automatic — an archived or cancelled member correctly stops qualifying as an adult
+// host, while nothing told the club to go and look at the bookings that had been relying
+// on them. The lifecycle paths now record that obligation inside their own transaction,
+// which means they read the bookings this person ATTENDS through the caller's `tx` — and
+// this suite drives that transaction with a fake carrying only the lifecycle delegates.
+//
+// Mocked at the module boundary so the assertion here can be about the thing that
+// belongs here: that the change RECORDS the re-evaluation and is never refused by it.
+// What the re-evaluation then concludes is the hosting suites' subject.
+vi.mock("@/lib/adult-member-hosting-review", () => ({
+  enqueueHostingCoverageReevaluationForMember: (...args: unknown[]) =>
+    hostingMocks.fanout(...args),
+}));
+
+vi.mock("@/lib/adult-member-hosting-coverage-drain", () => ({
+  settleHostingCoverageAfterCommit: (...args: unknown[]) =>
+    hostingMocks.drain(...args),
+}));
+
 
 import {
   getAdminMemberArchiveLifecycleRequests,
@@ -981,6 +1008,29 @@ describe("member archive lifecycle actions", () => {
     });
 
     expect(result.request.status).toBe("APPROVED");
+
+    // #2576 §8, and §17's required test that "source membership lapse or archival causes
+    // re-evaluation". An archived member stops qualifying as an adult host, so a
+    // confirmed booking that was relying on them is now uncovered - and before this the
+    // club was never told: no incident, no owner email, no officer-queue entry, and the
+    // booking's own review snapshot still reading "compliant". Worse, the OWNER's next
+    // edit was then blamed for it, because "newly uncovered" is judged against exactly
+    // that stale snapshot, so they could not cancel or amend the booking that used to
+    // supply the cover without being told to fix the other one first.
+    //
+    // Recorded for the ARCHIVED MEMBER, inside the archive's own transaction, so the two
+    // commit or roll back together. It never refuses the archive.
+    expect(hostingMocks.fanout).toHaveBeenCalledTimes(1);
+    const call = hostingMocks.fanout.mock.calls[0];
+    expect(call?.[0]).toBe("member-1");
+    const context = call?.[2];
+    expect(context).toMatchObject({
+      cause: "SYSTEM_CHANGE",
+      actorMemberId: "admin-2",
+    });
+    // Drained after the commit, and unfiltered: one person can attend bookings owned by
+    // several accounts at several lodges, so there is no single owner key to scope to.
+    expect(hostingMocks.drain).toHaveBeenCalledTimes(1);
     // #1886 F23: the approval claims the request row guarded on status.
     expect(
       mockPrisma.memberLifecycleActionRequest.updateMany,

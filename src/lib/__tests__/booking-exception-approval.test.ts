@@ -40,7 +40,7 @@ vi.mock("@/lib/adult-member-hosting-review", () => ({
 // every other collaborator here, because the real helper reads
 // `tx.hostingCoverageIncident` and this suite's fake transaction carries only the
 // delegates the approval itself needs — which is exactly how it caught the change.
-const resolveHostingCoverageIncidents = vi.fn(async () => 1);
+const resolveHostingCoverageIncidents = vi.fn(async (..._args: unknown[]) => 1);
 vi.mock("@/lib/adult-member-hosting-coverage-incidents", () => ({
   resolveHostingCoverageIncidents: (...args: unknown[]) =>
     resolveHostingCoverageIncidents(...args),
@@ -624,9 +624,7 @@ describe("executeApprovedProposal — modification", () => {
     // uncovered nights, with a reason, had a `critical` incident re-affirmed against
     // their own decision, permanently, with no route or UI able to clear it.
     expect(resolveHostingCoverageIncidents).toHaveBeenCalledTimes(1);
-    const [resolution] = resolveHostingCoverageIncidents.mock.calls[0] as [
-      { bookingId: string; resolution: string; actorMemberId: string },
-    ];
+    const resolution = resolveHostingCoverageIncidents.mock.calls[0]?.[0];
     expect(resolution).toMatchObject({
       bookingId: "bk-1",
       resolution: "EXCEPTION_APPROVED",

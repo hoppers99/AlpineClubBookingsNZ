@@ -103,6 +103,33 @@ vi.mock("@/lib/membership-cancellation-subscription-credit", async (importOrigin
 vi.mock("@/lib/logger", () => ({
   default: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
 }));
+// #2576 §8: the lifecycle change records the coverage re-evaluation it owes.
+const hostingMocks = vi.hoisted(() => ({
+  fanout: vi.fn(async (..._args: unknown[]) => 1),
+  drain: vi.fn(async (..._args: unknown[]) => undefined),
+}));
+
+// #2576 §8. "Membership becoming inactive, lapsed, cancelled or archived" is the FIRST
+// change class the owner's decision names, and only the evaluator half of it was
+// automatic — an archived or cancelled member correctly stops qualifying as an adult
+// host, while nothing told the club to go and look at the bookings that had been relying
+// on them. The lifecycle paths now record that obligation inside their own transaction,
+// which means they read the bookings this person ATTENDS through the caller's `tx` — and
+// this suite drives that transaction with a fake carrying only the lifecycle delegates.
+//
+// Mocked at the module boundary so the assertion here can be about the thing that
+// belongs here: that the change RECORDS the re-evaluation and is never refused by it.
+// What the re-evaluation then concludes is the hosting suites' subject.
+vi.mock("@/lib/adult-member-hosting-review", () => ({
+  enqueueHostingCoverageReevaluationForMember: (...args: unknown[]) =>
+    hostingMocks.fanout(...args),
+}));
+
+vi.mock("@/lib/adult-member-hosting-coverage-drain", () => ({
+  settleHostingCoverageAfterCommit: (...args: unknown[]) =>
+    hostingMocks.drain(...args),
+}));
+
 
 import {
   getAdminMembershipCancellationRequests,
@@ -292,6 +319,23 @@ describe("membership cancellation admin review", () => {
       adminNote: "Approved by committee",
       ipAddress: "203.0.113.1",
     });
+
+    // #2576 §8. A cancelled membership stops qualifying as an adult host, so a confirmed
+    // booking that was relying on that person is now uncovered - and "membership becoming
+    // inactive, lapsed, cancelled or archived" is the FIRST change class the owner's
+    // decision names among those that cannot be blocked but MUST record the
+    // re-evaluation. Before this the evaluator half worked and nothing told the club to
+    // look: no incident, no owner email, no officer-queue entry.
+    //
+    // Recorded for the CANCELLED PARTICIPANT, inside the approval's own transaction, and
+    // it never refuses the cancellation. Drained unfiltered after the commit, because one
+    // person can attend bookings owned by several accounts at several lodges.
+    expect(hostingMocks.fanout).toHaveBeenCalledTimes(1);
+    expect(hostingMocks.fanout.mock.calls[0]?.[2] as object).toMatchObject({
+      cause: "SYSTEM_CHANGE",
+      actorMemberId: "admin-1",
+    });
+    expect(hostingMocks.drain).toHaveBeenCalledTimes(1);
 
     expect(result.request.participants[0].status).toBe("CANCELLED");
     expect(mocks.tx.member.update).toHaveBeenCalledWith({

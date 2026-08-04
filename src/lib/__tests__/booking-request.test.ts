@@ -95,7 +95,13 @@ vi.mock("@/lib/audit", () => ({
   logAudit: vi.fn(),
 }));
 
-vi.mock("@/lib/lodge-capacity", () => ({
+// #2576 §9 widened this module's import graph: the path under test now reaches the
+// hosting coverage drain, which pulls in the incident and email modules. Exports this
+// partial mock never had to provide became reachable, so it spreads `importOriginal`
+// over the real module and overrides only what it actually stubs — which is the shape
+// that cannot break again the next time an edge is added.
+vi.mock("@/lib/lodge-capacity", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/lodge-capacity")>()),
   // getPublicBookingRequestLodges now resolves each lodge's capacity.
   getLodgeCapacity: vi.fn(async (lodgeId: string) =>
     lodgeId === "lodge-2" ? 40 : 20,

@@ -43,8 +43,35 @@ vi.mock("@/lib/auth", () => ({ auth: mocks.auth }));
 vi.mock("@/lib/session-guards", () => ({
   requireActiveSessionUser: mocks.requireActiveSessionUser,
 }));
-vi.mock("@/lib/access-roles", () => ({
+// #2576 §9 widened this module's import graph: the path under test now reaches the
+// hosting coverage drain, which pulls in the incident and email modules. Exports this
+// partial mock never had to provide became reachable, so it spreads `importOriginal`
+// over the real module and overrides only what it actually stubs — which is the shape
+// that cannot break again the next time an edge is added.
+vi.mock("@/lib/access-roles", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/access-roles")>()),
   hasAdminAccess: mocks.hasAdminAccess,
+}));
+
+// #2576 §9. Confirming a draft IS a confirmation, so the route now runs the shared
+// hosting evaluator immediately before the PAID claim — and the evaluator reads the
+// lodge policy through the claim's transaction client, which this suite drives with a
+// fake carrying only the draft-review delegates. Mocked at the module boundary rather
+// than widened, because this file's subject is the #2266 review doors; the hosting
+// refusal on this route is pinned by `adult-member-hosting-call-sites.test.ts` (which
+// asserts the route both uses the seam and catches its refusal above the generic
+// branch) and by the hosting suites themselves.
+vi.mock("@/lib/adult-member-hosting-review", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/adult-member-hosting-review")>()),
+  reconcileAdultMemberHostingReviewWithSiblings: vi.fn(async () => ({
+    action: "none" as const,
+    violation: null,
+    mode: null,
+  })),
+}));
+
+vi.mock("@/lib/adult-member-hosting-coverage-drain", () => ({
+  settleHostingCoverageAfterCommit: vi.fn(async () => undefined),
 }));
 vi.mock("@/lib/prisma", () => ({
   prisma: {

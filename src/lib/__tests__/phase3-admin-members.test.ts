@@ -66,6 +66,25 @@ vi.mock("@/lib/auth", () => ({ auth: vi.fn() }));
 vi.mock("@/lib/logger", () => ({
   default: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
+// #2576 §8. "Membership becoming inactive, lapsed, cancelled or archived" is the FIRST
+// change class the owner's decision names, and only the evaluator half of it was
+// automatic — an archived or cancelled member correctly stops qualifying as an adult
+// host, while nothing told the club to go and look at the bookings that had been relying
+// on them. The lifecycle paths now record that obligation inside their own transaction,
+// which means they read the bookings this person ATTENDS through the caller's `tx` — and
+// this suite drives that transaction with a fake carrying only the lifecycle delegates.
+//
+// Mocked at the module boundary so the assertion here can be about the thing that
+// belongs here: that the change RECORDS the re-evaluation and is never refused by it.
+// What the re-evaluation then concludes is the hosting suites' subject.
+vi.mock("@/lib/adult-member-hosting-review", () => ({
+  enqueueHostingCoverageReevaluationForMember: vi.fn(async () => 1),
+}));
+
+vi.mock("@/lib/adult-member-hosting-coverage-drain", () => ({
+  settleHostingCoverageAfterCommit: vi.fn(async () => undefined),
+}));
+
 vi.mock("@/lib/utils", () => ({
   getSeasonYear: vi.fn().mockReturnValue(2026),
 }));
