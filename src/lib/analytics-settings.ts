@@ -104,13 +104,43 @@ export function parseMeasurementId(
  * (`U+200B`–`U+200F`, `U+FEFF`) and the soft hyphen (`U+00AD`) are the same class:
  * they change or hide the rendering without appearing in the text an admin proofread.
  *
+ * ## Why the Unicode category, and not a hand-listed set
+ *
+ * The first cut of this listed the ranges it could think of, and probing the shipped
+ * regex found eleven classes it had missed: `U+061C` ARABIC LETTER MARK, `U+180E`,
+ * the deprecated format codes `U+206A`–`U+206F`, interlinear annotation
+ * `U+FFF9`–`U+FFFB`, and the whole `U+E0000`–`U+E007F` TAG block — which renders as
+ * nothing at all and can carry arbitrary hidden ASCII. None of them could reverse or
+ * hide visible wording, so nothing exploitable was open; what was open is that an
+ * audit of the stored setting could disagree with the banner a visitor actually read,
+ * and that is the guarantee stated above.
+ *
+ * A hand-maintained list is the wrong shape for this. It rots silently, and in the
+ * permissive direction. `\p{Cf}` is the Unicode FORMAT category — precisely
+ * "affects the rendering of neighbouring text without being rendered itself" — so it
+ * covers all eleven, plus the soft hyphen, the zero-width set, the bidi overrides and
+ * isolates, `U+FEFF`, and whatever a future Unicode revision adds to the category.
+ * `analytics-settings.test.ts` walks the entire code-point space through the property
+ * escape as an INDEPENDENT oracle, so the two can never drift apart unnoticed.
+ *
+ * Two additions the category does not reach:
+ *  • **C0/C1 controls**, less the whitespace kept below.
+ *  • **Variation selectors** `U+FE00`–`U+FE0F`, which are `\p{Mn}` rather than
+ *    `\p{Cf}`. They are invisible, and they are the other documented channel for
+ *    hiding bytes inside ordinary-looking text. The cost is that an emoji written
+ *    with an explicit presentation selector loses it — `⚠️` stores as `⚠`, the same
+ *    character in text presentation. Accepted, and consistent with what this already
+ *    did: `U+200D` ZERO WIDTH JOINER is `\p{Cf}`, so composed emoji sequences were
+ *    never preserved here anyway, and this is a plain-text consent notice rather than
+ *    a rich-text field.
+ *
  * `U+0009`, `U+000A`, `U+000B`, `U+000C`, `U+000D`, `U+00A0`, `U+2028` and `U+2029`
  * are deliberately NOT in the set: every one of them is `\s`, so the collapse below
  * turns them into an ordinary space, which is the right answer for text pasted out of
  * a document. Removing them instead would silently weld two words together.
  */
 const INVISIBLE_OR_CONTROL_PATTERN =
-  /[\u0000-\u0008\u000E-\u001F\u007F-\u009F\u00AD\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF]/g;
+  /[\u0000-\u0008\u000E-\u001F\u007F-\u009F\uFE00-\uFE0F\p{Cf}]/gu;
 
 /**
  * Trim a submitted banner message and enforce the plain-text rules.

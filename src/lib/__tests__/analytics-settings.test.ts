@@ -238,6 +238,94 @@ describe("parseBannerMessage", () => {
         { ok: true, bannerMessage: "Accept analytics" },
       );
     });
+
+    /*
+      The classes the first cut of the character class MISSED, pinned individually.
+
+      Each of these survived into the stored value on the original pattern, verified
+      by probing the shipped regex rather than by reading it. None could reverse or
+      hide visible wording — the strong deception vectors above were already closed —
+      so what they broke was audit integrity: the stored setting and the banner a
+      visitor read could disagree, invisibly. The TAG block is the sharpest case,
+      because it renders as nothing at all and encodes arbitrary ASCII.
+    */
+    it.each([
+      ["ARABIC LETTER MARK U+061C", "؜"],
+      ["MONGOLIAN VOWEL SEPARATOR U+180E", "᠎"],
+      ["INHIBIT SYMMETRIC SWAPPING U+206A", "⁪"],
+      ["NOMINAL DIGIT SHAPES U+206F", "⁯"],
+      ["INTERLINEAR ANNOTATION ANCHOR U+FFF9", "￹"],
+      ["INTERLINEAR ANNOTATION TERMINATOR U+FFFB", "￻"],
+      ["VARIATION SELECTOR-1 U+FE00", "︀"],
+      ["VARIATION SELECTOR-16 U+FE0F", "️"],
+      ["LANGUAGE TAG U+E0001", "\u{E0001}"],
+      ["TAG LATIN CAPITAL A U+E0041", "\u{E0041}"],
+      ["CANCEL TAG U+E007F", "\u{E007F}"],
+    ])("strips %s", (_label, invisible) => {
+      expect(parseBannerMessage(`Accept${invisible}analytics`, true)).toEqual({
+        ok: true,
+        bannerMessage: "Acceptanalytics",
+      });
+    });
+
+    /*
+      The INDEPENDENT ORACLE for the whole class, and the reason the pattern is a
+      Unicode property escape rather than a hand-listed set.
+
+      This derives its expectation from `\p{Cf}` — the Unicode FORMAT category, i.e.
+      "affects the rendering of neighbouring text without being rendered itself" —
+      walked over the entire code-point space. A hand-listed set rots in the
+      permissive direction, and did: eleven classes were missing. If a future Unicode
+      revision (or a Node upgrade carrying one) adds a format character, this fails
+      instead of letting it through silently.
+    */
+    it("strips every Unicode format character, derived from the category itself", () => {
+      const formatCharacters: string[] = [];
+      for (let codePoint = 0; codePoint <= 0x10ffff; codePoint += 1) {
+        const character = String.fromCodePoint(codePoint);
+        if (/\p{Cf}/u.test(character)) {
+          formatCharacters.push(character);
+        }
+      }
+      // Sanity floor: the category is not empty and the walk really ran, so a
+      // vacuous pass is not available to this test.
+      expect(formatCharacters.length).toBeGreaterThan(100);
+
+      const survivors = formatCharacters.filter((character) => {
+        const result = parseBannerMessage(`ab${character}cd`, true);
+        return !result.ok || result.bannerMessage !== "abcd";
+      });
+      expect(
+        survivors.map((character) =>
+          `U+${character.codePointAt(0)?.toString(16).toUpperCase()}`,
+        ),
+      ).toEqual([]);
+    });
+
+    /*
+      The other direction, so the widened class cannot have become a blunt
+      instrument: ordinary wording an admin might really write has to come through
+      untouched. Macrons matter here — a NZ club's banner may carry te reo — and so
+      does the base character of an emoji, which survives while its presentation
+      selector does not (see the pattern's docblock for why that trade is taken).
+    */
+    it("leaves ordinary visible text, macrons and emoji base characters alone", () => {
+      expect(
+        parseBannerMessage(
+          "Kia ora — we use optional Google Analytics on whanganui.org.nz. 100% optional \u{1F36A}",
+          true,
+        ),
+      ).toEqual({
+        ok: true,
+        bannerMessage:
+          "Kia ora — we use optional Google Analytics on whanganui.org.nz. 100% optional \u{1F36A}",
+      });
+      // The presentation selector goes; the character it decorated stays visible.
+      expect(parseBannerMessage("⚠️ Analytics notice", true)).toEqual({
+        ok: true,
+        bannerMessage: "⚠ Analytics notice",
+      });
+    });
   });
 });
 
