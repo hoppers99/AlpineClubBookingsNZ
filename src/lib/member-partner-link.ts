@@ -440,7 +440,8 @@ function checkPartnerEligibility(
  *   co-member (see the delegated-details route), so this one-step path is open
  *   to EVERY adult login co-member, not a designated group admin: #2284 (S4)
  *   retired the old `FamilyGroupMember.role` ADMIN gate in favour of the equal
- *   "all adults in a family group" boundary.
+ *   "all adults in a family group" boundary, and #2520 dropped that column
+ *   outright (20260803030000), so there is no rank left to re-anchor onto.
  */
 export async function requestPartnerLink(params: {
   initiatorMemberId: string;

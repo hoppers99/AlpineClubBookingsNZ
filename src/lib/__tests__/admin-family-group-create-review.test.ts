@@ -4,7 +4,7 @@
  * Covered here (service-level, mirroring the family-groups.test.ts mock-prisma
  * patterns):
  *   - approve creates the requester's membership (and, since #2520, writes no
- *     `role` — the column was retired, so there is no rank to seed)
+ *     `role` — the column is dropped, so there is no rank to seed)
  *   - approve auto-files the partner ADULT_INVITE + invitation email
  *   - approve skips the invite (audited) when the partner became ineligible
  *   - approve 422s when the requester joined another group meanwhile
@@ -177,7 +177,7 @@ describe("reviewAdminFamilyGroupRequest — GROUP_CREATE", () => {
     expect(txExecuteRaw.mock.calls[0].flat().join(" ")).toContain(
       "member-lifecycle:member-1"
     );
-    // #2520: exactly these two columns. The retired `role` is not written —
+    // #2520: exactly these two columns. The dropped `role` is not written —
     // asserted by the exact-shape match, so re-adding it reddens this test. The
     // `select` narrows the write's implicit RETURNING (#2130 house rule).
     expect(txMembershipCreate).toHaveBeenCalledWith({

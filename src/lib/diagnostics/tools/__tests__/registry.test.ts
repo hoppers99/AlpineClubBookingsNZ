@@ -5,6 +5,9 @@
  * multi-statement string, a missing permission requirement, or a schema that
  * silently ignores unknown arguments fails here rather than in production.
  */
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 
@@ -14,16 +17,175 @@ import { canonicalStringify, sha256Hex } from "@/lib/diagnostics/knowledge/hash"
 import { readSqlPlaceholderNumbers } from "../database";
 import {
   defineDiagnosticsTool,
-  DIAGNOSTICS_SUBSTRATE_PROBE_TOOL_ID,
-  DIAGNOSTICS_TOOLS,
-  type DiagnosticsToolEntry,
-  findDiagnosticsTool,
+  DIAGNOSTICS_TOOL_EVIDENCE_SOURCES,
   FORBIDDEN_TOOL_SQL_PATTERNS,
   isValidDiagnosticsToolId,
+  type DiagnosticsSelectOnlyToolEntry,
+  type DiagnosticsToolEntry,
+} from "../define";
+import {
+  DIAGNOSTICS_BACKGROUND_JOB_HEALTH_TOOL_ID,
+  DIAGNOSTICS_DEPLOYMENT_TOOL_ID,
+  DIAGNOSTICS_READINESS_TOOL_ID,
+  DIAGNOSTICS_USAGE_HEALTH_TOOL_ID,
+} from "../packs/support-system";
+import {
+  DIAGNOSTICS_SUPPORT_CORRELATION_TOOLS,
+} from "../packs/support-correlation";
+import { renderToolResultEvidenceBlock } from "../render";
+import {
+  DIAGNOSTICS_SUBSTRATE_PROBE_TOOL_ID,
+  DIAGNOSTICS_TOOLS,
+  findDiagnosticsTool,
 } from "../registry";
 import { DIAGNOSTICS_TOOL_BOUNDS } from "../types";
 
+/**
+ * Only the `select_only_sql` entries carry SQL, so the statement-shaped contracts
+ * below iterate this list rather than the whole registry.
+ *
+ * What stops that narrowing from silently skipping an entry that should have been
+ * checked is the evidence-source contract test, which runs over the WHOLE registry
+ * and asserts that anything not declaring `select_only_sql` exposes no `sql`, no
+ * `bind` and no `readEvidence` handle at all. The permission, argument, projection
+ * and bound contracts still run over every entry regardless of source; the
+ * server-owned entries' own evidence sources are covered in
+ * `packs/__tests__/support-system.test.ts`.
+ */
+const SQL_TOOLS: readonly DiagnosticsSelectOnlyToolEntry[] = DIAGNOSTICS_TOOLS.filter(
+  (tool): tool is DiagnosticsSelectOnlyToolEntry =>
+    tool.source === "select_only_sql",
+);
+
 const AREA_KEYS = new Set(ADMIN_PERMISSION_AREAS.map((area) => area.key));
+
+/**
+ * A REALISTIC WIDEST raw row per entry, so the bound contracts below can measure what
+ * a deployment actually produces instead of trusting an estimate.
+ *
+ * Same census discipline as `EXAMPLE_ARGS`: a new entry with no row here fails
+ * loudly. The reason it exists is a defect this caught (#2375):
+ * `background_job_health` declared `byteLimit: 8_192`, and twenty rows of its own
+ * projected shape on an ordinary deployment — every job having simply run once —
+ * serialised to 8 272 bytes, so gate 9 refused every full result with
+ * `result_too_large` and told the operator to narrow a question that takes no
+ * arguments. Nothing caught it because the registry contract only checked
+ * `byteLimit <= maxResultBytes`, never that an entry's own limit was ACHIEVABLE at its
+ * own `rowLimit`.
+ *
+ * HOW WIDE EACH FIELD IS SET, because the line matters and getting it wrong is what
+ * let a too-tight ceiling survive a mutation of this very test. Setting *every* string
+ * to `fieldValueMaxChars` (200) is not the answer: the absolute worst case for a
+ * twelve-field row at 200 characters each exceeds the substrate's hard 32 768 by
+ * construction, and it would also fail entries whose values are structurally short —
+ * `substrate_probe.statementTimeout` is PostgreSQL's own rendering of a GUC, and a
+ * 200-character one does not exist. So the rule is per field:
+ *
+ *  - A field whose width is **open-ended in this system** is set to the projection's
+ *    own 200-character cap, because a future feature can make it that wide without
+ *    anyone revisiting the ceiling: `action_code` (audit action codes already run to 60
+ *    characters and nothing bounds them) and `job_name` (any pull request may register
+ *    a longer one). These are the fields that turn a comfortable ceiling into a refused
+ *    result later, so they are measured at the cap now.
+ *  - A field whose width is **structurally fixed** is set to the widest real value: an
+ *    ISO-8601 instant, a cuid, a closed enum, a 40-character commit SHA, the longest
+ *    entity-type name in the schema, a request id at the 128-character cap the
+ *    correlation projection now enforces.
+ *
+ * `result_too_large` remains the fail-closed backstop for anything wilder than that.
+ */
+const EXAMPLE_RAW_ROWS: Record<string, Record<string, unknown>> = {
+  [DIAGNOSTICS_SUBSTRATE_PROBE_TOOL_ID]: {
+    probe_ok: true,
+    transaction_read_only: "on",
+    statement_timeout: "5s",
+    statement_timeout_ms: 5_000,
+  },
+  [DIAGNOSTICS_READINESS_TOOL_ID]: {
+    readiness_state: "not_ready",
+    module_enabled: true,
+    credential_state: "needs_reentry",
+    monthly_budget_cents: 50_000,
+    database_role_state: "over_privileged",
+    blocker_codes:
+      "module_disabled,credential_needs_reentry,database_not_configured,database_role_unsafe,budget_exhausted",
+    blocker_count: 5,
+  },
+  [DIAGNOSTICS_DEPLOYMENT_TOOL_ID]: {
+    release_id: "v0.13.0-rc.4+build.20260803",
+    release_id_source: "release-id",
+    app_version: "0.13.0",
+    node_version: "v22.14.0",
+    runtime_role: "web-green",
+    uptime_seconds: 987_654,
+    knowledge_bundle_state: "verified",
+    knowledge_bundle_commit_sha: "a".repeat(40),
+    knowledge_bundle_commit_verified: true,
+    knowledge_bundle_observed_at_utc: "2026-08-03T03:04:05.678Z",
+    knowledge_bundle_generator: "scripts/build-knowledge-bundle.ts",
+    knowledge_bundle_entry_count: 4_321,
+  },
+  [DIAGNOSTICS_USAGE_HEALTH_TOOL_ID]: {
+    month: "2026-08",
+    monthly_budget_cents: 50_000,
+    settled_cents: 12_345,
+    active_reserved_cents: 84,
+    remaining_cents: 37_571,
+    budget_status: "warning_threshold_reached",
+    request_count: 1_234,
+    roundtrip_count: 5_678,
+    failed_count: 90,
+    stale_reservation_count: 3,
+    latest_success_at_utc: "2026-08-03T09:00:00.000Z",
+    latest_failure_at_utc: "2026-08-03T08:59:59.999Z",
+    latest_failure_code: "overloaded_error",
+    worst_case_roundtrip_cents: 42,
+    max_tool_rounds: 8,
+  },
+  [DIAGNOSTICS_BACKGROUND_JOB_HEALTH_TOOL_ID]: {
+    // Open-ended, so measured at the projection's 200-character cap. The longest name
+    // this release registers is `placeholder-guest-name-reminders` at 32 characters,
+    // but nothing stops a pull request registering a much longer one, and that is
+    // precisely how a ceiling that fits today stops fitting — the old 8 192-byte
+    // ceiling had 89 bytes of margin at the real names. A job with both a success and
+    // an older failure also keeps every timestamp field populated, which is the steady
+    // state of a mature deployment and the case that ceiling refused outright.
+    job_name: "j".repeat(200),
+    status: "stale",
+    severity: "warning",
+    enabled: true,
+    schedule: "*/15 * * * *",
+    stale_after_minutes: 1_440,
+    latest_run_at_utc: "2026-08-03T03:04:05.678Z",
+    latest_run_status: "SUCCESS",
+    latest_success_at_utc: "2026-08-03T03:04:05.678Z",
+    latest_failure_at_utc: "2026-05-01T03:04:05.678Z",
+    cron_scheduling_enabled: true,
+    registered_job_count: 34,
+  },
+  ...Object.fromEntries(
+    DIAGNOSTICS_SUPPORT_CORRELATION_TOOLS.map((tool) => [
+      tool.id,
+      {
+        event_ref: "clz0000000abcdefghijklmno",
+        // Open-ended, so measured at the projection's 200-character cap. Real action
+        // codes in this repository already reach 60 characters
+        // (`booking_request.member_whole_lodge_approve_idempotent_replay`) and nothing
+        // bounds a new one, so a ceiling that only fits today's codes is a ceiling that
+        // refuses a full result the first time someone writes a longer one.
+        action_code: "a".repeat(200),
+        category: "payment",
+        severity: "important",
+        outcome: "success",
+        entity_type: "SeasonalMembershipAssignment",
+        // The 128-character cap the projection now enforces — the widest a member can
+        // plant through the `x-request-id` header.
+        request_id: `r${"0".repeat(127)}`,
+        occurred_at_utc: "2026-08-03T09:00:00Z",
+      },
+    ]),
+  ),
+};
 
 /**
  * Representative VALID arguments for each entry, so the parameter-arity contract
@@ -33,6 +195,18 @@ const AREA_KEYS = new Set(ADMIN_PERMISSION_AREAS.map((area) => area.key));
  */
 const EXAMPLE_ARGS: Record<string, unknown> = {
   [DIAGNOSTICS_SUBSTRATE_PROBE_TOOL_ID]: {},
+  [DIAGNOSTICS_READINESS_TOOL_ID]: {},
+  [DIAGNOSTICS_DEPLOYMENT_TOOL_ID]: {},
+  [DIAGNOSTICS_USAGE_HEALTH_TOOL_ID]: {},
+  [DIAGNOSTICS_BACKGROUND_JOB_HEALTH_TOOL_ID]: {},
+  // The AID-6A correlation entries all take the same argument shape, and every one
+  // of them needs a row here or its parameter arity goes unchecked.
+  ...Object.fromEntries(
+    DIAGNOSTICS_SUPPORT_CORRELATION_TOOLS.map((tool) => [
+      tool.id,
+      { window: "1h", requestId: "req-abc-123" },
+    ]),
+  ),
 };
 
 /**
@@ -53,6 +227,7 @@ function nestedArgumentFixture<TArgs>(argsSchema: z.ZodType<TArgs>) {
     description:
       "Test-only entry with a nested argument shape, used to pin the depth-total reserved-key scan.",
     requiredAreas: ["support"],
+    source: "select_only_sql",
     argsSchema,
     inputSchema: {
       type: "object",
@@ -61,7 +236,7 @@ function nestedArgumentFixture<TArgs>(argsSchema: z.ZodType<TArgs>) {
     },
     sql: "SELECT true AS ok",
     bind: () => [],
-    project: (row) => ({ ok: row.ok === true }),
+    project: (row: Record<string, unknown>) => ({ ok: row.ok === true }),
     rowLimit: 1,
     byteLimit: 64,
     surfacesPersonalData: false,
@@ -186,6 +361,24 @@ describe("diagnostics tool registry contract (#2374)", () => {
   );
 
   it.each(DIAGNOSTICS_TOOLS.map((tool) => [tool.id, tool] as const))(
+    "%s declares one of the two known evidence sources, and matches its shape",
+    (_id, tool) => {
+      // The discriminant is the registry's, not an argument's, and there are exactly
+      // two kinds. A SQL entry carries a statement; a server-owned entry exposes no
+      // handle on its source at all, so the only way to reach it is through the
+      // closure `parseArgs` returns after the schema has accepted the arguments.
+      expect(DIAGNOSTICS_TOOL_EVIDENCE_SOURCES).toContain(tool.source);
+      if (tool.source === "select_only_sql") {
+        expect(typeof tool.sql).toBe("string");
+      } else {
+        expect("sql" in tool).toBe(false);
+        expect("readEvidence" in tool).toBe(false);
+        expect("bind" in tool).toBe(false);
+      }
+    },
+  );
+
+  it.each(DIAGNOSTICS_TOOLS.map((tool) => [tool.id, tool] as const))(
     "%s requires at least one real admin area, and never `edit`",
     (_id, tool) => {
       // ADR-002 §2: a tool that required nothing would be a tool anyone may run.
@@ -199,7 +392,7 @@ describe("diagnostics tool registry contract (#2374)", () => {
     },
   );
 
-  it.each(DIAGNOSTICS_TOOLS.map((tool) => [tool.id, tool] as const))(
+  it.each(SQL_TOOLS.map((tool) => [tool.id, tool] as const))(
     "%s carries exactly one SELECT statement",
     (_id, tool) => {
       const trimmed = tool.sql.trim();
@@ -211,7 +404,31 @@ describe("diagnostics tool registry contract (#2374)", () => {
     },
   );
 
-  it.each(DIAGNOSTICS_TOOLS.map((tool) => [tool.id, tool] as const))(
+  it.each(
+    SQL_TOOLS.filter((tool) => tool.rowLimit > 1).map(
+      (tool) => [tool.id, tool] as const,
+    ),
+  )(
+    "%s can return several rows, so it orders them deterministically",
+    (_id, tool) => {
+      // Checklist item 7, enforced rather than trusted, and only meaningful once a
+      // pack registers a multi-row entry — AID-6A's correlation tools are the first.
+      // Without a total `ORDER BY`, PostgreSQL may hand identical evidence back in a
+      // different order run to run, and the audit `resultHash` — the hash of the
+      // projected rows IN ORDER — would then differ for the same answer, which
+      // destroys the one question that hash exists to settle.
+      expect(tool.sql.toUpperCase()).toContain("ORDER BY");
+      // At least two ordering keys, because the leading key of a time-ordered read is
+      // never unique: a tiebreaker is what makes the order total.
+      const orderBy = tool.sql.slice(tool.sql.toUpperCase().lastIndexOf("ORDER BY"));
+      expect(
+        orderBy.split(",").length,
+        `${tool.id} orders by one key only: ${orderBy}`,
+      ).toBeGreaterThan(1);
+    },
+  );
+
+  it.each(SQL_TOOLS.map((tool) => [tool.id, tool] as const))(
     "%s contains no mutating, DDL, file-reading or locking SQL",
     (_id, tool) => {
       for (const pattern of FORBIDDEN_TOOL_SQL_PATTERNS) {
@@ -261,7 +478,7 @@ describe("diagnostics tool registry contract (#2374)", () => {
     ).toBe(true);
   });
 
-  it.each(DIAGNOSTICS_TOOLS.map((tool) => [tool.id, tool] as const))(
+  it.each(SQL_TOOLS.map((tool) => [tool.id, tool] as const))(
     "%s has balanced parentheses so the executor's LIMIT wrapper still parses",
     (_id, tool) => {
       // The row cap is applied by wrapping the entry's SQL in
@@ -287,6 +504,86 @@ describe("diagnostics tool registry contract (#2374)", () => {
       expect(tool.byteLimit).toBeLessThanOrEqual(
         DIAGNOSTICS_TOOL_BOUNDS.maxResultBytes,
       );
+    },
+  );
+
+  it.each(DIAGNOSTICS_TOOLS.map((tool) => [tool.id, tool] as const))(
+    "%s declares a byte limit its own row limit can ACHIEVE",
+    (_id, tool) => {
+      // The assertion that was missing. `byteLimit <= maxResultBytes` says a ceiling is
+      // legal; it does not say a full result fits under it. An entry whose own
+      // `rowLimit` rows exceed its own `byteLimit` is not "bounded" — it is BROKEN, and
+      // broken silently, because gate 9 refuses the whole result with
+      // `result_too_large` and tells the operator to narrow a question that in three of
+      // these entries takes no arguments at all.
+      const raw = EXAMPLE_RAW_ROWS[tool.id];
+      expect(raw, `${tool.id} has no EXAMPLE_RAW_ROWS entry`).toBeDefined();
+      const rows = Array.from({ length: tool.rowLimit }, () => tool.project(raw));
+      const byteCount = Buffer.byteLength(canonicalStringify(rows), "utf8");
+      expect(
+        byteCount,
+        `${tool.id}: ${tool.rowLimit} rows serialise to ${byteCount} bytes, over its ${tool.byteLimit} byteLimit`,
+      ).toBeLessThanOrEqual(tool.byteLimit);
+    },
+  );
+
+  it.each(DIAGNOSTICS_TOOLS.map((tool) => [tool.id, tool] as const))(
+    "%s stays HONEST about its rows when the evidence block has to clip them",
+    (_id, tool) => {
+      // The rendered block is the OTHER ceiling, and the one an earlier revision got
+      // wrong by estimating ~230 characters a row: 30 correlation rows of real action
+      // codes rendered to exactly 8 000 characters, three rows silently gone and a
+      // fourth cut mid-field, under a header still claiming 30.
+      //
+      // At the WIDEST widths below a clip is legitimate — a member can plant
+      // 128-character request ids on every row — so what this asserts is not that
+      // everything fits but that the block never lies about what it listed. Each pack's
+      // own test asserts the full row limit renders at TYPICAL widths.
+      const raw = EXAMPLE_RAW_ROWS[tool.id];
+      expect(raw, `${tool.id} has no EXAMPLE_RAW_ROWS entry`).toBeDefined();
+      const rows = Array.from({ length: tool.rowLimit }, () => tool.project(raw));
+      const block = renderToolResultEvidenceBlock({
+        schemaVersion: 1,
+        status: "ok",
+        toolId: tool.id,
+        label: tool.label,
+        rows,
+        truncated: true,
+        ...(tool.evidenceScope ? { evidenceScope: tool.evidenceScope } : {}),
+        observedAt: "2026-08-03T09:00:00.000Z",
+        audit: {
+          toolId: tool.id,
+          areasChecked: [...tool.requiredAreas],
+          authOutcome: "allowed",
+          failureReason: null,
+          argsHash: "a".repeat(64),
+          resultHash: "b".repeat(64),
+          rowCount: rows.length,
+          byteCount: 0,
+          durationMs: 1,
+          roundIndex: 0,
+          observedAt: "2026-08-03T09:00:00.000Z",
+        },
+      });
+      expect(block.length).toBeLessThanOrEqual(
+        DIAGNOSTICS_TOOL_BOUNDS.renderedBlockMaxChars,
+      );
+      const rowLines = block.split("\n").filter((line) => /^- \d+\./.test(line));
+      expect(rowLines.length).toBeGreaterThan(0);
+      expect(rowLines.length).toBeLessThanOrEqual(tool.rowLimit);
+
+      // The stated count matches the lines present, whether or not it clipped.
+      expect(block).toContain(
+        rowLines.length === rows.length
+          ? `rows (${rows.length}):`
+          : `rows (${rowLines.length} of ${rows.length} listed`,
+      );
+      // And no listed row is partial: every one ends on a complete `key=value`.
+      for (const line of rowLines) {
+        expect(line, `${tool.id}: ${line}`).toMatch(
+          /^- \d+\. (?:[A-Za-z0-9]+=(?:"[^"]*"|true|false|null|-?\d+(?:\.\d+)?); )*[A-Za-z0-9]+=(?:"[^"]*"|true|false|null|-?\d+(?:\.\d+)?)$/,
+        );
+      }
     },
   );
 
@@ -391,7 +688,7 @@ describe("diagnostics tool registry contract (#2374)", () => {
     expect(tool.parseArgs(cyclic).ok).toBe(false);
   });
 
-  it.each(DIAGNOSTICS_TOOLS.map((tool) => [tool.id, tool] as const))(
+  it.each(SQL_TOOLS.map((tool) => [tool.id, tool] as const))(
     "%s binds exactly the parameters its SQL references — $1..$N, no gaps",
     (_id, tool) => {
       // The executor appends the row cap as `$${params.length + 1}`, which is
@@ -407,12 +704,14 @@ describe("diagnostics tool registry contract (#2374)", () => {
       ).toBeDefined();
       const binding = tool.parseArgs(example);
       expect(binding.ok, `${tool.id} rejected its own EXAMPLE_ARGS`).toBe(true);
-      if (!binding.ok) return;
+      if (!binding.ok || binding.source !== "select_only_sql") return;
 
       const referenced = [...new Set(readSqlPlaceholderNumbers(tool.sql))].sort(
         (a, b) => a - b,
       );
-      expect(referenced).toEqual(binding.params.map((_value, index) => index + 1));
+      expect(referenced).toEqual(
+        binding.params.map((_value: unknown, index: number) => index + 1),
+      );
     },
   );
 
@@ -474,7 +773,9 @@ describe("diagnostics tool registry contract (#2374)", () => {
 });
 
 describe("the substrate readiness probe (#2374)", () => {
-  const probe = findDiagnosticsTool(DIAGNOSTICS_SUBSTRATE_PROBE_TOOL_ID);
+  const registered = findDiagnosticsTool(DIAGNOSTICS_SUBSTRATE_PROBE_TOOL_ID);
+  const probe =
+    registered?.source === "select_only_sql" ? registered : undefined;
 
   it("is registered under support:view and surfaces no personal data", () => {
     expect(probe).toBeDefined();
@@ -502,7 +803,9 @@ describe("the substrate readiness probe (#2374)", () => {
   it("takes no arguments and binds no parameters", () => {
     const binding = probe?.parseArgs({});
     expect(binding?.ok).toBe(true);
-    if (binding?.ok) expect(binding.params).toEqual([]);
+    if (binding?.ok && binding.source === "select_only_sql") {
+      expect(binding.params).toEqual([]);
+    }
   });
 
   it("projects only the flat scalars it declares, dropping any other column", () => {
@@ -543,5 +846,53 @@ describe("the substrate readiness probe (#2374)", () => {
     const row = probe?.project({ probe_ok: true });
     expect(Number.isFinite(row?.statementTimeoutMs)).toBe(true);
     expect(row?.statementTimeout).toBe("");
+  });
+});
+
+describe("the evidence modules are SERVER-ONLY (#2375)", () => {
+  /**
+   * Which modules in the tool tree may never reach a browser bundle. These are the
+   * ones that open a connection, decide authorization, write an audit row, or export
+   * a function that READS evidence.
+   *
+   * Why this is a test and not a convention. `define.ts` used to claim that a
+   * server-owned registry entry made its evidence source "unreachable". It does not:
+   * the entry exposes no handle (pinned separately, `"readEvidence" in tool` is
+   * false), but the four sources in `packs/support-evidence.ts` are ordinary module
+   * exports, and three of them query application tables on the application's own
+   * full-privilege connection with the registry projection as their only boundary.
+   * The docblocks now say so plainly, and they rest on this marker: a future caller
+   * can still import a reader server-side, but it can never be bundled for a
+   * browser, and the marker is what makes that a guarantee rather than a habit.
+   */
+  const SERVER_ONLY_MODULES = [
+    "audit.ts",
+    "authorize.ts",
+    "database.ts",
+    "invoke.ts",
+    "packs/support-correlation.ts",
+    "packs/support-evidence.ts",
+    "packs/support-system.ts",
+  ] as const;
+
+  it.each(SERVER_ONLY_MODULES)("%s imports server-only", (relativePath) => {
+    const source = readFileSync(
+      join(import.meta.dirname, "..", relativePath),
+      "utf8",
+    );
+    expect(source).toContain('import "server-only";');
+  });
+
+  it("covers every pack module, so a new pack cannot skip the marker", () => {
+    // Census, not a list: AID-6B and AID-6C add pack modules, and a pack that
+    // forgets the marker must fail here rather than at a reviewer's discretion.
+    const packDir = join(import.meta.dirname, "..", "packs");
+    const packModules = readdirSync(packDir)
+      .filter((name) => name.endsWith(".ts"))
+      .map((name) => `packs/${name}`)
+      .sort();
+    expect(packModules).toEqual(
+      SERVER_ONLY_MODULES.filter((name) => name.startsWith("packs/")).slice().sort(),
+    );
   });
 });

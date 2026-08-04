@@ -11,13 +11,11 @@ import {
   buildCronHealthReport,
   getAdminCronJobDefinitions,
   groupCronRunsByJob,
-  type AdminCronJobDefinition,
-  type AdminCronRun,
 } from "@/lib/admin-cron-health";
+// Shared with the AI Diagnostics background-job evidence tool (#2375) so both
+// surfaces classify job health from the same rows.
+import { getCronRunsForAdminHealth } from "@/lib/admin-cron-runs";
 import logger from "@/lib/logger";
-
-const RECENT_CRON_RUN_LIMIT = 200;
-const EXPECTED_CRON_RUN_HISTORY_LIMIT = 5;
 
 interface RuntimeStatusPayload {
   cronEnabled: boolean;
@@ -123,63 +121,6 @@ async function getCronJobDefinitionsForHealthReport() {
     APP_RUNTIME_ROLE: cronLeaderRuntimeStatus.role,
     CRON_ENABLED: cronLeaderRuntimeStatus.cronEnabled ? "true" : "false",
   });
-}
-
-function getCronRunTime(run: AdminCronRun): number {
-  return new Date(run.startedAt ?? run.createdAt ?? 0).getTime();
-}
-
-function dedupeCronRuns(runs: AdminCronRun[]): AdminCronRun[] {
-  const byId = new Map<string, AdminCronRun>();
-  for (const run of runs) {
-    byId.set(run.id, run);
-  }
-
-  return [...byId.values()].sort((a, b) => getCronRunTime(b) - getCronRunTime(a));
-}
-
-async function getExpectedJobCronRuns(jobName: string): Promise<AdminCronRun[]> {
-  const [recentRuns, latestSuccess, latestFailure] = await Promise.all([
-    prisma.cronJobRun.findMany({
-      where: { jobName },
-      orderBy: { startedAt: "desc" },
-      take: EXPECTED_CRON_RUN_HISTORY_LIMIT,
-    }),
-    prisma.cronJobRun.findMany({
-      where: { jobName, status: "SUCCESS" },
-      orderBy: { startedAt: "desc" },
-      take: 1,
-    }),
-    prisma.cronJobRun.findMany({
-      where: { jobName, status: "FAILURE" },
-      orderBy: { startedAt: "desc" },
-      take: 1,
-    }),
-  ]);
-
-  return [...recentRuns, ...latestSuccess, ...latestFailure];
-}
-
-async function getCronRunsForAdminHealth(
-  definitions: AdminCronJobDefinition[]
-): Promise<AdminCronRun[]> {
-  const expectedJobNames = [
-    ...new Set(
-      definitions
-        .filter((definition) => definition.recordsRuns)
-        .map((definition) => definition.jobName)
-    ),
-  ];
-
-  const [recentRuns, expectedJobRuns] = await Promise.all([
-    prisma.cronJobRun.findMany({
-      orderBy: { startedAt: "desc" },
-      take: RECENT_CRON_RUN_LIMIT,
-    }),
-    Promise.all(expectedJobNames.map(getExpectedJobCronRuns)),
-  ]);
-
-  return dedupeCronRuns([...recentRuns, ...expectedJobRuns.flat()]);
 }
 
 /**

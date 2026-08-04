@@ -60,7 +60,14 @@ A backup you have never restored is a hope, not a backup.
    actually landed in durable S3 storage (not a tmpfs path that the deploy will
    erase).
 2. Take a fresh backup immediately before the window, or confirm the most
-   recent durable S3 artifact is the one you will restore from.
+   recent durable S3 artifact is the one you will restore from. **A `windowed`
+   migration moves this step:** for
+   [§2.4.1](#241-2520-drop-familygroupmemberrole) the snapshot is taken *inside* the
+   traffic-off window, after every writer has stopped, so nothing lands between it
+   and the migration. That is the owner's order and it governs. Run step 1 and step 3
+   below against the most recent durable artifact **before** that window, and verify
+   the in-window snapshot by integrity and completion instead — §2.4.1 step 7 gives
+   the split and the exact commands.
 3. **Restore-test it** with `scripts/backup-restore-drill.sh --from-dump`
    (see `docs/MAINTENANCE.md` → "Quarterly Backup Restore Drill"). Fetch the
    `.sql.gz` object with read-only S3 credentials **from a workstation, never
@@ -170,19 +177,28 @@ Migrate via the supported blue/green deploy path. Run from the production host:
 ```
 
 The script re-enters itself with `--internal-blue-green-deploy` and runs a
-19-step engine (`scripts/run-production-blue-green-deploy.sh`). The steps that
+20-step engine (`scripts/run-production-blue-green-deploy.sh`). The steps that
 matter for this upgrade:
 
-- **Step 12/19 — "Validating Prisma schema against committed migrations".**
+- **Step 12/20 — "Validating Prisma schema against committed migrations".**
   This runs `validate_pending_migrations_blue_green_safe`, which calls
   `scripts/validate-blue-green-migrations.sh` against every pending migration.
   This is the gate. It must pass green (see [§2.1](#21-the-validator-gate-is-expected-green)).
-- **Step 13/19 — "Running Prisma migrations".** `prisma migrate deploy` runs
+- **Step 13/20 — "Running Prisma migrations".** `prisma migrate deploy` runs
   through the `migrate` service, applying the pending migrations to the shared
   Postgres **while the old color can still be serving traffic**.
-- **Step 14/19 / Step 15/19 — starts the new (target) web color and refreshes
+- **Step 14/20 / Step 15/20 — starts the new (target) web color and refreshes
   the cron leader on the new release, both before cutover.**
-- **Step 16/19 — "Switching Caddy upstream to target web service".** This is
+- **Step 16/20 — "Warming the new release and verifying its page cache before
+  cutover".** The #2566 gate: it renders every eligible public page on the new
+  colour, proves the page cache was populated for the addresses this release stores,
+  and REFUSES the cutover on any critical-page failure. Still fully reversible — no
+  traffic has moved. It also lengthens the migrate-to-cutover window by the time it
+  takes, and `DEPLOY_WARMUP_TOTAL_TIMEOUT_SECONDS` (240s by default) bounds **one
+  service's run**: the gate runs once per warmed service, which by default is the new
+  colour **and** the `app` cron leader, so the default worst case is 2 x 240s = 480s.
+  That matters for [§2.2](#22-agetier-not_applicable--deploy-in-a-quiet-window).
+- **Step 17/20 — "Switching Caddy upstream to target web service".** This is
   the **cutover**: Caddy is repointed to the new color, external/internal health
   is verified, then the previous color's connections are drained. Everything
   before this step is reversible by aborting; see [§4](#4-rollback-plan).
@@ -244,7 +260,7 @@ and the Wave-4 operator reminder:
 
 **Operator action for `v0.10.0`:** schedule this production window at **low
 member-admin traffic**, and minimise the gap between step 13 (migrate) and step
-16 (cutover) so the window where the old color could read a flipped
+17 (cutover) so the window where the old color could read a flipped
 `NOT_APPLICABLE` row is as short as possible. If you cannot deploy in a quiet
 window, the documented fallback is to defer only
 `20260707000100_backfill_org_age_tier_not_applicable` until the old color has
@@ -255,13 +271,40 @@ idempotent and safe to run once the new code is serving all traffic.
 
 Step 13 runs `verify_prisma_migration_status`; confirm the engine reports the
 database is up to date and that the new color passes `/api/health/ready` before
-cutover. Then let step 16 perform the cutover.
+cutover. Then let the warm-up gate (step 16) pass and step 17 perform the cutover.
 
 ### 2.4 Windowed migration deploy sequence
 
 Use this instead of the normal blue/green flow whenever any pending migration is
-declared `old_code_compatible=windowed` in the safety ledger. It applies to
-`20260803010000_contract_subscription_lockout_drop_enabled` (#2543 / #2561).
+declared `old_code_compatible=windowed` in the safety ledger. Two migrations are
+in that class:
+
+- `20260803010000_contract_subscription_lockout_drop_enabled` (#2543 / #2561) —
+  covered immediately below;
+- `20260803030000_contract_drop_family_group_member_role` (#2520) — covered in
+  [§2.4.1](#241-2520-drop-familygroupmemberrole).
+
+**If both are pending, they share ONE window.** `prisma migrate deploy` applies
+both in the same command — you do not stop and start the application twice. Work
+the checks in [§2.4.1](#241-2520-drop-familygroupmemberrole) as well as the ones
+here, and name both migrations in the override reason.
+
+**And rolling a combined window BACK takes BOTH `rollback.sql` scripts, in the
+reverse of the order they were applied** — `20260803030000` first, then
+`20260803010000`. Running only one leaves the other's column missing, so the
+previous release is still broken; if the one you skip is `20260803010000`, what
+stays broken is every booking write path. Spelled out at
+[§2.4.1](#241-2520-drop-familygroupmemberrole)'s rollback boundary, and rehearsed
+at [§7.2](#72-windowed-migration-rehearsal-20260803030000_contract_drop_family_group_member_role).
+
+**And when both are pending, §2.4.1's ordering governs the combined window**, not
+the ordering in the list immediately below. The two differ in one place: this list
+takes the backup at step 2, before traffic is removed; §2.4.1 takes it at step 7,
+*after* the app and every worker have stopped and no old connection remains. The
+later position is strictly safer — the snapshot is a quiet point, with no writes
+landing between the backup and the migration — and it is the order the owner
+directed for #2520 (3 Aug 2026). Nothing else about this list changes, and it stands
+as written for a window carrying only `20260803010000`.
 
 **Why the normal flow does not work here.** Blue/green relies on the old colour
 continuing to serve while the new schema is applied. This migration drops a column
@@ -288,16 +331,38 @@ irreversible without it.**
 4. **Stop the old app AND the background workers.** Both read this settings row.
    Leaving the workers running produces the same errors with nobody watching, and
    fills the logs with failures that look like the migration went wrong.
-5. **Migrate.** Run with `ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS=1` and a
-   `BLUE_GREEN_MIGRATION_OVERRIDE_REASON` that names this window — the validator
-   refuses the deploy otherwise, and refuses it regardless if the `rollback.sql`
-   is missing.
+5. **Migrate.** Run the safety validator first, with
+   `ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS=1` and a
+   `BLUE_GREEN_MIGRATION_OVERRIDE_REASON` that names this window — it refuses
+   otherwise, and refuses regardless if the `rollback.sql` is missing. The
+   validator is a **separate script** that `prisma migrate deploy` knows nothing
+   about, so in a hand-run window the operator invokes it or nothing does:
+   [§2.4.1](#241-2520-drop-familygroupmemberrole) step 9 carries the exact two
+   commands, and they are the same for this migration.
 6. **Start the new release**, confirm `/api/health/ready`, then take the site out
    of maintenance mode.
 
 Keep steps 5-6 as short as the plan allows. The three statements are metadata-only
 on a single-row table, so the migration itself is quick; the window is dominated by
-stopping and starting the application.
+stopping and starting the application. That holds for this list, where the backup and
+its restore test sit at step 2 — *before* traffic is removed — so the drill costs no
+downtime. It does **not** hold for the combined window, whose backup moves inside the
+traffic-off period: see [§2.4.1](#241-2520-drop-familygroupmemberrole) step 7 and its
+window-length note before you announce a duration.
+
+**The warm-up gate (step 16) runs inside this window too**, and it adds the time it
+takes to render every public page — bounded by `DEPLOY_WARMUP_TOTAL_TIMEOUT_SECONDS`
+(240s by default) **per warmed service**. The gate runs once per service, so budget
+480s for the default pair (the new colour and the `app` cron leader), not 240s. Budget
+for it rather than switching it off: in a window where the
+old colour is already broken, "does the new release actually serve its public pages?"
+is the most valuable question you can ask before opening the site again, and the
+answer arrives while members are still held out. If the window is genuinely too tight,
+lower the timeout and the concurrency rather than disabling the gate — but stay inside
+the accepted ranges (`DEPLOY_WARMUP_TOTAL_TIMEOUT_SECONDS` 5-1800,
+`DEPLOY_WARMUP_CONCURRENCY` 1-8; the full table is in `DEPLOYMENT.md` → "Pre-cutover
+warm-up gate"). Outside them the deploy refuses before it starts and names the
+setting; `DEPLOY_WARMUP_CONCURRENCY=0` is not how the gate is disabled.
 
 **Rollback path.** Two options, in order of preference:
 
@@ -314,6 +379,352 @@ stopping and starting the application.
   *forward* afterwards means deleting that row or re-applying `migration.sql` by
   hand.
 - **Restore the backup** only if the data itself is wrong, not merely the schema.
+
+#### 2.4.1 #2520: drop `FamilyGroupMember.role`
+
+`20260803030000_contract_drop_family_group_member_role` is the second `windowed`
+migration. It is one statement — `ALTER TABLE "FamilyGroupMember" DROP COLUMN
+"role"` — with no backfill and no DML of any kind.
+
+**Owner authorisation.** The original plan was two releases: deploy the runtime
+removal (PR #2565), soak seven days, then drop. The owner superseded that on
+3 Aug 2026: the drop ships now, as part of the Tokoroa cutover, behind an accepted
+maintenance window. No further owner approval is required to run it, provided this
+sequence is followed.
+
+**Why the normal flow does not work here.** The runtime removal was never deployed
+on its own, so the release currently in production is the last tagged one, whose
+Prisma client names the column freely. Measured against `v0.13.2`'s own
+`prisma/schema.prisma` (`role String @default("MEMBER")`, no `@ignore`):
+
+- `listOneStepPartnerCandidates` and the one-step path of `requestPartnerLink`
+  put `role: "ADMIN"` in the **WHERE clause**, so they name the column directly —
+  and the member profile page renders the first of those;
+- every unnarrowed `find`/`create`/`update`/`upsert`/`delete` on the join table
+  names every scalar in its `SELECT` or implicit `RETURNING`;
+- a static `@default("MEMBER")` is materialised **client-side** as a bind
+  parameter, so the column appears in the column list of every insert that client
+  emits, even one that sets no role and narrows itself with `select`;
+- an `include:` on the join table (admin family groups) and an explicit
+  `role: true` (`GET /api/member/onboarding`) name it too.
+
+So the moment the DROP commits, the previous release raises Postgres 42703 /
+Prisma P2022 across the whole family surface: member profile, admin family groups,
+member onboarding, family join/invite/removal, member merge, Xero member import
+and nomination. There is no ordering that keeps both versions working.
+
+**The sequence, in the owner's order. Do not reorder it.**
+
+1. **Build, publish and verify the complete replacement image** — before the live
+   site goes down. A build that fails after the column is dropped leaves no
+   working release to start.
+2. **Confirm the image carries both halves**: the no-role runtime code and this
+   migration. Both checks have to run **inside the replacement app image**, because
+   that is the only place `prisma/` and `node_modules/@prisma/client` exist
+   (`Dockerfile`, the two `COPY --from=builder` lines for `./prisma` and
+   `./node_modules`). The deploy host itself is documented as carrying **only Docker
+   and Docker Compose** (`DEPLOYMENT.md` → "Prerequisites") — no Node, no repo
+   `node_modules` — so pasted at the host shell these fail with
+   `node: command not found` or `Cannot find module '@prisma/client'`. Run them
+   through a throwaway container off that image. `--no-deps` keeps the database out
+   of it; `APP_IMAGE` must already point at the published replacement tag, exactly as
+   `scripts/run-production-blue-green-deploy.sh` exports it.
+   ```bash
+   # the migration is present
+   docker compose run --rm --no-deps app \
+     ls prisma/migrations/20260803030000_contract_drop_family_group_member_role/
+   # and the runtime cannot name the column: no `role` in the client's scalar enum
+   docker compose run --rm --no-deps app \
+     node -e "const {Prisma}=require('@prisma/client');console.log(Object.keys(Prisma.FamilyGroupMemberScalarFieldEnum).join(','))"
+   # expect: id,familyGroupId,memberId,joinedAt
+   ```
+3. **Announce or enable maintenance mode** and remove public traffic from the
+   existing application.
+4. **Stop all Tokoroa web processes.**
+5. **Stop every background worker, scheduler, cron runner, queue consumer** and
+   anything else that can reach the shared database. Leaving them up produces the
+   same errors with nobody watching, and fills the logs with failures that look
+   like the migration went wrong.
+6. **Verify nothing old is still connected.** No application process, and no
+   database connection capable of issuing application queries, may remain:
+   ```sql
+   SELECT pid, usename, application_name, client_addr, state,
+          left(query, 80) AS query
+   FROM pg_stat_activity
+   WHERE datname = current_database()
+     AND pid <> pg_backend_pid();
+   ```
+   Expect only your own admin session. Anything else is a process step 4 or 5
+   missed — go back and stop it rather than migrating around it.
+7. **Take and verify a fresh database backup**, immediately before migrating, not
+   merely before the deploy. For an ordinary migration you can abort up to the
+   cutover; for this one the point of no return is the migrate step, so this backup
+   is the last unconditional way back.
+
+   **Split the restore test from the snapshot, and do the expensive half before the
+   window.** [§1.1](#11-verified-restore-tested-database-backup-with-s3-durability-confirmed)
+   is not a dump-and-checksum step: its step 3 fetches the `.sql.gz` to a
+   workstation and runs `scripts/backup-restore-drill.sh --from-dump` against a
+   throwaway Postgres 16 container, replaying migrations forward and checking the
+   money sentinels. On a production-sized database that is tens of minutes, and this
+   step sits **after** maintenance mode and every process has stopped — so running it
+   here in full puts the whole drill inside the outage, and creates pressure to skip
+   the one safeguard §1.1 calls mandatory. Do it in two parts instead:
+
+   - **Before the window** (no downtime): confirm S3 durability per §1.1 step 1, then
+     run the full §1.1 step 3 restore drill against the most recent durable artifact.
+     This is what proves the backup *pipeline* produces a restorable dump. Record
+     `Result: PASS` and the object id.
+   - **Here, inside the window**: take the fresh snapshot and verify the *artifact*,
+     not the pipeline — it is minutes, not tens of minutes:
+     ```bash
+     gzip -t <dump>.sql.gz            # stream integrity; a truncated dump exits 1
+     gunzip -c <dump>.sql.gz | tail -20 | grep 'PostgreSQL database dump complete'
+     ls -l <dump>.sql.gz              # sane size against the previous artifact
+     ```
+     Both were measured on a `postgres:16` (16.14) dump: `gzip -t` exits 1 with
+     `unexpected end of file` on a truncated file, and the completion marker is
+     written by `pg_dump` only on a run that finished. **Not `pg_restore --list`** —
+     these artifacts are plain gzipped SQL (`src/lib/backup.ts` runs `pg_dump` with
+     no format flags, then gzip), and `pg_restore` refuses them outright with
+     `input file appears to be a text format dump. Please use psql.` (measured).
+
+   Budget the pre-window drill and this in-window verification separately when you
+   schedule, and see the window-length note after step 14.
+8. **Record the pre-migration checks.** Paste the output into the three windowed-
+   migration rows of [§8](#8-production-execution-record) — the check output, the
+   dump filename and where it is stored, and (at step 9) the override reason you
+   actually used. After step 9 none of these can be recovered from the database,
+   and the console scrollback is not a record.
+   ```sql
+   -- (a) row count
+   SELECT COUNT(*) AS family_group_member_rows FROM "FamilyGroupMember";
+
+   -- (b) distinct role values and their counts. FOUR labels ever existed and any
+   --     of them can appear: 'MEMBER' (the column default and what the
+   --     20260407120000 / 20260407200000 backfills wrote — usually the bulk),
+   --     'ADMIN', 'LEAD' (only from the 20260408020000 dependents backfill), and
+   --     'USER' (written by two live paths in the release you are replacing:
+   --     createFamilyGroupFromSuggestion, i.e. any group created from a family
+   --     suggestion, and the admin dependent-link route). Only 'ADMIN' was ever
+   --     read by anything. A FIFTH value would be genuinely unexpected -- stop and
+   --     escalate; the four above are not a reason to.
+   SELECT "role", COUNT(*) AS rows
+   FROM "FamilyGroupMember"
+   GROUP BY "role"
+   ORDER BY rows DESC, "role";
+
+   -- (c) the column exists, and in the shape the rollback script restores
+   SELECT column_name, data_type, is_nullable, column_default
+   FROM information_schema.columns
+   WHERE table_name = 'FamilyGroupMember' AND column_name = 'role';
+   -- expect: role | text | NO | 'MEMBER'::text
+   ```
+   ```bash
+   # (d) the replacement runtime cannot reference the column. This runs INSIDE the
+   #     replacement image built at step 1 — the deploy host has only Docker and
+   #     Docker Compose, so a bare `node -e` at the host shell fails with
+   #     `node: command not found` (or `Cannot find module '@prisma/client'`). Same
+   #     wrapper as step 2, and the same assertion CI pins in
+   #     src/lib/__tests__/family-group-role-retirement.test.ts.
+   docker compose run --rm --no-deps app \
+     node -e "const {Prisma}=require('@prisma/client');const s=Object.keys(Prisma.FamilyGroupMemberScalarFieldEnum);if(s.includes('role'))throw new Error('ABORT: replacement client still names role');console.log('replacement runtime cannot name role:',s.join(','))"
+   ```
+   **(e) REQUIRED — dump the labels per row before they are destroyed.** This is the
+   only thing that makes an exact restore possible: `rollback.sql` step 1 repopulates
+   every row with `'MEMBER'`, which for a production row is a *substitute*, not the
+   value it held, and a real number of production rows hold `'ADMIN'` (the release
+   being replaced predates #2284 and still reads that label). `rollback.sql` step 3
+   reads this file back.
+
+   **The file has to land on the HOST, not inside a container.** `\copy` writes
+   client-side, relative to the psql process's working directory — and on this host
+   psql is inside the postgres container, so the obvious `\copy` form put
+   the file at `/family-group-member-role-<DATE>.csv` in that container's writable
+   layer: not the `postgres_data` volume, not any backup path, and gone the next time
+   the deploy script recreates the container (measured on `postgres:16` 16.14; it
+   reported `COPY` and nothing appeared on the host). Use server-side
+   `COPY … TO STDOUT` and redirect on the host instead:
+   ```bash
+   docker compose exec -T postgres \
+     psql -U tac -d tacbookings -v ON_ERROR_STOP=1 \
+       -c 'COPY (SELECT "id", "role" FROM "FamilyGroupMember" ORDER BY "id") TO STDOUT WITH (FORMAT csv, HEADER)' \
+     > ./family-group-member-role-$(date +%Y%m%d).csv
+   wc -l ./family-group-member-role-*.csv   # expect step 8(a)'s row count + 1 header
+   ```
+   Then **move it off the host to wherever the backup lives** and record that
+   location in [§8](#8-production-execution-record) — the answer to "where is it
+   stored" has to survive the deploy, and the deploy script recreates and prunes
+   containers at its steps 14/17/18/19.
+9. **Run the safety validator, then apply the migration.** Two commands, in this
+   order, both from the repository root on the deploy host.
+
+   **Read this before pasting anything.** The validator is a **separate script**.
+   It is not a Prisma plugin and it does not hook `prisma migrate deploy` — the
+   only thing that runs it automatically is
+   `scripts/run-production-blue-green-deploy.sh --internal-blue-green-deploy`
+   (step 12/19), and that script performs the whole ordinary blue/green cutover,
+   which is exactly what this window replaces. So in a hand-run window the
+   operator runs it, or nothing does, and
+   `ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS` / `BLUE_GREEN_MIGRATION_OVERRIDE_REASON`
+   passed to `prisma migrate deploy` alone are inert — they gate the validator, not
+   Prisma.
+
+   9(a) **Validate.** Name every pending migration's `migration.sql`. In a combined
+   window that is both of them:
+   ```bash
+   ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS=1 \
+   BLUE_GREEN_MIGRATION_OVERRIDE_REASON="#2543 + #2520 windowed maintenance window <DATE>: public traffic removed, web and all workers stopped, no old connections, fresh verified backup taken, pre-migration checks recorded" \
+   ./scripts/validate-blue-green-migrations.sh \
+     prisma/migrations/20260803010000_contract_subscription_lockout_drop_enabled/migration.sql \
+     prisma/migrations/20260803030000_contract_drop_family_group_member_role/migration.sql
+   ```
+   Expect exit 0 with the override reason echoed back as a `WARNING:` line. It
+   exits 1 without **both** variables, and exits 1 regardless if `rollback.sql` is
+   missing beside a windowed migration — a documentation failure the override
+   cannot rescue. Record the reason you actually used in
+   [§8](#8-production-execution-record); all three directions were exercised in
+   the [§7.2](#72-windowed-migration-rehearsal-20260803030000_contract_drop_family_group_member_role)
+   rehearsal.
+
+   9(b) **Migrate**, through the same dedicated compose service the deploy script
+   uses at its step 13/19:
+   ```bash
+   docker compose --profile migrate run --rm migrate
+   ```
+   Do **not** substitute `npx prisma migrate deploy`. The migrate service runs
+   `./node_modules/.bin/prisma migrate deploy` with the in-container
+   `DATABASE_URL` and a 2-connection pool; the deploy host is documented as needing
+   only Docker and Docker Compose (`DEPLOYMENT.md` → "Prerequisites"),
+   carries no `DATABASE_URL` in shell scope, and the runner image deliberately
+   deletes `npm`, `npx` and `corepack`, so `npx` is not available inside the image
+   either.
+10. **Verify the migrate step.** The column is gone and the history is right:
+    ```sql
+    -- expect zero rows
+    SELECT column_name FROM information_schema.columns
+    WHERE table_name = 'FamilyGroupMember' AND column_name = 'role';
+
+    -- expect exactly one applied row, no rolled-back marker
+    SELECT migration_name, finished_at, applied_steps_count, rolled_back_at
+    FROM "_prisma_migrations"
+    WHERE migration_name = '20260803030000_contract_drop_family_group_member_role';
+
+    -- and the rest of the table is untouched
+    SELECT COUNT(*) FROM "FamilyGroupMember";  -- matches step 8(a)
+    ```
+11. **Start the replacement web application and replacement workers only.** Never
+    the old images — see the rollback boundary below.
+12. **Smoke-test**, in this order:
+    - sign-in;
+    - viewing an existing family group (member side and **Admin → Family
+      Groups**);
+    - creating or updating family-group membership, where safely testable;
+    - family requests and approvals (join / invite / removal);
+    - member merge, and the other affected administration paths;
+    - ordinary member and admin page operation, including the **member profile
+      page** — that is where the old code's `role: "ADMIN"` read lived, so it is
+      the most direct check that the replacement runtime does not repeat it;
+    - worker and scheduled-job startup.
+13. **Check the logs** — application, worker, Prisma and PostgreSQL — for
+    missing-column, unknown-field or family-lifecycle errors. Grep for `42703`,
+    `P2022`, `does not exist` and `Unknown field`.
+14. **Restore public traffic** only after every check above passes.
+
+Keep the interval between step 4 and step 11 as short as practical.
+
+**How long the outage actually is, so you can announce it honestly.** The migration
+itself is trivial: one metadata-only statement on a small cold table, PostgreSQL
+marks the attribute dropped and performs no table rewrite. But the outage members
+experience is step 3 to step 14, and the migration is the cheapest thing in it. What
+dominates is the careful work either side of it: stopping every web process and
+worker and confirming nothing is still connected (steps 4-6), taking and verifying
+the snapshot (step 7), the four checks and the required per-row dump (step 8), then
+starting the replacement release and working the seven-item smoke test and the log
+sweep before traffic returns (steps 11-13). Time all of that on the staging
+rehearsal and announce that figure, not the migration's. Do **not** describe this to
+the club as "a few minutes"; the changelog entry deliberately does not, and the
+scheduling note gives the shape rather than a number.
+
+**Rollback boundary — read before you start.** Once the DROP commits:
+
+- **Do not restart the old application version, and do not route traffic back to
+  it.** Its client names a column that no longer exists; it will fail across the
+  family surface, and re-pointing Caddy does not fix that.
+- A rollback to the old version requires **first** either running
+  `prisma/migrations/20260803030000_contract_drop_family_group_member_role/rollback.sql`
+  by hand as the migration role, **or** restoring the verified step 7 backup.
+- **In a combined window, run BOTH migrations' `rollback.sql`, in the reverse of
+  the order they were applied** — `20260803030000` (this one) first, then
+  `20260803010000_contract_subscription_lockout_drop_enabled`. This one alone is
+  not enough and the gap is worse than the one it fixes: the family surface comes
+  back but `MembershipLockoutSettings.enabled` is still dropped, the previous
+  release's client names that column on every read of the model, and the booking
+  gates resolve the club's lockout policy through that read — so **every booking
+  write path still fails**, on money, while the family pages look fine and suggest
+  the rollback worked. The two touch different tables so neither order can corrupt
+  the other, but reverse order is the rule to follow and the one that was
+  rehearsed ([§7.2](#72-windowed-migration-rehearsal-20260803030000_contract_drop_family_group_member_role)).
+  `20260803000000_subscription_lockout_three_way_mode` needs no reverse script: it
+  is additive and the previous release's client never names `mode`.
+- `rollback.sql` recreates the column as `TEXT NOT NULL DEFAULT 'MEMBER'` —
+  byte-identical to the shape
+  `20260407120000_add_family_group_member_join_table` created and exactly what the
+  previous release's client expects — and the constant default repopulates every
+  existing row in that one statement.
+- **The per-row values are not restored by script** and cannot be: PostgreSQL
+  cannot un-drop a column. Every row comes back as `'MEMBER'`, which for a
+  production row is a **substitute, not the value it held**. What makes it the safe
+  substitute is that of the four labels that ever existed (`'MEMBER'`, `'ADMIN'`,
+  `'LEAD'`, `'USER'`) only `'ADMIN'` was ever read by anything, so repopulating with
+  `'MEMBER'` can only withhold a power and never grant one — fail-closed by
+  construction. It is not free: the release being rolled back to predates #2284 and
+  still reads the label, so with every row back as `'MEMBER'` nobody holds `'ADMIN'`,
+  the one-step partner declaration finds no candidates and returns its 403 for a
+  no-login target. Everything else about family groups is unaffected, because
+  nothing else reads the value, and the ordinary consent round-trip still works. To
+  get the real labels back, use the **required** step 8(e) dump with `rollback.sql`
+  step 3, or the backup.
+- **After a `rollback.sql`, the migration history lies, and nothing in the deploy
+  path notices.** `_prisma_migrations` still records the migration as applied with
+  `applied_steps_count = 1` and no rolled-back marker, so `prisma migrate status`
+  answers *"Database schema is up to date!"* and `prisma migrate deploy` answers
+  *"No pending migrations to apply."* — and the deploy script's own drift gate
+  (`migrate diff --from-migrations prisma/migrations --to-schema
+  prisma/schema.prisma`) also passes, because it compares committed history to the
+  schema file and never reads the live database. All three were measured on the
+  rolled-back database in the
+  [§7.2](#72-windowed-migration-rehearsal-20260803030000_contract_drop_family_group_member_role)
+  rehearsal. The one command that does see it is
+  `prisma migrate diff --exit-code --from-config-datasource --to-schema
+  prisma/schema.prisma`, which reports the leftover column and exits 2. Run that
+  before you trust a rolled-back database.
+- **Rolling forward: re-apply `migration.sql` by hand.** That is the recommended
+  path of the two, and the shorter: the history row is already correct, so
+  re-running the one `ALTER TABLE … DROP COLUMN "role"` as the migration role
+  leaves history, schema and database agreeing with nothing to clear up
+  afterwards. The alternative — `DELETE FROM "_prisma_migrations" WHERE
+  migration_name = '20260803030000_contract_drop_family_group_member_role'` and
+  then migrate again — also works and rewrites the history row, but it edits the
+  migration history by hand for no gain. Both were rehearsed, and both ended with
+  `migrate diff` reporting **no difference** and every row intact.
+- **You do not have to roll the schema forward to start the replacement release.**
+  Measured, not assumed: the replacement client reads and writes the join table
+  normally against the *rolled-back* schema, because the restored column is
+  `NOT NULL DEFAULT 'MEMBER'` and an insert that omits it takes the database
+  default. So a rollback followed by a fix-and-restart of the replacement release
+  is a working state, and the only thing outstanding is the leftover column and
+  the drift it causes. Roll the schema forward once the release is stable rather
+  than while you are still firefighting.
+
+If the replacement application fails after the migration and cannot be corrected
+promptly, choose one of exactly two paths: **roll forward** by fixing and starting
+the replacement runtime, or **run the verified schema rollback / restore the
+backup before restarting the previous version.** There is no third option in which
+the old version runs against the migrated schema.
+
+Both directions were rehearsed against a production-shaped database before merge
+([§7.2](#72-windowed-migration-rehearsal-20260803030000_contract_drop_family_group_member_role)).
 
 ---
 
@@ -384,7 +795,7 @@ deployment.
 
 Rollback follows `docs/BLUE_GREEN_MIGRATION_POLICY.md`. The policy's whole point
 is that migrations preserve old-code/new-schema compatibility until the previous
-color drains, which makes the rollback boundary the **cutover (step 16)**.
+color drains, which makes the rollback boundary the **cutover (step 17)**.
 
 That boundary holds only while every pending migration really is old-code
 compatible. It does **not** hold for a migration the ledger declares
@@ -393,8 +804,8 @@ already broken, so the boundary moves back to **step 13 (migrate)** and the
 recovery paths are forward to cutover, the migration's own `rollback.sql`, or the
 verified backup.
 
-**The ledger now holds a real `windowed` row**, and it is not the only migration in
-that class. Check for both:
+**The ledger now holds two real `windowed` rows**, and they are not the only
+migrations in that class. Check for all three:
 
 - `20260803010000_contract_subscription_lockout_drop_enabled` (#2543 / #2561) is
   declared `old_code_compatible=windowed`. It drops `MembershipLockoutSettings.enabled`,
@@ -402,6 +813,14 @@ that class. Check for both:
   moment migrate commits — which means every booking write path on the old colour,
   not just the admin panel. It ships a tested `rollback.sql` and requires the
   maintenance-window sequence in [§2.4](#24-windowed-migration-deploy-sequence).
+- `20260803030000_contract_drop_family_group_member_role` (#2520) is declared
+  `old_code_compatible=windowed` too. It drops `FamilyGroupMember.role`, which the
+  previous release's client names in ordinary projections, in insert column lists
+  **and** in a `WHERE` clause (`role: "ADMIN"`), so the moment migrate commits the
+  old version fails across the whole family surface — including the member profile
+  page. It ships a tested `rollback.sql` and its own ordered sequence at
+  [§2.4.1](#241-2520-drop-familygroupmemberrole). If both windowed migrations are
+  pending they share **one** window.
 - **`v0.10.0` has one migration in that class too**, declared before the value
   existed. `20260707000100_backfill_org_age_tier_not_applicable` is
   `old_code_compatible=no`, and its `lock_impact_plan` states plainly that
@@ -414,11 +833,17 @@ row **or** any `yes`/`no` row whose `lock_impact_plan` carries an old-code cavea
 routed"). `docs/BLUE_GREEN_MIGRATION_POLICY.md` → "Historical note" gives the
 class rule and a starting-point filter.
 
-### Before cutover (up to and including step 13/14/15)
+### Before cutover (up to and including step 13/14/15/16)
+
+**This subsection describes the ORDINARY blue/green deploy.** It does not apply to
+a release carrying a `windowed` migration: there the old colour is deliberately
+stopped before migrate, so there is no "old colour still serving" state to fall
+back into. Use [§2.4](#24-windowed-migration-deploy-sequence) and, for #2520,
+[§2.4.1](#241-2520-drop-familygroupmemberrole) instead.
 
 The **old color is still serving traffic**. The rest of this set is
 expand-shaped and old-code-compatible, so if the new color fails to come up
-healthy, or you abort before step 16, you can stop the deploy and leave the old
+healthy, or the warm-up gate refuses, or you abort before step 17, you can stop the deploy and leave the old
 color serving the already-migrated (backward-compatible) schema. This is a
 blocked upgrade, not an outage. No traffic ever reached the new color.
 
@@ -433,7 +858,7 @@ offers the fallback of deferring that single migration until the old color has
 fully drained: taking it keeps the whole window inside the ordinary
 abort-is-safe boundary.
 
-### After cutover (step 16 onward)
+### After cutover (step 17 onward)
 
 Traffic is on the new color. To fall back you re-point Caddy to the previous
 color (the engine restores the previous upstream file on a failed reload; a
@@ -457,6 +882,15 @@ rows as an owner-approved data operation (see below).
   data changes, not schema removals; they are re-doable/idempotent rather than
   auto-reversed. Re-enable modules via Admin > Modules ([§3.1](#31-re-enable-modules-in-admin--modules)).
   Treat any need to un-flip AgeTier rows as an owner-approved data operation.
+- **The `FamilyGroupMember.role` values dropped by `20260803030000`** are gone for
+  good: PostgreSQL cannot un-drop a column, and `rollback.sql` can only recreate
+  the column and refill it with the safe `'MEMBER'` default. Recovering the actual
+  labels needs either the per-row `\copy` dump the pre-migration checks take
+  ([§2.4.1](#241-2520-drop-familygroupmemberrole) step 8) or the
+  [§1.1](#11-verified-restore-tested-database-backup-with-s3-durability-confirmed)
+  backup. Nothing reads those labels — that is why the drop is safe — so this is a
+  record-keeping loss, not a behavioural one, with the single fail-closed exception
+  named in §2.4.1's rollback boundary.
 
 If a rollback becomes necessary, capture evidence, re-point to the old color to
 restore service, and escalate to the owner before any data-repair action.
@@ -481,7 +915,8 @@ restore service, and escalate to the owner before any data-repair action.
       durability confirmed (#1361), module-flip prediction captured, in-flight
       inductions listed, from/to versions pinned, staging rehearsal recorded.
 - [ ] [§2](#2-migrate) migrate: validator gate green (step 12), migrations
-      applied (step 13), AgeTier quiet-window observed, cutover clean (step 16).
+      applied (step 13), AgeTier quiet-window observed, warm-up gate green (step
+      16), cutover clean (step 17).
 - [ ] [§3](#3-post-upgrade-checklist) post-upgrade: modules re-enabled,
       access-role audit run if applicable, money/Xero spot-check clean, all four
       critical journeys pass, fork automation repointed off the removed cancel
@@ -632,6 +1067,274 @@ be caught by a row **mismatch** rather than a raised error.
 > against a **restored copy of the production backup** — the settings row's real
 > value is the one thing a seed cannot supply.
 
+### 7.2 Windowed migration rehearsal: `20260803030000_contract_drop_family_group_member_role`
+
+The repo's second `old_code_compatible=windowed` migration (#2520) was rehearsed
+both ways before merge. Recorded here for the same reason as §7.1: a windowed
+migration's rollback path is only a plan until somebody has run it.
+
+**Environment.** Throwaway PostgreSQL 16.14 container (`postgres:16`, Debian
+16.14-1). The **full migration history** applied to an empty database with the drop
+migration held back, so the starting point is exactly what `prisma migrate deploy`
+finds when it reaches it. Four `FamilyGroupMember` rows across two family groups,
+covering `'MEMBER'`, `'ADMIN'` and `'LEAD'` plus the shape that matters most: one row
+inserted *without naming the column*, so it took `'MEMBER'` from the database
+default. `FamilyGroup.billingMembershipId` pointed at one of the rows, because
+member-merge re-points that pointer and a `DROP COLUMN` must not disturb it.
+
+**Those three are not all the labels**, and the earlier draft of this section wrongly
+said they were. A fourth, `'USER'`, exists in production: the release being replaced
+writes it from `createFamilyGroupFromSuggestion` (to every non-lead member of a group
+created from a family suggestion) and from the `familyGroupMember.upsert` create arm
+in the admin dependent-link route. A supplementary run covering all four is recorded
+under "Supplementary run" below; it changed no conclusion, because a metadata-only
+`DROP COLUMN` and a constant-default `ADD COLUMN` are both indifferent to the values
+in the column.
+
+**Pre-migration checks** — the same four the window prescribes at
+[§2.4.1](#241-2520-drop-familygroupmemberrole) step 8, run here to prove the queries
+are right before an operator depends on them:
+
+```
+ family_group_member_rows        role  | rows      column_name | data_type | is_nullable | column_default
+--------------------------      --------+------     -------------+-----------+-------------+----------------
+                        4        MEMBER |    2      role        | text      | NO          | 'MEMBER'::text
+                                 ADMIN  |    1
+                                 LEAD   |    1
+```
+
+The per-row `\copy` dump produced `id,role` for all four rows. The column's measured
+shape is **`text | NO | 'MEMBER'::text`**, which is what `rollback.sql` claims to
+restore and what `20260407120000_add_family_group_member_join_table` created.
+
+**The `windowed` claim was verified, not assumed, against the right client.** A
+Prisma client was generated from **`v0.13.2`'s own `prisma/schema.prisma`** — the
+last tagged release, which is what production runs when this lands because the
+runtime half was never deployed separately. That client's scalars are
+`id,familyGroupId,memberId,role,joinedAt`. Three call shapes were exercised, one per
+mechanism the ledger row names:
+
+| Old-client call | Pre-migration | After migrate | After `rollback.sql` |
+| --- | --- | --- | --- |
+| unnarrowed `findMany` (names every scalar in the `SELECT`) | OK, 4 rows | **FAILED `[P2022]`** | OK, 4 rows |
+| `where: { memberId, role: "ADMIN" }` (the one-step partner read) | OK, 1 row | **FAILED `[P2022]`** | OK, **0 rows** |
+| `create` setting **no** role, narrowed to `select: { id: true }` | OK | **FAILED `[P2022]`** | OK |
+
+```
+=== previous-release (v0.13.2) client against the MIGRATED schema (role dropped) ===
+old client scalars: id,familyGroupId,memberId,role,joinedAt
+READ   FAILED: [P2022] The column `FamilyGroupMember.role` does not exist in the current database.
+FILTER FAILED: [P2022] The column `FamilyGroupMember.role` does not exist in the current database.
+WRITE  FAILED: [P2022] The column `role of relation FamilyGroupMember` does not exist in the current database.
+```
+
+The **write** result is the one worth reading twice: that call sets no role and
+narrows itself with `select`, and it still fails — because a static
+`@default("MEMBER")` is materialised client-side as a bind parameter, so the column
+is in the `INSERT` column list regardless. That is the claim in the ledger row that
+would have been easiest to get wrong, and it is measured here rather than reasoned
+about.
+
+**After migrate.** The column is gone, the four surviving scalars are
+`id, familyGroupId, memberId, joinedAt`, `_prisma_migrations` records the migration
+**once** with `applied_steps_count = 1` and no rolled-back marker, all **4 rows
+survive**, and `FamilyGroup.billingMembershipId` still points where it did.
+`prisma migrate diff` from the migrated database to this branch's
+`prisma/schema.prisma` reports **"No difference detected"** — the schema-field
+removal and the migration agree, which is what the CI drift gate checks.
+
+**The replacement runtime cannot name the column**, asserted three ways:
+
+- the generated client's `FamilyGroupMemberScalarFieldEnum` is exactly
+  `id,familyGroupId,memberId,joinedAt`;
+- **none** of the `FamilyGroupMember*` type blocks in the generated `index.d.ts`
+  names `role`. **Counting method, stated once so a re-derivation lands on the same
+  number:** count declarations of a `type` or `interface` whose name begins
+  `FamilyGroupMember`, then brace-match each one's body and search it for the
+  identifier `role`. In `node_modules/.prisma/client/index.d.ts` that is **98
+  declarations** (97 distinct names — one name is declared twice), and **zero** of
+  the 98 bodies names `role`. Count only distinct names and you get 97, which is why
+  the method matters more than the figure;
+- an unnarrowed `findMany` on the **replacement** client against the **migrated**
+  database returns rows normally.
+
+The exact enforcement is worth stating precisely, because the shorthand overstates
+it and the difference is why the old delegate-scan guards could be retired:
+
+| Call shape naming `role` on the replacement client | Result |
+| --- | --- |
+| `where: { role: "ADMIN" }` | **compile error** — `'role' does not exist in type 'FamilyGroupMemberWhereInput'` |
+| `select: { id: true, role: true }` | compiles; **`PrismaClientValidationError`** at runtime, before any SQL |
+| `create({ data: { …, role: "ADMIN" } })` | compiles; **`PrismaClientValidationError`** at runtime, before any SQL |
+
+So **no call shape emits SQL naming the column** — there is no route to a Postgres
+42703 from the replacement runtime — but only the `WHERE` shape is caught by `tsc`.
+The other two fail loudly and unconditionally on first invocation instead. The
+implicit hazard the old guard existed for (an `include:` naming the column with no
+author intent) is structurally impossible now, which is the basis on which the
+delegate scans were deleted from
+`src/lib/__tests__/family-group-role-retirement.test.ts`.
+
+**Rollback direction.** `rollback.sql` run by hand as the migration role:
+
+- it restored `role | text | NO | 'MEMBER'::text` — **byte-identical** to the
+  original column, confirmed by the script's own verification query;
+- all **4 rows** came back populated, all `'MEMBER'`, in the one `ALTER TABLE`
+  statement (constant default, no table rewrite);
+- the `v0.13.2` client then read, filtered **and wrote** normally again;
+- the filter returned **0 rows**, which is the documented cost measured rather than
+  predicted: with every row back as `'MEMBER'` nobody holds `ADMIN`, so the
+  one-step partner declaration finds no candidates and fails **closed**. Nothing
+  else about family groups changed.
+
+**The exact-value restore was exercised too**, since it is the only way
+back to the real labels and a commented block nobody has run is not evidence. The
+step-3 block in `rollback.sql`, run as a `psql -f` script (the `\copy`
+meta-command needs a script file, not `-c`), loaded the pre-migration dump and
+reported `UPDATE 2` — the two rows that differed — leaving
+`fgm-admin=ADMIN, fgm-lead=LEAD, fgm-plain=MEMBER, fgm-default=MEMBER`, exactly the
+pre-migration state.
+
+**Roll-forward after a rollback was rehearsed too**, because it is prescribed in
+four places (this section, §2.4.1's rollback boundary, `DEPLOYMENT.md`, and the
+`rollback.sql` header) and a prescribed step nobody has run is not evidence. It was
+also the direction with the nastiest surprise:
+
+| Command, run on the rolled-back database | Answer |
+| --- | --- |
+| `prisma migrate status` | **"Database schema is up to date!"** |
+| `prisma migrate deploy` | **"No pending migrations to apply."** |
+| `migrate diff --from-migrations prisma/migrations --to-schema prisma/schema.prisma` (the deploy script's own gate, step 12/19) | **"No difference detected", exit 0** |
+| `migrate diff --from-config-datasource --to-schema prisma/schema.prisma` | `[-] Removed column role`, **exit 2** |
+
+One practical note on the third row, since it is the only command in this table an
+operator cannot simply paste. `--from-migrations` replays the history into a shadow
+database, so by hand it refuses with *"You must set `datasource.shadowDatabaseUrl`
+in your `prisma.config.ts`"* unless `SHADOW_DATABASE_URL` is set — which is why it
+is the deploy script's gate and not yours: that script creates a throwaway shadow
+database and passes the variable itself
+(`scripts/run-production-blue-green-deploy.sh`, `create_shadow_database`). The
+command in the rollback boundary below, `--from-config-datasource`, needs no shadow
+database and is the one to run by hand.
+
+The first three are a **false all-clear**: `_prisma_migrations` still records the
+migration as applied (`applied_steps_count = 1`, no rolled-back marker), and the
+deploy script's drift gate compares committed history to the schema file, so it
+never reads the live database at all. Only the database-vs-schema diff sees the
+restored column. That is the command to run before trusting a rolled-back database,
+and it is now named in the rollback boundary.
+
+Both documented roll-forward paths were then run to completion:
+
+| Roll-forward path | Result |
+| --- | --- |
+| re-apply `migration.sql` by hand as the migration role | column dropped again, history row untouched and already correct, `migrate diff` **no difference**, all rows intact |
+| `DELETE` the `_prisma_migrations` row, then `prisma migrate deploy` | migration re-applied and the history row rewritten, `migrate diff` **no difference**, all rows intact |
+
+Re-applying by hand is the recommended path: same end state, and it does not edit
+the migration history. Two smaller measured facts came out of the same run. The
+replacement client **works against the rolled-back schema** — an unnarrowed
+`findMany` returned its rows and a `create` that omits the column succeeded, taking
+`'MEMBER'` from the database default — so a rollback does not force a schema
+roll-forward before the replacement release can start. And `rollback.sql` is **not
+idempotent**: a second run fails with `ERROR: column "role" of relation
+"FamilyGroupMember" already exists`, which is the safe direction (a loud refusal,
+not a silent double-apply) but worth knowing at 2am.
+
+**The combined-window rollback was rehearsed in reverse order**, since this release
+carries two windowed migrations and rolling back only one is the failure mode the
+rollback boundary now calls out. With both applied, running
+`20260803030000/rollback.sql` and then
+`20260803010000_contract_subscription_lockout_drop_enabled/rollback.sql` restored
+`FamilyGroupMember.role` as `text | NO | 'MEMBER'::text` **and**
+`MembershipLockoutSettings.enabled` as `boolean | NO | true`, with the settings row
+mapping `HARD_BLOCK` back to `enabled = true` as its own script documents, and
+every `FamilyGroupMember` row intact. The two touch different tables, so neither
+order can corrupt the other; reverse order is the rule because it is the one that
+generalises.
+
+**The gates were exercised in all three directions**, not just the passing one:
+
+| `scripts/validate-blue-green-migrations.sh` on this migration | Result |
+| --- | --- |
+| no override | **refuses**, exit 1 — names the `DROP COLUMN` and the `windowed` ledger declaration |
+| `ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS=1` + `BLUE_GREEN_MIGRATION_OVERRIDE_REASON` | passes, exit 0, echoing the reason |
+| override present but `rollback.sql` deleted | **refuses**, exit 1 — a documentation failure the override cannot rescue |
+
+**Independently re-run before merge, from scratch.** Because everything above is
+evidence for an irreversible change, the rehearsal was repeated on a *second*
+throwaway container by a session that had not run the first one and treated the
+recorded transcript as a claim to be refuted rather than a result to be trusted.
+Same environment (`postgres:16`, measured `16.14 (Debian 16.14-1.pgdg13+1)`), full
+history applied with the drop held back, four rows seeded the same way. Every
+number and message above reproduced: the pre-migration checks (4 rows;
+`MEMBER 2, ADMIN 1, LEAD 1`; `role | text | NO | 'MEMBER'::text`), the surviving
+scalars after the drop (`id, familyGroupId, memberId, joinedAt`) with all four rows
+and `FamilyGroup.billingMembershipId` intact, `rollback.sql` restoring
+`text | NO | 'MEMBER'::text` with every row `'MEMBER'`, its second run refusing with
+`column "role" of relation "FamilyGroupMember" already exists`, the exact-value
+restore reporting `UPDATE 2` and returning `fgm-admin=ADMIN, fgm-lead=LEAD`, the
+false all-clear on all three commands, `--from-config-datasource` exiting 2 with
+`[-] Removed column role`, re-applying `migration.sql` by hand leaving no drift and
+the history row untouched, and the validator refusing / passing / refusing again in
+the three directions above (exit 1, 0, 1). The generated-client proof was re-derived
+too: scalars `id,familyGroupId,memberId,joinedAt`, zero of the 98
+`FamilyGroupMember*` blocks in the generated `index.d.ts` naming `role`, and a live
+`tsc` probe confirming the asymmetry — `where: { role: "ADMIN" }` fails with
+`TS2353 … 'role' does not exist in type 'FamilyGroupMemberWhereInput'` while
+`select: { role: true }` compiles, exactly as the table above states. Nothing was
+found that contradicted the record; the shadow-database note above was the only
+thing added.
+
+**Supplementary run: the fourth label, and where the dump actually lands** (same
+`postgres:16` image, measured `16.14 (Debian 16.14-1.pgdg13+1)`, 2026-08-04). Two
+claims in the record above needed measuring rather than reasoning about, and both are
+now closed:
+
+- **All four labels, not three.** Five rows seeded in the column's original
+  `20260407120000` shape: `'ADMIN'`, `'LEAD'`, `'USER'`, `'MEMBER'`, plus one row
+  inserted without naming the column. Step 8(b) returned
+  `MEMBER 2, ADMIN 1, LEAD 1, USER 1`; 8(c) returned
+  `role | text | NO | 'MEMBER'::text`. The `DROP COLUMN` then left
+  `id, familyGroupId, memberId, joinedAt` with all **5 rows** intact, `rollback.sql`
+  step 1 restored `text | NO | 'MEMBER'::text` with **every row `'MEMBER'`** —
+  including the former `'USER'` row — and a second run refused with
+  `column "role" of relation "FamilyGroupMember" already exists`. Identical behaviour
+  to the three-label run, as expected of a metadata-only statement.
+- **The step 8(e) dump has to be taken to a host path.** Run the way an operator on a
+  Docker-only host must run psql, the old `\copy` form
+  (`\copy (…) TO 'family-group-member-role-<DATE>.csv' CSV HEADER`) reported
+  `COPY 5` and wrote the file to **`/family-group-member-role-<DATE>.csv` inside the
+  postgres container's own writable layer** — confirmed absent from the host and
+  absent from `/var/lib/postgresql/data`, so it is in neither the `postgres_data`
+  volume nor any backup path, and it does not survive a container recreate. The
+  step 8(e) replacement (`COPY … TO STDOUT WITH (FORMAT csv, HEADER)` redirected on
+  the host) produced the same 88-byte CSV **on the host**. Copied back in and fed to
+  `rollback.sql` step 3, it reported `COPY 5` / `UPDATE 3` and restored
+  `fgm-admin=ADMIN, fgm-lead=LEAD, fgm-user=USER` exactly, leaving the two genuine
+  `'MEMBER'` rows alone.
+- **Backup verification inside the window.** `gzip -t` on a truncated `.sql.gz` exits
+  1 with `unexpected end of file`; a complete dump carries
+  `-- PostgreSQL database dump complete`. `pg_restore --list` does **not** work on
+  these artifacts — it refuses with
+  `input file appears to be a text format dump. Please use psql.` — which is why
+  step 7 prescribes the first two and not the third.
+
+| Field | Value |
+| --- | --- |
+| Rehearsal environment | Throwaway PostgreSQL 16.14, full migration history, rows covering `'MEMBER'` / `'ADMIN'` / `'LEAD'` + one database-default row; supplementary run adds `'USER'` |
+| Migration | `20260803030000_contract_drop_family_group_member_role` |
+| Rehearsal date | 2026-08-03, extended 2026-08-04 (roll-forward and combined rollback), independently re-run from scratch 2026-08-04, supplementary run 2026-08-04 (fourth label, dump location, backup verification) |
+| Result | **PASS** — migrate, `rollback.sql` both ways, the exact-value restore, both roll-forward paths, the combined two-migration rollback in reverse order, and the supplementary four-label + host-side-dump run; no drift at the end of any path; all three validator directions as expected |
+| Notable findings | Five, all in the documentation rather than the migration. (1) Earlier drafts said naming the column is "a compile error" on the replacement client. Measured, only the `WHERE` shape is; `select` and `create`-data compile and are rejected by the client before any SQL. The conclusion (no SQL can name the column) is unchanged, and the schema comment, migration header, domain invariant and guard test were corrected to say the measured thing. (2) After `rollback.sql`, `migrate status`, `migrate deploy` **and the deploy script's own drift gate** all report a clean database; only a database-vs-schema `migrate diff` sees the restored column. The rollback boundary now names that command. (3) The documented migrate command for the window was `npx prisma migrate deploy`, which neither runs the safety validator (a separate script, invoked only by the deploy script) nor exists on the deploy host or in the runner image. Step 9 was rewritten as an explicit validator call followed by the compose `migrate` service. (4) Every artefact claimed three labels ever existed. There are four — `'USER'` is written by two live paths in the release being replaced — so the enumeration, step 8(b)'s stated expectation and the rollback's reasoning were all corrected, and the "it is already the value" ground for `'MEMBER'` was withdrawn because #2565 was never deployed, which makes the set of rows it describes empty in production. The per-row dump was promoted from recommended to **required** on the same finding. (5) The dump landed inside the postgres container rather than on the host; step 8(e) now takes it host-side. |
+| Rehearsed by | Lane implementation session (pre-merge, on the #2520 contract PR), then independently re-run from scratch by a second session that had not performed the first, then a supplementary run by the review-fix session |
+
+> This rehearsal used seeded rows, not a production snapshot. Before the production
+> window, re-run migrate and `rollback.sql` against a **restored copy of the
+> production backup**. The real distribution of `role` values is the one thing a
+> seed cannot supply — and it is exactly what step 8(b) records, since after the
+> drop it cannot be recovered from the database at all.
+
 ---
 
 ## 8. Production execution record
@@ -650,8 +1353,11 @@ Fill this in live during the production window.
 | Module-flip predicted (updatedByMemberId NULL?) | _<yes/no + toggles to re-enable>_ |
 | In-flight inductions affected (count) | _<...>_ |
 | Validator gate result (step 12) | _<green / details>_ |
+| Windowed migration: pre-migration check output (§2.4.1 step 8) | _<paste 8(a) row count, 8(b) distinct role values + counts, 8(c) column shape, 8(d) replacement-client scalars>_ |
+| Windowed migration: per-row role dump (§2.4.1 step 8(e), REQUIRED) | _<host filename + the durable location it was moved to, beside the backup>_ |
+| Windowed migration: override reason used (§2.4.1 step 9a) | _<the exact BLUE_GREEN_MIGRATION_OVERRIDE_REASON string>_ |
 | AgeTier plan (quiet window / deferred backfill) | _<...>_ |
-| Cutover time (step 16) | _<HH:MM TZ>_ |
+| Cutover time (step 17) | _<HH:MM TZ>_ |
 | Modules re-enabled | _<list>_ |
 | Access-role audit run / result | _<n/a or PASS>_ |
 | Money + Xero spot-check | _<clean / notes>_ |

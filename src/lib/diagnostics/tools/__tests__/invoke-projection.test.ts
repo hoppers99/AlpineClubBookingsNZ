@@ -24,7 +24,7 @@ import {
 import { recordDiagnosticsToolAudit } from "../audit";
 import { invokeDiagnosticsTool } from "../invoke";
 import { createDiagnosticsToolSession } from "../session";
-import type { DiagnosticsToolEntry } from "../registry";
+import type { DiagnosticsToolEntry } from "../define";
 import { DIAGNOSTICS_TOOL_BOUNDS, type DiagnosticsToolRow } from "../types";
 
 vi.mock("../authorize", () => ({ authorizeDiagnosticsToolCall: vi.fn() }));
@@ -71,8 +71,14 @@ function makeEntry(
     description: "A registry entry that exists only to exercise the guards.",
     requiredAreas: ["support"],
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    source: "select_only_sql",
     sql: "SELECT 1 AS one",
-    parseArgs: () => ({ ok: true, args: {}, params: [] }),
+    parseArgs: () => ({
+      ok: true,
+      source: "select_only_sql",
+      args: {},
+      params: [],
+    }),
     project,
     rowLimit: 5,
     byteLimit: DIAGNOSTICS_TOOL_BOUNDS.maxResultBytes,

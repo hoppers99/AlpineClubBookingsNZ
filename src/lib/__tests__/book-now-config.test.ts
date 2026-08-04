@@ -16,6 +16,7 @@ import {
   ANONYMOUS_BOOK_NOW_LABEL,
   MEMBER_BOOK_NOW_LABEL,
   getBookNowVariants,
+  getConfiguredBookNowPagePath,
 } from "@/lib/book-now-config";
 
 /**
@@ -252,5 +253,96 @@ describe("getBookNowVariants resolves both forms from one read (#2352 D2)", () =
 
     expect(variants.anonymous.href).toBe("/how-booking-works");
     expect(variants.member.href).toBe("/how-booking-works");
+  });
+});
+
+/**
+ * The warm-up gate's reader (#2566), which needs a distinction the button does not.
+ *
+ * `resolveBookNowChoice()` fails OPEN on a database error, so a failed read of
+ * `PublicContentSettings` used to arrive at every caller as "this club has no page
+ * target". For the button that is correct and required (#1929: it is never dead). For
+ * the pre-cutover gate it was a misreport: it printed "Nothing public is missing" about
+ * a critical public route it had never established the existence of.
+ */
+describe("getConfiguredBookNowPagePath tells a failed read from no target", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("returns the configured page", async () => {
+    findUnique.mockResolvedValue({
+      showBookNow: true,
+      bookNowTarget: "PAGE",
+      bookNowPage: {
+        slug: "how-booking-works",
+        path: "/how-booking-works",
+        published: true,
+      },
+    });
+
+    await expect(getConfiguredBookNowPagePath()).resolves.toEqual({
+      state: "page",
+      path: "/how-booking-works",
+    });
+  });
+
+  it("returns none for a hidden button and for the default booking flow", async () => {
+    findUnique.mockResolvedValue({
+      showBookNow: false,
+      bookNowTarget: "PAGE",
+      bookNowPage: {
+        slug: "how-booking-works",
+        path: "/how-booking-works",
+        published: true,
+      },
+    });
+    await expect(getConfiguredBookNowPagePath()).resolves.toEqual({
+      state: "none",
+    });
+
+    findUnique.mockResolvedValue({
+      showBookNow: true,
+      bookNowTarget: "BOOKING_FLOW",
+      bookNowPage: null,
+    });
+    await expect(getConfiguredBookNowPagePath()).resolves.toEqual({
+      state: "none",
+    });
+  });
+
+  it("returns none for an unpublished page target, which is a real answer", async () => {
+    findUnique.mockResolvedValue({
+      showBookNow: true,
+      bookNowTarget: "PAGE",
+      bookNowPage: {
+        slug: "how-booking-works",
+        path: "/how-booking-works",
+        published: false,
+      },
+    });
+
+    await expect(getConfiguredBookNowPagePath()).resolves.toEqual({
+      state: "none",
+    });
+  });
+
+  it("returns unreadable when the settings read fails, NOT none", async () => {
+    findUnique.mockRejectedValue(new Error("statement timeout"));
+
+    await expect(getConfiguredBookNowPagePath()).resolves.toEqual({
+      state: "unreadable",
+      detail: "statement timeout",
+    });
+  });
+
+  it("keeps the button live through that same failure", async () => {
+    // The #1929 contract is untouched: the fail-open is still a fail-open, and only a
+    // caller that asked for the distinction sees it.
+    findUnique.mockRejectedValue(new Error("statement timeout"));
+
+    expect(await bookNowFor(false)).toEqual({
+      show: true,
+      href: "/login?next=/book",
+      label: ANONYMOUS_BOOK_NOW_LABEL,
+    });
   });
 });

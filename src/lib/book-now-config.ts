@@ -4,6 +4,9 @@ import { buildBookingLoginPath } from "@/lib/auth-redirect";
 import { DEFAULT_PUBLIC_CONTENT_SETTINGS } from "@/config/club-settings-defaults";
 import { prisma } from "@/lib/prisma";
 import { isCmsServablePageSlug } from "@/lib/public-website-paths";
+// The warm-up gate's planner owns this shape and is deliberately pure, so the type
+// lives there and is imported here rather than the other way round (#2566).
+import type { ConfiguredBookNowTarget } from "@/lib/deploy/warmup-route-policy";
 
 /**
  * Resolved public "Book Now" button state (E3 #1929).
@@ -60,6 +63,19 @@ interface BookNowChoice {
   show: boolean;
   /** The admin's PAGE target, or null for the default booking flow. */
   pageHref: string | null;
+  /**
+   * Set when the settings read FAILED and this value is the fail-open default rather
+   * than the club's choice.
+   *
+   * The button itself does not care — #1929 requires it to be live either way, which
+   * is what the catch below delivers. It exists for the #2566 warm-up gate, whose
+   * answer to "is there a public booking entry page?" must not be the confident "no"
+   * that a swallowed database error otherwise produces. When it is set, `pageHref`
+   * carries no information at all.
+   */
+  readFailed: boolean;
+  /** Why the read failed, for the caller that reports it. */
+  readFailureDetail: string | null;
 }
 
 function bookNowVariant(
@@ -99,9 +115,17 @@ async function resolveBookNowChoice(): Promise<BookNowChoice> {
       return {
         show: DEFAULT_PUBLIC_CONTENT_SETTINGS.showBookNow,
         pageHref: null,
+        readFailed: false,
+        readFailureDetail: null,
       };
 
-    if (!settings.showBookNow) return { show: false, pageHref: null };
+    if (!settings.showBookNow)
+      return {
+        show: false,
+        pageHref: null,
+        readFailed: false,
+        readFailureDetail: null,
+      };
 
     // The servability check is the #2352 slice-1 half (added by that slice's
     // security review). Slice 1 reserved every first segment belonging to another
@@ -116,20 +140,39 @@ async function resolveBookNowChoice(): Promise<BookNowChoice> {
       settings.bookNowPage.path &&
       isCmsServablePageSlug(settings.bookNowPage.slug)
     ) {
-      return { show: true, pageHref: settings.bookNowPage.path };
+      return {
+        show: true,
+        pageHref: settings.bookNowPage.path,
+        readFailed: false,
+        readFailureDetail: null,
+      };
     }
 
     // BOOKING_FLOW, or a PAGE target whose page is missing, unpublished or at an
     // address the public website no longer serves: fail open.
-    return { show: true, pageHref: null };
-  } catch {
+    return {
+      show: true,
+      pageHref: null,
+      readFailed: false,
+      readFailureDetail: null,
+    };
+  } catch (error) {
     // Deliberately still FAIL-OPEN, and deliberately out of step with the
     // no-row branch above, which fails closed since #2430: a database error is
     // not a club's choice, and #1929 owns the "the button is never dead"
     // contract this line implements. So a club whose button is off can, for the
     // life of a database outage, show it — narrow the contract only with the
     // owner's decision on #1929, not as a side effect of a default flip.
-    return { show: true, pageHref: null };
+    //
+    // `readFailed` is what stops that fail-open from being read as a club's answer by
+    // a caller for which the difference matters. The button ignores it.
+    return {
+      show: true,
+      pageHref: null,
+      readFailed: true,
+      readFailureDetail:
+        error instanceof Error ? error.message : "unknown database error",
+    };
   }
 }
 
@@ -152,4 +195,44 @@ export async function getBookNowVariants(): Promise<{
     anonymous: bookNowVariant(false, choice),
     member: bookNowVariant(true, choice),
   };
+}
+
+/**
+ * The club's configured public booking entry page, or null when there is not one.
+ *
+ * For the pre-cutover warm-up gate (#2566). The owner's critical-route list names
+ * "any public booking entry route", and in this deployment that is either a CMS
+ * content page an admin pointed the Book Now button at, or nothing public at all:
+ * on the default `BOOKING_FLOW` target an anonymous visitor is sent to the member
+ * login path, which the same decision excludes from warming, and `/book` is
+ * authenticated.
+ *
+ * Reads through the one resolver above rather than querying again, so it inherits
+ * every rule the button itself obeys — the hidden-button case, the #1929 fail-open
+ * contract, and the #2352 servability check that refuses a target the public
+ * website no longer serves. A `none` here therefore means "no public booking page to
+ * warm", never "there is one but this function disagrees with the button".
+ *
+ * Three states rather than `string | null`, and that is the whole point of this
+ * signature. The resolver fails OPEN on a database error, so a failed read of
+ * `PublicContentSettings` produced the same `null` as a deliberately hidden button —
+ * and the gate then printed "Nothing public is missing" about a critical public route
+ * it had never established the existence of. `unreadable` is that case, named.
+ */
+export async function getConfiguredBookNowPagePath(): Promise<ConfiguredBookNowTarget> {
+  const choice = await resolveBookNowChoice();
+
+  if (choice.readFailed) {
+    return {
+      state: "unreadable",
+      detail:
+        choice.readFailureDetail ?? "the Book Now setting could not be read",
+    };
+  }
+
+  if (!choice.show || choice.pageHref === null) {
+    return { state: "none" };
+  }
+
+  return { state: "page", path: choice.pageHref };
 }

@@ -28,8 +28,13 @@ route registry, permission-checked server re-fetch, and evidence render for the
 page an admin is looking at. **AID-5 (#2374) has since landed the
 [SELECT-only tool substrate](tools.md)** — the server-owned typed tool registry and
 the dedicated least-privilege database credential it reads through, with its
-operator setup in [deployment.md](deployment.md). It ships **no domain tool**: the
-tool packs are AID-6A/B/C (#2375–#2377).
+operator setup in [deployment.md](deployment.md). **AID-6A (#2375) has since landed
+the [support tool pack](tool-pack-support.md)** — deployment, configuration and
+readiness evidence behind `support:view`, bounded sanitized audit correlation behind
+`support:view` **and** the affected domain's own `area:view`, one column-restricted
+`AuditLog` grant, and the shared evidence-state and diagnostic-case contracts the
+remaining packs plug into. Those are AID-6B (#2376, booking/membership) and AID-6C
+(#2377, finance/Xero).
 
 ## Governance: these contracts are binding
 

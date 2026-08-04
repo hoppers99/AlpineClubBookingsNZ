@@ -26,8 +26,8 @@ export type AuditSnapshot = {
   // `familyGroupRoles` was REMOVED by #2520, for the same reason and by the same
   // pattern as #2130's `managedAgeTierSettings` (see the note in collectSnapshot's
   // `metrics` block): this script is retired and never executes, so the snapshot
-  // loses no live coverage, and dropping it stops dead code naming
-  // FamilyGroupMember."role" before the CONTRACT migration drops that column.
+  // loses no live coverage, and dropping it stopped dead code naming a
+  // FamilyGroupMember column that 20260803030000 has since dropped outright.
   metrics: Record<string, number>;
 };
 
@@ -258,8 +258,8 @@ export function evaluateAuditSnapshots(
   // backfilled" check above and for the same reasons. The script is retired and
   // unreachable outside its unit test (main() returns immediately once the
   // 20260720120000 contraction migration exists, shipped in v0.12.2), so no live
-  // audit coverage is lost; removing it stops the retired script's SQL naming
-  // FamilyGroupMember."role" ahead of the CONTRACT migration that drops it. The
+  // audit coverage is lost; removing it stopped the retired script's SQL naming
+  // a FamilyGroupMember column that 20260803030000 has since dropped. The
   // "Family-group join rows preserved" check above is the one that mattered —
   // it counts the join ROWS, which is the fact the cleanup could have damaged.
   // The role labels never carried a grant at all (#2284).
@@ -692,21 +692,23 @@ function buildRepresentativeSeedSql(): string {
     VALUES ('audit-family-group', 'Audit Family Group', CURRENT_TIMESTAMP)
     ON CONFLICT ("id") DO NOTHING;
 
-    -- #2520 runtime-prep: this fixture no longer seeds the retired role column
-    -- (deliberately named here without SQL quoting, so the retirement guard's
-    -- raw-SQL scan does not read this comment as a live reference), mirroring
-    -- the #2130 cleanup of the AgeTierSetting fixture above.
-    -- Nothing forced the removal — this replay database never receives the
-    -- CONTRACT drop migration (main() applies only migrations < 20260629160000
-    -- plus two named ones), so the column survives here regardless. The real
-    -- reason is that the script is already RETIRED and never runs: main()
-    -- returns immediately because the 20260720120000 contraction migration
-    -- shipped in v0.12.2. This is defensive cleanup so the dead fixture SQL
-    -- stops naming a column the CONTRACT migration drops. The paired
+    -- #2520: this fixture does not seed the retired role column (deliberately
+    -- named here without SQL quoting, so the retirement guard's raw-SQL scan does
+    -- not read this comment as a live reference), mirroring the #2130 cleanup of
+    -- the AgeTierSetting fixture above.
+    -- Nothing forced the removal, and nothing has since: this replay database
+    -- never receives the CONTRACT drop migration
+    -- (20260803030000_contract_drop_family_group_member_role) because main()
+    -- applies only migrations < 20260629160000 plus two named ones, so the column
+    -- is still THERE in this replay database even though production no longer has
+    -- it. The real reason for the cleanup is that the script is already RETIRED
+    -- and never runs: main() returns immediately because the 20260720120000
+    -- contraction migration shipped in v0.12.2. The paired
     -- "FamilyGroupMember group-local MEMBER labels preserved" check and the
     -- familyGroupRoles snapshot metric went with it (see evaluateAuditSnapshots
-    -- and collectSnapshot). The column keeps its NOT NULL DEFAULT 'MEMBER', so
-    -- the two rows below still store 'MEMBER' without naming it.
+    -- and collectSnapshot). In this replay database the column keeps its
+    -- NOT NULL DEFAULT 'MEMBER', so the two rows below still store 'MEMBER'
+    -- without naming it.
     INSERT INTO "FamilyGroupMember" (
       "id",
       "familyGroupId",
@@ -844,8 +846,8 @@ function collectSnapshot(databaseUrl: string): AuditSnapshot {
     // familyGroupRoles was dropped by #2520 along with its check and its two
     // report lines, the same way #2130 dropped managedAgeTierSettings below.
     // This script is retired and never executes, so removing the snapshot read
-    // loses no live coverage; it just stops dead code naming
-    // FamilyGroupMember."role" before the CONTRACT migration drops it. The
+    // loses no live coverage; it just stopped dead code naming a
+    // FamilyGroupMember column that 20260803030000 has since dropped. The
     // metrics.familyGroupMemberRows count below is the one that mattered, and it
     // names no retired column.
     metrics: {

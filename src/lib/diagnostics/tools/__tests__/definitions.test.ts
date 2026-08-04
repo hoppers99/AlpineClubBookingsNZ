@@ -42,22 +42,71 @@ function matrix(
 }
 
 describe("diagnostics tool definitions offered to the model (#2374, ADR-002 §2)", () => {
-  it("offers the probe to an admin holding support:view", () => {
-    const definitions = listDiagnosticsToolDefinitions(matrix({ support: "view" }));
-    expect(definitions.map((definition) => definition.name)).toContain(
-      DIAGNOSTICS_SUBSTRATE_PROBE_TOOL_ID,
+  /** Every registered tool whose declared areas are exactly `support`. */
+  const SUPPORT_ONLY_TOOL_IDS = DIAGNOSTICS_TOOLS.filter(
+    (tool) => tool.requiredAreas.length === 1 && tool.requiredAreas[0] === "support",
+  ).map((tool) => tool.id);
+
+  /** Every registered tool that declares `support` PLUS at least one other area. */
+  const CROSS_AREA_TOOL_IDS = DIAGNOSTICS_TOOLS.filter(
+    (tool) => tool.requiredAreas.length > 1,
+  ).map((tool) => tool.id);
+
+  it("offers the support-only tools to an admin holding support:view, and withholds the cross-area ones", () => {
+    // AID-6A (#2375) is the first pack to register tools requiring MORE than
+    // `support`: each domain correlation entry requires `support:view` AND the
+    // affected domain's own area. So `support:view` alone must offer the system
+    // evidence and the system correlation — and must NOT offer the booking,
+    // membership, finance or lodge correlations.
+    const support = matrix({ support: "view" });
+    const offered = listDiagnosticsToolDefinitions(support).map(
+      (definition) => definition.name,
     );
-    expect(listWithheldDiagnosticsToolIds(matrix({ support: "view" }))).toEqual([]);
+    expect(offered).toContain(DIAGNOSTICS_SUBSTRATE_PROBE_TOOL_ID);
+    expect(offered).toEqual(SUPPORT_ONLY_TOOL_IDS);
+    expect(SUPPORT_ONLY_TOOL_IDS.length).toBeGreaterThan(1);
+
+    expect(CROSS_AREA_TOOL_IDS.length).toBeGreaterThan(0);
+    expect(listWithheldDiagnosticsToolIds(support)).toEqual(CROSS_AREA_TOOL_IDS);
   });
 
-  it("offers it at `edit` too — `view` is a floor, not an exact level", () => {
+  it("offers them at `edit` too — `view` is a floor, not an exact level", () => {
     const definitions = listDiagnosticsToolDefinitions(matrix({ support: "edit" }));
-    // Not `toHaveLength(DIAGNOSTICS_TOOLS.length)`: that comparison is satisfied by
-    // 0 === 0 and would pass even if the filter withheld everything.
+    // Not `toHaveLength(SUPPORT_ONLY_TOOL_IDS.length)` alone: that comparison is
+    // satisfied by 0 === 0 and would pass even if the filter withheld everything.
     expect(definitions.map((definition) => definition.name)).toEqual(
-      DIAGNOSTICS_TOOLS.map((tool) => tool.id),
+      SUPPORT_ONLY_TOOL_IDS,
     );
     expect(definitions.length).toBeGreaterThan(0);
+  });
+
+  it("offers EVERY tool to an admin holding view on every area", () => {
+    const all = Object.fromEntries(
+      ADMIN_PERMISSION_AREAS.map((area) => [area.key, "view"]),
+    ) as AdminPermissionMatrix;
+    expect(listDiagnosticsToolDefinitions(all).map((entry) => entry.name)).toEqual(
+      DIAGNOSTICS_TOOLS.map((tool) => tool.id),
+    );
+    expect(listWithheldDiagnosticsToolIds(all)).toEqual([]);
+  });
+
+  it("withholds a cross-area tool from an admin holding only ONE of its areas", () => {
+    // The AND rule, at the courtesy layer. A Booking Officer without `support:view`
+    // gets no booking correlation, and a support admin without `bookings:view` gets
+    // none either — the two halves are not interchangeable.
+    for (const areas of [
+      { bookings: "view" } as const,
+      { support: "view" } as const,
+    ]) {
+      const offered = listDiagnosticsToolDefinitions(matrix(areas)).map(
+        (definition) => definition.name,
+      );
+      for (const id of CROSS_AREA_TOOL_IDS) {
+        expect(offered, `${id} offered on ${JSON.stringify(areas)}`).not.toContain(
+          id,
+        );
+      }
+    }
   });
 
   it("withholds every tool from an admin holding no relevant area", () => {

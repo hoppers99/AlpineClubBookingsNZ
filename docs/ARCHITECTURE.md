@@ -2730,7 +2730,12 @@ membership. Provisioning is an operator step
 (`npm run diagnostics:provision-role`), not a migration: a database role is cluster
 state, needs a secret the schema must never contain, and its `SELECT` allowlist is
 declared in public code so "which tables can Diagnostics read" is answerable by
-reading one file. That allowlist is **empty** today — AID-5 ships no domain tool.
+reading one file. That allowlist names **one** relation today (AID-6A, #2375):
+`public."AuditLog"`, granted by **column** — eight of them, for the audit-correlation
+tools — because the rest of that table is IP addresses, user agents, free text,
+arbitrary JSON and member ids. A column grant makes the refusal PostgreSQL's own, so
+`SELECT "ipAddress" FROM "AuditLog"` fails as the diagnostics role, and the runtime
+self-check refuses the credential outright if a grant widens to the whole relation.
 
 Each read runs inside `BEGIN READ ONLY` with its own `statement_timeout`,
 `lock_timeout`, `idle_in_transaction_session_timeout`, and `search_path` pinned to
@@ -2738,6 +2743,18 @@ Each read runs inside `BEGIN READ ONLY` with its own `statement_timeout`,
 tool cannot ship an unbounded scan by omission. Read-only at the transaction level
 is the database's own refusal of every write and DDL statement independently of the
 role's grants, so both layers must fail before a write is possible.
+
+A registry entry declares one of two closed evidence sources. `select_only_sql` is
+the fixed statement above. `server_owned` (AID-6A, #2375) reads a fixed, first-party,
+read-only calculation the application already exposes to admins — diagnostics
+readiness, the monthly budget/usage panel, the authoritative cron health
+classification, the deployed bundle's identity — because those answers depend on
+encrypted credential state and on a verdict about the diagnostics role's own
+connection, which ADR-007 puts permanently out of that role's reach, and because a
+second calculation in SQL could drift from the admin screen. It is not a second
+privileged path: it runs through the same gates, and the only one it skips is the
+SELECT-only credential check, which does not govern it — and must be skipped, or
+readiness would become unreportable exactly when that credential is the fault.
 
 Ten gates run in a fixed order and every one returns **no rows**: registry, loop
 budget, fresh authorization, arguments, metering, credential, read, projection,
@@ -2748,8 +2765,20 @@ the audit row is written *before* any evidence is returned, and evidence is
 discarded if it cannot be written. An over-size result is a refusal, never a silent
 trim. Withholding a tool definition from the model is a usability courtesy — the
 per-invocation permission re-read is the control. Full reference:
-[`ai-diagnostics/tools.md`](ai-diagnostics/tools.md); operator setup in
+[`ai-diagnostics/tools.md`](ai-diagnostics/tools.md); the registered tools, their
+permissions and their projections in
+[`ai-diagnostics/tool-pack-support.md`](ai-diagnostics/tool-pack-support.md);
+operator setup in
 [`ai-diagnostics/deployment.md`](ai-diagnostics/deployment.md).
+
+Every result also carries a **stable evidence state** (`src/lib/diagnostics/case/`),
+because an empty result cannot distinguish "we looked and there is nothing" from "you
+were not permitted to see it" from "this deployment is not set up for it" — and a
+model shown one with no state narrates whichever is most plausible. The same module
+holds the shared diagnostic-case contract the domain packs contribute to, where a
+permission denial is recorded as an outcome rather than as a missing source and every
+finding carries a confidence so an inference cannot be presented as an authoritative
+rule result.
 
 ## Security and Privacy Boundaries
 

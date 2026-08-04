@@ -382,3 +382,57 @@ export async function listWebsiteMenuPages() {
       record.menuTitle.trim().length > 0 && isCmsServablePageSlug(record.slug),
   );
 }
+
+/**
+ * The published, servable CMS page paths, as a snapshot for the pre-cutover
+ * warm-up gate (#2566).
+ *
+ * The same three-part filter {@link listWebsiteMenuPages} applies, minus the
+ * navigation one: `published` (a draft or hidden page is never warmed — the owner's
+ * decision lists "draft pages" and "unpublished or deleted CMS pages" among the
+ * exclusions), and {@link isCmsServablePageSlug} (the address must be one the
+ * `(website)/[...slug]` catch-all will actually serve). A page with no `menuTitle`
+ * IS included, deliberately: it is unadvertised, not unpublished, and a visitor
+ * following a direct link still pays the cold render.
+ *
+ * Lives in this module rather than in the deploy code because this is where the
+ * published filter lives (#2440) and where the contract test keeps it — a second
+ * `PageContent` read somewhere else is how one caller ends up serving drafts.
+ *
+ * Ordered by path so the warm-up report reads the same way twice, and so the
+ * bounded-concurrency worker pool consumes a stable list.
+ */
+export async function listPublishedCmsPagePaths(): Promise<string[]> {
+  const records = await prisma.pageContent.findMany({
+    where: { published: true },
+    orderBy: { path: "asc" },
+    select: { slug: true, path: true },
+  });
+
+  return records
+    .filter((record) => isCmsServablePageSlug(record.slug))
+    .map((record) => record.path);
+}
+
+/**
+ * Is this CMS path STILL published and servable?
+ *
+ * The warm-up gate's answer to the owner's CMS-consistency requirement: "If a page
+ * is unpublished after discovery but before warming, distinguish that race from an
+ * unexpected missing published page." A 404 on a discovered path is only a failure
+ * if the page is still published; if an admin hid it mid-deploy, the 404 is the
+ * correct answer and the gate says so instead of blocking a cutover on it.
+ *
+ * Deliberately a FRESH read, not the snapshot: the whole point is to see the state
+ * as it is now rather than as discovery found it.
+ */
+export async function isCmsPagePathPublished(path: string): Promise<boolean> {
+  const record = await prisma.pageContent.findUnique({
+    where: { path },
+    select: { slug: true, published: true },
+  });
+
+  return Boolean(
+    record && record.published !== false && isCmsServablePageSlug(record.slug),
+  );
+}
