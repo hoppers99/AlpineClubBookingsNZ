@@ -564,7 +564,7 @@ export function AnalyticsIntegrationCard() {
                     Restore the suggested wording
                   </ViewOnlyActionButton>
                 ) : null}
-                <div className="rounded-md border border-border bg-muted/40 px-3 py-2">
+                <div className="rounded-md border border-border bg-muted px-3 py-2">
                   <p className="text-xs font-medium text-foreground">
                     Banner preview
                   </p>
