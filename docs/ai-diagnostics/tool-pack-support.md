@@ -349,7 +349,7 @@ as a row. It also reports the clip as the **machine-readable** evidence state:
 `evidence-state="result_truncated"` in the opening tag and the matching sentence in the
 body, derived from the same number as the header. That second half was missing at first:
 the state came from the executor's own `truncated` flag, which is set only when the source
-returned more rows than the row limit, so a block that clipped 8 of the 24 rows it held
+returned more rows than the row limit, so a block that clipped a third of the rows it held
 could carry `evidence-state="ok"` and "Evidence was retrieved." above an incomplete
 listing.
 A consumer branches on the state, so a silent cap has to read as a flag rather than as a

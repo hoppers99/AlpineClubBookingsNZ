@@ -379,8 +379,9 @@ function defineCorrelationTool(input: {
     //    event the platform did record.
     //
     // Both sentences cost block characters, which is why the per-entry prose above is
-    // kept tight: the widest of these scope lines and 24 rows have to fit 8 000
-    // characters together (see `CORRELATION_ROW_LIMIT`).
+    // kept tight: the widest of these scope lines and a full result have to fit 8 000
+    // characters together, and the row ceiling is set by that measurement rather than
+    // the other way round (see `CORRELATION_ROW_LIMIT`).
     evidenceScope: `${input.scope} It searched only the audit categories ${input.categories.join(", ")}. Nothing matched means nothing in THOSE categories matched in the window — not that nothing happened. A row recorded with NO category is matched by no correlation tool at all, so an empty result does not rule that out either.`,
     argsSchema: correlationArgsSchema,
     inputSchema: correlationInputSchema,
