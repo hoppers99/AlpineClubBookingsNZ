@@ -80,8 +80,13 @@ export const DIAGNOSTICS_EVIDENCE_STATE_DESCRIPTIONS: Record<
   string
 > = {
   ok: "Evidence was retrieved.",
+  // Worded to cover BOTH causes of an incomplete set, because there are two and the
+  // operator's move is the same for either: the source had more rows than the tool's
+  // row limit, or the evidence block could not list every row it was given (see
+  // `renderToolResultEvidence`). "Only the first part … was retrieved" was true of the
+  // first and wrong about the second.
   result_truncated:
-    "Only the first part of a longer result was retrieved, so this is not a complete set.",
+    "Only part of a longer result is here, so this is not a complete set.",
   not_found: "Nothing matched, so there is no evidence of this to report.",
   ambiguous:
     "More than one record matched, so a specific one has to be chosen before it can be investigated.",
@@ -152,7 +157,20 @@ const EVIDENCE_STATE_FOR_FAILURE: Record<
   internal_error: "tool_failed",
 };
 
-/** The stable state for one tool result — success, truncation and failure alike. */
+/**
+ * The stable state for what the executor RETRIEVED — success, truncation and failure
+ * alike.
+ *
+ * RETRIEVAL IS NOT PRESENTATION, and conflating the two is how the block came to
+ * contradict itself. `truncated` here means the SOURCE returned more rows than the
+ * tool's `rowLimit`. It says nothing about whether the rendered evidence block could
+ * list the rows it was handed — the block has its own character cap and drops whole
+ * rows to stay under it. A caller that renders a result for a model must therefore use
+ * `renderToolResultEvidence`, which returns the state the block itself asserts: this
+ * state, raised to `result_truncated` when the listing is short. Using this function's
+ * answer beside a clipped block is what produced `evidence-state="ok"` above
+ * `rows (22 of 24 listed …)`.
+ */
 export function evidenceStateForToolResult(
   result: DiagnosticsToolResult,
 ): DiagnosticsEvidenceState {
@@ -165,6 +183,26 @@ export function evidenceStateForToolResult(
   // model must not present the first as the second.
   if (result.rows.length === 0) return "not_found";
   return "ok";
+}
+
+/**
+ * The WORSE of two states, by the declared best-to-worst order of
+ * `DIAGNOSTICS_EVIDENCE_STATES`.
+ *
+ * It exists so a second state can be folded in without letting anything be laundered.
+ * The case recorder takes the state the model was actually shown (a block that clipped
+ * its rows asserts `result_truncated` where the retrieval was `ok`) and combines it
+ * this way, so a caller can only ever make a case's own account of itself MORE
+ * qualified — never turn a denial or a truncation back into "evidence was retrieved".
+ */
+export function worstEvidenceState(
+  first: DiagnosticsEvidenceState,
+  second: DiagnosticsEvidenceState,
+): DiagnosticsEvidenceState {
+  return DIAGNOSTICS_EVIDENCE_STATES.indexOf(second) >
+    DIAGNOSTICS_EVIDENCE_STATES.indexOf(first)
+    ? second
+    : first;
 }
 
 /**

@@ -267,7 +267,16 @@ wrong:
   result into an evidence block capped at 8 000 characters, about 1 000 of which is
   fixed framing. Real action codes in this repository run to 60 characters, so a
   rendered row is ~260. Thirty rows came to exactly 8 000 characters with three rows
-  gone and a fourth cut mid-field; 24 render whole with room to spare.
+  gone and a fourth cut mid-field. 24 render whole on an ordinary day, but **the margin
+  is thin, and this page previously overstated it** ("with room to spare") because the
+  measurement left out the `scope:` line the executor always attaches to these five
+  entries. Re-measured with it, at a mix of today's real action codes and a 24-character
+  request id, the widest-scope entry lands at 7 964 of the 8 000 characters — 36 to
+  spare. Wider-but-still-real values clip: 22 of 24 when every row carries the longest
+  60-character action code, 20 of 24 at wide field values throughout, and 16 of 24 once
+  a member has planted 128-character request ids. A clip is not a loss — the block says
+  so in its state and its header, see below — but nothing should be re-tuned on the
+  assumption that it cannot happen.
 - **The job-health ceiling is below the number of registered jobs** (34 at the time of
   writing, and the number only grows). The source orders by severity (error, warning,
   info, ok) and then by job name, and the executor keeps the first **18**. A healthy
@@ -284,9 +293,17 @@ wrong:
   projected shape at its own row limit and fails if the entry's ceiling is
   unachievable.
 
-**When a result really is too wide for the block, the block says so.** It drops whole
-rows from the tail and states `rows (K of N listed …)`, so the count the model reads
-always matches the rows in front of it and a partial row is never presented as a row.
+**When a result really is too wide for the block, the block says so — in both channels.**
+It drops whole rows from the tail and states `rows (K of N listed …)`, so the count the
+model reads always matches the rows in front of it and a partial row is never presented
+as a row. It also reports the clip as the **machine-readable** evidence state:
+`evidence-state="result_truncated"` in the opening tag and the matching sentence in the
+body, derived from the same number as the header. That second half was missing at first:
+the state came from the executor's own `truncated` flag, which is set only when the source
+returned more rows than the row limit, so a block that clipped 8 of 24 rows itself could
+carry `evidence-state="ok"` and "Evidence was retrieved." above an incomplete listing.
+A consumer branches on the state, so a silent cap has to read as a flag rather than as a
+complete answer.
 
 The window predicate is always applied, **including** when a request id is supplied.
 That is a performance control: `AuditLog` has no index on `requestId`, so a

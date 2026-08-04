@@ -33,6 +33,7 @@ import {
   DIAGNOSTICS_EVIDENCE_STATE_DESCRIPTIONS,
   evidenceStateForToolResult,
   isWithheldEvidenceState,
+  worstEvidenceState,
 } from "../states";
 
 const OBSERVED_AT = "2026-08-03T09:00:00.000Z";
@@ -169,6 +170,27 @@ describe("evidence states (#2375)", () => {
     );
   });
 
+  it("picks the WORSE of two states, and cannot be made to pick the better one", () => {
+    // The combining rule the case recorder uses when a caller has rendered a result and
+    // the BLOCK asserts something worse than the retrieval did (a listing the block had
+    // to clip). Order is the declared best-to-worst order of the vocabulary, and the
+    // operation is symmetric, so nothing can be laundered back to `ok` by argument
+    // position.
+    expect(worstEvidenceState("ok", "result_truncated")).toBe("result_truncated");
+    expect(worstEvidenceState("result_truncated", "ok")).toBe("result_truncated");
+    expect(worstEvidenceState("permission_denied", "result_truncated")).toBe(
+      "permission_denied",
+    );
+    expect(worstEvidenceState("result_truncated", "permission_denied")).toBe(
+      "permission_denied",
+    );
+    expect(worstEvidenceState("ok", "ok")).toBe("ok");
+    for (const state of DIAGNOSTICS_EVIDENCE_STATES) {
+      expect(worstEvidenceState("ok", state), state).toBe(state);
+      expect(worstEvidenceState(state, "ok"), state).toBe(state);
+    }
+  });
+
   it("marks only the withheld states as withheld", () => {
     expect(isWithheldEvidenceState("permission_denied")).toBe(true);
     expect(isWithheldEvidenceState("actor_blocked")).toBe(true);
@@ -197,6 +219,39 @@ describe("diagnostic case (#2375)", () => {
     expect(summary.withheldAreas).toEqual(["finance"]);
     expect(summary.states).toEqual(["ok", "permission_denied"]);
     expect(diagnosticCase.sources).toHaveLength(2);
+  });
+
+  it("records the state the MODEL WAS SHOWN when the block clipped the rows", () => {
+    // The retrieval was complete; the evidence block could not list all of it (its own
+    // character cap drops whole rows). Without this, the case says `ok` and
+    // `summariseDiagnosticCase` marks it COMPLETE, while the model answered from part of
+    // the set — the same class of defect as an empty result reading as an absence.
+    const diagnosticCase = createDiagnosticCase("system.what_happened");
+    const outcome = recordCaseEvidence(
+      diagnosticCase,
+      success([{ action: "a" }, { action: "b" }]),
+      "result_truncated",
+    );
+    expect(outcome.state).toBe("result_truncated");
+    // The retrieved row count is unchanged — it is a fact about the read, not about the
+    // listing — so the case still says how much evidence existed.
+    expect(outcome.rowCount).toBe(2);
+    expect(summariseDiagnosticCase(diagnosticCase).complete).toBe(false);
+  });
+
+  it("will not let a presented state downgrade a denial", () => {
+    // The parameter exists to QUALIFY a record further, never to soften one. A caller
+    // passing `ok` for a denied read still records the denial.
+    const diagnosticCase = createDiagnosticCase("finance.why_unpaid");
+    const outcome = recordCaseEvidence(
+      diagnosticCase,
+      failure("permission_denied", { missingAreas: ["finance"] }),
+      "ok",
+    );
+    expect(outcome.state).toBe("permission_denied");
+    const summary = summariseDiagnosticCase(diagnosticCase);
+    expect(summary.hasWithheldEvidence).toBe(true);
+    expect(summary.withheldAreas).toEqual(["finance"]);
   });
 
   it("falls back to the tool's declared areas when a denial names none", () => {

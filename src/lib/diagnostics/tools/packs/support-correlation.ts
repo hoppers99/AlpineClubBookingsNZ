@@ -280,7 +280,20 @@ function projectRequestId(value: unknown): string | null {
  *    (`booking_request.member_whole_lodge_approve_idempotent_replay`), so a row line
  *    of this shape is ~260-280 characters, not the 230 the old comment assumed.
  *    Thirty rows rendered to exactly 8 000 characters with three rows silently gone
- *    and a fourth cut mid-field. Twenty-four render whole with room to spare.
+ *    and a fourth cut mid-field.
+ *
+ *    TWENTY-FOUR RENDER WHOLE ON AN ORDINARY DAY, AND THE MARGIN IS THIN — an earlier
+ *    revision of this comment said "with room to spare", which was measured without
+ *    the `scope:` line the executor always attaches to these five entries. Re-measured
+ *    with it, at a mix of today's real action codes and a 24-character request id: the
+ *    widest-scope entry (system, 565 characters of scope) lands at 7 964 of the 8 000
+ *    characters, a margin of 36. So the ceiling is right for the ordinary case and
+ *    clips in several ordinary-ish ones — 22 of 24 when every row carries the longest
+ *    real 60-character code, 20 of 24 at wide-but-real field values, 16 of 24 once a
+ *    member has planted 128-character request ids. That is acceptable BECAUSE the
+ *    renderer is honest about it in the machine-readable state as well as the prose
+ *    (`renderToolResultEvidence`); it would not be acceptable as a silent loss, and
+ *    nothing here should be re-tuned on the assumption that a clip cannot happen.
  *  - `canonicalStringify` is `JSON.stringify(value, null, 2)`, so a projected row
  *    costs ~310 bytes rather than ~230. The ceiling below is the measured cost of
  *    twenty-four rows at the widest values this projection can now produce (a

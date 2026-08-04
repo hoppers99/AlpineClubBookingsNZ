@@ -27,6 +27,14 @@
   those categories* rather than that the event never happened. Where a related event
   lives under another category, the lookup that would find it is named.
 
+  **A partial answer is labelled as one.** A lookup's rows are shown to the assistant in
+  a block with a fixed size limit, and a wide result can be too long for it — 24 audit
+  events usually fit, and fewer do once the events carry long identifiers. When that
+  happens the block now says so twice: in the wording the assistant reads, and in the
+  status a screen or a later step can act on. Previously only the wording said it, so a
+  listing that had quietly dropped its last few events still carried the status
+  "evidence was retrieved".
+
   **What it never returns.** No API key, credential value, database password,
   connection string, or credential identifier. No prompts, answers, provider payloads
   or provider error text — only stable failure codes. No job error text or job result

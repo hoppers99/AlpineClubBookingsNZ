@@ -6,8 +6,10 @@
  */
 import { describe, expect, it } from "vitest";
 
+import { DIAGNOSTICS_EVIDENCE_STATE_DESCRIPTIONS } from "../../case/states";
 import {
   buildToolResultUserTurn,
+  renderToolResultEvidence,
   renderToolResultEvidenceBlock,
 } from "../render";
 import {
@@ -280,12 +282,98 @@ describe("tool result evidence block (#2374, ADR-003 §2)", () => {
     );
   });
 
+  it("reports its OWN clip in the MACHINE-READABLE state, not only in the prose", () => {
+    // The defect this closes (#2375 re-review). `evidenceStateForToolResult` derives
+    // `result_truncated` from `result.truncated`, which the executor sets only when the
+    // SOURCE returned more rows than the tool's `rowLimit`. The block's own clip — a
+    // second, independent cap — was invisible to it, so a result the executor considered
+    // complete rendered as `rows (K of N listed …)` under `evidence-state="ok"` and
+    // "Evidence was retrieved.", and the one field a consumer branches on (AID-7, #2378
+    // keys on it) asserted a complete retrieval. Reachable without an attacker at the
+    // correlation pack's own row ceiling, and reachable deliberately by any signed-in
+    // member: `AuditLog.requestId` is verbatim `x-request-id`, so 128-character ids on
+    // ordinary requests cost enough width to drop rows.
+    const rows = Array.from({ length: 60 }, (_unused, index) => ({
+      index,
+      note: `${index}-${"x".repeat(120)}`,
+    }));
+    // NOT truncated at the source: the executor is satisfied, the block is not.
+    const evidence = renderToolResultEvidence(success(rows, false));
+    expect(evidence.rowsRetrieved).toBe(rows.length);
+    expect(evidence.rowsListed).toBeLessThan(rows.length);
+    expect(evidence.evidenceState).toBe("result_truncated");
+    expect(evidence.block).toContain('evidence-state="result_truncated"');
+    expect(evidence.block).not.toContain('evidence-state="ok"');
+    expect(evidence.block).toContain(
+      `evidence state: result_truncated — ${DIAGNOSTICS_EVIDENCE_STATE_DESCRIPTIONS.result_truncated}`,
+    );
+    expect(evidence.block).not.toContain("Evidence was retrieved.");
+  });
+
+  it("derives the state and the rows header from the SAME number", () => {
+    // The property that stops the two disagreeing again, asserted across the range
+    // where the clip switches on: whatever the widths, "the listing is short" and
+    // "the state says truncated" are one decision.
+    for (const width of [10, 60, 120, 400]) {
+      for (const count of [1, 5, 24, 60]) {
+        const rows = Array.from({ length: count }, (_unused, index) => ({
+          index,
+          note: `${index}-${"x".repeat(width)}`,
+        }));
+        const evidence = renderToolResultEvidence(success(rows, false));
+        const label = `width=${width} count=${count}`;
+        const listed = evidence.block
+          .split("\n")
+          .filter((line) => /^- \d+\./.test(line)).length;
+        expect(listed, label).toBe(evidence.rowsListed);
+        const clipped = evidence.rowsListed < evidence.rowsRetrieved;
+        expect(evidence.evidenceState === "result_truncated", label).toBe(clipped);
+        expect(evidence.block.includes('evidence-state="result_truncated"'), label).toBe(
+          clipped,
+        );
+        expect(
+          evidence.block.includes(
+            `rows (${evidence.rowsListed} of ${evidence.rowsRetrieved} listed`,
+          ),
+          label,
+        ).toBe(clipped);
+        expect(evidence.block.includes(`rows (${count}):`), label).toBe(!clipped);
+      }
+    }
+  });
+
+  it("keeps a state that is already worse than a truncation", () => {
+    // A clip must not be able to DOWNGRADE anything. A denial renders with its own
+    // state and no rows, and a source-truncated result stays truncated.
+    expect(renderToolResultEvidence(failure()).evidenceState).toBe("permission_denied");
+    expect(
+      renderToolResultEvidence(success([{ probeOk: true }], true)).evidenceState,
+    ).toBe("result_truncated");
+    // And an empty result is still `not_found`, not a truncation: nothing was clipped.
+    const empty = renderToolResultEvidence(success([]));
+    expect(empty.evidenceState).toBe("not_found");
+    expect(empty.rowsListed).toBe(0);
+    expect(empty.rowsRetrieved).toBe(0);
+  });
+
   it("hands the caller a USER turn, so it cannot land in the system role by accident", () => {
     const turn = buildToolResultUserTurn(success([{ probeOk: true }]));
     expect(turn.role).toBe("user");
     expect(turn.content).toBe(
       renderToolResultEvidenceBlock(success([{ probeOk: true }])),
     );
+    // The turn carries the state its own block asserts, so a caller showing the
+    // operator a state cannot pick a different one than the model was shown.
+    expect(turn.evidenceState).toBe("ok");
+    const clipped = buildToolResultUserTurn(
+      success(
+        Array.from({ length: 60 }, (_unused, index) => ({
+          note: `${index}-${"x".repeat(120)}`,
+        })),
+        false,
+      ),
+    );
+    expect(clipped.evidenceState).toBe("result_truncated");
   });
 
   it("is deterministic — no clock and no randomness", () => {

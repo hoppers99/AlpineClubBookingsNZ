@@ -35,6 +35,7 @@ import type { DiagnosticsToolResult } from "../tools/types";
 import {
   evidenceStateForToolResult,
   isWithheldEvidenceState,
+  worstEvidenceState,
   type DiagnosticsEvidenceState,
 } from "./states";
 
@@ -157,12 +158,25 @@ export function createDiagnosticCase(investigation: string): DiagnosticCase {
  * you" instead of quietly containing no finance evidence. `areas` comes from the
  * result's own audit metadata rather than from the caller, so it cannot be
  * misreported as a different tool's requirement.
+ *
+ * `presentedState` is for a caller that has already RENDERED this result for a model:
+ * `renderToolResultEvidence` returns the state its block asserts, which is
+ * `result_truncated` where this function alone would say `ok`, because the block has its
+ * own row cap. Pass it and the case records the WORSE of the two, so the case cannot
+ * claim to be complete when the model was shown part of a set. It can only ever qualify
+ * the record further — `worstEvidenceState` refuses to turn a denial or a truncation back
+ * into `ok`, so this parameter is not a way to launder an outcome.
  */
 export function recordCaseEvidence(
   diagnosticCase: DiagnosticCase,
   result: DiagnosticsToolResult,
+  presentedState?: DiagnosticsEvidenceState,
 ): DiagnosticEvidenceSourceOutcome {
-  const state = evidenceStateForToolResult(result);
+  const retrieved = evidenceStateForToolResult(result);
+  const state =
+    presentedState === undefined
+      ? retrieved
+      : worstEvidenceState(retrieved, presentedState);
   const outcome: DiagnosticEvidenceSourceOutcome = {
     toolId: result.toolId,
     state,

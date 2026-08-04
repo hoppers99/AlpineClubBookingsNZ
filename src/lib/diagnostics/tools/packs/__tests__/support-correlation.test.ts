@@ -26,7 +26,10 @@ import type {
   DiagnosticsToolEntry,
 } from "../../define";
 import { SELECT_GRANTS } from "../../provision-role";
-import { renderToolResultEvidenceBlock } from "../../render";
+import {
+  renderToolResultEvidence,
+  renderToolResultEvidenceBlock,
+} from "../../render";
 import {
   DIAGNOSTICS_TOOL_BOUNDS,
   type DiagnosticsToolSuccess,
@@ -526,16 +529,65 @@ describe("AID-6A correlation SQL shape (#2375)", () => {
     // exactly 8 000 characters with three rows gone and a fourth cut mid-field.
     // This one renders the entry's own projected shape at its own ceiling and counts
     // the rows that survived.
-    expect(sql.rowLimit).toBe(24);
-    const rendered = renderToolResultEvidenceBlock(
-      correlationSuccess(sampleRows(sql, sql.rowLimit), true),
-    );
-    expect(rendered.length).toBeLessThanOrEqual(
-      DIAGNOSTICS_TOOL_BOUNDS.renderedBlockMaxChars,
-    );
-    const rowLines = rendered.split("\n").filter((line) => /^- \d+\./.test(line));
-    expect(rowLines).toHaveLength(sql.rowLimit);
-    expect(rendered).toContain(`rows (${sql.rowLimit}):`);
+    //
+    // EVERY ENTRY, AND WITH ITS OWN `scope:` LINE. Both halves were missing and both
+    // mattered: the executor attaches `evidenceScope` to every one of these results
+    // (`invoke.ts`), and the scope lines run from 308 to 565 characters, so measuring
+    // without one measured a block this pack never emits. The five entries do still
+    // render 24 whole rows this way, and the widest-scope entry does it with 36
+    // characters of the 8 000 to spare — which is the number that makes "room to
+    // spare" the wrong description and this assertion worth running per entry.
+    for (const entry of DIAGNOSTICS_SUPPORT_CORRELATION_TOOLS) {
+      expect(entry.rowLimit).toBe(24);
+      const evidence = renderToolResultEvidence({
+        ...correlationSuccess(sampleRows(entry, entry.rowLimit), false),
+        toolId: entry.id,
+        label: entry.label,
+        evidenceScope: entry.evidenceScope,
+      });
+      expect(evidence.block.length, entry.id).toBeLessThanOrEqual(
+        DIAGNOSTICS_TOOL_BOUNDS.renderedBlockMaxChars,
+      );
+      const rowLines = evidence.block
+        .split("\n")
+        .filter((line) => /^- \d+\./.test(line));
+      expect(rowLines, entry.id).toHaveLength(entry.rowLimit);
+      expect(evidence.block, entry.id).toContain(`rows (${entry.rowLimit}):`);
+      // Nothing was clipped, so the state must be the plain retrieval state.
+      expect(evidence.evidenceState, entry.id).toBe("ok");
+      expect(evidence.rowsListed, entry.id).toBe(entry.rowLimit);
+    }
+  });
+
+  it("FLAGS the clip in the state when a member has widened the rows", () => {
+    // The thin margin, and the property that makes it safe. A signed-in member can plant
+    // a 128-character `x-request-id` on ordinary requests, which is enough to push rows
+    // out of the block: measured at 16 of 24 for the system and membership entries. What
+    // must never happen is that loss reading as a complete answer, so the check is on the
+    // MACHINE-READABLE state a consumer branches on (AID-7, #2378), not only on the prose
+    // header. Before this, `evidence-state` came from the executor's `truncated` flag
+    // alone — false here, because the source returned exactly the row limit — so the
+    // block asserted `ok` and "Evidence was retrieved." above `rows (16 of 24 listed …)`.
+    for (const entry of DIAGNOSTICS_SUPPORT_CORRELATION_TOOLS) {
+      const evidence = renderToolResultEvidence({
+        ...correlationSuccess(
+          sampleRows(entry, entry.rowLimit, WIDEST_FIELDS),
+          false,
+        ),
+        toolId: entry.id,
+        label: entry.label,
+        evidenceScope: entry.evidenceScope,
+      });
+      expect(evidence.rowsListed, entry.id).toBeLessThan(entry.rowLimit);
+      expect(evidence.evidenceState, entry.id).toBe("result_truncated");
+      expect(evidence.block, entry.id).toContain(
+        'evidence-state="result_truncated"',
+      );
+      expect(evidence.block, entry.id).not.toContain('evidence-state="ok"');
+      expect(evidence.block, entry.id).toContain(
+        `rows (${evidence.rowsListed} of ${entry.rowLimit} listed`,
+      );
+    }
   });
 
   it("declares a byte ceiling its own row ceiling can actually reach", () => {
