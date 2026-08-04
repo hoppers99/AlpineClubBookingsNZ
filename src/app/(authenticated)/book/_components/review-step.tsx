@@ -37,7 +37,12 @@ import {
   type ExceptionRequestProposalView,
   type ExceptionRequestSubmitResult,
 } from "@/components/booking/request-officer-approval-card";
-import type { ExceptionOffer } from "@/lib/booking-exception-offer";
+import {
+  newBookingExceptionOmittedChanges,
+  newBookingExceptionOmitsPricedChoice,
+  type ExceptionOffer,
+  type NewBookingExceptionExtras,
+} from "@/lib/booking-exception-offer";
 import { useAgeTierOptions } from "@/lib/use-age-tier-options";
 import { CheckCircle2, CreditCard, Landmark } from "lucide-react";
 import type {
@@ -269,6 +274,35 @@ export function ReviewStep({
       setCancelIfGuestsBumped(false);
     }
   }, [cancelIfGuestsBumped, provisionalHoldWillBeCreated, setCancelIfGuestsBumped]);
+
+  /**
+   * The wizard choices an exception request does NOT carry (#2562 review).
+   *
+   * Read straight off the same state the create call sends, so the two cannot
+   * disagree about what was chosen. `submitExceptionRequest` posts only the lodge,
+   * the nights, the party and the member's message; everything gathered here is
+   * dropped, and the card names it rather than letting the member assume their
+   * whole screen was submitted.
+   */
+  const exceptionExtras: NewBookingExceptionExtras = {
+    promoCode: appliedPromo?.code ?? null,
+    workPartyEventId:
+      attendingWorkParty && selectedWorkPartyEventId
+        ? selectedWorkPartyEventId
+        : null,
+    // A work-party discount arrives as an applied promo with no member-visible
+    // code, so the code check alone would miss the free night entirely.
+    workPartyDiscountApplied: Boolean(appliedPromo?.workPartyEvent),
+    appliedCreditCents,
+    requestedRoomId: requestedRoomId || null,
+    expectedArrivalTime: expectedArrivalTime || null,
+    notes: notes.trim() ? notes : null,
+    internetBankingChosen: paymentMethod === "internet_banking",
+    // Only meaningful while a provisional hold is actually on the cards; the
+    // effect above clears the tick otherwise, and a stale tick is not a choice.
+    cancelIfGuestsBumped: provisionalHoldWillBeCreated && cancelIfGuestsBumped,
+    groupTrip: groupTrip && groupBookingsEnabled,
+  };
 
   return (
     <div className="space-y-4">
@@ -841,19 +875,28 @@ export function ReviewStep({
             checkOut: bookingDateStrings.checkOut,
             envelopeNightCount: nights,
             base: null,
-            // A new booking's whole intent IS the party and the nights, so there
-            // is nothing the request cannot carry.
-            omittedChanges: [],
+            // #2562 review: the proposal is the party and the nights, but the
+            // MEMBER's screen carries more than that, and the request carries none
+            // of it — no promo, no working-bee discount, no credit election, no
+            // room request, no arrival time, no note, no payment-method choice.
+            // `executeApprovedNewBooking` calls the canonical create with none of
+            // them, so an approval prices at the club's normal rates. Naming them
+            // is what makes the card's disclosure block render on this path.
+            omittedChanges: newBookingExceptionOmittedChanges(exceptionExtras),
             // The quote the SERVER produced for this party, labelled as a quote.
             // `priceQuote` is a required prop of this step, so it is always the
             // club's own figure and never a client calculation.
             priceImpact: {
-              label: "Total for this stay",
-              // The SERVER's own quote for this party, with any applied promo — the
-              // same figure the price summary above shows, read from the same
-              // place rather than recomputed here.
-              amountCents:
-                appliedPromo?.finalPriceCents ?? priceQuote.totalPriceCents,
+              // The label changes when a discount the member can see above is NOT
+              // part of what they are sending: an unlabelled figure beside a
+              // dropped promo is the wrong number twice over.
+              label: newBookingExceptionOmitsPricedChoice(exceptionExtras)
+                ? "Total for this stay at the club's normal rates"
+                : "Total for this stay",
+              // The UNDISCOUNTED server quote, always. The request carries no promo
+              // and no credit election, so the discounted figure the price summary
+              // above shows is one no approval could ever produce.
+              amountCents: priceQuote.totalPriceCents,
             },
             guests: reviewGuestPayload.map((guest) => ({
               firstName: guest.firstName,

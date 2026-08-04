@@ -498,6 +498,35 @@ const EXCEPTION_PROPOSAL_PAYLOAD_KEYS = [
   "guestStayRanges",
 ] as const;
 
+/**
+ * The omitted payload keys that change what the club would CHARGE (#2562 review).
+ *
+ * WHY THIS MATTERS ON SCREEN. `modify-quote` prices the WHOLE payload the member
+ * typed: `netChargeCents` is built from `newFinalPriceCents = newTotalPriceCents +
+ * newPromoAdjustmentCents`, so a promo in the payload is baked into the figure.
+ * The exception request carries none of that, so the frozen proposal prices
+ * without it — and the card was printing the promo-inclusive number directly above
+ * its own warning that the promo is not included. The two contradicted each other
+ * and the number was the wrong one.
+ *
+ * `linkGuestToMember` is in this set deliberately: linking a placeholder guest to
+ * a real member can move that guest onto member rates, so it is a price change
+ * dressed as a tidy-up. `settlementMethod`, `guestUpdates`,
+ * `memberReviewJustification`, `confirmOverCapacity` and `notifyMember` are not:
+ * they change how a change is settled, recorded or announced, never its price.
+ */
+const EXCEPTION_PRICE_AFFECTING_OMITTED_KEYS: ReadonlySet<string> = new Set([
+  "promoCode",
+  "removePromoCode",
+  "promoGuestIds",
+  "promoAddedGuestIndexes",
+  "applyCreditCents",
+  "partnerSharedGuests",
+  "linkGuestToMember",
+  "adminOverride",
+  "pricingMode",
+]);
+
 const EXCEPTION_OMITTED_CHANGE_LABELS: Record<string, string> = {
   guestUpdates: "guest name corrections",
   linkGuestToMember: "linking a placeholder guest to a member",
@@ -516,12 +545,22 @@ const EXCEPTION_OMITTED_CHANGE_LABELS: Record<string, string> = {
 
 export function exceptionRequestPayloadFromModification(
   body: Record<string, unknown>,
-): { payload: Record<string, unknown>; omittedChanges: string[] } {
+): {
+  payload: Record<string, unknown>;
+  omittedChanges: string[];
+  /**
+   * True when at least one dropped key would have changed the price, so the
+   * quote's `netChargeCents` is NOT the figure the frozen proposal would produce
+   * and must not be shown as one.
+   */
+  omitsPricedChange: boolean;
+} {
   const payload: Record<string, unknown> = {};
   for (const key of EXCEPTION_PROPOSAL_PAYLOAD_KEYS) {
     if (body[key] !== undefined) payload[key] = body[key];
   }
   const omitted = new Set<string>();
+  let omitsPricedChange = false;
   for (const key of Object.keys(body)) {
     if ((EXCEPTION_PROPOSAL_PAYLOAD_KEYS as readonly string[]).includes(key)) {
       continue;
@@ -530,8 +569,17 @@ export function exceptionRequestPayloadFromModification(
     // silently: a wrong-looking word on screen is recoverable, a change the member
     // believes they submitted is not.
     omitted.add(EXCEPTION_OMITTED_CHANGE_LABELS[key] ?? key);
+    // FAIL SAFE on an unrecognised key: assume it moved the price. Suppressing a
+    // figure costs the member a sentence about normal rates; showing a figure no
+    // approval can produce costs them the difference.
+    if (
+      EXCEPTION_PRICE_AFFECTING_OMITTED_KEYS.has(key) ||
+      !(key in EXCEPTION_OMITTED_CHANGE_LABELS)
+    ) {
+      omitsPricedChange = true;
+    }
   }
-  return { payload, omittedChanges: [...omitted].sort() };
+  return { payload, omittedChanges: [...omitted].sort(), omitsPricedChange };
 }
 
 function previousDateOnly(dateString: string | null) {
@@ -1384,6 +1432,19 @@ export function EditBookingPanel({
     hasChanges && overrideQuoteReady
       ? JSON.stringify(buildModificationPayload())
       : null;
+  /**
+   * What an exception request would DROP from the pending edit, and whether any of
+   * it moved the price (#2562 review).
+   *
+   * Computed from the SAME builder the quote and the request itself use, once per
+   * render, so the card's disclosure list, its figure and the payload that is
+   * actually posted cannot disagree. `omitsPricedChange` is what suppresses the
+   * quote's `netChargeCents` — that number prices the whole payload, promo and
+   * credit included, and the frozen proposal carries neither.
+   */
+  const exceptionOmissions = exceptionRequestPayloadFromModification(
+    buildModificationPayload(),
+  );
   useEffect(() => {
     if (quoteTimeoutRef.current) clearTimeout(quoteTimeoutRef.current);
     if (!modificationPayloadJson) {
@@ -3481,21 +3542,25 @@ export function EditBookingPanel({
                   checkOut: booking.checkOut,
                   guestCount: booking.guests.length,
                 },
-                // The server's own figure when it produced one. A refusal answered
-                // INSTEAD of a quote leaves this null, and the card then says how
-                // pricing actually works rather than inventing a number.
-                priceImpact: quote
-                  ? {
-                      label:
-                        quote.netChargeCents >= 0
-                          ? "Extra to pay if this is approved"
-                          : "Refund due if this is approved",
-                      amountCents: Math.abs(quote.netChargeCents),
-                    }
-                  : null,
-                omittedChanges: exceptionRequestPayloadFromModification(
-                  buildModificationPayload(),
-                ).omittedChanges,
+                // The server's own figure when it produced one, and ONLY when the
+                // request carries everything that figure was priced on. A refusal
+                // answered INSTEAD of a quote leaves this null; so does a quote
+                // whose payload included a promo, a credit election or anything
+                // else the proposal drops (#2562 review) — `netChargeCents` bakes
+                // those in, so it is not the number an approval would produce. In
+                // both cases the card falls back to saying how pricing actually
+                // works rather than showing a figure nobody will ever charge.
+                priceImpact:
+                  quote && !exceptionOmissions.omitsPricedChange
+                    ? {
+                        label:
+                          quote.netChargeCents >= 0
+                            ? "Extra to pay if this is approved"
+                            : "Refund due if this is approved",
+                        amountCents: Math.abs(quote.netChargeCents),
+                      }
+                    : null,
+                omittedChanges: exceptionOmissions.omittedChanges,
                 guests: [
                   ...remainingGuests.map((guest) => ({
                     firstName: guest.firstName,

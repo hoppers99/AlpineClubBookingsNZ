@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import {
   EXCEPTION_ELIGIBLE_REFUSAL_CODES,
+  newBookingExceptionOmittedChanges,
+  newBookingExceptionOmitsPricedChoice,
   readExceptionOffer,
+  type NewBookingExceptionExtras,
 } from "@/lib/booking-exception-offer";
 import {
   HARD_STOP_BOOKING_FAILURE_CODES,
@@ -294,5 +297,91 @@ describe("the allowlist itself", () => {
         violation.reasonCode,
       );
     }
+  });
+});
+
+
+/**
+ * #2562 review — what a NEW-booking exception request cannot carry.
+ *
+ * The wizard used to tell the card there was nothing to disclose here, on the
+ * grounds that "a new booking's whole intent IS the party and the nights". That is
+ * true of the PROPOSAL and false of the member's screen: the create call also sends
+ * a promo, a credit election, a room request, an arrival time, a note and a payment
+ * choice, `POST /api/bookings/exception-requests` accepts none of them, and
+ * `executeApprovedNewBooking` calls the canonical create with none of them. So a
+ * working-bee attendee whose free night is expressed as a promo saw the discounted
+ * figure with no notice and the approved booking billed the full rate.
+ */
+describe("new-booking exception omissions", () => {
+  function extras(
+    overrides: Partial<NewBookingExceptionExtras> = {},
+  ): NewBookingExceptionExtras {
+    return {
+      promoCode: null,
+      workPartyEventId: null,
+      workPartyDiscountApplied: false,
+      appliedCreditCents: 0,
+      requestedRoomId: null,
+      expectedArrivalTime: null,
+      notes: null,
+      internetBankingChosen: false,
+      cancelIfGuestsBumped: false,
+      groupTrip: false,
+      ...overrides,
+    };
+  }
+
+  it("discloses nothing when the member chose nothing beyond the party and the nights", () => {
+    expect(newBookingExceptionOmittedChanges(extras())).toEqual([]);
+    expect(newBookingExceptionOmitsPricedChoice(extras())).toBe(false);
+  });
+
+  it("names the promo and treats it as price-affecting", () => {
+    const applied = extras({ promoCode: "WINTER20" });
+    expect(newBookingExceptionOmittedChanges(applied)).toContain("the promo code");
+    expect(newBookingExceptionOmitsPricedChoice(applied)).toBe(true);
+  });
+
+  it("catches a working-bee discount that carries no member-visible code", () => {
+    // The failure this pins: a work-party discount arrives as an applied promo with
+    // `code: null` (the internal code never reaches the client), so a check on the
+    // code alone missed the free night entirely.
+    const workParty = extras({ workPartyDiscountApplied: true });
+    expect(newBookingExceptionOmittedChanges(workParty)).toContain(
+      "the working bee discount",
+    );
+    expect(newBookingExceptionOmitsPricedChoice(workParty)).toBe(true);
+  });
+
+  it("names account credit as both omitted and price-affecting", () => {
+    const credit = extras({ appliedCreditCents: 4800 });
+    expect(newBookingExceptionOmittedChanges(credit)).toContain(
+      "using account credit",
+    );
+    expect(newBookingExceptionOmitsPricedChoice(credit)).toBe(true);
+  });
+
+  it("names the choices that do not move the price without relabelling the figure", () => {
+    const soft = extras({
+      requestedRoomId: "room-2",
+      expectedArrivalTime: "18:30",
+      notes: "Arriving after dark.",
+      internetBankingChosen: true,
+      cancelIfGuestsBumped: true,
+      groupTrip: true,
+    });
+    const omitted = newBookingExceptionOmittedChanges(soft);
+    expect(omitted).toEqual([
+      "the room you asked for",
+      "your expected arrival time",
+      "your note to the club",
+      "paying by internet banking",
+      'the "only book if my guests can come" choice',
+      "opening this as a group trip",
+    ]);
+    // None of these changes what the club would charge, so the price label stays
+    // the plain one.
+    expect(newBookingExceptionOmitsPricedChoice(soft)).toBe(false);
   });
 });

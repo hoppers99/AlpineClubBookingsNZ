@@ -405,3 +405,117 @@ describe("booking wizard — submitting the exception request", () => {
     ).toBe("req-old");
   });
 });
+
+/**
+ * #2562 review — an offer belongs to ONE proposal.
+ *
+ * Nothing retired a stale offer when the member changed their mind. `handleSubmit`,
+ * `handleJoinWaitlist` and `handleSaveAsDraft` cleared it, and no effect watched the
+ * dates, the lodge or the party — so a member refused for a one-night Saturday could
+ * press Back, extend to two nights (now compliant), return to Review, and still be
+ * shown "Ask a Booking Officer to allow this" naming the OLD rule and the OLD
+ * affected night above a booking they could make instantly. Clicking it answered 400
+ * "This proposal does not trip any reviewable booking-policy exception" — a dead end
+ * the card has no remedy branch for. The quieter variant is worse to read: a
+ * DIFFERENT short stay kept the previous refusal's nights on screen while the
+ * payload that would be frozen was the new one.
+ */
+describe("booking wizard — an offer belongs to the proposal it was refused for", () => {
+  it("retires the offer when the member changes the nights", async () => {
+    const { result } = await seatedWizard({
+      create: () => jsonResponse(MIN_STAY_REFUSAL, false, 400),
+      request: REQUEST_CREATED,
+    });
+    await act(async () => {
+      await result.current.handleSubmit();
+    });
+    expect(result.current.exceptionOffer).not.toBeNull();
+
+    // Back, then extend the stay to two nights. The old refusal describes nights
+    // that are no longer being proposed.
+    await act(async () => {
+      await result.current.handleDateSelect("2026-06-11", "2026-06-13");
+    });
+    expect(result.current.exceptionOffer).toBeNull();
+  });
+
+  it("retires the offer for a DIFFERENT short stay, not just a compliant one", async () => {
+    // The milder, worse-reading variant: still refusable, but the card would have
+    // described the previous refusal's nights.
+    const { result } = await seatedWizard({
+      create: () => jsonResponse(MIN_STAY_REFUSAL, false, 400),
+      request: REQUEST_CREATED,
+    });
+    await act(async () => {
+      await result.current.handleSubmit();
+    });
+    expect(result.current.exceptionOffer).not.toBeNull();
+
+    await act(async () => {
+      await result.current.handleDateSelect("2026-06-18", "2026-06-19");
+    });
+    expect(result.current.exceptionOffer).toBeNull();
+  });
+
+  it("retires the offer when the party changes", async () => {
+    const { result } = await seatedWizard({
+      create: () => jsonResponse(MIN_STAY_REFUSAL, false, 400),
+      request: REQUEST_CREATED,
+    });
+    await act(async () => {
+      await result.current.handleSubmit();
+    });
+    expect(result.current.exceptionOffer).not.toBeNull();
+
+    act(() => {
+      result.current.handleGuestsChange([
+        ...result.current.guests,
+        {
+          firstName: "Pat",
+          lastName: "Visitor",
+          ageTier: "ADULT",
+          isMember: false,
+        },
+      ]);
+    });
+    expect(result.current.exceptionOffer).toBeNull();
+  });
+
+  it("retires the offer when the LODGE changes under unchanged nights", async () => {
+    // The lodge is part of the proposal's identity, and this is the one path that
+    // moves it on its own: `handleLodgeChange` wipes the dates when a lodge was
+    // already chosen, so only the first seating leaves the nights standing. Without
+    // the lodge in the signature the offer would survive a change of building —
+    // and the rule it names belongs to the lodge that refused it.
+    const { result } = await seatedWizard({
+      create: () => jsonResponse(MIN_STAY_REFUSAL, false, 400),
+      request: REQUEST_CREATED,
+    });
+    await act(async () => {
+      await result.current.handleSubmit();
+    });
+    expect(result.current.exceptionOffer).not.toBeNull();
+
+    act(() => {
+      result.current.handleLodgeChange("lodge-2");
+    });
+    expect(result.current.checkIn).toBe("2026-06-11");
+    expect(result.current.exceptionOffer).toBeNull();
+  });
+
+  it("keeps the offer while the proposal is untouched", async () => {
+    // The mirror of the rule: retiring on any re-render at all would take the
+    // member's only remedy away from them.
+    const { result } = await seatedWizard({
+      create: () => jsonResponse(MIN_STAY_REFUSAL, false, 400),
+      request: REQUEST_CREATED,
+    });
+    await act(async () => {
+      await result.current.handleSubmit();
+    });
+    act(() => {
+      result.current.setNotes("Arriving late.");
+    });
+    expect(result.current.exceptionOffer?.code).toBe("MINIMUM_STAY_VIOLATION");
+  });
+});

@@ -190,3 +190,98 @@ export function readExceptionOffer(body: unknown): ExceptionOffer | null {
     capacityMode: aggregate as PolicyExceptionCapacityMode,
   };
 }
+
+// ---------------------------------------------------------------------------
+// What a NEW-BOOKING exception request cannot carry (#2562)
+// ---------------------------------------------------------------------------
+
+/**
+ * The wizard choices that a new-booking exception request DOES NOT carry.
+ *
+ * WHY THIS EXISTS. `POST /api/bookings/exception-requests` accepts exactly five
+ * things — lodge, check-in, check-out, guests, the member's message (plus the
+ * supersede id) — because a policy-exception proposal IS a party and a set of
+ * nights: that is what gets hashed, frozen and re-executed byte-for-byte. The
+ * wizard's own create call sends a great deal more, and
+ * `executeApprovedNewBooking` calls `createConfirmedBooking` with none of it: no
+ * promo, no credit election, no room request, no arrival time, no notes, no
+ * payment-method choice. So an approval prices and books at the club's normal
+ * rates.
+ *
+ * The card used to be told there was nothing to disclose here ("a new booking's
+ * whole intent IS the party and the nights"), which is true of the PROPOSAL and
+ * false of the member's screen: a working-bee attendee whose free night is
+ * expressed as a promo was shown the discounted figure with no notice, and the
+ * approved booking billed the full rate.
+ *
+ * Every field is REQUIRED and explicitly typed, for the same reason the edit
+ * panel's counterpart derives its list from real payload keys: a wizard choice
+ * added later cannot be silently dropped without somebody deciding, in writing,
+ * whether the request carries it.
+ */
+export interface NewBookingExceptionExtras {
+  /** A manually entered promo code, when one is applied. */
+  promoCode: string | null;
+  /** A selected working-bee event, when the member ticked one. */
+  workPartyEventId: string | null;
+  /** Whether the member's applied discount came from a work party. */
+  workPartyDiscountApplied: boolean;
+  /** Account credit the member elected to spend, in integer cents. */
+  appliedCreditCents: number;
+  /** A requested room, when the club offers room requests. */
+  requestedRoomId: string | null;
+  /** An expected arrival time, when the member gave one. */
+  expectedArrivalTime: string | null;
+  /** Free-text notes for the club. */
+  notes: string | null;
+  /** True when the member chose internet banking over card. */
+  internetBankingChosen: boolean;
+  /** The "only book if my guests can come" election. */
+  cancelIfGuestsBumped: boolean;
+  /** True when the member asked to open this as a group trip. */
+  groupTrip: boolean;
+}
+
+/**
+ * Those of the wizard's extras that change what the club would CHARGE.
+ *
+ * Kept as its own predicate because the price on the card is only honest when
+ * none of these is set: the figure has to be the undiscounted quote for the party
+ * and nights being frozen, and the label has to say so when a discount the member
+ * can see on the screen above is not part of what they are sending.
+ */
+export function newBookingExceptionOmitsPricedChoice(
+  extras: NewBookingExceptionExtras,
+): boolean {
+  return (
+    extras.promoCode !== null ||
+    extras.workPartyDiscountApplied ||
+    extras.workPartyEventId !== null ||
+    extras.appliedCreditCents > 0
+  );
+}
+
+/** The dropped choices, named for the member, in a stable order. */
+export function newBookingExceptionOmittedChanges(
+  extras: NewBookingExceptionExtras,
+): string[] {
+  const omitted: string[] = [];
+  if (extras.promoCode !== null) omitted.push("the promo code");
+  if (extras.workPartyEventId !== null || extras.workPartyDiscountApplied) {
+    omitted.push("the working bee discount");
+  }
+  if (extras.appliedCreditCents > 0) omitted.push("using account credit");
+  if (extras.requestedRoomId !== null) omitted.push("the room you asked for");
+  if (extras.expectedArrivalTime !== null) {
+    omitted.push("your expected arrival time");
+  }
+  if (extras.notes !== null) omitted.push("your note to the club");
+  if (extras.internetBankingChosen) {
+    omitted.push("paying by internet banking");
+  }
+  if (extras.cancelIfGuestsBumped) {
+    omitted.push('the "only book if my guests can come" choice');
+  }
+  if (extras.groupTrip) omitted.push("opening this as a group trip");
+  return omitted;
+}

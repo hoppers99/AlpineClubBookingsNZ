@@ -278,6 +278,53 @@ describe("EditBookingPanel — when the request action appears", () => {
     expect(screen.queryByTestId("request-officer-approval")).toBeNull();
   });
 
+  /**
+   * #2562 review — a promo-inclusive figure above "the promo is not included".
+   *
+   * The quote prices the WHOLE payload (`netChargeCents` derives from
+   * `newFinalPriceCents = newTotalPriceCents + newPromoAdjustmentCents`), and
+   * `handleSave` does not clear `quote` on a refusal, so the stale promo-inclusive
+   * number was what the card rendered — directly above its own warning that the
+   * promo is not part of the request. The two contradicted each other and the
+   * number was the wrong one: the frozen proposal prices without the promo.
+   */
+  it("shows no figure when the request drops something the quote was priced on", async () => {
+    const booking = {
+      ...makeBooking(),
+      promo: {
+        code: "SPRING",
+        type: "PERCENTAGE",
+        description: "Spring special",
+        workPartyEventName: null,
+      },
+      promoAdjustmentCents: -2000,
+    };
+    render(<EditBookingPanel booking={booking} onDone={vi.fn()} />);
+
+    // Take the promo off AND shorten the stay in one edit — the exact journey.
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    const saveButton = await shortenStayAndWaitForSave();
+    fireEvent.click(saveButton);
+
+    const card = await screen.findByTestId("request-officer-approval");
+    expect(card).toHaveTextContent(/removing the promo code/);
+    // The figure is withheld and the honest sentence takes its place.
+    expect(card).toHaveTextContent(/Worked out at the club's normal rates/i);
+    expect(card).not.toHaveTextContent(/Extra to pay if this is approved/);
+    expect(card).not.toHaveTextContent(/Refund due if this is approved/);
+  });
+
+  it("still shows the quote's figure when the request carries everything it priced", async () => {
+    render(<EditBookingPanel booking={makeBooking()} onDone={vi.fn()} />);
+    const saveButton = await shortenStayAndWaitForSave();
+    fireEvent.click(saveButton);
+
+    const card = await screen.findByTestId("request-officer-approval");
+    // A pure date change drops nothing, so the server's own figure stands.
+    expect(card).toHaveTextContent(/Refund due if this is approved/);
+    expect(card).toHaveTextContent("$50.00");
+  });
+
   it("retires the offer once a fresh quote comes back clean", async () => {
     render(<EditBookingPanel booking={makeBooking()} onDone={vi.fn()} />);
     const saveButton = await shortenStayAndWaitForSave();
@@ -456,5 +503,67 @@ describe("exceptionRequestPayloadFromModification", () => {
       checkOut: "2026-09-05",
     });
     expect(Object.keys(payload)).toEqual(["checkOut"]);
+  });
+
+  /**
+   * #2562 review — which omissions make the quote's figure the WRONG figure.
+   *
+   * `modify-quote` prices the whole payload the member typed: `netChargeCents` is
+   * built from `newFinalPriceCents = newTotalPriceCents + newPromoAdjustmentCents`,
+   * so a promo in the payload is baked in. The card was printing that number
+   * directly above its own warning that the promo is not included — the two
+   * contradicted each other and the number was the one no approval could produce.
+   */
+  it("flags a dropped promo, credit or member link as price-affecting", () => {
+    for (const key of [
+      "promoCode",
+      "removePromoCode",
+      "promoGuestIds",
+      "promoAddedGuestIndexes",
+      "applyCreditCents",
+      "partnerSharedGuests",
+      "linkGuestToMember",
+      "adminOverride",
+      "pricingMode",
+    ]) {
+      const { omitsPricedChange } = exceptionRequestPayloadFromModification({
+        checkOut: "2026-09-05",
+        [key]: "whatever",
+      });
+      expect(omitsPricedChange, key).toBe(true);
+    }
+  });
+
+  it("does not flag omissions that change how a change is recorded, not its price", () => {
+    for (const key of [
+      "guestUpdates",
+      "settlementMethod",
+      "memberReviewJustification",
+      "confirmOverCapacity",
+    ]) {
+      const { omitsPricedChange } = exceptionRequestPayloadFromModification({
+        checkOut: "2026-09-05",
+        [key]: "whatever",
+      });
+      expect(omitsPricedChange, key).toBe(false);
+    }
+    // And a payload that drops nothing at all keeps its figure.
+    expect(
+      exceptionRequestPayloadFromModification({
+        checkOut: "2026-09-05",
+        removeGuestIds: ["g2"],
+      }).omitsPricedChange,
+    ).toBe(false);
+  });
+
+  it("treats an UNKNOWN dropped key as price-affecting", () => {
+    // Fail safe. Suppressing a figure costs the member a sentence about normal
+    // rates; showing one no approval can produce costs them the difference.
+    expect(
+      exceptionRequestPayloadFromModification({
+        checkOut: "2026-09-05",
+        someFutureField: true,
+      }).omitsPricedChange,
+    ).toBe(true);
   });
 });

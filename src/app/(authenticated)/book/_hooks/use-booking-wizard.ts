@@ -156,10 +156,48 @@ export function useBookingWizard() {
    * shared rule in `readExceptionOffer`. The wizard never decides eligibility for
    * itself, so a hard failure (a full lodge, invalid dates, a consent or authority
    * refusal, a tampered payload) can never draw the action.
+   *
+   * STORED WITH THE PROPOSAL IT BELONGS TO, and that is the point of the wrapper
+   * (#2562 review). An offer describes ONE refused proposal: this lodge, these
+   * nights, this party. The member can go Back, extend a one-night stay to two,
+   * and return to Review — and the old offer would still have been drawn there,
+   * naming the old rule and the old affected nights above a booking they could now
+   * make instantly. Clicking it answered 400 "this proposal does not trip any
+   * reviewable booking-policy exception", a dead end with no remedy branch; the
+   * quieter variant was worse, because a DIFFERENT short stay kept the previous
+   * refusal's wording over the new payload. The signature is compared during
+   * render rather than cleared by an effect, so there is no frame in which the
+   * stale card is on screen at all.
    */
-  const [exceptionOffer, setExceptionOffer] = useState<ExceptionOffer | null>(
-    null,
-  );
+  const [exceptionOfferState, setExceptionOfferState] = useState<{
+    offer: ExceptionOffer;
+    proposalSignature: string;
+  } | null>(null);
+  /**
+   * The identity of the proposal an offer belongs to: the lodge, the nights and
+   * the exact guest payload the create call would send.
+   *
+   * Built from `buildGuestPayload()` on purpose — the same function the create and
+   * the request both use — so "the proposal changed" means what the server would
+   * see change, not what a component re-rendered.
+   */
+  function exceptionProposalSignature(): string {
+    return JSON.stringify({
+      lodgeId: lodgeId ?? null,
+      checkIn,
+      checkOut,
+      guests: buildGuestPayload(),
+    });
+  }
+  /**
+   * Record an offer against the proposal that was live when the server refused it,
+   * or clear it. Callers keep the plain `ExceptionOffer | null` contract they had.
+   */
+  function setExceptionOffer(offer: ExceptionOffer | null) {
+    setExceptionOfferState(
+      offer ? { offer, proposalSignature: exceptionProposalSignature() } : null,
+    );
+  }
   /**
    * The open request this visit is here to REPLACE, from
    * `/book?replaceRequest=<id>` — the link the member's request area renders. Read
@@ -1377,6 +1415,20 @@ export function useBookingWizard() {
   const remainingToPay = finalPriceBeforeCredit - appliedCreditCents;
   const bookingDateStrings = getBookingDateStrings();
   const reviewGuestPayload = priceQuote ? buildGuestPayload() : guests;
+  /**
+   * The offer, but ONLY while it still describes the proposal on screen.
+   *
+   * A mismatch means the member changed the lodge, the dates or the party after
+   * the refusal, so the offer describes something they are no longer proposing.
+   * Answering null retires it in the same render the change lands in — no effect,
+   * no cleared-too-late window, and no dependence on a component remembering to
+   * clear it (the edit panel's quote effect does the same job for that surface).
+   */
+  const exceptionOffer =
+    exceptionOfferState &&
+    exceptionOfferState.proposalSignature === exceptionProposalSignature()
+      ? exceptionOfferState.offer
+      : null;
   const cardPaymentDescription =
     bookingMessages["booking.payment.card.description"] ??
     "Pay now and secure the booking immediately.";
