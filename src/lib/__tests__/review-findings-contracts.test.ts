@@ -1302,7 +1302,10 @@ describe("review finding source/schema contracts", () => {
 
   it("keeps the active Caddy upstream file consistent if reload fails", () => {
     const source = readRepoFile("scripts/run-production-blue-green-deploy.sh");
-    const cutoverBlock = sliceFrom(source, 'step "16/19"', 'step "17/19"');
+    // The cutover moved from step 16 to step 17 when #2566 inserted the
+    // pre-cutover warm-up gate ahead of it. The block being sliced is still the
+    // Caddy switch; only its number changed.
+    const cutoverBlock = sliceFrom(source, 'step "17/20"', 'step "18/20"');
     const writeIndex = cutoverBlock.indexOf("write_active_upstream_file");
     const reloadIndex = cutoverBlock.indexOf("reload_caddy");
     const hasExplicitRestorePath =

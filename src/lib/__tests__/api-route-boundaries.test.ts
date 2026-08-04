@@ -141,7 +141,13 @@ function expectedBoundaryFor(routePath: string) {
   if (routePath.startsWith("src/app/api/finance/")) return "finance";
   if (routePath.startsWith("src/app/api/lodge/")) return "lodge";
   if (routePath.startsWith("src/app/api/cron/")) return "cron";
-  if (routePath === "src/app/api/deploy/runtime-status/route.ts") return "cron";
+  // Every `/api/deploy/*` route is operator machinery for
+  // `scripts/run-production-blue-green-deploy.sh` and is guarded by the shared
+  // cron/deploy secret. A PREFIX rather than the single named file it used to be
+  // (#2566 added the warm-up gate): a new deploy route now inherits the
+  // requirement instead of defaulting to "member" and failing for the wrong
+  // reason, and one that forgets the guard still fails.
+  if (routePath.startsWith("src/app/api/deploy/")) return "cron";
   return "member";
 }
 
