@@ -68,10 +68,22 @@
   nights, the change simply goes through and nothing is flagged, because the rule
   asks whether cover exists and not whether one particular person is still there.
 
-  **A Booking Officer is never stopped, and the club gets an urgent entry
-  instead.** Your change always goes through — you are the authority the member's
-  message points at — and so do the changes nobody can sensibly block, such as a
-  membership lapsing or a payment failing. What happens instead is that the affected
+  **A Booking Officer is asked to confirm rather than refused.** Your change is
+  always allowed — you are the authority the member's message points at — but where
+  it would leave one of that member's bookings without cover you are shown which
+  bookings and which nights, and asked to confirm it and give a reason. Re-submit
+  with the reason and the change goes through, recorded against your name so anybody
+  reading the history later can see who allowed it and why. Where nothing would be
+  left uncovered you are not asked anything, so an ordinary edit is unchanged.
+
+  **The changes nobody can sensibly block are never stopped, and the club gets an
+  urgent entry instead.** A membership lapsing, being made inactive, cancelled or
+  archived; a payment failing; an automated status change; a group settlement that
+  did not complete — all of these are allowed, and each one records the check it owes
+  at the moment it happens, so the club is told rather than finding out later. So is
+  a self-removal by somebody who is a guest on another member's booking: they are
+  never shown that member's other bookings and never asked to fix something that is
+  not theirs. What happens instead in every one of these cases is that the affected
   booking stays confirmed and keeps its beds and its payments, nothing is ever
   cancelled automatically, the booking owner is emailed once naming the lodge and the
   uncovered nights, and the booking appears on a new **Bookings without required
