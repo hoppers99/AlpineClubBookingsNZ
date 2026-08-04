@@ -161,6 +161,19 @@ export interface ExceptionRequestGuestInput {
   /** YYYY-MM-DD; falls back to the booking envelope when absent. */
   stayStart?: string | null;
   stayEnd?: string | null;
+  /**
+   * The guest's EXPLICIT night set (#713 multi-date-range mode), YYYY-MM-DD.
+   *
+   * Load-bearing, not optional detail (#2562 review). Both member surfaces send
+   * per-guest night sets whenever the "Multiple date ranges" mode is on — which
+   * needs no feature flag and is on by default for a booking that already has a
+   * sparse guest — and a request that dropped them froze the ENVELOPE for every
+   * guest instead. A member asking for one extra night then had six frozen,
+   * reserved, reviewed, priced and executed against them. When present and
+   * non-empty the guest stays exactly these nights; the envelope is derived from
+   * them, exactly as the canonical create and modify paths do.
+   */
+  nights?: string[] | null;
 }
 
 export interface CreateNewBookingExceptionRequestInput {
@@ -251,11 +264,23 @@ export function buildProposalPartyFromGuests(
   const bookingNights = envelopeNights(checkIn, checkOut);
   const guestNights: string[][] = guests.map((guest, index) => {
     const range = normalizeGuestStayRange(
-      { stayStart: guest.stayStart ?? null, stayEnd: guest.stayEnd ?? null },
+      {
+        stayStart: guest.stayStart ?? null,
+        stayEnd: guest.stayEnd ?? null,
+        // The explicit night set wins over the range, which is what
+        // `normalizeGuestStayRange` does for every other caller. Dropping it here
+        // froze the envelope for a guest who picked three nights out of nine.
+        nights: guest.nights ?? null,
+      },
       { checkIn, checkOut },
       index,
     );
-    const nights = envelopeNights(range.stayStart, range.stayEnd);
+    // An explicit set is the guest's nights VERBATIM (already deduped and sorted
+    // by the normaliser); only a contiguous range expands to its envelope.
+    const nights =
+      range.nights && range.nights.length > 0
+        ? range.nights.map(formatDateOnly)
+        : envelopeNights(range.stayStart, range.stayEnd);
     return nights.length > 0 ? nights : bookingNights;
   });
 
@@ -315,6 +340,16 @@ export interface ModificationDeltaInput {
     guestId: string;
     stayStart?: string | null;
     stayEnd?: string | null;
+    /**
+     * The guest's explicit night set (#713). Carried for the same reason as on
+     * `ExceptionRequestGuestInput`: the shared resolver's range-input mode hinges
+     * on ANY range input anywhere, and a night set stripped on the way in flipped
+     * the whole request into no-range-inputs mode — which resets every guest to the
+     * envelope on a date change, and keeps their STORED nights when the dates did
+     * not move, so the frozen proposal was either far wider than the ask or
+     * identical to the base.
+     */
+    nights?: string[] | null;
   }>;
 }
 
@@ -436,6 +471,24 @@ function optionalDateOnly(value: unknown): string | undefined {
 }
 
 /**
+ * A stored explicit night set, canonicalised: date-only strings, deduped, sorted.
+ * Absent or empty becomes `undefined` so the stored delta stays byte-stable
+ * (`normalizeStoredExceptionDelta`'s contract) and a re-freeze of the same request
+ * writes the same JSON.
+ */
+function optionalNightList(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const nights = [
+    ...new Set(
+      value.filter(
+        (night): night is string => typeof night === "string" && night.length > 0,
+      ),
+    ),
+  ].sort();
+  return nights.length > 0 ? nights : undefined;
+}
+
+/**
  * Canonicalise the stored delta so a re-freeze of the same member request writes
  * the same JSON: absent/empty collections are dropped rather than stored as `[]`,
  * and blank date strings become absent. Purely cosmetic for correctness — the
@@ -466,6 +519,12 @@ export function normalizeStoredExceptionDelta(
         ? { stayStart: guest.stayStart }
         : {}),
       ...(optionalDateOnly(guest.stayEnd) ? { stayEnd: guest.stayEnd } : {}),
+      // #713 explicit night set. Stored so the approval REPLAY produces the same
+      // party the freeze did — without it the replay lost the member's night
+      // selection and could only reproduce the frozen hash by accident.
+      ...(optionalNightList(guest.nights)
+        ? { nights: optionalNightList(guest.nights) }
+        : {}),
     }));
   }
   if (delta.removeGuestIds?.length) {
@@ -476,6 +535,9 @@ export function normalizeStoredExceptionDelta(
       guestId: range.guestId,
       ...(optionalDateOnly(range.stayStart) ? { stayStart: range.stayStart } : {}),
       ...(optionalDateOnly(range.stayEnd) ? { stayEnd: range.stayEnd } : {}),
+      ...(optionalNightList(range.nights)
+        ? { nights: optionalNightList(range.nights) }
+        : {}),
     }));
   }
   return out;
@@ -520,6 +582,17 @@ export function parseStoredExceptionDelta(
       ) {
         return null;
       }
+      // A stored `nights` that is not an array of strings is not a well-formed
+      // delta: fail closed (the approval then reports proposal drift) rather than
+      // replaying a party with the night set silently dropped.
+      if (guest.nights !== undefined) {
+        if (
+          !Array.isArray(guest.nights) ||
+          !guest.nights.every((night) => typeof night === "string")
+        ) {
+          return null;
+        }
+      }
       addGuests.push({
         firstName: guest.firstName,
         lastName: guest.lastName,
@@ -528,6 +601,7 @@ export function parseStoredExceptionDelta(
         memberId: stringOrUndefined(guest.memberId) ?? null,
         stayStart: stringOrUndefined(guest.stayStart) ?? null,
         stayEnd: stringOrUndefined(guest.stayEnd) ?? null,
+        nights: optionalNightList(guest.nights) ?? null,
       });
     }
   }
@@ -547,10 +621,19 @@ export function parseStoredExceptionDelta(
       if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
       const range = entry as Record<string, unknown>;
       if (typeof range.guestId !== "string") return null;
+      if (range.nights !== undefined) {
+        if (
+          !Array.isArray(range.nights) ||
+          !range.nights.every((night) => typeof night === "string")
+        ) {
+          return null;
+        }
+      }
       guestStayRanges.push({
         guestId: range.guestId,
         stayStart: stringOrUndefined(range.stayStart) ?? null,
         stayEnd: stringOrUndefined(range.stayEnd) ?? null,
+        nights: optionalNightList(range.nights) ?? null,
       });
     }
   }
@@ -1697,6 +1780,9 @@ export async function readMemberExceptionRequests(
         lastConflictAt: true,
         createdBookingId: true,
         supersededByRequestId: true,
+        // For the capacity SENTENCE only (#2562). `capacityHeld` on this path is
+        // hard-coded false; the mode is what lets the words say WHY.
+        aggregateCapacityMode: true,
       },
       orderBy: { createdAt: "desc" },
       take: MEMBER_EXCEPTION_REQUEST_CAP,
@@ -1716,6 +1802,11 @@ export async function readMemberExceptionRequests(
         lastConflictReason: true,
         lastConflictAt: true,
         supersededByRequestId: true,
+        // The frozen HOLD-if-any-HOLD aggregate, for the capacity SENTENCE and
+        // never for the capacity ANSWER (#2562): a NO_HOLD request that needs beds
+        // and a HOLD request that needs none both hold nothing, and telling a
+        // member the second when the first is true is the lie this fixes.
+        aggregateCapacityMode: true,
         // The reservation ledger IS the capacity answer (#2525). A count, not the
         // rows: the member is told whether beds are held, never which nights the
         // ledger holds them on.

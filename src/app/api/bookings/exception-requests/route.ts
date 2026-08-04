@@ -11,12 +11,26 @@ import { checkRateLimit, getClientIp, rateLimiters } from "@/lib/rate-limit";
 import { sendAdminBookingChangeRequestAlert } from "@/lib/email";
 import { bookableAgeTierEnum } from "@/lib/age-tier-schema";
 import { nameField } from "@/lib/zod-helpers";
+import { isDateOnlyString } from "@/lib/date-only";
 import logger from "@/lib/logger";
 import {
   createNewBookingExceptionRequest,
   readMemberExceptionRequests,
 } from "@/lib/booking-exception-request-service";
 import { mapExceptionRequestError } from "@/lib/booking-exception-request-http";
+
+/**
+ * A guest's explicit night set (#713), mirroring the create route's own field.
+ *
+ * REQUIRED here, not a nicety (#2562 review): the wizard sends per-guest night
+ * sets whenever "Multiple date ranges" is on, and zod STRIPS unknown keys — so
+ * omitting this field silently froze the whole envelope for a guest who picked one
+ * night, and the officer then reviewed (and an approval reserved, priced and
+ * booked) nights nobody asked for.
+ */
+const nightList = z
+  .array(z.string().refine(isDateOnlyString, { message: "Night must be YYYY-MM-DD" }))
+  .max(370);
 
 const createSchema = z.object({
   lodgeId: z.string().trim().min(1).optional(),
@@ -32,6 +46,7 @@ const createSchema = z.object({
         memberId: z.string().trim().min(1).optional(),
         stayStart: z.string().optional(),
         stayEnd: z.string().optional(),
+        nights: nightList.optional(),
       }),
     )
     .min(1)
