@@ -1422,7 +1422,9 @@ export function useBookingWizard() {
    * the refusal, so the offer describes something they are no longer proposing.
    * Answering null retires it in the same render the change lands in — no effect,
    * no cleared-too-late window, and no dependence on a component remembering to
-   * clear it (the edit panel's quote effect does the same job for that surface).
+   * clear it. The edit panel keys its own offer the same way (#2562 re-review): its
+   * debounced quote effect only clears on a RESOLVED quote, so relying on that left
+   * a refused proposal's rule and price on screen over changed nights.
    */
   const exceptionOffer =
     exceptionOfferState &&

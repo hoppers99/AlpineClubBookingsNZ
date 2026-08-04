@@ -582,6 +582,50 @@ export function exceptionRequestPayloadFromModification(
   return { payload, omittedChanges: [...omitted].sort(), omitsPricedChange };
 }
 
+/**
+ * The identity of the PROPOSAL inside a pending modification (#2562 re-review).
+ *
+ * An offer to ask a Booking Officer describes ONE refused proposal: these dates,
+ * this party, these per-guest ranges. The panel used to keep the offer in a plain
+ * state slot and rely on the debounced quote effect to clear it, which it does not
+ * do: the effect only clears on a RESOLVED quote or an empty payload, so a member
+ * who moved a date after a refusal was still shown the old rule's wording and the
+ * old payload's figure — labelled as the club's quote for "this proposal as it
+ * stands" — for as long as they kept editing, and a failed quote left the offer
+ * standing indefinitely. Submitting inside that window posts the CURRENT payload
+ * while they read the previous one, and a now-legal proposal comes back 400
+ * `NoEligiblePolicyExceptionError`, which has no remedy branch on the card.
+ *
+ * So the offer is stored WITH this signature and compared during render, exactly as
+ * the new-booking wizard does (`exceptionProposalSignature` in
+ * `use-booking-wizard.ts`): a mismatch retires it in the same render the change
+ * lands in, with no frame in which the stale card is on screen.
+ *
+ * Narrowed through `exceptionRequestPayloadFromModification` on purpose, so the
+ * signature covers exactly what the request would carry. Changing a promo code or a
+ * settlement choice does not retire an offer — those are not part of the proposal an
+ * officer would freeze, and the card already refuses to show a figure that was
+ * priced with them.
+ */
+function exceptionProposalSignature(body: Record<string, unknown>): string {
+  return JSON.stringify(exceptionRequestPayloadFromModification(body).payload);
+}
+
+/**
+ * The same signature for a payload that has already been serialised — the form the
+ * quote fetch holds. FAILS CLOSED: a body that will not parse yields a signature
+ * that matches nothing, so the offer retires rather than outliving its proposal.
+ */
+function exceptionProposalSignatureFromJson(payloadJson: string): string {
+  try {
+    const parsed = JSON.parse(payloadJson);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return "";
+    return exceptionProposalSignature(parsed as Record<string, unknown>);
+  } catch {
+    return "";
+  }
+}
+
 function previousDateOnly(dateString: string | null) {
   if (!dateString) return null;
   const date = new Date(`${dateString}T00:00:00.000Z`);
@@ -795,10 +839,16 @@ export function EditBookingPanel({
    * of a quote) and the save (the modify paths hard-block a minimum-stay breach with
    * a 400 carrying the frozen review). A hard failure — a full lodge, invalid dates,
    * a consent or authority refusal — can never open it.
+   *
+   * STORED WITH THE PROPOSAL IT BELONGS TO (#2562 re-review). The signature is the
+   * refused proposal's own identity, compared during render below, so an offer
+   * cannot outlive the dates and party it was refused for. See
+   * `exceptionProposalSignature`.
    */
-  const [exceptionOffer, setExceptionOffer] = useState<ExceptionOffer | null>(
-    null,
-  );
+  const [exceptionOfferState, setExceptionOfferState] = useState<{
+    offer: ExceptionOffer;
+    proposalSignature: string;
+  } | null>(null);
 
   // #2337: the placeholder→member links this edit will apply, keyed by the
   // existing guest row id. `linkFinderGuestId` is the row currently choosing a
@@ -1389,7 +1439,22 @@ export function EditBookingPanel({
           // #2562: a refused QUOTE is a real blockage on this path — the member
           // cannot save what they cannot price — so the reviewable ones open the
           // request door here rather than making them press Save to find out.
-          setExceptionOffer(readExceptionOffer(data));
+          //
+          // Recorded against THE PAYLOAD THIS FETCH SENT, not against whatever is on
+          // screen when the answer lands (#2562 re-review): the fetch is debounced,
+          // so the member may have edited on since, and the offer belongs to the
+          // proposal the server actually refused. The render comparison then retires
+          // it immediately if that is no longer what they are proposing.
+          const offer = readExceptionOffer(data);
+          setExceptionOfferState(
+            offer
+              ? {
+                  offer,
+                  proposalSignature:
+                    exceptionProposalSignatureFromJson(payloadJson),
+                }
+              : null,
+          );
           return;
         }
         setMemberGuestAddError(null);
@@ -1397,7 +1462,7 @@ export function EditBookingPanel({
         // A quote that came back is not a refusal, so no request is on offer.
         // Cleared here rather than only on the next attempt, so a member who fixes
         // the proposal is not still looking at a door they no longer need.
-        setExceptionOffer(null);
+        setExceptionOfferState(null);
         // A fresh quote that no longer needs an over-capacity confirm clears any
         // stale apply-side warning (#1668).
         if (!data.overCapacityConfirmRequired) {
@@ -1445,11 +1510,29 @@ export function EditBookingPanel({
   const exceptionOmissions = exceptionRequestPayloadFromModification(
     buildModificationPayload(),
   );
+  /**
+   * The offer, but ONLY while it still describes the proposal on screen.
+   *
+   * A mismatch means the member changed the dates, the party or a guest's nights
+   * after the refusal, so the offer describes something they are no longer
+   * proposing — and the figure beside it was priced on those old nights. Answering
+   * null retires both in the same render the change lands in: no effect, no
+   * cleared-too-late window, and no dependence on the debounced quote resolving
+   * (which is what left the stale card up).
+   */
+  const exceptionOffer =
+    exceptionOfferState &&
+    // `exceptionProposalSignature` applied to the payload the omissions above were
+    // derived from, so the render builds the modification payload once.
+    exceptionOfferState.proposalSignature ===
+      JSON.stringify(exceptionOmissions.payload)
+      ? exceptionOfferState.offer
+      : null;
   useEffect(() => {
     if (quoteTimeoutRef.current) clearTimeout(quoteTimeoutRef.current);
     if (!modificationPayloadJson) {
       setQuote(null);
-      setExceptionOffer(null);
+      setExceptionOfferState(null);
       return;
     }
     quoteTimeoutRef.current = setTimeout(
@@ -1855,7 +1938,7 @@ export function EditBookingPanel({
     }
     setSaving(true);
     // A fresh save attempt retires the previous refusal's offer (#2562).
-    setExceptionOffer(null);
+    setExceptionOfferState(null);
 
     try {
       const body = buildModificationPayload();
@@ -1884,6 +1967,17 @@ export function EditBookingPanel({
 
       const data = await res.json();
       if (!res.ok) {
+        // The proposal this save attempt actually sent, for any offer its refusal
+        // opens (#2562 re-review). Same rule as the quote path: the offer belongs to
+        // the payload the server refused, and the render comparison retires it the
+        // moment the member proposes something else.
+        const refusedProposalSignature = exceptionProposalSignature(body);
+        const recordExceptionOffer = (offer: ExceptionOffer | null) =>
+          setExceptionOfferState(
+            offer
+              ? { offer, proposalSignature: refusedProposalSignature }
+              : null,
+          );
         // #2104: the server tripped the no-adult review rule but the local
         // predicate missed it (client/server drift). Reveal the justification
         // field, show the message adjacent to it, and bring it into view.
@@ -1929,14 +2023,14 @@ export function EditBookingPanel({
           );
           // #2562: this refusal is exactly what the workflow exists for, so offer
           // the request — subject, as always, to the shared rule's own gates.
-          setExceptionOffer(readExceptionOffer(data));
+          recordExceptionOffer(readExceptionOffer(data));
           return;
         }
         setSaveError(data.error || "Failed to save changes");
         // Every other refusal goes through the same shared rule, which answers null
         // for all of them: the reviewable codes are an explicit allowlist and no
         // hard-stop code is on it.
-        setExceptionOffer(readExceptionOffer(data));
+        recordExceptionOffer(readExceptionOffer(data));
         return;
       }
 

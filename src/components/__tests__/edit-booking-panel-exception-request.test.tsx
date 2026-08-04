@@ -325,6 +325,79 @@ describe("EditBookingPanel — when the request action appears", () => {
     expect(card).toHaveTextContent("$50.00");
   });
 
+  /**
+   * #2562 RE-REVIEW — the offer, and its price, outliving the proposal.
+   *
+   * The wizard retires a stale offer by comparing a proposal signature during
+   * render. This panel was left relying on the debounced quote effect, which only
+   * clears the offer when a NEW quote resolves or the payload empties — so after a
+   * refusal the member could move check-out to a stay that no longer breaches and
+   * still be reading the old refusal's rule ("Minimum length of stay") and the old
+   * payload's figure ("Refund due if this is approved $50.00"), labelled as the
+   * club's quote for the proposal as it stands, against nights they had already
+   * changed. Every further keystroke restarted the 500ms debounce, so the window
+   * lasted as long as they kept editing, and a quote that FAILED cleared the figure
+   * but left the offer up indefinitely. Submitting inside it posts the current
+   * payload while they read the previous one, and a now-legal proposal answers 400
+   * `NoEligiblePolicyExceptionError` — a dead end, because only the two 409s have
+   * remedy branches on the card.
+   *
+   * Asserted with NO `waitFor`: retirement has to happen in the render the change
+   * lands in, before the debounce has even fired the next quote.
+   */
+  it("retires the offer in the same render the proposal changes, before any new quote", async () => {
+    render(<EditBookingPanel booking={makeBooking()} onDone={vi.fn()} />);
+    const saveButton = await shortenStayAndWaitForSave();
+    fireEvent.click(saveButton);
+
+    const card = await screen.findByTestId("request-officer-approval");
+    expect(card).toHaveTextContent(/Minimum length of stay/i);
+    expect(card).toHaveTextContent("$50.00");
+
+    // A stay that no longer breaches the rule. The quote for it has not run — the
+    // debounce is still pending — so nothing but the render-time comparison can
+    // retire the card.
+    fireEvent.change(screen.getByLabelText(/Check-out/i), {
+      target: { value: "2026-09-08" },
+    });
+    expect(screen.queryByTestId("request-officer-approval")).toBeNull();
+    // The card carried the offer's figure and its label; both go with it, rather
+    // than the figure hanging on under a changed set of nights.
+    expect(screen.queryByText(/Refund due if this is approved/i)).toBeNull();
+    expect(screen.queryByText(/Minimum length of stay/i)).toBeNull();
+  });
+
+  /**
+   * The complement, so the retirement is keyed on the PROPOSAL and not on any
+   * payload change: a promo removal, a guest name correction or a settlement choice
+   * is not part of what an officer would freeze, the card already refuses to show a
+   * figure that was priced with it, and retiring the offer for it would send the
+   * member back round a refusal they have not resolved.
+   */
+  it("keeps the offer when the member changes something the proposal does not carry", async () => {
+    const booking = {
+      ...makeBooking(),
+      promo: {
+        code: "SPRING",
+        type: "PERCENTAGE",
+        description: "Spring special",
+        workPartyEventName: null,
+      },
+      promoAdjustmentCents: -2000,
+    };
+    render(<EditBookingPanel booking={booking} onDone={vi.fn()} />);
+    const saveButton = await shortenStayAndWaitForSave();
+    fireEvent.click(saveButton);
+    await screen.findByTestId("request-officer-approval");
+
+    // Same nights, same party — only the promo election moves.
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    expect(screen.getByTestId("request-officer-approval")).toBeInTheDocument();
+    expect(screen.getByTestId("request-officer-approval")).toHaveTextContent(
+      /removing the promo code/,
+    );
+  });
+
   it("retires the offer once a fresh quote comes back clean", async () => {
     render(<EditBookingPanel booking={makeBooking()} onDone={vi.fn()} />);
     const saveButton = await shortenStayAndWaitForSave();
