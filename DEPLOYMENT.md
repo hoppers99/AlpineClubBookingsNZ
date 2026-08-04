@@ -536,17 +536,25 @@ says which governs when:
    consumer** that can reach the shared database, then **verify nothing old is
    still connected** (`pg_stat_activity`). Anything left running produces the same
    failures with nobody watching them.
-4. **Take a fresh backup and verify it restores.** Immediately before migrating,
-   and — note the order — *after* everything that writes has stopped, so the
-   snapshot is a quiet point with no writes landing between it and the migration.
-   For an ordinary migration you can abort up to the cutover; for a windowed one the
-   point of no return is the migrate step, so this is the last unconditional way
-   back. See [Backups](#backups).
+4. **Take a fresh backup and verify it.** Immediately before migrating, and — note
+   the order — *after* everything that writes has stopped, so the snapshot is a quiet
+   point with no writes landing between it and the migration. For an ordinary
+   migration you can abort up to the cutover; for a windowed one the point of no
+   return is the migrate step, so this is the last unconditional way back. See
+   [Backups](#backups). **Do the full restore drill before the window**, on the most
+   recent durable artifact — it is tens of minutes on a production-sized database and
+   this step is inside the outage. Verify *this* artifact by integrity and completion
+   instead: the exact commands, and why `pg_restore --list` is not one of them, are in
+   `docs/PRODUCTION_UPGRADE_RUNBOOK.md` §2.4.1 step 7.
 5. **Record the pre-migration checks** the runbook lists for the migration in hand
    — for `20260803030000` that is the row count, the distinct `role` values with
    counts, the column-exists confirmation, the proof that the replacement runtime
-   cannot name the column, and the recommended per-row dump. After migrate those
-   values are unrecoverable.
+   cannot name the column, and the **required** per-row dump. Both of the
+   `role`-related checks run inside the replacement image rather than at the host
+   shell (this host has only Docker and Docker Compose), and the dump has to land on a
+   **host** path and then move somewhere durable — a `\copy` through
+   `docker compose exec postgres psql` writes inside that container's writable layer,
+   which the deploy recreates. After migrate those values are unrecoverable.
 6. **Run the safety validator, then migrate** — two commands, in that order. The
    validator is `scripts/validate-blue-green-migrations.sh`, a **separate script**
    that `prisma migrate deploy` knows nothing about: the only thing that runs it

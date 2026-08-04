@@ -217,17 +217,24 @@ taken.
 the same maintenance window as the section above, and if both ship together they
 share one window.**
 
-**What is being removed.** `FamilyGroupMember.role` was a per-membership label
-('MEMBER', 'ADMIN', or 'LEAD') on the family-group join table. It stopped granting
-anything in #2284, when the one power it ever gated — declaring a partner for a
-family member who has no login of their own, in one step — was re-anchored onto who
-is recorded as having confirmed that member's details. Nothing has read the label
-since, and nothing displayed it even before that. `20260803030000_contract_drop_family_group_member_role`
-drops the column.
+**What is being removed.** `FamilyGroupMember.role` was a per-membership label on the
+family-group join table. Four values ever existed: 'MEMBER' (the default, and the bulk
+of rows), 'ADMIN', 'LEAD' and 'USER'. Only 'ADMIN' was ever read by anything, and
+nothing ever displayed any of them.
+`20260803030000_contract_drop_family_group_member_role` drops the column.
 
-**Family groups carry no rank at all now.** Every adult login co-member of a family
-group is equal — that has been the rule since #2284, and this removes the last
-trace of the old "group admin" idea from the database.
+**In the version you are upgrading *from*, the label is still live.** The one power it
+ever gated — declaring a partner for a family member who has no login of their own,
+in one step — was re-anchored in #2284 onto who is recorded as having confirmed that
+member's details, and nothing in the new version reads the label at all. But #2284
+ships in this upgrade too, so on the version currently running, 'ADMIN' is still what
+that check reads. That is why the reverse-script note below matters and why the
+operator is asked to save a copy of the values first: this is not a column that was
+already dead in production.
+
+**Family groups carry no rank at all after this upgrade.** Every adult login co-member
+of a family group is equal, and this removes the last trace of the old "group admin"
+idea from the database.
 
 **Why the window.** The runtime code that stops using the column and the migration
 that drops it ship in the same release, by owner decision (3 Aug 2026) rather than
@@ -235,18 +242,21 @@ carrying an obsolete column through another upgrade. So the version currently
 running still names the column — in ordinary reads, in every insert, and in a
 filter — and it cannot serve family-group pages, onboarding, family requests,
 member merge or Xero member import for the moments after the column is dropped.
-The deploy therefore takes a short planned outage:
+The deploy therefore takes a planned outage:
 
 1. build and validate the new images **first**, and confirm the image carries both
    halves — the new code and the migration;
 2. put the site into maintenance mode / remove public traffic;
 3. stop the old app **and** every worker, scheduler and queue consumer, then check
    nothing old is still connected;
-4. take a fresh backup and **verify it restores** — in that position, *after*
-   everything that writes has stopped, so nothing lands between the snapshot and
-   the migration;
+4. take a fresh backup and verify it — in that position, *after* everything that
+   writes has stopped, so nothing lands between the snapshot and the migration. Do
+   the full restore drill on the most recent durable artifact **before** the window,
+   and verify *this* artifact by integrity and completion checks, which take minutes
+   rather than the drill's tens of minutes;
 5. record the pre-migration checks (row count, the label values with counts, and —
-   recommended — a per-row dump, the only way to get the exact labels back later);
+   **required** — a per-row dump to a **host** path, then moved somewhere durable;
+   it is the only way to get the exact labels back later);
 6. run the repository's migration safety check — `ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS=1`
    and a `BLUE_GREEN_MIGRATION_OVERRIDE_REASON` naming the window go on **that**
    command, which is a separate script, not on the migrate command — then migrate;
@@ -262,9 +272,16 @@ the last unconditional way back, so anything missing from it is lost if it is ev
 needed. This is also the order that governs when both windowed changes in this
 release are applied together.
 
-The migration itself is one metadata-only statement on a small table, so the window
-is dominated by stopping and starting the application. Full sequence, with the exact
-check queries, is in `docs/PRODUCTION_UPGRADE_RUNBOOK.md` §2.4.1.
+**How long the outage is.** The migration itself is one metadata-only statement on a
+small table and takes no meaningful time. The outage members see is steps 2 to 8, and
+the migration is the cheapest thing in it: what dominates is the careful shutdown and
+connection check, the snapshot and its verification, the checks and the dump, and then
+starting the replacement release and working the smoke test and log sweep before
+traffic returns. Time it on the staging rehearsal and announce that figure. Do not
+announce "a few minutes" on the strength of the migration being quick.
+
+Full sequence, with the exact check queries, is in
+`docs/PRODUCTION_UPGRADE_RUNBOOK.md` §2.4.1.
 
 **If you need to go back.** Prefer going forward. If the new release will not start,
 the migration ships a tested reverse script beside it,
@@ -290,10 +307,16 @@ and `prisma migrate deploy` will both report the database up to date when it is 
 the runbook names the one command that sees the difference, and the tidy-up is to
 re-apply the migration by hand once things are calm.
 
-**One record-keeping point.** The original per-row labels cannot be restored by
-script: PostgreSQL cannot un-drop a column. Nothing reads them, so that is a
-record-keeping loss rather than a behavioural one, with one fail-closed exception
-noted in the runbook.
+**What the reverse script cannot give you back.** The original per-row labels: it
+refills every row with `'MEMBER'`, which is a substitute, not the value the row held.
+PostgreSQL cannot un-drop a column, so the only sources are the required step-5 dump
+(the reverse script has a block that loads it back — rehearsed) or the backup.
+`'MEMBER'` is the safe substitute because only `'ADMIN'` was ever read, so it can only
+ever withhold a power, never grant one. What it costs is real but narrow and
+fail-closed: on the rolled-back version nobody holds `'ADMIN'`, so the one-step partner
+declaration finds no candidates and refuses for a member with no login. The ordinary
+consent round-trip still works, and nothing else about family groups is affected. Take
+the dump, and this stops being a question.
 
 Every path above was rehearsed against a production-shaped database before this
 shipped — the migration, the reverse script, the exact-value restore, both ways of

@@ -3,8 +3,18 @@
 --
 -- Background. The column was created by
 -- 20260407120000_add_family_group_member_join_table as
--- `"role" TEXT NOT NULL DEFAULT 'MEMBER'` and carried a group-local rank label
--- ('MEMBER', 'ADMIN', and 'LEAD' from the 20260408020000 dependents backfill).
+-- `"role" TEXT NOT NULL DEFAULT 'MEMBER'` and carried a group-local rank label.
+-- FOUR labels ever existed, enumerated exhaustively from the migration history and
+-- from every writer in the tree's history rather than from the two the schema
+-- comment used to name: 'MEMBER' (the column default, and what the 20260407120000
+-- and 20260407200000 backfills wrote), 'ADMIN', 'LEAD' (only ever written by the
+-- 20260408020000 dependents backfill, to a parent's own row), and 'USER' (written
+-- by two live paths in the last tagged release — createFamilyGroupFromSuggestion in
+-- src/lib/family-suggestions.ts to every NON-lead member of a group created from a
+-- family suggestion, and the familyGroupMember.upsert create arm in
+-- src/app/api/admin/members/[id]/dependents/link/route.ts when an admin links an
+-- existing member as a dependent). Only 'ADMIN' was ever READ by anything, which is
+-- what makes the rollback's compatibility value safe — see rollback.sql.
 -- #2284 removed the last AUTHORISATION reader — the one-step partner declaration
 -- in member-partner-link.ts, re-anchored onto Member.detailsConfirmedByMemberId —
 -- and PR #2565 (merge commit 9a59c3ffa, the RUNTIME half of this issue) removed
@@ -69,14 +79,21 @@
 -- docs/BLUE_GREEN_MIGRATION_SAFETY.tsv.
 --
 -- Data safety. NO DML: this migration reads and rewrites no rows. The values it
--- destroys are meaningless rather than frozen — nothing has read them since
--- #2284, and every row inserted since #2565 took 'MEMBER' from the DATABASE
--- default because the client stopped naming the column. They are nonetheless
--- destroyed irrecoverably (PostgreSQL cannot un-drop a column), which is why the
--- pre-migration checks record the distinct values and their counts, and why the
--- runbook adds an optional per-row `\copy` dump that makes an EXACT restore
--- possible. Without that dump, rollback.sql repopulates every row with 'MEMBER'
--- — see its own header for why that is the safe value and what it costs.
+-- destroys are unread rather than meaningless, and the distinction matters for
+-- the rollback: nothing in THIS tree has read them since #2284, but the release
+-- actually in production is v0.13.2, which PREDATES #2284 and still filters on
+-- `role: "ADMIN"` (member-partner-link.ts lines 306 and 480 — verified against the
+-- tag, and it has no detailsConfirmedByMemberId reference at all). So on the live
+-- system the labels are authorising right now, and a real number of production
+-- rows carry a client-written 'ADMIN'. Because #2565 was never deployed on its
+-- own and the window stops the old app before migrating, NO production row was
+-- ever written by a client that omitted the column — every row carries a label
+-- some writer chose. The labels are destroyed irrecoverably (PostgreSQL cannot
+-- un-drop a column), which is why the pre-migration checks record the distinct
+-- values and their counts and why the per-row dump of (id, role) is REQUIRED
+-- rather than optional: it is the only thing that makes an EXACT restore
+-- possible. Without it, rollback.sql repopulates every row with 'MEMBER' — see
+-- its own header for why that is the safe value and what it costs.
 --
 -- Lock impact. "FamilyGroupMember" is on the deploy guard's HOT_TABLE_SQL_REGEX,
 -- so this row is a gate requirement and not merely documentation. In practice the

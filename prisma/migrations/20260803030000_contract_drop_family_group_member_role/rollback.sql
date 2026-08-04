@@ -37,16 +37,34 @@
 --     un-drop a column, and this script has nowhere to read the old labels from.
 --     Every row comes back as 'MEMBER'.
 --
--- WHY 'MEMBER' IS THE SAFE COMPATIBILITY VALUE. It is the column's own default
--- since it was created, so it is the value the database itself supplied to every
--- row inserted after #2565 stopped the client naming the column — for those rows
--- it is not a substitute, it is the actual value. It is also the LEAST-PRIVILEGED
--- of the three labels that ever existed ('MEMBER', 'ADMIN', 'LEAD'): restoring
--- 'MEMBER' can only ever withhold a power, never grant one. Reconstructing 'ADMIN'
--- by heuristic — from who created the group, or from FamilyGroup.billingMembershipId
--- — was considered and rejected: that is a guess about who holds a privilege, and
--- guessing in the granting direction is the one mistake a rollback script must not
--- make.
+-- WHY 'MEMBER' IS THE SAFE COMPATIBILITY VALUE. Be clear what it is first: for
+-- every production row it IS A SUBSTITUTE, not the actual value. FOUR labels ever
+-- existed — 'MEMBER' (the column default, and what the 20260407120000 and
+-- 20260407200000 backfills wrote), 'ADMIN', 'LEAD' (only from the 20260408020000
+-- dependents backfill), and 'USER' (written by createFamilyGroupFromSuggestion to
+-- non-lead members of a group created from a family suggestion, and by the
+-- familyGroupMember.upsert create arm in the admin dependent-link route) — and
+-- every row in production carries one that a writer or a migration chose. Nothing
+-- was ever inserted by a client that omitted the column and took the database
+-- default: that would need #2565 deployed on its own, and the owner's 3 Aug 2026
+-- directive replaced that plan with this window, which stops the old app BEFORE
+-- migrating. So the ground that reads strongest — "it is already the value" — is
+-- the one that carries no weight here, and it is not claimed.
+--
+-- What actually makes 'MEMBER' safe is the second ground, on its own. Of the four
+-- labels, only 'ADMIN' was ever READ by anything; 'MEMBER', 'LEAD' and 'USER' were
+-- inert alike. So repopulating with 'MEMBER' can only ever WITHHOLD a power, never
+-- grant one — it is fail-closed by construction, whatever the row held before. It
+-- is also the column's own declared default, i.e. the value the schema itself
+-- designates for a membership with nothing special recorded, which is why it is the
+-- right choice among the three inert labels. Reconstructing 'ADMIN' by heuristic —
+-- from who created the group, or from FamilyGroup.billingMembershipId — was
+-- considered and rejected: that is a guess about who holds a privilege, and guessing
+-- in the granting direction is the one mistake a rollback script must not make.
+--
+-- Because 'MEMBER' is a substitute rather than the actual value, THE PER-ROW DUMP AT
+-- STEP 8 OF THE WINDOW IS REQUIRED, not optional. It is the only thing that makes
+-- step 3 below possible.
 --
 -- WHAT 'MEMBER' COSTS, stated plainly rather than buried. On a rolled-back release
 -- that PREDATES #2284 — which the last tagged release does — the value is read in
@@ -69,10 +87,15 @@
 --
 --   1. The per-row dump the runbook's pre-migration checks take
 --      (docs/PRODUCTION_UPGRADE_RUNBOOK.md -> "Windowed migration deploy
---      sequence", #2520 step 8). If you took it, run step 3 below after step 1 to
---      restore every label exactly. This is why that dump is in the checklist.
+--      sequence", #2520 step 8), which that step marks REQUIRED. Run step 3 below
+--      after step 1 to restore every label exactly. Check you can actually READ the
+--      file from wherever you have a shell before you rely on it: step 8 takes it to
+--      a HOST path deliberately, because a `\copy` run through
+--      `docker compose exec postgres psql` writes inside the postgres container's
+--      own writable layer — not the postgres_data volume, not any backup path, and
+--      gone the next time that container is recreated (measured; runbook 7.2).
 --   2. The verified backup taken immediately before migrating. Use it if the dump
---      was skipped and the labels genuinely matter.
+--      is missing and the labels matter.
 --
 -- IF THIS RELEASE ALSO CARRIED 20260803010000_contract_subscription_lockout_drop_enabled
 -- — the sibling windowed migration, applied in the same window — RUN BOTH REVERSE
@@ -128,23 +151,32 @@ FROM information_schema.columns
 WHERE table_name = 'FamilyGroupMember'
   AND column_name = 'role';
 
--- 3. OPTIONAL — exact value restore from the pre-migration dump. Only run this if
---    you took the per-row `\copy` at step 8 of the window and you need the old
---    labels back (see "WHAT 'MEMBER' COSTS" above for when that matters). Load the
---    CSV into a temporary table and copy the labels across by id. Rows that have
---    been deleted since the dump simply do not match, and rows created since the
---    dump keep their 'MEMBER' default, which is correct for both.
+-- 3. Exact value restore from the pre-migration dump. Run it when you need the old
+--    labels back rather than the 'MEMBER' substitute step 1 wrote (see "WHAT
+--    'MEMBER' COSTS" above for when that matters). It loads the CSV into a temporary
+--    table and copies the labels across by id. Rows deleted since the dump simply do
+--    not match, and rows created since the dump keep their 'MEMBER' default, which is
+--    correct for both.
 --
 --    RUN IT AS A SCRIPT FILE — `psql -f restore.sql`, not `psql -c "..."`. `\copy`
---    is a psql meta-command, so it is a syntax error inside `-c`, and the TEMP
---    table has to live in the same session as the UPDATE. Rehearsed exactly this
---    way (runbook §7.2): it reported `UPDATE 2` and restored every label.
+--    is a psql meta-command, so it is a syntax error inside `-c`, and the TEMP table
+--    has to live in the same session as the UPDATE.
+--
+--    On a Docker-only host, put both files where psql can see them first. This is
+--    exactly the shape rehearsed in runbook 7.2, which reported `COPY 5` /
+--    `UPDATE 3` and restored 'ADMIN', 'LEAD' and 'USER' exactly:
+--
+--      docker cp ./family-group-member-role-<DATE>.csv <project>-postgres-1:/tmp/roles.csv
+--      docker cp ./restore.sql                          <project>-postgres-1:/tmp/restore.sql
+--      docker compose exec postgres psql -U tac -d tacbookings -v ON_ERROR_STOP=1 -f /tmp/restore.sql
+--
+--    restore.sql, with the in-container path the copy above put the CSV at:
 --
 --    CREATE TEMP TABLE "family_group_member_role_restore" (
 --      "id"   TEXT PRIMARY KEY,
 --      "role" TEXT NOT NULL
 --    );
---    \copy "family_group_member_role_restore" FROM 'family-group-member-role-YYYYMMDD.csv' CSV HEADER
+--    \copy "family_group_member_role_restore" FROM '/tmp/roles.csv' CSV HEADER
 --    UPDATE "FamilyGroupMember" AS target
 --    SET "role" = restore."role"
 --    FROM "family_group_member_role_restore" AS restore
