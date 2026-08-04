@@ -244,6 +244,33 @@ describe("RequestOfficerApprovalCard — capacity honesty", () => {
       screen.getByText(/No extra beds are held by this request/i),
     ).toBeInTheDocument();
   });
+
+  /**
+   * #2562 review — the mandated notice pointed the wrong way.
+   *
+   * It ended "Nothing is reserved by the request itself except where it says
+   * otherwise below", and the card draws the capacity sentence ABOVE it. So a member
+   * on the modification HOLD path — the one case where something IS reserved — read
+   * the denial, looked below for the exception it promised, and found nothing about
+   * reservations at all; a member on the new-booking path was left wondering what
+   * the exception had been. The direction is asserted against the rendered DOM
+   * order, not just the constant, because the constant is only right relative to a
+   * layout.
+   */
+  it("points at the capacity sentence in the direction it is actually rendered", () => {
+    const { container } = renderCard({ source: "MODIFICATION" });
+    const capacity = screen.getByText(/held while the request waits/i);
+    const notice = screen.getByText(/Nothing is reserved by the request itself/i);
+
+    expect(notice).toHaveTextContent(/the note above says otherwise/i);
+    expect(notice).not.toHaveTextContent(/below/i);
+    // Node order: the exception really is above the sentence that cites it.
+    expect(
+      capacity.compareDocumentPosition(notice) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(container).toBeTruthy();
+  });
 });
 
 describe("RequestOfficerApprovalCard — submitting", () => {

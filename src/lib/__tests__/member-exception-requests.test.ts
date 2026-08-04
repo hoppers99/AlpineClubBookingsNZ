@@ -432,4 +432,111 @@ describe("capacity wording", () => {
       }),
     ).toContain("ran out");
   });
+
+  /**
+   * #2562 review — the APPROVED sentence was the one branch that made a held-beds
+   * promise, and it made it to everybody.
+   *
+   * It returned "The beds are on the booking this created." from the FIRST branch,
+   * before any source check. On the new-booking path that is a claim about a
+   * booking that holds nothing: an approval creates the booking the member's own
+   * wizard would have created (PENDING or PAYMENT_PENDING), and neither holds
+   * capacity until it is paid, so another member can still take those nights. On
+   * the modification path it described a booking that was never created at all.
+   */
+  it("never claims an approved new booking is holding beds it has not paid for", () => {
+    const notHeld = memberExceptionCapacityWording({
+      source: "NEW_BOOKING",
+      status: "approved",
+      capacityHeld: false,
+      capacityMode: "NO_HOLD",
+      createdBookingHoldsCapacity: false,
+    });
+    expect(notHeld).not.toMatch(/beds are on the booking/i);
+    expect(notHeld).toContain("not holding any beds");
+    expect(notHeld).toContain("until it is paid");
+
+    // Once it IS paid the same row must stop saying the opposite.
+    const held = memberExceptionCapacityWording({
+      source: "NEW_BOOKING",
+      status: "approved",
+      capacityHeld: false,
+      capacityMode: "NO_HOLD",
+      createdBookingHoldsCapacity: true,
+    });
+    expect(held).toContain("holding its beds");
+
+    // Booking unreadable: state the rule, assert no answer either way.
+    const unknown = memberExceptionCapacityWording({
+      source: "NEW_BOOKING",
+      status: "approved",
+      capacityHeld: false,
+      capacityMode: "NO_HOLD",
+      createdBookingHoldsCapacity: null,
+    });
+    expect(unknown).toContain("holds no beds until it is paid");
+    expect(unknown).not.toMatch(/is holding its beds/);
+  });
+
+  it("tells an approved modification the change was applied, not that a booking was created", () => {
+    for (const createdBookingHoldsCapacity of [true, false, null] as const) {
+      const wording = memberExceptionCapacityWording({
+        source: "MODIFICATION",
+        status: "approved",
+        capacityHeld: false,
+        capacityMode: "HOLD",
+        createdBookingHoldsCapacity,
+      });
+      expect(wording).not.toMatch(/booking this created/i);
+      expect(wording).toContain("applied to your booking");
+    }
+  });
+});
+
+describe("the created booking's capacity answer on the DTO (#2562 review)", () => {
+  function approvedNewBookingRow(
+    overrides: Record<string, unknown> = {},
+  ): Parameters<typeof toMemberExceptionRequestItem>[0] {
+    return {
+      ...baseRow({ status: "APPROVED", createdBookingId: "booking-9" }),
+      ...overrides,
+    } as Parameters<typeof toMemberExceptionRequestItem>[0];
+  }
+
+  it("carries the caller's fact about the created booking", () => {
+    expect(
+      toMemberExceptionRequestItem(
+        approvedNewBookingRow({ createdBookingHoldsCapacity: false }),
+      ).createdBookingHoldsCapacity,
+    ).toBe(false);
+    expect(
+      toMemberExceptionRequestItem(
+        approvedNewBookingRow({ createdBookingHoldsCapacity: true }),
+      ).createdBookingHoldsCapacity,
+    ).toBe(true);
+  });
+
+  it("is null wherever there is no booking to describe", () => {
+    // No booking id: nothing to answer about, whatever a caller passed.
+    expect(
+      toMemberExceptionRequestItem(
+        approvedNewBookingRow({
+          createdBookingId: null,
+          createdBookingHoldsCapacity: true,
+        }),
+      ).createdBookingHoldsCapacity,
+    ).toBeNull();
+    // Not approved: the id is withheld already, and so is its answer.
+    expect(
+      toMemberExceptionRequestItem({
+        ...baseRow({ status: "REQUESTED", createdBookingId: "booking-9" }),
+        createdBookingHoldsCapacity: true,
+      } as Parameters<typeof toMemberExceptionRequestItem>[0]).createdBookingHoldsCapacity,
+    ).toBeNull();
+    // Caller could not establish it.
+    expect(
+      toMemberExceptionRequestItem(approvedNewBookingRow())
+        .createdBookingHoldsCapacity,
+    ).toBeNull();
+  });
 });

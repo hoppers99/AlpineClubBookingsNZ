@@ -10,6 +10,7 @@ import { evaluateProposedPaidUpAdultPresence } from "@/lib/subscription-lockout-
 import { computeMemberGuestBoundary } from "@/lib/booking-guests";
 import { isOperationallyPresentConsent } from "@/lib/member-guest-consent";
 import { acquireLodgeCapacityLock, checkCapacityForGuestRanges } from "@/lib/capacity";
+import { bookingHoldsCapacity } from "@/lib/booking-status";
 import {
   releasePolicyExceptionReservation,
   reservePolicyExceptionCapacity,
@@ -1737,6 +1738,54 @@ export async function readUnifiedExceptionQueue(input: {
 const MEMBER_EXCEPTION_REQUEST_CAP = 50;
 
 /**
+ * Read the created bookings' OWN capacity answers, keyed by booking id (#2562).
+ *
+ * WHY THIS IS A BOOKING READ and not a fact about the request. An approved
+ * new-booking exception creates the booking the member's own wizard would have
+ * created: `resolveNewBookingExecutionParams` passes
+ * `calculateBookingHoldDecision`'s status, which is only ever PENDING or
+ * PAYMENT_PENDING, and the create sets no `originBookingRequest` and no
+ * `adminCapacityHoldAt`. Neither status holds capacity on its own (#737), so
+ * `bookingHoldsCapacity` is false and another member can still take those nights
+ * — until the member pays, at which point the same booking DOES hold them. Only
+ * the booking row can answer that, and it answers differently on different days,
+ * which is why nothing derives it from the approval.
+ *
+ * A booking id with no row (deleted, or a soft pointer that never resolved) is
+ * simply absent from the map, and the caller's `?? null` turns that into "state
+ * the rule, assert nothing".
+ */
+async function readCreatedBookingCapacityHolds(
+  bookingIds: string[],
+): Promise<Map<string, boolean>> {
+  const holds = new Map<string, boolean>();
+  if (bookingIds.length === 0) return holds;
+  const bookings = await prisma.booking.findMany({
+    where: { id: { in: bookingIds } },
+    select: {
+      id: true,
+      status: true,
+      adminCapacityHoldAt: true,
+      // The relation-based PENDING extension (#1254): a converted-request booking
+      // holds its beds while unpaid. Selected as an id so the read stays a
+      // presence check rather than pulling the request row.
+      originBookingRequest: { select: { id: true } },
+    },
+  });
+  for (const booking of bookings) {
+    holds.set(
+      booking.id,
+      bookingHoldsCapacity({
+        status: booking.status,
+        isRequestConverted: booking.originBookingRequest !== null,
+        hasAdminCapacityHold: booking.adminCapacityHoldAt !== null,
+      }),
+    );
+  }
+  return holds;
+}
+
+/**
  * Every booking-policy exception request the member RAISED, merged from both
  * tables and projected through the member DTO (#2562).
  *
@@ -1758,6 +1807,13 @@ const MEMBER_EXCEPTION_REQUEST_CAP = 50;
  *     HOLD aggregate reserved no bed at all.
  *  3. Both sources are capped, merged, then sorted newest-first in memory —
  *     correct across two tables, which one SQL ORDER BY cannot be.
+ *  4. An APPROVED new-booking row gets the CREATED BOOKING's own capacity answer,
+ *     read from that booking's status through `bookingHoldsCapacity`. Approval
+ *     creates the booking the member's own wizard would have created — PENDING or
+ *     PAYMENT_PENDING — and neither holds a bed until it is paid, so "approved"
+ *     is not evidence about beds. Without this read the row told the member their
+ *     beds were on the booking, which is the held-beds promise the owner's
+ *     decision forbids on this path.
  */
 export async function readMemberExceptionRequests(
   requestedByMemberId: string,
@@ -1817,6 +1873,16 @@ export async function readMemberExceptionRequests(
     }),
   ]);
 
+  // The created bookings' OWN capacity answers, for the approved new-booking rows
+  // only. One extra query, skipped entirely when nothing was approved, and it
+  // reads the three fields `bookingHoldsCapacity` needs and nothing else.
+  const createdBookingHoldsCapacityById =
+    await readCreatedBookingCapacityHolds(
+      newBookingRows
+        .filter((row) => row.status === "APPROVED" && row.createdBookingId)
+        .map((row) => row.createdBookingId as string),
+    );
+
   const items: MemberExceptionRequestItem[] = [
     ...newBookingRows.map((row) =>
       toMemberExceptionRequestItem({
@@ -1828,6 +1894,12 @@ export async function readMemberExceptionRequests(
         // new booking has no row to key on. Saying "holding beds" here is the
         // exact lie the officer queue had to be corrected for in #2526.
         holdsReservationNights: false,
+        // The created booking's answer, or null where there is no booking or the
+        // row could not be read. Null makes the sentence state the RULE rather
+        // than assert an answer, which is the safe direction here.
+        createdBookingHoldsCapacity: row.createdBookingId
+          ? (createdBookingHoldsCapacityById.get(row.createdBookingId) ?? null)
+          : null,
       }),
     ),
     ...modificationRows.map((row) =>
@@ -1836,6 +1908,10 @@ export async function readMemberExceptionRequests(
         source: "MODIFICATION",
         createdBookingId: null,
         holdsReservationNights: row._count.reservationNights > 0,
+        // No booking was CREATED on this path — the change was applied to one the
+        // member already had — so there is no created-booking answer to give, and
+        // the wording branch for MODIFICATION never asks for one.
+        createdBookingHoldsCapacity: null,
       }),
     ),
   ];

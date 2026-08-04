@@ -75,6 +75,8 @@ function request(
     lastConflictAt: null,
     bookingId: null,
     createdBookingId: null,
+    // No booking was created, so there is no created-booking capacity answer.
+    createdBookingHoldsCapacity: null,
     supersededByRequestId: null,
     canWithdraw: true,
     canReplace: true,

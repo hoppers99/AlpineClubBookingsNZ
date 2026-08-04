@@ -172,6 +172,11 @@ export function MyExceptionRequests({
             // The frozen mode, so a NO_HOLD change that DOES need beds is never
             // told it needs none (#2562 review).
             capacityMode: request.capacityMode,
+            // The CREATED booking's own answer on an approved new booking. An
+            // approval lands the booking on PENDING or PAYMENT_PENDING, which
+            // holds no bed until it is paid, so this row must not tell the member
+            // their beds are secured (#2562 review).
+            createdBookingHoldsCapacity: request.createdBookingHoldsCapacity,
           });
           const isConfirming = confirmingId === request.id;
           return (

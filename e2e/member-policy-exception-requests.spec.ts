@@ -110,6 +110,13 @@ type MemberExceptionRow = {
   createdBookingId: string | null;
   decisionExplanation: string | null;
   capacityHeld: boolean;
+  /**
+   * The CREATED booking's own capacity answer, which is a different fact from
+   * `capacityHeld` (#2562 review): `capacityHeld` is about the request's own
+   * provisional reservation, this is about the booking an approval produced.
+   * Null on every row that created no booking.
+   */
+  createdBookingHoldsCapacity: boolean | null;
   canWithdraw: boolean;
   canReplace: boolean;
 };
@@ -544,17 +551,30 @@ test("an approval becomes a real booking the member's row links to", async () =>
     approved?.createdBookingId,
     "an approved new-booking request must carry the booking it created",
   ).toBeTruthy();
-  // Approval is not a status flip, and it is not a hold either: the beds live on
-  // a booking now, so the request itself holds nothing.
+  // Approval is not a status flip, and it is not a hold either. The request holds
+  // nothing — and neither does the booking it created (#2562 review): the approval
+  // lands it on PENDING or PAYMENT_PENDING, and neither holds capacity until it is
+  // paid, so another member can still take those nights.
   expect(approved?.capacityHeld).toBe(false);
+  expect(
+    approved?.createdBookingHoldsCapacity,
+    "an unpaid booking made by an approval holds no beds",
+  ).toBe(false);
 
   const list = await memberContext.newPage();
   await list.goto("/bookings");
   const row = list.getByTestId("exception-request-row").first();
   await expect(row.getByText("Approved and booked")).toBeVisible();
+  // The honest sentence for this path (#2562 review). The booking exists; its beds
+  // are NOT held until it is paid, and the row must say so rather than telling the
+  // member their stay is secured.
+  await expect(
+    row.getByText(/not holding any beds yet/),
+  ).toBeVisible();
+  await expect(row.getByText(/until it is paid/)).toBeVisible();
   await expect(
     row.getByText(/The beds are on the booking this created/),
-  ).toBeVisible();
+  ).toHaveCount(0);
   await expect(row.getByRole("link", { name: "Open the booking" })).toHaveAttribute(
     "href",
     new RegExp(`/bookings/${approved?.createdBookingId}`),

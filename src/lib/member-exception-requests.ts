@@ -158,6 +158,16 @@ export interface MemberExceptionRequestItem {
   bookingId: string | null;
   /** The booking a successful approval produced, once it exists. */
   createdBookingId: string | null;
+  /**
+   * Whether that created booking is holding its beds right now — the booking's
+   * own capacity answer, not the request's. Null on every row that created no
+   * booking, and null when the caller could not read the booking.
+   *
+   * Separate from `capacityHeld` on purpose: `capacityHeld` is about the REQUEST's
+   * provisional reservation, which an approved request no longer has. This is
+   * about the thing the approval produced, and the two are never the same fact.
+   */
+  createdBookingHoldsCapacity: boolean | null;
   /** The replacement request, once this one has been superseded. */
   supersededByRequestId: string | null;
   /** Whether the withdraw affordance is offered — derived, not restated. */
@@ -231,9 +241,42 @@ export function memberExceptionCapacityWording(args: {
    * so a member racing for a bed was told they had nothing to race for.
    */
   capacityMode?: PolicyExceptionCapacityMode | null;
+  /**
+   * Whether the booking an APPROVED new-booking request created is holding its
+   * beds RIGHT NOW, read from that booking's own status through
+   * `bookingHoldsCapacity`. Null when the caller cannot establish it (and on
+   * every path that has no such booking).
+   *
+   * REQUIRED to tell the truth about an approved new booking, and this is why.
+   * The approval creates the booking the member's own wizard would have created
+   * — PENDING or PAYMENT_PENDING (`calculateBookingHoldDecision`) — and neither
+   * of those holds capacity on its own: no `originBookingRequest`, no
+   * `adminCapacityHoldAt`, so `bookingHoldsCapacity` is false and another member
+   * can still take those nights until it is paid. The sentence this function used
+   * to return said the opposite ("the beds are on the booking this created"), which
+   * is a held-beds promise about a booking that holds nothing — the one thing the
+   * owner's #2562 decision forbids on this path. It becomes true later, when the
+   * member pays, so the answer has to come from the booking rather than from the
+   * approval.
+   */
+  createdBookingHoldsCapacity?: boolean | null;
 }): string {
   if (args.status === "approved") {
-    return "The beds are on the booking this created.";
+    // A MODIFICATION approval created no booking: it changed one the member
+    // already had. Its beds are that booking's, held on the booking's own terms,
+    // and the request holds nothing of its own any more — so this says what
+    // happened and makes no capacity claim it cannot stand behind.
+    if (args.source === "MODIFICATION") {
+      return "The change has been applied to your booking. This request holds nothing of its own any more — the beds are the booking's, on the booking's own terms.";
+    }
+    if (args.createdBookingHoldsCapacity === true) {
+      return "The booking this created is holding its beds.";
+    }
+    if (args.createdBookingHoldsCapacity === false) {
+      return "This created a booking, and it is not holding any beds yet — a new booking holds none until it is paid. Open it and pay it, or the nights can still go to somebody else.";
+    }
+    // The booking cannot be read from here. State the rule rather than an answer.
+    return "This created a booking. A new booking holds no beds until it is paid, so open it and check whether anything is still owing.";
   }
   if (
     args.status === "withdrawn" ||
@@ -416,6 +459,17 @@ export function toMemberExceptionRequestItem(request: {
   /** True only when live PolicyExceptionReservationNight rows exist for it. */
   holdsReservationNights: boolean;
   /**
+   * The CREATED booking's own capacity answer, where the caller read it.
+   *
+   * A FACT about a Booking, established by the caller through
+   * `bookingHoldsCapacity`, exactly as `holdsReservationNights` is a fact about
+   * the reservation ledger. Never derived here and never inferred from
+   * `status === "APPROVED"`: an approval creates a PENDING or PAYMENT_PENDING
+   * booking, which holds nothing until it is paid, and "we approved it" is not
+   * evidence about beds.
+   */
+  createdBookingHoldsCapacity?: boolean | null;
+  /**
    * The frozen HOLD-if-any-HOLD aggregate, or null on a row that has none.
    *
    * Carried so the capacity SENTENCE can tell "this change needs no extra beds"
@@ -467,6 +521,12 @@ export function toMemberExceptionRequestItem(request: {
     bookingId: request.bookingId,
     // Only a request that actually executed has a booking to open.
     createdBookingId: status === "approved" ? request.createdBookingId : null,
+    // Scoped to the same condition as the id it describes: a row with no booking
+    // to open has no booking-capacity answer either, whatever a caller passed.
+    createdBookingHoldsCapacity:
+      status === "approved" && request.createdBookingId
+        ? (request.createdBookingHoldsCapacity ?? null)
+        : null,
     supersededByRequestId: request.supersededByRequestId,
     // DERIVED from the very condition the cancel/supersede services' guarded
     // claims name (`status: "REQUESTED"`), not a restatement of it. Offering a
@@ -574,8 +634,19 @@ export function memberExceptionRuleLabel(code: string): string {
  * needs both: submitting is not approval (a state-of-the-world fact), and approval
  * is not guaranteed (a fact about how the club decides).
  */
+/**
+ * "ABOVE", not "below", and the direction is load-bearing.
+ *
+ * The exception this sentence points at is the capacity sentence, and the card
+ * draws that sentence immediately BEFORE this one (the honest per-path answer has
+ * to be the first capacity thing a member reads, not a footnote to a general
+ * denial). Pointing "below" sent a member on the one path where something IS
+ * reserved — a HOLD modification — looking past this notice for an exception that
+ * was never there, and left a new-booking member wondering what the exception had
+ * been.
+ */
 export const MEMBER_EXCEPTION_NOT_APPROVED_YET_NOTICE =
-  "Sending this request does not book anything and does not confirm anything. Nothing is reserved by the request itself except where it says otherwise below.";
+  "Sending this request does not book anything and does not confirm anything. Nothing is reserved by the request itself except where the note above says otherwise.";
 
 export const MEMBER_EXCEPTION_DISCRETIONARY_NOTICE =
   "Booking Officers allow exceptions at their discretion. There is no guarantee this one will be approved, and approval can never put the lodge over capacity.";
