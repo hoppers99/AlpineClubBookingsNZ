@@ -526,8 +526,20 @@ describe("GET /api/members/family", () => {
 
 describe("FamilyGroupMember migration SQL logic", () => {
   it("migration SQL inserts rows from Member.familyGroupId", () => {
-    // Verify the SQL logic is correct conceptually — members with familyGroupId
-    // should each get exactly one FamilyGroupMember row with role=MEMBER
+    // HISTORICAL, and deliberately left as written. This restates the backfill
+    // logic of 20260407200000_add_missing_schema_changes, which populated the
+    // join table from Member.familyGroupId and set `role` to 'MEMBER'. Applied
+    // migration history is immutable, so that INSERT still names the column and
+    // this assertion about it is still true.
+    //
+    // It does NOT describe the live table. #2520 dropped
+    // FamilyGroupMember.role outright (20260803030000), so there is no `role`
+    // on the model or in the database today and the `role` below is a plain
+    // property of a local object literal, not a column. Do not take it as a
+    // pattern for new code: see src/lib/__tests__/family-group-role-retirement.test.ts.
+    //
+    // Members with familyGroupId should each get exactly one FamilyGroupMember
+    // row; the member with no group should not be migrated at all.
     const members = [
       { id: "m1", familyGroupId: "g1" },
       { id: "m2", familyGroupId: "g1" },

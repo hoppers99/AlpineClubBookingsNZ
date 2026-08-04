@@ -1074,6 +1074,16 @@ also the direction with the nastiest surprise:
 | `migrate diff --from-migrations prisma/migrations --to-schema prisma/schema.prisma` (the deploy script's own gate, step 12/19) | **"No difference detected", exit 0** |
 | `migrate diff --from-config-datasource --to-schema prisma/schema.prisma` | `[-] Removed column role`, **exit 2** |
 
+One practical note on the third row, since it is the only command in this table an
+operator cannot simply paste. `--from-migrations` replays the history into a shadow
+database, so by hand it refuses with *"You must set `datasource.shadowDatabaseUrl`
+in your `prisma.config.ts`"* unless `SHADOW_DATABASE_URL` is set — which is why it
+is the deploy script's gate and not yours: that script creates a throwaway shadow
+database and passes the variable itself
+(`scripts/run-production-blue-green-deploy.sh`, `create_shadow_database`). The
+command in the rollback boundary below, `--from-config-datasource`, needs no shadow
+database and is the one to run by hand.
+
 The first three are a **false all-clear**: `_prisma_migrations` still records the
 migration as applied (`applied_steps_count = 1`, no rolled-back marker), and the
 deploy script's drift gate compares committed history to the schema file, so it
@@ -1118,14 +1128,39 @@ generalises.
 | `ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS=1` + `BLUE_GREEN_MIGRATION_OVERRIDE_REASON` | passes, exit 0, echoing the reason |
 | override present but `rollback.sql` deleted | **refuses**, exit 1 — a documentation failure the override cannot rescue |
 
+**Independently re-run before merge, from scratch.** Because everything above is
+evidence for an irreversible change, the rehearsal was repeated on a *second*
+throwaway container by a session that had not run the first one and treated the
+recorded transcript as a claim to be refuted rather than a result to be trusted.
+Same environment (`postgres:16`, measured `16.14 (Debian 16.14-1.pgdg13+1)`), full
+history applied with the drop held back, four rows seeded the same way. Every
+number and message above reproduced: the pre-migration checks (4 rows;
+`MEMBER 2, ADMIN 1, LEAD 1`; `role | text | NO | 'MEMBER'::text`), the surviving
+scalars after the drop (`id, familyGroupId, memberId, joinedAt`) with all four rows
+and `FamilyGroup.billingMembershipId` intact, `rollback.sql` restoring
+`text | NO | 'MEMBER'::text` with every row `'MEMBER'`, its second run refusing with
+`column "role" of relation "FamilyGroupMember" already exists`, the exact-value
+restore reporting `UPDATE 2` and returning `fgm-admin=ADMIN, fgm-lead=LEAD`, the
+false all-clear on all three commands, `--from-config-datasource` exiting 2 with
+`[-] Removed column role`, re-applying `migration.sql` by hand leaving no drift and
+the history row untouched, and the validator refusing / passing / refusing again in
+the three directions above (exit 1, 0, 1). The generated-client proof was re-derived
+too: scalars `id,familyGroupId,memberId,joinedAt`, zero of the 98
+`FamilyGroupMember*` blocks in the generated `index.d.ts` naming `role`, and a live
+`tsc` probe confirming the asymmetry — `where: { role: "ADMIN" }` fails with
+`TS2353 … 'role' does not exist in type 'FamilyGroupMemberWhereInput'` while
+`select: { role: true }` compiles, exactly as the table above states. Nothing was
+found that contradicted the record; the shadow-database note above was the only
+thing added.
+
 | Field | Value |
 | --- | --- |
 | Rehearsal environment | Throwaway PostgreSQL 16.14, full migration history, rows covering all three labels + one database-default row |
 | Migration | `20260803030000_contract_drop_family_group_member_role` |
-| Rehearsal date | 2026-08-03, extended 2026-08-04 (roll-forward and combined rollback) |
+| Rehearsal date | 2026-08-03, extended 2026-08-04 (roll-forward and combined rollback), independently re-run from scratch 2026-08-04 |
 | Result | **PASS** — migrate, `rollback.sql` both ways, the optional exact-value restore, both roll-forward paths, and the combined two-migration rollback in reverse order; no drift at the end of any path; all three validator directions as expected |
 | Notable findings | Three, all in the documentation rather than the migration. (1) Earlier drafts said naming the column is "a compile error" on the replacement client. Measured, only the `WHERE` shape is; `select` and `create`-data compile and are rejected by the client before any SQL. The conclusion (no SQL can name the column) is unchanged, and the schema comment, migration header, domain invariant and guard test were corrected to say the measured thing. (2) After `rollback.sql`, `migrate status`, `migrate deploy` **and the deploy script's own drift gate** all report a clean database; only a database-vs-schema `migrate diff` sees the restored column. The rollback boundary now names that command. (3) The documented migrate command for the window was `npx prisma migrate deploy`, which neither runs the safety validator (a separate script, invoked only by the deploy script) nor exists on the deploy host or in the runner image. Step 9 was rewritten as an explicit validator call followed by the compose `migrate` service. |
-| Rehearsed by | Lane implementation session (pre-merge, on the #2520 contract PR) |
+| Rehearsed by | Lane implementation session (pre-merge, on the #2520 contract PR), then independently re-run from scratch by a second session that had not performed the first |
 
 > This rehearsal used seeded rows, not a production snapshot. Before the production
 > window, re-run migrate and `rollback.sql` against a **restored copy of the
