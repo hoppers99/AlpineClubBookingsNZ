@@ -244,6 +244,11 @@ describe("every refusing surface answers with something the caller can act on", 
     expect(CATCHERS).toEqual([
       "src/app/api/admin/booking-requests/[id]/approve/route.ts",
       "src/app/api/admin/booking-requests/[id]/hold/route.ts",
+      // #2576 §9: confirming a DRAFT is a confirmation, and DRAFT is outside
+      // `ACTIVE_BOOKING_STATUSES` — so it is invisible to the strand check that
+      // guards a source cancellation, and this was the one confirming path where an
+      // uncovered booking could reach PAID deterministically rather than by a race.
+      "src/app/api/bookings/[id]/confirm-draft/route.ts",
       "src/app/api/bookings/[id]/guests/[guestId]/route.ts",
       "src/app/api/bookings/[id]/guests/route.ts",
       "src/app/api/bookings/[id]/modify-dates/route.ts",
@@ -321,6 +326,7 @@ describe("the same-owner refusal and the escalation seam (#2576 §6, §8, §9)",
     // whole content of the message.
     expect(REFUSAL_CATCHERS).toEqual([
       "src/app/api/bookings/[id]/cancel/route.ts",
+      "src/app/api/bookings/[id]/confirm-draft/route.ts",
       "src/app/api/bookings/[id]/guests/[guestId]/route.ts",
       "src/app/api/bookings/[id]/guests/route.ts",
       "src/app/api/bookings/[id]/modify-dates/route.ts",
@@ -348,46 +354,146 @@ describe("the same-owner refusal and the escalation seam (#2576 §6, §8, §9)",
 
   it("uses the enqueue-only seam on exactly the confirming paths that must not refuse", () => {
     // §9 requires every confirming path to re-read the hosting facts. Most do it by
-    // reconciling inside their own transaction, which REFUSES an uncovered booking
-    // at an enforcing club. These four cannot: capacity is claimed and a charge is
-    // in flight or settled, so §8 applies instead — allow the transition, record the
-    // bounded re-evaluation with it, escalate to an urgent incident afterwards.
-    // A FIFTH file appearing here would be a booking path quietly opting out of the
-    // refusal, which is exactly the shape §13's carve-out assertion exists to catch.
+    // reconciling inside their own transaction, which REFUSES an uncovered booking at
+    // an enforcing club. These cannot: capacity is claimed and money is in flight or
+    // settled, so §8 applies instead — allow the transition, record the bounded
+    // re-evaluation with it, escalate to an urgent incident afterwards.
+    //
+    // THIS LIST GREW BECAUSE THE FIRST VERSION OF IT WAS WRONG. It named five files
+    // and read as though that were the whole confirming set, but the assertion only
+    // pins who USES the seam — it cannot see a confirming path that uses NEITHER
+    // seam, and five of them did not: the single payment settle door (whose payable
+    // set includes DRAFT), the fully-credit-covered settlement, the inbound Xero
+    // PAID, the admin waitlist force-confirm, and the group-settlement reaper's
+    // CONFIRMED -> PAYMENT_PENDING revert, which de-confirms a coverage SOURCE.
+    // `confirmingPathsUseAHostingSeam` below is the assertion that actually closes
+    // that hole.
     expect(sourceFilesNaming("enqueueOwnHostingCoverageReevaluation(")).toEqual([
       "src/app/api/admin/bookings/[id]/confirm-pending-guests/route.ts",
+      "src/app/api/admin/bookings/[id]/force-confirm/route.ts",
       "src/app/api/payments/switch-to-internet-banking/route.ts",
       "src/lib/adult-member-hosting-review.ts",
+      "src/lib/booking-credit-election.ts",
       "src/lib/cron-confirm-pending.ts",
+      "src/lib/cron-group-settlement-reaper.ts",
       "src/lib/group-settlement.ts",
+      "src/lib/payment-reconciliation.ts",
+      "src/lib/xero-inbound/invoice-paid-effects.ts",
     ]);
   });
 
+  it("leaves no confirming write without a hosting seam at all (#2576 §9)", () => {
+    // The assertion the census above could not make. Every file that claims a
+    // booking into a confirmed-or-paid state must reach the hosting rule by one of
+    // the two seams — reconcile (refuse) or enqueue (escalate) — because §9 forbids
+    // relying on a quote-time answer, and the statuses these writes come FROM
+    // (DRAFT, WAITLISTED, WAITLIST_OFFERED, PAYMENT_PENDING) are all outside
+    // `ACTIVE_BOOKING_STATUSES` and therefore invisible to the strand check that
+    // guards a source cancellation. A booking could be created while cover existed,
+    // have that cover cancelled with nothing stranded and nothing queued, and then
+    // confirm here with no refusal, no incident, no owner email and nothing in the
+    // officer queue.
+    const CONFIRMING_WRITES = [
+      "src/app/api/admin/bookings/[id]/confirm-pending-guests/route.ts",
+      "src/app/api/admin/bookings/[id]/force-confirm/route.ts",
+      "src/app/api/bookings/[id]/confirm-draft/route.ts",
+      "src/app/api/payments/switch-to-internet-banking/route.ts",
+      "src/lib/booking-credit-election.ts",
+      "src/lib/cron-confirm-pending.ts",
+      "src/lib/group-settlement.ts",
+      "src/lib/payment-reconciliation.ts",
+      "src/lib/waitlist.ts",
+      "src/lib/xero-inbound/invoice-paid-effects.ts",
+    ];
+    for (const file of CONFIRMING_WRITES) {
+      const source = readRepoCode(file);
+      const usesASeam =
+        source.includes("enqueueOwnHostingCoverageReevaluation(") ||
+        source.includes("reconcileAdultMemberHostingReviewWithSiblings(");
+      expect(usesASeam, file).toBe(true);
+    }
+  });
+
+  /**
+   * The files that DEFINE the enqueue seams, plus the transaction-scoped helpers that
+   * run inside somebody else's `tx` and so have no commit of their own to drain
+   * after. Every other name reached by the sweep below would be a real gap.
+   *
+   * Shared by the two assertions that follow, because the exemption and the proof of
+   * its premise have to be reading the same list — a helper exempted in one place and
+   * unproven in the other is how the `member-guest-consent-service.ts` gap survived.
+   */
+  const TX_SCOPED_HELPERS = [
+    "src/lib/adult-member-hosting-review.ts",
+    "src/lib/booking-credit-election.ts",
+    "src/lib/booking-guest-removal-service.ts",
+    "src/lib/booking-exception-approval.ts",
+  ];
+
   it("drains after the commit on every path that can record work", () => {
     // A queue row with nobody draining it is §7's "immediate re-evaluation" turned
-    // into "within three hours". Every file that enqueues must also drain, and the
-    // drain must be OUTSIDE the transaction — it re-reads committed facts and sends
-    // email, neither of which is safe inside one.
-    const enqueuers = sourceFilesNaming(
+    // into "within three hours": that long before an incident a new officer-created
+    // booking has just fixed is resolved, or before one it caused is raised.
+    //
+    // TREE-WIDE, WHICH IS WHAT THE FIRST VERSION OF THIS TEST ONLY LOOKED LIKE. It
+    // swept the enqueue users and then checked a HARDCODED list of five change
+    // paths, so five other files that reconcile — and therefore can enqueue, because
+    // `dependentCoverage` defaults to ESCALATE — sat outside the assertion entirely:
+    // waitlist.ts, booking-request.ts, booking-request-quotes.ts, group-booking.ts
+    // and school-booking-request.ts. The sweep below finds them by what they CALL.
+    const ENQUEUE_SEAMS = [
       "enqueueOwnHostingCoverageReevaluation(",
-    ).filter((file) => file !== "src/lib/adult-member-hosting-review.ts");
-    for (const file of enqueuers) {
+      "enqueueHostingCoverageReevaluationForMember(",
+      "reconcileAdultMemberHostingReviewWithSiblings(",
+    ];
+    const seamUsers = new Set<string>();
+    for (const seam of ENQUEUE_SEAMS) {
+      for (const file of sourceFilesNaming(seam)) seamUsers.add(file);
+    }
+    for (const file of [...seamUsers].sort()) {
+      if (TX_SCOPED_HELPERS.includes(file)) continue;
       expect(readRepoCode(file), file).toContain(
-        "settleHostingCoverageAfterCommit()",
+        "settleHostingCoverageAfterCommit(",
       );
     }
-    // ...and the escalating CHANGE paths drain too, since that is where an
-    // officer's override becomes an incident and an email.
-    for (const file of [
-      "src/lib/booking-cancel.ts",
-      "src/lib/booking-batch-modification-service.ts",
-      "src/lib/booking-date-modification-service.ts",
-      "src/app/api/bookings/[id]/guests/route.ts",
-      "src/app/api/bookings/[id]/guests/[guestId]/route.ts",
-    ]) {
-      expect(readRepoCode(file), file).toContain(
-        "settleHostingCoverageAfterCommit()",
-      );
+  });
+
+  it("proves the carve-out's premise: every caller of a tx-scoped helper drains", () => {
+    // THE CARVE-OUT ABOVE ASSERTS SOMETHING IT DOES NOT CHECK, and that unchecked
+    // half is where a real gap hid. `booking-guest-removal-service.ts` is exempt on
+    // the stated grounds that "its own callers drain" — and one of them did not:
+    // `member-guest-consent-service.ts` routes a DECLINE and an EXPIRY through the
+    // shared removal path, which reconciles and can enqueue, and then committed
+    // without draining. §6 lists "removal or decline of required member-guest
+    // consent" among the changes that must be re-evaluated, so the owner of a booking
+    // that had just lost its cover waited up to three hours to be told.
+    //
+    // So the premise is now an assertion. A future helper added to the exempt list
+    // brings its callers into this sweep automatically, which is the property the
+    // hardcoded list never had.
+    const EXPORTED_TX_ENTRYPOINTS: Record<string, readonly string[]> = {
+      "src/lib/booking-guest-removal-service.ts": [
+        "removeBookingGuestInTransaction(",
+      ],
+      "src/lib/booking-credit-election.ts": ["settleFullyCreditCoveredBooking("],
+      "src/lib/booking-exception-approval.ts": [],
+      // The seam definitions themselves; their callers are the sweep above.
+      "src/lib/adult-member-hosting-review.ts": [],
+    };
+    for (const helper of TX_SCOPED_HELPERS) {
+      const entrypoints = EXPORTED_TX_ENTRYPOINTS[helper];
+      // A helper added to the exempt list without saying how it is entered would
+      // silently opt its callers out of the whole invariant.
+      expect(entrypoints, `${helper} has no declared entrypoints`).toBeDefined();
+      for (const entrypoint of entrypoints ?? []) {
+        for (const caller of sourceFilesNaming(entrypoint)) {
+          if (caller === helper) continue;
+          expect(
+            readRepoCode(caller),
+            `${caller} calls ${entrypoint} and must drain after its commit`,
+          ).toContain("settleHostingCoverageAfterCommit(");
+        }
+      }
     }
   });
 
@@ -400,6 +506,9 @@ describe("the same-owner refusal and the escalation seam (#2576 §6, §8, §9)",
       for (const call of source.matchAll(
         /settleHostingCoverageAfterCommit\(([^)]*)\)/g,
       )) {
+        // The argument is a scoping object (`{ bookingId }`, `{ limit }`) — never a
+        // client. `\btx\b` still catches the mistake this exists to catch, because a
+        // transaction client is only ever named `tx` here.
         expect(call[1].trim(), `${file}: ${call[0]}`).not.toMatch(/\btx\b/);
       }
     }

@@ -28,6 +28,10 @@ const mocks = vi.hoisted(() => {
     requiresAdultSupervisionReview: vi.fn(),
     reconcileBedAllocationsForBooking: vi.fn(),
     sendBookingConfirmedEmail: vi.fn(),
+    // #2576 §9: a waitlist force-confirm IS a confirmation, so it records the
+    // bounded hosting re-evaluation in the claim transaction and drains it after.
+    enqueueOwnHostingCoverageReevaluation: vi.fn(),
+    settleHostingCoverageAfterCommit: vi.fn(),
     // Split-parent describe helper reads the provisional non-member child via
     // prisma.booking.findFirst; default null = not a split parent.
     prismaBookingFindFirst: vi.fn().mockResolvedValue(null),
@@ -72,6 +76,26 @@ vi.mock("@/lib/logger", () => ({
   default: {
     error: mocks.loggerError,
   },
+}));
+
+// #2576 §9. Mocked at the module boundary like every other collaborator here. The real
+// seam reads `booking.findUnique` and the lodge policy through the transaction client,
+// and this suite's fake `tx` carries only the delegates the force-confirm itself needs
+// — so without these the claim throws and the route answers 500, which is how this
+// suite caught the change.
+//
+// WHAT THE ROUTE NEEDED IT FOR: WAITLISTED and WAITLIST_OFFERED are both outside
+// `ACTIVE_BOOKING_STATUSES`, so a waitlisted booking is invisible to the strand check
+// that guards a source cancellation. A member could cancel the booking supplying cover
+// (nothing stranded, nothing queued) and an officer force-confirm this one straight to
+// PAID with no hosting evaluation at all.
+vi.mock("@/lib/adult-member-hosting-review", () => ({
+  enqueueOwnHostingCoverageReevaluation:
+    mocks.enqueueOwnHostingCoverageReevaluation,
+}));
+
+vi.mock("@/lib/adult-member-hosting-coverage-drain", () => ({
+  settleHostingCoverageAfterCommit: mocks.settleHostingCoverageAfterCommit,
 }));
 
 import { POST } from "@/app/api/admin/bookings/[id]/force-confirm/route";
@@ -433,6 +457,49 @@ describe("POST /api/admin/bookings/[id]/force-confirm", () => {
       expect(body).toMatchObject({
         status: "AWAITING_REVIEW",
         unpaidFinishedStay: false,
+      });
+      // #2576 §9: nothing to re-evaluate, because nothing confirmed. The booking
+      // parked for review instead, so recording a coverage obligation against it
+      // would put a stay nobody has accepted in front of an officer as an emergency —
+      // the same reason `reconcileSameOwnerCoverageIncident` opens nothing for a
+      // booking outside the confirmed-and-paid set.
+      expect(mocks.enqueueOwnHostingCoverageReevaluation).not.toHaveBeenCalled();
+    });
+  });
+
+  // #2576 §9. A force-confirm is a confirmation — the owner's decision names "officer
+  // approval" and "waitlist promotion" explicitly — and WAITLISTED / WAITLIST_OFFERED
+  // are both outside `ACTIVE_BOOKING_STATUSES`, so a waitlisted booking is invisible
+  // to the strand check that guards a source cancellation. A member could cancel the
+  // booking supplying their cover (nothing stranded, nothing queued, cancel allowed)
+  // and an officer force-confirm this one straight to PAID with no hosting evaluation
+  // at all.
+  describe("hosting coverage re-evaluation (#2576 §9)", () => {
+    it("records the obligation in the claim transaction and drains it after commit", async () => {
+      mocks.checkCapacityForGuestRanges.mockResolvedValue({
+        available: true,
+        minAvailable: 3,
+        nightDetails: [],
+      });
+      mocks.tx.booking.findUnique.mockResolvedValue(waitlistBooking());
+
+      const response = await POST(forceConfirmRequest({}), routeParams());
+      expect(response.status).toBe(200);
+
+      // ENQUEUE rather than refuse: the officer's deliberate act on a booking whose
+      // beds have just been claimed, possibly over capacity, so §8 applies — allow the
+      // authoritative change, record the obligation with it, escalate afterwards.
+      expect(mocks.enqueueOwnHostingCoverageReevaluation).toHaveBeenCalledTimes(1);
+      const [bookingId, client, context] =
+        mocks.enqueueOwnHostingCoverageReevaluation.mock.calls[0];
+      expect(bookingId).toBe("booking-1");
+      // The CLAIM's transaction client, so the queue row and the status flip commit
+      // together and the obligation cannot be lost.
+      expect(client).toBe(mocks.tx);
+      expect(context).toMatchObject({ cause: "SYSTEM_CHANGE" });
+      // Drained after the commit, never inside it.
+      expect(mocks.settleHostingCoverageAfterCommit).toHaveBeenCalledWith({
+        bookingId: "booking-1",
       });
     });
   });

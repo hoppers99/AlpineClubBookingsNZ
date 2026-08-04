@@ -12,8 +12,22 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
+// The fake store below is deliberately I/O-free, but the shared evaluator asks the
+// club for its #2543 subscription-lockout mode through the MODULE Prisma client, not
+// through the injected `db`. Against the unreachable test DATABASE_URL that read
+// costs ~2.7 seconds of connection retries on EVERY evaluation that has a
+// member-linked participant, which is what pushed several of these tests past the
+// default 5s timeout as soon as they gained a second evaluation. Stub it: the mode
+// is a club setting, not part of what this file is asserting, and `HARD_BLOCK` is
+// the default that makes `loadUnpaidSubscriptionMemberIds` a no-op.
+vi.mock("@/lib/member-subscription-eligibility", () => ({
+  peekSubscriptionLockoutMode: async () => "HARD_BLOCK",
+  resolveSubscriptionLockoutMode: async () => "HARD_BLOCK",
+}));
+
 import {
   evaluateBookingAdultMemberHosting,
+  enqueueHostingCoverageReevaluationForMember,
   reconcileSameOwnerCoverageIncident,
   reconcileAdultMemberHostingReviewWithSiblings,
   hostingCoverageActorOptions,
@@ -21,7 +35,9 @@ import {
 } from "@/lib/adult-member-hosting-review";
 import { hostingCoverageStateKey } from "@/lib/adult-member-hosting-coverage-incidents";
 import {
+  SameOwnerCoverageOverrideRequiredError,
   SameOwnerCoverageWouldBreakError,
+  buildSameOwnerCoverageOverrideRequiredBody,
   formatStrandedCoverageMessage,
   sameBookingOwnerCoverageSourceWhere,
   sameOwnerCoverageDependentWhere,
@@ -109,10 +125,14 @@ function booking(overrides: FakeBooking = {}): FakeBooking {
  * Apply a Prisma-shaped `where` to a plain row.
  *
  * Supports exactly the operators the coverage predicates use — equality, `not`,
- * `in`, `notIn`, `lt`, `gt`, and a top-level `OR` — and THROWS on anything else.
- * Throwing rather than ignoring is deliberate: a clause this fake silently skipped
- * would make a "not related" test pass while the production query related the two
- * bookings.
+ * `in`, `notIn`, `lt`, `gt`, `gte`, the `guests: { some: ... }` relation filter, and
+ * a top-level `OR` — and THROWS on anything else. Throwing rather than ignoring is
+ * deliberate: a clause this fake silently skipped would make a "not related" test
+ * pass while the production query related the two bookings.
+ *
+ * `gte` and `some` are here for the §8 member fan-out, which asks a different
+ * question from the coverage predicates: not "which of this owner's bookings overlap"
+ * but "which live current-or-future bookings does this PERSON attend".
  */
 function matchesWhere(row: FakeBooking, where: Record<string, unknown>): boolean {
   for (const [key, condition] of Object.entries(where)) {
@@ -126,9 +146,22 @@ function matchesWhere(row: FakeBooking, where: Record<string, unknown>): boolean
       if (value !== condition) return false;
       continue;
     }
+    // `guests: { some: { memberId } }` — the relation filter the member fan-out uses
+    // to find the bookings one person actually ATTENDS. Ownership is a different
+    // column and deliberately not consulted here (#2576 §2: ownership is never
+    // attendance evidence).
+    if (key === "guests" && "some" in (condition as Record<string, unknown>)) {
+      const some = (condition as { some: Record<string, unknown> }).some;
+      const guests = (value ?? []) as Array<Record<string, unknown>>;
+      if (!guests.some((guest) => matchesWhere(guest, some))) return false;
+      continue;
+    }
     const operators = condition as Record<string, unknown>;
     for (const [operator, operand] of Object.entries(operators)) {
       switch (operator) {
+        case "gte":
+          if (!((value as Date) >= (operand as Date))) return false;
+          break;
         case "not":
           if (value === operand) return false;
           break;
@@ -171,10 +204,24 @@ function makeStore(
   const db = {
     booking: {
       findUnique: vi.fn(async ({ where }: any) => byId.get(where.id) ?? null),
-      findMany: vi.fn(async ({ where, select }: any) => {
-        const matched = [...byId.values()].filter((row) =>
-          matchesWhere(row, where),
-        );
+      findMany: vi.fn(async ({ where, select, orderBy, take }: any) => {
+        let matched = [...byId.values()].filter((row) => matchesWhere(row, where));
+        // ORDER THEN TRUNCATE, in that sequence, because that is what a bounded read
+        // does and the whole point of the dependent reads' `orderBy` is that the
+        // truncation is reproducible. A fake that truncated in insertion order could
+        // not tell a deterministic ceiling from an arbitrary one.
+        if (Array.isArray(orderBy)) {
+          for (const clause of [...orderBy].reverse()) {
+            const [field, direction] = Object.entries(clause)[0] as [string, string];
+            matched = [...matched].sort((left, right) => {
+              const a = left[field] as never;
+              const b = right[field] as never;
+              const cmp = a < b ? -1 : a > b ? 1 : 0;
+              return direction === "desc" ? -cmp : cmp;
+            });
+          }
+        }
+        if (typeof take === "number") matched = matched.slice(0, take);
         // The same-owner SOURCE read narrows the guest relation to member-linked
         // rows. Honour it: a fake that returned non-member guests too would hide a
         // loader that had stopped narrowing.
@@ -192,6 +239,9 @@ function makeStore(
         updates.push({ id: where.id, data });
         return {};
       }),
+      count: vi.fn(async ({ where }: any) =>
+        [...byId.values()].filter((row) => matchesWhere(row, where)).length,
+      ),
     },
     adultMemberHostingPolicy: {
       findMany: vi.fn().mockResolvedValue(options.policies ?? [policyRow()]),
@@ -874,7 +924,10 @@ describe("a change that would strand another booking (#2576 §6, §7, §14)", ()
       hostingCoverageActorOptions({
         actorRole: "ADMIN",
         actorMemberId: "officer-1",
-        reason: "Member rang; taking the adult off at their request",
+        override: {
+          acknowledged: true,
+          reason: "Member rang; taking the adult off at their request",
+        },
       }),
     );
     expect(queued).toHaveLength(1);
@@ -906,30 +959,327 @@ describe("a change that would strand another booking (#2576 §6, §7, §14)", ()
     expect(queued).toEqual([]);
   });
 
-  it("records an unexplained officer change honestly, as a system change", () => {
-    // §7 makes a reason mandatory, so a surface that captured none has not taken an
-    // override — and recording it AS one, with an invented reason, would be worse
-    // than recording what actually happened.
+  it("asks an officer to confirm an unexplained change rather than taking it (§7)", () => {
+    // §7 requires the override to carry an explicit confirmation AND a mandatory
+    // reason. An officer surface that captured neither has not taken an override, so
+    // it is ASKED for one — which is the only way the reason can exist. Recording it
+    // as an override with an invented reason, or as an anonymous system change
+    // indistinguishable from a cron sweep, were both worse answers, and the second is
+    // what this helper used to do: OFFICER_OVERRIDE and the incident's
+    // `overrideReason` / `overriddenByMemberId` columns were unreachable outside
+    // tests, because no caller ever supplied a reason.
     expect(
       hostingCoverageActorOptions({ actorRole: "ADMIN", actorMemberId: "officer-1" }),
     ).toEqual({
-      dependentCoverage: "ESCALATE",
+      dependentCoverage: "REQUIRE_OVERRIDE",
+      coverageActorMemberId: "officer-1",
       coverageChange: {
         cause: "SYSTEM_CHANGE",
         actorMemberId: "officer-1",
         reason: null,
       },
     });
-    expect(hostingCoverageActorOptions({ actorRole: "MEMBER" })).toEqual({
-      dependentCoverage: "BLOCK",
+    // Half an override is not an override, in either direction.
+    for (const half of [
+      { acknowledged: true },
+      { reason: "Member rang about it" },
+      { acknowledged: false, reason: "Member rang about it" },
+      { acknowledged: true, reason: "   " },
+    ]) {
+      expect(
+        hostingCoverageActorOptions({
+          actorRole: "ADMIN",
+          actorMemberId: "officer-1",
+          override: half as never,
+        }).dependentCoverage,
+        JSON.stringify(half),
+      ).toBe("REQUIRE_OVERRIDE");
+    }
+    // A complete one is, and it records who and why.
+    expect(
+      hostingCoverageActorOptions({
+        actorRole: "ADMIN",
+        actorMemberId: "officer-1",
+        override: { acknowledged: true, reason: "Member rang about it" },
+      }),
+    ).toEqual({
+      dependentCoverage: "ESCALATE",
+      coverageActorMemberId: "officer-1",
+      coverageChange: {
+        cause: "OFFICER_OVERRIDE",
+        actorMemberId: "officer-1",
+        reason: "Member rang about it",
+      },
     });
+    expect(
+      hostingCoverageActorOptions({ actorRole: "MEMBER", actorMemberId: "owner-1" })
+        .dependentCoverage,
+    ).toBe("BLOCK");
     // A delegated bookings-edit permission is officer authority too.
     expect(
       hostingCoverageActorOptions({
         actorRole: "MEMBER",
         hasBookingsEditAccess: true,
       }).dependentCoverage,
-    ).toBe("ESCALATE");
+    ).toBe("REQUIRE_OVERRIDE");
+  });
+
+  it("shows the officer what would be stranded instead of silently allowing it (§7)", async () => {
+    const { db, queued } = makeStore(strandingPair([REMAINING_MEMBER_CHILD]));
+    // Resolve-or-reject captured explicitly, then narrowed with `instanceof`. A bare
+    // `.catch(err => err as ...)` types the result as the UNION of the outcome and the
+    // error, so `error.stranded` does not exist on it — and casting the union away
+    // would have let a version of this that stopped throwing pass with `undefined`.
+    const thrown = await reconcileAdultMemberHostingReviewWithSiblings(
+      "b-source",
+      db,
+      hostingCoverageActorOptions({ actorRole: "ADMIN", actorMemberId: "officer-1" }),
+    ).then(
+      () => null,
+      (err: unknown) => err,
+    );
+    if (!(thrown instanceof SameOwnerCoverageOverrideRequiredError)) {
+      throw new Error(
+        `expected the officer to be asked to confirm the override, got ${String(thrown)}`,
+      );
+    }
+    const error = thrown;
+    // Rolled back with the change, so nothing was recorded for a change that did not
+    // happen.
+    expect(queued).toEqual([]);
+    // And the prompt identifies the affected bookings and nights, which is the item
+    // on §7's list an officer cannot act on without.
+    expect(error.stranded).toEqual([
+      {
+        bookingId: "b-main",
+        reference: expect.any(String),
+        lodgeName: "Ruapehu Lodge",
+        nights: ["2026-07-03", "2026-07-04"],
+      },
+    ]);
+    const body = buildSameOwnerCoverageOverrideRequiredBody(error);
+    expect(body.code).toBe("SAME_OWNER_COVERAGE_OVERRIDE_REQUIRED");
+    expect(body.requiresOverrideReason).toBe(true);
+    expect(body.strandedBookings[0]?.nights).toEqual(["2026-07-03", "2026-07-04"]);
+  });
+
+  it("never refuses an officer whose change strands nobody", async () => {
+    // The confirmation is asked for only when there is something to confirm, so an
+    // ordinary officer edit at an enforcing lodge is not put behind a reason prompt.
+    const { db, queued } = makeStore([
+      sourceWithAdult("b-source", ["2026-07-03", "2026-07-04"]),
+      booking({
+        id: "b-main",
+        guests: [
+          guestRow(
+            "adult-own",
+            ["2026-07-03", "2026-07-04"],
+            memberRow({ id: "adult-own" }),
+          ),
+        ],
+      }),
+    ]);
+    await expect(
+      reconcileAdultMemberHostingReviewWithSiblings(
+        "b-source",
+        db,
+        hostingCoverageActorOptions({ actorRole: "ADMIN", actorMemberId: "officer-1" }),
+      ),
+    ).resolves.toBeTruthy();
+    expect(queued).toEqual([]);
+  });
+
+  it("escalates rather than refusing when the actor is not the booking owner (§6, §11)", async () => {
+    // The guest DELETE route deliberately admits a member from ANOTHER account: a
+    // member-linked guest may take their own row off somebody else's CONFIRMED or
+    // PAID booking. `BLOCK`'s refusal names the OWNER's other bookings — reference,
+    // lodge and exact nights — so answering it to that actor hands them another
+    // account's booking details in a sentence addressed as though it were their own,
+    // which §6 and §11 both forbid. It also trapped them: every remedy the message
+    // offers belongs to the owner.
+    const { db, queued } = makeStore(strandingPair([REMAINING_MEMBER_CHILD]));
+    await expect(
+      reconcileAdultMemberHostingReviewWithSiblings(
+        "b-source",
+        db,
+        hostingCoverageActorOptions({
+          actorRole: "MEMBER",
+          // A DIFFERENT account from `owner-1`, who owns both bookings.
+          actorMemberId: "guest-member-9",
+        }),
+      ),
+    ).resolves.toBeTruthy();
+    // Allowed and escalated: the owner is emailed, the incident is raised, the
+    // officer queue shows it — and the actor is told nothing about the other booking.
+    expect(queued).toHaveLength(1);
+    expect(queued[0]).toMatchObject({
+      memberId: "owner-1",
+      cause: "SYSTEM_CHANGE",
+      actorMemberId: "guest-member-9",
+    });
+  });
+
+  it("still refuses the owner's own change, and only theirs", async () => {
+    // The mutation that matters for the guard above: if the ownership test were
+    // dropped, or inverted, §6's block would stop working for the person it is for.
+    const { db } = makeStore(strandingPair([REMAINING_MEMBER_CHILD]));
+    await expect(
+      reconcileAdultMemberHostingReviewWithSiblings(
+        "b-source",
+        db,
+        hostingCoverageActorOptions({ actorRole: "MEMBER", actorMemberId: "owner-1" }),
+      ),
+    ).rejects.toThrow(SameOwnerCoverageWouldBreakError);
+    // A site that forgot to pass the actor at all fails towards escalation — an
+    // allowed change plus an incident — rather than towards disclosure.
+    const bare = makeStore(strandingPair([REMAINING_MEMBER_CHILD]));
+    await expect(
+      reconcileAdultMemberHostingReviewWithSiblings("b-source", bare.db, {
+        dependentCoverage: "BLOCK",
+      }),
+    ).resolves.toBeTruthy();
+    expect(bare.queued).toHaveLength(1);
+  });
+
+  it("resolves the AFFECTED booking's own incident when the change fixes it (§7)", async () => {
+    // The gap this closes was total. Every list the settle step computes comes from
+    // `sameOwnerCoverageDependentWhere`, which excludes the booking being changed, so
+    // nothing done TO an affected booking could reach its own incident: amending it
+    // cleared its review row and left a `critical` stuck-state card standing against
+    // a booking whose guest list plainly showed an adult member, and there is no
+    // admin route, no UI action and no periodic sweep that could ever clear it.
+    const { db, incidents, queued } = makeStore(
+      [
+        booking({
+          id: "b-main",
+          guests: [
+            guestRow("kid", ["2026-07-03", "2026-07-04"]),
+            guestRow(
+              "adult-own",
+              ["2026-07-03", "2026-07-04"],
+              memberRow({ id: "adult-own" }),
+            ),
+          ],
+        }),
+      ],
+      {
+        incidents: [
+          { id: "incident-1", bookingId: "b-main", stateKey: "v1:old" },
+        ],
+      },
+    );
+    await reconcileAdultMemberHostingReviewWithSiblings(
+      "b-main",
+      db,
+      hostingCoverageActorOptions({ actorRole: "MEMBER", actorMemberId: "owner-1" }),
+    );
+    expect(incidents[0]).toMatchObject({
+      resolvedAt: expect.any(Date),
+      resolution: "BOOKING_AMENDED",
+    });
+    // And the account is re-read after commit, because freeing cover can change what
+    // the owner's other bookings may conclude.
+    expect(queued).toHaveLength(1);
+  });
+
+  it("resolves it as CANCELLED, not AMENDED, when the stay is no longer happening (§7)", async () => {
+    // The label is a fact the caller knows. Reporting a cancelled stay as amended, or
+    // as `COVERAGE_RESTORED`, would tell an officer cover came back when nothing of
+    // the kind happened.
+    const { db, incidents } = makeStore(
+      [
+        booking({
+          id: "b-main",
+          status: "CANCELLED",
+          guests: [guestRow("kid", ["2026-07-03", "2026-07-04"])],
+        }),
+      ],
+      {
+        incidents: [{ id: "incident-1", bookingId: "b-main", stateKey: "v1:old" }],
+      },
+    );
+    await reconcileAdultMemberHostingReviewWithSiblings(
+      "b-main",
+      db,
+      hostingCoverageActorOptions({ actorRole: "MEMBER", actorMemberId: "owner-1" }),
+    );
+    expect(incidents[0]).toMatchObject({ resolution: "BOOKING_CANCELLED" });
+  });
+
+  it("resolves it as EXCEPTION_APPROVED when an officer has authorised the hazard (§7)", async () => {
+    // An approved exception does not REMOVE the hazard, it authorises it — so the
+    // drain's "is the violation gone" test could never see it, and the next
+    // reconciliation re-affirmed a critical incident against the officer's own
+    // decision, permanently, with no route or UI able to clear it.
+    const plain = makeStore([
+      booking({
+        id: "b-main",
+        guests: [guestRow("kid", ["2026-07-03", "2026-07-04"])],
+      }),
+    ]);
+    // Seed the APPROVED review with the snapshot its CURRENT uncovered state
+    // produces, because that is what "approved for THIS hazard" means: a snapshot
+    // that no longer matches reopens as PENDING and drops the decision, which is the
+    // guard that stops a stale approval suppressing a new problem.
+    const { violation } = await evaluateBookingAdultMemberHosting(
+      plain.rowFor("b-main") as never,
+      plain.db,
+    );
+    const { db, incidents } = makeStore(
+      [
+        booking({
+          id: "b-main",
+          adultMemberHostingReview: violation as never,
+          adultMemberHostingReviewStatus: "APPROVED",
+          guests: [guestRow("kid", ["2026-07-03", "2026-07-04"])],
+        }),
+      ],
+      {
+        incidents: [{ id: "incident-1", bookingId: "b-main", stateKey: "v1:old" }],
+      },
+    );
+    await reconcileSameOwnerCoverageIncident(
+      { bookingId: "b-main", cause: "SYSTEM_CHANGE" },
+      db,
+    );
+    expect(incidents[0]).toMatchObject({ resolution: "EXCEPTION_APPROVED" });
+  });
+
+  it("re-affirms the incident when the approval no longer matches the hazard", async () => {
+    // The mutation that matters for the test above. If the APPROVED arm ignored
+    // material identity it would silence a genuinely NEW uncovered state on any
+    // booking an officer had ever approved. Here the stored approval covers one
+    // night and the booking now has two, so the reconciliation reopens the review as
+    // PENDING and the incident is updated rather than closed.
+    const { db, incidents } = makeStore(
+      [
+        booking({
+          id: "b-main",
+          adultMemberHostingReview: {
+            reasonCode: "ADULT_MEMBER_HOSTING_REQUIRED",
+            policyId: "policy-club",
+            policyVersion: 7,
+            affectedNights: ["2026-07-03"],
+            requirements: {
+              uncovered: [
+                { guestRef: "kid", guestName: "kid Person", night: "2026-07-03" },
+              ],
+            },
+          } as never,
+          adultMemberHostingReviewStatus: "APPROVED",
+          guests: [guestRow("kid", ["2026-07-03", "2026-07-04"])],
+        }),
+      ],
+      {
+        incidents: [{ id: "incident-1", bookingId: "b-main", stateKey: "v1:old" }],
+      },
+    );
+    await reconcileSameOwnerCoverageIncident(
+      { bookingId: "b-main", cause: "SYSTEM_CHANGE" },
+      db,
+    );
+    expect(incidents[0]).not.toHaveProperty("resolution", "EXCEPTION_APPROVED");
+    expect((incidents[0] as Record<string, unknown>).resolvedAt).toBeUndefined();
   });
 
   it("queues the resolution when a change RESTORES another booking's cover", async () => {
@@ -954,14 +1304,14 @@ describe("a change that would strand another booking (#2576 §6, §7, §14)", ()
     expect(queued).toHaveLength(1);
   });
 
-  it("does nothing at all while the club is only reviewing, not enforcing", async () => {
+  it("never refuses under the review consequence, but still re-reads the dependents", async () => {
     const rows = strandingPair([REMAINING_MEMBER_CHILD]);
     const { db, queued } = makeStore(rows, {
       policies: [policyRow({ mode: "ADMIN_REVIEW_REQUIRED" })],
     });
     // An uncovered booking is a permitted state with a pending review under this
-    // consequence, so neither a refusal nor a second officer-facing incident is
-    // something the club asked for.
+    // consequence, so neither a refusal nor an officer-facing incident is something
+    // the club asked for.
     await expect(
       reconcileAdultMemberHostingReviewWithSiblings(
         "b-source",
@@ -969,7 +1319,37 @@ describe("a change that would strand another booking (#2576 §6, §7, §14)", ()
         hostingCoverageActorOptions({ actorRole: "MEMBER", actorMemberId: "owner-1" }),
       ),
     ).resolves.toBeTruthy();
-    expect(queued).toEqual([]);
+    // ...but the dependent's own snapshot DOES have to be refreshed, and this is the
+    // one staleness the new scope introduces that the review consequence cannot catch
+    // by itself: with SAME_BOOKING alone a booking's cover can only move through its
+    // own rows or its split siblings, both reconciled on every write, whereas here a
+    // change to a DIFFERENT booking stranded it and nothing else will ever look.
+    // Returning early left it recorded as compliant indefinitely.
+    expect(queued).toHaveLength(1);
+    expect(queued[0]).toMatchObject({
+      memberId: "owner-1",
+      lodgeId: LODGE,
+      cause: "SYSTEM_CHANGE",
+      sourceBookingId: "b-source",
+    });
+  });
+
+  it("opens no incident from a review-mode re-read, however uncovered the dependent is", async () => {
+    // The other half of the same rule: the queue row exists to refresh the SNAPSHOT,
+    // and `reconcileSameOwnerCoverageIncident` must still open nothing while the mode
+    // is not ENFORCED — doubling a normal pending review into an urgent incident
+    // would double the officer's queue for a state the club merely wants to see.
+    const rows = strandingPair([REMAINING_MEMBER_CHILD]);
+    const { db, incidents } = makeStore(rows, {
+      policies: [policyRow({ mode: "ADMIN_REVIEW_REQUIRED" })],
+    });
+    await expect(
+      reconcileSameOwnerCoverageIncident(
+        { bookingId: "b-main", cause: "SYSTEM_CHANGE" },
+        db,
+      ),
+    ).resolves.toEqual({ action: "none" });
+    expect(incidents).toEqual([]);
   });
 });
 
@@ -1177,5 +1557,220 @@ describe("settling a dependent booking after the change (#2576 §7, §14, §16)"
         db,
       ),
     ).resolves.toMatchObject({ action: "opened" });
+  });
+});
+
+describe("a change to one PERSON's standing (#2576 §8, §17)", () => {
+  // §8's FIRST-NAMED change class — "membership becoming inactive, lapsed, cancelled
+  // or archived" — and §17's required test that "source membership lapse or archival
+  // causes re-evaluation". Only the evaluator half of this existed: a lapsed or
+  // archived adult correctly stops counting as a host, while nothing told the club to
+  // go and look at the bookings that had been relying on them. So an archive, an
+  // officer deactivation or a membership cancellation left a confirmed booking
+  // silently non-compliant — no incident, no owner email, no officer-queue entry, and
+  // the booking's own review snapshot still reading "compliant". There is no periodic
+  // sweep to compensate; the cron drains queue rows and nothing else.
+  //
+  // The fan-out is driven by ATTENDANCE, not ownership (§2), so these tests set the
+  // acting member up as a GUEST on bookings owned by other accounts.
+  const TODAY = new Date("2026-07-01T00:00:00.000Z");
+
+  function attendedBooking(
+    id: string,
+    ownerId: string,
+    overrides: FakeBooking = {},
+  ): FakeBooking {
+    return booking({
+      id,
+      memberId: ownerId,
+      guests: [
+        guestRow(
+          `adult-on-${id}`,
+          ["2026-07-03", "2026-07-04"],
+          memberRow({ id: "lapsing-adult" }),
+        ),
+      ],
+      ...overrides,
+    });
+  }
+
+  it("records one bounded item per booking the person actually attends", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(TODAY);
+    try {
+      const { db, queued } = makeStore([
+        // Two DIFFERENT owners, because one person's standing can strand bookings on
+        // several accounts and the item has to name each booking's own owner.
+        attendedBooking("b-owner-1", "owner-1"),
+        attendedBooking("b-owner-2", "owner-2"),
+      ]);
+      const count = await enqueueHostingCoverageReevaluationForMember(
+        "lapsing-adult",
+        db,
+        { cause: "SYSTEM_CHANGE", actorMemberId: "officer-1" },
+      );
+      expect(count).toBe(2);
+      // The owner/lodge/night triple every other item carries, so the drain cannot
+      // widen it into the lodge-wide sweep #2575 rejected (§10).
+      expect(queued).toHaveLength(2);
+      expect(queued.map((item) => item.memberId).sort()).toEqual([
+        "owner-1",
+        "owner-2",
+      ]);
+      for (const item of queued) {
+        expect(item).toMatchObject({
+          lodgeId: LODGE,
+          cause: "SYSTEM_CHANGE",
+          actorMemberId: "officer-1",
+          nights: ["2026-07-03", "2026-07-04"],
+        });
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("ignores a booking the person merely OWNS but does not attend (§2)", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(TODAY);
+    try {
+      // Ownership by itself is never attendance evidence, so a lapse cannot make a
+      // booking uncovered through a column the rule does not read.
+      const { db, queued } = makeStore([
+        booking({
+          id: "b-owned-only",
+          memberId: "lapsing-adult",
+          guests: [guestRow("kid", ["2026-07-03", "2026-07-04"])],
+        }),
+      ]);
+      expect(
+        await enqueueHostingCoverageReevaluationForMember("lapsing-adult", db),
+      ).toBe(0);
+      expect(queued).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("ignores a past stay and a terminal booking (§3)", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(TODAY);
+    try {
+      const { db, queued } = makeStore([
+        // Checked out before today: a lapse cannot retroactively break a completed
+        // attendance record.
+        attendedBooking("b-past", "owner-1", {
+          checkIn: new Date("2026-06-01T00:00:00.000Z"),
+          checkOut: new Date("2026-06-03T00:00:00.000Z"),
+        }),
+        attendedBooking("b-cancelled", "owner-1", { status: "CANCELLED" }),
+        attendedBooking("b-deleted", "owner-1", { deletedAt: TODAY }),
+      ]);
+      expect(
+        await enqueueHostingCoverageReevaluationForMember("lapsing-adult", db),
+      ).toBe(0);
+      expect(queued).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("records nothing while the club is not enforcing", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(TODAY);
+    try {
+      // Incidents exist only under ENFORCED, and that rule is unchanged. Gated on the
+      // consequence and NOT on the scope, deliberately: a lapse removes cover under
+      // SAME_BOOKING just as surely, and the drain reconciles each booking through the
+      // shared evaluator, which honours whichever scopes the lodge actually has on.
+      const review = makeStore([attendedBooking("b-owner-1", "owner-1")], {
+        policies: [policyRow({ mode: "ADMIN_REVIEW_REQUIRED" })],
+      });
+      expect(
+        await enqueueHostingCoverageReevaluationForMember("lapsing-adult", review.db),
+      ).toBe(0);
+      expect(review.queued).toEqual([]);
+
+      const sameBookingOnly = makeStore([attendedBooking("b-owner-1", "owner-1")], {
+        policies: [policyRow({ hostScopeSameBookingOwner: false })],
+      });
+      expect(
+        await enqueueHostingCoverageReevaluationForMember(
+          "lapsing-adult",
+          sameBookingOnly.db,
+        ),
+      ).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("the dependent reads truncate reproducibly (#2576 §10)", () => {
+  it("asks for a deterministic order on both bounded dependent reads", async () => {
+    // The safe-failure argument the SOURCE read rests on INVERTS here: a truncated
+    // source read sees fewer hosts and errs towards flagging, while a dependent
+    // dropped by the ceiling is neither refused under BLOCK nor enqueued, and the
+    // drain silently skips it. `take` with no `orderBy` lets Postgres return any 25 of
+    // the matching rows, so an over-limit account could refuse a change on one request
+    // and allow it on the next. A unit test cannot prove Postgres determinism; what it
+    // pins is that both reads ASK for the order, which is the mutation that would
+    // silently restore the arbitrary truncation.
+    // The same two-booking account the §6 tests use, restated locally because
+    // `strandingPair` is scoped to that describe block: `b-source` no longer carries a
+    // qualifying adult, so `b-main`'s non-member child is stranded and BOTH bounded
+    // dependent reads run.
+    const { db } = makeStore([
+      booking({
+        id: "b-source",
+        guests: [
+          guestRow(
+            "their-child",
+            ["2026-07-03", "2026-07-04"],
+            memberRow({ id: "member-child", ageTier: AgeTier.CHILD }),
+          ),
+        ],
+      }),
+      booking({
+        id: "b-main",
+        guests: [guestRow("kid", ["2026-07-03", "2026-07-04"])],
+      }),
+    ]);
+    await reconcileAdultMemberHostingReviewWithSiblings(
+      "b-source",
+      db,
+      hostingCoverageActorOptions({ actorRole: "ADMIN", actorMemberId: "officer-1" }),
+    ).catch(() => undefined);
+    await loadSameOwnerCoverageDependentIds(
+      {
+        memberId: "owner-1",
+        lodgeId: LODGE,
+        nights: ["2026-07-03", "2026-07-04"],
+      },
+      db,
+    );
+    // The SOURCE read is bounded too and deliberately has NO order — its truncation
+    // fails towards the rule, so reproducibility buys it nothing. It is told apart by
+    // the `guests.where` that narrows the relation to member-linked rows; the two
+    // dependent reads have no such filter (one selects the whole hosting shape, the
+    // other selects `id` alone).
+    const dependentReads = db.booking.findMany.mock.calls.filter(
+      ([args]: [any]) =>
+        typeof args?.take === "number" && !args?.select?.guests?.where,
+    );
+    expect(dependentReads).toHaveLength(2);
+    for (const [args] of dependentReads) {
+      expect(args.orderBy, JSON.stringify(args.where)).toEqual([
+        { checkIn: "asc" },
+        { id: "asc" },
+      ]);
+    }
+    // And the source read is the one that is allowed to stay unordered, stated so a
+    // future change that orders it does not look like a failure of this test.
+    const sourceReads = db.booking.findMany.mock.calls.filter(
+      ([args]: [any]) =>
+        typeof args?.take === "number" && args?.select?.guests?.where,
+    );
+    expect(sourceReads.length).toBeGreaterThanOrEqual(1);
   });
 });

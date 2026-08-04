@@ -25,6 +25,11 @@ const mocks = vi.hoisted(() => ({
   sendJoinReleased: vi.fn(),
   sendJoinCancelled: vi.fn(),
   settleGroupBookingOnOrganiserCancel: vi.fn(),
+  // #2576 §8: the revert de-confirms a coverage SOURCE, so each released child
+  // records a bounded hosting re-evaluation inside the reap transaction and the
+  // reaper drains it after commit.
+  enqueueOwnHostingCoverage: vi.fn(),
+  settleHostingCoverage: vi.fn(),
 }));
 
 const txClient = {
@@ -71,6 +76,22 @@ vi.mock("@/lib/email", () => ({
 }));
 vi.mock("@/lib/logger", () => ({
   default: { error: vi.fn(), info: vi.fn(), warn: vi.fn() },
+}));
+// #2576 §8. Mocked at the module boundary, the same way every other collaborator in
+// this suite is: the reaper's job is to reap, and whether an uncovered booking becomes
+// an incident is the hosting suites' subject. What belongs HERE is that the revert
+// records the obligation at all — `releaseSettlementChildren` reverts CONFIRMED to
+// PAYMENT_PENDING, which takes the child out of
+// `HOSTING_COVERAGE_SOURCE_BOOKING_STATUSES`, so a joiner attending as the qualifying
+// adult stops counting for every other booking on their account the moment this runs.
+// Without the mocks the real seam reads through this suite's narrow fake `tx`, which
+// carries no `booking.findUnique` and no policy delegate, and the whole reap
+// transaction throws — which is how this suite caught the change in the first place.
+vi.mock("@/lib/adult-member-hosting-review", () => ({
+  enqueueOwnHostingCoverageReevaluation: mocks.enqueueOwnHostingCoverage,
+}));
+vi.mock("@/lib/adult-member-hosting-coverage-drain", () => ({
+  settleHostingCoverageAfterCommit: mocks.settleHostingCoverage,
 }));
 
 import {
@@ -213,6 +234,27 @@ describe("reapStaleGroupSettlements", () => {
     expect(mocks.processWaitlistForDates).toHaveBeenCalledTimes(2);
     expect(mocks.sendSettlementExpired).toHaveBeenCalledTimes(1);
     expect(mocks.sendJoinReleased).toHaveBeenCalledTimes(2);
+
+    // #2576 §8. THE ASYMMETRIC HALF OF THE SETTLEMENT PAIR: `group-settlement.ts`
+    // records a hosting re-evaluation when a settlement CREATES cover, and nothing
+    // recorded it when this automated failure TAKES cover away. CONFIRMED is an
+    // eligible coverage source and PAYMENT_PENDING is not, so a joiner attending as
+    // the qualifying adult on a released child silently stops covering every other
+    // booking on their account — no incident, no owner email, no officer-queue entry,
+    // on a booking whose own review snapshot still read "compliant".
+    //
+    // One item per released child, recorded INSIDE the reap transaction (the fake `tx`,
+    // not the module client) so the revert and the obligation commit together, and
+    // never refused — §8 names both "payment or booking lifecycle failure" and
+    // "automated status transitions".
+    expect(mocks.enqueueOwnHostingCoverage).toHaveBeenCalledTimes(2);
+    for (const call of mocks.enqueueOwnHostingCoverage.mock.calls) {
+      expect(call[1]).toBe(txClient);
+      expect(call[2]).toMatchObject({ cause: "SYSTEM_CHANGE" });
+    }
+    // ...and drained after the commit, so a joiner's other booking reaches the officer
+    // queue on this pass rather than waiting for the next general sweep.
+    expect(mocks.settleHostingCoverage).toHaveBeenCalledTimes(1);
   });
 
   it("re-processes the freed child's own lodge queue, not the default lodge (M1)", async () => {

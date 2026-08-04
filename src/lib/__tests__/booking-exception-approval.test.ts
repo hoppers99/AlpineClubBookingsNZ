@@ -35,6 +35,17 @@ vi.mock("@/lib/adult-member-hosting-review", () => ({
   evaluateProposedAdultMemberHosting: vi.fn(async () => null),
 }));
 
+// #2576 §7's third automatic resolution: "the incident should resolve automatically
+// if ... a valid policy exception is approved". Mocked at the module boundary like
+// every other collaborator here, because the real helper reads
+// `tx.hostingCoverageIncident` and this suite's fake transaction carries only the
+// delegates the approval itself needs — which is exactly how it caught the change.
+const resolveHostingCoverageIncidents = vi.fn(async () => 1);
+vi.mock("@/lib/adult-member-hosting-coverage-incidents", () => ({
+  resolveHostingCoverageIncidents: (...args: unknown[]) =>
+    resolveHostingCoverageIncidents(...args),
+}));
+
 const getNonMemberHoldPolicy = vi.fn();
 vi.mock("@/lib/cancellation", () => ({
   getNonMemberHoldPolicy: (...args: unknown[]) => getNonMemberHoldPolicy(...args),
@@ -605,11 +616,29 @@ describe("executeApprovedProposal — modification", () => {
     expect(decision.reason).toContain("ADULT_MEMBER_HOSTING_REQUIRED");
     expect(decision.reason).toContain("req-1");
     expect(outcome.hostingDecisionRecorded).toBe(true);
+
+    // #2576 §7. AND THE APPROVAL CLOSES THE INCIDENT, in this same transaction.
+    // Without it the approval was undone on the next pass: the drain's reconciliation
+    // tests only whether the hazard is GONE, and an approved exception AUTHORISES the
+    // hazard rather than removing it — so an officer who had just decided these exact
+    // uncovered nights, with a reason, had a `critical` incident re-affirmed against
+    // their own decision, permanently, with no route or UI able to clear it.
+    expect(resolveHostingCoverageIncidents).toHaveBeenCalledTimes(1);
+    const [resolution] = resolveHostingCoverageIncidents.mock.calls[0] as [
+      { bookingId: string; resolution: string; actorMemberId: string },
+    ];
+    expect(resolution).toMatchObject({
+      bookingId: "bk-1",
+      resolution: "EXCEPTION_APPROVED",
+      actorMemberId: OFFICER,
+    });
   });
 
   it("does NOT touch the hosting review when that rule was not overridden", async () => {
     await runExecution(MIN_STAY_OVERRIDE);
     expect(recordAdultMemberHostingReviewDecision).not.toHaveBeenCalled();
+    // Nor the incident: nothing was authorised, so there is nothing to close.
+    expect(resolveHostingCoverageIncidents).not.toHaveBeenCalled();
   });
 
   it("refuses to execute without a verified delta (fails loudly, never silently)", async () => {
