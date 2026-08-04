@@ -49,21 +49,60 @@ call without the key. A `filters` object is the natural shape for the first tool
 so an author adding a nested or record-shaped argument inherits the refusal rather
 than having to remember it.
 
-## What AID-5 ships, and what it deliberately does not
+## What is registered, and what is deliberately not
 
-AID-5 is the **substrate**. It ships exactly one registered tool — a readiness
-probe that reads **no relation at all** and returns only whether the connection is
+AID-5 shipped the **substrate** plus exactly one registered tool — a readiness probe
+that reads **no relation at all** and returns only whether the connection is
 read-only and what query timeout is in force. Its purpose is to prove the plumbing
 end to end (the dedicated role connects, the transaction really is `READ ONLY`, the
 timeout is set, authorization runs, the audit row is written) without exposing one
-row of club data.
+row of club data. It is still registered, and still reads nothing.
 
-The domain tools arrive in their own children so each gets its own permission
-review and its own table grant: AID-6A (#2375, config/readiness), AID-6B (#2376,
-booking/membership/induction/bed allocation), AID-6C (#2377, finance/Xero).
+AID-6A (#2375) has since added the **support pack**: deployment, configuration and
+readiness evidence behind `support:view`, and bounded sanitized audit correlation
+behind `support:view` **and** the affected domain's own `area:view`. Full reference:
+[tool-pack-support.md](tool-pack-support.md).
 
-The `SELECT` grant allowlist is therefore **empty** today. Every table in the
-schema, including `IntegrationCredential`, is unreadable by the diagnostics role.
+The remaining domain tools arrive in their own children so each gets its own
+permission review and its own table grant: AID-6B (#2376,
+booking/membership/induction/bed allocation) and AID-6C (#2377, finance/Xero).
+
+The `SELECT` grant allowlist therefore names **one** relation today —
+`public."AuditLog"`, and only eight of its columns (see the pack doc for why each
+one). Everything else in the schema, including `IntegrationCredential`, is unreadable
+by the diagnostics role, and so is every other column of `AuditLog`: the grant is by
+column, so `SELECT "ipAddress" FROM "AuditLog"` is refused by PostgreSQL itself.
+
+## Two evidence sources, one gate chain
+
+A registry entry declares a closed `source` — never an argument, so it cannot move an
+invocation onto a different path at call time:
+
+| `source` | Reads | Added by |
+| --- | --- | --- |
+| `select_only_sql` | one fixed parameterised statement, as the dedicated SELECT-only role | AID-5 |
+| `server_owned` | one fixed, first-party, read-only calculation the application already exposes to admins | AID-6A |
+
+The second exists because some questions have an authoritative answer the database
+cannot give. Diagnostics readiness combines the module flag, the **encrypted**
+dedicated-credential state and the server-verified privilege shape of the diagnostics
+role itself: ADR-007 forbids granting that role any access to credential storage, and
+the last of the three is a verdict *about* its own connection — which has to stay
+reportable in exactly the case where that connection is the blocker. Re-deriving
+monthly spend or cron staleness in SQL would likewise be a second definition of
+numbers the admin screens already own, and #2375 forbids a calculation that can drift
+from the screen an operator trusts.
+
+A `server_owned` entry is **not** a way around the gates. Registry lookup, loop
+budget, fresh AND-ed authorization, `.strict()` argument parsing with the
+reserved-key scan, the metering breaker, the fixed projection with redaction and
+per-field caps, the row/byte ceilings, truncation honesty and the approved-metadata
+audit row all apply identically. The only gate it skips is the SELECT-only credential
+check, which does not govern it — and skipping that one is required, not merely
+permitted, or readiness would become unreportable exactly when it matters most. It
+may never be a write, a provider call, or anything that takes a caller-supplied
+source: `readEvidence` names a function in this repository's own code, resolved at
+review time.
 
 ## The ten gates, in order
 
@@ -78,8 +117,8 @@ typed result carrying **no rows**.
 | 3 | **Authorize** | the caller's freshly re-read matrix lacks `view` on **any** area the tool declares, or their account is locked out |
 | 4 | **Arguments** | the entry's `.strict()` schema rejects them, or they carry a reserved key |
 | 5 | **Metering** | AID-2's metering circuit breaker is open |
-| 6 | **Credential** | the dedicated role is absent, malformed, carries a connection parameter that would redirect it, is the app's own role, is unverifiable, or is over-privileged |
-| 7 | **Read** | the entry's parameters do not match the `$n` its SQL references, the statement fails, or the statement timeout cancels it |
+| 6 | **Credential** | (`select_only_sql` only) the dedicated role is absent, malformed, carries a connection parameter that would redirect it, is the app's own role, is unverifiable, or is over-privileged |
+| 7 | **Read** | the entry's parameters do not match the `$n` its SQL references, the statement fails, or the statement timeout cancels it — or, for a `server_owned` entry, its source refuses or misses its deadline |
 | 8 | **Project** | the projection returns anything that is not a flat scalar, or too many fields |
 | 9 | **Size** | the projected result exceeds the tool's byte ceiling — a **refusal**, never a silent trim |
 | 10 | **Audit** | the approved-metadata row cannot be written — the evidence is then discarded |
@@ -139,7 +178,50 @@ looser one.
 | Tool calls per session | 16 | server-side session counter |
 | Provider rounds | AID-2's `DIAGNOSTICS_MAX_TOOL_ROUNDS` | server-side session counter |
 | Pool connections | 3 | the dedicated `pg` pool, plus the role's `CONNECTION LIMIT` |
-| Rendered evidence block | 8,000 chars | truncated tail, with an explicit in-block notice |
+| Rendered evidence block | 8,000 chars | whole rows dropped from the tail, and the rows header states how many of how many it listed |
+| Server-owned evidence read | 15,000 ms | explicit deadline on the **wait**; expiry and refusal both return no rows |
+
+The rendered-block cap is what sets a tool pack's practical row ceiling. When a result
+is too wide for the block, the renderer drops **whole** rows from the tail and changes
+the rows header to `rows (K of N listed …)`, so the count the model reads always
+matches the rows in front of it and a partial row is never presented as a row. That is
+the backstop, not the plan: an entry should pick a `rowLimit` that renders whole, so
+the model gets the substrate's own honest `truncated` flag over a complete listing.
+AID-6A's correlation entries stop at 22 rows and its job-health entry at 18 for that
+reason, both **measured** against the entry's own projected shape at realistic field
+widths rather than estimated, and measured **with** the entry's own `scope:` line, which
+is part of the framing every result carries — a registry contract test renders every entry
+at its own row limit and pins that the block never lies about what it listed. A row limit
+is therefore a measurement that moves when the framing does: correlation came down from 24
+to 22 when a scope line grew. The job-health source orders by severity, so what gets given
+up is always the healthy tail.
+
+The clip is reported in **both** channels — the rows header and the machine-readable
+`evidence-state` — because a consumer branches on the state. See
+`renderToolResultEvidence`, which derives both from the same number; the block's own clip
+was invisible to the state at first, so `evidence-state="ok"` could sit above
+`rows (16 of 24 listed …)`.
+
+Two ceilings, and the byte one **refuses** rather than trimming. `byteLimit` is checked
+against `canonicalStringify` of the projected rows — `JSON.stringify(…, null, 2)`, so
+one indented line per field, roughly double what a naive estimate suggests — and a
+result over it is discarded whole as `result_too_large`. An entry whose own `rowLimit`
+rows exceed its own `byteLimit` is therefore broken, not merely tight, and broken
+silently: AID-6A found `background_job_health` in exactly that state, telling operators
+to narrow a question that takes no arguments. A registry contract test now serialises
+every entry's own projected shape at its own row limit and fails if the ceiling is
+unachievable.
+
+A `server_owned` entry gets the 15-second deadline on the **wait**, and that is all the
+substrate can give it: `Promise.race` does not cancel the loser, and nothing propagates
+a cancellation into Prisma, so an abandoned read keeps running. A first-party source
+that fans out or can be slow must therefore bound its own **work** — its own deadline,
+below the executor's, and a batched rather than unbounded fan-out. AID-6A's job-health
+source is the worked example.
+
+The server-owned deadline sits **above** the privilege-probe deadline on purpose: the
+canonical readiness answer includes that probe, so a shorter deadline would turn "the
+role could not be reached, and readiness says so" into a timeout that says nothing.
 
 The row cap is applied **in SQL**, as the outermost clause wrapped around the
 entry's own statement, so a tool that forgot a `LIMIT` is still bounded by the
@@ -199,6 +281,33 @@ and over the pool's explicit options, so `?user=` would let the driver connect a
 application role while the gate below vetted the dedicated one. The connected role is
 then re-checked against the server's own `current_user` as well.
 
+## Every result carries a stable state
+
+Alongside `observedAt`, every result carries a **stable evidence state** from the
+shared vocabulary in `src/lib/diagnostics/case/states.ts` (AID-6A, #2375), rendered
+into the evidence block as `evidence-state="…"` with its server-owned sentence. The
+mapping from the executor's failure reasons is a **total** `Record`, so a new reason
+cannot compile until somebody has decided what an operator and the model should be
+told.
+
+The states exist because an empty result cannot distinguish four different things,
+and a model shown one with no state will confidently narrate whichever is most
+plausible:
+
+`not_found` (we looked and there is nothing) · `permission_denied` (the caller was
+not permitted, and nothing inferred it from elsewhere) · `not_configured` (this
+deployment has not set it up) · `evidence_unavailable` (the source could not be
+reached). `result_truncated`, `ambiguous`, `stale`, `indeterminate`,
+`limit_exceeded`, `actor_blocked`, `unsupported`, `not_ready`,
+`temporarily_unavailable` and `tool_failed` complete the list.
+
+`src/lib/diagnostics/case/` also holds the shared **diagnostic-case** contract the
+later packs contribute to, so one conversation can combine booking, membership and
+finance evidence under whichever areas the administrator holds. Two properties there
+are load-bearing: a permission denial is recorded as an *outcome* rather than as a
+missing source, and every finding carries a `confidence` so an inference can never be
+presented as an authoritative rule result.
+
 ## Results are untrusted evidence
 
 A tool result carries no system authority. `render.ts` wraps it in an
@@ -252,7 +361,14 @@ never echoes caller input: `unknown_tool`, `invalid_args`,
 `call_budget_exhausted`, `metering_unavailable`, `actor_unresolved`,
 `actor_blocked`, `actor_read_failed`, `permission_denied`,
 `database_not_configured`, `database_role_unsafe`, `query_failed`,
-`result_too_large`, `redaction_failed`, `audit_unavailable`, `internal_error`.
+`evidence_unavailable`, `result_too_large`, `redaction_failed`,
+`audit_unavailable`, `internal_error`.
+
+`evidence_unavailable` is AID-6A's, and it stays distinct from `query_failed` because
+the operator's next step differs: `query_failed` points at the diagnostics role and a
+narrower question, while `evidence_unavailable` means the first-party calculation a
+`server_owned` entry reads could not be gathered — usually the application's own
+database. Conflating them would send an operator to the wrong credential.
 
 Several distinctions are deliberate. `unknown_tool` and `permission_denied` stay
 separate so a misconfigured registry and an authorization anomaly are not the same
@@ -276,18 +392,56 @@ as `denied`, which is what `audit.ts` turns into a `blocked` outcome.
 The checklist a reviewer should hold you to:
 
 1. `requiredAreas` names the area(s) that already govern this data in the admin UI,
-   at `view`. A cross-area tool lists **every** area (AND).
-2. `sql` is one statement, no semicolon, schema-qualified, parameterised.
-3. `bind` maps parsed arguments to parameters positionally; it never formats SQL, and
+   at `view`. A cross-area tool lists **every** area (AND). Do **not** add
+   `support:view` to a domain tool merely because the feature appears inside AI
+   Diagnostics — a Booking Officer investigating a booking needs `bookings:view` and
+   nothing more.
+2. Choose the `source` deliberately. If the question already has an authoritative
+   first-party answer — a rule engine, a health classifier, a money calculation —
+   read it as a `server_owned` entry rather than re-deriving it in SQL, and say in the
+   entry's own docblock why a `SELECT` could not answer it. Otherwise it is
+   `select_only_sql`.
+3. `sql` is one statement, no semicolon, schema-qualified, parameterised.
+4. `bind` maps parsed arguments to parameters positionally; it never formats SQL, and
    it returns exactly as many parameters as the SQL references (`$1..$N`, no gaps).
    Add the entry's representative arguments to `EXAMPLE_ARGS` in `registry.test.ts` so
-   that arity is actually checked.
-4. `project` returns **only** allowlisted columns, as flat scalars.
-5. Add the table's `GRANT SELECT` to `SELECT_GRANTS` in `provision-role.ts` in the
-   **same** pull request — never a blanket `ALL TABLES IN SCHEMA` grant — and an
-   operator re-provisions as part of that upgrade.
-6. `surfacesPersonalData` is true if any projected field identifies a person;
+   that arity is actually checked. A fixed server-owned value a query needs — a
+   category set, for instance — travels as a **bound parameter** closed over by
+   `bind`, not formatted into the statement.
+5. `project` returns **only** allowlisted columns, as flat scalars, and the **same**
+   field set for every row. A `Date` is not a flat scalar: a SQL entry formats its
+   timestamps as text in SQL, and a server-owned one calls `.toISOString()`.
+6. Add the relation's grant to `SELECT_GRANTS` in `provision-role.ts` in the **same**
+   pull request — never a blanket `ALL TABLES IN SCHEMA` grant — and an operator
+   re-provisions as part of that upgrade. Grant **columns**, not the relation, unless
+   every column of it is appropriate diagnostics evidence; the runtime self-check
+   verifies the granted columns against the allowlist, so a grant that widens to the
+   whole table fails readiness closed.
+7. `surfacesPersonalData` is true if any projected field identifies a person;
    ADR-004 §1 then requires a per-invocation opt-in from the operator.
+8. Know which projected values are **server-defined codes** and which are not. A
+   column whose value originates in a request — a header, a name, a note — is
+   attacker-chosen text, and the projection re-validates it against a known shape and
+   substitutes a stable code when it does not conform, rather than shipping it. The
+   renderer's neutralising is the second layer, not the first. AID-6A's `requestId` is
+   the worked example: it is verbatim `x-request-id` header text, which any signed-in
+   member can write.
+9. Declare an `evidenceScope` whenever the entry's filter is **narrower than the
+   question an operator will ask it**. An empty result otherwise carries the state
+   `not_found` — "there is no evidence of this to report" — which is a claim about the
+   whole domain rather than about the slice the entry read. The scope sentence is
+   server-owned, comes from the registry, and renders above the rows.
+10. Measure `rowLimit` and `byteLimit`; do not estimate them. Add the entry's widest
+    realistic **raw row** to `EXAMPLE_RAW_ROWS` in `registry.test.ts`, which then
+    serialises `rowLimit` rows of your own projected shape and fails if your
+    `byteLimit` is unachievable, and renders them and fails if the block would
+    misreport what it listed. Both contracts are census-style: a new entry with no row
+    fails loudly.
+11. A `server_owned` source bounds its own **work**, not just the executor's wait: a
+    deadline below the executor's, and a batched fan-out. A deadline **refuses**; it
+    never returns a partial set that a classifier would read as a real absence.
+12. Document the entry in its pack's doc: what it answers, which permission, which
+    columns it reads and why, and what it deliberately never returns.
 
 Secret-bearing relations (credentials, tokens, password/2FA, sessions) and raw
 provider-payload stores are permanently out of scope (ADR-007 §1).
@@ -308,9 +462,15 @@ against a real PostgreSQL, connects as that role, and proves:
   and no membership in **any** role — tested with `pg_has_role(…, 'MEMBER')`, because
   the role is `NOINHERIT` and the `'USAGE'` predicate reports a hand-granted
   membership as absent;
-- it holds no table privilege at all on the migrated schema, and although PUBLIC
-  leaves it able to EXECUTE the schema's routines, none of them is
-  `SECURITY DEFINER`;
+- it can read nothing on the migrated schema outside the declared allowlist, and on
+  the one column-granted relation it can read **only** the declared columns — every
+  other column, and `SELECT *`, are refused with `42501` — and although PUBLIC leaves
+  it able to EXECUTE the schema's routines, none of them is `SECURITY DEFINER`;
+- re-provisioning **revokes** a hand-widened column grant, so an allowlist entry can
+  be narrowed in a later release and not merely widened;
+- the self-check refuses the role when a column grant widens to the whole relation —
+  the case where the relation-level count stays at zero because the relation is
+  declared;
 - it can execute no overload of `pg_read_file`, `pg_read_binary_file`, `pg_ls_dir`,
   `pg_stat_file`, `lo_import` or `lo_export`;
 - `INSERT`, `UPDATE`, `DELETE`, and `TRUNCATE` fail with insufficient privilege
@@ -340,7 +500,16 @@ against a real PostgreSQL, connects as that role, and proves:
 - the executor's SQL row cap holds whatever the query would have returned, a long
   query is cancelled at the statement timeout (`57014`), and an entry that binds one
   parameter short is refused — with the same statement shown returning rows, and the
-  wrong ones, when the guard is not there.
+  wrong ones, when the guard is not there;
+- **every registered `select_only_sql` entry actually runs** as that role, with the
+  parameters its own `bind` produced, against the migrated schema — the only place a
+  column the allowlist does not grant, a mis-numbered `$n`, an unparseable statement
+  or a driver value the projection cannot handle can be caught before an operator
+  asks the question that reaches the tool;
+- a **real audit row** carrying an IP address, a user agent, a description, free
+  text, JSON metadata and three member references is correlated end to end, and none
+  of those values reaches the projected evidence — the role holds no privilege on
+  those columns, so both layers are proven at once.
 
 The suite is opt-in (`RUN_CONCURRENCY_RACE_TESTS=1` plus a loopback-only,
 high-port, dedicated-name database) and `describe.skip`s itself otherwise, so it
@@ -351,6 +520,9 @@ failing.
 
 ## Related
 
+- [Support tool pack (AID-6A)](tool-pack-support.md) — the registered
+  deployment/configuration/readiness and audit-correlation tools, their permissions,
+  their projections, and the one table grant they argue for.
 - [Deployment and operator guide](deployment.md) — provisioning the role, rotating
   the password, and what readiness reports.
 - [Page context](page-context.md) — the other evidence channel (AID-4).

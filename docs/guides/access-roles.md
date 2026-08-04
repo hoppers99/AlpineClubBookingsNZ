@@ -70,6 +70,28 @@ areas it can **edit**. Giving a role Bookings edit is therefore what makes
 booking-change and exception-request alerts reach it. See
 [Recipients](notification-recipients.md) for the alert-to-area table.
 
+**Areas also decide what AI Diagnostics can look up.** Any signed-in administrator
+may open AI Diagnostics, but opening it grants nothing by itself: the server re-reads
+the administrator's current areas on **every** question and on **every** lookup, and
+offers only the tools their areas cover.
+
+- General system evidence — diagnostics readiness, deployment/release, diagnostics
+  spend, background-job health, system and security event correlation — needs
+  **Support & System** at View.
+- Domain diagnostics use their **own** area, not Support & System. Booking evidence
+  needs Bookings at View; membership evidence needs Membership; payment, refund and
+  Xero evidence needs Finance.
+- Evidence that spans the audit trail *and* a business domain needs **both** — for
+  example, correlating booking events needs Support & System **and** Bookings.
+- A Full Admin holds every area, so they can investigate the whole case.
+
+Where an area is missing, Diagnostics says so and names the permission required. It
+never fills the gap from another source, and it never performs an action: it explains
+the current state, identifies what is blocking it, and describes what an authorised
+administrator would do next. A role change takes effect on the very next lookup, so
+removing an area mid-conversation stops the evidence immediately. Full detail in
+[`docs/ai-diagnostics/tool-pack-support.md`](../ai-diagnostics/tool-pack-support.md).
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |

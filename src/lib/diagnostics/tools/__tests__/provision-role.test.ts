@@ -103,8 +103,18 @@ describe("AI Diagnostics SELECT-only role provisioning SQL (#2374, ADR-007)", ()
       'REVOKE ALL PRIVILEGES ON SCHEMA public FROM "ai_diagnostics_ro";',
     );
     expect(text).toContain('GRANT USAGE ON SCHEMA public TO "ai_diagnostics_ro";');
-    // Never CREATE anywhere.
-    expect(text).not.toMatch(/GRANT[^;]*CREATE[^;]*TO "ai_diagnostics_ro"/i);
+    // Never CREATE anywhere. The word boundaries are load-bearing: the AID-6A
+    // allowlist grants the `"createdAt"` COLUMN of `AuditLog`, and a bare
+    // substring match would read that grant as a CREATE privilege. The negative
+    // control below proves the pattern still catches a real one.
+    expect(text).not.toMatch(
+      /GRANT[^;]*\bCREATE\b[^;]*TO "ai_diagnostics_ro"/i,
+    );
+    expect(
+      /GRANT[^;]*\bCREATE\b[^;]*TO "ai_diagnostics_ro"/i.test(
+        'GRANT CREATE ON SCHEMA public TO "ai_diagnostics_ro";',
+      ),
+    ).toBe(true);
   });
 
   it("strips every object privilege and default privilege before granting the allowlist", () => {
@@ -192,11 +202,60 @@ describe("AI Diagnostics SELECT-only role provisioning SQL (#2374, ADR-007)", ()
     );
   });
 
-  it("ships an EMPTY SELECT allowlist — AID-5 carries no domain tool", () => {
-    expect(SELECT_GRANTS).toHaveLength(0);
-    expect(sql()).not.toMatch(/GRANT SELECT ON "/);
-    // And never a blanket grant, whatever the allowlist grows to.
-    expect(sql()).not.toMatch(/GRANT SELECT ON ALL TABLES/i);
+  it("grants exactly the declared SELECT allowlist, and never a blanket grant", () => {
+    // AID-5 shipped an EMPTY allowlist; AID-6A (#2375) adds `AuditLog`, BY COLUMN,
+    // for the five audit-correlation tools. The assertion is over the declared list
+    // rather than a hard-coded expectation, so it keeps holding as later packs add
+    // their own relations — what it pins is the SHAPE of what provisioning emits.
+    expect(SELECT_GRANTS.length).toBeGreaterThan(0);
+    const statements = sql();
+
+    for (const grant of SELECT_GRANTS) {
+      const target = `"${grant.schema}"."${grant.relation}"`;
+      if (grant.columns === undefined) {
+        expect(statements).toContain(`GRANT SELECT ON ${target} TO`);
+        continue;
+      }
+      // A column list must name at least one column, and the emitted statement must
+      // be the COLUMN form — the whole-relation form for a column-restricted entry
+      // would be exactly the silent widening the allowlist exists to prevent.
+      expect(grant.columns.length).toBeGreaterThan(0);
+      const columns = grant.columns.map((column) => `"${column}"`).join(", ");
+      expect(statements).toContain(`GRANT SELECT (${columns}) ON ${target} TO`);
+      expect(statements).not.toContain(`GRANT SELECT ON ${target} TO`);
+    }
+
+    // Never a blanket grant, whatever the allowlist grows to.
+    expect(statements).not.toMatch(/GRANT SELECT ON ALL TABLES/i);
+    expect(statements).not.toMatch(/GRANT ALL/i);
+  });
+
+  it("REFUSES an allowlist entry whose column list is empty", () => {
+    // `GRANT SELECT () ON …` is not valid SQL, and emitting the whole-relation form
+    // instead would turn a mistake in the allowlist into a table-wide grant.
+    expect(() =>
+      buildAiDiagnosticsRoleSql({
+        ...base,
+        selectGrants: [{ schema: "public", relation: "AuditLog", columns: [] }],
+      }),
+    ).toThrow(/at least one column/i);
+  });
+
+  it("REFUSES a column name outside the supported identifier pattern", () => {
+    // A column travels into an emitted identifier exactly as a relation name does,
+    // so it goes through the same validation rather than being trusted.
+    expect(() =>
+      buildAiDiagnosticsRoleSql({
+        ...base,
+        selectGrants: [
+          {
+            schema: "public",
+            relation: "AuditLog",
+            columns: ['id" , "ipAddress'],
+          },
+        ],
+      }),
+    ).toThrow(/Refusing to build provisioning SQL/i);
   });
 
   // ------------------------------------------------------------------

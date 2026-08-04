@@ -313,9 +313,15 @@ module boundaries, data model, integrations, cron jobs, and the mermaid maps.
   substrate (AID-5, #2374): the server-owned typed registry with no model SQL, the
   ten fail-closed gates, per-invocation `area:view` re-checks, the row/byte/loop
   bounds, and the approved audit metadata.
+- [`ai-diagnostics/tool-pack-support.md`](ai-diagnostics/tool-pack-support.md) — the
+  support tool pack (AID-6A, #2375): the registered deployment, configuration,
+  readiness, budget, background-job and audit-correlation tools, the permission each
+  requires, the column-restricted `AuditLog` grant they argue for, the shared
+  evidence-state and diagnostic-case contracts, and an operator troubleshooting table.
 - [`ai-diagnostics/deployment.md`](ai-diagnostics/deployment.md) — the operator
   guide for AI Diagnostics: setup order, provisioning and rotating the dedicated
-  non-superuser SELECT-only database role, and how to read the readiness endpoint.
+  non-superuser SELECT-only database role, what the role may read, and how to read the
+  readiness endpoint.
 - [`ONGOING_DEVELOPMENT_WORKFLOW.md`](ONGOING_DEVELOPMENT_WORKFLOW.md) — how
   generic public changes and private deployment-fork changes flow.
 - [`STYLE_GUIDE.md`](STYLE_GUIDE.md) — documentation style, the operator-guide
