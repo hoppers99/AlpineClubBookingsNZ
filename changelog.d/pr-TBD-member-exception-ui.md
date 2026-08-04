@@ -41,6 +41,47 @@
   decision notes are unchanged and stay member-visible, which is what they have
   always been.
 
+  **A refused request now emails the member.** The officer's explanation is
+  mandatory on a refusal so the member can act on it; until now it was recorded and
+  delivered nowhere, so the member had to keep checking My Bookings or ring the
+  club. They now get a message naming the nights, the officer's reason, and the fact
+  that nothing was booked and any beds the request was holding have been released.
+  A refusal about an existing booking is withheld by that booking's "No emails"
+  switch like every other message about it.
+
+  **An approved new booking no longer tells the member their beds are secured.** The
+  booking an approval creates is unpaid, and an unpaid booking holds no beds — so
+  the request now says so and points at paying it, and it changes to "holding its
+  beds" once the payment lands. An approved change to an existing booking says the
+  change was applied rather than describing a booking that was never created.
+
+  **The request card no longer shows a price the club could not charge.** On the
+  booking wizard a promo code, a working-bee discount, account credit, a room
+  request, an arrival time, a note and the payment-method choice are not part of an
+  exception request, and the card now names each one it is leaving out and shows the
+  club's normal-rate figure instead of the discounted one. On the edit screen, a
+  quote that included a promo or account credit no longer has its figure shown at
+  all, because the frozen proposal is priced without them. And a request card left
+  over from an earlier refusal is retired the moment the member changes the lodge,
+  the dates or the party, so nobody is offered a request for a booking they could
+  now simply make.
+
+  **Locked-period change requests get the same two-field officer note.** That queue
+  writes the same member-visible note as the exception queue and its box was headed
+  only "Admin notes", so it now names its audience before the decision is submitted
+  and offers the internal-note counterpart beside it. The member's own booking page
+  labels the note it shows them as coming from the club. Two further things changed
+  on that form: neither decision can be sent until the member-facing explanation is
+  written (before, a card nobody had typed into could be decided with no explanation
+  at all), and each card keeps its own draft, so a note started against one request
+  can no longer be submitted with another member's.
+
+  **The help pages now describe the request limit as it is actually enforced:** one
+  open request per identical proposal for a new booking and one per booking for a
+  change, with **Replace** as the way to switch an existing ask to different dates.
+  The previous wording promised a single open request per member, which would have
+  let a member end up with two approvable requests without realising.
+
   Nothing about how policies are evaluated, how capacity is calculated, or how an
   approval creates the booking changed. Operators need do nothing: the member step
   appears wherever a waivable rule already applies.

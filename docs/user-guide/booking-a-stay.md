@@ -260,18 +260,31 @@ While a request is still open you can **Withdraw** it, or **Replace it with a
 corrected request**. A request cannot be edited once it is sent — a Booking Officer
 decides the exact proposal you submitted, so changing the dates, the guests or
 anything else material means replacing it. Replace takes you back to the screen
-that built it; the old request is closed as replaced when the new one is sent, and
-you only ever have one open request at a time.
+that built it, and the old request is closed as replaced when the new one is sent.
+
+Use **Replace** whenever you are switching an existing ask to different dates or a
+different party. Sending a fresh request from the wizard instead does *not* close
+the old one: the club caps you at one open request per identical proposal (new
+bookings) and one per booking (changes), so two different date ranges are two live
+requests, and an officer can approve them independently. That is two bookings, or a
+new booking plus a change, and both are yours to pay for. If you already have one
+open and just want to move it, replace it.
 
 #### When it is decided
 
 When an officer approves, the thing you asked for happens straight away: the
 booking is created, or the change is applied. If it was a new booking, you get an
 email telling you it was approved and what is left to pay — pay it from your
-account, because the beds are not held until you do. If it was a change to a
-booking you already had, you get the usual "your booking was changed" email. Either
-way the officer's explanation comes with the decision, whether they said yes or no,
-and it is on your request in **My booking-rule requests** too.
+account, because the beds are not held until you do. Your request row says the same
+thing: it reads "not holding any beds yet" until the payment lands, and then changes
+to "holding its beds". If it was a change to a booking you already had, you get the
+usual "your booking was changed" email and the row says the change has been applied.
+
+If a Booking Officer says no, you get an email too: their reason, the nights it was
+about, and confirmation that nothing was booked and any beds the request was holding
+have gone back into the pool. You can then ask again with different dates or a
+different party. Either way the officer's explanation is on your request in
+**My booking-rule requests** as well as in the email.
 
 ## Troubleshooting
 

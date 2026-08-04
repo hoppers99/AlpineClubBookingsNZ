@@ -2612,21 +2612,31 @@ proposal state and capacity reservation from `HOLD` all belong to #2365; the
 capacity mode is frozen onto the snapshot and aggregated here, and reserves
 nothing.
 
-### The officer-note split on policy-exception requests (#2562)
+### The officer-note split on booking requests (#2562)
 
 A Booking Officer's decision carries **two** notes, and which audience reads which
-is an invariant, not a convention.
+is an invariant, not a convention. It is **table-wide**, which means all three
+officer surfaces that decide a request on these tables and not just the
+policy-exception one: `BookingChangeRequest` holds both kinds of row, and its
+LOCKED_PERIOD half is decided from a different panel
+(`booking-change-requests-panel.tsx` → `PATCH
+/api/admin/booking-change-requests/[id]`) that writes the same column.
 
-- `adminNotes` is **member-visible**, on both request tables. It is the decision
-  explanation, written for the member: rendered on their own request list, and
-  interpolated into the approval email. The officer screen labels it as
-  member-visible *before* the decision is submitted, so nobody discovers the
-  audience afterwards.
-- `internalNotes` is **never member-visible**, on either table. It is the officer's
-  private commentary — a judgement about the member, a reference to somebody else's
-  booking, a note for the next officer — and is read only by admin-guarded surfaces
-  (the officer queue list and its per-request detail endpoint, both behind
-  `requireAdmin`).
+- `adminNotes` is **member-visible**, on both request tables and for both kinds of
+  `BookingChangeRequest` row. It is the decision explanation, written for the
+  member: rendered on their own request list, on their booking page under "Change
+  Requests", and interpolated into the approval and refusal emails. Every officer
+  screen labels it as member-visible *before* the decision is submitted, so nobody
+  discovers the audience afterwards. A box headed only "Admin notes" over this
+  column is a defect — it is what let an officer type a judgement about a member
+  into the sentence that member then read verbatim.
+- `internalNotes` is **never member-visible**, on either table or either kind. It is
+  the officer's private commentary — a judgement about the member, a reference to
+  somebody else's booking, a note for the next officer — and is read only by
+  admin-guarded surfaces (the two officer queues and the per-request detail
+  endpoint, all behind `requireAdmin`). Every officer surface that offers the
+  member-facing field offers this one beside it, because an officer with no private
+  field writes private things in the public one.
 
 Four structural properties hold that boundary, so it does not depend on any single
 call site remembering it:
@@ -2635,21 +2645,34 @@ call site remembering it:
    (`src/lib/member-exception-requests.ts`) is a strict allowlist that never spreads
    a row, and its INPUT type does not accept `internalNotes` — handing the private
    note to the member projection is a typecheck failure, not a privacy incident.
-2. **The member read does not select the column.** `readMemberExceptionRequests`
-   names its columns explicitly and omits `internalNotes`, so on the member path
-   there is nothing in memory for a later mapper edit to leak.
-3. **No email, notification or member-facing template names it.** The approval
-   email composes its optional line from `adminNotes` alone.
+2. **Every member-reachable read names its columns and omits the column.**
+   `readMemberExceptionRequests` does, and so does every handler on
+   `/api/bookings/[id]/change-requests` — GET **and** POST — through the shared
+   manifest in `booking-change-request-member-view.ts`, whose census test proves the
+   two halves of the manifest cover the whole scalar enum. So a column added to the
+   model fails that test until somebody decides in writing whether a member may read
+   it, and on the member path there is nothing in memory for a later mapper edit to
+   leak. The member's booking page selects `adminNotes` and not `internalNotes`.
+3. **No email, notification or member-facing template names it.** The approval and
+   refusal emails compose their optional line from `adminNotes` alone.
 4. **The audit log records its EXISTENCE, never its text**
    (`internalNoteRecorded: boolean`). The audit trail is read by more surfaces than
    the officer queue, and copying the text there would make it private in one place
    and not the other.
 
 **A private note is never a substitute for the member-facing one.** Refusing a
-request still requires `adminNotes`, and so does approving an adult-member hosting
-exception (D-R4's reason-for-the-record): a refusal the member cannot read is a
-refusal they cannot act on. Both routes say so in the refusal message rather than
-silently accepting an internal note in its place.
+policy-exception request still requires `adminNotes`, and so does approving an
+adult-member hosting exception (D-R4's reason-for-the-record): a refusal the member
+cannot read is a refusal they cannot act on. The exception decision route says so
+in its own 400 message rather than silently accepting an internal note in its
+place, and the locked-period panel keeps BOTH decision buttons disabled until that
+request's own member-facing field is filled in. "That request's own" is part of the
+rule: the panel's three inputs share one state slot, so the draft belongs to the row
+named by `reviewingId` and a note begun against one request is neither submitted with
+another nor able to unlock another's buttons. Before #2562 the guard read
+`reviewingId === request.id && !adminNotes.trim()`, which left every untouched row
+decidable with no explanation at all and posted one member's draft onto another
+member's request.
 
 The column is an expand-only addition
 (`20260803040000_add_policy_exception_internal_notes`), nullable with no backfill on
