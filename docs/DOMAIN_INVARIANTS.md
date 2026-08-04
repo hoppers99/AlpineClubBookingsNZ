@@ -2704,6 +2704,19 @@ intentions:
   `lastConflictAt` set reads as "an officer tried and the lodge was full", never as
   "nobody has looked". Those are different facts and the second is one the member
   would act on.
+- **Approval is never described as the moment beds are secured**, on either the
+  pending or the approved sentence. An approval creates the booking the member's own
+  wizard would have created (PENDING or PAYMENT_PENDING), which holds nothing until
+  it is paid, so a pending new-booking row says availability is rechecked at review
+  *and* that an approved new booking still holds no beds until it is paid.
+- **The created booking is described from TWO facts about its own row**, both
+  established by the caller and neither derived from the other:
+  `createdBookingHoldsCapacity` (`bookingHoldsCapacity`) and
+  `createdBookingAwaitsPayment` (still inside `ACTIVE_BOOKING_STATUSES`). "Holds no
+  beds" is equally true of an unpaid booking and of a cancelled or reaped one, so the
+  instruction to open it and pay it is conditional on the second fact; a closed
+  booking gets a sentence that says it is no longer live, and an unreadable one gets
+  the rule with no instruction at all.
 - **Withdraw and replace are offered only where the API would accept them**,
   derived from the same `status = REQUESTED` condition the cancel and supersede
   services' guarded claims name.

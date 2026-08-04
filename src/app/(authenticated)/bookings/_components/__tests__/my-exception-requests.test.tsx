@@ -75,8 +75,10 @@ function request(
     lastConflictAt: null,
     bookingId: null,
     createdBookingId: null,
-    // No booking was created, so there is no created-booking capacity answer.
+    // No booking was created, so there is no created-booking capacity answer and no
+    // payable state either.
     createdBookingHoldsCapacity: null,
+    createdBookingAwaitsPayment: null,
     supersededByRequestId: null,
     canWithdraw: true,
     canReplace: true,
@@ -166,6 +168,39 @@ describe("MyExceptionRequests — what each state reads as", () => {
       "href",
       "/bookings/booking-9",
     );
+  });
+
+  /**
+   * #2562 re-review — the row passes the booking's PAYABLE state through, not just
+   * its capacity answer.
+   *
+   * Both are false for a booking that was cancelled or reaped, and the row used to
+   * read the capacity answer as "unpaid": it told the member to open it and pay it,
+   * or lose the nights to somebody else, about a booking that could not be paid.
+   */
+  it("only asks the member to pay an approved booking that can still be paid", () => {
+    const approved = {
+      status: "approved" as const,
+      canWithdraw: false,
+      canReplace: false,
+      createdBookingId: "booking-9",
+      createdBookingHoldsCapacity: false,
+    };
+    const { unmount } = render(
+      <MyExceptionRequests
+        requests={[request({ ...approved, createdBookingAwaitsPayment: true })]}
+      />,
+    );
+    expect(screen.getByText(/Open it and pay it/i)).toBeInTheDocument();
+    unmount();
+
+    render(
+      <MyExceptionRequests
+        requests={[request({ ...approved, createdBookingAwaitsPayment: false })]}
+      />,
+    );
+    expect(screen.getByText(/no longer live/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Open it and pay it/i)).toBeNull();
   });
 
   it("has a distinct word for withdrawn, replaced and lapsed", () => {

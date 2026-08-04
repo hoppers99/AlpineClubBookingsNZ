@@ -117,6 +117,12 @@ type MemberExceptionRow = {
    * Null on every row that created no booking.
    */
   createdBookingHoldsCapacity: boolean | null;
+  /**
+   * Whether that created booking is still live and still owed (#2562 re-review) —
+   * the fact that separates "holds no beds because nobody has paid it" from "holds
+   * no beds because it was cancelled or reaped". Null where there is no booking.
+   */
+  createdBookingAwaitsPayment: boolean | null;
   canWithdraw: boolean;
   canReplace: boolean;
 };
@@ -560,6 +566,14 @@ test("an approval becomes a real booking the member's row links to", async () =>
     approved?.createdBookingHoldsCapacity,
     "an unpaid booking made by an approval holds no beds",
   ).toBe(false);
+  // The second fact about the same booking (#2562 re-review): it holds nothing
+  // BECAUSE it is unpaid, not because it is over — which is what makes "open it and
+  // pay it" honest advice on this row rather than an instruction about a cancelled
+  // booking.
+  expect(
+    approved?.createdBookingAwaitsPayment,
+    "the booking an approval just made is still live and still owed",
+  ).toBe(true);
 
   const list = await memberContext.newPage();
   await list.goto("/bookings");

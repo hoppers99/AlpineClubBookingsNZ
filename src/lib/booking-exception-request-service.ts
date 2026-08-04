@@ -10,7 +10,10 @@ import { evaluateProposedPaidUpAdultPresence } from "@/lib/subscription-lockout-
 import { computeMemberGuestBoundary } from "@/lib/booking-guests";
 import { isOperationallyPresentConsent } from "@/lib/member-guest-consent";
 import { acquireLodgeCapacityLock, checkCapacityForGuestRanges } from "@/lib/capacity";
-import { bookingHoldsCapacity } from "@/lib/booking-status";
+import {
+  ACTIVE_BOOKING_STATUSES,
+  bookingHoldsCapacity,
+} from "@/lib/booking-status";
 import {
   releasePolicyExceptionReservation,
   reservePolicyExceptionCapacity,
@@ -1738,6 +1741,19 @@ export async function readUnifiedExceptionQueue(input: {
 const MEMBER_EXCEPTION_REQUEST_CAP = 50;
 
 /**
+ * What one created booking can honestly be said about, from its own row.
+ *
+ * TWO facts, not one (#2562 re-review). `holdsCapacity` answers "are the beds on
+ * it"; `awaitsPayment` answers "is it still live and still owed". Both are false for
+ * a cancelled or reaped booking, and reading the first as a proxy for the second is
+ * what told a member to go and pay a booking that no longer existed.
+ */
+interface CreatedBookingCapacityFacts {
+  holdsCapacity: boolean;
+  awaitsPayment: boolean;
+}
+
+/**
  * Read the created bookings' OWN capacity answers, keyed by booking id (#2562).
  *
  * WHY THIS IS A BOOKING READ and not a fact about the request. An approved
@@ -1757,8 +1773,8 @@ const MEMBER_EXCEPTION_REQUEST_CAP = 50;
  */
 async function readCreatedBookingCapacityHolds(
   bookingIds: string[],
-): Promise<Map<string, boolean>> {
-  const holds = new Map<string, boolean>();
+): Promise<Map<string, CreatedBookingCapacityFacts>> {
+  const holds = new Map<string, CreatedBookingCapacityFacts>();
   if (bookingIds.length === 0) return holds;
   const bookings = await prisma.booking.findMany({
     where: { id: { in: bookingIds } },
@@ -1773,14 +1789,22 @@ async function readCreatedBookingCapacityHolds(
     },
   });
   for (const booking of bookings) {
-    holds.set(
-      booking.id,
-      bookingHoldsCapacity({
+    holds.set(booking.id, {
+      holdsCapacity: bookingHoldsCapacity({
         status: booking.status,
         isRequestConverted: booking.originBookingRequest !== null,
         hasAdminCapacityHold: booking.adminCapacityHoldAt !== null,
       }),
-    );
+      // STILL LIVE. `ACTIVE_BOOKING_STATUSES` is the club's own answer to "is this
+      // booking a thing that is still happening": PENDING, PAYMENT_PENDING,
+      // CONFIRMED, PAID, AWAITING_REVIEW. A non-holding booking inside that set is
+      // non-holding because it is UNPAID, which is the only case where telling the
+      // member to open it and pay it is true; CANCELLED, BUMPED and every
+      // waitlist/draft state fall outside it and get the closed sentence instead.
+      awaitsPayment: (ACTIVE_BOOKING_STATUSES as readonly string[]).includes(
+        booking.status,
+      ),
+    });
   }
   return holds;
 }
@@ -1876,7 +1900,7 @@ export async function readMemberExceptionRequests(
   // The created bookings' OWN capacity answers, for the approved new-booking rows
   // only. One extra query, skipped entirely when nothing was approved, and it
   // reads the three fields `bookingHoldsCapacity` needs and nothing else.
-  const createdBookingHoldsCapacityById =
+  const createdBookingFactsById =
     await readCreatedBookingCapacityHolds(
       newBookingRows
         .filter((row) => row.status === "APPROVED" && row.createdBookingId)
@@ -1894,11 +1918,19 @@ export async function readMemberExceptionRequests(
         // new booking has no row to key on. Saying "holding beds" here is the
         // exact lie the officer queue had to be corrected for in #2526.
         holdsReservationNights: false,
-        // The created booking's answer, or null where there is no booking or the
+        // The created booking's answers, or null where there is no booking or the
         // row could not be read. Null makes the sentence state the RULE rather
         // than assert an answer, which is the safe direction here.
         createdBookingHoldsCapacity: row.createdBookingId
-          ? (createdBookingHoldsCapacityById.get(row.createdBookingId) ?? null)
+          ? (createdBookingFactsById.get(row.createdBookingId)?.holdsCapacity ??
+            null)
+          : null,
+        // Whether that booking can still be paid (#2562 re-review). Without it the
+        // row told a member whose booking had been cancelled or reaped to open it and
+        // pay it before somebody else took the nights.
+        createdBookingAwaitsPayment: row.createdBookingId
+          ? (createdBookingFactsById.get(row.createdBookingId)?.awaitsPayment ??
+            null)
           : null,
       }),
     ),
@@ -1912,6 +1944,7 @@ export async function readMemberExceptionRequests(
         // member already had — so there is no created-booking answer to give, and
         // the wording branch for MODIFICATION never asks for one.
         createdBookingHoldsCapacity: null,
+        createdBookingAwaitsPayment: null,
       }),
     ),
   ];

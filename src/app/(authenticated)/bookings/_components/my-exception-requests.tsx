@@ -177,6 +177,10 @@ export function MyExceptionRequests({
             // holds no bed until it is paid, so this row must not tell the member
             // their beds are secured (#2562 review).
             createdBookingHoldsCapacity: request.createdBookingHoldsCapacity,
+            // Whether that booking can still be paid (#2562 re-review). "Holds no
+            // beds" is equally true of an unpaid booking and a cancelled one, and
+            // only one of them is worth opening the wallet for.
+            createdBookingAwaitsPayment: request.createdBookingAwaitsPayment,
           });
           const isConfirming = confirmingId === request.id;
           return (

@@ -234,7 +234,9 @@ exceptions **at their discretion**, so there is no guarantee.
   it cannot be approved. A request to change an existing booking holds only the
   *extra* beds the change needs, and only if the club set the rule up that way; the
   screen tells you which of those applies to your own request rather than making a
-  general promise. Approval can never put the lodge over capacity.
+  general promise. Approval can never put the lodge over capacity, and approval is
+  not itself a reservation: the booking an approval creates holds no beds until you
+  pay it.
 - If nothing is held, the lodge can fill up before a decision. Your request then
   says **"Waiting — the lodge was full"** rather than sitting silently: an officer
   has looked, there was no room, and it stays open in case space frees up.
@@ -277,7 +279,9 @@ booking is created, or the change is applied. If it was a new booking, you get a
 email telling you it was approved and what is left to pay — pay it from your
 account, because the beds are not held until you do. Your request row says the same
 thing: it reads "not holding any beds yet" until the payment lands, and then changes
-to "holding its beds". If it was a change to a booking you already had, you get the
+to "holding its beds". If that booking is later cancelled, or lapses because it was
+never paid, the row says it is no longer live and stops telling you to pay it. If it
+was a change to a booking you already had, you get the
 usual "your booking was changed" email and the row says the change has been applied.
 
 If a Booking Officer says no, you get an email too: their reason, the nights it was

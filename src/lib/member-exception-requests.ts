@@ -168,6 +168,13 @@ export interface MemberExceptionRequestItem {
    * about the thing the approval produced, and the two are never the same fact.
    */
   createdBookingHoldsCapacity: boolean | null;
+  /**
+   * Whether that created booking is still live and still owes money — so "open it
+   * and pay it" is real advice rather than an instruction about a booking that was
+   * cancelled or reaped (#2562 re-review). Null on every row with no created
+   * booking, and where the caller could not read it.
+   */
+  createdBookingAwaitsPayment: boolean | null;
   /** The replacement request, once this one has been superseded. */
   supersededByRequestId: string | null;
   /** Whether the withdraw affordance is offered — derived, not restated. */
@@ -260,6 +267,20 @@ export function memberExceptionCapacityWording(args: {
    * approval.
    */
   createdBookingHoldsCapacity?: boolean | null;
+  /**
+   * Whether that created booking is still LIVE AND OWED — open, and holding nothing
+   * because it has not been paid rather than because it is over.
+   *
+   * REQUIRED before this function tells a member to go and pay something (#2562
+   * re-review). `createdBookingHoldsCapacity` is false for every non-holding status,
+   * and that set includes CANCELLED and BUMPED as well as an unpaid PENDING or
+   * PAYMENT_PENDING. Reading false as "unpaid" told a member whose booking had been
+   * cancelled, or reaped for non-payment, to "open it and pay it, or the nights can
+   * still go to somebody else" — impossible advice about a booking that reads as
+   * still winnable. Null where the caller cannot establish it, which withholds the
+   * instruction rather than guessing at it.
+   */
+  createdBookingAwaitsPayment?: boolean | null;
 }): string {
   if (args.status === "approved") {
     // A MODIFICATION approval created no booking: it changed one the member
@@ -273,7 +294,18 @@ export function memberExceptionCapacityWording(args: {
       return "The booking this created is holding its beds.";
     }
     if (args.createdBookingHoldsCapacity === false) {
-      return "This created a booking, and it is not holding any beds yet — a new booking holds none until it is paid. Open it and pay it, or the nights can still go to somebody else.";
+      // Live and owed: the beds are not held BECAUSE it is unpaid, so paying is the
+      // move and saying so is honest.
+      if (args.createdBookingAwaitsPayment === true) {
+        return "This created a booking, and it is not holding any beds yet — a new booking holds none until it is paid. Open it and pay it, or the nights can still go to somebody else.";
+      }
+      // Closed: cancelled, bumped, or reaped for non-payment. There is nothing to
+      // pay and nothing to race for, and the old sentence told the member to do both.
+      if (args.createdBookingAwaitsPayment === false) {
+        return "This created a booking, but that booking is no longer live, so it holds no beds and there is nothing left to pay on it. Open it to see what happened, and ask again if you still want those nights.";
+      }
+      // Not established. State the rule and give no instruction.
+      return "This created a booking, and it is not holding any beds — a new booking holds none until it is paid. Open it to see where it stands.";
     }
     // The booking cannot be read from here. State the rule rather than an answer.
     return "This created a booking. A new booking holds no beds until it is paid, so open it and check whether anything is still owing.";
@@ -295,7 +327,18 @@ export function memberExceptionCapacityWording(args: {
   }
   // pending
   if (args.source === "NEW_BOOKING") {
-    return "No beds are held. Nothing is reserved until a Booking Officer approves this, and availability is checked again at that moment.";
+    /*
+      "UNTIL A BOOKING OFFICER APPROVES THIS" named approval as the moment the beds
+      arrive, and it does not (#2562 re-review). An approval creates the booking the
+      member's own wizard would have created — PENDING or PAYMENT_PENDING — which
+      holds nothing until it is paid, which is exactly why the APPROVED branch above
+      had to be rewritten. A member who read the old sentence could treat approval as
+      securing the nights, not pay promptly, and lose them to somebody else while
+      holding an approved request. The rule the owner's decision sets is that
+      approval never overrides capacity and availability is rechecked at review, so
+      the sentence says that and carries the payment condition through.
+    */
+    return "No beds are held. Nothing is reserved by this request, availability is checked again when a Booking Officer reviews it, and an approved new booking still holds no beds until it is paid.";
   }
   if (args.capacityHeld) {
     return "The extra beds this change needs are held while it waits. Availability is checked again when a Booking Officer approves it.";
@@ -470,6 +513,17 @@ export function toMemberExceptionRequestItem(request: {
    */
   createdBookingHoldsCapacity?: boolean | null;
   /**
+   * The CREATED booking's PAYABLE state, where the caller read it: true when the
+   * booking is still open and still owes money, false when it is closed
+   * (cancelled, bumped, or reaped for non-payment), null when unknown.
+   *
+   * A second fact about the same booking, established by the caller from the same
+   * row as `createdBookingHoldsCapacity` — never derived from it. "Holds no beds" is
+   * true of an unpaid booking AND of a cancelled one, and only one of those can be
+   * paid, so the sentence that says "open it and pay it" needs this to be true.
+   */
+  createdBookingAwaitsPayment?: boolean | null;
+  /**
    * The frozen HOLD-if-any-HOLD aggregate, or null on a row that has none.
    *
    * Carried so the capacity SENTENCE can tell "this change needs no extra beds"
@@ -526,6 +580,12 @@ export function toMemberExceptionRequestItem(request: {
     createdBookingHoldsCapacity:
       status === "approved" && request.createdBookingId
         ? (request.createdBookingHoldsCapacity ?? null)
+        : null,
+    // Scoped identically, for the same reason: a row with no booking to open has no
+    // payable state either.
+    createdBookingAwaitsPayment:
+      status === "approved" && request.createdBookingId
+        ? (request.createdBookingAwaitsPayment ?? null)
         : null,
     supersededByRequestId: request.supersededByRequestId,
     // DERIVED from the very condition the cancel/supersede services' guarded

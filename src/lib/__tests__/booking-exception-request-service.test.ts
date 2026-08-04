@@ -1027,6 +1027,58 @@ describe("readMemberExceptionRequests — the created booking's capacity answer"
     expect(mocks.bookingFindMany).not.toHaveBeenCalled();
   });
 
+  /**
+   * #2562 re-review — the second fact about the same booking.
+   *
+   * `createdBookingHoldsCapacity` is false for every non-holding status, cancelled
+   * and reaped included, and the row's wording read false as "unpaid" — so a member
+   * whose booking had been cancelled was told to open it and pay it before the nights
+   * went to somebody else. The payable state is read from the same row.
+   */
+  it("separates an unpaid created booking from one that is no longer live", async () => {
+    mocks.bookingFindMany.mockResolvedValue([
+      {
+        id: "bk-new",
+        status: "PENDING",
+        adminCapacityHoldAt: null,
+        originBookingRequest: null,
+      },
+    ]);
+    let items = await readMemberExceptionRequests("member-1");
+    expect(items[0].createdBookingHoldsCapacity).toBe(false);
+    expect(items[0].createdBookingAwaitsPayment).toBe(true);
+
+    mocks.bookingFindMany.mockResolvedValue([
+      {
+        id: "bk-new",
+        status: "CANCELLED",
+        adminCapacityHoldAt: null,
+        originBookingRequest: null,
+      },
+    ]);
+    items = await readMemberExceptionRequests("member-1");
+    expect(items[0].createdBookingHoldsCapacity).toBe(false);
+    expect(items[0].createdBookingAwaitsPayment).toBe(false);
+
+    // A booking that was bumped is equally over.
+    mocks.bookingFindMany.mockResolvedValue([
+      {
+        id: "bk-new",
+        status: "BUMPED",
+        adminCapacityHoldAt: null,
+        originBookingRequest: null,
+      },
+    ]);
+    items = await readMemberExceptionRequests("member-1");
+    expect(items[0].createdBookingAwaitsPayment).toBe(false);
+  });
+
+  it("answers null for the payable state when the booking cannot be read", async () => {
+    mocks.bookingFindMany.mockResolvedValue([]);
+    const items = await readMemberExceptionRequests("member-1");
+    expect(items[0].createdBookingAwaitsPayment).toBeNull();
+  });
+
   it("never selects the officer's internal note on this path", async () => {
     mocks.bookingFindMany.mockResolvedValue([]);
     await readMemberExceptionRequests("member-1");

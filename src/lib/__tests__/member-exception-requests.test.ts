@@ -478,6 +478,77 @@ describe("capacity wording", () => {
     expect(unknown).not.toMatch(/is holding its beds/);
   });
 
+  /**
+   * #2562 re-review — the PENDING new-booking sentence named approval as the moment
+   * the beds arrive.
+   *
+   * "Nothing is reserved until a Booking Officer approves this" reads as "approval
+   * reserves it", and it does not: an approval creates a PENDING or PAYMENT_PENDING
+   * booking that holds nothing until it is paid. A member who believed the old
+   * sentence could sit on an approved request and lose the nights to somebody else.
+   */
+  it("never lets a pending new-booking request read as though approval secures the beds", () => {
+    const wording = memberExceptionCapacityWording({
+      source: "NEW_BOOKING",
+      status: "pending",
+      capacityHeld: false,
+      capacityMode: "NO_HOLD",
+    });
+    expect(wording).toContain("No beds are held");
+    // Availability is rechecked at review, per the owner's decision.
+    expect(wording).toMatch(/checked again when a Booking Officer reviews it/i);
+    // And the payment condition survives into this sentence, so approval is not the
+    // end of the story.
+    expect(wording).toMatch(/holds no beds until it is paid/i);
+    expect(wording).not.toMatch(/reserved until a Booking Officer approves/i);
+  });
+
+  /**
+   * #2562 re-review — "open it and pay it" for a booking nobody can pay.
+   *
+   * `createdBookingHoldsCapacity` is false for every non-holding status, so a
+   * cancelled or reaped booking landed in the branch written for an unpaid one and
+   * told the member to pay it before the nights went to somebody else.
+   */
+  it("only tells the member to pay an approved booking that can still be paid", () => {
+    const unpaid = memberExceptionCapacityWording({
+      source: "NEW_BOOKING",
+      status: "approved",
+      capacityHeld: false,
+      capacityMode: "NO_HOLD",
+      createdBookingHoldsCapacity: false,
+      createdBookingAwaitsPayment: true,
+    });
+    expect(unpaid).toContain("not holding any beds yet");
+    expect(unpaid).toMatch(/Open it and pay it/i);
+
+    const closed = memberExceptionCapacityWording({
+      source: "NEW_BOOKING",
+      status: "approved",
+      capacityHeld: false,
+      capacityMode: "NO_HOLD",
+      createdBookingHoldsCapacity: false,
+      createdBookingAwaitsPayment: false,
+    });
+    expect(closed).toMatch(/no longer live/i);
+    expect(closed).toMatch(/nothing left to pay/i);
+    expect(closed).not.toMatch(/pay it/i);
+    // And it must not read as a stay that is still winnable.
+    expect(closed).not.toMatch(/can still go to somebody else/i);
+
+    // Payable state unknown: state the rule, instruct nothing.
+    const unknown = memberExceptionCapacityWording({
+      source: "NEW_BOOKING",
+      status: "approved",
+      capacityHeld: false,
+      capacityMode: "NO_HOLD",
+      createdBookingHoldsCapacity: false,
+    });
+    expect(unknown).toContain("not holding any beds");
+    expect(unknown).toMatch(/holds none until it is paid/i);
+    expect(unknown).not.toMatch(/Open it and pay it/i);
+  });
+
   it("tells an approved modification the change was applied, not that a booking was created", () => {
     for (const createdBookingHoldsCapacity of [true, false, null] as const) {
       const wording = memberExceptionCapacityWording({
