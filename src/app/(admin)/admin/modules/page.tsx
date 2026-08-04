@@ -84,11 +84,22 @@ function readinessLabel(status: ModuleReadinessStatus) {
   return "Disabled";
 }
 
-// Modules whose "Needs setup" state has a guided setup wizard to deep-link to
-// (#2080). C4/C5 add their providers here as their wizards land.
+// Modules whose "Needs setup" state has somewhere to deep-link to (#2080). C4/C5
+// add their providers here as their wizards land.
+//
+// `analytics` points at the Integrations HUB rather than at a setup route of its
+// own, because it has none by design: the owner's #2573 decision put Google
+// Analytics on that hub as a peer card whose configuration opens in place, and
+// expressly ruled out a dedicated analytics setup route. Without this entry
+// analytics was the one module in the tree that could report `credentials_missing`
+// with no clickable route to its configuration — on the screen where the #2573
+// hard cutover is most likely to be discovered by an operator who has not read the
+// release note, and two rows away from the Xero and Google sign-in cards that do
+// show the affordance.
 const MODULE_SETUP_HREFS: Partial<Record<ModuleKey, string>> = {
   xeroIntegration: "/admin/xero/setup",
   googleLogin: "/admin/google/setup",
+  analytics: "/admin/integrations",
 };
 
 function getReadiness(

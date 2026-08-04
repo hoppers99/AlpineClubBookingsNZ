@@ -113,6 +113,36 @@ describe("getAdminFeatureSearchIndex — derivation", () => {
 
     expect(xero?.keywords).toContain("accounting");
   });
+
+  /*
+    A card that lives INSIDE a hub page has to be findable through that hub's href.
+
+    The index is built from hrefs, so a surface with no href of its own cannot
+    appear in it — and #2573 deliberately gave Google Analytics no route, putting
+    its configuration in a dialog on the Integrations hub instead (owner
+    clarification 4). The hub therefore carries the search terms, which is the house
+    convention: Backups carries "s3"/"pg_dump", the AI help assistant carries
+    "anthropic"/"spend cap".
+
+    Worth pinning rather than trusting: "analytics" alone is ambiguous in this tree —
+    `/admin/reports` already claims it for Financial Reports — so before this the
+    palette answered the obvious search with the wrong screen, and answered "google
+    analytics" and "ga4" with nothing.
+  */
+  it("finds Google Analytics through the Integrations hub it lives on", () => {
+    const index = getAdminFeatureSearchIndex(allOn, fullMatrix, true);
+    const integrations = index.find(
+      (entry) => entry.href === "/admin/integrations",
+    );
+
+    expect(integrations?.keywords).toEqual(
+      expect.arrayContaining(["google analytics", "analytics", "ga4"]),
+    );
+    // The pre-existing terms stay: this widened the entry, it did not replace it.
+    expect(integrations?.keywords).toEqual(
+      expect.arrayContaining(["api", "connections", "third-party", "webhooks"]),
+    );
+  });
 });
 
 describe("getAdminFeatureSearchIndex — permission filtering (the invariant)", () => {

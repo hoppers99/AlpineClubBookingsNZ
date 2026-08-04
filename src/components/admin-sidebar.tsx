@@ -446,7 +446,25 @@ const navSections: NavSection[] = [
         href: "/admin/integrations",
         label: "Integrations",
         icon: Plug,
-        keywords: ["api", "connections", "third-party", "webhooks"],
+        // "google analytics", "analytics" and "ga4" ride on the HUB href because
+        // the Google Analytics configuration has no href of its own — #2573 put it
+        // in a dialog on this hub, and the search index is built from the hrefs the
+        // sidebar would show (`getAdminFeatureSearchIndex`), so a card inside a page
+        // can only be found through the page that carries it. Without them the
+        // palette answered "analytics" with Financial Reports, whose own keywords
+        // already claim the word, and "google analytics" and "ga4" with nothing at
+        // all — for the screen that controls whether the club's public website
+        // tracks visitors. Same reason Backups carries "s3"/"pg_dump" and the AI
+        // help assistant carries "anthropic"/"spend cap".
+        keywords: [
+          "api",
+          "connections",
+          "third-party",
+          "webhooks",
+          "google analytics",
+          "analytics",
+          "ga4",
+        ],
       },
       {
         href: "/admin/notifications",

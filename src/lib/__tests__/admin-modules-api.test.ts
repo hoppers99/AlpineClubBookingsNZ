@@ -176,6 +176,42 @@ describe("Admin modules schema contract", () => {
   });
 });
 
+/*
+  The Modules page's "Set up ->" affordance, contracted against the source.
+
+  Google Analytics is the first module whose setup lives IN-APP but has no setup
+  route of its own: the owner's #2573 decision put its configuration on the
+  Integrations hub as a peer card that opens in place, and expressly ruled out a
+  dedicated `/admin/analytics/setup`. The page renders the link only when
+  `MODULE_SETUP_HREFS` has an entry for the module key, so without one analytics
+  reported "Needs setup" with no clickable route to the very screen this release
+  moved in-app — two rows from the Xero and Google sign-in cards that do show it,
+  and on the screen where the hard cutover is most likely to be met by an operator
+  who has not read the release note. `docs/UPGRADING.md` states the badge "points
+  at Integrations", so the docs asserted it too.
+
+  A source-text parse rather than a render: the page is a `"use client"` component
+  whose data comes from `fetch`, and what is under test is a registration, not
+  behaviour. Deliberately NOT phrased as "every module that can report
+  credentials_missing has an href" — `addressAutocomplete` can, and correctly has
+  none, because its credentials are deploy-time environment variables with no
+  in-app screen to link to.
+*/
+describe("Modules page setup affordance", () => {
+  it("deep-links the analytics module at the Integrations hub", () => {
+    const page = readRepoFile("src/app/(admin)/admin/modules/page.tsx");
+    const map = sliceFrom(page, "const MODULE_SETUP_HREFS", "};");
+
+    expect(map).toContain('analytics: "/admin/integrations"');
+    // The two that were already there, so a careless rewrite of the map is caught
+    // rather than silently dropping them.
+    expect(map).toContain('xeroIntegration: "/admin/xero/setup"');
+    expect(map).toContain('googleLogin: "/admin/google/setup"');
+    // The route the owner ruled out must not reappear anywhere on the page.
+    expect(page).not.toContain("/admin/analytics/setup");
+  });
+});
+
 describe("Admin modules API", () => {
   beforeEach(() => {
     mocks.auth.mockReset();
