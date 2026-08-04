@@ -21,6 +21,8 @@ import {
   PolicyExceptionExecutionCapacityError,
 } from "@/lib/booking-exception-approval";
 import { parseFrozenEvidence } from "@/lib/booking-exception-requests";
+import { parseDateOnly } from "@/lib/date-only";
+import { sendBookingPolicyExceptionRefusedEmail } from "@/lib/email";
 import { BookingModificationSettlementMethodRequiredError } from "@/lib/booking-modify-settlement";
 import {
   BookingGuestValidationError,
@@ -127,6 +129,85 @@ async function loadRequestDetail(id: string) {
   });
   if (newBooking) return { source: "NEW_BOOKING" as const, row: newBooking };
   return null;
+}
+
+/**
+ * Tell the member their request was refused (#2562 review).
+ *
+ * WHY IT IS ITS OWN FUNCTION and awaited nowhere: the refusal is already
+ * committed by the time this runs, so every failure inside it is a logged
+ * notification problem and never a failed decision. That is the same
+ * "log, never surface" discipline the approval path's post-commit notifications
+ * use, and the reason the caller marks it `void`.
+ *
+ * WHICH DATES. The PROPOSED nights out of the frozen snapshot, because those are
+ * the nights the member asked about and the ones they will recognise. A snapshot
+ * that will not parse falls back to the live booking's own envelope on the change
+ * path; on the new-booking path there is nothing else to fall back to, so the
+ * notice is skipped and logged rather than sent with invented dates.
+ *
+ * WHICH NOTE. `adminNotes` only. `internalNotes` reaches no member surface, and an
+ * email is a member surface.
+ */
+async function notifyMemberOfRefusal(args: {
+  source: "MODIFICATION" | "NEW_BOOKING";
+  row: {
+    id: string;
+    requestedByMemberId: string;
+    requestedBy: { id: string; firstName: string; email: string } | null;
+    bookingId?: string | null;
+    lodgeId?: string | null;
+    booking?: { id: string; checkIn: Date; checkOut: Date; lodgeId: string | null } | null;
+  };
+  snapshot: { proposed: { checkIn: string; checkOut: string } } | null;
+  adminNotes: string | undefined;
+}): Promise<void> {
+  try {
+    const recipient = args.row.requestedBy;
+    if (!recipient?.email) return;
+    const proposedCheckIn = args.snapshot
+      ? parseDateOnly(args.snapshot.proposed.checkIn)
+      : null;
+    const proposedCheckOut = args.snapshot
+      ? parseDateOnly(args.snapshot.proposed.checkOut)
+      : null;
+    const checkIn =
+      proposedCheckIn && !Number.isNaN(proposedCheckIn.getTime())
+        ? proposedCheckIn
+        : (args.row.booking?.checkIn ?? null);
+    const checkOut =
+      proposedCheckOut && !Number.isNaN(proposedCheckOut.getTime())
+        ? proposedCheckOut
+        : (args.row.booking?.checkOut ?? null);
+    if (!checkIn || !checkOut) {
+      logger.error(
+        { requestId: args.row.id, source: args.source },
+        "Refused a booking-policy exception request but could not resolve its nights, so the member was not emailed",
+      );
+      return;
+    }
+    await sendBookingPolicyExceptionRefusedEmail({
+      // A refused CHANGE belongs to its booking, so the per-booking "No emails"
+      // switch can withhold it. A refused NEW booking has no booking at all.
+      bookingContext:
+        args.source === "MODIFICATION" && args.row.bookingId
+          ? { bookingId: args.row.bookingId }
+          : "none",
+      email: recipient.email,
+      recipientMemberId: args.row.requestedByMemberId,
+      firstName: recipient.firstName,
+      checkIn,
+      checkOut,
+      adminNotes: args.adminNotes ?? null,
+      source: args.source,
+      lodgeId: args.row.booking?.lodgeId ?? args.row.lodgeId ?? null,
+    });
+  } catch (err) {
+    logger.error(
+      { err, requestId: args.row.id, source: args.source },
+      "Failed to email a member about their refused booking-policy exception request",
+    );
+  }
 }
 
 /** One proposed guest, as the officer needs to see them before deciding. */
@@ -359,6 +440,22 @@ export async function PATCH(
         internalNoteRecorded: Boolean(internalNotes),
       },
       ipAddress,
+    });
+    // #2562 review: TELL THE MEMBER. Before this the refusal branch recorded a
+    // mandatory member-facing explanation and delivered it nowhere — no email, and
+    // this app has no in-app notification centre — so the member's only signal was
+    // a badge they had to go looking for, and their realistic next act was the
+    // phone call this workflow exists to remove.
+    //
+    // Fire-and-forget, AFTER the claim has committed: the refusal is recorded, so a
+    // mail failure must never be reported to the officer as a failed decision.
+    // `adminNotes` and never `internalNotes` — the private note reaches no member
+    // surface, and this is one of them.
+    void notifyMemberOfRefusal({
+      source: found.source,
+      row: found.row,
+      snapshot,
+      adminNotes,
     });
     return NextResponse.json({
       id,

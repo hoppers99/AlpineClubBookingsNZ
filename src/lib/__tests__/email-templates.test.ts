@@ -19,6 +19,7 @@ import {
   adminSplitSettlementUnpaidTemplate,
   adminSplitSettlementCancelledTemplate,
   splitGuestPortionCancelledTemplate,
+  bookingPolicyExceptionRefusedTemplate,
 } from "../email-templates";
 import { getAppBaseUrl } from "../app-url";
 import { formatNZDateTime } from "../nzst-date";
@@ -695,5 +696,60 @@ describe("email-templates", () => {
       expect(html).toContain("white-space: pre-wrap");
       expect(html).toContain("First line\nSecond line");
     });
+  });
+});
+
+/**
+ * #2562 review — the refusal notice.
+ *
+ * Before this, a refusal recorded a mandatory member-facing explanation and
+ * delivered it nowhere. Three properties of the copy are load-bearing: the reason
+ * actually appears, the message says nothing was booked or held, and it carries NO
+ * `/bookings` CTA — the canonical authorized booking link is gated on
+ * `ALWAYS_BOOKING_SCOPED_TEMPLATE_NAMES`, whose contract is that every sender hands
+ * over a real booking id, and a refused NEW-booking request has none. A CTA added
+ * here would be silently stripped on the change path and would make that set's own
+ * statement false.
+ */
+describe("bookingPolicyExceptionRefusedTemplate", () => {
+  function render(overrides: Record<string, unknown> = {}) {
+    return bookingPolicyExceptionRefusedTemplate({
+      firstName: "Ada",
+      lodgeName: "Example Lodge",
+      checkIn: new Date("2026-08-14T00:00:00.000Z"),
+      checkOut: new Date("2026-08-15T00:00:00.000Z"),
+      reasonLine:
+        "Why the Booking Officer said no: that weekend is fully committed every year.",
+      askDescription:
+        "your request to be let past a booking rule for a new stay",
+      ...overrides,
+    } as Parameters<typeof bookingPolicyExceptionRefusedTemplate>[0]);
+  }
+
+  it("delivers the officer's explanation and says nothing was booked or held", () => {
+    const html = render();
+    expect(html).toContain("Your request was not approved");
+    expect(html).toContain("fully committed every year");
+    expect(html).toContain("Nothing was booked and nothing was changed");
+    expect(html).toContain("gone back into the pool");
+    // Where to look, since there is no button (see below).
+    expect(html).toContain("My booking-rule requests");
+  });
+
+  it("carries no /bookings call to action on either flavour", () => {
+    for (const askDescription of [
+      "your request to be let past a booking rule for a new stay",
+      "your request to be let past a booking rule for a change to your booking",
+    ]) {
+      const html = render({ askDescription });
+      expect(html).not.toContain("/bookings");
+      expect(html).not.toContain("View Booking");
+    }
+  });
+
+  it("renders nothing in place of an absent reason rather than a dangling label", () => {
+    const html = render({ reasonLine: "" });
+    expect(html).not.toContain("Why the Booking Officer said no");
+    expect(html).toContain("Your request was not approved");
   });
 });

@@ -4,6 +4,9 @@ import {
   finalizeBookingEmailHtml,
   hasBookingDetailHref,
 } from "@/lib/booking-email-html";
+import { bookingPolicyExceptionApprovedTemplate } from "@/lib/email-templates";
+import { BOOKING_URL_TEMPLATE_NAMES } from "@/lib/booking-email-template-contract";
+import { ALWAYS_BOOKING_SCOPED_TEMPLATE_NAMES } from "@/lib/booking-email-suppression";
 
 beforeEach(() => {
   vi.stubEnv("NEXTAUTH_URL", "https://bookings.example.nz");
@@ -191,5 +194,66 @@ describe("built-in booking email HTML links", () => {
         "Literal bearer: /bookings/consent/token. " +
         "Unrelated: /help?next=/bookings/bk_visible#faq.",
     );
+  });
+});
+
+/**
+ * #2562 review — where the approval notice's "View Booking" button actually goes.
+ *
+ * The template writes `{BASE_URL}/bookings`, which reads like a list link on the
+ * page, and a review took it for one. It is not: `booking-policy-exception-approved`
+ * is a registered, always-booking-scoped template in the booking-URL set, so
+ * `sendEmail` resolves the recipient's own authorized detail URL and
+ * `applyBookingDetailLinkToBuiltInHtml` rewrites the CTA to it before delivery —
+ * or strips the CTA entirely for a recipient with no route authority. Pinned here
+ * because the delivered link is a property of the send pipeline, not of the
+ * template source, and reading the template alone gives the wrong answer.
+ */
+describe("the approved-exception notice links to the booking, not the list", () => {
+  const html = () =>
+    bookingPolicyExceptionApprovedTemplate({
+      firstName: "Ada",
+      checkIn: new Date("2026-07-01T00:00:00.000Z"),
+      checkOut: new Date("2026-07-03T00:00:00.000Z"),
+      guestCount: 2,
+      paymentNote: "There is $120.00 to pay on this booking.",
+      adminNotesLine: "",
+    });
+
+  it("is classified so the canonical booking link is resolved for it at all", () => {
+    expect(
+      ALWAYS_BOOKING_SCOPED_TEMPLATE_NAMES.has(
+        "booking-policy-exception-approved",
+      ),
+    ).toBe(true);
+    expect(
+      BOOKING_URL_TEMPLATE_NAMES.has("booking-policy-exception-approved"),
+    ).toBe(true);
+  });
+
+  it("delivers the recipient's own booking-detail URL in the CTA", () => {
+    const delivered = finalizeBookingEmailHtml({
+      html: html(),
+      bookingUrl: "https://bookings.example.nz/bookings/bk_approved",
+      bookingScoped: true,
+      bodyOverrideApplied: false,
+    });
+    expect(delivered).toContain(
+      'href="https://bookings.example.nz/bookings/bk_approved"',
+    );
+    // The bare list href never survives to the wire.
+    expect(delivered).not.toContain('href="https://bookings.example.nz/bookings"');
+  });
+
+  it("drops the CTA rather than leaking a booking id to an unauthorized recipient", () => {
+    const delivered = finalizeBookingEmailHtml({
+      html: html(),
+      bookingUrl: null,
+      bookingScoped: true,
+      bodyOverrideApplied: false,
+    });
+    expect(delivered).not.toContain("View Booking");
+    // The message itself still tells them what was approved and what is owing.
+    expect(delivered).toContain("120.00");
   });
 });
