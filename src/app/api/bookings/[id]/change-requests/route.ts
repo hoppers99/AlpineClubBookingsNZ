@@ -15,6 +15,10 @@ import { checkRateLimit, getClientIp, rateLimiters } from "@/lib/rate-limit";
 import logger from "@/lib/logger";
 import { z } from "zod";
 import { bookingManagementAuthorizationRole } from "@/lib/admin-permissions";
+import {
+  memberBookingChangeRequestSelect,
+  projectMemberBookingChangeRequest,
+} from "@/lib/booking-change-request-member-view";
 
 const createChangeRequestSchema = z.object({
   checkIn: z.string().optional(),
@@ -498,9 +502,20 @@ export async function GET(
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
+  // #2562 — an EXPLICIT column projection, never `include:`.
+  //
+  // This read is authorised for the booking's own OWNER (line above), and it
+  // selects every change request on the booking with no `kind` filter — so
+  // POLICY_EXCEPTION rows come back here too. `include:` returns every scalar
+  // column on the model, which meant the officer's private `internalNotes` went
+  // to the member it was written about the moment that column existed. The
+  // manifest in `booking-change-request-member-view.ts` names what a member may
+  // read and what they may not, and its census test fails until a newly added
+  // column is classified.
   const requests = await prisma.bookingChangeRequest.findMany({
     where: { bookingId },
-    include: {
+    select: {
+      ...memberBookingChangeRequestSelect,
       requestedBy: { select: { id: true, firstName: true, lastName: true, email: true } },
       reviewedBy: { select: { id: true, firstName: true, lastName: true } },
     },
@@ -508,5 +523,7 @@ export async function GET(
     take: 50,
   });
 
-  return NextResponse.json(requests);
+  // Projected again on the way out (see the manifest module): the select is the
+  // guarantee, this is the backstop for the day somebody rewrites the query.
+  return NextResponse.json(requests.map(projectMemberBookingChangeRequest));
 }

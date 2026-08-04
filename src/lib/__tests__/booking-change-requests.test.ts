@@ -653,4 +653,69 @@ describe("booking change requests", () => {
       })
     );
   });
+
+  /**
+   * #2562 — the officer's PRIVATE note must not travel on this route.
+   *
+   * The read is authorised for the booking's OWNER as well as an officer, and it
+   * returns every change request on the booking with no `kind` filter, so
+   * POLICY_EXCEPTION rows come back here too. It used to read with `include:`,
+   * which returns every scalar column on the model — including `internalNotes`
+   * once #2562 added it. These two cases pin the projection rather than the
+   * absence of a leak in one fixture: the first proves the query names its
+   * columns and never asks for the note, the second proves the route does not
+   * pass a note through even if a stale mock (or a future raw query) hands it one.
+   */
+  it("never asks the database for the officer's internal note", async () => {
+    mocks.bookingFindUnique.mockResolvedValue({ memberId: "member-1" });
+    mocks.bookingChangeRequestFindMany.mockResolvedValue([]);
+
+    const request = new NextRequest(
+      "http://localhost/api/bookings/booking-1/change-requests"
+    );
+    await getMemberBookingChangeRequests(request, {
+      params: Promise.resolve({ id: "booking-1" }),
+    });
+
+    const args = mocks.bookingChangeRequestFindMany.mock.calls[0][0] as {
+      select?: Record<string, unknown>;
+      include?: unknown;
+    };
+    // An explicit projection, not `include:` — the shape that cannot leak the
+    // NEXT column either.
+    expect(args.include).toBeUndefined();
+    expect(args.select).toBeDefined();
+    expect(args.select).not.toHaveProperty("internalNotes");
+    expect(args.select).not.toHaveProperty("openStateKey");
+    // The member-facing explanation is still readable; the split is only safe
+    // while a refused member can read why.
+    expect(args.select).toHaveProperty("adminNotes", true);
+    expect(args.select).toHaveProperty("requestedBy");
+    expect(args.select).toHaveProperty("reviewedBy");
+  });
+
+  it("does not serialise an internal note even if one reaches the route", async () => {
+    mocks.bookingFindUnique.mockResolvedValue({ memberId: "member-1" });
+    mocks.bookingChangeRequestFindMany.mockResolvedValue([
+      {
+        id: "request-1",
+        kind: "POLICY_EXCEPTION",
+        adminNotes: "Not that weekend, sorry.",
+        internalNotes: "Chases every officer until somebody says yes.",
+      },
+    ]);
+
+    const request = new NextRequest(
+      "http://localhost/api/bookings/booking-1/change-requests"
+    );
+    const response = await getMemberBookingChangeRequests(request, {
+      params: Promise.resolve({ id: "booking-1" }),
+    });
+    const raw = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(raw).toContain("Not that weekend, sorry.");
+    expect(raw).not.toContain("internalNotes");
+    expect(raw).not.toContain("Chases every officer");
+  });
 });
