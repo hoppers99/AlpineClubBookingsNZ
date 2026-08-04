@@ -498,44 +498,118 @@ Check for these before every deploy:
 awk -F'\t' '$4 == "windowed" { print $1 }' docs/BLUE_GREEN_MIGRATION_SAFETY.tsv
 ```
 
-**Current windowed migration:**
-`20260803010000_contract_subscription_lockout_drop_enabled` (#2543 / #2561). It
-drops `MembershipLockoutSettings.enabled`. The previous release's Prisma client
-names that column on every read of the model, and the booking gates resolve the
-club's subscription-lockout policy through that read — so between migrate and
-cutover the old colour cannot take a booking at all. There is no ordering that
-keeps both colours working, which is why the window exists.
+**Current windowed migrations — there are two, and if both are pending they share
+ONE window.** `prisma migrate deploy` applies them in the same command, so the
+sequence below is run once, not twice.
+
+- `20260803010000_contract_subscription_lockout_drop_enabled` (#2543 / #2561). It
+  drops `MembershipLockoutSettings.enabled`. The previous release's Prisma client
+  names that column on every read of the model, and the booking gates resolve the
+  club's subscription-lockout policy through that read — so between migrate and
+  cutover the old colour cannot take a booking at all.
+- `20260803030000_contract_drop_family_group_member_role` (#2520). It drops
+  `FamilyGroupMember.role`. The previous release's client names that column in
+  ordinary projections, in the column list of every insert (a static
+  `@default("MEMBER")` is materialised client-side), and in a `WHERE` clause —
+  `role: "ADMIN"`, the one-step partner declaration read that the member profile
+  page renders. So the old colour fails across the whole family surface: member
+  profile, admin family groups, onboarding, family join/invite/removal, member
+  merge, Xero member import and nomination. The owner authorised this one as a
+  windowed drop on 3 Aug 2026, superseding an earlier plan that would have carried
+  the obsolete column through another release.
+
+In neither case is there an ordering that keeps both colours working, which is why
+the window exists.
 
 **The sequence, in order. Each step is there because the next one cannot be
-undone without it:**
+undone without it.** This is the combined order — the one the owner directed for
+#2520 and the one that governs a window carrying both migrations. It differs from
+the runbook's §2.4 list in one place, the position of the backup, and the runbook
+says which governs when:
 
-1. **Build and validate the new images first**, before touching the database. A
-   build that fails after the column is dropped leaves no working release to start.
-2. **Take a fresh backup and verify it restores.** Immediately before migrating.
-   For an ordinary migration you can abort up to the cutover; for a windowed one the
-   point of no return is the migrate step, so this is the last unconditional way
-   back. See [Backups](#backups).
-3. **Enter maintenance mode / remove user traffic.** Nobody should be mid-booking.
-4. **Stop the old app *and* the workers.** Both read this settings row. Workers left
-   running produce the same failures with nobody watching them.
-5. **Migrate**, with the acknowledgement above and a
-   `BLUE_GREEN_MIGRATION_OVERRIDE_REASON` naming this window. The validator refuses
-   the deploy without it — and refuses it regardless if the migration ships no
-   `rollback.sql`.
-6. **Start the new release**, confirm `/api/health/ready`, then leave maintenance
+1. **Build, publish and validate the new images first**, before touching the
+   database — and confirm the image carries both the new runtime code and the
+   expected migration. A build that fails after the column is dropped leaves no
+   working release to start.
+2. **Enter maintenance mode / remove user traffic.** Nobody should be mid-booking.
+3. **Stop the old app *and* every worker, scheduler, cron runner and queue
+   consumer** that can reach the shared database, then **verify nothing old is
+   still connected** (`pg_stat_activity`). Anything left running produces the same
+   failures with nobody watching them.
+4. **Take a fresh backup and verify it.** Immediately before migrating, and — note
+   the order — *after* everything that writes has stopped, so the snapshot is a quiet
+   point with no writes landing between it and the migration. For an ordinary
+   migration you can abort up to the cutover; for a windowed one the point of no
+   return is the migrate step, so this is the last unconditional way back. See
+   [Backups](#backups). **Do the full restore drill before the window**, on the most
+   recent durable artifact — it is tens of minutes on a production-sized database and
+   this step is inside the outage. Verify *this* artifact by integrity and completion
+   instead: the exact commands, and why `pg_restore --list` is not one of them, are in
+   `docs/PRODUCTION_UPGRADE_RUNBOOK.md` §2.4.1 step 7.
+5. **Record the pre-migration checks** the runbook lists for the migration in hand
+   — for `20260803030000` that is the row count, the distinct `role` values with
+   counts, the column-exists confirmation, the proof that the replacement runtime
+   cannot name the column, and the **required** per-row dump. Both of the
+   `role`-related checks run inside the replacement image rather than at the host
+   shell (this host has only Docker and Docker Compose), and the dump has to land on a
+   **host** path and then move somewhere durable — a `\copy` through
+   `docker compose exec postgres psql` writes inside that container's writable layer,
+   which the deploy recreates. After migrate those values are unrecoverable.
+6. **Run the safety validator, then migrate** — two commands, in that order. The
+   validator is `scripts/validate-blue-green-migrations.sh`, a **separate script**
+   that `prisma migrate deploy` knows nothing about: the only thing that runs it
+   automatically is `scripts/run-production-blue-green-deploy.sh`, which performs
+   the whole ordinary cutover this window replaces. So in a hand-run window the
+   operator runs it or nothing does, and passing
+   `ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS` to Prisma alone achieves nothing. It
+   refuses without the acknowledgement above and a
+   `BLUE_GREEN_MIGRATION_OVERRIDE_REASON` naming this window, and refuses
+   regardless if the migration ships no `rollback.sql`. Then migrate through the
+   dedicated compose service the deploy script uses,
+   `docker compose --profile migrate run --rm migrate` — not `npx`, which this host
+   is not documented as having and which is deliberately removed from the runtime
+   image. Exact commands: `docs/PRODUCTION_UPGRADE_RUNBOOK.md` §2.4.1 step 9.
+7. **Verify the migrate step**: the dropped column is gone and
+   `_prisma_migrations` records each migration once.
+8. **Start the replacement release and replacement workers only**, confirm
+   `/api/health/ready`, smoke-test the affected surfaces, check the app, worker,
+   Prisma and PostgreSQL logs for missing-column errors, then leave maintenance
    mode.
 
 **If it goes wrong.** Prefer going *forward*: the schema is migrated and the data is
 intact, so finishing the deploy is usually the fastest recovery. If the new release
 will not start, run the reverse script beside the migration —
 `prisma/migrations/<migration>/rollback.sql` — as the migration role, then redeploy
-the previous release's images. Restore from backup only if the **data** is wrong
-rather than the schema. Note that `_prisma_migrations` still records the migration
-as applied after a `rollback.sql`, so rolling forward later means clearing that row
-or re-applying `migration.sql` by hand.
+the previous release's images. **Never restart the previous release before running
+the reverse script or restoring the backup**: after the drop commits, its client
+names a column that no longer exists, so re-pointing traffic at it does not restore
+service. Restore from backup only if the **data** is wrong rather than the schema.
 
-Full step-by-step, including the rehearsal evidence for the current one, is in
-`docs/PRODUCTION_UPGRADE_RUNBOOK.md` → "Windowed migration deploy sequence".
+**When both windowed migrations were applied in the one window, roll back BOTH, in
+the reverse of the order they were applied** — `20260803030000` first, then
+`20260803010000`. One is not enough: whichever you skip leaves its column missing
+and the previous release still broken, and if you skip `20260803010000` what stays
+broken is every booking write path, while the family-group pages look fine and
+suggest the rollback worked. The two touch different tables, so the order cannot
+corrupt anything; it is the rule to follow because it generalises. Rehearsed both
+scripts in that order.
+
+**After a `rollback.sql` the migration history lies, and nothing in the deploy path
+notices.** `_prisma_migrations` still records the migration as applied, so
+`prisma migrate status`, `prisma migrate deploy` and the deploy script's own drift
+gate all report a clean database — measured, not assumed. The one command that sees
+the leftover column is
+`prisma migrate diff --exit-code --from-config-datasource --to-schema prisma/schema.prisma`.
+Rolling forward later is best done by re-applying `migration.sql` by hand, which
+leaves the already-correct history row alone; deleting the `_prisma_migrations` row
+and migrating again works too but edits the history for no gain. You do not have to
+roll the schema forward before starting the replacement release: the replacement
+client works against the rolled-back schema, because the restored column is
+`NOT NULL` with a constant default.
+
+Full step-by-step, including the rehearsal evidence for both current windowed
+migrations, is in `docs/PRODUCTION_UPGRADE_RUNBOOK.md` → "Windowed migration deploy
+sequence" (the #2520 sequence is its §2.4.1).
 
 ## Config Self-Heal On Boot
 

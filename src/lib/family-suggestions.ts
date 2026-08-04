@@ -264,7 +264,7 @@ export async function resetHiddenFamilySuggestions(): Promise<{
  * Create a family group from a suggestion. Every suggested member is added as a
  * plain membership: #2520 removed the "pick a lead and mark them ADMIN" step,
  * because the `FamilyGroupMember.role` column it wrote granted nothing (#2284)
- * and is retired pending its CONTRACT drop. There is no rank to assign.
+ * and 20260803030000 has since dropped the column. There is no rank to assign.
  */
 export async function createFamilyGroupFromSuggestion(
   name: string,

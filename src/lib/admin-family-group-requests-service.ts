@@ -1281,8 +1281,8 @@ async function reviewGroupCreateRequest(params: {
 
         // GROUP_CREATE approval creates the requester's membership. It used to
         // write role ADMIN to mark them the group's lead; #2520 removed that
-        // write, because the column granted nothing (#2284) and is retired
-        // pending its CONTRACT drop. There is deliberately no "group admin"
+        // write, because the column granted nothing (#2284), and then dropped
+        // the column itself (20260803030000). There is deliberately no "group admin"
         // concept left to seed: every adult login co-member of a family group
         // is equal (see the family authorisation boundary in
         // docs/DOMAIN_INVARIANTS.md).

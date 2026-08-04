@@ -46,8 +46,10 @@ export async function GET(
       memberships: {
         where: { member: { archivedAt: null } },
         // #2520: `select`, not `include` — an `include` on the join table
-        // projects every FamilyGroupMember scalar, naming the retired `role`
-        // column in the SQL. Only the member is read from these rows.
+        // projects every FamilyGroupMember scalar, which is how the retired
+        // `role` column stayed in this SQL long after the last reader went
+        // (20260803030000 has since dropped it). Only the member is read from
+        // these rows, so the narrowing stays.
         select: {
           member: {
             select: {
@@ -89,8 +91,8 @@ export async function GET(
     id: group.id,
     name: group.name,
     createdAt: group.createdAt,
-    // #2520: no per-membership `role` in the payload — the column is retired and
-    // nothing in the admin UI read it out of this response.
+    // #2520: no per-membership `role` in the payload — the column is dropped
+    // (20260803030000) and nothing in the admin UI read it out of this response.
     members: group.memberships.map(({ member }) => ({
       id: member.id,
       firstName: member.firstName,

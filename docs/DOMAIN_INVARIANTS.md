@@ -5210,16 +5210,20 @@ The four powers over a non-login member, and how #2284 settled each:
   deliberately so; no code may treat `detailsConfirmedByMemberId` as naming a
   single, lead-appointed responsible adult. With the role reader gone,
   **`FamilyGroupMember.role` no longer gates authorisation anywhere** — and #2520
-  finished the job: **the generated Prisma Client no longer carries the field at
-  all**, so no statement it emits can name the column. Every writer is gone (the
+  finished the job in two halves: PR #2565 removed every writer (the
   group-creating flows, the join/invite/nomination/partner and Xero-import paths,
-  and the demo seed), member-merge's vestigial `maxFamilyRole` upgrade is gone,
-  every `FamilyGroupMember` query is narrowed with an explicit `select`, and the
-  field is marked **`@ignore`** in `prisma/schema.prisma`.
+  and the demo seed), removed member-merge's vestigial `maxFamilyRole` upgrade,
+  narrowed every `FamilyGroupMember` query with an explicit `select`, and marked
+  the field `@ignore`; then
+  **`20260803030000_contract_drop_family_group_member_role` DROPPED the column and
+  removed the field from `prisma/schema.prisma`.** There is now no rank on a
+  family-group membership at any level: not in the database, not in the generated
+  Prisma Client, and not in the schema. **Membership in a group is the only fact
+  the join table records.**
 
-  The `@ignore` is the load-bearing part, and removing the call sites was **not**
-  sufficient without it. Measured against Prisma 7.9.0 by recording the SQL
-  through a driver adapter:
+  Why the runtime half needed the `@ignore` rather than just deleting the call
+  sites, recorded because the same trap applies to the next doomed column.
+  Measured against Prisma 7.9.0 by recording the SQL through a driver adapter:
 
   - A static `@default("MEMBER")` is materialised **client-side** as a bind
     parameter, so the column appeared in the column list of every `INSERT` the
@@ -5231,16 +5235,40 @@ The four powers over a non-login member, and how #2284 settled each:
     implicit `RETURNING`, and an `include:` (or a bare `: true`) on the join table
     names every scalar in its `SELECT`.
 
-  `@ignore` closes all of those at once and makes naming the column a **compile**
-  error rather than a latent production error. It changes no database state — the
-  schema diff with and without it is empty, so the annotation owes no migration —
-  and the column keeps its `NOT NULL DEFAULT 'MEMBER'`, so rows inserted from here
-  on are filled by the **database** default and are never `NULL`.
-  `src/lib/__tests__/family-group-role-retirement.test.ts` pins the annotation and
-  the client's shape, and covers the surfaces the client cannot: nested-relation
-  projections and raw SQL. Narrowing of the delegate calls themselves is enforced
-  by `src/lib/__tests__/doomed-column-select-guard.test.ts`, which now registers
-  `familyGroupMember` alongside the two #2130 models.
+  `@ignore` closed all of those at once, which is what let the drop be reasoned
+  about at all. Removing the field outright now does the same thing permanently:
+  **no call shape on this delegate can emit SQL naming the column**, because the
+  generated client has no such field to put in a `SELECT`, an `INSERT` column
+  list, a `RETURNING` or a `WHERE`.
+
+  How that is enforced, measured in the rehearsal rather than asserted, because
+  the convenient shorthand ("it is a compile error now") is not quite true and the
+  difference decides how much guard coverage is still owed:
+
+  - `where: { role: ... }` **is** a compile error —
+    `'role' does not exist in type 'FamilyGroupMemberWhereInput'`;
+  - `select: { role: true }` and `create({ data: { role } })` **compile cleanly**,
+    and are rejected at runtime by the client with `PrismaClientValidationError`
+    **before any SQL is emitted**.
+
+  So the residual hazard is a 500 on one route, not a Postgres 42703, and it is
+  unconditional rather than data-dependent — the first invocation of that code
+  path fails, in any test or dev run. What is gone completely is the *implicit*
+  hazard the old guard existed for: an `include:` or a bare `: true` naming the
+  column with no author intent at all. The client cannot name a field the schema
+  does not declare.
+
+  `src/lib/__tests__/family-group-role-retirement.test.ts` survives the drop in
+  reduced form. Its delegate, nested-relation and write/read scans were deleted on
+  the reasoning just above — the implicit hazard is structurally impossible and the
+  explicit one is loud and unconditional — and `familyGroupMember` came out of
+  `src/lib/__tests__/doomed-column-select-guard.test.ts`'s
+  `NARROW_SELECT_MODELS` at the same time. What it still pins is the part the
+  compiler cannot reach: the **generated client's shape** (the owner-required proof
+  that the replacement runtime cannot name the dropped column) and **raw SQL**,
+  where a `$queryRaw` or a psql heredoc naming the column is invisible to
+  TypeScript. It also ties the schema's field-absence to the committed migration
+  and to the migration's `windowed` ledger row with its `rollback.sql`.
 
   Worth recording precisely, because the #2284 close-out is easy to misread: what
   #2284 removed was the last **authorisation** reader. **Payload** readers
@@ -5251,8 +5279,8 @@ The four powers over a non-login member, and how #2284 settled each:
   the member-facing onboarding wizard as `groupRole`. None was rendered (the
   wizard declared `groupRole` in its type and never used it; the admin pages never
   referenced it), so removing them changes no screen — but "the column has no
-  reader" was not true of the deployed release until now, and the blue/green
-  precondition below depends on it being true. A retired audit script
+  reader" was not true of the deployed release until PR #2565, and the drop's
+  safety depends on it being true. A retired audit script
   (`scripts/audit-access-role-membership-cleanup.ts`) also still named the column
   in raw fixture SQL and a snapshot query; #2520 removed those the same way #2130
   removed that script's `AgeTierSetting.xeroContactGroupId` references.
@@ -5262,38 +5290,51 @@ The four powers over a non-login member, and how #2284 settled each:
   join request no longer materialises a group around a consentless target with any
   role at all (`src/app/api/members/family/request-join/route.ts`).
 
-  The column itself survives one more release. Removing the Prisma field requires
-  the `DROP COLUMN` migration in the same pull request — the migration-drift gate
-  compares `prisma/migrations/` against `prisma/schema.prisma` — and that DROP is
-  only old-code compatible once the release described above is the *draining*
-  colour, because the **currently deployed** client still carries the field and so
-  still names it. Shipping the drop in the same release as the writer removal would
-  break the previous colour between migrate and cutover, i.e. force a maintenance
-  window. So the retirement is deliberately two-step, per
-  `docs/BLUE_GREEN_MIGRATION_POLICY.md`: this RUNTIME release stops depending on
-  the column, and the CONTRACT release drops it, removes the field, deletes the
-  guard test, and drops `familyGroupMember` from the other guard's
-  `NARROW_SELECT_MODELS`.
+  **How the drop actually shipped, and why the plan changed.** An earlier version
+  of this text described a deliberately two-step retirement: deploy the runtime
+  half, wait for it to become the draining colour, then drop the column in a later
+  release declaring `old_code_compatible=yes`. **The owner superseded that on
+  3 Aug 2026** (#2520): the physical drop ships now, as part of the Tokoroa
+  cutover, behind an accepted maintenance window, rather than carrying an obsolete
+  column through another release. This paragraph replaces the old plan rather than
+  sitting beside it, because no release ever shipped under it — the "leave it as
+  declared" convention in `docs/BLUE_GREEN_MIGRATION_POLICY.md` protects the record
+  of what operators actually deployed under, which this was not.
 
-  **#2520 stays open until that CONTRACT release lands** — the DROP is the second
-  half of its scope, not a separate follow-up, so the pull request delivering this
-  RUNTIME half must not close it.
+  What that means concretely, and it is the honest version of the constraint the
+  old plan was designed to avoid:
 
-  Two details the CONTRACT pull request must get right, both easy to get wrong:
+  - The runtime half was **never deployed on its own**, so the release in
+    production when the drop lands is the last tagged one, whose Prisma client
+    names the column in ordinary projections, in every insert's column list, **and
+    in a `WHERE` clause** — `role: "ADMIN"`, the one-step partner declaration read
+    that the member profile page renders. The moment the DROP commits, that release
+    fails across the whole family surface.
+  - So the ledger row is `old_code_compatible=**windowed**`, not `yes`: it says in
+    writing that the previous release *will* break, and it carries the full ordered
+    maintenance-window plan. `previous_expand_release` names an adjacent migration
+    in the same release, because **no truthful value exists**: the runtime half
+    shipped no migration of its own, so there is no folder from it to name, and the
+    field is single-valued and checked only for non-emptiness. The real precondition
+    is written out in the row's `lock_impact_plan` instead. That last part is the
+    practice the #2130 contract row (`20260721130000`) established — its own single
+    field could not express two expand releases either, so it named one and
+    explained both in the plan column — but #2130's field names a *real, already
+    deployed* expand release, which this one's cannot.
+  - The rollback boundary moves back to the **migrate step**, so
+    `rollback.sql` ships beside the migration and was rehearsed both ways. It
+    restores the column's exact shape (`TEXT NOT NULL DEFAULT 'MEMBER'`) but not
+    the per-row labels, which no script can recover; `'MEMBER'` is the documented
+    safe compatibility value. The operator sequence, the four pre-migration checks
+    and the rollback-boundary rules are in
+    `docs/PRODUCTION_UPGRADE_RUNBOOK.md` → "Windowed migration deploy sequence"
+    → §2.4.1.
 
-  - It may declare `old_code_compatible=yes` **only because** the draining colour
-    is the release described above, whose client cannot name the column. Verify
-    that release is actually deployed and soaked first.
-  - This RUNTIME release ships **no migration of its own**, so there is no
-    migration folder from it to put in `previous_expand_release`. Do what the
-    #2130 contract row (`20260721130000`) did for its runtime-prep release: name
-    an adjacent migration in that field and record the real precondition — "do not
-    deploy until the release carrying the `@ignore` has shipped and soaked" — in
-    `lock_impact_plan`.
-
-  Until the drop lands the stored values are **meaningless**, not frozen: the
-  column keeps its `NOT NULL DEFAULT 'MEMBER'`, so new rows still receive
-  `'MEMBER'` from the database.
+  The stored values were **meaningless rather than frozen** for the whole interval
+  between #2284 and the drop: nothing read them, and every row inserted after the
+  runtime half took `'MEMBER'` from the database default because the client had
+  stopped naming the column. That is why destroying them costs nothing
+  behaviourally.
 
 **What one MEMBER may see about another member's parent** (#2424, owner decision
 2026-08-01). `GET /api/members/family` and `GET /api/member/onboarding` both
@@ -5829,7 +5870,7 @@ and is hard-deleted at the end. The merge is **additive and master-wins**:
     `NotificationPreference` (1-1), `MemberInductionSignOff` (earliest sign-off
     wins), `MemberInductionAssignedSigner`, `FamilyGroupMember` (keep the
     master's row and re-point the family's billing membership at it; #2520
-    removed the old `MAX(ADMIN > MEMBER)` role upgrade along with the retired
+    removed the old `MAX(ADMIN > MEMBER)` role upgrade and then dropped the
     column it wrote), and `MemberPartnerLink` (canonical
     `memberAId < memberBId` pair, self-pairs and duplicates deleted, and at most
     one CONFIRMED partner kept for the master).

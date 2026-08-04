@@ -249,7 +249,7 @@ export const MEMBER_MERGE_RELATION_SPECS: readonly MemberMergeRelationSpec[] = [
 
   // --- Family ---
   spec("FamilyGroupMember", "member", "memberId", "resolve", {
-    note: "@@unique(familyGroupId,memberId); master's row kept, billing membership re-pointed (#2520 removed the role MAX upgrade with the retired column)",
+    note: "@@unique(familyGroupId,memberId); master's row kept, billing membership re-pointed (#2520 removed the role MAX upgrade and then dropped the column)",
   }),
   spec("FamilyGroupJoinRequest", "invitedMember", "invitedMemberId", "move"),
   spec("FamilyGroupJoinRequest", "linkedMember", "linkedMemberId", "move"),
@@ -2915,12 +2915,13 @@ async function resolveFamilyGroupMembers(
   masterId: string,
   loserId: string,
 ): Promise<{ moved: number; dropped: number }> {
-  // #2520: both reads are narrowed to the two columns this resolver uses, so
-  // neither projects the retired `role` column. That is a blue/green
-  // precondition, not a micro-optimisation: Prisma names every scalar of the
-  // model in an unnarrowed find's SELECT, so an unnarrowed read here would make
-  // this deployed colour break the moment the CONTRACT migration drops the
-  // column while it is still draining.
+  // #2520: both reads are narrowed to the two columns this resolver uses. That
+  // was a blue/green precondition while the retired `role` column was still in
+  // the database — Prisma names every scalar of the model in an unnarrowed find's
+  // SELECT, so an unnarrowed read would have named it. The column is now dropped
+  // (20260803030000) and the field is gone from the schema, so the narrowing is
+  // ordinary hygiene rather than load-bearing; it stays because these two columns
+  // are genuinely all this resolver reads.
   const membershipSelect = { id: true, familyGroupId: true } as const;
   const [loserRows, masterRows] = await Promise.all([
     tx.familyGroupMember.findMany({
@@ -2940,9 +2941,12 @@ async function resolveFamilyGroupMembers(
     const masterRow = masterByGroup.get(row.familyGroupId);
     if (!masterRow) continue; // no collision -> will be moved
     // Re-point the family's billing membership if it pointed at the loser's
-    // (about-to-be-dropped) row. #2520 removed the `maxFamilyRole` upgrade that
-    // also ran here: the column it wrote granted nothing (#2284), so promoting
-    // the surviving row to "ADMIN" changed no behaviour anywhere.
+    // (about-to-be-dropped) row. That is the ONLY thing this collision branch
+    // does now. #2520 removed the `maxFamilyRole` upgrade that also ran here —
+    // it promoted the surviving row to "ADMIN" when either row held it — because
+    // the column it wrote granted nothing after #2284, so the promotion changed
+    // no behaviour anywhere; the column itself is now dropped (20260803030000).
+    // Do not add a merge rule for a rank the join table no longer records.
     await tx.familyGroup.updateMany({
       where: { billingMembershipId: row.id },
       data: { billingMembershipId: masterRow.id },
