@@ -1,4 +1,5 @@
 import type { Prisma } from "@prisma/client";
+import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
 import { acquireLodgeCapacityLock } from "@/lib/capacity";
 import {
   BookingGuestRemovalError,
@@ -653,6 +654,30 @@ export async function finaliseMemberGuestConsentTransition(params: {
         "Failed to reconcile bed allocations after a member-guest consent approval",
       );
     }
+  }
+
+  // #2576 §7/§8. LOSING MEMBER-GUEST CONSENT CAN REMOVE COVER, and the owner's
+  // decision names it twice: §6 lists "removal or decline of required member-guest
+  // consent" among the changes that must be re-evaluated, and §17 asks for a test
+  // that it causes re-evaluation.
+  //
+  // The re-evaluation itself was already recorded, because a decline and an expiry
+  // both go through `removeBookingGuestInTransaction` — the shared removal path — and
+  // that reconciles the hosting rule inside the caller's transaction, enqueueing a
+  // bounded row when another booking on the owner's account is affected. What was
+  // missing was the other half of the pair: nothing DRAINED it here, so §7's
+  // "immediate re-evaluation" became "within three hours" and the owner of a booking
+  // that had just lost its cover was not emailed until the cron ran.
+  //
+  // AFTER THE COMMIT AND ONLY FOR THE OUTCOMES THAT REMOVED SOMEBODY. An APPROVED
+  // consent adds an operationally-present adult, which can only ADD cover, and it
+  // reconciles through the same path; BLOCKED left the guest on the booking and
+  // ALREADY_RESOLVED wrote nothing at all. Scoped to this booking's owner so one
+  // member's decline never runs another account's backlog, and best-effort for the
+  // reason every other drain site is: the transition is committed and the cron sweep
+  // is the authority on completion.
+  if (outcome.outcome === "DECLINED" || outcome.outcome === "EXPIRED") {
+    await settleHostingCoverageAfterCommit({ bookingId });
   }
 
   await notifyMemberGuestConsentOutcome({

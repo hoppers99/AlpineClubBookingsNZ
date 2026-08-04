@@ -33,6 +33,20 @@ import {
 } from "@/lib/subscription-lockout-enforcement";
 import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
 import { hasAdminAccess } from "@/lib/access-roles";
+import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
+import {
+  AdultMemberHostingRequiredError,
+  buildAdultMemberHostingRefusalBody,
+  hostingCoverageActorOptions,
+  reconcileAdultMemberHostingReviewWithSiblings,
+} from "@/lib/adult-member-hosting-review";
+import {
+  SameOwnerCoverageOverrideRequiredError,
+  SameOwnerCoverageWouldBreakError,
+  buildSameOwnerCoverageOverrideRequiredBody,
+  buildSameOwnerCoverageRefusalBody,
+  readHostingCoverageOverride,
+} from "@/lib/adult-member-hosting-same-owner";
 
 export async function POST(
   request: NextRequest,
@@ -54,6 +68,14 @@ export async function POST(
   const memberGuestRefusalStartedAt = startMemberGuestRefusalClock();
 
   const { id } = await params;
+
+  // #2576 §7. The only field this route reads off the body: an officer's explicit
+  // confirmation and reason for overriding a same-owner coverage refusal. Absent on
+  // every ordinary confirmation, and an unparseable body is simply "no override"
+  // rather than a 400 — this endpoint took no body at all before.
+  const hostingOverride = readHostingCoverageOverride(
+    await request.json().catch(() => null),
+  );
 
   const booking = await prisma.booking.findUnique({
     where: { id },
@@ -186,6 +208,7 @@ export async function POST(
   }
 
   // Check capacity + transition to PAID in transaction
+  try {
   await prisma.$transaction(async (tx) => {
     // Lock the booking's lodge before re-reading it: the draft's lodge cannot
     // change, so the pre-read outside the lock is safe for key selection.
@@ -262,7 +285,60 @@ export async function POST(
         checkOut: freshBooking.checkOut,
       },
     });
+
+    // #2576 §9. CONFIRMING A DRAFT IS A CONFIRMATION, and the owner's decision
+    // names it: every route that can confirm must run the shared hosting evaluator
+    // immediately before confirmation and re-read current authoritative data,
+    // never a quote-time or earlier result. This route already re-runs the
+    // minimum-stay check and the #2543 paid-up-adult check on today's facts; the
+    // hosting rule was the one it did not.
+    //
+    // THE GAP WAS DETERMINISTIC RATHER THAN A RACE, and it was the widest one in
+    // the design. A DRAFT is outside `ACTIVE_BOOKING_STATUSES`, so it is invisible
+    // to `sameOwnerCoverageDependentWhere`: a member could create the draft while
+    // another booking supplied cover, cancel that booking (nothing stranded,
+    // nothing queued, cancellation allowed), and then confirm here — landing a PAID
+    // booking with uncovered non-member guest-nights at an enforcing lodge.
+    //
+    // REFUSES rather than escalates, and that is right for this route specifically:
+    // no money has moved (it only ever confirms a $0 booking), the member is the
+    // actor, and the throw rolls the whole claim back — the status flip, the $0
+    // payment and the bed allocations — leaving the draft exactly as it was so they
+    // can fix the party or ask an officer.
+    await reconcileAdultMemberHostingReviewWithSiblings(id, tx, {
+      ...hostingCoverageActorOptions({
+        actorRole: session.user.role,
+        hasBookingsEditAccess: isAdmin,
+        actorMemberId: session.user.id,
+        ...(hostingOverride ? { override: hostingOverride } : {}),
+      }),
+    });
   });
+  } catch (err) {
+    // #2576 §6/§7/§9, and #2569's own refusal. All three are `ApiError`s thrown
+    // from inside the transaction, so the draft is untouched by the time they reach
+    // here; each gets the body its own audience needs.
+    if (err instanceof AdultMemberHostingRequiredError) {
+      return NextResponse.json(buildAdultMemberHostingRefusalBody(err.violation), {
+        status: 409,
+      });
+    }
+    if (err instanceof SameOwnerCoverageWouldBreakError) {
+      return NextResponse.json(buildSameOwnerCoverageRefusalBody(err), {
+        status: 409,
+      });
+    }
+    if (err instanceof SameOwnerCoverageOverrideRequiredError) {
+      return NextResponse.json(
+        buildSameOwnerCoverageOverrideRequiredBody(err),
+        { status: 409 },
+      );
+    }
+    throw err;
+  }
+
+  // #2576 §7/§9: drain what the confirmation queued, now that it has committed.
+  await settleHostingCoverageAfterCommit({ bookingId: id });
 
   // Fire-and-forget: confirmation email + Xero invoice
   sendBookingConfirmedEmail(

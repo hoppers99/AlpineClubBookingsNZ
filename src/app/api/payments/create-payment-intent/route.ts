@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
 import { getDefaultLodgeId } from "@/lib/lodges";
 import { prisma } from "@/lib/prisma";
 import { createPaymentIntent, findOrCreateCustomer, getPaymentIntent } from "@/lib/stripe";
@@ -386,6 +387,12 @@ export async function POST(request: NextRequest) {
     const creditElection = draftTransition?.creditElection ?? null;
 
     if (draftTransition?.settledAtZero) {
+      // #2576 §9: `settleFullyCreditCoveredBooking` queued the bounded hosting
+      // re-evaluation with its PAID claim. Drain it first, so a booking that
+      // confirmed without cover reaches the officer queue before the confirmation
+      // email goes out. Best-effort; the cron sweep is the authority.
+      await settleHostingCoverageAfterCommit({ bookingId: booking.id });
+
       // Post-commit side effects for the $0 settlement, mirroring the
       // fully-credit-covered branch of booking-create and the $0 confirm-draft
       // route: the durable lifecycle event, the member's confirmation email,

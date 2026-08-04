@@ -58,6 +58,7 @@ import {
   reconcileAdultMemberHostingReviewWithSiblings,
 } from "@/lib/adult-member-hosting-review";
 import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
+import type { HostingCoverageOverrideInput } from "@/lib/adult-member-hosting-same-owner";
 import logger from "@/lib/logger";
 import { createBookingModificationCredit } from "@/lib/member-credit";
 import {
@@ -206,12 +207,19 @@ function buildIdentityOnlyPricing(booking: LoadedBookingForModify): PricingResul
 export async function modifyBookingBatch({
   bookingId,
   actor,
+  hostingCoverageOverride,
   input,
   ipAddress,
   tx: callerTx,
 }: {
   bookingId: string;
   actor: { id: string; role: Role };
+  /**
+   * #2576 §7: the officer's explicit confirmation and mandatory reason for
+   * overriding a same-owner coverage refusal. Ignored for a non-officer actor, so a
+   * member cannot self-authorise past §6's block by inventing a reason.
+   */
+  hostingCoverageOverride?: HostingCoverageOverrideInput | null;
   input: BatchModifyInput;
   ipAddress: string;
   /**
@@ -909,6 +917,7 @@ export async function modifyBookingBatch({
       ...hostingCoverageActorOptions({
         actorRole: actor.role,
         actorMemberId: actor.id,
+        ...(hostingCoverageOverride ? { override: hostingCoverageOverride } : {}),
       }),
     });
 
@@ -1033,7 +1042,7 @@ export async function modifyBookingBatch({
     // settlement and email work because a confirmed booking the club's own rule
     // would refuse is the more urgent of the two. Best-effort: the edit is
     // committed, and the cron sweep is the authority on completion.
-    await settleHostingCoverageAfterCommit();
+    await settleHostingCoverageAfterCommit({ bookingId });
 
     // AFTER the commit, and before the settlement work below, so a cross-family
     // guest is asked as promptly as the booking-modified email is sent. Awaited: an

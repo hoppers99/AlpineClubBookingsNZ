@@ -54,6 +54,7 @@ import {
   reconcileAdultMemberHostingReviewWithSiblings,
 } from "@/lib/adult-member-hosting-review";
 import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
+import type { HostingCoverageOverrideInput } from "@/lib/adult-member-hosting-same-owner";
 import { acquireLodgeCapacityLock } from "@/lib/capacity";
 import { bookingStayHasStarted } from "@/lib/booking-edit-policy";
 
@@ -185,6 +186,14 @@ export async function cancelBooking(
     // cancel route opts in; every internal/admin caller leaves it false, so
     // their behaviour is unchanged. See the guard in performBookingCancellation.
     enforceStartedStayBlock?: boolean;
+    /**
+     * #2576 §7: the officer's explicit confirmation and mandatory reason for
+     * overriding a same-owner coverage refusal. Honoured only for an officer-type
+     * actor (the same pair the authorization gate accepts) — the disposition helper
+     * ignores it for anybody else, so a member cannot self-authorise past §6's
+     * block by inventing a reason.
+     */
+    hostingCoverageOverride?: HostingCoverageOverrideInput;
   } = {}
 ): Promise<CancelBookingResponse> {
   // Issue #1705: resolve the honoured email choice once, so the main cancel and
@@ -204,7 +213,8 @@ export async function cancelBooking(
     options.hasBookingsEditAccess ?? false,
     options.requireRequestHold ?? false,
     notifyMember,
-    options.enforceStartedStayBlock ?? false
+    options.enforceStartedStayBlock ?? false,
+    options.hostingCoverageOverride ?? null
   );
 
   if (result.status === 200) {
@@ -238,7 +248,7 @@ export async function cancelBooking(
     // it. This is the "immediate re-evaluation" half: re-read the now-committed
     // facts, open or resolve the incident, and notify the owner once. Best-effort —
     // the cancellation is done, and the cron sweep is the authority on completion.
-    await settleHostingCoverageAfterCommit();
+    await settleHostingCoverageAfterCommit({ bookingId });
   }
 
   return result;
@@ -395,7 +405,11 @@ async function performBookingCancellation(
   notifyMember = true,
   // #2029: self-service started-stay block (see the guard below). Default false
   // so every internal/admin caller is unaffected.
-  enforceStartedStayBlock = false
+  enforceStartedStayBlock = false,
+  // #2576 §7: the officer's explicit confirmation and reason, or null. Null on
+  // every internal caller, which is correct: they are §8 system changes and are
+  // never asked to confirm anything.
+  hostingCoverageOverride: HostingCoverageOverrideInput | null = null
 ): Promise<CancelBookingResponse> {
   // Issue #1705 (#1698 pattern): a suppressed admin cancel records the choice in
   // the audit metadata — notifyMember is false only when an authorized admin
@@ -601,6 +615,7 @@ async function performBookingCancellation(
           actorRole: sessionUserRole,
           hasBookingsEditAccess,
           actorMemberId: sessionUserId,
+          ...(hostingCoverageOverride ? { override: hostingCoverageOverride } : {}),
         }),
       });
 
@@ -776,6 +791,7 @@ async function performBookingCancellation(
           actorRole: sessionUserRole,
           hasBookingsEditAccess,
           actorMemberId: sessionUserId,
+          ...(hostingCoverageOverride ? { override: hostingCoverageOverride } : {}),
         }),
       });
 
@@ -1028,6 +1044,7 @@ async function performBookingCancellation(
           actorRole: sessionUserRole,
           hasBookingsEditAccess,
           actorMemberId: sessionUserId,
+          ...(hostingCoverageOverride ? { override: hostingCoverageOverride } : {}),
         }),
       });
 
@@ -1558,6 +1575,7 @@ async function performBookingCancellation(
         actorRole: sessionUserRole,
         hasBookingsEditAccess,
         actorMemberId: sessionUserId,
+        ...(hostingCoverageOverride ? { override: hostingCoverageOverride } : {}),
       }),
     });
 

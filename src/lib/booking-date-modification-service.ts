@@ -26,6 +26,7 @@ import {
   reconcileAdultMemberHostingReviewWithSiblings,
 } from "@/lib/adult-member-hosting-review";
 import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
+import type { HostingCoverageOverrideInput } from "@/lib/adult-member-hosting-same-owner";
 import {
   createModificationAdditionalPaymentIntent,
   executeBookingModificationRefund,
@@ -231,11 +232,18 @@ export type DateModificationResponse = {
 export async function modifyBookingDates({
   bookingId,
   actor,
+  hostingCoverageOverride,
   input,
   ipAddress,
 }: {
   bookingId: string;
   actor: { id: string; role: Role };
+  /**
+   * #2576 §7: the officer's explicit confirmation and mandatory reason for
+   * overriding a same-owner coverage refusal. Ignored for a non-officer actor, so a
+   * member cannot self-authorise past §6's block by inventing a reason.
+   */
+  hostingCoverageOverride?: HostingCoverageOverrideInput | null;
   input: ModifyBookingDatesInput;
   ipAddress: string;
 }): Promise<DateModificationResponse> {
@@ -968,6 +976,7 @@ export async function modifyBookingDates({
       ...hostingCoverageActorOptions({
         actorRole: actor.role,
         actorMemberId: actor.id,
+        ...(hostingCoverageOverride ? { override: hostingCoverageOverride } : {}),
       }),
     });
 
@@ -1042,7 +1051,7 @@ export async function modifyBookingDates({
   // #2576 §7/§8: drain the bounded re-evaluation this edit committed, if any, now
   // that the dates really are what the queue row says they are. Best-effort; the
   // cron sweep is the authority on completion.
-  await settleHostingCoverageAfterCommit();
+  await settleHostingCoverageAfterCommit({ bookingId });
 
   await dispatchDatePostTransactionSideEffects({
     bookingId,
@@ -1258,6 +1267,12 @@ export async function adminShiftBookingDates({
 }: {
   bookingId: string;
   actor: { id: string; role: Role };
+  /**
+   * #2576 §7: the officer's explicit confirmation and mandatory reason for
+   * overriding a same-owner coverage refusal. Ignored for a non-officer actor, so a
+   * member cannot self-authorise past §6's block by inventing a reason.
+   */
+  hostingCoverageOverride?: HostingCoverageOverrideInput | null;
   input: {
     checkIn?: string;
     checkOut?: string;
@@ -1589,7 +1604,9 @@ export async function adminShiftBookingDates({
     // is allowed and escalated to an urgent incident. `actorRole: "ADMIN"` is
     // stated rather than derived for the same reason the line below it is.
     await reconcileAdultMemberHostingReviewWithSiblings(bookingId, tx, {
-      ...hostingCoverageActorOptions({ actorRole: "ADMIN" }),
+      // The admin date shift has no interactive surface to confirm on, so it is a
+      // §8 system change: never refused, escalated, and audited as what it was.
+      ...hostingCoverageActorOptions({ actorRole: "ADMIN", actorMemberId: null }),
     });
 
     return {
@@ -1693,7 +1710,7 @@ export async function adminShiftBookingDates({
   // #2576 §7/§8. An officer's date shift is never refused, so this is the path on
   // which the escalation actually happens: the shift committed a bounded
   // re-evaluation row, and this opens the urgent incident and notifies the owner.
-  await settleHostingCoverageAfterCommit();
+  await settleHostingCoverageAfterCommit({ bookingId });
 
   return {
     booking: result.booking,

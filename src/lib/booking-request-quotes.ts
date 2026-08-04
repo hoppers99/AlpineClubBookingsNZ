@@ -13,6 +13,7 @@ import {
 } from "@prisma/client";
 import { z } from "zod";
 import { hashActionToken, issueActionToken } from "@/lib/action-tokens";
+import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
 import { reconcileAdultMemberHostingReviewWithSiblings } from "@/lib/adult-member-hosting-review";
 import { logAudit } from "@/lib/audit";
 import {
@@ -1556,6 +1557,15 @@ export async function holdBookingRequestSlots(input: {
               }),
       };
     });
+
+
+    // #2576 §7. Every path that can ENQUEUE bounded re-evaluation work must also
+    // drain it: a queue row with nobody draining it turns the owner's "immediate
+    // re-evaluation" into "within three hours", which is how long an officer-created
+    // booking that has just RESTORED cover would leave a critical incident standing,
+    // or one that removed it would leave the owner un-notified. Best-effort and
+    // scoped to this booking's owner; the cron sweep is the authority on completion.
+    await settleHostingCoverageAfterCommit({ bookingId: booking.id });
 
     // MG4-D-b (#2309), AFTER the commit and outside the capacity lock: no
     // provider call may sit inside a booking transaction. The dispatcher is

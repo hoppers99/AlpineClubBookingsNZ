@@ -723,7 +723,13 @@ async function settleConfirmedChildrenAndNotify(
   // #2576 §9: drain whatever `commitChildrenToConfirmed` recorded for these
   // children before this settlement runs. Best-effort; the cron sweep is the
   // authority on completion.
-  await settleHostingCoverageAfterCommit();
+  //
+  // UNFILTERED, unlike the member-facing routes, and with a limit that fits the
+  // shape: a group's children belong to DIFFERENT joiners, so there is no single
+  // owner to scope the claim to, and one settlement can legitimately have queued a
+  // row per child. This is a settlement job rather than a member's request, so the
+  // cost is already accounted for.
+  await settleHostingCoverageAfterCommit({ limit: 25 });
 
   const settled = await prisma.$transaction(async (tx) => {
     // #1881 two-tier protocol. This path flips CONFIRMED -> PAID (no net-new

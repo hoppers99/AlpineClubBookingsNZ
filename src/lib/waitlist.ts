@@ -17,6 +17,7 @@ import {
 import { logAudit } from "./audit";
 import logger from "@/lib/logger";
 import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
+import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
 import {
   AdultMemberHostingRequiredError,
   buildAdultMemberHostingRefusalBody,
@@ -1076,6 +1077,17 @@ export async function confirmWaitlistOffer(
     }
     logger.error({ err, bookingId }, "Failed to confirm waitlist offer");
     return { success: false, error: "An error occurred while confirming your booking" };
+  }
+
+
+  // #2576 §7. Every path that can ENQUEUE bounded re-evaluation work must also
+  // drain it: a queue row with nobody draining it turns the owner's "immediate
+  // re-evaluation" into "within three hours", which is how long an officer-created
+  // booking that has just RESTORED cover would leave a critical incident standing,
+  // or one that removed it would leave the owner un-notified. Best-effort and
+  // scoped to this booking's owner; the cron sweep is the authority on completion.
+  if (result.success) {
+    await settleHostingCoverageAfterCommit({ bookingId });
   }
 
   if (result.success) {

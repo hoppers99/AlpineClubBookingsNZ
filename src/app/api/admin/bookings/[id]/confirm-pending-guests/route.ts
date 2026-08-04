@@ -448,7 +448,7 @@ export async function POST(
     }
 
     // #2576 §9: drain what the claim recorded, now that it has committed.
-    await settleHostingCoverageAfterCommit();
+    await settleHostingCoverageAfterCommit({ bookingId });
 
     // Mirror of the cron's releaseChargeClaim: only touched while Stripe has
     // NOT captured money. Once a charge succeeds the claim is never released —

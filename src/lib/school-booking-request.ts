@@ -37,6 +37,7 @@ import {
 import { z } from "zod";
 import { isEffectiveModuleEnabled } from "@/lib/admin-modules";
 import { issueActionToken } from "@/lib/action-tokens";
+import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
 import { reconcileAdultMemberHostingReviewWithSiblings } from "@/lib/adult-member-hosting-review";
 import { createAuditLog, logAudit } from "@/lib/audit";
 import { formatDateOnly } from "@/lib/date-only";
@@ -1311,6 +1312,17 @@ export async function approveSchoolBookingRequest(input: {
     throw err;
   }
 
+
+  // #2576 §7. Every path that can ENQUEUE bounded re-evaluation work must also
+  // drain it: a queue row with nobody draining it turns the owner's "immediate
+  // re-evaluation" into "within three hours", which is how long an officer-created
+  // booking that has just RESTORED cover would leave a critical incident standing,
+  // or one that removed it would leave the owner un-notified. Best-effort and
+  // scoped to this booking's owner; the cron sweep is the authority on completion.
+  if (!conversion.alreadyConverted) {
+    await settleHostingCoverageAfterCommit({ bookingId: conversion.bookingId });
+  }
+
   // On the idempotent replay path the tx body was skipped: the booking already
   // exists and its Xero invoice was already queued by the first accept, and
   // teacherAssignments is empty. Guard EVERY post-tx side effect on
@@ -2213,6 +2225,17 @@ export async function approveMemberWholeLodgeRequest(input: {
       return { type: "capacityExceeded", fullNights: capacityFullNights };
     }
     throw err;
+  }
+
+
+  // #2576 §7. Every path that can ENQUEUE bounded re-evaluation work must also
+  // drain it: a queue row with nobody draining it turns the owner's "immediate
+  // re-evaluation" into "within three hours", which is how long an officer-created
+  // booking that has just RESTORED cover would leave a critical incident standing,
+  // or one that removed it would leave the owner un-notified. Best-effort and
+  // scoped to this booking's owner; the cron sweep is the authority on completion.
+  if (!conversion.alreadyConverted) {
+    await settleHostingCoverageAfterCommit({ bookingId: conversion.bookingId });
   }
 
   // Every post-commit side effect is guarded on !alreadyConverted so a replayed

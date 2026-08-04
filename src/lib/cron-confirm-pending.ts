@@ -1651,7 +1651,9 @@ export async function confirmPendingBookings(): Promise<CronConfirmResult> {
   // either completed or been released. Once per cycle rather than once per booking —
   // the drain is bounded and idempotent, and the general cron sweep runs it again
   // anyway, so this is the "immediate" attempt and not the guarantee.
-  await settleHostingCoverageAfterCommit();
+  // Unfiltered and generously limited: this is a cron cycle over many members'
+  // bookings, not one member's request, so there is no owner to scope it to.
+  await settleHostingCoverageAfterCommit({ limit: 25 });
 
   return result;
 }

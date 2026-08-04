@@ -394,7 +394,7 @@ export async function POST(request: NextRequest) {
 
   // #2576 §9: drain the re-evaluation the claim above recorded, now that the
   // confirmation has committed. Best-effort; the cron sweep is the authority.
-  await settleHostingCoverageAfterCommit();
+  await settleHostingCoverageAfterCommit({ bookingId: booking.id });
 
   try {
     const queued = await enqueueXeroBookingInvoiceOperation(booking.id, {

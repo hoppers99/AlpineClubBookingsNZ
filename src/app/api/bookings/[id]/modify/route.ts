@@ -6,8 +6,11 @@ import {
   buildAdultMemberHostingRefusalBody,
 } from "@/lib/adult-member-hosting-review";
 import {
+  SameOwnerCoverageOverrideRequiredError,
   SameOwnerCoverageWouldBreakError,
+  buildSameOwnerCoverageOverrideRequiredBody,
   buildSameOwnerCoverageRefusalBody,
+  hostingCoverageOverrideSchema,
 } from "@/lib/adult-member-hosting-same-owner";
 import { ApiError } from "@/lib/api-error";
 import { auth } from "@/lib/auth";
@@ -121,6 +124,11 @@ const batchModifySchema = z.object({
     )
     .max(10)
     .optional(),
+  // #2576 §7: the officer's explicit confirmation and mandatory reason for
+  // overriding a same-owner coverage refusal. Optional in the shape because the
+  // first submission never carries it — the officer is asked only when the change
+  // would actually strand another booking on the account.
+  hostingCoverageOverride: hostingCoverageOverrideSchema.optional(),
 });
 
 const OVERRIDE_DATE_ONLY_FIELDS = [
@@ -272,6 +280,9 @@ export async function PUT(
         : await modifyBookingBatch({
             bookingId,
             actor: { id: session.user.id, role: actorRole },
+            ...(parsed.data.hostingCoverageOverride
+              ? { hostingCoverageOverride: parsed.data.hostingCoverageOverride }
+              : {}),
             input: parsed.data,
             ipAddress,
           });
@@ -401,6 +412,14 @@ export async function PUT(
       return NextResponse.json(buildSameOwnerCoverageRefusalBody(err), {
         status: err.status,
       });
+    }
+    // #2576 §7. The officer is not refused: they are shown which bookings and
+    // nights the change would strand and asked to confirm it with a reason.
+    if (err instanceof SameOwnerCoverageOverrideRequiredError) {
+      return NextResponse.json(
+        buildSameOwnerCoverageOverrideRequiredBody(err),
+        { status: err.status },
+      );
     }
     if (err instanceof ApiError) {
       return NextResponse.json({ error: err.message }, { status: err.status });

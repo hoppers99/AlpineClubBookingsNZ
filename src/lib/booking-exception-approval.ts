@@ -8,6 +8,7 @@ import {
 import { checkCapacityForGuestRanges } from "@/lib/capacity";
 import { hasAdminAreaAccess } from "@/lib/admin-permissions";
 import { MEMBER_ACCESS_ROLE_SELECT } from "@/lib/access-role-definitions";
+import { resolveHostingCoverageIncidents } from "@/lib/adult-member-hosting-coverage-incidents";
 import { recordAdultMemberHostingReviewDecision } from "@/lib/adult-member-hosting-review";
 import { createConfirmedBooking } from "@/lib/booking-create";
 import { modifyBookingBatch } from "@/lib/booking-batch-modification-service";
@@ -681,6 +682,30 @@ async function executeApprovedModification(args: {
       tx,
       { reason: overrideReason, byMemberId: context.actorMemberId },
     );
+
+    // #2576 §7's third automatic resolution: "the incident should resolve
+    // automatically if ... a valid policy exception is approved". Without this the
+    // approval was undone on the next pass — the drain tests only whether the
+    // hazard is gone, and an approved exception AUTHORISES the hazard rather than
+    // removing it, so an officer who had just decided these exact uncovered nights,
+    // with a reason, had a `critical` incident re-affirmed against their own
+    // decision, permanently, with no route or UI able to clear it.
+    //
+    // In this transaction, alongside the decision it belongs to, and guarded on
+    // `resolvedAt: null` so a replayed approval closes nothing twice. The decision
+    // itself is a guarded PENDING → APPROVED claim, so a hazard that has since
+    // changed materially reopens as PENDING and this resolution does not apply to
+    // it.
+    if (outcome.hostingDecisionRecorded) {
+      await resolveHostingCoverageIncidents(
+        {
+          bookingId: snapshot.bookingId,
+          resolution: "EXCEPTION_APPROVED",
+          actorMemberId: context.actorMemberId,
+        },
+        tx,
+      );
+    }
   }
 
   // Persist the officer's note on the decided request, in the same transaction.

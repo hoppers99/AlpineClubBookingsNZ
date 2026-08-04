@@ -27,6 +27,7 @@ import {
   minorsReviewAlertShouldFire,
   requiresAdultSupervisionReview,
 } from "@/lib/booking-review";
+import type { HostingCoverageOverrideInput } from "@/lib/adult-member-hosting-same-owner";
 import {
   hostingCoverageActorOptions,
   reconcileAdultMemberHostingReviewWithSiblings,
@@ -264,6 +265,7 @@ export async function removeBookingGuestInTransaction({
   settlementMethod,
   consentAuthority,
   subscriptionLockoutMode,
+  hostingCoverageOverride,
 }: {
   tx: Prisma.TransactionClient;
   bookingId: string;
@@ -271,6 +273,13 @@ export async function removeBookingGuestInTransaction({
   actorMemberId: string;
   actorRole: string;
   settlementMethod?: BookingModificationSettlementMethod;
+  /**
+   * #2576 §7: the officer's explicit confirmation and mandatory reason for
+   * overriding a same-owner coverage refusal. Ignored for a non-officer actor —
+   * including a self-removing member guest, whose change is never blocked and never
+   * discloses the owner's other bookings (see `resolveDependentDisposition`).
+   */
+  hostingCoverageOverride?: HostingCoverageOverrideInput | null;
   /**
    * The club's subscription-lockout mode (#2543), resolved by the caller BEFORE it
    * opened this transaction — `resolveSubscriptionLockoutMode` can refresh the
@@ -774,7 +783,11 @@ export async function removeBookingGuestInTransaction({
   // disposition travels with the actor — a member is refused and rolled back, an
   // officer is allowed and escalated.
   await reconcileAdultMemberHostingReviewWithSiblings(bookingId, tx, {
-    ...hostingCoverageActorOptions({ actorRole, actorMemberId }),
+    ...hostingCoverageActorOptions({
+      actorRole,
+      actorMemberId,
+      ...(hostingCoverageOverride ? { override: hostingCoverageOverride } : {}),
+    }),
   });
 
   return {

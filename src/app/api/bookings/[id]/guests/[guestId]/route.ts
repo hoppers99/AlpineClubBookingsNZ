@@ -5,8 +5,11 @@ import {
 } from "@/lib/adult-member-hosting-review";
 import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
 import {
+  SameOwnerCoverageOverrideRequiredError,
   SameOwnerCoverageWouldBreakError,
+  buildSameOwnerCoverageOverrideRequiredBody,
   buildSameOwnerCoverageRefusalBody,
+  readHostingCoverageOverride,
 } from "@/lib/adult-member-hosting-same-owner";
 import { ApiError } from "@/lib/api-error";
 import { auth } from "@/lib/auth";
@@ -86,6 +89,12 @@ export async function DELETE(
     | BookingModificationSettlementMethod
     | undefined;
 
+  // #2576 §7: the officer's explicit confirmation and reason for overriding a
+  // same-owner coverage refusal. Read off the same body, and simply absent when the
+  // client did not send one — the officer is asked only when the removal would
+  // actually strand another booking on the owner's account.
+  const hostingCoverageOverride = readHostingCoverageOverride(body);
+
   // Issue #1705 (#1696 semantics): the per-action member-email choice. Only a
   // booking-management ADMIN (Full Admin / Booking Officer) may carry the flag;
   // any other caller — the booking owner or a self-removing linked guest — is
@@ -125,6 +134,7 @@ export async function DELETE(
         actorRole: authorizationRoleFromAccessRoles(session.user),
         settlementMethod,
         subscriptionLockoutMode,
+        hostingCoverageOverride,
       })
     );
 
@@ -134,7 +144,7 @@ export async function DELETE(
     // allowed and recorded a bounded re-evaluation row, and this is where that
     // becomes an urgent incident and an email to the owner. Best-effort — the
     // removal is committed, and the cron sweep is the authority on completion.
-    await settleHostingCoverageAfterCommit();
+    await settleHostingCoverageAfterCommit({ bookingId });
 
     /**
      * MG4 (#2309): tell a member guest their place has gone.
@@ -461,6 +471,14 @@ export async function DELETE(
       return NextResponse.json(buildSameOwnerCoverageRefusalBody(err), {
         status: err.status,
       });
+    }
+    // #2576 §7. The officer is not refused: they are shown which bookings and
+    // nights the change would strand and asked to confirm it with a reason.
+    if (err instanceof SameOwnerCoverageOverrideRequiredError) {
+      return NextResponse.json(
+        buildSameOwnerCoverageOverrideRequiredBody(err),
+        { status: err.status },
+      );
     }
     // Shared-lib domain errors (e.g. the #1032 quote-priced edit block from
     // assertBookingNotQuotePriced) carry intentional user-facing messages.

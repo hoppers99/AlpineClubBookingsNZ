@@ -31,6 +31,7 @@ import {
 } from "@prisma/client";
 import { z } from "zod";
 import { hashActionToken, issueActionToken } from "@/lib/action-tokens";
+import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
 import { reconcileAdultMemberHostingReviewWithSiblings } from "@/lib/adult-member-hosting-review";
 import { logAudit } from "@/lib/audit";
 import { cancelBooking } from "@/lib/booking-cancel";
@@ -2282,6 +2283,17 @@ export async function approveBookingRequest(input: {
       return { type: "capacityExceeded", fullNights: capacityFullNights };
     }
     throw err;
+  }
+
+
+  // #2576 §7. Every path that can ENQUEUE bounded re-evaluation work must also
+  // drain it: a queue row with nobody draining it turns the owner's "immediate
+  // re-evaluation" into "within three hours", which is how long an officer-created
+  // booking that has just RESTORED cover would leave a critical incident standing,
+  // or one that removed it would leave the owner un-notified. Best-effort and
+  // scoped to this booking's owner; the cron sweep is the authority on completion.
+  if (!conversion.alreadyConverted) {
+    await settleHostingCoverageAfterCommit({ bookingId: conversion.bookingId });
   }
 
   // On the idempotent replay path the tx body was skipped, so no new booking,

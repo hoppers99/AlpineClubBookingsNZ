@@ -1,3 +1,5 @@
+import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
+import { enqueueOwnHostingCoverageReevaluation } from "@/lib/adult-member-hosting-review";
 import { prisma } from "@/lib/prisma";
 import {
   BookingEventType,
@@ -1498,6 +1500,31 @@ async function settleBookingPaymentInTransaction(
       );
     }
 
+    // #2576 §9. THE SINGLE SETTLE DOOR IS A CONFIRMING PATH, and §9 names "payment
+    // completion" among the routes that must run the shared hosting evaluator
+    // immediately before confirmation rather than trusting a quote-time answer.
+    // Every card and cash route funnels through here — the Stripe webhook, the
+    // session confirm, the public payment link, the saved-card charge, the
+    // auto-confirm cron and the admin manual settlement — and
+    // `PAYABLE_SUCCESS_STATUS_LIST` includes DRAFT, which is the widest version of
+    // the gap: a member could create a draft while cover existed, cancel the
+    // booking that supplied it (a DRAFT is outside `ACTIVE_BOOKING_STATUSES`, so
+    // nothing was stranded and nothing was queued), and then pay — landing a PAID
+    // booking with uncovered non-member guest-nights at an enforcing lodge with no
+    // refusal, no incident, no owner notification and nothing in the officer queue.
+    //
+    // ENQUEUE RATHER THAN REFUSE, for the reason §8 gives for every payment path: by
+    // the time this runs the money is captured, so throwing would leave a charge
+    // pointing at a booking the club had just refused. The queue row commits WITH
+    // the settlement — so the obligation cannot be lost — and the post-commit drain
+    // re-reads the facts, raises the urgent incident and emails the owner. Both
+    // exported wrappers drain inline.
+    await enqueueOwnHostingCoverageReevaluation(booking.id, tx, {
+      cause: "SYSTEM_CHANGE",
+      actorMemberId:
+        settlement.kind === "manual" ? settlement.actingAdminMemberId : null,
+    });
+
     // #2265 (#2319; #2262 door 3). This is the single settle door every card
     // path funnels through — the Stripe webhook, the session confirm, the
     // public payment link, the saved-card charge and the auto-confirm cron —
@@ -1720,6 +1747,13 @@ export async function markBookingPaymentSucceeded({
       paymentMethodId,
     })
   );
+
+
+  // #2576 §9: the settlement recorded a bounded hosting re-evaluation with its PAID
+  // claim. Drain it now the confirmation has committed, so an uncovered booking
+  // reaches the officer queue and the owner's inbox immediately rather than on the
+  // next cron pass. Best-effort; the cron sweep is the authority on completion.
+  await settleHostingCoverageAfterCommit({ bookingId });
 
   if (reconciliation.outcome === "manual_paid") {
     // Unreachable: the Stripe settlement source never produces it. Narrowing
@@ -2233,6 +2267,13 @@ export async function markBookingPaymentManuallySettled({
       additionalCoverage,
     })
   );
+
+
+  // #2576 §9: the settlement recorded a bounded hosting re-evaluation with its PAID
+  // claim. Drain it now the confirmation has committed, so an uncovered booking
+  // reaches the officer queue and the owner's inbox immediately rather than on the
+  // next cron pass. Best-effort; the cron sweep is the authority on completion.
+  await settleHostingCoverageAfterCommit({ bookingId });
 
   if (reconciliation.outcome !== "manual_paid") {
     // Unreachable: the manual settlement source produces exactly this outcome
