@@ -16,6 +16,9 @@
  *     interpolation, a closed window enum, deterministic total ordering, and a row
  *     ceiling that fits the rendered evidence block.
  */
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import { ADMIN_PERMISSION_AREAS } from "@/lib/admin-permissions";
@@ -270,6 +273,10 @@ describe("AID-6A correlation category sets (#2375)", () => {
     // Not a completeness requirement for its own sake: an uncovered category would be
     // invisible to every correlation tool, which is the right FAIL-CLOSED default but
     // a poor surprise. Pinning it here means adding a category is a conversation.
+    //
+    // NAMED categories only. This list has no notion of a row written with NO category,
+    // which is a real and common case — see the ABSENT-category tests below, which cover
+    // it. Reading this assertion as "every audit row is reachable" is what hid that gap.
     const covered = new Set(
       Object.values(DIAGNOSTICS_CORRELATION_CATEGORY_SETS).flat(),
     );
@@ -322,6 +329,65 @@ describe("AID-6A correlation category sets (#2375)", () => {
       }
       expect(entry.evidenceScope).toContain("not that nothing happened");
     }
+  });
+
+  it("NAMES the ABSENT category as a gap, in every scope line and every description", () => {
+    // The symmetric counterpart of the MISMATCH class above, and the one no entry covers
+    // at all. `AuditLog.category` is optional, `audit.ts` writes the column only when a
+    // caller supplies one, and 81 non-test call sites do not — including
+    // subscription-billing settings/retry/mark-family/unmark-family/reconcile, the
+    // subscription charge confirm, all three member-credit adjustment steps, fee
+    // configuration, the family login-holder change, booking-policy edits, bulk
+    // communications and deletion-request decisions.
+    //
+    // `WHERE "category" = ANY ($1)` is NULL for such a row, so it is returned by NONE of
+    // the five entries. Untreated, a Finance Officer asking "what did the platform record
+    // around this subscription reconcile?" gets zero rows and the state `not_found`
+    // ("Nothing matched, so there is no evidence of this to report"), and the prose steers
+    // the model to the other four entries — which cannot see the row either — so after
+    // exhausting all five it reports an authoritative absence for a money event that IS
+    // recorded. Declaring the gap is the fail-closed remedy, so the declaration is a
+    // contract, not a comment.
+    for (const entry of DIAGNOSTICS_SUPPORT_CORRELATION_TOOLS) {
+      expect(entry.evidenceScope, `${entry.id} scope`).toContain(
+        "A row recorded with NO category is matched by no correlation tool at all",
+      );
+      expect(entry.description, `${entry.id} description`).toContain(
+        "A row with no category is invisible to every correlation tool",
+      );
+      // And it must say what to do instead, or the model has only a caveat.
+      expect(entry.description, `${entry.id} description`).toContain(
+        "Admin > Audit Log",
+      );
+    }
+  });
+
+  it("really cannot match an uncategorised row, which is what makes the gap real", () => {
+    // The structural half. The predicate is an equality against a bound array, and
+    // `= ANY (…)` evaluates to NULL — not true — for a NULL column, so the row is
+    // returned by no entry. If a future edit gives the statement an explicit null case,
+    // the disclosures above become false, and this assertion is what forces the two to
+    // move together.
+    const statement = selectOnlyTool(DIAGNOSTICS_SYSTEM_CORRELATION_TOOL_ID).sql;
+    expect(statement).toContain('a."category" = ANY ($1::text[])');
+    expect(statement).not.toMatch(/"category"\s+IS\s+(?:NOT\s+)?NULL/i);
+    expect(statement).not.toMatch(/coalesce/i);
+  });
+
+  it("declares that gap because the COLUMN is optional, read from the schema itself", () => {
+    // The root fact, taken from `prisma/schema.prisma` rather than from a comment, so
+    // nobody can delete the disclosures as stale while the column is still nullable. The
+    // migration-drift CI gate keeps the schema and the database in step, so the schema is
+    // authoritative here (the generated runtime DMMF carries no nullability — see
+    // `audit-archive-columns.test.ts`).
+    const schema = readFileSync(
+      join(process.cwd(), "prisma", "schema.prisma"),
+      "utf8",
+    );
+    const model = /model AuditLog \{([\s\S]*?)\n\}/.exec(schema)?.[1];
+    expect(model, "AuditLog model not found in schema.prisma").toBeDefined();
+    // Optional, and with no `@default`, which is what makes a NULL row reachable.
+    expect(model).toMatch(/^\s*category\s+String\?\s*$/m);
   });
 
   it("tells the model where the three mismatched surfaces really record", () => {
@@ -538,7 +604,7 @@ describe("AID-6A correlation SQL shape (#2375)", () => {
     // characters of the 8 000 to spare — which is the number that makes "room to
     // spare" the wrong description and this assertion worth running per entry.
     for (const entry of DIAGNOSTICS_SUPPORT_CORRELATION_TOOLS) {
-      expect(entry.rowLimit).toBe(24);
+      expect(entry.rowLimit).toBe(22);
       const evidence = renderToolResultEvidence({
         ...correlationSuccess(sampleRows(entry, entry.rowLimit), false),
         toolId: entry.id,

@@ -28,12 +28,19 @@
   lives under another category, the lookup that would find it is named.
 
   **A partial answer is labelled as one.** A lookup's rows are shown to the assistant in
-  a block with a fixed size limit, and a wide result can be too long for it — 24 audit
-  events usually fit, and fewer do once the events carry long identifiers. When that
-  happens the block now says so twice: in the wording the assistant reads, and in the
-  status a screen or a later step can act on. Previously only the wording said it, so a
-  listing that had quietly dropped its last few events still carried the status
-  "evidence was retrieved".
+  a block with a fixed size limit, and a wide result can be too long for it — 22 audit
+  events fit, and fewer do once the events carry long identifiers. When that happens the
+  block now says so twice: in the wording the assistant reads, and in the status a screen
+  or a later step can act on. Previously only the wording said it, so a listing that had
+  quietly dropped its last few events still carried the status "evidence was retrieved".
+
+  **What an empty correlation result does and does not prove.** Each of the five audit
+  lookups now also says that an event recorded with no category at all is invisible to
+  every one of them, and points to Admin > Audit Log, which does list those rows. The
+  audit category is optional and a number of administrative operations — subscription
+  billing, member credit adjustments, fee configuration, booking-policy changes, bulk
+  communications, deletion-request decisions — record without one. Without that sentence,
+  an assistant that found nothing could report that nothing had happened.
 
   **What it never returns.** No API key, credential value, database password,
   connection string, or credential identifier. No prompts, answers, provider payloads

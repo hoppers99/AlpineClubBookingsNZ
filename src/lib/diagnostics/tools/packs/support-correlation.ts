@@ -20,10 +20,26 @@
  * entry. Asking for `diagnostics.finance_event_correlation` without `finance:view`
  * is denied server-side with `permission_denied` and the missing area named, and the
  * denied rows are not reachable through the entry they can run: the category sets are
- * disjoint and every row carries exactly one category, so no `payment` or `xero` row
- * can arrive through the system entry. That is the acceptance criterion "missing
- * permission is a denial, not worked around with source inference", enforced by the
- * category filters rather than by discipline.
+ * disjoint and a row carries AT MOST ONE category, so no `payment` or `xero` row can
+ * arrive through the system entry. That is the acceptance criterion "missing permission
+ * is a denial, not worked around with source inference", enforced by the category
+ * filters rather than by discipline.
+ *
+ * "AT MOST ONE" IS EXACT, AND IT COSTS COVERAGE RATHER THAN CONTAINMENT.
+ * `AuditLog.category` is `String?` with no default, and `audit.ts` writes the column
+ * only when a caller supplies one — so a row with NO category exists and is common. A
+ * census of this repository's non-test audit writes: 81 of ~350 call sites pass no
+ * category (11 `createAuditLog`, 69 `logAudit`, 1 `createStructuredAuditLog`),
+ * including money-adjacent ones — subscription-billing settings/retry/mark-family/
+ * unmark-family/reconcile, the subscription charge confirm, all three member-credit
+ * adjustment steps, fee configuration and the family login-holder change — plus
+ * booking-policy edits, bulk communications and deletion-request decisions.
+ * `WHERE "category" = ANY ($1)` is NULL for such a row, so it is returned by NONE of the
+ * five entries. The containment argument is unharmed (a row nobody can reach is not a way
+ * around a denial); what is harmed is any reading of an empty result as an absence, which
+ * is why every `evidenceScope` and every description now names this gap in as many words.
+ * See `DIAGNOSTICS_CORRELATION_CATEGORY_SETS` for why the alternative — routing the null
+ * case to the system entry — is an owner decision rather than a fix.
  *
  * ONE HONEST QUALIFICATION, because "the domain requirement is what stands between a
  * support-only admin and any domain evidence" would be too strong a claim. The `admin`
@@ -75,7 +91,7 @@
  * means it.
  *
  * BOUNDS. One primary correlation input (an exact request id, optional) plus a fixed
- * approved window from a closed enum; newest first; twenty-four events (measured, see
+ * approved window from a closed enum; newest first; twenty-two events (measured, see
  * `CORRELATION_ROW_LIMIT`); no free-text log search, no `LIKE`, no wildcard, no
  * model-chosen column, ordering or filter.
  *
@@ -269,7 +285,7 @@ function projectRequestId(value: unknown): string | null {
 }
 
 /**
- * Twenty-four events, not the fifty #2375 allows as a maximum, and not the thirty an
+ * Twenty-two events, not the fifty #2375 allows as a maximum, and not the thirty an
  * earlier revision claimed rendered whole. MEASURED, because the arithmetic that
  * justified thirty was wrong in both directions:
  *
@@ -282,18 +298,24 @@ function projectRequestId(value: unknown): string | null {
  *    Thirty rows rendered to exactly 8 000 characters with three rows silently gone
  *    and a fourth cut mid-field.
  *
- *    TWENTY-FOUR RENDER WHOLE ON AN ORDINARY DAY, AND THE MARGIN IS THIN — an earlier
- *    revision of this comment said "with room to spare", which was measured without
- *    the `scope:` line the executor always attaches to these five entries. Re-measured
- *    with it, at a mix of today's real action codes and a 24-character request id: the
- *    widest-scope entry (system, 565 characters of scope) lands at 7 964 of the 8 000
- *    characters, a margin of 36. So the ceiling is right for the ordinary case and
- *    clips in several ordinary-ish ones — 22 of 24 when every row carries the longest
- *    real 60-character code, 20 of 24 at wide-but-real field values, 16 of 24 once a
- *    member has planted 128-character request ids. That is acceptable BECAUSE the
- *    renderer is honest about it in the machine-readable state as well as the prose
- *    (`renderToolResultEvidence`); it would not be acceptable as a silent loss, and
- *    nothing here should be re-tuned on the assumption that a clip cannot happen.
+ *    TWENTY-TWO, AND MEASURED WITH THE `scope:` LINE THIS TIME. Two revisions of this
+ *    comment claimed twenty-four rendered "whole with room to spare"; both measured a
+ *    block this pack never emits, because the executor attaches every entry's
+ *    `evidenceScope` to every result (`invoke.ts`) and those lines run to 627
+ *    characters. Re-measured per entry WITH them, at a 24-character request id: the
+ *    system entry lists 22 of 24 at a mix of today's real action codes, and every entry
+ *    lists 22 of 24 when each row carries the longest real 60-character code
+ *    (`booking_request.member_whole_lodge_approve_idempotent_replay`). At 22 all five
+ *    render whole in both cases — the worst of them at 7 718 of the 8 000 characters.
+ *
+ *    THE CEILING IS THEREFORE A MEASUREMENT, NOT A PREFERENCE, and it moves when the
+ *    framing does: it dropped from 24 to 22 when the absent-category disclosure was
+ *    added to every scope line, which is the correct direction of travel. What it does
+ *    NOT have to survive is a hostile width — a member can plant 128-character request
+ *    ids and clip any ceiling. That case is safe because the renderer reports its own
+ *    clip in the machine-readable state as well as the prose
+ *    (`renderToolResultEvidence`): a cap that reads as a flag is acceptable, a cap that
+ *    reads as a complete answer is not.
  *  - `canonicalStringify` is `JSON.stringify(value, null, 2)`, so a projected row
  *    costs ~310 bytes rather than ~230. The ceiling below is the measured cost of
  *    twenty-four rows at the widest values this projection can now produce (a
@@ -303,21 +325,23 @@ function projectRequestId(value: unknown): string | null {
  * how many it listed — so this ceiling is about giving an operator a complete answer
  * rather than about preventing a silent loss.
  */
-const CORRELATION_ROW_LIMIT = 24;
+const CORRELATION_ROW_LIMIT = 22;
 
 /**
  * The byte ceiling, measured rather than estimated. `canonicalStringify` is
  * `JSON.stringify(…, null, 2)`, so a row costs one indented line per field, and gate 9
- * REFUSES a result over this rather than trimming it. Measured at 24 rows of this
- * projected shape:
+ * REFUSES a result over this rather than trimming it. Measured at the 22-row ceiling of
+ * this projected shape:
  *
- *  - 8 229 bytes at typical widths (a 24-character request id, today's real action
+ *  - 7 302 bytes at typical widths (a 24-character request id, today's real action
  *    codes).
- *  - 10 971 bytes with a request id at the 128-character cap this projection enforces.
- *  - 14 331 bytes at the WIDEST the projection can emit — `action_code` at
+ *  - 9 590 bytes with a request id at the 128-character cap this projection enforces.
+ *  - 13 115 bytes at the WIDEST the projection can emit — `action_code` at
  *    `fieldValueMaxChars` (200). Nothing bounds the length of a new audit action code,
  *    and real ones already reach 60 characters, so that is the number the ceiling has
- *    to clear; a ceiling of 12 288 clears the first two and fails this one.
+ *    to clear; a ceiling of 12 288 clears the first two and fails this one. (The same
+ *    three at the old 24-row ceiling were 7 953, 10 449 and 14 307, so the ceiling was
+ *    not the binding constraint on the row limit — the rendered block was.)
  *
  * Two contract tests serialise the entry's own projected shape at its own row limit and
  * fail if this is unachievable — the assertion that was missing when 30 rows of
@@ -341,11 +365,23 @@ function defineCorrelationTool(input: {
     description: input.description,
     requiredAreas: input.requiredAreas,
     // The searched scope, rendered above the rows. It is what keeps an empty result
-    // from reading as domain-wide absence: the audit `category` taxonomy is NOT the
-    // admin-area partition (see `DIAGNOSTICS_CORRELATION_CATEGORY_SETS`), so a
-    // membership question can legitimately return nothing here while the events sit
-    // in another entry's category set.
-    evidenceScope: `${input.scope} It searched only the audit categories ${input.categories.join(", ")}. Nothing matched means nothing in THOSE categories matched in the window — not that nothing happened.`,
+    // from reading as domain-wide absence, and it has to carry BOTH ways that happens:
+    //
+    //  - MISMATCH. The audit `category` taxonomy is not the admin-area partition (see
+    //    `DIAGNOSTICS_CORRELATION_CATEGORY_SETS`), so a membership question can
+    //    legitimately return nothing here while the events sit in another entry's set.
+    //  - ABSENT. A row written with no category at all is matched by no entry's filter,
+    //    and 81 non-test call sites write that way. Naming it is the fail-closed remedy:
+    //    without the sentence, a Finance Officer asking about a subscription reconcile
+    //    gets zero rows, the state `not_found` ("there is no evidence of this to
+    //    report"), and prose steering them to the other four entries — none of which can
+    //    see the row either — so the model narrates an authoritative absence for a money
+    //    event the platform did record.
+    //
+    // Both sentences cost block characters, which is why the per-entry prose above is
+    // kept tight: the widest of these scope lines and 24 rows have to fit 8 000
+    // characters together (see `CORRELATION_ROW_LIMIT`).
+    evidenceScope: `${input.scope} It searched only the audit categories ${input.categories.join(", ")}. Nothing matched means nothing in THOSE categories matched in the window — not that nothing happened. A row recorded with NO category is matched by no correlation tool at all, so an empty result does not rule that out either.`,
     argsSchema: correlationArgsSchema,
     inputSchema: correlationInputSchema,
     sql: CORRELATION_SQL,
@@ -389,14 +425,36 @@ export const DIAGNOSTICS_LODGE_CORRELATION_TOOL_ID =
  * The audit categories each entry may read. DISJOINT and CLOSED, and both
  * properties are pinned by `support-correlation.test.ts`:
  *
- *  - DISJOINT, so a row is reachable through exactly one permission set. Every row
- *    carries exactly one category, so this is what makes the five entries a partition
- *    of the audit trail rather than five overlapping views of it.
+ *  - DISJOINT, so a row is reachable through at most one permission set. A row carries
+ *    at most one category, so these five sets are a partition of the CATEGORISED audit
+ *    trail rather than five overlapping views of it.
  *  - CLOSED, so a category no entry declares is reachable by NO correlation tool.
  *    `AuditCategory` is an open union (`… | (string & {})`), so a future feature can
  *    write a category nobody here has reviewed; the fail-closed answer is that it
  *    stays invisible to Diagnostics until a pull request adds it to a declared set,
  *    which is the same deliberate friction ADR-007 puts on a table grant.
+ *
+ * THE ABSENT CATEGORY IS THE SAME FAIL-CLOSED DEFAULT, ONE STEP FURTHER OUT, and it is
+ * not hypothetical: 81 non-test audit write call sites pass no category at all (see this
+ * file's docblock for the census and the money-adjacent members of it), and the admin
+ * audit-log screen already treats the null case as ordinary — `audit-query.ts` infers a
+ * category from the action for display (`inferAuditCategoryFromAction`) and its category
+ * filter matches `{ category: null }` against a table of legacy action patterns
+ * (`buildAuditCategoryWhere`, `LEGACY_AUDIT_CATEGORY_ACTION_FILTERS`). A null row is
+ * therefore an ordinary row everywhere except here, where it is invisible to all five
+ * entries.
+ *
+ * TWO WAYS TO CLOSE THAT, AND ONLY ONE IS A REVIEWER'S TO TAKE. Declaring the gap — in
+ * every `evidenceScope` and every description — is the fail-closed option and the one
+ * taken here: the model is told an empty result does not rule out an uncategorised
+ * record, which is the same remedy already applied to the category MISMATCH class above.
+ * The alternative is to give the SYSTEM entry the null case explicitly
+ * (`"category" IS NULL OR "category" = ANY(…)`), which would keep the five sets disjoint
+ * and make the evidence complete — but it routes those 81 call sites' rows, including
+ * booking-policy and communications events, to an entry behind `support:view` alone, and
+ * it needs a fresh look at the `(category, createdAt)` index against a 5-second statement
+ * timeout. Widening who can read part of the audit trail is an owner decision, so it is
+ * filed as one rather than taken here.
  *
  * WHAT THESE SETS ARE NOT, stated plainly because an earlier revision of this comment
  * claimed otherwise and AID-6B/6C are told to extend the taxonomy on this reasoning.
@@ -458,7 +516,7 @@ export const DIAGNOSTICS_CORRELATION_CATEGORY_SETS: Readonly<
  * completeness flag is read as an authoritative "this never happened".
  */
 const SHARED_DESCRIPTION_TAIL =
-  "Returns only stable codes and timestamps: the event reference, action code, category, severity, outcome, what kind of record it concerned, the request identifier, and when it happened in UTC. It never returns which record, which member, event descriptions, stored metadata, IP addresses, user agents or error text. Newest first, at most 24 events, and the window always applies — widen it if the event you are looking for is older. It searches only the audit categories listed above: if nothing matches, say that nothing matched IN THOSE CATEGORIES rather than that the event did not happen, and consider whether a related event would have been recorded under another category by another correlation tool.";
+  "Returns only stable codes and timestamps: the event reference, action code, category, severity, outcome, what kind of record it concerned, the request identifier, and when it happened in UTC. It never returns which record, which member, event descriptions, stored metadata, IP addresses, user agents or error text. Newest first, at most 22 events, and the window always applies — widen it if the event you are looking for is older. It searches only the audit categories listed above: if nothing matches, say that nothing matched IN THOSE CATEGORIES rather than that the event did not happen, and consider whether a related event would have been recorded under another category by another correlation tool. The audit category is optional, and some administrative operations record without one — subscription billing, member credit adjustments, fee configuration, booking-policy changes, bulk communications and deletion-request decisions among them. A row with no category is invisible to every correlation tool, so never report that something did not happen on the strength of an empty correlation result; say that no categorised audit event matched, and suggest Admin > Audit Log, which lists those rows as well.";
 
 export const DIAGNOSTICS_SUPPORT_CORRELATION_TOOLS: readonly DiagnosticsToolEntry[] =
   [
@@ -468,7 +526,7 @@ export const DIAGNOSTICS_SUPPORT_CORRELATION_TOOLS: readonly DiagnosticsToolEntr
       requiredAreas: ["support"],
       categories: SYSTEM_CATEGORIES,
       scope:
-        "System, security, communication and ADMIN-INITIATED events. The `admin` category is the platform's catch-all for actions an administrator took, in every domain — member merges and member-lifecycle decisions, member import, seasonal membership assignments, payment and booking SETTINGS changes, chores, lockers, rooms, bed allocation and lodge settings all record here, as metadata only.",
+        "System, security, communication and ADMIN-INITIATED events. The `admin` category is the platform's catch-all for actions an administrator took in EVERY domain — member merges and lifecycle decisions, member import, seasonal assignments, payment and booking SETTINGS changes, and lodge operations settings — as metadata only.",
       description: `Correlates recent audit events in the categories system, security, admin and communication, optionally for one exact request identifier. Use it to see what the platform recorded around an incident. Note that "admin" is the catch-all for administrator-initiated actions in every domain — member merges, lifecycle decisions, imports and settings changes are recorded here rather than in the domain categories — so this tool is the right one for "what did an administrator do around this time". ${SHARED_DESCRIPTION_TAIL}`,
     }),
     defineCorrelationTool({
@@ -486,7 +544,7 @@ export const DIAGNOSTICS_SUPPORT_CORRELATION_TOOLS: readonly DiagnosticsToolEntr
       requiredAreas: ["support", "membership"],
       categories: MEMBERSHIP_CATEGORIES,
       scope:
-        "Member self-service account events (profile edits, notification preferences, post-login landing, membership cancellation) and privacy events (deletion requests, member export, issue reports). It does NOT cover member merges, member-lifecycle delete/archive decisions, member import or lodge-access changes — those are `admin` — and it does not cover induction, which is `lodge`.",
+        "Member self-service account events (profile edits, notification preferences, membership cancellation) and privacy events (deletion requests, member export, issue reports). It does NOT cover member merges, member-lifecycle delete/archive decisions, member import or lodge-access changes — those are `admin` — nor induction, which is `lodge`.",
       description: `Correlates recent audit events in the categories account and privacy, optionally for one exact request identifier. Use it to see what the platform recorded around a member's own account changes, a deletion request or an issue report. It does NOT cover member merges, member-lifecycle delete or archive decisions, member import or lodge-access changes (recorded under "admin", see the system correlation tool) or induction (recorded under "lodge"). ${SHARED_DESCRIPTION_TAIL}`,
     }),
     defineCorrelationTool({
@@ -504,7 +562,7 @@ export const DIAGNOSTICS_SUPPORT_CORRELATION_TOOLS: readonly DiagnosticsToolEntr
       requiredAreas: ["support", "lodge"],
       categories: LODGE_CATEGORIES,
       scope:
-        "Lodge-operations events, which also include INDUCTION and induction-baseline events even though the induction admin screen sits under Membership. Administrator changes to chores, lockers, rooms, bed allocation and lodge settings are recorded under `admin`, which the system correlation tool covers.",
+        "Lodge-operations events, including INDUCTION and induction-baseline events even though the induction admin screen sits under Membership. Administrator changes to chores, lockers, rooms, bed allocation and lodge settings are `admin`, which the system correlation tool covers.",
       description: `Correlates recent audit events in the lodge category, optionally for one exact request identifier. Use it to see what the platform recorded around a rosters, guest arrival/departure, bed-allocation or induction problem. Induction events are recorded here, under "lodge", even though the induction admin screen sits under Membership. Administrator changes to chores, lockers, rooms and lodge settings are recorded under "admin", so use the system correlation tool for those. ${SHARED_DESCRIPTION_TAIL}`,
     }),
   ];

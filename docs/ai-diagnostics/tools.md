@@ -187,11 +187,20 @@ the rows header to `rows (K of N listed …)`, so the count the model reads alwa
 matches the rows in front of it and a partial row is never presented as a row. That is
 the backstop, not the plan: an entry should pick a `rowLimit` that renders whole, so
 the model gets the substrate's own honest `truncated` flag over a complete listing.
-AID-6A's correlation entries stop at 24 rows and its job-health entry at 18 for that
+AID-6A's correlation entries stop at 22 rows and its job-health entry at 18 for that
 reason, both **measured** against the entry's own projected shape at realistic field
-widths rather than estimated — a registry contract test renders every entry at its own
-row limit and pins that the block never lies about what it listed. The job-health
-source orders by severity, so what gets given up is always the healthy tail.
+widths rather than estimated, and measured **with** the entry's own `scope:` line, which
+is part of the framing every result carries — a registry contract test renders every entry
+at its own row limit and pins that the block never lies about what it listed. A row limit
+is therefore a measurement that moves when the framing does: correlation came down from 24
+to 22 when a scope line grew. The job-health source orders by severity, so what gets given
+up is always the healthy tail.
+
+The clip is reported in **both** channels — the rows header and the machine-readable
+`evidence-state` — because a consumer branches on the state. See
+`renderToolResultEvidence`, which derives both from the same number; the block's own clip
+was invisible to the state at first, so `evidence-state="ok"` could sit above
+`rows (16 of 24 listed …)`.
 
 Two ceilings, and the byte one **refuses** rather than trimming. `byteLimit` is checked
 against `canonicalStringify` of the projected rows — `JSON.stringify(…, null, 2)`, so

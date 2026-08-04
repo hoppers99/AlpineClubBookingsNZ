@@ -77,11 +77,16 @@ and not a reviewer's.
 
 A caller who lacks an area is not offered that tool, and an invocation naming it
 anyway is denied server-side with `permission_denied` and the missing area named.
-Nothing infers the answer from elsewhere: the category filters are **disjoint** and
-every audit row carries exactly one category, so the tool a caller *can* run cannot
+Nothing infers the answer from elsewhere: the category filters are **disjoint** and an
+audit row carries **at most one** category, so the tool a caller *can* run cannot
 return the rows the denied one would have. A support-only administrator asking a
 finance question gets a denial that says `finance:view` is required. A contract test
 pins the disjointness.
+
+"At most one" is exact, and an earlier revision of this page said "exactly one", which was
+wrong and hid a coverage gap — see [A row with no category is invisible to
+correlation](#a-row-with-no-category-is-invisible-to-correlation). It does not weaken the
+denial argument: a row no entry can reach is not a way around a denial.
 
 One qualification, because the stronger claim would be untrue. `support:view` alone
 does reach **administrator-initiated** events in every domain, because that is what
@@ -124,6 +129,48 @@ Re-mapping is not on the table: a row's category is a single string that does no
 which screen wrote it, so `admin` cannot be split by category, and adding it to all
 four domain entries would destroy the disjointness that makes a denial impossible to
 work around.
+
+### A row with no category is invisible to correlation
+
+The table above covers the ten **named** categories. There is an eleventh case, and no
+correlation entry covers it: the column is optional.
+
+`AuditLog.category` is `String?` with no default, and the audit writer sets it only when
+the caller supplies one. A census of this repository's non-test audit writes found **81 of
+about 350 call sites pass no category** — 11 through `createAuditLog`, 69 through
+`logAudit`, one through `createStructuredAuditLog`. Some of them are money-adjacent:
+subscription-billing settings, retry, mark/unmark family, reconcile; the subscription
+charge confirm; all three member-credit adjustment steps; fee configuration; the family
+login-holder change. Others are ordinary but relevant: booking-policy edits, bulk
+communications, deletion-request decisions.
+
+The shared statement filters on `"category" = ANY (…)`, which is NULL — not true — for a
+row with no category, so **such a row is returned by none of the five entries.** It is not
+a containment problem (a row nobody can reach is not a way around a denial); it is an
+honesty problem, and the one the epic treats as Critical. Untreated, a Finance Officer
+asking "what did the platform record around this subscription reconcile?" gets zero rows,
+the state `not_found` — *"Nothing matched, so there is no evidence of this to report"* —
+and prose steering them to the other four entries, none of which can see the row either.
+After all five, an authoritative absence for an event the platform did record.
+
+What ships instead is the same remedy the mismatch class gets, one step further out: every
+entry's `scope:` line says *"a row recorded with NO category is matched by no correlation
+tool at all, so an empty result does not rule that out either"*, and every description says
+the same and points at **Admin > Audit Log**, which does list those rows (its own category
+filter matches uncategorised rows against a table of legacy action patterns, and it infers
+a category from the action for display). Contract tests pin the wording in all five scope
+lines and descriptions, pin that the statement really cannot match a null row, and read
+`prisma/schema.prisma` so the disclosure cannot be dropped as stale while the column is
+still nullable.
+
+**The alternative is an owner decision, not a reviewer's.** The system entry could take the
+null case explicitly (`"category" IS NULL OR "category" = ANY (…)`), which would keep the
+five sets disjoint and make the evidence complete. But it routes those 81 call sites'
+rows — booking policy, communications, deletion decisions — into an entry that needs
+`support:view` alone, and it needs a fresh look at the `(category, createdAt)` index
+against the 5-second statement timeout. Widening who can read part of the audit trail is
+the owner's call. The other option, and the better long-run one, is to give those call
+sites a category at the source, which is a platform-wide change of its own.
 
 ## Evidence sources
 
@@ -252,8 +299,8 @@ deliberate friction ADR-007 asks for.
 | --- | --- |
 | Correlation window | Closed enum: `15m`, `1h` (default), `6h`, `24h`, `7d`. No other value parses. |
 | Correlation input | One optional **exact** request id, 3–128 characters, no whitespace or quotes. The predicate is `=`; there is no `LIKE`, no wildcard, nothing to enumerate with. |
-| Correlation rows | 24, newest first, with truncation reported. |
-| Correlation bytes | 16 384, measured against 24 rows at the widest values the projection can emit. |
+| Correlation rows | 22, newest first, with truncation reported. |
+| Correlation bytes | 16 384, measured against 22 rows at the widest values the projection can emit. |
 | Job health rows | 18, **worst severity first**, with the registered job count on every row. |
 | Job health bytes | 16 384, measured the same way. |
 | Single-row tools | Readiness, deployment and usage health return exactly one row. |
@@ -263,20 +310,22 @@ Three of those deserve their reasoning, and all three numbers are measured rathe
 estimated — an earlier revision of this page estimated them and got both ceilings
 wrong:
 
-- **24 correlation rows, not the 50 #2375 permits.** The substrate renders a tool
+- **22 correlation rows, not the 50 #2375 permits.** The substrate renders a tool
   result into an evidence block capped at 8 000 characters, about 1 000 of which is
   fixed framing. Real action codes in this repository run to 60 characters, so a
   rendered row is ~260. Thirty rows came to exactly 8 000 characters with three rows
-  gone and a fourth cut mid-field. 24 render whole on an ordinary day, but **the margin
-  is thin, and this page previously overstated it** ("with room to spare") because the
-  measurement left out the `scope:` line the executor always attaches to these five
-  entries. Re-measured with it, at a mix of today's real action codes and a 24-character
-  request id, the widest-scope entry lands at 7 964 of the 8 000 characters — 36 to
-  spare. Wider-but-still-real values clip: 22 of 24 when every row carries the longest
-  60-character action code, 20 of 24 at wide field values throughout, and 16 of 24 once
-  a member has planted 128-character request ids. A clip is not a loss — the block says
-  so in its state and its header, see below — but nothing should be re-tuned on the
-  assumption that it cannot happen.
+  gone and a fourth cut mid-field. Two later revisions of this page said **24** rendered
+  whole "with room to spare"; both measured a block this pack never emits, because they
+  left out the `scope:` line the executor attaches to every one of these five results —
+  and those lines now run to 627 characters. Re-measured per entry with them, at a
+  24-character request id: the system entry lists 22 of 24 at a mix of today's real
+  action codes, and every entry lists 22 of 24 when each row carries the longest real
+  60-character code. **At 22, all five render whole in both cases**, the worst of them at
+  7 718 of the 8 000. So the ceiling is a measurement, and it moves when the framing
+  does: it came down from 24 when the absent-category disclosure was added to every scope
+  line. It is not expected to survive a hostile width — a member can plant 128-character
+  request ids and clip any ceiling — which is safe only because the block reports its own
+  clip in both channels; see below.
 - **The job-health ceiling is below the number of registered jobs** (34 at the time of
   writing, and the number only grows). The source orders by severity (error, warning,
   info, ok) and then by job name, and the executor keeps the first **18**. A healthy
@@ -300,8 +349,9 @@ as a row. It also reports the clip as the **machine-readable** evidence state:
 `evidence-state="result_truncated"` in the opening tag and the matching sentence in the
 body, derived from the same number as the header. That second half was missing at first:
 the state came from the executor's own `truncated` flag, which is set only when the source
-returned more rows than the row limit, so a block that clipped 8 of 24 rows itself could
-carry `evidence-state="ok"` and "Evidence was retrieved." above an incomplete listing.
+returned more rows than the row limit, so a block that clipped 8 of the 24 rows it held
+could carry `evidence-state="ok"` and "Evidence was retrieved." above an incomplete
+listing.
 A consumer branches on the state, so a silent cap has to read as a flag rather than as a
 complete answer.
 
