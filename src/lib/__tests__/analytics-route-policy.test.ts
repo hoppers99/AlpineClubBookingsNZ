@@ -220,6 +220,23 @@ describe("analytics route policy — credential-shaped addresses the catch-all c
     }
   });
 
+  /*
+    The two ACCEPTED costs of gate 2, pinned as deliberate rather than left to be
+    rediscovered as bugs. Both are named in the module docblock and in the operator
+    troubleshooting row in `docs/guides/integrations.md`, which is the only place a
+    club is told why one of its pages reports no views — so if either of these flips,
+    that documentation has gone stale and this should say so.
+  */
+  it("loses page views for the two slug shapes the policy deliberately refuses", () => {
+    // Condition 3: one long unhyphenated word mixing letters and digits reads as an
+    // opaque identifier, and nothing structural tells it from a token.
+    expect(isAnalyticsEligiblePath("/newsletter2026")).toBe(false);
+    // A whole-segment credential word, even as a club's real page title.
+    expect(isAnalyticsEligiblePath("/verify")).toBe(false);
+    // Hyphenate the first and it comes back, which is the fix the operator guide gives.
+    expect(isAnalyticsEligiblePath("/newsletter-2026")).toBe(true);
+  });
+
   it("refuses credential-flavoured whole segments", () => {
     for (const path of [
       "/verify/abc123",
@@ -238,9 +255,13 @@ describe("analytics route policy — credential-shaped addresses the catch-all c
 
   it("does not refuse an ordinary page whose title merely contains such a word", () => {
     // Whole-segment matching only, so a real CMS page is not collateral damage.
+    // `/verify-your-booking` is here because the module docblock cites it as still
+    // eligible: it previously claimed the opposite, which was wrong, and the claim
+    // is only worth making if something pins it.
     for (const path of [
       "/overview",
       "/verification-of-membership",
+      "/verify-your-booking",
       "/pinnacle-ridge",
       "/code-of-conduct",
       "/returns-policy",

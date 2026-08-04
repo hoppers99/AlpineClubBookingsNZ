@@ -44,10 +44,20 @@ import { isFixedNonceWebsitePath } from "@/lib/public-website-paths";
  *    not, plus a small set of credential-flavoured segment words, and the result
  *    is fail-CLOSED: an unrecognised shape is excluded rather than tracked.
  *
- * The cost of gate 2 is that a club which names a page `verify-your-booking` gets
- * no analytics on it. That is the right trade in this direction and it is
- * documented in `docs/user-guide` — a missing page view is a reporting gap, a sent
- * token is a disclosure.
+ * The cost of gate 2 is that a club which names a page exactly `verify`, `code`,
+ * `session` or another whole-segment entry in {@link CREDENTIAL_SEGMENT_WORDS} gets
+ * no analytics on it — and neither does one named `newsletter2026`, which condition
+ * 3 below reads as an identifier. Measured, not assumed: matching is on WHOLE
+ * segments, so `verify-your-booking`, `verification-of-membership` and
+ * `pinnacle-ridge` are all still eligible, and `analytics-route-policy.test.ts`
+ * pins both directions.
+ *
+ * That is the right trade — a missing page view is a reporting gap, a sent token is
+ * a disclosure — and it is documented for the operator who hits it, as a
+ * troubleshooting row in `docs/guides/integrations.md` ("Analytics reports no page
+ * views for one page"). NOT in `docs/user-guide`, which is the member-facing set and
+ * carries no analytics content at all: this is an operator's reporting question, not
+ * something a club member ever needs to read.
  */
 
 /**
