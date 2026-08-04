@@ -68,12 +68,16 @@
   is not set up, is set up wrongly, or the database cannot be read, analytics
   simply does not run and the website carries on as normal.
 
-  **One setting to change on Google's side.** In your GA4 web stream, switch
+  **One setting you must change on Google's side.** In your GA4 web stream, switch
   **Page changes based on browser history events** off under Enhanced measurement.
-  This application sends one page view per page itself, with the address trimmed;
-  left on, Google adds its own as visitors move around the site and pages are
-  counted twice. The setup screen and the operator guide both say so — it is a
-  Google setting, so nothing here can change it for you.
+  Please do not treat this as optional tidying. This application decides which
+  pages analytics may see, and trims the addresses it reports; that Google option
+  works by watching the browser instead of asking us, so left on, Google records a
+  page view when a visitor steps from a public page onto one we deliberately keep
+  from it — the login page, for instance — and it may report that address in full.
+  Pages are also counted twice, which is the part you would notice. The setup
+  screen and the operator guide both spell it out. It is a Google setting, so
+  nothing here can change it for you.
 
   One thing this release deliberately does not do: it does not tell you whether
   your chosen setting meets your legal obligations. Whichever mode you pick, your

@@ -79,13 +79,23 @@ admin completes the steps below. No restart or redeploy is needed.
    labels are set by the application.
 6. Select **Save**. The status chip on the card then reads **Configured with
    consent banner** or **Configured without consent banner**.
-7. In Google Analytics, open **Admin → Data streams → your web stream → Enhanced
-   measurement** and switch **Page changes based on browser history events** off.
-   This application sends one page view per address itself, with the address
-   stripped of anything after a `?` or a `#`. Left on, Google adds a page view of
-   its own each time a visitor moves between pages, so views are counted twice.
-   The option is Google's and is on by default for a new stream; nothing in this
-   application can change it.
+7. **Required, and do not skip it.** In Google Analytics, open **Admin → Data
+   streams → your web stream → Enhanced measurement** and switch **Page changes
+   based on browser history events** off. This is not a tidiness step: left on,
+   Google reports addresses this application deliberately keeps from it.
+
+   This application chooses which addresses analytics may see — never an admin
+   page, a signed-in member or dashboard page, and nothing carrying a token, PIN
+   or personal identifier — and it sends one page view per eligible address
+   itself, stripped of anything after a `?` or a `#`. That Google option bypasses
+   both choices, because it works by watching the browser's own address changes
+   rather than by asking the application. So when a visitor moves from a public
+   page to an excluded one — selecting **Log In** in the website header, say —
+   Google records a page view for that address, and it may carry the address as
+   the browser has it rather than the stripped one this application sends.
+   Ordinary pages are also counted twice, which is the part you would notice; the
+   disclosure is the part that matters. The option is Google's and is on by
+   default for a new stream; nothing in this application can change it.
 
 Two things the application deliberately does not do: it never claims a consent
 mode is legally compliant, and it does not decide your privacy disclosures for

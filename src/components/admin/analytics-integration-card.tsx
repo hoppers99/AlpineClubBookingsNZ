@@ -416,23 +416,54 @@ export function AnalyticsIntegrationCard() {
                 </p>
                 {/*
                   Owner section 7 requires that client-side navigation cannot cause
-                  duplicate page views. This application enforces its half in code —
-                  `send_page_view: false` plus one de-duplicated sanitised page view
-                  per address — but Google's enhanced-measurement option "Page changes
-                  based on browser history events" is a GA PROPERTY setting, on by
-                  default for a new stream and not controllable from gtag. With it on,
-                  Google adds a page view of its own on every soft navigation. Nothing
-                  in the app can switch it off, so the admin has to be told.
+                  duplicate page views, AND that excluded routes are never reported.
+                  This application enforces its half in code — `send_page_view: false`
+                  plus one de-duplicated sanitised page view per eligible address — but
+                  Google's enhanced-measurement option "Page changes based on browser
+                  history events" is a GA PROPERTY setting, on by default for a new
+                  stream and not controllable from gtag.
+
+                  Double counting is the LESSER consequence, and framing the step that
+                  way (as this text first did) let an admin who does not mind duplicate
+                  numbers skip it. The real one is disclosure. That option works by
+                  watching the browser's own history, and Next flips the URL in
+                  `HistoryUpdater`'s `useInsertionEffect` — the commit's mutation phase,
+                  measured in next@16.2.12 at
+                  node_modules/next/dist/client/components/app-router.js:38-70 — while
+                  this component's kill switch is a PASSIVE effect destroy React
+                  schedules after paint (analytics-consent.tsx, the unmount effect).
+                  So on the first soft navigation off the public website (the public
+                  header's own "Log In", "Dashboard" and "Book Now" links) the resident
+                  tag's history hook observes `/login`, `/dashboard` or `/book` while
+                  `ga-disable-<id>` is still false: a page view leaves for an address
+                  section 7 excludes outright.
+
+                  Whether that hit carries the browser's raw URL or inherits the
+                  sanitised value already `set` on the tag is Google's internal
+                  behaviour and is NOT verifiable from this repository, so the wording
+                  says "may" rather than asserting it. Under either reading a page view
+                  leaves for an excluded address, which is enough to make the step
+                  required. Nothing in the app can switch the option off, so the admin
+                  has to be told what is at stake, not just what is miscounted.
                 */}
                 <p className="text-xs text-muted-foreground">
-                  In your GA4 web stream, switch off{" "}
+                  <span className="font-medium">Required:</span> in your GA4 web stream,
+                  switch off{" "}
                   <span className="font-medium">
                     Page changes based on browser history events
                   </span>{" "}
-                  under Enhanced measurement. This application sends one page view per
-                  address itself, with the address stripped of anything after a{" "}
-                  <code>?</code> or a <code>#</code>. Left on, Google adds its own page
-                  view as you move between pages, so views are counted twice.
+                  under Enhanced measurement. This application chooses which addresses
+                  analytics may see — never an admin page, a signed-in member or
+                  dashboard page, or anything carrying a token, PIN or personal
+                  identifier — and it sends one page view per address itself, stripped
+                  of anything after a <code>?</code> or a <code>#</code>. That option
+                  bypasses both choices: it watches the browser&rsquo;s own address
+                  changes, so when a visitor moves from a public page to an excluded one
+                  Google records a page view for it, and that page view may carry the
+                  address as the browser has it rather than the stripped one this
+                  application sends. Ordinary pages are also counted twice. The option
+                  is Google&rsquo;s, on by default for a new stream, and nothing here
+                  can change it.
                 </p>
               </div>
 

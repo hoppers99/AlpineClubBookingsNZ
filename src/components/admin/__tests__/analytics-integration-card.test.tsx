@@ -217,15 +217,30 @@ describe("the consent-mode choice", () => {
     ).toHaveLength(0);
   });
 
-  it("tells the admin to switch Google's own history page views off", async () => {
-    // The app enforces one sanitised page view per address; the GA property option
-    // that would double-count is not controllable from gtag, so the admin is told.
+  it("tells the admin to switch Google's own history page views off, and why it is not optional", async () => {
+    // The app enforces one sanitised page view per ELIGIBLE address; the GA property
+    // option that bypasses both halves of that is not controllable from gtag, so the
+    // admin is told. Pinned because the first version of this text gave double
+    // counting as the only reason, which an admin who does not mind duplicate numbers
+    // can rationally skip — while the consequence they were not told about is a page
+    // view leaving for a login, member or dashboard address that owner section 7
+    // excludes outright.
     await openDialog();
 
     const dialog = await screen.findByRole("dialog");
     expect(dialog.textContent).toContain(
       "Page changes based on browser history events",
     );
+    expect(dialog.textContent).toContain("Required:");
+    // The disclosure consequence, in the admin's own terms.
+    expect(dialog.textContent).toContain(
+      "Google records a page view for it",
+    );
+    expect(dialog.textContent).toMatch(
+      /may carry the address as the browser has it/,
+    );
+    // Double counting stays mentioned, but demoted rather than deleted.
+    expect(dialog.textContent).toContain("counted twice");
   });
 });
 

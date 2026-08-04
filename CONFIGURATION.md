@@ -2174,11 +2174,17 @@ pages, or any address carrying a token, PIN or personal identifier) and what is 
 about the address (origin and pathname only, never a query string or fragment, with
 the referrer sanitised too).
 
-One **Google-side** setting matters and the application cannot reach it: switch
-**Page changes based on browser history events** off under Enhanced measurement in
-your GA4 web stream. The app sends one sanitised page view per address itself; left
-on, Google adds its own on every client-side navigation and views are double
-counted.
+One **Google-side** setting matters and the application cannot reach it, so
+switching it off is a **required** setup step, not a refinement: turn **Page
+changes based on browser history events** off under Enhanced measurement in your
+GA4 web stream. The app sends one sanitised page view per *eligible* address
+itself. That option instead watches the browser's own history, so left on Google
+adds a page view whenever a visitor moves between pages — including the move that
+leaves the public website for a login, member or dashboard address the route
+policy excludes, and that hit may carry the address as the browser has it rather
+than the stripped one the app sends. Double-counted views are the visible symptom;
+the disclosure is the reason. See the
+[Integrations guide](docs/guides/integrations.md) step 7.
 
 The application never states whether a chosen configuration is legally compliant.
 Whichever mode a club picks, its privacy policy should disclose the use of Google

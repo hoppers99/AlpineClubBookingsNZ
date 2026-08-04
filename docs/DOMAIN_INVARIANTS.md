@@ -4434,21 +4434,35 @@ Advertising storage, advertising user data and advertising personalisation are
 denied in every consent signal, in both banner modes, with no setting that
 changes it.
 
-Only `origin + pathname` is ever sent as page-location information, and only for
-an eligible route. Never a query string, never a fragment, and never a reset
-token, invitation token, verification code, PIN, email address, member id,
-booking id or payment id — including in the referrer, which is sanitised before
-Google sees it.
+Every page view **this application sends** carries `origin + pathname` only, and
+is sent only for an eligible route. Never a query string, never a fragment, and
+never a reset token, invitation token, verification code, PIN, email address,
+member id, booking id or payment id — including in the referrer, which is
+sanitised before Google sees it.
 
-The application sends **exactly one sanitised page view per address** across
-client-side navigation: `send_page_view: false` suppresses the one the `config`
-call would send, and the manual event is de-duplicated against the last location
-actually sent. End to end that holds only if the GA property's enhanced-measurement
-option **“Page changes based on browser history events”** is switched off — it is a
+It sends **exactly one such page view per address** across client-side
+navigation: `send_page_view: false` suppresses the one the `config` call would
+send, and the manual event is de-duplicated against the last location actually
+sent.
+
+**Both of those hold end to end only if the GA property's enhanced-measurement
+option “Page changes based on browser history events” is switched off.** It is a
 Google-side setting, on by default for a new web stream and not controllable from
-`gtag`, so with it on Google adds a page view of its own on every soft navigation.
-The setup panel and `docs/guides/integrations.md` tell the administrator to turn it
-off; the application cannot.
+`gtag`, and it works by watching the browser's own history rather than by asking
+the application — so with it on Google adds a page view of its own on every soft
+navigation, including the navigation that LEAVES the public website for an
+excluded route. Next flips the URL in `HistoryUpdater`'s `useInsertionEffect`
+(the commit's mutation phase, `next@16.2.12`), while the runtime's kill switch is
+a passive effect destroy React schedules after paint, so the resident tag
+observes `/login`, `/dashboard` or `/book` while `ga-disable-<id>` is still
+false. Whether the resulting hit carries the browser's raw URL or inherits the
+sanitised value already `set` on the tag is Google's internal behaviour and is
+not verifiable from this repository; under either reading a page view leaves for
+an address the policy excludes. The setup panel and `docs/guides/integrations.md`
+therefore make switching it off a REQUIRED setup step, and state the disclosure
+rather than the double count as the reason. The application cannot switch it off
+itself, which is why this is a documented operator obligation and not an
+enforced invariant.
 
 Leaving the public website is part of the same guarantee. The runtime is mounted by
 the public website layouts only, so a soft navigation into the member, admin or
