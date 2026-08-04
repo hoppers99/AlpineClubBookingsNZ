@@ -4,7 +4,11 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AnalyticsConsent } from "@/components/analytics-consent";
-import { ANALYTICS_PREFERENCES_ATTRIBUTE, ANALYTICS_PREFERENCES_OPEN_EVENT } from "@/lib/analytics-preferences-channel";
+import {
+  ANALYTICS_PREFERENCES_ATTRIBUTE,
+  ANALYTICS_PREFERENCES_AVAILABILITY_EVENT,
+  ANALYTICS_PREFERENCES_OPEN_EVENT,
+} from "@/lib/analytics-preferences-channel";
 import type { AnalyticsRuntimeConfig } from "@/lib/analytics-settings-shared";
 
 /**
@@ -788,5 +792,46 @@ describe("opting out and back in on the same page", () => {
     rerender(<AnalyticsConsent config={BANNER_OFF} nonce="n-1" />);
     await waitFor(() => expect(analyticsLoader()).not.toBeNull());
     expect(pageViewCalls()).toHaveLength(1);
+  });
+});
+
+describe("leaving the website withdraws the preferences control", () => {
+  /*
+    The footer that carries the Analytics preferences link is rendered by the
+    `(public)` layout as well — the login, recovery and token-bearing group, which
+    mounts no analytics runtime. So a link left offered there is a button with nothing
+    behind it: the panel it opens belongs to the component that has just unmounted.
+  */
+  it("clears the attribute and announces it when the runtime unmounts", async () => {
+    const announced: boolean[] = [];
+    const listener = (event: Event) => {
+      announced.push(
+        Boolean((event as CustomEvent<{ available?: boolean }>).detail?.available),
+      );
+    };
+    window.addEventListener(ANALYTICS_PREFERENCES_AVAILABILITY_EVENT, listener);
+
+    try {
+      const { unmount } = render(<AnalyticsConsent config={BANNER_ON} nonce="n-1" />);
+      await waitFor(() =>
+        expect(
+          document.documentElement.getAttribute(ANALYTICS_PREFERENCES_ATTRIBUTE),
+        ).toBe("available"),
+      );
+      expect(announced.at(-1)).toBe(true);
+
+      unmount();
+
+      expect(
+        document.documentElement.getAttribute(ANALYTICS_PREFERENCES_ATTRIBUTE),
+      ).toBeNull();
+      // Both channels agree: a listener that never re-reads the attribute is still told.
+      expect(announced.at(-1)).toBe(false);
+    } finally {
+      window.removeEventListener(
+        ANALYTICS_PREFERENCES_AVAILABILITY_EVENT,
+        listener,
+      );
+    }
   });
 });

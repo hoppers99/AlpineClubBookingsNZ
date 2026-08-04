@@ -504,6 +504,14 @@ export function AnalyticsConsent({
     );
     return () => {
       root.removeAttribute("data-analytics-consent-banner");
+      // ANNOUNCE the withdrawal as well as removing the attribute. A listener that
+      // subscribed to the event has no reason to re-read the attribute, so clearing
+      // one channel and not the other leaves it holding the last value it was told.
+      window.dispatchEvent(
+        new CustomEvent("analytics-consent-visibility", {
+          detail: { visible: false },
+        }),
+      );
     };
   }, [bannerVisible]);
 
@@ -521,8 +529,28 @@ export function AnalyticsConsent({
         detail: { available: preferencesAvailable },
       }),
     );
+    /*
+      Announced on the way out too, not just removed from the DOM.
+
+      This runtime is mounted only by the two public WEBSITE layouts, but the FOOTER
+      that carries the preferences link is also rendered by the `(public)` layout — the
+      login, recovery and token-bearing group, which mounts no analytics runtime at all.
+      A soft navigation from the website into that group therefore unmounts this
+      component while a fresh `AnalyticsPreferencesLink` mounts, and that link decides
+      whether to render by reading the attribute on mount. Removing the attribute is
+      what makes it stay hidden, and it works only because React runs this destroy
+      function before the new tree's effects; dispatching the event as well means the
+      answer no longer rests on that ordering, and any already-mounted listener is told
+      outright. A visible link there would be a button with nothing behind it: the panel
+      it opens belongs to the component that has just gone.
+    */
     return () => {
       root.removeAttribute(ANALYTICS_PREFERENCES_ATTRIBUTE);
+      window.dispatchEvent(
+        new CustomEvent(ANALYTICS_PREFERENCES_AVAILABILITY_EVENT, {
+          detail: { available: false },
+        }),
+      );
     };
   }, [preferencesAvailable]);
 
