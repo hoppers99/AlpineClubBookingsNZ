@@ -432,6 +432,18 @@ export async function POST(
       },
       reason: normalizedReason,
     },
+    // The SAME member-readable manifest the GET on this route uses (#2562
+    // review). Without it Prisma returns every scalar column and line 473 sends
+    // that row straight to the member as the 201 body — so the response named
+    // `internalNotes`. Nothing could leak TODAY (a row this new has no note on
+    // it), but the boundary this lane wrote down was false for this handler, and
+    // the census test that is supposed to make the leak impossible was not
+    // watching it. Selecting the manifest brings the POST under that census, so
+    // the next edit that returns a row which is NOT brand new — an upsert so a
+    // member can resubmit into their open request, a re-read after
+    // `linkedModificationId` is set, a shared helper reused here — cannot carry
+    // the officer's private note out with it.
+    select: memberBookingChangeRequestSelect,
   });
 
   logAudit({
@@ -470,7 +482,12 @@ export async function POST(
     )
   );
 
-  return NextResponse.json(changeRequest, { status: 201 });
+  // Re-projected as well as selected, for the same reason the GET is: the select
+  // is the guard that matters in production, and the whitelist copy is what still
+  // holds if this query is ever an `include:` again.
+  return NextResponse.json(projectMemberBookingChangeRequest(changeRequest), {
+    status: 201,
+  });
 }
 
 export async function GET(

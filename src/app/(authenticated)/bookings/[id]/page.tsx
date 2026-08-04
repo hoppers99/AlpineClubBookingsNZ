@@ -1764,8 +1764,18 @@ export default async function BookingDetailPage({
                   {request.reason ? (
                     <p className="mt-2 text-muted-foreground">{request.reason}</p>
                   ) : null}
+                  {/* The officer's MEMBER-FACING explanation (#2562), labelled so
+                      the member knows who wrote it and can act on it. The officer
+                      panel says this field is member-visible before they submit
+                      it; the internal note is a different column and is neither
+                      selected above nor rendered anywhere here. */}
                   {request.adminNotes ? (
-                    <p className="mt-2 text-muted-foreground">{request.adminNotes}</p>
+                    <div className="mt-2">
+                      <p className="font-medium">What the club said</p>
+                      <p className="mt-1 whitespace-pre-wrap text-muted-foreground">
+                        {request.adminNotes}
+                      </p>
+                    </div>
                   ) : null}
                 </div>
               );

@@ -4562,11 +4562,13 @@ model BookingChangeRequest {
   kind                 BookingChangeRequestKind   @default(LOCKED_PERIOD)
   requestedChanges     Json
   reason               String?                    @db.VarChar(2000)
-  // MEMBER-VISIBLE. The officer's decision explanation, written FOR the member
-  // and rendered to them on their own request list, in the approval email, and
-  // in the exception API payloads (#2562). Never treat this as a private field:
-  // the officer UI labels it as member-visible before they submit it, and
-  // `internalNotes` below is the field for anything they do not want read.
+  // MEMBER-VISIBLE, on BOTH kinds of row. The officer's decision explanation,
+  // written FOR the member and rendered to them on their own request list, on
+  // their booking page under "Change Requests" (the LOCKED_PERIOD half), in the
+  // approval and refusal emails, and in the exception API payloads (#2562). Never
+  // treat this as a private field: every officer UI that writes it labels it as
+  // member-visible before the decision is submitted, and `internalNotes` below is
+  // the field for anything they do not want read.
   adminNotes           String?                    @db.VarChar(2000)
   // #2562: NEVER MEMBER-VISIBLE. The officer's private commentary on the
   // decision — a judgement about the member, a reference to another member's
