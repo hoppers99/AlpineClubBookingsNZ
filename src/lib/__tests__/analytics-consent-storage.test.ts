@@ -18,6 +18,26 @@ import {
  * assuming consent.
  */
 
+/**
+ * Block one `localStorage` method the way a storage-refusing browser does.
+ *
+ * It has to be `Storage.prototype` and NOT `window.localStorage`. jsdom implements
+ * `localStorage` as a Proxy whose traps forward to the prototype methods, so
+ * `vi.spyOn(window.localStorage, "setItem")` installs a property the proxy never
+ * consults: the mock is never called and the real store answers normally.
+ *
+ * That is not a hypothetical tidy-up. Two tests in this file used the instance seam
+ * and passed VACUOUSLY — one asserted a call "does not throw" when nothing was
+ * throwing, and the other asserted a null read that was already null because the
+ * store was empty. Measured, not assumed: with the instance spy installed, a direct
+ * `window.localStorage.setItem` does not throw; with this one, it does.
+ */
+function blockStorage(method: "getItem" | "setItem" | "removeItem") {
+  return vi.spyOn(Storage.prototype, method).mockImplementation(() => {
+    throw new Error("SecurityError: storage is not available");
+  });
+}
+
 describe("readStoredConsent", () => {
   beforeEach(() => {
     window.localStorage.clear();
@@ -78,16 +98,21 @@ describe("readStoredConsent", () => {
   it("returns null rather than throwing when storage itself throws", () => {
     // Private browsing and storage-partitioned contexts throw on access; the
     // fail-closed answer is "no choice", which re-shows the banner.
-    const spy = vi
-      .spyOn(window.localStorage, "getItem")
-      .mockImplementation(() => {
-        throw new Error("SecurityError");
-      });
+    //
+    // A record is written FIRST, so the null answer can only come from the caught
+    // throw. Without it this passes on an empty store whether or not the block is
+    // in force — which is exactly how it used to pass.
+    writeStoredConsent({ choice: "accepted", revision: 1, source: "banner" });
+    expect(readStoredConsent()).not.toBeNull();
+
+    const spy = blockStorage("getItem");
     try {
       expect(readStoredConsent()).toBeNull();
     } finally {
       spy.mockRestore();
     }
+    // …and the record was there all along, so nothing else explains the null.
+    expect(readStoredConsent()).not.toBeNull();
   });
 });
 
@@ -140,11 +165,7 @@ describe("writeStoredConsent", () => {
   });
 
   it("swallows a storage failure rather than breaking the page", () => {
-    const spy = vi
-      .spyOn(window.localStorage, "setItem")
-      .mockImplementation(() => {
-        throw new Error("QuotaExceededError");
-      });
+    const spy = blockStorage("setItem");
     try {
       expect(() =>
         writeStoredConsent({
@@ -153,6 +174,64 @@ describe("writeStoredConsent", () => {
           source: "banner",
         }),
       ).not.toThrow();
+      // The block really was in force: without this the "does not throw" above is
+      // satisfied by a write that simply succeeded.
+      expect(spy).toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("reports true when the value landed", () => {
+    expect(
+      writeStoredConsent({
+        choice: "declined",
+        revision: 1,
+        source: "preferences",
+      }),
+    ).toBe(true);
+  });
+
+  /*
+    The return value is the whole point, not a convenience.
+
+    A storage-blocked browser throws on the read as well as the write, so the
+    choice cannot come back on the next page load. In banner-ENABLED mode that is
+    fail-closed and needs nothing said (the banner asks again and nothing loads).
+    In banner-DISABLED mode `resolveAnalyticsDecision` answers "allowed" with no
+    stored record, so a preferences opt-out would hold for one page and then
+    silently stop holding while the panel had just promised it would stop further
+    collection from this browser. Reporting the refusal is what lets the panel say
+    so instead of asserting something untrue — see the module header.
+  */
+  it("reports false when the browser refuses the write", () => {
+    const spy = blockStorage("setItem");
+    try {
+      expect(
+        writeStoredConsent({
+          choice: "declined",
+          revision: 1,
+          source: "preferences",
+        }),
+      ).toBe(false);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("still reports true when only the legacy cleanup fails", () => {
+    // The v2 value landed, which is the fact the caller acts on; a browser that
+    // refuses `removeItem` has no v1 value to remove either, and the v2 record wins
+    // on the next read regardless.
+    const spy = blockStorage("removeItem");
+    try {
+      expect(
+        writeStoredConsent({
+          choice: "accepted",
+          revision: 3,
+          source: "banner",
+        }),
+      ).toBe(true);
     } finally {
       spy.mockRestore();
     }

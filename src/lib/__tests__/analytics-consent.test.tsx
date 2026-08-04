@@ -526,6 +526,84 @@ describe("the public preferences control", () => {
     );
     expect(panel.textContent).not.toMatch(/delete|erase|compliant/i);
   });
+
+  /*
+    A REFUSED write must not be reported as a stored choice.
+
+    Storage-blocked contexts (private browsing, partitioned or embedded storage,
+    zero quota) throw on `setItem` AND `getItem` together, so the choice cannot
+    come back on the next page load. In banner-OFF mode that is fail-OPEN:
+    `resolveAnalyticsDecision` answers "allowed" with no stored record, so the
+    opt-out holds for this page and then quietly stops holding — while the panel
+    has just said "switching analytics off stops further collection from this
+    browser". Owner section 5 asks for the opt-out to be preserved for future
+    eligible page loads, and this implementation cannot preserve it there; what it
+    can do is stop claiming otherwise.
+  */
+  describe("when the browser refuses to store the choice", () => {
+    /*
+      `Storage.prototype`, not `window.localStorage`: jsdom implements the instance
+      as a Proxy whose traps forward to the prototype methods, so an instance spy
+      installs a property the proxy never consults and the real store answers
+      normally. Measured — with the instance seam this test's block does not fire at
+      all, and the assertions below pass for the wrong reason.
+      `analytics-consent-storage.test.ts` carries the same helper and the same note.
+    */
+    function blockStorageWrites() {
+      return vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+        throw new Error("SecurityError: storage is not available");
+      });
+    }
+
+    it("keeps the panel open and says the choice will not be remembered", async () => {
+      const spy = blockStorageWrites();
+      try {
+        await openPanel(BANNER_OFF);
+        await waitFor(() => expect(analyticsLoader()).not.toBeNull());
+
+        fireEvent.click(screen.getByRole("button", { name: "Turn analytics off" }));
+
+        // The choice IS honoured for this page: the tag goes and the kill switch is set.
+        await waitFor(() => expect(analyticsLoader()).toBeNull());
+        expect(
+          (window as unknown as Record<string, unknown>)[
+            "ga-disable-G-TEST123456"
+          ],
+        ).toBe(true);
+
+        // …and the panel stays open carrying the honest note, rather than dismissing
+        // itself on a choice that will not survive the next page load.
+        const panel = screen.getByRole("dialog", {
+          name: /Analytics preferences/,
+        });
+        expect(panel.textContent).toContain(
+          "This browser would not let us save your choice",
+        );
+        expect(panel.textContent).toContain(
+          "will not be remembered the next time you visit",
+        );
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it("closes the panel as usual once the write lands", async () => {
+      // The mirror case, so "stays open" cannot pass by the panel simply never
+      // closing.
+      await openPanel(BANNER_OFF);
+      fireEvent.click(screen.getByRole("button", { name: "Turn analytics off" }));
+      await waitFor(() =>
+        expect(
+          screen.queryByRole("dialog", { name: /Analytics preferences/ }),
+        ).toBeNull(),
+      );
+    });
+
+    it("shows nothing about storage when the write succeeded", async () => {
+      const panel = await openPanel(BANNER_ON);
+      expect(panel.textContent).not.toMatch(/would not let us save/i);
+    });
+  });
 });
 
 describe("route policy and URL sanitisation, enforced at the runtime", () => {

@@ -12,9 +12,29 @@ import type {
  * why there is nothing here to audit or to expose through an API.
  *
  * Every access is wrapped, because `localStorage` THROWS rather than returning
- * null in private-browsing and storage-partitioned contexts. A read that throws is
- * "no choice recorded", which in banner-enabled mode means the banner shows again
- * — the fail-closed direction.
+ * null in private-browsing and storage-partitioned contexts.
+ *
+ * ## What a refused write means, in each mode
+ *
+ * A storage-blocked browser throws on `getItem` AND `setItem` together, so a
+ * choice made there cannot be read back on the next page load. The two banner
+ * modes land in opposite places, and the difference is why
+ * {@link writeStoredConsent} reports back instead of swallowing the failure:
+ *
+ *  • **Banner ENABLED** — fail-CLOSED, and no disclosure is needed. The read
+ *    returns "no choice recorded", so the banner simply asks again and nothing
+ *    loads until the visitor accepts on that page.
+ *  • **Banner DISABLED** — fail-OPEN. `resolveAnalyticsDecision`'s banner-off
+ *    branch answers `analyticsAllowed: true` when there is no stored record, so a
+ *    visitor's opt-out through the public preferences control would hold for the
+ *    current page and then quietly stop holding. Owner section 5 requires the
+ *    opt-out to be "preserved for future eligible page loads", and in a
+ *    storage-blocked browser this implementation cannot preserve it.
+ *
+ * What it can do is stop CLAIMING it did. The write reports whether the value
+ * landed and the preferences panel says so plainly when it did not, rather than
+ * asserting "switching analytics off stops further collection from this browser"
+ * about a browser where it will not.
  */
 
 /**
@@ -115,26 +135,37 @@ export function readStoredConsent(): StoredConsent | null {
 }
 
 /**
- * Persist a choice.
+ * Persist a choice, and report whether it actually landed.
  *
  * The legacy key is removed in the same call, so the migration happens once and a
- * later revision bump cannot be undone by the stale v1 value reappearing. A
- * storage failure is swallowed: the current page still honours the choice in
- * memory, which is the most that can be promised when the browser refuses to
- * store anything.
+ * later revision bump cannot be undone by the stale v1 value reappearing.
+ *
+ * Returns `false` when the browser refused the write (storage fully blocked, a
+ * partitioned or embedded context, zero quota). The choice still stands in memory
+ * for the current page either way — the caller keeps honouring it — but a `false`
+ * means it will NOT survive the next page load, and the caller is expected to say
+ * so rather than let the panel assert otherwise. See the module header for why
+ * that matters in banner-off mode and not in banner-on mode.
+ *
+ * The legacy `removeItem` deliberately does not affect the answer: in a browser
+ * that refuses writes there is no v1 value to remove either, and the v2 value wins
+ * on the next successful read regardless.
  */
-export function writeStoredConsent(record: StoredConsent): void {
+export function writeStoredConsent(record: StoredConsent): boolean {
+  let persisted = false;
   try {
     window.localStorage.setItem(
       ANALYTICS_CONSENT_STORAGE_KEY,
       JSON.stringify(record),
     );
+    persisted = true;
   } catch {
-    // Private browsing / quota: the in-memory decision still stands.
+    // Private browsing / quota / partitioned storage: reported to the caller.
   }
   try {
     window.localStorage.removeItem(LEGACY_ANALYTICS_CONSENT_STORAGE_KEY);
   } catch {
     // Nothing to do; the v2 value wins on the next read regardless.
   }
+  return persisted;
 }

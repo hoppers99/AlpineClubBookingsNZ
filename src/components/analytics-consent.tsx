@@ -563,12 +563,33 @@ export function AnalyticsConsent({
     };
   }, [preferencesAvailable]);
 
+  /*
+    Record a choice, and report whether the browser agreed to KEEP it.
+
+    `writeStoredConsent` returns false when `localStorage` refuses the write —
+    storage fully blocked, a partitioned or embedded context, zero quota. Those
+    browsers throw on the read as well, so the choice cannot come back on the next
+    page load.
+
+    Banner-ON mode needs nothing said about it: the read returns "no choice
+    recorded", the banner asks again, and nothing loads until the visitor accepts.
+    Banner-OFF mode is the opposite — with no stored record `resolveAnalyticsDecision`
+    answers "analytics allowed", so an opt-out made through the preferences panel
+    holds for this page and then stops holding, while the panel has just told the
+    visitor that "switching analytics off stops further collection from this
+    browser". The implementation cannot preserve the opt-out in that browser (owner
+    section 5's "preserved for future eligible page loads"), so what it must not do
+    is claim it did. The panel keeps itself open and says so instead.
+  */
+  const [storageRefused, setStorageRefused] = useState(false);
   const record = useCallback(
     (choice: ConsentChoice, source: ConsentSource) => {
-      if (!consentRevision) return;
+      if (!consentRevision) return false;
       const next: StoredConsent = { choice, revision: consentRevision, source };
       setStored(next);
-      writeStoredConsent(next);
+      const persisted = writeStoredConsent(next);
+      setStorageRefused(!persisted);
+      return persisted;
     },
     [consentRevision],
   );
@@ -656,14 +677,43 @@ export function AnalyticsConsent({
               does not remove information already sent to Google.
               <PrivacyPolicyLink path={config.privacyPolicyPath} />
             </p>
+            {/*
+              Only ever populated after a click whose write was REFUSED, which is why
+              the panel stays open below rather than closing on the choice. Plain
+              about both halves: the choice is in force now, and it will not come
+              back. Deliberately not a claim about what to do instead — the browser
+              setting that blocked the write is the visitor's own.
+
+              The `role="status"` WRAPPER is mounted unconditionally and only its
+              content is gated, the same shape as `PolicyFeedback` and
+              `AdminViewOnlySectionBanner`: a live region injected already-populated
+              in a single mutation is announced by some screen-reader/browser
+              pairings and silently dropped by others. The dialog mounts on open, so
+              the region is registered from the panel's first paint and the note
+              lands as a content change inside it.
+            */}
+            <div role="status">
+              {storageRefused ? (
+                <p className="text-foreground">
+                  This browser would not let us save your choice, so it applies to
+                  this page only and will not be remembered the next time you visit.
+                  That is usually private browsing, or a setting that blocks website
+                  storage.
+                </p>
+              ) : null}
+            </div>
           </div>
           <DialogFooter>
             <Button
               type="button"
               variant="outline"
               onClick={() => {
-                record("declined", "preferences");
-                setPreferencesOpen(false);
+                // Close only when the choice was actually stored: otherwise the note
+                // above is the thing the visitor needs to read, and dismissing the
+                // panel would hide it.
+                if (record("declined", "preferences")) {
+                  setPreferencesOpen(false);
+                }
               }}
             >
               Turn analytics off
@@ -671,8 +721,9 @@ export function AnalyticsConsent({
             <Button
               type="button"
               onClick={() => {
-                record("accepted", "preferences");
-                setPreferencesOpen(false);
+                if (record("accepted", "preferences")) {
+                  setPreferencesOpen(false);
+                }
               }}
             >
               Allow analytics
