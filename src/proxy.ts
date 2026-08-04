@@ -305,6 +305,18 @@ const API_NAMESPACE_ANY_CASE_PATTERN = /^\/api(?:\/|$)/i;
  * Anything that adds a third `Set-Cookie` writer, or a second carve-out on the
  * directive side, has to re-establish the pairing rather than inherit it.
  *
+ * **BOTH facts are now tested, which the first cut left to the docblock (review
+ * finding, 4 Aug 2026).** The gating is mutation-proven — reverting the cookie gate to
+ * `startsWith("/api/")` reddens `csp-proxy.test.ts`. The sole-writer half was enforced
+ * by nothing, and every case in that file asserts on the HINT cookie by name, so a
+ * second writer (a lodge preference, a consent banner) would have left the suite green
+ * while `GET /branding/logo.png` shipped a `Set-Cookie` beside `send`'s
+ * `public, max-age=…`. "keeps syncSignedInHint the proxy's only Set-Cookie writer"
+ * walks this file's AST and fails on any `"Set-Cookie"` literal or `.cookies.set()`
+ * outside that function. So adding a writer elsewhere is now a red test rather than a
+ * silent regression — and moving the existing write into a helper reddens that one
+ * case and nothing else, which is the point.
+ *
  * Note this says nothing about which addresses are the public WEBSITE — that is
  * `isPublicWebsitePath()`. A member page, `/login`, `/robots.txt` and `/sitemap.xml`
  * are all page-shaped and all outside the website territory.
@@ -471,8 +483,21 @@ export function stripSignedInHintFromCookieHeader(
 }
 
 /**
- * Cache-Control for an anonymous public page GET, or null to leave the
- * framework default (`private, no-cache, no-store`) untouched.
+ * Cache-Control for an anonymous public page GET, or null when #2322's deliberate
+ * browser window is not the directive being sent.
+ *
+ * **`null` no longer means "the framework's own header reaches the wire" (#2578).**
+ * It used to, and the sentence saying so survived the first cut of that fix.
+ * {@link getPrivateOnlyCacheControl} now CALLS this function for the one path in
+ * {@link CACHEABLE_ANONYMOUS_PATHS} and writes {@link PRIVATE_ONLY_CACHE_CONTROL}
+ * whenever it answers `null` — so `null` means "the private-only rule owns this
+ * response", and the two functions between them cover every page-shaped GET.
+ *
+ * Worth stating because reasoning from the OLD premise is what produced #2578: the
+ * pre-fix `getPrivateOnlyCacheControl()` docblock argued that only a public-website
+ * path could pick up a framework `s-maxage`, and shipped the stored-404 hole on that
+ * basis. #2352 slice 2 makes `/` static, and anyone adding a second entry to
+ * `CACHEABLE_ANONYMOUS_PATHS` needs the current relationship rather than that one.
  */
 // test seam
 export function getAnonymousPageCacheControl(
@@ -521,10 +546,16 @@ export function getAnonymousPageCacheControl(
  * route group, so a request the proxy classifies as "not the public website" can
  * still be answered out of the public page STORE: measured on a container build of
  * slice 1, `/pay`, `/dashboard/nope` and `/admin/typo` all returned stored 404
- * documents carrying `s-maxage=15, stale-while-revalidate=31535985` and no `Vary`,
- * because this function had refused them and the framework's own header reached the
- * wire. The pre-slice-1 baseline answered `private, no-cache, no-store` on the same
- * four URLs, so the directive was introduced by slice 1 rather than inherited.
+ * documents carrying `s-maxage=15, stale-while-revalidate=31535985` and no
+ * `Vary: Cookie`, because this function had refused them and the framework's own
+ * header reached the wire. `Vary: Cookie` rather than "no `Vary`", precisely: the
+ * measurement shows `Vary: rsc, next-router-state-tree, next-router-prefetch,
+ * next-router-segment-prefetch, Accept-Encoding` on every one of them — Next's own
+ * flight-navigation vary, which says nothing about the session. `Cookie` is the
+ * member that would have made the stored document safe to share, and it is the one
+ * that was absent. The pre-slice-1 baseline answered `private, no-cache, no-store` on
+ * the same four URLs, so the directive was introduced by slice 1 rather than
+ * inherited.
  * Middleware runs before routing and cannot tell `/dashboard/nope` from
  * `/dashboard/bookings` (#2570), so the only sound rule is the one that does not need
  * to know: an address outside the public website is never invited into a shared
@@ -534,7 +565,7 @@ export function getAnonymousPageCacheControl(
  *
  * It also closes the second half of the same hazard rather than only the caching
  * half: this response can carry the D2 marker `Set-Cookie`
- * ({@link syncSignedInHint}), and a `Set-Cookie` next to an `s-maxage` with no `Vary`
+ * ({@link syncSignedInHint}), and a `Set-Cookie` next to an `s-maxage` with no `Vary: Cookie`
  * is a cookie a shared cache may hand to a stranger. After this it can never be next
  * to one — see {@link isPageShapedPath} for the two shapes that keep another layer's
  * directive, and why the cookie is withheld on exactly those.
@@ -796,7 +827,7 @@ export async function proxy(request: NextRequest) {
   // **What those same stored documents did to the HEADERS was a separate fault, and
   // it is CLOSED (#2578) rather than accepted.** Because the response was answered
   // out of the page store, the framework's own `s-maxage=15,
-  // stale-while-revalidate=31535985` reached the wire with no `Vary` — and could do so
+  // stale-while-revalidate=31535985` reached the wire with no `Vary: Cookie` — and could do so
   // alongside the D2 marker `Set-Cookie` — on addresses this proxy had classified as
   // not-the-public-website. `getPrivateOnlyCacheControl()` now answers for BOTH
   // territories, so an out-of-territory address is never invited into a shared cache

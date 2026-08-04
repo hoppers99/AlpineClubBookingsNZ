@@ -16,11 +16,18 @@
   is served, at the same speed, and the club logo and other shipped images keep
   their normal browser caching.
 
-  Two small operator-visible details. The site map (`/sitemap.xml`) was the same
-  fault in a more exposed form — a cache could have held it for a year — and it is
-  closed the same way; search engines refetch it each time, which is what the club
-  wants anyway. And any file added to the shipped `public/` folder that is not an
-  image (a self-hosted font, say, or a PDF) will be fetched fresh on every page view
-  rather than cached by the browser. Nothing shipped today is affected; if that ever
-  matters, the fix is a one-line addition to the shared list of asset file types in
-  `src/lib/asset-url-404.ts` rather than a change to the caching rule.
+  Two small operator-visible details. The site map (`/sitemap.xml`) had a milder
+  version of the same fault, and it is closed the same way. It already told caches to
+  check with the site every single time, so it could never be served stale — but it
+  also called the answer shareable while carrying the sign-in marker cookie, and a
+  shared cache that keeps a shareable answer can hand the cookie that came with it to
+  the next visitor. It now says plainly that it must not be stored. Search engines
+  refetch it each time, which is what the club wants anyway.
+
+  And any file in the shipped `public/` folder that is not an image (a self-hosted
+  font, say, or a PDF) is now fetched fresh on every page view rather than cached by
+  the browser. `robots.txt` is the one such file shipped today and the practical
+  effect on it is nil, because it already told browsers to check every time. If a
+  font or a PDF is ever added and its caching matters, the fix is a one-line addition
+  to the shared list of asset file types in `src/lib/asset-url-404.ts` rather than a
+  change to the caching rule.

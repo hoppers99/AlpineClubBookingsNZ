@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import ts from "typescript";
 import { describe, expect, it, vi } from "vitest";
 import { NextRequest, NextResponse } from "next/server";
 import { adapter } from "next/dist/server/web/adapter";
@@ -21,7 +24,7 @@ import {
   SIGNED_IN_HINT_VALUE,
 } from "@/lib/signed-in-hint";
 import { FEATURE_ROUTE_RULES } from "@/config/feature-routes";
-import { MODULE_KEYS } from "@/config/modules";
+import { MODULE_KEYS, type ModuleKey } from "@/config/modules";
 import proxy, {
   applyPrivateOnlyCacheControl,
   config,
@@ -39,6 +42,43 @@ import type { FeatureFlags } from "@/config/schema";
 vi.mock("@/lib/club-theme", () => ({
   getWebsiteThemeRenderState: async () => ({ isComplete: true, css: "" }),
 }));
+
+// #2578 review finding: the docblocks in this file said it pinned "every module on",
+// and only the setup gate above was ever pinned. `loadEffectiveModuleFlags()` reads a
+// database that is deliberately unreachable here, and its failure path disables every
+// optional module — so any path under a `FEATURE_ROUTE_RULES` prefix was answered by
+// `proxy()`'s module-gate short-circuit (and therefore by
+// `applyPrivateOnlyCacheControl()`) instead of the pass-through header rule the cases
+// name. `/display` and `/api/admin/waitlist` are both such paths and both appear in the
+// #2578 matrix labelled as pass-through rows, so the matrix measured a different
+// function from the one it documented, and a `/display`-shaped carve-out in
+// `getPrivateOnlyCacheControl()` could have shipped with it green. Pinned on so the
+// rows measure what they say; the gate's own behaviour with a module OFF is covered by
+// `feature-routes.test.ts` and the gate tests, and the seam is exercised directly in
+// the "a response the proxy returns itself" block below.
+//
+// Written as an async factory rather than reusing `allFeaturesOn` below: `vi.mock` is
+// hoisted above these declarations, so naming that constant here would read it in its
+// temporal dead zone when `proxy.ts` first imports the module. `vi.hoisted` gives the
+// factory a mutable holder so the ONE case that needs a module off — the module gate's
+// own 404, below — can turn it off without unmocking; everything else runs all-on.
+// Typed as `ModuleKey` rather than `string` so a wrong key fails typecheck instead of
+// silently switching nothing off — `/display` is gated on `lobbyDisplay`, not `display`.
+const moduleFlagOverrides = vi.hoisted(() => ({ off: new Set<ModuleKey>() }));
+
+vi.mock("@/lib/module-settings", async (importOriginal) => {
+  const original =
+    await importOriginal<typeof import("@/lib/module-settings")>();
+  const { MODULE_KEYS: keys } = await import("@/config/modules");
+
+  return {
+    ...original,
+    loadEffectiveModuleFlags: async () =>
+      Object.fromEntries(
+        keys.map((key) => [key, !moduleFlagOverrides.off.has(key)]),
+      ) as FeatureFlags,
+  };
+});
 
 // #2352 D1: the public website's script nonce is derived from the release
 // identifier baked into the image. Pinned here so the website-path cases below
@@ -1509,15 +1549,29 @@ describe("anonymous public-page cache headers (#2322)", () => {
  * another route group — so `/pay`, `/dashboard/nope` and `/admin/typo` were answered
  * out of the page store while the proxy, having classified them as not-the-website,
  * left the framework's own `s-maxage=15, stale-while-revalidate=31535985` on them,
- * with no `Vary` and possibly with the D2 marker `Set-Cookie` beside it. Measured on a
- * container build of slice 1; the pre-slice-1 baseline answered
+ * with no `Vary: Cookie` and possibly with the D2 marker `Set-Cookie` beside it.
+ * Measured on a container build of slice 1; the pre-slice-1 baseline answered
  * `private, no-cache, no-store` on the same four URLs.
  *
  * The values are constants here rather than derived from the predicate, for the same
  * reason `public-website-path-predicates.test.ts` spells its answers out: a case that
  * asks the code what it thinks cannot catch the code being wrong. Reverting the
- * territory keying — `if (!publicWebsite) return false` — must redden this matrix, and
- * mutation-testing that revert is part of the change's own evidence.
+ * territory keying — `if (!publicWebsite || method !== "GET") return false` plus the
+ * outright `/` carve-out — must redden this matrix, and mutation-testing that revert
+ * is part of the change's own evidence: measured, it reddens 23 of the 186 cases in
+ * this file.
+ *
+ * **A case that measures a different function from the one it names is the same class
+ * of problem, and this matrix had two (review finding, 4 Aug 2026).** `/display` and
+ * `/api/admin/waitlist` both sit under `FEATURE_ROUTE_RULES` prefixes, and the module
+ * flags resolved OFF here because `loadEffectiveModuleFlags()` was left unmocked
+ * against an unreachable database — so both rows were answered by `proxy()`'s module
+ * gate and `applyPrivateOnlyCacheControl()`, not by `getPrivateOnlyCacheControl()`.
+ * The revert above reddened 22 cases and left `/display` GREEN, which is the proof.
+ * The modules are pinned on at the top of this file now, so the rows measure the
+ * function they document; the module gate's own call site is pinned instead by the
+ * one case that turns a module off, in the "a response the proxy returns itself"
+ * block below.
  */
 describe("out-of-territory responses are never offered to a shared cache (#2578)", () => {
   const PRIVATE_ONLY = "private, no-cache, no-store, max-age=0, must-revalidate";
@@ -1540,13 +1594,25 @@ describe("out-of-territory responses are never offered to a shared cache (#2578)
     ["/dashboard", PRIVATE_ONLY],
     ["/admin/site-style", PRIVATE_ONLY],
     ["/login", PRIVATE_ONLY],
+    // `/display` is gated on the `lobbyDisplay` module, so it only measures this
+    // function while the modules are pinned ON at the top of this file. Before that
+    // mock existed the row was answered by the module gate's 404 instead — the same
+    // literal value from a different function — so it read green while naming a path
+    // it never took (#2578 review finding). Same for `/api/admin/waitlist` below.
     ["/display", PRIVATE_ONLY],
     ["/pay/tok-123", PRIVATE_ONLY],
-    // Machine-readable addresses outside the website. `/sitemap.xml` matters more
-    // than it looks: a static route takes `s-maxage=31536000` from the same
-    // framework function when `revalidate` is absent
-    // (`next/dist/server/lib/cache-control.js`), so leaving it to the framework is
-    // not the same as leaving it alone.
+    // Machine-readable addresses outside the website. `/sitemap.xml` still matters,
+    // but NOT for the reason an earlier version of this comment gave (review
+    // correction, 4 Aug 2026): it claimed a static route takes `s-maxage=31536000`
+    // from `cache-control.js` when `revalidate` is absent, which is a derivation the
+    // build's own prerender manifest refutes — the metadata-route wrapper puts
+    // `public, max-age=0, must-revalidate` in the entry's `initialHeaders`, and
+    // `build/templates/app-route.js` fills a directive in only when the entry does
+    // not already carry one. What was actually on the wire was a `public` answer
+    // beside the marker `Set-Cookie` with no `Vary: Cookie`, which a shared cache may reuse
+    // for a stranger even while revalidating every time. Narrower than a year, still
+    // this fix's business, and the reasoning is set out in
+    // `docs/SECURITY-ATTACK-SURFACE.md`.
     ["/robots.txt", PRIVATE_ONLY],
     ["/sitemap.xml", PRIVATE_ONLY],
     // Not `_next/static` or `_next/image` — the matcher excludes exactly those two
@@ -1584,6 +1650,11 @@ describe("out-of-territory responses are never offered to a shared cache (#2578)
     // come from the page store: an `/api` handler's own (`/api/skifield-conditions`
     // answers `public, max-age=600` on purpose) and a real file's, served by
     // `send` with its set-if-absent `public, max-age=…`.
+    //
+    // `/api/admin/waitlist` is `waitlist`-gated, so like `/display` above it reaches
+    // the handler-exclusion arm only while the modules are pinned on. Mutation-checked
+    // both ways: deleting `isPageShapedPath()`'s `isApiHandlerPath()` early return
+    // reddens this row, which it could not do while the module gate was answering it.
     ["/api/admin/waitlist", null],
     // The real, correctly-cased uploaded-image handler, whose URLs all end in an image
     // extension (`src/app/api/images/uploaded/[...path]/route.ts`). The odd-cased row
@@ -1678,7 +1749,7 @@ describe("out-of-territory responses are never offered to a shared cache (#2578)
     // The second half of the hazard, stated as the property rather than as a path
     // list. The D2 marker cookie is written on a page-shaped GET whenever the hint
     // disagrees with the session, which includes every address in this matrix — and
-    // a `Set-Cookie` next to an `s-maxage` with no `Vary` is a cookie a shared cache
+    // a `Set-Cookie` next to an `s-maxage` with no `Vary: Cookie` is a cookie a shared cache
     // may hand to a stranger.
     const probes = [
       // Signed in with no hint yet: the proxy SETS the hint.
@@ -1720,6 +1791,107 @@ describe("out-of-territory responses are never offered to a shared cache (#2578)
       expect(directive, path).not.toContain("public");
       expect(directive, path).toContain("private");
     }
+  });
+
+  /**
+   * The OTHER fact the invariant above rests on, read out of the source rather than
+   * inferred from behaviour (#2578 review finding, 4 Aug 2026).
+   *
+   * The claim in `isPageShapedPath()`'s docblock — "the proxy never emits a
+   * `Set-Cookie` on a response whose `Cache-Control` it has left to another layer" —
+   * needs two things: that `syncSignedInHint()` is gated on that predicate, and that
+   * `syncSignedInHint()` is the proxy's ONLY `Set-Cookie` writer. The first is
+   * mutation-proven by the cases above. The second was documented and enforced by
+   * nothing, and every case in this file asserts on the HINT cookie specifically — so
+   * a second writer added ahead of the header block (a lodge preference, a consent
+   * banner, both entirely plausible here) would leave the whole suite green while
+   * `GET /branding/logo.png` shipped that cookie beside `send`'s `public, max-age=…`,
+   * storable by a shared cache and servable to a stranger. That is the hazard #2578
+   * closed, reopened by an unrelated change.
+   *
+   * So the rule is structural: the AST is walked rather than the text grepped, because
+   * `src/proxy.ts` names `Set-Cookie` in more than a dozen docblocks and a string
+   * search cannot tell prose from code. The same shape as the repo's other
+   * registration guards (`dataset-reset-contract.test.ts` and friends).
+   *
+   * A third writer is not forbidden — it has to RE-ESTABLISH the pairing rather than
+   * inherit it, which means either writing inside `syncSignedInHint()` or extending
+   * this list along with the directive side and the docblocks that claim it.
+   */
+  it("keeps syncSignedInHint the proxy's only Set-Cookie writer", () => {
+    const proxyPath = resolve(process.cwd(), "src/proxy.ts");
+    const source = ts.createSourceFile(
+      proxyPath,
+      readFileSync(proxyPath, "utf8"),
+      ts.ScriptTarget.Latest,
+      true,
+    );
+
+    // `X.cookies.set|delete|append(...)` — the `NextResponse` cookie proxy, which
+    // writes `Set-Cookie` (and `x-middleware-set-cookie`) for its caller.
+    const COOKIE_PROXY_WRITERS = new Set(["set", "delete", "append"]);
+
+    function enclosingFunctionName(node: ts.Node): string {
+      let current: ts.Node | undefined = node.parent;
+
+      while (current && !ts.isSourceFile(current)) {
+        if (
+          (ts.isFunctionDeclaration(current) || ts.isMethodDeclaration(current)) &&
+          current.name
+        ) {
+          return current.name.getText();
+        }
+        if (
+          (ts.isVariableDeclaration(current) ||
+            ts.isPropertyAssignment(current)) &&
+          ts.isIdentifier(current.name)
+        ) {
+          return current.name.text;
+        }
+        current = current.parent;
+      }
+
+      return "<module scope>";
+    }
+
+    const writers: { name: string; line: number }[] = [];
+
+    function visit(node: ts.Node) {
+      const isSetCookieLiteral =
+        (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) &&
+        node.text.toLowerCase() === "set-cookie";
+      const isCookieProxyWrite =
+        ts.isPropertyAccessExpression(node) &&
+        COOKIE_PROXY_WRITERS.has(node.name.text) &&
+        ts.isPropertyAccessExpression(node.expression) &&
+        node.expression.name.text === "cookies";
+
+      if (isSetCookieLiteral || isCookieProxyWrite) {
+        writers.push({
+          name: enclosingFunctionName(node),
+          line:
+            source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1,
+        });
+      }
+
+      ts.forEachChild(node, visit);
+    }
+
+    visit(source);
+
+    // Not vacuous: if the writer is renamed away or the append is deleted, this fails
+    // rather than passing with an empty list.
+    expect(
+      writers.length,
+      "src/proxy.ts must still write the marker cookie somewhere",
+    ).toBeGreaterThan(0);
+
+    expect(
+      writers.filter(({ name }) => name !== "syncSignedInHint"),
+      "a Set-Cookie writer outside syncSignedInHint() breaks the #2578 pairing: it is " +
+        "not gated on isPageShapedPath(), so it can land beside a directive the proxy " +
+        "left to another layer. See isPageShapedPath()'s docblock in src/proxy.ts.",
+    ).toEqual([]);
   });
 
   it("writes no marker cookie on the shapes it leaves another layer's directive on", async () => {
@@ -1768,11 +1940,12 @@ describe("out-of-territory responses are never offered to a shared cache (#2578)
    * The responses the proxy RETURNS itself — a #2420 holding screen, a module gate's
    * 404 — rather than passes through.
    *
-   * Driven through the seam because both of the real callers need a database read to
-   * reach (the gate reads `ClubTheme`, the module gate reads the module settings), and
-   * this file pins the gate complete and every module on so the header cases above can
-   * run at all. The property is about the header, not about the gate's decision, so
-   * the seam is where it belongs.
+   * Driven through the seam because neither real caller can fire in this file: both
+   * decide on state this file pins in the opposite direction so the header cases above
+   * can run at all — the setup gate on a `ClubTheme` read pinned complete, the module
+   * gate on module settings pinned every-module-on (see both `vi.mock`s at the top).
+   * The property is about the header, not about either gate's decision, so the seam is
+   * where it belongs.
    *
    * These responses ask a DIFFERENT question from the pass-through ones above, which
    * the first cut of this fix missed by sharing one predicate: the exclusions there
@@ -1855,6 +2028,31 @@ describe("out-of-territory responses are never offered to a shared cache (#2578)
       );
 
       expect(response.headers.get("Cache-Control")).toBeNull();
+    });
+
+    it("is actually reached from proxy() on a module gate's 404", async () => {
+      // The one case here that drives the real caller rather than the seam, and it
+      // exists because pinning the modules on (see the top of this file) left the
+      // CALL SITE untested: mutation-deleting
+      // `applyPrivateOnlyCacheControl(request, featureFlagBlockResponse)` reddened
+      // nothing, because no other case in this file reaches the module gate any more.
+      // The seam cases above prove the function is right; this one proves it is wired.
+      //
+      // `/display/screen.png` on purpose: asset-shaped, so it is the exact address the
+      // first cut of #2578 was measured returning a bare 404 on, and the one the
+      // PASS-THROUGH rule would refuse.
+      moduleFlagOverrides.off.add("lobbyDisplay");
+
+      try {
+        const response = await proxy(
+          new NextRequest("https://example.org/display/screen.png"),
+        );
+
+        expect(response.status).toBe(404);
+        expect(response.headers.get("Cache-Control")).toBe(PRIVATE_ONLY);
+      } finally {
+        moduleFlagOverrides.off.delete("lobbyDisplay");
+      }
     });
   });
 });

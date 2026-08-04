@@ -66,7 +66,7 @@
  * if" that they falsify. Tracked on #2570; not closed here.
  *
  * **What WAS closed for those documents is their HEADERS (#2578).** A stored
- * out-of-territory 404 shipped the framework's own `s-maxage` with no `Vary`, because
+ * out-of-territory 404 shipped the framework's own `s-maxage` with no `Vary: Cookie`, because
  * `src/proxy.ts` keyed its private-only cache-control override on
  * {@link isPublicWebsitePath} and these addresses sit outside it. That override now
  * covers both territories, so a `false` from this predicate decides a NONCE and

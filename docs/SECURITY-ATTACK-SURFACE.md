@@ -1145,7 +1145,7 @@ The security-relevant properties:
   addresses whose first segment belongs to another route group — so `/pay`,
   `/dashboard/nope` and `/admin/typo` were answered from the page store while the
   proxy, having classified them as not-the-website, left the framework's
-  `s-maxage=15, stale-while-revalidate=31535985` on them, with no `Vary` and
+  `s-maxage=15, stale-while-revalidate=31535985` on them, with no `Vary: Cookie` and
   possibly with the D2 marker `Set-Cookie` beside it. Measured on a container
   build of slice 1, against a pre-slice-1 baseline that answered
   `private, no-cache, no-store` on the same four URLs. Middleware runs before
@@ -1206,7 +1206,14 @@ The security-relevant properties:
   writer and is gated on that predicate, and every path the predicate admits gets a
   directive from one of the two cache rules. A third `Set-Cookie` writer, or a
   second carve-out on the directive side, has to re-establish the pairing rather
-  than inherit it. The hint is NOT suppressed out of territory generally —
+  than inherit it, and BOTH facts are tested rather than only documented (review
+  finding, 4 Aug 2026): the gating is mutation-proven, and the sole-writer half is a
+  source-reading contract case that walks `src/proxy.ts`'s AST and fails on any
+  `"Set-Cookie"` literal or `.cookies.set()` outside the hint sync. Without it a
+  lodge-preference or consent-banner cookie added ahead of the header block would
+  have left the whole suite green while `GET /branding/logo.png` shipped that cookie
+  beside `send`'s `public, max-age=…`. The hint is NOT suppressed out of territory
+  generally —
   `/login` and the member area are where the session state changes, so
   suppressing there would take the correction off the responses that need it —
   and it does not have to be, because those responses now carry `private` rather
@@ -1230,9 +1237,37 @@ The security-relevant properties:
   font, a PDF handbook — counts as page-shaped and is sent `private, no-store`,
   meaning a browser refetches it on every page view. `/robots.txt` is the only such
   file shipped today (`send` gave it `public, max-age=0`, i.e. revalidate every
-  time, so the change is negligible), and `/sitemap.xml` is a genuine closure: as a
-  static prerender with no `revalidate` it was shipping `s-maxage=31536000` beside
-  the marker cookie. App JS and CSS are unaffected — they live under
+  time, so the change is negligible), and `/sitemap.xml` is a genuine but NARROWER
+  closure than an earlier draft of this bullet claimed.
+
+  **What `/sitemap.xml` actually shipped, measured rather than derived (review
+  correction, 4 Aug 2026).** The earlier wording said "as a static prerender with no
+  `revalidate` it was shipping `s-maxage=31536000`", derived from
+  `next/dist/server/lib/cache-control.js`. The build's own prerender manifest
+  falsifies it: the entry for `/sitemap.xml` carries
+  `initialHeaders["cache-control"] = "public, max-age=0, must-revalidate"` with
+  `initialRevalidateSeconds: false`, because Next's metadata-route wrapper sets that
+  header itself and `build/index.js` records it as `initialHeaders: meta.headers`.
+  Serving reads the same `.meta` back into `cacheEntry.value.headers`
+  (`server/lib/incremental-cache/file-system-cache.js`), and
+  `build/templates/app-route.js` only fills a directive in when
+  `cacheEntry.cacheControl && !res.getHeader('Cache-Control') &&
+  !headers.get('Cache-Control')` — that third clause is false here, so
+  `getCacheControlHeader()` is never reached for this URL and the year-long value was
+  never on the wire. This is the same measured-versus-derived trap the `s-maxage=15`
+  paragraph in `src/proxy.ts` warns about, caught on the other side.
+
+  **The real residual on that URL, and why the fix still matters there.** `public,
+  max-age=0, must-revalidate` forces validation on every reuse, so nothing stale
+  could be served — the exposure was not duration but SHARING: a `public` answer
+  carrying `Set-Cookie: signed-in-hint=1` with no `Vary: Cookie`, where a shared cache that
+  revalidates, gets a `304`, merges its headers into the stored response and reuses it
+  can hand that stored `Set-Cookie` to a stranger. The private-only directive closes
+  exactly that, and it does reach this URL: `send-response.js` appends the cache
+  entry's value only when the name is not already set, and `cache-control` is not in
+  its `headersWithMultipleValuesAllowed` list, so the proxy's header (written first by
+  the router server) wins and the entry's `public` value is dropped. App JS and CSS
+  are unaffected — they live under
   `_next/static/`, which the matcher excludes. If a non-image static file is ever
   added, the single knob is `ASSET_URL_EXTENSIONS` in `src/lib/asset-url-404.ts`,
   which moves the rewrite, the setup gate's classifier and the proxy predicate
@@ -2529,7 +2564,7 @@ permanently (D7).
   **The same stored documents also shipped a shared-cache directive, and THAT half is
   closed rather than accepted (#2578).** Because the response came out of the page
   store, the framework's own `s-maxage=15, stale-while-revalidate=31535985` reached the
-  wire with no `Vary` — and could do so alongside the D2 marker `Set-Cookie` — on
+  wire with no `Vary: Cookie` — and could do so alongside the D2 marker `Set-Cookie` — on
   addresses the proxy had classified as not-the-public-website. Measured on the same
   container build, on `/pay`, `/dashboard/nope` and `/admin/typo`, against a
   pre-slice-1 baseline that answered `private, no-cache, no-store` on all four
