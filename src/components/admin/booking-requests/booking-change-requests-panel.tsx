@@ -126,6 +126,35 @@ interface BookingChangeRequestsPanelProps {
   canEdit?: boolean;
 }
 
+/**
+ * One request's un-submitted decision, as the officer has typed it so far.
+ *
+ * A DRAFT PER REQUEST, keyed by request id, and that is the whole design (#2562
+ * review). The three fields used to share one state slot with a `reviewingId`
+ * marker naming their owner, and every field's onChange moved the marker — so a
+ * keystroke in the internal note or the modification id on one row claimed
+ * ownership of the OTHER row's half-written member-facing explanation: the second
+ * card displayed it, its decision buttons unlocked on it, and submitting posted
+ * one member a sentence written about somebody else's request. On this table
+ * `adminNotes` is read verbatim by the member on their own booking page, so that
+ * was a privacy failure, not a cosmetic one. Keyed state makes the row-isolation
+ * invariant structural: there is no shared slot left for a draft to leak through,
+ * whichever field is typed in and in whatever order.
+ */
+interface DecisionDraft {
+  /** The MEMBER-FACING decision explanation (`adminNotes`). */
+  adminNotes: string;
+  /** The officer's PRIVATE note. Never shown to the member. */
+  internalNotes: string;
+  linkedModificationId: string;
+}
+
+const EMPTY_DECISION_DRAFT: DecisionDraft = {
+  adminNotes: "",
+  internalNotes: "",
+  linkedModificationId: "",
+};
+
 const EMPTY_SEARCH_PARAMS: Record<string, string> = {};
 
 function buildBookingChangeRequestsPath(
@@ -162,33 +191,37 @@ export function BookingChangeRequestsPanel({
     isRequestFilter(initialFilter) ? initialFilter : defaultFilter
   );
   const [loading, setLoading] = useState(true);
-  const [reviewingId, setReviewingId] = useState<string | null>(null);
-  // The MEMBER-FACING decision explanation. Named `adminNotes` after the column
-  // it writes; the label beside it, and the internal counterpart below, are what
-  // #2562 added so the audience of each is stated before the decision is sent.
-  const [adminNotes, setAdminNotes] = useState("");
-  const [internalNotes, setInternalNotes] = useState("");
-  const [linkedModificationIdInput, setLinkedModificationIdInput] = useState("");
   /**
-   * The decision draft belongs to ONE request — the one named by `reviewingId`.
+   * Every open decision draft, keyed by the request it belongs to.
    *
-   * All three inputs share a single state slot, which is why each field renders
-   * `reviewingId === request.id ? value : ""`. The SUBMIT path did not do that
-   * (#2562 review): a note typed against one request was posted onto whichever row
-   * the officer clicked next, and on this table `adminNotes` is read verbatim by
-   * that row's member — so one member could be shown a sentence written about
-   * somebody else's request, and a linked modification id could be filed against
-   * the wrong row. Every read of the draft now goes through here, so a row that
-   * does not own the draft has nothing to send and nothing to submit with.
+   * One entry per row the officer has typed into, so a row's fields, the guard on
+   * its buttons and the body it submits all read the SAME object and no row can
+   * read another's (#2562 review — see `DecisionDraft`). A row nobody has typed
+   * into has no entry, which is exactly the empty draft its buttons stay disabled
+   * on.
    */
-  function decisionDraftFor(id: string) {
-    return reviewingId === id
-      ? {
-          adminNotes: adminNotes.trim(),
-          internalNotes: internalNotes.trim(),
-          linkedModificationId: linkedModificationIdInput.trim(),
-        }
-      : { adminNotes: "", internalNotes: "", linkedModificationId: "" };
+  const [decisionDrafts, setDecisionDrafts] = useState<
+    Record<string, DecisionDraft>
+  >({});
+  /** This row's draft as typed, or the empty one. Never another row's. */
+  function decisionDraftFor(id: string): DecisionDraft {
+    return decisionDrafts[id] ?? EMPTY_DECISION_DRAFT;
+  }
+  /** Patch one field of one row's draft, leaving every other row untouched. */
+  function updateDecisionDraft(id: string, patch: Partial<DecisionDraft>) {
+    setDecisionDrafts((current) => ({
+      ...current,
+      [id]: { ...(current[id] ?? EMPTY_DECISION_DRAFT), ...patch },
+    }));
+  }
+  /** Drop one row's draft — used on a SUCCESSFUL decision, and only then. */
+  function clearDecisionDraft(id: string) {
+    setDecisionDrafts((current) => {
+      if (!(id in current)) return current;
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
   }
   const [error, setError] = useState("");
   const currentPath = buildBookingChangeRequestsPath(
@@ -230,21 +263,23 @@ export function BookingChangeRequestsPanel({
     request: BookingChangeRequestData,
     status: "APPROVED" | "REJECTED"
   ) {
-    // Resolved BEFORE the busy marker moves, and only from this row's own draft
-    // (#2562 review): another row's half-written note is not this member's.
+    // This row's own draft, and nothing else (#2562 review): another row's
+    // half-written note is not this member's. Trimmed here so the stored draft
+    // keeps the officer's own spacing while the wire body carries neither.
     const draft = decisionDraftFor(request.id);
-    setReviewingId(request.id);
     setError("");
 
     try {
-      const trimmedModificationId = draft.linkedModificationId;
+      const trimmedAdminNotes = draft.adminNotes.trim();
+      const trimmedInternalNotes = draft.internalNotes.trim();
+      const trimmedModificationId = draft.linkedModificationId.trim();
       const response = await fetch(`/api/admin/booking-change-requests/${request.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           status,
-          adminNotes: draft.adminNotes || undefined,
-          internalNotes: draft.internalNotes || undefined,
+          adminNotes: trimmedAdminNotes || undefined,
+          internalNotes: trimmedInternalNotes || undefined,
           linkedModificationId:
             status === "APPROVED" && trimmedModificationId
               ? trimmedModificationId
@@ -256,14 +291,12 @@ export function BookingChangeRequestsPanel({
         throw new Error(data.error || "Failed to review request");
       }
 
-      // Cleared only on SUCCESS, and the draft's owner is released with it. A
-      // failed decision keeps `reviewingId` on this row (#2562 review) so the
-      // officer's typed note stays on screen and can be resubmitted, instead of
-      // vanishing from the field while surviving in state.
-      setAdminNotes("");
-      setInternalNotes("");
-      setLinkedModificationIdInput("");
-      setReviewingId(null);
+      // Cleared only on SUCCESS, and only THIS row's draft. A failed decision
+      // keeps it (#2562 review) so the officer's typed note stays on screen and
+      // can be resubmitted, instead of vanishing from the field while surviving
+      // in state; and a draft the officer has open on another row is none of this
+      // decision's business.
+      clearDecisionDraft(request.id);
       toast.success(
         status === "APPROVED"
           ? trimmedModificationId
@@ -470,13 +503,14 @@ export function BookingChangeRequestsPanel({
                         </p>
                         <Textarea
                           id={`admin-notes-${request.id}`}
-                          value={reviewingId === request.id ? adminNotes : ""}
+                          value={decisionDraftFor(request.id).adminNotes}
                           disabled={!canEdit}
                           title={canEdit === false ? ADMIN_VIEW_ONLY_ACTION_REASON : undefined}
-                          onChange={(event) => {
-                            setReviewingId(request.id);
-                            setAdminNotes(event.target.value);
-                          }}
+                          onChange={(event) =>
+                            updateDecisionDraft(request.id, {
+                              adminNotes: event.target.value,
+                            })
+                          }
                           maxLength={2000}
                           placeholder="What you decided and why, written for the member."
                         />
@@ -493,13 +527,14 @@ export function BookingChangeRequestsPanel({
                         </p>
                         <Textarea
                           id={`internal-notes-${request.id}`}
-                          value={reviewingId === request.id ? internalNotes : ""}
+                          value={decisionDraftFor(request.id).internalNotes}
                           disabled={!canEdit}
                           title={canEdit === false ? ADMIN_VIEW_ONLY_ACTION_REASON : undefined}
-                          onChange={(event) => {
-                            setReviewingId(request.id);
-                            setInternalNotes(event.target.value);
-                          }}
+                          onChange={(event) =>
+                            updateDecisionDraft(request.id, {
+                              internalNotes: event.target.value,
+                            })
+                          }
                           maxLength={2000}
                           placeholder="Context for the next officer. The member never reads this."
                         />
@@ -510,36 +545,38 @@ export function BookingChangeRequestsPanel({
                         </Label>
                         <Input
                           id={`linked-modification-${request.id}`}
-                          value={
-                            reviewingId === request.id
-                              ? linkedModificationIdInput
-                              : ""
-                          }
+                          value={decisionDraftFor(request.id).linkedModificationId}
                           disabled={!canEdit}
                           title={canEdit === false ? ADMIN_VIEW_ONLY_ACTION_REASON : undefined}
-                          onChange={(event) => {
-                            setReviewingId(request.id);
-                            setLinkedModificationIdInput(event.target.value);
-                          }}
+                          onChange={(event) =>
+                            updateDecisionDraft(request.id, {
+                              linkedModificationId: event.target.value,
+                            })
+                          }
                           placeholder="Paste the BookingModification id from the booking audit"
                         />
                       </div>
-                      {/* Gated on THIS row's own draft (#2562 review). The old rule
-                          was `reviewingId === request.id && !adminNotes.trim()`,
+                      {/* Gated on THIS row's own draft (#2562 review). The original
+                          rule was `reviewingId === request.id && !adminNotes.trim()`,
                           which enabled both buttons on every row the officer had
                           not typed into — so a decision could be sent with no
-                          member-facing explanation at all, and the note the officer
-                          HAD typed belonged to a different request. Now a decision
-                          needs this request's own explanation, which is what makes
-                          the table-wide invariant in DOMAIN_INVARIANTS true rather
-                          than aspirational. */}
+                          member-facing explanation at all. The shared-slot repair
+                          then left a narrower version of the same hole: typing an
+                          internal note on this row moved the ownership marker while
+                          the ANOTHER row's explanation was still in the shared slot,
+                          so this row's buttons unlocked on somebody else's sentence.
+                          The draft is now keyed by request id, so a decision needs
+                          this request's own explanation and can carry nothing but
+                          this request's own draft — which is what makes the
+                          table-wide invariant in DOMAIN_INVARIANTS true rather than
+                          aspirational. */}
                       <div className="flex flex-wrap gap-2">
                         <ViewOnlyActionButton
                           canEdit={canEdit}
                           describeReason={false}
                           size="sm"
                           onClick={() => reviewRequest(request, "APPROVED")}
-                          disabled={!decisionDraftFor(request.id).adminNotes}
+                          disabled={!decisionDraftFor(request.id).adminNotes.trim()}
                         >
                           Acknowledge as approved
                         </ViewOnlyActionButton>
@@ -549,7 +586,7 @@ export function BookingChangeRequestsPanel({
                           size="sm"
                           variant="outline"
                           onClick={() => reviewRequest(request, "REJECTED")}
-                          disabled={!decisionDraftFor(request.id).adminNotes}
+                          disabled={!decisionDraftFor(request.id).adminNotes.trim()}
                         >
                           Reject
                         </ViewOnlyActionButton>

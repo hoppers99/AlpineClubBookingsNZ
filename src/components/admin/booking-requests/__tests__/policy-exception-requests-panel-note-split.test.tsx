@@ -160,6 +160,89 @@ describe("the officer decision form labels who reads what, before submission", (
     });
   });
 
+  /**
+   * #2562 RE-REVIEW — the sibling surface's bug, checked for here.
+   *
+   * `booking-change-requests-panel` draws every REQUESTED card's decision form at
+   * once and kept ONE draft, so a keystroke on one card claimed another card's
+   * half-written member-facing explanation and could post it to the wrong member.
+   * This queue is an accordion — one `openId`, one form, and opening a card resets
+   * the draft — so the same class of leak has nowhere to happen. That is a
+   * structural property worth a test rather than a comment: if a later change ever
+   * mounts two forms, or keeps a draft across cards, this fails.
+   */
+  it("draws only the open card's decision form, so no other card can carry its draft", async () => {
+    queueResponse = () =>
+      jsonResponse({
+        data: [
+          queueItem(),
+          queueItem({
+            id: "req-2",
+            bookingId: "bk-2",
+            requestedBy: {
+              id: "m-2",
+              firstName: "Bea",
+              lastName: "Tui",
+              email: "bea@example.com",
+            },
+          }),
+        ],
+        page: 1,
+        pageSize: 100,
+        total: 2,
+      });
+    render(<PolicyExceptionRequestsPanel />);
+
+    // Both cards offer to be decided; neither has a form until one is opened.
+    const openButtons = await screen.findAllByRole("button", {
+      name: /Decide this request/i,
+    });
+    expect(openButtons).toHaveLength(2);
+    expect(screen.queryByLabelText(/Explanation for the member/i)).toBeNull();
+
+    fireEvent.click(openButtons[0]);
+    // Exactly ONE note field pair exists — the open card's.
+    expect(screen.getAllByLabelText(/Explanation for the member/i)).toHaveLength(1);
+    expect(screen.getAllByLabelText(/Internal note/i)).toHaveLength(1);
+    fireEvent.change(screen.getByLabelText(/Explanation for the member/i), {
+      target: { value: "Ada's road was closed, allowing it." },
+    });
+    fireEvent.change(screen.getByLabelText(/Internal note/i), {
+      target: { value: "Ada rings every month." },
+    });
+    // The other card still has no decision affordance at all, so there is nothing
+    // for the draft to unlock.
+    expect(
+      screen.getAllByRole("button", { name: /Decide this request/i }),
+    ).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: "Refuse" })).toHaveLength(1);
+
+    // Opening the OTHER card takes the draft with it, rather than carrying Ada's
+    // sentence over to Bea.
+    fireEvent.click(screen.getByRole("button", { name: /Decide this request/i }));
+    expect(screen.getByLabelText(/Explanation for the member/i)).toHaveValue("");
+    expect(screen.getByLabelText(/Internal note/i)).toHaveValue("");
+    expect(screen.getByRole("button", { name: "Refuse" })).toBeDisabled();
+
+    // And a decision from here goes to Bea's id with Bea's own note.
+    fireEvent.change(screen.getByLabelText(/Explanation for the member/i), {
+      target: { value: "Bea's weekend is already committed." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Refuse" }));
+    await waitFor(() => {
+      const patch = fetchMock.mock.calls.find(
+        ([, init]) => (init as RequestInit | undefined)?.method === "PATCH",
+      );
+      expect(String(patch?.[0])).toContain("/req-2");
+      expect(JSON.parse(String((patch?.[1] as RequestInit).body))).toMatchObject({
+        adminNotes: "Bea's weekend is already committed.",
+      });
+      expect(
+        JSON.parse(String((patch?.[1] as RequestInit).body)).internalNotes,
+      ).toBeUndefined();
+    });
+  });
+
   it("omits an internal note that was left blank rather than sending an empty string", async () => {
     await openDecisionForm();
     fireEvent.change(screen.getByLabelText(/Explanation for the member/i), {

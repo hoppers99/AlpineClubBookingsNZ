@@ -242,6 +242,25 @@ export function PolicyExceptionRequestsPanel({
   }, []);
 
   async function decide(item: QueueItem, action: "approve" | "reject") {
+    /*
+      THE DRAFT BELONGS TO THE OPEN CARD, and this says so rather than assuming it
+      (#2562 re-review). This queue keeps one decision draft and one `openId`: the
+      form — and the two decision buttons — are drawn only inside the card whose id
+      `openId` names, and opening another card resets the draft, so the notes read
+      below have always been this card's own. The SIBLING panel on the same table
+      (`booking-change-requests-panel`) had the same shape with several cards' forms
+      mounted at once and leaked one member's decision explanation onto another
+      member's request. Nothing here can reach that state, and a guard that fails
+      closed costs one comparison and removes the possibility that a later refactor
+      (drawing more than one form, or keeping a draft across cards) re-opens it
+      silently. `adminNotes` is read verbatim by the member.
+    */
+    if (openId !== item.id) {
+      setError(
+        "Open the request you want to decide before sending a decision, so the notes go to the right member.",
+      );
+      return;
+    }
     setBusyId(item.id);
     setError("");
     try {

@@ -2667,12 +2667,20 @@ cannot read is a refusal they cannot act on. The exception decision route says s
 in its own 400 message rather than silently accepting an internal note in its
 place, and the locked-period panel keeps BOTH decision buttons disabled until that
 request's own member-facing field is filled in. "That request's own" is part of the
-rule: the panel's three inputs share one state slot, so the draft belongs to the row
-named by `reviewingId` and a note begun against one request is neither submitted with
-another nor able to unlock another's buttons. Before #2562 the guard read
+rule, and it is held STRUCTURALLY rather than by a marker: the panel draws every
+open request's form at once and keeps **one draft per request id**
+(`decisionDrafts[request.id]`), which each field reads, writes and submits from, so
+a note begun against one request is neither submitted with another nor able to
+unlock another's buttons — whichever field is typed in, in whatever order. Two
+earlier shapes both failed that: the original guard read
 `reviewingId === request.id && !adminNotes.trim()`, which left every untouched row
-decidable with no explanation at all and posted one member's draft onto another
-member's request.
+decidable with no explanation at all; the shared-slot repair that followed still let
+the internal-note and modification-id handlers move the ownership marker while the
+previous row's sentence sat in the shared slot, so a keystroke on one card put
+another member's explanation into this card's field, unlocked its buttons and posted
+it under that member's request. The sibling policy-exception queue is an accordion
+(one `openId`, one mounted form, draft reset on open) and its decision path refuses
+to act for any card that is not the open one.
 
 The column is an expand-only addition
 (`20260803040000_add_policy_exception_internal_notes`), nullable with no backfill on

@@ -74,6 +74,31 @@ function changeRequest(overrides: Record<string, unknown> = {}) {
   };
 }
 
+/** A second card on the same table, owned by a DIFFERENT member. */
+function secondChangeRequest() {
+  return changeRequest({
+    id: "req-2",
+    bookingId: "bk-2",
+    requestedByMemberId: "m-2",
+    requestedBy: {
+      id: "m-2",
+      firstName: "Bea",
+      lastName: "Tui",
+      email: "bea@example.com",
+    },
+    booking: {
+      ...changeRequest().booking,
+      id: "bk-2",
+      member: {
+        id: "m-2",
+        firstName: "Bea",
+        lastName: "Tui",
+        email: "bea@example.com",
+      },
+    },
+  });
+}
+
 let listResponse: () => Response;
 let fetchMock: ReturnType<typeof vi.fn>;
 
@@ -148,40 +173,17 @@ describe("the locked-period decision form names who reads what", () => {
   it("never carries one request's draft note onto another request", async () => {
     listResponse = () =>
       jsonResponse({
-        data: [
-          changeRequest(),
-          changeRequest({
-            id: "req-2",
-            bookingId: "bk-2",
-            requestedByMemberId: "m-2",
-            requestedBy: {
-              id: "m-2",
-              firstName: "Bea",
-              lastName: "Tui",
-              email: "bea@example.com",
-            },
-            booking: {
-              ...changeRequest().booking,
-              id: "bk-2",
-              member: {
-                id: "m-2",
-                firstName: "Bea",
-                lastName: "Tui",
-                email: "bea@example.com",
-              },
-            },
-          }),
-        ],
+        data: [changeRequest(), secondChangeRequest()],
         page: 1,
         pageSize: 25,
         total: 2,
       });
     render(<BookingChangeRequestsPanel />);
 
-    // Three inputs share one state slot, so a note typed on the first card used to
-    // be POSTed onto whichever card the officer clicked next — and on this table the
-    // member reads `adminNotes` verbatim, so Bea would have read a sentence written
-    // about Ada's request.
+    // The three inputs used to share one state slot, so a note typed on the first
+    // card was POSTed onto whichever card the officer clicked next — and on this
+    // table the member reads `adminNotes` verbatim, so Bea would have read a
+    // sentence written about Ada's request.
     const memberFields = await screen.findAllByLabelText(
       /Explanation for the member/i,
     );
@@ -216,6 +218,104 @@ describe("the locked-period decision form names who reads what", () => {
           String(url).includes("/req-2"),
       ),
     ).toHaveLength(0);
+  });
+
+  /**
+   * #2562 RE-REVIEW — the case the first repair still failed.
+   *
+   * Routing every READ of the draft through the owner check was not enough: only
+   * the member-facing textarea's onChange re-owned the draft, while the internal
+   * note and the modification id ALSO claimed ownership and left the previous
+   * row's sentence sitting in the shared slot. So typing an internal note on card
+   * two handed card two Ada's member-facing explanation: it appeared in Bea's
+   * field, it unlocked Bea's buttons, and a click posted Ada's sentence to
+   * `/req-2` — which Bea then reads verbatim on her own booking page under "What
+   * the club said". The draft is keyed per request now, so the order of the
+   * keystrokes cannot matter.
+   */
+  it("keeps each row's draft to that row whichever field is typed first", async () => {
+    listResponse = () =>
+      jsonResponse({
+        data: [changeRequest(), secondChangeRequest()],
+        page: 1,
+        pageSize: 25,
+        total: 2,
+      });
+    render(<BookingChangeRequestsPanel />);
+
+    const memberFields = await screen.findAllByLabelText(
+      /Explanation for the member/i,
+    );
+    const internalFields = screen.getAllByLabelText(/Internal note/i);
+    const modificationFields = screen.getAllByLabelText(
+      /Linked booking modification id/i,
+    );
+
+    // Card ONE gets a member-facing explanation.
+    fireEvent.change(memberFields[0], {
+      target: { value: "Ada's road was closed, allowing it." },
+    });
+    // Card TWO is then typed into on the two fields that used to steal ownership:
+    // the internal note first, then the modification id.
+    fireEvent.change(internalFields[1], {
+      target: { value: "Bea asks every season." },
+    });
+    fireEvent.change(modificationFields[1], { target: { value: "mod-123" } });
+
+    // Bea's card must show NOTHING of Ada's sentence, and must stay undecidable.
+    expect(memberFields[1]).toHaveValue("");
+    expect(screen.getAllByRole("button", { name: "Reject" })[1]).toBeDisabled();
+    expect(
+      screen.getAllByRole("button", { name: /Acknowledge as approved/i })[1],
+    ).toBeDisabled();
+
+    // Ada's card kept its own draft while Bea's card was being typed into, and
+    // Bea's internal note has not landed in Ada's field either.
+    expect(memberFields[0]).toHaveValue("Ada's road was closed, allowing it.");
+    expect(internalFields[0]).toHaveValue("");
+
+    // Interleave back: Ada's internal note, then more of Bea's explanation. Both
+    // rows keep exactly their own text.
+    fireEvent.change(internalFields[0], {
+      target: { value: "Ada rings every month." },
+    });
+    fireEvent.change(memberFields[1], {
+      target: { value: "Bea's dates were already committed." },
+    });
+    expect(memberFields[0]).toHaveValue("Ada's road was closed, allowing it.");
+    expect(internalFields[0]).toHaveValue("Ada rings every month.");
+    expect(memberFields[1]).toHaveValue("Bea's dates were already committed.");
+    expect(internalFields[1]).toHaveValue("Bea asks every season.");
+
+    // And each row submits its own three fields, to its own id.
+    fireEvent.click(screen.getAllByRole("button", { name: "Reject" })[1]);
+    await waitFor(() => {
+      const patch = fetchMock.mock.calls.find(
+        ([url, init]) =>
+          (init as RequestInit | undefined)?.method === "PATCH" &&
+          String(url).includes("/req-2"),
+      );
+      expect(patch).toBeDefined();
+      expect(JSON.parse(String((patch?.[1] as RequestInit).body))).toMatchObject({
+        status: "REJECTED",
+        adminNotes: "Bea's dates were already committed.",
+        internalNotes: "Bea asks every season.",
+      });
+    });
+    // Nothing was sent for Ada's request, and her draft survives the other row's
+    // successful decision.
+    expect(
+      fetchMock.mock.calls.filter(
+        ([url, init]) =>
+          (init as RequestInit | undefined)?.method === "PATCH" &&
+          String(url).includes("/req-1"),
+      ),
+    ).toHaveLength(0);
+    await waitFor(() => {
+      expect(
+        screen.getAllByLabelText(/Explanation for the member/i)[0],
+      ).toHaveValue("Ada's road was closed, allowing it.");
+    });
   });
 
   it("sends the two notes as separate fields", async () => {
