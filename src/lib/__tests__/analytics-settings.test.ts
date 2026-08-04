@@ -258,6 +258,11 @@ describe("parseBannerMessage", () => {
       ["INTERLINEAR ANNOTATION TERMINATOR U+FFFB", "￻"],
       ["VARIATION SELECTOR-1 U+FE00", "︀"],
       ["VARIATION SELECTOR-16 U+FE0F", "️"],
+      // The supplement block, closed for the same reason as U+FE00-U+FE0F: 240 more
+      // invisible selectors, and stopping at the basic block would have been an
+      // arbitrary line through one character class.
+      ["VARIATION SELECTOR-17 U+E0100", "\u{E0100}"],
+      ["VARIATION SELECTOR-256 U+E01EF", "\u{E01EF}"],
       ["LANGUAGE TAG U+E0001", "\u{E0001}"],
       ["TAG LATIN CAPITAL A U+E0041", "\u{E0041}"],
       ["CANCEL TAG U+E007F", "\u{E007F}"],
@@ -298,6 +303,39 @@ describe("parseBannerMessage", () => {
       expect(
         survivors.map((character) =>
           `U+${character.codePointAt(0)?.toString(16).toUpperCase()}`,
+        ),
+      ).toEqual([]);
+    });
+
+    /*
+      The second independent oracle, for the one class `\p{Cf}` does not reach.
+
+      Variation selectors are `\p{Mn}`, so the category walk above cannot see them,
+      and they are enumerated as two explicit ranges in the pattern — exactly the
+      hand-listed shape that rotted the first cut. This walks both blocks by
+      code point instead of trusting the ranges, so an off-by-one at either end
+      (`U+FE0F` vs `U+FE10`, `U+E01EF` vs `U+E01F0`) fails here rather than shipping.
+    */
+    it("strips every variation selector in both blocks", () => {
+      const selectors: string[] = [];
+      for (let codePoint = 0xfe00; codePoint <= 0xfe0f; codePoint += 1) {
+        selectors.push(String.fromCodePoint(codePoint));
+      }
+      for (let codePoint = 0xe0100; codePoint <= 0xe01ef; codePoint += 1) {
+        selectors.push(String.fromCodePoint(codePoint));
+      }
+      // 16 in the basic block plus 240 in the supplement: the whole set, so the walk
+      // cannot pass vacuously.
+      expect(selectors).toHaveLength(256);
+
+      const survivors = selectors.filter((character) => {
+        const result = parseBannerMessage(`ab${character}cd`, true);
+        return !result.ok || result.bannerMessage !== "abcd";
+      });
+      expect(
+        survivors.map(
+          (character) =>
+            `U+${character.codePointAt(0)?.toString(16).toUpperCase()}`,
         ),
       ).toEqual([]);
     });

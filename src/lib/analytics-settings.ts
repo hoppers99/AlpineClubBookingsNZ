@@ -125,14 +125,17 @@ export function parseMeasurementId(
  *
  * Two additions the category does not reach:
  *  • **C0/C1 controls**, less the whitespace kept below.
- *  • **Variation selectors** `U+FE00`–`U+FE0F`, which are `\p{Mn}` rather than
- *    `\p{Cf}`. They are invisible, and they are the other documented channel for
- *    hiding bytes inside ordinary-looking text. The cost is that an emoji written
- *    with an explicit presentation selector loses it — `⚠️` stores as `⚠`, the same
- *    character in text presentation. Accepted, and consistent with what this already
- *    did: `U+200D` ZERO WIDTH JOINER is `\p{Cf}`, so composed emoji sequences were
- *    never preserved here anyway, and this is a plain-text consent notice rather than
- *    a rich-text field.
+ *  • **Variation selectors**, `\p{Mn}` rather than `\p{Cf}`, in BOTH blocks:
+ *    `U+FE00`–`U+FE0F` and the supplement `U+E0100`–`U+E01EF`. They are invisible,
+ *    and they are the other documented channel for hiding bytes inside
+ *    ordinary-looking text. The supplement is here because leaving it out while
+ *    closing `U+FE00`–`U+FE0F` would be an arbitrary line through one character
+ *    class — 240 more selectors, same invisibility, same purpose. The cost is that an
+ *    emoji written with an explicit presentation selector loses it — `⚠️` stores as
+ *    `⚠`, the same character in text presentation. Accepted, and consistent with what
+ *    this already did: `U+200D` ZERO WIDTH JOINER is `\p{Cf}`, so composed emoji
+ *    sequences were never preserved here anyway, and this is a plain-text consent
+ *    notice rather than a rich-text field.
  *
  * `U+0009`, `U+000A`, `U+000B`, `U+000C`, `U+000D`, `U+00A0`, `U+2028` and `U+2029`
  * are deliberately NOT in the set: every one of them is `\s`, so the collapse below
@@ -140,7 +143,7 @@ export function parseMeasurementId(
  * a document. Removing them instead would silently weld two words together.
  */
 const INVISIBLE_OR_CONTROL_PATTERN =
-  /[\u0000-\u0008\u000E-\u001F\u007F-\u009F\uFE00-\uFE0F\p{Cf}]/gu;
+  /[\u0000-\u0008\u000E-\u001F\u007F-\u009F\uFE00-\uFE0F\u{E0100}-\u{E01EF}\p{Cf}]/gu;
 
 /**
  * Trim a submitted banner message and enforce the plain-text rules.
