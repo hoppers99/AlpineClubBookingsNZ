@@ -18,8 +18,10 @@
 
   **The wording about beds is now true per path rather than reassuring in general.**
   A request for a booking that does not exist yet holds no beds, and says so;
-  availability is checked again when an officer reviews it, and approval can never
-  put the lodge over capacity. A request to change an existing booking states
+  availability is checked again when an officer reviews it, approval can never put
+  the lodge over capacity, and approval is not itself a reservation — the booking it
+  creates holds nothing until it is paid, which the pending row now says rather than
+  implying that an approval secures the nights. A request to change an existing booking states
   whether that particular change is holding any extra beds. A request an officer has
   already tried to apply, and the lodge had no room for, now reads "waiting — the
   lodge was full" instead of sitting silently as though nobody had looked.
@@ -52,7 +54,9 @@
   **An approved new booking no longer tells the member their beds are secured.** The
   booking an approval creates is unpaid, and an unpaid booking holds no beds — so
   the request now says so and points at paying it, and it changes to "holding its
-  beds" once the payment lands. An approved change to an existing booking says the
+  beds" once the payment lands. If that booking is later cancelled, or lapses because
+  it was never paid, the row says it is no longer live instead of telling the member
+  to pay something they cannot. An approved change to an existing booking says the
   change was applied rather than describing a booking that was never created.
 
   **The request card no longer shows a price the club could not charge.** On the
@@ -73,8 +77,9 @@
   labels the note it shows them as coming from the club. Two further things changed
   on that form: neither decision can be sent until the member-facing explanation is
   written (before, a card nobody had typed into could be decided with no explanation
-  at all), and each card keeps its own draft, so a note started against one request
-  can no longer be submitted with another member's.
+  at all), and each card keeps its own draft — one per request, whichever field is
+  typed in and in whatever order — so a note started against one request can no
+  longer appear on, unlock, or be submitted with another member's.
 
   **The help pages now describe the request limit as it is actually enforced:** one
   open request per identical proposal for a new booking and one per booking for a
