@@ -77,6 +77,11 @@ beforeEach(() => {
   window.localStorage.clear();
   window.dataLayer = undefined;
   window.gtag = undefined;
+  // Document-scoped, exactly like `dataLayer`, so it has to be reset with it: a real
+  // browser gets a fresh document per page load, and jsdom hands every test in this
+  // file the same one. Leaving it set would make the next test's first consent push an
+  // `update` when a fresh document would have sent a `default`.
+  window.__analyticsConsentDefaultPushed = undefined;
   mockPathname.value = "/contact";
   document.querySelectorAll("script[data-fixture]").forEach((el) => el.remove());
   document.documentElement.removeAttribute(ANALYTICS_PREFERENCES_ATTRIBUTE);
@@ -686,5 +691,102 @@ describe("AnalyticsConsent nonce source", () => {
     addDocumentScript("doc-nonce");
 
     await expect(loaderNonce()).resolves.toBe("doc-nonce");
+  });
+});
+
+describe("the consent position survives a cross-group round trip", () => {
+  /*
+    The visitor accepts on the public website, soft-navigates into a group that mounts
+    no analytics runtime (the header's own "Log In" and "Dashboard" links do exactly
+    this), then comes back to a website page.
+
+    gtag honours `consent default` only BEFORE the library initialises. A second
+    `default` pushed by the remounted instance is ignored, so if that is what it pushes
+    the tag stays on the DENIAL the unmount queued — analytics degraded to cookieless
+    pings for someone who explicitly accepted. The last consent signal has to be an
+    `update` that grants.
+  */
+  it("re-grants with an update, not an ignored second default", async () => {
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ choice: "accepted", revision: 1, source: "banner" }),
+    );
+
+    const first = render(<AnalyticsConsent config={BANNER_ON} nonce="n-1" />);
+    await waitFor(() => expect(analyticsLoader()).not.toBeNull());
+    first.unmount();
+    // Leaving the website disables the resident tag.
+    expect(
+      (window as unknown as Record<string, unknown>)["ga-disable-G-TEST123456"],
+    ).toBe(true);
+
+    // Coming back mounts a fresh instance in the SAME document, where the gtag library
+    // is still resident.
+    render(<AnalyticsConsent config={BANNER_ON} nonce="n-1" />);
+    await waitFor(() => expect(analyticsLoader()).not.toBeNull());
+
+    const last = consentCalls().at(-1);
+    expect(last?.[1]).toBe("update");
+    expect(last?.[2]).toMatchObject({
+      analytics_storage: "granted",
+      ad_storage: "denied",
+      ad_user_data: "denied",
+      ad_personalization: "denied",
+    });
+    expect(
+      (window as unknown as Record<string, unknown>)["ga-disable-G-TEST123456"],
+    ).toBe(false);
+    // Exactly one `default` in the whole document, and it is the first thing queued.
+    expect(consentCalls().filter((entry) => entry[1] === "default")).toHaveLength(1);
+    expect(consentCalls()[0]?.[1]).toBe("default");
+  });
+});
+
+describe("opting out and back in on the same page", () => {
+  it("sends a page view again for the address the visitor is still on", async () => {
+    mockPathname.value = "/about";
+    render(<AnalyticsConsent config={BANNER_OFF} nonce="n-1" />);
+    await waitFor(() => expect(pageViewCalls()).toHaveLength(1));
+
+    fireEvent(window, new CustomEvent(ANALYTICS_PREFERENCES_OPEN_EVENT));
+    fireEvent.click(await screen.findByRole("button", { name: "Turn analytics off" }));
+    await waitFor(() => expect(analyticsLoader()).toBeNull());
+    // Nothing further while it is off.
+    expect(pageViewCalls()).toHaveLength(1);
+
+    fireEvent(window, new CustomEvent(ANALYTICS_PREFERENCES_OPEN_EVENT));
+    fireEvent.click(await screen.findByRole("button", { name: "Allow analytics" }));
+    await waitFor(() => expect(analyticsLoader()).not.toBeNull());
+
+    // GA4 needs a page view to open the session, so the re-grant sends one for the
+    // page the visitor never left rather than waiting for their next navigation.
+    await waitFor(() => expect(pageViewCalls()).toHaveLength(2));
+    for (const call of pageViewCalls()) {
+      expect(call[2]).toMatchObject({ page_location: "http://localhost:3000/about" });
+    }
+  });
+
+  /*
+    The other half of the same boundary, pinned so the fix above cannot be widened by
+    accident. An INELIGIBLE ADDRESS is not a consent event: stepping onto one and back
+    must still send nothing, which is what the de-duplication in owner section 7 is for.
+    Only a withdrawal of consent forgets what was already reported.
+  */
+  it("does not re-report an address after a detour through an ineligible one", async () => {
+    mockPathname.value = "/about";
+    const { rerender } = render(<AnalyticsConsent config={BANNER_OFF} nonce="n-1" />);
+    await waitFor(() => expect(pageViewCalls()).toHaveLength(1));
+
+    // An unbroken alphanumeric run: served by the website catch-all, so the component
+    // stays MOUNTED, but refused by the route policy as a possible identifier.
+    mockPathname.value = "/newsletter2026spring";
+    rerender(<AnalyticsConsent config={BANNER_OFF} nonce="n-1" />);
+    await waitFor(() => expect(analyticsLoader()).toBeNull());
+    expect(pageViewCalls()).toHaveLength(1);
+
+    mockPathname.value = "/about";
+    rerender(<AnalyticsConsent config={BANNER_OFF} nonce="n-1" />);
+    await waitFor(() => expect(analyticsLoader()).not.toBeNull());
+    expect(pageViewCalls()).toHaveLength(1);
   });
 });

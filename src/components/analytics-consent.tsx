@@ -101,6 +101,16 @@ declare global {
   interface Window {
     dataLayer?: unknown[];
     gtag?: (...args: unknown[]) => void;
+    /**
+     * Whether a `gtag('consent', 'default', …)` has already been pushed into THIS
+     * DOCUMENT's `dataLayer`.
+     *
+     * On `window` rather than in a `useRef` because the scope that matters is the
+     * document, not the component instance, and `window.dataLayer` — the thing the
+     * flag describes — is document-scoped too. See the consent effect for what goes
+     * wrong when the two scopes disagree.
+     */
+    __analyticsConsentDefaultPushed?: boolean;
   }
 }
 
@@ -251,13 +261,18 @@ export function AnalyticsConsent({
     ? resolveAnalyticsDecision(config, stored)
     : { analyticsAllowed: false, showBanner: false, preference: "unset" as const };
 
-  // The tag loads only when the club is configured, the route is eligible, the
-  // stored/derived decision allows it, and the browser has told us what is stored.
-  // `hydrated` is part of the gate rather than a cosmetic guard: before the read
-  // resolves we do not know whether this visitor declined, and loading on the
+  // Whether the VISITOR's position allows analytics, with the route gate deliberately
+  // left out. Split from `analyticsAllowed` because the page-view effect below has to
+  // tell "this visitor has withdrawn consent" apart from "this particular address is
+  // not one we report" — the two look identical to the tag and are not the same fact.
+  //
+  // `hydrated` is part of the gate rather than a cosmetic guard: before the storage
+  // read resolves we do not know whether this visitor declined, and loading on the
   // strength of "no record yet" would be a load without consent.
-  const analyticsAllowed =
-    Boolean(config) && routeEligible && hydrated && decision.analyticsAllowed;
+  const consentAllowsAnalytics =
+    Boolean(config) && hydrated && decision.analyticsAllowed;
+  // The tag loads only when consent allows it AND the address is one analytics runs on.
+  const analyticsAllowed = consentAllowsAnalytics && routeEligible;
   const bannerVisible =
     Boolean(config) && routeEligible && hydrated && decision.showBanner;
   // The preferences control is offered wherever the runtime is mounted and the club
@@ -326,18 +341,36 @@ export function AnalyticsConsent({
     the documented pair: `default` states the position the page starts from, `update`
     records a change the visitor made. Both are local array pushes; neither is a
     network call, and neither reaches Google before the loader below is mounted.
+
+    "FIRST" is per DOCUMENT, not per component instance, and that distinction is the
+    whole reason the flag lives on `window`. gtag honours `consent default` only
+    BEFORE the library initialises; once `gtag/js` has run, a later `default` is
+    ignored and only an `update` moves the position. A per-instance ref gets this
+    wrong on a cross-group round trip — the visitor accepts on the public website,
+    soft-navigates to `/dashboard` (which unmounts this component and queues the
+    denial the cleanup effect below owes), then comes back, and the fresh instance's
+    ref is false again, so it pushes `default(granted)` into a document whose
+    resident library has already initialised. The queue reads
+    `default(granted), update(denied), default(granted)` and the tag stays DENIED for
+    the life of the tab: analytics degrades to cookieless pings for a visitor who
+    explicitly accepted, which is section 3's "Accept should enable Analytics" not
+    holding. Wrong in the private direction rather than the dangerous one, but wrong.
+
+    Keying on the document makes the second mount push `update(granted)`, which is
+    honoured. It is also the right answer when the library never loaded: the queue
+    then holds `default(denied), update(granted)` and `gtag/js` replays both in order
+    when it finally arrives, landing on granted.
   */
-  const consentDefaultPushedRef = useRef(false);
   const configuredMeasurementIdRef = useRef<string | null>(null);
   useEffect(() => {
     if (!measurementId || !hydrated) return;
 
     const gtag = ensureGtag();
-    if (consentDefaultPushedRef.current) {
+    if (window.__analyticsConsentDefaultPushed) {
       gtag("consent", "update", consentCategories(analyticsAllowed));
     } else {
       gtag("consent", "default", consentCategories(analyticsAllowed));
-      consentDefaultPushedRef.current = true;
+      window.__analyticsConsentDefaultPushed = true;
     }
 
     setGaDisableFlag(measurementId, !analyticsAllowed);
@@ -382,14 +415,17 @@ export function AnalyticsConsent({
     cross-group remount the new instance sets the flag from its own route
     eligibility, so leaving it disabled here is always the safe order.
 
-    Guarded on `consentDefaultPushedRef`: if this instance never bootstrapped gtag
-    (no measurement ID, or storage never resolved) there is no tag of ours to
-    disable, and creating `window.dataLayer` on the way out would be pure noise.
+    Guarded on the same document-scoped flag as the effect above: if NOTHING in this
+    document ever bootstrapped gtag (no measurement ID anywhere, or storage never
+    resolved) there is no tag to disable, and creating `window.dataLayer` on the way
+    out would be pure noise. Document scope is the right scope here too — an instance
+    that never pushed a default itself, mounted after one that did, is still leaving
+    the public website with a resident tag that has to be switched off.
   */
   useEffect(() => {
     if (!measurementId) return;
     return () => {
-      if (!consentDefaultPushedRef.current) return;
+      if (!window.__analyticsConsentDefaultPushed) return;
       setGaDisableFlag(measurementId, true);
       ensureGtag()("consent", "update", consentCategories(false));
     };
@@ -402,11 +438,30 @@ export function AnalyticsConsent({
     is the ONLY page view sent — which is what makes both guarantees hold at once: the
     URL is sanitised (no query, no fragment, no identifiers) and a client-side
     navigation cannot produce a second view of the same address. The ref holds the
-    last location actually SENT, so a re-render, a consent change, or a navigation
-    back to the same path sends nothing.
+    last location actually SENT, so a re-render, or a step onto an address analytics
+    does not report and back again, sends nothing.
+
+    WITHDRAWN CONSENT is the one thing that clears that memory, and the distinction is
+    deliberate. A visitor who opens the preferences panel, turns analytics off and then
+    turns it back on without moving used to contribute nothing at all for the page they
+    were sitting on: the ref still held that address, so the re-grant sent no page view,
+    and GA4 needs one to open the session — so the visitor was measured from their next
+    navigation onwards, or never, if they read the page and left. Clearing on withdrawal
+    means a fresh grant starts counting from wherever the visitor actually is.
+
+    It cannot double-send for one navigation: the ref is written synchronously in the
+    same effect that sends, and only a consent change clears it. An INELIGIBLE ADDRESS
+    deliberately does NOT clear it, which is why `consentAllowsAnalytics` is gated
+    separately from `routeEligible` above — a detour through a page analytics does not
+    report is not a consent event, and treating it as one would re-report the address
+    the visitor came back to.
   */
   const lastPageViewRef = useRef<string | null>(null);
   useEffect(() => {
+    if (!consentAllowsAnalytics) {
+      lastPageViewRef.current = null;
+      return;
+    }
     if (!analyticsAllowed || typeof pathname !== "string") return;
 
     const pageLocation = buildAnalyticsPageLocation(
@@ -430,7 +485,7 @@ export function AnalyticsConsent({
     gtag("set", payload);
     gtag("event", "page_view", payload);
     lastPageViewRef.current = pageLocation;
-  }, [analyticsAllowed, pathname]);
+  }, [analyticsAllowed, consentAllowsAnalytics, pathname]);
 
   // Publish the banner's visibility so a co-located bottom-corner widget (the public
   // help launcher, epic #2094 C2) can step aside while it shows. A data attribute for
