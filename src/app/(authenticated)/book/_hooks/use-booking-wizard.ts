@@ -1317,6 +1317,14 @@ export function useBookingWizard() {
       id: String(data.id),
       proposal: data.proposal,
       capacityHeld: data.capacityHeld === true,
+      // The frozen aggregate, for the receipt's capacity sentence. Read from the
+      // create response rather than from the refusal, so the receipt describes the
+      // request that was actually written.
+      capacityMode:
+        data.aggregateCapacityMode === "HOLD" ||
+        data.aggregateCapacityMode === "NO_HOLD"
+          ? data.aggregateCapacityMode
+          : null,
     };
   }
 

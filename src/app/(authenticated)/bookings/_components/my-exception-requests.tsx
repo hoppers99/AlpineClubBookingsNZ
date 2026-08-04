@@ -169,6 +169,9 @@ export function MyExceptionRequests({
             source: request.source,
             status: request.status,
             capacityHeld: request.capacityHeld,
+            // The frozen mode, so a NO_HOLD change that DOES need beds is never
+            // told it needs none (#2562 review).
+            capacityMode: request.capacityMode,
           });
           const isConfirming = confirmingId === request.id;
           return (

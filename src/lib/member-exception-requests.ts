@@ -32,6 +32,12 @@
  *     no booking yet — so its answer is always false. A modification request
  *     answers from its real reservation-night rows.
  *
+ *     The frozen capacity MODE is carried as well, for the sentence and never for
+ *     that answer. "Nothing is held" has two causes — a HOLD request that needs no
+ *     extra bed (a pure shrink) and a NO_HOLD request that may need plenty — and a
+ *     member told the first when the second is true stops watching a lodge they are
+ *     racing.
+ *
  *  4. EXHAUSTIVE STATUS MAPPING over the Prisma enum: the `never` assignment in
  *     the mapper is a compile-time proof that every status is classified, so a
  *     new status cannot default into a friendly word.
@@ -137,6 +143,14 @@ export interface MemberExceptionRequestItem {
   decisionExplanation: string | null;
   /** Whether this request is holding beds RIGHT NOW. Never a policy guess. */
   capacityHeld: boolean;
+  /**
+   * The frozen HOLD-if-any-HOLD capacity mode, or null where the row has none.
+   *
+   * Carried ONLY so the capacity sentence can distinguish "needs no extra beds"
+   * from "needs beds that this rule does not hold". It is never an answer to
+   * "are beds held" — `capacityHeld` is, and it comes from the ledger.
+   */
+  capacityMode: PolicyExceptionCapacityMode | null;
   /** The most recent capacity conflict an approval attempt ran into. */
   lastConflictReason: string | null;
   lastConflictAt: string | null;
@@ -205,6 +219,18 @@ export function memberExceptionCapacityWording(args: {
   source: MemberExceptionRequestSource;
   status: MemberExceptionRequestStatus;
   capacityHeld: boolean;
+  /**
+   * The request's own frozen capacity mode, where the caller has it.
+   *
+   * REQUIRED to tell the truth about a pending modification, and this is why:
+   * `capacityHeld` is false in two materially different situations — a HOLD
+   * request whose incremental footprint came out empty (a pure shrink: it needs no
+   * extra bed, so none is held) and ANY NO_HOLD request (which reserves nothing
+   * even when the change needs beds on nights the booking does not have). Deciding
+   * the sentence on `capacityHeld` alone asserted the first of those about both,
+   * so a member racing for a bed was told they had nothing to race for.
+   */
+  capacityMode?: PolicyExceptionCapacityMode | null;
 }): string {
   if (args.status === "approved") {
     return "The beds are on the booking this created.";
@@ -228,9 +254,22 @@ export function memberExceptionCapacityWording(args: {
   if (args.source === "NEW_BOOKING") {
     return "No beds are held. Nothing is reserved until a Booking Officer approves this, and availability is checked again at that moment.";
   }
-  return args.capacityHeld
-    ? "The extra beds this change needs are held while it waits. Availability is checked again when a Booking Officer approves it."
-    : "This change needs no extra beds, so none are held. Availability is checked again when a Booking Officer approves it.";
+  if (args.capacityHeld) {
+    return "The extra beds this change needs are held while it waits. Availability is checked again when a Booking Officer approves it.";
+  }
+  // Nothing is held. WHY nothing is held decides what is honest to say next.
+  if (args.capacityMode === "HOLD") {
+    // A HOLD aggregate that reserved no bed genuinely needs none: the change is a
+    // shrink, or a reshuffle that adds nobody on any night.
+    return "This change needs no extra beds, so none are held. Availability is checked again when a Booking Officer approves it.";
+  }
+  if (args.capacityMode === "NO_HOLD") {
+    // The change may well need beds. The club set this rule up not to hold them,
+    // so say that, and say what it means for the member.
+    return "No beds are held for this request, so the lodge could fill before it is decided. Availability is checked again when a Booking Officer approves it, and a full lodge means it cannot be approved.";
+  }
+  // Mode unknown to this caller: state only what is certainly true.
+  return "No extra beds are held for this request. Availability is checked again when a Booking Officer approves it, and a full lodge means it cannot be approved.";
 }
 
 /**
@@ -376,6 +415,24 @@ export function toMemberExceptionRequestItem(request: {
   supersededByRequestId: string | null;
   /** True only when live PolicyExceptionReservationNight rows exist for it. */
   holdsReservationNights: boolean;
+  /**
+   * The frozen HOLD-if-any-HOLD aggregate, or null on a row that has none.
+   *
+   * Carried so the capacity SENTENCE can tell "this change needs no extra beds"
+   * apart from "this change needs beds and the policy holds none" — two facts
+   * `capacityHeld` alone collapses into one, because a NO_HOLD request reserves
+   * nothing whatever it needs. It is NEVER the source of `capacityHeld`: the mode
+   * says what the policy would do, only the ledger says what this request holds.
+   */
+  aggregateCapacityMode: PolicyExceptionCapacityMode | null;
+  /**
+   * NOT A FIELD. Declared as `never` so the officer's private note is rejected by
+   * the compiler even when a caller SPREADS a row in — which both production call
+   * sites do, and which an excess-property check does not see. Without this the
+   * documented "handing the private note to the member projection is a typecheck
+   * failure" was only true of a caller who named the field, i.e. of nobody.
+   */
+  internalNotes?: never;
 }): MemberExceptionRequestItem {
   // A conflict counts as "undecided" only while the request is still open. Once
   // it is refused, withdrawn, replaced, expired or executed, an old conflict is
@@ -401,6 +458,10 @@ export function toMemberExceptionRequestItem(request: {
     // A new-booking request reserves nothing, so the caller passes false for it;
     // this reads the fact rather than re-deriving it from the capacity mode.
     capacityHeld: request.holdsReservationNights,
+    // The frozen mode, carried for the WORDING only. See the field's doc comment
+    // and `memberExceptionCapacityWording`: HOLD-with-nothing-held and
+    // NO_HOLD-with-nothing-held are different facts and get different sentences.
+    capacityMode: request.aggregateCapacityMode,
     lastConflictReason: request.lastConflictReason,
     lastConflictAt: request.lastConflictAt?.toISOString() ?? null,
     bookingId: request.bookingId,

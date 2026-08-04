@@ -8,6 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { MEMBER_MESSAGE_MAX_LENGTH } from "@/lib/booking-exception-requests";
 import type { ExceptionOffer } from "@/lib/booking-exception-offer";
+import type { PolicyExceptionCapacityMode } from "@/lib/booking-policy-exceptions";
 import {
   MEMBER_EXCEPTION_DISCRETIONARY_NOTICE,
   MEMBER_EXCEPTION_NOT_APPROVED_YET_NOTICE,
@@ -125,6 +126,13 @@ export interface ExceptionRequestSubmitResult {
   id: string;
   proposal: MemberExceptionProposal;
   capacityHeld: boolean;
+  /**
+   * The request's own frozen HOLD-if-any-HOLD aggregate, for the receipt's
+   * capacity sentence. Needed because `capacityHeld: false` has two causes and
+   * only one of them means "this change needs no extra beds" — see
+   * `memberExceptionCapacityWording`.
+   */
+  capacityMode: PolicyExceptionCapacityMode | null;
 }
 
 export interface RequestOfficerApprovalCardProps {
@@ -293,6 +301,10 @@ export function RequestOfficerApprovalCard({
             source,
             status: "pending",
             capacityHeld: submitted.capacityHeld,
+            // The FROZEN mode, so a NO_HOLD change that needs beds is not told it
+            // needs none. Falls back to the offer's aggregate, which is the same
+            // server-computed value the refusal carried.
+            capacityMode: submitted.capacityMode ?? offer.capacityMode,
           })}
         </p>
         <p>

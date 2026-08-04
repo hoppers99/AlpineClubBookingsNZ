@@ -1766,6 +1766,13 @@ export function EditBookingPanel({
       id: String(data.id),
       proposal: data.proposal,
       capacityHeld: data.capacityHeld === true,
+      // The frozen aggregate, for the receipt's capacity sentence: on this path
+      // "nothing held" means "needs nothing" only under HOLD.
+      capacityMode:
+        data.aggregateCapacityMode === "HOLD" ||
+        data.aggregateCapacityMode === "NO_HOLD"
+          ? data.aggregateCapacityMode
+          : null,
     };
   }
 

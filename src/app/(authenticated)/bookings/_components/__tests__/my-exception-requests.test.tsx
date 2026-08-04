@@ -69,6 +69,8 @@ function request(
     memberMessage: "Driving up after work.",
     decisionExplanation: null,
     capacityHeld: false,
+    // A new-booking request reserves nothing, so NO_HOLD is its real frozen mode.
+    capacityMode: "NO_HOLD",
     lastConflictReason: null,
     lastConflictAt: null,
     bookingId: null,

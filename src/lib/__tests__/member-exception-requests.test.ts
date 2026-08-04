@@ -116,6 +116,9 @@ function baseRow(overrides: Record<string, unknown> = {}) {
     createdBookingId: null,
     supersededByRequestId: null,
     holdsReservationNights: false,
+    // The frozen aggregate every stored row carries. NO_HOLD here because the
+    // default fixture is a new-booking request, which reserves nothing.
+    aggregateCapacityMode: "NO_HOLD" as const,
     ...overrides,
   };
 }
@@ -337,6 +340,7 @@ describe("capacity wording", () => {
         source: "MODIFICATION",
         status: "pending",
         capacityHeld: true,
+        capacityMode: "HOLD",
       }),
     ).toContain("held while it waits");
     expect(
@@ -344,8 +348,43 @@ describe("capacity wording", () => {
         source: "MODIFICATION",
         status: "pending",
         capacityHeld: false,
+        capacityMode: "HOLD",
       }),
     ).toContain("no extra beds");
+  });
+
+  /**
+   * The reason the frozen mode is carried at all. "Nothing is held" has two
+   * causes and only one of them means "this change needs nothing":
+   *
+   *  - HOLD with an empty footprint — a pure shrink. Nothing is needed, so
+   *    nothing is held, and the member has nothing to race for.
+   *  - NO_HOLD — the rule holds nothing whatever the change needs, so the member
+   *    may well be racing a filling lodge and must be told so.
+   *
+   * Deciding on `capacityHeld` alone asserted the first about both.
+   */
+  it("never tells a NO_HOLD modification that it needs no extra beds", () => {
+    const noHold = memberExceptionCapacityWording({
+      source: "MODIFICATION",
+      status: "pending",
+      capacityHeld: false,
+      capacityMode: "NO_HOLD",
+    });
+    expect(noHold).not.toMatch(/needs no extra beds/);
+    expect(noHold).toContain("could fill before it is decided");
+    expect(noHold).toContain("cannot be approved");
+
+    // Mode unknown to the caller: say only what is certainly true — nothing is
+    // held — and never the "needs none" claim.
+    const unknown = memberExceptionCapacityWording({
+      source: "MODIFICATION",
+      status: "pending",
+      capacityHeld: false,
+      capacityMode: null,
+    });
+    expect(unknown).not.toMatch(/needs no extra beds/);
+    expect(unknown).toContain("No extra beds are held");
   });
 
   it("says approval can never put the lodge over capacity, on both submit paths", () => {
