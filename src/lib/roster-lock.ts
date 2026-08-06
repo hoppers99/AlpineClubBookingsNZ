@@ -51,18 +51,6 @@ export async function lockRosterDates(
 }
 
 /**
- * Lock every lodge night in each half-open [start, end) date-only range.
- * `lockRosterDates` sorts and de-duplicates the resulting keys, so old and
- * proposed booking/guest ranges can overlap without changing lock order.
- */
-export async function lockRosterDateRanges(
-  tx: RosterLockTx,
-  ranges: Array<{ start: Date; end: Date }>,
-) {
-  await lockRosterDateRangesAndDates(tx, ranges, []);
-}
-
-/**
  * Acquire one sorted lock set for date ranges plus exceptional stored dates.
  *
  * Booking mutations use this before tuple writes so an out-of-envelope legacy
