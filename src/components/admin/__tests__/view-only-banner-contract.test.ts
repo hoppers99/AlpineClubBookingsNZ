@@ -324,9 +324,9 @@ const FIGURES = {
   /** Every `<ViewOnlyActionButton>` render site in the admin tree. */
   callSites: 311,
   /** Those that hand their explanation to a banner, by either rule. */
-  optOuts: 262,
+  optOuts: 261,
   /** `describeReason={false}` — needs a banner in the SAME file. */
-  staticOptOuts: 235,
+  staticOptOuts: 234,
   /** `describeReason={!ancestorRendersViewOnlyBanner}` — needs a vouch. */
   vouchedOptOuts: 27,
   /** …of the vouched: proved at a parent's own JSX render site (#2168). */
@@ -334,8 +334,8 @@ const FIGURES = {
   /** …of the vouched: proved through the wizard shell's channel (#2324). */
   shellVouchedOptOuts: 5,
   /** Controls that KEEP the per-button reason, and the files holding them. */
-  exceptions: 49,
-  exceptionFiles: 26,
+  exceptions: 50,
+  exceptionFiles: 27,
   /** The remainder bucket: neither a member detail card nor dialog-only. */
   leafControls: 36,
   leafFiles: 21,
@@ -1255,7 +1255,13 @@ describe("view-only section banner coverage (#2160)", () => {
                banner for standalone reuse, while the bed-allocation page
                suppresses that child banner and covers both control sites with
                the page's existing bookings-area banner.
-               static opt-outs move 234 -> 235 and banner components 83 -> 84.
+               banner components move 83 -> 84. A re-measure on the integrated
+               tree leaves static opt-outs at 234.
+          311      #2595 adds the confirmed bed-move dialog's local-reason
+               control while reconciling the prior count against the current
+               tree. Exceptions move 49 -> 50 and exception files 26 -> 27;
+               the control is inside a separate modal accessibility container,
+               so it must not inherit the board page's banner.
       */
       // #2259 adds the per-booking "No emails"
       // switch (`booking-no-emails-controls.tsx`), a leaf control dropped into
@@ -1306,6 +1312,7 @@ describe("view-only section banner coverage (#2160)", () => {
       "app/(admin)/admin/issue-reports/page.tsx",
       "app/(admin)/admin/member-applications/_components/approval-mapping-panel.tsx",
       "app/(admin)/admin/membership-types/page.tsx",
+      "components/admin/bed-allocation-move-dialog.tsx",
     ];
 
     const bucket = (names: string[]) =>
@@ -1335,7 +1342,7 @@ describe("view-only section banner coverage (#2160)", () => {
       // the wrong permission — and an admin with membership edit but finance
       // view-only would get no banner at all.
       memberDetailCards: { controls: 4, files: 1 },
-      separateA11yContainer: { controls: 9, files: 4 },
+      separateA11yContainer: { controls: 10, files: 5 },
       // +1 control / +1 file vs 20/11: the #2259 "No emails" switch; then
       // +4 controls / +1 file: the four #2249 display-wizard step controls,
       // which the shell's render-callback indirection put out of reach of both

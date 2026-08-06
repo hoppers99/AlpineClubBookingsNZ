@@ -168,7 +168,7 @@ function renderChip({
 }: {
   allocation?: DashboardAllocation;
   canEdit?: boolean;
-  onReassignBed?: (bedId: string) => void;
+  onReassignBed?: (bedId: string, focusOrigin?: HTMLElement | null) => void;
   onRemove?: () => void;
   options?: BedOption[];
   groups?: BedOptionGroup[];
@@ -294,11 +294,13 @@ describe("AllocationChip held vs provisional state (#1251)", () => {
     }
   });
 
-  it("keeps removal preview reachable while disabling view-only move writes", () => {
+  it("keeps move and removal previews reachable while disabling view-only writes", () => {
     const onRemove = vi.fn();
+    const onReassignBed = vi.fn();
     renderChip({
       canEdit: false,
       onRemove,
+      onReassignBed,
       options: bedOptions,
       groups: bedOptionGroups,
     });
@@ -315,7 +317,11 @@ describe("AllocationChip held vs provisional state (#1251)", () => {
       screen.getByRole("button", {
         name: "Move Example Guest to a bed in Room One",
       }),
-    ).toBeDisabled();
+    ).toBeEnabled();
+    fireEvent.click(
+      screen.getByRole("menuitem", { name: /Room One \/ Bed Two/i }),
+    );
+    expect(onReassignBed).toHaveBeenCalledWith("bed-2", expect.any(HTMLElement));
     fireEvent.click(screen.getByRole("menuitem", { name: "Remove allocation" }));
     expect(onRemove).toHaveBeenCalledOnce();
   });
@@ -374,7 +380,7 @@ describe("AllocationChip held vs provisional state (#1251)", () => {
     });
 
     fireEvent.click(screen.getByRole("menuitem", { name: /Room One \/ Bed Two/i }));
-    expect(onReassignBed).toHaveBeenCalledWith("bed-2");
+    expect(onReassignBed).toHaveBeenCalledWith("bed-2", expect.any(HTMLElement));
 
     fireEvent.click(screen.getByRole("menuitem", { name: "Remove allocation" }));
     expect(onRemove).toHaveBeenCalledTimes(1);

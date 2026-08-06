@@ -354,7 +354,12 @@ export default function AdminBedAllocationPage() {
           `${movedRowCount} allocation night${movedRowCount === 1 ? "" : "s"} moved`,
         );
       }
-      await loadDashboard();
+      const refreshed = await loadDashboard();
+      if (!refreshed) {
+        throw new Error(
+          "The allocation moved, but the board could not be refreshed. Try Refresh before making another change.",
+        );
+      }
     },
   });
 
@@ -716,8 +721,9 @@ export default function AdminBedAllocationPage() {
   function openAllocationMoveDialog(
     allocation: DashboardAllocation,
     destinationBedId: string,
+    focusOrigin?: HTMLElement | null,
   ) {
-    if (!canEditBookings) return;
+    if (canEditBookings === undefined) return;
     const bed = bedById.get(destinationBedId);
     if (!bed) return;
     moveDialog.openMoveDialog(
@@ -730,6 +736,7 @@ export default function AdminBedAllocationPage() {
         destinationBedId: bed.id,
         destinationLabel: bed.label,
       },
+      focusOrigin,
     );
   }
 

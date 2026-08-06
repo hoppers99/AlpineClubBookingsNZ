@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 
 import "@testing-library/jest-dom/vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   BedAllocationMoveDialog,
@@ -64,13 +65,33 @@ function response(body: unknown, ok = true, status = 200) {
   return { ok, status, json: async () => body };
 }
 
+function deferred<T>() {
+  let resolve: (value: T) => void = () => {};
+  let reject: (reason: unknown) => void = () => {};
+  const promise = new Promise<T>((accept, decline) => {
+    resolve = accept;
+    reject = decline;
+  });
+  return { promise, resolve, reject };
+}
+
+const appliedResult = {
+  noop: false,
+  movedRowCount: 1,
+  promotedRowCount: 0,
+  affectedNights: [anchor.stayDate],
+};
+
 function Harness({ onApplied = vi.fn() }: { onApplied?: () => void | Promise<void> }) {
   const move = useBedAllocationMoveDialog({ canEdit: true, onApplied });
   return (
     <main>
       <button
         type="button"
-        onClick={() => move.openMoveDialog(anchor, destination)}
+        data-bed-allocation-focus-id={anchor.allocationId}
+        onClick={(event) =>
+          move.openMoveDialog(anchor, destination, event.currentTarget)
+        }
       >
         Open move
       </button>
@@ -114,12 +135,7 @@ describe("BedAllocationMoveDialog", () => {
     fetchMock
       .mockResolvedValueOnce(response(preview()))
       .mockResolvedValueOnce(
-        response({
-          noop: false,
-          movedRowCount: 1,
-          promotedRowCount: 0,
-          affectedNights: [anchor.stayDate],
-        }),
+        response(appliedResult),
       );
     render(<Harness onApplied={() => Promise.reject(new Error("refresh failed"))} />);
 
@@ -135,6 +151,172 @@ describe("BedAllocationMoveDialog", () => {
     );
     expect(screen.getByRole("alert")).not.toHaveTextContent(
       "No allocation changed",
+    );
+  });
+
+  it("restores focus to the stable originating allocation control on cancel", async () => {
+    fetchMock.mockResolvedValueOnce(response(preview()));
+    render(<Harness />);
+
+    const origin = screen.getByRole("button", { name: "Open move" });
+    fireEvent.click(origin);
+    await screen.findByText(/1 changing, 0 unchanged, 1 total/);
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    await waitFor(() => expect(origin).toHaveFocus());
+  });
+
+  it("restores focus by allocation identity after a successful refresh replaces the control", async () => {
+    function RefreshHarness() {
+      const [version, setVersion] = useState(0);
+      const move = useBedAllocationMoveDialog({
+        canEdit: true,
+        onApplied: async () => setVersion((current) => current + 1),
+      });
+      return (
+        <main>
+          <button
+            key={version}
+            type="button"
+            data-bed-allocation-focus-id={anchor.allocationId}
+            onClick={(event) =>
+              move.openMoveDialog(anchor, destination, event.currentTarget)
+            }
+          >
+            Open move version {version}
+          </button>
+          {move.dialog}
+        </main>
+      );
+    }
+
+    fetchMock
+      .mockResolvedValueOnce(response(preview()))
+      .mockResolvedValueOnce(response(appliedResult));
+    render(<RefreshHarness />);
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Open move version 0" }),
+    );
+    await screen.findByText(/1 changing, 0 unchanged, 1 total/);
+    fireEvent.click(screen.getByRole("button", { name: "Confirm move" }));
+
+    const replacement = await screen.findByRole("button", {
+      name: "Open move version 1",
+    });
+    await waitFor(() => expect(replacement).toHaveFocus());
+  });
+
+  it("ignores same-tick duplicate confirmation and blocks close while apply is pending", async () => {
+    const pendingApply = deferred<ReturnType<typeof response>>();
+    fetchMock
+      .mockResolvedValueOnce(response(preview()))
+      .mockImplementationOnce(() => pendingApply.promise);
+    render(<Harness />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Open move" }));
+    await screen.findByText(/1 changing, 0 unchanged, 1 total/);
+    const confirm = screen.getByRole("button", { name: "Confirm move" });
+    fireEvent.click(confirm);
+    fireEvent.click(confirm);
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    fireEvent.keyDown(document, { key: "Escape" });
+
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    await act(async () => pendingApply.resolve(response(appliedResult)));
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
+  });
+
+  it("fences an old apply completion from a newly opened target", async () => {
+    const pendingApply = deferred<ReturnType<typeof response>>();
+    const destinationB = {
+      destinationBedId: "bed-3",
+      destinationLabel: "Room Three / Bed C",
+    };
+
+    function RetargetHarness() {
+      const onApplied = vi.fn();
+      const move = useBedAllocationMoveDialog({ canEdit: true, onApplied });
+      return (
+        <main>
+          <button
+            type="button"
+            data-testid="open-a"
+            onClick={(event) =>
+              move.openMoveDialog(anchor, destination, event.currentTarget)
+            }
+          >
+            Open A
+          </button>
+          <button
+            type="button"
+            data-testid="open-b"
+            onClick={(event) =>
+              move.openMoveDialog(anchor, destinationB, event.currentTarget)
+            }
+          >
+            Open B
+          </button>
+          {move.dialog}
+        </main>
+      );
+    }
+
+    fetchMock
+      .mockResolvedValueOnce(response(preview()))
+      .mockImplementationOnce(() => pendingApply.promise)
+      .mockResolvedValueOnce(
+        response(
+          preview({
+            digest: "v1:target-b",
+            destination: {
+              bedId: destinationB.destinationBedId,
+              label: destinationB.destinationLabel,
+              available: true,
+            },
+          }),
+        ),
+      );
+    render(<RetargetHarness />);
+
+    fireEvent.click(screen.getByTestId("open-a"));
+    await screen.findByText(/1 changing, 0 unchanged, 1 total/);
+    fireEvent.click(screen.getByRole("button", { name: "Confirm move" }));
+    fireEvent.click(screen.getByTestId("open-b"));
+    await screen.findByRole("heading", {
+      name: `Move ${anchor.guestName} to ${destinationB.destinationLabel}`,
+    });
+
+    await act(async () => pendingApply.resolve(response(appliedResult)));
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", {
+        name: `Move ${anchor.guestName} to ${destinationB.destinationLabel}`,
+      }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/No allocation changed/)).not.toBeInTheDocument();
+  });
+
+  it("announces preview errors once through the permanent assertive region", async () => {
+    fetchMock.mockResolvedValueOnce(
+      response({ error: "Destination no longer exists" }, false, 409),
+    );
+    render(<Harness />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Open move" }));
+    await screen.findByText("Destination no longer exists");
+
+    const alerts = screen.getAllByRole("alert");
+    expect(alerts).toHaveLength(2);
+    expect(alerts[0]).toHaveTextContent(
+      "Move preview failed. Destination no longer exists",
+    );
+    expect(alerts[1].querySelector('[role="presentation"]')).toHaveTextContent(
+      "Destination no longer exists",
     );
   });
 

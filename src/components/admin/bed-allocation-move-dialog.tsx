@@ -39,7 +39,8 @@ interface UseBedAllocationMoveDialogOptions {
   onApplied: (result: BedAllocationMoveApplyResult) => void | Promise<void>;
 }
 
-function currentReturnFocusTarget() {
+function currentReturnFocusTarget(explicitTarget?: HTMLElement | null) {
+  if (explicitTarget?.isConnected) return explicitTarget;
   const active =
     document.activeElement instanceof HTMLElement
       ? document.activeElement
@@ -70,6 +71,7 @@ function focusConnectedTarget(target: HTMLElement | null) {
 export function useBedAllocationMoveDialog(
   options: UseBedAllocationMoveDialogOptions,
 ) {
+  const appliedCallback = options.onApplied;
   const [anchor, setAnchor] = useState<BedAllocationMoveDialogTarget | null>(
     null,
   );
@@ -78,18 +80,41 @@ export function useBedAllocationMoveDialog(
   const [assertiveAnnouncement, setAssertiveAnnouncement] = useState("");
   const returnFocusRef = useRef<HTMLElement | null>(null);
   const fallbackFocusRef = useRef<HTMLElement | null>(null);
+  const focusAllocationIdRef = useRef<string | null>(null);
+
+  const restoreFocus = useCallback(() => {
+    if (focusConnectedTarget(returnFocusRef.current)) return;
+    const allocationId = focusAllocationIdRef.current;
+    if (allocationId) {
+      const replacement = [
+        ...document.querySelectorAll<HTMLElement>(
+          "[data-bed-allocation-focus-id]",
+        ),
+      ].find(
+        (candidate) =>
+          candidate.dataset.bedAllocationFocusId === allocationId,
+      );
+      if (focusConnectedTarget(replacement ?? null)) {
+        returnFocusRef.current = replacement ?? null;
+        return;
+      }
+    }
+    focusConnectedTarget(fallbackFocusRef.current);
+  }, []);
 
   const openMoveDialog = useCallback(
     (
       nextAnchor: BedAllocationMoveDialogAnchor,
       destination: BedAllocationMoveDialogDestination,
+      focusOrigin?: HTMLElement | null,
     ) => {
       const nextTarget: BedAllocationMoveDialogTarget = {
         ...nextAnchor,
         ...destination,
       };
-      const returnTarget = currentReturnFocusTarget();
+      const returnTarget = currentReturnFocusTarget(focusOrigin);
       returnFocusRef.current = returnTarget;
+      focusAllocationIdRef.current = nextAnchor.allocationId;
       fallbackFocusRef.current =
         returnTarget?.closest<HTMLElement>(
           "section, [role='region'], main, [role='main']",
@@ -108,11 +133,10 @@ export function useBedAllocationMoveDialog(
     setOpen(nextOpen);
     if (!nextOpen) {
       window.setTimeout(() => {
-        if (focusConnectedTarget(returnFocusRef.current)) return;
-        focusConnectedTarget(fallbackFocusRef.current);
+        restoreFocus();
       }, 0);
     }
-  }, []);
+  }, [restoreFocus]);
 
   const announcePolite = useCallback((message: string) => {
     setAssertiveAnnouncement("");
@@ -123,6 +147,19 @@ export function useBedAllocationMoveDialog(
     setPoliteAnnouncement("");
     setAssertiveAnnouncement(message);
   }, []);
+
+  const onApplied = useCallback(
+    async (result: BedAllocationMoveApplyResult) => {
+      try {
+        await appliedCallback(result);
+      } finally {
+        // The dashboard refresh may reconcile the chip into another cell. Find
+        // its new control by allocation identity after that render settles.
+        window.setTimeout(restoreFocus, 0);
+      }
+    },
+    [appliedCallback, restoreFocus],
+  );
 
   const dialog = (
     <>
@@ -139,7 +176,7 @@ export function useBedAllocationMoveDialog(
         onOpenChange={onOpenChange}
         anchor={anchor}
         canEdit={options.canEdit}
-        onApplied={options.onApplied}
+        onApplied={onApplied}
         announcePolite={announcePolite}
         announceAssertive={announceAssertive}
       />
@@ -199,6 +236,17 @@ export function BedAllocationMoveDialog({
   const previewAbortRef = useRef<AbortController | null>(null);
   const requestGenerationRef = useRef(0);
   const applyInFlightRef = useRef(false);
+  const applyGenerationRef = useRef(0);
+  const openRef = useRef(open);
+  const targetKey = anchor
+    ? `${anchor.allocationId}\u0000${anchor.destinationBedId}`
+    : null;
+  const targetKeyRef = useRef<string | null>(targetKey);
+
+  useEffect(() => {
+    openRef.current = open;
+    targetKeyRef.current = targetKey;
+  }, [open, targetKey]);
 
   const loadPreview = useCallback(
     async (nextScope: BedAllocationMoveScope) => {
@@ -254,6 +302,9 @@ export function BedAllocationMoveDialog({
 
   useEffect(() => {
     if (!open || !anchor) return;
+    applyGenerationRef.current += 1;
+    applyInFlightRef.current = false;
+    setApplying(false);
     setScope("ALLOCATION_NIGHT");
     setPreview(null);
     setError("");
@@ -261,6 +312,19 @@ export function BedAllocationMoveDialog({
     void loadPreview("ALLOCATION_NIGHT");
     return () => previewAbortRef.current?.abort();
   }, [anchor, loadPreview, open]);
+
+  const handleDialogOpenChange = useCallback(
+    (nextOpen: boolean) => {
+      if (!nextOpen && applyInFlightRef.current) return;
+      if (!nextOpen) {
+        requestGenerationRef.current += 1;
+        applyGenerationRef.current += 1;
+        previewAbortRef.current?.abort();
+      }
+      onOpenChange(nextOpen);
+    },
+    [onOpenChange],
+  );
 
   const exactNights = useMemo(
     () =>
@@ -284,6 +348,13 @@ export function BedAllocationMoveDialog({
   async function confirmMove() {
     if (!anchor || !preview || !canEdit || applyInFlightRef.current) return;
     applyInFlightRef.current = true;
+    const applyGeneration = applyGenerationRef.current + 1;
+    applyGenerationRef.current = applyGeneration;
+    const applyTargetKey = targetKey;
+    const isCurrentApply = () =>
+      applyGenerationRef.current === applyGeneration &&
+      openRef.current &&
+      targetKeyRef.current === applyTargetKey;
     setApplying(true);
     setError("");
     let appliedResult: BedAllocationMoveApplyResult | null = null;
@@ -298,8 +369,10 @@ export function BedAllocationMoveDialog({
           previewDigest: preview.digest,
         }),
       });
+      if (!isCurrentApply()) return;
       if (!response.ok) {
         const body = await readMoveError(response);
+        if (!isCurrentApply()) return;
         if (body.refreshedPreview) setPreview(body.refreshedPreview);
         const message = body.error ?? "No allocations were moved";
         if (body.code === "STALE_PREVIEW" && body.refreshedPreview) {
@@ -318,12 +391,16 @@ export function BedAllocationMoveDialog({
       }
 
       appliedResult = (await response.json()) as BedAllocationMoveApplyResult;
+      if (!isCurrentApply()) return;
     } catch {
+      if (!isCurrentApply()) return;
       setError("Failed to move allocations");
       announceAssertive("Move failed. No allocation changed.");
     } finally {
-      applyInFlightRef.current = false;
-      setApplying(false);
+      if (isCurrentApply()) {
+        applyInFlightRef.current = false;
+        setApplying(false);
+      }
     }
 
     if (!appliedResult) return;
@@ -344,7 +421,7 @@ export function BedAllocationMoveDialog({
   const hasConflicts = Boolean(preview?.conflicts.length);
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={handleDialogOpenChange}>
       <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>
@@ -357,7 +434,11 @@ export function BedAllocationMoveDialog({
         </DialogHeader>
 
         <div role="alert" aria-live="assertive" className="min-h-0">
-          {error ? <Alert variant="error">{error}</Alert> : null}
+          {error ? (
+            <Alert role="presentation" variant="error">
+              {error}
+            </Alert>
+          ) : null}
         </div>
 
         <fieldset className="space-y-3" disabled={loading || applying}>
@@ -460,7 +541,7 @@ export function BedAllocationMoveDialog({
           <Button
             type="button"
             variant="outline"
-            onClick={() => onOpenChange(false)}
+            onClick={() => handleDialogOpenChange(false)}
             disabled={applying}
           >
             Cancel

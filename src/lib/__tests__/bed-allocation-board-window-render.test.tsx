@@ -18,6 +18,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DashboardPayload } from "@/app/(admin)/admin/bed-allocation/_components/types";
 
 const openRemovalDialogMock = vi.hoisted(() => vi.fn());
+const openMoveDialogMock = vi.hoisted(() => vi.fn());
 const editAccessMock = vi.hoisted(() => vi.fn());
 
 vi.mock("next/navigation", () => ({
@@ -71,7 +72,7 @@ vi.mock("@/components/admin/bed-allocation-removal-dialog", () => ({
 }));
 vi.mock("@/components/admin/bed-allocation-move-dialog", () => ({
   useBedAllocationMoveDialog: () => ({
-    openMoveDialog: vi.fn(),
+    openMoveDialog: openMoveDialogMock,
     dialog: <div data-testid="move-dialog-seam" />,
   }),
 }));
@@ -79,7 +80,38 @@ vi.mock("@/components/admin/bed-allocation-move-dialog", () => ({
 // The board's contents are covered by their own component tests; here we only
 // need to know WHETHER the board rendered at all.
 vi.mock("@/app/(admin)/admin/bed-allocation/_components/room-table", () => ({
-  RoomTable: () => <div data-testid="room-table" />,
+  RoomTable: ({
+    onReassignBed,
+  }: {
+    onReassignBed: (
+      allocation: {
+        id: string;
+        guestName: string;
+        stayDate: string;
+      },
+      bedId: string,
+      focusOrigin?: HTMLElement | null,
+    ) => void;
+  }) => (
+    <div data-testid="room-table">
+      <button
+        type="button"
+        onClick={(event) =>
+          onReassignBed(
+            {
+              id: "allocation-1",
+              guestName: "Ada Guest",
+              stayDate: "2026-07-01",
+            },
+            "bed-1",
+            event.currentTarget,
+          )
+        }
+      >
+        Open allocation move
+      </button>
+    </div>
+  ),
 }));
 vi.mock("@/app/(admin)/admin/bed-allocation/_components/bucket-board", () => ({
   BucketBoard: () => <div data-testid="bucket-board" />,
@@ -139,6 +171,7 @@ function buildPayload(): DashboardPayload {
 describe("bed allocation board — refused window", () => {
   beforeEach(() => {
     openRemovalDialogMock.mockReset();
+    openMoveDialogMock.mockReset();
     editAccessMock.mockReturnValue(true);
     vi.stubGlobal(
       "fetch",
@@ -233,6 +266,28 @@ describe("bed allocation board — refused window", () => {
         initialScope: "WINDOW",
         initialCategories: [],
       }),
+    );
+  });
+
+  it("lets a view-only admin open a move preview from the integrated board", async () => {
+    editAccessMock.mockReturnValue(false);
+    render(<AdminBedAllocationPage />);
+    await screen.findByTestId("room-table");
+
+    const origin = screen.getByRole("button", { name: "Open allocation move" });
+    fireEvent.click(origin);
+
+    expect(openMoveDialogMock).toHaveBeenCalledWith(
+      {
+        allocationId: "allocation-1",
+        guestName: "Ada Guest",
+        stayDate: "2026-07-01",
+      },
+      {
+        destinationBedId: "bed-1",
+        destinationLabel: "Example Room / Bed One",
+      },
+      origin,
     );
   });
 });

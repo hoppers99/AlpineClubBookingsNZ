@@ -1,5 +1,6 @@
 "use client";
 
+import { useRef } from "react";
 import { useDraggable } from "@dnd-kit/core";
 import { CSS } from "@dnd-kit/utilities";
 import { CircleDashed, GripVertical, Lock, X } from "lucide-react";
@@ -31,7 +32,7 @@ interface AllocationChipProps {
   allocation: DashboardAllocation;
   bedOptions: BedOption[];
   bedOptionGroups?: BedOptionGroup[];
-  onReassignBed: (bedId: string) => void;
+  onReassignBed: (bedId: string, focusOrigin?: HTMLElement | null) => void;
   onRemove: () => void;
   // #2251 entry point 2: open the range dialog prefilled with this placement's
   // guest and bed, to extend it across the rest of the stay.
@@ -52,6 +53,7 @@ export function AllocationChip({
   pending,
   canEdit,
 }: AllocationChipProps) {
+  const manageTriggerRef = useRef<HTMLButtonElement>(null);
   const { attributes, listeners, setNodeRef, transform, isDragging } =
     useDraggable({
       id: allocationDraggableId(allocation.id),
@@ -193,10 +195,12 @@ export function AllocationChip({
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <Button
+            ref={manageTriggerRef}
             size="icon"
             variant="ghost"
             className="h-5 w-5 shrink-0"
             aria-label={`Manage allocation for ${allocation.guestName}`}
+            data-bed-allocation-focus-id={allocation.id}
             disabled={pending || canEdit === undefined}
           >
             <X className="h-3 w-3" />
@@ -212,7 +216,7 @@ export function AllocationChip({
             <DropdownMenuSub key={group.roomId}>
               <DropdownMenuSubTrigger
                 aria-label={`Move ${allocation.guestName} to a bed in ${group.roomName}`}
-                disabled={!canEdit}
+                disabled={canEdit === undefined}
               >
                 {group.roomName}
               </DropdownMenuSubTrigger>
@@ -224,8 +228,10 @@ export function AllocationChip({
                   <DropdownMenuItem
                     key={bed.id}
                     aria-label={`Move ${allocation.guestName} to ${bed.label}`}
-                    onSelect={() => onReassignBed(bed.id)}
-                    disabled={!canEdit}
+                    onSelect={() =>
+                      onReassignBed(bed.id, manageTriggerRef.current)
+                    }
+                    disabled={canEdit === undefined}
                   >
                     {bed.bedName}
                   </DropdownMenuItem>
