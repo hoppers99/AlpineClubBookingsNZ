@@ -1132,6 +1132,11 @@ in sorted id order → every selected or causal `BedAllocation` row in sorted id
 order with `FOR UPDATE`**. Its first authoritative read refuses a matching or
 causal row in any third lodge, so historical drift cannot be deleted under an
 unrelated lodge lock.
+ID- and bed-night-expanded queries use deterministic chunks of at most 10,000
+values, preserving that one global row-id order while staying below
+PostgreSQL's 65,535 bind-parameter ceiling. Every chunk remains inside the same
+transaction; a later delete or promotion count mismatch rolls back earlier
+chunks and their locks.
 It re-runs the full preview under those locks and compares the supplied
 `v1:<sha256>` digest before delete, partner promotion, or audit. A stale/moved
 anchor, newly approved row, changed category, or concurrent lifecycle result is

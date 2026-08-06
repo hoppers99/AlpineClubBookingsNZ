@@ -189,7 +189,7 @@ allocations…** above the board.
    be promoted to primary, and every booking whose final approved bed will be
    removed. In that last case the member's requested-room editor re-opens.
 
-   ![Bed Allocation Reset allocations dialog showing selected categories and the reviewed removal counts, affected nights, promotions, and requested-room consequences](../images/admin/admin-bed-allocation-reset-preview.png)
+   ![Bed Allocation Reset allocations dialog showing an Auto-draft preview with reviewed counts, the affected booking and night, and zero shared-double promotions](../images/admin/admin-bed-allocation-reset-preview.png)
 
 4. Review the result, then click **Remove reviewed allocations**. If any
    relevant row changed, moved, was approved, or disappeared after the preview,
@@ -372,7 +372,7 @@ you place them yourself.
 
 | Symptom | Likely cause | Fix |
 | --- | --- | --- |
-| A view-only notice, drag disabled | Your admin role can view but not edit bed allocation | Ask a full admin for bookings edit access |
+| A view-only notice, drag disabled | Your admin role can inspect allocation state and removal previews but cannot write | Use **Remove**, **Remove allocation**, or **Reset allocations…** to review consequences; ask a full admin for bookings edit access to apply a removal, move, assign, approve, or save |
 | Bed Allocation is missing from the sidebar | The `bedAllocation` module is off | Enable it under **Admin → Setup → Modules** — see [`CONFIGURATION.md`](../../CONFIGURATION.md#module-controls-and-admin-modules) |
 | **Run Auto Allocation** is disabled | Auto-allocation is off for this lodge, or there are no suggestions | Click **Edit**, tick **Auto allocation enabled**, then **Save**; the board reloads automatically |
 | A preference is marked **Disabled** | It is not part of this lodge's saved comparison order | Click **Edit**, then **Enable**; use the arrows or drag to place it where you want |

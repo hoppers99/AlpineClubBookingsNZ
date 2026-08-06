@@ -812,7 +812,10 @@ mutable identity of every matching row, every approved row on an affected
 booking, and every surviving shared-double second occupant whose primary would
 be removed. Apply first resolves the booking's immutable lodge plus the
 reviewed anchor lodge, then takes global `lock(1)` → sorted lodge locks →
-sorted `BedAllocation` row locks. An authoritative under-lock check refuses any
+sorted `BedAllocation` row locks. Expanded bed-night, row-lock, delete, and
+promotion queries are split into deterministic 10,000-value chunks so supported
+booking scopes cannot cross PostgreSQL's 65,535 bind-parameter ceiling; all
+chunks remain in the same transaction and sorted lock order. An authoritative under-lock check refuses any
 historical third-lodge anomaly rather than deleting it without that lodge's
 lock. Apply rebuilds the preview under those locks and refuses with a refreshed
 preview when the anchor or digest drifted; an aggregate booking/person preview

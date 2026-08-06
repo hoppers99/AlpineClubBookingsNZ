@@ -18,6 +18,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DashboardPayload } from "@/app/(admin)/admin/bed-allocation/_components/types";
 
 const openRemovalDialogMock = vi.hoisted(() => vi.fn());
+const editAccessMock = vi.hoisted(() => vi.fn());
 
 vi.mock("next/navigation", () => ({
   useSearchParams: () => new URLSearchParams(),
@@ -40,7 +41,7 @@ vi.mock("sonner", () => ({
 vi.mock("@/hooks/use-admin-area-edit-access", async (importOriginal) => {
   const actual =
     await importOriginal<typeof import("@/hooks/use-admin-area-edit-access")>();
-  return { ...actual, useAdminAreaEditAccess: () => true };
+  return { ...actual, useAdminAreaEditAccess: () => editAccessMock() };
 });
 
 // #2286: the board's custodian copy uses the club's own word for the role.
@@ -132,6 +133,7 @@ function buildPayload(): DashboardPayload {
 describe("bed allocation board — refused window", () => {
   beforeEach(() => {
     openRemovalDialogMock.mockReset();
+    editAccessMock.mockReturnValue(true);
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue({
@@ -208,6 +210,24 @@ describe("bed allocation board — refused window", () => {
       initialScope: "WINDOW",
       initialCategories: [],
     });
+  });
+
+  it("lets a view-only admin open the non-mutating reset preview", async () => {
+    editAccessMock.mockReturnValue(false);
+    render(<AdminBedAllocationPage />);
+    await screen.findByTestId("room-table");
+
+    const reset = screen.getByRole("button", { name: /Reset allocations/ });
+    expect(reset).toBeEnabled();
+    fireEvent.click(reset);
+
+    expect(openRemovalDialogMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        lodgeId: "lodge-1",
+        initialScope: "WINDOW",
+        initialCategories: [],
+      }),
+    );
   });
 });
 

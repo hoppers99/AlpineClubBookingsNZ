@@ -274,9 +274,9 @@ export function BookingBedAllocationPanel({
   canHoldBeds,
   guests,
 }: BookingBedAllocationPanelProps) {
-  // Same permission the board's write controls use: every affordance here is a
-  // write, so a view-only admin sees the state and the reason, never a button
-  // that would 403.
+  // Same permission the board's write controls use. Removal preview is a
+  // bookings:view read and remains reachable; assign, confirm, and the
+  // dialog's reviewed apply stay disabled until bookings:edit resolves true.
   const canEdit = useAdminAreaEditAccess("bookings");
   /*
    * Admin copy uses the club's own word for the role (#2286 review M8); only
@@ -681,7 +681,7 @@ export function BookingBedAllocationPanel({
   }
 
   function openRunRemoval(guestName: string, run: PlacedRun) {
-    if (!canEdit || !lodgeId) return;
+    if (!lodgeId) return;
     const runIds = new Set(run.allocationIds);
     const runAllocations = allocations
       .filter((allocation) => runIds.has(allocation.id))
@@ -712,8 +712,8 @@ export function BookingBedAllocationPanel({
    */
   const viewOnlyBanner = (
     <AdminViewOnlySectionBanner canEdit={canEdit} className="mb-4">
-      You can see where this booking is sleeping, but not assign, remove, or
-      confirm beds.
+      You can see where this booking is sleeping and preview removals, but not
+      assign, apply removals, or confirm beds.
     </AdminViewOnlySectionBanner>
   );
 
@@ -1004,16 +1004,14 @@ export function BookingBedAllocationPanel({
                             </span>
                           </span>
                         ) : null}
-                        <ViewOnlyActionButton
-                          canEdit={canEdit}
-                          describeReason={false}
+                        <Button
                           type="button"
                           variant="ghost"
                           size="sm"
                           onClick={() => openRunRemoval(row.name, run)}
                         >
                           Remove
-                        </ViewOnlyActionButton>
+                        </Button>
                       </li>
                     ))}
                   </ul>

@@ -866,7 +866,6 @@ export default function AdminBedAllocationPage() {
   }
 
   function removeAllocation(allocation: DashboardAllocation) {
-    if (!canEditBookings) return;
     if (!lodgeId) return;
     removalDialog.openRemovalDialog({
       allocations: [
@@ -893,7 +892,7 @@ export default function AdminBedAllocationPage() {
   }
 
   function openWindowReset() {
-    if (!canEditBookings || !lodgeId) return;
+    if (!lodgeId) return;
     removalDialog.openRemovalDialog({
       allocations: [],
       lodgeId,
@@ -1385,15 +1384,13 @@ export default function AdminBedAllocationPage() {
                   <Check className="h-4 w-4" />
                   Approve Visible
                 </ViewOnlyActionButton>
-                <ViewOnlyActionButton
-                  canEdit={canEditBookings}
-                  describeReason={false}
+                <Button
                   variant="destructive"
                   onClick={openWindowReset}
                   disabled={!lodgeId}
                 >
                   Reset allocations…
-                </ViewOnlyActionButton>
+                </Button>
                 <Badge variant="outline">
                   {payload.suggestedAllocations.length} suggested
                 </Badge>

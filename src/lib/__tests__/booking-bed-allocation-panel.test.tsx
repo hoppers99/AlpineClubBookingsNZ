@@ -590,18 +590,55 @@ describe("BookingBedAllocationPanel", () => {
     expect(link.getAttribute("href")).toContain("bookingId=booking-1");
   });
 
-  it("shows a view-only admin the reason and no usable controls", async () => {
+  it("lets a view-only admin preview removal but never apply it", async () => {
     editAccess.mockReturnValue(false);
+    fetchMock.mockResolvedValue(
+      jsonResponse(
+        payload({
+          allocations: [
+            allocation({
+              id: "alloc-1",
+              approvedAt: "2026-05-01T00:00:00.000Z",
+            }),
+          ],
+          unallocatedGuestNights: [],
+        }),
+      ),
+    );
     renderPanel();
 
     await screen.findByText("Ada Guest");
     expect(screen.getByTestId("admin-view-only-banner")).toHaveTextContent(
-      "not assign, remove, or confirm beds",
+      "preview removals, but not assign, apply removals, or confirm beds",
     );
     expect(screen.getByRole("button", { name: "Assign…" })).toBeDisabled();
     expect(
       screen.getByRole("button", { name: "Confirm draft beds" }),
     ).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    fetchMock.mockResolvedValueOnce(jsonResponse(removalPreview(false)));
+    const previewButton = await screen.findByRole("button", {
+      name: "Preview removal",
+    });
+    await waitFor(() => expect(previewButton).toBeEnabled());
+    fireEvent.click(previewButton);
+
+    await screen.findByText(/matching allocation/);
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      "/api/admin/bed-allocation/allocations/removal",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(
+      screen.getByRole("button", { name: "Remove reviewed allocations" }),
+    ).toBeDisabled();
+    expect(
+      fetchMock.mock.calls.some(([, init]) =>
+        typeof init === "object" && init !== null && "method" in init
+          ? init.method === "PUT"
+          : false,
+      ),
+    ).toBe(false);
   });
 
   it("does not claim the lock re-opens when the booking's other pages hold confirmed nights", async () => {

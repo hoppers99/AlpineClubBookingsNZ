@@ -71,6 +71,17 @@ describe("bed allocation lock topology", () => {
       "BED_ALLOCATION_REMOVAL_APPLIED",
       "BED_ALLOCATION_PARTNERS_PROMOTED",
     ]);
+    expect(text).toContain(
+      "for (const primaryKeyChunk of chunkValues(primaryKeys))",
+    );
+    for (const token of [
+      "for (const lockIdChunk of lockIds)",
+      "Prisma.join(lockIdChunk)",
+      "chunkBedAllocationRemovalIds(selectedIds)",
+      "chunkBedAllocationRemovalIds(siblingIds)",
+    ]) {
+      expect(apply).toContain(token);
+    }
   });
 
   it("keeps the reviewed-removal PostgreSQL races on the guarded CI harness and production writer entrypoints", () => {

@@ -26,7 +26,9 @@ vi.mock("@/lib/prisma", () => ({ prisma: prismaMock }));
 
 import {
   applyBedAllocationRemoval,
+  BED_ALLOCATION_REMOVAL_QUERY_CHUNK_SIZE,
   BedAllocationRemovalError,
+  chunkBedAllocationRemovalIds,
   previewBedAllocationRemoval,
   type BedAllocationRemovalCategory,
   type BedAllocationRemovalRequest,
@@ -197,6 +199,19 @@ describe("bed allocation removal preview/apply", () => {
       async (callback: (tx: typeof prismaMock) => unknown) => callback(prismaMock),
     );
     prismaMock.booking.findUnique.mockResolvedValue({ lodgeId: "lodge-1" });
+  });
+
+  it("chunks more than PostgreSQL's 65,535 bind parameters in sorted order", () => {
+    const ids = Array.from(
+      { length: 65_536 },
+      (_, index) => `allocation-${String(65_535 - index).padStart(5, "0")}`,
+    );
+    const chunks = chunkBedAllocationRemovalIds([ids[0], ...ids, ids[0]]);
+
+    expect(Math.max(...chunks.map((chunk) => chunk.length))).toBe(
+      BED_ALLOCATION_REMOVAL_QUERY_CHUNK_SIZE,
+    );
+    expect(chunks.flat()).toEqual([...new Set(ids)].sort());
   });
 
   const categories: Array<[BedAllocationRemovalCategory, string]> = [
@@ -549,14 +564,58 @@ describe("bed allocation removal preview/apply", () => {
     expect(auditMock).toHaveBeenCalledTimes(2);
     const operation = auditMock.mock.calls[0][0];
     expect(operation.action).toBe("BED_ALLOCATION_REMOVAL_APPLIED");
-    expect(operation.metadata.allocationIds).toHaveLength(50);
-    expect(operation.metadata.affectedBookingIds).toHaveLength(50);
-    expect(operation.metadata.omittedAllocationIdCount).toBe(10);
-    expect(operation.metadata.omittedAffectedBookingIdCount).toBe(10);
+    const expectedBookingIds = Array.from(
+      { length: 50 },
+      (_, index) => `booking-${String(index).padStart(2, "0")}`,
+    );
+    const expectedAllocationIds = Array.from(
+      { length: 50 },
+      (_, index) => `primary-${String(index).padStart(2, "0")}`,
+    );
+    expect(operation.details).toBe(
+      `Affected bookings: ${expectedBookingIds.slice(0, 30).join(", ")}. Showing 30 of 60 booking IDs; metadata.affectedBookingIds contains a bounded sample of 50 IDs and omits 10.`,
+    );
+    expect(operation.metadata).toEqual({
+      digestVersion: preview.digestVersion,
+      previewDigest: preview.digest,
+      scope: request.scope,
+      selectedCategories: request.categories,
+      removedRowCount: 60,
+      categoryCounts: { AUTO_DRAFT: 60, MANUAL_DRAFT: 0, APPROVED: 0 },
+      affectedBookingCount: 60,
+      affectedBookingIds: expectedBookingIds,
+      omittedAffectedBookingIdCount: 10,
+      affectedNights: ["2026-08-01"],
+      omittedAffectedNightCount: 0,
+      promotedRowCount: 60,
+      reopenedBookingIds: [],
+      omittedReopenedBookingIdCount: 0,
+      allocationIds: expectedAllocationIds,
+      omittedAllocationIdCount: 10,
+      autoAllocationTriggered: false,
+    });
     const promotions = auditMock.mock.calls[1][0];
     expect(promotions.action).toBe("BED_ALLOCATION_PARTNERS_PROMOTED");
-    expect(promotions.metadata.promotions).toHaveLength(50);
-    expect(promotions.metadata.promotionsTruncated).toBe(true);
+    const expectedPromotionBookingIds = Array.from(
+      { length: 60 },
+      (_, index) => `partner-booking-${String(index).padStart(2, "0")}`,
+    );
+    expect(promotions.details).toBe(
+      `Promoted partner bookings: ${expectedPromotionBookingIds.slice(0, 30).join(", ")}. Showing 30 of 60 booking IDs; metadata.promotions contains a bounded sample of 50 of 60 promotion records and omits 10.`,
+    );
+    expect(promotions.metadata).toEqual({
+      removalPreviewDigest: preview.digest,
+      promotedCount: 60,
+      promotions: Array.from({ length: 50 }, (_, index) => ({
+        allocationId: `second-${String(index).padStart(2, "0")}`,
+        bookingId: `partner-booking-${String(index).padStart(2, "0")}`,
+        bookingGuestId: `partner-guest-${index}`,
+        bedId: `bed-${index}`,
+        stayDate: "2026-08-01",
+      })),
+      omittedPromotionCount: 10,
+      promotionsTruncated: true,
+    });
     expect(prismaMock.bedAllocation.updateMany).toHaveBeenCalledTimes(1);
   });
 

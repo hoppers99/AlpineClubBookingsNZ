@@ -935,7 +935,9 @@ Future reviews and issues should cite this file when proposing changes.
   bookings, and every causal shared-double sibling. Apply needs `bookings:edit`,
   resolves the immutable booking lodge plus the reviewed anchor lodge, then
   takes global `lock(1)` → sorted lodge locks → sorted allocation-row locks
-  before an authoritative re-preview. A matching or causal row in any third
+  before an authoritative re-preview. ID- and bed-night-expanded queries use
+  sorted 10,000-value chunks under that same transaction, below PostgreSQL's
+  bind-parameter ceiling without weakening all-or-nothing rollback. A matching or causal row in any third
   lodge is refused without mutation. If an aggregate booking/person preview's
   opening row disappeared, the refreshed preview re-anchors to the lowest-id
   matching survivor so a subsequent reviewed apply is reachable.

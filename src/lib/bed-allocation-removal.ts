@@ -13,6 +13,7 @@ import { prisma } from "@/lib/prisma";
 export const BED_ALLOCATION_REMOVAL_DIGEST_VERSION = "v1" as const;
 export const MAX_BED_ALLOCATION_REMOVAL_WINDOW_NIGHTS = 31;
 const MAX_AUDIT_IDENTITIES = 50;
+export const BED_ALLOCATION_REMOVAL_QUERY_CHUNK_SIZE = 10_000;
 
 export const BED_ALLOCATION_REMOVAL_CATEGORIES = [
   "AUTO_DRAFT",
@@ -97,6 +98,25 @@ export interface BedAllocationRemovalApplyResult {
   promotedRowCount: number;
   affectedBookingCount: number;
   affectedNights: string[];
+}
+
+function chunkValues<T>(values: readonly T[]): T[][] {
+  const chunks: T[][] = [];
+  for (
+    let offset = 0;
+    offset < values.length;
+    offset += BED_ALLOCATION_REMOVAL_QUERY_CHUNK_SIZE
+  ) {
+    chunks.push(
+      values.slice(offset, offset + BED_ALLOCATION_REMOVAL_QUERY_CHUNK_SIZE),
+    );
+  }
+  return chunks;
+}
+
+/** Test seam and canonical ordering for every ID-expanded removal query. */
+export function chunkBedAllocationRemovalIds(ids: readonly string[]): string[][] {
+  return chunkValues([...new Set(ids)].sort());
 }
 
 export class BedAllocationRemovalError extends Error {
@@ -405,23 +425,34 @@ async function loadPreviewState(
         });
 
   const selectedIds = new Set(matchingRows.map((row) => row.id));
-  const primaryKeys = matchingRows
-    .filter((row) => !row.isSecondOccupant)
-    .map((row) => ({ bedId: row.bedId, stayDate: row.stayDate }));
-  const siblingCandidates =
-    primaryKeys.length === 0
-      ? []
-      : await db.bedAllocation.findMany({
+  const primaryKeys = [
+    ...new Map(
+      matchingRows
+        .filter((row) => !row.isSecondOccupant)
+        .map((row) => [
+          `${row.bedId}\u0000${row.stayDate.toISOString()}`,
+          { bedId: row.bedId, stayDate: row.stayDate },
+        ]),
+    ).entries(),
+  ]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([, key]) => key);
+  const siblingCandidates = [];
+  for (const primaryKeyChunk of chunkValues(primaryKeys)) {
+    siblingCandidates.push(
+      ...(await db.bedAllocation.findMany({
           where: {
             isSecondOccupant: true,
-            OR: primaryKeys,
+            OR: primaryKeyChunk,
           },
           include: allocationInclude,
           orderBy: { id: "asc" },
-        });
-  const causalSiblings = siblingCandidates.filter(
-    (row) => !selectedIds.has(row.id),
-  );
+        })),
+    );
+  }
+  const causalSiblings = siblingCandidates
+    .filter((row) => !selectedIds.has(row.id))
+    .sort((left, right) => left.id.localeCompare(right.id));
 
   const approvedIdsByBooking = new Map<string, Set<string>>();
   for (const row of approvedRows) {
@@ -585,17 +616,15 @@ export async function applyBedAllocationRemoval(input: {
       allowStaleAnchor: true,
     });
     assertRemovalRowsUseLockedLodges(initial, lodgeIds);
-    const lockIds = [
-      ...new Set([
-        ...initial.matchingRows.map((row) => row.id),
-        ...initial.causalSiblings.map((row) => row.id),
-      ]),
-    ].sort();
-    if (lockIds.length > 0) {
+    const lockIds = chunkBedAllocationRemovalIds([
+      ...initial.matchingRows.map((row) => row.id),
+      ...initial.causalSiblings.map((row) => row.id),
+    ]);
+    for (const lockIdChunk of lockIds) {
       await tx.$executeRaw`
         SELECT 1
         FROM "BedAllocation"
-        WHERE "id" IN (${Prisma.join(lockIds)})
+        WHERE "id" IN (${Prisma.join(lockIdChunk)})
         ORDER BY "id"
         FOR UPDATE
       `;
@@ -625,29 +654,31 @@ export async function applyBedAllocationRemoval(input: {
       );
     }
 
-    const deleted = await tx.bedAllocation.deleteMany({
-      where: { id: { in: selectedIds } },
-    });
-    if (deleted.count !== selectedIds.length) {
-      throw new BedAllocationRemovalError(
-        "Bed allocations changed while the removal was applying.",
-        409,
-      );
-    }
-
-    const siblingIds = authoritative.causalSiblings
-      .map((sibling) => sibling.id)
-      .sort();
-    if (siblingIds.length > 0) {
-      const promoted = await tx.bedAllocation.updateMany({
-        where: { id: { in: siblingIds }, isSecondOccupant: true },
-        data: { isSecondOccupant: false },
+    for (const selectedIdChunk of chunkBedAllocationRemovalIds(selectedIds)) {
+      const deleted = await tx.bedAllocation.deleteMany({
+        where: { id: { in: selectedIdChunk } },
       });
-      if (promoted.count !== siblingIds.length) {
+      if (deleted.count !== selectedIdChunk.length) {
         throw new BedAllocationRemovalError(
-          "A shared double changed while the removal was applying.",
+          "Bed allocations changed while the removal was applying.",
           409,
         );
+      }
+    }
+
+    const siblingIds = authoritative.causalSiblings.map((sibling) => sibling.id);
+    if (siblingIds.length > 0) {
+      for (const siblingIdChunk of chunkBedAllocationRemovalIds(siblingIds)) {
+        const promoted = await tx.bedAllocation.updateMany({
+          where: { id: { in: siblingIdChunk }, isSecondOccupant: true },
+          data: { isSecondOccupant: false },
+        });
+        if (promoted.count !== siblingIdChunk.length) {
+          throw new BedAllocationRemovalError(
+            "A shared double changed while the removal was applying.",
+            409,
+          );
+        }
       }
     }
 
@@ -678,7 +709,7 @@ export async function applyBedAllocationRemoval(input: {
         category: "admin",
         outcome: "success",
         summary: "Bed allocations removed through reviewed preview",
-        details: `Affected bookings: ${searchableAffectedBookingIds.join(", ")}${authoritative.preview.affectedBookingCount > searchableAffectedBookingIds.length ? ` (+${authoritative.preview.affectedBookingCount - searchableAffectedBookingIds.length} more in metadata.affectedBookingIds)` : ""}`,
+        details: `Affected bookings: ${searchableAffectedBookingIds.join(", ")}${authoritative.preview.affectedBookingCount > searchableAffectedBookingIds.length ? `. Showing ${searchableAffectedBookingIds.length} of ${authoritative.preview.affectedBookingCount} booking IDs; metadata.affectedBookingIds contains a bounded sample of ${affectedBookingIdentitySummary.ids.length} IDs and omits ${affectedBookingIdentitySummary.omittedCount}.` : ""}`,
         metadata: {
           digestVersion: authoritative.preview.digestVersion,
           previewDigest: authoritative.preview.digest,
@@ -733,11 +764,13 @@ export async function applyBedAllocationRemoval(input: {
           category: "admin",
           outcome: "success",
           summary: `${authoritative.causalSiblings.length} second occupant${authoritative.causalSiblings.length === 1 ? "" : "s"} auto-promoted to primary after reviewed allocation removal`,
-          details: `Promoted partner bookings: ${searchableBookingIds.join(", ")}${promotedBookingIds.length > searchableBookingIds.length ? ` (+${promotedBookingIds.length - searchableBookingIds.length} more in metadata.promotions)` : ""}`,
+          details: `Promoted partner bookings: ${searchableBookingIds.join(", ")}${promotedBookingIds.length > searchableBookingIds.length ? `. Showing ${searchableBookingIds.length} of ${promotedBookingIds.length} booking IDs; metadata.promotions contains a bounded sample of ${promotionIdentitySummary.length} of ${authoritative.causalSiblings.length} promotion records and omits ${authoritative.causalSiblings.length - promotionIdentitySummary.length}.` : ""}`,
           metadata: {
             removalPreviewDigest: authoritative.preview.digest,
             promotedCount: authoritative.causalSiblings.length,
             promotions: promotionIdentitySummary,
+            omittedPromotionCount:
+              authoritative.causalSiblings.length - promotionIdentitySummary.length,
             promotionsTruncated:
               authoritative.causalSiblings.length > MAX_AUDIT_IDENTITIES,
           },
