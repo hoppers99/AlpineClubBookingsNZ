@@ -3,11 +3,13 @@ import type { APIRequestContext, APIResponse, Page } from "@playwright/test";
 /**
  * Closed census of E2E tests that submit `POST /api/bookings`.
  *
- * Every current entry is an ordinary journey or setup call, not a limiter test:
- * it therefore receives one deterministic private-IP bucket per test attempt.
- * Requests still pass through the real production limiter. If a future spec is
- * intentionally about sharing or exhausting that limiter, classify it here as
- * `intentional-limiter` and do not call {@link bookingCreateIsolation} for it.
+ * Ordinary journeys and setup calls are `isolated-setup`: they receive one
+ * deterministic private-IP bucket per test attempt through
+ * {@link bookingCreateIsolation}. A test whose PURPOSE is exercising the
+ * limiter is `intentional-limiter` and must use {@link bookingCreateLimiterProbe}
+ * instead. Both paths still traverse the real production limiter; the separate
+ * typed allocators make an intentional probe visible without letting it become
+ * an ordinary setup-call precedent.
  */
 export const E2E_BOOKING_CREATE_CENSUS = [
   {
@@ -51,7 +53,7 @@ export const E2E_BOOKING_CREATE_CENSUS = [
     key: "booking-create-shared-store-proof",
     file: "e2e/booking-create-rate-isolation.spec.ts",
     transport: "api",
-    classification: "isolated-setup",
+    classification: "intentional-limiter",
     requestsPerAttempt: 3,
   },
   {
@@ -178,11 +180,23 @@ export const E2E_BOOKING_CREATE_CENSUS = [
   requestsPerAttempt?: number;
 }>;
 
-export type BookingCreateIsolationKey =
-  (typeof E2E_BOOKING_CREATE_CENSUS)[number]["key"];
+type BookingCreateCensusEntry =
+  (typeof E2E_BOOKING_CREATE_CENSUS)[number];
+
+export type BookingCreateIsolationKey = Extract<
+  BookingCreateCensusEntry,
+  { classification: "isolated-setup" }
+>["key"];
+
+export type BookingCreateLimiterProbeKey = Extract<
+  BookingCreateCensusEntry,
+  { classification: "intentional-limiter" }
+>["key"];
+
+type BookingCreateCensusKey = BookingCreateCensusEntry["key"];
 
 export type BookingCreateIsolation = Readonly<{
-  key: BookingCreateIsolationKey;
+  key: BookingCreateCensusKey;
   retry: number;
   clientIp: string;
   headers: Readonly<Record<"x-forwarded-for", string>>;
@@ -198,19 +212,27 @@ export type BookingCreateIsolation = Readonly<{
  * `10.240.0.0/16` is deliberately disjoint from the login helper's
  * `10.99.0.0/16` and the whole-lodge submission worlds' `10.77.1.0/24`.
  */
-export function bookingCreateIsolation(
-  key: BookingCreateIsolationKey,
+function bookingCreateClientIdentity(
+  key: BookingCreateCensusKey,
   retry: number,
+  classification: BookingCreateCensusEntry["classification"],
 ): BookingCreateIsolation {
   if (!Number.isSafeInteger(retry) || retry < 0 || retry > 253) {
     throw new RangeError(`booking-create retry must be an integer from 0 to 253; got ${retry}`);
   }
 
-  const slot = E2E_BOOKING_CREATE_CENSUS.findIndex((entry) => entry.key === key) + 1;
-  if (slot === 0) {
+  const slotIndex = E2E_BOOKING_CREATE_CENSUS.findIndex((entry) => entry.key === key);
+  if (slotIndex < 0) {
     throw new Error(`unregistered E2E booking-create isolation key: ${key}`);
   }
+  const entry = E2E_BOOKING_CREATE_CENSUS[slotIndex];
+  if (entry.classification !== classification) {
+    throw new Error(
+      `booking-create key ${key} is ${entry.classification}, not ${classification}`,
+    );
+  }
 
+  const slot = slotIndex + 1;
   const clientIp = `10.240.${slot}.${retry + 1}`;
   return Object.freeze({
     key,
@@ -218,6 +240,27 @@ export function bookingCreateIsolation(
     clientIp,
     headers: Object.freeze({ "x-forwarded-for": clientIp }),
   });
+}
+
+export function bookingCreateIsolation(
+  key: BookingCreateIsolationKey,
+  retry: number,
+): BookingCreateIsolation {
+  return bookingCreateClientIdentity(key, retry, "isolated-setup");
+}
+
+/**
+ * Allocate a deterministic per-attempt identity for an explicitly declared
+ * limiter test. This is not an escape hatch for setup calls: the key's census
+ * entry must be `intentional-limiter`, and the structural contract rejects an
+ * intentional entry consumed through {@link bookingCreateIsolation} (or vice
+ * versa).
+ */
+export function bookingCreateLimiterProbe(
+  key: BookingCreateLimiterProbeKey,
+  retry: number,
+): BookingCreateIsolation {
+  return bookingCreateClientIdentity(key, retry, "intentional-limiter");
 }
 
 type BookingCreatePostOptions = NonNullable<

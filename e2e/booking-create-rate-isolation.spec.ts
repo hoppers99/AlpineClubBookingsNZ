@@ -6,7 +6,7 @@ import {
 
 import {
   type BookingCreateIsolation,
-  bookingCreateIsolation,
+  bookingCreateLimiterProbe,
   postBookingCreate,
 } from "./helpers/booking-create-client-ip";
 import { readRateLimitCounters } from "./helpers/rate-limit-counter";
@@ -41,15 +41,15 @@ test("Stripe retry dimensions reach distinct shared booking-create counters", as
   const probes = [
     await postBookingCreateSharedStoreProbe(
       request,
-      bookingCreateIsolation("booking-create-shared-store-proof", 0),
+      bookingCreateLimiterProbe("booking-create-shared-store-proof", 0),
     ),
     await postBookingCreateSharedStoreProbe(
       request,
-      bookingCreateIsolation("booking-create-shared-store-proof", 1),
+      bookingCreateLimiterProbe("booking-create-shared-store-proof", 1),
     ),
     await postBookingCreateSharedStoreProbe(
       request,
-      bookingCreateIsolation("booking-create-shared-store-proof", 2),
+      bookingCreateLimiterProbe("booking-create-shared-store-proof", 2),
     ),
   ] as const;
   const counterIds = probes.map(

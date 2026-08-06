@@ -12,6 +12,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   E2E_BOOKING_CREATE_CENSUS,
   bookingCreateIsolation,
+  bookingCreateLimiterProbe,
   postBookingCreate,
   withBookingCreateClientIp,
 } from "../../../e2e/helpers/booking-create-client-ip";
@@ -239,7 +240,17 @@ function isRequestCallable(
     return resolveStaticString(resolved.argumentExpression, bindings) === method;
   }
   if (ts.isIdentifier(resolved)) {
-    return isDestructuredRequestAlias(resolved, method);
+    // Browser-driven creates can call the platform fetch directly inside
+    // page.evaluate(). Treat the bare identifier as the global fetch surface;
+    // analyzeDirectPosts still requires an explicit POST method, so ordinary
+    // fetch(url), fetch(url, { headers }) and explicit GET remain negative.
+    // This is deliberately fail-closed for a locally shadowed identifier named
+    // `fetch`, matching the existing conservative treatment of any `.fetch`
+    // property access.
+    return (
+      (method === "fetch" && resolved.text === "fetch") ||
+      isDestructuredRequestAlias(resolved, method)
+    );
   }
   if (ts.isCallExpression(resolved)) {
     const callee = unwrapExpression(resolved.expression);
@@ -423,7 +434,13 @@ function containsForwardedFor(
 
     if (ts.isPropertyAccessExpression(resolved) && resolved.name.text === "headers") {
       const owner = resolveConstExpression(resolved.expression, bindings);
-      if (ts.isCallExpression(owner) && calledName(owner) === "bookingCreateIsolation") {
+      if (
+        ts.isCallExpression(owner) &&
+        new Set([
+          "bookingCreateIsolation",
+          "bookingCreateLimiterProbe",
+        ]).has(calledName(owner) ?? "")
+      ) {
         return true;
       }
     }
@@ -483,6 +500,80 @@ function directConsumerOf(expression: ts.Expression): string | null {
     current.parent.arguments.includes(current as ts.Expression)
     ? calledName(current.parent)
     : null;
+}
+
+const BOOKING_CREATE_ALLOCATORS = new Set([
+  "bookingCreateIsolation",
+  "bookingCreateLimiterProbe",
+]);
+
+const BOOKING_CREATE_CONSUMER_TRANSPORT = new Map<
+  string,
+  "api" | "browser"
+>([
+  ["postBookingCreate", "api"],
+  ["withBookingCreateClientIp", "browser"],
+  ["confirmBookingToPaymentStep", "browser"],
+  ["bookThroughWizard", "browser"],
+  ["postBookingCreateSharedStoreProbe", "api"],
+]);
+
+type BookingCreateAllocationUse = Readonly<{
+  allocator: string;
+  consumer: string | null;
+  file: string;
+  key: string | null;
+  transport: "api" | "browser" | null;
+}>;
+
+function analyzeBookingCreateAllocations(
+  sourceFile: ts.SourceFile,
+  file: string,
+): BookingCreateAllocationUse[] {
+  const bindings = collectConstBindings(sourceFile);
+  const uses: BookingCreateAllocationUse[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node)) {
+      const allocator = calledName(node);
+      if (allocator && BOOKING_CREATE_ALLOCATORS.has(allocator)) {
+        const consumer = directConsumerOf(node);
+        uses.push({
+          allocator,
+          consumer,
+          file,
+          key: resolveStaticString(node.arguments[0], bindings),
+          transport: consumer
+            ? (BOOKING_CREATE_CONSUMER_TRANSPORT.get(consumer) ?? null)
+            : null,
+        });
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return uses;
+}
+
+function allocatorForClassification(
+  classification: "isolated-setup" | "intentional-limiter",
+): "bookingCreateIsolation" | "bookingCreateLimiterProbe" {
+  return classification === "isolated-setup"
+    ? "bookingCreateIsolation"
+    : "bookingCreateLimiterProbe";
+}
+
+function bookingCreateAllocationMatchesCensus(
+  use: BookingCreateAllocationUse,
+): boolean {
+  const entry = E2E_BOOKING_CREATE_CENSUS.find(
+    (candidate) => candidate.key === use.key,
+  );
+  return Boolean(
+    entry &&
+      entry.file === use.file &&
+      entry.transport === use.transport &&
+      allocatorForClassification(entry.classification) === use.allocator,
+  );
 }
 
 const BOOKING_CREATE_BUTTON_NAMES = [
@@ -832,7 +923,11 @@ describe("E2E booking-create retry isolation (#2599)", () => {
 
   it("allocates a stable valid private IP per spec attempt without collisions", () => {
     const addresses = E2E_BOOKING_CREATE_CENSUS.flatMap((entry) =>
-      [0, 1, 2].map((retry) => bookingCreateIsolation(entry.key, retry).clientIp),
+      [0, 1, 2].map((retry) =>
+        entry.classification === "isolated-setup"
+          ? bookingCreateIsolation(entry.key, retry).clientIp
+          : bookingCreateLimiterProbe(entry.key, retry).clientIp,
+      ),
     );
 
     expect(new Set(addresses).size).toBe(addresses.length);
@@ -851,7 +946,10 @@ describe("E2E booking-create retry isolation (#2599)", () => {
 
   it("stays outside the reserved login and whole-lodge submission ranges", () => {
     for (const entry of E2E_BOOKING_CREATE_CENSUS) {
-      const address = bookingCreateIsolation(entry.key, 0).clientIp;
+      const address =
+        entry.classification === "isolated-setup"
+          ? bookingCreateIsolation(entry.key, 0).clientIp
+          : bookingCreateLimiterProbe(entry.key, 0).clientIp;
       expect(address).toMatch(/^10\.240\./);
       expect(address).not.toMatch(/^10\.99\./);
       expect(address).not.toMatch(/^10\.77\.1\./);
@@ -875,6 +973,21 @@ describe("E2E booking-create retry isolation (#2599)", () => {
     expect(() => bookingCreateIsolation("stripe-success", 254)).toThrow(
       /integer from 0 to 253/,
     );
+    expect(() =>
+      bookingCreateLimiterProbe("booking-create-shared-store-proof", -1),
+    ).toThrow(/integer from 0 to 253/);
+  });
+
+  it("fails closed when a census key crosses allocator classifications", () => {
+    expect(() =>
+      bookingCreateIsolation(
+        "booking-create-shared-store-proof" as never,
+        0,
+      ),
+    ).toThrow(/intentional-limiter, not isolated-setup/);
+    expect(() =>
+      bookingCreateLimiterProbe("stripe-success" as never, 0),
+    ).toThrow(/isolated-setup, not intentional-limiter/);
   });
 
   it("normalizes static booking routes and common direct POST aliases", () => {
@@ -910,6 +1023,63 @@ describe("E2E booking-create retry isolation (#2599)", () => {
       ],
       unresolved: ["fixture:{ method: runtimeMethod }"],
     });
+  });
+
+  it("detects global browser fetch POSTs without treating default GETs as creates", () => {
+    const sourceFile = parseSourceText(
+      "global-fetch-positive-negative.ts",
+      [
+        'page.evaluate(() => fetch("/api/bookings", { method: "POST", body: "{}" }));',
+        'fetch("/api/bookings");',
+        'fetch("/api/bookings", { headers: { accept: "application/json" } });',
+        'fetch("/api/bookings", { method: "GET" });',
+        'fetch("/api/bookings/booking-1", { method: "POST" });',
+        'fetch("/api/bookings", { method: runtimeMethod });',
+      ].join("\n"),
+    );
+
+    expect(analyzeDirectPosts(sourceFile, "fixture")).toEqual({
+      exact: ["fixture:<top-level>"],
+      unresolved: ["fixture:{ method: runtimeMethod }"],
+    });
+  });
+
+  it("keeps intentional limiter evidence on its declared allocator", () => {
+    const proofFile = "e2e/booking-create-rate-isolation.spec.ts";
+    const actual = source(proofFile);
+    const actualUses = analyzeBookingCreateAllocations(
+      parseSourceText(proofFile, actual),
+      proofFile,
+    ).filter((use) => use.key === "booking-create-shared-store-proof");
+    expect(actualUses).toHaveLength(3);
+    expect(actualUses.every(bookingCreateAllocationMatchesCensus)).toBe(true);
+
+    const mutated = actual.replaceAll(
+      "bookingCreateLimiterProbe(",
+      "bookingCreateIsolation(",
+    );
+    expect(mutated).not.toBe(actual);
+    const mutatedUses = analyzeBookingCreateAllocations(
+      parseSourceText("intentional-allocator-mutation.ts", mutated),
+      proofFile,
+    ).filter((use) => use.key === "booking-create-shared-store-proof");
+    expect(mutatedUses).toHaveLength(3);
+    expect(mutatedUses.some(bookingCreateAllocationMatchesCensus)).toBe(false);
+
+    const isolatedFixture = parseSourceText(
+      "isolated-allocator-positive-negative.ts",
+      [
+        'postBookingCreate(request, bookingCreateIsolation("waitlist-placement", 0), { data: {} });',
+        'postBookingCreate(request, bookingCreateLimiterProbe("waitlist-placement", 1), { data: {} });',
+      ].join("\n"),
+    );
+    const isolatedUses = analyzeBookingCreateAllocations(
+      isolatedFixture,
+      "e2e/waitlist.spec.ts",
+    );
+    expect(isolatedUses).toHaveLength(2);
+    expect(bookingCreateAllocationMatchesCensus(isolatedUses[0])).toBe(true);
+    expect(bookingCreateAllocationMatchesCensus(isolatedUses[1])).toBe(false);
   });
 
   it("recognizes equivalent browser create triggers and rejects unknown ones", () => {
@@ -1291,45 +1461,19 @@ describe("E2E booking-create retry isolation (#2599)", () => {
       ),
     ).toBe(31);
     expect(
-      E2E_BOOKING_CREATE_CENSUS.every(
-        (entry) => entry.classification === "isolated-setup",
-      ),
-    ).toBe(true);
+      E2E_BOOKING_CREATE_CENSUS.filter(
+        (entry) => entry.classification === "intentional-limiter",
+      ).map((entry) => entry.key),
+    ).toEqual(["booking-create-shared-store-proof"]);
 
-    const consumerTransport = new Map<string, "api" | "browser">([
-      ["postBookingCreate", "api"],
-      ["withBookingCreateClientIp", "browser"],
-      ["confirmBookingToPaymentStep", "browser"],
-      ["bookThroughWizard", "browser"],
-      ["postBookingCreateSharedStoreProbe", "api"],
-    ]);
-    const uses: Array<{
-      consumer: string | null;
-      file: string;
-      key: string | null;
-      transport: "api" | "browser" | null;
-    }> = [];
+    const uses: BookingCreateAllocationUse[] = [];
 
     for (const file of e2eTypeScriptFiles()) {
       if (file.endsWith("booking-create-client-ip.ts")) continue;
       const sourceFile = parseSource(file);
-      const bindings = collectConstBindings(sourceFile);
-      const visit = (node: ts.Node): void => {
-        if (
-          ts.isCallExpression(node) &&
-          calledName(node) === "bookingCreateIsolation"
-        ) {
-          const consumer = directConsumerOf(node);
-          uses.push({
-            consumer,
-            file: repoRelative(file),
-            key: resolveStaticString(node.arguments[0], bindings),
-            transport: consumer ? (consumerTransport.get(consumer) ?? null) : null,
-          });
-        }
-        ts.forEachChild(node, visit);
-      };
-      visit(sourceFile);
+      uses.push(
+        ...analyzeBookingCreateAllocations(sourceFile, repoRelative(file)),
+      );
     }
 
     const usesByKey = Map.groupBy(uses, (use) => use.key);
@@ -1344,14 +1488,23 @@ describe("E2E booking-create retry isolation (#2599)", () => {
         "requestsPerAttempt" in entry ? entry.requestsPerAttempt : 1,
       );
       expect(
-        keyUses.map(({ file, transport }) => ({ file, transport })),
-        `${entry.key} must stay bound to its registered file and transport`,
+        keyUses.map(({ allocator, file, transport }) => ({
+          allocator,
+          file,
+          transport,
+        })),
+        `${entry.key} must stay bound to its classification, file and transport`,
       ).toEqual(
         Array.from({ length: keyUses.length }, () => ({
+          allocator: allocatorForClassification(entry.classification),
           file: entry.file,
           transport: entry.transport,
         })),
       );
+      expect(
+        keyUses.every(bookingCreateAllocationMatchesCensus),
+        `${entry.key} must use only its declared allocator and consumer path`,
+      ).toBe(true);
     }
 
     for (const [file, functionName, requiredChild] of [
