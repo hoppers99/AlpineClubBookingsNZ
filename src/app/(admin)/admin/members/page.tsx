@@ -19,6 +19,11 @@ import { toast } from "sonner"
 import { useScrollToFeedback } from "@/hooks/use-scroll-to-feedback"
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access"
 import { useXeroOrgShortCode } from "@/hooks/use-xero-org-short-code"
+import {
+  getXeroPartialSuccessGuidance,
+  isXeroPartialSuccessRecovery,
+} from "@/lib/xero-partial-success"
+import type { XeroActionRecovery } from "@/lib/admin-member-xero-actions"
 import { MemberBulkActionBar } from "./_components/member-bulk-action-bar"
 import { MemberBulkDialog } from "./_components/member-bulk-dialog"
 import { MemberBulkMembershipDialog } from "./_components/member-bulk-membership-dialog"
@@ -71,6 +76,7 @@ export default function MembersPage() {
   const [error, setError] = useState("")
   const [xeroRecoveryError, setXeroRecoveryError] = useState("")
   const [xeroRecoveryAttention, setXeroRecoveryAttention] = useState(0)
+  const [xeroRecovery, setXeroRecovery] = useState<XeroActionRecovery | null>(null)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [createDialogOpen, setCreateDialogOpen] = useState(false)
   const [importDialogOpen, setImportDialogOpen] = useState(false)
@@ -122,7 +128,11 @@ export default function MembersPage() {
     await fetchMembersWithResult()
   }, [fetchMembersWithResult])
 
-  const showXeroRecovery = useCallback(async (guidance: string) => {
+  const showXeroRecovery = useCallback(async (recovery: XeroActionRecovery) => {
+    const guidance = isXeroPartialSuccessRecovery(recovery)
+      ? getXeroPartialSuccessGuidance(recovery)
+      : "A Xero action completed only in part. Do not repeat it until the member's current Xero status has been checked."
+    setXeroRecovery(recovery)
     setXeroRecoveryError(`${guidance} Refreshing the member list now...`)
     setXeroRecoveryAttention((value) => value + 1)
     const refreshed = await fetchMembersWithResult()
@@ -445,6 +455,9 @@ export default function MembersPage() {
         onSuccess={showSuccess}
         onWarning={showWarning}
         onRecoveryWarning={showXeroRecovery}
+        xeroCreateSuppressed={
+          xeroRecovery?.recoveryKind === "CONTACT_CREATED_LINK_UNCONFIRMED"
+        }
       />
       <MemberBulkDialog
         open={bulkDialogOpen}

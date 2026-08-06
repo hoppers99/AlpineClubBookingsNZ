@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import "@testing-library/jest-dom/vitest";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { Suspense } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -199,6 +199,65 @@ describe("Admin member detail Xero create", () => {
 
     expect(screen.getByRole("dialog")).toBeTruthy();
     expect(screen.getByText("Create Xero Contact")).toBeTruthy();
+  });
+
+  it("keeps Create suppressed after an unconfirmed provider contact survives refresh", async () => {
+    let memberReads = 0;
+    fetchMock.mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/admin/members/member-1") {
+        memberReads += 1;
+        return Promise.resolve({
+          ok: true,
+          json: async () => adminMember({ xeroContactId: null }),
+        });
+      }
+      if (url === "/api/admin/members/member-1/xero-push") {
+        return Promise.resolve({
+          ok: false,
+          status: 409,
+          json: async () => ({
+            code: "XERO_PARTIAL_SUCCESS",
+            error: "server copy",
+            recoveryKind: "CONTACT_CREATED_LINK_UNCONFIRMED",
+            xeroContactCreated: true,
+            xeroContactId: "contact-provider-only",
+            xeroPostProcessingPending: true,
+          }),
+        });
+      }
+      if (url === "/api/admin/members/member-1/credits") {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ balanceCents: 0, history: [], pendingRequests: [] }),
+        });
+      }
+      if (url === "/api/admin/xero/status") {
+        return Promise.resolve({ ok: true, json: async () => ({ connected: true, features: {} }) });
+      }
+      return Promise.reject(new Error(`Unexpected fetch: ${url}`));
+    });
+
+    await act(async () => {
+      render(
+        <Suspense fallback={<div>Loading route params...</div>}>
+          <MemberDetailPage params={Promise.resolve({ id: "member-1" })} />
+        </Suspense>,
+      );
+    });
+    fireEvent.click(await screen.findByRole("button", { name: /Create in Xero/ }));
+    fireEvent.change(screen.getByLabelText("Reason for not raising invoice"), {
+      target: { value: "Already invoiced" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+
+    await screen.findByText(/Do not create another contact/i);
+    await waitFor(() => expect(memberReads).toBeGreaterThanOrEqual(2));
+    expect(
+      screen.queryByRole("button", { name: /Create in Xero/ }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Link to Xero" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
   });
 
   it("keeps partial-unlink recovery mounted and focused through a successful refresh", async () => {

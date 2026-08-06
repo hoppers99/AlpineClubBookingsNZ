@@ -44,6 +44,7 @@ interface MemberXeroControlsProps {
   onXeroUnlink: (memberId: string) => void
   onXeroPush: (memberId: string, memberName: string) => void
   onClearFormError: () => void
+  xeroCreateSuppressed?: boolean
 }
 
 function XeroContactSearchControls({
@@ -128,6 +129,7 @@ export function MemberXeroControls({
   onXeroUnlink,
   onXeroPush,
   onClearFormError,
+  xeroCreateSuppressed = false,
 }: MemberXeroControlsProps) {
   if (!editingMember && xeroConnected === false) {
     return (
@@ -243,13 +245,20 @@ export function MemberXeroControls({
       {editingMember && !editingMember.xeroContactId && (
         <div className="space-y-3">
           <p className="text-sm text-muted-foreground">This member is not linked to a Xero contact.</p>
+          {xeroCreateSuppressed && (
+            <p className="rounded-md border border-warning-6 bg-warning-3 p-3 text-sm text-warning-11">
+              Xero already created a contact for this member, but the local link is not confirmed. Link the existing contact after checking the recovery warning; do not create another one.
+            </p>
+          )}
           <Select value={xeroChoice || undefined} onValueChange={(value) => onChangeXeroChoice(value as "link" | "create")}>
             <SelectTrigger>
               <SelectValue placeholder="Link or create a Xero contact..." />
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="link">Link an existing Xero contact</SelectItem>
-              <SelectItem value="create">Create a new Xero contact</SelectItem>
+              {!xeroCreateSuppressed && (
+                <SelectItem value="create">Create a new Xero contact</SelectItem>
+              )}
             </SelectContent>
           </Select>
 

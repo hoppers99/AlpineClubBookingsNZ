@@ -19,6 +19,7 @@ interface UseMemberXeroParams {
   setLoading: Dispatch<SetStateAction<boolean>>;
   setXeroError: Dispatch<SetStateAction<string>>;
   onPartialSuccess: (error: AdminMemberXeroActionError) => Promise<void>;
+  xeroCreateSuppressed?: boolean;
 }
 
 export function useMemberXero({
@@ -27,6 +28,7 @@ export function useMemberXero({
   setLoading,
   setXeroError,
   onPartialSuccess,
+  xeroCreateSuppressed = false,
 }: UseMemberXeroParams) {
   const [xeroSearchOpen, setXeroSearchOpen] = useState(false);
   const [xeroSearchQuery, setXeroSearchQuery] = useState("");
@@ -260,6 +262,7 @@ export function useMemberXero({
   };
 
   const openCreateXero = () => {
+    if (xeroCreateSuppressed) return;
     resetXeroEntranceFeeDecision();
     setXeroCreateOpen(true);
     setXeroError("");

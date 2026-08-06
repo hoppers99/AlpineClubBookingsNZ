@@ -80,7 +80,10 @@ import { useMemberXero } from "./_hooks/use-member-xero";
 import { useInheritEmailSearch } from "./_hooks/use-inherit-email-search";
 import { useMemberGroupEdit } from "./_hooks/use-member-group-edit";
 import type { MemberDetail } from "./_types";
-import type { AdminMemberXeroActionError } from "@/lib/admin-member-xero-actions";
+import type {
+  AdminMemberXeroActionError,
+  XeroActionRecovery,
+} from "@/lib/admin-member-xero-actions";
 import {
   getXeroPartialSuccessGuidance,
   isXeroPartialSuccessRecovery,
@@ -150,6 +153,10 @@ export default function MemberDetailPage({
   const [xeroError, setXeroError] = useState("");
   const [xeroRecoveryError, setXeroRecoveryError] = useState("");
   const [xeroRecoveryGuidance, setXeroRecoveryGuidance] = useState("");
+  const [xeroRecovery, setXeroRecovery] =
+    useState<XeroActionRecovery | null>(null);
+  const [xeroRecoveryMemberId, setXeroRecoveryMemberId] =
+    useState<string | null>(null);
   const [xeroRecoveryAttention, setXeroRecoveryAttention] = useState(0);
   const relationshipErrorRef = useRef<HTMLDivElement>(null);
   const xeroErrorRef = useRef<HTMLDivElement>(null);
@@ -202,10 +209,16 @@ export default function MemberDetailPage({
         ? getXeroPartialSuccessGuidance(error.recovery)
         : "A Xero action completed only in part. Do not repeat it until the member's current Xero status has been checked.";
       setXeroRecoveryGuidance(guidance);
+      setXeroRecovery(error.recovery);
+      setXeroRecoveryMemberId(id);
       await refreshAfterXeroPartialSuccess(guidance);
     },
-    [refreshAfterXeroPartialSuccess],
+    [id, refreshAfterXeroPartialSuccess],
   );
+
+  const xeroCreateSuppressed =
+    xeroRecoveryMemberId === id &&
+    xeroRecovery?.recoveryKind === "CONTACT_CREATED_LINK_UNCONFIRMED";
 
   // Dependent dialog state
   const {
@@ -359,6 +372,7 @@ export default function MemberDetailPage({
     setLoading,
     setXeroError,
     onPartialSuccess: recoverXeroPartialSuccess,
+    xeroCreateSuppressed,
   });
 
   // Per-group inline edit state: each group unlocks and saves only its own
@@ -656,6 +670,7 @@ export default function MemberDetailPage({
         xeroOrgShortCode={xeroOrgShortCode}
         xeroPushing={xeroPushing}
         xeroUnlinking={xeroUnlinking}
+        xeroCreateSuppressed={xeroCreateSuppressed}
         canEditMembership={canEditMembership}
         canEditFinance={canEditFinance}
         onOpenDependentDialog={openDependentDialog}

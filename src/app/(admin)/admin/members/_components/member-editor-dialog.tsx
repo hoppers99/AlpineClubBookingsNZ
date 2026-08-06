@@ -56,6 +56,7 @@ import {
   pushMemberToXero,
   searchXeroContacts,
   unlinkMemberXeroContact,
+  type XeroActionRecovery,
 } from "@/lib/admin-member-xero-actions";
 import { memberName } from "@/lib/member-serialization";
 import { formatValidationErrorResponse } from "@/lib/format-validation-errors";
@@ -97,7 +98,8 @@ interface MemberEditorDialogProps {
   onSaved: () => void;
   onSuccess: (message: string) => void;
   onWarning: (message: string) => void;
-  onRecoveryWarning?: (message: string) => Promise<void>;
+  onRecoveryWarning?: (recovery: XeroActionRecovery) => Promise<void>;
+  xeroCreateSuppressed?: boolean;
 }
 
 interface MemberSaveResponse {
@@ -176,6 +178,7 @@ export function MemberEditorDialog({
   onSuccess,
   onWarning,
   onRecoveryWarning,
+  xeroCreateSuppressed = false,
 }: MemberEditorDialogProps) {
   const roleOptions = useAccessRoleOptions();
   const [currentEditingMember, setCurrentEditingMember] =
@@ -249,7 +252,7 @@ export function MemberEditorDialog({
     closePendingXeroCreateDecision();
     onOpenChange(false);
     if (onRecoveryWarning) {
-      await onRecoveryWarning(guidance);
+      await onRecoveryWarning(error.recovery);
     } else {
       onWarning(guidance);
       onSaved();
@@ -1157,6 +1160,9 @@ export function MemberEditorDialog({
               onXeroUnlink={handleXeroUnlink}
               onXeroPush={handleXeroPush}
               onClearFormError={() => setFormError("")}
+              xeroCreateSuppressed={
+                Boolean(currentEditingMember) && xeroCreateSuppressed
+              }
             />
 
             {currentEditingMember && (

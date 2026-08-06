@@ -136,11 +136,13 @@ vi.mock("../member-xero-controls", () => ({
     onChangeXeroChoice,
     onChangeSelectedXeroContactId,
     onXeroUnlink,
+    xeroCreateSuppressed,
   }: {
     editingMember: Member | null;
     onChangeXeroChoice: (choice: "link" | "create") => void;
     onChangeSelectedXeroContactId: (contactId: string) => void;
     onXeroUnlink: (memberId: string) => void;
+    xeroCreateSuppressed?: boolean;
   }) => (
     <div data-testid="member-xero-controls">
       {!editingMember ? (
@@ -162,7 +164,11 @@ vi.mock("../member-xero-controls", () => ({
         <button type="button" onClick={() => onXeroUnlink(editingMember.id)}>
           Test unlink Xero contact
         </button>
-      ) : null}
+      ) : xeroCreateSuppressed ? (
+        <span>Xero contact creation suppressed</span>
+      ) : (
+        <span>Xero contact creation available</span>
+      )}
     </div>
   ),
 }));
@@ -669,7 +675,9 @@ describe("admin member access-role UI", () => {
     fireEvent.click(screen.getByRole("button", { name: "Test unlink Xero contact" }));
 
     await waitFor(() => expect(onRecoveryWarning).toHaveBeenCalledTimes(1));
-    expect(onRecoveryWarning.mock.calls[0]?.[0]).toMatch(/link was removed/i);
+    expect(onRecoveryWarning.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({ recoveryKind: "CONTACT_UNLINKED" }),
+    );
     expect(onOpenChange).toHaveBeenCalledWith(false);
     expect(xeroActionMocks.unlink).toHaveBeenCalledTimes(1);
   });
@@ -725,7 +733,9 @@ describe("admin member access-role UI", () => {
     fireEvent.click(screen.getByRole("button", { name: "Create Member" }));
 
     await waitFor(() => expect(onRecoveryWarning).toHaveBeenCalledTimes(1));
-    expect(onRecoveryWarning.mock.calls[0]?.[0]).toMatch(/linked to the Xero contact/i);
+    expect(onRecoveryWarning.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({ recoveryKind: "CONTACT_LINKED" }),
+    );
     expect(xeroActionMocks.link).toHaveBeenCalledWith(
       "member-new",
       "xero-contact-1",
@@ -766,7 +776,7 @@ describe("admin member access-role UI", () => {
         }),
       );
 
-    render(
+    const view = render(
       <MemberEditorDialog
         open
         xeroConnected
@@ -796,7 +806,13 @@ describe("admin member access-role UI", () => {
     );
 
     await waitFor(() => expect(onRecoveryWarning).toHaveBeenCalledTimes(1));
-    expect(onRecoveryWarning.mock.calls[0]?.[0]).toMatch(/Do not create another contact/i);
+    const recovery = onRecoveryWarning.mock.calls[0]?.[0];
+    expect(recovery).toEqual(
+      expect.objectContaining({
+        recoveryKind: "CONTACT_CREATED_LINK_UNCONFIRMED",
+        xeroContactCreated: true,
+      }),
+    );
     expect(
       screen.queryByRole("dialog", { name: "Review Similar Xero Contacts" }),
     ).not.toBeInTheDocument();
@@ -804,6 +820,26 @@ describe("admin member access-role UI", () => {
       "member-new",
       expect.objectContaining({ forceCreate: true }),
     );
+
+    view.rerender(
+      <MemberEditorDialog
+        open
+        editingMember={{ ...baseMember, id: "member-new", xeroContactId: null }}
+        xeroConnected
+        xeroOrgShortCode={null}
+        onOpenChange={vi.fn()}
+        onSaved={vi.fn()}
+        onSuccess={vi.fn()}
+        onWarning={vi.fn()}
+        onRecoveryWarning={onRecoveryWarning}
+        xeroCreateSuppressed={
+          recovery?.recoveryKind === "CONTACT_CREATED_LINK_UNCONFIRMED"
+        }
+      />,
+    );
+    expect(
+      screen.getByText("Xero contact creation suppressed"),
+    ).toBeInTheDocument();
   });
 });
 

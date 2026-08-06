@@ -51,15 +51,11 @@ export async function POST(
     subscriptionRefreshPending = true;
     const flushedSubscriptionHistory = await flushMemberSubscriptionHistory(id);
     subscriptionRefreshPending = false;
-    try {
-      await deactivateXeroObjectLinks({
-        localModel: "Member",
-        localId: id,
-        role: "CONTACT",
-      });
-    } catch (linkErr) {
-      logger.warn({ err: linkErr, memberId: id }, "Failed to deactivate Xero object links during unlink");
-    }
+    await deactivateXeroObjectLinks({
+      localModel: "Member",
+      localId: id,
+      role: "CONTACT",
+    });
 
     await logAudit({
       action: "XERO_UNLINK",

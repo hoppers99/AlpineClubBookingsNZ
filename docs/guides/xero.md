@@ -93,8 +93,11 @@ idempotent — retrying the same work never double-charges.
    already complete. **Do not repeat Create, Link, Unlink, or Import.** Check the
    reloaded member and follow the displayed **Member Status Repair Backfill** remedy
    when refresh or cleanup remains pending.
-6. That recovery warning stays visible while the member reloads and if reload
-   fails. Use **Try again** from the warning before taking another Xero action.
+6. That recovery warning stays visible while the current view reloads and if the
+   reload fails. On member detail, use **Try again** from the warning. The members
+   list refreshes its current results automatically; Contact Sync and diagnostics
+   direct you to reload the status or open the affected member before another
+   Xero action.
 
 ### Set up mappings and import (Xero Setup)
 

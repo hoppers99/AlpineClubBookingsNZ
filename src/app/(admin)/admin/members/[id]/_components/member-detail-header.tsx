@@ -42,6 +42,7 @@ interface MemberDetailHeaderProps {
   xeroOrgShortCode: string | null;
   xeroPushing: boolean;
   xeroUnlinking: boolean;
+  xeroCreateSuppressed?: boolean;
   /**
    * Add Dependent writes the membership-area members route (#1997).
    * Tri-state (#2065): `undefined` while the client session resolves — the
@@ -70,6 +71,7 @@ export function MemberDetailHeader({
   xeroOrgShortCode,
   xeroPushing,
   xeroUnlinking,
+  xeroCreateSuppressed = false,
   canEditMembership,
   canEditFinance,
   onOpenDependentDialog,
@@ -237,26 +239,28 @@ export function MemberDetailHeader({
                   <Link2 className="h-4 w-4 mr-1" />
                   Link to Xero
                 </ViewOnlyActionButton>
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      aria-label="More member actions"
-                    >
-                      <MoreHorizontal className="h-4 w-4" />
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end">
-                    <DropdownMenuItem
-                      onClick={onOpenCreateXero}
-                      disabled={xeroPushing || !canEditFinance}
-                    >
-                      <Plus className="h-4 w-4 mr-1" />
-                      {xeroPushing ? "Creating..." : "Create in Xero"}
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
+                {!xeroCreateSuppressed && (
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        aria-label="More member actions"
+                      >
+                        <MoreHorizontal className="h-4 w-4" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem
+                        onClick={onOpenCreateXero}
+                        disabled={xeroPushing || !canEditFinance}
+                      >
+                        <Plus className="h-4 w-4 mr-1" />
+                        {xeroPushing ? "Creating..." : "Create in Xero"}
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                )}
               </>
             ))}
         </div>

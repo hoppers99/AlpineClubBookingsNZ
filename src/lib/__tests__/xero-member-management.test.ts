@@ -266,6 +266,39 @@ describe("Xero Member Management", () => {
       expect(body).not.toHaveProperty("subscriptionCleanupPending");
       expect(JSON.stringify(body)).not.toContain("private audit detail");
     });
+
+    it("returns partial-success recovery when operation-link cleanup fails after unlink", async () => {
+      mockedAuth.mockResolvedValue(adminSession);
+      vi.mocked(prisma.member.findUnique).mockResolvedValue({
+        id: "m1", firstName: "John", lastName: "Doe", xeroContactId: "xero-123",
+      } as any);
+      vi.mocked(prisma.member.update).mockResolvedValue({ id: "m1" } as any);
+      mockDeactivateXeroObjectLinks.mockRejectedValueOnce(
+        new Error("private operation-link detail"),
+      );
+
+      const res = await xeroUnlink(
+        new NextRequest("http://localhost/api/admin/members/m1/xero-unlink", {
+          method: "POST",
+        }),
+        { params: Promise.resolve({ id: "m1" }) },
+      );
+      const body = await res.json();
+
+      expect(res.status).toBe(409);
+      expect(body).toEqual(
+        expect.objectContaining({
+          code: "XERO_PARTIAL_SUCCESS",
+          recoveryKind: "CONTACT_UNLINKED",
+          xeroContactUnlinked: true,
+          xeroLinkMayHaveChanged: true,
+          xeroPostProcessingPending: true,
+        }),
+      );
+      expect(body).not.toHaveProperty("subscriptionCleanupPending");
+      expect(JSON.stringify(body)).not.toContain("private operation-link detail");
+      expect(logAudit).not.toHaveBeenCalled();
+    });
   });
 
   // ── Xero Contact Group Filter ──
