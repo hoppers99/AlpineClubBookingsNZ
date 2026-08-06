@@ -14,7 +14,7 @@ import { parseJsonRequestBody } from "@/lib/api-json";
 // lib is called at all (#2251 review C2): `.min(1)` accepted "9999999-01-01".
 const DATE_ONLY = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Expected YYYY-MM-DD");
 
-// requireAdmin() is enforced by requireBedAllocationAdmin().
+// requireAdmin() is enforced by requireBedAllocationWrite().
 const rangeAllocationSchema = z
   .object({
     bookingGuestId: z.string().min(1),
