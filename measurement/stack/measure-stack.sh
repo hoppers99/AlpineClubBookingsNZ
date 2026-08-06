@@ -134,9 +134,21 @@ compose() {
     -f docker-compose.yml -f measurement/stack/docker-compose.measure.yml "$@"
 }
 
-prepare() {
+stop_application_writers() {
+  echo "==> Stopping app + caddy before changing the measure database"
+  compose stop app caddy >/dev/null
+}
+
+start_application_writers() {
+  echo "==> Starting app + caddy (http://localhost:8027 via Caddy; app direct on :3003)"
+  compose up -d --wait app caddy
+}
+
+prepare_database() {
   echo "==> Starting measure postgres (host port 5435)"
   compose up -d --wait postgres
+
+  stop_application_writers
 
   echo "==> Resetting database schema"
   compose exec -T postgres psql -U tac -d tacbookings -v ON_ERROR_STOP=1 \
@@ -157,10 +169,6 @@ prepare() {
   SEED_ADMIN_PASSWORD="$(env_value SEED_ADMIN_PASSWORD)" \
   SEED_LODGE_PASSWORD="$(env_value SEED_LODGE_PASSWORD)" \
   DATABASE_URL="$HOST_DATABASE_URL" npx tsx prisma/seed.ts
-
-  echo "==> Starting app + caddy (http://localhost:8027 via Caddy; app direct on :3003)"
-  compose up -d --wait app caddy
-  echo "==> Measure stack ready"
 }
 
 require_absolute_file_path() {
@@ -224,6 +232,32 @@ create_canonical_dump() (
   sha256sum "$archive"
 )
 
+prepare_stack() (
+  local archive="${1:-}"
+  local preparation_complete=false
+  cleanup_failed_preparation() {
+    local status="$?"
+    trap - EXIT INT TERM
+    if [[ "$preparation_complete" != true ]]; then
+      echo "measure stack preparation failed; leaving app + caddy stopped" >&2
+      stop_application_writers >/dev/null 2>&1 || true
+    fi
+    exit "$status"
+  }
+  trap cleanup_failed_preparation EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+
+  prepare_database
+  if [[ -n "$archive" ]]; then
+    create_canonical_dump "$archive"
+  fi
+  start_application_writers
+  preparation_complete=true
+  trap - EXIT INT TERM
+  echo "==> Measure stack ready"
+)
+
 restore_canonical_dump() {
   local archive="$1"
   local expected_sha="$2"
@@ -232,7 +266,7 @@ restore_canonical_dump() {
   [ "$(sha256sum "$archive" | awk '{print $1}')" = "$expected_sha" ] || {
     echo "canonical archive checksum mismatch" >&2; exit 1;
   }
-  if [ -n "$(compose ps -q app)" ]; then compose stop app >/dev/null; fi
+  stop_application_writers
   compose up -d --wait postgres >/dev/null
   compose exec -T postgres psql -U tac -d tacbookings -v ON_ERROR_STOP=1 \
     -c "DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public;" >/dev/null
@@ -242,12 +276,11 @@ restore_canonical_dump() {
 }
 
 case "${1:-}" in
-  prepare) prepare ;;
+  prepare) prepare_stack ;;
   prepare-canonical-dump)
     shift
     [ -n "${1:-}" ] || { echo "usage: $0 prepare-canonical-dump <absolute-path>" >&2; exit 1; }
-    prepare
-    create_canonical_dump "$1"
+    prepare_stack "$1"
     ;;
   create-canonical-dump)
     shift

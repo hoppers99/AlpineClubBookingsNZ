@@ -83,10 +83,89 @@ for (const contract of [
   /rm -f -- "\$lock_dir\/\.env\.measure\.snapshot" "\$lock_dir\/runtime-env-hmac\.key"/,
   /"\$@" && command_status=0 \|\| command_status=\$\?/,
   /cleanup_private_env "\$command_status"/,
-  /prepare-canonical-dump\)[\s\S]*?prepare[\s\S]*?create_canonical_dump "\$1"/,
 ]) assert.match(measureStackSource, contract);
 assert(measureStackSource.indexOf("with_private_env") < measureStackSource.indexOf(': "${MEASURE_ENV_SNAPSHOT:'),
   "the wrapper must create its private bindings before inner stack commands require them");
+
+const sourceSection = (source, start, end) => {
+  const startAt = source.indexOf(start);
+  const endAt = end === null ? source.length : source.indexOf(end, startAt + start.length);
+  if (startAt < 0 || endAt < 0) throw new Error(`missing stack source section: ${start}`);
+  return source.slice(startAt, endAt);
+};
+const requireOrdered = (source, markers, message) => {
+  let cursor = -1;
+  for (const marker of markers) {
+    const next = source.indexOf(marker, cursor + 1);
+    if (next < 0) throw new Error(message);
+    cursor = next;
+  }
+};
+const assertStackPreparationOrdering = (source) => {
+  const reset = sourceSection(source, "prepare_database() {", "require_absolute_file_path() {");
+  requireOrdered(reset, [
+    "compose up -d --wait postgres",
+    "stop_application_writers",
+    "DROP SCHEMA public CASCADE",
+    "npx prisma migrate deploy",
+    "npx tsx prisma/demo-seed.ts",
+    "npx tsx prisma/seed.ts",
+  ], "stack preparation must stop app and caddy before reset, migration and both seeds");
+
+  const dump = sourceSection(source, "create_canonical_dump() (", "prepare_stack() (");
+  requireOrdered(dump, [
+    "pg_dump",
+    "pg_restore --list",
+    "fs.linkSync",
+    'sha256sum "$archive"',
+  ], "canonical dump must be verified and atomically published before completion");
+
+  const preparation = sourceSection(source, "prepare_stack() (", "restore_canonical_dump() {");
+  requireOrdered(preparation, [
+    "trap cleanup_failed_preparation EXIT",
+    "prepare_database",
+    'create_canonical_dump "$archive"',
+    "start_application_writers",
+    "preparation_complete=true",
+    "trap - EXIT INT TERM",
+  ], "canonical dump publication must precede writer restart and successful guard release");
+  if (!/cleanup_failed_preparation\(\) \{[\s\S]*?stop_application_writers >\/dev\/null 2>&1 \|\| true[\s\S]*?exit "\$status"/.test(preparation)) {
+    throw new Error("failed stack preparation must leave app and caddy stopped");
+  }
+
+  const restore = sourceSection(source, "restore_canonical_dump() {", 'case "${1:-}" in');
+  requireOrdered(restore, ["stop_application_writers", "DROP SCHEMA IF EXISTS public CASCADE"],
+    "canonical restore must stop app and caddy before resetting the schema");
+
+  const actions = sourceSection(source, 'case "${1:-}" in', null);
+  if (!/prepare\) prepare_stack ;;/.test(actions)
+      || !/prepare-canonical-dump\)[\s\S]*?prepare_stack "\$1"/.test(actions)
+      || /prepare-canonical-dump\)[\s\S]*?\n\s+prepare\n\s+create_canonical_dump/.test(actions)) {
+    throw new Error("stack actions must use the guarded factored preparation path");
+  }
+};
+assertStackPreparationOrdering(measureStackSource);
+
+const missingPreResetStopMutation = measureStackSource.replace(
+  '  stop_application_writers\n\n  echo "==> Resetting database schema"',
+  '  : # mutation: schema reset would retain live writers\n\n  echo "==> Resetting database schema"',
+);
+assert.notEqual(missingPreResetStopMutation, measureStackSource, "writer-stop mutation fixture must apply");
+assert.throws(() => assertStackPreparationOrdering(missingPreResetStopMutation), /stop app and caddy before reset/);
+
+const startBeforeDumpMutation = measureStackSource.replace(
+  '  if [[ -n "$archive" ]]; then\n    create_canonical_dump "$archive"\n  fi\n  start_application_writers',
+  '  start_application_writers\n  if [[ -n "$archive" ]]; then\n    create_canonical_dump "$archive"\n  fi',
+);
+assert.notEqual(startBeforeDumpMutation, measureStackSource, "writer-restart mutation fixture must apply");
+assert.throws(() => assertStackPreparationOrdering(startBeforeDumpMutation), /dump publication must precede writer restart/);
+
+const missingFailureStopMutation = measureStackSource.replace(
+  "      stop_application_writers >/dev/null 2>&1 || true",
+  "      true # mutation: writers would remain available after a partial restart",
+);
+assert.notEqual(missingFailureStopMutation, measureStackSource, "failure-stop mutation fixture must apply");
+assert.throws(() => assertStackPreparationOrdering(missingFailureStopMutation), /must leave app and caddy stopped/);
 
 const phase2Readme = readFileSync(resolve(repo, "measurement/phase2/README.md"), "utf8");
 const correctnessReadme = readFileSync(resolve(repo, "measurement/current-main-refresh/README.md"), "utf8");
@@ -97,6 +176,9 @@ for (const readme of [phase2Readme, correctnessReadme]) {
 assert.match(phase2Readme, /prepare-canonical-dump/);
 assert.match(phase2Readme, /process\.versions\.node/);
 assert.match(phase2Readme, /\.nvmrc is authoritative/);
+assert.match(phase2Readme, /Every schema reset stops both `app` and `caddy` before `DROP SCHEMA`/);
+assert.match(phase2Readme, /atomically published, then starts them/);
+assert.match(phase2Readme, /leaves both services stopped/);
 assert.doesNotMatch(phase2Readme, /^bash measurement\/stack\/measure-stack\.sh (?:prepare|down)$/m,
   "manual stack commands must not bypass the private snapshot wrapper");
 assert.match(correctnessReadme, /\.\.\/phase2\/README\.md/);

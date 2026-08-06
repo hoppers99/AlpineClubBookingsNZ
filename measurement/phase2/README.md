@@ -105,6 +105,18 @@ target, DNS result, Postgres identity, container/network identity, and the full
 uninterpolated Compose/resource definition so the restored database and the app
 connection cannot be confused with another stack.
 
+Every schema reset stops both `app` and `caddy` before `DROP SCHEMA`. Plain
+`prepare` restarts them only after migrations and both seeds succeed. The
+combined command above additionally keeps them stopped while `pg_dump` is
+verified with `pg_restore --list` and atomically published, then starts them.
+Any reset, seed, dump, publication or startup failure makes the command fail and
+leaves both services stopped. Inspect the failure before recovery: if the target
+archive is absent, correct the cause and rerun the combined command with an
+absent target; if a target confirmed absent before the run now exists, atomic
+publication completed, so retain and verify its printed SHA before deliberately
+starting the stack. Never start writers
+against a database whose reset or seed stage did not complete.
+
 `with-private-env` owns the same fixed machine-wide lock as final phase-2
 orchestration. It copies `measurement/stack/.env.measure` to a new restrictive
 private snapshot, HMAC-binds that snapshot with a fresh private key, exports the
