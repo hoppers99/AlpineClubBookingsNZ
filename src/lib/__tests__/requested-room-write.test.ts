@@ -27,7 +27,7 @@ describe("requested room authoritative write", () => {
       async (callback: (tx: typeof prismaMock) => unknown) => callback(prismaMock),
     );
     prismaMock.booking.findUnique
-      .mockResolvedValueOnce({ lodgeId: "lodge-1" })
+      .mockResolvedValueOnce({ id: "booking-1" })
       .mockResolvedValueOnce({
         memberId: "owner-1",
         status: "PAID",
@@ -48,13 +48,9 @@ describe("requested room authoritative write", () => {
     auditMock.mockResolvedValue(undefined);
   });
 
-  it.each([
-    ["missing", null],
-    ["cross-lodge", { id: "room-2", name: "Room 2", lodgeId: "lodge-2" }],
-  ])(
+  it.each(["missing", "cross-lodge"])(
     "returns forbidden to a non-owner before exposing a %s room",
-    async (_label, room) => {
-      prismaMock.lodgeRoom.findUnique.mockResolvedValueOnce(room);
+    async () => {
       await expect(
         writeRequestedRoom({
           bookingId: "booking-1",
@@ -64,6 +60,7 @@ describe("requested room authoritative write", () => {
           auditActorLabel: "Member",
         }),
       ).rejects.toMatchObject({ status: 403, message: "Forbidden" });
+      expect(prismaMock.lodgeRoom.findUnique).not.toHaveBeenCalled();
       expect(prismaMock.booking.updateMany).not.toHaveBeenCalled();
       expect(auditMock).not.toHaveBeenCalled();
     },
@@ -79,6 +76,22 @@ describe("requested room authoritative write", () => {
     });
 
     expect(prismaMock.$executeRaw).toHaveBeenCalledTimes(2);
+    const [bookingIdentityRead, authoritativeBookingRead] =
+      prismaMock.booking.findUnique.mock.invocationCallOrder;
+    const [globalLockCall, bookingRowLockCall] =
+      prismaMock.$executeRaw.mock.invocationCallOrder;
+    const [authoritativeRoomRead] =
+      prismaMock.lodgeRoom.findUnique.mock.invocationCallOrder;
+    expect(bookingIdentityRead).toBeLessThan(globalLockCall);
+    expect(globalLockCall).toBeLessThan(bookingRowLockCall);
+    expect(bookingRowLockCall).toBeLessThan(authoritativeBookingRead);
+    expect(authoritativeBookingRead).toBeLessThan(authoritativeRoomRead);
+    expect(authoritativeRoomRead).toBeLessThan(
+      prismaMock.booking.updateMany.mock.invocationCallOrder[0],
+    );
+    expect(prismaMock.booking.updateMany.mock.invocationCallOrder[0]).toBeLessThan(
+      auditMock.mock.invocationCallOrder[0],
+    );
     expect(prismaMock.booking.updateMany).toHaveBeenCalledWith({
       where: expect.objectContaining({
         id: "booking-1",
@@ -90,10 +103,60 @@ describe("requested room authoritative write", () => {
     expect(auditMock).toHaveBeenCalledTimes(1);
   });
 
+  it("returns invalid room when the authoritative under-lock read finds it deleted", async () => {
+    prismaMock.lodgeRoom.findUnique.mockResolvedValueOnce(null);
+
+    await expect(
+      writeRequestedRoom({
+        bookingId: "booking-1",
+        actorMemberId: "owner-1",
+        actorIsAdmin: false,
+        requestedRoomId: "room-1",
+        auditActorLabel: "Member",
+      }),
+    ).rejects.toMatchObject({ status: 400, message: "Invalid requested room" });
+
+    expect(prismaMock.lodgeRoom.findUnique).toHaveBeenCalledTimes(1);
+    expect(prismaMock.booking.updateMany).not.toHaveBeenCalled();
+    expect(auditMock).not.toHaveBeenCalled();
+  });
+
+  it("uses the authoritative under-lock room name in the committed audit", async () => {
+    prismaMock.lodgeRoom.findUnique.mockResolvedValueOnce({
+      id: "room-1",
+      name: "Room renamed under lock",
+      lodgeId: "lodge-1",
+    });
+    prismaMock.booking.findUniqueOrThrow.mockResolvedValueOnce({
+      id: "booking-1",
+      requestedRoomId: "room-1",
+      requestedRoom: {
+        id: "room-1",
+        name: "Room renamed under lock",
+        active: true,
+      },
+    });
+
+    await writeRequestedRoom({
+      bookingId: "booking-1",
+      actorMemberId: "owner-1",
+      actorIsAdmin: false,
+      requestedRoomId: "room-1",
+      auditActorLabel: "Member",
+    });
+
+    expect(auditMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        details: 'Member set requested room to "Room renamed under lock"',
+      }),
+      prismaMock,
+    );
+  });
+
   it("refuses a member write after an approved allocation appears", async () => {
     prismaMock.booking.findUnique.mockReset();
     prismaMock.booking.findUnique
-      .mockResolvedValueOnce({ lodgeId: "lodge-1" })
+      .mockResolvedValueOnce({ id: "booking-1" })
       .mockResolvedValueOnce({
         memberId: "owner-1",
         status: "PAID",

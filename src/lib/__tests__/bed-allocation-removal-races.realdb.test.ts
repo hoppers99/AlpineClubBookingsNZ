@@ -10,7 +10,15 @@
  * forces the interleaving without sleeps or test-only hooks in production code.
  */
 import type { PrismaClient } from "@prisma/client";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+} from "vitest";
 
 import { realElapsedMs } from "@/lib/__tests__/helpers/clock";
 
@@ -26,6 +34,8 @@ const RACE_TEST_TIMEOUT_MS = 30_000;
 const ACTOR_ID = "race-2594-admin";
 const LODGE_ID = "race-2594-lodge";
 const ROOM_ID = "race-2594-room";
+const REQUESTED_ROOM_RACE_ID = "race-2594-requested-room";
+const REQUESTED_ROOM_RACE_NAME = "Race 2594 requested room";
 const OLD_DOUBLE_BED_ID = "race-2594-old-double";
 const DESTINATION_BED_ID = "race-2594-destination";
 const OTHER_BED_ID = "race-2594-other";
@@ -50,14 +60,40 @@ const MOVE_AUDIT_ACTIONS = [
   "BED_ALLOCATION_MANUAL_SET",
   "BED_ALLOCATION_PARTNER_PROMOTED",
 ] as const;
+const REQUESTED_ROOM_AUDIT_ACTIONS = [
+  "booking.requested_room.updated",
+  "booking.requested_room.cleared",
+] as const;
+
+type RemovalRollbackFailureStage = "delete" | "promotion" | "audit";
+
+const ROLLBACK_FAILURE_OBJECTS = {
+  delete: {
+    trigger: "race_2594_fail_delete_trigger",
+    function: "race_2594_fail_delete_fn",
+    table: "BedAllocation",
+  },
+  promotion: {
+    trigger: "race_2594_fail_promotion_trigger",
+    function: "race_2594_fail_promotion_fn",
+    table: "BedAllocation",
+  },
+  audit: {
+    trigger: "race_2594_fail_audit_trigger",
+    function: "race_2594_fail_audit_fn",
+    table: "AuditLog",
+  },
+} as const;
 
 let prisma: typeof import("@/lib/prisma")["prisma"];
 let previewBedAllocationRemoval: typeof import("@/lib/bed-allocation-removal")["previewBedAllocationRemoval"];
 let applyBedAllocationRemoval: typeof import("@/lib/bed-allocation-removal")["applyBedAllocationRemoval"];
 let moveBedAllocationsSameDate: typeof import("@/lib/admin-bed-allocation")["moveBedAllocationsSameDate"];
 let runAutoBedAllocation: typeof import("@/lib/admin-bed-allocation")["runAutoBedAllocation"];
+let deleteBedAllocationRoom: typeof import("@/lib/admin-bed-allocation")["deleteBedAllocationRoom"];
 let reconcileBedAllocationsForBooking: typeof import("@/lib/bed-allocation-lifecycle")["reconcileBedAllocationsForBooking"];
 let cancelBooking: typeof import("@/lib/booking-cancel")["cancelBooking"];
+let writeRequestedRoom: typeof import("@/lib/requested-room-write")["writeRequestedRoom"];
 let lockHolderClient: PrismaClient;
 let observerClient: PrismaClient;
 
@@ -211,6 +247,31 @@ async function clearBookingFixtures(): Promise<void> {
   });
 }
 
+async function recreateRequestedRoomRaceFixture(): Promise<void> {
+  await prisma.lodgeRoom.upsert({
+    where: { id: REQUESTED_ROOM_RACE_ID },
+    create: {
+      id: REQUESTED_ROOM_RACE_ID,
+      lodgeId: LODGE_ID,
+      name: REQUESTED_ROOM_RACE_NAME,
+      sortOrder: 99,
+    },
+    update: {
+      lodgeId: LODGE_ID,
+      name: REQUESTED_ROOM_RACE_NAME,
+      sortOrder: 99,
+      active: true,
+      notes: null,
+    },
+  });
+}
+
+async function deleteRequestedRoomRaceFixture(): Promise<void> {
+  await prisma.lodgeRoom.deleteMany({
+    where: { id: REQUESTED_ROOM_RACE_ID },
+  });
+}
+
 async function seedBookings(
   status: "CONFIRMED" | "AWAITING_REVIEW" = "CONFIRMED",
   includePartner = true,
@@ -339,6 +400,175 @@ async function actionCount(actions: readonly string[]): Promise<number> {
   });
 }
 
+async function fixtureRemovalAuditCount(): Promise<number> {
+  return prisma.auditLog.count({
+    where: {
+      action: { in: [...REMOVAL_AUDIT_ACTIONS] },
+      OR: [
+        { memberId: ACTOR_ID },
+        { actorMemberId: ACTOR_ID },
+        { targetId: { in: [BOOKING_ID, PARTNER_BOOKING_ID] } },
+      ],
+    },
+  });
+}
+
+async function requestedRoomAuditRows() {
+  return prisma.auditLog.findMany({
+    where: {
+      targetId: BOOKING_ID,
+      action: { in: [...REQUESTED_ROOM_AUDIT_ACTIONS] },
+    },
+    select: {
+      action: true,
+      memberId: true,
+      targetId: true,
+      details: true,
+    },
+  });
+}
+
+async function dropRemovalRollbackFailureInjection(): Promise<void> {
+  for (const object of Object.values(ROLLBACK_FAILURE_OBJECTS)) {
+    await prisma.$executeRawUnsafe(
+      `DROP TRIGGER IF EXISTS ${object.trigger} ON "${object.table}"`,
+    );
+  }
+  for (const object of Object.values(ROLLBACK_FAILURE_OBJECTS)) {
+    await prisma.$executeRawUnsafe(
+      `DROP FUNCTION IF EXISTS ${object.function}()`,
+    );
+  }
+}
+
+async function installRemovalRollbackFailureInjection(
+  stage: RemovalRollbackFailureStage,
+): Promise<void> {
+  await dropRemovalRollbackFailureInjection();
+
+  if (stage === "delete") {
+    await prisma.$executeRawUnsafe(`
+      CREATE FUNCTION ${ROLLBACK_FAILURE_OBJECTS.delete.function}()
+      RETURNS trigger
+      LANGUAGE plpgsql
+      AS $race2594$
+      BEGIN
+        RAISE EXCEPTION 'race 2594 forced delete failure';
+        RETURN OLD;
+      END;
+      $race2594$
+    `);
+    await prisma.$executeRawUnsafe(`
+      CREATE TRIGGER ${ROLLBACK_FAILURE_OBJECTS.delete.trigger}
+      BEFORE DELETE ON "BedAllocation"
+      FOR EACH ROW
+      WHEN (OLD."id" = '${TARGET_ALLOCATION_ID}')
+      EXECUTE FUNCTION ${ROLLBACK_FAILURE_OBJECTS.delete.function}()
+    `);
+    return;
+  }
+
+  if (stage === "promotion") {
+    await prisma.$executeRawUnsafe(`
+      CREATE FUNCTION ${ROLLBACK_FAILURE_OBJECTS.promotion.function}()
+      RETURNS trigger
+      LANGUAGE plpgsql
+      AS $race2594$
+      BEGIN
+        IF EXISTS (
+          SELECT 1 FROM "BedAllocation"
+          WHERE "id" = '${TARGET_ALLOCATION_ID}'
+        ) THEN
+          RAISE EXCEPTION 'race 2594 promotion reached before delete';
+        END IF;
+        RAISE EXCEPTION 'race 2594 forced promotion failure after delete';
+        RETURN NEW;
+      END;
+      $race2594$
+    `);
+    await prisma.$executeRawUnsafe(`
+      CREATE TRIGGER ${ROLLBACK_FAILURE_OBJECTS.promotion.trigger}
+      BEFORE UPDATE OF "isSecondOccupant" ON "BedAllocation"
+      FOR EACH ROW
+      WHEN (
+        OLD."id" = '${PARTNER_ALLOCATION_ID}'
+        AND OLD."isSecondOccupant" = TRUE
+        AND NEW."isSecondOccupant" = FALSE
+      )
+      EXECUTE FUNCTION ${ROLLBACK_FAILURE_OBJECTS.promotion.function}()
+    `);
+    return;
+  }
+
+  await prisma.$executeRawUnsafe(`
+    CREATE FUNCTION ${ROLLBACK_FAILURE_OBJECTS.audit.function}()
+    RETURNS trigger
+    LANGUAGE plpgsql
+    AS $race2594$
+    BEGIN
+      IF EXISTS (
+        SELECT 1 FROM "BedAllocation"
+        WHERE "id" = '${TARGET_ALLOCATION_ID}'
+      ) THEN
+        RAISE EXCEPTION 'race 2594 audit reached before delete';
+      END IF;
+      IF EXISTS (
+        SELECT 1 FROM "BedAllocation"
+        WHERE "id" = '${PARTNER_ALLOCATION_ID}'
+          AND "isSecondOccupant" = TRUE
+      ) THEN
+        RAISE EXCEPTION 'race 2594 audit reached before promotion';
+      END IF;
+      RAISE EXCEPTION 'race 2594 forced audit failure after delete and promotion';
+      RETURN NEW;
+    END;
+    $race2594$
+  `);
+  await prisma.$executeRawUnsafe(`
+    CREATE TRIGGER ${ROLLBACK_FAILURE_OBJECTS.audit.trigger}
+    BEFORE INSERT ON "AuditLog"
+    FOR EACH ROW
+    WHEN (NEW."action" = 'BED_ALLOCATION_REMOVAL_APPLIED')
+    EXECUTE FUNCTION ${ROLLBACK_FAILURE_OBJECTS.audit.function}()
+  `);
+}
+
+async function expectOriginalSharedDoubleState(): Promise<void> {
+  const [allocations, removalAuditCount] = await Promise.all([
+    prisma.bedAllocation.findMany({
+      where: {
+        id: { in: [TARGET_ALLOCATION_ID, PARTNER_ALLOCATION_ID] },
+      },
+      select: {
+        id: true,
+        bedId: true,
+        source: true,
+        approvedAt: true,
+        isSecondOccupant: true,
+      },
+      orderBy: { id: "asc" },
+    }),
+    fixtureRemovalAuditCount(),
+  ]);
+  expect(allocations).toEqual([
+    {
+      id: PARTNER_ALLOCATION_ID,
+      bedId: OLD_DOUBLE_BED_ID,
+      source: "MANUAL",
+      approvedAt: null,
+      isSecondOccupant: true,
+    },
+    {
+      id: TARGET_ALLOCATION_ID,
+      bedId: OLD_DOUBLE_BED_ID,
+      source: "MANUAL",
+      approvedAt: null,
+      isSecondOccupant: false,
+    },
+  ]);
+  expect(removalAuditCount).toBe(0);
+}
+
 async function waitForAuditAction(action: string): Promise<void> {
   const startedAt = process.hrtime.bigint();
   while (realElapsedMs(startedAt) < LOCK_POLL_TIMEOUT_MS) {
@@ -384,13 +614,16 @@ describe("bed-allocation removal race DB safety guard (#2594)", () => {
       ({ previewBedAllocationRemoval, applyBedAllocationRemoval } = await import(
         "@/lib/bed-allocation-removal"
       ));
-      ({ moveBedAllocationsSameDate, runAutoBedAllocation } = await import(
-        "@/lib/admin-bed-allocation"
-      ));
+      ({
+        deleteBedAllocationRoom,
+        moveBedAllocationsSameDate,
+        runAutoBedAllocation,
+      } = await import("@/lib/admin-bed-allocation"));
       ({ reconcileBedAllocationsForBooking } = await import(
         "@/lib/bed-allocation-lifecycle"
       ));
       ({ cancelBooking } = await import("@/lib/booking-cancel"));
+      ({ writeRequestedRoom } = await import("@/lib/requested-room-write"));
 
       const [{ PrismaClient: SeparatePrismaClient }, { createPrismaPgAdapter }] =
         await Promise.all([
@@ -444,7 +677,9 @@ describe("bed-allocation removal race DB safety guard (#2594)", () => {
           id: { in: [OLD_DOUBLE_BED_ID, DESTINATION_BED_ID, OTHER_BED_ID] },
         },
       });
-      await prisma.lodgeRoom.deleteMany({ where: { id: ROOM_ID } });
+      await prisma.lodgeRoom.deleteMany({
+        where: { id: { in: [ROOM_ID, REQUESTED_ROOM_RACE_ID] } },
+      });
       await prisma.lodge.deleteMany({ where: { id: LODGE_ID } });
       await prisma.member.deleteMany({ where: { id: ACTOR_ID } });
 
@@ -465,6 +700,7 @@ describe("bed-allocation removal race DB safety guard (#2594)", () => {
       await prisma.lodgeRoom.create({
         data: { id: ROOM_ID, lodgeId: LODGE_ID, name: "Race 2594 Room" },
       });
+      await recreateRequestedRoomRaceFixture();
       await prisma.lodgeBed.createMany({
         data: [
           {
@@ -493,7 +729,34 @@ describe("bed-allocation removal race DB safety guard (#2594)", () => {
     }, 60_000);
 
     beforeEach(async () => {
+      await dropRemovalRollbackFailureInjection();
       await clearBookingFixtures();
+      await recreateRequestedRoomRaceFixture();
+    });
+
+    afterEach(async () => {
+      const cleanupErrors: unknown[] = [];
+      try {
+        await dropRemovalRollbackFailureInjection();
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+      try {
+        await clearBookingFixtures();
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+      try {
+        await deleteRequestedRoomRaceFixture();
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+      if (cleanupErrors.length > 0) {
+        throw new AggregateError(
+          cleanupErrors,
+          "Bed-allocation removal rollback-proof cleanup failed",
+        );
+      }
     });
 
     afterAll(async () => {
@@ -506,6 +769,7 @@ describe("bed-allocation removal race DB safety guard (#2594)", () => {
         }
       };
       if (typeof prisma !== "undefined") {
+        await attempt(dropRemovalRollbackFailureInjection);
         await attempt(clearBookingFixtures);
         await attempt(() =>
           prisma.bedAllocationSettings.deleteMany({ where: { id: LODGE_ID } }),
@@ -517,7 +781,11 @@ describe("bed-allocation removal race DB safety guard (#2594)", () => {
             },
           }),
         );
-        await attempt(() => prisma.lodgeRoom.deleteMany({ where: { id: ROOM_ID } }));
+        await attempt(() =>
+          prisma.lodgeRoom.deleteMany({
+            where: { id: { in: [ROOM_ID, REQUESTED_ROOM_RACE_ID] } },
+          }),
+        );
         await attempt(() => prisma.lodge.deleteMany({ where: { id: LODGE_ID } }));
         await attempt(() => prisma.member.deleteMany({ where: { id: ACTOR_ID } }));
         if (moduleSettingsExisted) {
@@ -551,6 +819,134 @@ describe("bed-allocation removal race DB safety guard (#2594)", () => {
         );
       }
     }, 60_000);
+
+    it("leaves rows untouched and skips downstream work when the real delete fails", async () => {
+      await seedBookings();
+      await seedTargetWithPartner();
+      const removal = await reviewedTargetRemoval(FIRST_NIGHT_DATE_ONLY);
+
+      try {
+        await installRemovalRollbackFailureInjection("delete");
+        await expect(removal.apply()).rejects.toThrow(
+          "race 2594 forced delete failure",
+        );
+      } finally {
+        await dropRemovalRollbackFailureInjection();
+      }
+
+      await expectOriginalSharedDoubleState();
+    });
+
+    it("restores the deleted primary when the real partner promotion fails", async () => {
+      await seedBookings();
+      await seedTargetWithPartner();
+      const removal = await reviewedTargetRemoval(FIRST_NIGHT_DATE_ONLY);
+
+      try {
+        await installRemovalRollbackFailureInjection("promotion");
+        await expect(removal.apply()).rejects.toThrow(
+          "race 2594 forced promotion failure after delete",
+        );
+      } finally {
+        await dropRemovalRollbackFailureInjection();
+      }
+
+      await expectOriginalSharedDoubleState();
+    });
+
+    it("restores delete and promotion state when the real removal audit fails", async () => {
+      await seedBookings();
+      await seedTargetWithPartner();
+      const removal = await reviewedTargetRemoval(FIRST_NIGHT_DATE_ONLY);
+
+      try {
+        await installRemovalRollbackFailureInjection("audit");
+        await expect(removal.apply()).rejects.toThrow(
+          "race 2594 forced audit failure after delete and promotion",
+        );
+      } finally {
+        await dropRemovalRollbackFailureInjection();
+      }
+
+      await expectOriginalSharedDoubleState();
+    });
+
+    it.each(["DELETE_FIRST", "WRITE_FIRST"] as const)(
+      "serializes requested-room write and room deletion when %s is queued first",
+      async (order) => {
+        await seedBookings("CONFIRMED", false);
+        const writeRoom = () =>
+          writeRequestedRoom({
+            bookingId: BOOKING_ID,
+            actorMemberId: ACTOR_ID,
+            actorIsAdmin: true,
+            requestedRoomId: REQUESTED_ROOM_RACE_ID,
+            auditActorLabel: "Admin",
+          });
+        const deleteRoom = () =>
+          deleteBedAllocationRoom({
+            id: REQUESTED_ROOM_RACE_ID,
+            lodgeId: LODGE_ID,
+          });
+
+        const outcomes =
+          order === "DELETE_FIRST"
+            ? await runWritersInGlobalQueueOrder(deleteRoom, writeRoom)
+            : await runWritersInGlobalQueueOrder(writeRoom, deleteRoom);
+        const [deleteOutcome, writeOutcome] =
+          order === "DELETE_FIRST"
+            ? outcomes
+            : [outcomes[1], outcomes[0]];
+
+        const [booking, room, audits] = await Promise.all([
+          prisma.booking.findUniqueOrThrow({
+            where: { id: BOOKING_ID },
+            select: { requestedRoomId: true },
+          }),
+          prisma.lodgeRoom.findUnique({
+            where: { id: REQUESTED_ROOM_RACE_ID },
+            select: { id: true },
+          }),
+          requestedRoomAuditRows(),
+        ]);
+        expect(deleteOutcome.status).toBe("fulfilled");
+        expect(room).toBeNull();
+        expect(booking.requestedRoomId).toBeNull();
+
+        if (order === "DELETE_FIRST") {
+          expect(writeOutcome.status).toBe("rejected");
+          expect(rejectionStatus(writeOutcome)).toBe(400);
+          if (writeOutcome.status === "rejected") {
+            expect(writeOutcome.reason).toMatchObject({
+              message: "Invalid requested room",
+              status: 400,
+            });
+          }
+          expect(audits).toEqual([]);
+          return;
+        }
+
+        expect(writeOutcome.status).toBe("fulfilled");
+        if (writeOutcome.status === "fulfilled") {
+          expect(writeOutcome.value).toMatchObject({
+            requestedRoomId: REQUESTED_ROOM_RACE_ID,
+            requestedRoom: {
+              id: REQUESTED_ROOM_RACE_ID,
+              name: REQUESTED_ROOM_RACE_NAME,
+              active: true,
+            },
+          });
+        }
+        expect(audits).toEqual([
+          {
+            action: "booking.requested_room.updated",
+            memberId: ACTOR_ID,
+            targetId: BOOKING_ID,
+            details: `Admin set requested room to "${REQUESTED_ROOM_RACE_NAME}"`,
+          },
+        ]);
+      },
+    );
 
     it.each(["MOVE_FIRST", "REMOVAL_FIRST"] as const)(
       "serializes reset and move atomically when %s is queued first",

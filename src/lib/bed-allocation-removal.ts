@@ -337,9 +337,30 @@ async function loadPreviewState(
         where: { id: request.scope.allocationId },
         include: allocationInclude,
       });
+      // An aggregate scope is identified by the booking/guest, not forever by
+      // the particular row that opened the dialog. If that row disappeared,
+      // return a canonical refreshed scope anchored to the first surviving row
+      // in the same aggregate. The current apply still fails closed because
+      // staleAnchor remains true; adopting this returned scope makes the next
+      // reviewed apply possible instead of producing an endless 409 loop.
+      if (!anchor && request.scope.type !== "ALLOCATION") {
+        const aggregateWhere =
+          request.scope.type === "BOOKING_GUEST"
+            ? {
+                bookingId: request.scope.bookingId,
+                bookingGuestId: request.scope.bookingGuestId,
+              }
+            : { bookingId: request.scope.bookingId };
+        anchor = await db.bedAllocation.findFirst({
+          where: { AND: [aggregateWhere, categoryWhere(categories)] },
+          include: allocationInclude,
+          orderBy: { id: "asc" },
+        });
+      }
       if (anchor) {
         effectiveScope = {
           ...request.scope,
+          allocationId: anchor.id,
           bookingId: anchor.bookingId,
           bookingGuestId: anchor.bookingGuestId,
           lodgeId: anchor.room.lodgeId,
@@ -499,29 +520,46 @@ async function resolveImmutableLodgeKeys(
   request: BedAllocationRemovalRequest,
 ): Promise<string[]> {
   if (request.scope.type === "WINDOW") return [request.scope.lodgeId];
-  // Resolve the immutable LodgeRoom.lodgeId values currently reached by the
-  // scope, and nothing mutable beyond those keys. The allocation -> room edge
-  // can move before global is acquired, but that race is fail-closed:
-  // - a move that wins global changes the digest, so this apply writes nothing;
-  // - an apply that wins global holds every pre-read row lodge and the move
-  //   re-reads only after it commits.
-  // Cross-lodge drift is included rather than silently assuming the booking's
-  // lodge, so every row that could be deleted has its actual lodge lock. A
-  // causal sibling shares the selected row's bed and therefore the same room
-  // and lodge key.
-  const rows = await prisma.bedAllocation.findMany({
-    where:
-      request.scope.type === "ALLOCATION"
-        ? { id: request.scope.allocationId }
-        : request.scope.type === "BOOKING_GUEST"
-          ? {
-              bookingId: request.scope.bookingId,
-              bookingGuestId: request.scope.bookingGuestId,
-            }
-          : { bookingId: request.scope.bookingId },
-    select: { room: { select: { lodgeId: true } } },
+  // Resolve only stable identity keys before global lock acquisition. The
+  // booking's lodge is the canonical allocation partition; the reviewed
+  // anchor's lodge is retained as a second key so a historical row already
+  // drifted from that partition is still handled safely. Never derive the lock
+  // set from mutable BedAllocation -> room edges. A later under-lock check
+  // refuses any third-lodge anomaly rather than mutating it without its lock.
+  const booking = await prisma.booking.findUnique({
+    where: { id: request.scope.bookingId },
+    select: { lodgeId: true },
   });
-  return [...new Set(rows.map((row) => row.room.lodgeId))].sort();
+  return [
+    ...new Set(
+      [booking?.lodgeId, request.scope.lodgeId].filter(
+        (lodgeId): lodgeId is string => Boolean(lodgeId),
+      ),
+    ),
+  ].sort();
+}
+
+function assertRemovalRowsUseLockedLodges(
+  state: Pick<
+    Awaited<ReturnType<typeof loadPreviewState>>,
+    "matchingRows" | "causalSiblings" | "preview"
+  >,
+  lodgeIds: string[],
+): void {
+  const lockedLodgeIds = new Set(lodgeIds);
+  const unlockedLodgeIds = [
+    ...new Set(
+      [...state.matchingRows, ...state.causalSiblings]
+        .map((row) => row.room.lodgeId)
+        .filter((lodgeId) => !lockedLodgeIds.has(lodgeId)),
+    ),
+  ].sort();
+  if (unlockedLodgeIds.length === 0) return;
+  throw new BedAllocationRemovalError(
+    "Matching allocations include a historical lodge outside the reviewed booking and anchor. Nothing was removed; remove that allocation separately.",
+    409,
+    state.preview,
+  );
 }
 
 function boundedIdentities(ids: string[]) {
@@ -546,6 +584,7 @@ export async function applyBedAllocationRemoval(input: {
     const initial = await loadPreviewState(input.request, tx, {
       allowStaleAnchor: true,
     });
+    assertRemovalRowsUseLockedLodges(initial, lodgeIds);
     const lockIds = [
       ...new Set([
         ...initial.matchingRows.map((row) => row.id),
@@ -565,6 +604,7 @@ export async function applyBedAllocationRemoval(input: {
     const authoritative = await loadPreviewState(input.request, tx, {
       allowStaleAnchor: true,
     });
+    assertRemovalRowsUseLockedLodges(authoritative, lodgeIds);
     if (
       authoritative.staleAnchor ||
       authoritative.preview.digest !== input.request.previewDigest

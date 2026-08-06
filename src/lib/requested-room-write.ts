@@ -22,21 +22,14 @@ export async function writeRequestedRoom(input: {
   requestedRoomId: string | null;
   auditActorLabel: "Admin" | "Member";
 }) {
-  // These reads resolve immutable identity keys only. Status, ownership,
-  // approved-allocation state and the final write fence are evaluated after the
-  // global booking lock and booking row lock inside the transaction.
-  const [bookingKey, roomKey] = await Promise.all([
-    prisma.booking.findUnique({
-      where: { id: input.bookingId },
-      select: { lodgeId: true },
-    }),
-    input.requestedRoomId
-      ? prisma.lodgeRoom.findUnique({
-          where: { id: input.requestedRoomId },
-          select: { id: true, name: true, lodgeId: true },
-        })
-      : Promise.resolve(null),
-  ]);
+  // Resolve only the immutable booking identity before lock acquisition. Room
+  // existence, name and lodge membership can all change under the same global
+  // lock this writer shares with inventory mutations, so they are authoritative
+  // only when re-read inside the transaction below.
+  const bookingKey = await prisma.booking.findUnique({
+    where: { id: input.bookingId },
+    select: { id: true },
+  });
   if (!bookingKey) {
     throw new RequestedRoomWriteError("Booking not found", 404);
   }
@@ -68,9 +61,21 @@ export async function writeRequestedRoom(input: {
     if (!input.actorIsAdmin && booking.memberId !== input.actorMemberId) {
       throw new RequestedRoomWriteError("Forbidden", 403);
     }
-    // Validate the immutable room key only AFTER ownership/authority. A
+    // Resolve and validate the room only AFTER ownership/authority. A
     // non-owner must not learn whether an arbitrary room id exists or belongs
-    // to this booking's lodge.
+    // to this booking's lodge. Inventory update/delete takes the same global
+    // lock, so this row cannot disappear or be renamed between here, the
+    // guarded booking write and the audit entry.
+    const roomKey = input.requestedRoomId
+      ? await tx.lodgeRoom.findUnique({
+          where: { id: input.requestedRoomId },
+          // Preserve the established write contract: the public picker offers
+          // active rooms, while this service requires only an existing room in
+          // the booking's lodge. Do not turn inventory deactivation into a new
+          // requested-room validation rule here.
+          select: { id: true, name: true, lodgeId: true },
+        })
+      : null;
     if (input.requestedRoomId && !roomKey) {
       throw new RequestedRoomWriteError("Invalid requested room", 400);
     }

@@ -6,10 +6,12 @@ const { auditMock, capacityLockMock, prismaMock } = vi.hoisted(() => ({
   prismaMock: {
     bedAllocation: {
       findUnique: vi.fn(),
+      findFirst: vi.fn(),
       findMany: vi.fn(),
       deleteMany: vi.fn(),
       updateMany: vi.fn(),
     },
+    booking: { findUnique: vi.fn() },
     lodge: { findUnique: vi.fn() },
     $executeRaw: vi.fn(),
     $transaction: vi.fn(),
@@ -133,6 +135,12 @@ function installRows(rows: Row[]) {
     async ({ where }: { where: { id: string } }) =>
       rows.find((candidate) => candidate.id === where.id) ?? null,
   );
+  prismaMock.bedAllocation.findFirst.mockImplementation(
+    async ({ where }: { where: Record<string, unknown> }) =>
+      rows
+        .filter((candidate) => matchesWhere(candidate, where))
+        .sort((a, b) => a.id.localeCompare(b.id))[0] ?? null,
+  );
   prismaMock.bedAllocation.findMany.mockImplementation(
     async (args: { where?: Record<string, unknown>; select?: unknown }) => {
       const found = rows.filter((candidate) =>
@@ -188,6 +196,7 @@ describe("bed allocation removal preview/apply", () => {
     prismaMock.$transaction.mockImplementation(
       async (callback: (tx: typeof prismaMock) => unknown) => callback(prismaMock),
     );
+    prismaMock.booking.findUnique.mockResolvedValue({ lodgeId: "lodge-1" });
   });
 
   const categories: Array<[BedAllocationRemovalCategory, string]> = [
@@ -350,6 +359,100 @@ describe("bed allocation removal preview/apply", () => {
       status: 409,
       refreshedPreview: { matchedRowCount: 0 },
     });
+    expect(prismaMock.bedAllocation.deleteMany).not.toHaveBeenCalled();
+    expect(auditMock).not.toHaveBeenCalled();
+  });
+
+  it.each(["BOOKING_GUEST", "BOOKING"] as const)(
+    "re-anchors a stale %s preview to a deterministic surviving row",
+    async (scopeType) => {
+      const rows = [
+        row({ id: "auto" }),
+        // Sorts before the selected-category survivor, proving re-anchoring
+        // cannot silently choose a row from a category the admin disabled.
+        row({ id: "a-disabled", source: "MANUAL" }),
+        row({
+          id: "survivor",
+          bookingGuestId:
+            scopeType === "BOOKING_GUEST" ? "guest-1" : "guest-2",
+          stayDate: "2026-08-02",
+        }),
+      ];
+      installRows(rows);
+      const request: BedAllocationRemovalRequest = {
+        scope: anchorScope(scopeType),
+        categories: ["AUTO_DRAFT"],
+      };
+      const preview = await previewBedAllocationRemoval(request);
+      rows.splice(
+        rows.findIndex((candidate) => candidate.id === "auto"),
+        1,
+      );
+
+      const firstError = (await applyBedAllocationRemoval({
+        request: { ...request, previewDigest: preview.digest },
+        actorMemberId: "admin-1",
+      }).catch((error: unknown) => error)) as BedAllocationRemovalError;
+
+      expect(firstError).toMatchObject({
+        status: 409,
+        refreshedPreview: {
+          matchedRowCount: 1,
+          scope: {
+            type: scopeType,
+            allocationId: "survivor",
+            stayDate: "2026-08-02",
+          },
+        },
+      });
+      expect(prismaMock.bedAllocation.deleteMany).not.toHaveBeenCalled();
+      expect(auditMock).not.toHaveBeenCalled();
+
+      const refreshedPreview = firstError.refreshedPreview!;
+      await expect(
+        applyBedAllocationRemoval({
+          request: {
+            scope: refreshedPreview.scope,
+            categories: request.categories,
+            previewDigest: refreshedPreview.digest,
+          },
+          actorMemberId: "admin-1",
+        }),
+      ).resolves.toMatchObject({ removedRowCount: 1 });
+      expect(rows.map((candidate) => candidate.id)).toEqual(["a-disabled"]);
+      expect(auditMock).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("locks canonical plus reviewed lodges and rejects an unlocked third-lodge anomaly", async () => {
+    const rows = [
+      row({ id: "auto", lodgeId: "lodge-z" }),
+      row({ id: "historical", lodgeId: "lodge-m", stayDate: "2026-08-02" }),
+    ];
+    installRows(rows);
+    prismaMock.booking.findUnique.mockResolvedValue({ lodgeId: "lodge-a" });
+    const request: BedAllocationRemovalRequest = {
+      scope: {
+        ...anchorScope("BOOKING"),
+        lodgeId: "lodge-z",
+      },
+      categories: ["AUTO_DRAFT"],
+    };
+    const preview = await previewBedAllocationRemoval(request);
+
+    await expect(
+      applyBedAllocationRemoval({
+        request: { ...request, previewDigest: preview.digest },
+        actorMemberId: "admin-1",
+      }),
+    ).rejects.toMatchObject({
+      status: 409,
+      refreshedPreview: { matchedRowCount: 2 },
+    });
+    expect(capacityLockMock.mock.calls.map((call) => call[1])).toEqual([
+      "lodge-a",
+      "lodge-z",
+    ]);
     expect(prismaMock.bedAllocation.deleteMany).not.toHaveBeenCalled();
     expect(auditMock).not.toHaveBeenCalled();
   });
