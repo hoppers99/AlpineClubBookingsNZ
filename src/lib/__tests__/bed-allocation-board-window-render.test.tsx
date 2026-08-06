@@ -69,6 +69,12 @@ vi.mock("@/components/admin/bed-allocation-removal-dialog", () => ({
     dialog: <div data-testid="removal-dialog-seam" />,
   }),
 }));
+vi.mock("@/components/admin/bed-allocation-move-dialog", () => ({
+  useBedAllocationMoveDialog: () => ({
+    openMoveDialog: vi.fn(),
+    dialog: <div data-testid="move-dialog-seam" />,
+  }),
+}));
 
 // The board's contents are covered by their own component tests; here we only
 // need to know WHETHER the board rendered at all.

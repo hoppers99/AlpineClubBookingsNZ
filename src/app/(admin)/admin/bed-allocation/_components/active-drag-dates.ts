@@ -27,18 +27,8 @@ export function deriveActiveDragDates(input: {
   );
   if (!allocation) return [];
 
-  const guestAllocations = visibleAllocations
-    .filter((item) => item.bookingGuestId === allocation.bookingGuestId)
-    .sort(
-      (left, right) =>
-        left.stayDate.localeCompare(right.stayDate) ||
-        left.id.localeCompare(right.id),
-    );
-
-  const firstAllocation = guestAllocations[0];
-  if (firstAllocation?.id === allocation.id && guestAllocations.length > 1) {
-    return [...new Set(guestAllocations.map((item) => item.stayDate))].sort();
-  }
-
+  // A dragged allocation is only the anchor. The admin chooses one night or
+  // the person's authoritative booking rows in the confirmation dialog, so
+  // the board must not imply a scope from whichever rows happen to be visible.
   return [allocation.stayDate];
 }

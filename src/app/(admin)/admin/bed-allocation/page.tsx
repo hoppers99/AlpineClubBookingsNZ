@@ -52,10 +52,7 @@ import {
   type BedRangeAssignResult,
   type BedRangeAssignTarget,
 } from "@/components/admin/bed-range-assign-dialog";
-import {
-  applyOptimisticAllocationBedMove,
-  planAllocationMove,
-} from "./_components/allocation-move";
+import { useBedAllocationMoveDialog } from "@/components/admin/bed-allocation-move-dialog";
 import {
   MAX_RANGE_NIGHTS,
   boardNights,
@@ -344,6 +341,19 @@ export default function AdminBedAllocationPage() {
       toast.success(
         `${removedRowCount} reviewed allocation${removedRowCount === 1 ? "" : "s"} removed; no automatic allocation was run`,
       );
+      await loadDashboard();
+    },
+  });
+  const moveDialog = useBedAllocationMoveDialog({
+    canEdit: canEditBookings,
+    onApplied: async ({ movedRowCount, noop }) => {
+      if (noop) {
+        toast.info("No allocation nights needed to move");
+      } else {
+        toast.success(
+          `${movedRowCount} allocation night${movedRowCount === 1 ? "" : "s"} moved`,
+        );
+      }
       await loadDashboard();
     },
   });
@@ -703,85 +713,22 @@ export default function AdminBedAllocationPage() {
     });
   }
 
-  async function moveAllocation(
+  function openAllocationMoveDialog(
     allocation: DashboardAllocation,
-    target: { bedId: string; roomId: string; stayDate: string },
+    destinationBedId: string,
   ) {
     if (!canEditBookings) return;
-
-    if (!payload) return;
-    const bed = bedById.get(target.bedId);
+    const bed = bedById.get(destinationBedId);
     if (!bed) return;
-
-    const movePlan = planAllocationMove({
-      allocation,
-      target,
-      visibleAllocations: payload.allocations,
-      visibleNights: nights,
-    });
-
-    if (movePlan.type === "noop") {
-      return;
-    }
-
-    const snapshot = payload;
-    const allocationIds =
-      movePlan.type === "bulk"
-        ? movePlan.allocationIds
-        : [movePlan.allocationId];
-    setPayload(
-      applyOptimisticAllocationBedMove({
-        payload,
-        allocationIds,
-        bed,
-      }),
-    );
-
-    await withPending(
-      allocationIds.map((id) => `allocation:${id}`),
-      async () => {
-        try {
-          const response = await fetch(
-            "/api/admin/bed-allocation/allocations",
-            {
-              method: "PATCH",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                allocationIds,
-                bedId: target.bedId,
-              }),
-            },
-          );
-
-          if (!response.ok) {
-            setPayload(snapshot);
-            if (response.status === 409) {
-              toast.warning(
-                await readApiError(
-                  response,
-                  "No allocations were moved because the destination bed is unavailable on an original lodge night",
-                ),
-              );
-            } else {
-              toast.error(
-                await readApiError(response, "Failed to move allocation"),
-              );
-            }
-            await loadDashboard();
-            return;
-          }
-
-          toast.success(
-            movePlan.type === "bulk"
-              ? "Visible guest nights moved"
-              : "Allocation moved",
-          );
-          await loadDashboard();
-        } catch {
-          setPayload(snapshot);
-          toast.error("Failed to move allocation");
-          await loadDashboard();
-        }
+    moveDialog.openMoveDialog(
+      {
+        allocationId: allocation.id,
+        guestName: allocation.guestName,
+        stayDate: allocation.stayDate,
+      },
+      {
+        destinationBedId: bed.id,
+        destinationLabel: bed.label,
       },
     );
   }
@@ -960,11 +907,7 @@ export default function AdminBedAllocationPage() {
       if (overData.type === "bucket") {
         removeAllocation(allocation);
       } else if (overData.type === "cell") {
-        void moveAllocation(allocation, {
-          bedId: overData.bedId,
-          roomId: overData.roomId,
-          stayDate: overData.stayDate,
-        });
+        openAllocationMoveDialog(allocation, overData.bedId);
       }
     }
   }
@@ -1466,13 +1409,7 @@ export default function AdminBedAllocationPage() {
                   allocationByBedAndDate={allocationByBedAndDate}
                   bedOptions={bedOptions}
                   bedOptionGroups={bedOptionGroups}
-                  onReassignBed={(allocation, bedId) =>
-                    void moveAllocation(allocation, {
-                      bedId,
-                      roomId: bedById.get(bedId)?.roomId ?? allocation.roomId,
-                      stayDate: allocation.stayDate,
-                    })
-                  }
+                  onReassignBed={openAllocationMoveDialog}
                   onRemove={removeAllocation}
                   onAssignRange={openRangeForAllocation}
                   rangeTint={rangeTint}
@@ -1514,6 +1451,7 @@ export default function AdminBedAllocationPage() {
         onAssigned={handleRangeAssigned}
       />
       {removalDialog.dialog}
+      {moveDialog.dialog}
       </div>
     </div>
   );

@@ -76,12 +76,10 @@ export function AllocationChip({
           return groups;
         }, []);
 
-  const otherBedGroups = optionGroups
-    .map((group) => ({
-      ...group,
-      beds: group.beds.filter((bed) => bed.id !== allocation.bedId),
-    }))
-    .filter((group) => group.beds.length > 0);
+  // Keep the anchor's current bed selectable. A one-night preview can be a
+  // no-op, while person scope can still consolidate other existing nights to
+  // this bed; only the authoritative dialog can distinguish those outcomes.
+  const moveBedGroups = optionGroups.filter((group) => group.beds.length > 0);
 
   // Issue #1251: a bed on a capacity-holding booking (booked/confirmed) holds
   // the night; a bed on a provisional booking (generic PENDING / PAYMENT_PENDING
@@ -210,7 +208,7 @@ export function AllocationChip({
           className="bed-allocation-move-menu max-h-[min(60vh,20rem)] overflow-y-auto"
         >
           <DropdownMenuLabel>Move to bed</DropdownMenuLabel>
-          {otherBedGroups.map((group) => (
+          {moveBedGroups.map((group) => (
             <DropdownMenuSub key={group.roomId}>
               <DropdownMenuSubTrigger
                 aria-label={`Move ${allocation.guestName} to a bed in ${group.roomName}`}
