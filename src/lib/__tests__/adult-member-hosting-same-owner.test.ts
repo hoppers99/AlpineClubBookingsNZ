@@ -1866,8 +1866,8 @@ describe("settling a dependent booking after the change (#2576 §7, §14, §16)"
       overrideReason: null,
     });
     expect(
-      db.$executeRaw.mock.calls.some(([, actorMemberId]) =>
-        actorMemberId === "missing-officer",
+      db.$executeRaw.mock.calls.some((call: unknown[]) =>
+        call[1] === "missing-officer",
       ),
     ).toBe(true);
     expect(db.member.findUnique).not.toHaveBeenCalled();
