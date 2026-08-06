@@ -107,6 +107,14 @@ function deferred() {
   return { promise, resolve };
 }
 
+function deferredValue<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
 function rawStatement(input: unknown): string {
   if (Array.isArray(input)) return input.join("?");
   const strings = (input as { strings?: readonly string[] })?.strings;
@@ -262,6 +270,8 @@ let executeMemberMerge: (typeof import("@/lib/member-merge"))["executeMemberMerg
 let acquireConfigImportLock: (typeof import("@/lib/config-transfer-lock"))["acquireConfigImportLock"];
 let lockMinimumStayPolicySet: (typeof import("@/lib/minimum-stay-policy-set"))["lockMinimumStayPolicySet"];
 let lockAdultMemberHostingPolicySet: (typeof import("@/lib/adult-member-hosting-policy-set"))["lockAdultMemberHostingPolicySet"];
+let enqueueActiveHostingIncidentPolicyReconciliation: (typeof import("@/lib/adult-member-hosting-policy-reconciliation"))["enqueueActiveHostingIncidentPolicyReconciliation"];
+let HOSTING_POLICY_RECONCILIATION_SELECT: (typeof import("@/lib/adult-member-hosting-policy-reconciliation"))["HOSTING_POLICY_RECONCILIATION_SELECT"];
 
 (RUN ? describe : describe.skip)(
   "hosting queue/member merge interleavings — real PostgreSQL (#2597)",
@@ -423,6 +433,57 @@ let lockAdultMemberHostingPolicySet: (typeof import("@/lib/adult-member-hosting-
       return { operation, pause };
     }
 
+    async function applyConfigTransferPolicyReconciliation(
+      tx: Prisma.TransactionClient,
+    ) {
+      const beforePolicies = await tx.adultMemberHostingPolicy.findMany({
+        select: HOSTING_POLICY_RECONCILIATION_SELECT,
+      });
+      const beforeQueueRows = await tx.hostingCoverageReevaluation.findMany({
+        where: { sourceBookingId: { in: BOOKING_IDS } },
+        select: { id: true },
+      });
+      const beforeQueueIds = new Set(beforeQueueRows.map((row) => row.id));
+
+      const existingPolicy = beforePolicies.find(
+        (policy) => policy.id === IDS.policy,
+      );
+      if (!existingPolicy) {
+        throw new Error("Policy reconciliation fixture is missing its policy.");
+      }
+      const updated = await tx.adultMemberHostingPolicy.updateMany({
+        where: { id: IDS.policy, version: existingPolicy.version },
+        data: {
+          hostScopeSameBookingOwner: true,
+          version: existingPolicy.version + 1,
+        },
+      });
+      if (updated.count !== 1) {
+        throw new Error("Policy reconciliation fixture lost its policy CAS.");
+      }
+      const queued = await enqueueActiveHostingIncidentPolicyReconciliation(
+        { beforePolicies, todayDateOnly: "2099-03-31" },
+        tx,
+      );
+
+      const fixtureRows = (
+        await tx.hostingCoverageReevaluation.findMany({
+          where: { sourceBookingId: { in: BOOKING_IDS } },
+          orderBy: { sourceBookingId: "asc" },
+          select: { id: true, memberId: true, sourceBookingId: true },
+        })
+      ).filter((row) => !beforeQueueIds.has(row.id));
+      const mergeBookingRow = fixtureRows.find(
+        (row) => row.sourceBookingId === IDS.mergeBooking,
+      );
+      if (!mergeBookingRow) {
+        throw new Error(
+          "Policy reconciliation did not enqueue the merge booking fixture.",
+        );
+      }
+      return { fixtureRows, mergeBookingRow, queued };
+    }
+
     beforeAll(async () => {
       assertSafeHostingQueueRaceDbUrl(RACE_DB_URL);
       process.env.DATABASE_URL = RACE_DB_URL;
@@ -434,6 +495,7 @@ let lockAdultMemberHostingPolicySet: (typeof import("@/lib/adult-member-hosting-
         configLock,
         minimumLock,
         hostingLock,
+        policyReconciliation,
       ] = await Promise.all([
         import("@/lib/adult-member-hosting-queue-participants"),
         import("@/lib/adult-member-hosting-review"),
@@ -441,6 +503,7 @@ let lockAdultMemberHostingPolicySet: (typeof import("@/lib/adult-member-hosting-
         import("@/lib/config-transfer-lock"),
         import("@/lib/minimum-stay-policy-set"),
         import("@/lib/adult-member-hosting-policy-set"),
+        import("@/lib/adult-member-hosting-policy-reconciliation"),
       ]);
       acquireHostingCoverageQueueParticipantProof =
         participants.acquireHostingCoverageQueueParticipantProof;
@@ -461,6 +524,10 @@ let lockAdultMemberHostingPolicySet: (typeof import("@/lib/adult-member-hosting-
       lockMinimumStayPolicySet = minimumLock.lockMinimumStayPolicySet;
       lockAdultMemberHostingPolicySet =
         hostingLock.lockAdultMemberHostingPolicySet;
+      enqueueActiveHostingIncidentPolicyReconciliation =
+        policyReconciliation.enqueueActiveHostingIncidentPolicyReconciliation;
+      HOSTING_POLICY_RECONCILIATION_SELECT =
+        policyReconciliation.HOSTING_POLICY_RECONCILIATION_SELECT;
 
       const [
         { PrismaClient: SeparatePrismaClient },
@@ -889,32 +956,45 @@ let lockAdultMemberHostingPolicySet: (typeof import("@/lib/adult-member-hosting-
       await expect(Promise.all([first, second])).resolves.toBeDefined();
     });
 
-    it("keeps config-transfer and merge in the one-way policy-set order in both winner orders", async () => {
-      const configHeld = deferred();
+    it("moves rows created by config-transfer policy reconciliation when config wins before the full merge", async () => {
       const releaseConfig = deferred();
+      const configReady = deferredValue<{
+        policyEffect: Awaited<
+          ReturnType<typeof applyConfigTransferPolicyReconciliation>
+        >;
+        preview: Awaited<ReturnType<typeof previewMerge>>;
+      }>();
       const configFirst = mergeA.$transaction(
         async (tx) => {
           await acquireConfigImportLock(tx);
           await lockMinimumStayPolicySet(tx);
           await lockAdultMemberHostingPolicySet(tx);
-          configHeld.resolve();
+          const policyEffect = await applyConfigTransferPolicyReconciliation(tx);
+          const preview = await buildMemberMergePreview({
+            masterId: IDS.master,
+            loserId: IDS.loser,
+            actorMemberId: IDS.actor,
+            db: tx,
+          });
+          configReady.resolve({ policyEffect, preview });
           await releaseConfig.promise;
         },
         { timeout: 30_000 },
       );
-      await configHeld.promise;
+      const { policyEffect, preview } = await configReady.promise;
 
-      const mergeSecond = mergeB.$transaction(
-        async (tx) => {
-          await lockAdultMemberHostingPolicySet(tx);
-          await lockMemberMergeHostingCoverageParticipants(tx, {
-            masterId: IDS.master,
-            loserId: IDS.loser,
-            ownerMemberIds: [IDS.ownerA],
-          });
-        },
-        { timeout: 30_000 },
-      );
+      expect(policyEffect.queued).toBeGreaterThanOrEqual(BOOKING_IDS.length);
+      expect(policyEffect.fixtureRows).toHaveLength(BOOKING_IDS.length);
+      expect(policyEffect.mergeBookingRow.memberId).toBe(IDS.loser);
+      expect(preview.blockers).toEqual([]);
+      const mergeSecond = executeMemberMerge({
+        masterId: IDS.master,
+        loserId: IDS.loser,
+        actorMemberId: IDS.actor,
+        previewToken: preview.previewToken,
+        confirmationText: preview.confirmationPhrase,
+        db: mergeB,
+      });
       try {
         await waitForClientToBlock("race-2597-merge-b");
         // Waiting on the policy key must happen before merge takes Member rows.
@@ -927,40 +1007,68 @@ let lockAdultMemberHostingPolicySet: (typeof import("@/lib/adult-member-hosting-
       } finally {
         releaseConfig.resolve();
       }
-      await Promise.all([configFirst, mergeSecond]);
+      const [, mergeResult] = await Promise.all([configFirst, mergeSecond]);
 
-      const mergeHeld = deferred();
-      const releaseMerge = deferred();
-      const mergeFirst = mergeA.$transaction(
-        async (tx) => {
-          await lockAdultMemberHostingPolicySet(tx);
-          await lockMemberMergeHostingCoverageParticipants(tx, {
-            masterId: IDS.master,
-            loserId: IDS.loser,
-            ownerMemberIds: [IDS.ownerA],
-          });
-          mergeHeld.resolve();
-          await releaseMerge.promise;
-        },
-        { timeout: 30_000 },
-      );
-      await mergeHeld.promise;
+      expect(mergeResult.relationMoves).toContainEqual({
+        model: "HostingCoverageReevaluation.member",
+        count: 1,
+      });
+      await expect(
+        primary.hostingCoverageReevaluation.findUniqueOrThrow({
+          where: { id: policyEffect.mergeBookingRow.id },
+          select: { memberId: true, sourceBookingId: true },
+        }),
+      ).resolves.toEqual({
+        memberId: IDS.master,
+        sourceBookingId: IDS.mergeBooking,
+      });
+      await expect(
+        primary.member.findUnique({ where: { id: IDS.loser } }),
+      ).resolves.toBeNull();
+    });
+
+    it("makes config-transfer wait for a full merge, then reconciles survivor-owned bookings", async () => {
+      const { operation: mergeFirst, pause } = await startPausedMerge("before");
       const configSecond = mergeB.$transaction(
         async (tx) => {
           await acquireConfigImportLock(tx);
           await lockMinimumStayPolicySet(tx);
           await lockAdultMemberHostingPolicySet(tx);
+          return applyConfigTransferPolicyReconciliation(tx);
         },
         { timeout: 30_000 },
       );
       try {
         await waitForClientToBlock("race-2597-merge-b");
       } finally {
-        releaseMerge.resolve();
+        pause.release.resolve();
       }
+      const [mergeResult, configEffect] = await Promise.all([
+        mergeFirst,
+        configSecond,
+      ]);
+
+      expect(mergeResult).toMatchObject({
+        masterId: IDS.master,
+        loserId: IDS.loser,
+      });
+      expect(configEffect.queued).toBeGreaterThanOrEqual(BOOKING_IDS.length);
+      expect(configEffect.fixtureRows).toHaveLength(BOOKING_IDS.length);
+      expect(configEffect.mergeBookingRow.memberId).toBe(IDS.master);
       await expect(
-        Promise.all([mergeFirst, configSecond]),
-      ).resolves.toBeDefined();
+        primary.hostingCoverageReevaluation.findUniqueOrThrow({
+          where: { id: configEffect.mergeBookingRow.id },
+          select: { memberId: true, sourceBookingId: true },
+        }),
+      ).resolves.toEqual({
+        memberId: IDS.master,
+        sourceBookingId: IDS.mergeBooking,
+      });
+      expect(
+        await primary.hostingCoverageReevaluation.count({
+          where: { memberId: IDS.loser },
+        }),
+      ).toBe(0);
     });
   },
 );
