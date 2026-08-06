@@ -386,6 +386,35 @@ describe("the relationship is the exact Booking.memberId and nothing else (#2576
       ]);
   });
 
+  it("keeps active pre-confirmation bookings in the dependent cohort", () => {
+    const where = sameOwnerCoverageDependentWhere(booking() as never) as Record<
+      string,
+      unknown
+    >;
+    const candidate = (status: string) =>
+      booking({ id: `dependent-${status}`, status });
+
+    for (const status of [
+      "PENDING",
+      "PAYMENT_PENDING",
+      "AWAITING_REVIEW",
+      "CONFIRMED",
+      "PAID",
+    ]) {
+      expect(matchesWhere(candidate(status), where), status).toBe(true);
+    }
+    for (const status of [
+      "DRAFT",
+      "WAITLISTED",
+      "WAITLIST_OFFERED",
+      "BUMPED",
+      "CANCELLED",
+      "COMPLETED",
+    ]) {
+      expect(matchesWhere(candidate(status), where), status).toBe(false);
+    }
+  });
+
   it("covers a night from another booking with the same memberId", async () => {
     expect(
       await uncoveredNights([
@@ -964,6 +993,64 @@ describe("a change that would strand another booking (#2576 §6, §7, §14)", ()
     ).toBe(false);
   });
 
+  it("protects a pending dependent without promising or opening a false urgent incident", async () => {
+    const rows = strandingPair([REMAINING_MEMBER_CHILD]);
+    rows[1] = booking({
+      ...rows[1],
+      id: "b-main",
+      status: "PENDING",
+      guests: [guestRow("kid", KID_NIGHTS_FOR_STRANDING)],
+    });
+
+    const first = makeStore(rows);
+    const prompt = await reconcileAdultMemberHostingReviewWithSiblings(
+      "b-source",
+      first.db,
+      hostingCoverageActorOptions({ actorRole: "ADMIN", actorMemberId: "officer-1" }),
+    ).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(prompt).toBeInstanceOf(SameOwnerCoverageOverrideRequiredError);
+    if (!(prompt instanceof SameOwnerCoverageOverrideRequiredError)) {
+      throw new Error("expected the pending dependent to require an officer override");
+    }
+    expect(prompt.message).not.toContain("will stay confirmed");
+    expect(prompt.message).toContain("subject to the hosting check before confirmation");
+
+    const accepted = makeStore(rows);
+    await reconcileAdultMemberHostingReviewWithSiblings(
+      "b-source",
+      accepted.db,
+      hostingCoverageActorOptions({
+        actorRole: "ADMIN",
+        actorMemberId: "officer-1",
+        override: {
+          acknowledged: true,
+          reason: "Member rang; pending booking will be reviewed before confirmation",
+          strandedStateKey: prompt.strandedStateKey,
+        },
+      }),
+    );
+    expect(accepted.queued).toHaveLength(1);
+
+    const incident = await reconcileSameOwnerCoverageIncident(
+      {
+        bookingId: "b-main",
+        cause: "OFFICER_OVERRIDE",
+        actorMemberId: "officer-1",
+        reason: "Member rang; pending booking will be reviewed before confirmation",
+      },
+      accepted.db,
+    );
+    expect(incident.action).toBe("none");
+    expect(accepted.incidents).toEqual([]);
+    expect(rowFromStore(accepted.db, "b-main")).toMatchObject({
+      status: "PENDING",
+      adultMemberHostingReviewStatus: "PENDING",
+    });
+  });
+
   it("refuses to record an officer override with no reason (§7)", async () => {
     const rows = strandingPair([REMAINING_MEMBER_CHILD]);
     const { db, queued } = makeStore(rows);
@@ -1090,6 +1177,18 @@ describe("a change that would strand another booking (#2576 §6, §7, §14)", ()
     expect(body.strandedStateKey).toBe(error.strandedStateKey);
     expect(body.strandedStateKey).toMatch(/^v1:[0-9a-f]{64}$/);
     expect(body.strandedBookings[0]?.nights).toEqual(["2026-07-03", "2026-07-04"]);
+    expect(body.error).toContain(
+      "affected booking's lifecycle, existing bed allocation and payment records " +
+        "will remain unchanged",
+    );
+    expect(body.error).toContain(
+      "If it is already confirmed, it will be raised as an urgent " +
+        "hosting-compliance incident",
+    );
+    expect(body.error).toContain(
+      "otherwise, it remains subject to the hosting check before confirmation",
+    );
+    expect(body.error).not.toContain("will stay confirmed");
   });
 
   it("re-prompts instead of overriding when the exact stranded set changed", async () => {

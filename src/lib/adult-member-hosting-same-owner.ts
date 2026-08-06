@@ -102,8 +102,10 @@ export function sameBookingOwnerCoverageSourceWhere(
  * set is the wider `ACTIVE_BOOKING_STATUSES`, not the eligible-source set. A
  * dependent is any booking the rule would judge, and the rule judges a
  * PAYMENT_PENDING or AWAITING_REVIEW booking too — those cannot SUPPLY cover, but
- * they certainly NEED it, and a change that strands one of them has stranded a
- * real booking somebody is holding beds for.
+ * they certainly NEED it. Refusing an ordinary source-removal change preserves
+ * their prospective cover; if an authorised or unavoidable change proceeds, their
+ * own confirmation path still rechecks the rule. These statuses are not all
+ * capacity-holding, so this is a policy cohort rather than a bed-hold claim.
  *
  * NO GUEST-COMPOSITION FILTER, on purpose. §10 describes the bound as "active
  * bookings containing relevant non-member guest-nights", and the SQL for "has a
@@ -339,9 +341,11 @@ export function formatCoverageOverrideRequiredMessage(
   const opening =
     "This change would leave another booking on this account without the " +
     "required adult member coverage for one or more nights. It is allowed with " +
-    "a Booking Officer override: confirm the change and record a reason, and " +
-    "the affected booking will stay confirmed with its beds and payments and be " +
-    "raised as an urgent hosting-compliance incident.";
+    "a Booking Officer override: confirm the change and record a reason. The " +
+    "affected booking's lifecycle, existing bed allocation and payment records " +
+    "will remain unchanged. If it is already confirmed, it will be raised as an " +
+    "urgent hosting-compliance incident; otherwise, it remains subject to the " +
+    "hosting check before confirmation.";
   if (stranded.length === 0) return opening;
 
   const detail = stranded

@@ -1,7 +1,7 @@
 import { type APIRequestContext, type BrowserContext, expect, test } from "@playwright/test";
 
 import { loginPersona, storageStatePath } from "./helpers/auth";
-import { E2E_ADMIN, WAITLISTER } from "./helpers/fixtures";
+import { E2E_ADMIN, ROLE_PERSONAS, WAITLISTER } from "./helpers/fixtures";
 import {
   overrideModules,
   setModuleSettings,
@@ -49,8 +49,10 @@ test.describe.configure({ mode: "serial" });
 const MEMBER_NAME = `${WAITLISTER.firstName} ${WAITLISTER.lastName}`;
 
 let adminContext: BrowserContext;
+let bookingOfficerContext: BrowserContext;
 let memberContext: BrowserContext;
 let admin: APIRequestContext;
+let bookingOfficer: APIRequestContext;
 let member: APIRequestContext;
 let ownerMemberId: string;
 
@@ -191,6 +193,33 @@ function createCoveringBooking() {
 }
 
 /**
+ * Create the covered booking through a DIFFERENT officer from the source.
+ * Both bookings therefore share only `Booking.memberId`, not `createdById`, while
+ * the provider-free Internet Banking hold makes the dependent genuinely
+ * CONFIRMED. That distinction matters for the post-confirmation incident contract:
+ * a merely PENDING booking is protected from losing prospective cover, but it does
+ * not receive an urgent incident until the club has accepted it (§7, §16).
+ */
+function createConfirmedDependentBooking() {
+  return bookingOfficer.post("/api/bookings", {
+    data: {
+      checkIn: WINDOW.checkIn,
+      checkOut: WINDOW.checkOut,
+      forMemberId: ownerMemberId,
+      paymentMethod: "internet_banking",
+      guests: [
+        {
+          firstName: "Covered",
+          lastName: "Guest",
+          ageTier: "ADULT",
+          isMember: false,
+        },
+      ],
+    },
+  });
+}
+
+/**
  * Every live booking this member owns that checks in on our window, read through
  * the ADMIN list because that is the only booking-listing API the product exposes
  * (`e2e/helpers/reset.ts` reads the same one for the same reason).
@@ -243,6 +272,18 @@ test.beforeAll(async ({ browser }) => {
     storageState: storageStatePath(E2E_ADMIN.email),
   });
   admin = adminContext.request;
+  // Role-boundary personas do not have pre-generated storage state. Log the
+  // Booking Officer in explicitly, then reuse that isolated context's request
+  // client so source and dependent have different `createdById` values.
+  bookingOfficerContext = await browser.newContext();
+  const bookingOfficerPage = await bookingOfficerContext.newPage();
+  await loginPersona(
+    bookingOfficerPage,
+    ROLE_PERSONAS.ADMIN_BOOKINGS.email,
+    "198.51.100.70",
+  );
+  await bookingOfficerPage.close();
+  bookingOfficer = bookingOfficerContext.request;
 
   // Wanda is seeded PAID with a complete, confirmed profile. Alice's booking
   // setup deliberately completes her profile in another spec, so using Alice
@@ -277,6 +318,7 @@ test.afterAll(async () => {
       memberName: MEMBER_NAME,
       checkIn: WINDOW.checkIn,
     }).catch(() => undefined);
+    await bookingOfficerContext?.close();
     await adminContext?.close();
     await memberContext?.close();
   }
@@ -371,6 +413,7 @@ test("another booking on the same account supplies the cover, and cannot then be
       }
     | undefined;
   let source: Awaited<ReturnType<typeof createCoveringBooking>>;
+  let dependent: Awaited<ReturnType<typeof createConfirmedDependentBooking>>;
   try {
     const banking = await admin.get("/api/admin/internet-banking-settings");
     expect(banking.ok(), `read Internet Banking settings (${banking.status()})`).toBe(
@@ -392,6 +435,7 @@ test("another booking on the same account supplies the cover, and cannot then be
       `enable Internet Banking holds (${enabled.status()}): ${await enabled.text()}`,
     ).toBe(true);
     source = await createCoveringBooking();
+    dependent = await createConfirmedDependentBooking();
   } finally {
     if (bankingSnapshot) {
       const restored = await admin.put("/api/admin/internet-banking-settings", {
@@ -408,8 +452,14 @@ test("another booking on the same account supplies the cover, and cannot then be
     source.ok(),
     `create the covering booking (${source.status()}): ${await source.text()}`,
   ).toBeTruthy();
-  const sourceBooking = (await source.json()) as { id: string; status: string };
+  const sourceBooking = (await source.json()) as {
+    id: string;
+    status: string;
+    memberId: string;
+    createdById: string | null;
+  };
   createdBookingIds.push(sourceBooking.id);
+  expect(sourceBooking.memberId).toBe(ownerMemberId);
   // Only genuinely confirmed active attendance may cover (§3), so the premise of
   // the next step is that this booking really reached one of those states.
   expect(
@@ -418,18 +468,33 @@ test("another booking on the same account supplies the cover, and cannot then be
   ).toContain(sourceBooking.status);
 
   // 2. THE DEPENDENT. The same party shape that was refused above — and this time
-  //    it is accepted, because the adult member on the other booking covers every
-  //    night of it.
-  const dependent = await createMemberBooking([
-    { firstName: "Covered", lastName: "Guest", ageTier: "ADULT", isMember: false },
-  ]);
+  //    it is accepted and CONFIRMED, because the adult member on the other booking
+  //    covers every night of it. A different officer created each booking, so the
+  //    relationship proven here is Booking.memberId rather than createdById.
   expect(
     dependent.ok(),
     `same-owner cover must allow this booking (${dependent.status()}): ` +
       `${await dependent.text()}`,
   ).toBeTruthy();
-  const dependentBooking = (await dependent.json()) as { id: string };
+  const dependentBooking = (await dependent.json()) as {
+    id: string;
+    status: string;
+    memberId: string;
+    createdById: string | null;
+    hasNonMembers: boolean;
+    guests: Array<{ isMember: boolean }>;
+  };
   createdBookingIds.push(dependentBooking.id);
+  expect(dependentBooking.memberId).toBe(ownerMemberId);
+  expect(dependentBooking.createdById).not.toBe(sourceBooking.createdById);
+  expect(dependentBooking.hasNonMembers).toBe(true);
+  expect(dependentBooking.guests).toEqual([
+    expect.objectContaining({ isMember: false }),
+  ]);
+  expect(
+    ["CONFIRMED", "PAID"],
+    `dependent booking must be confirmed before its cover can become an incident (got ${dependentBooking.status})`,
+  ).toContain(dependentBooking.status);
 
   // 3. THE REFUSED CHANGE (§6). Cancelling the source would strand the dependent,
   //    so the member's own cancel is refused — and the source is left untouched.
@@ -580,9 +645,9 @@ test("another booking on the same account supplies the cover, and cannot then be
     "the dependent booking must still be there after the override",
   ).toBeTruthy();
   expect(
-    dependentRow!.status,
-    "the dependent booking must NOT be cancelled automatically (§7, §16)",
-  ).not.toBe("CANCELLED");
+    ["CONFIRMED", "PAID"],
+    "the dependent booking must keep its accepted lifecycle (§7, §16)",
+  ).toContain(dependentRow!.status);
 
   const incidentPage = await adminContext.newPage();
   await incidentPage.goto("/admin/bookings#hosting-coverage-incidents");
