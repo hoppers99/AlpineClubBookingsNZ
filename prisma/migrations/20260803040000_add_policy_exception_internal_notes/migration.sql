@@ -27,12 +27,11 @@
 -- no field to write one in. A decision the old colour records lands in
 -- `adminNotes` alone, which is what it has always meant.
 --
--- Timestamp coordination: 20260803040000 sorts strictly after the latest
--- committed migration on this branch base (20260803010000) and clears the two
--- prefixes claimed by in-flight sibling lanes at planning time (20260803020000
--- for #2569, 20260803030000 for #2520). It reuses no existing prefix — the
--- duplicate-prefix ratchet in scripts/check-migration-safety-coverage.sh turns
--- main red on a collision.
+-- Timestamp coordination: 20260803040000 sorts strictly after current main's
+-- 20260803030000 #2520 contract migration. It is distinct from #2569's earlier
+-- 20260803020000 policy migration and that lane's renumbered 20260803070000
+-- coverage-incidents migration. The duplicate-prefix ratchet in
+-- scripts/check-migration-safety-coverage.sh turns main red on a collision.
 
 -- The MODIFICATION flavour (POLICY_EXCEPTION rows on the shared table). Nullable
 -- and never populated for a LOCKED_PERIOD row, which has no officer-decision
