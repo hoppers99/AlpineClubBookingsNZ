@@ -15,11 +15,34 @@ export function unresolvedMemberContactCreateRecoveryWhere(
     localId: memberId,
     status: "FAILED",
     manuallyResolvedAt: null,
-    responsePayload: {
-      path: ["phase"],
-      equals: XERO_CONTACT_CREATE_LOCAL_LINK_FAILURE_PHASE,
-    },
+    AND: [
+      {
+        responsePayload: {
+          path: ["phase"],
+          equals: XERO_CONTACT_CREATE_LOCAL_LINK_FAILURE_PHASE,
+        },
+      },
+      {
+        responsePayload: {
+          path: ["providerContactCreated"],
+          equals: true,
+        },
+      },
+    ],
   };
+}
+
+export function isProviderCreatedLocalLinkFailurePayload(
+  payload: unknown,
+): boolean {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return false;
+  }
+  const record = payload as Record<string, unknown>;
+  return (
+    record.phase === XERO_CONTACT_CREATE_LOCAL_LINK_FAILURE_PHASE &&
+    record.providerContactCreated === true
+  );
 }
 
 export async function hasUnresolvedMemberContactCreateRecovery(
@@ -27,9 +50,12 @@ export async function hasUnresolvedMemberContactCreateRecovery(
 ): Promise<boolean> {
   const operation = await prisma.xeroSyncOperation.findFirst({
     where: unresolvedMemberContactCreateRecoveryWhere(memberId),
-    select: { id: true },
+    select: { id: true, responsePayload: true },
   });
-  return operation !== null;
+  return (
+    operation !== null &&
+    isProviderCreatedLocalLinkFailurePayload(operation.responsePayload)
+  );
 }
 
 export async function getMemberContactCreateRecoveryPending(params: {

@@ -657,6 +657,7 @@ export async function findOrCreateXeroContact(
         await failXeroSyncOperation(finalResolved.operationId, linkError, {
           phase: "local_link_after_xero_resolution",
           resolvedContactId: finalResolved.contactId,
+          providerContactCreated: finalResolved.kind === "created",
         });
       } catch (failErr) {
         logger.error(
@@ -880,6 +881,7 @@ export async function createXeroContactForMember(
       await failXeroSyncOperation(operation.id, linkError, {
         phase: "local_link_after_xero_resolution",
         resolvedContactId: createdContactId,
+        providerContactCreated: true,
       });
     } catch (failErr) {
       logger.error(

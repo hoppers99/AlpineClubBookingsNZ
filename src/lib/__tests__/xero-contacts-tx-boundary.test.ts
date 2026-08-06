@@ -188,7 +188,55 @@ describe("findOrCreateXeroContact transaction boundary (#1355)", () => {
     expect(mocks.failXeroSyncOperation).toHaveBeenCalledWith(
       "op-1",
       expect.objectContaining({ message: "transaction aborted" }),
-      expect.objectContaining({ phase: "local_link_after_xero_resolution" })
+      expect.objectContaining({
+        phase: "local_link_after_xero_resolution",
+        providerContactCreated: true,
+      })
+    );
+  });
+
+  it("records matched-existing local-link failures as not provider-created", async () => {
+    mocks.getContacts
+      .mockResolvedValueOnce({ body: { contacts: [] } })
+      .mockResolvedValueOnce({
+        body: {
+          contacts: [
+            { contactID: "contact-matched", name: "Alice Example" },
+          ],
+        },
+      });
+    mocks.createContacts.mockRejectedValue({
+      response: { statusCode: 400 },
+      message: JSON.stringify({
+        body: {
+          Message: "A validation exception occurred",
+          Elements: [
+            {
+              ValidationErrors: [
+                {
+                  Message:
+                    "The contact name Alice Example is already assigned to another contact. The contact name must be unique across all active contacts.",
+                },
+              ],
+            },
+          ],
+        },
+      }),
+    });
+    mocks.transaction.mockRejectedValue(new Error("transaction aborted"));
+
+    await expect(findOrCreateXeroContact("member-1")).rejects.toThrow(
+      "transaction aborted"
+    );
+
+    expect(mocks.failXeroSyncOperation).toHaveBeenCalledWith(
+      "op-1",
+      expect.objectContaining({ message: "transaction aborted" }),
+      expect.objectContaining({
+        phase: "local_link_after_xero_resolution",
+        resolvedContactId: "contact-matched",
+        providerContactCreated: false,
+      })
     );
   });
 
