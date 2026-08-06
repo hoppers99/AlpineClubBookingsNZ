@@ -31,6 +31,7 @@ import {
   reconcileSameOwnerCoverageIncident,
   reconcileAdultMemberHostingReviewWithSiblings,
   hostingCoverageActorOptions,
+  isHostingCoverageSourceBookingTerminal,
   loadSameOwnerCoverageDependentIds,
 } from "@/lib/adult-member-hosting-review";
 import { hostingCoverageStateKey } from "@/lib/adult-member-hosting-coverage-incidents";
@@ -205,6 +206,9 @@ function makeStore(
   const updates: Array<{ id: string; data: Record<string, unknown> }> = [];
 
   const db = {
+    $executeRaw: vi.fn(async (_query: unknown, actorMemberId?: string) =>
+      actorMemberId === "missing-officer" ? 0 : 1,
+    ),
     booking: {
       findUnique: vi.fn(async ({ where }: any) => byId.get(where.id) ?? null),
       findMany: vi.fn(async ({ where, select, orderBy, take }: any) => {
@@ -250,7 +254,10 @@ function makeStore(
       findMany: vi.fn().mockResolvedValue(options.policies ?? [policyRow()]),
     },
     lodge: { findFirst: vi.fn().mockResolvedValue({ name: "Ruapehu Lodge" }) },
-    member: { findMany: vi.fn().mockResolvedValue([]) },
+    member: {
+      findMany: vi.fn().mockResolvedValue([]),
+      findUnique: vi.fn(async ({ where }: any) => ({ id: where.id })),
+    },
     hostingCoverageIncident: {
       findMany: vi.fn(async ({ where }: any) =>
         incidents.filter((incident) =>
@@ -1696,6 +1703,53 @@ describe("the re-evaluation bound is a property of the item (#2576 §10)", () =>
   });
 });
 
+describe("source lifecycle resolution is independent of the bounded fan-out (#2596)", () => {
+  it.each([
+    "DRAFT",
+    "PENDING",
+    "PAYMENT_PENDING",
+    "CONFIRMED",
+    "PAID",
+    "COMPLETED",
+    "WAITLISTED",
+    "WAITLIST_OFFERED",
+    "AWAITING_REVIEW",
+  ])("does not infer an extant %s source was cancelled", async (status) => {
+    const { db } = makeStore([booking({ id: "source-active", status })]);
+
+    await expect(
+      isHostingCoverageSourceBookingTerminal("source-active", db),
+    ).resolves.toBe(false);
+    expect(db.booking.findUnique).toHaveBeenCalledWith({
+      where: { id: "source-active" },
+      select: { status: true, deletedAt: true },
+    });
+  });
+
+  it.each(["CANCELLED", "BUMPED"])(
+    "recognises the terminal %s lifecycle directly",
+    async (status) => {
+      const { db } = makeStore([booking({ id: "source-terminal", status })]);
+      await expect(
+        isHostingCoverageSourceBookingTerminal("source-terminal", db),
+      ).resolves.toBe(true);
+    },
+  );
+
+  it("recognises soft-deleted and hard-missing sources as terminal", async () => {
+    const { db } = makeStore([
+      booking({ id: "source-deleted", deletedAt: new Date("2026-07-02") }),
+    ]);
+
+    await expect(
+      isHostingCoverageSourceBookingTerminal("source-deleted", db),
+    ).resolves.toBe(true);
+    await expect(
+      isHostingCoverageSourceBookingTerminal("source-missing", db),
+    ).resolves.toBe(true);
+  });
+});
+
 /** The live booking row inside a fake store, for asserting what was written. */
 function rowFromStore(db: any, id: string): Record<string, unknown> {
   return db.__rows.get(id) as Record<string, unknown>;
@@ -1703,6 +1757,38 @@ function rowFromStore(db: any, id: string): Record<string, unknown> {
 
 describe("settling a dependent booking after the change (#2576 §7, §14, §16)", () => {
   const KID_NIGHTS = ["2026-07-03", "2026-07-04"];
+
+  it("takes the policy-set lock before reading policy or writing an incident", async () => {
+    const { db } = makeStore([
+      booking({ id: "b-main", guests: [guestRow("kid", KID_NIGHTS)] }),
+    ]);
+    const order: string[] = [];
+    db.$executeRaw.mockImplementation(async () => {
+      order.push("policy-set-lock");
+      return 1;
+    });
+    db.adultMemberHostingPolicy.findMany.mockImplementation(async () => {
+      order.push("policy-read");
+      return [policyRow()];
+    });
+    db.hostingCoverageIncident.create.mockImplementation(async ({ data }: any) => {
+      order.push("incident-write");
+      return { id: "incident-1", ...data };
+    });
+
+    await reconcileSameOwnerCoverageIncident(
+      { bookingId: "b-main", cause: "SYSTEM_CHANGE" },
+      db,
+    );
+
+    expect(order[0]).toBe("policy-set-lock");
+    expect(order.indexOf("policy-set-lock")).toBeLessThan(
+      order.indexOf("policy-read"),
+    );
+    expect(order.indexOf("policy-read")).toBeLessThan(
+      order.indexOf("incident-write"),
+    );
+  });
 
   it("opens ONE urgent incident and never touches the booking's lifecycle", async () => {
     const rows = [
@@ -1804,6 +1890,35 @@ describe("settling a dependent booking after the change (#2576 §7, §14, §16)"
       overriddenByMemberId: "officer-1",
       overrideReason: "Member asked us to cancel the other booking",
     });
+  });
+
+  it("degrades a deleted queued actor to null while preserving the mandatory reason", async () => {
+    const { db, incidents } = makeStore([
+      booking({ id: "b-main", guests: [guestRow("kid", KID_NIGHTS)] }),
+    ]);
+
+    await expect(
+      reconcileSameOwnerCoverageIncident(
+        {
+          bookingId: "b-main",
+          cause: "OFFICER_OVERRIDE",
+          actorMemberId: "missing-officer",
+          reason: "Queued before the officer profile was deleted",
+        },
+        db,
+      ),
+    ).resolves.toMatchObject({ action: "opened" });
+    expect(incidents[0]).toMatchObject({
+      cause: "OFFICER_OVERRIDE",
+      overriddenByMemberId: null,
+      overrideReason: "Queued before the officer profile was deleted",
+    });
+    expect(
+      db.$executeRaw.mock.calls.some((call: unknown[]) =>
+        call[1] === "missing-officer",
+      ),
+    ).toBe(true);
+    expect(db.member.findUnique).not.toHaveBeenCalled();
   });
 
   it("does not refuse from inside the drain, however the club is configured", async () => {

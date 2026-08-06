@@ -132,6 +132,7 @@ else
   if ! MIGRATION_SAFETY_LEDGER="$MIGRATION_SAFETY_LEDGER" \
        ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS=1 \
        BLUE_GREEN_MIGRATION_OVERRIDE_REASON="PR-time ledger-coverage check (documentation gate, not a deploy)" \
+       BLUE_GREEN_OLD_APP_AND_WORKERS_STOPPED=1 \
        bash "$VALIDATOR" "${covered_sql_files[@]}" >/dev/null 2>"$coverage_err"; then
     echo "Ledger coverage check FAILED: a migration matches the blue/green safety regexes but has no valid ${MIGRATION_SAFETY_LEDGER} entry." >&2
     echo "Add a ledger row (see docs/BLUE_GREEN_MIGRATION_POLICY.md) before merging." >&2
