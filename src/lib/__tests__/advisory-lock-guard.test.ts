@@ -16,7 +16,8 @@ import { describe, expect, it } from "vitest";
 //    inventory only with that classification and PR lock-impact evidence.
 //
 // 2. The per-lodge key is minted ONLY by acquireLodgeCapacityLock:
-//    hashtextextended must not appear outside src/lib/capacity.ts, so an
+//    hashtextextended must not appear outside src/lib/lodge-capacity-lock.ts,
+//    so an
 //    ad-hoc reconstruction can never drift from the canonical key.
 //
 // Domain-keyed advisory locks (hashtext of a namespaced string) are
@@ -29,12 +30,21 @@ const SRC_DIR = path.join(process.cwd(), "src");
 // fine (delete the entry at zero); growing one needs a writer classification
 // and explicit justification in the PR that edits this file.
 const GLOBAL_BOOKING_MONEY_LOCK_INVENTORY: Record<string, number> = {
+  // #2586: approving a flagged live booking can make it roster-eligible, while
+  // rejecting one must remain ineligible until cancellation. Both review
+  // decisions share one helper that takes global -> immutable lodge before the
+  // authoritative re-read and guarded claim; provider work remains outside.
+  "src/app/api/admin/bookings/[id]/review/route.ts": 1,
   // #1881: the two capacity-admission branches in confirm-pending-guests
   // deliberately compose global lifecycle lock(1) first with the canonical
   // per-lodge capacity lock. The global lock prevents cancellation/settlement
   // resurrection while the lodge lock serialises the capacity claim.
   "src/app/api/admin/bookings/[id]/confirm-pending-guests/route.ts": 2,
   "src/app/api/bookings/[id]/waitlist-confirm/route.ts": 1,
+  // #2586: departure cleanup shares the consent writer's global -> lodge ->
+  // roster -> BookingGuest order so it cannot deadlock by locking the guest
+  // tuple before consent decline/expiry reaches the same roster partition.
+  "src/app/api/lodge/guests/[date]/depart/route.ts": 1,
   // #2265: the create-payment-intent pay transaction is a three-tier writer —
   // it flips a booking's status, claims capacity, and moves account credit. It
   // composes global lifecycle lock(1) FIRST, then the canonical per-lodge
@@ -102,6 +112,11 @@ const GLOBAL_BOOKING_MONEY_LOCK_INVENTORY: Record<string, number> = {
   // capacity when it restores a PAYMENT_PENDING booking, so it composes the
   // same global-before-per-lodge pair in the same order.
   "src/lib/payment-reconciliation.ts": 2,
+  // #2586: eligibility-validating roster generation/save/confirmation joins
+  // the global -> lodge booking-writer order before its roster-date key. This
+  // closes the initially-empty partition race without making every booking
+  // writer enumerate all possible roster dates.
+  "src/lib/roster-lock.ts": 1,
   "src/lib/school-booking-request.ts": 1,
   "src/lib/xero-group-settlement-invoices.ts": 3,
   "src/lib/xero-inbound/invoice-paid-effects.ts": 1,
@@ -116,7 +131,9 @@ const SCOPED_ADVISORY_LOCK_INVENTORY: Record<string, number> = {
   // catch the race). Single-lock holders; composition and counterpart analysis
   // in docs/CONCURRENCY_AND_LOCKING.md.
   "src/lib/admin-family-group-requests-service.ts": 2,
-  "src/lib/admin-roster-service.ts": 1,
+  // #2586: every roster-date writer calls the shared helper; the key is minted
+  // once here and writer participation is pinned by roster-lock-contract.test.
+  "src/lib/roster-lock.ts": 1,
   // #2364: lockAdultMemberHostingPolicySet takes the single global
   // adult-member-hosting-policy-set key before any read by an admin CRUD write
   // or a configuration import, and the migration's BEFORE STATEMENT trigger
@@ -182,8 +199,8 @@ const SCOPED_ADVISORY_LOCK_INVENTORY: Record<string, number> = {
   // duplicate/drop occurrences. Single-lock holder; its own keyspace, composed
   // with no booking/money/capacity/lifecycle key (calendar rows only).
   "src/lib/calendar-service.ts": 1,
-  "src/lib/capacity.ts": 1,
-  "src/lib/config-transfer/apply.ts": 1,
+  "src/lib/config-transfer-lock.ts": 1,
+  "src/lib/lodge-capacity-lock.ts": 1,
   "src/lib/member-credit.ts": 1,
   "src/lib/member-lifecycle-actions.ts": 2,
   // #2363: every minimum-stay policy writer takes the one global policy-set
@@ -268,7 +285,7 @@ const ROW_LOCK_SITE_INVENTORY: Record<string, number> = {
   "src/lib/member-merge.ts": 1,
 };
 
-const CAPACITY_LOCK_MINT = "src/lib/capacity.ts";
+const CAPACITY_LOCK_MINT = "src/lib/lodge-capacity-lock.ts";
 
 function walk(dir: string, files: string[] = []): string[] {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -462,7 +479,7 @@ describe("advisory lock guard (#182 / H1 regression class)", () => {
     expect(approval).toContain("lodgeId: conversion.lodgeId");
   });
 
-  it("mints the per-lodge capacity key only in capacity.ts", () => {
+  it("mints the per-lodge capacity key only in lodge-capacity-lock.ts", () => {
     const offenders = sources
       .filter(({ rel }) => rel !== CAPACITY_LOCK_MINT)
       .filter(({ text }) => countCodeOccurrences(text, "hashtextextended") > 0)
@@ -470,7 +487,7 @@ describe("advisory lock guard (#182 / H1 regression class)", () => {
 
     expect(
       offenders,
-      "hashtextextended found outside src/lib/capacity.ts. The per-lodge " +
+      "hashtextextended found outside src/lib/lodge-capacity-lock.ts. The per-lodge " +
         "capacity key must only be constructed by acquireLodgeCapacityLock so " +
         "every participant provably shares one key — call the helper instead " +
         "of rebuilding the expression."

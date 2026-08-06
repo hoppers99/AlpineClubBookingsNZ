@@ -11,6 +11,9 @@ import { AdminReviewStatus, BookingStatus } from "@prisma/client";
 // 400 through the same schema parse.
 const h = vi.hoisted(() => ({
   requireAdmin: vi.fn(),
+  transaction: vi.fn(),
+  executeRaw: vi.fn(),
+  acquireLodgeCapacityLock: vi.fn(),
   findUnique: vi.fn(),
   updateMany: vi.fn(),
   reconcile: vi.fn(),
@@ -22,7 +25,13 @@ const h = vi.hoisted(() => ({
 
 vi.mock("@/lib/session-guards", () => ({ requireAdmin: h.requireAdmin }));
 vi.mock("@/lib/prisma", () => ({
-  prisma: { booking: { findUnique: h.findUnique, updateMany: h.updateMany } },
+  prisma: {
+    $transaction: h.transaction,
+    booking: { findUnique: h.findUnique, updateMany: h.updateMany },
+  },
+}));
+vi.mock("@/lib/capacity", () => ({
+  acquireLodgeCapacityLock: h.acquireLodgeCapacityLock,
 }));
 vi.mock("@/lib/bed-allocation-lifecycle", () => ({
   reconcileBedAllocationsForBooking: h.reconcile,
@@ -68,6 +77,12 @@ function auditFor(action: string) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  h.transaction.mockImplementation(async (callback) =>
+    callback({
+      $executeRaw: h.executeRaw,
+      booking: { findUnique: h.findUnique, updateMany: h.updateMany },
+    }),
+  );
   h.requireAdmin.mockResolvedValue({
     ok: true,
     session: { user: { id: "admin-1" } },

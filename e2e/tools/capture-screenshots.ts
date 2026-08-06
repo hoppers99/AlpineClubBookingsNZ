@@ -211,7 +211,13 @@ const CAPTURES: Capture[] = [
   // work-parties (`workParties`) and hut-leaders (`hutLeaders`) default ON in the
   // seed, so all seven capture normally.
   { name: "admin-chores", route: "/admin/chores", area: "admin" },
-  { name: "admin-roster", route: "/admin/roster", area: "admin" },
+  {
+    name: "admin-roster",
+    route: "/admin/roster",
+    area: "admin",
+    waitForText: "Chore Roster",
+    prepare: prepareAdminRosterDocumentation,
+  },
   { name: "admin-hut-leaders", route: "/admin/hut-leaders", area: "admin" },
   { name: "admin-work-parties", route: "/admin/work-parties", area: "admin" },
   { name: "admin-lodge", route: "/admin/lodge", area: "admin" },
@@ -288,6 +294,27 @@ async function prepareMembersDocumentationTable(page: Page): Promise<void> {
   await page.getByRole("link", { name: "Open" }).first().waitFor({
     state: "visible",
     timeout: 10_000,
+  });
+}
+
+/**
+ * Show the staged whole-roster editor against the dedicated two-booking demo
+ * night. Entering Edit is non-persistent; the capture never clicks Save.
+ */
+async function prepareAdminRosterDocumentation(page: Page): Promise<void> {
+  const date = DEMO_BOOKING_WINDOWS.rosterEdit.checkIn;
+  const loaded = page.waitForResponse((response) =>
+    new URL(response.url()).pathname === `/api/admin/roster/${date}` &&
+    response.request().method() === "GET",
+  );
+  await page.locator("#date").fill(date);
+  await loaded;
+  const edit = page.getByRole("button", { name: "Edit roster" });
+  await edit.waitFor({ state: "visible", timeout: 15_000 });
+  await edit.click();
+  await page.locator('select[id^="roster-guest-"]').first().waitFor({
+    state: "visible",
+    timeout: 15_000,
   });
 }
 

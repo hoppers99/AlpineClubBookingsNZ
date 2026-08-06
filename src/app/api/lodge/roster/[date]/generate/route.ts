@@ -160,6 +160,8 @@ export async function POST(
       where: {
         date: { gte: lookbackDate, lt: date },
         bookingGuestId: { in: guests.map((g) => g.id) },
+        booking: lodgeNullTolerantScope(lodgeId),
+        choreTemplate: lodgeNullTolerantScope(lodgeId),
       },
     });
 

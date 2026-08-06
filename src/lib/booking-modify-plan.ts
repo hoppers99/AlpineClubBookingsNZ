@@ -2122,11 +2122,13 @@ export async function applyChoreCleanup(
     newCheckIn,
     newCheckOut,
     datesChanged,
+    rosterDatesAlreadyLocked = false,
   }: {
     bookingId: string;
     newCheckIn: Date;
     newCheckOut: Date;
     datesChanged: boolean;
+    rosterDatesAlreadyLocked?: boolean;
   },
 ): Promise<string[]> {
   let choreWarnings: string[] = [];
@@ -2136,12 +2138,14 @@ export async function applyChoreCleanup(
       bookingId,
       newCheckIn,
       newCheckOut,
+      { rosterDatesAlreadyLocked },
     );
     choreWarnings = result.choreWarnings;
   }
   const rangeCleanup = await cleanupChoreAssignmentsForGuestStayRanges(
     tx,
     bookingId,
+    { rosterDatesAlreadyLocked },
   );
   return [...choreWarnings, ...rangeCleanup.choreWarnings];
 }

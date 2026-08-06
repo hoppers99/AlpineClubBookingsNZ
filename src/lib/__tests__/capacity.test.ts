@@ -725,7 +725,7 @@ describe("multi-lodge capacity scoping", () => {
     // transaction died with a void-deserialization error under the pg
     // driver adapter.
     const source = readFileSync(
-      path.join(process.cwd(), "src/lib/capacity.ts"),
+      path.join(process.cwd(), "src/lib/lodge-capacity-lock.ts"),
       "utf8",
     );
     const lockFn = source.slice(

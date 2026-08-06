@@ -17,10 +17,11 @@ const mockPrisma = {
     createMany: vi.fn(),
     groupBy: vi.fn(),
   },
-  choreTemplate: { findMany: vi.fn() },
+  choreTemplate: { findMany: vi.fn(), count: vi.fn() },
   hutLeaderAssignment: { count: vi.fn(), findUnique: vi.fn() },
   memberLodgeAccess: { findMany: vi.fn() },
   lodge: { findFirst: vi.fn() },
+  $executeRaw: vi.fn(),
   $transaction: vi.fn(),
 };
 
@@ -80,6 +81,7 @@ describe("F9: PUT /api/lodge/roster/[date] - chore completion", () => {
     mockPrisma.booking.count.mockResolvedValue(0);
     mockPrisma.memberLodgeAccess.findMany.mockResolvedValue([]);
     mockPrisma.lodge.findFirst.mockResolvedValue({ id: "default-lodge" });
+    mockPrisma.$transaction.mockImplementation(async (fn: any) => fn(mockPrisma));
     mockAuth.mockResolvedValue({ user: { id: "lodge1", role: "LODGE", accessRoles: [{ role: "LODGE" }] } });
     mockPrisma.hutLeaderAssignment.count.mockResolvedValue(0);
     mockPrisma.booking.count.mockResolvedValue(0);
@@ -485,15 +487,9 @@ describe("F9: PUT /api/lodge/guests/[date]/depart", () => {
     mockPrisma.lodge.findFirst.mockResolvedValue({ id: "default-lodge" });
     mockAuth.mockResolvedValue({ user: { id: "lodge1", role: "LODGE", accessRoles: [{ role: "LODGE" }] } });
     mockPrisma.$transaction.mockImplementation(async (fn: any) =>
-      fn({
-        bookingGuest: {
-          update: mockPrisma.bookingGuest.update,
-        },
-        choreAssignment: {
-          deleteMany: mockPrisma.choreAssignment.deleteMany,
-        },
-      })
+      fn(mockPrisma)
     );
+    mockPrisma.choreAssignment.findMany.mockResolvedValue([]);
   });
 
   it("sets departedAt when guest has not departed", async () => {
@@ -539,8 +535,14 @@ describe("F9: PUT /api/lodge/guests/[date]/depart", () => {
         bookingGuestId: "g1",
         date: { gt: new Date("2026-07-10T00:00:00.000Z") },
         status: "SUGGESTED",
+        booking: { lodgeId: "default-lodge" },
+        choreTemplate: { lodgeId: "default-lodge" },
       },
     });
+    expect(mockPrisma.$executeRaw).toHaveBeenCalledTimes(2);
+    expect(mockPrisma.$executeRaw.mock.invocationCallOrder.at(-1)!).toBeLessThan(
+      mockPrisma.bookingGuest.update.mock.invocationCallOrder[0],
+    );
   });
 
   it("clears departedAt when guest already departed (toggle off)", async () => {
@@ -913,21 +915,25 @@ describe("F6: POST /api/lodge/roster/[date]/confirm", () => {
     mockPrisma.booking.count.mockResolvedValue(1);
     mockPrisma.memberLodgeAccess.findMany.mockResolvedValue([]);
     mockPrisma.lodge.findFirst.mockResolvedValue({ id: "default-lodge" });
-    mockPrisma.bookingGuest.findMany.mockResolvedValue([{ id: "g1", bookingId: "b1" }]);
+    mockPrisma.bookingGuest.findMany.mockResolvedValue([{
+      id: "g1",
+      bookingId: "b1",
+      stayStart: new Date("2026-07-10T00:00:00.000Z"),
+      stayEnd: new Date("2026-07-11T00:00:00.000Z"),
+      nights: [],
+      booking: {
+        checkIn: new Date("2026-07-10T00:00:00.000Z"),
+        checkOut: new Date("2026-07-11T00:00:00.000Z"),
+      },
+    }]);
+    mockPrisma.choreTemplate.count.mockResolvedValue(1);
+    mockPrisma.$transaction.mockImplementation(async (fn: any) => fn(mockPrisma));
     // Confirm requires hut-leader or admin tier (LODGE can't confirm)
     mockAuth.mockResolvedValue({ user: { id: "admin1", role: "ADMIN", accessRoles: [{ role: "ADMIN" }] } });
   });
 
   it("saves allocations as CONFIRMED when no existing roster", async () => {
     mockPrisma.choreAssignment.count.mockResolvedValue(0);
-    mockPrisma.$transaction.mockImplementation(async (fn: any) => {
-      await fn({
-        choreAssignment: {
-          deleteMany: vi.fn(),
-          createMany: vi.fn(),
-        },
-      });
-    });
 
     const { POST } = await import(
       "@/app/api/lodge/roster/[date]/confirm/route"
@@ -979,14 +985,6 @@ describe("F6: POST /api/lodge/roster/[date]/confirm", () => {
 
   it("allows overwrite when explicitly set", async () => {
     mockPrisma.choreAssignment.count.mockResolvedValue(5);
-    mockPrisma.$transaction.mockImplementation(async (fn: any) => {
-      await fn({
-        choreAssignment: {
-          deleteMany: vi.fn(),
-          createMany: vi.fn(),
-        },
-      });
-    });
 
     const { POST } = await import(
       "@/app/api/lodge/roster/[date]/confirm/route"
@@ -1055,7 +1053,17 @@ describe("F6: POST /api/lodge/roster/[date]/confirm", () => {
   });
 
   it("rejects allocations whose guest does not belong to the booking for that date", async () => {
-    mockPrisma.bookingGuest.findMany.mockResolvedValue([{ id: "g1", bookingId: "b-other" }]);
+    mockPrisma.bookingGuest.findMany.mockResolvedValue([{
+      id: "g1",
+      bookingId: "b-other",
+      stayStart: new Date("2026-07-10T00:00:00.000Z"),
+      stayEnd: new Date("2026-07-11T00:00:00.000Z"),
+      nights: [],
+      booking: {
+        checkIn: new Date("2026-07-10T00:00:00.000Z"),
+        checkOut: new Date("2026-07-11T00:00:00.000Z"),
+      },
+    }]);
 
     const { POST } = await import(
       "@/app/api/lodge/roster/[date]/confirm/route"
@@ -1076,7 +1084,9 @@ describe("F6: POST /api/lodge/roster/[date]/confirm", () => {
 
     const res = await POST(req, makeParams());
     expect(res.status).toBe(400);
-    expect(mockPrisma.$transaction).not.toHaveBeenCalled();
+    expect(mockPrisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(mockPrisma.choreAssignment.deleteMany).not.toHaveBeenCalled();
+    expect(mockPrisma.choreAssignment.createMany).not.toHaveBeenCalled();
   });
 });
 

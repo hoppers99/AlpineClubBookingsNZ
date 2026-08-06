@@ -17,6 +17,7 @@ import { requireAdmin } from "@/lib/session-guards";
 import { revalidatePublicPageContent } from "@/lib/public-content-revalidation";
 import { invalidatePublicClubIdentity } from "@/lib/public-layout-cache";
 import { primeClubIdentitySync } from "@/lib/club-identity-settings";
+import { acquireConfigImportLock } from "@/lib/config-transfer-lock";
 
 const createSchema = z
   .object({
@@ -64,9 +65,9 @@ export async function POST(request: Request) {
     );
   }
 
-  const slug = await buildUniqueLodgeSlug(prisma, parsed.data.name);
-
   const created = await prisma.$transaction(async (tx) => {
+    await acquireConfigImportLock(tx);
+    const slug = await buildUniqueLodgeSlug(tx, parsed.data.name);
     const lodge = await tx.lodge.create({
       data: {
         name: parsed.data.name.trim(),

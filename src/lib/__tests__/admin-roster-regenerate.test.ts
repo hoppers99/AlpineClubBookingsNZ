@@ -86,6 +86,7 @@ describe("PUT /api/admin/roster/[date] regenerate action", () => {
     mockTransaction.mockImplementation(async (callback: (tx: unknown) => unknown) =>
       callback({
         $executeRaw: mockTxExecuteRaw,
+        booking: { findMany: mockBookingFindMany },
         choreAssignment: {
           findMany: mockChoreAssignmentFindMany,
           deleteMany: mockChoreAssignmentDeleteMany,
@@ -111,7 +112,8 @@ describe("PUT /api/admin/roster/[date] regenerate action", () => {
     const body = await res.json()
 
     expect(res.status).toBe(400)
-    expect(body.error).toBe("Invalid input")
+    expect(body.code).toBe("ROSTER_INPUT_INVALID")
+    expect(body.error).toContain("Review the roster and try again")
     expect(mockTransaction).not.toHaveBeenCalled()
   })
 
@@ -129,11 +131,12 @@ describe("PUT /api/admin/roster/[date] regenerate action", () => {
     const body = await res.json()
 
     expect(res.status).toBe(409)
-    expect(body.error).toContain("Confirm overwrite")
+    expect(body.code).toBe("ROSTER_REGENERATE_CONFLICT")
+    expect(body.error).toContain("Confirm the overwrite warning")
     expect(mockBookingFindMany).not.toHaveBeenCalled()
     expect(mockChoreAssignmentDeleteMany).not.toHaveBeenCalled()
     expect(mockChoreAssignmentCreateMany).not.toHaveBeenCalled()
-    expect(mockTxExecuteRaw).toHaveBeenCalledTimes(1)
+    expect(mockTxExecuteRaw).toHaveBeenCalledTimes(3)
   })
 
   it("replaces confirmed assignments with fresh suggested ones after acknowledgement", async () => {
@@ -197,7 +200,11 @@ describe("PUT /api/admin/roster/[date] regenerate action", () => {
     expect(res.status).toBe(200)
     expect(body.success).toBe(true)
     expect(mockChoreAssignmentDeleteMany).toHaveBeenCalledWith({
-      where: { date: new Date("2026-04-10T00:00:00.000Z") },
+      where: {
+        date: new Date("2026-04-10T00:00:00.000Z"),
+        booking: { lodgeId: "default-lodge" },
+        choreTemplate: { lodgeId: "default-lodge" },
+      },
     })
     expect(mockChoreAssignmentCreateMany).toHaveBeenCalledWith({
       data: [
@@ -209,7 +216,7 @@ describe("PUT /api/admin/roster/[date] regenerate action", () => {
         }),
       ],
     })
-    expect(mockTxExecuteRaw).toHaveBeenCalledTimes(1)
+    expect(mockTxExecuteRaw).toHaveBeenCalledTimes(3)
   })
 })
 
@@ -233,6 +240,7 @@ describe("PUT /api/admin/roster/[date] excludes unconsented member guests (D-12,
     mockTransaction.mockImplementation(async (callback: (tx: unknown) => unknown) =>
       callback({
         $executeRaw: mockTxExecuteRaw,
+        booking: { findMany: mockBookingFindMany },
         choreAssignment: {
           findMany: mockChoreAssignmentFindMany,
           deleteMany: mockChoreAssignmentDeleteMany,
@@ -295,8 +303,8 @@ describe("PUT /api/admin/roster/[date] excludes unconsented member guests (D-12,
     // the token minter all work from.
     const allocatedGuests = mockAllocateChores.mock.calls[0][1] as Array<{ id: string }>
     expect(allocatedGuests.map((guest) => guest.id)).toEqual([
-      "guest-ordinary",
       "guest-agreed",
+      "guest-ordinary",
     ])
   })
 })

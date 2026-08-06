@@ -85,6 +85,7 @@ import {
 } from "@/lib/member-guest-add-policy";
 import type { MemberGuestAddActor } from "@/lib/member-guest-consent";
 import { resolveSubscriptionLockoutMode } from "@/lib/member-subscription-eligibility";
+import { lockRosterDateRangesAndDates } from "@/lib/roster-lock";
 
 type ModifiedBooking = Booking & {
   guests: BookingGuest[];
@@ -484,6 +485,23 @@ export async function modifyBookingBatch({
       input,
     });
 
+    // Lock the complete old and proposed booking envelopes before any
+    // Booking/BookingGuest tuple write. This includes empty roster partitions,
+    // so a concurrent whole-roster Save cannot validate the old stay and then
+    // insert after this modification moves or removes the guest.
+    const existingAssignmentDates = await tx.choreAssignment.findMany({
+      where: { bookingId },
+      select: { date: true },
+    });
+    await lockRosterDateRangesAndDates(
+      tx,
+      [
+        { start: booking.checkIn, end: booking.checkOut },
+        { start: dates.newCheckIn, end: dates.newCheckOut },
+      ],
+      existingAssignmentDates.map((assignment) => assignment.date),
+    );
+
     // #2363: this is the live member/admin edit surface, so the minimum-stay
     // policy is enforced on the SAVE and not only advised on the preview. It
     // mirrors the protected sibling `modifyBookingDates` exactly: a non-admin
@@ -680,6 +698,7 @@ export async function modifyBookingBatch({
       newCheckIn: dates.newCheckIn,
       newCheckOut: dates.newCheckOut,
       datesChanged: dates.datesChanged,
+      rosterDatesAlreadyLocked: true,
     });
 
     const payments = await applyPaymentAdjustments(tx, {

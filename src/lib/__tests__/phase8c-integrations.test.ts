@@ -1,5 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
+// chore-cleanup imports the shared roster lock. Capacity is not exercised by
+// these date-key cleanup tests, so keep its module-level Prisma client out.
+vi.mock("@/lib/capacity", () => ({
+  acquireLodgeCapacityLock: vi.fn(),
+}));
+
 // =====================================================================
 // CHR-01: Chore cleanup on date change
 // =====================================================================
@@ -31,14 +37,15 @@ describe("CHR-01: cleanupChoreAssignmentsForDateChange", () => {
       "@/lib/chore-cleanup"
     );
 
-    const deleteMock = vi.fn().mockResolvedValue({});
+    const deleteMock = vi.fn().mockResolvedValue({ count: 1 });
     const tx = {
+      $executeRaw: vi.fn(),
       choreAssignment: {
         findMany: vi.fn().mockResolvedValue([
           makeAssignment("ca1", new Date("2026-06-01"), "SUGGESTED", "Dishes"),
           makeAssignment("ca2", new Date("2026-06-02"), "SUGGESTED", "Sweep"),
         ]),
-        delete: deleteMock,
+        deleteMany: deleteMock,
       },
     } as any;
 
@@ -59,8 +66,9 @@ describe("CHR-01: cleanupChoreAssignmentsForDateChange", () => {
       "@/lib/chore-cleanup"
     );
 
-    const deleteMock = vi.fn().mockResolvedValue({});
+    const deleteMock = vi.fn().mockResolvedValue({ count: 1 });
     const tx = {
+      $executeRaw: vi.fn(),
       choreAssignment: {
         findMany: vi.fn().mockResolvedValue([
           makeAssignment(
@@ -70,7 +78,7 @@ describe("CHR-01: cleanupChoreAssignmentsForDateChange", () => {
             "Dishes"
           ),
         ]),
-        delete: deleteMock,
+        deleteMany: deleteMock,
       },
     } as any;
 
@@ -94,6 +102,7 @@ describe("CHR-01: cleanupChoreAssignmentsForDateChange", () => {
     );
 
     const tx = {
+      $executeRaw: vi.fn(),
       choreAssignment: {
         findMany: vi.fn().mockResolvedValue([
           makeAssignment(
@@ -103,7 +112,7 @@ describe("CHR-01: cleanupChoreAssignmentsForDateChange", () => {
             "Sweep"
           ),
         ]),
-        delete: vi.fn(),
+        deleteMany: vi.fn(),
       },
     } as any;
 
@@ -114,7 +123,7 @@ describe("CHR-01: cleanupChoreAssignmentsForDateChange", () => {
       new Date("2026-06-05")
     );
 
-    expect(tx.choreAssignment.delete).not.toHaveBeenCalled();
+    expect(tx.choreAssignment.deleteMany).not.toHaveBeenCalled();
     expect(result.choreWarnings).toHaveLength(1);
     expect(result.choreWarnings[0]).toContain("COMPLETED");
   });
@@ -124,8 +133,9 @@ describe("CHR-01: cleanupChoreAssignmentsForDateChange", () => {
       "@/lib/chore-cleanup"
     );
 
-    const deleteMock = vi.fn().mockResolvedValue({});
+    const deleteMock = vi.fn().mockResolvedValue({ count: 1 });
     const tx = {
+      $executeRaw: vi.fn(),
       choreAssignment: {
         findMany: vi.fn().mockResolvedValue([
           makeAssignment(
@@ -141,7 +151,7 @@ describe("CHR-01: cleanupChoreAssignmentsForDateChange", () => {
             "Sweep"
           ),
         ]),
-        delete: deleteMock,
+        deleteMany: deleteMock,
       },
     } as any;
 
@@ -163,9 +173,10 @@ describe("CHR-01: cleanupChoreAssignmentsForDateChange", () => {
     );
 
     const tx = {
+      $executeRaw: vi.fn(),
       choreAssignment: {
         findMany: vi.fn().mockResolvedValue([]),
-        delete: vi.fn(),
+        deleteMany: vi.fn(),
       },
     } as any;
 
@@ -187,9 +198,10 @@ describe("CHR-01: cleanupChoreAssignmentsForDateChange", () => {
 
     const createMock = vi.fn();
     const tx = {
+      $executeRaw: vi.fn(),
       choreAssignment: {
         findMany: vi.fn().mockResolvedValue([]),
-        delete: vi.fn(),
+        deleteMany: vi.fn(),
         create: createMock,
       },
     } as any;
@@ -203,6 +215,40 @@ describe("CHR-01: cleanupChoreAssignmentsForDateChange", () => {
     );
 
     expect(createMock).not.toHaveBeenCalled();
+  });
+
+  it("re-reads after the roster lock and does not delete an assignment reattributed while waiting", async () => {
+    const { cleanupChoreAssignmentsForDateChange } = await import(
+      "@/lib/chore-cleanup"
+    );
+    const stale = makeAssignment(
+      "ca-moved",
+      new Date("2026-06-01"),
+      "SUGGESTED",
+      "Dishes",
+    );
+    const deleteMany = vi.fn().mockResolvedValue({ count: 1 });
+    const findMany = vi.fn()
+      // Pre-lock key derivation still sees the row on booking A.
+      .mockResolvedValueOnce([stale])
+      // A concurrent whole-roster Save wins the lock and moves it to booking B.
+      .mockResolvedValueOnce([]);
+    const tx = {
+      $executeRaw: vi.fn().mockResolvedValue(undefined),
+      choreAssignment: { findMany, deleteMany },
+    } as any;
+
+    const result = await cleanupChoreAssignmentsForDateChange(
+      tx,
+      "booking-a",
+      new Date("2026-06-03"),
+      new Date("2026-06-05"),
+    );
+
+    expect(tx.$executeRaw).toHaveBeenCalledTimes(1);
+    expect(findMany).toHaveBeenCalledTimes(2);
+    expect(deleteMany).not.toHaveBeenCalled();
+    expect(result).toEqual({ deletedCount: 0, choreWarnings: [] });
   });
 });
 

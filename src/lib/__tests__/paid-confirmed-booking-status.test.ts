@@ -269,7 +269,17 @@ describe("paid legacy CONFIRMED booking repair", () => {
       departedAt: null,
     });
     prismaMocks.bookingGuestFindMany.mockResolvedValueOnce([
-      { id: "guest-1", bookingId: "booking-1" },
+      {
+        id: "guest-1",
+        bookingId: "booking-1",
+        stayStart: dateOnly(2026, 6, 10),
+        stayEnd: dateOnly(2026, 6, 12),
+        nights: [],
+        booking: {
+          checkIn: dateOnly(2026, 6, 10),
+          checkOut: dateOnly(2026, 6, 12),
+        },
+      },
     ]);
 
     await findLodgeGuestForDate("guest-1", dateOnly(2026, 6, 10));

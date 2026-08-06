@@ -22,6 +22,8 @@ import {
 import { buildLodgeCustodianNightCounter } from "@/lib/custodian-occupancy";
 import { buildLodgePolicyExceptionReservationCounter } from "@/lib/booking-exception-reservations";
 
+import { acquireLodgeCapacityLock as acquireLodgeCapacityLockKey } from "@/lib/lodge-capacity-lock";
+
 type PrismaClient = typeof prisma;
 type TransactionClient = Omit<PrismaClient, "$connect" | "$disconnect" | "$on" | "$transaction" | "$use" | "$extends">;
 
@@ -64,7 +66,7 @@ export async function acquireLodgeCapacityLock(
   tx: Pick<TransactionClient, "$executeRaw">,
   lodgeId: string,
 ): Promise<void> {
-  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${lodgeId}, 0))`;
+  await acquireLodgeCapacityLockKey(tx, lodgeId);
 }
 
 function getMonthStartDateOnly(year: number, month: number): Date {

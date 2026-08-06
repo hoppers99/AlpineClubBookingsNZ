@@ -3,6 +3,9 @@ import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   requireAdmin: vi.fn(),
+  transaction: vi.fn(),
+  executeRaw: vi.fn(),
+  acquireLodgeCapacityLock: vi.fn(),
   bookingFindUnique: vi.fn(),
   bookingUpdateMany: vi.fn(),
   cancelBooking: vi.fn(),
@@ -17,11 +20,16 @@ vi.mock("@/lib/session-guards", () => ({
 
 vi.mock("@/lib/prisma", () => ({
   prisma: {
+    $transaction: mocks.transaction,
     booking: {
       findUnique: mocks.bookingFindUnique,
       updateMany: mocks.bookingUpdateMany,
     },
   },
+}));
+
+vi.mock("@/lib/capacity", () => ({
+  acquireLodgeCapacityLock: mocks.acquireLodgeCapacityLock,
 }));
 
 vi.mock("@/lib/booking-cancel", () => ({
@@ -69,6 +77,15 @@ const params = Promise.resolve({ id: "b1" });
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.transaction.mockImplementation(async (callback) =>
+    callback({
+      $executeRaw: mocks.executeRaw,
+      booking: {
+        findUnique: mocks.bookingFindUnique,
+        updateMany: mocks.bookingUpdateMany,
+      },
+    }),
+  );
   mocks.requireAdmin.mockResolvedValue(adminSession);
   mocks.sendApprovedEmail.mockResolvedValue(undefined);
   mocks.sendRejectedEmail.mockResolvedValue(undefined);
@@ -165,6 +182,39 @@ describe("PATCH /api/admin/bookings/[id]/review", () => {
       }),
     );
     expect(mocks.cancelBooking).not.toHaveBeenCalled();
+  });
+
+  it("claims approval in global then lodge order before the authoritative re-read", async () => {
+    mocks.bookingFindUnique.mockResolvedValue({
+      id: "b1",
+      memberId: "m1",
+      lodgeId: "lodge-1",
+      deletedAt: null,
+      adminReviewStatus: "PENDING",
+      status: "PAID",
+      member: { email: "member@example.com", firstName: "Alex" },
+      checkIn: new Date("2026-07-01"),
+      checkOut: new Date("2026-07-03"),
+    });
+    mocks.bookingUpdateMany.mockResolvedValue({ count: 1 });
+
+    const res = await PATCH(makeRequest({ status: "APPROVED" }), { params });
+
+    expect(res.status).toBe(200);
+    expect(mocks.executeRaw).toHaveBeenCalledTimes(1);
+    expect(mocks.acquireLodgeCapacityLock).toHaveBeenCalledWith(
+      expect.anything(),
+      "lodge-1",
+    );
+    expect(mocks.executeRaw.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.acquireLodgeCapacityLock.mock.invocationCallOrder[0],
+    );
+    expect(mocks.acquireLodgeCapacityLock.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.bookingFindUnique.mock.invocationCallOrder[1],
+    );
+    expect(mocks.bookingFindUnique.mock.invocationCallOrder[1]).toBeLessThan(
+      mocks.bookingUpdateMany.mock.invocationCallOrder[0],
+    );
   });
 
   it("approves a flagged paid booking without touching its status (#1100)", async () => {
@@ -276,7 +326,6 @@ describe("PATCH /api/admin/bookings/[id]/review", () => {
       checkIn: new Date("2026-07-01"),
       checkOut: new Date("2026-07-03"),
     });
-    // First updateMany: the review claim; second: the DRAFT -> CANCELLED flip.
     mocks.bookingUpdateMany.mockResolvedValue({ count: 1 });
 
     const res = await PATCH(
@@ -286,9 +335,11 @@ describe("PATCH /api/admin/bookings/[id]/review", () => {
     expect(res.status).toBe(200);
 
     expect(mocks.cancelBooking).not.toHaveBeenCalled();
-    const flipArgs = mocks.bookingUpdateMany.mock.calls[1][0];
-    expect(flipArgs.where).toMatchObject({ id: "b1", status: "DRAFT" });
-    expect(flipArgs.data).toMatchObject({
+    expect(mocks.bookingUpdateMany).toHaveBeenCalledTimes(1);
+    const claimArgs = mocks.bookingUpdateMany.mock.calls[0][0];
+    expect(claimArgs.where).toMatchObject({ id: "b1", status: "DRAFT" });
+    expect(claimArgs.data).toMatchObject({
+      adminReviewStatus: "REJECTED",
       status: "CANCELLED",
       draftExpiresAt: null,
     });
@@ -298,7 +349,7 @@ describe("PATCH /api/admin/bookings/[id]/review", () => {
     );
   });
 
-  it("409s (not 500s) when the legacy DRAFT vanished before the cancel flip (#2266)", async () => {
+  it("409s when the legacy DRAFT changes before the guarded combined claim (#2266)", async () => {
     mocks.bookingFindUnique.mockResolvedValue({
       id: "b1",
       memberId: "m1",
@@ -308,9 +359,7 @@ describe("PATCH /api/admin/bookings/[id]/review", () => {
       checkIn: new Date("2026-07-01"),
       checkOut: new Date("2026-07-03"),
     });
-    mocks.bookingUpdateMany
-      .mockResolvedValueOnce({ count: 1 }) // review claim
-      .mockResolvedValueOnce({ count: 0 }); // draft moved concurrently
+    mocks.bookingUpdateMany.mockResolvedValue({ count: 0 });
 
     const res = await PATCH(
       makeRequest({ status: "REJECTED", adminNotes: "No adult attending." }),

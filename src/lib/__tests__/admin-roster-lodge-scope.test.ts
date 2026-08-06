@@ -43,6 +43,10 @@ vi.mock("@/lib/admin-roster-service", () => ({
   },
 }));
 
+vi.mock("@/lib/logger", () => ({
+  default: { error: vi.fn() },
+}));
+
 import { GET, PUT } from "@/app/api/admin/roster/[date]/route";
 
 const dateParams = { params: Promise.resolve({ date: "2026-07-10" }) };
@@ -91,6 +95,7 @@ describe("admin roster lodge scoping", () => {
     const res = await GET(req, dateParams);
 
     expect(res.status).toBe(400);
+    await expect(res.json()).resolves.toMatchObject({ code: "ROSTER_LODGE_INVALID" });
     expect(mocks.getAdminRosterForDate).not.toHaveBeenCalled();
   });
 
@@ -111,5 +116,35 @@ describe("admin roster lodge scoping", () => {
     expect(mocks.updateAdminRosterForDate).toHaveBeenCalledWith(
       expect.objectContaining({ lodgeId: "lodge-2" }),
     );
+  });
+
+  it("returns a stable actionable load error without leaking the exception", async () => {
+    mocks.getAdminRosterForDate.mockRejectedValueOnce(new Error("secret database detail"));
+    const req = new NextRequest("http://localhost/api/admin/roster/2026-07-10");
+    const res = await GET(req, dateParams);
+    expect(res.status).toBe(500);
+    const body = await res.json();
+    expect(body).toEqual({
+      code: "ROSTER_LOAD_FAILED",
+      error: "Roster could not be loaded because the service is unavailable. Try again.",
+    });
+    expect(JSON.stringify(body)).not.toContain("secret");
+  });
+
+  it.each([
+    ["save", "ROSTER_SERVICE_UNAVAILABLE", "Roster not saved because the service could not be reached. Your draft is still here; try Save again."],
+    ["confirm", "ROSTER_ACTION_FAILED", "Roster action could not be completed because the service is unavailable. Nothing was changed; try again."],
+  ])("returns a stable outer-route %s failure", async (action, code, error) => {
+    mocks.updateAdminRosterForDate.mockRejectedValueOnce(new Error("secret route detail"));
+    const req = new NextRequest("http://localhost/api/admin/roster/2026-07-10", {
+      method: "PUT",
+      body: JSON.stringify({ action }),
+      headers: { "Content-Type": "application/json" },
+    });
+    const res = await PUT(req, dateParams);
+    expect(res.status).toBe(500);
+    const body = await res.json();
+    expect(body).toEqual({ code, error });
+    expect(JSON.stringify(body)).not.toContain("secret");
   });
 });

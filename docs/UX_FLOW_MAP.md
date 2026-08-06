@@ -272,6 +272,27 @@ rule actually stops them (#2562, below).
 
 | Admin/finance dataset review              | Return a list, queue, ledger, or report to its known default without losing work context                                                   | Change search, filters, explicit sort, or page; use the always-visible **Reset** action; stay on the same lodge, season, tab, cohort, focused record, or Finance view where that value is context rather than dataset state                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | Use one visible label, **Reset**, across the audited 22 dataset surfaces. Keep it rendered at the default but natively disabled; its accessible name explains that search, filters, sort, and page are already at defaults. URL-backed resets use replace-style navigation, remove only known dataset keys, preserve unknown forward-compatible keys, and do not add history entries. Payments returns to the rolling NZ three-month Updated range through today; Reports returns to its rolling default through current month-end while keeping lodge; Subscriptions keeps season; Finance Dashboard restores Last Month / Previous Period / Next Month and empty cost filters while keeping view and lodge                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | Search-only, filter-only, sort-only, page-only, and combined dirty state; default state; a focused record or non-default lodge/season/tab/Finance view; unknown URL key; Xero sibling-panel params                                                                                                                                                                                                                                                                                                                                                                                                                                                     | Members, Bookings, Payments, Subscriptions, Reports, Finance Dashboard, Audit Log, Refund Requests, Waitlist, both Xero panels, Family Groups, Issue Reports, Deletion Requests, Membership Cancellations, Member Applications, all three Booking Request tabs, Induction Register, Promo Redemptions, Lockers |
 
+## Whole-roster staged editing (#2586)
+
+On `/admin/roster`, selecting a lodge night loads a read-only authoritative
+snapshot. **Edit roster** opens one draft for every assignment on that night;
+dropdown changes, **+ Add Person**, and **Remove** are local until one dirty- and
+valid-gated **Save roster** atomically commits the complete revision. **Cancel**
+restores the snapshot. A dirty draft prompts before date, lodge, or Regenerate
+changes; declining preserves both draft and focus. A failed keyed load clears
+the prior partition and offers **Try again**. Stale, ineligible, permission, and
+service failures keep the draft and move focus to the global alert or affected
+guest row.
+
+The permanent summaries show due-chore staffing against exact configured
+recommendations and every eligible guest grouped by booking/family. Within a
+group the server orders known linked-member dates of birth oldest-to-youngest,
+breaks equal-DOB ties by displayed name/stable id, then orders unknown DOBs by
+displayed name. DOB is never returned or inferred from age tier. The Save path
+re-resolves current guest eligibility and writes both guest and booking foreign
+keys under the shared date lock; all rows return to Suggested, and completed
+rows require explicit reset acknowledgement.
+
 ## Member-guest consent ("+ Add Member Guest", #2305 / MG2 #2307)
 
 MG2 turns the feature on server-side and makes consent *happen*. What a person

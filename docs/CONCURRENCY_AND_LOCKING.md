@@ -103,15 +103,15 @@ are the literal `1`.
 | Lock | Key | Helper / where | Tier | Serialises |
 | --- | --- | --- | --- | --- |
 | **Global booking / money** | `1` (literal) | inline `tx.$executeRaw` | 2 | Booking-status + money side effects that must exclude across the whole booking regardless of lodge: cancel, capture/settle, hold-release, group-settlement reaper/settle/refund/organiser-cancel, refunds, credit restore. |
-| **Per-lodge capacity** | `hashtextextended(<lodgeId>, 0)` | `acquireLodgeCapacityLock(tx, lodgeId)` (`capacity.ts`) | 1 | Capacity claims/checks for one lodge. |
+| **Per-lodge capacity** | `hashtextextended(<lodgeId>, 0)` | `acquireLodgeCapacityLock(tx, lodgeId)` (`lodge-capacity-lock.ts`, re-exported by `capacity.ts`) | 1 | Capacity claims/checks for one lodge; roster eligibility snapshots; and direct or config-transfer chore-template changes, which serialize active-template validation for that lodge. |
 | **Per-member night footprint** | `hashtext("booking-member-night"), hashtext(<memberId>)` | `lockBookingMemberNights(tx, guests)` (`booking-member-night-conflicts.ts`) | cross-lodge | Serialises the person-night guard ACROSS lodges (see below). |
 | **Per-owner hosting coverage** | `hashtext("hosting-coverage-owner"), hashtext(<Booking.memberId>)` | `lockHostingCoverageOwner` / `lockHostingCoverageOwners` (`adult-member-hosting-coverage-lock.ts`) | cross-booking | Serialises `SAME_BOOKING_OWNER` coverage (#2576 §9): one booking's compliance depends on another booking of the SAME owner, and per-lodge locks cannot serialise that because the cancel paths take only `lock(1)` while the create paths take only the lodge lock. Taken LAST in the tree's order (global → lodge → member-night → coverage-owner), sorted when several owners are involved, and only when the lodge actually has the scope enabled. |
 | **Per-member credit ledger** | `hashtext("member-credit-ledger"), hashtext(<memberId>)` | `lockMemberCreditLedger(memberId, tx)` (`member-credit.ts`) | — | A member's credit-ledger balance operations (spend, negative-adjustment validation, orphan-restore repair, the Xero inbound applied-credit repair, and the F20 pre-payment-reduction applied-credit clamp `clampAppliedCreditToBookingPrice`, taken inside the modification transaction only when the booking carries applied credit, and the #2265 stored-election consumption `consumeStoredCreditElection`, taken inside the `create-payment-intent` pay transaction and the Internet Banking switch transaction only when the booking carries an outstanding election). |
 | **Member lifecycle** | `hashtext("member-lifecycle:<memberId>")` | inline (`member-lifecycle-actions.ts`, `nomination.ts` approval mapping, `admin-family-group-requests-service.ts`, `member-merge.ts`) | — | Archive/delete of one member; overwrite of one member by application-approval mapping (E10, #1936); linking/removing one member into/from a family group on admin request review; and **member merge** (dual-lock on master + loser, E11 #1937, see below). |
 | **Membership application** | `hashtext(<application key>)` | `membershipApplicationLockKey` (`nomination.ts`) | — | State transitions of one membership application. |
 | **Membership applicant** | `hashtext(<applicant-email key>)` | `membershipApplicationApplicantLockKey` (`nomination.ts`) | — | Per-email applicant dedup at submit time. |
-| **Roster generation** | `hashtext("roster:<date>")` | inline (`admin-roster-service.ts`) | — | Roster generation for one calendar date. |
-| **Config-transfer import** | `hashtext("config-transfer-import")` | `acquireConfigImportLock(tx)` (`config-transfer/apply.ts`) | — | Single-flights configuration-bundle apply. |
+| **Roster-date writers** | `hashtext("roster:<date>")` | `lockRosterDate(tx, date)` / sorted `lockRosterDates(tx, dates)` (`roster-lock.ts`) | date | Serialises whole-roster save/regenerate/confirm/auto-suggest, kiosk confirm and complete/uncomplete, and booking/guest cleanup that can remove suggested rows for the same lodge night. |
+| **Config-transfer import** | `hashtext("config-transfer-import")` | `acquireConfigImportLock(tx)` (`config-transfer-lock.ts`) | — | Single-flights configuration-bundle apply and excludes lodge create/rename while an import resolves bundle slugs to immutable lodge ids. |
 | **Minimum-stay policy set** | `hashtext("minimum-stay-policy-set")` | `lockMinimumStayPolicySet(tx)` (`minimum-stay-policy-set.ts`) plus the migration's `MinimumStayPolicy_lock_set` statement trigger | policy config | Serialises every live CRUD and config-transfer replacement across the small club/lodge policy set. The database trigger puts draining old-colour DML behind the exact same key before any tuple lock. |
 | **Adult-member hosting policy set** | `hashtext("adult-member-hosting-policy-set")` | `lockAdultMemberHostingPolicySet(tx)` (`adult-member-hosting-policy-set.ts`) plus the migration's `AdultMemberHostingPolicy_lock_set` statement trigger | policy config | Serialises the admin write route and the config-transfer replacement over the one club row plus one row per lodge (#2364). Unlike its minimum-stay sibling the trigger is NOT a blue/green drain boundary — the table did not exist before its own migration, so no old colour writes it — it is there so advisory-before-tuple order holds for every writer, operator psql included. |
 | **Membership subscription billing** | `hashtext("membership-subscription-billing:<seasonYear>")` | `confirmSubscriptionBillingPreview`, `reconcileSubscriptionBillingExceptions` (`membership-subscription-billing.ts`) | — | Annual/approval charge snapshot creation for one membership year; the #2148 refresh-reconciliation holds the same key so exception auto-resolution serialises with confirm and never resolves rows a concurrent confirm is regenerating. The #2161 operator family-marker writers (MARK/UNMARK on the subscription-billing route) deliberately take **no** advisory lock: they only insert/release a `FamilyGroupSeasonInvoiceMarker` row (single-active enforced by a partial unique index, so a concurrent double-mark is a benign no-op), and confirm re-derives suppression from the live marker rows under this same lock inside its transaction, so a mark landing mid-confirm either is seen by the in-tx re-preview or shifts the confirmation token — never a torn snapshot. |
@@ -120,6 +120,67 @@ are the literal `1`.
 | **Xero member contact link (legacy key)** | `hashtext(<memberId>)` | short local-link transactions (`xero-contacts.ts`) | — | First-writer-wins local `Member.xeroContactId` linking after provider work. This legacy unnamespaced key is shared by both Xero contact-link writers; do not copy it for new domains. |
 | **Diagnostics budget reserve (per month)** | `hashtext("diagnostics-budget-reserve"), hashtext(<month>)` | `reserveDiagnosticsBudget` **and** `settleDiagnosticsRoundtrip` (`ai-diagnostics-usage.ts`, AID-2 #2371) | — | Serialises every AI Diagnostics budget RESERVE **and** SETTLE for one billing month so the reserve's read-check-insert (sum live reservations + settled spend, compare to budget, insert reservation) is atomic against concurrent reservers AND against a settle's reservation-delete + `settledCents` increment. A burst of paid diagnostics roundtrips therefore cannot push `settled + reserved` over the monthly budget, and a settle can never commit mid-reserve to under-count committed spend; a lost claim (over budget) inserts nothing and denies the paid call. Different months do not contend. Held only for the milliseconds of each short transaction; the provider call runs entirely OUTSIDE both. Both take ONLY this key (no second lock), so no ordering cycle is possible. See "Composition: diagnostics budget reserve" below. |
 | **Backup run claim** | `hashtext("backup:run-lock")` | `claimBackupRun` (`backup-run.ts`, #2095) | — | Single-flights managed database backups across containers (nightly cron vs admin run-now). Held only for the milliseconds of the reap-stale → active-check → insert-RUNNING claim transaction; the `pg_dump`/upload pipeline runs entirely outside any transaction, so a crashed run can never wedge the lock (a dead RUNNING row is reaped by heartbeat age on the next claim). Single-lock holder; composes with no other family. The config-transfer pre-apply safety backup deliberately bypasses this claim (it must run inline; concurrent dumps are independent snapshots writing uniquely-named files). |
+
+### Composition: roster-date writers (#2586)
+
+`lockRosterDate` is the only source of the `roster:<date>` key. Every operation
+that validates guest eligibility before creating or re-attributing assignments
+(admin GET auto-suggest, whole-roster Save, Regenerate, Confirm and email
+selection, and kiosk
+whole-roster Confirm) takes the complete order **global booking lock(1) →
+immutable lodge-capacity lock → roster-date lock → authoritative re-read →
+assignment rows**. Joining the booking writers' first two tiers is essential
+even when no assignment exists yet: otherwise a roster Save could validate an
+old stay, wait while a booking moves or a review is approved, then insert into
+the previously empty partition.
+
+Booking date/batch modifications already hold global → lodge. They now acquire
+one sorted set containing every night in the old and proposed half-open stay
+ranges plus any exceptional stored assignment dates before changing a Booking
+or BookingGuest tuple. Guest removal likewise takes global → lodge → sorted
+stored roster dates before its post-lock re-read and guarded deletion. Member
+guest consent and admin booking-review claims share global → lodge; guest add
+shares the immutable lodge tier. Those common tiers serialize eligibility
+changes with roster validation without making every booking writer enumerate
+every possible roster night.
+
+Kiosk complete/uncomplete takes only the affected roster-date key. Departure
+timestamps are not eligibility inputs, but departure cleanup also updates the
+same `BookingGuest` tuple as consent decline/expiry. It therefore joins the
+global, lodge, sorted roster-date, then BookingGuest order so it cannot invert
+the consent writer's first two tiers and deadlock on guest-versus-roster
+resources. A multi-night cleanup sorts and de-duplicates all keys before
+acquiring the first one. After any wait, cleanup re-reads its targets and uses
+guarded `deleteMany` predicates, so a row re-attributed by a whole-roster Save
+is never deleted from a stale id snapshot.
+
+The lock is date-wide rather than lodge-wide because `ChoreAssignment` has no
+`lodgeId`. Isolation still comes from every current-row predicate requiring both
+the related `Booking.lodgeId` and `ChoreTemplate.lodgeId`; the wider lock trades
+some cross-lodge concurrency for one unambiguous key shared with legacy writers.
+Whole-roster Save re-reads its revision, eligible guests, and active templates
+after acquiring the lock and performs no mutation on a stale or invalid draft.
+It then deletes removed rows and creates/updates retained rows in that same
+transaction, writing both authoritative booking and guest foreign keys.
+Admin chore-template update/delete takes the same lodge tier before its
+post-lock re-read and tuple mutation, so deactivation cannot commit between a
+roster action's active-template check and assignment write. Configuration
+transfer takes its singleton first, then any selected policy-set locks, then
+every existing lodge represented by the lodge-config bundle in sorted id order,
+all before its in-lock re-plan. Its chore-template fingerprint and writes are
+therefore protected by the same lodge tier; a newly created lodge needs no key
+because its id is not visible to a concurrent roster transaction before commit.
+Admin lodge create and rename take the config-transfer singleton before deriving
+or writing a slug, so the bundle-slug mapping cannot acquire a new, unlocked
+existing target after the import chooses its lodge keys. These writers take no
+policy-set or lodge-capacity key, so they cannot invert the import's order.
+
+Roster email **selection** uses the short eligibility transaction and rejects an
+ineligible guest or inactive template before minting any token. Effective-email
+and preference reads, token refresh, and provider sends remain outside that
+transaction. The lock participant inventory and acquisition-order contracts
+are enforced by `advisory-lock-guard.test.ts` and
+`roster-lock-contract.test.ts`.
 
 ### Composition: minimum-stay policy set (#2363)
 

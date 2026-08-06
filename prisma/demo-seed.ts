@@ -261,6 +261,7 @@ async function main() {
   // Members — every role, age tier, and lifecycle state.
   // -------------------------------------------------------------------------
   const alice = await makeMember("alice", "Alice", "Anderson", {
+    dateOfBirth: d("1990-04-12"),
     financeAccessLevel: "MANAGER",
     requiresInduction: true,
     phoneCountryCode: "64",
@@ -276,8 +277,8 @@ async function main() {
     financeAccessLevel: "VIEWER",
   });
   const carol = await makeMember("carol", "Carol", "Clark");
-  const dave = await makeMember("dave", "Dave", "Davis");
-  const erin = await makeMember("erin", "Erin", "Evans");
+  const dave = await makeMember("dave", "Dave", "Davis", { dateOfBirth: d("1970-02-03") });
+  const erin = await makeMember("erin", "Erin", "Evans", { dateOfBirth: d("1985-09-20") });
   const frank = await makeMember("frank", "Frank", "Foster");
   const grace = await makeMember("grace", "Grace", "Green");
   const heidi = await makeMember("heidi", "Heidi", "Hill");
@@ -519,6 +520,18 @@ async function main() {
   }
   await prisma.bookingEvent.create({ data: { bookingId: bConfirmed.id, type: "CREATED", actorMemberId: dave.id } });
   await prisma.bookingEvent.create({ data: { bookingId: bConfirmed.id, type: "MEMBER_PAID", actorMemberId: dave.id, amountCents: bConfirmed.finalPriceCents } });
+
+  // #2586: one isolated future lodge night with two booking/family groups.
+  // The roster E2E and docs capture use it to exercise whole-roster staging and
+  // the D-R2 display order: known linked-member DOB oldest -> youngest, then
+  // unknown-DOB guests alphabetically, without exposing DOB in the response.
+  const rosterA = await makeBooking(dave, "PAID", W.rosterEdit.checkIn, W.rosterEdit.checkOut);
+  await addGuest(rosterA.id, { firstName: "Dave", lastName: "Davis", ageTier: "ADULT", isMember: true, memberId: dave.id }, W.rosterEdit.checkIn, W.rosterEdit.checkOut, NIGHTLY);
+  await addGuest(rosterA.id, { firstName: "Alice", lastName: "Anderson", ageTier: "ADULT", isMember: true, memberId: alice.id }, W.rosterEdit.checkIn, W.rosterEdit.checkOut, NIGHTLY);
+  await addGuest(rosterA.id, { firstName: "Zara", lastName: "Unknown", ageTier: "ADULT" }, W.rosterEdit.checkIn, W.rosterEdit.checkOut, NIGHTLY);
+  const rosterB = await makeBooking(erin, "PAID", W.rosterEdit.checkIn, W.rosterEdit.checkOut);
+  await addGuest(rosterB.id, { firstName: "Erin", lastName: "Evans", ageTier: "ADULT", isMember: true, memberId: erin.id }, W.rosterEdit.checkIn, W.rosterEdit.checkOut, NIGHTLY);
+  await addGuest(rosterB.id, { firstName: "Aaron", lastName: "Unknown", ageTier: "ADULT" }, W.rosterEdit.checkIn, W.rosterEdit.checkOut, NIGHTLY);
   // A booking modification (date change) + resulting credit + recovery op.
   const daveMod = await prisma.bookingModification.create({
     data: {

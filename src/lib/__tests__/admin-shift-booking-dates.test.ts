@@ -40,6 +40,7 @@ const tx = {
   },
   bookingModification: { create: h.txModificationCreate },
   payment: { update: h.txPaymentUpdate },
+  choreAssignment: { findMany: vi.fn().mockResolvedValue([]) },
 };
 
 vi.mock("@/lib/prisma", () => ({

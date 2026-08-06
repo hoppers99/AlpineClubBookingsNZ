@@ -3,6 +3,8 @@ import { requireAdmin } from "@/lib/session-guards";
 import { prisma } from "@/lib/prisma"
 import { z } from "zod"
 import { createAuditLog } from "@/lib/audit"
+import { acquireLodgeCapacityLock } from "@/lib/capacity"
+import { getDefaultLodgeId } from "@/lib/lodges"
 
 const updateSchema = z.object({
   name: z.string().min(1).optional(),
@@ -51,18 +53,28 @@ export async function PUT(
     )
   }
 
-  // Snapshot the row for before/after audit metadata (mirrors the
-  // lodge-settings editor loading its previous settings before writing).
-  const before = await prisma.choreTemplate.findUnique({ where: { id } })
-  let chore
+  const lockTarget = await prisma.choreTemplate.findUnique({ where: { id } })
+  if (!lockTarget) {
+    return NextResponse.json({ error: "Chore not found" }, { status: 404 })
+  }
+  const effectiveLodgeId = lockTarget.lodgeId ?? (await getDefaultLodgeId(prisma))
+  let result
   try {
-    chore = await prisma.choreTemplate.update({
-      where: { id },
-      data,
+    result = await prisma.$transaction(async (tx) => {
+      // Save/Confirm/email all hold this lodge tier while validating active
+      // templates. Serialize the template update with that read so an active
+      // chore cannot be deactivated immediately after validation.
+      await acquireLodgeCapacityLock(tx, effectiveLodgeId)
+      const before = await tx.choreTemplate.findUnique({ where: { id } })
+      if (!before) return null
+      const chore = await tx.choreTemplate.update({ where: { id }, data })
+      return { before, chore }
     })
   } catch {
     return NextResponse.json({ error: "Chore not found" }, { status: 404 })
   }
+  if (!result) return NextResponse.json({ error: "Chore not found" }, { status: 404 })
+  const { before, chore } = result
 
   // Audit with the acting admin as actor so the bootstrap-import six-signal
   // probe (signal 6) detects hand-configured chore templates.
@@ -107,12 +119,24 @@ export async function DELETE(
   if (!guard.ok) return guard.response;
   const { id } = await params
 
-  const before = await prisma.choreTemplate.findUnique({ where: { id } })
+  const lockTarget = await prisma.choreTemplate.findUnique({ where: { id } })
+  if (!lockTarget) {
+    return NextResponse.json({ error: "Chore not found" }, { status: 404 })
+  }
+  const effectiveLodgeId = lockTarget.lodgeId ?? (await getDefaultLodgeId(prisma))
+  let before
   try {
-    await prisma.choreTemplate.delete({ where: { id } })
+    before = await prisma.$transaction(async (tx) => {
+      await acquireLodgeCapacityLock(tx, effectiveLodgeId)
+      const current = await tx.choreTemplate.findUnique({ where: { id } })
+      if (!current) return null
+      await tx.choreTemplate.delete({ where: { id } })
+      return current
+    })
   } catch {
     return NextResponse.json({ error: "Chore not found" }, { status: 404 })
   }
+  if (!before) return NextResponse.json({ error: "Chore not found" }, { status: 404 })
 
   await createAuditLog({
     action: "CHORE_TEMPLATE_DELETED",
