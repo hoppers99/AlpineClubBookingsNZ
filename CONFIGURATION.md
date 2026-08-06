@@ -1800,7 +1800,7 @@ action; scoped admins cannot merge.
 | `CURRENCY`, `NEXT_PUBLIC_CURRENCY` | Currency display and server default.                                                                 |
 | `TZ`, `NEXT_PUBLIC_TZ`             | Time zone; this app expects New Zealand date-only booking semantics unless a feature says otherwise. |
 | `LOCALE`, `NEXT_PUBLIC_LOCALE`     | Locale for formatting.                                                                               |
-| `NEXT_PUBLIC_GA_MEASUREMENT_ID`    | Optional GA4 measurement id. Google Analytics still requires the Admin Modules toggle and visitor consent before loading. |
+| ~~`NEXT_PUBLIC_GA_MEASUREMENT_ID`~~ | **Removed as configuration (#2573).** The GA4 measurement id, the consent-banner mode and the banner wording now live **only** in the database, entered in-app at Admin → Integrations → Google Analytics. Nothing in the app reads the environment variable, there is no fallback to it, and its value is **not** imported automatically — so after deploying this release Google Analytics stays inactive until an authorised admin saves a valid measurement id in-app. Remove the variable from your environment. See the Google Analytics section below. |
 | ~~`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`~~ | **Removed as configuration (#2087).** Google OAuth credentials now live **only** in the encrypted `IntegrationCredential` store, entered and verified in-app (Admin → Integrations → Google sign-in). Any legacy `GOOGLE_CLIENT_*` env vars are **detected, warned about, and ignored** — re-enter the credentials in the wizard, then remove the env vars. This reverses the earlier #2035 "bootstrap-class secret, never in the DB" posture by owner decision (epic #2078). See the Google sign-in section below. |
 | `LOG_LEVEL`                        | Pino log level such as `debug`, `info`, `warn`, `error`, or `fatal`.                                 |
 | `APP_RUNTIME_ROLE`                 | Runtime label used by health/status reporting, usually set by Compose.                               |
@@ -1843,7 +1843,7 @@ cannot be read, optional modules fail closed.
 | Two-factor authentication | off | Requires users to complete authenticator-app, email-code, or recovery-code verification after password login. |
 | Email sign-in link | off | Lets members request a single-use email link to sign in without their password (additive to password login, never a replacement). Only ever works for existing active members with a verified email; the `magic-link-login` link expiry defaults to 15 minutes (stored on the Login & Security settings, range 5–60) and is read by the sign-in request flow. |
 | Google sign-in | off | Lets members sign in with a Google account they have linked from their profile (additive to password login, never a replacement). Credentials are entered and verified **in-app** on the Google sign-in setup page (Admin → Integrations → Google) — no env vars, no restart. The module cannot be turned on until a real Google OAuth round-trip verifies (hard gate), and replacing a credential re-locks it until re-verified. The "Continue with Google" button appears only when the module is on AND credentials resolve. No account is ever created from Google, and an unlinked Google account is refused with a friendly message. See the Google sign-in section below. |
-| Google Analytics | off | Consent-gated GA4 tracking on public website and public account pages. Requires `NEXT_PUBLIC_GA_MEASUREMENT_ID`; GA scripts load only after a visitor accepts the analytics banner. |
+| Google Analytics | off | GA4 tracking on the public website, configured **in-app** at Admin → Integrations → Google Analytics (measurement id, consent-banner mode, banner wording) — no env vars, no restart. The module is the master switch: with it off there is no card, no configuration API and no tag. With the consent banner on (the default and the recommended option) nothing at all is sent to Google until a visitor selects Accept; with it off the tag loads automatically and visitors opt out afterwards from the footer's Analytics preferences link. Advertising consent categories stay denied in both modes, and analytics never runs on admin pages, signed-in member pages, or any address carrying a token, PIN or personal identifier. See the Google Analytics section below. |
 | AI help assistant | off | Free-text help questions answered by a paid AI model (Anthropic Claude Haiku), grounded strictly in each page's curated help content. The Anthropic API key is entered **in-app** on Admin → Integrations (encrypted vault, never an env var). Unlike Google sign-in there is **no** enable-gate on a present key — with the module on but no key, the ask box degrades to a structured fallback and curated page help still works. A monthly spend cap (default NZ$10) hard-stops AI answers for the rest of the month once reached. See the AI help assistant section below. |
 | Add another member as a guest | off | Lets a member add another club member, outside their own family group, as a guest on their booking. With the module off, a cross-family add is refused exactly as it was before this feature existed, so an existing club sees no change until an admin turns it on. With it on, the other member is emailed and asked first by default, and a bed is held for them until they answer or the request lapses. A member who has been asked but has not answered holds a bed and is deliberately kept off the kiosk arrivals list, the chore roster, bed allocation and the arrival emails until they accept. The surface exists both when a booking is created and when it is edited, and admins get the same section on a member's booking page. Turning the module on also brings admin adds, the admin booking-copy and the booking-request pipeline under the always-notify rule; with it off, none of those write a consent record or send anything. See the member-guest settings section below. |
 
@@ -2127,6 +2127,69 @@ The **publishable key** is not secret; it is delivered to the card form at
 build-time `NEXT_PUBLIC_*` inlining, so changing keys in the wizard takes effect
 without a rebuild. The webhook route stays **fail-closed**: with no stored signing
 secret it rejects every event.
+
+## Google Analytics
+
+> See the [Integrations guide](docs/guides/integrations.md) for the operator
+> walkthrough, and [`docs/UPGRADING.md`](docs/UPGRADING.md) for the cutover.
+
+**The Google Analytics configuration is DB-only (#2573).** The GA4 measurement id,
+the consent-banner mode and the banner wording live **only** in the
+`AnalyticsSettings` singleton, entered in-app at **Admin → Setup & Configuration →
+Integrations → Google Analytics** (finance **view** to see the status, finance
+**edit** to change it). Saving takes effect promptly — the public configuration
+cache is invalidated on write — and needs no restart or redeploy.
+
+`NEXT_PUBLIC_GA_MEASUREMENT_ID` is **not read at all** any more. There is no
+environment fallback and its value is **not** imported into the database, so
+analytics is inactive from the moment this release deploys until an admin saves a
+valid measurement id in-app. That hard cutover is deliberate, so no club's website
+starts tracking under a configuration nobody has reviewed. Remove the variable from
+your environment.
+
+Admin → **Modules** remains the master switch: with the `analytics` module off there
+is no Integrations card, the configuration API answers 404, and no tag loads.
+
+Two consent modes, chosen by the club:
+
+- **Show the consent banner** (the default, and the option the setup screen
+  recommends). Nothing whatsoever is sent to Google — no tag, no request, no
+  cookieless ping, no consent-status signal — until a visitor selects **Accept**.
+  Declining or dismissing the banner leaves analytics off.
+- **Do not show the consent banner.** The tag loads automatically on eligible
+  public pages. A decline recorded while the banner was showing is invalidated once;
+  a later opt-out through the public **Analytics preferences** link is always
+  honoured. The setup screen warns the admin before this mode is saved.
+
+Advertising storage, advertising user data and advertising personalisation stay
+**denied** in both modes, and Google's advanced consent mode is not implemented.
+
+Everything **fails closed**: no measurement id, an invalid one, a disabled module or
+a database read failure all mean no analytics, and the public website still renders
+normally.
+
+Two things are fixed in application code and are **not** configurable: where
+analytics may run (the public website only — never admin pages, signed-in member
+pages, or any address carrying a token, PIN or personal identifier) and what is sent
+about the address (origin and pathname only, never a query string or fragment, with
+the referrer sanitised too).
+
+One **Google-side** setting matters and the application cannot reach it, so
+switching it off is a **required** setup step, not a refinement: turn **Page
+changes based on browser history events** off under Enhanced measurement in your
+GA4 web stream. The app sends one sanitised page view per *eligible* address
+itself. That option instead watches the browser's own history, so left on Google
+adds a page view whenever a visitor moves between pages — including the move that
+leaves the public website for a login, member or dashboard address the route
+policy excludes, and that hit may carry the address as the browser has it rather
+than the stripped one the app sends. Double-counted views are the visible symptom;
+the disclosure is the reason. See the
+[Integrations guide](docs/guides/integrations.md) step 7.
+
+The application never states whether a chosen configuration is legally compliant.
+Whichever mode a club picks, its privacy policy should disclose the use of Google
+Analytics; the setup screen warns when no privacy policy page is published, and
+while one is published the consent banner and the preferences panel link it.
 
 ## AI help assistant
 

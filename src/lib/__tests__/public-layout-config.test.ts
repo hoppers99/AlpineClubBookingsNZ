@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   banners: vi.fn(async () => []),
   theme: vi.fn(async () => ({ appCss: "" })),
   clubIdentity: vi.fn(async () => ({ name: "Test Club" })),
+  analyticsConfig: vi.fn(async () => null),
 }));
 
 vi.mock("server-only", () => ({}));
@@ -32,8 +33,12 @@ vi.mock("@/lib/club-theme", () => ({
 vi.mock("@/lib/club-identity-settings", () => ({
   getClubIdentity: mocks.clubIdentity,
 }));
+vi.mock("@/lib/analytics-settings", () => ({
+  resolveAnalyticsRuntimeConfig: mocks.analyticsConfig,
+}));
 
 import {
+  getCachedAnalyticsRuntimeConfig,
   getCachedCurrentSiteBanners,
   getCachedDefaultLodgeCapacity,
   getCachedEffectiveModuleFlags,
@@ -66,6 +71,12 @@ describe("public layout config cache", () => {
       [mocks.clubIdentity, ["public-layout-club-identity"], {
         tags: [PUBLIC_LAYOUT_CACHE_TAGS.identity], revalidate: 15,
       }],
+      // #2573: the club's Google Analytics runtime configuration joins the same
+      // shape — its own key, its own tag, the same short TTL — so an admin save
+      // takes effect promptly instead of at the next TTL lapse.
+      [mocks.analyticsConfig, ["public-layout-analytics-config"], {
+        tags: [PUBLIC_LAYOUT_CACHE_TAGS.analytics], revalidate: 15,
+      }],
     ]);
   });
 
@@ -80,6 +91,15 @@ describe("public layout config cache", () => {
     expect(mocks.modules).toHaveBeenCalledOnce();
     expect(mocks.banners).toHaveBeenCalledOnce();
     expect(mocks.theme).toHaveBeenCalledOnce();
+  });
+
+  // The module flag is the cache KEY as well as an argument (#2573): a club with
+  // the analytics module off must never be served an entry built while it was on.
+  it("passes the module flag through to the analytics resolver", async () => {
+    mocks.analyticsConfig.mockClear();
+    await getCachedAnalyticsRuntimeConfig(false);
+    await getCachedAnalyticsRuntimeConfig(true);
+    expect(mocks.analyticsConfig.mock.calls).toEqual([[false], [true]]);
   });
 
   it("invalidates every requested tag with stale-while-revalidate semantics", () => {

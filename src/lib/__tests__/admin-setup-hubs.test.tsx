@@ -27,6 +27,16 @@ vi.mock("@/components/admin/member-guest-settings-card", () => ({
     <div>Member guests settings card (module {moduleEnabled ? "on" : "off"})</div>
   ),
 }));
+// #2573: the Integrations hub now carries the Google Analytics card, stubbed for
+// exactly the same reason as the two above — it is a client component whose
+// view-only gate reads `useSession`, and this suite renders SERVER pages to static
+// markup with no SessionProvider. What is under test here is WHICH cards a hub
+// renders and whether the hub survives a module being off; the card's own status
+// states, validation, warnings and re-consent flow are covered by
+// `analytics-integration-card.test.tsx`.
+vi.mock("@/components/admin/analytics-integration-card", () => ({
+  AnalyticsIntegrationCard: () => <div>Google Analytics integration card</div>,
+}));
 
 import AppearanceHubPage from "@/app/(admin)/admin/appearance/page";
 import DisplayHubPage from "@/app/(admin)/admin/display/page";

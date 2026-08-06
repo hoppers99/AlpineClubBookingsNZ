@@ -273,9 +273,11 @@ export const MODULE_DEFINITIONS: Record<ModuleKey, ModuleDefinition> = {
     key: "analytics",
     label: "Google Analytics",
     description:
-      "Consent-gated GA4 tracking on public website and public account pages.",
+      "GA4 tracking on the public website, with configurable visitor consent settings. Never runs on admin pages, signed-in member pages, or any page whose address carries a token, PIN or personal identifier.",
     dependencies: [
-      "NEXT_PUBLIC_GA_MEASUREMENT_ID must be configured before visitors can opt in.",
+      // #2573: the measurement ID moved into the database and the environment
+      // variable was removed from runtime, so this no longer names one.
+      "Complete the Google Analytics setup under Admin → Integrations after enabling this module. Analytics stays off until a valid GA4 measurement ID is saved there.",
     ],
   },
   lobbyDisplay: {

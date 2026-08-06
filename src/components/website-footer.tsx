@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { AnalyticsPreferencesLink } from "@/components/analytics-preferences-link";
 import { WebsiteFooterShell } from "@/components/website-footer-shell";
 import { WebsiteLogo } from "@/components/website-logo";
 import { getCachedClubIdentity } from "@/lib/public-layout-config";
@@ -123,6 +124,10 @@ export async function WebsiteFooter({
             >
               Terms of Service
             </Link>
+            {/* Renders nothing unless the analytics runtime has published that a
+                preferences control should be offered (#2573). The separator lives
+                inside the component so a club with analytics off gets neither. */}
+            <AnalyticsPreferencesLink className="underline-offset-4 transition-colors hover:text-brand-gold hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-gold" />
           </p>
         </div>
       </div>

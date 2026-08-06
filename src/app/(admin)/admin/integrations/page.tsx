@@ -3,6 +3,8 @@ import {
   AdminHubPage,
   type AdminHubSection,
 } from "@/components/admin-hub-page";
+import { AnalyticsIntegrationCard } from "@/components/admin/analytics-integration-card";
+import { canViewAdminHrefWithMatrix } from "@/lib/admin-permissions";
 import { loadEffectiveModuleFlags } from "@/lib/module-settings";
 import { getIntegrationsNeedingReentry } from "@/lib/integration-credentials";
 import { loadAdminSetupPermissionMatrix } from "@/app/(admin)/admin/setup/permission-matrix";
@@ -74,6 +76,23 @@ export default async function IntegrationsHubPage() {
   // support-area Backups card and dead-end at a redirect (#2095 MINOR-5).
   const permissionMatrix = await loadAdminSetupPermissionMatrix();
 
+  /*
+    Google Analytics is a PEER card in the same grid (#2573, owner decision
+    section 1), not a link to a page of its own: the decision explicitly rules out a
+    dedicated `/admin/analytics/setup` route and asks for the configuration to open
+    within the Integrations experience.
+
+    Two gates, both server-side. The `analytics` module flag is the master switch —
+    with the module off there is no card, and `src/config/feature-routes.ts` also
+    404s the configuration API, so a direct call gets nothing either. `finance` is
+    the area every card on this hub already belongs to, so an admin who cannot see
+    the hub cannot see this card, and the write route enforces `finance:edit`
+    independently of the UI.
+  */
+  const showAnalyticsCard =
+    features.analytics &&
+    canViewAdminHrefWithMatrix(permissionMatrix, "/admin/integrations");
+
   return (
     <AdminHubPage
       title="Integrations"
@@ -81,6 +100,7 @@ export default async function IntegrationsHubPage() {
       sections={sections}
       features={features}
       permissionMatrix={permissionMatrix}
+      extraCards={showAnalyticsCard ? <AnalyticsIntegrationCard /> : null}
     />
   );
 }

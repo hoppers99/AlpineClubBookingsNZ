@@ -855,12 +855,12 @@ Booking Policies sections (#2142) and is now the **default across the admin
 tree** (#2160, extended by #2168 and #2324) — not a claim that nothing is left.
 Measured
 on the current tree by `view-only-banner-contract.test.ts`, which asserts these
-figures rather than trusting a hand count: **82 components render a banner, and
-258 of the 307 `ViewOnlyActionButton` call sites opt out** of the per-button
+figures rather than trusting a hand count: **83 components render a banner, and
+263 of the 312 `ViewOnlyActionButton` call sites opt out** of the per-button
 reason. (Earlier revisions of this page published 76/232/264/211 — those were
 upstream-historical and had drifted; the numbers here are the ones the contract
-test currently pins, which is the only authority.) Those 258 split by WHICH rule
-covers them: **232** pass the literal
+test currently pins, which is the only authority.) Those 263 split by WHICH rule
+covers them: **237** pass the literal
 `describeReason={false}` and are covered by a banner in the same file, and **26**
 pass `describeReason={!ancestorRendersViewOnlyBanner}` and are covered by a
 verified vouching parent — 21 by a parent's own JSX render site (#2168), 5 by the
@@ -2794,9 +2794,21 @@ rule result.
   role/session checks close to the route boundary.
 - External service callbacks and webhooks must verify signatures, state, or
   expected origin data before mutating local state.
-- Google Analytics is optional and privacy-gated: the Analytics module,
-  `NEXT_PUBLIC_GA_MEASUREMENT_ID`, and a visitor opt-in are all required before
-  GA4 loads on public website or public account pages.
+- Google Analytics is optional and privacy-gated (#2573). Three things gate the
+  tag, and the club controls the third: the Analytics module must be on, a valid
+  GA4 measurement id must be saved in the database (Admin → Integrations →
+  Google Analytics — the environment variable was removed from runtime, with no
+  fallback), and the route must be analytics-eligible. With the consent banner
+  enabled — the default and the recommended option — the visitor must also have
+  accepted, and until then no script, request, cookieless ping or consent-status
+  signal reaches Google at all. With the banner disabled the tag loads
+  automatically and the visitor opts out afterwards from the footer's Analytics
+  preferences control. Advertising consent categories are denied in both modes.
+  The eligible-route policy is fixed and application-controlled
+  (`src/lib/analytics-route-policy.ts`): the public website only, never `/admin`,
+  never an authenticated member page, and never an address carrying a token, PIN
+  or personal identifier — and only `origin + pathname` is ever sent, never a
+  query string or fragment.
 
 ## Deployment and Migrations
 

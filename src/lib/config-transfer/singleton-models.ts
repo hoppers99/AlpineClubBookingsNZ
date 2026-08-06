@@ -86,6 +86,15 @@ export const MODEL_LEVEL_EXCLUSIONS: Record<string, string> = {
     "deployment-specific AI monthly spend cap (NZD integer cents); an operational " +
     "spend control a source club must never silently reset on a target — a fresh " +
     "import keeps the target's own cap (#2211) — instance-local",
+  AnalyticsSettings:
+    "the club's Google Analytics configuration (#2573): the GA4 measurement ID is " +
+    "bound to THIS install's own Google Analytics property, and importing it would " +
+    "silently point a target club's website at the source club's property and mix " +
+    "two clubs' traffic in one report. The consent revision counts this install's " +
+    "own visitors' choices, and the consent-banner mode is a privacy posture a " +
+    "source club must never set on a target's behalf — a fresh import keeps the " +
+    "target's own analytics configuration, and a target with none stays off " +
+    "(fail-closed) — instance-local",
   DiagnosticsSettings:
     "deployment-local AI Diagnostics monthly spend cap (NZD integer cents) for a " +
     "SEPARATE admin-only paid product (AID-2, #2371); like AiAssistantSettings it " +

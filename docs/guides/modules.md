@@ -68,7 +68,7 @@ deploy-time setup default **off**; general-purpose modules default **on**):
 | Two-factor authentication (`twoFactor`) | Second-factor after password login | Off |
 | Email sign-in link (`magicLink`) | Single-use email sign-in links | Off |
 | Google sign-in (`googleLogin`) | Sign in with a linked Google account | Off |
-| Google Analytics (`analytics`) | Consent-gated GA4 on public pages | Off |
+| Google Analytics (`analytics`) | GA4 on the public website. This toggle is the master switch; the measurement id, the visitor consent banner and its wording are configured at **Admin › Integrations › Google Analytics** (no env vars, no restart). See [Integrations](integrations.md) | Off |
 | Lobby TV display (`lobbyDisplay`) | Read-only paired lobby screens | Off |
 | Add another member as a guest (`memberGuests`) | Lets a member put another club member — outside their own family group — on their booking, on the create path and when editing. By default the other member is emailed and asked first and a bed is held until they answer. Also brings admin adds, the admin booking-copy and the booking-request pipeline under the same notify rule. Its policy lives on **Admin › Bookings setup › Member guests** | Off |
 | AI Diagnostics (`aiDiagnostics`) | A separate admin-only paid assistant that will explain the deployed system and retrieve bounded, permission-scoped operational evidence. Distinct from the AI help assistant: its own **dedicated** Anthropic key and monthly spend budget. Turning it on authorises no spend — it also needs a dedicated key and a positive budget, and stays "not ready" until both are set. Configuration is per-deployment and does not travel in config bundles. See [`docs/ai-diagnostics/README.md`](../ai-diagnostics/README.md) | Off |

@@ -11,6 +11,7 @@ import {
   loadClubModuleSettings,
   normalizeClubModuleSettings,
 } from "@/lib/module-settings";
+import { isAnalyticsIntegrationConfigured } from "@/lib/analytics-settings";
 import { getGoogleSetupState } from "@/lib/google-config";
 import { prisma } from "@/lib/prisma";
 import logger from "@/lib/logger";
@@ -170,5 +171,12 @@ export async function PUT(request: Request) {
   // always clears the capacity tag, so it is not repeated here.
   revalidatePublicSite(PUBLIC_LAYOUT_CACHE_TAGS.modules);
 
-  return NextResponse.json(buildClubModuleSettingsPayload(record));
+  // The analytics readiness fact is a separate DB read (#2573); resolved here so the
+  // response the toggle grid re-seeds from carries the same readiness message the GET
+  // would return, rather than the fail-closed default.
+  return NextResponse.json(
+    buildClubModuleSettingsPayload(record, {
+      analyticsConfigured: await isAnalyticsIntegrationConfigured(),
+    }),
+  );
 }

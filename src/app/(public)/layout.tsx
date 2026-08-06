@@ -1,6 +1,5 @@
 import { headers } from "next/headers";
 import { AppProviders } from "@/components/app-providers";
-import { AnalyticsConsent } from "@/components/analytics-consent";
 import { SiteBanners } from "@/components/site-banners";
 import { ThemeSwitcher } from "@/components/theme-switcher";
 import { WebsiteHeader } from "@/components/website-header";
@@ -11,7 +10,6 @@ import {
   getCachedClubIdentity,
   getCachedCurrentSiteBanners,
   getCachedDefaultLodgeCapacity,
-  getCachedEffectiveModuleFlags,
   getCachedWebsiteThemeRenderState,
 } from "@/lib/public-layout-config";
 
@@ -25,8 +23,9 @@ import {
  * booking-request and school-booking confirmations) that must never be stored. It
  * used to be dynamic by ACCIDENT: the `auth()` call this layout no longer makes was
  * a dynamic API read, and removing it left the group's build-time behaviour resting
- * on the `headers()` read below — which happens only AFTER the layout's five
- * database reads have resolved. During `docker build` there is no database
+ * on the `headers()` read below — which happens only AFTER the layout's four
+ * database reads have resolved (five until #2573 removed the module-flag read with
+ * the analytics runtime it fed). During `docker build` there is no database
  * (`Dockerfile` points `DATABASE_URL` at an unreachable host), so a page's own
  * unguarded query rejected before the bailout was reached, and the build stopped on
  * "Error occurred prerendering page /booking-requests".
@@ -49,16 +48,19 @@ export default async function PublicLayout({
   // These routes are still rendered per request — see the `force-dynamic` above,
   // which is now what says so — so nothing about their freshness changes; they
   // simply no longer resolve a session to decide a link label.
-  const [lodgeCapacity, siteBanners, modules, theme, clubIdentity] =
-    await Promise.all([
-      // Default lodge: public-site identity copy (per-lodge figures come
-      // from the {{lodge-capacity:slug}} content token).
-      getCachedDefaultLodgeCapacity(),
-      getCachedCurrentSiteBanners(),
-      getCachedEffectiveModuleFlags(),
-      getCachedWebsiteThemeRenderState(),
-      getCachedClubIdentity(),
-    ]);
+  //
+  // The module-flag read that used to sit in this list is gone with the analytics
+  // runtime it fed (#2573): nothing else in this layout is module-gated, so keeping
+  // the query would have been a database round trip per request for a value nobody
+  // reads.
+  const [lodgeCapacity, siteBanners, theme, clubIdentity] = await Promise.all([
+    // Default lodge: public-site identity copy (per-lodge figures come
+    // from the {{lodge-capacity:slug}} content token).
+    getCachedDefaultLodgeCapacity(),
+    getCachedCurrentSiteBanners(),
+    getCachedWebsiteThemeRenderState(),
+    getCachedClubIdentity(),
+  ]);
   const liveClubIdentity = { ...clubIdentity, lodgeCapacity };
   const requestHeaders = await headers();
   const nonce = requestHeaders.get(CSP_NONCE_HEADER) ?? undefined;
@@ -95,11 +97,28 @@ export default async function PublicLayout({
           logoUrl={theme.logoUrl}
           logoDataUrl={theme.logoDataUrl}
         />
-        <AnalyticsConsent
-          enabled={modules.analytics}
-          measurementId={process.env.NEXT_PUBLIC_GA_MEASUREMENT_ID}
-          nonce={nonce}
-        />
+        {/*
+          NO analytics runtime here, and that is the safe-route policy enforced in
+          code rather than documented (#2573, owner decision section 7).
+
+          Every route in this group is on the owner's exclusion list. `/login`,
+          `/login/verify`, `/login/enroll`, `/login/magic` and `/register` are
+          authentication screens; `/forgot-password`, `/reset-password`,
+          `/change-password`, `/verify-email` and `/confirm-email-change` are
+          recovery flows; and `/pay/[token]`, `/chores/[token]`,
+          `/family-invite/[token]`, `/membership-cancellation/[token]`,
+          `/booking-requests/respond/[token]`, `/booking-requests/verify/[token]`
+          and `/school-bookings/confirm/[token]` all carry a one-time credential in
+          the URL. Analytics must not load on any of them, and a URL from any of
+          them must never reach Google.
+
+          Mounting the component and letting its route policy refuse would work, and
+          `isAnalyticsEligiblePath()` does refuse every address above — but not
+          mounting it at all is the stronger statement: there is no code path from
+          this group to a Google request, so a future change to the policy cannot
+          accidentally open one. `analytics-route-policy.test.ts` still asserts the
+          predicate refuses these paths, so the two halves agree.
+        */}
       </div>
     </AppProviders>
   );
