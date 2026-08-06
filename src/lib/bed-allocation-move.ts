@@ -1372,7 +1372,7 @@ export async function applyBedAllocationMove(input: {
         memberId: input.actorMemberId,
         targetId: authoritative.anchor.bookingId,
         entityType: "BedAllocationMove",
-        category: "admin",
+        category: "lodge",
         outcome: "success",
         summary: `${orderedChanges.length} allocation night${orderedChanges.length === 1 ? "" : "s"} moved through reviewed preview`,
         metadata: {
@@ -1411,7 +1411,7 @@ export async function applyBedAllocationMove(input: {
           memberId: input.actorMemberId,
           targetId: authoritative.anchor.bookingId,
           entityType: "BedAllocation",
-          category: "admin",
+          category: "lodge",
           outcome: "success",
           summary: `${authoritative.promotionRows.length} shared-double occupant${authoritative.promotionRows.length === 1 ? "" : "s"} promoted after reviewed allocation move`,
           details: `Promoted partner bookings: ${searchableBookingIds.join(", ")}${promotedBookingIds.length > searchableBookingIds.length ? `. Showing ${searchableBookingIds.length} of ${promotedBookingIds.length} booking IDs; metadata.promotions contains a bounded sample of ${boundedPromotions.length} of ${promotionAuditRows.length} promotion records and omits ${promotionAuditRows.length - boundedPromotions.length}.` : ""}`,

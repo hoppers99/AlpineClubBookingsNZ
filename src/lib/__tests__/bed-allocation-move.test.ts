@@ -526,6 +526,10 @@ describe("authoritative bed-allocation move", () => {
       approvedByMemberId: null,
     });
     expect(auditMock).toHaveBeenCalledTimes(1);
+    expect(auditMock.mock.calls[0][0]).toMatchObject({
+      action: "BED_ALLOCATION_MOVE_APPLIED",
+      category: "lodge",
+    });
     expect(lifecycleLocksMock).toHaveBeenCalledWith(prismaMock, ["member-1"]);
     expect(partnerLocksMock).toHaveBeenCalledWith(prismaMock, ["member-1"]);
     const rawCalls = prismaMock.$executeRaw.mock.invocationCallOrder;
@@ -602,6 +606,7 @@ describe("authoritative bed-allocation move", () => {
     const promotionAudit = auditMock.mock.calls[1][0];
     expect(promotionAudit).toMatchObject({
       action: "BED_ALLOCATION_PARTNERS_PROMOTED",
+      category: "lodge",
       targetId: "booking-1",
       details: "Promoted partner bookings: booking-2",
       metadata: {
