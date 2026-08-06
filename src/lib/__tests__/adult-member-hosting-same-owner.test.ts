@@ -31,6 +31,7 @@ import {
   reconcileSameOwnerCoverageIncident,
   reconcileAdultMemberHostingReviewWithSiblings,
   hostingCoverageActorOptions,
+  isHostingCoverageSourceBookingTerminal,
   loadSameOwnerCoverageDependentIds,
 } from "@/lib/adult-member-hosting-review";
 import { hostingCoverageStateKey } from "@/lib/adult-member-hosting-coverage-incidents";
@@ -1699,6 +1700,53 @@ describe("the re-evaluation bound is a property of the item (#2576 §10)", () =>
         db,
       ),
     ).toEqual(["b-last-night"]);
+  });
+});
+
+describe("source lifecycle resolution is independent of the bounded fan-out (#2596)", () => {
+  it.each([
+    "DRAFT",
+    "PENDING",
+    "PAYMENT_PENDING",
+    "CONFIRMED",
+    "PAID",
+    "COMPLETED",
+    "WAITLISTED",
+    "WAITLIST_OFFERED",
+    "AWAITING_REVIEW",
+  ])("does not infer an extant %s source was cancelled", async (status) => {
+    const { db } = makeStore([booking({ id: "source-active", status })]);
+
+    await expect(
+      isHostingCoverageSourceBookingTerminal("source-active", db),
+    ).resolves.toBe(false);
+    expect(db.booking.findUnique).toHaveBeenCalledWith({
+      where: { id: "source-active" },
+      select: { status: true, deletedAt: true },
+    });
+  });
+
+  it.each(["CANCELLED", "BUMPED"])(
+    "recognises the terminal %s lifecycle directly",
+    async (status) => {
+      const { db } = makeStore([booking({ id: "source-terminal", status })]);
+      await expect(
+        isHostingCoverageSourceBookingTerminal("source-terminal", db),
+      ).resolves.toBe(true);
+    },
+  );
+
+  it("recognises soft-deleted and hard-missing sources as terminal", async () => {
+    const { db } = makeStore([
+      booking({ id: "source-deleted", deletedAt: new Date("2026-07-02") }),
+    ]);
+
+    await expect(
+      isHostingCoverageSourceBookingTerminal("source-deleted", db),
+    ).resolves.toBe(true);
+    await expect(
+      isHostingCoverageSourceBookingTerminal("source-missing", db),
+    ).resolves.toBe(true);
   });
 });
 

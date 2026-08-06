@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   lockPolicySet: vi.fn(),
   lockMember: vi.fn(),
   loadPolicy: vi.fn(),
+  sourceBookingIsTerminal: vi.fn(),
   loadDependents: vi.fn(),
   reconcile: vi.fn(),
   claimNotification: vi.fn(),
@@ -48,6 +49,7 @@ vi.mock("@/lib/adult-member-hosting-coverage-incidents", () => ({
 }));
 
 vi.mock("@/lib/adult-member-hosting-review", () => ({
+  isHostingCoverageSourceBookingTerminal: mocks.sourceBookingIsTerminal,
   loadAdultMemberHostingPolicy: mocks.loadPolicy,
   loadSameOwnerCoverageDependentIds: mocks.loadDependents,
   reconcileSameOwnerCoverageIncident: mocks.reconcile,
@@ -113,6 +115,7 @@ describe("hosting coverage drain claim fences (#2596)", () => {
     mocks.loadPolicy.mockResolvedValue({
       hostScopes: { sameBookingOwner: true },
     });
+    mocks.sourceBookingIsTerminal.mockResolvedValue(false);
     mocks.loadDependents.mockResolvedValue([]);
     mocks.resolveIncidents.mockResolvedValue(0);
     mocks.loadNotificationDelivery.mockResolvedValue({ ...DELIVERY });
@@ -154,11 +157,10 @@ describe("hosting coverage drain claim fences (#2596)", () => {
       .mockResolvedValue(stable);
     mocks.loadDependents.mockResolvedValue(["dependent-after"]);
     mocks.reconcile.mockResolvedValue({ action: "none" });
-    mocks.resolveIncidents.mockResolvedValue(1);
 
     const result = await drainHostingCoverageReevaluations({}, makeDb());
 
-    expect(result).toMatchObject({ claimed: 1, processed: 1, incidentsResolved: 1 });
+    expect(result).toMatchObject({ claimed: 1, processed: 1, incidentsResolved: 0 });
     expect(mocks.lockMember.mock.calls.map((call) => call[1])).toEqual([
       "member-lifecycle:actor-loser",
       "member-lifecycle:owner-loser",
@@ -197,14 +199,59 @@ describe("hosting coverage drain claim fences (#2596)", () => {
       },
       expect.anything(),
     );
+    expect(mocks.sourceBookingIsTerminal).toHaveBeenCalledWith(
+      "source-after",
+      expect.anything(),
+    );
+    expect(mocks.resolveIncidents).not.toHaveBeenCalled();
+  });
+
+  it("resolves a directly verified terminal source even when the bounded list omits it", async () => {
+    const item = {
+      ...CLAIMED_ITEM,
+      sourceBookingId: "source-cancelled",
+      actorMemberId: "officer-1",
+    };
+    mocks.claim.mockReset();
+    mocks.claim.mockResolvedValueOnce([item]).mockResolvedValue([]);
+    mocks.loadClaimed.mockResolvedValue(item);
+    mocks.loadPolicy.mockResolvedValue({
+      hostScopes: { sameBookingOwner: false },
+    });
+    mocks.sourceBookingIsTerminal.mockResolvedValue(true);
+    mocks.resolveIncidents.mockResolvedValue(1);
+
+    const result = await drainHostingCoverageReevaluations({}, makeDb());
+
+    expect(result).toMatchObject({ claimed: 1, processed: 1, incidentsResolved: 1 });
     expect(mocks.resolveIncidents).toHaveBeenCalledWith(
       {
-        bookingId: "source-after",
+        bookingId: "source-cancelled",
         resolution: "BOOKING_CANCELLED",
-        actorMemberId: "actor-master-2",
+        actorMemberId: "officer-1",
       },
       expect.anything(),
     );
+    expect(mocks.loadDependents).not.toHaveBeenCalled();
+    expect(mocks.reconcile).not.toHaveBeenCalled();
+  });
+
+  it("does not resolve an active source merely because the capped dependent list omitted it", async () => {
+    const item = { ...CLAIMED_ITEM, sourceBookingId: "source-after-cap" };
+    mocks.claim.mockReset();
+    mocks.claim.mockResolvedValueOnce([item]).mockResolvedValue([]);
+    mocks.loadClaimed.mockResolvedValue(item);
+    mocks.loadDependents.mockResolvedValue(
+      Array.from({ length: 25 }, (_, index) => `dependent-${index + 1}`),
+    );
+    mocks.reconcile.mockResolvedValue({ action: "none" });
+    mocks.sourceBookingIsTerminal.mockResolvedValue(false);
+
+    const result = await drainHostingCoverageReevaluations({}, makeDb());
+
+    expect(result).toMatchObject({ claimed: 1, processed: 1, incidentsResolved: 0 });
+    expect(mocks.reconcile).toHaveBeenCalledTimes(25);
+    expect(mocks.resolveIncidents).not.toHaveBeenCalled();
   });
 
   it("locks the sorted claimed identities before refresh when the drain wins", async () => {

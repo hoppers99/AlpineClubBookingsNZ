@@ -147,13 +147,17 @@ describe("the per-owner coverage lock (#2576 §9)", () => {
       "loadClaimedHostingCoverageReevaluation(item, db)",
     );
     const identityStabilisation = drainBody.indexOf("refreshedMemberIds.some(");
+    const sourceLifecycleRead = drainBody.indexOf(
+      "isHostingCoverageSourceBookingTerminal(",
+    );
     const dependentRead = drainBody.indexOf("loadSameOwnerCoverageDependentIds(");
     expect(drainPolicy).toBeGreaterThan(-1);
     expect(lifecycleLock).toBeGreaterThan(drainPolicy);
     expect(memberRowLock).toBeGreaterThan(lifecycleLock);
     expect(exactRefresh).toBeGreaterThan(memberRowLock);
     expect(identityStabilisation).toBeGreaterThan(exactRefresh);
-    expect(dependentRead).toBeGreaterThan(identityStabilisation);
+    expect(sourceLifecycleRead).toBeGreaterThan(identityStabilisation);
+    expect(dependentRead).toBeGreaterThan(sourceLifecycleRead);
 
     const review = readRepoFile("src/lib/adult-member-hosting-review.ts");
     const start = review.indexOf(

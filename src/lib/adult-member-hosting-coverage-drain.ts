@@ -19,6 +19,7 @@ import {
 } from "@/lib/adult-member-hosting-coverage-queue";
 import { lockAdultMemberHostingPolicySet } from "@/lib/adult-member-hosting-policy-set";
 import {
+  isHostingCoverageSourceBookingTerminal,
   loadSameOwnerCoverageDependentIds,
   loadAdultMemberHostingPolicy,
   reconcileSameOwnerCoverageIncident,
@@ -458,6 +459,12 @@ async function processHostingCoverageReevaluation(
     }>,
   };
   const policy = await loadAdultMemberHostingPolicy(refreshedItem.lodgeId, db);
+  const sourceBookingIsTerminal = refreshedItem.sourceBookingId
+    ? await isHostingCoverageSourceBookingTerminal(
+        refreshedItem.sourceBookingId,
+        db,
+      )
+    : false;
   const dependentIds =
     policy.hostScopes.sameBookingOwner || !refreshedItem.sourceBookingId
       ? await loadSameOwnerCoverageDependentIds(
@@ -468,7 +475,9 @@ async function processHostingCoverageReevaluation(
           },
           db,
         )
-      : [refreshedItem.sourceBookingId];
+      : sourceBookingIsTerminal
+        ? []
+        : [refreshedItem.sourceBookingId];
 
   for (const bookingId of dependentIds) {
     const outcome = await reconcileSameOwnerCoverageIncident(
@@ -505,14 +514,12 @@ async function processHostingCoverageReevaluation(
     });
   }
 
-  // The SOURCE booking itself may have been cancelled by the change that queued
-  // this work, in which case any incident it was carrying is moot: nobody can
-  // restore cover for a stay that is not happening. §7 lists cancellation of the
-  // affected booking as one of the four automatic resolutions.
-  if (
-    refreshedItem.sourceBookingId &&
-    !dependentIds.includes(refreshedItem.sourceBookingId)
-  ) {
+  // The SOURCE booking itself may have ended before the drain runs, in which case
+  // any incident it was carrying is moot: nobody can restore cover for a stay that
+  // is not happening. Its absence from `dependentIds` is NOT evidence of that —
+  // the same-owner query is capped and may omit a still-active source. Only the
+  // direct lifecycle lookup above can justify §7's cancellation resolution.
+  if (refreshedItem.sourceBookingId && sourceBookingIsTerminal) {
     counts.incidentsResolved += await resolveHostingCoverageIncidents(
       {
         bookingId: refreshedItem.sourceBookingId,

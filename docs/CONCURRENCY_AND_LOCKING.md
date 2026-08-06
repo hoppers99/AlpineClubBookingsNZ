@@ -384,6 +384,13 @@ locks those same `Member` rows `FOR KEY SHARE`, and only then re-reads the compl
 queue payload through Prisma with exact `id + claimToken + processedAt: null`.
 Every later read uses the refreshed owner, actor, lodge, nights, cause, source and
 reason; a missing exact claim performs no work.
+The dependent-id read remains deterministically capped at 25, so absence from that
+list is never treated as proof that the source booking was cancelled. While the
+same policy/lifecycle/Member locks are held, the drain reads the refreshed source id
+directly and applies the shared terminal-attendance predicate: only a missing,
+soft-deleted, `CANCELLED`, or `BUMPED` source receives the `BOOKING_CANCELLED`
+incident resolution. Every extant non-terminal lifecycle stays unresolved even if
+it sorts beyond the bounded fan-out.
 If the refreshed owner/actor set differs from the set locked by that transaction,
 the drain performs no reconciliation and starts a new transaction from the
 refreshed payload. This avoids acquiring a newly discovered id out of sorted order

@@ -588,7 +588,7 @@ export async function evaluateBookingAdultMemberHosting(
  * JUDGED rather than for the bookings supplying evidence — the two questions are
  * different and both need answering.
  */
-function bookingAttendanceIsTerminal(
+export function bookingAttendanceIsTerminal(
   booking: Pick<LoadedHostingBooking, "status" | "deletedAt">,
 ): boolean {
   if (booking.deletedAt != null) return true;
@@ -596,6 +596,31 @@ function bookingAttendanceIsTerminal(
     booking.status === BookingStatus.CANCELLED ||
     booking.status === BookingStatus.BUMPED
   );
+}
+
+/**
+ * Read whether the queued SOURCE booking is no longer attending (#2596).
+ *
+ * This is deliberately a direct id lookup rather than an inference from
+ * `loadSameOwnerCoverageDependentIds`: that list is capped, so an active source
+ * can legitimately sort beyond its first 25 rows. A missing row is a hard-deleted
+ * booking and therefore terminal for the same purpose as the soft-delete and
+ * terminal lifecycle states handled by `bookingAttendanceIsTerminal`.
+ *
+ * The drain passes its existing transaction client after taking the policy-set,
+ * member-lifecycle and Member-row locks, so this authoritative lifecycle read is
+ * made in the same reconciliation transaction as the bounded dependent read and
+ * incident writes.
+ */
+export async function isHostingCoverageSourceBookingTerminal(
+  bookingId: string,
+  db: AdultMemberHostingReviewDb,
+): Promise<boolean> {
+  const booking = await db.booking.findUnique({
+    where: { id: bookingId },
+    select: { status: true, deletedAt: true },
+  });
+  return booking === null || bookingAttendanceIsTerminal(booking);
 }
 
 /**
