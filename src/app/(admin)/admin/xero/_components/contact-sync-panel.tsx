@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -48,6 +48,21 @@ export function ContactSyncPanel({
   const [bookingResults, setBookingResults] = useState<ForceSyncBookingOption[]>([])
   const [bookingSearching, setBookingSearching] = useState(false)
   const [selectedBooking, setSelectedBooking] = useState<ForceSyncBookingOption | null>(null)
+  const errorRef = useRef<HTMLDivElement>(null)
+  const [errorAttentionVersion, setErrorAttentionVersion] = useState(0)
+
+  useEffect(() => {
+    if (!error || errorAttentionVersion === 0) return
+    const alert = errorRef.current
+    if (!alert) return
+    alert.focus({ preventScroll: true })
+    alert.scrollIntoView?.({ behavior: "smooth", block: "center" })
+  }, [error, errorAttentionVersion])
+
+  const showActionError = (message: string) => {
+    setError(message)
+    setErrorAttentionVersion((version) => version + 1)
+  }
 
   useEffect(() => {
     if (!connected || !open || forceSyncType === "INVOICE" || selectedMember) {
@@ -168,7 +183,7 @@ export function ContactSyncPanel({
       setSyncResult(data)
       onRefreshDiagnostics()
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Contact sync failed")
+      showActionError(err instanceof Error ? err.message : "Contact sync failed")
     } finally {
       setSyncing(null)
     }
@@ -177,15 +192,15 @@ export function ContactSyncPanel({
   const forceSync = async () => {
     if (forceSyncType === "INVOICE") {
       if (!selectedBooking) {
-        setError("Search for and select the booking you want to sync.")
+        showActionError("Search for and select the booking you want to sync.")
         return
       }
       if (!selectedBooking.canForceSyncInvoice) {
-        setError(selectedBooking.forceSyncInvoiceReason || "This booking cannot be synced right now.")
+        showActionError(selectedBooking.forceSyncInvoiceReason || "This booking cannot be synced right now.")
         return
       }
     } else if (!selectedMember) {
-      setError("Search for and select the member you want to sync.")
+      showActionError("Search for and select the member you want to sync.")
       return
     }
     setForceSyncing(true)
@@ -199,7 +214,7 @@ export function ContactSyncPanel({
       onRefreshOperations()
       onRefreshDiagnostics()
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed targeted Xero sync")
+      showActionError(err instanceof Error ? err.message : "Failed targeted Xero sync")
     } finally {
       setForceSyncing(false)
     }
@@ -207,14 +222,44 @@ export function ContactSyncPanel({
 
   const importXeroContactAsMember = async (contact: ForceSyncXeroContactOption) => {
     if (!contact.canImportAsMember) {
-      setError(contact.importBlockReason || "This Xero contact cannot be imported.")
+      showActionError(contact.importBlockReason || "This Xero contact cannot be imported.")
       return
     }
     setImportingXeroContactId(contact.contactId)
     setError("")
     onMessage("")
     try {
-      const data = await postJson<ActionResponse>("/api/admin/xero/import-member-contact", { xeroContactId: contact.contactId }, "Failed to import Xero contact")
+      const response = await fetch("/api/admin/xero/import-member-contact", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ xeroContactId: contact.contactId }),
+      })
+      const data = (await response.json().catch(() => ({}))) as ActionResponse & {
+        error?: string
+        memberImported?: boolean
+        xeroContactLinked?: boolean
+        subscriptionRefreshPending?: boolean
+      }
+      if (!response.ok) {
+        if (data.memberImported && data.memberId) {
+          setSelectedMember({
+            id: data.memberId,
+            firstName: contact.firstName || contact.name,
+            lastName: contact.lastName || "",
+            email: contact.email ?? "",
+            active: true,
+            xeroContactId: data.xeroContactLinked ? contact.contactId : null,
+          })
+          setMemberSearch("")
+          setMemberResults([])
+          setXeroContactResults([])
+          onRefreshDiagnostics()
+          throw new Error(
+            `${data.error || "The import could not be completed."} The member was created${data.xeroContactLinked ? " and linked to Xero" : ""}, but subscription history still needs repair. Do not import this contact again; reload, open the member record, and retry the Member Status Repair Backfill.`,
+          )
+        }
+        throw new Error(data.error || "Failed to import Xero contact")
+      }
       setSelectedMember({
         id: data.memberId ?? "",
         firstName: data.memberFirstName || contact.firstName || contact.name,
@@ -229,7 +274,7 @@ export function ContactSyncPanel({
       onMessage(data.warning ? `${data.message ?? "Xero contact imported."} ${data.warning}` : data.message ?? "Xero contact imported.")
       onRefreshDiagnostics()
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to import Xero contact")
+      showActionError(err instanceof Error ? err.message : "Failed to import Xero contact")
     } finally {
       setImportingXeroContactId(null)
     }
@@ -259,7 +304,16 @@ export function ContactSyncPanel({
       actions={<Button onClick={() => void syncContacts()} disabled={syncing !== null || !connected}>{syncing === "contacts" ? "Syncing..." : "Sync Contacts from Xero"}</Button>}
     >
       <div className="space-y-4">
-        {error ? <p className="text-sm text-danger">{error}</p> : null}
+        <div
+          id="xero-contact-sync-error"
+          ref={errorRef}
+          role="alert"
+          aria-atomic="true"
+          tabIndex={-1}
+          className={error ? "rounded-md bg-danger-3 p-3 text-sm text-danger-11" : "sr-only"}
+        >
+          {error}
+        </div>
         <p className="text-sm text-muted-foreground">
           Link existing {clubName} members to their Xero contacts by email address, or push a single member or booking without running a full sweep.
         </p>

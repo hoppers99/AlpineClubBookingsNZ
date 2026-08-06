@@ -444,6 +444,21 @@ export function PublicBookingRequestsPanel({
     useState<PublicBookingRequestData | null>(null);
   const [declineDialogOpen, setDeclineDialogOpen] = useState(false);
   const [error, setError] = useState("");
+  const errorRef = useRef<HTMLDivElement>(null);
+  const [errorAttentionVersion, setErrorAttentionVersion] = useState(0);
+
+  useEffect(() => {
+    if (!error || errorAttentionVersion === 0) return;
+    const alert = errorRef.current;
+    if (!alert) return;
+    alert.focus({ preventScroll: true });
+    alert.scrollIntoView?.({ behavior: "smooth", block: "center" });
+  }, [error, errorAttentionVersion]);
+
+  function showActionError(message: string) {
+    setError(message);
+    setErrorAttentionVersion((version) => version + 1);
+  }
 
   function ownerChoiceFor(requestId: string): OwnerContactChoice {
     return ownerChoices[requestId] ?? { mode: "create" };
@@ -643,7 +658,7 @@ export function PublicBookingRequestsPanel({
       toast.success("Quote saved");
       await fetchRequests();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create quote");
+      showActionError(err instanceof Error ? err.message : "Failed to create quote");
     } finally {
       setActioningId(null);
     }
@@ -651,7 +666,7 @@ export function PublicBookingRequestsPanel({
 
   async function handleSendQuote(request: PublicBookingRequestData) {
     if (ownerChoiceNeedsContact(request)) {
-      setError(
+      showActionError(
         "Choose an existing contact to map to, or switch to 'Create a new contact'."
       );
       return;
@@ -675,16 +690,17 @@ export function PublicBookingRequestsPanel({
       if (!response.ok) {
         throw new Error(data.error || "Failed to send quote");
       }
-      if (data.emailDelivered === false) {
-        setError(
-          "The quote was saved and its link is active, but the email could not be delivered — the requester has not received it. Check the contact email address, then send again or reach them another way.",
-        );
-      } else {
+      const deliveryError =
+        data.emailDelivered === false
+          ? "The quote was saved and its link is active, but the email could not be delivered — the requester has not received it. Check the contact email address, then send again or reach them another way."
+          : "";
+      if (!deliveryError) {
         toast.success("Quote sent");
       }
       await fetchRequests();
+      if (deliveryError) showActionError(deliveryError);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to send quote");
+      showActionError(err instanceof Error ? err.message : "Failed to send quote");
     } finally {
       setActioningId(null);
     }
@@ -705,7 +721,7 @@ export function PublicBookingRequestsPanel({
       toast.success(`Attendee confirmation link sent to ${data.sentTo}`);
       await fetchRequests();
     } catch (err) {
-      setError(
+      showActionError(
         err instanceof Error ? err.message : "Failed to re-send the attendee link",
       );
     } finally {
@@ -715,7 +731,7 @@ export function PublicBookingRequestsPanel({
 
   async function handleHoldSlots(request: PublicBookingRequestData) {
     if (ownerChoiceNeedsContact(request)) {
-      setError(
+      showActionError(
         "Choose an existing contact to map to, or switch to 'Create a new contact'."
       );
       return;
@@ -745,7 +761,7 @@ export function PublicBookingRequestsPanel({
       toast.success(data.reused ? "Slots were already held" : "Slots held");
       await fetchRequests();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to hold slots");
+      showActionError(err instanceof Error ? err.message : "Failed to hold slots");
     } finally {
       setActioningId(null);
     }
@@ -774,7 +790,7 @@ export function PublicBookingRequestsPanel({
       });
       await fetchRequests();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to release hold");
+      showActionError(err instanceof Error ? err.message : "Failed to release hold");
     } finally {
       setActioningId(null);
     }
@@ -892,7 +908,7 @@ export function PublicBookingRequestsPanel({
 
   async function handleApprove(request: PublicBookingRequestData) {
     if (ownerChoiceNeedsContact(request)) {
-      setError(
+      showActionError(
         "Choose an existing contact to map to, or switch to 'Create a new contact'."
       );
       return;
@@ -1013,7 +1029,7 @@ export function PublicBookingRequestsPanel({
       }
       await fetchRequests();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to approve request");
+      showActionError(err instanceof Error ? err.message : "Failed to approve request");
     } finally {
       setActioningId(null);
     }
@@ -1062,7 +1078,7 @@ export function PublicBookingRequestsPanel({
       );
       await fetchRequests();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to decline request");
+      showActionError(err instanceof Error ? err.message : "Failed to decline request");
     } finally {
       setActioningId(null);
     }
@@ -1098,14 +1114,27 @@ export function PublicBookingRequestsPanel({
         </div>
       ) : null}
 
-      {error && (
-        <div className="rounded-md bg-destructive/10 px-4 py-3 text-destructive">
-          {error}
-          <button onClick={() => setError("")} className="ml-2 underline">
-            Dismiss
-          </button>
-        </div>
-      )}
+      <div
+        id="public-booking-requests-error"
+        ref={errorRef}
+        role="alert"
+        aria-atomic="true"
+        tabIndex={-1}
+        className={
+          error
+            ? "rounded-md bg-destructive/10 px-4 py-3 text-destructive"
+            : "sr-only"
+        }
+      >
+        {error ? (
+          <>
+            {error}
+            <button onClick={() => setError("")} className="ml-2 underline">
+              Dismiss
+            </button>
+          </>
+        ) : null}
+      </div>
 
 
       <div className="flex flex-wrap gap-2">

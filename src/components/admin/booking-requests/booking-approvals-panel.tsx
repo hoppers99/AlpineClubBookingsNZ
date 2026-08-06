@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
@@ -124,6 +124,8 @@ export function BookingApprovalsPanel({
   const [reviewingId, setReviewingId] = useState<string | null>(null);
   const [notesById, setNotesById] = useState<Record<string, string>>({});
   const [error, setError] = useState("");
+  const errorRef = useRef<HTMLDivElement>(null);
+  const [errorAttentionVersion, setErrorAttentionVersion] = useState(0);
   // #1790: which decision is waiting on the admin's notify-or-not choice, and
   // whether the dialog is open. Both approve and reject always email the member
   // (unconditional sends in the route), so the dialog is shown for both. The
@@ -173,13 +175,26 @@ export function BookingApprovalsPanel({
     router.replace(currentPath, { scroll: false });
   }, [currentPath, router]);
 
+  useEffect(() => {
+    if (!error || errorAttentionVersion === 0) return;
+    const alert = errorRef.current;
+    if (!alert) return;
+    alert.focus({ preventScroll: true });
+    alert.scrollIntoView?.({ behavior: "smooth", block: "center" });
+  }, [error, errorAttentionVersion]);
+
+  function showActionError(message: string) {
+    setError(message);
+    setErrorAttentionVersion((version) => version + 1);
+  }
+
   // #1790: validate the decision (reject needs admin notes) and then open the
   // notify-choice dialog. Both decisions email the member either way, so the
   // dialog always asks; the actual PATCH runs from confirmNotify.
   function requestDecision(bookingId: string, decision: "APPROVED" | "REJECTED") {
     const adminNotes = notesById[bookingId]?.trim() ?? "";
     if (decision === "REJECTED" && !adminNotes) {
-      setError("Please add admin notes before rejecting so the member gets a reason.");
+      showActionError("Please add admin notes before rejecting so the member gets a reason.");
       return;
     }
     setError("");
@@ -274,7 +289,7 @@ export function BookingApprovalsPanel({
       );
       await fetchBookings();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to record decision");
+      showActionError(err instanceof Error ? err.message : "Failed to record decision");
     } finally {
       setReviewingId(null);
     }
@@ -318,14 +333,27 @@ export function BookingApprovalsPanel({
         </div>
       ) : null}
 
-      {error && (
-        <div className="rounded-md bg-destructive/10 px-4 py-3 text-destructive">
-          {error}
-          <button onClick={() => setError("")} className="ml-2 underline">
-            Dismiss
-          </button>
-        </div>
-      )}
+      <div
+        id="booking-approvals-error"
+        ref={errorRef}
+        role="alert"
+        aria-atomic="true"
+        tabIndex={-1}
+        className={
+          error
+            ? "rounded-md bg-destructive/10 px-4 py-3 text-destructive"
+            : "sr-only"
+        }
+      >
+        {error ? (
+          <>
+            {error}
+            <button onClick={() => setError("")} className="ml-2 underline">
+              Dismiss
+            </button>
+          </>
+        ) : null}
+      </div>
 
 
       <div className="flex flex-wrap gap-2">

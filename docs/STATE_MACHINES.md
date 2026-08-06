@@ -110,6 +110,27 @@ returns the safe retry outcome and none of the booking, member, queue or inciden
 states advance. Merge-generated work is actorless; the critical `MEMBER_MERGED`
 audit remains its human attribution.
 
+The “complete mutation” above means the database transaction that contains the
+queue write; it is not a promise that an earlier provider or workflow phase can be
+undone. Two interactive boundaries expose that distinction explicitly:
+
+```text
+Stripe capture succeeded -> confirm-payment participant retry
+  -> paymentReceived=true, finalisationPending=true
+  -> keep payment UI in place; check booking/payment status before retrying
+
+Xero contact fetched -> local member created -> Xero contact linked
+  -> subscription refresh participant retry
+  -> memberImported=true, xeroContactLinked=true,
+     subscriptionRefreshPending=true
+  -> select the created member; repair subscription history; do not import again
+```
+
+Booking-approval, public-request and Xero action consumers announce the fixed 409
+in a permanently mounted alert and focus/scroll the global action failure. Ordinary
+Xero subscription-history failures still complete the import with the existing
+repair warning; only the participant-fence code takes the fixed 409 path.
+
 There is no transition into the shared `AWAITING_REVIEW` booking status and no
 check-in block, unlike the minors-only rule (#1372/#1422). Capacity is not
 reserved from the frozen `HOLD` value; that, the member request state and the

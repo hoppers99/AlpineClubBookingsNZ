@@ -67,6 +67,7 @@ export default function BookingPaymentWrapper({
     number | null
   >(null);
   const [initFailed, setInitFailed] = useState(false);
+  const [confirmationError, setConfirmationError] = useState("");
   const [loading, setLoading] = useState(true);
   const handleAlreadyComplete = useEffectEvent(() => onPaymentComplete());
 
@@ -168,11 +169,27 @@ export default function BookingPaymentWrapper({
 
   async function handlePaymentSuccess(paymentIntentId: string) {
     try {
-      await fetch(`/api/bookings/${bookingId}/confirm-payment`, {
+      setConfirmationError("");
+      const response = await fetch(`/api/bookings/${bookingId}/confirm-payment`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ paymentIntentId }),
       });
+      if (response.status === 409) {
+        const data = (await response.json().catch(() => ({}))) as {
+          error?: string;
+          paymentReceived?: boolean;
+          finalisationPending?: boolean;
+        };
+        setConfirmationError(
+          `${data.error || "The booking could not be finalised."}${
+            data.paymentReceived && data.finalisationPending
+              ? " Your card payment was received, but booking finalisation is still pending."
+              : " Check the booking status before trying again."
+          }`,
+        );
+        return;
+      }
     } catch {
       // Non-fatal: the Stripe webhook will still reconcile the booking state.
     }
@@ -181,24 +198,37 @@ export default function BookingPaymentWrapper({
   }
 
   return (
-    <StripeProvider clientSecret={clientSecret}>
-      {paymentMode === "payment" ? (
-        <PaymentForm
-          amountCents={amountCents}
-          chargedAmountCents={chargedAmountCents}
-          isSplit={isSplit}
-          deferredGuestAmountCents={deferredGuestAmountCents}
-          returnUrl={returnUrl}
-          onSuccess={handlePaymentSuccess}
-          onError={() => undefined}
-        />
-      ) : (
-        <SetupForm
-          returnUrl={returnUrl}
-          onSuccess={() => onPaymentComplete()}
-          onError={() => undefined}
-        />
-      )}
-    </StripeProvider>
+    <>
+      <div
+        role="alert"
+        aria-atomic="true"
+        className={
+          confirmationError
+            ? "mb-4 rounded-md bg-danger-3 p-4 text-sm text-danger-11"
+            : "sr-only"
+        }
+      >
+        {confirmationError}
+      </div>
+      <StripeProvider clientSecret={clientSecret}>
+        {paymentMode === "payment" ? (
+          <PaymentForm
+            amountCents={amountCents}
+            chargedAmountCents={chargedAmountCents}
+            isSplit={isSplit}
+            deferredGuestAmountCents={deferredGuestAmountCents}
+            returnUrl={returnUrl}
+            onSuccess={handlePaymentSuccess}
+            onError={() => undefined}
+          />
+        ) : (
+          <SetupForm
+            returnUrl={returnUrl}
+            onSuccess={() => onPaymentComplete()}
+            onError={() => undefined}
+          />
+        )}
+      </StripeProvider>
+    </>
   );
 }

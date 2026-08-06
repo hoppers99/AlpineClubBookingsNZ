@@ -219,4 +219,49 @@ describe("BookingPaymentWrapper", () => {
       })
     );
   });
+
+  it("announces a confirmation 409 and does not report payment completion", async () => {
+    const onPaymentComplete = vi.fn();
+    const retryMessage =
+      "The database update could not be completed because this booking or member changed. Reload before trying again. If a payment was involved, check its status before retrying.";
+
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ clientSecret: "cs_test" }),
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 409,
+        json: async () => ({
+          error: retryMessage,
+          code: "HOSTING_COVERAGE_PARTICIPANT_RETRY",
+          paymentReceived: true,
+          finalisationPending: true,
+        }),
+      });
+
+    render(
+      <BookingPaymentWrapper
+        bookingId="booking-1"
+        amountCents={12500}
+        paymentMode="payment"
+        returnUrl="http://localhost/bookings/booking-1"
+        onPaymentComplete={onPaymentComplete}
+      />
+    );
+
+    await screen.findByText("payment-form");
+    const alert = screen.getByRole("alert", { hidden: true });
+    expect(alert.textContent).toBe("");
+    fireEvent.click(screen.getByText("trigger-success"));
+
+    await waitFor(() => expect(alert.textContent).toContain(retryMessage));
+    expect(alert.textContent).toContain(
+      "Your card payment was received, but booking finalisation is still pending.",
+    );
+    expect(alert.classList.contains("sr-only")).toBe(false);
+    expect(screen.getByText("payment-form")).not.toBeNull();
+    expect(onPaymentComplete).not.toHaveBeenCalled();
+  });
 });

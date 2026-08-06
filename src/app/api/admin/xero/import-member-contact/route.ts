@@ -3,6 +3,8 @@ import { hash } from "bcryptjs";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { logAudit } from "@/lib/audit";
+import { hostingCoverageParticipantRetryResponse } from "@/lib/adult-member-hosting-retry-response";
+import { isHostingCoverageParticipantRetry } from "@/lib/adult-member-hosting-queue-participants";
 import logger from "@/lib/logger";
 import { ensureMemberAccessRolesFromCompatibilityFields } from "@/lib/member-access-role-writes";
 import { prisma } from "@/lib/prisma";
@@ -81,6 +83,8 @@ export async function POST(request: NextRequest) {
   }
 
   const { xeroContactId } = parsed.data;
+  let importedMemberId: string | null = null;
+  let contactLinked = false;
 
   try {
     const existingLink = await prisma.member.findFirst({
@@ -193,6 +197,7 @@ export async function POST(request: NextRequest) {
         xeroContactId: true,
       },
     });
+    importedMemberId = member.id;
     await ensureMemberAccessRolesFromCompatibilityFields(prisma, {
       memberId: member.id,
       role: "USER",
@@ -222,6 +227,7 @@ export async function POST(request: NextRequest) {
         importedFromXeroContactSearch: true,
       },
     });
+    contactLinked = true;
 
     let warning: string | undefined;
     try {
@@ -241,6 +247,7 @@ export async function POST(request: NextRequest) {
         );
       }
     } catch (historyError) {
+      if (isHostingCoverageParticipantRetry(historyError)) throw historyError;
       warning =
         "Member imported, but subscription history refresh did not complete. Run the Member Status Repair Backfill to retry.";
       logger.warn(
@@ -284,6 +291,18 @@ export async function POST(request: NextRequest) {
       { status: 201 }
     );
   } catch (err) {
+    const hostingRetry = hostingCoverageParticipantRetryResponse(
+      err,
+      importedMemberId
+        ? {
+            memberImported: true,
+            memberId: importedMemberId,
+            xeroContactLinked: contactLinked,
+            subscriptionRefreshPending: true,
+          }
+        : undefined,
+    );
+    if (hostingRetry) return hostingRetry;
     const xeroError = getXeroApiErrorInfo(err, "Failed to import Xero contact as member");
     if (!xeroError.handled) {
       logger.error(

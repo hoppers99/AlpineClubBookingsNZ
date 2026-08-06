@@ -9,3 +9,9 @@
   restoring active cover continues to clear the incident without changing the
   dependent booking's accepted status. Notification delivery and its existing
   at-least-once retry behavior are unchanged.
+
+  The retry message now stays visible and is announced on the affected booking
+  approval, public-request, payment, and Xero admin actions. Multi-phase recovery
+  is reported truthfully: a captured card payment remains pending finalisation,
+  while a Xero contact whose local member and link were already created is kept
+  selected and directed to subscription-history repair rather than imported twice.

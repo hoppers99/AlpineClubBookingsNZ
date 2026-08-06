@@ -12,7 +12,7 @@
  * only what actually failed, the acting affordances are off, and Decline — the
  * one action that works end to end on a flagged row — stays on.
  */
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { PublicBookingRequestsPanel } from "@/components/admin/booking-requests/public-booking-requests-panel";
@@ -151,6 +151,36 @@ describe("PublicBookingRequestsPanel saved-data marker (#2342)", () => {
     expect(button(/Hold slots/i).disabled).toBe(false);
     expect(button(/Approve & invoice school/i).disabled).toBe(false);
     expect(button(/^Decline$/i).disabled).toBe(false);
+  });
+
+  it("keeps a permanent alert and focuses an approve failure", async () => {
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: scrollIntoView,
+    });
+    await renderWith(baseRequest);
+
+    const alert = document.getElementById("public-booking-requests-error");
+    expect(alert?.getAttribute("role")).toBe("alert");
+    expect(alert?.textContent).toBe("");
+    expect(alert?.classList.contains("sr-only")).toBe(true);
+
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 409,
+      json: async () => ({ error: "Reload the request and try again." }),
+    }) as unknown as typeof fetch;
+    fireEvent.click(button(/Approve & invoice school/i));
+
+    await waitFor(() =>
+      expect(alert?.textContent).toContain("Reload the request and try again."),
+    );
+    expect(document.activeElement).toBe(alert);
+    expect(scrollIntoView).toHaveBeenCalledWith({
+      behavior: "smooth",
+      block: "center",
+    });
   });
 
   it("states ONLY the guest failure when only the guest list is unreadable", async () => {

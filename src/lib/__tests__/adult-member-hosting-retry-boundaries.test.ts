@@ -84,6 +84,7 @@ describe("adult-member hosting participant retry responses (#2597)", () => {
       "src/app/api/admin/membership-cancellation-requests/[requestId]/participants/[participantId]/route.ts",
       "src/app/api/admin/subscriptions/[id]/manual-payment/route.ts",
       "src/app/api/admin/xero/force-sync/route.ts",
+      "src/app/api/admin/xero/import-member-contact/route.ts",
       "src/app/api/booking-requests/respond/[token]/route.ts",
       "src/app/api/bookings/[id]/cancel/route.ts",
       "src/app/api/bookings/[id]/confirm-draft/route.ts",

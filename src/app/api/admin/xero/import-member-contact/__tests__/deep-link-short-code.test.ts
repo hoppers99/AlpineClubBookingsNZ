@@ -88,6 +88,11 @@ vi.mock("@/lib/xero-api-errors", () => ({
 }));
 
 import { POST } from "@/app/api/admin/xero/import-member-contact/route";
+import {
+  HOSTING_COVERAGE_RETRY_CODE,
+  HOSTING_COVERAGE_RETRY_MESSAGE,
+  HostingCoverageParticipantRetryError,
+} from "@/lib/adult-member-hosting-queue-participants";
 import { buildXeroContactUrl } from "@/lib/xero-links";
 
 function request() {
@@ -163,5 +168,37 @@ describe("POST /api/admin/xero/import-member-contact deep links (#2314)", () => 
     expect(
       mocks.upsertXeroObjectLink.mock.calls[0][0].xeroObjectUrl,
     ).toBe(buildXeroContactUrl(CONTACT_ID));
+  });
+
+  it("keeps ordinary subscription refresh failures as a successful import warning", async () => {
+    mocks.syncMemberSubscriptionHistoryForLinkedContact.mockRejectedValueOnce(
+      new Error("Xero history unavailable"),
+    );
+
+    const response = await POST(request());
+    const body = await response.json();
+
+    expect(response.status).toBe(201);
+    expect(body.memberId).toBe("mem_1");
+    expect(body.warning).toMatch(/subscription history refresh did not complete/i);
+  });
+
+  it("returns the fixed 409 with truthful partial-import metadata on participant contention", async () => {
+    mocks.syncMemberSubscriptionHistoryForLinkedContact.mockRejectedValueOnce(
+      new HostingCoverageParticipantRetryError(),
+    );
+
+    const response = await POST(request());
+    const body = await response.json();
+
+    expect(response.status).toBe(409);
+    expect(body).toEqual({
+      error: HOSTING_COVERAGE_RETRY_MESSAGE,
+      code: HOSTING_COVERAGE_RETRY_CODE,
+      memberImported: true,
+      memberId: "mem_1",
+      xeroContactLinked: true,
+      subscriptionRefreshPending: true,
+    });
   });
 });
