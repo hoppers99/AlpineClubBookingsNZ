@@ -193,8 +193,12 @@ allocations…** above the board.
 
 4. Review the result, then click **Remove reviewed allocations**. If any
    relevant row changed, moved, was approved, or disappeared after the preview,
-   the apply is refused, nothing is removed, and the dialog shows a refreshed
-   preview to review again.
+   the apply is refused and nothing is removed. When the server can return the
+   new state, the dialog shows that refreshed preview to review again; a
+   booking/person preview whose opening row disappeared re-anchors to a
+   surviving matching row. A transient database conflict that cannot carry a
+   refreshed snapshot clears the old preview and asks you to click **Preview
+   removal** again instead of presenting stale counts as refreshed.
 
 The operation is all-or-nothing. It removes the reviewed rows, promotes a
 surviving shared-double second occupant when its primary is removed, and writes
@@ -375,7 +379,7 @@ you place them yourself.
 | Saving preferences succeeds but the board says it could not reload | The settings write completed, but recomputing the board failed | Use **Try again** on the board. Do not repeat the save unless you intend another settings write |
 | "No rooms available" / "No active beds" | Rooms and beds are not set up | Configure them in **Rooms & Beds** (via [Bookings Setup](bookings-setup.md)) |
 | "That bed was just taken … refreshing" | Someone else allocated that bed-night at the same moment | The board reloads automatically; pick another bed |
-| "Bed allocations changed after the preview" | A row was moved, approved, removed, or otherwise changed while you were reviewing | Read the refreshed counts and consequences, then apply that new preview if it is still what you intend |
+| "Bed allocations changed after the preview" | A row was moved, approved, removed, or otherwise changed while you were reviewing | Read the refreshed counts and consequences, then apply that new preview if it is still what you intend. If the dialog says the preview is no longer current instead, click **Preview removal** to load a new one. |
 | The removal preview finds no allocations | The selected scope has no rows in the selected categories | Change the scope or categories; nothing can be applied from a zero-match preview |
 | Removed guests remain unallocated | Reviewed removal never runs the planner automatically | Place them by hand or explicitly click **Run Auto Allocation** when you are ready |
 | A focused booking is "not on the board" | The deep-linked booking is outside the date range or was cancelled | Adjust Date In / Date Out to bring it into view |

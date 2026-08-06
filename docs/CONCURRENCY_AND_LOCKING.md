@@ -1025,9 +1025,12 @@ global -> lodge order introduces no inverse.
 
 Reviewed bed-allocation removal (`applyBedAllocationRemoval`, #2594) is the
 multi-row destructive counterpart. Its PREVIEW takes no lock and writes
-nothing. APPLY resolves only immutable actual-lodge keys before the transaction,
-then takes **global `lock(1)` → every affected lodge in sorted id order → every
-selected or causal `BedAllocation` row in sorted id order with `FOR UPDATE`**.
+nothing. APPLY resolves the immutable booking lodge plus the reviewed anchor
+lodge before the transaction, then takes **global `lock(1)` → those lodge keys
+in sorted id order → every selected or causal `BedAllocation` row in sorted id
+order with `FOR UPDATE`**. Its first authoritative read refuses a matching or
+causal row in any third lodge, so historical drift cannot be deleted under an
+unrelated lodge lock.
 It re-runs the full preview under those locks and compares the supplied
 `v1:<sha256>` digest before delete, partner promotion, or audit. A stale/moved
 anchor, newly approved row, changed category, or concurrent lifecycle result is
@@ -1043,12 +1046,14 @@ matching allocations after those tiers: a lodge-scoped approval locks that one
 lodge; the supported legacy club-wide selector locks the sorted immutable
 superset of all current lodge ids before its sorted allocation-row locks, so a
 newly matching allocation cannot enter from an unlocked lodge after a mutable
-pre-read. Requested-room writes take global then the booking row and repeat the
+pre-read. Requested-room writes take global then the booking row, re-read the
+requested room only after authority is established, and repeat the
 "no approved row exists" predicate in the guarded member update. Thus approval,
 removal, and requested-room editing cannot cross into a stale lock consequence.
 The production-path PostgreSQL race harness exercises removal against move,
-explicit auto-allocation, lifecycle reconciliation, and cancellation; the
-source contracts pin approval and requested-room topology.
+explicit auto-allocation, lifecycle reconciliation, cancellation, forced
+delete/promotion/audit failures, and requested-room write versus room deletion;
+the source contracts also pin approval and requested-room topology.
 
 Bed-allocation mutation boundaries follow the same composition rule (#2593,
 #2594).

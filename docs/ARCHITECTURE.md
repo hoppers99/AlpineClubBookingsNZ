@@ -810,10 +810,14 @@ unapproved `AUTO`, unapproved `MANUAL`, and approved regardless of source.
 The `v1:<sha256>` digest binds the canonical scope and sorted categories to the
 mutable identity of every matching row, every approved row on an affected
 booking, and every surviving shared-double second occupant whose primary would
-be removed. Apply first resolves the immutable actual-lodge key set, then takes
-global `lock(1)` → sorted lodge locks → sorted `BedAllocation` row locks,
-rebuilds the preview under those locks, and refuses with a refreshed preview
-when the anchor or digest drifted. A successful transaction deletes the exact
+be removed. Apply first resolves the booking's immutable lodge plus the
+reviewed anchor lodge, then takes global `lock(1)` → sorted lodge locks →
+sorted `BedAllocation` row locks. An authoritative under-lock check refuses any
+historical third-lodge anomaly rather than deleting it without that lodge's
+lock. Apply rebuilds the preview under those locks and refuses with a refreshed
+preview when the anchor or digest drifted; an aggregate booking/person preview
+whose opening row disappeared is re-anchored to the lowest-id matching survivor
+so the refreshed preview can be reviewed and applied. A successful transaction deletes the exact
 rows, promotes causal shared-double occupants, and writes the bounded
 `BED_ALLOCATION_REMOVAL_APPLIED` plus (when needed)
 `BED_ALLOCATION_PARTNERS_PROMOTED` audits together. It does not call either
@@ -823,7 +827,8 @@ Approval is a lock-compatible counterpart. A lodge-scoped approval locks that
 one immutable lodge; the supported legacy club-wide selector conservatively
 locks the sorted immutable superset of all lodge ids before it locks matching
 allocation rows, then re-applies its `approvedAt: null` selector. Requested-room
-writes take the same global key plus the booking row and keep a guarded
+writes take the same global key plus the booking row, re-read the requested room
+after those locks and the authority check, and keep a guarded
 "no approved allocation exists" predicate for member writes. Consequently a
 removal cannot race an approval or room-request edit into an outcome no actor
 reviewed: one transaction wins, and the other re-reads or fails its guard.

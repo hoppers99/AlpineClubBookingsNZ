@@ -926,8 +926,12 @@ Future reviews and issues should cite this file when proposing changes.
   The `v1:<sha256>` preview digest includes canonical scope, sorted categories,
   every matching row's mutable identity, every approved row on the affected
   bookings, and every causal shared-double sibling. Apply needs `bookings:edit`,
-  resolves the actual immutable lodge keys, then takes global `lock(1)` → sorted
-  lodge locks → sorted allocation-row locks before an authoritative re-preview.
+  resolves the immutable booking lodge plus the reviewed anchor lodge, then
+  takes global `lock(1)` → sorted lodge locks → sorted allocation-row locks
+  before an authoritative re-preview. A matching or causal row in any third
+  lodge is refused without mutation. If an aggregate booking/person preview's
+  opening row disappeared, the refreshed preview re-anchors to the lowest-id
+  matching survivor so a subsequent reviewed apply is reachable.
   A missing/moved anchor, changed category membership, new approval, promotion
   change, or any other digest drift returns 409 with a refreshed preview and
   writes nothing. A matching apply deletes the complete reviewed set, promotes

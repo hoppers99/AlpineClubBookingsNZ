@@ -1661,8 +1661,9 @@ shared-double promotions, and which bookings will have no approved row left and
 therefore re-open requested-room editing.
 
 APPLY must carry that preview's `v1:<sha256>` digest. Under global `lock(1)` →
-sorted actual-lodge locks → sorted selected/causal allocation-row locks, it
-rebuilds the same state. Drift produces a 409 refreshed preview and no
+the sorted immutable booking/anchor lodge locks → sorted selected/causal
+allocation-row locks, it rebuilds the same state and refuses any historical
+third-lodge anomaly. Drift produces a 409 refreshed preview and no
 transition. A match atomically deletes every selected row, changes each
 surviving causal shared-double occupant from second to primary, and records
 `BED_ALLOCATION_REMOVAL_APPLIED` plus the bounded
@@ -1671,6 +1672,9 @@ edge from APPLY to auto-allocation: freed nights stay unallocated until a later
 manual placement or explicit **Run Auto Allocation**. Preview requires
 `bookings:view`; APPLY requires `bookings:edit`; the retired direct
 `DELETE /api/admin/bed-allocation/allocations/[id]` is no longer a transition.
+When only the opening row of a booking/person scope disappeared, the 409 preview
+re-anchors to the lowest-id matching survivor; the current apply still writes
+nothing, while a newly reviewed apply is no longer trapped on a dead row id.
 
 Draft rows still arise constantly, which is why a confirmation step remains a
 real affordance rather than a legacy one: board single-night and drag placements
