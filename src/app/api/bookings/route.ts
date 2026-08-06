@@ -866,6 +866,7 @@ export async function POST(request: NextRequest) {
   // stored snapshot still coming from the reconciler inside the transaction.
   if (!adultMemberHostingReason) {
     const hostingViolation = await evaluateProposedAdultMemberHosting(prisma, {
+      bookingOwnerMemberId: effectiveMemberId,
       lodgeId: bookingLodgeId,
       checkIn,
       checkOut,

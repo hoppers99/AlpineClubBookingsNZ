@@ -765,10 +765,15 @@ describe("structured review reason codes (#2364)", () => {
 });
 
 describe("pre-persist evaluation for the create path (#2364)", () => {
-  const db = (policies: unknown[], members: unknown[] = []) =>
+  const db = (
+    policies: unknown[],
+    members: unknown[] = [],
+    sourceBookings: unknown[] = [],
+  ) =>
     ({
       adultMemberHostingPolicy: { findMany: vi.fn().mockResolvedValue(policies) },
       member: { findMany: vi.fn().mockResolvedValue(members) },
+      booking: { findMany: vi.fn().mockResolvedValue(sourceBookings) },
       lodge: { findFirst: vi.fn() },
     }) as any;
 
@@ -808,6 +813,46 @@ describe("pre-persist evaluation for the create path (#2364)", () => {
       },
     );
     expect(violation).toBeNull();
+  });
+
+  it("credits an eligible source booking owned by the prospective Booking.memberId", async () => {
+    const client = db(
+      [
+        {
+          ...CLUB_ON,
+          hostScopeSameBooking: true,
+          hostScopeSameBookingOwner: true,
+        },
+      ],
+      [],
+      [
+        {
+          id: "source-booking",
+          guests: [
+            guest(
+              "source-host",
+              ["2026-07-04", "2026-07-05"],
+              member({ id: "host-member" }),
+            ),
+          ],
+        },
+      ],
+    );
+
+    const violation = await evaluateProposedAdultMemberHosting(client, {
+      ...input,
+      bookingOwnerMemberId: "owner-1",
+    });
+
+    expect(violation).toBeNull();
+    expect(client.booking.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          memberId: "owner-1",
+          lodgeId: "lodge-1",
+        }),
+      }),
+    );
   });
 
   it("never credits a member whose live row says they cannot host", async () => {

@@ -444,8 +444,11 @@ function warnIfCoverageDependentCeilingBound(
  * the same-booking half of the rule reachable through the same-owner half.
  */
 async function loadSameBookingOwnerHosts(
-  booking: LoadedHostingBooking,
-  db: AdultMemberHostingReviewDb,
+  booking: Pick<
+    LoadedHostingBooking,
+    "id" | "memberId" | "lodgeId" | "checkIn" | "checkOut"
+  >,
+  db: Pick<AdultMemberHostingReviewDb, "booking">,
   excludeBookingIds: readonly string[],
 ): Promise<HostingParticipant[]> {
   const where = sameBookingOwnerCoverageSourceWhere(booking);
@@ -1175,6 +1178,7 @@ export async function evaluateProposedAdultMemberHosting(
     PrismaClient,
     // #2543 adds the subscription/membership-type reads the host bridge needs.
     | "member"
+    | "booking"
     | "adultMemberHostingPolicy"
     | "lodge"
     | "memberSubscription"
@@ -1182,6 +1186,8 @@ export async function evaluateProposedAdultMemberHosting(
     | "membershipType"
   >,
   input: {
+    /** The authoritative prospective Booking.memberId. */
+    bookingOwnerMemberId?: string | null;
     lodgeId: string;
     checkIn: Date;
     checkOut: Date;
@@ -1219,12 +1225,35 @@ export async function evaluateProposedAdultMemberHosting(
     : [];
   const memberById = new Map(members.map((member) => [member.id, member]));
 
-  const participants: HostingParticipant[] = input.guests.map((guest, index) => ({
-    guestRef: `guest:${index}`,
-    guestName: `${guest.firstName} ${guest.lastName}`.trim(),
-    member: guest.memberId ? memberById.get(guest.memberId) ?? null : null,
-    nights: proposedGuestNights(guest, input.checkIn, input.checkOut),
-  }));
+  // The proposed row does not exist yet, but SAME_BOOKING_OWNER is still a live
+  // relationship: another eligible booking under the prospective Booking.memberId
+  // may cover these exact lodge-nights. This is a preflight answer only; the
+  // persisted reconciler repeats the read under the owner lock inside the create
+  // transaction before it commits.
+  const sameOwnerHosts =
+    resolved.hostScopes.sameBookingOwner && input.bookingOwnerMemberId
+      ? await loadSameBookingOwnerHosts(
+          {
+            id: "__proposed_booking__",
+            memberId: input.bookingOwnerMemberId,
+            lodgeId: input.lodgeId,
+            checkIn: input.checkIn,
+            checkOut: input.checkOut,
+          },
+          db,
+          [],
+        )
+      : [];
+
+  const participants: HostingParticipant[] = [
+    ...input.guests.map((guest, index) => ({
+      guestRef: `guest:${index}`,
+      guestName: `${guest.firstName} ${guest.lastName}`.trim(),
+      member: guest.memberId ? memberById.get(guest.memberId) ?? null : null,
+      nights: proposedGuestNights(guest, input.checkIn, input.checkOut),
+    })),
+    ...sameOwnerHosts,
+  ];
 
   return evaluateAdultMemberHostingWithPolicy(
     // #2543 — the same bridge the persisted path applies, so a proposed party

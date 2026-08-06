@@ -775,9 +775,9 @@ export async function joinGroupBookingAsMember(
 
     // #2543 — the paid-up-adult requirement over the JOINER's own booking. A
     // group joiner creates their own booking under their own name, so "at least
-    // one paid-up adult member on the booking" is judged over their party alone:
-    // the organiser's adults are on a different booking and deliberately do not
-    // count, exactly as they do not count for the #2364 hosting rule.
+    // one paid-up adult member on the booking" is judged over their party alone.
+    // Hosting is evaluated separately below: only another eligible booking with
+    // this joiner's exact Booking.memberId can supply SAME_BOOKING_OWNER cover.
     const nonMemberPricing = await evaluateNonMemberPricingRequirements(prisma, {
       mode: subscriptionLockoutMode,
       lodgeId: groupLodgeId,
@@ -792,6 +792,7 @@ export async function joinGroupBookingAsMember(
       participants: guests,
     });
     const hostingViolation = await evaluateProposedAdultMemberHosting(prisma, {
+      bookingOwnerMemberId: sessionUserId,
       lodgeId: groupLodgeId,
       checkIn,
       checkOut,

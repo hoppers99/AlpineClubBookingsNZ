@@ -429,11 +429,21 @@ export function buildPolicyExceptionApprovalHooks(
     async evaluateCurrentViolations(
       snapshot: ExceptionProposalSnapshot,
       tx: PrismaTransactionClient,
+      request: LoadedPolicyExceptionRequest,
     ): Promise<PolicyExceptionViolation[]> {
       // The SAME evaluator the request froze its evidence with, run on `tx`
       // against today's policy configuration. Any difference is a genuine
       // policy-config change, which #2525's drift gate classifies.
-      return evaluateProposalPartyViolations(tx, snapshot.lodgeId, snapshot.proposed);
+      return evaluateProposalPartyViolations(
+        tx,
+        snapshot.lodgeId,
+        snapshot.proposed,
+        {
+          requestedByMemberId: request.requestedByMemberId,
+          bookingId:
+            snapshot.kind === "MODIFICATION" ? snapshot.bookingId : null,
+        },
+      );
     },
 
     async recheckCapacity(snapshot, tx) {

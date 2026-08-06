@@ -597,8 +597,8 @@ export async function evaluateProposalPartyViolations(
   lodgeId: string,
   party: ProposalParty,
   /**
-   * Who is asking, and about which booking (#2543). Optional, and used ONLY by the
-   * paid-up-adult evaluation below — the hosting evaluation is left byte-identical.
+   * Who is asking, and about which booking (#2543/#2569). Optional, and used by
+   * both the paid-up-adult and adult-member-hosting evaluations below.
    *
    * It exists to make the override door actually open. A booking path refuses a
    * party because its only paid-up adult member is a cross-family member guest
@@ -629,7 +629,9 @@ export async function evaluateProposalPartyViolations(
     violations.push(...stay.violations);
   }
 
+  const bookingOwnerMemberId = await resolveProposalBookingOwner(db, presence);
   const hosting = await evaluateProposedAdultMemberHosting(db, {
+    bookingOwnerMemberId,
     lodgeId,
     checkIn,
     checkOut,
@@ -660,7 +662,7 @@ export async function evaluateProposalPartyViolations(
     lodgeId,
     checkIn,
     checkOut,
-    bookingOwnerMemberId: await resolveProposalBookingOwner(db, presence),
+    bookingOwnerMemberId,
     guests: party.guests.map((guest) => ({
       ...guest,
       operationallyPresent: operationallyPresentFor(guest.memberId),

@@ -619,6 +619,22 @@ describe("no policy read inside a booking transaction (#2569 §7)", () => {
     expect(source).toContain("evaluateProposedAdultMemberHosting(db, {");
   });
 
+  it("every proposed-booking evaluator carries the authoritative Booking.memberId", () => {
+    const create = readRepoCode("src/app/api/bookings/route.ts");
+    expect(create).toContain("bookingOwnerMemberId: effectiveMemberId");
+
+    const groupJoin = readRepoFile("src/lib/group-booking.ts");
+    expect(groupJoin).toContain("bookingOwnerMemberId: sessionUserId");
+
+    const exceptionRequest = readRepoFile(
+      "src/lib/booking-exception-request-service.ts",
+    );
+    expect(exceptionRequest).toContain(
+      "bookingOwnerMemberId = await resolveProposalBookingOwner(db, presence)",
+    );
+    expect(exceptionRequest).toContain("bookingOwnerMemberId,");
+  });
+
   it("the in-transaction reconcilers all pass the transaction client", () => {
     // The composition rule on `loadAdultMemberHostingPolicy`: a caller already
     // inside `prisma.$transaction` MUST pass its own `tx`, or the read checks out
