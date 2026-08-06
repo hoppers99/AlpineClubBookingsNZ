@@ -1481,6 +1481,7 @@ Known allocation source: `AUTO` or `MANUAL`.
 booking confirmed/paid -> auto allocation proposal
 admin manually adjusts -> MANUAL allocation
 admin approves -> approved allocation metadata set
+admin previews + applies removal -> selected rows deleted; causal partner promoted
 booking modified/cancelled/completed/deleted -> allocation reconciliation
 exclusive whole-lodge hold SET -> allocation reconciliation (pure prune)
 exclusive whole-lodge hold CLEARED -> allocation reconciliation (re-plan)
@@ -1649,6 +1650,28 @@ confirmation step; the assign dialog says so before the admin commits. Manual
 allocation of a whole-lodge-held booking is refused outright at the write
 chokepoint, matching the lifecycle prune (#2285).
 
+**Reviewed removal (#2594).** Removal is an explicit PREVIEW → APPLY transition,
+not a one-click row delete. Preview writes nothing and classifies a non-empty
+selection as Auto draft, Manual draft, and/or Approved within exactly one scope:
+the anchored allocation, that person on that booking, the whole booking, or the
+selected lodge's visible half-open window (maximum 31 nights). Person and
+booking scope include matching rows outside the page; window scope does not.
+The preview states category counts, affected bookings/nights, causal
+shared-double promotions, and which bookings will have no approved row left and
+therefore re-open requested-room editing.
+
+APPLY must carry that preview's `v1:<sha256>` digest. Under global `lock(1)` →
+sorted actual-lodge locks → sorted selected/causal allocation-row locks, it
+rebuilds the same state. Drift produces a 409 refreshed preview and no
+transition. A match atomically deletes every selected row, changes each
+surviving causal shared-double occupant from second to primary, and records
+`BED_ALLOCATION_REMOVAL_APPLIED` plus the bounded
+`BED_ALLOCATION_PARTNERS_PROMOTED` audit when needed. There is deliberately no
+edge from APPLY to auto-allocation: freed nights stay unallocated until a later
+manual placement or explicit **Run Auto Allocation**. Preview requires
+`bookings:view`; APPLY requires `bookings:edit`; the retired direct
+`DELETE /api/admin/bed-allocation/allocations/[id]` is no longer a transition.
+
 Draft rows still arise constantly, which is why a confirmation step remains a
 real affordance rather than a legacy one: board single-night and drag placements
 create them, auto-allocation writes `source: "AUTO"` suggestions as drafts, and a
@@ -1663,12 +1686,14 @@ matches the lodge-scoped read the card displayed. That approval audits
 audit deep link finds it.
 
 The room-request lock is therefore **two-way**, and the surfaces say so. No
-un-approve action exists or is invented, but two existing paths take a booking's
-last approved row away and re-open the member's editor: the move re-draft above,
-and `deleteBedAllocation`. The in-booking panel warns before removing the last
-approved row for exactly that reason — deciding it from the booking's own
-approved-night count rather than the window on screen, because the panel pages a
-stay longer than 31 nights and cannot see the rest of it.
+un-approve action exists or is invented, but two paths can take a booking's last
+approved row away and re-open the member's editor: the move re-draft above and
+reviewed removal. The removal preview decides that from the booking's complete
+approved-row set rather than the window on screen, because the panel pages a
+stay longer than 31 nights and cannot see the rest of it. Approval, removal, and
+member requested-room writes share the global serialization boundary and use
+row locks/guarded predicates so a concurrent winner changes the authoritative
+answer rather than crossing this transition stale.
 
 To verify: approval status representation, conflict handling, per-night guest
 uniqueness, room continuity and whole-booking displacement behavior, range

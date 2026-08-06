@@ -46,6 +46,10 @@ whole booking regardless of lodge**: cancel, capture/settle, hold-release, the
 group-settlement reaper, refunds, and credit restoration. These are not
 per-lodge concerns — a cancel and a capture of the *same booking* must exclude
 each other whatever lodge it is at — so they share the single global key.
+Bed-allocation writers also join this cohort when their rows must not cross a
+cancellation/lifecycle prune: inventory writes, placement/move/range, explicit
+auto-allocation, approval, and reviewed removal all take global before their
+lodge tier even though they do not themselves move money.
 
 ### A writer that does BOTH takes BOTH — global first
 
@@ -102,8 +106,8 @@ are the literal `1`.
 
 | Lock | Key | Helper / where | Tier | Serialises |
 | --- | --- | --- | --- | --- |
-| **Global booking / money** | `1` (literal) | inline `tx.$executeRaw` | 2 | Booking-status + money side effects that must exclude across the whole booking regardless of lodge: cancel, capture/settle, hold-release, group-settlement reaper/settle/refund/organiser-cancel, refunds, credit restore. |
-| **Per-lodge capacity** | `hashtextextended(<lodgeId>, 0)` | `acquireLodgeCapacityLock(tx, lodgeId)` (`lodge-capacity-lock.ts`, re-exported by `capacity.ts`) | 1 | Capacity claims/checks for one lodge; roster eligibility snapshots; and direct or config-transfer chore-template changes, which serialize active-template validation for that lodge. |
+| **Global booking / money** | `1` (literal) | inline `tx.$executeRaw` | 2 | Booking-status + money side effects that must exclude across the whole booking regardless of lodge: cancel, capture/settle, hold-release, group-settlement reaper/settle/refund/organiser-cancel, refunds, credit restore; plus bed-allocation inventory/placement/move/range/auto/approval/removal writers that must serialize with lifecycle prune. |
+| **Per-lodge capacity** | `hashtextextended(<lodgeId>, 0)` | `acquireLodgeCapacityLock(tx, lodgeId)` (`lodge-capacity-lock.ts`, re-exported by `capacity.ts`) | 1 | Capacity claims/checks and bed-allocation mutations for one lodge; roster eligibility snapshots; and direct or config-transfer chore-template changes, which serialize active-template validation for that lodge. |
 | **Per-member night footprint** | `hashtext("booking-member-night"), hashtext(<memberId>)` | `lockBookingMemberNights(tx, guests)` (`booking-member-night-conflicts.ts`) | cross-lodge | Serialises the person-night guard ACROSS lodges (see below). |
 | **Per-owner hosting coverage** | `hashtext("hosting-coverage-owner"), hashtext(<Booking.memberId>)` | `lockHostingCoverageOwner` / `lockHostingCoverageOwners` (`adult-member-hosting-coverage-lock.ts`) | cross-booking | Serialises `SAME_BOOKING_OWNER` coverage (#2576 §9): one booking's compliance depends on another booking of the SAME owner, and per-lodge locks cannot serialise that because the cancel paths take only `lock(1)` while the create paths take only the lodge lock. Taken LAST among the application lock families a caller composes. Roster-aware modification paths take global → lodge → roster-date → any applicable member keys → coverage-owner; paths that do not use roster or member keys omit those tiers. Several owners are sorted, and the key is taken only when the lodge actually has the scope enabled. |
 | **Per-member credit ledger** | `hashtext("member-credit-ledger"), hashtext(<memberId>)` | `lockMemberCreditLedger(memberId, tx)` (`member-credit.ts`) | — | A member's credit-ledger balance operations (spend, negative-adjustment validation, orphan-restore repair, the Xero inbound applied-credit repair, and the F20 pre-payment-reduction applied-credit clamp `clampAppliedCreditToBookingPrice`, taken inside the modification transaction only when the booking carries applied credit, and the #2265 stored-election consumption `consumeStoredCreditElection`, taken inside the `create-payment-intent` pay transaction and the Internet Banking switch transaction only when the booking carries an outstanding election). |
@@ -1019,12 +1023,40 @@ preserves every member-night footprint. Its custodian-hold counterpart takes
 the same lodge key, cancellation takes the same global key, and the fixed
 global -> lodge order introduces no inverse.
 
-Bed-allocation mutation boundaries follow the same composition rule (#2593).
+Reviewed bed-allocation removal (`applyBedAllocationRemoval`, #2594) is the
+multi-row destructive counterpart. Its PREVIEW takes no lock and writes
+nothing. APPLY resolves only immutable actual-lodge keys before the transaction,
+then takes **global `lock(1)` → every affected lodge in sorted id order → every
+selected or causal `BedAllocation` row in sorted id order with `FOR UPDATE`**.
+It re-runs the full preview under those locks and compares the supplied
+`v1:<sha256>` digest before delete, partner promotion, or audit. A stale/moved
+anchor, newly approved row, changed category, or concurrent lifecycle result is
+a 409 refreshed preview with no partial mutation. The reset path never invokes a
+planner; the separate explicit `runAutoBedAllocation` writer is merely a
+counterpart taking the same global/lodge tiers.
+
+The counterpart inventory is deliberate. Move, explicit auto-allocation,
+lifecycle reconcile, cancellation prune, room/bed inventory changes, manual
+placement/range assignment, and reviewed removal all share global → sorted
+lodge order before their allocation writes. Approval also row-locks the exact
+matching allocations after those tiers: a lodge-scoped approval locks that one
+lodge; the supported legacy club-wide selector locks the sorted immutable
+superset of all current lodge ids before its sorted allocation-row locks, so a
+newly matching allocation cannot enter from an unlocked lodge after a mutable
+pre-read. Requested-room writes take global then the booking row and repeat the
+"no approved row exists" predicate in the guarded member update. Thus approval,
+removal, and requested-room editing cannot cross into a stale lock consequence.
+The production-path PostgreSQL race harness exercises removal against move,
+explicit auto-allocation, lifecycle reconciliation, and cancellation; the
+source contracts pin approval and requested-room topology.
+
+Bed-allocation mutation boundaries follow the same composition rule (#2593,
+#2594).
 The public lifecycle reconciler owns a transaction and takes global `lock(1)`
 before resolving and taking the booking's immutable lodge lock; callers already
 holding global use `reconcileBedAllocationsForBookingWithGlobalLockHeld`, and
 callers holding both use the explicitly named lodge-lock-held seam. Room/bed
-inventory update/delete, manual placement/range assignment, allocation delete,
+inventory update/delete, manual placement/range assignment, reviewed removal,
 and approval similarly expose transaction-owning public wrappers plus narrow
 `*WithLocksHeld` internals for existing transactions. A caller must never pass a
 client into a public wrapper to bypass lock ownership. The explicit board
