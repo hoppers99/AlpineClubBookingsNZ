@@ -263,7 +263,7 @@ test("the card resolves and states the two dimensions independently (#2569)", as
 
   // ...and the operator's own card says so, in the words they will read.
   const page = await adminContext.newPage();
-  await page.goto("/admin/booking-policies");
+  await page.goto("/admin/booking-policies/adult-member-hosting");
   const inForce = page.getByText("In force here now").first();
   await expect(inForce).toBeVisible();
   const panel = page
