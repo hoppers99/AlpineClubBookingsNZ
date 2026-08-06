@@ -7,6 +7,7 @@ import { loadEmailMessageSettings } from "@/lib/email-message-settings";
 import { clubThemeFontVariableClassName } from "@/lib/club-theme-fonts";
 import { loadEffectiveModuleFlags } from "@/lib/module-settings";
 import {
+  getCachedAnalyticsRuntimeConfig,
   getCachedClubIdentity,
   getCachedWebsiteThemeRenderState,
 } from "@/lib/public-layout-config";
@@ -105,6 +106,14 @@ export async function WebsiteChrome({
     // treatment loadEmailMessageSettings() already gets, and for the same
     // reason: keep the hot path's read set to what it actually renders.
   ]);
+  // Sequenced after the module read on purpose (#2573): Admin -> Modules is the
+  // master switch, so a club with analytics off performs no analytics query at all.
+  // The resolver never throws — a read failure resolves to `null` and is logged —
+  // so this cannot break a public page render.
+  const analyticsConfig = await getCachedAnalyticsRuntimeConfig(
+    modules.analytics,
+  );
+
   const themeStyle = (
     <style
       dangerouslySetInnerHTML={{ __html: theme.css }}
@@ -201,11 +210,7 @@ export async function WebsiteChrome({
         {children}
       </main>
       <WebsiteFooter logoUrl={theme.logoUrl} logoDataUrl={theme.logoDataUrl} />
-      <AnalyticsConsent
-        enabled={modules.analytics}
-        measurementId={process.env.NEXT_PUBLIC_GA_MEASUREMENT_ID}
-        nonce={nonce}
-      />
+      <AnalyticsConsent config={analyticsConfig} nonce={nonce} />
       {/* Public help widget: hardcoded llmEnabled=false; hides itself while the
           AnalyticsConsent banner occupies the same bottom corner. */}
       <HelpWidgetPublic />

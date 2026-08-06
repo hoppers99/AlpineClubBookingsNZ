@@ -427,13 +427,17 @@ describe("feature route map", () => {
     //   twoFactor / magicLink / googleLogin — extra ways to get through the
     //     shared login and account pages. Gating /login on any of them would
     //     lock every member out of the site whenever the module was off.
-    //   analytics — injects a consent-gated tracking script into public pages;
-    //     it has no page or endpoint of its own to 404.
+    //
+    // `analytics` was on this list until #2573 gave it a namespace of its own:
+    // its GA4 measurement id, consent-banner mode and banner wording moved out of
+    // NEXT_PUBLIC_GA_MEASUREMENT_ID into the database, behind
+    // /api/admin/integrations/analytics, which the module flag now 404s. It still
+    // injects a script into public pages rather than owning a public route, so the
+    // rule gates only the admin configuration subtree.
     const MODULES_WITHOUT_ROUTE_RULES: ModuleKey[] = [
       "twoFactor",
       "magicLink",
       "googleLogin",
-      "analytics",
     ];
 
     const gatedFlags = new Set<string>(

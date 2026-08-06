@@ -104,8 +104,11 @@ modules at `/admin/modules`. Kiosk, chores, finance dashboard, waitlist, Xero,
 bed allocation, Internet Banking payments, address autocomplete, lobby
 display, two-factor authentication, email sign-in link (a passwordless magic
 link, additive to password login), Google sign-in (profile-initiated Google
-account linking, additive to password login; requires `GOOGLE_CLIENT_ID` and
-`GOOGLE_CLIENT_SECRET`), and Google Analytics default off until an admin
+account linking, additive to password login; credentials entered in-app at
+Admin → Integrations → Google sign-in), and Google Analytics (the measurement id
+and the visitor consent settings are entered in-app at Admin → Integrations →
+Google Analytics; #2573 removed `NEXT_PUBLIC_GA_MEASUREMENT_ID` from runtime, so
+analytics stays off until they are saved) default off until an admin
 enables them. General-purpose modules default on and can be disabled there.
 Internet Banking payments also require operational Xero to be enabled,
 configured, and connected because invoice issuing and settlement reconciliation

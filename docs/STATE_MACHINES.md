@@ -2231,20 +2231,51 @@ and that every refusal renders a visible friendly message via the
 
 ## Analytics Consent Lifecycle
 
-Client-side state machine for the GA4 consent banner (issue #975). The module
-must be enabled and `NEXT_PUBLIC_GA_MEASUREMENT_ID` configured before anything
-renders at all.
+Client-side state machine for GA4 consent (issue #975, reshaped by #2573). The
+module must be enabled AND a valid GA4 measurement id must be stored in
+`AnalyticsSettings` before anything renders at all, and the route must also be
+analytics-eligible before the BANNER or the TAG appears. There is no
+environment-variable path.
+
+Route eligibility gates the banner and the tag; it deliberately does **not** gate
+the public **Analytics preferences** control, which is offered wherever the runtime
+is mounted — including a public page analytics does not run on — because in
+banner-off mode it is the visitor's only way to opt out.
+
+The club chooses one of two modes at Admin → Integrations → Google Analytics.
+
+Banner ENABLED (the default, and the recommended option):
 
 ```text
-unknown (null) -> banner shown, Google Consent Mode defaults ALL storage to denied
-visitor accepts -> choice "accepted" persisted (localStorage analytics-consent.v1) -> GA4 loader script renders + consent update granted
-visitor declines or dismisses -> choice "declined" persisted -> GA4 never loads, consent stays denied
-stored choice on revisit -> banner suppressed, prior choice honoured
+no stored choice, or one stored under an older consent revision
+    -> banner shown; NOTHING sent to Google (no tag, no request, no ping, no consent signal)
+visitor accepts  -> {choice:"accepted", revision, source:"banner"} persisted -> loader renders, analytics_storage granted
+visitor declines -> {choice:"declined", revision, source:"banner"} persisted -> loader never renders
+visitor dismisses (close) -> identical to declining
+stored choice at the CURRENT revision -> banner suppressed, prior choice honoured
+admin runs "Ask visitors to choose again" -> revision bumped -> every stored choice is stale -> banner shown again
 ```
 
-To verify: the consent-mode bootstrap (`wait_for_update: 500`, default denied),
-the loader rendering only when module enabled + measurement id present +
-choice === "accepted", and decline/dismiss both mapping to denied.
+Banner DISABLED:
+
+```text
+no stored choice                        -> loader renders automatically, analytics_storage granted
+stored choice with source:"banner"      -> IGNORED once (a banner-era decline no longer blocks) -> loader renders
+stored choice with source:"preferences" -> HONOURED at any revision (accepted -> loads, declined -> does not)
+visitor opts out from the footer's Analytics preferences control
+    -> {choice:"declined", revision, source:"preferences"} persisted
+    -> consent update denied + window["ga-disable-<ID>"] set -> no further collection
+```
+
+Advertising storage, advertising user data and advertising personalisation are
+denied in every signal, in both modes.
+
+To verify: no `<Script>` at all while the banner is enabled and unanswered; the
+loader rendering only when module enabled + valid stored measurement id +
+eligible route + decision allows; decline and dismiss both mapping to denied; a
+revision bump re-prompting; a banner-era decline being ignored in banner-off mode
+while a preferences decline is not; and `send_page_view: false` with exactly one
+sanitised `origin + pathname` page view per client-side navigation.
 
 ## Site Banner Display Lifecycle
 

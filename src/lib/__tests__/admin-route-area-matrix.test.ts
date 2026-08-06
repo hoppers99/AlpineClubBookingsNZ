@@ -261,6 +261,12 @@ const EXPECTED_ROUTE_AREAS: Record<string, AdminPermissionArea> = {
   "/api/admin/induction-templates/[id]": "membership",
   "/api/admin/inductions": "membership",
   "/api/admin/inductions/[id]": "membership",
+  // #2573: Google Analytics configuration. `finance`, deliberately and like every
+  // other route on this prefix — Xero, Stripe and Google sign-in setup all live in
+  // that area, and the owner's decision made analytics a peer of them on the same
+  // Integrations hub. Read needs finance:view, write finance:edit.
+  "/api/admin/integrations/analytics": "finance",
+  "/api/admin/integrations/analytics/reconsent": "finance",
   "/api/admin/integrations/credentials": "finance",
   "/api/admin/integrations/google/status": "finance",
   "/api/admin/integrations/google/verify/start": "finance",

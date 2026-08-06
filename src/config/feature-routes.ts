@@ -225,6 +225,28 @@ export const FEATURE_ROUTE_RULES: FeatureRouteRule[] = [
     exemptPaths: ["/api/admin/ai-diagnostics/readiness"],
   },
   {
+    // Google Analytics integration configuration (#2573). Admin -> Modules is the
+    // master switch (owner decision section 1), so with the module off this whole
+    // subtree 404s: the club cannot read or write the configuration, and the
+    // Integrations page hides its card behind the same flag.
+    //
+    // Deliberately NOT "/admin/integrations": that prefix is the shared hub which
+    // Xero, Stripe, Google sign-in and Backups also live on, and gating it would
+    // 404 the entire hub for a club that simply has analytics off — the mistake
+    // #2216 made. There is no /admin/analytics PAGE prefix either, because the
+    // owner's decision replaced the proposed /admin/analytics/setup route with an
+    // inline panel on the Integrations page; a prefix matching no file fails
+    // admin-route-map-drift.test.ts.
+    //
+    // Unlike the Google sign-in credentials route, there is no
+    // module-off-reachability exemption to make: nothing here has to be entered
+    // before the module can be enabled (the analytics module has no enable-gate),
+    // and the guided order is exactly the owner's — turn the module on, then
+    // complete the setup under Admin -> Integrations.
+    flag: "analytics",
+    prefixes: ["/api/admin/integrations/analytics"],
+  },
+  {
     // "+ Add Member Guest" (epic #2305). The two member-facing surfaces stop
     // existing when a club has the module off: the delegate's answer page, and
     // the consent endpoint both the target and the delegate answer through.
