@@ -1029,8 +1029,9 @@ and approval similarly expose transaction-owning public wrappers plus narrow
 `*WithLocksHeld` internals for existing transactions. A caller must never pass a
 client into a public wrapper to bypass lock ownership. The explicit board
 auto-allocation write takes global first, then the selected lodge lock, and
-rebuilds the complete scoped dashboard and plan through that transaction client
-before constructing any insert row. The authoritative under-lock rebuild
+re-validates that the selected lodge is still active before rebuilding the
+complete scoped dashboard and plan through that transaction client and
+constructing any insert row. The authoritative under-lock rebuild
 re-reads active rooms and beds (including their current lodge/type/bunk shape),
 booking/guest nights and eligibility, existing and approved allocations,
 whole-lodge holds, and custodian bed holds, so a visible preview is never itself

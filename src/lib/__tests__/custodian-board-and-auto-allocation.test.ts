@@ -51,6 +51,7 @@ vi.mock("@/lib/bed-allocation-lifecycle", async (importOriginal) => {
 });
 
 import {
+  BedAllocationAdminError,
   getBedAllocationDashboard,
   parseBedAllocationDateRange,
   runAutoBedAllocation,
@@ -130,6 +131,9 @@ function holdRow(bedId = "bed-a-1") {
 function buildDb(overrides: Record<string, unknown> = {}) {
   return {
     $executeRaw: mocks.executeRaw,
+    lodge: {
+      findUnique: vi.fn().mockResolvedValue({ id: LODGE, active: true }),
+    },
     bedAllocationSettings: {
       findUnique: vi.fn().mockResolvedValue({
         autoAllocationEnabled: true,
@@ -247,6 +251,36 @@ describe("board payload (chokepoint 2)", () => {
 });
 
 describe("runAutoBedAllocation (chokepoint 4)", () => {
+  it.each([null, { id: LODGE, active: false }])(
+    "rejects an unknown or inactive lodge under the locks before planning or writing",
+    async (lodge) => {
+      const lodgeFindUnique = vi.fn().mockResolvedValue(lodge);
+      const roomFindMany = vi.fn();
+      const db = buildDb({
+        lodge: { findUnique: lodgeFindUnique },
+        lodgeRoom: { findMany: roomFindMany },
+      });
+
+      await expect(
+        runAutoWithDb(db, { range, lodgeId: LODGE }),
+      ).rejects.toEqual(
+        expect.objectContaining<Partial<BedAllocationAdminError>>({
+          message: "Lodge not found or not active",
+          status: 400,
+        }),
+      );
+
+      expect(mocks.transaction).toHaveBeenCalledOnce();
+      expect(mocks.executeRaw).toHaveBeenCalled();
+      expect(lodgeFindUnique).toHaveBeenCalledWith({
+        where: { id: LODGE },
+        select: { id: true, active: true },
+      });
+      expect(roomFindMany).not.toHaveBeenCalled();
+      expect(mocks.createMany).not.toHaveBeenCalled();
+    },
+  );
+
   it("rebuilds after the locks and never writes the bed deactivated/retyped after preview", async () => {
     let inventory = room;
     const roomFindMany = vi.fn(async () => [inventory]);

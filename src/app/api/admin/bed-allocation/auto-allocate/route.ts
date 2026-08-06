@@ -10,8 +10,10 @@ import {
 } from "@/lib/admin-bed-allocation-routes";
 import { parseJsonRequestBody } from "@/lib/api-json";
 import { logAudit } from "@/lib/audit";
+import { resolveOptionalActiveLodgeId } from "@/lib/lodges";
+import { prisma } from "@/lib/prisma";
 
-// requireAdmin() is enforced by requireBedAllocationAdmin().
+// requireAdmin() with bookings:edit is enforced by requireBedAllocationWrite().
 const autoAllocateSchema = z
   .object({
     from: z.string().optional(),
@@ -37,10 +39,21 @@ export async function POST(request: Request) {
       );
     }
 
+    const lodgeId = await resolveOptionalActiveLodgeId(
+      prisma,
+      body.data.lodgeId,
+    );
+    if (!lodgeId) {
+      return NextResponse.json(
+        { error: "Lodge not found or not active" },
+        { status: 400 },
+      );
+    }
+
     const range = parseBedAllocationDateRange(body.data);
     const result = await runAutoBedAllocation({
       range,
-      lodgeId: body.data.lodgeId,
+      lodgeId,
     });
     logAudit({
       action: "BED_ALLOCATION_AUTO_RUN",

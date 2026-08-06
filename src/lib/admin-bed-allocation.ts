@@ -34,7 +34,11 @@ import {
   promoteOrphanedSecondOccupantsBatch,
 } from "@/lib/bed-allocation-lifecycle";
 import logger from "@/lib/logger";
-import { getDefaultLodgeId, lodgeNullTolerantScope } from "@/lib/lodges";
+import {
+  getDefaultLodgeId,
+  lodgeNullTolerantScope,
+  resolveOptionalActiveLodgeId,
+} from "@/lib/lodges";
 import {
   bookingHoldsCapacity,
   isCapacityHoldingBookingStatus,
@@ -2363,6 +2367,12 @@ export async function runAutoBedAllocation(input: {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
     const lodgeId = input.lodgeId;
     await acquireLodgeCapacityLock(tx, lodgeId);
+    if (!(await resolveOptionalActiveLodgeId(tx, lodgeId))) {
+      throw new BedAllocationAdminError(
+        "Lodge not found or not active",
+        400,
+      );
+    }
 
     const dashboard = await getBedAllocationDashboard({
       range: input.range,

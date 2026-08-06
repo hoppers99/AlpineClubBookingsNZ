@@ -124,6 +124,9 @@ function boardBooking(wholeLodgeHold: boolean) {
 
 function boardDb(wholeLodgeHold: boolean) {
   return {
+    lodge: {
+      findUnique: vi.fn().mockResolvedValue({ id: "lodge-1", active: true }),
+    },
     bedAllocationSettings: {
       findUnique: vi.fn().mockResolvedValue({
         autoAllocationEnabled: true,

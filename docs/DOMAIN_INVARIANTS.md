@@ -576,8 +576,9 @@ Future reviews and issues should cite this file when proposing changes.
   save never moves an existing row: it affects later board suggestions and
   later lifecycle reconciliation only. The board's visible suggestions are a
   preview, never a persistence payload: Run Auto Allocation takes global then
-  the selected lodge lock and rebuilds the complete scoped plan on that
-  transaction client before writing, so a bed/room deactivate, retype, lodge
+  the selected lodge lock, refuses an unknown or inactive selected lodge, and
+  rebuilds the complete scoped plan on that transaction client before writing,
+  so a bed/room deactivate, retype, lodge
   mismatch, allocation/approval change, or hard-predicate change committed
   after preview cannot receive a stale AUTO row.
 - **Cross-booking age mix (#1768, owner-set):** a room-night containing minors
