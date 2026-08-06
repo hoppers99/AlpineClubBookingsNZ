@@ -115,8 +115,22 @@ function makeIncidentDb(
             return false;
           }
           if (where.resolvedAt === null && row.resolvedAt != null) return false;
-          if (where.NOT?.notifiedStateKey !== undefined) {
-            if (row.notifiedStateKey === where.NOT.notifiedStateKey) return false;
+          if (where.OR !== undefined) {
+            const matchesNotificationState = where.OR.some((branch: any) => {
+              const filter = branch.notifiedStateKey;
+              if (filter === null) return row.notifiedStateKey == null;
+              if (filter?.not !== undefined) {
+                // Faithful to PostgreSQL three-valued logic: `NULL <> value` is
+                // UNKNOWN and does not match. The explicit OR-null branch above
+                // is therefore required for the first notification.
+                return (
+                  row.notifiedStateKey != null &&
+                  row.notifiedStateKey !== filter.not
+                );
+              }
+              return row.notifiedStateKey === filter;
+            });
+            if (!matchesNotificationState) return false;
           }
           return true;
         });
@@ -385,7 +399,7 @@ describe("automatic resolution (#2576 §7, §16)", () => {
 });
 
 describe("the owner is told once per transition (#2576 §16)", () => {
-  it("claims the notification exactly once for one state", async () => {
+  it("claims a fresh NULL notification stamp exactly once for one state", async () => {
     const { db } = makeIncidentDb([
       {
         id: "incident-1",

@@ -263,11 +263,14 @@ export async function resolveHostingCoverageIncidents(
  * must be based on actual state transitions; repeated reconciliation of the same
  * unchanged problem must not send repeated messages").
  *
- * A GUARDED CLAIM, not a read-then-write. The `updateMany` matches only while
- * `notifiedStateKey` is still something other than this state, so two concurrent
- * drains racing on the same incident produce exactly one winner and exactly one
- * email. `count === 1` means "you own the notification"; 0 means somebody else
- * already sent it, or the incident was resolved underneath.
+ * A GUARDED CLAIM, not a read-then-write. The `updateMany` matches a fresh NULL
+ * stamp OR a non-NULL stamp for a different state. The explicit NULL arm is
+ * load-bearing: SQL `NOT (NULL = value)` is UNKNOWN, not TRUE, so a bare NOT
+ * predicate would prevent every newly opened incident from sending its first
+ * notification. Two concurrent drains racing on the same incident still produce
+ * exactly one winner and exactly one email. `count === 1` means "you own the
+ * notification"; 0 means somebody else already sent it, or the incident was
+ * resolved underneath.
  *
  * CLAIM BEFORE SEND, deliberately. The alternative — send, then stamp — sends
  * twice whenever the stamp fails, and a duplicate "your booking has lost its
@@ -282,7 +285,10 @@ export async function claimHostingCoverageOwnerNotification(
     where: {
       id: params.incidentId,
       resolvedAt: null,
-      NOT: { notifiedStateKey: params.stateKey },
+      OR: [
+        { notifiedStateKey: null },
+        { notifiedStateKey: { not: params.stateKey } },
+      ],
     },
     data: { notifiedStateKey: params.stateKey, ownerNotifiedAt: new Date() },
   });
