@@ -313,7 +313,7 @@ function guestStayNights(guest: BedAllocationGuest): string[] {
   return eachDateOnlyInRange(guest.stayStart, guest.stayEnd).map(formatDateOnly);
 }
 
-function isAdultAgeTier(ageTier?: BedAllocationAgeTier | null): boolean {
+export function isAdultAgeTier(ageTier?: BedAllocationAgeTier | null): boolean {
   return !ageTier || ageTier === "ADULT";
 }
 

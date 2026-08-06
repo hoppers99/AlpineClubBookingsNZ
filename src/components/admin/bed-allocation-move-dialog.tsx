@@ -422,8 +422,9 @@ export function BedAllocationMoveDialog({
             {preview.promotions.length > 0 ? (
               <Alert variant="info" title="Shared-double occupants will be promoted">
                 {preview.promotions.map((promotion) => (
-                  <div key={promotion.allocationId}>
-                    {promotion.guestName} · {promotion.stayDate} · {promotion.bedName}
+                  <div key={`${promotion.stayDate}:${promotion.bedName}`}>
+                    A remaining shared-double occupant on {promotion.stayDate} at {promotion.bedName}{" "}
+                    will become the primary occupant.
                   </div>
                 ))}
               </Alert>
@@ -433,7 +434,8 @@ export function BedAllocationMoveDialog({
                 <ul className="list-disc pl-5">
                   {preview.conflicts.map((conflict) => (
                     <li key={`${conflict.allocationId}:${conflict.code}`}>
-                      {conflict.stayDate}: {conflict.message}
+                      {conflict.stayDate ? `${conflict.stayDate}: ` : ""}
+                      {conflict.message}
                     </li>
                   ))}
                 </ul>
