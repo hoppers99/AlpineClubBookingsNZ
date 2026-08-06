@@ -282,6 +282,15 @@ describe("createXeroContactForMember payload hygiene (#2089)", () => {
       xeroContactId: "contact-new",
       originalError: linkFailure,
     });
+    expect(mocks.failXeroSyncOperation).toHaveBeenCalledWith(
+      "op-1",
+      linkFailure,
+      expect.objectContaining({
+        phase: "local_link_after_xero_resolution",
+        resolvedContactId: "contact-new",
+        providerContactCreated: true,
+      }),
+    );
     expect(mocks.completeXeroSyncOperation).not.toHaveBeenCalled();
   });
 

@@ -5,6 +5,9 @@ const hostingMocks = vi.hoisted(() => ({
   enqueue: vi.fn().mockResolvedValue(0),
   settle: vi.fn().mockResolvedValue(undefined),
 }));
+const recoveryMocks = vi.hoisted(() => ({
+  getMemberContactCreateRecoveryPending: vi.fn().mockResolvedValue(false),
+}));
 
 vi.mock("@/lib/prisma", () => ({
   prisma: {
@@ -107,6 +110,10 @@ vi.mock("@/lib/adult-member-hosting-review", () => ({
 vi.mock("@/lib/adult-member-hosting-coverage-drain", () => ({
   settleHostingCoverageAfterCommit: hostingMocks.settle,
 }));
+vi.mock("@/lib/xero-contact-create-recovery", () => ({
+  getMemberContactCreateRecoveryPending:
+    recoveryMocks.getMemberContactCreateRecoveryPending,
+}));
 
 import { prisma } from "@/lib/prisma";
 import { auth } from "@/lib/auth";
@@ -148,6 +155,7 @@ function makePutRequest(id: string, body: Record<string, unknown>) {
 describe("Phase 3b: Member Detail Edit — PUT /api/admin/members/[id]", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    recoveryMocks.getMemberContactCreateRecoveryPending.mockResolvedValue(false);
     // #2106: reset the N/A-flip linked-guest query default so a per-test
     // override never leaks into a later test (clearAllMocks keeps implementations).
     vi.mocked(prisma.bookingGuest.findMany).mockResolvedValue([] as never);
@@ -1125,6 +1133,37 @@ describe("Phase 3b: Member Detail Edit — PUT /api/admin/members/[id]", () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.forcePasswordChange).toBe(true);
+  });
+
+  it("GET propagates the authoritative Xero contact-create recovery proof", async () => {
+    mockedAuth.mockResolvedValue(adminSession);
+    recoveryMocks.getMemberContactCreateRecoveryPending.mockResolvedValue(true);
+    vi.mocked(prisma.member.findUnique).mockResolvedValue({
+      ...baseMember,
+      subscriptions: [],
+      familyGroupMemberships: [],
+    } as any);
+    vi.mocked(prisma.booking.findMany).mockResolvedValue([]);
+    vi.mocked(prisma.auditLog.findMany).mockResolvedValue([]);
+    vi.mocked(prisma.booking.aggregate).mockResolvedValue({
+      _sum: { finalPriceCents: null }, _count: 0, _max: { checkOut: null },
+    } as any);
+
+    const req = new NextRequest("http://localhost/api/admin/members/m1");
+    const res = await getMemberDetail(req, {
+      params: Promise.resolve({ id: "m1" }),
+    });
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({
+      xeroContactCreateRecoveryPending: true,
+    });
+    expect(
+      recoveryMocks.getMemberContactCreateRecoveryPending,
+    ).toHaveBeenCalledWith({
+      memberId: "m1",
+      xeroContactId: null,
+    });
   });
 
   it("GET returns committee assignments as a separate member detail axis", async () => {
