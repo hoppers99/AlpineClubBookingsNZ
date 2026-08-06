@@ -262,7 +262,7 @@ trying again, and check payment status before retrying where relevant.
 
 That atomic promise stops at the transaction boundary. A provider or an earlier
 phase may already have completed before a later local reconciliation reaches the
-participant fence. The card-payment panel therefore keeps the payment form in place,
+participant fence. The card-payment panel therefore keeps the payment panel in place,
 announces that finalisation is pending, and does not navigate as if confirmation
 finished; the member checks the booking/payment status before retrying. A Xero
 contact import may likewise have created and linked the local member before its

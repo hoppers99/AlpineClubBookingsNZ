@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { FocusedActionError } from "@/components/focused-action-error";
 
 interface WaitlistOfferCardProps {
   bookingId: string;
@@ -59,31 +60,48 @@ export function WaitlistOfferCard({
     setConfirming(true);
     setError("");
 
-    const res = await fetch(`/api/bookings/${bookingId}/waitlist-confirm`, {
-      method: "POST",
-    });
+    try {
+      const res = await fetch(`/api/bookings/${bookingId}/waitlist-confirm`, {
+        method: "POST",
+      });
 
-    const data = await res.json();
+      const data = (await res.json().catch(() => ({}))) as {
+        success?: boolean;
+        newBookingId?: string;
+        code?: string;
+        error?: string;
+        updatedPriceCents?: number;
+      };
 
-    if (res.ok && data.success) {
-      if (data.newBookingId) {
-        // Cross-lodge accept: the entry was replaced by a fresh booking at the
-        // offered lodge — hard-navigate there. A full load (not router.push)
-        // keeps the F28 guarantee that the CTA can never stick on "Confirming…".
-        window.location.href = `/bookings/${data.newBookingId}`;
+      if (res.ok && data.success) {
+        if (data.newBookingId) {
+          // Cross-lodge accept: the entry was replaced by a fresh booking at the
+          // offered lodge — hard-navigate there. A full load (not router.push)
+          // keeps the F28 guarantee that the CTA can never stick on "Confirming…".
+          window.location.href = `/bookings/${data.newBookingId}`;
+          return;
+        }
+        // Hard reload: the confirm POST succeeded server-side, so re-render the
+        // page from the server to its new status (CONFIRMED/PENDING/PAID) with a
+        // full document reload. `confirming` stays true until the reload navigates,
+        // so the CTA can never stick on "Confirming…". A soft router.refresh()
+        // raced the server re-render and could leave the button frozen (#1371 F28).
+        window.location.reload();
         return;
       }
-      // Hard reload: the confirm POST succeeded server-side, so re-render the
-      // page from the server to its new status (CONFIRMED/PENDING/PAID) with a
-      // full document reload. `confirming` stays true until the reload navigates,
-      // so the CTA can never stick on "Confirming…". A soft router.refresh()
-      // raced the server re-render and could leave the button frozen (#1371 F28).
-      window.location.reload();
-    } else {
-      if (data.code === "OFFER_PRICE_CHANGED" && typeof data.updatedPriceCents === "number") {
+
+      if (
+        data.code === "OFFER_PRICE_CHANGED" &&
+        typeof data.updatedPriceCents === "number"
+      ) {
         setUpdatedPriceCents(data.updatedPriceCents);
       }
       setError(data.error || "Failed to confirm booking");
+      setConfirming(false);
+    } catch {
+      setError(
+        "We couldn't confirm this booking because the service could not be reached. Your offer is still here; try again.",
+      );
       setConfirming(false);
     }
   }
@@ -134,9 +152,7 @@ export function WaitlistOfferCard({
           </p>
         )}
 
-        {error && (
-          <div className="rounded-md bg-danger-3 p-3 text-sm text-danger-11">{error}</div>
-        )}
+        <FocusedActionError id="waitlist-confirm-error" error={error} />
 
         <div className="flex gap-3">
           <Button

@@ -550,6 +550,59 @@ describe("payment intent routes", () => {
     expect(mockStripeCreatePaymentIntent).not.toHaveBeenCalled();
   });
 
+  it("reports captured-card recovery when a succeeded intent hits participant contention", async () => {
+    mockPrisma.booking.findUnique.mockResolvedValue({
+      id: "booking-1",
+      memberId: "member-1",
+      status: "CONFIRMED",
+      hasNonMembers: false,
+      organiserSettled: false,
+      finalPriceCents: 12500,
+      member: {
+        id: "member-1",
+        email: "member@example.com",
+        firstName: "Test",
+        lastName: "Member",
+      },
+      guests: [],
+      payment: {
+        stripePaymentIntentId: "pi_captured_retry",
+        status: "PROCESSING",
+      },
+    });
+    mockGetPaymentIntent.mockResolvedValue({
+      id: "pi_captured_retry",
+      amount: 12500,
+      payment_method: "pm_123",
+      status: "succeeded",
+    });
+    mocks.markBookingPaymentSucceeded.mockRejectedValue(
+      new HostingCoverageParticipantRetryError(),
+    );
+
+    const response = await createPaymentIntentRoute(
+      new NextRequest(
+        "http://localhost/api/payments/create-payment-intent",
+        {
+          method: "POST",
+          body: JSON.stringify({ bookingId: "booking-1" }),
+          headers: { "Content-Type": "application/json" },
+        },
+      ),
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      error: HOSTING_COVERAGE_RETRY_MESSAGE,
+      code: HOSTING_COVERAGE_RETRY_CODE,
+      paymentReceived: true,
+      finalisationPending: true,
+      paymentIntentId: "pi_captured_retry",
+    });
+    expect(mocks.queueXeroInvoiceForPaidBooking).not.toHaveBeenCalled();
+    expect(mockStripeCreatePaymentIntent).not.toHaveBeenCalled();
+  });
+
   it("reuses an existing retryable setup intent", async () => {
     mockPrisma.booking.findUnique.mockResolvedValue({
       id: "booking-1",

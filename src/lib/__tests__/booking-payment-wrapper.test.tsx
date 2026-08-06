@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as Sentry from "@sentry/nextjs";
 import BookingPaymentWrapper from "@/components/stripe/BookingPaymentWrapper";
@@ -18,7 +19,7 @@ vi.mock("@/components/stripe/StripeProvider", () => ({
 }));
 
 vi.mock("@/components/stripe/PaymentForm", () => ({
-  default: ({
+  default: function MockPaymentForm({
     onError,
     onSuccess,
     chargedAmountCents,
@@ -30,22 +31,34 @@ vi.mock("@/components/stripe/PaymentForm", () => ({
     chargedAmountCents?: number | null;
     isSplit?: boolean | null;
     deferredGuestAmountCents?: number | null;
-  }) => (
-    <div>
-      <div>payment-form</div>
-      <div data-testid="charged-amount">{String(chargedAmountCents)}</div>
-      <div data-testid="is-split">{String(isSplit)}</div>
-      <div data-testid="deferred-amount">
-        {String(deferredGuestAmountCents)}
+  }) {
+    const [paid, setPaid] = useState(false);
+    if (paid) {
+      return <div>Payment successful!</div>;
+    }
+    return (
+      <div>
+        <div>payment-form</div>
+        <div data-testid="charged-amount">{String(chargedAmountCents)}</div>
+        <div data-testid="is-split">{String(isSplit)}</div>
+        <div data-testid="deferred-amount">
+          {String(deferredGuestAmountCents)}
+        </div>
+        <button type="button" onClick={() => onError("Card declined")}>
+          trigger-error
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setPaid(true);
+            onSuccess("pi_success");
+          }}
+        >
+          trigger-success
+        </button>
       </div>
-      <button type="button" onClick={() => onError("Card declined")}>
-        trigger-error
-      </button>
-      <button type="button" onClick={() => onSuccess("pi_success")}>
-        trigger-success
-      </button>
-    </div>
-  ),
+    );
+  },
 }));
 
 vi.mock("@/components/stripe/SetupForm", () => ({
@@ -127,6 +140,83 @@ describe("BookingPaymentWrapper", () => {
     expect(consoleArgs).not.toContain("sk_test");
     expect(consoleArgs).not.toContain("Invalid API Key");
 
+    consoleErrorSpy.mockRestore();
+  });
+
+  it("reports captured-card finalisation recovery instead of a payment-start failure", async () => {
+    const onPaymentComplete = vi.fn();
+    const retryMessage =
+      "The database update could not be completed because this booking or member changed. Reload before trying again. If a payment was involved, check its status before retrying.";
+    fetchMock.mockResolvedValueOnce({
+      ok: false,
+      status: 409,
+      json: async () => ({
+        error: retryMessage,
+        code: "HOSTING_COVERAGE_PARTICIPANT_RETRY",
+        paymentReceived: true,
+        finalisationPending: true,
+        paymentIntentId: "pi_captured_retry",
+      }),
+    });
+
+    render(
+      <BookingPaymentWrapper
+        bookingId="booking-1"
+        amountCents={12500}
+        paymentMode="payment"
+        returnUrl="http://localhost/bookings/booking-1"
+        onPaymentComplete={onPaymentComplete}
+      />,
+    );
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain(retryMessage);
+    expect(alert.textContent).toContain(
+      "Your card payment was received, but booking finalisation is still pending.",
+    );
+    expect(alert.textContent).toContain(
+      "Reload this page and check the booking status before trying any payment again.",
+    );
+    expect(screen.queryByText("Payment Error")).toBeNull();
+    expect(document.body.textContent).not.toContain(
+      "We couldn't start the card payment",
+    );
+    expect(screen.queryByText("payment-form")).toBeNull();
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+    expect(onPaymentComplete).not.toHaveBeenCalled();
+  });
+
+  it("keeps a pre-capture participant retry on the ordinary payment-start recovery", async () => {
+    const consoleErrorSpy = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    fetchMock.mockResolvedValueOnce({
+      ok: false,
+      status: 409,
+      json: async () => ({
+        error:
+          "The database update could not be completed because this booking or member changed. Reload before trying again. If a payment was involved, check its status before retrying.",
+        code: "HOSTING_COVERAGE_PARTICIPANT_RETRY",
+      }),
+    });
+
+    render(
+      <BookingPaymentWrapper
+        bookingId="booking-1"
+        amountCents={12500}
+        paymentMode="payment"
+        returnUrl="http://localhost/bookings/booking-1"
+        onPaymentComplete={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByText("Payment Error")).not.toBeNull();
+    expect(
+      screen.queryByText("Payment received - finalisation pending"),
+    ).toBeNull();
+    expect(
+      screen.queryByText(/your card payment was received/i),
+    ).toBeNull();
     consoleErrorSpy.mockRestore();
   });
 
@@ -220,7 +310,7 @@ describe("BookingPaymentWrapper", () => {
     );
   });
 
-  it("announces a confirmation 409 and does not report payment completion", async () => {
+  it("keeps the successful payment panel mounted when hosting finalisation must be retried", async () => {
     const onPaymentComplete = vi.fn();
     const retryMessage =
       "The database update could not be completed because this booking or member changed. Reload before trying again. If a payment was involved, check its status before retrying.";
@@ -261,7 +351,47 @@ describe("BookingPaymentWrapper", () => {
       "Your card payment was received, but booking finalisation is still pending.",
     );
     expect(alert.classList.contains("sr-only")).toBe(false);
-    expect(screen.getByText("payment-form")).not.toBeNull();
+    expect(screen.queryByText("payment-form")).toBeNull();
+    expect(screen.getByText("Payment successful!")).not.toBeNull();
     expect(onPaymentComplete).not.toHaveBeenCalled();
   });
+
+  it.each([true, false])(
+    "refreshes the cancelled booking after a capacity-loss 409 (refunded: %s)",
+    async (refunded) => {
+      const onPaymentComplete = vi.fn();
+
+      fetchMock
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ clientSecret: "cs_test" }),
+        })
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 409,
+          json: async () => ({
+            error:
+              "Payment succeeded, but lodge capacity is no longer available for this booking.",
+            status: "CANCELLED",
+            refunded,
+          }),
+        });
+
+      render(
+        <BookingPaymentWrapper
+          bookingId="booking-1"
+          amountCents={12500}
+          paymentMode="payment"
+          returnUrl="http://localhost/bookings/booking-1"
+          onPaymentComplete={onPaymentComplete}
+        />,
+      );
+
+      fireEvent.click(await screen.findByText("trigger-success"));
+
+      await waitFor(() => expect(onPaymentComplete).toHaveBeenCalledTimes(1));
+      expect(screen.getByText("Payment successful!")).not.toBeNull();
+      expect(screen.getByRole("alert", { hidden: true }).textContent).toBe("");
+    },
+  );
 });

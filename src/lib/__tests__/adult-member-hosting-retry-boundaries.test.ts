@@ -160,6 +160,12 @@ describe("adult-member hosting participant retry responses (#2597)", () => {
         "finalisationPending: true",
         "isAuthorizedCron && hostingParticipantRetry",
       ],
+      "src/app/api/payments/create-payment-intent/route.ts": [
+        "receivedPaymentIntentId = existingIntent.id",
+        "paymentReceived: true",
+        "finalisationPending: true",
+        "paymentIntentId: receivedPaymentIntentId",
+      ],
     };
     for (const [file, fragments] of Object.entries(expected)) {
       const source = readRepoCode(file);

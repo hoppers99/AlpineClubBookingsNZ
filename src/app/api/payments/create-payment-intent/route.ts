@@ -75,6 +75,11 @@ class PaymentIntentReviewPendingError extends Error {
 }
 
 export async function POST(request: NextRequest) {
+  // Set only after Stripe has authoritatively reported a succeeded intent and
+  // the local refund-history discriminator has proved it is a captured payment
+  // awaiting reconciliation. The outer retry mapper can then distinguish this
+  // recovery seam from an ordinary pre-capture participant conflict.
+  let receivedPaymentIntentId: string | null = null;
   try {
     const session = await auth();
     if (!session?.user?.id) {
@@ -538,6 +543,7 @@ export async function POST(request: NextRequest) {
             booking.payment.status === PaymentStatus.PARTIALLY_REFUNDED;
 
         if (!refundedHistory) {
+          receivedPaymentIntentId = existingIntent.id;
           if (booking.payment.status !== "SUCCEEDED") {
             const reconciliation = await markBookingPaymentSucceeded({
               bookingId: booking.id,
@@ -715,7 +721,16 @@ export async function POST(request: NextRequest) {
       creditElection,
     });
   } catch (error) {
-    const hostingRetry = hostingCoverageParticipantRetryResponse(error);
+    const hostingRetry = hostingCoverageParticipantRetryResponse(
+      error,
+      receivedPaymentIntentId
+        ? {
+            paymentReceived: true,
+            finalisationPending: true,
+            paymentIntentId: receivedPaymentIntentId,
+          }
+        : undefined,
+    );
     if (hostingRetry) return hostingRetry;
     logger.error({ err: error }, "Error creating payment intent");
     // The pay transaction's capacity refusal and its status-conflict bail both

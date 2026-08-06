@@ -67,6 +67,7 @@ export default function BookingPaymentWrapper({
     number | null
   >(null);
   const [initFailed, setInitFailed] = useState(false);
+  const [initRecoveryError, setInitRecoveryError] = useState("");
   const [confirmationError, setConfirmationError] = useState("");
   const [loading, setLoading] = useState(true);
   const handleAlreadyComplete = useEffectEvent(() => onPaymentComplete());
@@ -78,6 +79,7 @@ export default function BookingPaymentWrapper({
       try {
         setLoading(true);
         setInitFailed(false);
+        setInitRecoveryError("");
 
         const endpoint = paymentMode === "setup"
           ? "/api/payments/create-setup-intent"
@@ -92,6 +94,17 @@ export default function BookingPaymentWrapper({
         const data = await response.json();
 
         if (!response.ok) {
+          if (
+            response.status === 409 &&
+            data.code === "HOSTING_COVERAGE_PARTICIPANT_RETRY" &&
+            data.paymentReceived === true &&
+            data.finalisationPending === true
+          ) {
+            setInitRecoveryError(
+              `${data.error || "The booking could not be finalised."} Your card payment was received, but booking finalisation is still pending. Reload this page and check the booking status before trying any payment again.`,
+            );
+            return;
+          }
           // The raw provider detail (data.error) may leak partial key material;
           // log it for ops, but only ever show generic copy to the member (#1223).
           reportPaymentInitError(bookingId, data.error || "Failed to initialize payment");
@@ -159,6 +172,19 @@ export default function BookingPaymentWrapper({
     );
   }
 
+  if (initRecoveryError) {
+    return (
+      <div
+        role="alert"
+        aria-atomic="true"
+        className="rounded-md bg-warning-3 p-4 text-sm text-warning-11"
+      >
+        <p className="font-medium">Payment received - finalisation pending</p>
+        <p className="mt-1">{initRecoveryError}</p>
+      </div>
+    );
+  }
+
   if (!clientSecret) {
     return (
       <div className="rounded-md bg-warning-3 p-4 text-sm text-warning-11">
@@ -178,17 +204,20 @@ export default function BookingPaymentWrapper({
       if (response.status === 409) {
         const data = (await response.json().catch(() => ({}))) as {
           error?: string;
+          code?: string;
           paymentReceived?: boolean;
           finalisationPending?: boolean;
         };
-        setConfirmationError(
-          `${data.error || "The booking could not be finalised."}${
-            data.paymentReceived && data.finalisationPending
-              ? " Your card payment was received, but booking finalisation is still pending."
-              : " Check the booking status before trying again."
-          }`,
-        );
-        return;
+        if (data.code === "HOSTING_COVERAGE_PARTICIPANT_RETRY") {
+          setConfirmationError(
+            `${data.error || "The booking could not be finalised."}${
+              data.paymentReceived && data.finalisationPending
+                ? " Your card payment was received, but booking finalisation is still pending."
+                : " Check the booking status before trying again."
+            }`,
+          );
+          return;
+        }
       }
     } catch {
       // Non-fatal: the Stripe webhook will still reconcile the booking state.

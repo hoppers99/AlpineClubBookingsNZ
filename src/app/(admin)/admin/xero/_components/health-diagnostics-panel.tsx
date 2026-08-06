@@ -5,6 +5,7 @@ import Link from "next/link"
 import { AlertTriangle, CheckCircle2, Circle, Clock } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { FocusedActionError } from "@/components/focused-action-error"
 import { buildHrefWithReturnTo } from "@/lib/internal-return-path"
 import { buildXeroContactUrl } from "@/lib/xero-links"
 import { formatAgeTierName } from "@/lib/use-age-tier-options"
@@ -223,6 +224,7 @@ export function HealthAndDiagnosticsPanels({
 
   return (
     <>
+      <FocusedActionError id="xero-health-error" error={healthError} className="mb-3" />
       <SectionCard
         id="xero-section-health"
         title="Health Snapshot"
@@ -235,7 +237,6 @@ export function HealthAndDiagnosticsPanels({
           </Button>
         }
       >
-        {healthError ? <p className="mb-3 text-sm text-danger">{healthError}</p> : null}
         {loadingHealth && !health ? (
           <p className="text-sm text-muted-foreground">Loading health snapshot...</p>
         ) : health ? (
@@ -315,24 +316,24 @@ export function HealthAndDiagnosticsPanels({
         )}
       </SectionCard>
 
+      <FocusedActionError id="xero-contact-group-error" error={groupError} className="mb-3" />
       <ContactGroupMismatchPanel
         open={contactGroupMismatchesOpen}
         shortCode={shortCode}
         data={groupMismatches}
         loading={loadingGroupMismatches}
         resyncing={resyncingGroupMismatches}
-        error={groupError}
         currentXeroPath={currentXeroPath}
         onToggle={onToggle}
         onRefresh={resyncGroupMismatches}
       />
+      <FocusedActionError id="xero-contact-link-error" error={linkError} className="mb-3" />
       <ContactLinkMismatchPanel
         open={contactLinkMismatchesOpen}
         shortCode={shortCode}
         data={linkMismatches}
         loading={loadingLinkMismatches}
         resyncing={resyncingLinkMismatches}
-        error={linkError}
         currentXeroPath={currentXeroPath}
         onToggle={onToggle}
         onRefresh={resyncLinkMismatches}
@@ -394,7 +395,6 @@ function ContactGroupMismatchPanel({
   data,
   loading,
   resyncing,
-  error,
   currentXeroPath,
   onToggle,
   onRefresh,
@@ -404,7 +404,6 @@ function ContactGroupMismatchPanel({
   data: ContactGroupMismatchResponse | null
   loading: boolean
   resyncing: boolean
-  error: string
   currentXeroPath: string
   onToggle: ToggleSection
   onRefresh: () => Promise<void>
@@ -418,7 +417,6 @@ function ContactGroupMismatchPanel({
       onToggle={(nextOpen) => onToggle("contactGroupMismatches", nextOpen)}
       actions={<Button variant="outline" size="sm" onClick={() => void onRefresh()} disabled={loading || resyncing} title="Re-fetches the flagged contacts from Xero, then recomputes this audit.">{resyncing ? "Re-syncing from Xero..." : loading ? "Loading..." : "Refresh"}</Button>}
     >
-      {error ? <p className="mb-3 text-sm text-danger">{error}</p> : null}
       {loading && !data ? (
         <p className="text-sm text-muted-foreground">Loading contact group mismatches...</p>
       ) : data ? (
@@ -501,7 +499,6 @@ function ContactLinkMismatchPanel({
   data,
   loading,
   resyncing,
-  error,
   currentXeroPath,
   onToggle,
   onRefresh,
@@ -513,7 +510,6 @@ function ContactLinkMismatchPanel({
   data: ContactLinkMismatchResponse | null
   loading: boolean
   resyncing: boolean
-  error: string
   currentXeroPath: string
   onToggle: ToggleSection
   onRefresh: () => Promise<void>
@@ -529,7 +525,6 @@ function ContactLinkMismatchPanel({
       onToggle={(nextOpen) => onToggle("contactLinkMismatches", nextOpen)}
       actions={<Button variant="outline" size="sm" onClick={() => void onRefresh()} disabled={loading || resyncing} title="Re-fetches the flagged contacts from Xero, then recomputes this audit.">{resyncing ? "Re-syncing from Xero..." : loading ? "Loading..." : "Refresh"}</Button>}
     >
-      {error ? <p className="mb-3 text-sm text-danger">{error}</p> : null}
       {loading && !data ? (
         <p className="text-sm text-muted-foreground">Loading contact link mismatches...</p>
       ) : data ? (
