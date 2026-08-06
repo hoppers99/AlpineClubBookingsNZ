@@ -40,7 +40,10 @@ vi.mock("@/lib/adult-member-hosting-review", () => ({
 // every other collaborator here, because the real helper reads
 // `tx.hostingCoverageIncident` and this suite's fake transaction carries only the
 // delegates the approval itself needs — which is exactly how it caught the change.
-const resolveHostingCoverageIncidents = vi.fn(async (..._args: unknown[]) => 1);
+const resolveHostingCoverageIncidents = vi.fn(async (...args: unknown[]) => {
+  void args;
+  return 1;
+});
 vi.mock("@/lib/adult-member-hosting-coverage-incidents", () => ({
   resolveHostingCoverageIncidents: (...args: unknown[]) =>
     resolveHostingCoverageIncidents(...args),

@@ -59,8 +59,13 @@ vi.mock("@/lib/logger", () => ({
 }));
 // #2576 §8: the lifecycle change records the coverage re-evaluation it owes.
 const hostingMocks = vi.hoisted(() => ({
-  fanout: vi.fn(async (..._args: unknown[]) => 1),
-  drain: vi.fn(async (..._args: unknown[]) => undefined),
+  fanout: vi.fn(async (...args: unknown[]) => {
+    void args;
+    return 1;
+  }),
+  drain: vi.fn(async (...args: unknown[]) => {
+    void args;
+  }),
 }));
 
 // #2576 §8. "Membership becoming inactive, lapsed, cancelled or archived" is the FIRST

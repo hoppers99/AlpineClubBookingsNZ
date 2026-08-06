@@ -6,8 +6,13 @@ const mocks = vi.hoisted(() => ({
   transaction: vi.fn(),
   // #2576 §9: the single settle door is a confirming path, so it records the bounded
   // hosting re-evaluation with the PAID claim and drains it after the commit.
-  enqueueOwnHostingCoverage: vi.fn(async (..._args: unknown[]) => null),
-  settleHostingCoverage: vi.fn(async (..._args: unknown[]) => undefined),
+  enqueueOwnHostingCoverage: vi.fn(async (...args: unknown[]) => {
+    void args;
+    return null;
+  }),
+  settleHostingCoverage: vi.fn(async (...args: unknown[]) => {
+    void args;
+  }),
   executeRaw: vi.fn(),
   bookingFindUnique: vi.fn(),
   bookingFindMany: vi.fn(),
