@@ -740,6 +740,43 @@ describe("authoritative bed-allocation move", () => {
     });
   });
 
+  it("identifies a disappeared destination separately from a disappeared anchor", async () => {
+    install({
+      rows: [allocationRow()],
+      destination: destination({ id: "some-other-bed" }),
+    });
+
+    await expect(
+      applyBedAllocationMove({
+        request: { ...request(), previewDigest: `v1:${"0".repeat(64)}` },
+        actorMemberId: "admin-1",
+      }),
+    ).rejects.toMatchObject({
+      status: 409,
+      code: "STALE_PREVIEW",
+      refreshedPreview: expect.objectContaining({
+        conflicts: [expect.objectContaining({ code: "DESTINATION_UNAVAILABLE" })],
+      }),
+    });
+  });
+
+  it("refuses inconsistent guest relations without disguising them as an unavailable anchor", async () => {
+    const row = allocationRow();
+    row.bookingGuest.id = "different-guest";
+    install({ rows: [row] });
+
+    await expect(
+      applyBedAllocationMove({
+        request: { ...request(), previewDigest: `v1:${"0".repeat(64)}` },
+        actorMemberId: "admin-1",
+      }),
+    ).rejects.toMatchObject({
+      status: 409,
+      code: "INVALID_MOVE",
+      refreshedPreview: undefined,
+    });
+  });
+
   it.each([
     ["NOT_APPLICABLE", "ADULT"],
     ["ADULT", "YOUTH"],

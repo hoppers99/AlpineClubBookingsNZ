@@ -279,6 +279,7 @@ function assertMoveIdentity(
 ) {
   const guestBookingId = anchor.bookingGuest.bookingId;
   if (
+    anchor.bookingGuestId !== anchor.bookingGuest.id ||
     anchor.bookingId !== guestBookingId ||
     anchor.booking.id !== anchor.bookingId ||
     anchor.bookingGuest.booking.id !== guestBookingId
@@ -291,6 +292,7 @@ function assertMoveIdentity(
   for (const row of rows) {
     if (
       row.bookingGuestId !== anchor.bookingGuestId ||
+      row.bookingGuestId !== row.bookingGuest.id ||
       row.bookingId !== guestBookingId ||
       row.booking.id !== row.bookingId ||
       row.bookingGuest.bookingId !== guestBookingId ||
@@ -561,6 +563,7 @@ async function loadRelatedRows(base: MoveBaseState, db: MoveDb) {
   for (const row of rows) {
     if (
       row.bookingId !== row.booking.id ||
+      row.bookingGuestId !== row.bookingGuest.id ||
       row.bookingGuest.bookingId !== row.bookingId ||
       row.bookingGuest.booking.id !== row.bookingId ||
       row.roomId !== row.room.id ||
@@ -1049,10 +1052,17 @@ async function unavailablePreview(
   request: BedAllocationMoveRequest,
   db: MoveDb,
 ): Promise<BedAllocationMovePreview> {
-  const destination = await db.lodgeBed.findUnique({
-    where: { id: request.destinationBedId },
-    include: destinationInclude,
-  });
+  const [anchor, destination] = await Promise.all([
+    db.bedAllocation.findUnique({
+      where: { id: request.anchorAllocationId },
+      include: moveAllocationInclude,
+    }),
+    db.lodgeBed.findUnique({
+      where: { id: request.destinationBedId },
+      include: destinationInclude,
+    }),
+  ]);
+  const anchorUnavailable = anchor === null;
   const canonical = {
     digestVersion: BED_ALLOCATION_MOVE_DIGEST_VERSION,
     request,
@@ -1071,7 +1081,7 @@ async function unavailablePreview(
           },
         }
       : null,
-    unavailable: true,
+    anchorUnavailable,
   };
   const digest = `${BED_ALLOCATION_MOVE_DIGEST_VERSION}:${createHash("sha256")
     .update(JSON.stringify(canonical))
@@ -1101,8 +1111,12 @@ async function unavailablePreview(
       {
         allocationId: request.anchorAllocationId,
         stayDate: null,
-        code: "ALLOCATION_UNAVAILABLE",
-        message: "The selected allocation is no longer available.",
+        code: anchorUnavailable
+          ? "ALLOCATION_UNAVAILABLE"
+          : "DESTINATION_UNAVAILABLE",
+        message: anchorUnavailable
+          ? "The selected allocation is no longer available."
+          : "The destination bed is no longer available.",
       },
     ],
   };
@@ -1148,10 +1162,10 @@ export async function applyBedAllocationMove(input: {
     } catch (error) {
       if (
         error instanceof BedAllocationMoveError &&
-        (error.status === 404 || error.status === 409)
+        error.status === 404
       ) {
         throw new BedAllocationMoveError(
-          "The selected allocation is no longer available. Review the refreshed preview.",
+          "The move target is no longer available. Review the refreshed preview.",
           409,
           "STALE_PREVIEW",
           await unavailablePreview(input.request, tx),
@@ -1174,7 +1188,20 @@ export async function applyBedAllocationMove(input: {
     await acquireMemberPartnerLinkLocks(tx, initial.memberIds);
     await lockMoveRows(tx, [...initial.selectedRows, ...initial.relatedRows]);
 
-    const authoritativeBase = await loadMoveBase(input.request, tx);
+    let authoritativeBase: MoveBaseState;
+    try {
+      authoritativeBase = await loadMoveBase(input.request, tx);
+    } catch (error) {
+      if (error instanceof BedAllocationMoveError && error.status === 404) {
+        throw new BedAllocationMoveError(
+          "The move target is no longer available. Review the refreshed preview.",
+          409,
+          "STALE_PREVIEW",
+          await unavailablePreview(input.request, tx),
+        );
+      }
+      throw error;
+    }
     const authoritative = await loadMoveState(authoritativeBase, tx);
     const unlockedLodges = moveLodgeIds(
       authoritativeBase,
