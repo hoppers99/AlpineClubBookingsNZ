@@ -1,8 +1,9 @@
 /**
  * Real-PostgreSQL serialization proofs for reviewed bed-allocation removal
- * (#2594). Ordinary Vitest runs skip the production-path races. The explicit
- * concurrency job imports this file from concurrency-lock-races.realdb.test.ts
- * after migrating a disposable, loopback-only database.
+ * (#2594) and reviewed moves (#2595). Ordinary Vitest runs skip the production-
+ * path races. The explicit concurrency job imports this file from
+ * concurrency-lock-races.realdb.test.ts after migrating a disposable,
+ * loopback-only database.
  *
  * A third connection holds the exact production global booking lock while the
  * two real writers reach PostgreSQL. The test observes their waiters in
@@ -51,6 +52,7 @@ const SECOND_NIGHT = new Date("2099-04-02T00:00:00.000Z");
 const CHECK_OUT = new Date("2099-04-03T00:00:00.000Z");
 const FIRST_NIGHT_DATE_ONLY = "2099-04-01";
 const SECOND_NIGHT_DATE_ONLY = "2099-04-02";
+const TARGET_APPROVED_AT = new Date("2099-03-01T00:00:00.000Z");
 
 const REMOVAL_AUDIT_ACTIONS = [
   "BED_ALLOCATION_REMOVAL_APPLIED",
@@ -398,11 +400,13 @@ async function reviewedTargetRemoval(stayDate: string) {
   };
 }
 
-async function reviewedTargetMove() {
+async function reviewedTargetMove(
+  scope: "ALLOCATION_NIGHT" | "BOOKING_GUEST" = "ALLOCATION_NIGHT",
+) {
   const request = {
     anchorAllocationId: TARGET_ALLOCATION_ID,
     destinationBedId: DESTINATION_BED_ID,
-    scope: "ALLOCATION_NIGHT" as const,
+    scope,
   };
   const preview = await previewBedAllocationMove(request);
   return {
@@ -652,7 +656,7 @@ describe("bed-allocation removal race DB safety guard (#2594)", () => {
 });
 
 (RUN ? describe : describe.skip)(
-  "reviewed bed-allocation removal races - real PostgreSQL (#2594)",
+  "reviewed bed-allocation removal and move races - real PostgreSQL (#2594, #2595)",
   { timeout: RACE_TEST_TIMEOUT_MS },
   () => {
     let previousBedAllocationModuleEnabled: boolean | null = null;
@@ -1119,6 +1123,254 @@ describe("bed-allocation removal race DB safety guard (#2594)", () => {
           expect(reviewedMoveAudits).toBe(0);
           expect(removalAudits).toBe(1);
         }
+      },
+    );
+
+    it.each(["MOVE_FIRST", "AUTO_FIRST"] as const)(
+      "serializes a reviewed person move and explicit auto-allocation when %s is queued first",
+      async (order) => {
+        await seedBookings();
+        await seedTargetWithPartner();
+        await prisma.bedAllocation.update({
+          where: { id: TARGET_ALLOCATION_ID },
+          data: {
+            approvedAt: TARGET_APPROVED_AT,
+            approvedByMemberId: ACTOR_ID,
+          },
+        });
+        const move = await reviewedTargetMove("BOOKING_GUEST");
+        expect(move.preview).toMatchObject({
+          resolvedRowCount: 1,
+          changedRowCount: 1,
+          unchangedRowCount: 0,
+          approvedToDraftCount: 1,
+          promotions: [{ stayDate: FIRST_NIGHT_DATE_ONLY }],
+          conflicts: [],
+        });
+        const range = {
+          from: FIRST_NIGHT,
+          to: CHECK_OUT,
+          fromDate: FIRST_NIGHT_DATE_ONLY,
+          toDate: "2099-04-03",
+        };
+
+        const outcomes =
+          order === "MOVE_FIRST"
+            ? await runWritersInGlobalQueueOrder(move.apply, () =>
+                runAutoBedAllocation({ range, lodgeId: LODGE_ID }),
+              )
+            : await runWritersInGlobalQueueOrder(
+                () => runAutoBedAllocation({ range, lodgeId: LODGE_ID }),
+                move.apply,
+              );
+        const [moveOutcome, autoOutcome] =
+          order === "MOVE_FIRST"
+            ? outcomes
+            : [outcomes[1], outcomes[0]];
+
+        expect(autoOutcome).toMatchObject({
+          status: "fulfilled",
+          value: { count: 2 },
+        });
+        const [targetRows, partner, moveAuditCount, promotionAuditCount] =
+          await Promise.all([
+            prisma.bedAllocation.findMany({
+              where: {
+                bookingId: BOOKING_ID,
+                bookingGuestId: GUEST_ID,
+              },
+              select: {
+                id: true,
+                stayDate: true,
+                bedId: true,
+                source: true,
+                approvedAt: true,
+                approvedByMemberId: true,
+              },
+              orderBy: { stayDate: "asc" },
+            }),
+            prisma.bedAllocation.findUniqueOrThrow({
+              where: { id: PARTNER_ALLOCATION_ID },
+              select: { isSecondOccupant: true },
+            }),
+            actionCount(["BED_ALLOCATION_MOVE_APPLIED"]),
+            actionCount(["BED_ALLOCATION_PARTNERS_PROMOTED"]),
+          ]);
+        expect(targetRows).toHaveLength(2);
+        expect(targetRows[1]).toMatchObject({
+          stayDate: SECOND_NIGHT,
+          source: "AUTO",
+          approvedAt: null,
+          approvedByMemberId: null,
+        });
+
+        if (order === "MOVE_FIRST") {
+          expect(moveOutcome).toMatchObject({
+            status: "fulfilled",
+            value: {
+              noop: false,
+              movedRowCount: 1,
+              promotedRowCount: 1,
+              affectedNights: [FIRST_NIGHT_DATE_ONLY],
+            },
+          });
+          expect(targetRows[0]).toEqual({
+            id: TARGET_ALLOCATION_ID,
+            stayDate: FIRST_NIGHT,
+            bedId: DESTINATION_BED_ID,
+            source: "MANUAL",
+            approvedAt: null,
+            approvedByMemberId: null,
+          });
+          expect(partner.isSecondOccupant).toBe(false);
+          expect(moveAuditCount).toBe(1);
+          expect(promotionAuditCount).toBe(1);
+          return;
+        }
+
+        expect(rejectionStatus(moveOutcome)).toBe(409);
+        if (moveOutcome.status === "rejected") {
+          expect(moveOutcome.reason).toMatchObject({
+            code: "STALE_PREVIEW",
+            refreshedPreview: expect.objectContaining({
+              scope: "BOOKING_GUEST",
+              resolvedRowCount: 2,
+            }),
+          });
+        }
+        expect(targetRows[0]).toEqual({
+          id: TARGET_ALLOCATION_ID,
+          stayDate: FIRST_NIGHT,
+          bedId: OLD_DOUBLE_BED_ID,
+          source: "MANUAL",
+          approvedAt: TARGET_APPROVED_AT,
+          approvedByMemberId: ACTOR_ID,
+        });
+        expect(partner.isSecondOccupant).toBe(true);
+        expect(moveAuditCount).toBe(0);
+        expect(promotionAuditCount).toBe(0);
+      },
+    );
+
+    it.each(["MOVE_FIRST", "LIFECYCLE_FIRST"] as const)(
+      "serializes a reviewed person move and lifecycle reconciliation when %s is queued first",
+      async (order) => {
+        await seedBookings();
+        await seedTargetWithPartner();
+        await prisma.bedAllocation.update({
+          where: { id: TARGET_ALLOCATION_ID },
+          data: {
+            approvedAt: TARGET_APPROVED_AT,
+            approvedByMemberId: ACTOR_ID,
+          },
+        });
+        const move = await reviewedTargetMove("BOOKING_GUEST");
+        expect(move.preview).toMatchObject({
+          resolvedRowCount: 1,
+          changedRowCount: 1,
+          unchangedRowCount: 0,
+          approvedToDraftCount: 1,
+          promotions: [{ stayDate: FIRST_NIGHT_DATE_ONLY }],
+          conflicts: [],
+        });
+        const reconcile = () =>
+          reconcileBedAllocationsForBooking({ bookingId: BOOKING_ID });
+
+        const outcomes =
+          order === "MOVE_FIRST"
+            ? await runWritersInGlobalQueueOrder(move.apply, reconcile)
+            : await runWritersInGlobalQueueOrder(reconcile, move.apply);
+        const [moveOutcome, lifecycleOutcome] =
+          order === "MOVE_FIRST"
+            ? outcomes
+            : [outcomes[1], outcomes[0]];
+
+        expect(lifecycleOutcome).toMatchObject({
+          status: "fulfilled",
+          value: {
+            enabled: true,
+            deletedCount: 0,
+            createdCount: 1,
+            promotedCount: 0,
+          },
+        });
+        const [targetRows, partner, moveAuditCount, promotionAuditCount] =
+          await Promise.all([
+            prisma.bedAllocation.findMany({
+              where: {
+                bookingId: BOOKING_ID,
+                bookingGuestId: GUEST_ID,
+              },
+              select: {
+                id: true,
+                stayDate: true,
+                bedId: true,
+                source: true,
+                approvedAt: true,
+                approvedByMemberId: true,
+              },
+              orderBy: { stayDate: "asc" },
+            }),
+            prisma.bedAllocation.findUniqueOrThrow({
+              where: { id: PARTNER_ALLOCATION_ID },
+              select: { isSecondOccupant: true },
+            }),
+            actionCount(["BED_ALLOCATION_MOVE_APPLIED"]),
+            actionCount(["BED_ALLOCATION_PARTNERS_PROMOTED"]),
+          ]);
+        expect(targetRows).toHaveLength(2);
+        expect(targetRows[1]).toMatchObject({
+          stayDate: SECOND_NIGHT,
+          source: "AUTO",
+          approvedAt: null,
+          approvedByMemberId: null,
+        });
+
+        if (order === "MOVE_FIRST") {
+          expect(moveOutcome).toMatchObject({
+            status: "fulfilled",
+            value: {
+              noop: false,
+              movedRowCount: 1,
+              promotedRowCount: 1,
+              affectedNights: [FIRST_NIGHT_DATE_ONLY],
+            },
+          });
+          expect(targetRows[0]).toEqual({
+            id: TARGET_ALLOCATION_ID,
+            stayDate: FIRST_NIGHT,
+            bedId: DESTINATION_BED_ID,
+            source: "MANUAL",
+            approvedAt: null,
+            approvedByMemberId: null,
+          });
+          expect(partner.isSecondOccupant).toBe(false);
+          expect(moveAuditCount).toBe(1);
+          expect(promotionAuditCount).toBe(1);
+          return;
+        }
+
+        expect(rejectionStatus(moveOutcome)).toBe(409);
+        if (moveOutcome.status === "rejected") {
+          expect(moveOutcome.reason).toMatchObject({
+            code: "STALE_PREVIEW",
+            refreshedPreview: expect.objectContaining({
+              scope: "BOOKING_GUEST",
+              resolvedRowCount: 2,
+            }),
+          });
+        }
+        expect(targetRows[0]).toEqual({
+          id: TARGET_ALLOCATION_ID,
+          stayDate: FIRST_NIGHT,
+          bedId: OLD_DOUBLE_BED_ID,
+          source: "MANUAL",
+          approvedAt: TARGET_APPROVED_AT,
+          approvedByMemberId: ACTOR_ID,
+        });
+        expect(partner.isSecondOccupant).toBe(true);
+        expect(moveAuditCount).toBe(0);
+        expect(promotionAuditCount).toBe(0);
       },
     );
 
