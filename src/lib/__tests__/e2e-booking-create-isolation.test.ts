@@ -52,6 +52,16 @@ function parseSource(file: string): ts.SourceFile {
   );
 }
 
+function parseSourceText(file: string, text: string): ts.SourceFile {
+  return ts.createSourceFile(
+    file,
+    text,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+}
+
 function collectConstBindings(sourceFile: ts.SourceFile): ConstBindings {
   const bindings: ConstBindings = new Map();
   const visit = (node: ts.Node): void => {
@@ -146,6 +156,23 @@ function resolveStaticString(
   if (!expression) return null;
   const resolved = resolveConstExpression(expression, bindings);
   if (ts.isStringLiteralLike(resolved)) return resolved.text;
+  if (ts.isTemplateExpression(resolved)) {
+    let value = resolved.head.text;
+    for (const span of resolved.templateSpans) {
+      const interpolation = resolveStaticString(span.expression, bindings);
+      if (interpolation === null) return null;
+      value += interpolation + span.literal.text;
+    }
+    return value;
+  }
+  if (
+    ts.isBinaryExpression(resolved) &&
+    resolved.operatorToken.kind === ts.SyntaxKind.PlusToken
+  ) {
+    const left = resolveStaticString(resolved.left, bindings);
+    const right = resolveStaticString(resolved.right, bindings);
+    return left === null || right === null ? null : left + right;
+  }
   return null;
 }
 
@@ -163,8 +190,97 @@ function calledName(call: ts.CallExpression): string | null {
   return null;
 }
 
-function propertyName(node: ts.PropertyName): string | null {
+function isDestructuredPostAlias(identifier: ts.Identifier): boolean {
+  let found = false;
+  const visit = (node: ts.Node): void => {
+    if (found) return;
+    if (ts.isVariableDeclaration(node) && ts.isObjectBindingPattern(node.name)) {
+      for (const element of node.name.elements) {
+        if (
+          ts.isIdentifier(element.name) &&
+          element.name.text === identifier.text &&
+          (element.propertyName
+            ? propertyName(element.propertyName) === "post"
+            : element.name.text === "post")
+        ) {
+          found = true;
+          return;
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(identifier.getSourceFile());
+  return found;
+}
+
+function isPostCallable(
+  expression: ts.Expression,
+  bindings: ConstBindings,
+  seen = new Set<ts.Node>(),
+): boolean {
+  const resolved = resolveConstExpression(expression, bindings);
+  if (seen.has(resolved)) return false;
+  seen.add(resolved);
+
+  if (ts.isPropertyAccessExpression(resolved)) {
+    return resolved.name.text === "post";
+  }
+  if (ts.isElementAccessExpression(resolved)) {
+    return resolveStaticString(resolved.argumentExpression, bindings) === "post";
+  }
+  if (ts.isIdentifier(resolved)) {
+    return isDestructuredPostAlias(resolved);
+  }
+  if (ts.isCallExpression(resolved)) {
+    const callee = unwrapExpression(resolved.expression);
+    return (
+      ts.isPropertyAccessExpression(callee) &&
+      callee.name.text === "bind" &&
+      isPostCallable(callee.expression, bindings, seen)
+    );
+  }
+  return false;
+}
+
+function classifyBookingCreateRoute(
+  expression: ts.Expression | undefined,
+  bindings: ConstBindings,
+): "exact" | "other" | "unresolved" {
+  const route = resolveStaticString(expression, bindings);
+  if (route === null) {
+    if (!expression) return "unresolved";
+    const resolved = resolveConstExpression(expression, bindings);
+    if (ts.isTemplateExpression(resolved)) {
+      const head = resolved.head.text;
+      const tail = resolved.templateSpans.map((span) => span.literal.text).join("");
+      if (
+        head.startsWith("/api/admin/") ||
+        head.startsWith("/api/booking-requests/") ||
+        (head.startsWith("/api/bookings/") && /[a-z]/i.test(tail))
+      ) {
+        return "other";
+      }
+    }
+    return "unresolved";
+  }
+  try {
+    const pathname = new URL(route, "https://e2e-contract.invalid").pathname;
+    const normalized = pathname.length > 1 ? pathname.replace(/\/$/, "") : pathname;
+    return normalized === "/api/bookings" ? "exact" : "other";
+  } catch {
+    return "unresolved";
+  }
+}
+
+function propertyName(
+  node: ts.PropertyName,
+  bindings?: ConstBindings,
+): string | null {
   if (ts.isIdentifier(node) || ts.isStringLiteralLike(node)) return node.text;
+  if (bindings && ts.isComputedPropertyName(node)) {
+    return resolveStaticString(node.expression, bindings);
+  }
   return null;
 }
 
@@ -211,39 +327,100 @@ function enclosingFunctionName(node: ts.Node): string | null {
   return null;
 }
 
+type FunctionProducer =
+  | ts.ArrowFunction
+  | ts.FunctionDeclaration
+  | ts.FunctionExpression;
+
+function functionReturns(producer: FunctionProducer): ts.Expression[] | null {
+  if (!producer.body) return null;
+  if (!ts.isBlock(producer.body)) return [producer.body];
+
+  const returns: ts.Expression[] = [];
+  const visit = (node: ts.Node): void => {
+    if (node !== producer.body && ts.isFunctionLike(node)) return;
+    if (ts.isReturnStatement(node)) {
+      if (node.expression) returns.push(node.expression);
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(producer.body);
+  return returns.length > 0 ? returns : null;
+}
+
+function producedExpressions(
+  expression: ts.Expression,
+  bindings: ConstBindings,
+  seen = new Set<ts.Node>(),
+): ts.Expression[] | null {
+  const resolved = resolveConstExpression(expression, bindings);
+  if (seen.has(resolved)) return null;
+  seen.add(resolved);
+
+  if (!ts.isCallExpression(resolved) || resolved.arguments.length > 0) {
+    return [resolved];
+  }
+
+  const callee = resolveConstExpression(resolved.expression, bindings);
+  if (ts.isArrowFunction(callee) || ts.isFunctionExpression(callee)) {
+    return functionReturns(callee);
+  }
+  if (!ts.isIdentifier(callee)) return null;
+
+  const declarations: ts.FunctionDeclaration[] = [];
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isFunctionDeclaration(node) &&
+      node.name?.text === callee.text
+    ) {
+      declarations.push(node);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(callee.getSourceFile());
+  return declarations.length === 1 ? functionReturns(declarations[0]) : null;
+}
+
 function containsForwardedFor(
   expression: ts.Expression,
   bindings: ConstBindings,
   seen = new Set<ts.Node>(),
-): boolean {
-  const resolved = resolveConstExpression(expression, bindings);
-  if (seen.has(resolved)) return false;
-  seen.add(resolved);
+): boolean | null {
+  const produced = producedExpressions(expression, bindings, seen);
+  if (!produced) return null;
 
-  if (ts.isObjectLiteralExpression(resolved)) {
-    return resolved.properties.some((property) => {
-      if (ts.isSpreadAssignment(property)) {
-        return containsForwardedFor(property.expression, bindings, seen);
+  let unresolved = false;
+  for (const resolved of produced) {
+    if (ts.isObjectLiteralExpression(resolved)) {
+      for (const property of resolved.properties) {
+        if (ts.isSpreadAssignment(property)) {
+          const spread = containsForwardedFor(property.expression, bindings, seen);
+          if (spread === true) return true;
+          if (spread === null) unresolved = true;
+          continue;
+        }
+        if (
+          ts.isPropertyAssignment(property) ||
+          ts.isShorthandPropertyAssignment(property)
+        ) {
+          const name = propertyName(property.name, bindings);
+          if (name === "x-forwarded-for") return true;
+          if (name === null) unresolved = true;
+        }
       }
-      if (
-        (ts.isPropertyAssignment(property) ||
-          ts.isShorthandPropertyAssignment(property)) &&
-        propertyName(property.name) === "x-forwarded-for"
-      ) {
+      continue;
+    }
+
+    if (ts.isPropertyAccessExpression(resolved) && resolved.name.text === "headers") {
+      const owner = resolveConstExpression(resolved.expression, bindings);
+      if (ts.isCallExpression(owner) && calledName(owner) === "bookingCreateIsolation") {
         return true;
       }
-      return (
-        ts.isPropertyAssignment(property) &&
-        containsForwardedFor(property.initializer, bindings, seen)
-      );
-    });
+    }
+    unresolved = true;
   }
-
-  if (!ts.isPropertyAccessExpression(resolved) || resolved.name.text !== "headers") {
-    return false;
-  }
-  const owner = resolveConstExpression(resolved.expression, bindings);
-  return ts.isCallExpression(owner) && calledName(owner) === "bookingCreateIsolation";
+  return unresolved ? null : false;
 }
 
 function objectPropertyExpressions(
@@ -251,21 +428,34 @@ function objectPropertyExpressions(
   name: string,
   bindings: ConstBindings,
   seen = new Set<ts.Node>(),
-): ts.Expression[] {
+): ts.Expression[] | null {
   if (!expression) return [];
-  const resolved = resolveConstExpression(expression, bindings);
-  if (seen.has(resolved) || !ts.isObjectLiteralExpression(resolved)) return [];
-  seen.add(resolved);
+  const produced = producedExpressions(expression, bindings, seen);
+  if (!produced) return null;
 
-  return resolved.properties.flatMap((property) => {
-    if (ts.isSpreadAssignment(property)) {
-      return objectPropertyExpressions(property.expression, name, bindings, seen);
+  const values: ts.Expression[] = [];
+  for (const resolved of produced) {
+    if (!ts.isObjectLiteralExpression(resolved)) return null;
+    for (const property of resolved.properties) {
+      if (ts.isSpreadAssignment(property)) {
+        const spreadValues = objectPropertyExpressions(
+          property.expression,
+          name,
+          bindings,
+          seen,
+        );
+        if (spreadValues === null) return null;
+        values.push(...spreadValues);
+        continue;
+      }
+      const resolvedName = propertyName(property.name, bindings);
+      if (resolvedName === null) return null;
+      if (resolvedName !== name) continue;
+      if (ts.isPropertyAssignment(property)) values.push(property.initializer);
+      if (ts.isShorthandPropertyAssignment(property)) values.push(property.name);
     }
-    if (propertyName(property.name) !== name) return [];
-    if (ts.isPropertyAssignment(property)) return [property.initializer];
-    if (ts.isShorthandPropertyAssignment(property)) return [property.name];
-    return [];
-  });
+  }
+  return values;
 }
 
 function directConsumerOf(expression: ts.Expression): string | null {
@@ -286,44 +476,216 @@ function directConsumerOf(expression: ts.Expression): string | null {
     : null;
 }
 
-const BOOKING_CREATE_BUTTON_NAMES = new Set([
+const BOOKING_CREATE_BUTTON_NAMES = [
   "Confirm Booking",
   "Create without emailing",
   "Create and email them",
-  "/Continue to Payment|Confirm Booking/",
-]);
+  "Continue to Payment",
+] as const;
 
-function bookingCreateButtonName(
-  click: ts.CallExpression,
-  bindings: ConstBindings,
-): string | null {
-  const callee = unwrapExpression(click.expression);
-  if (!ts.isPropertyAccessExpression(callee) || callee.name.text !== "click") {
+type BrowserTrigger =
+  | Readonly<{ kind: "create"; label: string }>
+  | Readonly<{ kind: "other" }>
+  | Readonly<{ kind: "unresolved" }>;
+
+function regexFromLiteral(expression: ts.Expression): RegExp | null {
+  if (expression.kind !== ts.SyntaxKind.RegularExpressionLiteral) return null;
+  const literal = expression.getText();
+  const lastSlash = literal.lastIndexOf("/");
+  if (!literal.startsWith("/") || lastSlash === 0) return null;
+  try {
+    return new RegExp(literal.slice(1, lastSlash), literal.slice(lastSlash + 1));
+  } catch {
     return null;
   }
+}
+
+function bookingCreateMatcher(
+  expression: ts.Expression | undefined,
+  bindings: ConstBindings,
+  selector: boolean,
+): BrowserTrigger {
+  if (!expression) return { kind: "unresolved" };
+  const resolved = resolveConstExpression(expression, bindings);
+  const text = resolveStaticString(resolved, bindings);
+  if (text !== null) {
+    const normalized = text.toLowerCase().replace(/[^a-z]+/g, " ");
+    const label = BOOKING_CREATE_BUTTON_NAMES.find((candidate) => {
+      if (!selector) return text === candidate;
+      const candidateWords = candidate.toLowerCase().replace(/[^a-z]+/g, " ");
+      return normalized.includes(candidateWords);
+    });
+    return label ? { kind: "create", label } : { kind: "other" };
+  }
+
+  let regex = regexFromLiteral(resolved);
+  if (
+    !regex &&
+    (ts.isCallExpression(resolved) || ts.isNewExpression(resolved)) &&
+    calledName(resolved as ts.CallExpression) === "RegExp"
+  ) {
+    const pattern = resolveStaticString(resolved.arguments?.[0], bindings);
+    const flags = resolveStaticString(resolved.arguments?.[1], bindings) ?? "";
+    if (pattern !== null) {
+      try {
+        regex = new RegExp(pattern, flags);
+      } catch {
+        return { kind: "unresolved" };
+      }
+    }
+  }
+  if (regex) {
+    const label = BOOKING_CREATE_BUTTON_NAMES.find((candidate) => {
+      regex!.lastIndex = 0;
+      return regex!.test(candidate);
+    });
+    return label ? { kind: "create", label } : { kind: "other" };
+  }
+  return /confirm.*book|create|submit.*book|request.*book/i.test(resolved.getText())
+    ? { kind: "unresolved" }
+    : { kind: "other" };
+}
+
+function bookingCreateTrigger(
+  action: ts.CallExpression,
+  bindings: ConstBindings,
+): BrowserTrigger | null {
+  const callee = unwrapExpression(action.expression);
+  if (!ts.isPropertyAccessExpression(callee)) return null;
+  if (!new Set(["click", "press", "dispatchEvent"]).has(callee.name.text)) {
+    return null;
+  }
+
   const locator = resolveConstExpression(callee.expression, bindings);
   const getByRole = childCallNamed(locator, "getByRole");
-  if (!getByRole || resolveStaticString(getByRole.arguments[0], bindings) !== "button") {
-    return null;
-  }
-  const optionsExpression = getByRole.arguments[1]
-    ? resolveConstExpression(getByRole.arguments[1], bindings)
-    : null;
-  if (!optionsExpression || !ts.isObjectLiteralExpression(optionsExpression)) {
-    return null;
-  }
-  const nameProperty = optionsExpression.properties.find(
-    (property): property is ts.PropertyAssignment =>
-      ts.isPropertyAssignment(property) && propertyName(property.name) === "name",
-  );
-  if (!nameProperty) return null;
-  const nameExpression = resolveConstExpression(nameProperty.initializer, bindings);
-  const name = ts.isStringLiteralLike(nameExpression)
-    ? nameExpression.text
-    : nameExpression.kind === ts.SyntaxKind.RegularExpressionLiteral
-      ? nameExpression.getText()
+  const getByText = childCallNamed(locator, "getByText");
+  const locatorCall = childCallNamed(locator, "locator");
+  if (!getByRole && !getByText && !locatorCall) {
+    return /confirm.*book|create|submit.*book|request.*book/i.test(
+      callee.expression.getText(),
+    )
+      ? { kind: "unresolved" }
       : null;
-  return name && BOOKING_CREATE_BUTTON_NAMES.has(name) ? name : null;
+  }
+
+  if (callee.name.text === "press") {
+    const key = resolveStaticString(action.arguments[0], bindings);
+    if (key !== "Enter") return key === null ? { kind: "unresolved" } : null;
+  } else if (callee.name.text === "dispatchEvent") {
+    const event = resolveStaticString(action.arguments[0], bindings);
+    if (event !== "click") {
+      if (event !== "keydown" && event !== "keypress") {
+        return event === null ? { kind: "unresolved" } : null;
+      }
+      const keys = objectPropertyExpressions(action.arguments[1], "key", bindings);
+      if (keys === null) return { kind: "unresolved" };
+      const resolvedKeys = keys.map((key) => resolveStaticString(key, bindings));
+      if (!resolvedKeys.includes("Enter")) {
+        return resolvedKeys.includes(null) ? { kind: "unresolved" } : null;
+      }
+    }
+  } else if (callee.name.text !== "click") {
+    return null;
+  }
+
+  if (getByRole) {
+    const role = resolveStaticString(getByRole.arguments[0], bindings);
+    if (role !== "button") {
+      return role === null ? { kind: "unresolved" } : { kind: "other" };
+    }
+    const names = objectPropertyExpressions(
+      getByRole.arguments[1],
+      "name",
+      bindings,
+    );
+    if (names === null || names.length > 1) return { kind: "unresolved" };
+    if (names.length === 0) {
+      return /confirm.*book|create|submit.*book|request.*book/i.test(
+        locator.getText(),
+      )
+        ? { kind: "unresolved" }
+        : { kind: "other" };
+    }
+    return bookingCreateMatcher(names[0], bindings, false);
+  }
+
+  if (getByText) {
+    return bookingCreateMatcher(getByText.arguments[0], bindings, true);
+  }
+
+  return locatorCall
+    ? bookingCreateMatcher(locatorCall.arguments[0], bindings, true)
+    : null;
+}
+
+function analyzeDirectPosts(sourceFile: ts.SourceFile, file: string) {
+  const bindings = collectConstBindings(sourceFile);
+  const exact: string[] = [];
+  const unresolved: string[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node) && isPostCallable(node.expression, bindings)) {
+      const route = classifyBookingCreateRoute(node.arguments[0], bindings);
+      if (route === "exact") {
+        exact.push(`${file}:${enclosingFunctionName(node) ?? "<top-level>"}`);
+      } else if (route === "unresolved") {
+        unresolved.push(
+          `${file}:${node.arguments[0]?.getText(sourceFile) ?? "<missing-route>"}`,
+        );
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return { exact, unresolved };
+}
+
+function analyzeBrowserTriggers(sourceFile: ts.SourceFile, file: string) {
+  const bindings = collectConstBindings(sourceFile);
+  const create: string[] = [];
+  const unresolved: string[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node)) {
+      const trigger = bookingCreateTrigger(node, bindings);
+      if (
+        trigger &&
+        trigger.kind !== "other" &&
+        enclosingActionConsumer(node) !== "withBookingCreateClientIp"
+      ) {
+        const label = trigger.kind === "create" ? trigger.label : node.getText(sourceFile);
+        (trigger.kind === "create" ? create : unresolved).push(`${file}:${label}`);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return { create, unresolved };
+}
+
+function analyzeBlanketContexts(sourceFile: ts.SourceFile, file: string) {
+  const bindings = collectConstBindings(sourceFile);
+  const present: string[] = [];
+  const unresolved: string[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node) && calledName(node) === "newContext") {
+      const headers = objectPropertyExpressions(
+        node.arguments[0],
+        "extraHTTPHeaders",
+        bindings,
+      );
+      if (headers === null) {
+        unresolved.push(`${file}:${node.getText(sourceFile)}`);
+      } else {
+        for (const header of headers) {
+          const status = containsForwardedFor(header, bindings);
+          if (status === true) present.push(file);
+          if (status === null) unresolved.push(`${file}:${header.getText(sourceFile)}`);
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return { present, unresolved };
 }
 
 function isPrivateIpv4(address: string): boolean {
@@ -387,6 +749,85 @@ describe("E2E booking-create retry isolation (#2599)", () => {
     expect(() => bookingCreateIsolation("stripe-success", 254)).toThrow(
       /integer from 0 to 253/,
     );
+  });
+
+  it("normalizes static booking routes and common direct POST aliases", () => {
+    const sourceFile = parseSourceText(
+      "direct-positive-negative.ts",
+      [
+        'const resource = "bookings";',
+        "request.post(`/api/${resource}`, { data: {} });",
+        "const boundCreate = request.post.bind(request);",
+        'boundCreate("https://club.invalid/api/" + resource + "?retry=1", {});',
+        "const { post: aliasedPost } = request;",
+        "aliasedPost(`/api/${resource}/`, {});",
+        "request.post(`/api/bookings/${bookingId}/cancel`, {});",
+        'request.post("/api/admin/bookings", {});',
+      ].join("\n"),
+    );
+
+    expect(analyzeDirectPosts(sourceFile, "fixture")).toEqual({
+      exact: [
+        "fixture:<top-level>",
+        "fixture:<top-level>",
+        "fixture:<top-level>",
+      ],
+      unresolved: [],
+    });
+  });
+
+  it("recognizes equivalent browser create triggers and rejects unknown ones", () => {
+    const sourceFile = parseSourceText(
+      "browser-positive-negative.ts",
+      [
+        'const roleName = "button";',
+        'const optionName = "name";',
+        "page.getByRole(`${roleName}`, { [`${optionName}`]: /Continue to Payment|Confirm Booking/ }).click();",
+        'const createText = "Create without emailing";',
+        "page.getByText(`${createText}`).press(`Enter`);",
+        "page.locator(`button:has-text('Create and email them')`).dispatchEvent(`click`);",
+        "page.getByRole(`button`, { name: confirmBookingLabel }).click();",
+        'page.getByRole("button", { name: "Cancel" }).click();',
+        'page.getByText("Confirm Booking").press("Escape");',
+        'page.locator("#confirm-booking").dispatchEvent("input");',
+        "withBookingCreateClientIp(page, isolation, () => page.getByText(`Confirm Booking`).click());",
+      ].join("\n"),
+    );
+
+    expect(analyzeBrowserTriggers(sourceFile, "fixture")).toEqual({
+      create: [
+        "fixture:Confirm Booking",
+        "fixture:Create without emailing",
+        "fixture:Create and email them",
+      ],
+      unresolved: [
+        'fixture:page.getByRole(`button`, { name: confirmBookingLabel }).click()',
+      ],
+    });
+  });
+
+  it("detects computed and function-produced blanket headers fail closed", () => {
+    const sourceFile = parseSourceText(
+      "headers-positive-negative.ts",
+      [
+        'const headerSuffix = "for";',
+        'const contextOption = "extraHTTPHeaders";',
+        'const headers = { [`x-forwarded-${headerSuffix}`]: "10.240.250.1" };',
+        "browser.newContext({ [`${contextOption}`]: headers });",
+        'function makeHeaders() { return { "x-forwarded-for": "10.240.250.2" }; }',
+        "function makeOptions() { return { extraHTTPHeaders: makeHeaders() }; }",
+        "browser.newContext(makeOptions());",
+        "browser.newContext({ extraHTTPHeaders: buildAtRuntime(runtimeSeed) });",
+        'browser.newContext({ extraHTTPHeaders: { authorization: "Bearer ***" } });',
+      ].join("\n"),
+    );
+
+    expect(analyzeBlanketContexts(sourceFile, "fixture")).toEqual({
+      present: ["fixture", "fixture"],
+      unresolved: [
+        "fixture:buildAtRuntime(runtimeSeed)",
+      ],
+    });
   });
 
   it("merges direct-request headers through the one typed POST helper", async () => {
@@ -634,47 +1075,28 @@ describe("E2E booking-create retry isolation (#2599)", () => {
 
   it("rejects every raw exact APIRequestContext booking-create POST", () => {
     const rawExactPosts: string[] = [];
+    const unresolvedPostRoutes: string[] = [];
     for (const file of e2eTypeScriptFiles()) {
       const sourceFile = parseSource(file);
-      const bindings = collectConstBindings(sourceFile);
-      const visit = (node: ts.Node): void => {
-        if (
-          ts.isCallExpression(node) &&
-          calledName(node) === "post" &&
-          resolveStaticString(node.arguments[0], bindings) === "/api/bookings"
-        ) {
-          rawExactPosts.push(
-            `${repoRelative(file)}:${enclosingFunctionName(node) ?? "<top-level>"}`,
-          );
-        }
-        ts.forEachChild(node, visit);
-      };
-      visit(sourceFile);
+      const result = analyzeDirectPosts(sourceFile, repoRelative(file));
+      rawExactPosts.push(...result.exact);
+      unresolvedPostRoutes.push(...result.unresolved);
     }
 
     expect(rawExactPosts).toEqual([
       "e2e/helpers/booking-create-client-ip.ts:postBookingCreate",
     ]);
+    expect(unresolvedPostRoutes).toEqual([]);
   });
 
   it("pins browser booking-create triggers inside the exact-action wrapper", () => {
     const unwrappedCandidates: string[] = [];
+    const unresolvedCandidates: string[] = [];
     for (const file of e2eTypeScriptFiles()) {
       const sourceFile = parseSource(file);
-      const bindings = collectConstBindings(sourceFile);
-      const visit = (node: ts.Node): void => {
-        if (ts.isCallExpression(node)) {
-          const buttonName = bookingCreateButtonName(node, bindings);
-          if (
-            buttonName &&
-            enclosingActionConsumer(node) !== "withBookingCreateClientIp"
-          ) {
-            unwrappedCandidates.push(`${repoRelative(file)}:${buttonName}`);
-          }
-        }
-        ts.forEachChild(node, visit);
-      };
-      visit(sourceFile);
+      const result = analyzeBrowserTriggers(sourceFile, repoRelative(file));
+      unwrappedCandidates.push(...result.create);
+      unresolvedCandidates.push(...result.unresolved);
     }
 
     expect(unwrappedCandidates.sort()).toEqual(
@@ -685,30 +1107,20 @@ describe("E2E booking-create retry isolation (#2599)", () => {
         "e2e/waitlist.spec.ts:Confirm Booking",
       ].sort(),
     );
+    expect(unresolvedCandidates).toEqual([]);
   });
 
   it("rejects blanket context booking-create headers, including aliases", () => {
     const blanketContexts: string[] = [];
+    const unresolvedContexts: string[] = [];
     for (const file of e2eTypeScriptFiles()) {
       const sourceFile = parseSource(file);
-      const bindings = collectConstBindings(sourceFile);
-      const visit = (node: ts.Node): void => {
-        if (ts.isCallExpression(node) && calledName(node) === "newContext") {
-          for (const headers of objectPropertyExpressions(
-            node.arguments[0],
-            "extraHTTPHeaders",
-            bindings,
-          )) {
-            if (containsForwardedFor(headers, bindings)) {
-              blanketContexts.push(repoRelative(file));
-            }
-          }
-        }
-        ts.forEachChild(node, visit);
-      };
-      visit(sourceFile);
+      const result = analyzeBlanketContexts(sourceFile, repoRelative(file));
+      blanketContexts.push(...result.present);
+      unresolvedContexts.push(...result.unresolved);
     }
 
     expect(blanketContexts).toEqual([]);
+    expect(unresolvedContexts).toEqual([]);
   });
 });
