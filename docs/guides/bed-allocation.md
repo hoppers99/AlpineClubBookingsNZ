@@ -346,7 +346,7 @@ that booking, so the booking's own **Audit log** link finds it.
 | Auto allocation enabled | Let the board and booking lifecycle propose bed placements for the selected lodge | on | Saved per lodge; enables Run Auto Allocation |
 | Allocation preference order | Compare feasible layouts from top to bottom | booking cohesion → stay continuity → requested room → direct-family cohesion | Drag or use up/down while editing; each item can be disabled |
 | Single-night drag mode | Drag allocates one night vs the whole stay | off | Client-side only, not saved |
-| Move an existing chip | Change its bed while preserving its original night | — | First visible chip moves all visible original nights atomically; later chips move one night; the hovered date column is ignored; no-op only when every represented row already uses the destination |
+| Move an existing chip | Review a bed change while preserving original nights | — | Choose this allocation night or every existing night for this person on the booking (including off-screen rows, up to 366); hovered date is ignored; changed approved rows become Manual drafts; all-noop confirmation is audit-free |
 | Edit / Save / Cancel | Stage, persist, or discard this lodge's allocation preferences | — | Needs bookings edit; Save is dirty-gated |
 | Run Auto Allocation | Apply suggested placements | — | Needs auto-allocation on and suggestions available |
 | Approve Visible | Approve the visible draft allocations | — | Disabled when nothing is unapproved |
