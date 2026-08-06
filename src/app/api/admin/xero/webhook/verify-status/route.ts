@@ -21,6 +21,11 @@ import logger from "@/lib/logger";
  * never the webhook key or its fingerprint.
  */
 export async function GET(request: Request) {
+  // Capture the verify-start at request entry, before authorization or any
+  // credential/database work. A valid Xero ping can arrive while this request
+  // is still in flight; anchoring after those awaits would make that genuinely
+  // post-click ping look stale and leave the wizard polling until timeout.
+  const requestStartedAt = Date.now();
   const guard = await requireAdmin();
   if (!guard.ok) return guard.response;
 
@@ -36,7 +41,10 @@ export async function GET(request: Request) {
   }
 
   try {
-    const result = await checkXeroWebhookFreshVerify(sinceMs);
+    const result = await checkXeroWebhookFreshVerify(
+      sinceMs,
+      requestStartedAt,
+    );
     // `webhooksVerifiable` (deployment can receive Xero's ping at all) lets the
     // amber badge soften to an informational note off a public-HTTPS deployment
     // instead of nagging to finish an unfinishable step. Same derivation the

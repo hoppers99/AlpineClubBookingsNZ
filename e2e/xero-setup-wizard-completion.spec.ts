@@ -106,14 +106,30 @@ test("operator completes the whole Xero wizard including verified webhooks", asy
     page.getByRole("heading", { name: /webhooks \(optional\)/i }),
   ).toBeVisible();
   await page.getByLabel(/Webhooks key/i).fill("mock-webhook-signing-key");
-  await page.getByRole("button", { name: /^Save key$/ }).click();
+  // The first attempt sees Save; a retry intentionally preserves credentials
+  // and therefore sees Replace. Exercise the write on every attempt so the
+  // verification remains attributable to this run.
+  await page
+    .getByRole("button", { name: /^(save|replace) key$/i })
+    .click();
+  await expect(
+    page.getByRole("status").getByText(/Webhook key saved/i),
+  ).toBeVisible();
   const verifyBtn = page.getByRole("button", { name: "Verify" });
   await expect(verifyBtn).toBeEnabled();
-  await verifyBtn.click();
 
-  // Give the wizard a moment to capture its server-issued verify-start, THEN
-  // trigger the mock validation ping so its marker is strictly newer (freshness).
-  await page.waitForTimeout(500);
+  // Synchronize on the first freshness-scoped poll. Its `since` query proves
+  // the server-issued start response has returned and the client has installed
+  // that exact anchor; a fixed sleep can still race a loaded CI runner.
+  const firstFreshnessPoll = page.waitForRequest((request) => {
+    const url = new URL(request.url());
+    return (
+      url.pathname === "/api/admin/xero/webhook/verify-status" &&
+      url.searchParams.has("since")
+    );
+  });
+  await verifyBtn.click();
+  await firstFreshnessPoll;
   const pingRes = await page.request.post(
     "/api/testing/xero-mock/send-validation",
   );
