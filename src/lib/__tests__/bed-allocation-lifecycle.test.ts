@@ -7,7 +7,7 @@ import {
   partnerShareSweepCounterpartNames,
   partnerShareSweepNights,
   reconcileBedAllocationsForBookingWithLodgeLockHeld,
-  sweepFuturePartnerSharedAllocationsWithLocksHeld as sweepFuturePartnerSharedAllocations,
+  sweepFuturePartnerSharedAllocationsWithLocksHeld,
 } from "@/lib/bed-allocation-lifecycle";
 import { acquireMemberLifecycleLocks } from "@/lib/member-lifecycle-lock";
 import { BED_ALLOCATION_PRIORITY_VOCABULARY } from "@/lib/bed-allocation-settings";
@@ -3104,7 +3104,7 @@ describe("prune orphan auto-promote (#1750)", () => {
 // #1756: stale partner-share sweep
 // ---------------------------------------------------------------------------
 
-describe("sweepFuturePartnerSharedAllocations (#1756)", () => {
+describe("sweepFuturePartnerSharedAllocationsWithLocksHeld (#1756)", () => {
   const AUG1 = parseDateOnly("2026-08-01");
   const AUG2 = parseDateOnly("2026-08-02");
 
@@ -3206,7 +3206,7 @@ describe("sweepFuturePartnerSharedAllocations (#1756)", () => {
       ]);
     db.bedAllocation.deleteMany.mockResolvedValue({ count: 2 });
 
-    const swept = await sweepFuturePartnerSharedAllocations({
+    const swept = await sweepFuturePartnerSharedAllocationsWithLocksHeld({
       memberId: "member-a",
       partnerMemberId: "member-b",
       reason: "partner_link_dissolved",
@@ -3311,7 +3311,7 @@ describe("sweepFuturePartnerSharedAllocations (#1756)", () => {
       ]);
     db.bedAllocation.deleteMany.mockResolvedValue({ count: 2 });
 
-    const swept = await sweepFuturePartnerSharedAllocations({
+    const swept = await sweepFuturePartnerSharedAllocationsWithLocksHeld({
       memberId: "member-m",
       reason: "member_deactivated",
       db: db as any,
@@ -3335,13 +3335,13 @@ describe("sweepFuturePartnerSharedAllocations (#1756)", () => {
   it("is a safe no-op on an empty candidate set and therefore idempotent on a second run", async () => {
     const db = makeSweepDb();
 
-    const first = await sweepFuturePartnerSharedAllocations({
+    const first = await sweepFuturePartnerSharedAllocationsWithLocksHeld({
       memberId: "member-a",
       partnerMemberId: "member-b",
       reason: "partner_link_dissolved",
       db: db as any,
     });
-    const second = await sweepFuturePartnerSharedAllocations({
+    const second = await sweepFuturePartnerSharedAllocationsWithLocksHeld({
       memberId: "member-a",
       partnerMemberId: "member-b",
       reason: "partner_link_dissolved",
@@ -3370,7 +3370,7 @@ describe("sweepFuturePartnerSharedAllocations (#1756)", () => {
       // No primary row on that bed-night (transient #1743 orphan).
       .mockResolvedValueOnce([]);
 
-    const swept = await sweepFuturePartnerSharedAllocations({
+    const swept = await sweepFuturePartnerSharedAllocationsWithLocksHeld({
       memberId: "member-a",
       partnerMemberId: "member-b",
       reason: "partner_link_dissolved",

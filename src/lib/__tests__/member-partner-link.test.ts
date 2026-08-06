@@ -61,7 +61,7 @@ import {
   sendPartnerLinkRemovedEmail,
   sendAdminPartnerShareSweptAlert,
 } from "@/lib/email";
-import { sweepFuturePartnerSharedAllocationsWithLocksHeld as sweepFuturePartnerSharedAllocations } from "@/lib/bed-allocation-lifecycle";
+import { sweepFuturePartnerSharedAllocationsWithLocksHeld } from "@/lib/bed-allocation-lifecycle";
 import {
   canonicalPartnerPair,
   listOneStepPartnerCandidates,
@@ -130,7 +130,9 @@ beforeEach(() => {
   vi.mocked(prisma.memberPartnerLink.findMany).mockResolvedValue([] as never);
   vi.mocked(prisma.memberPartnerLink.findUnique).mockResolvedValue(null as never);
   vi.mocked(prisma.memberPartnerLink.deleteMany).mockResolvedValue({ count: 0 } as never);
-  vi.mocked(sweepFuturePartnerSharedAllocations).mockResolvedValue([]);
+  vi.mocked(sweepFuturePartnerSharedAllocationsWithLocksHeld).mockResolvedValue(
+    [],
+  );
 });
 
 describe("canonicalPartnerPair", () => {
@@ -712,7 +714,9 @@ describe("removeOwnPartnerLink", () => {
       memberB: adultB,
     } as never);
     vi.mocked(prisma.memberPartnerLink.deleteMany).mockResolvedValue({ count: 1 } as never);
-    vi.mocked(sweepFuturePartnerSharedAllocations).mockResolvedValueOnce([
+    vi.mocked(
+      sweepFuturePartnerSharedAllocationsWithLocksHeld,
+    ).mockResolvedValueOnce([
       {
         allocationId: "alloc-2nd",
         bookingId: "booking-b",
@@ -731,7 +735,7 @@ describe("removeOwnPartnerLink", () => {
     const result = await removeOwnPartnerLink({ memberId: adultA.id, linkId: "link-1" });
 
     expect(result.ok).toBe(true);
-    expect(sweepFuturePartnerSharedAllocations).toHaveBeenCalledWith({
+    expect(sweepFuturePartnerSharedAllocationsWithLocksHeld).toHaveBeenCalledWith({
       memberId: "member-a",
       partnerMemberId: "member-b",
       reason: "partner_link_dissolved",
@@ -747,8 +751,9 @@ describe("removeOwnPartnerLink", () => {
       .invocationCallOrder[0];
     const deleteOrder = vi.mocked(prisma.memberPartnerLink.deleteMany).mock
       .invocationCallOrder[0];
-    const heldSweepOrder = vi.mocked(sweepFuturePartnerSharedAllocations).mock
-      .invocationCallOrder[0];
+    const heldSweepOrder = vi.mocked(
+      sweepFuturePartnerSharedAllocationsWithLocksHeld,
+    ).mock.invocationCallOrder[0];
     expect(acquireOrder).toBeLessThan(memberLockOrder);
     expect(memberLockOrder).toBeLessThan(deleteOrder);
     expect(deleteOrder).toBeLessThan(heldSweepOrder);
@@ -776,7 +781,7 @@ describe("removeOwnPartnerLink", () => {
     const result = await removeOwnPartnerLink({ memberId: adultA.id, linkId: "link-1" });
 
     expect(result.ok).toBe(true);
-    expect(sweepFuturePartnerSharedAllocations).not.toHaveBeenCalled();
+    expect(sweepFuturePartnerSharedAllocationsWithLocksHeld).not.toHaveBeenCalled();
     expect(sendAdminPartnerShareSweptAlert).not.toHaveBeenCalled();
   });
 
@@ -795,7 +800,9 @@ describe("removeOwnPartnerLink", () => {
     const result = await removeOwnPartnerLink({ memberId: adultA.id, linkId: "link-1" });
 
     expect(result.ok).toBe(true);
-    expect(sweepFuturePartnerSharedAllocations).toHaveBeenCalledTimes(1);
+    expect(sweepFuturePartnerSharedAllocationsWithLocksHeld).toHaveBeenCalledTimes(
+      1,
+    );
     expect(sendAdminPartnerShareSweptAlert).not.toHaveBeenCalled();
   });
 });
@@ -1066,7 +1073,9 @@ describe("adminRemovePartnerLink", () => {
       memberB: adultB,
     } as never);
     vi.mocked(prisma.memberPartnerLink.deleteMany).mockResolvedValue({ count: 1 } as never);
-    vi.mocked(sweepFuturePartnerSharedAllocations).mockResolvedValueOnce([
+    vi.mocked(
+      sweepFuturePartnerSharedAllocationsWithLocksHeld,
+    ).mockResolvedValueOnce([
       {
         allocationId: "alloc-2nd",
         bookingId: "booking-b",
@@ -1088,7 +1097,7 @@ describe("adminRemovePartnerLink", () => {
     });
 
     expect(result.ok).toBe(true);
-    expect(sweepFuturePartnerSharedAllocations).toHaveBeenCalledWith({
+    expect(sweepFuturePartnerSharedAllocationsWithLocksHeld).toHaveBeenCalledWith({
       memberId: "member-a",
       partnerMemberId: "member-b",
       reason: "partner_link_dissolved",
@@ -1119,7 +1128,7 @@ describe("adminRemovePartnerLink", () => {
     });
 
     expect(result.ok).toBe(true);
-    expect(sweepFuturePartnerSharedAllocations).not.toHaveBeenCalled();
+    expect(sweepFuturePartnerSharedAllocationsWithLocksHeld).not.toHaveBeenCalled();
     expect(sendAdminPartnerShareSweptAlert).not.toHaveBeenCalled();
   });
 
