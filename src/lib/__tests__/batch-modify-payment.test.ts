@@ -691,7 +691,7 @@ describe("PUT /api/bookings/[id]/modify", () => {
           },
         ],
       },
-      adultMemberHostingDecision: {
+      approvedExceptionAdultMemberHostingDecision: {
         byMemberId: "officer-1",
         reason: "Approved adult-member hosting exception req-1.",
       },

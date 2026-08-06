@@ -697,7 +697,7 @@ async function executeApprovedModification(args: {
     ipAddress: context.ipAddress,
     ...(overridesAdultMemberHosting(override)
       ? {
-          adultMemberHostingDecision: {
+          approvedExceptionAdultMemberHostingDecision: {
             reason: overrideReason,
             byMemberId: context.actorMemberId,
           },

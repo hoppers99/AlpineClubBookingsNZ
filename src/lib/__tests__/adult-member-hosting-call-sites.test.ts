@@ -652,4 +652,25 @@ describe("no policy read inside a booking transaction (#2569 §7)", () => {
       }
     }
   });
+
+  it("keeps the ENFORCED modification bypass exclusive to an approved exception", () => {
+    // This option carries a prior attributable officer decision into the real
+    // batch service, so it suppresses the ordinary ENFORCED refusal. A route or
+    // another service copying it would create an unreviewed bypass even though
+    // the implementation still typechecks. Pin both its declaration and its sole
+    // supplier tree-wide.
+    expect(
+      sourceFilesNaming("approvedExceptionAdultMemberHostingDecision"),
+    ).toEqual([
+      "src/lib/booking-batch-modification-service.ts",
+      "src/lib/booking-exception-approval.ts",
+    ]);
+
+    expect(readRepoCode("src/lib/booking-batch-modification-service.ts")).toMatch(
+      /approvedExceptionAdultMemberHostingDecision\?:\s*\{[\s\S]*?reason:\s*string;[\s\S]*?byMemberId:\s*string;/,
+    );
+    expect(readRepoCode("src/lib/booking-exception-approval.ts")).toContain(
+      "approvedExceptionAdultMemberHostingDecision:",
+    );
+  });
 });

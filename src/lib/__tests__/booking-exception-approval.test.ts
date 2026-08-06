@@ -631,7 +631,7 @@ describe("executeApprovedProposal — modification", () => {
     expect(outcome.hostingDecisionRecorded).toBe(true);
     expect(modifyBookingBatch).toHaveBeenCalledWith(
       expect.objectContaining({
-        adultMemberHostingDecision: {
+        approvedExceptionAdultMemberHostingDecision: {
           byMemberId: OFFICER,
           reason: expect.stringContaining("ADULT_MEMBER_HOSTING_REQUIRED"),
         },
@@ -663,7 +663,7 @@ describe("executeApprovedProposal — modification", () => {
     expect(modifyBookingBatch).toHaveBeenCalledWith(
       expect.objectContaining({
         hostingCoverageOverride,
-        adultMemberHostingDecision: expect.any(Object),
+        approvedExceptionAdultMemberHostingDecision: expect.any(Object),
       }),
     );
   });

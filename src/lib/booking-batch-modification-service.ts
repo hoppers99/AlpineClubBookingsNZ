@@ -207,7 +207,7 @@ function buildIdentityOnlyPricing(booking: LoadedBookingForModify): PricingResul
 export async function modifyBookingBatch({
   bookingId,
   actor,
-  adultMemberHostingDecision,
+  approvedExceptionAdultMemberHostingDecision,
   hostingCoverageOverride,
   input,
   ipAddress,
@@ -221,7 +221,10 @@ export async function modifyBookingBatch({
    * still records/reopens the authoritative review before the approval executor
    * performs its guarded PENDING -> APPROVED claim.
    */
-  adultMemberHostingDecision?: { reason: string; byMemberId: string } | null;
+  approvedExceptionAdultMemberHostingDecision?: {
+    reason: string;
+    byMemberId: string;
+  } | null;
   /**
    * #2576 §7: the officer's explicit confirmation and mandatory reason for
    * overriding a same-owner coverage refusal. Ignored for a non-officer actor, so a
@@ -922,8 +925,8 @@ export async function modifyBookingBatch({
     // travels with the actor — an ordinary member is refused and rolled back, an
     // officer is allowed and the consequence is escalated to an urgent incident.
     await reconcileAdultMemberHostingReviewWithSiblings(bookingId, tx, {
-      ...(adultMemberHostingDecision
-        ? { decision: adultMemberHostingDecision }
+      ...(approvedExceptionAdultMemberHostingDecision
+        ? { decision: approvedExceptionAdultMemberHostingDecision }
         : {}),
       ...hostingCoverageActorOptions({
         actorRole: actor.role,
