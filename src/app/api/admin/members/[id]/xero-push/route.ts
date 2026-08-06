@@ -297,18 +297,25 @@ export async function POST(
             subscriptionRefreshPending,
           )
         : null;
+    const memberScopedRecovery = recovery
+      ? { ...recovery, memberId: id }
+      : null;
     const sourceError = helperPartial?.originalError ?? err;
     const hostingRetry = hostingCoverageParticipantRetryResponse(
       sourceError,
-      recovery ? { ...recovery } : undefined,
+      memberScopedRecovery ? { ...memberScopedRecovery } : undefined,
     );
     if (hostingRetry) return hostingRetry;
-    if (recovery) {
+    if (memberScopedRecovery) {
       logger.error(
-        { err: sourceError, memberId: id, recoveryKind: recovery.recoveryKind },
+        {
+          err: sourceError,
+          memberId: id,
+          recoveryKind: memberScopedRecovery.recoveryKind,
+        },
         "Xero contact creation completed only in part",
       );
-      return NextResponse.json(xeroPartialSuccessBody(recovery), {
+      return NextResponse.json(xeroPartialSuccessBody(memberScopedRecovery), {
         status: 409,
       });
     }

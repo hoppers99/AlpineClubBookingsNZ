@@ -216,6 +216,7 @@ describe("POST /api/admin/members/[id]/xero-push (#2089)", () => {
     await expect(res.json()).resolves.toEqual({
       error: HOSTING_COVERAGE_RETRY_MESSAGE,
       code: HOSTING_COVERAGE_RETRY_CODE,
+      memberId: "mem_1",
       xeroContactCreated: true,
       xeroContactLinked: true,
       xeroContactId: "contact-1",
@@ -244,6 +245,7 @@ describe("POST /api/admin/members/[id]/xero-push (#2089)", () => {
       error:
         "A Xero contact was created, but its local member link could not be confirmed. Do not create another contact. Reload the member, search Xero for the contact, and link it if needed.",
       recoveryKind: "CONTACT_CREATED_LINK_UNCONFIRMED",
+      memberId: "mem_1",
       xeroContactCreated: true,
       xeroContactId: "contact-provider-only",
       xeroPostProcessingPending: true,

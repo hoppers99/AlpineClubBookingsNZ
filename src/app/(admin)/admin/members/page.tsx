@@ -433,6 +433,12 @@ export default function MembersPage() {
           sortBy={sortBy}
           sortDir={sortDir}
           membersListPath={membersListPath}
+          xeroRecoveryMemberId={
+            xeroRecovery?.recoveryKind ===
+              "CONTACT_CREATED_LINK_UNCONFIRMED"
+              ? xeroRecovery.memberId ?? null
+              : null
+          }
           onToggleSelect={toggleSelect}
           onToggleSelectAll={toggleSelectAll}
           onToggleSort={toggleSort}
@@ -455,9 +461,6 @@ export default function MembersPage() {
         onSuccess={showSuccess}
         onWarning={showWarning}
         onRecoveryWarning={showXeroRecovery}
-        xeroCreateSuppressed={
-          xeroRecovery?.recoveryKind === "CONTACT_CREATED_LINK_UNCONFIRMED"
-        }
       />
       <MemberBulkDialog
         open={bulkDialogOpen}

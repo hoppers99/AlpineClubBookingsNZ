@@ -136,13 +136,11 @@ vi.mock("../member-xero-controls", () => ({
     onChangeXeroChoice,
     onChangeSelectedXeroContactId,
     onXeroUnlink,
-    xeroCreateSuppressed,
   }: {
     editingMember: Member | null;
     onChangeXeroChoice: (choice: "link" | "create") => void;
     onChangeSelectedXeroContactId: (contactId: string) => void;
     onXeroUnlink: (memberId: string) => void;
-    xeroCreateSuppressed?: boolean;
   }) => (
     <div data-testid="member-xero-controls">
       {!editingMember ? (
@@ -164,11 +162,7 @@ vi.mock("../member-xero-controls", () => ({
         <button type="button" onClick={() => onXeroUnlink(editingMember.id)}>
           Test unlink Xero contact
         </button>
-      ) : xeroCreateSuppressed ? (
-        <span>Xero contact creation suppressed</span>
-      ) : (
-        <span>Xero contact creation available</span>
-      )}
+      ) : null}
     </div>
   ),
 }));
@@ -265,7 +259,11 @@ const baseMember: Member = {
   currentMembershipType: null,
 };
 
-function renderMemberTable(members: Member[], canEdit = true) {
+function renderMemberTable(
+  members: Member[],
+  canEdit = true,
+  xeroRecoveryMemberId: string | null = null,
+) {
   return render(
     <MemberTable
       members={members}
@@ -277,6 +275,7 @@ function renderMemberTable(members: Member[], canEdit = true) {
       sortBy="name"
       sortDir="asc"
       membersListPath="/admin/members"
+      xeroRecoveryMemberId={xeroRecoveryMemberId}
       onToggleSelect={vi.fn()}
       onToggleSelectAll={vi.fn()}
       onToggleSort={vi.fn()}
@@ -379,6 +378,40 @@ describe("admin member access-role UI", () => {
     expect(header).toHaveAttribute("aria-sort", "ascending");
     fireEvent.click(screen.getByRole("button", { name: /Access/ }));
     expect(onToggleSort).toHaveBeenCalledWith("access");
+  });
+
+  it("marks only the affected member links for contact-create recovery", () => {
+    const affected = {
+      ...baseMember,
+      id: "member-affected",
+      firstName: "Alice",
+      lastName: "Affected",
+    };
+    const other = {
+      ...baseMember,
+      id: "member-other",
+      firstName: "Bob",
+      lastName: "Other",
+    };
+    renderMemberTable([affected, other], true, affected.id);
+
+    for (const link of [
+      screen.getByRole("link", { name: "Alice Affected" }),
+      screen.getByRole("link", { name: "Open Alice Affected" }),
+    ]) {
+      expect(link).toHaveAttribute(
+        "href",
+        expect.stringContaining(
+          "xeroRecovery=contact-created-link-unconfirmed",
+        ),
+      );
+    }
+    for (const link of [
+      screen.getByRole("link", { name: "Bob Other" }),
+      screen.getByRole("link", { name: "Open Bob Other" }),
+    ]) {
+      expect(link.getAttribute("href")).not.toContain("xeroRecovery=");
+    }
   });
 
   it("relabels the login-access filter and offers all four stages including No login (#1444)", () => {
@@ -776,7 +809,7 @@ describe("admin member access-role UI", () => {
         }),
       );
 
-    const view = render(
+    render(
       <MemberEditorDialog
         open
         xeroConnected
@@ -821,25 +854,6 @@ describe("admin member access-role UI", () => {
       expect.objectContaining({ forceCreate: true }),
     );
 
-    view.rerender(
-      <MemberEditorDialog
-        open
-        editingMember={{ ...baseMember, id: "member-new", xeroContactId: null }}
-        xeroConnected
-        xeroOrgShortCode={null}
-        onOpenChange={vi.fn()}
-        onSaved={vi.fn()}
-        onSuccess={vi.fn()}
-        onWarning={vi.fn()}
-        onRecoveryWarning={onRecoveryWarning}
-        xeroCreateSuppressed={
-          recovery?.recoveryKind === "CONTACT_CREATED_LINK_UNCONFIRMED"
-        }
-      />,
-    );
-    expect(
-      screen.getByText("Xero contact creation suppressed"),
-    ).toBeInTheDocument();
   });
 });
 

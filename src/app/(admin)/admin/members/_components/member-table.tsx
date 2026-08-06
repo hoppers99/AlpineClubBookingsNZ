@@ -28,6 +28,10 @@ import { memberName } from "@/lib/member-serialization"
 import { formatNZDate } from "@/lib/nzst-date"
 import { getXeroContactGroupTone } from "@/lib/xero-contact-group-tone"
 import { buildXeroContactUrl, buildXeroInvoiceUrl } from "@/lib/xero-links"
+import {
+  XERO_CONTACT_CREATE_RECOVERY_QUERY_PARAM,
+  XERO_CONTACT_CREATE_RECOVERY_QUERY_VALUE,
+} from "@/lib/xero-partial-success"
 import type { SubscriptionStatus } from "@prisma/client"
 import type { Member } from "../_types"
 import { formatTypeTierLabel } from "../_utils"
@@ -49,6 +53,7 @@ interface MemberTableProps {
   sortBy: string
   sortDir: "asc" | "desc"
   membersListPath: string
+  xeroRecoveryMemberId?: string | null
   onToggleSelect: (id: string) => void
   onToggleSelectAll: () => void
   onToggleSort: (column: string) => void
@@ -98,6 +103,7 @@ export function MemberTable({
   sortBy,
   sortDir,
   membersListPath,
+  xeroRecoveryMemberId = null,
   onToggleSelect,
   onToggleSelectAll,
   onToggleSort,
@@ -213,6 +219,20 @@ export function MemberTable({
             />
           )
           const name = memberName(member)
+          const memberPath = new URL(
+            `/admin/members/${member.id}`,
+            "https://tacbookings.local",
+          )
+          if (member.id === xeroRecoveryMemberId) {
+            memberPath.searchParams.set(
+              XERO_CONTACT_CREATE_RECOVERY_QUERY_PARAM,
+              XERO_CONTACT_CREATE_RECOVERY_QUERY_VALUE,
+            )
+          }
+          const memberHref = buildHrefWithReturnTo(
+            `${memberPath.pathname}${memberPath.search}`,
+            membersListPath,
+          )
 
           return (
             <TableRow key={member.id}>
@@ -229,7 +249,7 @@ export function MemberTable({
               ) : null}
               <TableCell className="font-medium">
                 <Link
-                  href={buildHrefWithReturnTo(`/admin/members/${member.id}`, membersListPath)}
+                  href={memberHref}
                   className="rounded-sm text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
                   {name}
@@ -345,10 +365,7 @@ export function MemberTable({
                   ) : null}
                   <Button variant="outline" size="sm" asChild>
                     <Link
-                      href={buildHrefWithReturnTo(
-                        `/admin/members/${member.id}`,
-                        membersListPath,
-                      )}
+                      href={memberHref}
                       aria-label={`Open ${name}`}
                     >
                       Open

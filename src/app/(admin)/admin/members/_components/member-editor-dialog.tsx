@@ -99,7 +99,6 @@ interface MemberEditorDialogProps {
   onSuccess: (message: string) => void;
   onWarning: (message: string) => void;
   onRecoveryWarning?: (recovery: XeroActionRecovery) => Promise<void>;
-  xeroCreateSuppressed?: boolean;
 }
 
 interface MemberSaveResponse {
@@ -178,7 +177,6 @@ export function MemberEditorDialog({
   onSuccess,
   onWarning,
   onRecoveryWarning,
-  xeroCreateSuppressed = false,
 }: MemberEditorDialogProps) {
   const roleOptions = useAccessRoleOptions();
   const [currentEditingMember, setCurrentEditingMember] =
@@ -1160,9 +1158,6 @@ export function MemberEditorDialog({
               onXeroUnlink={handleXeroUnlink}
               onXeroPush={handleXeroPush}
               onClearFormError={() => setFormError("")}
-              xeroCreateSuppressed={
-                Boolean(currentEditingMember) && xeroCreateSuppressed
-              }
             />
 
             {currentEditingMember && (

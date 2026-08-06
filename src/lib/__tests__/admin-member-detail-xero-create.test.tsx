@@ -8,6 +8,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import MemberDetailPage from "@/app/(admin)/admin/members/[id]/page";
 
 const fetchMock = vi.fn();
+let searchParamsMock = new URLSearchParams();
 
 vi.mock("next-auth/react", () => ({
   useSession: () => ({
@@ -17,7 +18,7 @@ vi.mock("next-auth/react", () => ({
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn() }),
-  useSearchParams: () => new URLSearchParams(),
+  useSearchParams: () => searchParamsMock,
 }));
 
 vi.mock("@/components/admin/family-group-editor-dialog", () => ({
@@ -146,6 +147,7 @@ function adminMember(overrides: Record<string, unknown> = {}) {
 describe("Admin member detail Xero create", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    searchParamsMock = new URLSearchParams();
     Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
       configurable: true,
       value: vi.fn(),
@@ -199,6 +201,30 @@ describe("Admin member detail Xero create", () => {
 
     expect(screen.getByRole("dialog")).toBeTruthy();
     expect(screen.getByText("Create Xero Contact")).toBeTruthy();
+  });
+
+  it("consumes a list recovery marker without flashing Create", async () => {
+    searchParamsMock = new URLSearchParams(
+      "xeroRecovery=contact-created-link-unconfirmed&returnTo=%2Fadmin%2Fmembers",
+    );
+
+    await act(async () => {
+      render(
+        <Suspense fallback={<div>Loading route params...</div>}>
+          <MemberDetailPage params={Promise.resolve({ id: "member-1" })} />
+        </Suspense>,
+      );
+    });
+
+    expect(await screen.findByRole("button", { name: "Link to Xero" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Create in Xero/ })).not.toBeInTheDocument();
+    const alert = document.getElementById("member-xero-recovery-error");
+    expect(alert).toHaveTextContent(/Do not create another contact/i);
+    expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
+    expect(document.activeElement).toBe(alert);
+    expect(searchParamsMock.get("xeroRecovery")).toBe(
+      "contact-created-link-unconfirmed",
+    );
   });
 
   it("keeps Create suppressed after an unconfirmed provider contact survives refresh", async () => {

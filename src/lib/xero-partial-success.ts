@@ -5,6 +5,10 @@ export type XeroPartialSuccessKind =
   | "CONTACT_UNLINKED"
   | "MEMBER_IMPORTED_AND_LINKED";
 
+export const XERO_CONTACT_CREATE_RECOVERY_QUERY_PARAM = "xeroRecovery";
+export const XERO_CONTACT_CREATE_RECOVERY_QUERY_VALUE =
+  "contact-created-link-unconfirmed";
+
 export interface XeroPartialSuccessRecovery {
   recoveryKind: XeroPartialSuccessKind;
   xeroContactCreated?: true;

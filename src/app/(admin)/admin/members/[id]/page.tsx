@@ -87,6 +87,9 @@ import type {
 import {
   getXeroPartialSuccessGuidance,
   isXeroPartialSuccessRecovery,
+  XERO_CONTACT_CREATE_RECOVERY_QUERY_PARAM,
+  XERO_CONTACT_CREATE_RECOVERY_QUERY_VALUE,
+  XERO_PARTIAL_SUCCESS_MESSAGES,
 } from "@/lib/xero-partial-success";
 
 // Re-exports preserve the existing import paths used by tests and other callers
@@ -187,6 +190,28 @@ export default function MemberDetailPage({
     await fetchMemberWithResult();
   }, [fetchMemberWithResult]);
 
+  const hasCreatedContactRecoveryMarker =
+    searchParams.get(XERO_CONTACT_CREATE_RECOVERY_QUERY_PARAM) ===
+    XERO_CONTACT_CREATE_RECOVERY_QUERY_VALUE;
+
+  useEffect(() => {
+    if (!hasCreatedContactRecoveryMarker) return;
+    const guidance =
+      XERO_PARTIAL_SUCCESS_MESSAGES.CONTACT_CREATED_LINK_UNCONFIRMED;
+    setXeroRecovery({
+      recoveryKind: "CONTACT_CREATED_LINK_UNCONFIRMED",
+      xeroContactCreated: true,
+      memberId: id,
+      xeroPostProcessingPending: true,
+    });
+    setXeroRecoveryMemberId(id);
+    setXeroRecoveryGuidance(guidance);
+    setXeroRecoveryError(
+      `${guidance} This member was opened from the recovery warning; check the current Xero link before taking another action.`,
+    );
+    setXeroRecoveryAttention((value) => value + 1);
+  }, [hasCreatedContactRecoveryMarker, id]);
+
   const refreshAfterXeroPartialSuccess = useCallback(
     async (guidance: string) => {
       setXeroRecoveryError(`${guidance} Refreshing the member now...`);
@@ -217,8 +242,9 @@ export default function MemberDetailPage({
   );
 
   const xeroCreateSuppressed =
-    xeroRecoveryMemberId === id &&
-    xeroRecovery?.recoveryKind === "CONTACT_CREATED_LINK_UNCONFIRMED";
+    hasCreatedContactRecoveryMarker ||
+    (xeroRecoveryMemberId === id &&
+      xeroRecovery?.recoveryKind === "CONTACT_CREATED_LINK_UNCONFIRMED");
 
   // Dependent dialog state
   const {
