@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import type { Prisma, PrismaClient } from "@prisma/client";
 
 import type { HostingCoverageIncidentCause } from "@/lib/adult-member-hosting-coverage-incidents";
@@ -55,7 +57,16 @@ export interface HostingCoverageReevaluationItem {
   actorMemberId: string | null;
   reason: string | null;
   attempts: number;
+  /** Opaque ownership proof for this one delivery attempt. */
+  claimToken: string;
 }
+
+export type HostingCoverageReevaluationClaim = Pick<
+  HostingCoverageReevaluationItem,
+  "id" | "claimToken"
+>;
+
+const HOSTING_COVERAGE_REEVALUATION_LEASE_MS = 15 * 60 * 1000;
 
 /**
  * Record one bounded unit of re-evaluation work, INSIDE the caller's transaction.
@@ -93,11 +104,13 @@ export async function enqueueHostingCoverageReevaluation(
 /**
  * Claim up to `limit` unprocessed items, oldest first.
  *
- * A GUARDED CLAIM per row rather than a `SELECT ... FOR UPDATE SKIP LOCKED`
- * batch, because the cost model does not need the latter: this queue carries a
- * handful of items after a membership-lapse sweep, not thousands, and a guarded
- * `updateMany` on `processedAt: null` is the pattern the rest of this repository
- * uses for exactly-one-claimant. Two concurrent drains simply split the work.
+ * A GUARDED, EXPIRING CLAIM per row rather than a `SELECT ... FOR UPDATE SKIP
+ * LOCKED` batch, because processing and provider delivery deliberately happen
+ * after the claim transaction. The opaque token is the ownership proof used by
+ * completion and failure; `claimExpiresAt` is what makes a crashed worker
+ * retryable without making an item visible while a live worker still owns it.
+ * Two simultaneous or staggered drains therefore split the work instead of
+ * repeatedly incrementing `attempts` for the same in-flight item.
  *
  * `attempts` is incremented AT CLAIM TIME, not on failure. A poison item that
  * throws every time therefore still counts up, and `maxAttempts` retires it —
@@ -126,10 +139,12 @@ export async function claimHostingCoverageReevaluations(
 ): Promise<HostingCoverageReevaluationItem[]> {
   const limit = options.limit ?? 25;
   const maxAttempts = options.maxAttempts ?? 5;
+  const claimedAt = new Date();
   const candidates = await db.hostingCoverageReevaluation.findMany({
     where: {
       processedAt: null,
       attempts: { lt: maxAttempts },
+      OR: [{ claimToken: null }, { claimExpiresAt: { lt: claimedAt } }],
       ...(options.memberId ? { memberId: options.memberId } : {}),
       ...(options.lodgeId ? { lodgeId: options.lodgeId } : {}),
     },
@@ -150,15 +165,29 @@ export async function claimHostingCoverageReevaluations(
 
   const claimed: HostingCoverageReevaluationItem[] = [];
   for (const candidate of candidates) {
+    const claimToken = randomUUID();
+    const claimExpiresAt = new Date(
+      claimedAt.getTime() + HOSTING_COVERAGE_REEVALUATION_LEASE_MS,
+    );
     const claim = await db.hostingCoverageReevaluation.updateMany({
-      where: { id: candidate.id, processedAt: null, attempts: candidate.attempts },
-      data: { attempts: { increment: 1 } },
+      where: {
+        id: candidate.id,
+        processedAt: null,
+        attempts: candidate.attempts,
+        OR: [{ claimToken: null }, { claimExpiresAt: { lt: claimedAt } }],
+      },
+      data: {
+        attempts: { increment: 1 },
+        claimToken,
+        claimExpiresAt,
+      },
     });
     if (claim.count !== 1) continue;
     claimed.push({
       ...candidate,
       nights: parseNights(candidate.nights),
       attempts: candidate.attempts + 1,
+      claimToken,
     });
   }
   return claimed;
@@ -166,25 +195,36 @@ export async function claimHostingCoverageReevaluations(
 
 /** Mark an item done. Idempotent: a second call matches nothing. */
 export async function completeHostingCoverageReevaluation(
-  id: string,
+  claim: HostingCoverageReevaluationClaim,
   db: HostingCoverageQueueDb,
-): Promise<void> {
-  await db.hostingCoverageReevaluation.updateMany({
-    where: { id, processedAt: null },
-    data: { processedAt: new Date(), lastError: null },
+): Promise<boolean> {
+  const completed = await db.hostingCoverageReevaluation.updateMany({
+    where: { id: claim.id, processedAt: null, claimToken: claim.claimToken },
+    data: {
+      processedAt: new Date(),
+      lastError: null,
+      claimToken: null,
+      claimExpiresAt: null,
+    },
   });
+  return completed.count === 1;
 }
 
 /** Record why an item failed, leaving it unprocessed for the next sweep. */
 export async function failHostingCoverageReevaluation(
-  id: string,
+  claim: HostingCoverageReevaluationClaim,
   message: string,
   db: HostingCoverageQueueDb,
-): Promise<void> {
-  await db.hostingCoverageReevaluation.updateMany({
-    where: { id, processedAt: null },
-    data: { lastError: message.slice(0, 1000) },
+): Promise<boolean> {
+  const failed = await db.hostingCoverageReevaluation.updateMany({
+    where: { id: claim.id, processedAt: null, claimToken: claim.claimToken },
+    data: {
+      lastError: message.slice(0, 1000),
+      claimToken: null,
+      claimExpiresAt: null,
+    },
   });
+  return failed.count === 1;
 }
 
 /**

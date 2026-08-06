@@ -163,6 +163,31 @@ describe("AdminBookingsPage", () => {
     expect(callArgs.where.checkOut).toBeUndefined();
   });
 
+  it("scopes the hosting-coverage incident queue to the active lodge filter", async () => {
+    await AdminBookingsPage({
+      searchParams: Promise.resolve({ lodgeId: "lodge-b" }),
+    });
+
+    expect(prisma.hostingCoverageIncident.count).toHaveBeenCalledWith({
+      where: { resolvedAt: null, lodgeId: "lodge-b" },
+    });
+    expect(prisma.hostingCoverageIncident.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { resolvedAt: null, lodgeId: "lodge-b" },
+      }),
+    );
+
+    vi.mocked(prisma.hostingCoverageIncident.count).mockClear();
+    vi.mocked(prisma.hostingCoverageIncident.findMany).mockClear();
+    await AdminBookingsPage({ searchParams: Promise.resolve({}) });
+    expect(prisma.hostingCoverageIncident.count).toHaveBeenCalledWith({
+      where: { resolvedAt: null },
+    });
+    expect(prisma.hostingCoverageIncident.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { resolvedAt: null } }),
+    );
+  });
+
   it("applies a check-out date range via checkOutFrom/checkOutTo", async () => {
     const from = formatDateOnly(addDaysDateOnly(getTodayDateOnly(), -14));
     const to = formatDateOnly(addDaysDateOnly(getTodayDateOnly(), -7));

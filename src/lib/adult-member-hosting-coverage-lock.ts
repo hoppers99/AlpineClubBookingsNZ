@@ -32,11 +32,13 @@ import type { Prisma } from "@prisma/client";
  * locks.
  *
  * ACQUISITION ORDER — ALWAYS LAST. Callers take this AFTER any
- * `pg_advisory_xact_lock(1)`, after `acquireLodgeCapacityLock`, and after
- * `lockBookingMemberNights`, giving the tree one consistent order
- * (global → lodge → member-night → coverage-owner) that cannot deadlock. Where
- * several owners are involved the keys are taken in sorted order, the same
- * discipline the member-night lock uses.
+ * `pg_advisory_xact_lock(1)`, after `acquireLodgeCapacityLock`, after any
+ * roster-date locks, and after the applicable member-night and member-credit
+ * locks. That gives the full tree one consistent order (global → lodge →
+ * roster-date → member-night → member-credit → coverage-owner) that cannot
+ * deadlock; paths that do not use a tier simply omit it. Where several owners
+ * are involved the keys are taken in sorted order, the same discipline the
+ * member-night lock uses.
  *
  * RE-ENTRANT, SO CHEAP TO BE THOROUGH. Postgres advisory locks are per-session
  * and re-entrant, so acquiring the same owner key twice inside one transaction is

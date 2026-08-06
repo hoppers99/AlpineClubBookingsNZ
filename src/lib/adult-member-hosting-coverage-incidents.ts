@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 import { Prisma, type PrismaClient } from "@prisma/client";
 
@@ -48,6 +48,13 @@ export type HostingCoverageIncidentResolution =
   | "BOOKING_AMENDED"
   | "EXCEPTION_APPROVED"
   | "BOOKING_CANCELLED";
+
+export interface HostingCoverageOwnerNotificationClaim {
+  incidentId: string;
+  stateKey: string;
+  /** Opaque ownership proof for this one provider delivery attempt. */
+  claimToken: string;
+}
 
 /**
  * The stored fingerprint of one uncovered state.
@@ -142,6 +149,7 @@ export async function openOrUpdateHostingCoverageIncident(
         cause: params.cause,
         ownerNotificationClaimStateKey: null,
         ownerNotificationClaimedAt: null,
+        ownerNotificationClaimToken: null,
         // A later override reason replaces an earlier one only when one was
         // actually supplied; a system-driven update must not erase the officer's
         // recorded reason for the override that opened this incident.
@@ -172,6 +180,7 @@ export async function openOrUpdateHostingCoverageIncident(
         evidence: params.violation as unknown as Prisma.InputJsonValue,
         ownerNotificationClaimStateKey: null,
         ownerNotificationClaimedAt: null,
+        ownerNotificationClaimToken: null,
         overriddenByMemberId: override?.byMemberId ?? null,
         overrideReason: override ? override.reason.trim().slice(0, 500) : null,
       },
@@ -204,6 +213,7 @@ export async function openOrUpdateHostingCoverageIncident(
         evidence: params.violation as unknown as Prisma.InputJsonValue,
         ownerNotificationClaimStateKey: null,
         ownerNotificationClaimedAt: null,
+        ownerNotificationClaimToken: null,
       },
     });
     return { action: "updated", incidentId: winner.id, stateKey };
@@ -285,9 +295,10 @@ export async function resolveHostingCoverageIncidents(
 export async function claimHostingCoverageOwnerNotification(
   params: { incidentId: string; stateKey: string },
   db: Pick<PrismaClient, "hostingCoverageIncident">,
-): Promise<boolean> {
+): Promise<HostingCoverageOwnerNotificationClaim | null> {
   const claimedAt = new Date();
   const staleBefore = new Date(claimedAt.getTime() - 15 * 60 * 1000);
+  const claimToken = randomUUID();
   const claim = await db.hostingCoverageIncident.updateMany({
     where: {
       id: params.incidentId,
@@ -310,14 +321,15 @@ export async function claimHostingCoverageOwnerNotification(
     data: {
       ownerNotificationClaimStateKey: params.stateKey,
       ownerNotificationClaimedAt: claimedAt,
+      ownerNotificationClaimToken: claimToken,
     },
   });
-  return claim.count === 1;
+  return claim.count === 1 ? { ...params, claimToken } : null;
 }
 
 /** Stamp a notification only after the transport reports a successful send. */
 export async function completeHostingCoverageOwnerNotification(
-  params: { incidentId: string; stateKey: string },
+  params: HostingCoverageOwnerNotificationClaim,
   db: Pick<PrismaClient, "hostingCoverageIncident">,
 ): Promise<boolean> {
   const completed = await db.hostingCoverageIncident.updateMany({
@@ -326,12 +338,14 @@ export async function completeHostingCoverageOwnerNotification(
       resolvedAt: null,
       stateKey: params.stateKey,
       ownerNotificationClaimStateKey: params.stateKey,
+      ownerNotificationClaimToken: params.claimToken,
     },
     data: {
       notifiedStateKey: params.stateKey,
       ownerNotifiedAt: new Date(),
       ownerNotificationClaimStateKey: null,
       ownerNotificationClaimedAt: null,
+      ownerNotificationClaimToken: null,
     },
   });
   return completed.count === 1;
@@ -339,19 +353,22 @@ export async function completeHostingCoverageOwnerNotification(
 
 /** Release a failed/non-send claim so the next queue attempt can retry it. */
 export async function releaseHostingCoverageOwnerNotification(
-  params: { incidentId: string; stateKey: string },
+  params: HostingCoverageOwnerNotificationClaim,
   db: Pick<PrismaClient, "hostingCoverageIncident">,
-): Promise<void> {
-  await db.hostingCoverageIncident.updateMany({
+): Promise<boolean> {
+  const released = await db.hostingCoverageIncident.updateMany({
     where: {
       id: params.incidentId,
       ownerNotificationClaimStateKey: params.stateKey,
+      ownerNotificationClaimToken: params.claimToken,
     },
     data: {
       ownerNotificationClaimStateKey: null,
       ownerNotificationClaimedAt: null,
+      ownerNotificationClaimToken: null,
     },
   });
+  return released.count === 1;
 }
 
 async function recordIncidentAudit(

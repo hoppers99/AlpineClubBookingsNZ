@@ -190,19 +190,33 @@ export async function drainHostingCoverageReevaluations(
           throw err;
         }
       }
-      await completeHostingCoverageReevaluation(item.id, db);
-      result.processed += 1;
+      const completed = await completeHostingCoverageReevaluation(item, db);
+      if (completed) {
+        result.processed += 1;
+      } else {
+        logger.warn(
+          { itemId: item.id, memberId: item.memberId, lodgeId: item.lodgeId },
+          "Hosting coverage re-evaluation finished after its claim was replaced",
+        );
+      }
     } catch (err) {
-      result.failed += 1;
       logger.error(
         { err, itemId: item.id, memberId: item.memberId, lodgeId: item.lodgeId },
         "Failed to re-evaluate same-owner hosting coverage",
       );
-      await failHostingCoverageReevaluation(
-        item.id,
+      const failureRecorded = await failHostingCoverageReevaluation(
+        item,
         err instanceof Error ? err.message : String(err),
         db,
-      ).catch(() => undefined);
+      ).catch(() => false);
+      if (failureRecorded) {
+        result.failed += 1;
+      } else {
+        logger.warn(
+          { itemId: item.id, memberId: item.memberId, lodgeId: item.lodgeId },
+          "Hosting coverage re-evaluation failure arrived after its claim was replaced",
+        );
+      }
     }
   }
   return result;
@@ -233,6 +247,7 @@ async function processHostingCoverageReevaluation(
     bookingId: string;
     incidentId: string;
     stateKey: string;
+    claimToken: string;
   }>;
 }> {
   const counts = {
@@ -243,6 +258,7 @@ async function processHostingCoverageReevaluation(
       bookingId: string;
       incidentId: string;
       stateKey: string;
+      claimToken: string;
     }>,
   };
   const policy = await loadAdultMemberHostingPolicy(item.lodgeId, db);
@@ -280,8 +296,7 @@ async function processHostingCoverageReevaluation(
     if (!claimed) continue;
     counts.notifications.push({
       bookingId,
-      incidentId: outcome.incidentId,
-      stateKey: outcome.stateKey,
+      ...claimed,
     });
   }
 
