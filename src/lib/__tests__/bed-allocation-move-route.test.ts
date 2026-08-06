@@ -4,11 +4,13 @@ const {
   mockRequireAdmin,
   mockModuleEnabled,
   mockMoveBedAllocationsSameDate,
+  mockApplyBedAllocationMove,
   mockCreateAuditLog,
 } = vi.hoisted(() => ({
   mockRequireAdmin: vi.fn(),
   mockModuleEnabled: vi.fn(),
   mockMoveBedAllocationsSameDate: vi.fn(),
+  mockApplyBedAllocationMove: vi.fn(),
   mockCreateAuditLog: vi.fn(),
 }));
 
@@ -29,6 +31,16 @@ vi.mock("@/lib/admin-bed-allocation", async () => {
     ...actual,
     moveBedAllocationsSameDate: (...args: unknown[]) =>
       mockMoveBedAllocationsSameDate(...args),
+  };
+});
+vi.mock("@/lib/bed-allocation-move", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/bed-allocation-move")>(
+    "@/lib/bed-allocation-move",
+  );
+  return {
+    ...actual,
+    applyBedAllocationMove: (...args: unknown[]) =>
+      mockApplyBedAllocationMove(...args),
   };
 });
 vi.mock("@/lib/prisma", () => ({ prisma: {} }));
@@ -73,6 +85,12 @@ describe("PATCH /api/admin/bed-allocation/allocations (#2366)", () => {
         },
       ],
     });
+    mockApplyBedAllocationMove.mockResolvedValue({
+      noop: false,
+      movedRowCount: 1,
+      promotedRowCount: 0,
+      affectedNights: ["2026-07-01"],
+    });
   });
 
   it("passes only allocation ids, destination bed and actor to the atomic service", async () => {
@@ -109,6 +127,74 @@ describe("PATCH /api/admin/bed-allocation/allocations (#2366)", () => {
     });
 
     expect(response.status).toBe(400);
+    expect(mockMoveBedAllocationsSameDate).not.toHaveBeenCalled();
+  });
+
+  it("accepts only the strict typed preview-confirm request", async () => {
+    const digest = `v1:${"a".repeat(64)}`;
+    const response = await patch({
+      anchorAllocationId: "allocation-1",
+      destinationBedId: "bed-2",
+      scope: "BOOKING_GUEST",
+      previewDigest: digest,
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      noop: false,
+      movedRowCount: 1,
+      promotedRowCount: 0,
+      affectedNights: ["2026-07-01"],
+    });
+    expect(mockApplyBedAllocationMove).toHaveBeenCalledWith({
+      request: {
+        anchorAllocationId: "allocation-1",
+        destinationBedId: "bed-2",
+        scope: "BOOKING_GUEST",
+        previewDigest: digest,
+      },
+      actorMemberId: "admin-1",
+    });
+    expect(mockMoveBedAllocationsSameDate).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      anchorAllocationId: "allocation-1",
+      destinationBedId: "bed-2",
+      scope: "ALLOCATION_NIGHT",
+    },
+    {
+      anchorAllocationId: "allocation-1",
+      destinationBedId: "bed-2",
+      scope: "ALLOCATION_NIGHT",
+      previewDigest: `v1:${"a".repeat(64)}`,
+      allocationIds: ["allocation-1"],
+      bedId: "bed-2",
+    },
+    {
+      allocationIds: ["allocation-1"],
+      bedId: "bed-2",
+      destinationBedId: "bed-2",
+    },
+  ])("rejects incomplete or mixed typed/legacy shapes", async (body) => {
+    const response = await patch(body);
+    expect(response.status).toBe(400);
+    expect(mockApplyBedAllocationMove).not.toHaveBeenCalled();
+    expect(mockMoveBedAllocationsSameDate).not.toHaveBeenCalled();
+  });
+
+  it("preserves the legacy 31-row cap", async () => {
+    const accepted = Array.from({ length: 31 }, (_, index) => `a-${index}`);
+    const response = await patch({ allocationIds: accepted, bedId: "bed-2" });
+    expect(response.status).toBe(200);
+
+    mockMoveBedAllocationsSameDate.mockClear();
+    const refused = await patch({
+      allocationIds: [...accepted, "a-31"],
+      bedId: "bed-2",
+    });
+    expect(refused.status).toBe(400);
     expect(mockMoveBedAllocationsSameDate).not.toHaveBeenCalled();
   });
 
