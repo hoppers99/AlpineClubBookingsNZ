@@ -273,8 +273,18 @@ export async function drainHostingCoverageReevaluations(
             // Missing recipients and intentional suppression are terminal for this
             // queue item: the officer incident remains visible, but retrying the
             // identical state cannot make an intentionally withheld message send.
-            await releaseHostingCoverageOwnerNotification(notification, db);
-            terminalNotificationStates.add(notificationStateKey(notification));
+            const released = await releaseHostingCoverageOwnerNotification(
+              notification,
+              db,
+            );
+            // A null delivery also means the exact notification token may have
+            // been replaced. Only the worker that still owns and releases that
+            // token may classify missing-recipient/suppression as terminal. A
+            // failed release leaves the exact state for the authoritative pending
+            // check below, so a crashed successor cannot be stranded by Q.
+            if (released) {
+              terminalNotificationStates.add(notificationStateKey(notification));
+            }
           }
         } catch (err) {
           await releaseHostingCoverageOwnerNotification(notification, db).catch(

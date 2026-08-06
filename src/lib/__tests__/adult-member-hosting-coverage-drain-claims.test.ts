@@ -391,7 +391,7 @@ describe("hosting coverage drain claim fences (#2596)", () => {
 
   it.each([
     ["resolved incident", null],
-    ["replaced state or token", null],
+    ["superseded or already-notified state", null],
   ])("calls no provider for a stale %s claim", async (_label, delivery) => {
     mocks.loadDependents.mockResolvedValue(["booking-1"]);
     mocks.reconcile.mockResolvedValue({
@@ -405,6 +405,8 @@ describe("hosting coverage drain claim fences (#2596)", () => {
       claimToken: "notification-current",
     });
     mocks.loadNotificationDelivery.mockResolvedValue(delivery);
+    mocks.releaseNotification.mockResolvedValue(false);
+    mocks.pendingNotification.mockResolvedValue(false);
 
     const result = await drainHostingCoverageReevaluations({}, makeDb());
 
@@ -422,6 +424,71 @@ describe("hosting coverage drain claim fences (#2596)", () => {
     expect(mocks.completeNotification).not.toHaveBeenCalled();
     expect(mocks.releaseNotification).toHaveBeenCalledWith(
       expect.objectContaining({ claimToken: "notification-current" }),
+      expect.anything(),
+    );
+    expect(mocks.pendingNotification).toHaveBeenCalledWith(
+      expect.objectContaining({ incidentId: "incident-1", stateKey: "v1:state-a" }),
+      expect.anything(),
+    );
+  });
+
+  it("defers when a null delivery proves its notification token was replaced, then retries", async () => {
+    mocks.loadDependents.mockResolvedValue(["booking-1"]);
+    mocks.reconcile.mockResolvedValue({
+      action: "unchanged",
+      incidentId: "incident-1",
+      stateKey: "v1:state-a",
+    });
+    mocks.claimNotification.mockResolvedValue({
+      incidentId: "incident-1",
+      stateKey: "v1:state-a",
+      claimToken: "notification-stale",
+    });
+    mocks.loadNotificationDelivery.mockResolvedValue(null);
+    // Worker B replaced N while A still owns Q. A cannot release B's token, and
+    // B then crashes before success-stamping the still-pending exact state.
+    mocks.releaseNotification.mockResolvedValue(false);
+    mocks.pendingNotification.mockResolvedValue(true);
+
+    const stale = await drainHostingCoverageReevaluations({}, makeDb());
+
+    expect(stale).toMatchObject({ claimed: 1, processed: 0, notified: 0, failed: 0 });
+    expect(mocks.sendEmail).not.toHaveBeenCalled();
+    expect(mocks.complete).not.toHaveBeenCalled();
+    expect(mocks.fail).not.toHaveBeenCalled();
+    expect(mocks.defer).toHaveBeenCalledWith(
+      expect.objectContaining({ claimToken: "claim-current" }),
+      expect.anything(),
+    );
+
+    const retryItem = { ...CLAIMED_ITEM, claimToken: "claim-after-crash" };
+    mocks.claim.mockReset();
+    mocks.claim.mockResolvedValueOnce([retryItem]).mockResolvedValue([]);
+    mocks.loadClaimed.mockResolvedValue(retryItem);
+    mocks.claimNotification.mockResolvedValue({
+      incidentId: "incident-1",
+      stateKey: "v1:state-a",
+      claimToken: "notification-after-crash",
+    });
+    mocks.loadNotificationDelivery.mockResolvedValue(DELIVERY);
+    mocks.releaseNotification.mockResolvedValue(true);
+    mocks.pendingNotification.mockResolvedValue(false);
+    mocks.sendEmail.mockResolvedValue({
+      status: "sent",
+      emailLogId: "mail-after-crash",
+      bookingId: "booking-1",
+      messageId: "provider-after-crash",
+    });
+
+    const retry = await drainHostingCoverageReevaluations({}, makeDb());
+
+    expect(retry).toMatchObject({ claimed: 1, processed: 1, notified: 1, failed: 0 });
+    expect(mocks.completeNotification).toHaveBeenCalledWith(
+      expect.objectContaining({ claimToken: "notification-after-crash" }),
+      expect.anything(),
+    );
+    expect(mocks.complete).toHaveBeenCalledWith(
+      expect.objectContaining({ claimToken: "claim-after-crash" }),
       expect.anything(),
     );
   });
