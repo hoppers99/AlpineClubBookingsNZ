@@ -5,10 +5,16 @@ import {
   applyBedAllocationRemoval,
   BED_ALLOCATION_REMOVAL_CATEGORIES,
   BedAllocationRemovalError,
+  MAX_BED_ALLOCATION_REMOVAL_WINDOW_NIGHTS,
   previewBedAllocationRemoval,
   type BedAllocationRemovalApplyRequest,
   type BedAllocationRemovalRequest,
 } from "@/lib/bed-allocation-removal";
+import {
+  countNightsDateOnly,
+  isDateOnlyString,
+  parseDateOnly,
+} from "@/lib/date-only";
 import {
   bedAllocationErrorResponse,
   requireBedAllocationRead,
@@ -23,19 +29,39 @@ const anchorFields = {
   stayDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
 };
 
-const scopeSchema = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("ALLOCATION"), ...anchorFields }).strict(),
-  z.object({ type: z.literal("BOOKING_GUEST"), ...anchorFields }).strict(),
-  z.object({ type: z.literal("BOOKING"), ...anchorFields }).strict(),
-  z
-    .object({
-      type: z.literal("WINDOW"),
-      lodgeId: z.string().min(1),
-      from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-      to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-    })
-    .strict(),
-]);
+const windowScopeSchema = z
+  .object({
+    type: z.literal("WINDOW"),
+    lodgeId: z.string().min(1),
+    from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  })
+  .strict();
+
+const scopeSchema = z
+  .discriminatedUnion("type", [
+    z.object({ type: z.literal("ALLOCATION"), ...anchorFields }).strict(),
+    z.object({ type: z.literal("BOOKING_GUEST"), ...anchorFields }).strict(),
+    z.object({ type: z.literal("BOOKING"), ...anchorFields }).strict(),
+    windowScopeSchema,
+  ])
+  .superRefine((scope, context) => {
+    if (scope.type !== "WINDOW") return;
+    if (!isDateOnlyString(scope.from) || !isDateOnlyString(scope.to)) {
+      context.addIssue({ code: "custom", message: "Invalid removal window" });
+      return;
+    }
+    const nights = countNightsDateOnly(
+      parseDateOnly(scope.from),
+      parseDateOnly(scope.to),
+    );
+    if (nights < 1 || nights > MAX_BED_ALLOCATION_REMOVAL_WINDOW_NIGHTS) {
+      context.addIssue({
+        code: "custom",
+        message: `Removal window must cover 1 to ${MAX_BED_ALLOCATION_REMOVAL_WINDOW_NIGHTS} nights`,
+      });
+    }
+  });
 
 const categorySchema = z.enum(BED_ALLOCATION_REMOVAL_CATEGORIES);
 const categoriesSchema = z

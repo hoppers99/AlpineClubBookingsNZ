@@ -51,6 +51,10 @@ const issue675MalformedJsonRoutes = [
 // bypass.
 const sharedAdminGuardWrappers: Record<string, string> = {
   requireBedAllocationAdmin: "src/lib/admin-bed-allocation-routes.ts",
+  requireBedAllocationRead: "src/lib/admin-bed-allocation-routes.ts",
+  requireBedAllocationWrite: "src/lib/admin-bed-allocation-routes.ts",
+  requireBedInventoryRead: "src/lib/admin-bed-allocation-routes.ts",
+  requireBedInventoryWrite: "src/lib/admin-bed-allocation-routes.ts",
   requireFullAdminForConfigTransfer: "src/lib/config-transfer/route-helpers.ts",
 };
 

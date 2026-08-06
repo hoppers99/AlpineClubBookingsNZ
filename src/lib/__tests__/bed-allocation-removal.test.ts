@@ -227,6 +227,59 @@ describe("bed allocation removal preview/apply", () => {
     }
   }
 
+  it("keeps booking scopes off-window while WINDOW stays lodge/window bounded", async () => {
+    const rows = [
+      row({ id: "auto" }),
+      row({ id: "guest-off-window", stayDate: "2026-10-01" }),
+      row({
+        id: "other-guest-off-window",
+        bookingGuestId: "guest-2",
+        stayDate: "2026-10-02",
+      }),
+      row({ id: "other-booking-in-window", bookingId: "booking-2" }),
+      row({
+        id: "other-lodge-in-window",
+        bookingId: "booking-3",
+        lodgeId: "lodge-2",
+      }),
+    ];
+    installRows(rows);
+
+    const bookingGuest = await previewBedAllocationRemoval({
+      scope: anchorScope("BOOKING_GUEST"),
+      categories: ["AUTO_DRAFT"],
+    });
+    expect(bookingGuest.matchedRowCount).toBe(2);
+    expect(bookingGuest.affectedNights).toEqual([
+      "2026-08-01",
+      "2026-10-01",
+    ]);
+
+    const booking = await previewBedAllocationRemoval({
+      scope: anchorScope("BOOKING"),
+      categories: ["AUTO_DRAFT"],
+    });
+    expect(booking.matchedRowCount).toBe(3);
+    expect(booking.affectedNights).toEqual([
+      "2026-08-01",
+      "2026-10-01",
+      "2026-10-02",
+    ]);
+
+    const window = await previewBedAllocationRemoval({
+      scope: {
+        type: "WINDOW",
+        lodgeId: "lodge-1",
+        from: "2026-08-01",
+        to: "2026-08-02",
+      },
+      categories: ["AUTO_DRAFT"],
+    });
+    expect(window.matchedRowCount).toBe(2);
+    expect(window.affectedBookingCount).toBe(2);
+    expect(window.affectedNights).toEqual(["2026-08-01"]);
+  });
+
   it("supports a mutually exclusive multi-category preview", async () => {
     const rows = [
       row({ id: "auto" }),

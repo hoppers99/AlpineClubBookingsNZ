@@ -562,10 +562,10 @@ describe("in-booking bed allocation panel visibility (#2252)", () => {
   });
 
   it("keys the panel's write controls off the same permission its APIs demand", () => {
-    // Assign/remove/confirm all POST or DELETE under /api/admin/bed-allocation,
-    // which resolves to bookings:edit — the same area/level the panel's
-    // useAdminAreaEditAccess("bookings") gate asks for, so no button is
-    // rendered enabled that the route would refuse.
+    // Assign/confirm remain bookings:edit. Removal's preview is an explicit
+    // bookings:view read; applying that reviewed preview is bookings:edit — the
+    // same area/level the panel's useAdminAreaEditAccess("bookings") gate asks
+    // for, so no write button is rendered enabled that the route would refuse.
     for (const path of [
       "/api/admin/bed-allocation/approve",
       "/api/admin/bed-allocation/allocations/range",
@@ -575,8 +575,14 @@ describe("in-booking bed allocation panel visibility (#2252)", () => {
         level: "edit",
       });
     }
+    // This source-based path helper reports the strongest requirement in a
+    // mixed-method file. The removal route's dedicated handler tests pin POST
+    // to view; this assertion pins its PUT/write boundary here.
     expect(
-      getAdminRouteRequirement("/api/admin/bed-allocation/allocations/AID", "DELETE"),
+      getAdminRouteRequirement(
+        "/api/admin/bed-allocation/allocations/removal",
+        "PUT",
+      ),
     ).toEqual({ area: "bookings", level: "edit" });
   });
 });
