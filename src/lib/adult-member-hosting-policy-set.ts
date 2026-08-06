@@ -55,7 +55,7 @@ export async function lockAdultMemberHostingPolicySet(
  * merge transaction.
  */
 export async function tryLockAdultMemberHostingPolicySet(
-  tx: Pick<Prisma.TransactionClient, "$queryRaw">,
+  tx: Prisma.TransactionClient,
 ): Promise<boolean> {
   const returned = await tx.$queryRaw`
     SELECT pg_try_advisory_xact_lock(
