@@ -37,7 +37,9 @@ before a pair, pair set, or aggregate can complete.
   ```bash
   eval "$(fnm env --shell bash)"
   fnm use --install-if-missing
-  node --version # must print v24.x
+  EXPECTED_NODE_VERSION="$(tr -d '\r\n' < .nvmrc)"
+  test "$(node -p 'process.versions.node')" = "$EXPECTED_NODE_VERSION"
+  # The reviewed repository pin is currently 24.15.0; .nvmrc is authoritative.
   ```
 
   The orchestrator and both runners reject any other major and seal the
@@ -91,9 +93,9 @@ The dump path must not already exist; the helper refuses to overwrite it.
 
 ```bash
 cd C:/Users/jorda/Local_Repos/wt-measure
-bash measurement/stack/measure-stack.sh prepare
-bash measurement/stack/measure-stack.sh create-canonical-dump \
-  C:/Users/jorda/AppData/Local/Temp/issue-2352/canonical.dump
+bash measurement/stack/measure-stack.sh with-private-env -- \
+  bash measurement/stack/measure-stack.sh prepare-canonical-dump \
+    C:/Users/jorda/AppData/Local/Temp/issue-2352/canonical.dump
 ```
 
 Record the printed archive SHA-256. Each side is restored from that exact dump,
@@ -102,6 +104,17 @@ Any drift aborts the pair. The runner also records the app's redacted database
 target, DNS result, Postgres identity, container/network identity, and the full
 uninterpolated Compose/resource definition so the restored database and the app
 connection cannot be confused with another stack.
+
+`with-private-env` owns the same fixed machine-wide lock as final phase-2
+orchestration. It copies `measurement/stack/.env.measure` to a new restrictive
+private snapshot, HMAC-binds that snapshot with a fresh private key, exports the
+three required bindings only to the child command, and token-verifies ownership
+before deleting the snapshot, key and private audit. Do not source
+`.env.measure`, export its values, manufacture these bindings manually, or run
+an inner `measure-stack.sh` command outside this wrapper. The combined action
+keeps reset, migration, seed and canonical-dump creation inside one lock.
+Do not wrap `orchestrate-pairs.sh` with `with-private-env`: final orchestration
+owns that same lock and creates its own evidence-retained snapshot audit.
 
 ## Bind correctness, sources, images, and expected responses
 
@@ -130,6 +143,24 @@ archive checksums. `correctness-report.example.json` deliberately illustrates
 the current blocked state; it is not permission to substitute a scalar pass.
 `verify-http-proof.mjs` checks exact
 status/body/ETag/classification immediately before and after every CPU block.
+
+For each create-only correctness root, use the private wrapper shown in the
+current-main producer README. After the producer runner returns successfully,
+seal and independently derive that side's result before putting its completion
+path in the manifest:
+
+```bash
+node measurement/phase2/bin/finalize-correctness-evidence.mjs \
+  --dir C:/Users/jorda/AppData/Local/Temp/issue-2352/current-correctness
+
+node measurement/phase2/bin/finalize-correctness-evidence.mjs \
+  --dir C:/Users/jorda/AppData/Local/Temp/issue-2352/baseline-correctness
+```
+
+Each command refuses an existing derived seal, verifies the complete live and
+archived producer-source set at both boundaries, scans the exact evidence tree,
+and writes the required `COMPLETED.json`. A completed result that is failed,
+unverified or `OWNER_DISPOSITION_NEEDED` remains ineligible for timing.
 
 ## Exact run order
 
@@ -297,7 +328,8 @@ or measurement results.
 Leave the isolated stack down while retaining its volume and images:
 
 ```bash
-bash measurement/stack/measure-stack.sh down
+bash measurement/stack/measure-stack.sh with-private-env -- \
+  bash measurement/stack/measure-stack.sh down
 ```
 
 Report the generated evidence as preliminary/relative until the owner reviews

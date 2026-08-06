@@ -2,6 +2,18 @@
 # Orchestrates the ISOLATED tacbookings-measure stack for the #2352 slice-1
 # staging evaluation. Run from the wt-measure worktree root.
 #
+# Manual commands must run through the private snapshot wrapper so the source
+# .env file never becomes Compose's mutable runtime authority:
+#
+#   measurement/stack/measure-stack.sh with-private-env -- \
+#     bash measurement/stack/measure-stack.sh prepare
+#   measurement/stack/measure-stack.sh with-private-env -- \
+#     bash measurement/stack/measure-stack.sh prepare-canonical-dump <absolute-path>
+#
+# Commands below are inner commands. Calling one directly is valid only while
+# the reviewed wrapper (or the phase-2 orchestrator) owns the fixed lock and has
+# exported its HMAC-bound private snapshot.
+#
 #   measurement/stack/measure-stack.sh prepare          # postgres + schema + seeds + app + caddy
 #   measurement/stack/measure-stack.sh create-canonical-dump <absolute-path>
 #   measurement/stack/measure-stack.sh restore-canonical-dump <absolute-path> <sha256>
@@ -18,8 +30,79 @@
 # (tacbookings-staging, 3001/5433/8025) or any production stack.
 set -euo pipefail
 
-cd "$(dirname "$0")/../.."
+SCRIPT_DIRECTORY="$(cd "$(dirname "$0")" && pwd -P)"
+cd "$SCRIPT_DIRECTORY/../.."
 ROOT="$(pwd)"
+
+new_private_token() {
+  node -e 'process.stdout.write(require("node:crypto").randomBytes(32).toString("hex") + "\n")'
+}
+
+with_private_env() {
+  [[ "${1:-}" == -- ]] || {
+    echo "usage: $0 with-private-env -- <command> [args...]" >&2
+    exit 2
+  }
+  shift
+  [[ "$#" -gt 0 ]] || {
+    echo "with-private-env requires a command" >&2
+    exit 2
+  }
+  case "$(uname -s)" in
+    MINGW*|MSYS*) ;;
+    *) echo "the private measurement wrapper is cleared only for Git Bash on Windows" >&2; exit 2 ;;
+  esac
+
+  local windows_temp_path lock_dir lock_token snapshot key_file audit_file snapshot_hmac command_status
+  local lock_held=false
+  windows_temp_path="$(powershell.exe -NoProfile -NonInteractive -Command '[IO.Path]::GetTempPath()' | tr -d '\0\r\n')"
+  lock_dir="$(cygpath -u "$windows_temp_path")/tacbookings-measure-phase2.lock"
+  lock_token="$(new_private_token)"
+  if ! mkdir "$lock_dir" 2>/dev/null; then
+    echo "another measurement operation is active, or stale lock requires review: $lock_dir" >&2
+    exit 1
+  fi
+  lock_held=true
+  snapshot="$(cygpath -am "$lock_dir/.env.measure.snapshot")"
+  key_file="$(cygpath -am "$lock_dir/runtime-env-hmac.key")"
+  audit_file="$(cygpath -am "$lock_dir/measure-env-snapshot-audit.json")"
+
+  cleanup_private_env() {
+    local status="${1:-$?}"
+    trap - EXIT INT TERM
+    if [[ "$lock_held" == true ]] && [[ -f "$lock_dir/owner.txt" ]] && grep -qx "token=$lock_token" "$lock_dir/owner.txt"; then
+      rm -f -- "$lock_dir/.env.measure.snapshot" "$lock_dir/runtime-env-hmac.key" \
+        "$lock_dir/measure-env-snapshot-audit.json" "$lock_dir/owner.txt"
+      rmdir "$lock_dir" 2>/dev/null || true
+    fi
+    exit "$status"
+  }
+  trap cleanup_private_env EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+
+  umask 077
+  printf 'pid=%s\nstarted_at_utc=%s\ntoken=%s\n' "$$" "$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)" "$lock_token" > "$lock_dir/owner.txt"
+  new_private_token > "$key_file"
+  chmod 600 "$lock_dir/owner.txt" "$key_file"
+  node measurement/phase2/bin/measure-env-contract.mjs \
+    --snapshot-source "$(cygpath -am measurement/stack/.env.measure)" \
+    --snapshot-out "$snapshot" --hmac-key-file "$key_file" --audit-out "$audit_file"
+  snapshot_hmac="$(node -e 'const v=require(process.argv[1]);if(!/^[a-f0-9]{64}$/.test(v.snapshot_hmac_sha256))process.exit(2);process.stdout.write(v.snapshot_hmac_sha256)' "$audit_file")"
+  chmod 600 "$lock_dir/owner.txt" "$snapshot" "$key_file" "$audit_file"
+
+  MEASURE_ENV_SNAPSHOT="$snapshot" \
+  MEASURE_ENV_SNAPSHOT_HMAC_SHA256="$snapshot_hmac" \
+  PHASE2_ENV_AUDIT_HMAC_KEY_FILE="$key_file" \
+    "$@" && command_status=0 || command_status=$?
+  cleanup_private_env "$command_status"
+}
+
+if [[ "${1:-}" == with-private-env ]]; then
+  shift
+  with_private_env "$@"
+  exit 0
+fi
 
 : "${MEASURE_ENV_SNAPSHOT:?MEASURE_ENV_SNAPSHOT must point to the private orchestrator snapshot}"
 : "${MEASURE_ENV_SNAPSHOT_HMAC_SHA256:?MEASURE_ENV_SNAPSHOT_HMAC_SHA256 must bind the private snapshot}"
@@ -160,6 +243,12 @@ restore_canonical_dump() {
 
 case "${1:-}" in
   prepare) prepare ;;
+  prepare-canonical-dump)
+    shift
+    [ -n "${1:-}" ] || { echo "usage: $0 prepare-canonical-dump <absolute-path>" >&2; exit 1; }
+    prepare
+    create_canonical_dump "$1"
+    ;;
   create-canonical-dump)
     shift
     [ -n "${1:-}" ] || { echo "usage: $0 create-canonical-dump <absolute-path>" >&2; exit 1; }
@@ -192,7 +281,7 @@ case "${1:-}" in
     compose "$@"
     ;;
   *)
-    echo "Usage: $0 {prepare|create-canonical-dump <path>|restore-canonical-dump <path> <sha256>|database-fingerprint|provider-isolation-audit|app-image <tag>|restart-app|up|stop|down|destroy|compose ...}" >&2
+    echo "Usage: $0 {with-private-env -- <command> [args...]|prepare|prepare-canonical-dump <path>|create-canonical-dump <path>|restore-canonical-dump <path> <sha256>|database-fingerprint|provider-isolation-audit|app-image <tag>|restart-app|up|stop|down|destroy|compose ...}" >&2
     exit 1
     ;;
 esac

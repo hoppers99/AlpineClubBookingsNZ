@@ -89,7 +89,8 @@ there is no download fallback.
 Example invocation from the exact source worktree:
 
 ```bash
-bash measurement/current-main-refresh/run-correctness-producers.sh \
+bash measurement/stack/measure-stack.sh with-private-env -- \
+  bash measurement/current-main-refresh/run-correctness-producers.sh \
   --run-root /absolute/evidence/current-correctness \
   --run-id current-1 \
   --side current \
@@ -109,6 +110,35 @@ bash measurement/current-main-refresh/run-correctness-producers.sh \
   --postgres-container tacbookings-measure-postgres-1 \
   --auth-state /absolute/e2e/.auth/e2e-admin.state.json
 ```
+
+Before that invocation, select the same immutable image under the same private
+snapshot contract; the producer runner will independently reject any image,
+container, OCI revision or source-archive disagreement:
+
+```bash
+bash measurement/stack/measure-stack.sh with-private-env -- \
+  bash measurement/stack/measure-stack.sh app-image \
+    <repository>@sha256:<digest>
+```
+
+The wrapper acquires the fixed `tacbookings-measure` single-flight lock, creates
+and HMAC-binds a restrictive private copy of `.env.measure`, exports its three
+bindings only to the child, and removes the snapshot/key/audit only after
+token-verified ownership. Never source `.env.measure`, pass its values through
+the ambient environment, or invoke the correctness runner without the wrapper.
+
+When the create-only producer run succeeds, derive and seal its exact evidence
+tree. This is a separate required step; the producer runner deliberately does
+not create `COMPLETED.json`:
+
+```bash
+node measurement/phase2/bin/finalize-correctness-evidence.mjs \
+  --dir /absolute/evidence/current-correctness
+```
+
+Repeat with a different create-only root for the baseline and finalize that
+root too. `OWNER_DISPOSITION_NEEDED`, including the unresolved `MC-03D`, may be
+sealed honestly but cannot enter timing as a pass.
 
 Use a different create-only run root for the baseline. The baseline side runs
 only the route-manifest and CMS route-response bindings required on both sides;
@@ -227,5 +257,5 @@ node --check measurement/current-main-refresh/bin/create-immutable-inputs.mjs
 This directory contains producer source only. A passing self-test is not a
 completed measurement, final report, CI result, or owner approval.
 
-Return to the measurement documentation hub in
-[`measurement/README.md`](../README.md).
+Continue with the paired-run and aggregation procedure in
+[`measurement/phase2/README.md`](../phase2/README.md).

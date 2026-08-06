@@ -69,6 +69,40 @@ try {
   assert.throws(() => parseMeasureEnv(link), /non-reparse/);
 } catch (error) { if (error.code !== "EPERM") throw error; }
 
+const measureStackSource = readFileSync(resolve(repo, "measurement/stack/measure-stack.sh"), "utf8");
+for (const contract of [
+  /with-private-env -- <command>/,
+  /tacbookings-measure-phase2\.lock/,
+  /randomBytes\(32\)/,
+  /--snapshot-source "\$\(cygpath -am measurement\/stack\/\.env\.measure\)"/,
+  /--snapshot-out "\$snapshot" --hmac-key-file "\$key_file" --audit-out "\$audit_file"/,
+  /MEASURE_ENV_SNAPSHOT="\$snapshot"/,
+  /MEASURE_ENV_SNAPSHOT_HMAC_SHA256="\$snapshot_hmac"/,
+  /PHASE2_ENV_AUDIT_HMAC_KEY_FILE="\$key_file"/,
+  /grep -qx "token=\$lock_token"/,
+  /rm -f -- "\$lock_dir\/\.env\.measure\.snapshot" "\$lock_dir\/runtime-env-hmac\.key"/,
+  /"\$@" && command_status=0 \|\| command_status=\$\?/,
+  /cleanup_private_env "\$command_status"/,
+  /prepare-canonical-dump\)[\s\S]*?prepare[\s\S]*?create_canonical_dump "\$1"/,
+]) assert.match(measureStackSource, contract);
+assert(measureStackSource.indexOf("with_private_env") < measureStackSource.indexOf(': "${MEASURE_ENV_SNAPSHOT:'),
+  "the wrapper must create its private bindings before inner stack commands require them");
+
+const phase2Readme = readFileSync(resolve(repo, "measurement/phase2/README.md"), "utf8");
+const correctnessReadme = readFileSync(resolve(repo, "measurement/current-main-refresh/README.md"), "utf8");
+for (const readme of [phase2Readme, correctnessReadme]) {
+  assert.match(readme, /measure-stack\.sh with-private-env --/);
+  assert.match(readme, /finalize-correctness-evidence\.mjs/);
+}
+assert.match(phase2Readme, /prepare-canonical-dump/);
+assert.match(phase2Readme, /process\.versions\.node/);
+assert.match(phase2Readme, /\.nvmrc is authoritative/);
+assert.doesNotMatch(phase2Readme, /^bash measurement\/stack\/measure-stack\.sh (?:prepare|down)$/m,
+  "manual stack commands must not bypass the private snapshot wrapper");
+assert.match(correctnessReadme, /\.\.\/phase2\/README\.md/);
+assert.doesNotMatch(correctnessReadme, /\]\(\.\.\/README\.md\)/,
+  "the correctness README must not link to a nonexistent measurement hub");
+
 const validRuntimeValues = Object.fromEntries(AUDITED_KEYS.map((key) => [key, ""]));
 Object.assign(validRuntimeValues, {
   APP_RUNTIME_ROLE: "web-measure", CRON_ENABLED: "false", NODE_ENV: "production", TZ: "Pacific/Auckland", KEEP_ALIVE_TIMEOUT: "65000", LOG_LEVEL: "info",
