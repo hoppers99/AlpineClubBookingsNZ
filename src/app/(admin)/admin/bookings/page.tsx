@@ -373,7 +373,7 @@ export default async function AdminBookingsPage({
                   <Link
                     href={buildHrefWithReturnTo(
                       `/bookings/${incident.bookingId}`,
-                      "/admin/bookings#hosting-coverage-incidents",
+                      `${currentBookingsPath}#hosting-coverage-incidents`,
                     )}
                     className="app-button-secondary shrink-0"
                   >

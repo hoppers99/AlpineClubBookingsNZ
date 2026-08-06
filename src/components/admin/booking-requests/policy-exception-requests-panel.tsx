@@ -195,9 +195,15 @@ export function PolicyExceptionRequestsPanel({
 }: PolicyExceptionRequestsPanelProps) {
   const [items, setItems] = useState<QueueItem[]>([]);
   const [filter, setFilter] = useState<StatusFilter>("REQUESTED");
+  const [loadedFilter, setLoadedFilter] = useState<StatusFilter | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadFailed, setLoadFailed] = useState(false);
   const [error, setError] = useState("");
   const errorRef = useRef<HTMLDivElement>(null);
+  const activeFilterRef = useRef(filter);
+  // A slower response for the filter the officer just left must never become
+  // authoritative for the filter now shown in the toolbar.
+  const loadRequestIdRef = useRef(0);
   const [openId, setOpenId] = useState<string | null>(null);
   // The MEMBER-FACING decision explanation. Named `notes` since #2526 and kept
   // that way so every existing reference reads the same field; the label beside
@@ -244,8 +250,14 @@ export function PolicyExceptionRequestsPanel({
     return () => clearInterval(timer);
   }, []);
 
-  const fetchItems = useCallback(async () => {
-    setLoading(true);
+  const fetchItems = useCallback(async (
+    { preserveItemsOnFailure = false }: { preserveItemsOnFailure?: boolean } = {},
+  ) => {
+    const requestId = ++loadRequestIdRef.current;
+    const isCurrentRequest = () =>
+      requestId === loadRequestIdRef.current && filter === activeFilterRef.current;
+    if (!preserveItemsOnFailure) setLoading(true);
+    setLoadFailed(false);
     setError("");
     try {
       const response = await fetch(
@@ -255,15 +267,27 @@ export function PolicyExceptionRequestsPanel({
       if (!response.ok) {
         throw new Error(data.error || "Failed to load exception requests");
       }
+      if (!isCurrentRequest()) return false;
       setItems(Array.isArray(data?.data) ? data.data : []);
+      setLoadedFilter(filter);
+      return true;
     } catch (err) {
+      if (!isCurrentRequest()) return false;
+      if (!preserveItemsOnFailure) {
+        setItems([]);
+        setLoadedFilter(null);
+        setLoadFailed(true);
+      }
       setError(
         err instanceof Error ? err.message : "Failed to load exception requests",
       );
+      return false;
     } finally {
-      setLoading(false);
+      if (isCurrentRequest() && !preserveItemsOnFailure) {
+        setLoading(false);
+      }
     }
-  }, [filter, setError, setItems, setLoading]);
+  }, [filter]);
 
   useEffect(() => {
     fetchItems();
@@ -394,7 +418,9 @@ export function PolicyExceptionRequestsPanel({
         // told the request "changed while you were reviewing it", which blamed a
         // third party for their own previous attempt and left the guide's remedy
         // ("approve it again once beds free up") unreachable without a reload.
-        await fetchItems();
+        if (filter === activeFilterRef.current) {
+          await fetchItems({ preserveItemsOnFailure: true });
+        }
         // A kept-pending answer is NOT a failure of the officer's intent: the
         // request is still open and can be approved once beds free up. Say that
         // in those words rather than showing a bare error.
@@ -473,15 +499,29 @@ export function PolicyExceptionRequestsPanel({
           className={
             error
               ? "rounded-md bg-destructive/10 px-4 py-3 text-destructive"
-              : undefined
+              : "sr-only"
           }
         >
           {error ? (
             <>
               {error}
-              <button onClick={() => setError("")} className="ml-2 underline">
-                Dismiss
-              </button>
+              {loadFailed ? (
+                <button
+                  type="button"
+                  onClick={() => void fetchItems()}
+                  className="ml-2 underline"
+                >
+                  Try again
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setError("")}
+                  className="ml-2 underline"
+                >
+                  Dismiss
+                </button>
+              )}
             </>
           ) : null}
         </div>
@@ -493,6 +533,7 @@ export function PolicyExceptionRequestsPanel({
               variant={filter === status ? "default" : "outline"}
               size="sm"
               onClick={() => {
+                activeFilterRef.current = status;
                 resetDecisionForm();
                 setFilter(status);
               }}
@@ -504,9 +545,9 @@ export function PolicyExceptionRequestsPanel({
           ))}
         </div>
 
-        {loading ? (
+        {loading || (!loadFailed && loadedFilter !== filter) ? (
           <div className="py-8 text-center">Loading...</div>
-        ) : items.length === 0 ? (
+        ) : loadFailed ? null : items.length === 0 ? (
           <div className="py-8 text-center text-muted-foreground">
             No {filter === "ALL" ? "" : `${filter.toLowerCase()} `}booking-policy
             exception requests.

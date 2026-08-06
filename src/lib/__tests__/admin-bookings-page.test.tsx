@@ -188,6 +188,37 @@ describe("AdminBookingsPage", () => {
     );
   });
 
+  it("preserves the active lodge filter in hosting-incident booking return links", async () => {
+    vi.mocked(prisma.hostingCoverageIncident.count).mockResolvedValue(1);
+    vi.mocked(prisma.hostingCoverageIncident.findMany).mockResolvedValue([
+      {
+        id: "incident-1",
+        bookingId: "booking-incident",
+        cause: "OFFICER_OVERRIDE",
+        evidence: { requirements: { uncoveredNonMemberGuestNights: 1 } },
+        openedAt: new Date("2026-08-06T00:00:00.000Z"),
+        booking: {
+          checkIn: new Date("2026-08-10T00:00:00.000Z"),
+          checkOut: new Date("2026-08-11T00:00:00.000Z"),
+          member: { firstName: "Aroha", lastName: "Ngata" },
+          lodge: { name: "Lodge B" },
+        },
+      },
+    ] as any);
+
+    const element = await AdminBookingsPage({
+      searchParams: Promise.resolve({ lodgeId: "lodge-b" }),
+    });
+    const html = renderToStaticMarkup(element);
+
+    expect(html).toContain(
+      "returnTo=%2Fadmin%2Fbookings%3FlodgeId%3Dlodge-b%23hosting-coverage-incidents",
+    );
+    expect(html).not.toContain(
+      "returnTo=%2Fadmin%2Fbookings%23hosting-coverage-incidents",
+    );
+  });
+
   it("applies a check-out date range via checkOutFrom/checkOutTo", async () => {
     const from = formatDateOnly(addDaysDateOnly(getTodayDateOnly(), -14));
     const to = formatDateOnly(addDaysDateOnly(getTodayDateOnly(), -7));

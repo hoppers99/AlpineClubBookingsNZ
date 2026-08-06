@@ -141,14 +141,82 @@ describe("the officer decision form labels who reads what, before submission", (
     const alert = document.getElementById("policy-exception-error");
     expect(alert).toHaveAttribute("role", "alert");
     expect(alert).toBeEmptyDOMElement();
+    expect(alert).toHaveClass("sr-only");
     loadGate.resolve(jsonResponse({ error: "Queue service unavailable" }, 503));
     expect(await screen.findByText("Queue service unavailable")).toBeInTheDocument();
     expect(document.getElementById("policy-exception-error")).toBe(alert);
+    expect(alert).not.toHaveClass("sr-only");
     expect(document.activeElement).toBe(alert);
+    expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
+    expect(
+      screen.queryByText(/No requested booking-policy exception requests/i),
+    ).not.toBeInTheDocument();
     expect(scrollIntoView).toHaveBeenCalledWith({
       behavior: "smooth",
       block: "center",
     });
+  });
+
+  it("retries the current filter from the load-failure alert", async () => {
+    let queueLoads = 0;
+    fetchMock.mockImplementation(async (input: unknown) => {
+      if (String(input).includes("/api/admin/booking-exception-requests?")) {
+        queueLoads += 1;
+        return queueLoads === 1
+          ? jsonResponse({ error: "Queue service unavailable" }, 503)
+          : jsonResponse({ data: [queueItem()], page: 1, pageSize: 100, total: 1 });
+      }
+      return jsonResponse({ proposedGuests: [] });
+    });
+
+    render(<PolicyExceptionRequestsPanel />);
+    fireEvent.click(await screen.findByRole("button", { name: "Try again" }));
+
+    expect(await screen.findByText("Ada Lovelace")).toBeInTheDocument();
+    expect(queueLoads).toBe(2);
+    expect(
+      fetchMock.mock.calls
+        .filter(([input]) =>
+          String(input).includes("/api/admin/booking-exception-requests?"),
+        )
+        .every(([input]) => String(input).includes("status=REQUESTED")),
+    ).toBe(true);
+    const alert = document.getElementById("policy-exception-error");
+    expect(alert).toBeEmptyDOMElement();
+    expect(alert).toHaveClass("sr-only");
+  });
+
+  it("does not show the previous filter's rows or a false empty state when a filter load fails", async () => {
+    fetchMock.mockImplementation(async (input: unknown) => {
+      const url = String(input);
+      if (url.includes("status=APPROVED")) {
+        return jsonResponse({ error: "Approved queue unavailable" }, 503);
+      }
+      if (url.includes("/api/admin/booking-exception-requests?")) {
+        return jsonResponse({ data: [queueItem()], page: 1, pageSize: 100, total: 1 });
+      }
+      return jsonResponse({ proposedGuests: [] });
+    });
+
+    render(<PolicyExceptionRequestsPanel />);
+    expect(await screen.findByText("Ada Lovelace")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Approved" }));
+
+    expect(await screen.findByText("Approved queue unavailable")).toBeInTheDocument();
+    expect(screen.queryByText("Ada Lovelace")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/No approved booking-policy exception requests/i),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
+  });
+
+  it("visually collapses the empty permanent alert after a successful load", async () => {
+    render(<PolicyExceptionRequestsPanel />);
+    await screen.findByRole("button", { name: /Decide this request/i });
+
+    const alert = document.getElementById("policy-exception-error");
+    expect(alert).toBeEmptyDOMElement();
+    expect(alert).toHaveClass("sr-only");
   });
 
   it("focuses a decision failure without discarding the open decision draft", async () => {
