@@ -657,18 +657,20 @@ Future reviews and issues should cite this file when proposing changes.
   shared-slot affordance. A DOUBLE
   holding a second occupant
   cannot be retyped to a non-double until that occupant is removed. Whenever a
-  shared double loses its primary — a board delete (#1743), a board move of the
-  primary onto another bed, or a cross-booking cancellation / reconcile prune
+  shared double loses its primary — a reviewed removal (#2594), a board move of
+  the primary onto another bed, or a cross-booking cancellation / reconcile prune
   (#1750) — the surviving partner is **auto-promoted** to primary on the vacated
-  bed-night atomically with the removal on transactional paths, each with its own audit entry
-  (`BED_ALLOCATION_PARTNER_PROMOTED`) because the partner may belong to a
-  different booking (sharing eligibility is member-level). The one exception is
-  **range assignment** (#2251), which can vacate up to 366 bed-nights in a single
-  transaction: it records **one batched
+  bed-night atomically with the removal on transactional paths. Single-row paths
+  write one `BED_ALLOCATION_PARTNER_PROMOTED` audit per promotion because the
+  partner may belong to a different booking (sharing eligibility is
+  member-level). Two bulk paths batch that audit: **range assignment** (#2251),
+  which can vacate up to 366
+  bed-nights, and **reviewed removal** (#2594), which can span a booking or the
+  board's 31-night lodge window. Each records **one batched
   `BED_ALLOCATION_PARTNERS_PROMOTED`** entry instead, targeted at the booking
-  whose range assignment caused the promotions and listing each promotion
+  anchoring the operation when one exists and listing each promotion
   (`{allocationId, bookingId, bookingGuestId, bedId, stayDate}`) up to
-  `MAX_AUDITED_RANGE_PARTNER_PROMOTIONS` (50, the audit sanitiser's array limit),
+  its 50-identity bound (the audit sanitiser's array limit),
   with the exact `promotedCount` and a `promotionsTruncated` flag alongside — so
   the promoted partner's own booking is still named per promotion, and the audit
   rows written inside that transaction stay bounded independently of the range
@@ -680,10 +682,10 @@ Future reviews and issues should cite this file when proposing changes.
   therefore never left dead-ended behind the orphaned-second-occupant guard in
   `resolveSecondOccupant`, and re-pairing follows the normal sharing rules (in
   particular the promoted primary's booking must hold capacity before a new
-  partner may join). The two atomicity shapes differ by path: the board
-  delete/move helpers self-wrap their read + write + promote in a transaction,
-  while the lifecycle prune captures-before / flips-after on the caller's own
-  client. Reconcile is usually already inside a transaction, but a few callers
+  partner may join). The reviewed-removal and board-move services self-wrap
+  their read + write + promote in a transaction, while the lifecycle prune
+  captures-before / flips-after on the caller's own client. Reconcile is
+  usually already inside a transaction, but a few callers
   reconcile on the bare `prisma` singleton (e.g. `cron-complete-bookings`, the
   confirm-pending-guests route); on those a crash between the delete and the flip
   regresses to the pre-#1750 state — a recoverable orphaned second occupant,
@@ -881,16 +883,17 @@ Future reviews and issues should cite this file when proposing changes.
   wider than the lodge-scoped read the officer was shown — an anomalous row of
   the booking in another lodge's room is neither displayed nor confirmed.
 - **The requested-room lock is two-way, and nothing pretends otherwise
-  (#776, #2252):** no un-approve action exists and none is invented, but two
-  ordinary paths take a booking's last approved row away and re-open the
+  (#776, #2252, #2594):** no un-approve action exists and none is invented, but
+  two ordinary paths can take a booking's last approved row away and re-open the
   member's editor — a board MOVE re-drafts the row it updates (the upsert's
-  update branch clears `approvedAt`/`approvedByMemberId`), and
-  `deleteBedAllocation` removes it. The in-booking panel therefore warns before
-  removing the last approved row rather than describing the lock as permanent —
-  and that warning counts the booking's approved nights **booking-wide**
-  (`countApprovedBedAllocationNights`), never just the 31-night page on screen,
-  because a page-scoped count claims a re-open that a longer stay's other pages
-  disprove.
+  update branch clears `approvedAt`/`approvedByMemberId`), and reviewed removal
+  deletes it. The removal preview computes `reopenedBookings` from every approved
+  row on each affected booking, never only the 31-night page on screen, and the
+  shared dialog names that consequence before apply. Member requested-room
+  writes take global `lock(1)`, lock and re-read the booking row, then use a
+  guarded update whose predicate still says no approved allocation exists; an
+  approval or removal that wins first therefore changes the authoritative answer
+  rather than being crossed by a stale room-request write.
   The same three paths (single-night/drag placements, `source: "AUTO"`
   suggestions, and move re-drafts) are why draft rows persist under #2251's
   auto-approve, and why a confirmation affordance stays meaningful.
@@ -915,6 +918,36 @@ Future reviews and issues should cite this file when proposing changes.
   change bucket-to-board placement,
   whose existing bulk path continues to report and skip individual conflicting
   nights while placing the rest.
+- **Destructive allocation removal is preview-bound and never replans
+  (#2594):** every UI entry point uses
+  `POST`/`PUT /api/admin/bed-allocation/allocations/removal`; the old direct
+  `DELETE /api/admin/bed-allocation/allocations/[id]` route is retired. Preview
+  needs `bookings:view`, writes nothing, and accepts exactly one of four scopes:
+  one anchored allocation, one guest on one booking, one whole booking, or one
+  lodge's half-open visible window of at most 31 nights. Guest and booking scope
+  include off-screen rows by design; window scope never crosses its lodge or
+  visible dates. Category selection is a non-empty subset of three mutually
+  exclusive classifications: unapproved `AUTO`, unapproved `MANUAL`, and any
+  approved row regardless of source.
+
+  The `v1:<sha256>` preview digest includes canonical scope, sorted categories,
+  every matching row's mutable identity, every approved row on the affected
+  bookings, and every causal shared-double sibling. Apply needs `bookings:edit`,
+  resolves the immutable booking lodge plus the reviewed anchor lodge, then
+  takes global `lock(1)` → sorted lodge locks → sorted allocation-row locks
+  before an authoritative re-preview. ID- and bed-night-expanded queries use
+  sorted 10,000-value chunks under that same transaction, below PostgreSQL's
+  bind-parameter ceiling without weakening all-or-nothing rollback. A matching or causal row in any third
+  lodge is refused without mutation. If an aggregate booking/person preview's
+  opening row disappeared, the refreshed preview re-anchors to the lowest-id
+  matching survivor so a subsequent reviewed apply is reachable.
+  A missing/moved anchor, changed category membership, new approval, promotion
+  change, or any other digest drift returns 409 with a refreshed preview and
+  writes nothing. A matching apply deletes the complete reviewed set, promotes
+  any stranded shared-double second occupants, and writes one bounded operation
+  audit plus one bounded promotion audit in the same transaction. It never calls
+  board or lifecycle auto-allocation: no replacement row appears until an admin
+  explicitly places it or runs auto-allocation later.
 - **A range assignment writes all or nothing, and records itself once (#2251):**
   `assignBedRange` scans, writes and audits inside one transaction. If any
   requested night is blocked, NOTHING is written and the caller receives a

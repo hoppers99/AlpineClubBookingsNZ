@@ -26,6 +26,91 @@ function expectInOrder(text: string, tokens: readonly string[]): void {
 }
 
 describe("bed allocation lock topology", () => {
+  it("uses immutable sorted lodge keys and one lodge-narrowed selector for approval row locks and update", () => {
+    const text = source("src/lib/admin-bed-allocation.ts");
+    const selector = between(
+      text,
+      "function buildApproveBedAllocationsWhere",
+      "export async function approveBedAllocationsWithLocksHeld",
+    );
+    expect(selector).toContain(
+      "if (input.lodgeId) where.room = lodgeNullTolerantScope(input.lodgeId)",
+    );
+    const approval = text.slice(
+      text.indexOf("export async function approveBedAllocations(input"),
+    );
+    expectInOrder(approval, [
+      "const lockWhere = buildApproveBedAllocationsWhere(input)",
+      "await prisma.lodge.findMany",
+      'orderBy: { id: "asc" }',
+      "prisma.$transaction",
+      "pg_advisory_xact_lock(1)",
+      "acquireLodgeCapacityLock",
+      "where: lockWhere",
+      "ORDER BY \"id\"",
+      "FOR UPDATE",
+      "approveBedAllocationsWithLocksHeld",
+      "createAuditLog",
+    ]);
+  });
+
+  it("serializes reviewed removal global then actual sorted lodges then rows", () => {
+    const text = source("src/lib/bed-allocation-removal.ts");
+    const apply = text.slice(
+      text.indexOf("export async function applyBedAllocationRemoval"),
+    );
+    expectInOrder(apply, [
+      "resolveImmutableLodgeKeys",
+      "prisma.$transaction",
+      "pg_advisory_xact_lock(1)",
+      "acquireLodgeCapacityLock",
+      "ORDER BY \"id\"",
+      "FOR UPDATE",
+      "deleteMany",
+      "updateMany",
+      "BED_ALLOCATION_REMOVAL_APPLIED",
+      "BED_ALLOCATION_PARTNERS_PROMOTED",
+    ]);
+    expect(text).toContain(
+      "for (const primaryKeyChunk of chunkValues(primaryKeys))",
+    );
+    for (const token of [
+      "for (const lockIdChunk of lockIds)",
+      "Prisma.join(lockIdChunk)",
+      "chunkBedAllocationRemovalIds(selectedIds)",
+      "chunkBedAllocationRemovalIds(siblingIds)",
+    ]) {
+      expect(apply).toContain(token);
+    }
+  });
+
+  it("keeps the reviewed-removal PostgreSQL races on the guarded CI harness and production writer entrypoints", () => {
+    const harness = source(
+      "src/lib/__tests__/concurrency-lock-races.realdb.test.ts",
+    );
+    expect(harness).toContain(
+      'import "./bed-allocation-removal-races.realdb.test"',
+    );
+
+    const races = source(
+      "src/lib/__tests__/bed-allocation-removal-races.realdb.test.ts",
+    );
+    expect(races).toContain(
+      'process.env.RUN_CONCURRENCY_RACE_TESTS === "1"',
+    );
+    expect(races).toContain("CONCURRENCY_RACE_DATABASE_URL");
+    expect(races).toContain("concurrency_race_1881");
+    for (const writer of [
+      "applyBedAllocationRemoval",
+      "moveBedAllocationsSameDate",
+      "runAutoBedAllocation",
+      "reconcileBedAllocationsForBooking",
+      "cancelBooking",
+    ]) {
+      expect(races).toContain(writer);
+    }
+  });
+
   it("rebuilds the board auto-allocation plan only after global then lodge", () => {
     const autoRun = between(
       source("src/lib/admin-bed-allocation.ts"),

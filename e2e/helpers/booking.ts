@@ -53,6 +53,18 @@ export async function completeMemberDetailsGateIfShown(page: Page): Promise<void
   const dialog = page.getByRole("dialog");
 
   const saveAndContinue = dialog.getByRole("button", { name: "Save and continue" });
+  const confirmCorrect = dialog.getByRole("button", {
+    name: "Confirm details are correct",
+  });
+  // The title and the current step do not mount in the same commit. Sampling
+  // Save immediately after the title can therefore see neither step, skip the
+  // profile form, and wait until the whole test times out for Confirm. Wait for
+  // either legitimate step action before deciding which branch is active.
+  await dialog
+    .getByRole("button", {
+      name: /Save and continue|Confirm details are correct/,
+    })
+    .waitFor({ state: "visible", timeout: 5_000 });
   if (await saveAndContinue.isVisible().catch(() => false)) {
     const dob = dialog.getByLabel(/date of birth/i);
     if ((await dob.inputValue().catch(() => "")) === "") {
@@ -81,9 +93,6 @@ export async function completeMemberDetailsGateIfShown(page: Page): Promise<void
     await saveAndContinue.click();
   }
 
-  const confirmCorrect = dialog.getByRole("button", {
-    name: "Confirm details are correct",
-  });
   await confirmCorrect.waitFor({ state: "visible" });
   await confirmCorrect.click();
 

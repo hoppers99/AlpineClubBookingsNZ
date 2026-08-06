@@ -18,9 +18,10 @@ same inputs, but it is a practical heuristic rather than a promise of the one
 globally optimal arrangement across every booking.
 
 Bed allocation is gated by the **`bedAllocation`** module — when it is on, each
-lodge's capacity is its active bed count. Editing needs **bookings edit**
-access; a view-only bookings role can browse the board but not move, allocate,
-approve, or save. Dates are NZ date-only lodge nights, and the board shows up to
+lodge's capacity is its active bed count. Reading the board and a removal
+preview needs **bookings view** access; moving, allocating, approving, saving,
+or applying a removal needs **bookings edit** access. Dates are NZ date-only
+lodge nights, and the board shows up to
 31 nights at a time — use the **‹** and **›** arrows to step the window a
 calendar month. That 31-night limit is only how much of the board you can *see*:
 **Assign range…** places a guest in a bed across a stay of any length (up to a
@@ -35,7 +36,8 @@ year in one go).
 - To choose whether that lodge should favour booking cohesion, room/bed
   continuity, requested rooms, or direct-family cohesion when those aims
   conflict.
-- To move a guest from one bed to another, or free a bed by unallocating.
+- To move a guest from one bed to another, or review and remove allocations by
+  night, person, booking, or the visible lodge window.
 - To check which beds are free on a given night.
 
 ## Step-by-step
@@ -153,13 +155,57 @@ are taken, never by whom.
    ![Bed Allocation board while Dave Davis is dragged across date columns: the preview says the destination is Bunk Room A bed A4 and that the original lodge nights will be kept](../images/admin/admin-bed-allocation-snap-preview.png)
 
 4. To free a bed, drag the chip back to the pool or use **Remove allocation**.
-   This removes only the chip you dragged, even when it is the first visible
-   chip; its preview therefore names that one original night, not every proxy
-   night. Pressing **Escape** during a pointer or keyboard drag cancels it
-   without sending a request.
+   Either action opens the reviewed-removal dialog for that one original night;
+   dropping the first visible proxy never silently includes its other nights.
+   Nothing is removed until you preview the exact rows and choose **Remove
+   reviewed allocations**. Pressing **Escape** during a pointer or keyboard
+   drag cancels it without sending a request.
 5. In **Single-night drag mode**, hovering an unbooked date says that no
    allocation will be made. Dropping there is refused locally and sends no
    request.
+
+### Remove or reset allocations safely
+
+Every board removal uses the same review dialog. Open it from a chip's **Remove
+allocation** action, by dragging a chip back to the pool, or with **Reset
+allocations…** above the board.
+
+1. Choose the scope:
+   - **This night only** removes the anchored allocation row.
+   - **This person on this booking** includes that person's matching nights on
+     the whole booking, including nights outside the 31-night page.
+   - **Whole booking** includes matching rows for every person and night on the
+     booking, including off-screen rows.
+   - **Selected lodge and visible window only** is available on the board and
+     never reaches another lodge or a night outside the displayed Date In/Date
+     Out window. **Reset allocations…** starts here. The in-booking card does
+     not offer this lodge-window scope.
+2. Choose at least one mutually exclusive category. **Auto draft** means an
+   unapproved automatic suggestion; **Manual draft** means an unapproved manual
+   placement; **Approved** means any approved placement, however it was created.
+   You can select more than one category in one review.
+3. Click **Preview removal**. The preview lists the exact category counts,
+   affected bookings and NZ lodge nights, any shared-double occupants who will
+   be promoted to primary, and every booking whose final approved bed will be
+   removed. In that last case the member's requested-room editor re-opens.
+
+   ![Bed Allocation Reset allocations dialog showing an Auto-draft preview with reviewed counts, the affected booking and night, and zero shared-double promotions](../images/admin/admin-bed-allocation-reset-preview.png)
+
+4. Review the result, then click **Remove reviewed allocations**. If any
+   relevant row changed, moved, was approved, or disappeared after the preview,
+   the apply is refused and nothing is removed. When the server can return the
+   new state, the dialog shows that refreshed preview to review again; a
+   booking/person preview whose opening row disappeared re-anchors to a
+   surviving matching row. A transient database conflict that cannot carry a
+   refreshed snapshot clears the old preview and asks you to click **Preview
+   removal** again instead of presenting stale counts as refreshed.
+
+The operation is all-or-nothing. It removes the reviewed rows, promotes a
+surviving shared-double second occupant when its primary is removed, and writes
+the audit records together. It deliberately does **not** run auto-allocation or
+choose replacement beds: the freed guest nights return to the
+awaiting-allocation pool until an admin places them or explicitly clicks **Run
+Auto Allocation** later.
 
 ### Assign a guest to one bed for a long stay
 
@@ -232,11 +278,17 @@ of nights rather than a line per night.
 - **Assign…** opens the same range dialog the board uses, prefilled with that
   guest's own stay. Everything above about ranges applies unchanged, including
   the warning that assigning a range confirms those beds straight away.
-- **Remove** takes a run of nights off a bed. If those are the last confirmed
-  nights on the booking, the panel warns you first: removing them re-opens the
-  member's room request for editing. The room-request lock is not one-way. That
-  check counts the whole booking, not just the page on screen, so a long stay
-  with confirmed nights on another page does not get the warning by mistake.
+- **Remove** opens the same reviewed-removal dialog as the board, preselected
+  for one night and the run's exact Auto draft, Manual draft, or Approved
+  category. You may widen it to this person or the whole booking; those scopes
+  deliberately include matching off-screen nights. The preview counts approved
+  rows across the whole booking and names the booking when the removal will
+  re-open the member's room request, so a long stay with approved nights on
+  another page does not get a false warning. The room-request lock is not
+  one-way.
+
+  ![Booking detail Bed allocation card Remove dialog showing the previewed one-night scope, category counts, and consequences before apply](../images/admin/admin-booking-bed-allocation-removal.png)
+
 - **Confirm draft beds** approves every draft bed night on **this booking and no
   other**, at the lodge whose beds the card is showing — it can never confirm a
   bed you were not shown. It does not place anybody — if some nights still have nobody on a bed,
@@ -273,8 +325,9 @@ Some things the card deliberately will not pretend about:
   one of this booking's placed nights is somehow sitting on a held bed — which
   the app itself never writes — that run is marked held rather than left
   looking clean.
-- **Removing a run is one night at a time**, so if it stops half way the message
-  tells you exactly how many nights actually went.
+- **Removing is reviewed and atomic**, so it either applies the exact previewed
+  set or removes nothing. A stale preview is refreshed in place for another
+  review.
 
 Confirming from a booking records a **BED_ALLOCATION_APPROVED** entry against
 that booking, so the booking's own **Audit log** link finds it.
@@ -293,6 +346,8 @@ that booking, so the booking's own **Audit log** link finds it.
 | Edit / Save / Cancel | Stage, persist, or discard this lodge's allocation preferences | — | Needs bookings edit; Save is dirty-gated |
 | Run Auto Allocation | Apply suggested placements | — | Needs auto-allocation on and suggestions available |
 | Approve Visible | Approve the visible draft allocations | — | Disabled when nothing is unapproved |
+| Reset allocations… | Review removal of selected categories in this lodge's visible window | — | Requires a preview; never includes off-screen nights and never runs automatic allocation afterwards |
+| Remove allocation / Remove | Review removal from one chip or an in-booking run | — | Starts with one night; may widen to the person or whole booking, including off-screen rows; apply is atomic and needs bookings edit |
 | Select bed / Allocate | Place a guest on a chosen bed | — | Needs bookings edit access |
 | Refresh | Reload the board | — | — |
 | Bed allocation card (on a booking) | Assign, remove and confirm this booking's beds without leaving it | — | Admin-only; needs bookings edit access; long stays are paged 31 nights at a time |
@@ -317,13 +372,16 @@ you place them yourself.
 
 | Symptom | Likely cause | Fix |
 | --- | --- | --- |
-| A view-only notice, drag disabled | Your admin role can view but not edit bed allocation | Ask a full admin for bookings edit access |
+| A view-only notice, drag disabled | Your admin role can inspect allocation state and removal previews but cannot write | Use **Remove**, **Remove allocation**, or **Reset allocations…** to review consequences; ask a full admin for bookings edit access to apply a removal, move, assign, approve, or save |
 | Bed Allocation is missing from the sidebar | The `bedAllocation` module is off | Enable it under **Admin → Setup → Modules** — see [`CONFIGURATION.md`](../../CONFIGURATION.md#module-controls-and-admin-modules) |
 | **Run Auto Allocation** is disabled | Auto-allocation is off for this lodge, or there are no suggestions | Click **Edit**, tick **Auto allocation enabled**, then **Save**; the board reloads automatically |
 | A preference is marked **Disabled** | It is not part of this lodge's saved comparison order | Click **Edit**, then **Enable**; use the arrows or drag to place it where you want |
 | Saving preferences succeeds but the board says it could not reload | The settings write completed, but recomputing the board failed | Use **Try again** on the board. Do not repeat the save unless you intend another settings write |
 | "No rooms available" / "No active beds" | Rooms and beds are not set up | Configure them in **Rooms & Beds** (via [Bookings Setup](bookings-setup.md)) |
 | "That bed was just taken … refreshing" | Someone else allocated that bed-night at the same moment | The board reloads automatically; pick another bed |
+| "Bed allocations changed after the preview" | A row was moved, approved, removed, or otherwise changed while you were reviewing | Read the refreshed counts and consequences, then apply that new preview if it is still what you intend. If the dialog says the preview is no longer current instead, click **Preview removal** to load a new one. |
+| The removal preview finds no allocations | The selected scope has no rows in the selected categories | Change the scope or categories; nothing can be applied from a zero-match preview |
+| Removed guests remain unallocated | Reviewed removal never runs the planner automatically | Place them by hand or explicitly click **Run Auto Allocation** when you are ready |
 | A focused booking is "not on the board" | The deep-linked booking is outside the date range or was cancelled | Adjust Date In / Date Out to bring it into view |
 | "The board window is out of range" | You typed more than 31 nights, or a Date Out before Date In | Narrow the dates, or use ‹ › to step a month at a time |
 | "Showing part of this stay" | You followed a link for a booking longer than the board window | Step forward with › to see the rest of the stay |

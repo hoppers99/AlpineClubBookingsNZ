@@ -86,6 +86,10 @@ import {
 import { useSyncedScroll } from "./_components/use-synced-scroll";
 import { AllocationPreferencesSection } from "./_components/allocation-preferences-section";
 import { useScopedDashboard } from "./_components/use-scoped-dashboard";
+import {
+  bedAllocationRemovalCategoryForAnchor,
+  useBedAllocationRemovalDialog,
+} from "@/components/admin/bed-allocation-removal-dialog";
 
 // #2286: a bulk drop can now be refused for two different reasons on different
 // nights, and they need different fixes — "someone else is in that bed" (clear
@@ -232,31 +236,6 @@ function addOptimisticAllocations(
   };
 }
 
-function applyOptimisticRemove(
-  payload: DashboardPayload,
-  allocation: DashboardAllocation,
-): DashboardPayload {
-  const memberName =
-    payload.bookings.find((booking) => booking.id === allocation.bookingId)
-      ?.memberName ?? "";
-
-  return {
-    ...payload,
-    allocations: payload.allocations.filter((item) => item.id !== allocation.id),
-    unallocatedGuestNights: [
-      ...payload.unallocatedGuestNights,
-      {
-        bookingId: allocation.bookingId,
-        bookingGuestId: allocation.bookingGuestId,
-        guestName: allocation.guestName,
-        guestAgeTier: allocation.guestAgeTier,
-        memberName,
-        stayDate: allocation.stayDate,
-      },
-    ],
-  };
-}
-
 export default function AdminBedAllocationPage() {
   const searchParams = useSearchParams();
   const requestedFrom = searchParams.get("from");
@@ -359,6 +338,15 @@ export default function AdminBedAllocationPage() {
   const dashboardError = scopedDashboard.error;
   const loadDashboard = scopedDashboard.reload;
   const setPayload = scopedDashboard.setValue;
+  const removalDialog = useBedAllocationRemovalDialog({
+    canEdit: canEditBookings,
+    onApplied: async ({ removedRowCount }) => {
+      toast.success(
+        `${removedRowCount} reviewed allocation${removedRowCount === 1 ? "" : "s"} removed; no automatic allocation was run`,
+      );
+      await loadDashboard();
+    },
+  });
 
   useEffect(() => {
     if (dashboardError) toast.error(dashboardError);
@@ -877,35 +865,41 @@ export default function AdminBedAllocationPage() {
     void loadDashboard();
   }
 
-  async function removeAllocation(allocation: DashboardAllocation) {
-    if (!canEditBookings) return;
+  function removeAllocation(allocation: DashboardAllocation) {
+    if (!lodgeId) return;
+    removalDialog.openRemovalDialog({
+      allocations: [
+        {
+          allocationId: allocation.id,
+          bookingId: allocation.bookingId,
+          bookingGuestId: allocation.bookingGuestId,
+          lodgeId,
+          stayDate: allocation.stayDate,
+        },
+      ],
+      lodgeId,
+      lodgeName: lodges.find((lodge) => lodge.id === lodgeId)?.name,
+      window: { from: fromDate, to: toDate },
+      guestName: allocation.guestName,
+      initialScope: "ALLOCATION",
+      initialCategories: [
+        bedAllocationRemovalCategoryForAnchor(
+          allocation.source,
+          allocation.approvedAt,
+        ),
+      ],
+    });
+  }
 
-    if (!payload) return;
-
-    const snapshot = payload;
-    setPayload(applyOptimisticRemove(payload, allocation));
-
-    await withPending(`allocation:${allocation.id}`, async () => {
-      try {
-        const response = await fetch(
-          `/api/admin/bed-allocation/allocations/${allocation.id}`,
-          { method: "DELETE" },
-        );
-
-        if (!response.ok) {
-          setPayload(snapshot);
-          toast.error(await readApiError(response, "Failed to remove allocation"));
-          await loadDashboard();
-          return;
-        }
-
-        toast.success("Allocation removed");
-        await loadDashboard();
-      } catch {
-        setPayload(snapshot);
-        toast.error("Failed to remove allocation");
-        await loadDashboard();
-      }
+  function openWindowReset() {
+    if (!lodgeId) return;
+    removalDialog.openRemovalDialog({
+      allocations: [],
+      lodgeId,
+      lodgeName: lodges.find((lodge) => lodge.id === lodgeId)?.name,
+      window: { from: fromDate, to: toDate },
+      initialScope: "WINDOW",
+      initialCategories: [],
     });
   }
 
@@ -964,7 +958,7 @@ export default function AdminBedAllocationPage() {
       if (!allocation) return;
 
       if (overData.type === "bucket") {
-        void removeAllocation(allocation);
+        removeAllocation(allocation);
       } else if (overData.type === "cell") {
         void moveAllocation(allocation, {
           bedId: overData.bedId,
@@ -1390,6 +1384,13 @@ export default function AdminBedAllocationPage() {
                   <Check className="h-4 w-4" />
                   Approve Visible
                 </ViewOnlyActionButton>
+                <Button
+                  variant="destructive"
+                  onClick={openWindowReset}
+                  disabled={!lodgeId}
+                >
+                  Reset allocations…
+                </Button>
                 <Badge variant="outline">
                   {payload.suggestedAllocations.length} suggested
                 </Badge>
@@ -1472,7 +1473,7 @@ export default function AdminBedAllocationPage() {
                       stayDate: allocation.stayDate,
                     })
                   }
-                  onRemove={(allocation) => void removeAllocation(allocation)}
+                  onRemove={removeAllocation}
                   onAssignRange={openRangeForAllocation}
                   rangeTint={rangeTint}
                   custodianHoldByBedAndDate={custodianHoldByBedAndDate}
@@ -1512,6 +1513,7 @@ export default function AdminBedAllocationPage() {
         canEdit={canEditBookings}
         onAssigned={handleRangeAssigned}
       />
+      {removalDialog.dialog}
       </div>
     </div>
   );

@@ -89,7 +89,14 @@ let ibSettingsBefore:
   | undefined;
 const createdBookingIds: string[] = [];
 const createdLinks: Array<{ memberId: string; linkId: string }> = [];
-const createdAllocationIds: string[] = [];
+type CreatedAllocation = {
+  allocationId: string;
+  bookingId: string;
+  bookingGuestId: string;
+  lodgeId: string;
+  stayDate: string;
+};
+const createdAllocations: CreatedAllocation[] = [];
 
 type Member = { id: string; firstName: string; lastName: string; email: string };
 const members: Record<string, Member> = {};
@@ -179,7 +186,23 @@ async function allocate(bookingGuestId: string, bedId: string, stayDate: string)
     `allocate ${bookingGuestId} -> ${bedId} @ ${stayDate} (${res.status()}): ${await res.text()}`,
   ).toBeTruthy();
   const body = await res.json();
-  createdAllocationIds.push(body.allocation.id);
+  const nextNight = new Date(`${stayDate}T00:00:00.000Z`);
+  nextNight.setUTCDate(nextNight.getUTCDate() + 1);
+  const board = await getBoard(stayDate, nextNight.toISOString().slice(0, 10));
+  const booking = board.bookings.find(
+    (candidate: { id: string }) => candidate.id === body.allocation.bookingId,
+  );
+  expect(
+    booking,
+    `allocation booking ${body.allocation.bookingId} missing from board`,
+  ).toBeTruthy();
+  createdAllocations.push({
+    allocationId: body.allocation.id,
+    bookingId: body.allocation.bookingId,
+    bookingGuestId: body.allocation.bookingGuestId,
+    lodgeId: bedAllocationSettingsBefore!.lodgeId,
+    stayDate,
+  });
   return body.allocation as {
     id: string;
     bookingGuestId: string;
@@ -190,10 +213,39 @@ async function allocate(bookingGuestId: string, bedId: string, stayDate: string)
 }
 
 async function deleteAllocation(id: string) {
-  const res = await api().delete(`/api/admin/bed-allocation/allocations/${id}`);
-  expect(res.ok(), `delete allocation ${id} (${res.status()})`).toBeTruthy();
-  const index = createdAllocationIds.indexOf(id);
-  if (index >= 0) createdAllocationIds.splice(index, 1);
+  const anchor = createdAllocations.find(
+    (allocation) => allocation.allocationId === id,
+  );
+  expect(anchor, `tracked allocation anchor ${id} missing`).toBeTruthy();
+  const scope = { type: "ALLOCATION", ...anchor };
+  const preview = await api().post(
+    "/api/admin/bed-allocation/allocations/removal",
+    { data: { scope, categories: ["MANUAL_DRAFT"] } },
+  );
+  const previewBody = await preview.text();
+  expect(
+    preview.ok(),
+    `preview allocation removal ${id} (${preview.status()}): ${previewBody}`,
+  ).toBeTruthy();
+  const reviewed = JSON.parse(previewBody);
+  const apply = await api().put(
+    "/api/admin/bed-allocation/allocations/removal",
+    {
+      data: {
+        scope,
+        categories: ["MANUAL_DRAFT"],
+        previewDigest: reviewed.digest,
+      },
+    },
+  );
+  expect(
+    apply.ok(),
+    `apply allocation removal ${id} (${apply.status()})`,
+  ).toBeTruthy();
+  const index = createdAllocations.findIndex(
+    (allocation) => allocation.allocationId === id,
+  );
+  if (index >= 0) createdAllocations.splice(index, 1);
 }
 
 function memberGuest(member: Member) {
@@ -407,10 +459,8 @@ test.afterAll(async () => {
   // booking BEFORE restoring the bed type: a DOUBLE with a second-occupant row
   // cannot be retyped.
   try {
-    for (const id of [...createdAllocationIds]) {
-      await api()
-        .delete(`/api/admin/bed-allocation/allocations/${id}`)
-        .catch(() => undefined);
+    for (const allocation of [...createdAllocations]) {
+      await deleteAllocation(allocation.allocationId).catch(() => undefined);
     }
     // Holding bookings are CONFIRMED, so they cannot be hard-deleted (only
     // DRAFTs can); cancel them instead — nothing was paid, so the credit-method
