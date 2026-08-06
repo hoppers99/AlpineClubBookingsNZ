@@ -360,13 +360,17 @@ export async function claimHostingCoverageOwnerNotification(
 }
 
 /**
- * Freeze provider input only while this exact delivery claim is still current.
+ * Renew this exact delivery claim just in time, then freeze provider input only
+ * while the renewed claim is still current.
  *
- * This is the final database read before transport. A resolved incident, a moved
- * state, an expired/reclaimed lease, or a claim already completed by somebody else
- * returns null, so the stale worker performs no provider call. The incident evidence
- * supplies the affected nights; re-reading the booking's live review here could pair
- * this claim with a different state that was written after reconciliation.
+ * Renewal is a guarded `updateMany`, not an expiry read followed by a write. A
+ * worker holding an expired-but-unreclaimed token can therefore extend its lease
+ * and send; if a successor races that renewal, both contend on the incident row and
+ * only the exact token that wins remains current. A resolved incident, moved state,
+ * replaced token, or claim already completed by somebody else returns null, so the
+ * stale worker performs no provider call. The final exact read freezes the incident
+ * evidence and recipient after renewal; re-reading the booking's live review here
+ * could pair this claim with a different state written after reconciliation.
  *
  * The provider call deliberately remains outside a transaction. Consequently a
  * state can still change after this final token read and before transport begins;
@@ -378,9 +382,23 @@ export async function loadHostingCoverageOwnerNotificationDelivery(
   db: Pick<PrismaClient, "hostingCoverageIncident">,
   now: Date = new Date(),
 ): Promise<HostingCoverageOwnerNotificationDelivery | null> {
-  const currentFrom = new Date(
-    now.getTime() - HOSTING_COVERAGE_OWNER_NOTIFICATION_LEASE_MS,
-  );
+  const renewed = await db.hostingCoverageIncident.updateMany({
+    where: {
+      id: params.incidentId,
+      bookingId: params.bookingId,
+      resolvedAt: null,
+      stateKey: params.stateKey,
+      ownerNotificationClaimStateKey: params.stateKey,
+      ownerNotificationClaimToken: params.claimToken,
+      OR: [
+        { notifiedStateKey: null },
+        { notifiedStateKey: { not: params.stateKey } },
+      ],
+    },
+    data: { ownerNotificationClaimedAt: now },
+  });
+  if (renewed.count !== 1) return null;
+
   const incident = await db.hostingCoverageIncident.findFirst({
     where: {
       id: params.incidentId,
@@ -389,9 +407,11 @@ export async function loadHostingCoverageOwnerNotificationDelivery(
       stateKey: params.stateKey,
       ownerNotificationClaimStateKey: params.stateKey,
       ownerNotificationClaimToken: params.claimToken,
-      // Claim acquisition treats only timestamps strictly before this boundary
-      // as stale, so the final delivery fence keeps the exact boundary current.
-      ownerNotificationClaimedAt: { gte: currentFrom },
+      ownerNotificationClaimedAt: now,
+      OR: [
+        { notifiedStateKey: null },
+        { notifiedStateKey: { not: params.stateKey } },
+      ],
     },
     select: {
       evidence: true,

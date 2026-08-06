@@ -138,7 +138,6 @@ describe("hosting coverage drain claim fences (#2596)", () => {
   it.each([
     ["resolved incident", null],
     ["replaced state or token", null],
-    ["expired notification lease", null],
   ])("calls no provider for a stale %s claim", async (_label, delivery) => {
     mocks.loadDependents.mockResolvedValue(["booking-1"]);
     mocks.reconcile.mockResolvedValue({

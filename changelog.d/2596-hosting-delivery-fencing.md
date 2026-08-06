@@ -2,8 +2,9 @@
   (#2596).** Re-evaluation and owner-email delivery now use short, opaque claims;
   only the worker holding the current claim can finish or release it. If a worker
   crashes, another can retry after the lease expires without the stale worker
-  overwriting the retry. Work is claimed one row at a time, stale notification
-  claims stop before email delivery, and a transient unreadable booking email flag
+  overwriting the retry. Work is claimed one row at a time; an exact notification
+  claimant renews just before delivery, while a replaced token stops before the
+  provider call. A transient unreadable booking email flag
   remains retryable without turning intentional suppression into a poison item.
   Delivery is at-least-once: an ambiguous crash after provider acceptance may retry
   the notice rather than silently lose it. The claim-token migration now requires

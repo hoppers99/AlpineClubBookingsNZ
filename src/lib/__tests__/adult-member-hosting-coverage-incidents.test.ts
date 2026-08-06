@@ -442,6 +442,102 @@ describe("automatic resolution (#2576 §7, §16)", () => {
   });
 });
 
+function makeNotificationDeliveryDb(
+  overrides: Partial<Record<string, unknown>> = {},
+) {
+  const row: Record<string, any> = {
+    id: "incident-1",
+    bookingId: "booking-1",
+    resolvedAt: null,
+    stateKey: "v1:a",
+    notifiedStateKey: null,
+    ownerNotificationClaimStateKey: "v1:a",
+    ownerNotificationClaimedAt: new Date("2026-07-01T11:59:00.000Z"),
+    ownerNotificationClaimToken: "notification-current",
+    evidence: { affectedNights: ["2026-07-03", "2026-07-04"] },
+    booking: {
+      id: "booking-1",
+      memberId: "owner-1",
+      lodgeId: "lodge-a",
+      checkIn: new Date("2026-07-03T00:00:00.000Z"),
+      checkOut: new Date("2026-07-05T00:00:00.000Z"),
+      member: { firstName: "Owner", email: "owner@example.test" },
+    },
+    ...overrides,
+  };
+  const matches = (where: Record<string, any>) => {
+    for (const field of [
+      "id",
+      "bookingId",
+      "stateKey",
+      "ownerNotificationClaimStateKey",
+      "ownerNotificationClaimToken",
+    ]) {
+      if (where[field] !== undefined && row[field] !== where[field]) return false;
+    }
+    if (where.resolvedAt === null && row.resolvedAt != null) return false;
+    if (
+      where.ownerNotificationClaimedAt instanceof Date &&
+      (!(row.ownerNotificationClaimedAt instanceof Date) ||
+        row.ownerNotificationClaimedAt.getTime() !==
+          where.ownerNotificationClaimedAt.getTime())
+    ) {
+      return false;
+    }
+    if (where.OR) {
+      const notificationPending = where.OR.some((branch: any) => {
+        if (branch.notifiedStateKey === null) return row.notifiedStateKey == null;
+        if (branch.notifiedStateKey?.not !== undefined) {
+          return (
+            row.notifiedStateKey != null &&
+            row.notifiedStateKey !== branch.notifiedStateKey.not
+          );
+        }
+        return false;
+      });
+      if (!notificationPending) return false;
+    }
+    if (where.AND) {
+      const claimAvailable = (where.AND[0]?.OR ?? []).some((branch: any) => {
+        if (branch.ownerNotificationClaimStateKey === null) {
+          return row.ownerNotificationClaimStateKey == null;
+        }
+        if (branch.ownerNotificationClaimStateKey?.not !== undefined) {
+          return (
+            row.ownerNotificationClaimStateKey != null &&
+            row.ownerNotificationClaimStateKey !==
+              branch.ownerNotificationClaimStateKey.not
+          );
+        }
+        if (branch.ownerNotificationClaimedAt?.lt instanceof Date) {
+          return (
+            row.ownerNotificationClaimedAt instanceof Date &&
+            row.ownerNotificationClaimedAt <
+              branch.ownerNotificationClaimedAt.lt
+          );
+        }
+        return false;
+      });
+      if (!claimAvailable) return false;
+    }
+    return true;
+  };
+  const updateMany = vi.fn(async ({ where, data }: any) => {
+    if (!matches(where)) return { count: 0 };
+    Object.assign(row, data);
+    return { count: 1 };
+  });
+  const findFirst = vi.fn(async ({ where }: any) =>
+    matches(where) ? { evidence: row.evidence, booking: row.booking } : null,
+  );
+  return {
+    row,
+    updateMany,
+    findFirst,
+    db: { hostingCoverageIncident: { updateMany, findFirst } } as any,
+  };
+}
+
 describe("the owner is told once per transition (#2576 §16)", () => {
   it("leases a fresh notification once, then stamps it only after success", async () => {
     const { db, rows } = makeIncidentDb([
@@ -585,35 +681,8 @@ describe("the owner is told once per transition (#2576 §16)", () => {
   });
 
   it("freezes incident evidence only while the exact incident, state, and token are current", async () => {
-    const row = {
-      id: "incident-1",
-      bookingId: "booking-1",
-      resolvedAt: null as Date | null,
-      stateKey: "v1:a",
-      ownerNotificationClaimStateKey: "v1:a",
-      ownerNotificationClaimToken: "notification-current",
-      evidence: { affectedNights: ["2026-07-03", "2026-07-04"] },
-      booking: {
-        id: "booking-1",
-        memberId: "owner-1",
-        lodgeId: "lodge-a",
-        checkIn: new Date("2026-07-03T00:00:00.000Z"),
-        checkOut: new Date("2026-07-05T00:00:00.000Z"),
-        member: { firstName: "Owner", email: "owner@example.test" },
-      },
-    };
-    const findFirst = vi.fn(async ({ where }: any) => {
-      const current =
-        row.id === where.id &&
-        row.bookingId === where.bookingId &&
-        row.resolvedAt == null &&
-        row.stateKey === where.stateKey &&
-        row.ownerNotificationClaimStateKey ===
-          where.ownerNotificationClaimStateKey &&
-        row.ownerNotificationClaimToken === where.ownerNotificationClaimToken;
-      return current ? { evidence: row.evidence, booking: row.booking } : null;
-    });
-    const db = { hostingCoverageIncident: { findFirst } } as any;
+    const now = new Date("2026-07-01T12:00:00.000Z");
+    const { db, row, updateMany, findFirst } = makeNotificationDeliveryDb();
     const claim = {
       bookingId: "booking-1",
       incidentId: "incident-1",
@@ -622,56 +691,73 @@ describe("the owner is told once per transition (#2576 §16)", () => {
     };
 
     await expect(
-      loadHostingCoverageOwnerNotificationDelivery(claim, db),
+      loadHostingCoverageOwnerNotificationDelivery(claim, db, now),
     ).resolves.toMatchObject({
       bookingId: "booking-1",
       recipientMemberId: "owner-1",
       uncoveredNights: "2026-07-03, 2026-07-04",
     });
+    expect(updateMany).toHaveBeenCalledWith({
+      where: {
+        id: "incident-1",
+        bookingId: "booking-1",
+        resolvedAt: null,
+        stateKey: "v1:a",
+        ownerNotificationClaimStateKey: "v1:a",
+        ownerNotificationClaimToken: "notification-current",
+        OR: [
+          { notifiedStateKey: null },
+          { notifiedStateKey: { not: "v1:a" } },
+        ],
+      },
+      data: { ownerNotificationClaimedAt: now },
+    });
+    expect(row.ownerNotificationClaimedAt).toEqual(now);
+    expect(findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          ownerNotificationClaimedAt: now,
+          ownerNotificationClaimToken: "notification-current",
+          resolvedAt: null,
+        }),
+      }),
+    );
     expect(JSON.stringify(findFirst.mock.calls[0][0].select)).not.toContain(
       "adultMemberHostingReview",
     );
 
     row.ownerNotificationClaimToken = "notification-successor";
     await expect(
-      loadHostingCoverageOwnerNotificationDelivery(claim, db),
+      loadHostingCoverageOwnerNotificationDelivery(claim, db, now),
     ).resolves.toBeNull();
+    expect(findFirst).toHaveBeenCalledTimes(1);
 
     row.ownerNotificationClaimToken = "notification-current";
     row.stateKey = "v1:b";
     await expect(
-      loadHostingCoverageOwnerNotificationDelivery(claim, db),
+      loadHostingCoverageOwnerNotificationDelivery(claim, db, now),
     ).resolves.toBeNull();
+    expect(findFirst).toHaveBeenCalledTimes(1);
 
     row.stateKey = "v1:a";
     row.resolvedAt = new Date();
     await expect(
-      loadHostingCoverageOwnerNotificationDelivery(claim, db),
+      loadHostingCoverageOwnerNotificationDelivery(claim, db, now),
     ).resolves.toBeNull();
+    expect(findFirst).toHaveBeenCalledTimes(1);
   });
 
-  it.each<[string, number, boolean]>([
-    ["fresh", HOSTING_COVERAGE_OWNER_NOTIFICATION_LEASE_MS - 1, true],
-    ["at the exact expiry boundary", HOSTING_COVERAGE_OWNER_NOTIFICATION_LEASE_MS, true],
-    ["older than the lease", HOSTING_COVERAGE_OWNER_NOTIFICATION_LEASE_MS + 1, false],
-  ])("treats a %s delivery claim according to the shared lease boundary", async (_label, ageMs, expectedCurrent) => {
+  it.each<[string, number]>([
+    ["fresh", HOSTING_COVERAGE_OWNER_NOTIFICATION_LEASE_MS - 1],
+    ["at the exact expiry boundary", HOSTING_COVERAGE_OWNER_NOTIFICATION_LEASE_MS],
+    ["expired but unreclaimed", HOSTING_COVERAGE_OWNER_NOTIFICATION_LEASE_MS + 1],
+  ])("renews and delivers a %s exact claim just before transport", async (_label, ageMs) => {
     const now = new Date("2026-07-01T12:00:00.000Z");
     const claimedAt = new Date(now.getTime() - ageMs);
-    const findFirst = vi.fn(async ({ where }: any) => {
-      if (claimedAt < where.ownerNotificationClaimedAt.gte) return null;
-      return {
-        evidence: { affectedNights: ["2026-07-03"] },
-        booking: {
-          id: "booking-1",
-          memberId: "owner-1",
-          lodgeId: "lodge-a",
-          checkIn: new Date("2026-07-03T00:00:00.000Z"),
-          checkOut: new Date("2026-07-04T00:00:00.000Z"),
-          member: { firstName: "Owner", email: "owner@example.test" },
-        },
-      };
+    const { db, row, updateMany, findFirst } = makeNotificationDeliveryDb({
+      ownerNotificationClaimedAt: claimedAt,
+      evidence: { affectedNights: ["2026-07-03"] },
     });
-    const db = { hostingCoverageIncident: { findFirst } } as any;
 
     const result = await loadHostingCoverageOwnerNotificationDelivery(
       {
@@ -684,18 +770,89 @@ describe("the owner is told once per transition (#2576 §16)", () => {
       now,
     );
 
-    expect(result !== null).toBe(expectedCurrent);
+    expect(result).toMatchObject({ uncoveredNights: "2026-07-03" });
+    expect(updateMany).toHaveBeenCalledTimes(1);
+    expect(updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          id: "incident-1",
+          bookingId: "booking-1",
+          resolvedAt: null,
+          stateKey: "v1:a",
+          ownerNotificationClaimStateKey: "v1:a",
+          ownerNotificationClaimToken: "notification-current",
+        }),
+        data: { ownerNotificationClaimedAt: now },
+      }),
+    );
+    expect(row.ownerNotificationClaimedAt).toEqual(now);
     expect(findFirst).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
-          ownerNotificationClaimedAt: {
-            gte: new Date(
-              now.getTime() - HOSTING_COVERAGE_OWNER_NOTIFICATION_LEASE_MS,
-            ),
-          },
+          ownerNotificationClaimedAt: now,
         }),
       }),
     );
+  });
+
+  it("serializes expired exact renewal against successor takeover so only one token wins", async () => {
+    vi.useFakeTimers();
+    const now = new Date("2026-07-01T12:00:00.000Z");
+    vi.setSystemTime(now);
+    const expiredAt = new Date(
+      now.getTime() - HOSTING_COVERAGE_OWNER_NOTIFICATION_LEASE_MS - 1,
+    );
+    const oldClaim = {
+      bookingId: "booking-1",
+      incidentId: "incident-1",
+      stateKey: "v1:a",
+      claimToken: "notification-current",
+    };
+    try {
+      // Old exact token reaches the row first: it renews, so takeover no longer
+      // sees an expired timestamp.
+      const oldWins = makeNotificationDeliveryDb({
+        ownerNotificationClaimedAt: expiredAt,
+      });
+      await expect(
+        loadHostingCoverageOwnerNotificationDelivery(oldClaim, oldWins.db, now),
+      ).resolves.not.toBeNull();
+      await expect(
+        claimHostingCoverageOwnerNotification(
+          { incidentId: "incident-1", stateKey: "v1:a" },
+          oldWins.db,
+        ),
+      ).resolves.toBeNull();
+      expect(oldWins.row.ownerNotificationClaimToken).toBe(
+        "notification-current",
+      );
+
+      // Successor reaches the expired row first: its new token replaces the old
+      // one, so the old token loses renewal and cannot reach the payload read.
+      const successorWins = makeNotificationDeliveryDb({
+        ownerNotificationClaimedAt: expiredAt,
+      });
+      const successor = await claimHostingCoverageOwnerNotification(
+        { incidentId: "incident-1", stateKey: "v1:a" },
+        successorWins.db,
+      );
+      expect(successor).toMatchObject({
+        incidentId: "incident-1",
+        stateKey: "v1:a",
+        claimToken: expect.any(String),
+      });
+      expect(successor!.claimToken).not.toBe("notification-current");
+      await expect(
+        loadHostingCoverageOwnerNotificationDelivery(
+          oldClaim,
+          successorWins.db,
+          now,
+        ),
+      ).resolves.toBeNull();
+      expect(successorWins.findFirst).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

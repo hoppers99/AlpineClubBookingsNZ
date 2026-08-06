@@ -2874,20 +2874,23 @@ compliant indefinitely.
   outrun the column and make two different problems compare equal. The owner's
   notification takes a short delivery lease with an opaque claimant token before
   the send, but `notifiedStateKey` is stamped only after transport reports success.
-  A final guarded read freezes recipient data and the incident's own evidence only
-  while the incident is unresolved and that exact state/token is current; a stale or
-  reclaimed worker therefore calls no provider and never substitutes a later live
-  booking review into an older claim. Completion and release match the same token,
-  so a stale sender cannot complete or clear a successor's lease. Missing email,
+  Immediately before provider input is read, a guarded update renews the lease only
+  while the incident is unresolved, unnotified, and that exact state/token is still
+  current. An expired-but-unreclaimed claimant can therefore continue, while a
+  successor token and the old worker race on the row and only one wins. A final exact
+  read then freezes recipient data and the incident's own evidence at the renewed
+  timestamp; a stale or reclaimed worker calls no provider and never substitutes a
+  later live booking review into an older claim. Completion and release match the
+  same token, so a stale sender cannot complete or clear a successor's lease. Missing email,
   placeholder/bounce suppression and a deliberate per-booking `noEmails` switch are
   terminal while the incident stays visible to officers. An unreadable `noEmails`
   flag is transient: the notification lease is released and the exact queue claim
   fails, because `hosting-coverage-lost` deliberately has no independent EmailLog
   retry authority. The provider stays outside transactions, leaving only the narrow
   race after the final token read rather than holding a transaction across delivery.
-  The final read also rejects an expired lease. There is still one unavoidable
-  post-provider ambiguity: if the provider accepts the message and the process dies
-  before `notifiedStateKey` is stamped, the 15-minute retry may send the same
+  At most one exact claimant is active for each renewed lease. There is still one
+  unavoidable post-provider ambiguity: if the provider accepts the message and the
+  process dies before `notifiedStateKey` is stamped, the next lease may send the same
   transition again. The provider has no idempotency-key contract; stamping before
   transport would trade that rare duplicate for a permanently lost notice. This is
   therefore at-least-once delivery with one durable success stamp, not an
@@ -2921,12 +2924,16 @@ compliant indefinitely.
   officer's own decision. Approval means approval for THIS hazard: a materially
   different uncovered state reopens the review as PENDING and drops the decision, so a
   stale approval cannot suppress a new problem.
-- **The queue is at-least-once and every effect is idempotent.** Work is recorded in
+- **The queue is at-least-once; database effects are idempotent and provider delivery
+  has an explicit ambiguity.** Work is recorded in
   the transaction that caused it, drained inline immediately after that commit
   (best-effort, since the authoritative change must not be undone by a follow-up
   problem) and again by the `hosting-coverage-reevaluation` general-cron job, which
   is the authority on completion. `attempts` increments at CLAIM time, so a process
-  that dies mid-item still counts up and a poison item retires.
+  that dies mid-item still counts up and a poison item retires. Incident/review and
+  queue completion effects are guarded and idempotent; email is the stated
+  at-least-once exception when a crash lands after provider acceptance but before
+  the durable success stamp.
 - **The Booking Officer queue is in the bookings area.** Every unresolved incident
   appears prominently above the ordinary `/admin/bookings` list, with booking
   reference, owner, lodge, dates, uncovered guest-night count, cause and direct
