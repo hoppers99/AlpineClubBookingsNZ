@@ -789,7 +789,7 @@ bounded deterministic heuristic, not a global optimum across all bookings.
 Changing preferences affects future suggestions and lifecycle reconciliation;
 it never rewrites existing allocation rows by itself.
 
-Migration `20260806010000_add_bed_allocation_priority_order` is an additive
+Migration `20260806020000_add_bed_allocation_priority_order` is an additive
 EXPAND on the cold settings table: one non-null `TEXT[]` column with the
 historical constant default. Old-colour clients omit and ignore it; old-colour
 inserts receive that default; no `BedAllocation` row is touched or replanned.

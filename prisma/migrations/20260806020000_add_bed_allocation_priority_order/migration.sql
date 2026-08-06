@@ -1,4 +1,5 @@
 -- Per-lodge ordered soft preferences for bed allocation (#2593).
+-- Prefix 20260806020000 follows #2596's reserved 20260806010000 migration.
 --
 -- Additive EXPAND only. The constant database default gives old-colour INSERTs
 -- the same canonical order used by the new application while the column is
