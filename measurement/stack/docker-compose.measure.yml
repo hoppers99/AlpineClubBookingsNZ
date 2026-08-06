@@ -1,0 +1,86 @@
+# Measurement-stack override for the #2352 slice-1 staging evaluation.
+#
+# Used together with the repo's base docker-compose.yml (NOT the staging
+# override), compose project `tacbookings-measure`, so the stack keeps the
+# production shape: read-only root fs, tmpfs /tmp + /app/.next/cache (64m),
+# image_uploads volume, mem_limit 1g, no-new-privileges, Caddy in front.
+#
+#   docker compose --env-file measurement/stack/.env.measure \
+#     -p tacbookings-measure --project-directory . \
+#     -f docker-compose.yml -f measurement/stack/docker-compose.measure.yml \
+#     up -d --wait postgres app caddy
+#
+# Isolation: unique project name, host ports 3003 (app, loopback), 5435
+# (postgres, loopback), 8027 (caddy, loopback), 8127 (mailpit UI, loopback).
+# Never touches the tacbookings-staging stack (3001/5433/8025) or production.
+#
+# Deviations from production, all recorded in measurement/phase1/NOTES.md:
+#  - cpus: 1.0 on the app container (production deliberately uncaps CPU, #2351;
+#    the owner's Option A spec requires explicit limits for the comparison).
+#  - KEEP_ALIVE_TIMEOUT=65000: the repo's own documented harness accommodation
+#    (docs/E2E_PLAYWRIGHT.md "keep-alive socket race"); affects idle sockets
+#    only, not request handling.
+#  - Caddy serves plain http on :8027 via Caddyfile.staging, the repo's hosted
+#    staging proxy config, which mirrors the production Caddyfile's headers,
+#    /images handler and forwarded-header behaviour (TLS termination excluded).
+#  - mailpit SMTP capture so any incidental outbound email succeeds quietly
+#    instead of polluting the error-noise check. No live providers anywhere.
+services:
+  postgres:
+    ports: !override
+      - "127.0.0.1:5435:5432"
+
+  app:
+    image: ${APP_IMAGE:?set APP_IMAGE to tacbookings-measure-app:current or :baseline}
+    ports: !override
+      - "127.0.0.1:3003:3000"
+    # Explicit CPU ceiling for the measurement (owner Option A spec). Memory
+    # stays the production mem_limit: 1g from the base file.
+    cpus: 1.0
+    environment:
+      APP_RUNTIME_ROLE: web-measure
+      CRON_ENABLED: "false"
+      NEXTAUTH_URL: http://localhost:8027
+      KEEP_ALIVE_TIMEOUT: "65000"
+      # The production WEB-slot pool (app_blue/app_green use connection_limit=10;
+      # the base `app` service is the cron-leader on 5, which is not the shape
+      # being measured).
+      DATABASE_URL: postgresql://tac:${DB_PASSWORD:?DB_PASSWORD is required}@postgres:5432/tacbookings?connection_limit=10&pool_timeout=10
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mailpit:
+        condition: service_healthy
+
+  # Non-production SMTP capture (same image/config as the repo's staging
+  # override) so resolveEmailDeliveryConfig is valid and no live provider is
+  # ever contacted.
+  mailpit:
+    image: axllent/mailpit:v1.30.3
+    restart: unless-stopped
+    environment:
+      TZ: Pacific/Auckland
+      MP_SMTP_AUTH_ACCEPT_ANY: "true"
+      MP_SMTP_AUTH_ALLOW_INSECURE: "true"
+    ports:
+      - "127.0.0.1:8127:8025"
+    mem_limit: 128m
+    cpus: 0.2
+
+  # Blue/green slots are the deploy runner's concern; the measurement runs one
+  # web-shaped app container. Parking them behind a profile disables them.
+  app_blue:
+    profiles: ["production-bluegreen"]
+  app_green:
+    profiles: ["production-bluegreen"]
+
+  caddy:
+    ports: !override
+      - "127.0.0.1:8027:8027"
+    environment:
+      DOMAIN: localhost
+      STAGING_CADDY_SITE: http://localhost:8027
+    volumes: !override
+      - ./Caddyfile.staging:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
