@@ -239,14 +239,40 @@ operator's feet.
 
 The script also does not create the database, the app role, or any view.
 
-### Adding a table grant later
+### What the diagnostics role may read today
 
-A tool pack (AID-6A/B/C) that needs a new table adds its `GRANT SELECT` to
-`SELECT_GRANTS` in the same pull request as the tool. Upgrading to that release is
-therefore a two-step operation: deploy, then **re-run
-`npm run diagnostics:provision-role`**. ADR-007's deliberate friction is exactly
-this — a new table becoming readable by Diagnostics is a visible, reviewed, operator
-action, not a side effect.
+The allowlist lives in `SELECT_GRANTS` (`src/lib/diagnostics/tools/provision-role.ts`),
+in public code, so "which relations — and which columns of them — can Diagnostics
+read" is answerable by reading one file. As of AID-6A (#2375) it names one relation:
+
+| Relation | Granted | Read by |
+| --- | --- | --- |
+| `public."AuditLog"` | **columns only**: `id`, `action`, `category`, `severity`, `outcome`, `entityType`, `requestId`, `createdAt` | the five audit-correlation tools ([tool-pack-support.md](tool-pack-support.md)) |
+
+Every other relation in the schema, including `IntegrationCredential`, is unreadable.
+So is every other **column** of `AuditLog`: the grant is by column, so as the
+diagnostics role `SELECT "ipAddress" FROM "AuditLog"` and `SELECT *` are both refused
+by PostgreSQL with `42501`. The operator CLI prints the declared grants, columns and
+all, on every run and on `--dry-run`.
+
+### Adding a relation grant later
+
+A tool pack (AID-6A/B/C) that needs a new relation adds its grant to `SELECT_GRANTS`
+in the same pull request as the tool — by **column** unless every column of the
+relation is appropriate diagnostics evidence. Upgrading to that release is therefore a
+two-step operation: deploy, then **re-run `npm run diagnostics:provision-role`**.
+ADR-007's deliberate friction is exactly this — a new relation becoming readable by
+Diagnostics is a visible, reviewed, operator action, not a side effect.
+
+**Until you re-run it, the new tools will not work**: readiness reports
+`over_privileged` (the role can read less than the allowlist declares, or more) and
+the affected tool calls are refused. That is the intended failure, not a bug.
+
+Re-provisioning also **narrows**. PostgreSQL's `REVOKE` reference states that revoking
+a privilege on a table also revokes the corresponding column privileges, so a release
+that drops a column from an allowlist entry really does take it away rather than
+leaving the wider grant in place. The real-PostgreSQL proof asserts it by hand-granting
+`"ipAddress"` on `AuditLog`, re-provisioning, and finding the read refused.
 
 ### Rotating the password
 
@@ -264,7 +290,7 @@ every restriction at the same time.
 | `not_configured` | `AI_DIAGNOSTICS_DATABASE_URL` is not set. Nothing was contacted. | Provision the role and set the variable. |
 | `misconfigured` | Set, but unusable as configured: not a valid `postgres://` URL, no username, it names the **same role** as `DATABASE_URL`, or it carries one of the refused query parameters above. | Fix the connection string; it must be the dedicated role, with no overriding parameters. |
 | `unverified` | Set, but the server could not be asked — unreachable host, bad password, connection limit, or no answer inside the probe deadline. The role is **not** trusted. | Fix connectivity or credentials, then re-check. |
-| `over_privileged` | Reachable, and the server's answer is not acceptable: the role holds a privilege ADR-007 forbids, can read a relation the allowlist does not declare, or is not even the role the connection string names. | Re-run the provisioning script and investigate how it drifted. If the role name in the string does not match `current_user`, fix the string. |
+| `over_privileged` | Reachable, and the server's answer is not acceptable: the role holds a privilege ADR-007 forbids, can read a relation — or a **column** of a column-restricted relation — that the allowlist does not declare, or is not even the role the connection string names. | Re-run the provisioning script and investigate how it drifted. After a release that added a grant, this is simply the re-provision step not yet run. If the role name in the string does not match `current_user`, fix the string. |
 | `verified` | The server itself confirmed the named role is a non-superuser that can only `SELECT`, and only from the declared allowlist. | Nothing. |
 
 The response never contains the connection string, the password, or the role name.
@@ -311,5 +337,7 @@ provisions and drops a cluster role and temporarily revokes
 
 - [Tool substrate reference](tools.md) — the gates, bounds, audit, and the rules
   for adding a tool.
+- [Support tool pack (AID-6A)](tool-pack-support.md) — what is registered today, the
+  permission each tool requires, and the operator troubleshooting table.
 - [Hub, ADRs, and threat model](README.md).
 - [`DEPLOYMENT.md`](../../DEPLOYMENT.md), [`CONFIGURATION.md`](../../CONFIGURATION.md).

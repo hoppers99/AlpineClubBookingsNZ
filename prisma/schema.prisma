@@ -5338,48 +5338,23 @@ model FamilyGroupMember {
   id            String   @id @default(cuid())
   familyGroupId String
   memberId      String
-  // RETIRED — @ignore keeps it out of the generated Prisma Client entirely.
-  // #2284 removed the last authorisation reader (the one-step partner
-  // declaration in member-partner-link.ts, re-anchored onto
-  // Member.detailsConfirmedByMemberId), and #2520 removed every writer plus
-  // member-merge's vestigial maxFamilyRole upgrade.
+  // NO `role` FIELD, AND NO `role` COLUMN. Membership in a group is the only
+  // fact this table records: family-group membership carries no rank, and every
+  // adult login co-member of a group is equal
+  // (docs/DOMAIN_INVARIANTS.md -> family authorisation boundary).
   //
-  // Why @ignore rather than only deleting the call sites: removing the readers
-  // and writers is NOT sufficient to stop the SQL naming the column, and that
-  // distinction is what the coming DROP depends on. Measured against Prisma
-  // 7.9.0 on this schema:
-  //
-  //   - a static `@default("MEMBER")` is materialised CLIENT-side as a bind
-  //     parameter, so the column appeared in the column list of every INSERT —
-  //     `create`, `upsert`'s insert branch and `createMany` alike — even when
-  //     the call set no role and narrowed itself to `select: { id: true }`;
-  //   - an unnarrowed `create`/`update`/`upsert`/`delete` names every scalar in
-  //     its implicit RETURNING, and an `include:` on the join table names every
-  //     scalar in its SELECT.
-  //
-  // @ignore removes the field from the client, so none of those SQL forms can
-  // name the column and no call-site discipline has to be maintained to keep it
-  // that way: naming `role` on this delegate is now a COMPILE error rather than
-  // a latent production error. It changes no database state — the diff between
-  // this schema and the one without @ignore is empty, so no migration is owed —
-  // and the column keeps its `NOT NULL DEFAULT 'MEMBER'`
-  // (20260407120000_add_family_group_member_join_table), so rows inserted from
-  // here on are filled by the DATABASE default and are never NULL. Stored
-  // values are meaningless, not frozen.
-  //
-  // The field stays here ONLY because the DB column does. This is the RUNTIME
-  // half of the blue/green retirement (docs/BLUE_GREEN_MIGRATION_POLICY.md):
-  // removing the field requires the DROP migration in the same PR (the
-  // migration-drift gate compares migrations against this file), and that DROP
-  // is only old-code compatible once THIS release is the draining colour.
-  // #2520 stays OPEN until that CONTRACT release lands; it removes this field,
-  // adds the DROP migration, and adds the ledger row. Note this release ships
-  // no migration of its own, so — exactly as the #2130 contract row
-  // (20260721130000) did for its runtime-prep release — that ledger row names an
-  // adjacent migration in `previous_expand_release` and records the real
-  // precondition ("do not deploy until the release carrying this @ignore has
-  // shipped and soaked") in `lock_impact_plan`.
-  role          String   @default("MEMBER") @ignore
+  // History, so the absence is not mistaken for an oversight. The column existed
+  // as `"role" TEXT NOT NULL DEFAULT 'MEMBER'` from
+  // 20260407120000_add_family_group_member_join_table. #2284 removed its last
+  // authorisation reader (the one-step partner declaration in
+  // member-partner-link.ts, re-anchored onto Member.detailsConfirmedByMemberId),
+  // PR #2565 removed every remaining writer and payload reader plus
+  // member-merge's vestigial maxFamilyRole upgrade and marked the field
+  // `@ignore`, and #2520's CONTRACT migration
+  // 20260803030000_contract_drop_family_group_member_role physically DROPPED the
+  // column under a maintenance window (owner directive, 3 Aug 2026). Do not
+  // reintroduce a rank column here without an owner decision on the
+  // authorisation boundary above.
   joinedAt      DateTime @default(now())
 
   familyGroup FamilyGroup @relation(fields: [familyGroupId], references: [id], onDelete: Cascade)

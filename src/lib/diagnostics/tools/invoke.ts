@@ -12,10 +12,13 @@
  *   4. ARGUMENTS    parsed by the entry's `.strict()` schema, then bound
  *                   POSITIONALLY. No caller text ever reaches SQL.
  *   5. METERING     AID-2's circuit breaker must be closed (ADR-005 §5).
- *   6. CREDENTIAL   the dedicated SELECT-only role must be configured AND
- *                   verified least-privilege by the server (ADR-007).
+ *   6. CREDENTIAL   for a `select_only_sql` entry, the dedicated SELECT-only role
+ *                   must be configured AND verified least-privilege by the server
+ *                   (ADR-007).
  *   7. READ         one statement, inside BEGIN READ ONLY, under a statement
- *                   timeout, with the executor's own SQL-level row cap.
+ *                   timeout, with the executor's own SQL-level row cap — or, for a
+ *                   `server_owned` entry, the entry's fixed first-party read under
+ *                   its own deadline.
  *   8. PROJECT      column allowlist, redaction, per-field caps (ADR-004 §2).
  *   9. SIZE         over the byte ceiling is a REFUSAL, never a silent trim.
  *  10. AUDIT        the approved-metadata row is written BEFORE any evidence is
@@ -26,6 +29,16 @@
  * unauthorized caller use the difference between "invalid arguments" and
  * "permission denied" as an oracle for a tool's argument shape. Authorizing first
  * also means an unauthorized invocation never opens a database connection.
+ *
+ * TWO EVIDENCE SOURCES, ONE GATE CHAIN (AID-6A, #2375). `source` is a closed
+ * discriminant the REGISTRY declares — never an argument, so it cannot move an
+ * invocation onto a different path at call time. Gates 1-5 and 8-10 are identical
+ * for both, and the AID-6A pack's own docblocks argue why its readiness, budget,
+ * deployment and job-health entries could not be a `SELECT` as the least-privilege
+ * role. The credential gate is SKIPPED for a `server_owned` entry because it does
+ * not govern it — and skipping it is required, not merely permitted: the canonical
+ * readiness answer has to stay reportable in exactly the case where that credential
+ * is the thing that is broken.
  *
  * NO INJECTABLE DEPENDENCIES. This module imports its collaborators directly
  * rather than accepting them as parameters. A `deps` argument would be a seam a
@@ -48,10 +61,11 @@ import { recordDiagnosticsToolAudit } from "./audit";
 import { authorizeDiagnosticsToolCall } from "./authorize";
 import { getDiagnosticsDatabase, runDiagnosticsReadOnlyQuery } from "./database";
 import {
-  findDiagnosticsTool,
   isValidDiagnosticsToolId,
   type DiagnosticsToolEntry,
-} from "./registry";
+  type DiagnosticsToolRawRow,
+} from "./define";
+import { findDiagnosticsTool } from "./registry";
 import type { DiagnosticsToolSession } from "./session";
 import {
   DIAGNOSTICS_TOOL_BOUNDS,
@@ -212,6 +226,89 @@ async function auditDenial(
       err,
       context: { toolId: audit.toolId, failureReason: audit.failureReason },
     });
+  }
+}
+
+/**
+ * The sentinel for "no evidence" — a REJECTION and a DEADLINE alike. Declared at
+ * module scope so TypeScript infers a `unique symbol` and the race's result narrows;
+ * a `const` inside the function is typed as plain `symbol`, which does not.
+ */
+const NO_EVIDENCE: unique symbol = Symbol(
+  "diagnostics-server-evidence-unavailable",
+);
+
+/**
+ * Read a `server_owned` entry's evidence under a hard deadline (AID-6A, #2375).
+ *
+ * A first-party calculation is not a query the database will cancel for us, so the
+ * deadline lives here. Three properties, each of them a way this could have gone
+ * wrong:
+ *
+ *  - A REJECTION AND A TIMEOUT ARE THE SAME OUTCOME to the caller: no rows, and
+ *    `evidence_unavailable`. A source that cannot establish something must not be
+ *    able to return a row claiming it did.
+ *  - THE LOSING PROMISE IS STILL HANDLED. `Promise.race` does not cancel the loser,
+ *    so a source that rejects AFTER the deadline would otherwise surface as an
+ *    unhandled rejection and, depending on the runtime, take the process with it.
+ *    The `.catch` below is attached to the source promise itself, before the race.
+ *  - THE TIMER IS ALWAYS CLEARED, so a fast read does not hold an open handle for
+ *    fifteen seconds and keep a serverless invocation alive.
+ *
+ * It never throws: a source that throws SYNCHRONOUSLY (before returning a promise)
+ * is caught here too, because the executor's contract is a typed refusal.
+ */
+async function readServerOwnedEvidence(
+  toolId: string,
+  read: () => Promise<readonly DiagnosticsToolRawRow[]>,
+): Promise<
+  | { ok: true; rows: readonly DiagnosticsToolRawRow[]; durationMs: number }
+  | { ok: false; durationMs: number }
+> {
+  const startedAt = Date.now();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
+  try {
+    const source = Promise.resolve()
+      .then(read)
+      // The return annotation keeps the sentinel's `unique symbol` type through the
+      // callback; an inferred return widens it to `symbol`, and the `===` below then
+      // narrows nothing.
+      .catch((err: unknown): typeof NO_EVIDENCE => {
+        // Recorded once, here, so the reason is diagnosable even though the failure
+        // the operator sees is deliberately generic. The error object is NOT
+        // forwarded: a first-party calculation can wrap a driver error whose message
+        // quotes a value, and `reportAiError` sends what it is given to Sentry
+        // unredacted.
+        reportAiError({
+          tag: "diagnostics-tool-server-evidence",
+          message: "A server-owned diagnostics evidence source refused",
+          err: new Error(
+            `Server-owned diagnostics evidence source refused (${
+              err instanceof Error ? err.name : typeof err
+            })`,
+          ),
+          context: { toolId },
+        });
+        return NO_EVIDENCE;
+      });
+
+    const deadline = new Promise<typeof NO_EVIDENCE>((resolve) => {
+      timer = setTimeout(
+        () => resolve(NO_EVIDENCE),
+        DIAGNOSTICS_TOOL_BOUNDS.serverEvidenceTimeoutMs,
+      );
+    });
+
+    const outcome = await Promise.race([source, deadline]);
+    if (outcome === NO_EVIDENCE) {
+      return { ok: false, durationMs: Date.now() - startedAt };
+    }
+    return { ok: true, rows: outcome, durationMs: Date.now() - startedAt };
+  } catch {
+    return { ok: false, durationMs: Date.now() - startedAt };
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
   }
 }
 
@@ -399,42 +496,97 @@ export async function invokeDiagnosticsTool(
       });
     }
 
-    // 6. CREDENTIAL. Absent, malformed, app-role-reusing, unverifiable or
-    //    over-privileged all refuse here — no fallback to `DATABASE_URL`.
-    const database = await getDiagnosticsDatabase();
-    if (!database.ok) {
-      return await fail(database.reason, {
-        toolId: tool.id,
-        areasChecked: tool.requiredAreas,
-        authOutcome: "allowed",
-        argsHash,
-        roundIndex,
-      });
-    }
-
-    // 7. READ. `rowLimit + 1` rows are fetched inside the executor's own SQL
-    //    LIMIT so truncation can be reported honestly rather than guessed at.
     const rowLimit = Math.min(tool.rowLimit, DIAGNOSTICS_TOOL_BOUNDS.maxRows);
-    const read = await runDiagnosticsReadOnlyQuery(
-      { sql: tool.sql, params: binding.params, rowLimit, toolId: tool.id },
-      database.pool,
-    );
-    if (!read.ok) {
-      return await fail("query_failed", {
-        toolId: tool.id,
-        areasChecked: tool.requiredAreas,
-        authOutcome: "allowed",
-        argsHash,
-        durationMs: read.durationMs,
-        roundIndex,
-      });
+
+    // 6 + 7. The only gates that differ by evidence source. Both arms produce the
+    //        SAME thing — raw rows and a duration — so gates 8-10 below cannot tell
+    //        which source they came from and cannot treat one more leniently.
+    //
+    //        The branch is on the ENTRY's declared source, and the binding's own
+    //        discriminant is then cross-checked rather than assumed: a mismatch
+    //        would mean `defineDiagnosticsTool` and the entry disagree, which is a
+    //        bug, and the honest outcome for a bug is `internal_error` with no rows
+    //        — never "fall through to the other arm and hope".
+    let rawRows: readonly DiagnosticsToolRawRow[];
+    let readDurationMs: number;
+
+    if (tool.source === "select_only_sql") {
+      if (binding.source !== "select_only_sql") {
+        return await fail("internal_error", {
+          toolId: tool.id,
+          areasChecked: tool.requiredAreas,
+          authOutcome: "allowed",
+          argsHash,
+          roundIndex,
+        });
+      }
+
+      // 6. CREDENTIAL. Absent, malformed, app-role-reusing, unverifiable or
+      //    over-privileged all refuse here — no fallback to `DATABASE_URL`.
+      const database = await getDiagnosticsDatabase();
+      if (!database.ok) {
+        return await fail(database.reason, {
+          toolId: tool.id,
+          areasChecked: tool.requiredAreas,
+          authOutcome: "allowed",
+          argsHash,
+          roundIndex,
+        });
+      }
+
+      // 7. READ. `rowLimit + 1` rows are fetched inside the executor's own SQL
+      //    LIMIT so truncation can be reported honestly rather than guessed at.
+      const read = await runDiagnosticsReadOnlyQuery(
+        { sql: tool.sql, params: binding.params, rowLimit, toolId: tool.id },
+        database.pool,
+      );
+      if (!read.ok) {
+        return await fail("query_failed", {
+          toolId: tool.id,
+          areasChecked: tool.requiredAreas,
+          authOutcome: "allowed",
+          argsHash,
+          durationMs: read.durationMs,
+          roundIndex,
+        });
+      }
+      rawRows = read.rows;
+      readDurationMs = read.durationMs;
+    } else {
+      if (binding.source !== "server_owned") {
+        return await fail("internal_error", {
+          toolId: tool.id,
+          areasChecked: tool.requiredAreas,
+          authOutcome: "allowed",
+          argsHash,
+          roundIndex,
+        });
+      }
+
+      // 7'. READ, from the entry's fixed first-party calculation. No SELECT-only
+      //     credential is involved, so gate 6 has nothing to check — and must not
+      //     block, or readiness would become unreportable exactly when the
+      //     diagnostics role is the fault.
+      const serverRead = await readServerOwnedEvidence(tool.id, binding.read);
+      if (!serverRead.ok) {
+        return await fail("evidence_unavailable", {
+          toolId: tool.id,
+          areasChecked: tool.requiredAreas,
+          authOutcome: "allowed",
+          argsHash,
+          durationMs: serverRead.durationMs,
+          roundIndex,
+        });
+      }
+      rawRows = serverRead.rows;
+      readDurationMs = serverRead.durationMs;
     }
 
     // 8. PROJECT + REDACT.
-    const truncated = read.rows.length > rowLimit;
+    const truncated = rawRows.length > rowLimit;
     let rows: DiagnosticsToolRow[];
     try {
-      rows = projectRows(tool, read.rows.slice(0, rowLimit));
+      rows = projectRows(tool, rawRows.slice(0, rowLimit));
     } catch (err) {
       reportAiError({
         tag: "diagnostics-tool-projection",
@@ -447,7 +599,7 @@ export async function invokeDiagnosticsTool(
         areasChecked: tool.requiredAreas,
         authOutcome: "allowed",
         argsHash,
-        durationMs: read.durationMs,
+        durationMs: readDurationMs,
         roundIndex,
       });
     }
@@ -466,7 +618,7 @@ export async function invokeDiagnosticsTool(
         areasChecked: tool.requiredAreas,
         authOutcome: "allowed",
         argsHash,
-        durationMs: read.durationMs,
+        durationMs: readDurationMs,
         roundIndex,
       });
     }
@@ -483,7 +635,7 @@ export async function invokeDiagnosticsTool(
       resultHash: sha256Hex(serialized),
       rowCount: rows.length,
       byteCount,
-      durationMs: read.durationMs,
+      durationMs: readDurationMs,
       roundIndex,
       observedAt,
     });
@@ -506,7 +658,7 @@ export async function invokeDiagnosticsTool(
         areasChecked: tool.requiredAreas,
         authOutcome: "allowed",
         argsHash,
-        durationMs: read.durationMs,
+        durationMs: readDurationMs,
         roundIndex,
       });
     }
@@ -521,6 +673,11 @@ export async function invokeDiagnosticsTool(
       observedAt,
       audit,
     };
+    // The entry's own server-owned scope sentence, carried so the renderer can say
+    // what was searched (AID-6A, #2375). Copied from the REGISTRY, never from a row
+    // or an argument, and omitted rather than set to an empty string when an entry
+    // declares none — a blank `scope:` line would read as "we searched nothing".
+    if (tool.evidenceScope) success.evidenceScope = tool.evidenceScope;
     return success;
   } catch (err) {
     reportAiError({

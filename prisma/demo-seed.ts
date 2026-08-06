@@ -686,8 +686,9 @@ async function main() {
   // Family group + join requests.
   // -------------------------------------------------------------------------
   const smithGroup = await prisma.familyGroup.create({ data: { name: "The Powell Family" } });
-  // #2520: `role` is @ignore'd out of the client, so membership is the only fact
-  // recorded. Results are discarded, so the writes narrow their implicit
+  // #2520: the join table records membership only — the rank column was dropped by
+  // 20260803030000 and the field is gone from prisma/schema.prisma, so there is
+  // nothing to set here. Results are discarded, so the writes narrow their implicit
   // RETURNING the same way the production paths do (#2130 house rule).
   await prisma.familyGroupMember.create({ data: { familyGroupId: smithGroup.id, memberId: pat.id }, select: { id: true } });
   await prisma.familyGroupMember.create({ data: { familyGroupId: smithGroup.id, memberId: alice.id }, select: { id: true } });

@@ -75,11 +75,13 @@ import {
   evaluateNonMemberPricingRequirements,
 } from "@/lib/subscription-lockout-enforcement";
 import { nameField } from "@/lib/zod-helpers";
+import { BookingGuestStayRangeValidationError } from "@/lib/booking-guest-stay-range-input";
 import {
-  BookingGuestStayRangeValidationError,
-  normalizeGuestStayRange,
-  normalizeGuestStayRanges,
-} from "@/lib/booking-guest-stay-range-input";
+  resolveModificationStayRanges,
+  type LiveGuestStayRow,
+  type ResolvedModificationStayRanges,
+  type StayRangeDeltaInput,
+} from "@/lib/booking-modification-stay-ranges";
 import {
   canModifyBookingStatusForRole,
   getBookingEditPolicy,
@@ -211,12 +213,6 @@ const OVERRIDE_DATE_ONLY_QUOTE_FIELDS = [
   "partnerSharedGuests",
 ] as const;
 
-type StayRangeInput = {
-  stayStart?: string | null;
-  stayEnd?: string | null;
-  nights?: ReadonlyArray<string> | null;
-};
-
 type NormalizedAddGuest = MemberGuestConsentGuestFields & {
   firstName: string;
   lastName: string;
@@ -226,11 +222,6 @@ type NormalizedAddGuest = MemberGuestConsentGuestFields & {
   stayStart?: string | null;
   stayEnd?: string | null;
   nights?: ReadonlyArray<string> | null;
-};
-
-type NormalizedAddGuestWithRange = Omit<NormalizedAddGuest, "stayStart" | "stayEnd"> & {
-  stayStart: Date;
-  stayEnd: Date;
 };
 
 type PromoRedemptionWithTargets = {
@@ -268,43 +259,121 @@ function selectedIndexesForStoredGuestTargets(
 }
 
 /*
-  A LOCAL COPY of the stay-range resolution, kept in step with the apply path by
-  inspection. #2526 extracted the canonical version to
-  `src/lib/booking-modification-stay-ranges.ts`
-  (`resolveModificationStayRanges` / `deltaHasStayRangeInputs`), which
-  `resolveTargetDates` and `prepareGuestPlan` now BOTH call, so the party a
-  modification writes and the party a policy-exception request freezes are one
-  answer computed once.
+  #2563: this preview holds NO stay-range arithmetic of its own.
 
-  This preview route still assembles its own — it was not part of that lane's
-  diff, it is money-adjacent (a wrong resolution here quotes the wrong price),
-  and folding it in needs its own review pass. Today the three agree: the
-  envelope pass below and the per-guest pass further down are the same rules the
-  shared resolver implements, and the two suites `modify-quote-*` plus
-  `booking-edit-guest-ranges` pin preview against apply.
+  It used to. #2526 extracted the canonical resolution to
+  `src/lib/booking-modification-stay-ranges.ts`
+  (`resolveModificationStayRanges` / `deltaHasStayRangeInputs`) and routed
+  `resolveTargetDates` and `prepareGuestPlan` through it, but this route kept a
+  local copy — its own `hasStayRangeInput` / `hasStayRangeValue` / `minDate` /
+  `maxDate`, its own envelope-expansion loop and its own per-guest pass — held in
+  step with the apply path only by inspection. That copy is gone rather than
+  fenced behind parity tests: the preview is money-adjacent (a wrong resolution
+  quotes a wrong price), and two implementations of one rule is exactly what let
+  the policy-exception workflow freeze a party the planner never built.
+
+  The preview now makes the SAME TWO CALLS the apply path makes, in the same
+  order, so the answer is identical by construction:
+
+   1. the envelope call, mirroring `resolveTargetDates` — in range-input mode the
+      effective envelope is the UNION of every resolved range (so a stored range
+      can pin it open wider than the member asked for, #713, and a shortened
+      check-out that another guest still spans is not honoured); with no range
+      inputs anywhere it is the requested envelope untouched;
+   2. the per-guest call after the in-progress clamp, mirroring
+      `prepareGuestPlan`, which passes the CLAMPED envelope as `requested` so an
+      in-progress edit resolves against the envelope actually being applied.
+
+  WHY THE SECOND CALL CANNOT MOVE THE ENVELOPE THE FIRST ONE SETTLED. This is the
+  load-bearing argument for making two calls at all: the route prices and
+  capacity-checks `newCheckIn`/`newCheckOut` from call 1, while call 2 normalises
+  every guest against an envelope it re-derives internally. If those two differed,
+  guests would be priced on nights outside the quoted envelope.
+
+  Call 2 re-runs the resolver's own envelope pass over the SAME delta and the same
+  guests, and every term of that min/max is identical to call 1's bar one:
+
+   - an entry that carries any dates (a start and an end, or an explicit night
+     set) resolves envelope-INDEPENDENTLY — `normalizeGuestStayRange` reads its
+     `booking` argument only to default an entry that supplies no dates at all;
+   - a remaining guest with no range entry contributes its STORED range, falling
+     back to the ORIGINAL booking bounds, which does not depend on `requested`
+     either. READ THAT TWICE: it does NOT contribute the requested bounds, which
+     is why a shortened check-out that another guest's stored range still spans
+     comes back pinned open rather than honoured;
+   - the one term that does depend on `requested` is a range-less ADDED guest,
+     which contributes exactly the `requested` bounds.
+
+  So call 2's envelope is `min/max(fixed terms, requested)` where `requested` is
+  call 1's answer — and call 1's answer is already the min/max over those same
+  fixed terms, so it dominates them and the second min/max returns it unchanged.
+  With no range inputs the resolver skips the pass entirely and returns
+  `requested` verbatim. Either way the pass is idempotent, and `prepareGuestPlan`
+  rests on the same property.
+
+  TWO PRECONDITIONS, because the argument fails without them:
+
+   a. `requested` for call 2 must be call 1's answer. The in-progress branch is
+      the one place it is not — `newCheckIn` is clamped back to `booking.checkIn`
+      — and there the argument rests entirely on the in-progress check-in guard
+      below, which 400s any delta whose RESOLVED check-in moved off the stored
+      day. That guard makes the clamp a no-op by the time call 2 runs. Relax it
+      and a range-less added guest can be handed an envelope reaching back to the
+      stored check-in, wider than the one being priced.
+   b. Nothing between the two calls may SHRINK the envelope. A downward clamp of
+      `newCheckOut` would leave call 2's min/max dominated by the stored and
+      explicit ranges instead, so call 2 would resolve against a wider envelope
+      than the quote prices.
+
+  (a) is pinned: `modify-quote-planner-stay-range-parity` drives a mid-stay edit
+  through this route and the planner together, and asserts the guard's own 400.
+  (b) cannot be pinned by a test — a test would have to introduce the shrinking
+  clamp to observe it — so it is a standing constraint on whoever next edits the
+  lines between the two calls, not a covered case. Treat this paragraph as the
+  design note that has to be re-derived if that code moves.
 
   The invariant is that preview and save resolve ranges identically (see
-  `GUEST_MEMBER_LINK_IN_PROGRESS_MESSAGE` on the same theme). If you touch either
-  side, touch both — or better, finish the job: #2563.
+  `GUEST_MEMBER_LINK_IN_PROGRESS_MESSAGE` on the same theme), and it is now
+  proven by test rather than by comment. `modify-quote-planner-stay-range-parity`
+  drives this route, the real `resolveTargetDates` -> `prepareGuestPlan` pair and
+  the officer-facing freeze over one delta and compares the envelope, every
+  guest's nights, the capacity input, the adult-supervision input, the refusal
+  wording (with its member-facing "Guest N" number) and the cents; its
+  source-shape suite is what keeps a second copy from growing back here.
 */
-function hasStayRangeValue(value: string | null | undefined): boolean {
-  return typeof value === "string" ? value.trim() !== "" : value !== null && value !== undefined;
-}
 
-function hasStayRangeInput(input: StayRangeInput): boolean {
-  return (
-    hasStayRangeValue(input.stayStart) ||
-    hasStayRangeValue(input.stayEnd) ||
-    (input.nights != null && input.nights.length > 0)
-  );
-}
+type PreviewStayRangeResolution<Guest extends LiveGuestStayRow> =
+  | { ok: true; ranges: ResolvedModificationStayRanges<Guest> }
+  | { ok: false; response: NextResponse };
 
-function minDate(values: Date[]): Date {
-  return values.reduce((earliest, value) => (value < earliest ? value : earliest));
-}
-
-function maxDate(values: Date[]): Date {
-  return values.reduce((latest, value) => (value > latest ? value : latest));
+/**
+ * The route boundary for the shared resolver (#2563).
+ *
+ * The resolver raises a STRUCTURED `BookingGuestStayRangeValidationError` — the
+ * same error the apply path maps to `ApiError(message, 400)` in
+ * `resolveStayRangesOrApiError` — and this adapter maps that one error type onto
+ * this route's 400 body. The message is the resolver's, verbatim, so the member
+ * reads the same refusal (including the same "Guest N: ..." index) from the
+ * preview and from the save; the presentation lives here and the business rule
+ * lives in the resolver, in one place.
+ */
+function resolveStayRangesForPreview<Guest extends LiveGuestStayRow>(args: {
+  booking: { checkIn: Date; checkOut: Date };
+  guests: ReadonlyArray<Guest>;
+  input: StayRangeDeltaInput;
+  requested: { checkIn: Date; checkOut: Date };
+}): PreviewStayRangeResolution<Guest> {
+  try {
+    return { ok: true, ranges: resolveModificationStayRanges(args) };
+  } catch (error) {
+    if (error instanceof BookingGuestStayRangeValidationError) {
+      return {
+        ok: false,
+        response: NextResponse.json({ error: error.message }, { status: 400 }),
+      };
+    }
+    throw error;
+  }
 }
 
 export async function POST(
@@ -782,65 +851,30 @@ export async function POST(
     );
   }
 
-  const hasRangeInputs =
-    (guestStayRanges?.some(hasStayRangeInput) ?? false) ||
-    (normalizedAddGuests?.some(hasStayRangeInput) ?? false);
-  const existingRangeInputs = new Map(
-    (guestStayRanges ?? []).map((range) => [range.guestId, range])
-  );
-  let finalRequestedCheckIn = requestedCheckIn;
-  let finalRequestedCheckOut = requestedCheckOut;
+  // The delta this request asks for, in the shape the shared resolver reads. The
+  // ADD guests are the NORMALIZED ones (`normalizeBookingGuestInputs` preserves
+  // input order and length), so the range entries the resolver sees are the same
+  // objects the pricing rows are built from.
+  const stayRangeDelta: StayRangeDeltaInput = {
+    checkIn: newCheckInStr,
+    checkOut: newCheckOutStr,
+    addGuests: normalizedAddGuests,
+    removeGuestIds,
+    guestStayRanges,
+  };
 
-  if (hasRangeInputs) {
-    try {
-      const removeSet = new Set(removeGuestIds ?? []);
-      const envelope = {
-        checkIn: requestedCheckIn < booking.checkIn ? requestedCheckIn : booking.checkIn,
-        checkOut: requestedCheckOut > booking.checkOut ? requestedCheckOut : booking.checkOut,
-      };
-      const proposedRanges: Array<{ stayStart: Date; stayEnd: Date }> = [];
-
-      for (const guest of booking.guests) {
-        if (removeSet.has(guest.id)) {
-          continue;
-        }
-        const rangeInput = existingRangeInputs.get(guest.id);
-        if (rangeInput && hasStayRangeInput(rangeInput)) {
-          proposedRanges.push(
-            normalizeGuestStayRange(rangeInput, envelope, proposedRanges.length)
-          );
-        } else {
-          proposedRanges.push({
-            stayStart: normalizeDateOnlyForTimeZone(guest.stayStart ?? booking.checkIn),
-            stayEnd: normalizeDateOnlyForTimeZone(guest.stayEnd ?? booking.checkOut),
-          });
-        }
-      }
-
-      for (const guest of normalizedAddGuests ?? []) {
-        if (hasStayRangeInput(guest)) {
-          proposedRanges.push(
-            normalizeGuestStayRange(guest, envelope, proposedRanges.length)
-          );
-        } else {
-          proposedRanges.push({
-            stayStart: normalizeDateOnlyForTimeZone(requestedCheckIn),
-            stayEnd: normalizeDateOnlyForTimeZone(requestedCheckOut),
-          });
-        }
-      }
-
-      if (proposedRanges.length > 0) {
-        finalRequestedCheckIn = minDate(proposedRanges.map((range) => range.stayStart));
-        finalRequestedCheckOut = maxDate(proposedRanges.map((range) => range.stayEnd));
-      }
-    } catch (error) {
-      if (error instanceof BookingGuestStayRangeValidationError) {
-        return NextResponse.json({ error: error.message }, { status: 400 });
-      }
-      throw error;
-    }
-  }
+  // Pass 1 — the effective envelope, the SAME call `resolveTargetDates` makes on
+  // the apply path (#2563). `requested` carries the dates this route already
+  // parsed and NaN-checked above, so the resolver never re-parses them.
+  const envelopeRanges = resolveStayRangesForPreview({
+    booking: { checkIn: booking.checkIn, checkOut: booking.checkOut },
+    guests: booking.guests,
+    input: stayRangeDelta,
+    requested: { checkIn: requestedCheckIn, checkOut: requestedCheckOut },
+  });
+  if (!envelopeRanges.ok) return envelopeRanges.response;
+  const finalRequestedCheckIn = envelopeRanges.ranges.checkIn;
+  const finalRequestedCheckOut = envelopeRanges.ranges.checkOut;
 
   const isInProgressEdit = editPolicy.mode === "in-progress";
   const bookingCheckIn = normalizeDateOnlyForTimeZone(booking.checkIn);
@@ -921,54 +955,38 @@ export async function POST(
     );
   }
 
-  let proposedRemainingGuests: Array<{
-    guest: (typeof remainingGuests)[number];
-    stayStart: Date;
-    stayEnd: Date;
-    nights?: Date[];
-  }>;
-  let normalizedAddGuestsWithRanges: NormalizedAddGuestWithRange[] | undefined;
-  try {
-    proposedRemainingGuests = remainingGuests.map((guest, index) => {
-      const existingNights =
-        guest.nights && guest.nights.length > 0
-          ? guest.nights.map((night) => night.stayDate)
-          : undefined;
-      if (!hasRangeInputs) {
-        return targetDatesChanged
-          ? { guest, stayStart: newCheckIn, stayEnd: newCheckOut }
-          : {
-              guest,
-              stayStart: normalizeDateOnlyForTimeZone(guest.stayStart ?? booking.checkIn),
-              stayEnd: normalizeDateOnlyForTimeZone(guest.stayEnd ?? booking.checkOut),
-              nights: existingNights,
-            };
-      }
-
-      const rangeInput = existingRangeInputs.get(guest.id);
-      const normalizedRange =
-        rangeInput && hasStayRangeInput(rangeInput)
-          ? normalizeGuestStayRange(rangeInput, { checkIn: newCheckIn, checkOut: newCheckOut }, index)
-          : {
-              stayStart: normalizeDateOnlyForTimeZone(guest.stayStart ?? booking.checkIn),
-              stayEnd: normalizeDateOnlyForTimeZone(guest.stayEnd ?? booking.checkOut),
-              nights: existingNights,
-            };
-
-      return { guest, ...normalizedRange };
-    });
-    normalizedAddGuestsWithRanges = normalizedAddGuests
-      ? normalizeGuestStayRanges(normalizedAddGuests, {
-          checkIn: newCheckIn,
-          checkOut: newCheckOut,
-        })
-      : undefined;
-  } catch (error) {
-    if (error instanceof BookingGuestStayRangeValidationError) {
-      return NextResponse.json({ error: error.message }, { status: 400 });
-    }
-    throw error;
-  }
+  // Pass 2 — every guest's final range, the SAME call `prepareGuestPlan` makes on
+  // the apply path (#2563), with the post-clamp envelope as `requested` so an
+  // in-progress edit resolves against the envelope actually being applied.
+  const guestRanges = resolveStayRangesForPreview({
+    booking: { checkIn: booking.checkIn, checkOut: booking.checkOut },
+    guests: remainingGuests,
+    input: stayRangeDelta,
+    requested: { checkIn: newCheckIn, checkOut: newCheckOut },
+  });
+  if (!guestRanges.ok) return guestRanges.response;
+  const proposedRemainingGuests = guestRanges.ranges.remaining;
+  // Each field assigned explicitly rather than spread, exactly as
+  // `prepareGuestPlan` does: `normalizedAddGuests` carries its own raw `nights`
+  // (date STRINGS from the request payload) and the resolved range carries the
+  // normalised `Date[]`, so a spread leaves the property typed as the union of the
+  // two and the pricing input rejects it.
+  //
+  // The positional join is sound because `stayRangeDelta.addGuests` IS
+  // `normalizedAddGuests` — the same array instance — and the resolver builds
+  // `added` with a plain `.map` over it, so the two are the same length in the
+  // same order by construction. Re-order, filter or re-sort either side and that
+  // stops being true: `modify-quote-planner-stay-range-parity` carries a
+  // two-added-guest case with different ranges specifically so a mis-ordered join
+  // fails rather than silently pricing one added guest on the other's nights.
+  const normalizedAddGuestsWithRanges = normalizedAddGuests
+    ? normalizedAddGuests.map((guest, index) => ({
+        ...guest,
+        stayStart: guestRanges.ranges.added[index].stayStart,
+        stayEnd: guestRanges.ranges.added[index].stayEnd,
+        nights: guestRanges.ranges.added[index].nights,
+      }))
+    : undefined;
 
   const proposedGuestRows = [
     ...proposedRemainingGuests.map((entry) => {

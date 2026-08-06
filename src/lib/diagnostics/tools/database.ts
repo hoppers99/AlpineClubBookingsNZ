@@ -308,6 +308,26 @@ export interface DiagnosticsRolePrivilegeReport {
    */
   undeclaredReadableRelations: number;
   /**
+   * COLUMNS in schema `public` the role can SELECT that `SELECT_GRANTS` does not
+   * declare — the column-level twin of the count above, and the control that makes a
+   * column allowlist real (AID-6A, #2375).
+   *
+   * `AuditLog` is granted by COLUMN precisely because the table also carries
+   * `ipAddress`, `userAgent`, `summary`, `details`, `metadata` and three
+   * member-identifying columns. Without this count, a hand-added
+   * `GRANT SELECT ON "AuditLog"` would leave `undeclaredReadableRelations` at zero —
+   * the relation IS declared — while the role could read every one of those columns.
+   * Measured on postgres:16: with the eight-column grant in place,
+   * `has_table_privilege(…, 'AuditLog', 'SELECT')` is FALSE and
+   * `has_any_column_privilege(…, 'SELECT')` is TRUE, so the relation-level count
+   * cannot distinguish the two grants at all.
+   *
+   * A relation declared WITHOUT a column list is skipped here: every one of its
+   * columns is legitimately readable, and enumerating them in TypeScript would make
+   * the allowlist track the schema.
+   */
+  undeclaredReadableColumns: number;
+  /**
    * `SECURITY DEFINER` routines in schema `public` the role may EXECUTE. Such a
    * routine runs with its OWNER's privileges, so one of them is a write path that
    * no table grant would show. It is checked rather than revoked because
@@ -347,6 +367,10 @@ export function isDiagnosticsRolePrivilegeSafe(
     report.forbiddenRoleNames.length === 0 &&
     report.writableRelations === 0 &&
     report.undeclaredReadableRelations === 0 &&
+    // The column-level twin of the line above. Not redundant with it: a relation the
+    // allowlist declares BY COLUMN is excluded from the relation count, so only this
+    // one notices a grant that widened to the whole table.
+    report.undeclaredReadableColumns === 0 &&
     report.executableSecurityDefinerRoutines === 0
   );
 }
@@ -387,6 +411,16 @@ export function isDiagnosticsRolePrivilegeSafe(
  * The relation and routine counts at the end use table AND column level predicates:
  * `GRANT INSERT (note) ON …` is a write privilege that `has_table_privilege`
  * alone reports as absent.
+ *
+ * The COLUMN count (`undeclared_readable_columns`, AID-6A #2375) is the one control
+ * that can tell a column-restricted grant from a table-wide one. `AuditLog` is
+ * granted eight columns because the rest of that table is IP addresses, user agents,
+ * free text, arbitrary JSON and member ids; a hand-added table-level
+ * `GRANT SELECT ON "AuditLog"` leaves every other count in this report unchanged —
+ * the relation is declared, so `undeclared_readable_relations` stays 0 — while the
+ * role gains all of them. Measured on postgres:16: with the eight-column grant,
+ * `has_table_privilege` is false and `has_any_column_privilege` is true, so the
+ * relation-level predicates cannot separate the two grants even in principle.
  */
 const ROLE_PRIVILEGE_SQL = `
 SELECT
@@ -454,6 +488,24 @@ SELECT
   )::int                                                              AS undeclared_readable_relations,
   (
     SELECT count(*)
+    FROM pg_catalog.pg_class c
+    JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+    JOIN pg_catalog.pg_attribute a
+      ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
+    WHERE n.nspname = 'public'
+      AND c.relkind = ANY (ARRAY['r','v','m','f','p'])
+      AND pg_catalog.has_column_privilege(current_user, c.oid, a.attnum, 'SELECT')
+      -- A relation declared WITHOUT a column list: all of its columns are allowed.
+      AND NOT ((n.nspname || '.' || c.relname) = ANY($5::text[]))
+      -- Otherwise the column itself has to be on the allowlist. A relation the
+      -- allowlist does not declare at all contributes every readable column here as
+      -- well as one row to the relation count above, which is the right answer twice.
+      AND NOT (
+        (n.nspname || '.' || c.relname || '.' || a.attname) = ANY($4::text[])
+      )
+  )::int                                                              AS undeclared_readable_columns,
+  (
+    SELECT count(*)
     FROM pg_catalog.pg_proc p
     JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
     WHERE n.nspname = 'public'
@@ -467,6 +519,28 @@ WHERE r.rolname = current_user
 /** The declared allowlist as the probe compares it: `schema.relation`. */
 function declaredSelectGrantKeys(): string[] {
   return SELECT_GRANTS.map((grant) => `${grant.schema}.${grant.relation}`);
+}
+
+/**
+ * The COLUMN allowlist as the probe compares it: `schema.relation.column`, for the
+ * entries that declare a column list (AID-6A, #2375).
+ */
+function declaredSelectColumnKeys(): string[] {
+  return SELECT_GRANTS.flatMap((grant) =>
+    (grant.columns ?? []).map(
+      (column) => `${grant.schema}.${grant.relation}.${column}`,
+    ),
+  );
+}
+
+/**
+ * The relations declared for the WHOLE relation — every column of these is
+ * legitimately readable, so the column-level count skips them entirely.
+ */
+function declaredWholeRelationGrantKeys(): string[] {
+  return SELECT_GRANTS.filter((grant) => grant.columns === undefined).map(
+    (grant) => `${grant.schema}.${grant.relation}`,
+  );
 }
 
 /**
@@ -531,6 +605,8 @@ async function readRolePrivileges(
     [...FORBIDDEN_PREDEFINED_ROLES],
     [...FORBIDDEN_SERVER_FILE_FUNCTIONS],
     declaredSelectGrantKeys(),
+    declaredSelectColumnKeys(),
+    declaredWholeRelationGrantKeys(),
   ]);
   const row = result.rows[0] as Record<string, unknown> | undefined;
   if (!row) {
@@ -564,6 +640,7 @@ async function readRolePrivileges(
     ),
     writableRelations: Number(row.writable_relations ?? 0),
     undeclaredReadableRelations: Number(row.undeclared_readable_relations ?? 0),
+    undeclaredReadableColumns: Number(row.undeclared_readable_columns ?? 0),
     executableSecurityDefinerRoutines: Number(
       row.executable_security_definer_routines ?? 0,
     ),
@@ -765,8 +842,9 @@ export type DiagnosticsDatabaseState =
   | "unverified"
   /**
    * Present and reachable, and the server's answer is not acceptable: the role
-   * holds a privilege ADR-007 forbids, can read a relation the allowlist does not
-   * declare, or is not even the role the connection string names.
+   * holds a privilege ADR-007 forbids, can read a relation — or a COLUMN of a
+   * column-restricted relation — that the allowlist does not declare, or is not even
+   * the role the connection string names.
    */
   | "over_privileged"
   /**
@@ -952,6 +1030,16 @@ export async function runDiagnosticsReadOnlyQuery(
     // Pinned per transaction so a role-level or database-level `search_path`
     // cannot redirect an unqualified relation name in a registry query.
     await client.query("SET LOCAL search_path TO public");
+    // Pinned for the same reason, and it is a CORRECTNESS control, not a cosmetic
+    // one. The platform stores every instant as a naive `timestamp` holding UTC, so
+    // any expression that crosses between `timestamp` and `timestamptz` — comparing a
+    // column against `now()`, or formatting one with `to_char` after an
+    // `AT TIME ZONE` — is resolved using the SESSION's `TimeZone`. On a deployment
+    // whose database or role sets `TimeZone` to `Pacific/Auckland`, the same entry
+    // would silently shift a window by 12-13 hours and stamp a local time with a `Z`.
+    // An entry should still be written to be timezone-independent; this makes a lapse
+    // harmless rather than a wrong answer presented as evidence.
+    await client.query("SET LOCAL TimeZone TO 'UTC'");
 
     const result: QueryResult = await client.query(wrapped, values);
     await client.query("COMMIT");

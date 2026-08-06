@@ -129,11 +129,12 @@ export async function POST(req: NextRequest) {
       });
       await tx.familyGroupMember.create({
         data: {
-          // #2520: no `role` is written. The column carries no grant (#2284
-          // re-anchored the one power it ever gated onto
-          // Member.detailsConfirmedByMemberId) and is retired pending its
-          // CONTRACT drop, so membership in this group confers nothing beyond
-          // being listed in it. That matters here: the group is materialised
+          // #2520: no `role` is written, and there is no longer a column to
+          // write to (dropped by 20260803030000). It carried no grant either —
+          // #2284 re-anchored the one power it ever gated onto
+          // Member.detailsConfirmedByMemberId — so membership in this group
+          // confers nothing beyond being listed in it. That matters here: the
+          // group is materialised
           // around a member who has not yet consented to the join (the
           // requester's JOIN_REQUEST is still pending admin review).
           familyGroupId: group.id,

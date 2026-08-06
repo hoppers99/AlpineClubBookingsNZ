@@ -29,7 +29,8 @@ export interface FamilyGroupMemberRow extends MemberOption, WithMemberAgeLabel {
   active: boolean;
   canLogin?: boolean;
   // #2520: no `role`. The admin family-group payloads used to carry the
-  // FamilyGroupMember.role value; the column is retired and nothing rendered it.
+  // FamilyGroupMember.role value; nothing rendered it, and the column itself is
+  // now dropped (20260803030000).
   inheritEmailFromId?: string | null;
   inheritEmailFrom?: { email: string } | null;
   hasPassword?: boolean;

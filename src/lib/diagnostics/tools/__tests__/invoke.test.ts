@@ -26,7 +26,12 @@ import {
 } from "../database";
 import { recordDiagnosticsToolAudit } from "../audit";
 import { invokeDiagnosticsTool } from "../invoke";
+import {
+  DIAGNOSTICS_MEMBERSHIP_CORRELATION_TOOL_ID,
+  DIAGNOSTICS_SUPPORT_CORRELATION_TOOLS,
+} from "../packs/support-correlation";
 import { DIAGNOSTICS_SUBSTRATE_PROBE_TOOL_ID } from "../registry";
+import { renderToolResultEvidenceBlock } from "../render";
 import { createDiagnosticsToolSession } from "../session";
 import type { DiagnosticsToolAuditInput } from "../audit";
 
@@ -250,6 +255,45 @@ describe("invokeDiagnosticsTool — the happy path (#2374)", () => {
     const first = await invoke();
     const second = await invoke();
     expect(first.audit.argsHash).toBe(second.audit.argsHash);
+  });
+
+  it("carries the entry's SERVER-OWNED searched scope onto the result", async () => {
+    // The wiring that makes the scope sentence reach the model (#2375). It is the one
+    // line between a registry entry declaring what it searched and the renderer being
+    // able to say so, and without it an empty correlation result renders as bare
+    // `not_found` — "there is no evidence of this to report" — which is a claim about
+    // the whole domain rather than about the audit categories the entry actually read.
+    //
+    // A real entry is used rather than a fixture: the value must come from the
+    // REGISTRY, so a test that supplied its own scope would prove nothing.
+    const correlation = DIAGNOSTICS_SUPPORT_CORRELATION_TOOLS.find(
+      (entry) => entry.id === DIAGNOSTICS_MEMBERSHIP_CORRELATION_TOOL_ID,
+    );
+    if (!correlation?.evidenceScope) throw new Error("no membership entry");
+    queryReturns([]);
+
+    const result = await invoke({ toolId: correlation.id, args: {} });
+    expect(result.status).toBe("ok");
+    if (result.status !== "ok") return;
+    expect(result.evidenceScope).toBe(correlation.evidenceScope);
+    // End to end: it is in the block the model reads, above the rows, and it survives
+    // the empty-result path — which is the only path where it changes an answer.
+    const block = renderToolResultEvidenceBlock(result);
+    expect(block).toContain("scope: ");
+    expect(block).toContain("account, privacy");
+    expect(block).toContain("rows: none matched");
+    expect(block.indexOf("scope:")).toBeLessThan(block.indexOf("rows:"));
+  });
+
+  it("OMITS the scope for an entry that declares none, rather than blanking it", async () => {
+    // A blank `scope:` line would read as "we searched nothing", which is worse than
+    // silence. The substrate probe declares no scope.
+    const result = await invoke();
+    expect(result.status).toBe("ok");
+    if (result.status !== "ok") return;
+    expect(result.evidenceScope).toBeUndefined();
+    expect("evidenceScope" in result).toBe(false);
+    expect(renderToolResultEvidenceBlock(result)).not.toContain("scope:");
   });
 });
 

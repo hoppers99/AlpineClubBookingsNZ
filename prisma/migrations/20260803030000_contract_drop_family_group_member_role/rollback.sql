@@ -1,0 +1,184 @@
+-- Reverse script for 20260803030000_contract_drop_family_group_member_role.
+--
+-- WHAT THIS IS FOR. That migration is declared `old_code_compatible=windowed` in
+-- docs/BLUE_GREEN_MIGRATION_SAFETY.tsv, so its rollback boundary is the MIGRATE
+-- step, not the cutover: once it commits, the previous release is already broken
+-- and aborting the deploy no longer restores service. This script is the path that
+-- undoes the schema change without a full restore. See
+-- docs/BLUE_GREEN_MIGRATION_POLICY.md -> "A `windowed` migration moves the
+-- rollback boundary".
+--
+-- Prisma never applies, checksums or even reads this file. Run it by hand, as the
+-- migration role, against the database you are rolling back.
+--
+-- WHEN TO USE IT. To go back to the release that was in production before this
+-- one. Under the owner's 3 Aug 2026 directive the RUNTIME half (#2565) was never
+-- deployed on its own, so that release is the last tagged one — v0.13.2 or
+-- whatever the operator recorded at runbook §1.4 — whose prisma/schema.prisma
+-- declares `role String @default("MEMBER")` with NO `@ignore`, i.e. a client that
+-- names the column in ordinary SELECTs, in insert column lists and in a WHERE
+-- clause (`role: "ADMIN"`). Without this script that release cannot serve the
+-- family surface at all. If you are rolling back further than that release, use
+-- the verified backup instead.
+--
+-- WHAT IT RESTORES, AND WHAT IT DOES NOT.
+--
+--   * The COLUMN comes back byte-identical to the one
+--     20260407120000_add_family_group_member_join_table created:
+--     `"role" TEXT NOT NULL DEFAULT 'MEMBER'`. That is exactly the shape the
+--     previous release's Prisma client expects from
+--     `role String @default("MEMBER")` — TEXT, NOT NULL, constant default — so its
+--     reads, its omitted-column inserts and its `role: "ADMIN"` filters all work
+--     again. Adding a column with a CONSTANT default is metadata-only on
+--     PostgreSQL 11+, so every existing row is populated by the same statement
+--     with no table rewrite and no window in which the column exists unpopulated.
+--
+--   * THE PER-ROW VALUES ARE NOT RESTORED, and cannot be: PostgreSQL cannot
+--     un-drop a column, and this script has nowhere to read the old labels from.
+--     Every row comes back as 'MEMBER'.
+--
+-- WHY 'MEMBER' IS THE SAFE COMPATIBILITY VALUE. Be clear what it is first: for
+-- every production row it IS A SUBSTITUTE, not the actual value. FOUR labels ever
+-- existed — 'MEMBER' (the column default, and what the 20260407120000 and
+-- 20260407200000 backfills wrote), 'ADMIN', 'LEAD' (only from the 20260408020000
+-- dependents backfill), and 'USER' (written by createFamilyGroupFromSuggestion to
+-- non-lead members of a group created from a family suggestion, and by the
+-- familyGroupMember.upsert create arm in the admin dependent-link route) — and
+-- every row in production carries one that a writer or a migration chose. Nothing
+-- was ever inserted by a client that omitted the column and took the database
+-- default: that would need #2565 deployed on its own, and the owner's 3 Aug 2026
+-- directive replaced that plan with this window, which stops the old app BEFORE
+-- migrating. So the ground that reads strongest — "it is already the value" — is
+-- the one that carries no weight here, and it is not claimed.
+--
+-- What actually makes 'MEMBER' safe is the second ground, on its own. Of the four
+-- labels, only 'ADMIN' was ever READ by anything; 'MEMBER', 'LEAD' and 'USER' were
+-- inert alike. So repopulating with 'MEMBER' can only ever WITHHOLD a power, never
+-- grant one — it is fail-closed by construction, whatever the row held before. It
+-- is also the column's own declared default, i.e. the value the schema itself
+-- designates for a membership with nothing special recorded, which is why it is the
+-- right choice among the three inert labels. Reconstructing 'ADMIN' by heuristic —
+-- from who created the group, or from FamilyGroup.billingMembershipId — was
+-- considered and rejected: that is a guess about who holds a privilege, and guessing
+-- in the granting direction is the one mistake a rollback script must not make.
+--
+-- Because 'MEMBER' is a substitute rather than the actual value, THE PER-ROW DUMP AT
+-- STEP 8 OF THE WINDOW IS REQUIRED, not optional. It is the only thing that makes
+-- step 3 below possible.
+--
+-- WHAT 'MEMBER' COSTS, stated plainly rather than buried. On a rolled-back release
+-- that PREDATES #2284 — which the last tagged release does — the value is read in
+-- one place: the one-step partner declaration
+-- (`listOneStepPartnerCandidates` and the one-step path of `requestPartnerLink` in
+-- src/lib/member-partner-link.ts) requires the acting member to hold
+-- `role: "ADMIN"` in a group the target belongs to. With every row back as
+-- 'MEMBER' nobody holds ADMIN, so that path finds no candidates and, for a
+-- no-login target, returns its 403 ("Only the admin of their family group can
+-- declare this partnership directly; otherwise ask an admin"). Everything else
+-- about family groups — membership, billing family, join/invite/removal requests,
+-- admin editing, merges — is unaffected, because nothing else reads the value.
+-- That is a FAIL-CLOSED loss of one convenience path, not a data loss and not a
+-- privilege escalation, and it is the correct direction for a fallback. The
+-- workaround on the rolled-back release is the ordinary consent round-trip: the
+-- partner link is still creatable, it just asks the other member first.
+--
+-- IF YOU NEED THE EXACT OLD VALUES BACK, there are two sources, in order of
+-- preference:
+--
+--   1. The per-row dump the runbook's pre-migration checks take
+--      (docs/PRODUCTION_UPGRADE_RUNBOOK.md -> "Windowed migration deploy
+--      sequence", #2520 step 8), which that step marks REQUIRED. Run step 3 below
+--      after step 1 to restore every label exactly. Check you can actually READ the
+--      file from wherever you have a shell before you rely on it: step 8 takes it to
+--      a HOST path deliberately, because a `\copy` run through
+--      `docker compose exec postgres psql` writes inside the postgres container's
+--      own writable layer — not the postgres_data volume, not any backup path, and
+--      gone the next time that container is recreated (measured; runbook 7.2).
+--   2. The verified backup taken immediately before migrating. Use it if the dump
+--      is missing and the labels matter.
+--
+-- IF THIS RELEASE ALSO CARRIED 20260803010000_contract_subscription_lockout_drop_enabled
+-- — the sibling windowed migration, applied in the same window — RUN BOTH REVERSE
+-- SCRIPTS, in the reverse of the order they were applied: this one first, then
+-- 20260803010000's. This one alone is not enough. The family surface comes back but
+-- "MembershipLockoutSettings"."enabled" is still dropped, the previous release's
+-- client names it on every read of that model, and the booking gates resolve the
+-- club's lockout policy through that read, so every booking write path still fails
+-- while the family pages look healthy. Rehearsed in that order; the two touch
+-- different tables so neither order can corrupt the other.
+--
+-- After running this, redeploy the previous release's images.
+--
+-- ROLLING FORWARD AFTER THIS SCRIPT, measured on a throwaway PostgreSQL 16 in the
+-- runbook §7.2 rehearsal rather than reasoned about:
+--
+--   * `_prisma_migrations` still records this migration as applied, and NOTHING in
+--     the deploy path notices. `prisma migrate status` answers "Database schema is
+--     up to date!", `prisma migrate deploy` answers "No pending migrations to
+--     apply.", and the deploy script's own drift gate
+--     (`migrate diff --from-migrations prisma/migrations --to-schema
+--     prisma/schema.prisma`) reports "No difference detected" — it compares
+--     committed history to the schema file and never reads the live database. The
+--     one command that sees the restored column is
+--     `prisma migrate diff --exit-code --from-config-datasource --to-schema
+--     prisma/schema.prisma`, which exits 2.
+--   * To roll forward, RE-APPLY migration.sql BY HAND as the migration role. The
+--     history row is already correct, so that leaves history, schema and database
+--     in agreement with nothing to clear up. Deleting the `_prisma_migrations` row
+--     and migrating again also works, and was rehearsed, but it edits the migration
+--     history for no gain.
+--   * You do NOT have to roll forward before starting the replacement release: the
+--     replacement client reads and writes this table normally against the restored
+--     shape, because the column is NOT NULL with a constant default and an insert
+--     that omits it takes that default.
+--   * This script is NOT idempotent. A second run fails with `column "role" of
+--     relation "FamilyGroupMember" already exists`, which is the safe direction —
+--     a loud refusal rather than a silent double-apply.
+
+-- 1. Recreate the column in the exact shape the previous release's client expects.
+--    The constant default repopulates every existing row in this one statement.
+ALTER TABLE "FamilyGroupMember"
+  ADD COLUMN "role" TEXT NOT NULL DEFAULT 'MEMBER';
+
+-- 2. Confirm the shape before you redeploy. Expect one row:
+--    role | text | NO | 'MEMBER'::text
+SELECT
+  column_name,
+  data_type,
+  is_nullable,
+  column_default
+FROM information_schema.columns
+WHERE table_name = 'FamilyGroupMember'
+  AND column_name = 'role';
+
+-- 3. Exact value restore from the pre-migration dump. Run it when you need the old
+--    labels back rather than the 'MEMBER' substitute step 1 wrote (see "WHAT
+--    'MEMBER' COSTS" above for when that matters). It loads the CSV into a temporary
+--    table and copies the labels across by id. Rows deleted since the dump simply do
+--    not match, and rows created since the dump keep their 'MEMBER' default, which is
+--    correct for both.
+--
+--    RUN IT AS A SCRIPT FILE — `psql -f restore.sql`, not `psql -c "..."`. `\copy`
+--    is a psql meta-command, so it is a syntax error inside `-c`, and the TEMP table
+--    has to live in the same session as the UPDATE.
+--
+--    On a Docker-only host, put both files where psql can see them first. This is
+--    exactly the shape rehearsed in runbook 7.2, which reported `COPY 5` /
+--    `UPDATE 3` and restored 'ADMIN', 'LEAD' and 'USER' exactly:
+--
+--      docker cp ./family-group-member-role-<DATE>.csv <project>-postgres-1:/tmp/roles.csv
+--      docker cp ./restore.sql                          <project>-postgres-1:/tmp/restore.sql
+--      docker compose exec postgres psql -U tac -d tacbookings -v ON_ERROR_STOP=1 -f /tmp/restore.sql
+--
+--    restore.sql, with the in-container path the copy above put the CSV at:
+--
+--    CREATE TEMP TABLE "family_group_member_role_restore" (
+--      "id"   TEXT PRIMARY KEY,
+--      "role" TEXT NOT NULL
+--    );
+--    \copy "family_group_member_role_restore" FROM '/tmp/roles.csv' CSV HEADER
+--    UPDATE "FamilyGroupMember" AS target
+--    SET "role" = restore."role"
+--    FROM "family_group_member_role_restore" AS restore
+--    WHERE target."id" = restore."id"
+--      AND target."role" <> restore."role";
