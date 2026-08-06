@@ -553,8 +553,8 @@ export async function applyBedAllocationRemoval(input: {
       ]),
     ].sort();
     if (lockIds.length > 0) {
-      await tx.$queryRaw`
-        SELECT "id"
+      await tx.$executeRaw`
+        SELECT 1
         FROM "BedAllocation"
         WHERE "id" IN (${Prisma.join(lockIds)})
         ORDER BY "id"

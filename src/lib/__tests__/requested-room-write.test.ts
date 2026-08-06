@@ -10,7 +10,6 @@ const { auditMock, prismaMock } = vi.hoisted(() => ({
     },
     lodgeRoom: { findUnique: vi.fn() },
     $executeRaw: vi.fn(),
-    $queryRaw: vi.fn(),
     $transaction: vi.fn(),
   },
 }));
@@ -24,7 +23,6 @@ describe("requested room authoritative write", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     prismaMock.$executeRaw.mockResolvedValue(0);
-    prismaMock.$queryRaw.mockResolvedValue([]);
     prismaMock.$transaction.mockImplementation(
       async (callback: (tx: typeof prismaMock) => unknown) => callback(prismaMock),
     );
@@ -80,8 +78,7 @@ describe("requested room authoritative write", () => {
       auditActorLabel: "Member",
     });
 
-    expect(prismaMock.$executeRaw).toHaveBeenCalledTimes(1);
-    expect(prismaMock.$queryRaw).toHaveBeenCalledTimes(1);
+    expect(prismaMock.$executeRaw).toHaveBeenCalledTimes(2);
     expect(prismaMock.booking.updateMany).toHaveBeenCalledWith({
       where: expect.objectContaining({
         id: "booking-1",

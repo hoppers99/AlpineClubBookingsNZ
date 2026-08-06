@@ -4335,8 +4335,8 @@ export async function approveBedAllocations(input: ApproveBedAllocationsInput) {
     });
     const rowIds = rowsToLock.map((row) => row.id);
     if (rowIds.length > 0) {
-      await tx.$queryRaw`
-        SELECT "id"
+      await tx.$executeRaw`
+        SELECT 1
         FROM "BedAllocation"
         WHERE "id" IN (${Prisma.join(rowIds)})
         ORDER BY "id"

@@ -42,8 +42,8 @@ export async function writeRequestedRoom(input: {
   }
   return prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
-    await tx.$queryRaw`
-      SELECT "id"
+    await tx.$executeRaw`
+      SELECT 1
       FROM "Booking"
       WHERE "id" = ${input.bookingId}
       FOR UPDATE

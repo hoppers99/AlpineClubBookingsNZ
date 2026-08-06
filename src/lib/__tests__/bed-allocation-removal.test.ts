@@ -12,7 +12,6 @@ const { auditMock, capacityLockMock, prismaMock } = vi.hoisted(() => ({
     },
     lodge: { findUnique: vi.fn() },
     $executeRaw: vi.fn(),
-    $queryRaw: vi.fn(),
     $transaction: vi.fn(),
   },
 }));
@@ -186,7 +185,6 @@ describe("bed allocation removal preview/apply", () => {
     auditMock.mockResolvedValue(undefined);
     capacityLockMock.mockResolvedValue(undefined);
     prismaMock.$executeRaw.mockResolvedValue(0);
-    prismaMock.$queryRaw.mockResolvedValue([]);
     prismaMock.$transaction.mockImplementation(
       async (callback: (tx: typeof prismaMock) => unknown) => callback(prismaMock),
     );
