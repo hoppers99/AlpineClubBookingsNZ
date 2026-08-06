@@ -85,7 +85,7 @@
   never shown that member's other bookings and never asked to fix something that is
   not theirs. What happens instead in every one of these cases is that the affected
   booking stays confirmed and keeps its beds and its payments, nothing is ever
-  cancelled automatically, the booking owner is emailed once naming the lodge and the
+  cancelled automatically, the booking owner is emailed naming the lodge and the
   uncovered nights, and the booking appears prominently in the Booking Officer's
   **Adult member cover needs attention** queue above `/admin/bookings`; Stuck States
   mirrors the count and direct booking rows for support staff. That entry clears itself when
