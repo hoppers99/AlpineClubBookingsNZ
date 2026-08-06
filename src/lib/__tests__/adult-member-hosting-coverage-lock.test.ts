@@ -179,10 +179,12 @@ describe("the per-owner coverage lock (#2576 §9)", () => {
     expect(doc).toContain("deliberately not a `FOR UPDATE`");
 
     const merge = readRepoFile("src/lib/member-merge.ts");
+    const mergePolicyLock = merge.indexOf("lockAdultMemberHostingPolicySet(tx)");
     const mergeLifecycleLock = merge.indexOf("member-lifecycle:${lockA}");
     const relationMoves = merge.indexOf("const relationMoves = await applyMoves(");
     const mergeMemberRows = merge.indexOf('ORDER BY "id" FOR UPDATE', relationMoves);
-    expect(mergeLifecycleLock).toBeGreaterThan(-1);
+    expect(mergePolicyLock).toBeGreaterThan(-1);
+    expect(mergeLifecycleLock).toBeGreaterThan(mergePolicyLock);
     expect(relationMoves).toBeGreaterThan(mergeLifecycleLock);
     expect(mergeMemberRows).toBeGreaterThan(relationMoves);
   });

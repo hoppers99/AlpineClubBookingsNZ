@@ -16,6 +16,7 @@ import { deleteOwnedMemberPhotoBlobs } from "@/lib/member-photo";
 import { memberDisplayName } from "@/lib/member-serialization";
 import { prisma } from "@/lib/prisma";
 import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
+import { lockAdultMemberHostingPolicySet } from "@/lib/adult-member-hosting-policy-set";
 import {
   enqueueHostingCoverageReevaluationForMember,
   enqueueOwnHostingCoverageReevaluation,
@@ -25,8 +26,9 @@ import logger from "@/lib/logger";
 /**
  * E11 (#1937) — additive, master-wins member profile merge.
  *
- * The whole operation runs in ONE interactive transaction guarded by a dual
- * `member-lifecycle:{id}` advisory lock (see docs/CONCURRENCY_AND_LOCKING.md).
+ * The whole operation runs in ONE interactive transaction guarded first by the
+ * hosting policy-set lock, then a dual `member-lifecycle:{id}` advisory lock
+ * (see docs/CONCURRENCY_AND_LOCKING.md).
  * The hosting drain takes the same sorted keys for its claimed owner and actor,
  * then refreshes the exact queue payload. This handshake starts here, before any
  * relation move, not at the later Member row locks used by field merge.
@@ -2144,6 +2146,14 @@ export async function executeMemberMerge(params: {
   }
 
   const result = await client.$transaction(async (tx) => {
+    // Policy reconciliation enumerates bookings and inserts required queue rows
+    // under this key. Take it before lifecycle locks and hold it through every
+    // relation move, merge-triggered queue write and loser deletion, so a policy
+    // writer can only enqueue the complete pre-merge owner (which this merge
+    // moves) or the surviving owner after commit. Without this first tier, a row
+    // inserted after applyMoves could be cascade-dropped with the loser.
+    await lockAdultMemberHostingPolicySet(tx);
+
     // Dual advisory lock in sorted id order (deadlock-free) on the shared
     // member-lifecycle key space, so a merge serialises with any concurrent
     // delete/archive/merge touching either member.

@@ -218,10 +218,11 @@ const SCOPED_ADVISORY_LOCK_INVENTORY: Record<string, number> = {
   // PostgreSQL reaches tuple locks. Config import orders its existing singleton
   // first, then this key; live CRUD takes only this key.
   "src/lib/minimum-stay-policy-set.ts": 1,
-  // #1937: executeMemberMerge takes the shared member-lifecycle:{id} key for
-  // BOTH the master and the loser, in sorted id order (deadlock-free), so a
-  // merge serialises with any concurrent delete/archive/merge touching either
-  // member (same dual-lock pattern as member-lifecycle-actions.ts).
+  // #1937/#2596: executeMemberMerge first calls the shared hosting policy-set
+  // helper, then takes the two raw member-lifecycle:{id} keys in sorted order.
+  // Only the raw locks are counted here; the helper owns its single raw site in
+  // adult-member-hosting-policy-set.ts. This order serialises policy enumeration
+  // before relation moves and every delete/archive/merge touching either member.
   "src/lib/member-merge.ts": 2,
   "src/lib/member-partner-link.ts": 1,
   // #2148: reconcileSubscriptionBillingExceptions takes the SAME

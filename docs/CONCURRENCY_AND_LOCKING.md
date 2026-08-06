@@ -113,7 +113,7 @@ are the literal `1`.
 | **Roster-date writers** | `hashtext("roster:<date>")` | `lockRosterDate(tx, date)` / sorted `lockRosterDates(tx, dates)` (`roster-lock.ts`) | date | Serialises whole-roster save/regenerate/confirm/auto-suggest, kiosk confirm and complete/uncomplete, and booking/guest cleanup that can remove suggested rows for the same lodge night. |
 | **Config-transfer import** | `hashtext("config-transfer-import")` | `acquireConfigImportLock(tx)` (`config-transfer-lock.ts`) | — | Single-flights configuration-bundle apply and excludes lodge create/rename while an import resolves bundle slugs to immutable lodge ids. |
 | **Minimum-stay policy set** | `hashtext("minimum-stay-policy-set")` | `lockMinimumStayPolicySet(tx)` (`minimum-stay-policy-set.ts`) plus the migration's `MinimumStayPolicy_lock_set` statement trigger | policy config | Serialises every live CRUD and config-transfer replacement across the small club/lodge policy set. The database trigger puts draining old-colour DML behind the exact same key before any tuple lock. |
-| **Adult-member hosting policy set** | `hashtext("adult-member-hosting-policy-set")` | `lockAdultMemberHostingPolicySet(tx)` (`adult-member-hosting-policy-set.ts`) plus the migration's `AdultMemberHostingPolicy_lock_set` statement trigger | policy config | Serialises the admin write route and the config-transfer replacement over the one club row plus one row per lodge (#2364), and fences the drain's policy read before incident reconciliation. Unlike its minimum-stay sibling the trigger is NOT a blue/green drain boundary — the table did not exist before its own migration, so no old colour writes it — it is there so advisory-before-tuple order holds for every writer, operator psql included. Policy writers bulk-insert re-evaluation rows while holding only this key; the later drain composes policy-set → sorted claimed member-lifecycle keys → sorted claimed `Member FOR KEY SHARE` rows → coverage-owner. |
+| **Adult-member hosting policy set** | `hashtext("adult-member-hosting-policy-set")` | `lockAdultMemberHostingPolicySet(tx)` (`adult-member-hosting-policy-set.ts`) plus the migration's `AdultMemberHostingPolicy_lock_set` statement trigger | policy config | Serialises the admin write route and the config-transfer replacement over the one club row plus one row per lodge (#2364), fences the drain's policy read before incident reconciliation, and excludes member merge while policy reconciliation enumerates bookings and inserts queue rows. Unlike its minimum-stay sibling the trigger is NOT a blue/green drain boundary — the table did not exist before its own migration, so no old colour writes it — it is there so advisory-before-tuple order holds for every writer, operator psql included. Policy writers hold only this key; drain and member merge both compose policy-set → sorted member-lifecycle, with the drain continuing through sorted `Member FOR KEY SHARE` rows → coverage-owner. |
 | **Membership subscription billing** | `hashtext("membership-subscription-billing:<seasonYear>")` | `confirmSubscriptionBillingPreview`, `reconcileSubscriptionBillingExceptions` (`membership-subscription-billing.ts`) | — | Annual/approval charge snapshot creation for one membership year; the #2148 refresh-reconciliation holds the same key so exception auto-resolution serialises with confirm and never resolves rows a concurrent confirm is regenerating. The #2161 operator family-marker writers (MARK/UNMARK on the subscription-billing route) deliberately take **no** advisory lock: they only insert/release a `FamilyGroupSeasonInvoiceMarker` row (single-active enforced by a partial unique index, so a concurrent double-mark is a benign no-op), and confirm re-derives suppression from the live marker rows under this same lock inside its transaction, so a mark landing mid-confirm either is seen by the in-tx re-preview or shifts the confirmation token — never a torn snapshot. |
 | **Authoritative fee schedule** | `hashtext("fee-schedule:<domain>:<key>")` | `lockFeeSchedule` (`authoritative-fees.ts`) | — | Serialises effective-dated membership or entrance-fee schedule changes for one configured key. |
 | **Member partner link** | sorted `hashtext("member-partner-link:<memberId>")` keys | `lockPartnerMembers` (`member-partner-link.ts`) | — | Serialises partner-link invariants across every member touched by a link; same-family keys are sorted. |
@@ -391,13 +391,15 @@ and also covers a second merge of the first survivor. After three unstable reads
 the exact claim is failed for a later sweep instead of processing an unfenced id.
 
 The advisory tier is the merge handshake; its later Member row lock is too late.
-Member merge takes sorted member-lifecycle keys at transaction entry, before it
+Member merge takes the hosting policy-set key and then sorted member-lifecycle keys
+at transaction entry, before it
 re-points relations. If drain wins, merge waits and later re-points the drain's
 committed incident effects. If merge wins, the typed queue re-read sees the
 survivor. The composed order is **policy-set → sorted member-lifecycle → sorted
-Member KEY SHARE → exact queue re-read → coverage-owner**. No member-lifecycle
-participant takes the hosting policy-set key, and policy writers take no lifecycle,
-Member-row or coverage-owner lock, so neither counterpart reverses this chain.
+Member KEY SHARE → exact queue re-read → coverage-owner**. Member merge joins the
+first two tiers in that same direction; every other member-lifecycle participant
+omits the policy key. Policy writers take no lifecycle, Member-row or coverage-owner
+lock, so no counterpart reverses this chain.
 The queue read is deliberately not a `FOR UPDATE`: no queue tuple lock is held while
 the member tiers are acquired, so there is no queue → Member inversion.
 
@@ -1005,7 +1007,8 @@ its order against every advisory- and row-lock counterpart.
 
 ### Member merge — dual member-lifecycle lock (E11 #1937)
 
-`executeMemberMerge` (`member-merge.ts`) is a writer that holds **two**
+`executeMemberMerge` (`member-merge.ts`) first takes the adult-member hosting
+policy-set key, then holds **two**
 `member-lifecycle:<memberId>` advisory locks at once — one for the master, one
 for the loser. Both are acquired at the very top of the single merge transaction
 in **sorted id order** (`[masterId, loserId].sort()`, smaller id first) so a
@@ -1013,10 +1016,17 @@ merge and its mirror (a merge started from the other direction, or a concurrent
 archive/delete of either member) can never deadlock. Because the keys share the
 `member-lifecycle:` namespace with `member-lifecycle-actions.ts`, a merge also
 mutually excludes any archive or delete of either the master or the loser.
+The policy key is held through all relation moves, hosting re-evaluation writes,
+and loser deletion. A concurrent policy reconciliation therefore either inserts a
+complete pre-merge loser-owned queue row before merge starts (which the relation
+sweep moves to the master), or waits and reads the surviving booking owner after
+merge commits. It cannot insert a loser-owned row after the sweep for deletion to
+cascade away, nor race the deleted FK into a policy-save failure.
+
 The hosting drain is the other multi-key participant: it may hold the claimed
 owner and actor keys, also sorted and de-duplicated, to exclude merge before
-relation moves begin. It takes the hosting policy-set first; no other
-member-lifecycle participant takes that policy key, so this edge is one-way.
+relation moves begin. It takes the hosting policy-set first, the same direction as
+merge; no other member-lifecycle participant takes that policy key.
 
 Inside the locks the merge re-reads both members, re-runs the full guard matrix,
 and re-verifies the HMAC preview token (which bakes in both `updatedAt` values)
