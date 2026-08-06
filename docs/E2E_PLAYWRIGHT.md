@@ -471,7 +471,12 @@ Four rules follow, and a new spec must satisfy all four:
   every create still traverses production rate limiting and the suite never
   resets or mocks its storage. A future test that deliberately shares or
   exhausts the limiter must be classified `intentional-limiter` in the census
-  and must not use the isolation helper.
+  and must not use the isolation helper. The focused #2599 executable contract
+  also reproduces the old exhausted runner bucket through the shipped
+  `bookingCreate` configuration, client-IP resolver, and in-process fallback
+  counter, then executes retry 1 and retry 2 around downstream waitlist and
+  whole-lodge bucket probes. It does not need Stripe credentials or a
+  provider success, and it neither resets nor mocks the limiter store.
 - **Restore shared state in `afterAll`, never at the end of the test body.**
   `xero-setup-wizard-completion.spec.ts` used to disconnect Xero and rewind the
   wizard on its last line; when it failed earlier it stranded the sibling spec on

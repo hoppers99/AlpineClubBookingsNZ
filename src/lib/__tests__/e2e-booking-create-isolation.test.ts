@@ -15,6 +15,11 @@ import {
   postBookingCreate,
   withBookingCreateClientIp,
 } from "../../../e2e/helpers/booking-create-client-ip";
+import {
+  checkRateLimitInMemory,
+  getClientIp,
+  rateLimiters,
+} from "../rate-limit";
 
 const E2E_ROOT = path.join(process.cwd(), "e2e");
 
@@ -1013,6 +1018,100 @@ describe("E2E booking-create retry isolation (#2599)", () => {
       },
       data: { checkIn: "2026-08-01" },
     });
+  });
+
+  it("keeps waitlist and whole-lodge creates live after one and two Stripe retries", () => {
+    // IP extraction and limiter namespacing happen before either production
+    // store is selected. Drive the shipped in-process fallback directly here:
+    // it uses the same `bookingCreate` id/key/budget as the shared Postgres
+    // path, needs no storage mock or reset, and keeps this provider-free
+    // reproduction deterministic. `rate-limit.test.ts` separately proves the
+    // shared counter's atomic upsert and fallback boundary.
+    const spendProductionBookingCreateBucket = (
+      headers?: Readonly<Record<string, string>>,
+    ) => {
+      const request = new Request("https://club.example/api/bookings", {
+        method: "POST",
+        headers,
+      });
+      return checkRateLimitInMemory(
+        rateLimiters.bookingCreate,
+        getClientIp(request),
+      );
+    };
+
+    // Reproduce the old serial-runner failure first. Twenty unlabelled creates
+    // consume the shipped 20/hour `bookingCreate:unknown` bucket and the next
+    // create is refused. This is the state a retry used to leave for a later
+    // waitlist or whole-lodge setup call.
+    expect(rateLimiters.bookingCreate).toMatchObject({
+      id: "booking-create",
+      limit: 20,
+      windowSeconds: 60 * 60,
+    });
+    for (let requestNumber = 1; requestNumber <= 20; requestNumber += 1) {
+      expect(
+        spendProductionBookingCreateBucket(),
+        `legacy shared request ${requestNumber} must consume the real bucket`,
+      ).toMatchObject({ success: true, remaining: 20 - requestNumber });
+    }
+    expect(spendProductionBookingCreateBucket()).toMatchObject({
+      success: false,
+      remaining: 0,
+    });
+
+    const stripeAttempt = bookingCreateIsolation("stripe-success", 0);
+    const stripeRetryOne = bookingCreateIsolation("stripe-success", 1);
+    const stripeRetryTwo = bookingCreateIsolation("stripe-success", 2);
+    const waitlistAttempt = bookingCreateIsolation("waitlist-placement", 0);
+    const wholeLodgeAttempt = bookingCreateIsolation(
+      "whole-lodge-held-anchor",
+      0,
+    );
+
+    expect(
+      new Set([
+        stripeAttempt.clientIp,
+        stripeRetryOne.clientIp,
+        stripeRetryTwo.clientIp,
+        waitlistAttempt.clientIp,
+        wholeLodgeAttempt.clientIp,
+      ]).size,
+    ).toBe(5);
+
+    // The original Stripe attempt and its first retry use separate production
+    // keys. The two later waitlist creates share their own attempt bucket, and
+    // the whole-lodge held-world create has another. All remain live even while
+    // the old runner bucket above is already exhausted.
+    expect(spendProductionBookingCreateBucket(stripeAttempt.headers)).toMatchObject({
+      success: true,
+      remaining: 19,
+    });
+    expect(
+      spendProductionBookingCreateBucket(stripeRetryOne.headers),
+    ).toMatchObject({ success: true, remaining: 19 });
+    expect(
+      spendProductionBookingCreateBucket(waitlistAttempt.headers),
+    ).toMatchObject({ success: true, remaining: 19 });
+    expect(
+      spendProductionBookingCreateBucket(waitlistAttempt.headers),
+    ).toMatchObject({ success: true, remaining: 18 });
+    expect(
+      spendProductionBookingCreateBucket(wholeLodgeAttempt.headers),
+    ).toMatchObject({ success: true, remaining: 19 });
+
+    // A second prior Stripe retry spends only retry 2's Stripe bucket. The
+    // next waitlist and whole-lodge probes advance solely from their own prior
+    // counts, proving the retry did not consume either downstream allowance.
+    expect(
+      spendProductionBookingCreateBucket(stripeRetryTwo.headers),
+    ).toMatchObject({ success: true, remaining: 19 });
+    expect(
+      spendProductionBookingCreateBucket(waitlistAttempt.headers),
+    ).toMatchObject({ success: true, remaining: 17 });
+    expect(
+      spendProductionBookingCreateBucket(wholeLodgeAttempt.headers),
+    ).toMatchObject({ success: true, remaining: 18 });
   });
 
   it("adds the header only to the exact browser booking-create request", async () => {
