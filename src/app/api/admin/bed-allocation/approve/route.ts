@@ -11,7 +11,7 @@ import {
 import { parseJsonRequestBody } from "@/lib/api-json";
 import { createAuditLog } from "@/lib/audit";
 
-// requireAdmin() is enforced by requireBedAllocationAdmin().
+// requireAdmin() is enforced by requireBedAllocationWrite().
 const approveSchema = z
   .object({
     allocationIds: z.array(z.string().min(1)).max(250).optional(),

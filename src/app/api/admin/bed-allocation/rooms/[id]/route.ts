@@ -12,7 +12,7 @@ import { parseJsonRequestBody } from "@/lib/api-json";
 import { logAudit } from "@/lib/audit";
 import { revalidatePublicSite } from "@/lib/public-content-revalidation";
 
-// requireAdmin() is enforced by requireBedAllocationAdmin().
+// requireAdmin() is enforced by requireBedInventoryWrite().
 const roomPatchSchema = z
   .object({
     name: z.string().trim().min(1).max(100).optional(),

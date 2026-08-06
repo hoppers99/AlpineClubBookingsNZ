@@ -7,7 +7,7 @@ import {
 import { logAudit } from "@/lib/audit";
 import { revalidatePublicSite } from "@/lib/public-content-revalidation";
 
-// requireAdmin() is enforced by requireBedAllocationAdmin().
+// requireAdmin() is enforced by requireBedInventoryWrite().
 export async function POST() {
   const guard = await requireBedInventoryWrite();
   if (!guard.ok) return guard.response;

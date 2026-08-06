@@ -10,7 +10,7 @@ import {
 import { prisma } from "@/lib/prisma";
 import { resolveOptionalActiveLodgeId } from "@/lib/lodges";
 
-// requireAdmin() is enforced by requireBedAllocationAdmin().
+// requireAdmin() is enforced by requireBedAllocationRead().
 export async function GET(request: NextRequest) {
   const guard = await requireBedAllocationRead();
   if (!guard.ok) return guard.response;

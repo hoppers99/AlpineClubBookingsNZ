@@ -6,7 +6,7 @@ import {
 } from "@/lib/admin-bed-allocation-routes";
 import { createAuditLog } from "@/lib/audit";
 
-// requireAdmin() is enforced by requireBedAllocationAdmin().
+// requireAdmin() is enforced by requireBedAllocationWrite().
 export async function DELETE(
   _request: Request,
   { params }: { params: Promise<{ id: string }> },

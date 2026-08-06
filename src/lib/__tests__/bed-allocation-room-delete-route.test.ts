@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NextResponse } from "next/server";
 
 // DELETE /api/admin/bed-allocation/rooms/[id] follows the bed DELETE route
-// pattern: the shared requireBedAllocationAdmin guard, an audit entry on
+// pattern: the shared requireBedInventoryWrite guard, an audit entry on
 // success, and the shared bedAllocationErrorResponse mapper for typed guard
 // errors. The next-auth chain (session-guards / admin-modules) is mocked so the
 // real guard wrapper and the real error mapper both run without loading auth.

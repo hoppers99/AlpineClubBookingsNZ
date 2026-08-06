@@ -13,7 +13,7 @@ import {
 import { parseJsonRequestBody } from "@/lib/api-json";
 import { createAuditLog } from "@/lib/audit";
 
-// requireAdmin() is enforced by requireBedAllocationAdmin().
+// requireAdmin() is enforced by requireBedAllocationWrite().
 const manualAllocationSchema = z
   .object({
     bookingGuestId: z.string().min(1),
