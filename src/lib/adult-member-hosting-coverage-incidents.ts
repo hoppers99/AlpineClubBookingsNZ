@@ -56,6 +56,9 @@ export interface HostingCoverageOwnerNotificationClaim {
   claimToken: string;
 }
 
+/** Shared lifetime for claiming and finally validating one provider delivery. */
+export const HOSTING_COVERAGE_OWNER_NOTIFICATION_LEASE_MS = 15 * 60 * 1000;
+
 /**
  * The immutable payload handed to the email provider for one current claim.
  *
@@ -103,8 +106,12 @@ export interface OpenHostingCoverageIncidentParams {
   lodgeId: string;
   cause: HostingCoverageIncidentCause;
   violation: AdultMemberHostingPolicyExceptionViolation;
-  /** The officer who overrode the refusal, and their mandatory reason (§7). */
-  override?: { byMemberId: string; reason: string } | null;
+  /**
+   * The officer who overrode the refusal, when that member row still exists,
+   * and the mandatory reason (§7). Attribution is nullable because queued work
+   * survives member deletion; the explanation must survive it too.
+   */
+  override?: { byMemberId: string | null; reason: string } | null;
 }
 
 export type HostingCoverageIncidentOutcome =
@@ -316,7 +323,9 @@ export async function claimHostingCoverageOwnerNotification(
   db: Pick<PrismaClient, "hostingCoverageIncident">,
 ): Promise<HostingCoverageOwnerNotificationClaim | null> {
   const claimedAt = new Date();
-  const staleBefore = new Date(claimedAt.getTime() - 15 * 60 * 1000);
+  const staleBefore = new Date(
+    claimedAt.getTime() - HOSTING_COVERAGE_OWNER_NOTIFICATION_LEASE_MS,
+  );
   const claimToken = randomUUID();
   const claim = await db.hostingCoverageIncident.updateMany({
     where: {
@@ -363,7 +372,11 @@ export async function claimHostingCoverageOwnerNotification(
 export async function loadHostingCoverageOwnerNotificationDelivery(
   params: HostingCoverageOwnerNotificationClaim & { bookingId: string },
   db: Pick<PrismaClient, "hostingCoverageIncident">,
+  now: Date = new Date(),
 ): Promise<HostingCoverageOwnerNotificationDelivery | null> {
+  const currentFrom = new Date(
+    now.getTime() - HOSTING_COVERAGE_OWNER_NOTIFICATION_LEASE_MS,
+  );
   const incident = await db.hostingCoverageIncident.findFirst({
     where: {
       id: params.incidentId,
@@ -372,6 +385,9 @@ export async function loadHostingCoverageOwnerNotificationDelivery(
       stateKey: params.stateKey,
       ownerNotificationClaimStateKey: params.stateKey,
       ownerNotificationClaimToken: params.claimToken,
+      // Claim acquisition treats only timestamps strictly before this boundary
+      // as stale, so the final delivery fence keeps the exact boundary current.
+      ownerNotificationClaimedAt: { gte: currentFrom },
     },
     select: {
       evidence: true,

@@ -13,6 +13,7 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 
 import {
+  HOSTING_COVERAGE_OWNER_NOTIFICATION_LEASE_MS,
   claimHostingCoverageOwnerNotification,
   completeHostingCoverageOwnerNotification,
   hostingCoverageStateKey,
@@ -647,6 +648,54 @@ describe("the owner is told once per transition (#2576 §16)", () => {
     await expect(
       loadHostingCoverageOwnerNotificationDelivery(claim, db),
     ).resolves.toBeNull();
+  });
+
+  it.each<[string, number, boolean]>([
+    ["fresh", HOSTING_COVERAGE_OWNER_NOTIFICATION_LEASE_MS - 1, true],
+    ["at the exact expiry boundary", HOSTING_COVERAGE_OWNER_NOTIFICATION_LEASE_MS, true],
+    ["older than the lease", HOSTING_COVERAGE_OWNER_NOTIFICATION_LEASE_MS + 1, false],
+  ])("treats a %s delivery claim according to the shared lease boundary", async (_label, ageMs, expectedCurrent) => {
+    const now = new Date("2026-07-01T12:00:00.000Z");
+    const claimedAt = new Date(now.getTime() - ageMs);
+    const findFirst = vi.fn(async ({ where }: any) => {
+      if (claimedAt < where.ownerNotificationClaimedAt.gte) return null;
+      return {
+        evidence: { affectedNights: ["2026-07-03"] },
+        booking: {
+          id: "booking-1",
+          memberId: "owner-1",
+          lodgeId: "lodge-a",
+          checkIn: new Date("2026-07-03T00:00:00.000Z"),
+          checkOut: new Date("2026-07-04T00:00:00.000Z"),
+          member: { firstName: "Owner", email: "owner@example.test" },
+        },
+      };
+    });
+    const db = { hostingCoverageIncident: { findFirst } } as any;
+
+    const result = await loadHostingCoverageOwnerNotificationDelivery(
+      {
+        bookingId: "booking-1",
+        incidentId: "incident-1",
+        stateKey: "v1:a",
+        claimToken: "notification-current",
+      },
+      db,
+      now,
+    );
+
+    expect(result !== null).toBe(expectedCurrent);
+    expect(findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          ownerNotificationClaimedAt: {
+            gte: new Date(
+              now.getTime() - HOSTING_COVERAGE_OWNER_NOTIFICATION_LEASE_MS,
+            ),
+          },
+        }),
+      }),
+    );
   });
 });
 
