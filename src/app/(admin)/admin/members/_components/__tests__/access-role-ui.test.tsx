@@ -731,13 +731,94 @@ describe("admin member access-role UI", () => {
 
     await waitFor(() => expect(onRecoveryWarning).toHaveBeenCalledTimes(1));
     expect(onRecoveryWarning.mock.calls[0]?.[0]).toEqual(
-      expect.objectContaining({ recoveryKind: "CONTACT_LINKED" }),
+      expect.objectContaining({
+        recoveryKind: "CONTACT_LINKED",
+        memberId: "member-new",
+      }),
     );
     expect(xeroActionMocks.link).toHaveBeenCalledWith(
       "member-new",
       "xero-contact-1",
     );
     expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  it("routes duplicate-decision Link selected recovery with the new member id", async () => {
+    const onRecoveryWarning = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(fetch).mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          id: "member-new",
+          firstName: "Riley",
+          lastName: "Chen",
+        }),
+        { status: 201, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    xeroActionMocks.push.mockResolvedValueOnce({
+      status: "needsDecision",
+      suggestedContacts: [
+        {
+          contactId: "xero-contact-existing",
+          name: "Riley Chen",
+          email: "riley@example.test",
+          isLinked: false,
+        },
+      ],
+    });
+    xeroActionMocks.link.mockRejectedValueOnce(
+      new AdminMemberXeroActionError("private post-link detail", {
+        recoveryKind: "CONTACT_LINKED",
+        xeroContactLinked: true,
+        xeroLinkMayHaveChanged: true,
+        xeroContactId: "xero-contact-existing",
+        xeroPostProcessingPending: true,
+      }),
+    );
+
+    render(
+      <MemberEditorDialog
+        open
+        xeroConnected
+        xeroOrgShortCode={null}
+        onOpenChange={vi.fn()}
+        onSaved={vi.fn()}
+        onSuccess={vi.fn()}
+        onWarning={vi.fn()}
+        onRecoveryWarning={onRecoveryWarning}
+      />,
+    );
+    fireEvent.change(screen.getByLabelText("First Name *"), {
+      target: { value: "Riley" },
+    });
+    fireEvent.change(screen.getByLabelText("Last Name *"), {
+      target: { value: "Chen" },
+    });
+    fireEvent.change(screen.getByLabelText("Email *"), {
+      target: { value: "riley@example.test" },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "Test create Xero contact" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Create Member" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Link Selected Contact" }),
+    );
+
+    await waitFor(() => expect(onRecoveryWarning).toHaveBeenCalledTimes(1));
+    expect(onRecoveryWarning.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({
+        recoveryKind: "CONTACT_LINKED",
+        memberId: "member-new",
+      }),
+    );
+    expect(xeroActionMocks.link).toHaveBeenCalledWith(
+      "member-new",
+      "xero-contact-existing",
+    );
+    expect(
+      screen.queryByRole("dialog", { name: "Review Similar Xero Contacts" }),
+    ).not.toBeInTheDocument();
   });
 
   it("closes the duplicate-create decision after provider creation is proven", async () => {
@@ -808,6 +889,7 @@ describe("admin member access-role UI", () => {
       expect.objectContaining({
         recoveryKind: "CONTACT_CREATED_LINK_UNCONFIRMED",
         xeroContactCreated: true,
+        memberId: "member-new",
       }),
     );
     expect(

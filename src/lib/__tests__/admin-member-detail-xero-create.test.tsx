@@ -304,7 +304,7 @@ describe("Admin member detail Xero create", () => {
     );
   });
 
-  it("keeps Create suppressed after an unconfirmed provider contact survives refresh", async () => {
+  it("clears recovery after linking and reloading the authoritative member", async () => {
     let memberReads = 0;
     fetchMock.mockImplementation((input: RequestInfo | URL) => {
       const url = String(input);
@@ -313,10 +313,87 @@ describe("Admin member detail Xero create", () => {
         return Promise.resolve({
           ok: true,
           json: async () =>
-            adminMember({
-              xeroContactId: null,
-              xeroContactCreateRecoveryPending: memberReads > 1,
-            }),
+            adminMember(
+              memberReads === 1
+                ? { xeroContactCreateRecoveryPending: true }
+                : {
+                    xeroContactId: "contact-linked",
+                    xeroContactCreateRecoveryPending: false,
+                  },
+            ),
+        });
+      }
+      if (url === "/api/admin/xero/search-contacts?q=Alice") {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            contacts: [
+              {
+                contactId: "contact-linked",
+                name: "Alice Smith",
+                email: "alice@example.com",
+                isLinked: false,
+              },
+            ],
+          }),
+        });
+      }
+      if (url === "/api/admin/members/member-1/xero-link") {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ contactName: "Alice Smith" }),
+        });
+      }
+      if (url === "/api/admin/members/member-1/credits") {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ balanceCents: 0, history: [], pendingRequests: [] }),
+        });
+      }
+      if (url === "/api/admin/xero/status") {
+        return Promise.resolve({ ok: true, json: async () => ({ connected: true, features: {} }) });
+      }
+      return Promise.reject(new Error(`Unexpected fetch: ${url}`));
+    });
+
+    await act(async () => {
+      render(
+        <Suspense fallback={<div>Loading route params...</div>}>
+          <MemberDetailPage params={Promise.resolve({ id: "member-1" })} />
+        </Suspense>,
+      );
+    });
+    await screen.findByText(/Do not create another contact/i);
+    fireEvent.click(screen.getByRole("button", { name: "Link to Xero" }));
+    fireEvent.change(screen.getByPlaceholderText("Search by name or email..."), {
+      target: { value: "Alice" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Link" }));
+
+    await screen.findByRole("button", { name: "View in Xero" });
+    await waitFor(() =>
+      expect(document.getElementById("member-xero-recovery-error")).not.toHaveTextContent(
+        /Do not create another contact/i,
+      ),
+    );
+  });
+
+  it("keeps Create suppressed after an unconfirmed provider contact survives refresh", async () => {
+    let memberReads = 0;
+    let resolveRefresh: ((value: Response) => void) | null = null;
+    fetchMock.mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/admin/members/member-1") {
+        memberReads += 1;
+        if (memberReads === 1) {
+          return Promise.resolve({
+            ok: true,
+            json: async () => adminMember(),
+          });
+        }
+        return new Promise<Response>((resolve) => {
+          resolveRefresh = resolve;
         });
       }
       if (url === "/api/admin/members/member-1/xero-push") {
@@ -358,12 +435,95 @@ describe("Admin member detail Xero create", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
 
-    await screen.findByText(/Do not create another contact/i);
-    await waitFor(() => expect(memberReads).toBeGreaterThanOrEqual(2));
+    const alert = document.getElementById("member-xero-recovery-error");
+    await screen.findByText(/Refreshing the member now/i);
+    expect(alert).toHaveTextContent(/Do not create another contact/i);
+    expect(screen.getByText("Loading member details...")).toBeInTheDocument();
+
+    // Mutation pin: the pre-action member snapshot says `pending=false`, but
+    // cannot clear recovery while this authoritative GET is unresolved.
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(alert).toHaveTextContent(/Do not create another contact/i);
+
+    await act(async () => {
+      resolveRefresh?.({
+        ok: true,
+        json: async () =>
+          adminMember({ xeroContactCreateRecoveryPending: true }),
+      } as Response);
+    });
+    await screen.findByText(/member was refreshed successfully/i);
     expect(
       screen.queryByRole("button", { name: /Create in Xero/ }),
     ).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Link to Xero" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
+  });
+
+  it("retains unconfirmed-create recovery when the authoritative refresh fails", async () => {
+    let memberReads = 0;
+    let rejectRefresh: ((reason?: unknown) => void) | null = null;
+    fetchMock.mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/admin/members/member-1") {
+        memberReads += 1;
+        if (memberReads === 1) {
+          return Promise.resolve({ ok: true, json: async () => adminMember() });
+        }
+        return new Promise<Response>((_resolve, reject) => {
+          rejectRefresh = reject;
+        });
+      }
+      if (url === "/api/admin/members/member-1/xero-push") {
+        return Promise.resolve({
+          ok: false,
+          status: 409,
+          json: async () => ({
+            code: "XERO_PARTIAL_SUCCESS",
+            error: "server copy",
+            recoveryKind: "CONTACT_CREATED_LINK_UNCONFIRMED",
+            xeroContactCreated: true,
+            xeroContactId: "contact-provider-only",
+            xeroPostProcessingPending: true,
+          }),
+        });
+      }
+      if (url === "/api/admin/members/member-1/credits") {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ balanceCents: 0, history: [], pendingRequests: [] }),
+        });
+      }
+      if (url === "/api/admin/xero/status") {
+        return Promise.resolve({ ok: true, json: async () => ({ connected: true, features: {} }) });
+      }
+      return Promise.reject(new Error(`Unexpected fetch: ${url}`));
+    });
+
+    await act(async () => {
+      render(
+        <Suspense fallback={<div>Loading route params...</div>}>
+          <MemberDetailPage params={Promise.resolve({ id: "member-1" })} />
+        </Suspense>,
+      );
+    });
+    fireEvent.click(await screen.findByRole("button", { name: /Create in Xero/ }));
+    fireEvent.change(screen.getByLabelText("Reason for not raising invoice"), {
+      target: { value: "Already invoiced" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+
+    const alert = document.getElementById("member-xero-recovery-error");
+    await screen.findByText(/Refreshing the member now/i);
+    await act(async () => {
+      rejectRefresh?.(new Error("member read unavailable"));
+    });
+
+    await screen.findByText(/member could not be refreshed/i);
+    expect(alert).toHaveTextContent(/Do not create another contact/i);
+    expect(document.activeElement).toBe(alert);
     expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
   });
 
