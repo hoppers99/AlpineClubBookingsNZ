@@ -48,6 +48,7 @@ let adminContext: BrowserContext;
 let memberContext: BrowserContext;
 let admin: APIRequestContext;
 let member: APIRequestContext;
+let bookerMemberId: string;
 
 /** A future in-season window with room, chosen once so both bookings share it. */
 let WINDOW: { checkIn: string; checkOut: string };
@@ -134,6 +135,21 @@ async function readClubHostingPolicy(): Promise<{
   return body.effective;
 }
 
+async function resolveBookerMemberId(): Promise<string> {
+  const res = await admin.get(
+    `/api/admin/members?search=${encodeURIComponent(personas.booker.email)}&pageSize=5`,
+  );
+  expect(res.ok(), `resolve booking member (${res.status()})`).toBeTruthy();
+  const body = (await res.json()) as {
+    members?: Array<{ id: string; email: string }>;
+  };
+  const match = (body.members ?? []).find(
+    (candidate) => candidate.email === personas.booker.email,
+  );
+  expect(match?.id, "the booking persona must resolve to a member id").toBeTruthy();
+  return match!.id;
+}
+
 /** Create a booking as the member, returning the response for the caller to judge. */
 function createMemberBooking(guests: Array<Record<string, unknown>>) {
   return member.post("/api/bookings", {
@@ -203,6 +219,7 @@ test.beforeAll(async ({ browser }) => {
   });
   admin = adminContext.request;
   member = memberContext.request;
+  bookerMemberId = await resolveBookerMemberId();
 
   // `stayWindowForAttempt` hands out a distinct in-season window per spec/attempt,
   // which is what keeps concurrent specs off each other's capacity.
@@ -312,6 +329,9 @@ test("another booking on the same account supplies the cover, and cannot then be
       lastName: personas.booker.lastName,
       ageTier: "ADULT",
       isMember: true,
+      // `isMember` is presentation metadata; the authoritative attendance
+      // relationship is the linked member id, which is what the policy must use.
+      memberId: bookerMemberId,
     },
   ]);
   expect(
