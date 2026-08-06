@@ -653,6 +653,7 @@ describe("bed-allocation removal race DB safety guard (#2594)", () => {
         where: { id: "default" },
         create: { id: "default", bedAllocation: true },
         update: { bedAllocation: true },
+        select: { id: true },
       });
 
       await prisma.bedAllocationSettings.deleteMany({ where: { id: LODGE_ID } });
@@ -795,6 +796,7 @@ describe("bed-allocation removal race DB safety guard (#2594)", () => {
               data: {
                 bedAllocation: previousBedAllocationModuleEnabled ?? false,
               },
+              select: { id: true },
             }),
           );
         } else {
