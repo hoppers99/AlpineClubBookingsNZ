@@ -198,6 +198,41 @@ export async function claimHostingCoverageReevaluations(
   return claimed;
 }
 
+/**
+ * Re-read one claimed item's authoritative payload inside its reconciliation
+ * transaction. Member merge can re-point both live member identities after the
+ * claim commits, so the drain uses its snapshot only for the merge handshake and
+ * reconciles exclusively from this exact-token refresh.
+ */
+export async function loadClaimedHostingCoverageReevaluation(
+  claim: HostingCoverageReevaluationClaim,
+  db: HostingCoverageQueueDb,
+): Promise<HostingCoverageReevaluationItem | null> {
+  const row = await db.hostingCoverageReevaluation.findFirst({
+    where: { id: claim.id, claimToken: claim.claimToken, processedAt: null },
+    select: {
+      id: true,
+      memberId: true,
+      lodgeId: true,
+      nights: true,
+      cause: true,
+      sourceBookingId: true,
+      actorMemberId: true,
+      reason: true,
+      attempts: true,
+      claimToken: true,
+    },
+  });
+  if (!row) return null;
+  return {
+    ...row,
+    nights: parseNights(row.nights),
+    // The exact-token predicate proves this is non-null; Prisma does not narrow
+    // selected nullable columns from a where clause.
+    claimToken: claim.claimToken,
+  };
+}
+
 /** Mark an item done. Idempotent: a second call matches nothing. */
 export async function completeHostingCoverageReevaluation(
   claim: HostingCoverageReevaluationClaim,

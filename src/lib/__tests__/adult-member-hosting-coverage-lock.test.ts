@@ -134,7 +134,27 @@ describe("the per-owner coverage lock (#2576 §9)", () => {
     expect(doc).toContain("hosting-coverage-owner");
   });
 
-  it("pins policy reconciliation to policy-set then Member KEY SHARE then coverage-owner", () => {
+  it("pins drain reconciliation to policy, lifecycle, Member row, refresh, then owner", () => {
+    const drain = readRepoFile("src/lib/adult-member-hosting-coverage-drain.ts");
+    const drainStart = drain.indexOf(
+      "async function processHostingCoverageReevaluation(",
+    );
+    const drainBody = drain.slice(drainStart, drainStart + 9000);
+    const drainPolicy = drainBody.indexOf("lockAdultMemberHostingPolicySet(db)");
+    const lifecycleLock = drainBody.indexOf("member-lifecycle:${memberId}");
+    const memberRowLock = drainBody.indexOf("FOR KEY SHARE");
+    const exactRefresh = drainBody.indexOf(
+      "loadClaimedHostingCoverageReevaluation(item, db)",
+    );
+    const identityStabilisation = drainBody.indexOf("refreshedMemberIds.some(");
+    const dependentRead = drainBody.indexOf("loadSameOwnerCoverageDependentIds(");
+    expect(drainPolicy).toBeGreaterThan(-1);
+    expect(lifecycleLock).toBeGreaterThan(drainPolicy);
+    expect(memberRowLock).toBeGreaterThan(lifecycleLock);
+    expect(exactRefresh).toBeGreaterThan(memberRowLock);
+    expect(identityStabilisation).toBeGreaterThan(exactRefresh);
+    expect(dependentRead).toBeGreaterThan(identityStabilisation);
+
     const review = readRepoFile("src/lib/adult-member-hosting-review.ts");
     const start = review.indexOf(
       "function reconcileSameOwnerCoverageIncident(",
@@ -154,15 +174,24 @@ describe("the per-owner coverage lock (#2576 §9)", () => {
     );
 
     const doc = readRepoFile("docs/CONCURRENCY_AND_LOCKING.md");
-    expect(doc).toContain("policy-set → Member KEY SHARE → coverage-owner");
-    expect(doc).toContain("no queue tuple");
+    expect(doc).toContain("policy-set → sorted member-lifecycle → sorted");
+    expect(doc).toContain("Member KEY SHARE → exact queue re-read → coverage-owner");
+    expect(doc).toContain("deliberately not a `FOR UPDATE`");
+
+    const merge = readRepoFile("src/lib/member-merge.ts");
+    const mergeLifecycleLock = merge.indexOf("member-lifecycle:${lockA}");
+    const relationMoves = merge.indexOf("const relationMoves = await applyMoves(");
+    const mergeMemberRows = merge.indexOf('ORDER BY "id" FOR UPDATE', relationMoves);
+    expect(mergeLifecycleLock).toBeGreaterThan(-1);
+    expect(relationMoves).toBeGreaterThan(mergeLifecycleLock);
+    expect(mergeMemberRows).toBeGreaterThan(relationMoves);
   });
 
   it("keeps queued reconciliation in a real transaction and email after it", () => {
     const drain = readRepoFile("src/lib/adult-member-hosting-coverage-drain.ts");
     const itemTransaction = drain.indexOf("await db.$transaction((tx) =>");
     const reconciliation = drain.indexOf(
-      "processHostingCoverageReevaluation(item, tx)",
+      "processHostingCoverageReevaluation(reconciliationItem, tx)",
       itemTransaction,
     );
     const notification = drain.indexOf(

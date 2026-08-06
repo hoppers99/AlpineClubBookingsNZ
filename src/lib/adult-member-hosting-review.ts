@@ -2092,11 +2092,11 @@ export async function reconcileSameOwnerCoverageIncident(
   // policy writer had already enumerated the active rows it needed to close.
   // The policy-set key is first here; an optional actor Member KEY SHARE comes
   // next, and the evaluator's coverage-owner key is taken after that. The
-  // complete composed order is therefore:
-  // policy-set -> Member KEY SHARE -> coverage-owner -> incident/queue.
-  // The queue lease was claimed and committed before this transaction, so no
-  // queue row lock is held while acquiring Member; there is no queue -> Member
-  // inversion.
+  // direct-call order is policy-set -> Member KEY SHARE -> coverage-owner.
+  // The queue drain has a stronger outer handshake: policy-set -> sorted claimed
+  // lifecycle keys -> sorted claimed Member rows -> exact typed queue refresh,
+  // then re-enters here with the refreshed actor. Neither layer locks the queue
+  // row, so there is no queue -> Member inversion.
   await lockAdultMemberHostingPolicySet(db);
 
   // Queue attribution is intentionally FK-less so the work survives ordinary

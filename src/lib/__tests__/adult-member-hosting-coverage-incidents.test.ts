@@ -27,6 +27,7 @@ import {
   completeHostingCoverageReevaluation,
   enqueueHostingCoverageReevaluation,
   failHostingCoverageReevaluation,
+  loadClaimedHostingCoverageReevaluation,
 } from "@/lib/adult-member-hosting-coverage-queue";
 import type { AdultMemberHostingPolicyExceptionViolation } from "@/lib/booking-policy-exceptions";
 
@@ -905,6 +906,15 @@ function makeQueueDb(seed: Array<Record<string, unknown>> = []) {
           // and double-count it — an artefact of the fake, not of the queue.
           .map((row) => ({ ...row })),
       ),
+      findFirst: vi.fn(async ({ where }: any) => {
+        const row = rows.find(
+          (candidate) =>
+            candidate.id === where.id &&
+            candidate.claimToken === where.claimToken &&
+            (where.processedAt !== null || candidate.processedAt == null),
+        );
+        return row ? { ...row } : null;
+      }),
       updateMany: vi.fn(async ({ where, data }: any) => {
         const matched = rows.filter((row) => {
           if (row.id !== where.id) return false;
@@ -1000,6 +1010,47 @@ describe("the bounded re-evaluation queue (#2576 §8, §10)", () => {
       db,
     );
     expect((rows[0].reason as string).length).toBe(500);
+  });
+
+  it("re-reads the full payload only through the exact live claim", async () => {
+    const { db } = makeQueueDb([{
+      id: "queue-1",
+      memberId: "owner-master",
+      lodgeId: "lodge-b",
+      nights: ["2026-07-04", "bad", "2026-07-03", "2026-07-04"],
+      cause: "OFFICER_OVERRIDE",
+      sourceBookingId: "source-after",
+      actorMemberId: "actor-master",
+      reason: "authoritative reason",
+      attempts: 2,
+      processedAt: null,
+      claimToken: "claim-current",
+      claimExpiresAt: new Date("2026-07-01T00:15:00.000Z"),
+      enqueuedAt: new Date("2026-07-01T00:00:00.000Z"),
+    }]);
+
+    await expect(loadClaimedHostingCoverageReevaluation(
+      { id: "queue-1", claimToken: "claim-current" },
+      db,
+    )).resolves.toMatchObject({
+      memberId: "owner-master",
+      lodgeId: "lodge-b",
+      nights: ["2026-07-03", "2026-07-04"],
+      cause: "OFFICER_OVERRIDE",
+      sourceBookingId: "source-after",
+      actorMemberId: "actor-master",
+      reason: "authoritative reason",
+      claimToken: "claim-current",
+    });
+    expect(db.hostingCoverageReevaluation.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: "queue-1", claimToken: "claim-current", processedAt: null },
+      }),
+    );
+    await expect(loadClaimedHostingCoverageReevaluation(
+      { id: "queue-1", claimToken: "claim-replaced" },
+      db,
+    )).resolves.toBeNull();
   });
 
   it("counts an attempt at claim time, so a poison item retires", async () => {

@@ -105,15 +105,15 @@ are the literal `1`.
 | **Global booking / money** | `1` (literal) | inline `tx.$executeRaw` | 2 | Booking-status + money side effects that must exclude across the whole booking regardless of lodge: cancel, capture/settle, hold-release, group-settlement reaper/settle/refund/organiser-cancel, refunds, credit restore. |
 | **Per-lodge capacity** | `hashtextextended(<lodgeId>, 0)` | `acquireLodgeCapacityLock(tx, lodgeId)` (`lodge-capacity-lock.ts`, re-exported by `capacity.ts`) | 1 | Capacity claims/checks for one lodge; roster eligibility snapshots; and direct or config-transfer chore-template changes, which serialize active-template validation for that lodge. |
 | **Per-member night footprint** | `hashtext("booking-member-night"), hashtext(<memberId>)` | `lockBookingMemberNights(tx, guests)` (`booking-member-night-conflicts.ts`) | cross-lodge | Serialises the person-night guard ACROSS lodges (see below). |
-| **Per-owner hosting coverage** | `hashtext("hosting-coverage-owner"), hashtext(<Booking.memberId>)` | `lockHostingCoverageOwner` / `lockHostingCoverageOwners` (`adult-member-hosting-coverage-lock.ts`) | cross-booking | Serialises `SAME_BOOKING_OWNER` coverage (#2576 §9): one booking's compliance depends on another booking of the SAME owner, and per-lodge locks cannot serialise that because the cancel paths take only `lock(1)` while the create paths take only the lodge lock. Taken LAST among the application lock families a caller composes. Roster-aware modification paths take global → lodge → roster-date → any applicable member keys → coverage-owner; queued incident reconciliation takes hosting policy-set → optional actor `Member FOR KEY SHARE` → coverage-owner. Paths that do not use roster or member keys omit those tiers. Several owners are sorted, and the key is taken only when the lodge actually has the scope enabled. |
+| **Per-owner hosting coverage** | `hashtext("hosting-coverage-owner"), hashtext(<Booking.memberId>)` | `lockHostingCoverageOwner` / `lockHostingCoverageOwners` (`adult-member-hosting-coverage-lock.ts`) | cross-booking | Serialises `SAME_BOOKING_OWNER` coverage (#2576 §9): one booking's compliance depends on another booking of the SAME owner, and per-lodge locks cannot serialise that because the cancel paths take only `lock(1)` while the create paths take only the lodge lock. Taken LAST among the application lock families a caller composes. Roster-aware modification paths take global → lodge → roster-date → any applicable member keys → coverage-owner; queued incident reconciliation takes hosting policy-set → sorted claimed member-lifecycle keys → sorted claimed `Member FOR KEY SHARE` rows → coverage-owner. Paths that do not use roster or member keys omit those tiers. Several owners are sorted, and the key is taken only when the lodge actually has the scope enabled. |
 | **Per-member credit ledger** | `hashtext("member-credit-ledger"), hashtext(<memberId>)` | `lockMemberCreditLedger(memberId, tx)` (`member-credit.ts`) | — | A member's credit-ledger balance operations (spend, negative-adjustment validation, orphan-restore repair, the Xero inbound applied-credit repair, and the F20 pre-payment-reduction applied-credit clamp `clampAppliedCreditToBookingPrice`, taken inside the modification transaction only when the booking carries applied credit, and the #2265 stored-election consumption `consumeStoredCreditElection`, taken inside the `create-payment-intent` pay transaction and the Internet Banking switch transaction only when the booking carries an outstanding election). |
-| **Member lifecycle** | `hashtext("member-lifecycle:<memberId>")` | inline (`member-lifecycle-actions.ts`, `nomination.ts` approval mapping, `admin-family-group-requests-service.ts`, `member-merge.ts`) | — | Archive/delete of one member; overwrite of one member by application-approval mapping (E10, #1936); linking/removing one member into/from a family group on admin request review; and **member merge** (dual-lock on master + loser, E11 #1937, see below). |
+| **Member lifecycle** | `hashtext("member-lifecycle:<memberId>")` | inline (`member-lifecycle-actions.ts`, `nomination.ts` approval mapping, `admin-family-group-requests-service.ts`, `member-merge.ts`, `adult-member-hosting-coverage-drain.ts`) | — | Archive/delete of one member; overwrite of one member by application-approval mapping (E10, #1936); linking/removing one member into/from a family group on admin request review; **member merge** (dual-lock on master + loser, E11 #1937, see below); and the queue-drain handshake that prevents a claimed hosting item from using identities while merge re-points them. |
 | **Membership application** | `hashtext(<application key>)` | `membershipApplicationLockKey` (`nomination.ts`) | — | State transitions of one membership application. |
 | **Membership applicant** | `hashtext(<applicant-email key>)` | `membershipApplicationApplicantLockKey` (`nomination.ts`) | — | Per-email applicant dedup at submit time. |
 | **Roster-date writers** | `hashtext("roster:<date>")` | `lockRosterDate(tx, date)` / sorted `lockRosterDates(tx, dates)` (`roster-lock.ts`) | date | Serialises whole-roster save/regenerate/confirm/auto-suggest, kiosk confirm and complete/uncomplete, and booking/guest cleanup that can remove suggested rows for the same lodge night. |
 | **Config-transfer import** | `hashtext("config-transfer-import")` | `acquireConfigImportLock(tx)` (`config-transfer-lock.ts`) | — | Single-flights configuration-bundle apply and excludes lodge create/rename while an import resolves bundle slugs to immutable lodge ids. |
 | **Minimum-stay policy set** | `hashtext("minimum-stay-policy-set")` | `lockMinimumStayPolicySet(tx)` (`minimum-stay-policy-set.ts`) plus the migration's `MinimumStayPolicy_lock_set` statement trigger | policy config | Serialises every live CRUD and config-transfer replacement across the small club/lodge policy set. The database trigger puts draining old-colour DML behind the exact same key before any tuple lock. |
-| **Adult-member hosting policy set** | `hashtext("adult-member-hosting-policy-set")` | `lockAdultMemberHostingPolicySet(tx)` (`adult-member-hosting-policy-set.ts`) plus the migration's `AdultMemberHostingPolicy_lock_set` statement trigger | policy config | Serialises the admin write route and the config-transfer replacement over the one club row plus one row per lodge (#2364), and fences the drain's policy read before incident reconciliation. Unlike its minimum-stay sibling the trigger is NOT a blue/green drain boundary — the table did not exist before its own migration, so no old colour writes it — it is there so advisory-before-tuple order holds for every writer, operator psql included. Policy writers bulk-insert re-evaluation rows while holding only this key; the later drain composes policy-set → optional actor `Member FOR KEY SHARE` → coverage-owner. |
+| **Adult-member hosting policy set** | `hashtext("adult-member-hosting-policy-set")` | `lockAdultMemberHostingPolicySet(tx)` (`adult-member-hosting-policy-set.ts`) plus the migration's `AdultMemberHostingPolicy_lock_set` statement trigger | policy config | Serialises the admin write route and the config-transfer replacement over the one club row plus one row per lodge (#2364), and fences the drain's policy read before incident reconciliation. Unlike its minimum-stay sibling the trigger is NOT a blue/green drain boundary — the table did not exist before its own migration, so no old colour writes it — it is there so advisory-before-tuple order holds for every writer, operator psql included. Policy writers bulk-insert re-evaluation rows while holding only this key; the later drain composes policy-set → sorted claimed member-lifecycle keys → sorted claimed `Member FOR KEY SHARE` rows → coverage-owner. |
 | **Membership subscription billing** | `hashtext("membership-subscription-billing:<seasonYear>")` | `confirmSubscriptionBillingPreview`, `reconcileSubscriptionBillingExceptions` (`membership-subscription-billing.ts`) | — | Annual/approval charge snapshot creation for one membership year; the #2148 refresh-reconciliation holds the same key so exception auto-resolution serialises with confirm and never resolves rows a concurrent confirm is regenerating. The #2161 operator family-marker writers (MARK/UNMARK on the subscription-billing route) deliberately take **no** advisory lock: they only insert/release a `FamilyGroupSeasonInvoiceMarker` row (single-active enforced by a partial unique index, so a concurrent double-mark is a benign no-op), and confirm re-derives suppression from the live marker rows under this same lock inside its transaction, so a mark landing mid-confirm either is seen by the in-tx re-preview or shifts the confirmation token — never a torn snapshot. |
 | **Authoritative fee schedule** | `hashtext("fee-schedule:<domain>:<key>")` | `lockFeeSchedule` (`authoritative-fees.ts`) | — | Serialises effective-dated membership or entrance-fee schedule changes for one configured key. |
 | **Member partner link** | sorted `hashtext("member-partner-link:<memberId>")` keys | `lockPartnerMembers` (`member-partner-link.ts`) | — | Serialises partner-link invariants across every member touched by a link; same-family keys are sorted. |
@@ -377,17 +377,29 @@ for that, and it never accepts a caller's `tx`;
 
 Incident reconciliation composes one additional fixed chain. It first takes the
 adult-member hosting policy-set key so a policy demotion cannot race a fresh urgent
-incident. If the FK-less queue item carries an officer id, it next locks that
-`Member` row `FOR KEY SHARE` before reading it through Prisma; this prevents a hard
-delete between the existence check and the incident's nullable actor-FK write. The
-evaluator then takes the coverage-owner key. The exact order is therefore
-**policy-set → Member KEY SHARE → coverage-owner**. Member merge already takes its
-sorted Member row locks before coverage-owner work, and policy writers never take a
-Member or coverage-owner lock, so neither counterpart reverses this chain. The queue
-claim itself committed before the reconciliation transaction starts: no queue tuple
-or queue advisory lock is held while Member is acquired, so this is not a
-queue → Member inversion. A missing actor degrades to nullable attribution while
-the mandatory override reason remains durable.
+incident. A queue claim is only an in-memory snapshot: member merge may re-point its
+owner and FK-less actor after the claim commits. The drain therefore takes the
+sorted, unique `member-lifecycle:<id>` keys for the claimed owner and actor, then
+locks those same `Member` rows `FOR KEY SHARE`, and only then re-reads the complete
+queue payload through Prisma with exact `id + claimToken + processedAt: null`.
+Every later read uses the refreshed owner, actor, lodge, nights, cause, source and
+reason; a missing exact claim performs no work.
+If the refreshed owner/actor set differs from the set locked by that transaction,
+the drain performs no reconciliation and starts a new transaction from the
+refreshed payload. This avoids acquiring a newly discovered id out of sorted order
+and also covers a second merge of the first survivor. After three unstable reads
+the exact claim is failed for a later sweep instead of processing an unfenced id.
+
+The advisory tier is the merge handshake; its later Member row lock is too late.
+Member merge takes sorted member-lifecycle keys at transaction entry, before it
+re-points relations. If drain wins, merge waits and later re-points the drain's
+committed incident effects. If merge wins, the typed queue re-read sees the
+survivor. The composed order is **policy-set → sorted member-lifecycle → sorted
+Member KEY SHARE → exact queue re-read → coverage-owner**. No member-lifecycle
+participant takes the hosting policy-set key, and policy writers take no lifecycle,
+Member-row or coverage-owner lock, so neither counterpart reverses this chain.
+The queue read is deliberately not a `FOR UPDATE`: no queue tuple lock is held while
+the member tiers are acquired, so there is no queue → Member inversion.
 
 Concurrency inside the drain is handled by expiring, opaque-token claims rather than
 long-lived locks. Items are claimed **just in time, one at a time**, not leased as a
@@ -478,16 +490,18 @@ the application and member-lifecycle families. Its fixed acquisition order is:
 
 Counterpart analysis — no cycles are possible:
 
-- Every other `member-lifecycle` holder is single-lock in that family:
-  member archive/delete approval (`member-lifecycle-actions.ts`) locks exactly
-  one member and takes no application lock; the admin family-group request
+- Other `member-lifecycle` holders either take one key or use sorted multi-key
+  acquisition. Member archive/delete approval (`member-lifecycle-actions.ts`)
+  locks exactly one member and takes no application lock; the admin family-group request
   review transactions (`admin-family-group-requests-service.ts`) lock exactly
   the one pre-existing member being linked into (or removed from) a group
   before writing `FamilyGroupMember` — required because a `FamilyGroupMember`
   insert does not bump `Member.updatedAt`, so only the lock (not the mapping
   preview token) can serialise it against the mapping approval's
   in-any-family-group collision guard. (The group-create *reject* transaction
-  takes no member lock: it links nobody into a group.)
+  takes no member lock: it links nobody into a group.) Member merge locks master
+  plus loser, and the hosting drain locks the claimed owner plus non-null actor;
+  both sort and de-duplicate before acquiring the first key.
 - No `member-lifecycle` holder ever acquires a `member-application` lock, so
   the application → member-lifecycle direction is one-way.
 - Within the member-lifecycle family the approval acquires multiple keys in
@@ -991,7 +1005,7 @@ its order against every advisory- and row-lock counterpart.
 
 ### Member merge — dual member-lifecycle lock (E11 #1937)
 
-`executeMemberMerge` (`member-merge.ts`) is the only writer that holds **two**
+`executeMemberMerge` (`member-merge.ts`) is a writer that holds **two**
 `member-lifecycle:<memberId>` advisory locks at once — one for the master, one
 for the loser. Both are acquired at the very top of the single merge transaction
 in **sorted id order** (`[masterId, loserId].sort()`, smaller id first) so a
@@ -999,6 +1013,10 @@ merge and its mirror (a merge started from the other direction, or a concurrent
 archive/delete of either member) can never deadlock. Because the keys share the
 `member-lifecycle:` namespace with `member-lifecycle-actions.ts`, a merge also
 mutually excludes any archive or delete of either the master or the loser.
+The hosting drain is the other multi-key participant: it may hold the claimed
+owner and actor keys, also sorted and de-duplicated, to exclude merge before
+relation moves begin. It takes the hosting policy-set first; no other
+member-lifecycle participant takes that policy key, so this edge is one-way.
 
 Inside the locks the merge re-reads both members, re-runs the full guard matrix,
 and re-verifies the HMAC preview token (which bakes in both `updatedAt` values)

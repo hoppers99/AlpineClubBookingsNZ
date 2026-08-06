@@ -11,8 +11,10 @@ import {
   claimHostingCoverageReevaluations,
   completeHostingCoverageReevaluation,
   failHostingCoverageReevaluation,
+  loadClaimedHostingCoverageReevaluation,
   type HostingCoverageReevaluationItem,
 } from "@/lib/adult-member-hosting-coverage-queue";
+import { lockAdultMemberHostingPolicySet } from "@/lib/adult-member-hosting-policy-set";
 import {
   loadSameOwnerCoverageDependentIds,
   loadAdultMemberHostingPolicy,
@@ -145,6 +147,25 @@ export async function settleHostingCoverageAfterCommit(
  * that the work is somebody else's backlog and belongs to the cron.
  */
 const INLINE_DRAIN_LIMIT = 5;
+const MAX_MEMBER_ID_STABILIZATION_ATTEMPTS = 3;
+
+type HostingCoverageReconciliationOutcome = {
+  kind: "processed";
+  incidentsOpened: number;
+  incidentsUpdated: number;
+  incidentsResolved: number;
+  notifications: Array<{
+    bookingId: string;
+    incidentId: string;
+    stateKey: string;
+    claimToken: string;
+  }>;
+};
+
+type HostingCoverageReconciliationTransactionResult =
+  | HostingCoverageReconciliationOutcome
+  | { kind: "lost" }
+  | { kind: "retry"; item: HostingCoverageReevaluationItem };
 
 export async function drainHostingCoverageReevaluations(
   options: {
@@ -179,9 +200,40 @@ export async function drainHostingCoverageReevaluations(
       // database reconciliation for one bounded item in a REAL transaction so
       // those locks remain held through its reads and incident writes. Email is
       // deliberately handled after this transaction commits.
-      const outcome = await db.$transaction((tx) =>
-        processHostingCoverageReevaluation(item, tx),
-      );
+      let reconciliationItem = item;
+      let outcome: HostingCoverageReconciliationOutcome | null = null;
+      let claimLost = false;
+      for (
+        let attempt = 0;
+        attempt < MAX_MEMBER_ID_STABILIZATION_ATTEMPTS;
+        attempt += 1
+      ) {
+        const reconciliation = await db.$transaction((tx) =>
+          processHostingCoverageReevaluation(reconciliationItem, tx),
+        );
+        if (reconciliation.kind === "lost") {
+          claimLost = true;
+          break;
+        }
+        if (reconciliation.kind === "retry") {
+          reconciliationItem = reconciliation.item;
+          continue;
+        }
+        outcome = reconciliation;
+        break;
+      }
+      if (claimLost) {
+        logger.warn(
+          { itemId: item.id, memberId: item.memberId, lodgeId: item.lodgeId },
+          "Hosting coverage re-evaluation claim disappeared before its authoritative payload read",
+        );
+        continue;
+      }
+      if (!outcome) {
+        throw new Error(
+          "Hosting coverage re-evaluation member identities did not stabilise after merge",
+        );
+      }
       result.incidentsOpened += outcome.incidentsOpened;
       result.incidentsUpdated += outcome.incidentsUpdated;
       result.incidentsResolved += outcome.incidentsResolved;
@@ -261,18 +313,55 @@ export async function drainHostingCoverageReevaluations(
 async function processHostingCoverageReevaluation(
   item: HostingCoverageReevaluationItem,
   db: Prisma.TransactionClient,
-): Promise<{
-  incidentsOpened: number;
-  incidentsUpdated: number;
-  incidentsResolved: number;
-  notifications: Array<{
-    bookingId: string;
-    incidentId: string;
-    stateKey: string;
-    claimToken: string;
-  }>;
-}> {
+): Promise<HostingCoverageReconciliationTransactionResult> {
+  // MEMBER-MERGE HANDSHAKE. A claim is an in-memory snapshot. Take policy first,
+  // then the same sorted lifecycle keys merge takes at transaction entry, before
+  // it re-points relations. The later sorted row locks protect promotion into
+  // incident FKs. If drain wins, merge waits; if merge wins, the exact typed read
+  // sees the survivor. Never row-lock the queue: merge writes it after Member
+  // locks, so queue -> Member would invert the counterpart order.
+  await lockAdultMemberHostingPolicySet(db);
+  const claimedMemberIds = [
+    ...new Set(
+      [item.memberId, item.actorMemberId].filter(
+        (memberId): memberId is string => Boolean(memberId),
+      ),
+    ),
+  ].sort();
+  for (const memberId of claimedMemberIds) {
+    await db.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`member-lifecycle:${memberId}`}))`;
+  }
+  for (const memberId of claimedMemberIds) {
+    await db.$executeRaw`
+      SELECT 1
+      FROM "Member"
+      WHERE "id" = ${memberId}
+      FOR KEY SHARE
+    `;
+  }
+  const refreshedItem = await loadClaimedHostingCoverageReevaluation(item, db);
+  if (!refreshedItem) return { kind: "lost" };
+  const refreshedMemberIds = [
+    ...new Set(
+      [refreshedItem.memberId, refreshedItem.actorMemberId].filter(
+        (memberId): memberId is string => Boolean(memberId),
+      ),
+    ),
+  ].sort();
+  if (
+    refreshedMemberIds.length !== claimedMemberIds.length ||
+    refreshedMemberIds.some(
+      (memberId, index) => memberId !== claimedMemberIds[index],
+    )
+  ) {
+    // End this transaction before acquiring any newly discovered key. Starting a
+    // fresh transaction with the refreshed snapshot preserves sorted acquisition
+    // and handles chained merges without lifecycle-key inversion.
+    return { kind: "retry", item: refreshedItem };
+  }
+
   const counts = {
+    kind: "processed" as const,
     incidentsOpened: 0,
     incidentsUpdated: 0,
     incidentsResolved: 0,
@@ -283,22 +372,26 @@ async function processHostingCoverageReevaluation(
       claimToken: string;
     }>,
   };
-  const policy = await loadAdultMemberHostingPolicy(item.lodgeId, db);
+  const policy = await loadAdultMemberHostingPolicy(refreshedItem.lodgeId, db);
   const dependentIds =
-    policy.hostScopes.sameBookingOwner || !item.sourceBookingId
+    policy.hostScopes.sameBookingOwner || !refreshedItem.sourceBookingId
       ? await loadSameOwnerCoverageDependentIds(
-          { memberId: item.memberId, lodgeId: item.lodgeId, nights: item.nights },
+          {
+            memberId: refreshedItem.memberId,
+            lodgeId: refreshedItem.lodgeId,
+            nights: refreshedItem.nights,
+          },
           db,
         )
-      : [item.sourceBookingId];
+      : [refreshedItem.sourceBookingId];
 
   for (const bookingId of dependentIds) {
     const outcome = await reconcileSameOwnerCoverageIncident(
       {
         bookingId,
-        cause: item.cause,
-        actorMemberId: item.actorMemberId,
-        reason: item.reason,
+        cause: refreshedItem.cause,
+        actorMemberId: refreshedItem.actorMemberId,
+        reason: refreshedItem.reason,
       },
       db,
     );
@@ -326,12 +419,15 @@ async function processHostingCoverageReevaluation(
   // this work, in which case any incident it was carrying is moot: nobody can
   // restore cover for a stay that is not happening. §7 lists cancellation of the
   // affected booking as one of the four automatic resolutions.
-  if (item.sourceBookingId && !dependentIds.includes(item.sourceBookingId)) {
+  if (
+    refreshedItem.sourceBookingId &&
+    !dependentIds.includes(refreshedItem.sourceBookingId)
+  ) {
     counts.incidentsResolved += await resolveHostingCoverageIncidents(
       {
-        bookingId: item.sourceBookingId,
+        bookingId: refreshedItem.sourceBookingId,
         resolution: "BOOKING_CANCELLED",
-        actorMemberId: item.actorMemberId,
+        actorMemberId: refreshedItem.actorMemberId,
       },
       db,
     );

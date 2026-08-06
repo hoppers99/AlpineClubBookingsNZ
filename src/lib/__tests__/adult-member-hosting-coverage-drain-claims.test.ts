@@ -6,6 +6,9 @@ const mocks = vi.hoisted(() => ({
   claim: vi.fn(),
   complete: vi.fn(),
   fail: vi.fn(),
+  loadClaimed: vi.fn(),
+  lockPolicySet: vi.fn(),
+  lockMember: vi.fn(),
   loadPolicy: vi.fn(),
   loadDependents: vi.fn(),
   reconcile: vi.fn(),
@@ -23,6 +26,11 @@ vi.mock("@/lib/adult-member-hosting-coverage-queue", () => ({
   claimHostingCoverageReevaluations: mocks.claim,
   completeHostingCoverageReevaluation: mocks.complete,
   failHostingCoverageReevaluation: mocks.fail,
+  loadClaimedHostingCoverageReevaluation: mocks.loadClaimed,
+}));
+
+vi.mock("@/lib/adult-member-hosting-policy-set", () => ({
+  lockAdultMemberHostingPolicySet: mocks.lockPolicySet,
 }));
 
 vi.mock("@/lib/adult-member-hosting-coverage-incidents", () => ({
@@ -76,9 +84,10 @@ const DELIVERY = {
 };
 
 function makeDb() {
+  const tx = { $executeRaw: mocks.lockMember };
   return {
     $transaction: vi.fn(async (callback: (tx: unknown) => Promise<unknown>) =>
-      callback({}),
+      callback(tx),
     ),
   } as any;
 }
@@ -90,6 +99,9 @@ describe("hosting coverage drain claim fences (#2596)", () => {
     mocks.claim.mockResolvedValueOnce([{ ...CLAIMED_ITEM }]).mockResolvedValue([]);
     mocks.complete.mockResolvedValue(true);
     mocks.fail.mockResolvedValue(true);
+    mocks.loadClaimed.mockResolvedValue({ ...CLAIMED_ITEM });
+    mocks.lockPolicySet.mockResolvedValue(undefined);
+    mocks.lockMember.mockResolvedValue(1);
     mocks.loadPolicy.mockResolvedValue({
       hostScopes: { sameBookingOwner: true },
     });
@@ -98,6 +110,156 @@ describe("hosting coverage drain claim fences (#2596)", () => {
     mocks.loadNotificationDelivery.mockResolvedValue({ ...DELIVERY });
     mocks.completeNotification.mockResolvedValue(true);
     mocks.releaseNotification.mockResolvedValue(true);
+  });
+
+  it("stabilises through chained merges before using refreshed owner and actor", async () => {
+    const claimed = {
+      ...CLAIMED_ITEM,
+      memberId: "owner-loser",
+      actorMemberId: "actor-loser",
+      lodgeId: "lodge-before",
+      nights: ["2026-07-01"],
+      sourceBookingId: "source-before",
+      reason: "stale reason",
+    };
+    const firstMerge = {
+      ...claimed,
+      memberId: "owner-master-1",
+      actorMemberId: "actor-master-1",
+      lodgeId: "lodge-after",
+      nights: ["2026-07-03", "2026-07-04"],
+      cause: "OFFICER_OVERRIDE" as const,
+      sourceBookingId: "source-after",
+      reason: "authoritative reason",
+    };
+    const stable = {
+      ...firstMerge,
+      memberId: "owner-master-2",
+      actorMemberId: "actor-master-2",
+    };
+    mocks.claim.mockReset();
+    mocks.claim.mockResolvedValueOnce([claimed]).mockResolvedValue([]);
+    mocks.lockMember.mockResolvedValue(0);
+    mocks.loadClaimed
+      .mockResolvedValueOnce(firstMerge)
+      .mockResolvedValue(stable);
+    mocks.loadDependents.mockResolvedValue(["dependent-after"]);
+    mocks.reconcile.mockResolvedValue({ action: "none" });
+    mocks.resolveIncidents.mockResolvedValue(1);
+
+    const result = await drainHostingCoverageReevaluations({}, makeDb());
+
+    expect(result).toMatchObject({ claimed: 1, processed: 1, incidentsResolved: 1 });
+    expect(mocks.lockMember.mock.calls.map((call) => call[1])).toEqual([
+      "member-lifecycle:actor-loser",
+      "member-lifecycle:owner-loser",
+      "actor-loser",
+      "owner-loser",
+      "member-lifecycle:actor-master-1",
+      "member-lifecycle:owner-master-1",
+      "actor-master-1",
+      "owner-master-1",
+      "member-lifecycle:actor-master-2",
+      "member-lifecycle:owner-master-2",
+      "actor-master-2",
+      "owner-master-2",
+    ]);
+    expect(mocks.lockPolicySet.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.lockMember.mock.invocationCallOrder[0],
+    );
+    expect(mocks.lockMember.mock.invocationCallOrder[3]).toBeLessThan(
+      mocks.loadClaimed.mock.invocationCallOrder[0],
+    );
+    expect(mocks.loadPolicy).toHaveBeenCalledWith("lodge-after", expect.anything());
+    expect(mocks.loadDependents).toHaveBeenCalledWith(
+      {
+        memberId: "owner-master-2",
+        lodgeId: "lodge-after",
+        nights: ["2026-07-03", "2026-07-04"],
+      },
+      expect.anything(),
+    );
+    expect(mocks.reconcile).toHaveBeenCalledWith(
+      {
+        bookingId: "dependent-after",
+        cause: "OFFICER_OVERRIDE",
+        actorMemberId: "actor-master-2",
+        reason: "authoritative reason",
+      },
+      expect.anything(),
+    );
+    expect(mocks.resolveIncidents).toHaveBeenCalledWith(
+      {
+        bookingId: "source-after",
+        resolution: "BOOKING_CANCELLED",
+        actorMemberId: "actor-master-2",
+      },
+      expect.anything(),
+    );
+  });
+
+  it("locks the sorted claimed identities before refresh when the drain wins", async () => {
+    const claimed = {
+      ...CLAIMED_ITEM,
+      memberId: "member-z",
+      actorMemberId: "member-a",
+    };
+    mocks.claim.mockReset();
+    mocks.claim.mockResolvedValueOnce([claimed]).mockResolvedValue([]);
+    mocks.loadClaimed.mockResolvedValue(claimed);
+
+    const result = await drainHostingCoverageReevaluations({}, makeDb());
+
+    expect(result).toMatchObject({ claimed: 1, processed: 1, failed: 0 });
+    expect(mocks.lockMember.mock.calls.map((call) => call[1])).toEqual([
+      "member-lifecycle:member-a",
+      "member-lifecycle:member-z",
+      "member-a",
+      "member-z",
+    ]);
+    expect(mocks.loadDependents).toHaveBeenCalledWith(
+      expect.objectContaining({ memberId: "member-z" }),
+      expect.anything(),
+    );
+  });
+
+  it("does no work when the exact claimed payload disappeared", async () => {
+    mocks.loadClaimed.mockResolvedValue(null);
+
+    const result = await drainHostingCoverageReevaluations({}, makeDb());
+
+    expect(result).toMatchObject({ claimed: 1, processed: 0, failed: 0 });
+    expect(mocks.loadPolicy).not.toHaveBeenCalled();
+    expect(mocks.reconcile).not.toHaveBeenCalled();
+    expect(mocks.complete).not.toHaveBeenCalled();
+    expect(mocks.fail).not.toHaveBeenCalled();
+  });
+
+  it("fails the exact claim when identities never stabilise", async () => {
+    mocks.loadClaimed
+      .mockResolvedValueOnce({
+        ...CLAIMED_ITEM,
+        memberId: "owner-2",
+      })
+      .mockResolvedValueOnce({
+        ...CLAIMED_ITEM,
+        memberId: "owner-3",
+      })
+      .mockResolvedValueOnce({
+        ...CLAIMED_ITEM,
+        memberId: "owner-4",
+      });
+
+    const result = await drainHostingCoverageReevaluations({}, makeDb());
+
+    expect(result).toMatchObject({ claimed: 1, processed: 0, failed: 1 });
+    expect(mocks.loadClaimed).toHaveBeenCalledTimes(3);
+    expect(mocks.loadPolicy).not.toHaveBeenCalled();
+    expect(mocks.fail).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "queue-1", claimToken: "claim-current" }),
+      expect.stringContaining("did not stabilise"),
+      expect.anything(),
+    );
   });
 
   it("does not count work as processed when completion loses the exact claim", async () => {

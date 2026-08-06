@@ -27,6 +27,9 @@ import logger from "@/lib/logger";
  *
  * The whole operation runs in ONE interactive transaction guarded by a dual
  * `member-lifecycle:{id}` advisory lock (see docs/CONCURRENCY_AND_LOCKING.md).
+ * The hosting drain takes the same sorted keys for its claimed owner and actor,
+ * then refreshes the exact queue payload. This handshake starts here, before any
+ * relation move, not at the later Member row locks used by field merge.
  * It re-points every Member-referencing relation onto the master, additively
  * fills the master's blank scalar fields from the loser, tidies the loser's
  * Xero links, writes one critical audit, and hard-deletes the loser. There are
@@ -1606,7 +1609,8 @@ function selfRelationMoveWhere(
  * `claimAlreadyConvertedBookingRequest` — not an actor/audit snapshot.
  * `HostingCoverageReevaluation.actorMemberId` is live too: the drain promotes
  * it into the incident's real Member foreign key, so queued attribution must
- * follow a merged person onto the surviving profile.
+ * follow a merged person onto the surviving profile. Merge and drain share the
+ * sorted lifecycle handshake, and the drain refreshes its exact claimed row.
  */
 export const MEMBER_MERGE_FK_LESS_MOVE_COLUMNS: readonly {
   key: string;
@@ -2785,7 +2789,9 @@ async function applyMoves(
   // FK-LESS member-id columns carried as MOVES rather than snapshots (#2243).
   // Both are live identities even though the schema cannot express them as
   // Member relations: one is replayed to conversion callers and the other is
-  // promoted into a real incident FK by the hosting drain. Left on a
+  // promoted into a real incident FK by the hosting drain. The drain's shared
+  // lifecycle handshake precedes this move; its later Member row lock alone
+  // would be insufficient because these moves precede step-5 FOR UPDATE. Left on a
   // hard-deleted loser either would later name a member that no longer exists.
   for (const c of MEMBER_MERGE_FK_LESS_MOVE_COLUMNS) {
     const delegate = (tx as unknown as Record<string, {

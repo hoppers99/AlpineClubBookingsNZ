@@ -143,6 +143,12 @@ const SCOPED_ADVISORY_LOCK_INVENTORY: Record<string, number> = {
   // booking or capacity path ever takes it, so the keyspaces are disjoint.
   // Counterpart analysis in docs/CONCURRENCY_AND_LOCKING.md.
   "src/lib/adult-member-hosting-policy-set.ts": 1,
+  // #2596: after the hosting policy-set key, the drain takes sorted
+  // member-lifecycle keys for claimed owner + actor before Member rows and the
+  // exact payload refresh. Merge takes those keys before relation moves. No
+  // lifecycle participant takes the policy key and the drain never locks the
+  // queue row, so there is no reverse policy or queue -> Member edge.
+  "src/lib/adult-member-hosting-coverage-drain.ts": 1,
   // Same-owner hosting coverage (#2576 §9). `lockHostingCoverageOwner` takes
   // `pg_advisory_xact_lock(hashtext('hosting-coverage-owner'), hashtext(<Booking.memberId>))`
   // — a NEW keyspace in its own namespace, keyed on the booking OWNER.
