@@ -362,10 +362,45 @@ test("another booking on the same account supplies the cover, and cannot then be
     xeroIntegration: true,
     internetBankingPayments: true,
   });
+  let bankingSnapshot:
+    | {
+        holdBedSlots: boolean;
+        holdDays: number;
+        minimumDaysBeforeCheckIn: number;
+      }
+    | undefined;
   let source: Awaited<ReturnType<typeof createCoveringBooking>>;
   try {
+    const banking = await admin.get("/api/admin/internet-banking-settings");
+    expect(banking.ok(), `read Internet Banking settings (${banking.status()})`).toBe(
+      true,
+    );
+    bankingSnapshot = (
+      (await banking.json()) as { settings: typeof bankingSnapshot }
+    ).settings;
+    expect(bankingSnapshot).toBeTruthy();
+    const enabled = await admin.put("/api/admin/internet-banking-settings", {
+      data: {
+        holdBedSlots: true,
+        holdDays: bankingSnapshot!.holdDays,
+        minimumDaysBeforeCheckIn: 0,
+      },
+    });
+    expect(
+      enabled.ok(),
+      `enable Internet Banking holds (${enabled.status()}): ${await enabled.text()}`,
+    ).toBe(true);
     source = await createCoveringBooking();
   } finally {
+    if (bankingSnapshot) {
+      const restored = await admin.put("/api/admin/internet-banking-settings", {
+        data: bankingSnapshot,
+      });
+      expect(
+        restored.ok(),
+        `restore Internet Banking settings (${restored.status()})`,
+      ).toBe(true);
+    }
     await setModuleSettings(admin, moduleSnapshot);
   }
   expect(
