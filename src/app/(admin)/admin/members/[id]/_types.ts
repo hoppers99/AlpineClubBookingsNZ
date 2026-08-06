@@ -198,6 +198,7 @@ export interface MemberDetail {
   photoUpdatedAt: string | null;
   forcePasswordChange: boolean;
   xeroContactId: string | null;
+  xeroContactCreateRecoveryPending?: boolean;
   joinedDate: string | null;
   lifeMemberDate: string | null;
   occupation: string | null;

@@ -22,6 +22,7 @@ import {
   shouldRepairXeroContactNameOrder,
 } from "@/lib/xero-contact-sync";
 import { getXeroApiErrorInfo } from "@/lib/xero-api-errors";
+import { getMemberContactCreateRecoveryPending } from "@/lib/xero-contact-create-recovery";
 import logger from "@/lib/logger";
 import {
   copyStreetAddressToPostal,
@@ -585,12 +586,20 @@ export async function getAdminMemberDetail(params: {
     return jsonResult({ error: "Member not found" }, { status: 404 });
   }
 
-  const [deleteEligibility, deleteLifecycleActionRequests] = await Promise.all([
+  const [
+    deleteEligibility,
+    deleteLifecycleActionRequests,
+    xeroContactCreateRecoveryPending,
+  ] = await Promise.all([
     getMemberDeleteEligibility({
       memberId: id,
       currentAdminMemberId,
     }),
     getMemberDeleteLifecycleRequests(id),
+    getMemberContactCreateRecoveryPending({
+      memberId: id,
+      xeroContactId: member.xeroContactId,
+    }),
   ]);
   const lifecycleActionRequests = [
     ...deleteLifecycleActionRequests,
@@ -724,6 +733,7 @@ export async function getAdminMemberDetail(params: {
     auditLogs: auditLogsWithActors,
     xeroContactGroups,
     xeroContactGroupsLoaded,
+    xeroContactCreateRecoveryPending,
     deleteEligibility,
     lifecycleActionRequests,
     openCancellationRequest: openCancellationParticipant

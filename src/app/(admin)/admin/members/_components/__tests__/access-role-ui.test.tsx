@@ -262,7 +262,6 @@ const baseMember: Member = {
 function renderMemberTable(
   members: Member[],
   canEdit = true,
-  xeroRecoveryMemberId: string | null = null,
 ) {
   return render(
     <MemberTable
@@ -275,7 +274,6 @@ function renderMemberTable(
       sortBy="name"
       sortDir="asc"
       membersListPath="/admin/members"
-      xeroRecoveryMemberId={xeroRecoveryMemberId}
       onToggleSelect={vi.fn()}
       onToggleSelectAll={vi.fn()}
       onToggleSort={vi.fn()}
@@ -378,40 +376,6 @@ describe("admin member access-role UI", () => {
     expect(header).toHaveAttribute("aria-sort", "ascending");
     fireEvent.click(screen.getByRole("button", { name: /Access/ }));
     expect(onToggleSort).toHaveBeenCalledWith("access");
-  });
-
-  it("marks only the affected member links for contact-create recovery", () => {
-    const affected = {
-      ...baseMember,
-      id: "member-affected",
-      firstName: "Alice",
-      lastName: "Affected",
-    };
-    const other = {
-      ...baseMember,
-      id: "member-other",
-      firstName: "Bob",
-      lastName: "Other",
-    };
-    renderMemberTable([affected, other], true, affected.id);
-
-    for (const link of [
-      screen.getByRole("link", { name: "Alice Affected" }),
-      screen.getByRole("link", { name: "Open Alice Affected" }),
-    ]) {
-      expect(link).toHaveAttribute(
-        "href",
-        expect.stringContaining(
-          "xeroRecovery=contact-created-link-unconfirmed",
-        ),
-      );
-    }
-    for (const link of [
-      screen.getByRole("link", { name: "Bob Other" }),
-      screen.getByRole("link", { name: "Open Bob Other" }),
-    ]) {
-      expect(link.getAttribute("href")).not.toContain("xeroRecovery=");
-    }
   });
 
   it("relabels the login-access filter and offers all four stages including No login (#1444)", () => {

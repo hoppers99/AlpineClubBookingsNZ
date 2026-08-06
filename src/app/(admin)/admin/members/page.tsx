@@ -76,7 +76,6 @@ export default function MembersPage() {
   const [error, setError] = useState("")
   const [xeroRecoveryError, setXeroRecoveryError] = useState("")
   const [xeroRecoveryAttention, setXeroRecoveryAttention] = useState(0)
-  const [xeroRecovery, setXeroRecovery] = useState<XeroActionRecovery | null>(null)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [createDialogOpen, setCreateDialogOpen] = useState(false)
   const [importDialogOpen, setImportDialogOpen] = useState(false)
@@ -132,7 +131,6 @@ export default function MembersPage() {
     const guidance = isXeroPartialSuccessRecovery(recovery)
       ? getXeroPartialSuccessGuidance(recovery)
       : "A Xero action completed only in part. Do not repeat it until the member's current Xero status has been checked."
-    setXeroRecovery(recovery)
     setXeroRecoveryError(`${guidance} Refreshing the member list now...`)
     setXeroRecoveryAttention((value) => value + 1)
     const refreshed = await fetchMembersWithResult()
@@ -433,12 +431,6 @@ export default function MembersPage() {
           sortBy={sortBy}
           sortDir={sortDir}
           membersListPath={membersListPath}
-          xeroRecoveryMemberId={
-            xeroRecovery?.recoveryKind ===
-              "CONTACT_CREATED_LINK_UNCONFIRMED"
-              ? xeroRecovery.memberId ?? null
-              : null
-          }
           onToggleSelect={toggleSelect}
           onToggleSelectAll={toggleSelectAll}
           onToggleSort={toggleSort}
