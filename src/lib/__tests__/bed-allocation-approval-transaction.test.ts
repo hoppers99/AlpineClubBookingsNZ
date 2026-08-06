@@ -8,6 +8,7 @@ const { auditMock, capacityLockMock, prismaMock } = vi.hoisted(() => ({
       findMany: vi.fn(),
       updateMany: vi.fn(),
     },
+    lodge: { findMany: vi.fn() },
     $executeRaw: vi.fn(),
     $transaction: vi.fn(),
   },
@@ -33,6 +34,10 @@ describe("bed allocation approval transaction", () => {
     );
     prismaMock.bedAllocation.findMany.mockResolvedValue([{ id: "alloc-1" }]);
     prismaMock.bedAllocation.updateMany.mockResolvedValue({ count: 1 });
+    prismaMock.lodge.findMany.mockResolvedValue([
+      { id: "lodge-1" },
+      { id: "lodge-2" },
+    ]);
     capacityLockMock.mockResolvedValue(undefined);
     auditMock.mockResolvedValue(undefined);
   });
@@ -56,15 +61,19 @@ describe("bed allocation approval transaction", () => {
   });
 
   it("keeps a booking approval searchable and writes its audit through tx", async () => {
-    prismaMock.bedAllocation.findMany
-      .mockResolvedValueOnce([{ room: { lodgeId: "lodge-1" } }])
-      .mockResolvedValueOnce([{ id: "alloc-1" }]);
-
     await approveBedAllocations({
       approvedByMemberId: "admin-1",
       bookingId: "booking-1",
     });
 
+    expect(prismaMock.lodge.findMany).toHaveBeenCalledWith({
+      select: { id: true },
+      orderBy: { id: "asc" },
+    });
+    expect(capacityLockMock.mock.calls.map(([, lodgeId]) => lodgeId)).toEqual([
+      "lodge-1",
+      "lodge-2",
+    ]);
     expect(auditMock).toHaveBeenCalledWith(
       expect.objectContaining({
         action: "BED_ALLOCATION_APPROVED",

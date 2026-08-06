@@ -4304,20 +4304,20 @@ export async function approveBedAllocationsWithLocksHeld(
 
 export async function approveBedAllocations(input: ApproveBedAllocationsInput) {
   const lockWhere = buildApproveBedAllocationsWhere(input);
-  // Resolve only immutable room -> lodge keys before opening the transaction.
-  // Mutable allocation state, selector membership and approval state are all
-  // re-read after global + sorted lodge locks below.
-  const lockRows = input.lodgeId
-    ? []
-    : await prisma.bedAllocation.findMany({
-        where: lockWhere,
-        select: { room: { select: { lodgeId: true } } },
-      });
+  // Resolve only immutable lodge keys before opening the transaction. A
+  // mutable allocation pre-read is not sufficient here: a writer already
+  // holding global lock(1) could commit a newly matching row after that read,
+  // and approval would then include its lodge without having taken that lodge's
+  // capacity lock. Lodge-scoped callers stay narrow; the supported legacy
+  // club-wide selector conservatively locks the immutable lodge-id superset.
   const lodgeIds = input.lodgeId
     ? [input.lodgeId]
-    : ([
-        ...new Set(lockRows.map((row) => row.room.lodgeId).filter(Boolean)),
-      ].sort() as string[]);
+    : (
+        await prisma.lodge.findMany({
+          select: { id: true },
+          orderBy: { id: "asc" },
+        })
+      ).map((lodge) => lodge.id);
 
   return prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
