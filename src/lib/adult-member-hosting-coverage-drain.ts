@@ -1,5 +1,9 @@
+import type { Prisma } from "@prisma/client";
+
 import {
   claimHostingCoverageOwnerNotification,
+  completeHostingCoverageOwnerNotification,
+  releaseHostingCoverageOwnerNotification,
   resolveHostingCoverageIncidents,
 } from "@/lib/adult-member-hosting-coverage-incidents";
 import {
@@ -10,6 +14,7 @@ import {
 } from "@/lib/adult-member-hosting-coverage-queue";
 import {
   loadSameOwnerCoverageDependentIds,
+  loadAdultMemberHostingPolicy,
   reconcileSameOwnerCoverageIncident,
 } from "@/lib/adult-member-hosting-review";
 import { sendHostingCoverageLostEmail } from "@/lib/email/booking";
@@ -24,14 +29,12 @@ import { prisma } from "@/lib/prisma";
  * settles each dependent booking's incident, and notifies the owner once per
  * transition.
  *
- * DELIBERATELY NOT INSIDE A TRANSACTION. Each dependent booking is settled on its
- * own, and the notification is sent after the incident row is claimed. That is the
- * opposite of the usual advice and it is right here for three reasons: the facts it
- * must read are the COMMITTED ones (§8 says "re-read current facts after commit");
- * one item can touch several bookings and holding a transaction across all of them
- * would serialise unrelated stays; and an email must never be sent from inside a
- * transaction that can still roll back. Every write it makes is individually
- * idempotent, so partial progress is safe and re-running finishes the job.
+ * Each claimed item is reconciled inside one SHORT transaction. That is required
+ * because the evaluator's owner advisory lock is transaction-scoped: without the
+ * wrapper it would be released immediately after the lock statement and protect
+ * none of the reads or incident writes. The transaction starts only after the
+ * authoritative caller commit, so it still re-reads committed facts, and email is
+ * sent only after this reconciliation transaction commits.
  *
  * RUN TWICE, ON PURPOSE. Callers run it INLINE immediately after their commit, so
  * §7's "immediate re-evaluation" is real; the general cron sweep runs it again so
@@ -157,11 +160,36 @@ export async function drainHostingCoverageReevaluations(
   const result: HostingCoverageDrainResult = { ...EMPTY_RESULT, claimed: items.length };
   for (const item of items) {
     try {
-      const outcome = await processHostingCoverageReevaluation(item, db);
+      // The evaluator takes transaction-scoped owner advisory locks. Run all
+      // database reconciliation for one bounded item in a REAL transaction so
+      // those locks remain held through its reads and incident writes. Email is
+      // deliberately handled after this transaction commits.
+      const outcome = await db.$transaction((tx) =>
+        processHostingCoverageReevaluation(item, tx),
+      );
       result.incidentsOpened += outcome.incidentsOpened;
       result.incidentsUpdated += outcome.incidentsUpdated;
       result.incidentsResolved += outcome.incidentsResolved;
-      result.notified += outcome.notified;
+
+      for (const notification of outcome.notifications) {
+        try {
+          const sent = await notifyOwnerOfLostCoverage(notification.bookingId, db);
+          if (sent) {
+            const completed = await completeHostingCoverageOwnerNotification(
+              notification,
+              db,
+            );
+            if (completed) result.notified += 1;
+          } else {
+            await releaseHostingCoverageOwnerNotification(notification, db);
+          }
+        } catch (err) {
+          await releaseHostingCoverageOwnerNotification(notification, db).catch(
+            () => undefined,
+          );
+          throw err;
+        }
+      }
       await completeHostingCoverageReevaluation(item.id, db);
       result.processed += 1;
     } catch (err) {
@@ -196,23 +224,35 @@ export async function drainHostingCoverageReevaluations(
  */
 async function processHostingCoverageReevaluation(
   item: HostingCoverageReevaluationItem,
-  db: typeof prisma,
+  db: Prisma.TransactionClient,
 ): Promise<{
   incidentsOpened: number;
   incidentsUpdated: number;
   incidentsResolved: number;
-  notified: number;
+  notifications: Array<{
+    bookingId: string;
+    incidentId: string;
+    stateKey: string;
+  }>;
 }> {
   const counts = {
     incidentsOpened: 0,
     incidentsUpdated: 0,
     incidentsResolved: 0,
-    notified: 0,
+    notifications: [] as Array<{
+      bookingId: string;
+      incidentId: string;
+      stateKey: string;
+    }>,
   };
-  const dependentIds = await loadSameOwnerCoverageDependentIds(
-    { memberId: item.memberId, lodgeId: item.lodgeId, nights: item.nights },
-    db,
-  );
+  const policy = await loadAdultMemberHostingPolicy(item.lodgeId, db);
+  const dependentIds =
+    policy.hostScopes.sameBookingOwner || !item.sourceBookingId
+      ? await loadSameOwnerCoverageDependentIds(
+          { memberId: item.memberId, lodgeId: item.lodgeId, nights: item.nights },
+          db,
+        )
+      : [item.sourceBookingId];
 
   for (const bookingId of dependentIds) {
     const outcome = await reconcileSameOwnerCoverageIncident(
@@ -229,17 +269,20 @@ async function processHostingCoverageReevaluation(
       continue;
     }
     if (outcome.action === "none") continue;
-    if (outcome.action === "unchanged") continue;
 
     if (outcome.action === "opened") counts.incidentsOpened += 1;
-    else counts.incidentsUpdated += 1;
+    else if (outcome.action === "updated") counts.incidentsUpdated += 1;
 
     const claimed = await claimHostingCoverageOwnerNotification(
       { incidentId: outcome.incidentId, stateKey: outcome.stateKey },
       db,
     );
     if (!claimed) continue;
-    if (await notifyOwnerOfLostCoverage(bookingId, db)) counts.notified += 1;
+    counts.notifications.push({
+      bookingId,
+      incidentId: outcome.incidentId,
+      stateKey: outcome.stateKey,
+    });
   }
 
   // The SOURCE booking itself may have been cancelled by the change that queued
@@ -295,7 +338,7 @@ async function notifyOwnerOfLostCoverage(
       )
     : [];
 
-  await sendHostingCoverageLostEmail({
+  const outcome = await sendHostingCoverageLostEmail({
     bookingId: booking.id,
     recipientMemberId: booking.memberId,
     email: booking.member.email,
@@ -307,5 +350,5 @@ async function notifyOwnerOfLostCoverage(
     uncoveredNights: nights.length > 0 ? nights.join(", ") : "see your booking",
     lodgeId: booking.lodgeId,
   });
-  return true;
+  return outcome.status === "sent";
 }

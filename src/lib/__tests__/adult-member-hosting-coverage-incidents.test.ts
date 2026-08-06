@@ -14,8 +14,10 @@ vi.mock("server-only", () => ({}));
 
 import {
   claimHostingCoverageOwnerNotification,
+  completeHostingCoverageOwnerNotification,
   hostingCoverageStateKey,
   openOrUpdateHostingCoverageIncident,
+  releaseHostingCoverageOwnerNotification,
   resolveHostingCoverageIncidents,
 } from "@/lib/adult-member-hosting-coverage-incidents";
 import {
@@ -115,6 +117,9 @@ function makeIncidentDb(
             return false;
           }
           if (where.resolvedAt === null && row.resolvedAt != null) return false;
+          if (where.stateKey !== undefined && row.stateKey !== where.stateKey) {
+            return false;
+          }
           if (where.OR !== undefined) {
             const matchesNotificationState = where.OR.some((branch: any) => {
               const filter = branch.notifiedStateKey;
@@ -131,6 +136,37 @@ function makeIncidentDb(
               return row.notifiedStateKey === filter;
             });
             if (!matchesNotificationState) return false;
+          }
+          if (where.AND !== undefined) {
+            const claimFilter = where.AND[0]?.OR ?? [];
+            const claimAvailable = claimFilter.some((branch: any) => {
+              if (branch.ownerNotificationClaimStateKey === null) {
+                return row.ownerNotificationClaimStateKey == null;
+              }
+              if (branch.ownerNotificationClaimStateKey?.not !== undefined) {
+                return (
+                  row.ownerNotificationClaimStateKey != null &&
+                  row.ownerNotificationClaimStateKey !==
+                    branch.ownerNotificationClaimStateKey.not
+                );
+              }
+              if (branch.ownerNotificationClaimedAt?.lt instanceof Date) {
+                return (
+                  row.ownerNotificationClaimedAt instanceof Date &&
+                  row.ownerNotificationClaimedAt <
+                    branch.ownerNotificationClaimedAt.lt
+                );
+              }
+              return false;
+            });
+            if (!claimAvailable) return false;
+          }
+          if (
+            where.ownerNotificationClaimStateKey !== undefined &&
+            row.ownerNotificationClaimStateKey !==
+              where.ownerNotificationClaimStateKey
+          ) {
+            return false;
           }
           return true;
         });
@@ -399,8 +435,8 @@ describe("automatic resolution (#2576 §7, §16)", () => {
 });
 
 describe("the owner is told once per transition (#2576 §16)", () => {
-  it("claims a fresh NULL notification stamp exactly once for one state", async () => {
-    const { db } = makeIncidentDb([
+  it("leases a fresh notification once, then stamps it only after success", async () => {
+    const { db, rows } = makeIncidentDb([
       {
         id: "incident-1",
         bookingId: "b-main",
@@ -422,6 +458,50 @@ describe("the owner is told once per transition (#2576 §16)", () => {
         db,
       ),
     ).toBe(false);
+    expect(rows[0].notifiedStateKey).toBeNull();
+
+    expect(
+      await completeHostingCoverageOwnerNotification(
+        { incidentId: "incident-1", stateKey: "v1:a" },
+        db,
+      ),
+    ).toBe(true);
+    expect(rows[0].notifiedStateKey).toBe("v1:a");
+    expect(rows[0].ownerNotificationClaimStateKey).toBeNull();
+    expect(
+      await claimHostingCoverageOwnerNotification(
+        { incidentId: "incident-1", stateKey: "v1:a" },
+        db,
+      ),
+    ).toBe(false);
+  });
+
+  it("releases a failed delivery so the unchanged state is retryable", async () => {
+    const { db } = makeIncidentDb([
+      {
+        id: "incident-1",
+        bookingId: "b-main",
+        resolvedAt: null,
+        stateKey: "v1:a",
+        notifiedStateKey: null,
+      },
+    ]);
+    expect(
+      await claimHostingCoverageOwnerNotification(
+        { incidentId: "incident-1", stateKey: "v1:a" },
+        db,
+      ),
+    ).toBe(true);
+    await releaseHostingCoverageOwnerNotification(
+      { incidentId: "incident-1", stateKey: "v1:a" },
+      db,
+    );
+    expect(
+      await claimHostingCoverageOwnerNotification(
+        { incidentId: "incident-1", stateKey: "v1:a" },
+        db,
+      ),
+    ).toBe(true);
   });
 
   it("notifies again when the uncovered state materially changes", async () => {
@@ -430,7 +510,7 @@ describe("the owner is told once per transition (#2576 §16)", () => {
         id: "incident-1",
         bookingId: "b-main",
         resolvedAt: null,
-        stateKey: "v1:a",
+        stateKey: "v1:b",
         notifiedStateKey: "v1:a",
       },
     ]);

@@ -3357,6 +3357,12 @@ model HostingCoverageIncident {
   notifiedStateKey String?   @db.VarChar(300)
   ownerNotifiedAt  DateTime?
 
+  /// Short-lived delivery lease. This is intentionally separate from
+  /// notifiedStateKey: the latter records a SUCCESSFUL send only. A failed
+  /// sender releases this claim so the durable re-evaluation can retry.
+  ownerNotificationClaimStateKey String?   @db.VarChar(300)
+  ownerNotificationClaimedAt     DateTime?
+
   openedAt   DateTime  @default(now())
   updatedAt  DateTime  @updatedAt
   resolvedAt DateTime?

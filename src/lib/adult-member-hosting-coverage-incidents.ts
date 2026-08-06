@@ -140,6 +140,8 @@ export async function openOrUpdateHostingCoverageIncident(
         stateKey,
         evidence: params.violation as unknown as Prisma.InputJsonValue,
         cause: params.cause,
+        ownerNotificationClaimStateKey: null,
+        ownerNotificationClaimedAt: null,
         // A later override reason replaces an earlier one only when one was
         // actually supplied; a system-driven update must not erase the officer's
         // recorded reason for the override that opened this incident.
@@ -168,6 +170,8 @@ export async function openOrUpdateHostingCoverageIncident(
         cause: params.cause,
         stateKey,
         evidence: params.violation as unknown as Prisma.InputJsonValue,
+        ownerNotificationClaimStateKey: null,
+        ownerNotificationClaimedAt: null,
         overriddenByMemberId: override?.byMemberId ?? null,
         overrideReason: override ? override.reason.trim().slice(0, 500) : null,
       },
@@ -198,6 +202,8 @@ export async function openOrUpdateHostingCoverageIncident(
       data: {
         stateKey,
         evidence: params.violation as unknown as Prisma.InputJsonValue,
+        ownerNotificationClaimStateKey: null,
+        ownerNotificationClaimedAt: null,
       },
     });
     return { action: "updated", incidentId: winner.id, stateKey };
@@ -258,41 +264,94 @@ export async function resolveHostingCoverageIncidents(
 }
 
 /**
- * Mark the booking owner as notified about one incident's CURRENT state, but only
- * if they have not already been told about that exact state (§16: "notifications
+ * Lease delivery for one incident's CURRENT state, but only if the owner has not
+ * already been told about that exact state (§16: "notifications
  * must be based on actual state transitions; repeated reconciliation of the same
  * unchanged problem must not send repeated messages").
  *
- * A GUARDED CLAIM, not a read-then-write. The `updateMany` matches a fresh NULL
- * stamp OR a non-NULL stamp for a different state. The explicit NULL arm is
+ * A GUARDED LEASE, not a read-then-write. The `updateMany` matches a fresh NULL
+ * success stamp OR a non-NULL stamp for a different state. The explicit NULL arm is
  * load-bearing: SQL `NOT (NULL = value)` is UNKNOWN, not TRUE, so a bare NOT
  * predicate would prevent every newly opened incident from sending its first
  * notification. Two concurrent drains racing on the same incident still produce
- * exactly one winner and exactly one email. `count === 1` means "you own the
- * notification"; 0 means somebody else already sent it, or the incident was
- * resolved underneath.
+ * exactly one active sender. `count === 1` means "you own the delivery"; 0 means
+ * somebody else is sending, already completed it, or the incident was resolved
+ * underneath.
  *
- * CLAIM BEFORE SEND, deliberately. The alternative — send, then stamp — sends
- * twice whenever the stamp fails, and a duplicate "your booking has lost its
- * cover" email to a member who has already rung the club is worse than a missed
- * one, which the next reconciliation re-detects anyway.
+ * The durable success stamp is written only AFTER transport success. A failed
+ * sender releases the lease, and a crashed sender's lease expires, so unchanged
+ * reconciliation retries instead of permanently suppressing delivery.
  */
 export async function claimHostingCoverageOwnerNotification(
   params: { incidentId: string; stateKey: string },
   db: Pick<PrismaClient, "hostingCoverageIncident">,
 ): Promise<boolean> {
+  const claimedAt = new Date();
+  const staleBefore = new Date(claimedAt.getTime() - 15 * 60 * 1000);
   const claim = await db.hostingCoverageIncident.updateMany({
     where: {
       id: params.incidentId,
       resolvedAt: null,
+      stateKey: params.stateKey,
       OR: [
         { notifiedStateKey: null },
         { notifiedStateKey: { not: params.stateKey } },
       ],
+      AND: [
+        {
+          OR: [
+            { ownerNotificationClaimStateKey: null },
+            { ownerNotificationClaimStateKey: { not: params.stateKey } },
+            { ownerNotificationClaimedAt: { lt: staleBefore } },
+          ],
+        },
+      ],
     },
-    data: { notifiedStateKey: params.stateKey, ownerNotifiedAt: new Date() },
+    data: {
+      ownerNotificationClaimStateKey: params.stateKey,
+      ownerNotificationClaimedAt: claimedAt,
+    },
   });
   return claim.count === 1;
+}
+
+/** Stamp a notification only after the transport reports a successful send. */
+export async function completeHostingCoverageOwnerNotification(
+  params: { incidentId: string; stateKey: string },
+  db: Pick<PrismaClient, "hostingCoverageIncident">,
+): Promise<boolean> {
+  const completed = await db.hostingCoverageIncident.updateMany({
+    where: {
+      id: params.incidentId,
+      resolvedAt: null,
+      stateKey: params.stateKey,
+      ownerNotificationClaimStateKey: params.stateKey,
+    },
+    data: {
+      notifiedStateKey: params.stateKey,
+      ownerNotifiedAt: new Date(),
+      ownerNotificationClaimStateKey: null,
+      ownerNotificationClaimedAt: null,
+    },
+  });
+  return completed.count === 1;
+}
+
+/** Release a failed/non-send claim so the next queue attempt can retry it. */
+export async function releaseHostingCoverageOwnerNotification(
+  params: { incidentId: string; stateKey: string },
+  db: Pick<PrismaClient, "hostingCoverageIncident">,
+): Promise<void> {
+  await db.hostingCoverageIncident.updateMany({
+    where: {
+      id: params.incidentId,
+      ownerNotificationClaimStateKey: params.stateKey,
+    },
+    data: {
+      ownerNotificationClaimStateKey: null,
+      ownerNotificationClaimedAt: null,
+    },
+  });
 }
 
 async function recordIncidentAudit(

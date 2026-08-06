@@ -61,6 +61,9 @@ const SENSITIVE_EMAIL_LOG_TEMPLATES = new Set([
 // mailbox or SMTP path cannot recurse into retrying the retry-failure alert.
 const NON_RETRYABLE_EMAIL_LOG_TEMPLATES = new Set([
   ...SENSITIVE_EMAIL_LOG_TEMPLATES,
+  // The hosting incident/outbox is the retry authority for this message. Keeping
+  // a second EmailLog retry authority could replay a successful incident send.
+  "hosting-coverage-lost",
   "admin-email-failure",
 ]);
 
