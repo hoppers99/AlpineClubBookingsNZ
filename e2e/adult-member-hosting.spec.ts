@@ -92,9 +92,11 @@ async function setClubHostingPolicy(options: {
     current.ok(),
     `read hosting policy (${current.status()}): ${await current.text()}`,
   ).toBeTruthy();
-  const body = (await current.json()) as {
-    club?: { version?: number } | null;
-  };
+  // The keyed settings route returns the selected row at the response root
+  // (with `version: 0` for the synthesized never-saved state), not under a
+  // `club` envelope. Carry every positive revision so the second write is a
+  // genuine compare-and-swap instead of an accidental blind-create attempt.
+  const body = (await current.json()) as { version?: number };
 
   const saved = await admin.put(
     "/api/admin/booking-policies/adult-member-hosting",
@@ -103,7 +105,7 @@ async function setClubHostingPolicy(options: {
         mode: options.mode,
         hostScopes: options.hostScopes,
         capacityMode: "NO_HOLD",
-        ...(body.club?.version ? { version: body.club.version } : {}),
+        ...(body.version ? { version: body.version } : {}),
       },
     },
   );
