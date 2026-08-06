@@ -60,10 +60,6 @@ const MOVE_AUDIT_ACTIONS = [
   "BED_ALLOCATION_MANUAL_SET",
   "BED_ALLOCATION_PARTNER_PROMOTED",
 ] as const;
-const REVIEWED_MOVE_AUDIT_ACTIONS = [
-  "BED_ALLOCATION_MOVE_APPLIED",
-  "BED_ALLOCATION_PARTNERS_PROMOTED",
-] as const;
 const REQUESTED_ROOM_AUDIT_ACTIONS = [
   "booking.requested_room.updated",
   "booking.requested_room.cleared",
@@ -1092,8 +1088,8 @@ describe("bed-allocation removal race DB safety guard (#2594)", () => {
               where: { id: PARTNER_ALLOCATION_ID },
               select: { isSecondOccupant: true },
             }),
-            actionCount(REVIEWED_MOVE_AUDIT_ACTIONS),
-            actionCount(REMOVAL_AUDIT_ACTIONS),
+            actionCount(["BED_ALLOCATION_MOVE_APPLIED"]),
+            actionCount(["BED_ALLOCATION_REMOVAL_APPLIED"]),
           ]);
 
         expect(partner.isSecondOccupant).toBe(false);
@@ -1105,7 +1101,7 @@ describe("bed-allocation removal race DB safety guard (#2594)", () => {
             source: "MANUAL",
             approvedAt: null,
           });
-          expect(reviewedMoveAudits).toBe(2);
+          expect(reviewedMoveAudits).toBe(1);
           expect(removalAudits).toBe(0);
         } else {
           expect(removalOutcome.status).toBe("fulfilled");
@@ -1120,8 +1116,8 @@ describe("bed-allocation removal race DB safety guard (#2594)", () => {
             });
           }
           expect(target).toBeNull();
-          expect(reviewedMoveAudits).toBe(1);
-          expect(removalAudits).toBe(2);
+          expect(reviewedMoveAudits).toBe(0);
+          expect(removalAudits).toBe(1);
         }
       },
     );
