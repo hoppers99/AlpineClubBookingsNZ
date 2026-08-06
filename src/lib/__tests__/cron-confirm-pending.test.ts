@@ -59,6 +59,21 @@ const mockReconcileBedAllocationsForBooking = vi
 vi.mock("@/lib/bed-allocation-lifecycle", () => ({
   reconcileBedAllocationsForBooking: (...args: unknown[]) =>
     mockReconcileBedAllocationsForBooking(...args),
+  reconcileBedAllocationsForBookingWithGlobalLockHeld: (...args: unknown[]) =>
+    mockReconcileBedAllocationsForBooking(...args),
+  reconcileBedAllocationsForBookingWithLodgeLockHeld: (...args: unknown[]) =>
+    mockReconcileBedAllocationsForBooking(...args),
+}));
+
+const mockEnqueueOwnHostingCoverage = vi.fn().mockResolvedValue(undefined);
+const mockSettleHostingCoverage = vi.fn().mockResolvedValue(undefined);
+vi.mock("@/lib/adult-member-hosting-review", () => ({
+  enqueueOwnHostingCoverageReevaluation: (...args: unknown[]) =>
+    mockEnqueueOwnHostingCoverage(...args),
+}));
+vi.mock("@/lib/adult-member-hosting-coverage-drain", () => ({
+  settleHostingCoverageAfterCommit: (...args: unknown[]) =>
+    mockSettleHostingCoverage(...args),
 }));
 
 // Mock email
@@ -365,8 +380,29 @@ function makePendingBooking(
 function mockPendingBookings(bookings: ReturnType<typeof makePendingBooking>[]) {
   mockBookingFindMany.mockResolvedValue(bookings);
   mockBookingFindUnique.mockImplementation(
-    async ({ where }: { where: { id: string } }) =>
-      bookings.find((booking) => booking.id === where.id) ?? null
+    async ({
+      where,
+      select,
+    }: {
+      where: { id: string };
+      select?: { status?: boolean };
+    }) => {
+      const booking = bookings.find((candidate) => candidate.id === where.id) ?? null;
+      // The requires-action release runs in a later transaction after the
+      // first transaction claimed CONFIRMED. The mock store is not stateful,
+      // so model that post-lock status-only re-read explicitly.
+      if (
+        booking &&
+        select?.status &&
+        Object.keys(select).length === 1 &&
+        mockBookingUpdateMany.mock.calls.some(
+          ([call]) => call?.data?.status === "CONFIRMED",
+        )
+      ) {
+        return { status: "CONFIRMED" };
+      }
+      return booking;
+    }
   );
 }
 
@@ -770,6 +806,12 @@ describe("Cron: Confirm Pending Bookings", () => {
         data: expect.objectContaining({ status: "CANCELLED" }),
       })
     );
+    expect(mockEnqueueOwnHostingCoverage).toHaveBeenCalledWith("b1", expect.anything(), {
+      cause: "SYSTEM_CHANGE",
+    });
+    expect(mockEnqueueOwnHostingCoverage.mock.invocationCallOrder[0]).toBeLessThan(
+      mockSettleHostingCoverage.mock.invocationCallOrder[0],
+    );
     expect(mockSendBumpedEmail).not.toHaveBeenCalled();
   });
 
@@ -866,6 +908,21 @@ describe("Cron: Confirm Pending Bookings", () => {
         nonMemberHoldUntil: booking.nonMemberHoldUntil,
       },
     });
+    const releaseLockOrder = mockAcquireLodgeCapacityLock.mock.invocationCallOrder.at(-1);
+    const releaseClaimOrder = mockBookingUpdateMany.mock.invocationCallOrder.at(-1);
+    const releaseReconcileOrder =
+      mockReconcileBedAllocationsForBooking.mock.invocationCallOrder.at(-1);
+    expect(releaseLockOrder).toBeDefined();
+    expect(releaseClaimOrder).toBeDefined();
+    expect(releaseReconcileOrder).toBeDefined();
+    expect(releaseLockOrder!).toBeLessThan(releaseClaimOrder!);
+    expect(releaseClaimOrder!).toBeLessThan(releaseReconcileOrder!);
+    expect(mockReconcileBedAllocationsForBooking).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        bookingId: "b1",
+        db: expect.anything(),
+      }),
+    );
   });
 
   it("does nothing when no pending bookings are past hold deadline", async () => {

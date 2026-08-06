@@ -256,6 +256,16 @@ export async function POST(
           return { error: "Booking is no longer pending" as const, status: 409 };
         }
 
+        await reconcileBedAllocationsForBookingWithLodgeLockHeld({
+          bookingId,
+          db: tx,
+          previousRange,
+        });
+        await enqueueOwnHostingCoverageReevaluation(bookingId, tx, {
+          cause: "SYSTEM_CHANGE",
+          actorMemberId: session.user.id,
+        });
+
         return { ok: true as const };
       });
 
@@ -275,7 +285,7 @@ export async function POST(
         );
       }
 
-      await reconcileBedAllocationsForBooking({ bookingId, previousRange });
+      await settleHostingCoverageAfterCommit({ bookingId });
       await prisma.payment.upsert({
         where: { bookingId },
         create: { bookingId, amountCents: 0, status: PaymentStatus.SUCCEEDED },

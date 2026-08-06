@@ -9,7 +9,10 @@ import {
 
 import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
 import { enqueueOwnHostingCoverageReevaluation } from "@/lib/adult-member-hosting-review";
-import { reconcileBedAllocationsForBookingWithGlobalLockHeld } from "@/lib/bed-allocation-lifecycle";
+import {
+  reconcileBedAllocationsForBookingWithGlobalLockHeld,
+  reconcileBedAllocationsForBookingWithLodgeLockHeld,
+} from "@/lib/bed-allocation-lifecycle";
 import { recordBookingEvent } from "@/lib/booking-events";
 import { bookingHasCapacityOverride } from "@/lib/booking-status";
 import { recordWithheldBookingEmail } from "@/lib/booking-email-suppression";
@@ -519,6 +522,9 @@ async function resolveHoldWindowUnderLock(
           checkIn: booking.checkIn,
           checkOut: booking.checkOut,
         },
+      });
+      await enqueueOwnHostingCoverageReevaluation(booking.id, tx, {
+        cause: "SYSTEM_CHANGE",
       });
 
       await tx.payment.upsert({
@@ -1558,6 +1564,20 @@ export async function confirmPendingBookings(): Promise<CronConfirmResult> {
       } else {
         await prisma.$transaction(async (tx) => {
           await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
+          const releaseLodgeId =
+            resolution.booking.lodgeId ?? (await getDefaultLodgeId(tx));
+          await acquireLodgeCapacityLock(tx, releaseLodgeId);
+
+          const lockedBooking = await tx.booking.findUnique({
+            where: { id: resolution.booking.id },
+            select: { status: true },
+          });
+          if (lockedBooking?.status !== BookingStatus.CONFIRMED) {
+            throw new Error(
+              "Pending-hold charge release lost its CONFIRMED claim",
+            );
+          }
+
           await upsertPaymentIntentTransaction({
             paymentId: resolution.paymentId,
             kind: PaymentTransactionKind.PRIMARY,
@@ -1584,7 +1604,7 @@ export async function confirmPendingBookings(): Promise<CronConfirmResult> {
               "Pending-hold charge release lost its CONFIRMED claim",
             );
           }
-          await reconcileBedAllocationsForBookingWithGlobalLockHeld({
+          await reconcileBedAllocationsForBookingWithLodgeLockHeld({
             bookingId: resolution.booking.id,
             db: tx,
             previousRange: {

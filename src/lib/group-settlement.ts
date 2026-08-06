@@ -240,7 +240,11 @@ export async function createGroupSettlementIntent(
 
   // Lock, re-read and claim before deriving provider amount. Repricing writers
   // share lock(1), so this returned snapshot is authoritative for this attempt.
-  const committedChildren = await commitChildrenToConfirmed(group.id, children);
+  const { children: committedChildren, hostingCoverageQueued } =
+    await commitChildrenToConfirmed(group.id, children);
+  if (hostingCoverageQueued) {
+    await settleHostingCoverageAfterCommit({ limit: 25 });
+  }
   const amountCents = committedChildren.reduce(
     (sum, child) => sum + child.finalPriceCents,
     0
@@ -421,10 +425,11 @@ async function createGroupSettlementInvoice(
     );
   }
 
-  const committedChildren = await commitChildrenToConfirmed(
-    groupBookingId,
-    children
-  );
+  const { children: committedChildren, hostingCoverageQueued } =
+    await commitChildrenToConfirmed(groupBookingId, children);
+  if (hostingCoverageQueued) {
+    await settleHostingCoverageAfterCommit({ limit: 25 });
+  }
   const amountCents = committedChildren.reduce(
     (sum, child) => sum + child.finalPriceCents,
     0
@@ -529,7 +534,10 @@ async function cancelSupersededSettlementIntent(
 async function commitChildrenToConfirmed(
   groupBookingId: string,
   children: SettleableChild[]
-): Promise<SettleableChild[]> {
+): Promise<{
+  children: SettleableChild[];
+  hostingCoverageQueued: boolean;
+}> {
   return prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
     const currentGroup = await tx.groupBooking.findUnique({
@@ -562,6 +570,7 @@ async function commitChildrenToConfirmed(
     }
 
     const committed: SettleableChild[] = [];
+    let hostingCoverageQueued = false;
     for (const child of children) {
       // Re-read inside the lock; another path may have already moved it.
       const fresh = await tx.booking.findUnique({
@@ -615,8 +624,11 @@ async function commitChildrenToConfirmed(
         );
       }
 
-      await tx.booking.update({
-        where: { id: fresh.id },
+      const claimed = await tx.booking.updateMany({
+        where: {
+          id: fresh.id,
+          status: BookingStatus.PAYMENT_PENDING,
+        },
         data: {
           status: BookingStatus.CONFIRMED,
           draftExpiresAt: null,
@@ -630,6 +642,12 @@ async function commitChildrenToConfirmed(
           creditElectionCents: null,
         },
       });
+      if (claimed.count !== 1) {
+        throw new GroupBookingError(
+          "A group booking changed while settlement was being prepared",
+          409,
+        );
+      }
       // CONFIRMED holds capacity, so the next child's check counts these beds.
       await reconcileBedAllocationsForBookingWithLodgeLockHeld({
         bookingId: fresh.id,
@@ -650,13 +668,17 @@ async function commitChildrenToConfirmed(
       await enqueueOwnHostingCoverageReevaluation(fresh.id, tx, {
         cause: "SYSTEM_CHANGE",
       });
+      hostingCoverageQueued = true;
       committed.push({
         id: fresh.id,
         finalPriceCents: fresh.finalPriceCents ?? child.finalPriceCents,
         status: BookingStatus.CONFIRMED,
       });
     }
-    return committed;
+    return {
+      children: committed,
+      hostingCoverageQueued,
+    };
   });
 }
 

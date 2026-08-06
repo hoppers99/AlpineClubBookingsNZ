@@ -610,6 +610,74 @@ describe("the same-owner refusal and the escalation seam (#2576 §6, §8, §9)",
       }
     }
   });
+
+  it("pins hosting and lock seams to the confirming branches that need them", () => {
+    const adminConfirm = readRepoCode(
+      "src/app/api/admin/bookings/[id]/confirm-pending-guests/route.ts",
+    );
+    const adminZero = adminConfirm.slice(
+      adminConfirm.indexOf("if (booking.finalPriceCents === 0)"),
+      adminConfirm.indexOf("// No saved payment method"),
+    );
+    expect(adminZero).toContain(
+      "reconcileBedAllocationsForBookingWithLodgeLockHeld({",
+    );
+    expect(adminZero).toContain("enqueueOwnHostingCoverageReevaluation(");
+    expect(adminZero).toContain("settleHostingCoverageAfterCommit({ bookingId })");
+
+    const cron = readRepoCode("src/lib/cron-confirm-pending.ts");
+    const cronZero = cron.slice(
+      cron.indexOf("if (booking.finalPriceCents === 0)"),
+      cron.indexOf("const savedPayment = savedPaymentMethodForBooking"),
+    );
+    expect(cronZero).toContain("enqueueOwnHostingCoverageReevaluation(");
+
+    const processingMarker = cron.indexOf(
+      "status: PaymentStatus.PROCESSING,",
+      cron.indexOf("export async function confirmPendingBookings"),
+    );
+    const processingRelease = cron.slice(
+      cron.lastIndexOf("await prisma.$transaction", processingMarker),
+      cron.indexOf('"Booking payment processing"', processingMarker),
+    );
+    const releaseOrder = [
+      "pg_advisory_xact_lock(1)",
+      "acquireLodgeCapacityLock(",
+      "const lockedBooking = await tx.booking.findUnique(",
+      "const released = await tx.booking.updateMany(",
+      "reconcileBedAllocationsForBookingWithLodgeLockHeld(",
+    ].map((marker) => processingRelease.indexOf(marker));
+    expect(releaseOrder.every((index) => index >= 0)).toBe(true);
+    expect(releaseOrder).toEqual([...releaseOrder].sort((a, b) => a - b));
+
+    const groupSettlement = readRepoCode("src/lib/group-settlement.ts");
+    const groupCommitCalls = [
+      ...groupSettlement.matchAll(/await commitChildrenToConfirmed\(/g),
+    ];
+    expect(groupCommitCalls).toHaveLength(2);
+    for (const call of groupCommitCalls) {
+      const callerTail = groupSettlement.slice(call.index, call.index + 400);
+      expect(callerTail).toContain("settleHostingCoverageAfterCommit({ limit: 25 })");
+    }
+
+    const xeroInbound = readRepoCode(
+      "src/lib/xero-inbound/invoice-paid-effects.ts",
+    );
+    const xeroPaid = xeroInbound.slice(
+      xeroInbound.indexOf("await acquireLodgeCapacityLock(tx, fresh.booking.lodgeId)"),
+      xeroInbound.indexOf(
+        "await enqueueOwnHostingCoverageReevaluation(fresh.bookingId",
+      ),
+    );
+    const xeroOrder = [
+      "await acquireLodgeCapacityLock(",
+      "const locked = await tx.payment.findUnique(",
+      "status: locked.booking.status",
+      "reconcileBedAllocationsForBookingWithLodgeLockHeld(",
+    ].map((marker) => xeroPaid.indexOf(marker));
+    expect(xeroOrder.every((index) => index >= 0)).toBe(true);
+    expect(xeroOrder).toEqual([...xeroOrder].sort((a, b) => a - b));
+  });
 });
 
 describe("no policy read inside a booking transaction (#2569 §7)", () => {
