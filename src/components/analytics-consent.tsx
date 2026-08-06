@@ -390,10 +390,11 @@ export function AnalyticsConsent({
   /*
     UNMOUNTING has to disable the tag, because it cannot unload it.
 
-    `next/script` unmounting removes an element; it does not — and cannot — unload a
-    library the browser has already executed. So without this the tag stays resident
-    with `ga-disable-<id> === false` and no denial queued, and it keeps sending the
-    events GA4 collects on its own.
+    Unmounting this runtime does not — and cannot — unload a library the browser has
+    already executed. Next may also retain the injected `next/script` node for the
+    life of the document. So without this the tag stays resident with
+    `ga-disable-<id> === false` and no denial queued, and it keeps sending the events
+    GA4 collects on its own.
 
     That is not a hypothetical: this runtime is mounted by the two PUBLIC WEBSITE
     layouts only. The `(public)`, `(authenticated)`, `(admin)`, `(finance)` and

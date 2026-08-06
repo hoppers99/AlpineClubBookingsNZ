@@ -4466,10 +4466,11 @@ enforced invariant.
 
 Leaving the public website is part of the same guarantee. The runtime is mounted by
 the public website layouts only, so a soft navigation into the member, admin or
-login/recovery groups unmounts it — and because unmounting a script element cannot
-unload an executed library, the unmount sets Google's per-id kill switch and queues
-a denial. A visitor's opt-out is propagated to other open tabs the same way, over
-the `storage` event.
+login/recovery groups unmounts it — and because neither that unmount nor removal of
+an injected script node can unload an executed library (and Next may retain the node
+for the document), the unmount sets Google's per-id kill switch and queues a denial.
+A visitor's opt-out is propagated to other open tabs the same way, over the `storage`
+event.
 
 The per-browser choice (`analytics-consent.v2`) stores the applicable consent
 revision and which surface recorded it, and is honoured on revisit. Only the

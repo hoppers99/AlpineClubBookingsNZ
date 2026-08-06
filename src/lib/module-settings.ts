@@ -9,7 +9,6 @@ import {
   type ModuleSettingsValues,
 } from "@/config/modules";
 import type { FeatureFlags } from "@/config/schema";
-import { isAnalyticsIntegrationConfigured } from "@/lib/analytics-settings";
 import logger from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
 
@@ -171,6 +170,14 @@ export function buildClubModuleSettingsPayload(
 }
 
 export async function loadClubModuleSettings(): Promise<ClubModuleSettingsPayload> {
+  // Keep this server-only dependency behind the one admin-read path that needs it.
+  // `loadEffectiveModuleFlags()` is also imported by Node-side maintenance and E2E
+  // seed scripts; a top-level import would evaluate the bare `server-only` package
+  // in `tsx` before those scripts can run (#2573).
+  const analyticsConfiguredPromise = import("@/lib/analytics-settings").then(
+    ({ isAnalyticsIntegrationConfigured }) =>
+      isAnalyticsIntegrationConfigured(),
+  );
   const [record, analyticsConfigured] = await Promise.all([
     prisma.clubModuleSettings.findUnique({
       where: { id: CLUB_MODULE_SETTINGS_ID },
@@ -178,7 +185,7 @@ export async function loadClubModuleSettings(): Promise<ClubModuleSettingsPayloa
     }),
     // Never throws: a read failure reports "not configured", which shows the
     // "complete the setup" readiness message rather than failing the whole page.
-    isAnalyticsIntegrationConfigured(),
+    analyticsConfiguredPromise,
   ]);
 
   return buildClubModuleSettingsPayload(record, { analyticsConfigured });

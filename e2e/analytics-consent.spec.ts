@@ -249,10 +249,12 @@ test.describe("Google Analytics consent (anonymous visitor)", () => {
       owner's section 7 excludes.
 
       What is asserted is the state Google's own library reads: `ga-disable-<id>`
-      must be true once the runtime has gone. The fake measurement id means the
-      real library never executes here, so "no further collect request" would pass
-      vacuously and is deliberately not the assertion — though any request that
-      did leave after the navigation would still fail the count below.
+      must be true once the runtime has gone. Next may retain the already-injected
+      `next/script` node for the life of this document, so DOM-node removal is not
+      the boundary and is deliberately not asserted. The fake measurement id means
+      the real library never executes here, so "no further collect request" would
+      pass vacuously and is not the primary assertion — though any request that did
+      leave after the navigation would still fail the count below.
     */
     await saveAnalyticsSettings(admin, {
       measurementId: FAKE_MEASUREMENT_ID,
@@ -309,9 +311,7 @@ test.describe("Google Analytics consent (anonymous visitor)", () => {
       "expected a client-side navigation into /login, not a full document load",
     ).toBe(true);
 
-    // The runtime is gone from the tree…
-    await expect(page.locator("#ga4-loader")).toHaveCount(0);
-    // …and it turned the tag off on its way out. This is the assertion the fix
+    // The runtime turned the tag off on its way out. This is the assertion the fix
     // exists for: the same document, the library still resident, collection off.
     await expect
       .poll(() =>

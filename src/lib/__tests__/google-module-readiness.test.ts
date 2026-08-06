@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_MODULE_SETTINGS } from "@/config/modules";
 import { buildClubModuleSettingsPayload } from "@/lib/module-settings";
@@ -40,5 +42,21 @@ describe("googleLogin module readiness (DB-only, #2087)", () => {
 
   it("defaults googleLogin OFF for a fresh install", () => {
     expect(DEFAULT_MODULE_SETTINGS.googleLogin).toBe(false);
+  });
+});
+
+describe("analytics readiness import boundary (#2573)", () => {
+  it("loads the server-only analytics settings only inside the admin payload read", () => {
+    const source = readFileSync(
+      resolve(process.cwd(), "src/lib/module-settings.ts"),
+      "utf8",
+    );
+
+    expect(source).not.toMatch(
+      /^import\s+.*from\s+["']@\/lib\/analytics-settings["'];?$/m,
+    );
+    expect(source).toMatch(
+      /export async function loadClubModuleSettings[\s\S]*?import\(["']@\/lib\/analytics-settings["']\)/,
+    );
   });
 });

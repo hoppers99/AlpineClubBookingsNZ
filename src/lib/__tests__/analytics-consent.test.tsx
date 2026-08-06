@@ -659,6 +659,13 @@ describe("route policy and URL sanitisation, enforced at the runtime", () => {
     mockPathname.value = "/contact";
     const { rerender } = render(<AnalyticsConsent config={BANNER_OFF} />);
     await waitFor(() => expect(pageViewCalls()).toHaveLength(1));
+    await waitFor(() =>
+      expect(
+        (window as unknown as Record<string, unknown>)[
+          "ga-disable-G-TEST123456"
+        ],
+      ).toBe(false),
+    );
 
     // A re-render with no navigation must not duplicate the view.
     rerender(<AnalyticsConsent config={BANNER_OFF} />);
@@ -672,11 +679,28 @@ describe("route policy and URL sanitisation, enforced at the runtime", () => {
     mockPathname.value = "/dashboard";
     rerender(<AnalyticsConsent config={BANNER_OFF} />);
     await waitFor(() => expect(pageViewCalls()).toHaveLength(2));
+    // A route transition can leave the already-executed Google library resident in
+    // the document. The per-id kill switch is therefore the privacy boundary, not
+    // whether Next removes its injected script node.
+    await waitFor(() =>
+      expect(
+        (window as unknown as Record<string, unknown>)[
+          "ga-disable-G-TEST123456"
+        ],
+      ).toBe(true),
+    );
 
     // …and coming back to an address already reported sends nothing either.
     mockPathname.value = "/about";
     rerender(<AnalyticsConsent config={BANNER_OFF} />);
     await waitFor(() => expect(pageViewCalls()).toHaveLength(2));
+    await waitFor(() =>
+      expect(
+        (window as unknown as Record<string, unknown>)[
+          "ga-disable-G-TEST123456"
+        ],
+      ).toBe(false),
+    );
   });
 
   it("reduces a token-bearing same-origin referrer to the origin", async () => {
