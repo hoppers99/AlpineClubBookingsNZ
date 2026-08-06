@@ -2,6 +2,11 @@ import { type APIRequestContext, type BrowserContext, expect, test } from "@play
 
 import { loginPersona, storageStatePath } from "./helpers/auth";
 import { E2E_ADMIN, WAITLISTER } from "./helpers/fixtures";
+import {
+  overrideModules,
+  setModuleSettings,
+  type ModuleSettings,
+} from "./helpers/modules";
 import { cancelMemberBookingsOnDate } from "./helpers/reset";
 import { stayWindowForAttempt } from "./helpers/stay-dates";
 
@@ -48,6 +53,7 @@ let memberContext: BrowserContext;
 let admin: APIRequestContext;
 let member: APIRequestContext;
 let ownerMemberId: string;
+let previousModules: ModuleSettings | null = null;
 
 /** A future in-season window with room, chosen once so both bookings share it. */
 let WINDOW: { checkIn: string; checkOut: string };
@@ -214,6 +220,13 @@ test.beforeAll(async ({ browser }) => {
     storageState: storageStatePath(E2E_ADMIN.email),
   });
   admin = adminContext.request;
+  // These bookings use Internet Banking so an all-member source reaches a
+  // confirmed active-attendance state without live Stripe. The isolated seed
+  // leaves both switches off; restore the exact snapshot in afterAll.
+  previousModules = await overrideModules(admin, {
+    xeroIntegration: true,
+    internetBankingPayments: true,
+  });
 
   // Wanda is seeded PAID with a complete, confirmed profile. Alice's booking
   // setup deliberately completes her profile in another spec, so using Alice
@@ -244,12 +257,19 @@ test.afterAll(async () => {
   try {
     await setClubHostingPolicy({ mode: "DISABLED", hostScopes: null });
   } finally {
-    await cancelMemberBookingsOnDate(admin, {
-      memberName: MEMBER_NAME,
-      checkIn: WINDOW.checkIn,
-    }).catch(() => undefined);
-    await adminContext?.close();
-    await memberContext?.close();
+    try {
+      await cancelMemberBookingsOnDate(admin, {
+        memberName: MEMBER_NAME,
+        checkIn: WINDOW.checkIn,
+      }).catch(() => undefined);
+    } finally {
+      try {
+        if (previousModules) await setModuleSettings(admin, previousModules);
+      } finally {
+        await adminContext?.close();
+        await memberContext?.close();
+      }
+    }
   }
 });
 
