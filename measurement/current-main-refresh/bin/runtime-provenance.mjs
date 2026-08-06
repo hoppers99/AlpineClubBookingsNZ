@@ -93,8 +93,13 @@ export async function captureRuntimeProvenance(inputRoot) {
   const registryChromiumExecutable = await described(independentlyResolvedExecutable, "registry-resolved Chromium executable");
   const chromiumExecutable = await described(chromium.executablePath(), "Playwright Chromium executable");
   if (!samePath(registryChromiumExecutable.path, chromiumExecutable.path) || registryChromiumExecutable.sha256 !== chromiumExecutable.sha256) throw new Error("Playwright API and installed registry resolve different Chromium executables");
-  const nodeExecutable = await described(process.execPath, "Node executable");
-  assertExactPath(nodeExecutable.path, process.execPath, "Node executable");
+  // fnm's normal `fnm use` workflow exposes node.exe through a multishell
+  // directory whose parent is a junction. Bind the physical installation
+  // binary, not the transient alias, so the captured identity is stable while
+  // still hashing the exact executable that Windows resolves.
+  const physicalNodeExecutable = realpathSync.native(process.execPath);
+  const nodeExecutable = await described(physicalNodeExecutable, "Node executable");
+  assertExactPath(nodeExecutable.path, physicalNodeExecutable, "Node executable");
 
   return {
     schema_version: 1,

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -438,6 +438,11 @@ exec "$node_executable" "${'${converted[@]}'}"
   runIn(runtimeRoot, process.execPath, [runtimeTool, "--root", runtimeRoot, "--verify", runtimeProvenance]);
   runIn(runtimeRoot, process.execPath, [runtimeTool, "--root", temp, "--out", join(temp, "external-runtime.json")], false);
   const runtimeDocument = JSON.parse(readFileSync(runtimeProvenance, "utf8"));
+  const expectedPhysicalNode = realpathSync.native(process.execPath);
+  const sameNodePath = process.platform === "win32"
+    ? runtimeDocument.node.executable.path.toLowerCase() === expectedPhysicalNode.toLowerCase()
+    : runtimeDocument.node.executable.path === expectedPhysicalNode;
+  if (!sameNodePath) throw new Error("runtime provenance did not bind the physical Node executable behind the fnm alias");
   const rejectRuntimeMutation = (name, mutate) => {
     const mutated = structuredClone(runtimeDocument); mutate(mutated);
     const path = join(temp, `${name}-runtime-provenance.json`); json(path, mutated);
