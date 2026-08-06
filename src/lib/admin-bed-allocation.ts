@@ -196,13 +196,17 @@ interface DashboardAllocation {
   approvedAt: string | null;
   approvedByName: string | null;
   isSecondOccupant?: boolean;
-  familyGroupIds?: string[];
   // Raw booking status (issue #1251), kept for display/debugging.
   bookingStatus: string;
   // Server-computed "Held" vs "Provisional" signal (#1254). Holding is no longer
   // a pure function of status (an accepted-but-unpaid quote is PENDING but holds),
   // so the board reads this precomputed flag from bookingHoldsCapacity().
   holdsCapacity: boolean;
+}
+
+/** Server-private planner projection; family membership is not a board DTO. */
+interface PlannerAllocation extends DashboardAllocation {
+  familyGroupIds: string[];
 }
 
 interface DashboardGuestNight {
@@ -212,6 +216,10 @@ interface DashboardGuestNight {
   guestAgeTier: BedAllocationAgeTier;
   memberName: string;
   stayDate: string;
+}
+
+/** Server-private planner projection; family membership is not a board DTO. */
+interface PlannerGuestNight extends DashboardGuestNight {
   familyGroupIds: string[];
 }
 
@@ -1634,9 +1642,9 @@ function serializeBookings(
   }));
 }
 
-function serializeAllocations(
+function serializePlannerAllocations(
   allocations: DashboardAllocationRecord[],
-): DashboardAllocation[] {
+): PlannerAllocation[] {
   return allocations.map((allocation) => ({
     id: allocation.id,
     bookingId: allocation.bookingId,
@@ -1667,10 +1675,46 @@ function serializeAllocations(
   }));
 }
 
+function toDashboardAllocation(
+  allocation: PlannerAllocation,
+): DashboardAllocation {
+  return {
+    id: allocation.id,
+    bookingId: allocation.bookingId,
+    bookingGuestId: allocation.bookingGuestId,
+    guestName: allocation.guestName,
+    guestAgeTier: allocation.guestAgeTier,
+    roomId: allocation.roomId,
+    roomName: allocation.roomName,
+    bedId: allocation.bedId,
+    bedName: allocation.bedName,
+    stayDate: allocation.stayDate,
+    source: allocation.source,
+    approvedAt: allocation.approvedAt,
+    approvedByName: allocation.approvedByName,
+    isSecondOccupant: allocation.isSecondOccupant,
+    bookingStatus: allocation.bookingStatus,
+    holdsCapacity: allocation.holdsCapacity,
+  };
+}
+
+function toDashboardGuestNight(
+  guestNight: PlannerGuestNight,
+): DashboardGuestNight {
+  return {
+    bookingId: guestNight.bookingId,
+    bookingGuestId: guestNight.bookingGuestId,
+    guestName: guestNight.guestName,
+    guestAgeTier: guestNight.guestAgeTier,
+    memberName: guestNight.memberName,
+    stayDate: guestNight.stayDate,
+  };
+}
+
 function buildGuestNightRows(
   bookings: DashboardBookingRecord[],
-): DashboardGuestNight[] {
-  const rows: DashboardGuestNight[] = [];
+): PlannerGuestNight[] {
+  const rows: PlannerGuestNight[] = [];
 
   for (const booking of bookings) {
     const bookingMemberName = memberName(booking.member);
@@ -1702,7 +1746,7 @@ function guestNightKey(bookingGuestId: string, stayDate: string) {
 
 function candidateGuestBookings(
   bookings: DashboardBookingRecord[],
-  guestNights: DashboardGuestNight[],
+  guestNights: PlannerGuestNight[],
 ): BedAllocationBooking[] {
   const bookingById = new Map(bookings.map((booking) => [booking.id, booking]));
   const guestsByBooking = new Map<string, BedAllocationBooking["guests"]>();
@@ -1953,7 +1997,11 @@ export async function getBedAllocationDashboard(input: {
     loadBookingRecords(input.range, db, input.lodgeId),
     loadAllocationRecords(input.range, db, input.lodgeId),
   ]);
-  const serializedAllocations = serializeAllocations(allocationRecords);
+  const visiblePlannerAllocations =
+    serializePlannerAllocations(allocationRecords);
+  const serializedAllocations = visiblePlannerAllocations.map(
+    toDashboardAllocation,
+  );
 
   // Planner-only continuity context: the board still returns and renders only
   // the requested window, but a guest allocated just outside it must influence
@@ -1993,7 +2041,7 @@ export async function getBedAllocationDashboard(input: {
       ];
     }
   }
-  const serializedPlannerAllocations = serializeAllocations(
+  const serializedPlannerAllocations = serializePlannerAllocations(
     plannerAllocationRecords,
   );
 
@@ -2019,7 +2067,7 @@ export async function getBedAllocationDashboard(input: {
       guestNightKey(allocation.bookingGuestId, allocation.stayDate),
     ),
   );
-  const unallocatedGuestNights = allGuestNights.filter(
+  const unallocatedPlannerGuestNights = allGuestNights.filter(
     (guestNight) =>
       // A held booking needs no per-bed placement (#120): keep its guests out
       // of the awaiting-allocation bucket AND out of the planner entirely.
@@ -2027,6 +2075,9 @@ export async function getBedAllocationDashboard(input: {
       !allocatedGuestNights.has(
         guestNightKey(guestNight.bookingGuestId, guestNight.stayDate),
       ),
+  );
+  const unallocatedGuestNights = unallocatedPlannerGuestNights.map(
+    toDashboardGuestNight,
   );
 
   // Board representation for each hold (#120): the group + the held nights that
@@ -2096,7 +2147,10 @@ export async function getBedAllocationDashboard(input: {
   );
 
   const plannerRooms = buildPlannerRooms(rooms);
-  const plannerBookings = candidateGuestBookings(bookings, unallocatedGuestNights);
+  const plannerBookings = candidateGuestBookings(
+    bookings,
+    unallocatedPlannerGuestNights,
+  );
   const plan = settings.autoAllocationEnabled
     ? buildFirstFitBedAllocationPlan({
         enabled: true,
