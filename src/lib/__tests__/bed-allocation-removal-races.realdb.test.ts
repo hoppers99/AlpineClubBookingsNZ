@@ -16,7 +16,11 @@ import { realElapsedMs } from "@/lib/__tests__/helpers/clock";
 
 const RUN = process.env.RUN_CONCURRENCY_RACE_TESTS === "1";
 const RACE_DB_URL = process.env.CONCURRENCY_RACE_DATABASE_URL ?? "";
-const LOCK_POLL_TIMEOUT_MS = 2_000;
+// The explicit auto writer computes a full dashboard plan before it enters the
+// transaction. A cold disposable database can legitimately spend more than two
+// seconds there; use the parent harness's five-second diagnostic bound rather
+// than misreporting that planning time as a missing global-lock participant.
+const LOCK_POLL_TIMEOUT_MS = 5_000;
 const RACE_TEST_TIMEOUT_MS = 30_000;
 
 const ACTOR_ID = "race-2594-admin";
@@ -236,6 +240,13 @@ async function seedBookings(
       priceCents: 200,
     },
   });
+  await prisma.bookingGuestNight.createMany({
+    data: [FIRST_NIGHT, SECOND_NIGHT].map((stayDate) => ({
+      bookingGuestId: GUEST_ID,
+      stayDate,
+      priceCents: 100,
+    })),
+  });
   if (includePartner) {
     await prisma.booking.create({
       data: {
@@ -260,6 +271,13 @@ async function seedBookings(
         stayEnd: CHECK_OUT,
         priceCents: 200,
       },
+    });
+    await prisma.bookingGuestNight.createMany({
+      data: [FIRST_NIGHT, SECOND_NIGHT].map((stayDate) => ({
+        bookingGuestId: PARTNER_GUEST_ID,
+        stayDate,
+        priceCents: 100,
+      })),
     });
   }
 }
@@ -671,6 +689,14 @@ describe("bed-allocation removal race DB safety guard (#2594)", () => {
         where: { id: GUEST_ID },
         data: { stayEnd: SECOND_NIGHT },
       });
+      await prisma.bookingGuestNight.delete({
+        where: {
+          bookingGuestId_stayDate: {
+            bookingGuestId: GUEST_ID,
+            stayDate: SECOND_NIGHT,
+          },
+        },
+      });
       const removal = await reviewedTargetRemoval(SECOND_NIGHT_DATE_ONLY);
 
       const [lifecycleOutcome, removalOutcome] =
@@ -688,7 +714,16 @@ describe("bed-allocation removal race DB safety guard (#2594)", () => {
       }
       const [target, validRow, partner, removalAudits] = await Promise.all([
         prisma.bedAllocation.findUnique({ where: { id: TARGET_ALLOCATION_ID } }),
-        prisma.bedAllocation.findUnique({ where: { id: OTHER_ALLOCATION_ID } }),
+          // Lifecycle reconciliation may replace a still-valid draft while it
+          // rebuilds the booking's authoritative plan. The invariant is the
+          // guest-night, not this fixture row's identity.
+          prisma.bedAllocation.findFirst({
+            where: {
+              bookingId: BOOKING_ID,
+              bookingGuestId: GUEST_ID,
+              stayDate: FIRST_NIGHT,
+            },
+          }),
         prisma.bedAllocation.findUniqueOrThrow({
           where: { id: PARTNER_ALLOCATION_ID },
           select: { isSecondOccupant: true },
