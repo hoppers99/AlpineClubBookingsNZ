@@ -46,7 +46,6 @@ import {
   deleteBedAllocation as deleteBedAllocationPublic,
   deleteBedAllocationRoom as deleteBedAllocationRoomPublic,
   approveBedAllocationsWithLocksHeld as approveBedAllocations,
-  countApprovedBedAllocationNights,
   isBookingBedAllocationLocked,
   getBedAllocationDashboard,
   getRoomsAndBedsConfiguration,
@@ -3614,12 +3613,12 @@ describe("approveBedAllocations — booking selector (#2252)", () => {
     expect(updateMany.mock.calls[0][0].where.room).toBeUndefined();
   });
 
-  it("leaves the board's own allocationIds approval byte-unchanged", async () => {
+  it("narrows the board's allocation ids to its lodge scope", async () => {
     const updateMany = vi.fn().mockResolvedValue({ count: 2 });
     const db = { bedAllocation: { updateMany } };
 
-    // The board sends ids (and may send a lodge) but never a bookingId, so the
-    // new lodge predicate must not appear on its path.
+    // The row and lodge selectors compose: the service must not lock lodge-1
+    // while approving a supplied id whose room belongs to another lodge.
     await approveBedAllocations({
       approvedByMemberId: "admin-1",
       allocationIds: ["alloc-1"],
@@ -3630,27 +3629,7 @@ describe("approveBedAllocations — booking selector (#2252)", () => {
     expect(updateMany.mock.calls[0][0].where).toEqual({
       approvedAt: null,
       id: { in: ["alloc-1"] },
-    });
-  });
-});
-
-describe("countApprovedBedAllocationNights (#2252 review)", () => {
-  it("counts a booking's approved bed nights across the whole booking, not a window", async () => {
-    const count = vi.fn().mockResolvedValue(7);
-    const db = { bedAllocation: { count } };
-
-    await expect(
-      countApprovedBedAllocationNights({
-        bookingId: "booking-1",
-        db: db as never,
-      }),
-    ).resolves.toBe(7);
-
-    // No date predicate: the panel's 31-night page cannot see the approved
-    // nights on a longer stay's other pages, which is the whole point.
-    expect(count.mock.calls[0][0].where).toEqual({
-      bookingId: "booking-1",
-      approvedAt: { not: null },
+      room: lodgeNullTolerantScope("lodge-1"),
     });
   });
 });

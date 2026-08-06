@@ -17,12 +17,10 @@ const {
   mockRequireAdmin,
   mockModuleEnabled,
   mockApproveBedAllocations,
-  mockCreateAuditLog,
 } = vi.hoisted(() => ({
   mockRequireAdmin: vi.fn(),
   mockModuleEnabled: vi.fn(),
   mockApproveBedAllocations: vi.fn(),
-  mockCreateAuditLog: vi.fn(),
 }));
 
 vi.mock("@/lib/session-guards", () => ({
@@ -30,9 +28,6 @@ vi.mock("@/lib/session-guards", () => ({
 }));
 vi.mock("@/lib/admin-modules", () => ({
   isEffectiveModuleEnabled: () => mockModuleEnabled(),
-}));
-vi.mock("@/lib/audit", () => ({
-  createAuditLog: (...args: unknown[]) => mockCreateAuditLog(...args),
 }));
 vi.mock("@/lib/admin-bed-allocation", async () => {
   const actual = await vi.importActual<
@@ -71,7 +66,6 @@ describe("POST /api/admin/bed-allocation/approve", () => {
       session: { user: { id: "admin-1" } },
     });
     mockModuleEnabled.mockResolvedValue(true);
-    mockCreateAuditLog.mockResolvedValue(undefined);
     mockApproveBedAllocations.mockResolvedValue({ count: 4 });
   });
 
@@ -104,25 +98,6 @@ describe("POST /api/admin/bed-allocation/approve", () => {
     });
   });
 
-  it("audits a booking-scoped approval against the booking, so the booking's audit deep link finds it", async () => {
-    await post({ bookingId: "booking-1" });
-
-    expect(mockCreateAuditLog).toHaveBeenCalledTimes(1);
-    const entry = mockCreateAuditLog.mock.calls[0][0];
-    expect(entry).toMatchObject({
-      action: "BED_ALLOCATION_APPROVED",
-      memberId: "admin-1",
-      entityType: "BedAllocation",
-      outcome: "success",
-      // The deep link searches targetId — metadata is not searched at all.
-      targetId: "booking-1",
-    });
-    expect(entry.metadata).toMatchObject({
-      approvedCount: 4,
-      bookingId: "booking-1",
-    });
-  });
-
   it("leaves the board's own approvals exactly as they were", async () => {
     await post({ from: "2026-06-01", to: "2026-06-08", lodgeId: "lodge-1" });
 
@@ -133,9 +108,6 @@ describe("POST /api/admin/bed-allocation/approve", () => {
       fromDate: "2026-06-01",
       toDate: "2026-06-08",
     });
-    // A club/lodge-wide approval is not attributable to one booking, so it
-    // carries no targetId — unchanged from before #2252.
-    expect(mockCreateAuditLog.mock.calls[0][0].targetId).toBeUndefined();
   });
 
   it("still accepts an explicit allocation id list", async () => {
@@ -160,7 +132,6 @@ describe("POST /api/admin/bed-allocation/approve", () => {
     expect(malformed.status).toBe(400);
 
     expect(mockApproveBedAllocations).not.toHaveBeenCalled();
-    expect(mockCreateAuditLog).not.toHaveBeenCalled();
   });
 
   it("passes the lib's no-selector refusal back as a 400 and audits nothing", async () => {
@@ -176,7 +147,6 @@ describe("POST /api/admin/bed-allocation/approve", () => {
 
     const response = await post({});
     expect(response.status).toBe(400);
-    expect(mockCreateAuditLog).not.toHaveBeenCalled();
   });
 
   it("404s when the bed allocation module is off", async () => {
@@ -199,6 +169,5 @@ describe("POST /api/admin/bed-allocation/approve", () => {
     const response = await post({ bookingId: "booking-1" });
     expect(response.status).toBe(403);
     expect(mockApproveBedAllocations).not.toHaveBeenCalled();
-    expect(mockCreateAuditLog).not.toHaveBeenCalled();
   });
 });

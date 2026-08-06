@@ -26,6 +26,51 @@ function expectInOrder(text: string, tokens: readonly string[]): void {
 }
 
 describe("bed allocation lock topology", () => {
+  it("uses one lodge-narrowed approval selector for pre-read, row locks, and update", () => {
+    const text = source("src/lib/admin-bed-allocation.ts");
+    const selector = between(
+      text,
+      "function buildApproveBedAllocationsWhere",
+      "export async function approveBedAllocationsWithLocksHeld",
+    );
+    expect(selector).toContain(
+      "if (input.lodgeId) where.room = lodgeNullTolerantScope(input.lodgeId)",
+    );
+    const approval = text.slice(
+      text.indexOf("export async function approveBedAllocations(input"),
+    );
+    expectInOrder(approval, [
+      "const lockWhere = buildApproveBedAllocationsWhere(input)",
+      "where: lockWhere",
+      "pg_advisory_xact_lock(1)",
+      "acquireLodgeCapacityLock",
+      "where: lockWhere",
+      "ORDER BY \"id\"",
+      "FOR UPDATE",
+      "approveBedAllocationsWithLocksHeld",
+      "createAuditLog",
+    ]);
+  });
+
+  it("serializes reviewed removal global then actual sorted lodges then rows", () => {
+    const text = source("src/lib/bed-allocation-removal.ts");
+    const apply = text.slice(
+      text.indexOf("export async function applyBedAllocationRemoval"),
+    );
+    expectInOrder(apply, [
+      "resolveImmutableLodgeKeys",
+      "prisma.$transaction",
+      "pg_advisory_xact_lock(1)",
+      "acquireLodgeCapacityLock",
+      "ORDER BY \"id\"",
+      "FOR UPDATE",
+      "deleteMany",
+      "updateMany",
+      "BED_ALLOCATION_REMOVAL_APPLIED",
+      "BED_ALLOCATION_PARTNERS_PROMOTED",
+    ]);
+  });
+
   it("locks global then lodge before the school whole-lodge conversion", () => {
     const school = source("src/lib/school-booking-request.ts");
     const conversion = school.slice(

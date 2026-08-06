@@ -247,13 +247,35 @@ function mutableIdentity(row: RemovalRow) {
   };
 }
 
+function canonicalScope(scope: BedAllocationRemovalScope) {
+  if (scope.type === "WINDOW") {
+    return {
+      type: scope.type,
+      lodgeId: scope.lodgeId,
+      from: scope.from,
+      to: scope.to,
+    };
+  }
+  return {
+    type: scope.type,
+    allocationId: scope.allocationId,
+    bookingId: scope.bookingId,
+    bookingGuestId: scope.bookingGuestId,
+    lodgeId: scope.lodgeId,
+    stayDate: scope.stayDate,
+  };
+}
+
 function digestPreviewState(input: {
+  request: BedAllocationRemovalRequest;
   matchingRows: RemovalRow[];
   approvedRows: RemovalRow[];
   causalSiblings: RemovalRow[];
 }): string {
   const byId = (a: RemovalRow, b: RemovalRow) => a.id.localeCompare(b.id);
   const canonical = {
+    scope: canonicalScope(input.request.scope),
+    categories: [...input.request.categories].sort(),
     matchingRows: [...input.matchingRows].sort(byId).map(mutableIdentity),
     approvedRows: [...input.approvedRows].sort(byId).map(mutableIdentity),
     causalSiblings: [...input.causalSiblings].sort(byId).map(mutableIdentity),
@@ -274,13 +296,17 @@ function digestPreviewState(input: {
 async function loadPreviewState(
   request: BedAllocationRemovalRequest,
   db: RemovalDb,
+  options: { allowStaleAnchor?: boolean } = {},
 ): Promise<{
   preview: BedAllocationRemovalPreview;
   matchingRows: RemovalRow[];
   causalSiblings: RemovalRow[];
+  staleAnchor: boolean;
 }> {
   const categories = assertCategories(request.categories);
   let anchor: RemovalRow | null = null;
+  let staleAnchor = false;
+  let effectiveScope = request.scope;
   let where: Prisma.BedAllocationWhereInput;
   let contextWindow: { from: string; to: string };
 
@@ -292,7 +318,35 @@ async function loadPreviewState(
     };
     contextWindow = { from: request.scope.from, to: request.scope.to };
   } else {
-    anchor = await resolveAnchor(request.scope, db);
+    try {
+      anchor = await resolveAnchor(request.scope, db);
+    } catch (error) {
+      // Preview calls reject invalid/stale anchors. Apply calls need a different
+      // response: every state change after a reviewed preview, including the
+      // anchor disappearing or moving, is a stale digest and returns a fresh
+      // preview-shaped snapshot with no mutation.
+      if (
+        !options.allowStaleAnchor ||
+        !(error instanceof BedAllocationRemovalError) ||
+        (error.status !== 404 && error.status !== 409)
+      ) {
+        throw error;
+      }
+      staleAnchor = true;
+      anchor = await db.bedAllocation.findUnique({
+        where: { id: request.scope.allocationId },
+        include: allocationInclude,
+      });
+      if (anchor) {
+        effectiveScope = {
+          ...request.scope,
+          bookingId: anchor.bookingId,
+          bookingGuestId: anchor.bookingGuestId,
+          lodgeId: anchor.room.lodgeId,
+          stayDate: formatDateOnly(anchor.stayDate),
+        };
+      }
+    }
     where =
       request.scope.type === "ALLOCATION"
         ? { id: request.scope.allocationId }
@@ -303,8 +357,8 @@ async function loadPreviewState(
             }
           : { bookingId: request.scope.bookingId };
     contextWindow = {
-      from: formatDateOnly(anchor.stayDate),
-      to: formatDateOnly(anchor.stayDate),
+      from: anchor ? formatDateOnly(anchor.stayDate) : request.scope.stayDate,
+      to: anchor ? formatDateOnly(anchor.stayDate) : request.scope.stayDate,
     };
   }
 
@@ -373,10 +427,7 @@ async function loadPreviewState(
   };
   for (const row of matchingRows) categoryCounts[categoryFor(row)] += 1;
 
-  const lodgeId =
-    request.scope.type === "WINDOW"
-      ? request.scope.lodgeId
-      : request.scope.lodgeId;
+  const lodgeId = effectiveScope.lodgeId;
   const lodge = await db.lodge.findUnique({
     where: { id: lodgeId },
     select: { name: true },
@@ -386,6 +437,7 @@ async function loadPreviewState(
   }
 
   const digest = digestPreviewState({
+    request: { scope: effectiveScope, categories: request.categories },
     matchingRows,
     approvedRows,
     causalSiblings,
@@ -397,10 +449,11 @@ async function loadPreviewState(
   return {
     matchingRows,
     causalSiblings,
+    staleAnchor,
     preview: {
       digestVersion: BED_ALLOCATION_REMOVAL_DIGEST_VERSION,
       digest,
-      scope: request.scope,
+      scope: effectiveScope,
       context: {
         lodgeId,
         lodgeName: lodge.name,
@@ -446,6 +499,16 @@ async function resolveImmutableLodgeKeys(
   request: BedAllocationRemovalRequest,
 ): Promise<string[]> {
   if (request.scope.type === "WINDOW") return [request.scope.lodgeId];
+  // Resolve the immutable LodgeRoom.lodgeId values currently reached by the
+  // scope, and nothing mutable beyond those keys. The allocation -> room edge
+  // can move before global is acquired, but that race is fail-closed:
+  // - a move that wins global changes the digest, so this apply writes nothing;
+  // - an apply that wins global holds every pre-read row lodge and the move
+  //   re-reads only after it commits.
+  // Cross-lodge drift is included rather than silently assuming the booking's
+  // lodge, so every row that could be deleted has its actual lodge lock. A
+  // causal sibling shares the selected row's bed and therefore the same room
+  // and lodge key.
   const rows = await prisma.bedAllocation.findMany({
     where:
       request.scope.type === "ALLOCATION"
@@ -480,7 +543,9 @@ export async function applyBedAllocationRemoval(input: {
       await acquireLodgeCapacityLock(tx, lodgeId);
     }
 
-    const initial = await loadPreviewState(input.request, tx);
+    const initial = await loadPreviewState(input.request, tx, {
+      allowStaleAnchor: true,
+    });
     const lockIds = [
       ...new Set([
         ...initial.matchingRows.map((row) => row.id),
@@ -497,8 +562,13 @@ export async function applyBedAllocationRemoval(input: {
       `;
     }
 
-    const authoritative = await loadPreviewState(input.request, tx);
-    if (authoritative.preview.digest !== input.request.previewDigest) {
+    const authoritative = await loadPreviewState(input.request, tx, {
+      allowStaleAnchor: true,
+    });
+    if (
+      authoritative.staleAnchor ||
+      authoritative.preview.digest !== input.request.previewDigest
+    ) {
       throw new BedAllocationRemovalError(
         "Bed allocations changed after the preview. Review the refreshed counts before applying.",
         409,
@@ -525,12 +595,15 @@ export async function applyBedAllocationRemoval(input: {
       );
     }
 
-    for (const sibling of authoritative.causalSiblings) {
+    const siblingIds = authoritative.causalSiblings
+      .map((sibling) => sibling.id)
+      .sort();
+    if (siblingIds.length > 0) {
       const promoted = await tx.bedAllocation.updateMany({
-        where: { id: sibling.id, isSecondOccupant: true },
+        where: { id: { in: siblingIds }, isSecondOccupant: true },
         data: { isSecondOccupant: false },
       });
-      if (promoted.count !== 1) {
+      if (promoted.count !== siblingIds.length) {
         throw new BedAllocationRemovalError(
           "A shared double changed while the removal was applying.",
           409,
@@ -538,7 +611,22 @@ export async function applyBedAllocationRemoval(input: {
       }
     }
 
-    const selectedIdentitySummary = boundedIdentities(selectedIds);
+    const selectedIdentitySummary = boundedIdentities([...selectedIds].sort());
+    const affectedBookingIdentitySummary = boundedIdentities(
+      [...new Set(authoritative.matchingRows.map((row) => row.bookingId))].sort(),
+    );
+    const affectedNightSummary = boundedIdentities(
+      [...authoritative.preview.affectedNights].sort(),
+    );
+    const reopenedBookingIdentitySummary = boundedIdentities(
+      authoritative.preview.reopenedBookings
+        .map((booking) => booking.bookingId)
+        .sort(),
+    );
+    const searchableAffectedBookingIds = affectedBookingIdentitySummary.ids.slice(
+      0,
+      30,
+    );
     await createAuditLog(
       {
         action: "BED_ALLOCATION_REMOVAL_APPLIED",
@@ -550,18 +638,24 @@ export async function applyBedAllocationRemoval(input: {
         category: "admin",
         outcome: "success",
         summary: "Bed allocations removed through reviewed preview",
+        details: `Affected bookings: ${searchableAffectedBookingIds.join(", ")}${authoritative.preview.affectedBookingCount > searchableAffectedBookingIds.length ? ` (+${authoritative.preview.affectedBookingCount - searchableAffectedBookingIds.length} more in metadata.affectedBookingIds)` : ""}`,
         metadata: {
           digestVersion: authoritative.preview.digestVersion,
           previewDigest: authoritative.preview.digest,
           scope: input.request.scope,
           selectedCategories: input.request.categories,
           removedRowCount: selectedIds.length,
+          categoryCounts: authoritative.preview.categories,
           affectedBookingCount: authoritative.preview.affectedBookingCount,
-          affectedNights: authoritative.preview.affectedNights,
+          affectedBookingIds: affectedBookingIdentitySummary.ids,
+          omittedAffectedBookingIdCount:
+            affectedBookingIdentitySummary.omittedCount,
+          affectedNights: affectedNightSummary.ids,
+          omittedAffectedNightCount: affectedNightSummary.omittedCount,
           promotedRowCount: authoritative.causalSiblings.length,
-          reopenedBookingIds: authoritative.preview.reopenedBookings.map(
-            (booking) => booking.bookingId,
-          ),
+          reopenedBookingIds: reopenedBookingIdentitySummary.ids,
+          omittedReopenedBookingIdCount:
+            reopenedBookingIdentitySummary.omittedCount,
           allocationIds: selectedIdentitySummary.ids,
           omittedAllocationIdCount: selectedIdentitySummary.omittedCount,
           autoAllocationTriggered: false,
@@ -570,24 +664,42 @@ export async function applyBedAllocationRemoval(input: {
       tx,
     );
 
-    for (const sibling of authoritative.causalSiblings) {
+    if (authoritative.causalSiblings.length > 0) {
+      const promotedBookingIds = [
+        ...new Set(
+          authoritative.causalSiblings.map((sibling) => sibling.bookingId),
+        ),
+      ].sort();
+      const searchableBookingIds = promotedBookingIds.slice(0, 30);
+      const promotionIdentitySummary = authoritative.causalSiblings
+        .slice()
+        .sort((a, b) => a.id.localeCompare(b.id))
+        .slice(0, MAX_AUDIT_IDENTITIES)
+        .map((sibling) => ({
+          allocationId: sibling.id,
+          bookingId: sibling.bookingId,
+          bookingGuestId: sibling.bookingGuestId,
+          bedId: sibling.bedId,
+          stayDate: formatDateOnly(sibling.stayDate),
+        }));
       await createAuditLog(
         {
-          action: "BED_ALLOCATION_PARTNER_PROMOTED",
+          action: "BED_ALLOCATION_PARTNERS_PROMOTED",
           memberId: input.actorMemberId,
-          targetId: sibling.bookingId,
+          targetId:
+            authoritative.preview.context.bookingId ??
+            authoritative.matchingRows[0]?.bookingId,
           entityType: "BedAllocation",
-          entityId: sibling.id,
           category: "admin",
           outcome: "success",
-          summary:
-            "Second occupant auto-promoted to primary after reviewed allocation removal",
+          summary: `${authoritative.causalSiblings.length} second occupant${authoritative.causalSiblings.length === 1 ? "" : "s"} auto-promoted to primary after reviewed allocation removal`,
+          details: `Promoted partner bookings: ${searchableBookingIds.join(", ")}${promotedBookingIds.length > searchableBookingIds.length ? ` (+${promotedBookingIds.length - searchableBookingIds.length} more in metadata.promotions)` : ""}`,
           metadata: {
-            allocationId: sibling.id,
-            bookingGuestId: sibling.bookingGuestId,
-            bedId: sibling.bedId,
-            stayDate: formatDateOnly(sibling.stayDate),
             removalPreviewDigest: authoritative.preview.digest,
+            promotedCount: authoritative.causalSiblings.length,
+            promotions: promotionIdentitySummary,
+            promotionsTruncated:
+              authoritative.causalSiblings.length > MAX_AUDIT_IDENTITIES,
           },
         },
         tx,
