@@ -4,8 +4,10 @@ Audience: developer / agent
 
 This harness produces relative Windows/WSL evidence for the already-reviewed
 slice-1 implementation. It does not decide whether work progresses. Every
-completed aggregate remains `OWNER_REVIEW_REQUIRED`; fewer than four valid,
-evenly counterbalanced pairs remains `PRELIMINARY_ONLY`. Four is the harness's
+completed aggregate from the exact declared final profile remains
+`OWNER_REVIEW_REQUIRED`; every nonfinal/test profile, changed parameter, or
+pair set other than exactly four valid evenly counterbalanced pairs remains
+`PRELIMINARY_ONLY`. Four is the harness's
 integrity choice for a balanced C-B/B-C final run; it is stricter than the
 owner's verbatim minimum of three.
 
@@ -17,13 +19,29 @@ owner's verbatim minimum of three.
 - Windows/WSL results support relative comparison only, not exact Tokoroa capacity.
 
 The word "approximately" is intentionally qualitative. The reporter records
-median and p95 but applies no invented autonomous p95 gate. Correctness and
-security must pass independently before timing; any failure stops progression.
+median and p95 but applies no invented autonomous p95 gate. Every non-timing
+correctness/security check must pass before timing; any failure stops
+progression. The pre-timing report marks only `MC-08B` (current) and `BND-09`
+(both sides) as `DEFERRED_TO_PHASE2`. It can reach only
+`pre_timing_passed`, never a final correctness pass. Each sealed timing side
+must replace its exact deferred set with independently derived `PASS` evidence
+before a pair, pair set, or aggregate can complete.
 
 ## Safety and prerequisites
 
 - Run the harness from Git Bash on Windows. Direct WSL/Linux execution has not
   been cleared for this host and fails closed.
+- Activate the repository runtime in that same Git Bash process before the
+  final run; the system `node` may otherwise be Node 22:
+
+  ```bash
+  eval "$(fnm env --shell bash)"
+  fnm use --install-if-missing
+  node --version # must print v24.x
+  ```
+
+  The orchestrator and both runners reject any other major and seal the
+  observed version in `inputs/node-version.txt`.
 - Use only the isolated `tacbookings-measure` Compose project and its loopback
   ports. Never use production/staging credentials, databases, backups, or live
   providers.
@@ -40,10 +58,31 @@ security must pass independently before timing; any failure stops progression.
 - Build both images from immutable source archives, set
   `org.opencontainers.image.revision` to the exact source commit, and retain the
   archives. Do not identify an image by a mutable tag alone.
-- Complete the exact correctness/security run for each image first. Retain each
-  machine-readable report; the report payload must record `result: "passed"`
-  and the manifest must bind its SHA-256. A failed/pending report cannot enter
-  timing.
+- Complete the exact correctness/security evidence chain for each image first.
+  The timing manifest binds the SHA-256 of the last, create-only
+  `COMPLETED.json`, not a naked Boolean report. The verifier walks backwards
+  through immutable inputs, the exact 35-ID `MC-*`/`BND-*` census, producer
+  source hashes, create-only producer results/raw files, exact raw manifest,
+  secret scan, and independently derived report. The reviewed producer source
+  archive contains every correctness and timing producer, its exact SHA-256
+  manifest, and the archived writer census. At orchestration start the complete
+  live timing harness is hashed again and every byte is matched to that archive;
+  this sealed binding is carried through pair-set completion and aggregation.
+  The correctness inputs also bind a typed installed-runtime snapshot: Node 24,
+  both npm locks, exact Playwright/axe package manifests, the Playwright Chromium
+  registry, and the hashed Node/Chromium executables.
+  The correctness finalizer verifies the complete live producer-source census
+  against the archive before deriving evidence and again immediately before its
+  completion marker. A failed finalization removes only its derived report,
+  scan, manifest, and completion files so the immutable raw run can be retried.
+  A complete but failed, unverified, or owner-disposition-needed chain cannot
+  enter timing, and no check outside the exact Phase 2-owned set may be deferred.
+- `MC-03D` (CMS deletion invalidation) currently has no product endpoint and no
+  direct owner disposition. The current-image example must therefore remain
+  `OWNER_DISPOSITION_NEEDED`; absence of an endpoint is never fabricated as a
+  pass or N/A. Final timing is intentionally blocked until that real
+  disposition or implementation exists and every other required producer
+  passes.
 
 ## One-time canonical database preparation
 
@@ -72,23 +111,23 @@ replace every placeholder. For both sides it binds:
 - immutable Docker image ID and exact OCI revision;
 - source archive path and SHA-256. It must be a `git archive` whose embedded
   commit ID exactly equals the OCI revision;
-- correctness report path and SHA-256. The report itself must be JSON with
-  `schema_version: 1` and `result: "passed"`; the verifier parses that bound
-  payload and never trusts a duplicate result claim in the manifest;
+- correctness root `COMPLETED.json` path and SHA-256. Its copied overall result
+  is never trusted; the verifier recomputes it from the exact chain;
 - canonical database archive path and SHA-256;
 - exact body SHA-256 and ETag for current `/about`, plus expected
   `X-Nextjs-Cache` classification for every route. Dynamic routes deliberately
   bind `body_sha256` and `etag` to `null`: per-request CSP nonces make their raw
-  bodies unstable, while the exact correctness-report checksum binds their
-  already-completed content/security proof.
+  bodies unstable, while the exact correctness-completion checksum binds their
+  independently verified content/security evidence chain.
 
 Expected bodies/ETags come from the completed correctness run, never from the
 first timed request. Current `/about` must be `HIT`; baseline `/about` and all
 three controls must have no `X-Nextjs-Cache` header (the intended dynamic
 classification). `verify-binding.mjs` compares the manifest to the image,
-archives, and report before any samples. The report payload must also bind the
-same side, image ID, OCI revision, source/database archive checksums, and exact
-route expectations; see `correctness-report.example.json`.
+archives, and completion chain before any samples. The immutable correctness
+inputs also bind the same side, image ID, OCI revision, and source/database
+archive checksums. `correctness-report.example.json` deliberately illustrates
+the current blocked state; it is not permission to substitute a scalar pass.
 `verify-http-proof.mjs` checks exact
 status/body/ETag/classification immediately before and after every CPU block.
 
@@ -114,14 +153,24 @@ bash measurement/phase2/bin/orchestrate-pairs.sh \
   --output-id post2591-final
 ```
 
-The wrapper snapshots and checksums the manifest and every referenced immutable
+The wrapper first copies `.env.measure` byte-for-byte to a restrictive private
+lock directory and uses that snapshot for every Compose call. It rejects
+ambient overrides, keeps the snapshot and common environment-audit HMAC key out
+of publishable evidence, and removes them only while it still owns the lock.
+It then snapshots and checksums the manifest and every referenced immutable
 input, acquires a fixed machine-wide single-flight lock for the one Compose/DB
 resource (independent of the configurable results root), continuously monitors
 host contamination, assigns collision-proof pair IDs and absolute output roots,
 enforces inter-side and inter-pair gaps, validates every sealed pair, and writes
 its set-level completion marker only after all four return successfully. The
 lock carries an ownership token so one process cannot remove another's lock.
-`--output-id` must be new; never reuse a partial output directory.
+`--output-id` must be new; never reuse a partial output directory. The live
+harness/archive binding is re-verified at pair start, after each sealed side,
+immediately before each pair and set finalization, and again by aggregation.
+Changing a harness byte after the initial snapshot therefore invalidates the
+run instead of leaving a valid-looking historical self-hash. If that happens
+after pair or pair-set finalization, the runner removes only the exact derived
+seal files and preserves the raw timing evidence for review or retry.
 
 Restore and fingerprint hooks are prohibited for final decision evidence. The
 orchestrator must use the reviewed canonical stack helpers, whose bytes are in
@@ -134,6 +183,15 @@ explicit new output root. The side runner independently proves the launched
 container image ID and after-fingerprint. It also binds the reviewed Caddy and
 Mailpit images/resources and proves that loopback `127.0.0.1:8027` reaches
 `app:3000` through the adapted Caddy config.
+
+After every database restore, counts-only evidence proves that no Xero token or
+prohibited integration credential exists, the analytics/AI/Xero/Google module
+flags are all off, and no analytics measurement ID is stored (zero settings
+rows are valid). The launched app's raw `Config.Env` is piped directly through
+a sanitizer: exact runtime/database/local-Mailpit settings, blank live-provider
+surfaces, blank seed overrides, and unknown sensitive key names fail closed.
+Only classifications, audited key names, and a common opaque HMAC enter the
+evidence; raw values, lengths, and prefixes do not.
 
 The default maximum gaps between sides and between pairs are 600 seconds. A
 restore or interruption that exceeds either invalidates the set rather than
@@ -161,8 +219,9 @@ Each side performs, in order:
    `COMPLETED.json` marker.
 
 Every timed segment has UTC boundary markers, cgroup CPU/memory/throttling/OOM
-snapshots, 1-second Docker CPU/memory/PID/I/O samples for app, Postgres, Caddy,
-and Mailpit, restart counts, and segment-scoped application logs. The exact
+snapshots, at least two continuous 1-second Docker CPU/memory/PID/I/O samples
+for app, Postgres, Caddy, and Mailpit, restart counts, and segment-scoped
+application logs. The exact
 configured segment/file set is required; missing cgroup fields, unbalanced or
 empty container samples, invalid timestamps, or command stderr fail closed. A
 restart or OOM aborts summarisation. Log noise, throttling, memory, and
@@ -170,8 +229,13 @@ regeneration load remain owner-reviewed evidence.
 
 Tunables are `RUNS=200`, `WARMUP=20`, `COLD_RUNS=5`, `IDLE_CYCLES=3`,
 `IDLE_SECONDS=120`, `REVALIDATION_SECONDS=305`, `CONC=10`, `DURATION=30`,
-and `REQUEST_TIMEOUT_SECONDS=10`. `IDLE_SECONDS >= 300` and
-`REVALIDATION_SECONDS < 300` fail closed.
+and `REQUEST_TIMEOUT_SECONDS=10`. A declared `final-decision` run requires
+those values exactly, plus four pairs, 600-second side/pair gap limits, the
+10-second host-monitor interval, and the exact four-container allowlist.
+Changing any of them fails before execution. A rehearsal declares
+`MEASUREMENT_PROFILE=nonfinal-test` and remains preliminary even if its values
+happen to match. `IDLE_SECONDS >= 300` and `REVALIDATION_SECONDS < 300` also
+fail closed.
 
 ## Aggregate without changing raw evidence
 
@@ -186,15 +250,20 @@ node measurement/phase2/bin/aggregate-pairs.mjs \
   --out-prefix C:/Users/jorda/AppData/Local/Temp/issue-2352/phase2-aggregate
 ```
 
-Aggregation verifies every nested checksum/completion marker, unique pair ID,
-at least four pairs with equal C-B/B-C counts, non-overlapping chronology and
+Aggregation verifies every exact file-and-directory census (including no late
+or case-variant extras), nested checksum/completion marker, unique pair ID,
+exactly four final-profile pairs with equal C-B/B-C counts, non-overlapping chronology and
 bounded gaps, one common correctness/harness/archive/logical-DB fingerprint,
+the sealed live-harness-to-producer-archive binding, and the exact Phase 2-owned
+PASS set for each re-derived side summary,
 before/after database equality, response proof, exact sample shape,
 restart/OOM status, and load errors. It re-derives each preserved `summary.json`
 from sealed raw evidence instead of trusting summary fields. Aggregate JSON,
 Markdown, their output manifest, and completion marker all refuse existing
 paths; the completion marker binds the sealed orchestration manifest and the
-aggregate checksums. It reports paired reductions, repeatability, relative
+aggregate checksums. The aggregate prefix resolves through existing real
+ancestors with Windows case-folding and must be outside the sealed set. It
+reports paired reductions, repeatability, relative
 latency, idle/revalidation, control drift, cache proof,
 memory/throttling/restart/log evidence, and concurrency. Those qualitative
 dimensions are explicitly `OWNER_REVIEW_REQUIRED`; output never says a
@@ -213,11 +282,15 @@ bash -n measurement/phase2/bin/orchestrate-pairs.sh
 bash -n measurement/stack/measure-stack.sh
 ```
 
-The fixtures exercise failed correctness payloads, wrong interior cache
-classification, mutated response bodies, missing regenerated-HIT proof,
-incorrect checksums, incomplete output, chronology overlap, summary-only
-aggregation, and non-monotonic/errorful load evidence. They contain no
-credentials or measurement results.
+The fixtures mutate the exact correctness census and chain, the two-stage
+deferred/PASS boundary, missing/failing/forged Phase 2-owned IDs, producer cleanup,
+raw census/checksums, duplicate cache/ETag headers, UTF-16/NUL/quoted/argument
+secrets (including AWS session/security tokens and generic API keys), the
+live-harness-to-producer-archive binding, measurement-env
+quoting/duplicates/reparse points/ambient overrides,
+every live-provider environment key, app/database invariants, profile
+classification, and sealed file/directory census. They contain no credentials
+or measurement results.
 
 ## Cleanup and reporting
 

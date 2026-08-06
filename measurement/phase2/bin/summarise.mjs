@@ -4,6 +4,10 @@ import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "
 import { basename, join, resolve } from "node:path";
 import { conventionalMedian, rankedQuantile } from "./statistics.mjs";
 import { verifyRevalidationEvidence } from "./revalidation-evidence.mjs";
+import { parseStrictHttpHeaders } from "./http-evidence.mjs";
+import { classifySideProfile, PROFILE_FINAL, requireKnownProfile } from "./measurement-profile.mjs";
+import { verifySecretScan } from "./scan-evidence-secrets.mjs";
+import { buildPhase2Correctness } from "./correctness-contract.mjs";
 
 const verifyJsonMode = process.argv[2] === "--verify-json";
 const dir = resolve(process.argv[verifyJsonMode ? 3 : 2] ?? "");
@@ -50,20 +54,8 @@ function routeFromFile(file) {
   const stem = file.replace(/\.csv$/, "");
   return stem === "_root" ? "/" : `/${stem.replace(/^_/, "").replaceAll("_", "/")}`;
 }
-function parseHeaders(path) {
-  const blocks = readFileSync(required(path), "utf8").trim().split(/\r?\n\r?\n(?=HTTP\/)/i);
-  const rows = blocks.at(-1).split(/\r?\n/);
-  const status = Number(/^HTTP\/\S+\s+(\d+)/i.exec(rows.shift() ?? "")?.[1]);
-  if (!Number.isInteger(status)) fail(`invalid HTTP headers: ${path}`);
-  const headers = {};
-  for (const row of rows) {
-    const colon = row.indexOf(":");
-    if (colon > 0) headers[row.slice(0, colon).trim().toLowerCase()] = row.slice(colon + 1).trim();
-  }
-  return { status, headers };
-}
 function validateResponseEvidence({ headersPath, bodyPath, proof, expected, contextLabel, acceptedCaches }) {
-  const parsed = parseHeaders(headersPath);
+  const parsed = parseStrictHttpHeaders(readFileSync(required(headersPath), "utf8"), `${contextLabel} headers`);
   const bodySha = fileSha256(bodyPath);
   const nextCache = parsed.headers["x-nextjs-cache"] ?? "ABSENT";
   const etag = parsed.headers.etag ?? null;
@@ -93,8 +85,8 @@ function segmentEvidence(context) {
   ].sort();
   const suffixes = [
     "started-at.txt", "cgroup-before.txt", "restarts-before.txt",
-    "docker-stats.csv", "docker-stats.stderr", "cgroup-after.txt",
-    "restarts-after.txt", "app.log", "app-log.stderr", "ended-at.txt",
+    "runtime-identity-before.json", "docker-stats.csv", "docker-stats.stderr", "sampler-exit-status.txt", "cgroup-after.txt",
+    "restarts-after.txt", "runtime-identity-after.json", "app.log", "app-log.stderr", "ended-at.txt",
   ];
   const expectedFiles = new Set(expectedNames.flatMap((name) => suffixes.map((suffix) => `${name}-${suffix}`)));
   const actualFiles = readdirSync(segmentDir).sort();
@@ -110,6 +102,7 @@ function segmentEvidence(context) {
     const startedAt = Date.parse(readFileSync(join(segmentDir, `${name}-started-at.txt`), "utf8").trim());
     const endedAt = Date.parse(readFileSync(join(segmentDir, `${name}-ended-at.txt`), "utf8").trim());
     if (!Number.isFinite(startedAt) || !Number.isFinite(endedAt) || endedAt < startedAt) fail(`segment ${name} has invalid UTC boundaries`);
+    if (readFileSync(join(segmentDir, `${name}-sampler-exit-status.txt`), "utf8").trim() !== "0") fail(`segment ${name} sampler did not exit successfully`);
     const before = parseCgroup(join(segmentDir, `${name}-cgroup-before.txt`));
     const after = parseCgroup(join(segmentDir, `${name}-cgroup-after.txt`));
     for (const [capture, parsed] of [["before", before], ["after", after]]) {
@@ -126,15 +119,23 @@ function segmentEvidence(context) {
     const statsLines = lines(join(segmentDir, `${name}-docker-stats.csv`));
     const requiredContainers = ["tacbookings-measure-app-1", "tacbookings-measure-postgres-1", "tacbookings-measure-caddy-1", "tacbookings-measure-mailpit-1"];
     const samplesByContainer = Object.fromEntries(requiredContainers.map((container) => [container, 0]));
+    const sampleTimes = Object.fromEntries(requiredContainers.map((container) => [container, []]));
     for (const line of statsLines) {
       const fields = line.split(",");
       if (!Number.isFinite(Date.parse(fields[0])) || !Object.hasOwn(samplesByContainer, fields[1])) fail(`segment ${name} has an invalid/unexpected docker-stats row`);
       samplesByContainer[fields[1]] += 1;
+      sampleTimes[fields[1]].push(Date.parse(fields[0]));
     }
     for (const container of requiredContainers) {
-      if (samplesByContainer[container] === 0) fail(`segment ${name} has no docker-stats sample for ${container}`);
+      if (samplesByContainer[container] < 2) fail(`segment ${name} has fewer than two docker-stats samples for ${container}`);
+      const times = sampleTimes[container];
+      if (times[0] < startedAt - 3000 || times[0] > startedAt + 1000 || times.at(-1) < endedAt - 3000 || times.at(-1) > endedAt + 1000 || times.some((value, index) => index > 0 && (value <= times[index - 1] || value - times[index - 1] > 3000))) fail(`segment ${name} sampler timestamps/gaps/boundary coverage are invalid for ${container}`);
     }
     if (new Set(Object.values(samplesByContainer)).size !== 1) fail(`segment ${name} docker-stats sample counts differ by container`);
+    for (const suffix of ["before", "after"]) {
+      const identity = json(join(segmentDir, `${name}-runtime-identity-${suffix}.json`));
+      if (JSON.stringify(identity) !== identityCanonical) fail(`segment ${name} ${suffix} runtime identity differs from the sealed app/Postgres identity`);
+    }
     const logText = readFileSync(join(segmentDir, `${name}-app.log`), "utf8");
     const errorLines = logText.split(/\r?\n/).filter((line) => /\b(error|fatal|panic|uncaught|unhandled)\b/i.test(line)).length;
     return [name, {
@@ -149,17 +150,23 @@ function segmentEvidence(context) {
       suspicious_log_lines: errorLines,
       docker_stats_rows: statsLines.length,
       docker_stats_samples_by_container: samplesByContainer,
+      maximum_docker_stats_gap_ms: Math.max(...Object.values(sampleTimes).flatMap((times) => times.slice(1).map((value, index) => value - times[index]))),
     }];
   }));
 }
 
 const context = json(join(dir, "run-context.json"));
+requireKnownProfile(context.measurement_profile);
+const derivedProfile = classifySideProfile(context.parameters);
+if (context.final_profile_parameters_exact !== (derivedProfile === PROFILE_FINAL)) fail("side context final-profile exactness flag is false or stale");
+if (context.measurement_profile === PROFILE_FINAL && derivedProfile !== PROFILE_FINAL) fail("final-decision side parameters differ from the exact reviewed profile");
 const binding = json(join(dir, "env", "verified-binding.json"));
 if (
-  !binding.verified || binding.side !== context.side || binding.correctness_result !== "passed" ||
+  !binding.verified || binding.side !== context.side || binding.correctness_result !== "pre_timing_passed" ||
   !/^sha256:[a-f0-9]{64}$/.test(binding.image_id ?? "") ||
   !/^[a-f0-9]{40,64}$/.test(binding.oci_revision ?? "") || binding.source_archive_revision !== binding.oci_revision ||
   !/^[a-f0-9]{64}$/.test(binding.source_archive_sha256 ?? "") ||
+  !/^[a-f0-9]{64}$/.test(binding.correctness_completion_sha256 ?? "") ||
   !/^[a-f0-9]{64}$/.test(binding.correctness_report_sha256 ?? "") ||
   !/^[a-f0-9]{64}$/.test(binding.canonical_database_archive_sha256 ?? "")
 ) fail("immutable binding payload is incomplete or invalid");
@@ -172,7 +179,7 @@ const postgresContainer = json(join(dir, "env", "postgres-container-inspect.json
 const caddyContainer = json(join(dir, "env", "caddy-container-inspect.json"));
 const mailpitContainer = json(join(dir, "env", "mailpit-container-inspect.json"));
 const network = json(join(dir, "env", "network-inspect.json"));
-const secretScan = json(join(dir, "env", "secret-scan.json"));
+const secretScan = verifySecretScan({ root: dir, report: json(join(dir, "secret-scan.json")), allowedLaterFiles: ["summary.json", "summary.txt", "output-manifest.sha256", "COMPLETED.json"] });
 if (!secretScan.passed || secretScan.findings?.length !== 0) fail("raw evidence secret scan did not pass");
 if (appContainer.Image !== binding.image_id) fail("raw app container image ID differs from the immutable binding");
 if (appContainer.HostConfig.NanoCpus !== 1_000_000_000 || appContainer.HostConfig.Memory !== 1_073_741_824 || appContainer.HostConfig.ReadonlyRootfs !== true || !(appContainer.HostConfig.SecurityOpt ?? []).includes("no-new-privileges:true")) {
@@ -180,6 +187,15 @@ if (appContainer.HostConfig.NanoCpus !== 1_000_000_000 || appContainer.HostConfi
 }
 if (caddyContainer.Config.Image !== "caddy:2-alpine" || caddyContainer.HostConfig.NanoCpus !== 200_000_000 || caddyContainer.HostConfig.Memory !== 134_217_728) fail("raw Caddy image/resource identity differs");
 if (mailpitContainer.Config.Image !== "axllent/mailpit:v1.30.3" || mailpitContainer.HostConfig.NanoCpus !== 200_000_000 || mailpitContainer.HostConfig.Memory !== 134_217_728) fail("raw Mailpit image/resource identity differs");
+const appEnvironment = json(join(dir, "env", "app-environment-audit.json"));
+if (!appEnvironment.verified || !/^[a-f0-9]{64}$/.test(appEnvironment.keyed_fingerprint_sha256 ?? "") || appEnvironment.prohibited_live_provider_keys?.length || appEnvironment.unknown_sensitive_key_names?.length) fail("sanitized app environment audit is invalid");
+const runtimeIdentityInitial = json(join(dir, "env", "runtime-identity-initial.json"));
+const runtimeIdentityBeforeCold = json(join(dir, "env", "runtime-identity-before-cold.json"));
+const runtimeIdentityAfterCold = json(join(dir, "env", "runtime-identity-after-cold.json"));
+const runtimeIdentityBeforeFinalization = json(join(dir, "env", "runtime-identity-before-finalization.json"));
+const identityCanonical = JSON.stringify(runtimeIdentityInitial);
+for (const [label, identity] of [["before cold", runtimeIdentityBeforeCold], ["after cold", runtimeIdentityAfterCold], ["before finalization", runtimeIdentityBeforeFinalization]]) if (JSON.stringify(identity) !== identityCanonical) fail(`immutable app/Postgres identity differs ${label}`);
+if (runtimeIdentityInitial.app?.container_id !== appContainer.Id || runtimeIdentityInitial.app?.image_id !== binding.image_id || runtimeIdentityInitial.postgres?.container_id !== postgresContainer.Id || runtimeIdentityInitial.postgres?.image_id !== postgresContainer.Image || !runtimeIdentityInitial.postgres?.server_version || !runtimeIdentityInitial.verified) fail("initial immutable runtime identity does not bind inspected app/Postgres");
 if (readFileSync(join(dir, "env", "caddy-port.txt"), "utf8").trim() !== "127.0.0.1:8027") fail("raw Caddy localhost:8027 binding differs");
 if (statSync(join(dir, "env", "caddy-adapt.stderr")).size !== 0) fail("Caddy adaptation emitted stderr");
 const adaptedCaddy = readFileSync(join(dir, "env", "caddy-adapted.json"), "utf8");
@@ -316,7 +332,9 @@ const segments = segmentEvidence(context);
 if (Object.values(segments).some((segment) => segment.restart_delta !== 0 || segment.oom_delta !== 0 || segment.oom_kill_delta !== 0)) {
   fail("restart/OOM contamination occurred during a timed segment");
 }
-
+const databaseFingerprintBefore = readFileSync(join(dir, "env", "database-fingerprint-before.txt"), "utf8").trim();
+const databaseFingerprintAfter = readFileSync(join(dir, "env", "database-fingerprint-after.txt"), "utf8").trim();
+if (!/^[a-f0-9]{64}$/.test(databaseFingerprintBefore) || !/^[a-f0-9]{64}$/.test(databaseFingerprintAfter) || databaseFingerprintBefore !== databaseFingerprintAfter) fail("database before/after fingerprints are invalid or differ");
 const summary = {
   schema_version: 2,
   methodology: { median: "conventional median; even samples average the two middle values", p95: "sorted[floor(0.95*n)], capped at n-1" },
@@ -324,6 +342,7 @@ const summary = {
   name: basename(dir),
   context,
   immutable_binding: binding,
+  phase2_correctness: buildPhase2Correctness(context.side),
   environment_identity: {
     harness_manifest_sha256: harnessManifestSha,
     compose_uninterpolated_sha256: fileSha256(join(dir, "env", "compose-config-uninterpolated.yml")),
@@ -336,13 +355,12 @@ const summary = {
     network_driver: network[0]?.Driver,
     network_options: network[0]?.Options ?? {},
     app_database_target: json(join(dir, "env", "app-database-target.json")),
+    app_environment_audit: appEnvironment,
+    runtime_identity: runtimeIdentityInitial,
     secret_scan_passed: true,
   },
-  database_fingerprint_after: (() => {
-    const fingerprint = readFileSync(join(dir, "env", "database-fingerprint-after.txt"), "utf8").trim();
-    if (!/^[a-f0-9]{64}$/.test(fingerprint)) fail("database after-fingerprint is invalid");
-    return fingerprint;
-  })(),
+  database_fingerprint_before: databaseFingerprintBefore,
+  database_fingerprint_after: databaseFingerprintAfter,
   phases: {
     cold: { "/about": timingCsv(join(dir, "cold", "about.csv")) },
     warm,

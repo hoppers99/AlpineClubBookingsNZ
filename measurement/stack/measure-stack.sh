@@ -21,15 +21,33 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 ROOT="$(pwd)"
 
-ENV_FILE="$ROOT/measurement/stack/.env.measure"
+: "${MEASURE_ENV_SNAPSHOT:?MEASURE_ENV_SNAPSHOT must point to the private orchestrator snapshot}"
+: "${MEASURE_ENV_SNAPSHOT_HMAC_SHA256:?MEASURE_ENV_SNAPSHOT_HMAC_SHA256 must bind the private snapshot}"
+: "${PHASE2_ENV_AUDIT_HMAC_KEY_FILE:?PHASE2_ENV_AUDIT_HMAC_KEY_FILE must point to the private HMAC key}"
+case "$MEASURE_ENV_SNAPSHOT" in /*|[A-Za-z]:/*) ;; *) echo "MEASURE_ENV_SNAPSHOT must be absolute" >&2; exit 1 ;; esac
+ENV_FILE="$(cygpath -am "$MEASURE_ENV_SNAPSHOT")"
+verify_env_snapshot() {
+  node measurement/phase2/bin/measure-env-contract.mjs --verify-snapshot "$ENV_FILE" \
+    --hmac-key-file "$PHASE2_ENV_AUDIT_HMAC_KEY_FILE" --expected-hmac "$MEASURE_ENV_SNAPSHOT_HMAC_SHA256"
+}
+verify_env_snapshot
 PROJECT=tacbookings-measure
 
 # Host-side view of the measure database, for migrate + seeds.
-DB_PASSWORD="$(grep '^DB_PASSWORD=' "$ENV_FILE" | cut -d= -f2)"
+env_value() { node measurement/phase2/bin/measure-env-contract.mjs --get "$1" --env-file "$ENV_FILE"; }
+DB_PASSWORD="$(env_value DB_PASSWORD)"
+[ -n "$DB_PASSWORD" ] || { echo "private measurement DB password is empty" >&2; exit 1; }
+DEFAULT_MEASURE_APP_IMAGE="$(env_value APP_IMAGE)"
 export HOST_DATABASE_URL="postgresql://tac:${DB_PASSWORD}@localhost:5435/tacbookings"
 
 compose() {
-  docker compose --env-file "$ENV_FILE" -p "$PROJECT" --project-directory "$ROOT" \
+  verify_env_snapshot
+  local image="${MEASURE_APP_IMAGE:-$DEFAULT_MEASURE_APP_IMAGE}"
+  local clean_env=("PATH=$PATH") name
+  for name in SystemRoot SYSTEMROOT COMSPEC DOCKER_HOST DOCKER_CONTEXT DOCKER_CONFIG DOCKER_CERT_PATH DOCKER_TLS_VERIFY HOME USERPROFILE TEMP TMP; do
+    [ -z "${!name:-}" ] || clean_env+=("$name=${!name}")
+  done
+  env -i "${clean_env[@]}" MEASURE_APP_IMAGE="$image" docker compose --env-file "$ENV_FILE" -p "$PROJECT" --project-directory "$ROOT" \
     -f docker-compose.yml -f measurement/stack/docker-compose.measure.yml "$@"
 }
 
@@ -52,9 +70,9 @@ prepare() {
 
   echo "==> Seeding base data (SEED_THEME_COMPLETE=1 so the public site is open)"
   SEED_THEME_COMPLETE=1 \
-  SEED_ADMIN_EMAIL="$(grep '^SEED_ADMIN_EMAIL=' "$ENV_FILE" | cut -d= -f2)" \
-  SEED_ADMIN_PASSWORD="$(grep '^SEED_ADMIN_PASSWORD=' "$ENV_FILE" | cut -d= -f2)" \
-  SEED_LODGE_PASSWORD="$(grep '^SEED_LODGE_PASSWORD=' "$ENV_FILE" | cut -d= -f2)" \
+  SEED_ADMIN_EMAIL="$(env_value SEED_ADMIN_EMAIL)" \
+  SEED_ADMIN_PASSWORD="$(env_value SEED_ADMIN_PASSWORD)" \
+  SEED_LODGE_PASSWORD="$(env_value SEED_LODGE_PASSWORD)" \
   DATABASE_URL="$HOST_DATABASE_URL" npx tsx prisma/seed.ts
 
   echo "==> Starting app + caddy (http://localhost:8027 via Caddy; app direct on :3003)"
@@ -78,6 +96,32 @@ database_fingerprint() {
     | sha256sum | awk '{print $1}'
 }
 
+provider_isolation_audit() {
+  compose exec -T postgres psql -U tac -d tacbookings -v ON_ERROR_STOP=1 -tA <<'SQL'
+WITH forbidden_credentials AS (
+  SELECT count(*)::int AS count FROM "IntegrationCredential"
+  WHERE lower(provider) = ANY (ARRAY['xero','stripe','google','backup','anthropic','anthropic-diagnostics'])
+), module_rows AS (
+  SELECT count(*)::int AS rows,
+    count(*) FILTER (WHERE analytics OR "aiAssistant" OR "aiDiagnostics" OR "xeroIntegration" OR "googleLogin")::int AS unsafe
+  FROM "ClubModuleSettings"
+), analytics_rows AS (
+  SELECT count(*)::int AS rows,
+    count(*) FILTER (WHERE coalesce(trim("measurementId"), '') <> '')::int AS unsafe
+  FROM "AnalyticsSettings"
+)
+SELECT json_build_object(
+  'schema_version', 1,
+  'forbidden_integration_credential_count', (SELECT count FROM forbidden_credentials),
+  'xero_token_count', (SELECT count(*)::int FROM "XeroToken"),
+  'club_module_settings_rows', (SELECT rows FROM module_rows),
+  'unsafe_club_module_settings_rows', (SELECT unsafe FROM module_rows),
+  'analytics_settings_rows', (SELECT rows FROM analytics_rows),
+  'unsafe_analytics_settings_rows', (SELECT unsafe FROM analytics_rows)
+)::text;
+SQL
+}
+
 create_canonical_dump() (
   local archive="$1"
   local temp_archive
@@ -93,7 +137,7 @@ create_canonical_dump() (
   compose exec -T postgres pg_restore --list < "$temp_archive" > /dev/null
   # Same-directory hard-link publication is atomic and refuses a destination
   # created by a racing writer; unlinking the temporary name leaves one inode.
-  node -e 'const fs=require("node:fs");fs.linkSync(process.argv[1],process.argv[2]);fs.unlinkSync(process.argv[1])' "$temp_archive" "$archive"
+  node -e 'const fs=require("node:fs");fs.linkSync(process.argv[1],process.argv[2]);fs.unlinkSync(process.argv[1])' "$(cygpath -am "$temp_archive")" "$(cygpath -am "$archive")"
   sha256sum "$archive"
 )
 
@@ -105,7 +149,7 @@ restore_canonical_dump() {
   [ "$(sha256sum "$archive" | awk '{print $1}')" = "$expected_sha" ] || {
     echo "canonical archive checksum mismatch" >&2; exit 1;
   }
-  compose stop app >/dev/null 2>&1 || true
+  if [ -n "$(compose ps -q app)" ]; then compose stop app >/dev/null; fi
   compose up -d --wait postgres >/dev/null
   compose exec -T postgres psql -U tac -d tacbookings -v ON_ERROR_STOP=1 \
     -c "DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public;" >/dev/null
@@ -129,10 +173,11 @@ case "${1:-}" in
     restore_canonical_dump "$1" "$2"
     ;;
   database-fingerprint) database_fingerprint ;;
+  provider-isolation-audit) provider_isolation_audit ;;
   app-image)
     shift
     [ -n "${1:-}" ] || { echo "usage: $0 app-image <image:tag>" >&2; exit 1; }
-    APP_IMAGE="$1" compose up -d --wait app
+    MEASURE_APP_IMAGE="$1" compose up -d --wait app
     ;;
   restart-app)
     compose restart app
@@ -147,7 +192,7 @@ case "${1:-}" in
     compose "$@"
     ;;
   *)
-    echo "Usage: $0 {prepare|create-canonical-dump <path>|restore-canonical-dump <path> <sha256>|database-fingerprint|app-image <tag>|restart-app|up|stop|down|destroy|compose ...}" >&2
+    echo "Usage: $0 {prepare|create-canonical-dump <path>|restore-canonical-dump <path> <sha256>|database-fingerprint|provider-isolation-audit|app-image <tag>|restart-app|up|stop|down|destroy|compose ...}" >&2
     exit 1
     ;;
 esac

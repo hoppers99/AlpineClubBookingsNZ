@@ -1,26 +1,14 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { parseStrictHttpHeaders } from "./http-evidence.mjs";
 
 const fail = (message) => { throw new Error(message); };
 const json = (path) => JSON.parse(readFileSync(path, "utf8"));
 const sha256 = (path) => createHash("sha256").update(readFileSync(path)).digest("hex");
 
-function parseHeaders(path) {
-  const blocks = readFileSync(path, "utf8").trim().split(/\r?\n\r?\n(?=HTTP\/)/i);
-  const rows = blocks.at(-1).split(/\r?\n/);
-  const status = Number(/^HTTP\/\S+\s+(\d+)/i.exec(rows.shift() ?? "")?.[1]);
-  if (!Number.isInteger(status)) fail(`invalid HTTP headers: ${path}`);
-  const headers = {};
-  for (const row of rows) {
-    const colon = row.indexOf(":");
-    if (colon > 0) headers[row.slice(0, colon).trim().toLowerCase()] = row.slice(colon + 1).trim();
-  }
-  return { status, headers };
-}
-
 function verifyResponse({ root, stem, proof, side, phase, expected, caches }) {
-  const parsed = parseHeaders(join(root, `${stem}.headers`));
+  const parsed = parseStrictHttpHeaders(readFileSync(join(root, `${stem}.headers`), "utf8"), `${side} ${phase} headers`);
   const bodySha = sha256(join(root, `${stem}.body`));
   const nextCache = parsed.headers["x-nextjs-cache"] ?? "ABSENT";
   const etag = parsed.headers.etag ?? null;

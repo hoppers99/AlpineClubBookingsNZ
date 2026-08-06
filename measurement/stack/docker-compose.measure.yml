@@ -31,7 +31,7 @@ services:
       - "127.0.0.1:5435:5432"
 
   app:
-    image: ${APP_IMAGE:?set APP_IMAGE to tacbookings-measure-app:current or :baseline}
+    image: ${MEASURE_APP_IMAGE:?set MEASURE_APP_IMAGE to the exact immutable measurement image}
     ports: !override
       - "127.0.0.1:3003:3000"
     # Explicit CPU ceiling for the measurement (owner Option A spec). Memory
@@ -41,7 +41,43 @@ services:
       APP_RUNTIME_ROLE: web-measure
       CRON_ENABLED: "false"
       NEXTAUTH_URL: http://localhost:8027
+      AUTH_SECRET: ${NEXTAUTH_SECRET:?NEXTAUTH_SECRET is required}
+      AUTH_TRUST_HOST: "true"
       KEEP_ALIVE_TIMEOUT: "65000"
+      LOG_LEVEL: info
+      USE_AWS_SES: "false"
+      USE_SMTP_RELAY: "true"
+      EMAIL_SERVER_HOST: mailpit
+      EMAIL_SERVER_PORT: "1025"
+      EMAIL_SERVER_USER: measurement
+      EMAIL_SERVER_PASSWORD: measurement-only
+      EMAIL_FROM: noreply@measurement.invalid
+      SMTP_HOST: ""
+      SMTP_PORT: ""
+      AWS_SES_ACCESS_KEY_ID: ""
+      AWS_SES_SECRET_ACCESS_KEY: ""
+      SES_SNS_TOPIC_ARN: ""
+      SES_SNS_ALLOW_UNSAFE_MISSING_TOPIC_ARN: "false"
+      SENTRY_DSN: ""
+      NEXT_PUBLIC_SENTRY_DSN: ""
+      SENTRY_ORG: ""
+      SENTRY_PROJECT: ""
+      SENTRY_AUTH_TOKEN: ""
+      ADDY_API_KEY: ""
+      ADDY_API_SECRET: ""
+      LEGACY_DASHBOARD_EXPORT_TOKEN: ""
+      AI_DIAGNOSTICS_DATABASE_URL: ""
+      MIROTALK_URL: ""
+      MIRO_JWT_KEY: ""
+      MIRO_MEETING_USERNAME: ""
+      MIRO_MEETING_PASSWORD: ""
+      MIRO_MEETING_PRESENTER: ""
+      XERO_MOCK_API_ORIGIN: ""
+      XERO_MOCK_INTERNAL_ORIGIN: ""
+      NEXT_PUBLIC_GA_MEASUREMENT_ID: ""
+      SEED_ADMIN_EMAIL: ""
+      SEED_ADMIN_PASSWORD: ""
+      SEED_LODGE_PASSWORD: ""
       # The production WEB-slot pool (app_blue/app_green use connection_limit=10;
       # the base `app` service is the cron-leader on 5, which is not the shape
       # being measured).

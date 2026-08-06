@@ -3,6 +3,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { parseStrictHttpHeaders } from "./http-evidence.mjs";
 
 function fail(message) { throw new Error(message); }
 function arg(name) {
@@ -11,23 +12,6 @@ function arg(name) {
   return process.argv[index + 1];
 }
 function sha256Buffer(buffer) { return createHash("sha256").update(buffer).digest("hex"); }
-function parseHeaders(text) {
-  // curl may preserve an interim response; the last HTTP block is authoritative.
-  const blocks = text.trim().split(/\r?\n\r?\n(?=HTTP\/)/i);
-  const lines = blocks.at(-1).split(/\r?\n/);
-  const match = /^HTTP\/\S+\s+(\d+)/i.exec(lines.shift() ?? "");
-  if (!match) fail("captured headers have no HTTP status line");
-  const headers = {};
-  for (const line of lines) {
-    const colon = line.indexOf(":");
-    if (colon < 1) continue;
-    const name = line.slice(0, colon).trim().toLowerCase();
-    const value = line.slice(colon + 1).trim();
-    headers[name] = headers[name] ? `${headers[name]}, ${value}` : value;
-  }
-  return { status: Number(match[1]), headers };
-}
-
 const manifestPath = resolve(arg("manifest"));
 const side = arg("side");
 const route = arg("route");
@@ -42,7 +26,7 @@ const expectedCaches = overrideIndex >= 0
 const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
 const expected = manifest.sides?.[side]?.routes?.[route];
 if (!expected) fail(`no correctness expectation for ${side} ${route}`);
-const parsed = parseHeaders(readFileSync(headersPath, "utf8"));
+const parsed = parseStrictHttpHeaders(readFileSync(headersPath, "utf8"), `${side} ${route} ${phase} headers`);
 const bodySha = sha256Buffer(readFileSync(bodyPath));
 const nextCache = parsed.headers["x-nextjs-cache"] ?? "ABSENT";
 const etag = parsed.headers.etag;

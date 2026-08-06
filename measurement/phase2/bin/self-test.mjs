@@ -1,260 +1,587 @@
+import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { execFileSync, spawn } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
-import { createServer } from "node:http";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import assert from "node:assert/strict";
+import { AUDITED_KEYS, LIVE_PROVIDER_KEYS, auditAppEnvironment } from "./audit-app-environment.mjs";
+import { CORRECTNESS_CENSUS, EXPECTED_PRODUCER_SOURCE_PATHS, PHASE2_DEFERRED_CHECK_IDS, PRODUCER_CHECK_SCHEMA, buildPhase2Correctness, classifyPreTimingResult, correctnessCensus, sha256File, validateCensus, validatePhase2Correctness, validateProducerFilesManifest, validateProducerResult, validateRuntimeProvenance, verifyLiveProducerSource } from "./correctness-contract.mjs";
+import { parseStrictHttpHeaders } from "./http-evidence.mjs";
+import { readGitArchive } from "./git-archive.mjs";
+import { verifyCorrectnessRouteEvidence } from "./correctness-route-evidence.mjs";
+import { compareStackIdentities, verifyStackIdentity } from "./correctness-stack-identity.mjs";
+import { MEASURE_ENV_KEYS, auditMeasureEnvFile, createMeasureEnvSnapshot, parseMeasureEnv, verifyMeasureEnvSnapshot } from "./measure-env-contract.mjs";
+import { FINAL_ORCHESTRATION_PROFILE, FINAL_SIDE_PARAMETERS, PROFILE_FINAL, PROFILE_NONFINAL, assertDeclaredProfile, classifyOrchestrationProfile, classifySideProfile } from "./measurement-profile.mjs";
+import { scanEvidence, verifySecretScan } from "./scan-evidence-secrets.mjs";
+import { finalizeSealedTree, verifySealedTree } from "./sealed-tree.mjs";
+import { conventionalMedian, rankedQuantile } from "./statistics.mjs";
+import { verifyPostFinalizationRuntimeIdentity } from "./runtime-identity.mjs";
+import { verifyHarnessAgainstProducerArchive } from "./verify-harness-source.mjs";
+import { verifyCorrectnessCompletion } from "./verify-correctness-evidence.mjs";
+import { finalizeCorrectnessEvidence } from "./finalize-correctness-evidence.mjs";
 
-const root = resolve(import.meta.dirname, "../../..");
+const repo = resolve(import.meta.dirname, "../../..");
 const bin = resolve(import.meta.dirname);
-const fixtureRoot = resolve(import.meta.dirname, "../test-fixtures");
-const aggregateSource = readFileSync(join(bin, "aggregate-pairs.mjs"), "utf8");
-const { conventionalMedian, rankedQuantile } = await import("./statistics.mjs");
-const { verifyRevalidationEvidence } = await import("./revalidation-evidence.mjs");
-assert.equal(conventionalMedian([4, 1, 3, 2]), 2.5);
-assert.equal(conventionalMedian([3, 1, 2]), 2);
-assert.equal(rankedQuantile([1, 2, 3, 4], 0.95), 4);
-for (const contract of [
-  "At least three contemporaneous current/baseline pairs are required.",
-  "Preferred CPU reduction is at least 80%; below roughly 50% is the explicit stop condition; 50-80% requires owner review.",
-  "approximately_300_ms_guidance_interpretation: \"OWNER_REVIEW_REQUIRED\"",
-  "binding_p95_gate: null",
-  "autonomous_progression_authorised: false",
-  "--verify-json",
-  "refusing aggregate output collision",
-  ".output-manifest.sha256",
-  ".COMPLETED.json",
-  "orchestration_output_manifest_sha256",
-]) assert.match(aggregateSource, new RegExp(contract.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 const temp = mkdtempSync(join(tmpdir(), "issue-2352-phase2-selftest-"));
 const sha = (value) => createHash("sha256").update(value).digest("hex");
-const run = (script, args, options = {}) => execFileSync(process.execPath, [join(bin, script), ...args], { cwd: root, encoding: "utf8", stdio: "pipe", ...options });
-function rejects(script, args, pattern) {
-  assert.throws(() => run(script, args), pattern);
-}
-const harnessPaths = [
-  ...readdirSync(bin).map((name) => join(bin, name)).filter((path) => statSync(path).isFile()),
-  join(root, "docker-compose.yml"),
-  join(root, "Caddyfile.staging"),
-  join(root, "measurement/stack/docker-compose.measure.yml"),
-  join(root, "measurement/stack/measure-stack.sh"),
-].sort();
-const harnessManifestPath = join(temp, "harness-files.sha256");
-writeFileSync(harnessManifestPath, `${harnessPaths.map((path) => `${sha(readFileSync(path))}  ${path}`).join("\n")}\n`);
-run("verify-harness-manifest.mjs", [harnessManifestPath]);
-const incompleteHarnessManifestPath = join(temp, "incomplete-harness-files.sha256");
-writeFileSync(incompleteHarnessManifestPath, `${harnessPaths.slice(1).map((path) => `${sha(readFileSync(path))}  ${path}`).join("\n")}\n`);
-rejects("verify-harness-manifest.mjs", [incompleteHarnessManifestPath], /exact complete reviewed harness file set/);
+const run = (script, args, options = {}) => execFileSync(process.execPath, [join(bin, script), ...args], { cwd: repo, encoding: "utf8", stdio: "pipe", ...options });
+const rejects = (script, args, pattern) => assert.throws(() => run(script, args), pattern);
+const mkdirs = (...paths) => paths.forEach((path) => mkdirSync(path, { recursive: true }));
 
-const body = Buffer.from("bound fixture body\n");
-const bodyPath = join(temp, "body.txt");
-const headersPath = join(temp, "headers.txt");
-const sourcePath = join(temp, "source.tar");
-const reportPath = join(temp, "correctness.json");
-const archivePath = join(temp, "canonical.dump");
-writeFileSync(bodyPath, body);
-writeFileSync(headersPath, 'HTTP/1.1 200 OK\r\nETag: "fixture-etag"\r\nX-Nextjs-Cache: HIT\r\nCache-Control: private, no-store\r\n\r\n');
-writeFileSync(archivePath, "canonical database fixture");
-const imageId = `sha256:${"a".repeat(64)}`;
-const revision = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
-execFileSync("git", ["archive", "--format=tar", `--output=${sourcePath}`, revision], { cwd: root });
-const route = { next_cache: "ABSENT", etag: null, body_sha256: null };
-const currentRoutes = { "/about": { next_cache: "HIT", etag: '"fixture-etag"', body_sha256: sha(body) }, "/": route, "/join": route, "/contact": route };
-writeFileSync(reportPath, `${JSON.stringify({ schema_version: 1, result: "passed", side: "current", image_id: imageId, oci_revision: revision, source_archive_sha256: sha(readFileSync(sourcePath)), canonical_database_archive_sha256: sha(readFileSync(archivePath)), routes: currentRoutes })}\n`);
-const manifest = {
-  schema_version: 1,
-  harness_scope: "issue-2352-phase2",
-  canonical_database: { archive_path: archivePath, archive_sha256: sha(readFileSync(archivePath)) },
-  sides: {
-    current: {
-      image_reference: `fixture@${imageId}`,
-      image_id: imageId,
-      oci_revision: revision,
-      source_archive: { path: sourcePath, sha256: sha(readFileSync(sourcePath)) },
-      correctness_report: { path: reportPath, sha256: sha(readFileSync(reportPath)) },
-      routes: currentRoutes,
-    },
-  },
-};
-const manifestPath = join(temp, "manifest.json");
-const imageInspectPath = join(temp, "image-inspect.json");
-writeFileSync(manifestPath, `${JSON.stringify(manifest)}\n`);
-writeFileSync(imageInspectPath, `${JSON.stringify([{ Id: imageId, RepoDigests: ["fixture@sha256:immutable"], Config: { Labels: { "org.opencontainers.image.revision": revision } } }])}\n`);
+assert.equal(conventionalMedian([4, 1, 3, 2]), 2.5);
+assert.equal(rankedQuantile([1, 2, 3, 4], 0.95), 4);
+assert.equal(classifySideProfile(FINAL_SIDE_PARAMETERS), PROFILE_FINAL);
+assert.equal(classifyOrchestrationProfile(FINAL_ORCHESTRATION_PROFILE), PROFILE_FINAL);
+assert.equal(assertDeclaredProfile(PROFILE_NONFINAL, PROFILE_FINAL, "rehearsal"), PROFILE_NONFINAL);
+assert.throws(() => assertDeclaredProfile(PROFILE_FINAL, PROFILE_NONFINAL, "weakened"), /weakens or changes/);
 
-run("verify-binding.mjs", ["--manifest", manifestPath, "--side", "current", "--image-reference", `fixture@${imageId}`, "--image-inspect", imageInspectPath, "--out", join(temp, "binding.json")]);
-const failedReportPath = join(temp, "failed-correctness.json");
-const failedReport = JSON.parse(readFileSync(reportPath, "utf8"));
-failedReport.result = "failed";
-writeFileSync(failedReportPath, JSON.stringify(failedReport));
-const failedManifest = structuredClone(manifest);
-failedManifest.sides.current.correctness_report = { path: failedReportPath, sha256: sha(readFileSync(failedReportPath)) };
-const failedManifestPath = join(temp, "failed-correctness-manifest.json");
-writeFileSync(failedManifestPath, JSON.stringify(failedManifest));
-rejects("verify-binding.mjs", ["--manifest", failedManifestPath, "--side", "current", "--image-reference", `fixture@${imageId}`, "--image-inspect", imageInspectPath, "--out", join(temp, "failed-result-binding.json")], /bound correctness report payload must have schema_version 1 and result passed/);
-run("verify-http-proof.mjs", ["--manifest", manifestPath, "--side", "current", "--route", "/about", "--phase", "valid", "--headers", headersPath, "--body", bodyPath, "--out", join(temp, "proof.json")]);
-const warmEvidence = join(temp, "warm-evidence");
-mkdirSync(warmEvidence);
-for (const sample of [1, 2]) {
-  writeFileSync(join(warmEvidence, `sample-${sample}.headers`), readFileSync(headersPath));
-  writeFileSync(join(warmEvidence, `sample-${sample}.body`), body);
-}
-const warmCsv = join(temp, "warm.csv");
-writeFileSync(warmCsv, "200,0.001,0.002\n200,0.003,0.004\n");
-run("verify-warm-block.mjs", ["--manifest", manifestPath, "--side", "current", "--route", "/about", "--evidence-dir", warmEvidence, "--timing-csv", warmCsv, "--samples", "2", "--out", join(temp, "warm-proof.json")]);
-writeFileSync(join(warmEvidence, "sample-2.headers"), readFileSync(join(fixtureRoot, "wrong-cache.headers")));
-rejects("verify-warm-block.mjs", ["--manifest", manifestPath, "--side", "current", "--route", "/about", "--evidence-dir", warmEvidence, "--timing-csv", warmCsv, "--samples", "2", "--out", join(temp, "warm-cache-rejected.json")], /sample 2 cache classification changed/);
-writeFileSync(join(warmEvidence, "sample-2.headers"), readFileSync(headersPath));
-writeFileSync(join(warmEvidence, "sample-2.body"), readFileSync(join(fixtureRoot, "mutated-body.txt")));
-rejects("verify-warm-block.mjs", ["--manifest", manifestPath, "--side", "current", "--route", "/about", "--evidence-dir", warmEvidence, "--timing-csv", warmCsv, "--samples", "2", "--out", join(temp, "warm-body-rejected.json")], /sample 2 body checksum changed/);
+const headers = 'HTTP/1.1 103 Early Hints\r\nLink: </x>; rel=preload\r\n\r\nHTTP/1.1 200 OK\r\nETag: "bound"\r\nX-Nextjs-Cache: HIT\r\n\r\n';
+assert.equal(parseStrictHttpHeaders(headers).headers.etag, '"bound"');
+for (const duplicate of [
+  'HTTP/1.1 200 OK\r\nX-Nextjs-Cache: HIT\r\nx-nextjs-cache: HIT\r\n\r\n',
+  'HTTP/1.1 200 OK\r\nETag: "a"\r\netag: "a"\r\n\r\n',
+]) assert.throws(() => parseStrictHttpHeaders(duplicate), /duplicate/i);
+assert.throws(() => parseStrictHttpHeaders('HTTP/1.1 200 OK\r\n folded\r\n\r\n'), /folded|malformed/i);
 
-rejects("verify-http-proof.mjs", ["--manifest", manifestPath, "--side", "current", "--route", "/about", "--phase", "wrong-cache", "--headers", join(fixtureRoot, "wrong-cache.headers"), "--body", bodyPath, "--out", join(temp, "wrong-cache.json")], /expected X-Nextjs-Cache HIT/);
-rejects("verify-http-proof.mjs", ["--manifest", manifestPath, "--side", "current", "--route", "/about", "--phase", "mutated-body", "--headers", headersPath, "--body", join(fixtureRoot, "mutated-body.txt"), "--out", join(temp, "mutated-body.json")], /body checksum changed/);
-
-const revalidationDir = join(temp, "revalidation-evidence");
-mkdirSync(revalidationDir);
-const revalidationHeaders = (cache) => `HTTP/1.1 200 OK\r\nETag: "fixture-etag"\r\nX-Nextjs-Cache: ${cache}\r\n\r\n`;
-const revalidationProof = (phase, cache, accepted) => ({ schema_version: 1, side: "current", route: "/about", phase, status: 200, next_cache: cache, accepted_cache_values: accepted, etag: '"fixture-etag"', body_sha256: sha(body), verified: true });
-writeFileSync(join(revalidationDir, "first.csv"), "200,0.001,0.002\n");
-writeFileSync(join(revalidationDir, "window-cpu-usec.csv"), "/about,1,1,2,1\n");
-writeFileSync(join(revalidationDir, "first.headers"), revalidationHeaders("STALE"));
-writeFileSync(join(revalidationDir, "first.body"), body);
-writeFileSync(join(revalidationDir, "first-proof.json"), JSON.stringify(revalidationProof("revalidation-first", "STALE", ["STALE"])));
-for (const [attempt, cache] of [[1, "STALE"], [2, "HIT"]]) {
-  writeFileSync(join(revalidationDir, `attempt-${attempt}.headers`), revalidationHeaders(cache));
-  writeFileSync(join(revalidationDir, `attempt-${attempt}.body`), body);
-  writeFileSync(join(revalidationDir, `attempt-${attempt}-proof.json`), JSON.stringify(revalidationProof(`revalidation-attempt-${attempt}`, cache, ["STALE", "HIT"])));
-}
-const finalHitProof = readFileSync(join(revalidationDir, "attempt-2-proof.json"));
-writeFileSync(join(revalidationDir, "regenerated-proof.json"), finalHitProof);
-assert.equal(verifyRevalidationEvidence({ root: revalidationDir, side: "current", expected: currentRoutes["/about"] }).attempts.length, 2);
-unlinkSync(join(revalidationDir, "regenerated-proof.json"));
-assert.throws(() => verifyRevalidationEvidence({ root: revalidationDir, side: "current", expected: currentRoutes["/about"] }), /missing regenerated-proof/);
-writeFileSync(join(revalidationDir, "regenerated-proof.json"), finalHitProof);
-writeFileSync(join(revalidationDir, "first.headers"), revalidationHeaders("MISS"));
-assert.throws(() => verifyRevalidationEvidence({ root: revalidationDir, side: "current", expected: currentRoutes["/about"] }), /revalidation-first raw status\/cache proof failed/);
-writeFileSync(join(revalidationDir, "first.headers"), revalidationHeaders("STALE"));
-
-const badManifest = structuredClone(manifest);
-badManifest.canonical_database.archive_sha256 = "0".repeat(64);
-const badManifestPath = join(temp, "bad-manifest.json");
-writeFileSync(badManifestPath, JSON.stringify(badManifest));
-rejects("verify-binding.mjs", ["--manifest", badManifestPath, "--side", "current", "--image-reference", `fixture@${imageId}`, "--image-inspect", imageInspectPath, "--out", join(temp, "bad-binding.json")], /canonical database archive checksum mismatch/);
-
-const sealed = join(temp, "sealed");
-mkdirSync(sealed);
-writeFileSync(join(sealed, "evidence.txt"), "immutable evidence\n");
-run("finalize-run.mjs", ["--dir", sealed, "--side", "current", "--pair-id", "fixture-pair"]);
-run("verify-completed-run.mjs", [sealed]);
-writeFileSync(join(sealed, "evidence.txt"), "mutated evidence\n");
-rejects("verify-completed-run.mjs", [sealed], /manifest mismatch/);
-
-function runAsync(script, args) {
-  return new Promise((resolvePromise, rejectPromise) => {
-    const child = spawn(process.execPath, [join(bin, script), ...args], { cwd: root, stdio: ["ignore", "pipe", "pipe"] });
-    let stdout = ""; let stderr = "";
-    child.stdout.on("data", (chunk) => { stdout += chunk; });
-    child.stderr.on("data", (chunk) => { stderr += chunk; });
-    child.on("error", rejectPromise);
-    child.on("close", (code) => code === 0 ? resolvePromise(stdout) : rejectPromise(new Error(stderr)));
-  });
-}
-const server = createServer((request, response) => {
-  if (request.url === "/hang") return;
-  response.writeHead(200, { "content-type": "text/plain" });
-  response.end("ok");
-});
-await new Promise((resolvePromise) => server.listen(0, "127.0.0.1", resolvePromise));
+const envDir = join(temp, "env-contract");
+mkdirs(envDir);
+const envValues = Object.fromEntries(MEASURE_ENV_KEYS.map((key) => [key, key === "DB_PASSWORD" ? '"quoted=value"' : key === "APP_IMAGE" ? "fixture@sha256:" + "1".repeat(64) : ""]));
+const envPath = join(envDir, ".env.measure");
+writeFileSync(envPath, `${MEASURE_ENV_KEYS.map((key) => `${key}=${envValues[key]}`).join("\r\n")}\r\n`);
+assert.equal(parseMeasureEnv(envPath).values.DB_PASSWORD, "quoted=value");
+assert.doesNotThrow(() => auditMeasureEnvFile(envPath, { ambient: { APP_IMAGE: "ignored-command-selector" } }));
+assert.throws(() => auditMeasureEnvFile(envPath, { ambient: { AUTH_SECRET: "override" } }), /ambient environment overrides/);
+const snapshotPath = join(envDir, "private.snapshot");
+const snapshotKey = "9".repeat(64);
+const snapshotAudit = createMeasureEnvSnapshot(envPath, snapshotPath, { ambient: {}, key: snapshotKey });
+assert.deepEqual(readFileSync(snapshotPath), readFileSync(envPath));
+assert.doesNotThrow(() => verifyMeasureEnvSnapshot(snapshotPath, { ambient: {}, key: snapshotKey, expectedHmac: snapshotAudit.snapshot_hmac_sha256 }));
+writeFileSync(snapshotPath, readFileSync(snapshotPath, "utf8").replace('DB_PASSWORD="quoted=value"', 'DB_PASSWORD="changed=value"'));
+assert.throws(() => verifyMeasureEnvSnapshot(snapshotPath, { ambient: {}, key: snapshotKey, expectedHmac: snapshotAudit.snapshot_hmac_sha256 }), /changed after it was frozen/);
+const duplicateEnv = join(envDir, "duplicate.env");
+writeFileSync(duplicateEnv, `${readFileSync(envPath, "utf8")}DB_PASSWORD=again\n`);
+assert.throws(() => parseMeasureEnv(duplicateEnv), /duplicate key/);
+const controlEnv = join(envDir, "control.env");
+writeFileSync(controlEnv, Buffer.concat([readFileSync(envPath), Buffer.from([0])]));
+assert.throws(() => parseMeasureEnv(controlEnv), /control bytes/);
 try {
-  const address = server.address();
-  const ok = JSON.parse(await runAsync("load.mjs", ["--url", `http://127.0.0.1:${address.port}/ok`, "--concurrency", "2", "--duration", "0.1", "--timeout-ms", "500"]));
-  assert.equal(ok.schema_version, 2);
-  assert.ok(ok.actual_elapsed_ms >= 100);
-  assert.ok(ok.requests > 0 && ok.rps > 0);
-  assert.deepEqual(ok.error_classes, {});
-  const timedOut = JSON.parse(await runAsync("load.mjs", ["--url", `http://127.0.0.1:${address.port}/hang`, "--concurrency", "1", "--duration", "0.05", "--timeout-ms", "25"]));
-  assert.equal(timedOut.requests, 0);
-  assert.ok(timedOut.errors > 0);
-  assert.ok((timedOut.error_classes.timeout ?? 0) > 0);
-} finally {
-  await new Promise((resolvePromise) => server.close(resolvePromise));
+  const link = join(envDir, "linked.env"); symlinkSync(envPath, link, "file");
+  assert.throws(() => parseMeasureEnv(link), /non-reparse/);
+} catch (error) { if (error.code !== "EPERM") throw error; }
+
+const validRuntimeValues = Object.fromEntries(AUDITED_KEYS.map((key) => [key, ""]));
+Object.assign(validRuntimeValues, {
+  APP_RUNTIME_ROLE: "web-measure", CRON_ENABLED: "false", NODE_ENV: "production", TZ: "Pacific/Auckland", KEEP_ALIVE_TIMEOUT: "65000", LOG_LEVEL: "info",
+  AUTH_TRUST_HOST: "true", AUTH_SECRET: "fixture-auth", NEXTAUTH_SECRET: "fixture-auth", CRON_SECRET: "fixture-cron", NEXTAUTH_URL: "http://localhost:8027",
+  USE_AWS_SES: "false", USE_SMTP_RELAY: "true", EMAIL_SERVER_HOST: "mailpit", EMAIL_SERVER_PORT: "1025", EMAIL_SERVER_USER: "measurement", EMAIL_SERVER_PASSWORD: "measurement-only", EMAIL_FROM: "noreply@measurement.invalid",
+  DATABASE_URL: "postgresql://tac:fixture-db@postgres:5432/tacbookings?connection_limit=10&pool_timeout=10", SES_SNS_ALLOW_UNSAFE_MISSING_TOPIC_ARN: "false", BACKUP_CRON_SCHEDULE: "0 3 * * *", MIRO_JWT_EXP: "1h",
+});
+const inspectFor = (values, extras = {}) => [{ Config: { Env: Object.entries({ ...values, ...extras }).map(([key, value]) => `${key}=${value}`) } }];
+const hmacKey = "a".repeat(64);
+const runtimeAudit = auditAppEnvironment(inspectFor(validRuntimeValues), hmacKey);
+assert.equal(runtimeAudit.verified, true);
+assert.equal(runtimeAudit.keyed_fingerprint_sha256, auditAppEnvironment([{ Config: { Env: [...inspectFor(validRuntimeValues)[0].Config.Env].reverse() } }], hmacKey).keyed_fingerprint_sha256);
+for (const key of LIVE_PROVIDER_KEYS) assert.throws(() => auditAppEnvironment(inspectFor(validRuntimeValues, { [key]: "live-value" }), hmacKey), /prohibited live-provider/);
+assert.throws(() => auditAppEnvironment(inspectFor(validRuntimeValues, { ANTHROPIC_API_KEY: "" }), hmacKey), /unknown provider\/sensitive/);
+for (const key of ["NODE_OPTIONS", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"]) assert.throws(() => auditAppEnvironment(inspectFor(validRuntimeValues, { [key]: "http://proxy.invalid" }), hmacKey), /unapproved influential/);
+assert.notEqual(runtimeAudit.keyed_fingerprint_sha256, auditAppEnvironment(inspectFor(validRuntimeValues, { HARMLESS_IMAGE_METADATA: "changed" }), hmacKey).keyed_fingerprint_sha256);
+const invalidDatabaseSecret = "not-a-url-private-material";
+assert.throws(() => auditAppEnvironment(inspectFor({ ...validRuntimeValues, DATABASE_URL: invalidDatabaseSecret }), hmacKey), (error) => /not a valid isolated/.test(error.message) && !error.message.includes(invalidDatabaseSecret));
+for (const [key, value] of [["APP_RUNTIME_ROLE", "web"], ["CRON_ENABLED", "true"], ["NEXTAUTH_URL", "https://live.example"], ["AUTH_SECRET", "different"], ["DATABASE_URL", "postgresql://tac:x@other:5432/tacbookings?connection_limit=10&pool_timeout=10"], ["USE_AWS_SES", "true"], ["NEXT_PUBLIC_GA_MEASUREMENT_ID", "G-live"]]) {
+  assert.throws(() => auditAppEnvironment(inspectFor({ ...validRuntimeValues, [key]: value }), hmacKey));
+}
+const duplicatedEnvInspect = inspectFor(validRuntimeValues); duplicatedEnvInspect[0].Config.Env.push("AUTH_SECRET=again");
+assert.throws(() => auditAppEnvironment(duplicatedEnvInspect, hmacKey), /duplicate key/);
+
+const databaseAudit = { schema_version: 1, forbidden_integration_credential_count: 0, xero_token_count: 0, club_module_settings_rows: 0, unsafe_club_module_settings_rows: 0, analytics_settings_rows: 0, unsafe_analytics_settings_rows: 0 };
+const dbInput = join(temp, "db-audit.json"); writeFileSync(dbInput, JSON.stringify(databaseAudit));
+run("verify-database-isolation.mjs", ["--input", dbInput, "--out", join(temp, "db-audit-verified.json")]);
+for (const key of ["forbidden_integration_credential_count", "xero_token_count", "unsafe_club_module_settings_rows", "unsafe_analytics_settings_rows"]) {
+  const input = join(temp, `db-${key}.json`); writeFileSync(input, JSON.stringify({ ...databaseAudit, [key]: 1 }));
+  rejects("verify-database-isolation.mjs", ["--input", input, "--out", join(temp, `db-${key}-out.json`)], /permits a live provider/);
 }
 
-// Build a tiny but fully checksummed four-pair set. This catches schema drift in
-// the aggregator without preserving or fabricating real measurement results.
-const orchestration = join(temp, "orchestration-fixture");
-mkdirSync(orchestration);
-const timing = (value) => ({ samples: 2, ttfb_ms: { median: value, p95: value + 1 }, total_ms: { median: value + 2, p95: value + 3 } });
-const pairRecords = [];
-for (let index = 1; index <= 4; index += 1) {
-  const pairId = `fixture-p${index}`;
-  const order = index % 2 ? "current-baseline" : "baseline-current";
-  const pairDir = join(orchestration, `pair-${index}`);
-  mkdirSync(pairDir);
-  const sideRecords = [];
-  for (const side of order.split("-")) {
-    const sideDir = join(pairDir, side);
-    mkdirSync(sideDir);
-    const current = side === "current";
-    const warmValue = current ? 100 + index : 200 + index;
-    const summary = {
-      schema_version: 2,
-      context: { side, pair_id: pairId, order, parameters: { runs: 2, warmup: 1, cold_runs: 1, idle_cycles: 1, idle_seconds: 1, revalidation_seconds: 300, concurrency: 1, duration_seconds: 1, request_timeout_seconds: 1 } },
-      immutable_binding: { correctness_result: "passed", manifest_sha256: "c".repeat(64), canonical_database_archive_sha256: "d".repeat(64) },
-      database_fingerprint_after: "e".repeat(64),
-      environment_identity: { compose_uninterpolated_sha256: "f".repeat(64), app_resource_shape: {}, postgres_resource_shape: {}, network_driver: "bridge", network_options: {}, app_database_target: { host: "postgres" } },
-      phases: {
-        cold: { "/about": timing(300) },
-        warm: { "/about": timing(warmValue), "/": timing(150), "/join": timing(160), "/contact": timing(170) },
-        idle: { cycles: [{ cycle: 1, first: timing(warmValue + 5), first_cpu_ms: current ? 3 : 8, first_cache: current ? "HIT" : "ABSENT", followup: timing(warmValue) }] },
-        revalidation: { first: timing(250), first_cpu_ms: 10, first_cache: current ? "STALE" : "ABSENT", recovered: { next_cache: current ? "HIT" : "ABSENT" } },
-      },
-      warm_cpu: {
-        "/about": { ms_per_request: current ? 20 + index : 100 + index },
-        "/": { ms_per_request: 50 }, "/join": { ms_per_request: 55 }, "/contact": { ms_per_request: 60 },
-      },
-      cache_proofs: { all_verified: true, count: 16, exact_pre_post_proofs: [
-        { route: "/about", phase: "warm-before", next_cache: current ? "HIT" : "ABSENT" },
-        { route: "/about", phase: "warm-after", next_cache: current ? "HIT" : "ABSENT" },
-      ] },
-      concurrency: { concurrency: 1, requested_duration_s: 1, request_timeout_ms: 1000, requests: 10, rps: current ? 10 : 8, errors: 0, error_classes: {}, statuses: { "200": 10 }, cpu: { ms_per_request: current ? 4 : 9 }, firstByte: { median_ms: current ? 90 : 180, p95_ms: current ? 100 : 200 } },
-      evidence_totals: { restart_delta: 0, oom_delta: 0, oom_kill_delta: 0, nr_throttled_delta: 0, throttled_usec_delta: 0, suspicious_log_lines: 0, maximum_observed_memory_bytes: current ? 1000 : 1100 },
-    };
-    writeFileSync(join(sideDir, "summary.json"), `${JSON.stringify(summary)}\n`);
-    run("finalize-run.mjs", ["--dir", sideDir, "--side", side, "--pair-id", pairId]);
-    const pairBase = Date.UTC(2026, 7, 6, 0, (index - 1) * 10, 0);
-    const first = sideRecords.length === 0;
-    sideRecords.push({ sequence: sideRecords.length + 1, side, restore_started_at: new Date(pairBase + (first ? 1 : 11) * 1000).toISOString(), started_at: new Date(pairBase + (first ? 2 : 12) * 1000).toISOString(), ended_at: new Date(pairBase + (first ? 10 : 20) * 1000).toISOString(), gap_from_previous_seconds: first ? 0 : 2, database_fingerprint_before: "e".repeat(64), database_fingerprint_after: "e".repeat(64) });
-  }
-  const pairBase = Date.UTC(2026, 7, 6, 0, (index - 1) * 10, 0);
-  const pair = { schema_version: 2, status: "COMPLETE", quiet_host_attested: true, pair_id: pairId, order, started_at: new Date(pairBase).toISOString(), ended_at: new Date(pairBase + 21_000).toISOString(), maximum_inter_side_gap_seconds: 600, canonical_database_archive_sha256: "d".repeat(64), sides: sideRecords };
-  writeFileSync(join(pairDir, "pair.json"), `${JSON.stringify(pair)}\n`);
-  run("finalize-run.mjs", ["--dir", pairDir, "--side", "pair", "--pair-id", pairId]);
-  pairRecords.push({ pair_id: pairId, order, pair_output: pairDir, status: "COMPLETE", wrapper_invoked_at_utc: new Date(pairBase - 1000).toISOString(), wrapper_returned_at_utc: new Date(pairBase + 22_000).toISOString(), pair_started_at_utc: pair.started_at, pair_ended_at_utc: pair.ended_at, inter_pair_gap_seconds: index === 1 ? 0 : 577 });
+const scanRoot = join(temp, "scan-safe"); mkdirs(scanRoot); writeFileSync(join(scanRoot, "safe.txt"), "AUTH_SECRET=${AUTH_SECRET}\nSOME_API_KEY=placeholder\nTOKEN_COUNT=1\nEMAIL_FROM=noreply@measurement.invalid\n");
+const scanPath = join(scanRoot, "secret-scan.json");
+const scan = scanEvidence({ root: scanRoot, out: scanPath });
+verifySecretScan({ root: scanRoot, report: scan });
+for (const [name, bytes, pattern] of [
+  ["quoted", Buffer.from('AUTH_SECRET="real-secret-material"\n'), /potential secrets/],
+  ["argument", Buffer.from('--token "real-command-token"\n'), /potential secrets/],
+  ["utf16", Buffer.from('DB_PASSWORD="utf16-secret-material"', "utf16le"), /potential secrets/],
+  ["nul-private-key", Buffer.concat([Buffer.from([0]), Buffer.from("-----BEGIN PRIVATE KEY-----")]), /potential secrets/],
+  ["sentry", Buffer.from("NEXT_PUBLIC_SENTRY_DSN=https://publickey@o1.ingest.sentry.io/123\n"), /potential secrets/],
+  ["ai-diagnostics", Buffer.from("AI_DIAGNOSTICS_DATABASE_URL=postgresql://ai:private@remote/db\n"), /potential secrets/],
+  ["legacy", Buffer.from("LEGACY_DASHBOARD_EXPORT_TOKEN=legacy-private-token\n"), /potential secrets/],
+  ["miro", Buffer.from("MIRO_JWT_KEY=miro-private-material\n"), /potential secrets/],
+  ["xero", Buffer.from("XERO_WEBHOOK_KEY=xero-private-material\n"), /potential secrets/],
+  ["generic-aws", Buffer.from("AWS_SECRET_ACCESS_KEY=aws-private-material\n"), /potential secrets/],
+  ["aws-session", Buffer.from("AWS_SESSION_TOKEN=very-private-session-token-material\n"), /potential secrets/],
+  ["aws-security", Buffer.from("AWS_SECURITY_TOKEN=very-private-security-token-material\n"), /potential secrets/],
+  ["anthropic", Buffer.from("ANTHROPIC_API_KEY=anthropic-private-material\n"), /potential secrets/],
+  ["generic-api-key", Buffer.from("SOME_API_KEY=generic-private-material\n"), /potential secrets/],
+  ["backup", Buffer.from("BACKUP_S3_SECRET_ACCESS_KEY=backup-private-material\n"), /potential secrets/],
+  ["allowed-substring", Buffer.from("AUTH_SECRET=real-measurement-secret\n"), /potential secrets/],
+  ["nul-split", Buffer.from("A\0U\0T\0H\0_\0S\0E\0C\0R\0E\0T\0=\0n\0u\0l\0-\0s\0p\0l\0i\0t\0-\0s\0e\0c\0r\0e\0t\n"), /potential secrets/],
+]) {
+  const root = join(temp, `scan-${name}`); mkdirs(root); writeFileSync(join(root, "evidence.bin"), bytes);
+  assert.throws(() => scanEvidence({ root, out: join(root, "secret-scan.json") }), pattern);
 }
-const pairsPath = join(orchestration, "pairs.jsonl");
-const setManifestPath = join(orchestration, "set-output-manifest.sha256");
-const setCompletionPath = join(orchestration, "PAIR-COMPLETED.json");
-function sealSyntheticSet(records) {
-  writeFileSync(pairsPath, `${records.map(JSON.stringify).join("\n")}\n`);
-  const setFiles = [];
-  const visit = (directory) => readdirSync(directory, { withFileTypes: true }).forEach((entry) => {
-    const path = join(directory, entry.name);
-    if (entry.isDirectory()) visit(path); else if (entry.isFile()) setFiles.push(path);
+
+const sealed = join(temp, "sealed"); mkdirs(join(sealed, "nested")); writeFileSync(join(sealed, "nested", "evidence.txt"), "immutable\n");
+finalizeSealedTree({ root: sealed }); verifySealedTree(sealed);
+writeFileSync(join(sealed, "extra.txt"), "late\n"); assert.throws(() => verifySealedTree(sealed), /census differs/);
+const sealedExtraDir = join(temp, "sealed-extra-dir"); mkdirs(sealedExtraDir); writeFileSync(join(sealedExtraDir, "evidence.txt"), "immutable\n"); finalizeSealedTree({ root: sealedExtraDir }); mkdirSync(join(sealedExtraDir, "empty-extra")); assert.throws(() => verifySealedTree(sealedExtraDir), /census differs/);
+
+assert.doesNotThrow(() => validateCensus(correctnessCensus()));
+assert.throws(() => validateCensus({ ...correctnessCensus(), checks: correctnessCensus().checks.slice(1) }), /exact reviewed MC\/BND census/);
+const preTimingChecks = CORRECTNESS_CENSUS.filter((check) => check.required_sides.includes("current")).map((check) => PHASE2_DEFERRED_CHECK_IDS.current.includes(check.id)
+  ? { id: check.id, applicability: "deferred_to_phase2", outcome: "DEFERRED_TO_PHASE2", producer_ids: [], evidence: [] }
+  : { id: check.id, applicability: "required", outcome: "PASS", producer_ids: [check.allowed_producers[0]], evidence: [{ path: `fixture/${check.id}`, sha256: "1".repeat(64) }] });
+assert.equal(classifyPreTimingResult("current", preTimingChecks, { passed: true, findings: [] }), "pre_timing_passed");
+assert.notEqual(classifyPreTimingResult("current", preTimingChecks, { passed: true, findings: [] }), "passed");
+const promotedBeforeTiming = preTimingChecks.map((check) => check.id === "MC-08B" ? { ...check, applicability: "required", outcome: "PASS" } : check);
+assert.throws(() => classifyPreTimingResult("current", promotedBeforeTiming, { passed: true, findings: [] }), /not exactly deferred/);
+const forgedDeferral = preTimingChecks.map((check) => check.id === "MC-01A" ? { ...check, applicability: "deferred_to_phase2", outcome: "DEFERRED_TO_PHASE2", producer_ids: [], evidence: [] } : check);
+assert.throws(() => classifyPreTimingResult("current", forgedDeferral, { passed: true, findings: [] }), /non-phase2 check cannot be deferred/);
+const currentPhase2 = buildPhase2Correctness("current");
+assert.doesNotThrow(() => validatePhase2Correctness(currentPhase2, "current"));
+assert.throws(() => validatePhase2Correctness({ ...currentPhase2, checks: currentPhase2.checks.slice(1) }, "current"), /exact sealed current contract/);
+assert.throws(() => validatePhase2Correctness({ ...currentPhase2, checks: currentPhase2.checks.map((check) => check.id === "MC-08B" ? { ...check, outcome: "FAIL" } : check) }, "current"), /exact sealed current contract/);
+assert.throws(() => validatePhase2Correctness({ ...currentPhase2, checks: currentPhase2.checks.map((check) => check.id === "MC-08B" ? { ...check, id: "BND-02" } : check) }, "current"), /exact sealed current contract/);
+assert.throws(() => validatePhase2Correctness({ ...currentPhase2, checks: currentPhase2.checks.map((check) => check.id === "MC-08B" ? { ...check, producer_id: "cms-lifecycle" } : check) }, "current"), /exact sealed current contract/);
+
+const sourceRepo = join(temp, "producer-source-repo"); mkdirs(sourceRepo);
+execFileSync("git", ["init", "--quiet"], { cwd: sourceRepo });
+execFileSync("git", ["config", "core.autocrlf", "false"], { cwd: sourceRepo });
+execFileSync("git", ["config", "user.email", "phase2-selftest@example.invalid"], { cwd: sourceRepo });
+execFileSync("git", ["config", "user.name", "Phase 2 self-test"], { cwd: sourceRepo });
+for (const [index, path] of EXPECTED_PRODUCER_SOURCE_PATHS.entries()) {
+  const absolute = join(sourceRepo, ...path.split("/")); mkdirs(resolve(absolute, "..")); writeFileSync(absolute, `reviewed producer source ${index}\n`);
+}
+execFileSync("git", ["add", "."], { cwd: sourceRepo });
+execFileSync("git", ["commit", "--quiet", "-m", "fixture"], { cwd: sourceRepo });
+const sourceRevision = execFileSync("git", ["rev-parse", "HEAD"], { cwd: sourceRepo, encoding: "utf8" }).trim();
+const exactSourceArchive = join(temp, "reviewed-producers.tar");
+execFileSync("git", ["archive", "--format=tar", `--output=${exactSourceArchive}`, sourceRevision], { cwd: sourceRepo });
+const exactSourceManifest = join(temp, "reviewed-producers.sha256");
+const archivedSources = readGitArchive(exactSourceArchive);
+const validSourceManifestText = `# schema_version=1\n# producer_source_archive_sha256=${sha256File(exactSourceArchive)}\n# producer_source_commit=${sourceRevision}\n${EXPECTED_PRODUCER_SOURCE_PATHS.map((path) => `${sha(archivedSources.files.get(path))}  ${path}`).join("\n")}\n`;
+writeFileSync(exactSourceManifest, validSourceManifestText);
+const fixtureProducerManifest = join(temp, "fixture-producers.sha256"); writeFileSync(fixtureProducerManifest, validSourceManifestText);
+assert.equal(validateProducerFilesManifest(exactSourceManifest, exactSourceArchive).archiveRevision, sourceRevision);
+assert.deepEqual(EXPECTED_PRODUCER_SOURCE_PATHS, [...EXPECTED_PRODUCER_SOURCE_PATHS].sort());
+const integratedProducerManifestBuilder = resolve(repo, "measurement/current-main-refresh/bin/build-producer-manifest.mjs");
+if (existsSync(integratedProducerManifestBuilder)) {
+  const integratedManifest = join(temp, "integrated-producer-files.sha256");
+  execFileSync(process.execPath, [integratedProducerManifestBuilder, "--producer-source-archive", exactSourceArchive, "--producer-source-commit", sourceRevision, "--out", integratedManifest], { cwd: repo, encoding: "utf8", stdio: "pipe" });
+  assert.equal(validateProducerFilesManifest(integratedManifest, exactSourceArchive).count, EXPECTED_PRODUCER_SOURCE_PATHS.length);
+}
+const harnessFixturePaths = EXPECTED_PRODUCER_SOURCE_PATHS.filter((path) => path.startsWith("measurement/phase2/bin/") || ["docker-compose.yml", "Caddyfile.staging", "measurement/stack/docker-compose.measure.yml", "measurement/stack/measure-stack.sh"].includes(path));
+const harnessFixtureManifest = join(temp, "live-harness.sha256");
+const writeHarnessFixture = () => writeFileSync(harnessFixtureManifest, `${harnessFixturePaths.map((path) => `${sha256File(join(sourceRepo, ...path.split("/")))}  ${join(sourceRepo, ...path.split("/"))}`).join("\n")}\n`);
+writeHarnessFixture();
+assert.doesNotThrow(() => verifyHarnessAgainstProducerArchive({ harnessManifestPath: harnessFixtureManifest, producerManifestPath: exactSourceManifest, producerArchivePath: exactSourceArchive, producerCommit: sourceRevision, repoRoot: sourceRepo }));
+for (const sourcePath of ["measurement/phase2/bin/verify-harness-source.mjs", "measurement/phase2/bin/summarise.mjs", "measurement/phase2/bin/aggregate-pairs.mjs"]) {
+  const livePath = join(sourceRepo, ...sourcePath.split("/"));
+  writeFileSync(livePath, "modified after reviewed producer archive binding\n");
+  writeHarnessFixture();
+  assert.throws(() => verifyHarnessAgainstProducerArchive({ harnessManifestPath: harnessFixtureManifest, producerManifestPath: exactSourceManifest, producerArchivePath: exactSourceArchive, producerCommit: sourceRevision, repoRoot: sourceRepo }), /differ from the reviewed producer source archive/);
+  writeFileSync(livePath, archivedSources.files.get(sourcePath));
+}
+writeHarnessFixture();
+assert.doesNotThrow(() => verifyHarnessAgainstProducerArchive({ harnessManifestPath: harnessFixtureManifest, producerManifestPath: exactSourceManifest, producerArchivePath: exactSourceArchive, producerCommit: sourceRevision, repoRoot: sourceRepo }));
+const liveProducerOptions = { producerManifestPath: exactSourceManifest, producerArchivePath: exactSourceArchive, producerCommit: sourceRevision, repoRoot: sourceRepo };
+assert.equal(verifyLiveProducerSource(liveProducerOptions).count, EXPECTED_PRODUCER_SOURCE_PATHS.length);
+const extraGovernedSource = join(sourceRepo, "measurement", "phase2", "bin", "unreviewed-extra.mjs");
+writeFileSync(extraGovernedSource, "unreviewed extra source\n");
+assert.throws(() => verifyLiveProducerSource(liveProducerOptions), /missing, extra, or case-drifted/);
+unlinkSync(extraGovernedSource);
+const preservedResults = join(sourceRepo, "measurement", "phase2", "results", "preserved-evidence.json"); mkdirs(resolve(preservedResults, "..")); writeFileSync(preservedResults, "{}\n");
+assert.equal(verifyLiveProducerSource(liveProducerOptions).count, EXPECTED_PRODUCER_SOURCE_PATHS.length);
+const exactCaseSource = join(sourceRepo, "measurement", "phase2", "bin", "summarise.mjs");
+const wrongCaseSource = join(sourceRepo, "measurement", "phase2", "bin", "Summarise.mjs");
+renameSync(exactCaseSource, wrongCaseSource);
+assert.throws(() => verifyLiveProducerSource(liveProducerOptions), /wrong case|case-drifted/);
+renameSync(wrongCaseSource, exactCaseSource);
+const symlinkSource = join(sourceRepo, "measurement", "phase2", "bin", "statistics.mjs");
+const symlinkTarget = join(temp, "reviewed-statistics-source.mjs"); writeFileSync(symlinkTarget, archivedSources.files.get("measurement/phase2/bin/statistics.mjs"));
+unlinkSync(symlinkSource);
+try {
+  symlinkSync(symlinkTarget, symlinkSource, "file");
+  assert.throws(() => verifyLiveProducerSource(liveProducerOptions), /symbolic link|differs from the reviewed archive/);
+  unlinkSync(symlinkSource);
+} catch (error) {
+  if (error.code !== "EPERM") throw error;
+}
+writeFileSync(symlinkSource, archivedSources.files.get("measurement/phase2/bin/statistics.mjs"));
+assert.equal(verifyLiveProducerSource(liveProducerOptions).count, EXPECTED_PRODUCER_SOURCE_PATHS.length);
+writeFileSync(exactSourceManifest, `${readFileSync(exactSourceManifest, "utf8")} ${"0".repeat(64)}  arbitrary.txt\n`);
+assert.throws(() => validateProducerFilesManifest(exactSourceManifest, exactSourceArchive), /invalid producer-files|archive binding|source-path census/);
+
+// Exercise the composed correctness finalizer/verifier by default. This is a
+// complete dependency-free facsimile of both side trees, not a classifier-only
+// test: every immutable input and every raw producer artifact is created before
+// the real finalizer builds and seals its derived chain.
+const appSourceRepo = join(temp, "app-source-repo"); mkdirs(appSourceRepo);
+execFileSync("git", ["init", "--quiet"], { cwd: appSourceRepo });
+execFileSync("git", ["config", "core.autocrlf", "false"], { cwd: appSourceRepo });
+execFileSync("git", ["config", "user.email", "phase2-selftest@example.invalid"], { cwd: appSourceRepo });
+execFileSync("git", ["config", "user.name", "Phase 2 self-test"], { cwd: appSourceRepo });
+writeFileSync(join(appSourceRepo, "app-source.txt"), "immutable application source fixture\n");
+execFileSync("git", ["add", "."], { cwd: appSourceRepo });
+execFileSync("git", ["commit", "--quiet", "-m", "app fixture"], { cwd: appSourceRepo });
+const appSourceRevision = execFileSync("git", ["rev-parse", "HEAD"], { cwd: appSourceRepo, encoding: "utf8" }).trim();
+const appSourceArchive = join(temp, "reviewed-app.tar");
+execFileSync("git", ["archive", "--format=tar", `--output=${appSourceArchive}`, appSourceRevision], { cwd: appSourceRepo });
+const fixtureDatabaseArchive = join(temp, "canonical-fixture.dump"); writeFileSync(fixtureDatabaseArchive, "canonical isolated database fixture\n");
+const fixtureFingerprint = "6".repeat(64);
+const fixturePostgresImage = `sha256:${"7".repeat(64)}`;
+const fixtureWriterCensus = archivedSources.files.get("measurement/current-main-refresh/public-writer-census.json");
+
+const writeJson = (path, value) => writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
+const runtimeFixtureRoot = join(temp, "runtime-fixture"); mkdirs(join(runtimeFixtureRoot, "node_modules"));
+const runtimePackageNames = ["@playwright/test", "playwright", "playwright-core", "axe-core"];
+const runtimeVersion = "1.2.3";
+const runtimeIntegrity = "sha512-YWJj";
+const runtimePackageEntries = Object.fromEntries(runtimePackageNames.map((name) => [`node_modules/${name}`, { version: runtimeVersion, integrity: runtimeIntegrity }]));
+const runtimeRootPackagePath = join(runtimeFixtureRoot, "package.json"); writeJson(runtimeRootPackagePath, { name: "phase2-runtime-fixture", version: "1.0.0", engines: { node: ">=24.0.0 <25" } });
+const runtimeRootLockPath = join(runtimeFixtureRoot, "package-lock.json"); writeJson(runtimeRootLockPath, { lockfileVersion: 3, packages: { "": { name: "phase2-runtime-fixture", version: "1.0.0" }, ...runtimePackageEntries } });
+const runtimeInstalledLockPath = join(runtimeFixtureRoot, "node_modules", ".package-lock.json"); writeJson(runtimeInstalledLockPath, { lockfileVersion: 3, packages: runtimePackageEntries });
+const runtimePackages = {};
+for (const name of runtimePackageNames) {
+  const packagePath = join(runtimeFixtureRoot, "node_modules", ...name.split("/"), "package.json"); mkdirs(resolve(packagePath, "..")); writeJson(packagePath, { name, version: runtimeVersion, ...(name === "playwright" ? { main: "index.js" } : {}) });
+  runtimePackages[name] = { version: runtimeVersion, package_json_path: packagePath, package_json_sha256: sha256File(packagePath), root_lock_integrity: runtimeIntegrity, installed_lock_integrity: runtimeIntegrity };
+}
+const runtimeBrowserRegistryPath = join(runtimeFixtureRoot, "node_modules", "playwright-core", "browsers.json"); writeJson(runtimeBrowserRegistryPath, { browsers: [{ name: "chromium", revision: "1234", browserVersion: "141.0.0.0" }] });
+const runtimeChromiumExecutablePath = join(runtimeFixtureRoot, "chromium", "chrome.exe"); mkdirs(resolve(runtimeChromiumExecutablePath, "..")); writeFileSync(runtimeChromiumExecutablePath, "fixture Chromium executable bytes\n");
+writeFileSync(join(runtimeFixtureRoot, "node_modules", "playwright", "index.js"), `exports.chromium={executablePath:()=>${JSON.stringify(runtimeChromiumExecutablePath)}};\n`);
+const describedRuntimeFile = (path) => ({ path, size_bytes: statSync(path).size, sha256: sha256File(path) });
+const runtimePhysicalNodeExecutable = realpathSync.native(process.execPath);
+const runtimeProvenanceFixture = {
+  schema_version: 1,
+  node: { version: process.version, executable: describedRuntimeFile(runtimePhysicalNodeExecutable) },
+  root_package: describedRuntimeFile(runtimeRootPackagePath),
+  root_lock: { ...describedRuntimeFile(runtimeRootLockPath), lockfile_version: 3 },
+  installed_lock: { ...describedRuntimeFile(runtimeInstalledLockPath), lockfile_version: 3 },
+  packages: runtimePackages,
+  chromium: { browser_version: "141.0.0.0", revision: "1234", registry: describedRuntimeFile(runtimeBrowserRegistryPath), executable: describedRuntimeFile(runtimeChromiumExecutablePath) },
+};
+const runtimeFixtureContext = { repoRoot: runtimeFixtureRoot, nodeExecutable: process.execPath, nodeVersion: process.version, chromiumExecutable: runtimeChromiumExecutablePath };
+assert.equal(runtimeProvenanceFixture.node.executable.path, realpathSync.native(runtimeFixtureContext.nodeExecutable), "fnm aliases must resolve to the exact physical Node executable recorded in provenance");
+assert.doesNotThrow(() => validateRuntimeProvenance(runtimeProvenanceFixture, runtimeFixtureContext));
+assert.throws(() => validateRuntimeProvenance(runtimeProvenanceFixture, { ...runtimeFixtureContext, repoRoot: join(temp, "fabricated-runtime-root") }), /lock\/package\/Node identity|file binding/);
+const crossPackageRuntime = structuredClone(runtimeProvenanceFixture);
+crossPackageRuntime.packages.playwright.package_json_path = runtimeProvenanceFixture.packages["axe-core"].package_json_path;
+crossPackageRuntime.packages.playwright.package_json_sha256 = runtimeProvenanceFixture.packages["axe-core"].package_json_sha256;
+assert.throws(() => validateRuntimeProvenance(crossPackageRuntime, runtimeFixtureContext), /package binding/);
+const wrongNodeRuntime = structuredClone(runtimeProvenanceFixture); wrongNodeRuntime.node.executable = describedRuntimeFile(runtimeChromiumExecutablePath);
+assert.throws(() => validateRuntimeProvenance(wrongNodeRuntime, runtimeFixtureContext), /lock\/package\/Node identity/);
+const wrongChromiumRuntime = structuredClone(runtimeProvenanceFixture); wrongChromiumRuntime.chromium.executable = describedRuntimeFile(runtimePhysicalNodeExecutable);
+assert.throws(() => validateRuntimeProvenance(wrongChromiumRuntime, runtimeFixtureContext), /registry\/executable/);
+const rootPackageBytes = readFileSync(runtimeRootPackagePath);
+writeJson(runtimeRootPackagePath, { name: "phase2-runtime-fixture", version: "1.0.0" });
+const wrongEngineRuntime = structuredClone(runtimeProvenanceFixture); wrongEngineRuntime.root_package = describedRuntimeFile(runtimeRootPackagePath);
+assert.throws(() => validateRuntimeProvenance(wrongEngineRuntime, runtimeFixtureContext), /lock\/package\/Node identity/);
+writeFileSync(runtimeRootPackagePath, rootPackageBytes);
+
+function writeCorrectnessStack(root, stage, imageId) {
+  const directoryName = stage === "before" ? "inputs" : "postcondition-evidence";
+  const directory = join(root, directoryName); mkdirs(directory);
+  const container = (service) => ({
+    schema_version: 1,
+    service,
+    container_id: (service === "app" ? (stage === "before" ? "1" : "2") : "3").repeat(64),
+    image_id: service === "app" ? imageId : fixturePostgresImage,
+    compose_project: "tacbookings-measure",
+    compose_service: service,
+    network_mode: "tacbookings-measure_default",
+    networks: { "tacbookings-measure_default": { NetworkID: "4".repeat(64), IPAddress: service === "app" ? "172.30.0.4" : "172.30.0.2" } },
+    ports: { [service === "app" ? "3000/tcp" : "5432/tcp"]: [{ HostIp: "127.0.0.1", HostPort: service === "app" ? "3003" : "5435" }] },
   });
-  visit(orchestration);
-  const setLines = setFiles.filter((path) => path !== setManifestPath && path !== setCompletionPath).map((path) => {
-    const relative = path.slice(orchestration.length + 1).replaceAll("\\", "/");
-    return `${sha(readFileSync(path))}  ${statSync(path).size}  ${relative}`;
-  }).sort();
-  writeFileSync(setManifestPath, `${setLines.join("\n")}\n`);
-  const setCompletion = { status: "COMPLETE", pair_count: 4, orders: records.map((pair) => pair.order), maximum_inter_pair_gap_seconds: 600, pairs_manifest_sha256: sha(readFileSync(pairsPath)), set_output_manifest_sha256: sha(readFileSync(setManifestPath)), set_output_artifact_count: setLines.length, pair_outputs: records.map((pair) => pair.pair_output) };
-  writeFileSync(setCompletionPath, `${JSON.stringify(setCompletion)}\n`);
+  const leaves = {
+    "app-container-inspect.json": container("app"),
+    "postgres-container-inspect.json": container("postgres"),
+    "postgres-server-version.json": { schema_version: 1, version: "16.9", version_num: "160009", database: "tacbookings", user: "tac" },
+    "database-fingerprint.json": { schema_version: 1, logical_fingerprint: fixtureFingerprint },
+  };
+  for (const [name, value] of Object.entries(leaves)) writeJson(join(directory, name), value);
+  const relative = (name) => `${directoryName}/${name}`;
+  const bound = (name) => ({ path: relative(name), sha256: sha256File(join(directory, name)) });
+  const aggregate = {
+    schema_version: 1, stage, compose_project: "tacbookings-measure", image_id: imageId,
+    app: { ...bound("app-container-inspect.json"), container_id: leaves["app-container-inspect.json"].container_id },
+    postgres: { ...bound("postgres-container-inspect.json"), container_id: leaves["postgres-container-inspect.json"].container_id, image_id: fixturePostgresImage },
+    postgres_server: { ...bound("postgres-server-version.json"), version: "16.9", version_num: "160009", database: "tacbookings", user: "tac" },
+    database: { ...bound("database-fingerprint.json"), logical_fingerprint: fixtureFingerprint },
+    verified: true,
+    captured_at: stage === "before" ? "2026-08-06T00:00:00.000Z" : "2026-08-06T00:04:00.000Z",
+  };
+  const aggregatePath = join(directory, `stack-identity-${stage}.json`); writeJson(aggregatePath, aggregate);
+  return aggregatePath;
 }
-const overlapping = pairRecords.map((pair, index) => index === 1 ? { ...pair, wrapper_invoked_at_utc: pairRecords[0].wrapper_invoked_at_utc, pair_started_at_utc: pairRecords[0].pair_started_at_utc, inter_pair_gap_seconds: 0 } : pair);
-sealSyntheticSet(overlapping);
-rejects("aggregate-pairs.mjs", ["--orchestration", orchestration, "--out-prefix", join(temp, "chronology-rejected")], /overlaps|chronology/);
-sealSyntheticSet(pairRecords);
-rejects("aggregate-pairs.mjs", ["--orchestration", orchestration, "--out-prefix", join(temp, "summary-only-rejected")], /sealed raw evidence revalidation failed/);
 
-console.log("phase-2 self-test: all refutations passed");
+function writeCorrectnessRoutes(root, side, imageId) {
+  const directory = join(root, "raw", "cms-lifecycle"); mkdirs(directory);
+  const files = [];
+  const sample = (stem, cache, body, etag = null) => {
+    const headersPath = `raw/cms-lifecycle/${stem}.headers`;
+    const bodyPath = `raw/cms-lifecycle/${stem}.body.html`;
+    writeFileSync(join(root, ...headersPath.split("/")), `HTTP/1.1 200 OK\r\n${cache ? `X-Nextjs-Cache: ${cache}\r\n` : ""}${etag ? `ETag: ${etag}\r\n` : ""}\r\n`);
+    writeFileSync(join(root, ...bodyPath.split("/")), body);
+    files.push(headersPath, bodyPath);
+    return { headersPath, bodyPath };
+  };
+  const etag = '"fixture-route"';
+  const about1 = sample("binding-about-1", side === "current" ? "MISS" : null, "stable about fixture", side === "current" ? etag : null);
+  const about2 = sample("binding-about-2", side === "current" ? "HIT" : null, "stable about fixture", side === "current" ? etag : null);
+  const dynamic = Object.fromEntries([["/", "binding-root"], ["/join", "binding-join"], ["/contact", "binding-contact"]].map(([route, stem]) => [route, sample(stem, null, `dynamic fixture ${route}`)]));
+  const aboutBodySha = sha256File(join(root, ...about2.bodyPath.split("/")));
+  const document = {
+    schema_version: 1, side, image_id: imageId,
+    routes: {
+      "/about": {
+        samples: [[side === "current" ? "miss" : "first", about1], [side === "current" ? "hit" : "second", about2]].map(([phase, value]) => ({ phase, headers_path: value.headersPath, body_path: value.bodyPath })),
+        derived: side === "current" ? { status: 200, next_cache: "HIT", etag, body_sha256: aboutBodySha } : { status: 200, next_cache: "ABSENT", etag: null, body_sha256: null },
+      },
+      ...Object.fromEntries(Object.entries(dynamic).map(([route, value]) => [route, { samples: [{ phase: "request", headers_path: value.headersPath, body_path: value.bodyPath }], derived: { status: 200, next_cache: "ABSENT", etag: null, body_sha256: null } }])),
+    },
+  };
+  const evidencePath = "raw/cms-lifecycle/route-response-evidence.json"; writeJson(join(root, ...evidencePath.split("/")), document); files.push(evidencePath);
+  return files;
+}
+
+function prepareComposedCorrectness(name, side, mutation = {}) {
+  const root = join(temp, `composed-${name}`);
+  mkdirs(join(root, "inputs"), join(root, "postcondition-evidence"), join(root, "raw", "orchestrator"), join(root, "producer-results"));
+  const imageId = `sha256:${(side === "current" ? "a" : "b").repeat(64)}`;
+  const census = mutation.censusTamper ? { ...correctnessCensus(), checks: correctnessCensus().checks.slice(1) } : correctnessCensus();
+  const censusPath = join(root, "inputs", "check-census.json"); writeJson(censusPath, census);
+  const writerPath = join(root, "inputs", "public-writer-census.json");
+  writeFileSync(writerPath, mutation.writerTamper ? Buffer.concat([fixtureWriterCensus, Buffer.from("\nwriter census tamper\n")]) : fixtureWriterCensus);
+  const producerManifestPath = join(root, "inputs", "producer-files.sha256"); writeFileSync(producerManifestPath, validSourceManifestText);
+  const runtimeProvenancePath = join(root, "inputs", "runtime-provenance.json");
+  const runtimeProvenance = structuredClone(runtimeProvenanceFixture);
+  if (mutation.runtimeSchemaTamper) runtimeProvenance.packages.playwright.root_lock_integrity = null;
+  if (mutation.runtimeChromiumTamper) runtimeProvenance.chromium.revision = "not-a-revision";
+  writeJson(runtimeProvenancePath, runtimeProvenance);
+  const imageInspectPath = join(root, "inputs", "image-inspect.json"); writeJson(imageInspectPath, { id: imageId, oci_revision: appSourceRevision });
+  const containerInspectPath = join(root, "inputs", "container-inspect.json"); writeJson(containerInspectPath, { id: "5".repeat(64), image_id: imageId, compose_project: "tacbookings-measure", compose_service: "app" });
+  const stackBeforePath = writeCorrectnessStack(root, "before", imageId);
+  writeCorrectnessStack(root, "after", imageId);
+
+  const buildRawPath = join(root, "inputs", "image-build-scan.raw.json");
+  writeJson(buildRawPath, { schema_version: 1, image_id: imageId, oci_revision: appSourceRevision, scanned_roots: ["/app/.next/server", "/app/.next/static"], scanned_file_count: 1, scanned_bytes: 1, filesystem_aggregate_sha256: "8".repeat(64), public_sentry_dsn_literal_count: 0, public_sentry_identifier_count: 0, locations: [] });
+  const buildRuntimePath = join(root, "inputs", "image-build-runtime-env.json"); writeJson(buildRuntimePath, { schema_version: 1, image_id: imageId, present: false, blank: true });
+  const buildIdentityPath = join(root, "inputs", "image-build-identity.json");
+  writeJson(buildIdentityPath, {
+    schema_version: 1, image_id: imageId, oci_revision: appSourceRevision,
+    raw_scan_path: "inputs/image-build-scan.raw.json", raw_scan_sha256: sha256File(buildRawPath),
+    scanned_roots: ["/app/.next/server", "/app/.next/static"], scanned_file_count: 1, scanned_bytes: 1,
+    filesystem_aggregate_sha256: "8".repeat(64), public_sentry_dsn_literal_count: 0,
+    runtime_env: { present: false, blank: true },
+    safe_build_input_evidence: { status: "unavailable", reason: "OCI image metadata does not retain Docker build-argument values; the compiled filesystem scan is authoritative" },
+    verdict: "passed",
+  });
+
+  let producerArchivePath = exactSourceArchive;
+  if (mutation.sourceTamper) {
+    producerArchivePath = join(temp, `${name}-producer-source.tar`);
+    writeFileSync(producerArchivePath, Buffer.concat([readFileSync(exactSourceArchive), Buffer.from("tamper")]));
+  }
+  const immutable = {
+    schema_version: 1, run_id: name, side,
+    source: { commit: appSourceRevision, archive_path: appSourceArchive, archive_sha256: sha256File(appSourceArchive) },
+    producer_source: { commit: sourceRevision, archive_path: producerArchivePath, archive_sha256: sha256File(producerArchivePath) },
+    image: {
+      reference: `fixture@${imageId}`, id: imageId, oci_revision: appSourceRevision, inspect_path: imageInspectPath, inspect_sha256: sha256File(imageInspectPath),
+      build_evidence: { raw_path: buildRawPath, raw_sha256: sha256File(buildRawPath), typed_path: buildIdentityPath, typed_sha256: sha256File(buildIdentityPath), runtime_path: buildRuntimePath, runtime_sha256: sha256File(buildRuntimePath) },
+    },
+    container: { inspect_path: containerInspectPath, inspect_sha256: sha256File(containerInspectPath) },
+    stack_identity_before: { path: stackBeforePath, sha256: sha256File(stackBeforePath) },
+    runtime_provenance: { path: runtimeProvenancePath, sha256: sha256File(runtimeProvenancePath) },
+    database: { archive_path: fixtureDatabaseArchive, archive_sha256: sha256File(fixtureDatabaseArchive), logical_fingerprint_before: fixtureFingerprint },
+    environment: { base_url: "http://127.0.0.1:8027", compose_project: "tacbookings-measure", release_id_sha256: "9".repeat(64) },
+    check_census_path: censusPath, check_census_sha256: sha256File(censusPath),
+    writer_census_path: writerPath, writer_census_sha256: sha256File(writerPath),
+    producer_files_path: producerManifestPath, producer_files_sha256: sha256File(producerManifestPath),
+    created_at: "2026-08-06T00:01:00.000Z",
+  };
+  if (mutation.schemaDrift) immutable.unreviewed_field = true;
+  writeJson(join(root, "inputs", "immutable-inputs.json"), immutable);
+
+  const routePaths = writeCorrectnessRoutes(root, side, imageId);
+  for (const [producerId, checkIds] of Object.entries(PRODUCER_CHECK_SCHEMA[side])) {
+    const producerDirectory = join(root, "raw", producerId); mkdirs(producerDirectory);
+    const genericPath = `raw/${producerId}/evidence.txt`; writeFileSync(join(root, ...genericPath.split("/")), `public fixture evidence for ${producerId}\n`);
+    const ownedPaths = [genericPath, ...(producerId === "cms-lifecycle" ? routePaths : [])].sort((left, right) => left.localeCompare(right));
+    const observations = checkIds.map((checkId) => ({
+      check_id: checkId,
+      outcome: checkId === "MC-03D" ? "OWNER_DISPOSITION_NEEDED" : "PASS",
+      assertions: [`fixture assertion for ${checkId}`],
+      evidence_paths: [checkId === "BND-02" && producerId === "cms-lifecycle" ? "raw/cms-lifecycle/route-response-evidence.json" : genericPath],
+    }));
+    if (mutation.cyclicEvidence && producerId === Object.keys(PRODUCER_CHECK_SCHEMA[side])[0]) observations[0].evidence_paths = ["raw-evidence-manifest.json"];
+    writeJson(join(root, "producer-results", `${producerId}.json`), {
+      schema_version: 1, run_id: name, producer_id: producerId, side,
+      started_at: "2026-08-06T00:02:00.000Z", ended_at: "2026-08-06T00:03:00.000Z", exit_code: 0,
+      cleanup: { status: mutation.failedCleanup && producerId === Object.keys(PRODUCER_CHECK_SCHEMA[side])[0] ? "failed" : "passed", evidence_paths: [genericPath] },
+      observations,
+      owned_artifacts: ownedPaths.map((path) => ({ path, sha256: sha256File(join(root, ...path.split("/"))), size_bytes: statSync(join(root, ...path.split("/"))).size })),
+    });
+  }
+  writeJson(join(root, "raw", "orchestrator", "app-health.json"), { status: "healthy" });
+  if (mutation.extraRaw) writeFileSync(join(root, "raw", "route-manifests", "unowned.txt"), "unowned raw fixture\n");
+  writeJson(join(root, "postconditions.json"), {
+    schema_version: 1, run_id: name, side,
+    database_fingerprint_before: fixtureFingerprint, database_fingerprint_after: fixtureFingerprint, database_unchanged: true,
+    app_health: { status: "passed", evidence_paths: ["raw/orchestrator/app-health.json"] },
+    completed_at: "2026-08-06T00:05:00.000Z",
+  });
+  return root;
+}
+
+const finalizerTestOptions = { runtimeContext: runtimeFixtureContext, liveSourceRoot: sourceRepo };
+const baselineComposed = prepareComposedCorrectness("baseline-composed", "baseline");
+finalizeCorrectnessEvidence(baselineComposed, finalizerTestOptions);
+const baselineVerified = verifyCorrectnessCompletion(join(baselineComposed, "COMPLETED.json"), { runtimeContext: runtimeFixtureContext });
+assert.equal(baselineVerified.report.result, "pre_timing_passed");
+assert.deepEqual(baselineVerified.report.checks.filter((check) => check.outcome === "DEFERRED_TO_PHASE2").map((check) => check.id), ["BND-09"]);
+const currentComposed = prepareComposedCorrectness("current-composed", "current");
+finalizeCorrectnessEvidence(currentComposed, finalizerTestOptions);
+const currentVerified = verifyCorrectnessCompletion(join(currentComposed, "COMPLETED.json"), { requirePassed: false, runtimeContext: runtimeFixtureContext });
+assert.equal(currentVerified.report.result, "owner_disposition_needed");
+assert.deepEqual(currentVerified.report.checks.filter((check) => check.outcome === "DEFERRED_TO_PHASE2").map((check) => check.id), ["MC-08B", "BND-09"]);
+assert.throws(() => verifyCorrectnessCompletion(join(currentComposed, "COMPLETED.json"), { runtimeContext: runtimeFixtureContext }), /not pre-timing ready/);
+
+for (const [name, mutation, pattern] of [
+  ["schema-drift", { schemaDrift: true }, /invalid schema/],
+  ["runtime-schema-drift", { runtimeSchemaTamper: true }, /runtime provenance package binding/],
+  ["runtime-chromium-drift", { runtimeChromiumTamper: true }, /runtime provenance identity/],
+  ["census-tamper", { censusTamper: true }, /exact reviewed MC\/BND census/],
+  ["failed-cleanup", { failedCleanup: true }, /cleanup\/observations\/artifacts/],
+  ["source-tamper", { sourceTamper: true }, /archive|producer-files manifest headers/],
+  ["writer-tamper", { writerTamper: true }, /writer census differs/],
+  ["extra-raw", { extraRaw: true }, /owned artifact census|outside the authoritative/],
+  ["cyclic-evidence", { cyclicEvidence: true }, /semantic evidence|create-only directory/],
+]) {
+  const root = prepareComposedCorrectness(name, "baseline", mutation);
+  assert.throws(() => finalizeCorrectnessEvidence(root, finalizerTestOptions), pattern);
+}
+const postProducerDriftRoot = prepareComposedCorrectness("post-producer-finalizer-drift", "baseline");
+const liveFinalizerPath = join(sourceRepo, "measurement", "phase2", "bin", "finalize-correctness-evidence.mjs");
+writeFileSync(liveFinalizerPath, "modified after producer output completed\n");
+assert.throws(() => finalizeCorrectnessEvidence(postProducerDriftRoot, finalizerTestOptions), /live producer source differs/);
+for (const name of ["raw-evidence-manifest.json", "route-expectations.json", "secret-scan.json", "correctness-report.json", "COMPLETED.json"]) assert.equal(existsSync(join(postProducerDriftRoot, name)), false, `failed finalization must remove exact derived output ${name}`);
+writeFileSync(liveFinalizerPath, archivedSources.files.get("measurement/phase2/bin/finalize-correctness-evidence.mjs"));
+assert.doesNotThrow(() => finalizeCorrectnessEvidence(postProducerDriftRoot, finalizerTestOptions));
+const finalizerSource = readFileSync(join(bin, "finalize-correctness-evidence.mjs"), "utf8");
+const finalizerLiveChecks = [...finalizerSource.matchAll(/verifyLiveProducerSource\(producerSourceVerification\)/g)].map((match) => match.index);
+assert.equal(finalizerLiveChecks.length, 2, "correctness finalizer must verify exact live producer source twice");
+assert(finalizerLiveChecks[0] < finalizerSource.indexOf("const rawManifest = buildRawManifest") && finalizerLiveChecks[1] > finalizerSource.indexOf("const completion =") && finalizerLiveChecks[1] < finalizerSource.indexOf('writeFileSync(paths["COMPLETED.json"]'),
+  "correctness finalizer live-source checks must bracket all derivation and precede COMPLETED");
+
+const producerImmutable = { run_id: "producer-fixture", side: "baseline", created_at: "2026-08-06T00:00:00.000Z" };
+const producerArtifact = { path: "raw/route-manifests/evidence.json", sha256: "a".repeat(64), size_bytes: 1 };
+const producerResult = {
+  schema_version: 1, run_id: producerImmutable.run_id, producer_id: "route-manifests", side: "baseline",
+  started_at: "2026-08-06T00:00:01.000Z", ended_at: "2026-08-06T00:00:02.000Z", exit_code: 0,
+  cleanup: { status: "passed", evidence_paths: [producerArtifact.path] },
+  observations: [{ check_id: "BND-01", outcome: "PASS", assertions: ["reviewed route manifest analysis passed"], evidence_paths: [producerArtifact.path] }],
+  owned_artifacts: [producerArtifact],
+};
+assert.doesNotThrow(() => validateProducerResult(producerResult, { immutable: producerImmutable, producerId: "route-manifests" }));
+assert.throws(() => validateProducerResult({ ...producerResult, producer_id: "generic-check" }, { immutable: producerImmutable, producerId: "generic-check" }), /outside the reviewed registry/);
+assert.throws(() => validateProducerResult({ ...producerResult, observations: [{ ...producerResult.observations[0], check_id: "BND-02" }] }, { immutable: producerImmutable, producerId: "route-manifests" }), /producer observation is invalid/);
+assert.throws(() => validateProducerResult({ ...producerResult, started_at: "2026-08-05T23:59:59.000Z" }, { immutable: producerImmutable, producerId: "route-manifests" }), /chronology/);
+
+const routeRoot = join(temp, "route-contract"); const routeRaw = join(routeRoot, "raw", "cms-lifecycle"); mkdirs(routeRaw);
+const routeImageId = `sha256:${"7".repeat(64)}`;
+const routeFiles = new Map();
+const writeRouteSample = (stem, cache, body = "stable response") => {
+  const headersPath = `raw/cms-lifecycle/${stem}.headers`, bodyPath = `raw/cms-lifecycle/${stem}.body.html`;
+  writeFileSync(join(routeRoot, ...headersPath.split("/")), `HTTP/1.1 200 OK\r\n${cache ? `X-Nextjs-Cache: ${cache}\r\n` : ""}ETag: \"stable\"\r\n\r\n`);
+  writeFileSync(join(routeRoot, ...bodyPath.split("/")), body);
+  routeFiles.set(headersPath, { path: headersPath, producer_id: "cms-lifecycle", check_ids: [] }); routeFiles.set(bodyPath, { path: bodyPath, producer_id: "cms-lifecycle", check_ids: [] });
+};
+writeRouteSample("binding-about-1", "MISS"); writeRouteSample("binding-about-2", "HIT");
+for (const stem of ["binding-root", "binding-join", "binding-contact"]) writeRouteSample(stem, null, stem);
+const stableBodySha = sha256File(join(routeRaw, "binding-about-2.body.html"));
+const routeDocument = { schema_version: 1, side: "current", image_id: routeImageId, routes: {
+  "/about": { samples: [{ phase: "miss", headers_path: "raw/cms-lifecycle/binding-about-1.headers", body_path: "raw/cms-lifecycle/binding-about-1.body.html" }, { phase: "hit", headers_path: "raw/cms-lifecycle/binding-about-2.headers", body_path: "raw/cms-lifecycle/binding-about-2.body.html" }], derived: { status: 200, next_cache: "HIT", etag: '"stable"', body_sha256: stableBodySha } },
+  "/": { samples: [{ phase: "request", headers_path: "raw/cms-lifecycle/binding-root.headers", body_path: "raw/cms-lifecycle/binding-root.body.html" }], derived: { status: 200, next_cache: "ABSENT", etag: null, body_sha256: null } },
+  "/join": { samples: [{ phase: "request", headers_path: "raw/cms-lifecycle/binding-join.headers", body_path: "raw/cms-lifecycle/binding-join.body.html" }], derived: { status: 200, next_cache: "ABSENT", etag: null, body_sha256: null } },
+  "/contact": { samples: [{ phase: "request", headers_path: "raw/cms-lifecycle/binding-contact.headers", body_path: "raw/cms-lifecycle/binding-contact.body.html" }], derived: { status: 200, next_cache: "ABSENT", etag: null, body_sha256: null } },
+} };
+const routeEvidencePath = "raw/cms-lifecycle/route-response-evidence.json"; writeFileSync(join(routeRoot, ...routeEvidencePath.split("/")), `${JSON.stringify(routeDocument)}\n`);
+routeFiles.set(routeEvidencePath, { path: routeEvidencePath, producer_id: "cms-lifecycle", check_ids: ["BND-02"] });
+assert.deepEqual(verifyCorrectnessRouteEvidence(routeRoot, { side: "current", image: { id: routeImageId } }, routeFiles).routes, Object.fromEntries(Object.entries(routeDocument.routes).map(([route, value]) => [route, value.derived])));
+writeFileSync(join(routeRaw, "binding-about-2.body.html"), "mutated response");
+assert.throws(() => verifyCorrectnessRouteEvidence(routeRoot, { side: "current", image: { id: routeImageId } }, routeFiles), /stable MISS\/HIT pair/);
+
+const stackRoot = join(temp, "stack-contract"); const stackFingerprint = "8".repeat(64); const postgresImage = `sha256:${"9".repeat(64)}`;
+const writeStackStage = (stage, appContainerId) => {
+  const directoryName = stage === "before" ? "inputs" : "postcondition-evidence"; const directory = join(stackRoot, directoryName); mkdirs(directory);
+  const container = (service, containerId, selectedImage, containerPort, hostPort) => ({ schema_version: 1, service, container_id: containerId, image_id: selectedImage, compose_project: "tacbookings-measure", compose_service: service, network_mode: "tacbookings-measure_default", networks: { "tacbookings-measure_default": { NetworkID: "1".repeat(64), IPAddress: service === "app" ? "172.20.0.4" : "172.20.0.2" } }, ports: { [`${containerPort}/tcp`]: [{ HostIp: "127.0.0.1", HostPort: String(hostPort) }] } });
+  const leaves = {
+    "app-container-inspect.json": container("app", appContainerId, routeImageId, 3000, 3003),
+    "postgres-container-inspect.json": container("postgres", "2".repeat(64), postgresImage, 5432, 5435),
+    "postgres-server-version.json": { schema_version: 1, version: "16.9", version_num: "160009", database: "tacbookings", user: "tac" },
+    "database-fingerprint.json": { schema_version: 1, logical_fingerprint: stackFingerprint },
+  };
+  for (const [name, value] of Object.entries(leaves)) writeFileSync(join(directory, name), `${JSON.stringify(value)}\n`);
+  const bound = (name) => ({ path: `${directoryName}/${name}`, sha256: sha256File(join(directory, name)) });
+  const aggregate = { schema_version: 1, stage, compose_project: "tacbookings-measure", image_id: routeImageId,
+    app: { ...bound("app-container-inspect.json"), container_id: appContainerId },
+    postgres: { ...bound("postgres-container-inspect.json"), container_id: "2".repeat(64), image_id: postgresImage },
+    postgres_server: { ...bound("postgres-server-version.json"), version: "16.9", version_num: "160009", database: "tacbookings", user: "tac" },
+    database: { ...bound("database-fingerprint.json"), logical_fingerprint: stackFingerprint }, verified: true, captured_at: stage === "before" ? "2026-08-06T00:00:00.000Z" : "2026-08-06T00:01:00.000Z" };
+  const aggregateName = `stack-identity-${stage}.json`; writeFileSync(join(directory, aggregateName), `${JSON.stringify(aggregate)}\n`);
+  return verifyStackIdentity(stackRoot, `${directoryName}/${aggregateName}`, { stage, imageId: routeImageId, composeProject: "tacbookings-measure", databaseFingerprint: stackFingerprint });
+};
+const stackBefore = writeStackStage("before", "3".repeat(64)); const stackAfter = writeStackStage("after", "4".repeat(64));
+assert.equal(compareStackIdentities(stackBefore, stackAfter), true);
+writeFileSync(join(stackRoot, "postcondition-evidence", "database-fingerprint.json"), '{"schema_version":1,"logical_fingerprint":"mutated"}\n');
+assert.throws(() => verifyStackIdentity(stackRoot, "postcondition-evidence/stack-identity-after.json", { stage: "after", imageId: routeImageId, composeProject: "tacbookings-measure", databaseFingerprint: stackFingerprint }), /checksum/);
+
+const runtimeIdentity = { schema_version: 1, app: { container_id: "a".repeat(64), image_id: `sha256:${"b".repeat(64)}` }, postgres: { container_id: "c".repeat(64), image_id: `sha256:${"d".repeat(64)}`, server_version: "16.9" }, verified: true };
+const runtimePath = join(temp, "runtime-after.json"); writeFileSync(runtimePath, `${JSON.stringify(runtimeIdentity)}\n`);
+const runtimeSha = sha256File(runtimePath);
+assert.doesNotThrow(() => verifyPostFinalizationRuntimeIdentity(runtimePath, { claimedSha256: runtimeSha, expected: runtimeIdentity }));
+assert.throws(() => verifyPostFinalizationRuntimeIdentity(runtimePath, { claimedSha256: "e".repeat(64), expected: runtimeIdentity }), /checksum/);
+assert.throws(() => verifyPostFinalizationRuntimeIdentity(runtimePath, { claimedSha256: runtimeSha, expected: { ...runtimeIdentity, app: { ...runtimeIdentity.app, container_id: "f".repeat(64) } } }), /differs semantically/);
+
+const aggregateSource = readFileSync(join(bin, "aggregate-pairs.mjs"), "utf8");
+for (const contract of ["finalProfileExact", "observations.length === 4", "PRELIMINARY_ONLY", "OWNER_REVIEW_REQUIRED", "isFuturePathInside", "common_runtime_environment_hmac_sha256", "autonomous_progression_authorised: false", "verifyHarnessSourceBinding"]) assert.match(aggregateSource, new RegExp(contract.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+assert((aggregateSource.match(/verifyOrchestration\(args\.orchestration\)/g) ?? []).length >= 2,
+  "aggregate must reverify its live archive-backed harness source at process start and immediately before writing outputs");
+assert.match(aggregateSource, /verifyAggregateCompletion\(completionPath\)/,
+  "aggregate must verify its final output seal before reporting success");
+const aggregateSealRoot = join(temp, "aggregate-seal");
+mkdirs(aggregateSealRoot);
+const aggregatePrefix = join(aggregateSealRoot, "result");
+const aggregateJsonPath = `${aggregatePrefix}.json`;
+const aggregateMarkdownPath = `${aggregatePrefix}.md`;
+const aggregateManifestPath = `${aggregatePrefix}.output-manifest.sha256`;
+const aggregateCompletionPath = `${aggregatePrefix}.COMPLETED.json`;
+writeFileSync(aggregateJsonPath, `${JSON.stringify({ schema_version: 2, integrity: { measurement_profile: PROFILE_NONFINAL, final_profile_exact: false } })}\n`);
+writeFileSync(aggregateMarkdownPath, "# Result\n");
+const aggregateFiles = [aggregateJsonPath, aggregateMarkdownPath].map((path) => ({ path, bytes: statSync(path).size, sha256: sha256File(path) }));
+writeFileSync(aggregateManifestPath, `${aggregateFiles.map((record) => `${record.sha256}  ${record.bytes}  ${record.path}`).join("\n")}\n`);
+writeFileSync(aggregateCompletionPath, `${JSON.stringify({ schema_version: 2, status: "COMPLETE", completed_at: new Date().toISOString(), measurement_profile: PROFILE_NONFINAL, final_profile_exact: false, pre_timing_correctness_ready: true, phase2_checks_passed: true, live_harness_source_verified_at_start_and_before_completion: true, orchestration_output_manifest_sha256: "a".repeat(64), aggregate_output_manifest_sha256: sha256File(aggregateManifestPath), aggregate_files: aggregateFiles, artifact_count: aggregateFiles.length })}\n`);
+assert.doesNotThrow(() => run("aggregate-pairs.mjs", ["--verify-completion", aggregateCompletionPath]));
+const validAggregateCompletion = JSON.parse(readFileSync(aggregateCompletionPath, "utf8"));
+writeFileSync(aggregateCompletionPath, `${JSON.stringify({ ...validAggregateCompletion, final_profile_exact: true })}\n`);
+rejects("aggregate-pairs.mjs", ["--verify-completion", aggregateCompletionPath], /profile differs/);
+writeFileSync(aggregateCompletionPath, `${JSON.stringify(validAggregateCompletion)}\n`);
+writeFileSync(aggregateJsonPath, "{\"tampered\":true}\n");
+rejects("aggregate-pairs.mjs", ["--verify-completion", aggregateCompletionPath], /differs from its final seal/);
+writeFileSync(aggregateJsonPath, `${JSON.stringify({ schema_version: 2, integrity: { measurement_profile: PROFILE_NONFINAL, final_profile_exact: false } })}\n`);
+const restoredAggregateFiles = [aggregateJsonPath, aggregateMarkdownPath].map((path) => ({ path, bytes: statSync(path).size, sha256: sha256File(path) }));
+writeFileSync(aggregateManifestPath, `${restoredAggregateFiles.map((record) => `${record.sha256}  ${record.bytes}  ${record.path}`).join("\n")}\n${restoredAggregateFiles[0].sha256}  ${restoredAggregateFiles[0].bytes}  ${restoredAggregateFiles[0].path}\n`);
+writeFileSync(aggregateCompletionPath, `${JSON.stringify({ ...validAggregateCompletion, aggregate_output_manifest_sha256: sha256File(aggregateManifestPath), aggregate_files: restoredAggregateFiles })}\n`);
+rejects("aggregate-pairs.mjs", ["--verify-completion", aggregateCompletionPath], /exactly two final artifacts/);
+const orchestrationSource = readFileSync(join(bin, "orchestrate-pairs.sh"), "utf8");
+for (const contract of ["PAIR_COUNT:-4", "MAX_INTER_SIDE_GAP_SECONDS:-600", "MAX_INTER_PAIR_GAP_SECONDS:-600", "QUIET_MONITOR_INTERVAL_SECONDS:-10", "final-decision orchestration profile cannot weaken"]) assert.match(orchestrationSource, new RegExp(contract.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+
+console.log("phase-2 self-test: all contract mutations were rejected");
