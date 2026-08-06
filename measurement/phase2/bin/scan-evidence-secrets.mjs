@@ -21,6 +21,7 @@ const PATTERNS = [
   ["bearer-token", /\b(?:authorization\s*[:=]\s*)?bearer\s+([A-Za-z0-9._~+/=-]{12,})/gi, 1],
   ["postgres-credential", /postgres(?:ql)?:\/\/[^:\s/@]+:([^@\s/]+)@/gi, 1],
   ["sensitive-assignment", /\b(?:DATABASE_URL|AI_DIAGNOSTICS_DATABASE_URL|DB_PASSWORD|SEED_ADMIN_PASSWORD|SEED_LODGE_PASSWORD|CRON_SECRET|NEXTAUTH_SECRET|AUTH_SECRET|STRIPE_(?:SECRET_KEY|WEBHOOK_SECRET)|AWS(?:_SES|_S3)?_(?:ACCESS_KEY_ID|SECRET_ACCESS_KEY)|EMAIL_SERVER_PASSWORD|SMTP_PASSWORD|ADDY_API_(?:KEY|SECRET)|SENTRY_(?:AUTH_TOKEN|DSN)|NEXT_PUBLIC_SENTRY_DSN|LEGACY_DASHBOARD_EXPORT_TOKEN|MIRO(?:TALK)?_(?:JWT_KEY|MEETING_PASSWORD|MEETING_USERNAME|MEETING_PRESENTER)|XERO_(?:CLIENT_ID|CLIENT_SECRET|ENCRYPTION_KEY|WEBHOOK_KEY)|GOOGLE_(?:CLIENT_ID|CLIENT_SECRET)|BACKUP_(?:S3_(?:ACCESS_KEY_ID|SECRET_ACCESS_KEY)|ENCRYPTION_KEY|PASSWORD|CREDENTIALS?)|COOKIE_SECRET)\b\s*(?:=|:)\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^\s,;]+)/gi, 1],
+  ["credential-assignment", /["']?\b([A-Za-z_][A-Za-z0-9_]*(?:PASSWORD|PASSWD|SECRET|TOKEN|API_KEY|ACCESS_KEY|PRIVATE_KEY|CREDENTIAL|DSN)[A-Za-z0-9_]*)\b["']?\s*(?:=|:)\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\$\{[^}\s]+\}|[^\s,;}]+)/gi, 2],
   ["sensitive-json", /["'](?:password|secret|token|dsn|api[_-]?key|access[_-]?key(?:[_-]?id)?|client[_-]?secret|encryption[_-]?key|webhook[_-]?key|private[_-]?key|cookie)["']\s*:\s*["']([^"']+)["']/gi, 1],
   ["sensitive-argument", /--(?:password|secret|token|api-key|client-secret)(?:=|\s+)("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^\s]+)/gi, 1],
   ["stripe-secret", /\b(?:sk|rk|whsec)_(?:live|test)?_?[A-Za-z0-9]{12,}\b/g, 0],
@@ -89,6 +90,7 @@ export function scanEvidence({ root, out, manifest = null }) {
         pattern.lastIndex = 0;
         for (const match of text.matchAll(pattern)) {
           const candidate = match[group] ?? match[0];
+          if (kind === "credential-assignment" && /_(?:COUNT|PATH|FILE|FILENAME|NAME|HASH|SHA(?:256)?|PRESENT|STATUS|ENABLED|EXP|EXPIRY|EXPIRATION|LENGTH|TYPE)$/i.test(match[1])) continue;
           if (safeValue(candidate)) continue;
           findings.push({ path, kind, encoding, offset: match.index });
         }

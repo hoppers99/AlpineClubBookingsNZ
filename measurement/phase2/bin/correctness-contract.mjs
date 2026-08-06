@@ -6,7 +6,12 @@ import { readGitArchive } from "./git-archive.mjs";
 const fail = (message) => { throw new Error(message); };
 export const sha256File = (path) => createHash("sha256").update(readFileSync(path)).digest("hex");
 export const sha256Bytes = (bytes) => createHash("sha256").update(bytes).digest("hex");
-export const OUTCOMES = Object.freeze(["PASS", "FAIL", "UNVERIFIED", "OWNER_DISPOSITION_NEEDED", "NOT_APPLICABLE"]);
+export const OUTCOMES = Object.freeze(["PASS", "FAIL", "UNVERIFIED", "OWNER_DISPOSITION_NEEDED", "DEFERRED_TO_PHASE2", "NOT_APPLICABLE"]);
+export const PHASE2_DEFERRED_CHECK_IDS = Object.freeze({ current: Object.freeze(["MC-08B", "BND-09"]), baseline: Object.freeze(["BND-09"]) });
+const PHASE2_EVIDENCE_PATHS = Object.freeze({
+  "MC-08B": Object.freeze(["env/app-container-inspect.json", "segments"]),
+  "BND-09": Object.freeze(["env/verified-binding.json", "env/runtime-identity-initial.json", "env/runtime-identity-before-finalization.json", "env/database-fingerprint-before.txt", "env/database-fingerprint-after.txt"]),
+});
 
 const check = (id, requirementClass, requiredSides, allowedProducers) => Object.freeze({ id, requirement_class: requirementClass, required_sides: Object.freeze(requiredSides), allowed_producers: Object.freeze(allowedProducers) });
 export const CORRECTNESS_CENSUS = Object.freeze([
@@ -82,19 +87,33 @@ export const PRODUCER_CHECK_SCHEMA = Object.freeze({
   }),
 });
 export const EXPECTED_PRODUCER_SOURCE_PATHS = Object.freeze([
-  "measurement/current-main-refresh/README.md",
-  "measurement/current-main-refresh/bin/analyse-deploy-warmup.mjs", "measurement/current-main-refresh/bin/analyse-log-noise.mjs", "measurement/current-main-refresh/bin/analyse-route-manifests.mjs",
-  "measurement/current-main-refresh/bin/analyse-stored-404.mjs", "measurement/current-main-refresh/bin/build-canonical-contract.mjs", "measurement/current-main-refresh/bin/build-producer-manifest.mjs",
-  "measurement/current-main-refresh/bin/build-route-response-evidence.mjs", "measurement/current-main-refresh/bin/build-stack-identity.mjs", "measurement/current-main-refresh/bin/create-immutable-inputs.mjs",
-  "measurement/current-main-refresh/bin/generate-source-census.mjs", "measurement/current-main-refresh/bin/observe-stored-404-browser.mjs", "measurement/current-main-refresh/bin/run-browser-suite.mjs",
-  "measurement/current-main-refresh/bin/scan-image-build.mjs", "measurement/current-main-refresh/bin/validate-image-build-scan.mjs",
-  "measurement/current-main-refresh/check-census.json", "measurement/current-main-refresh/lib/producer.sh", "measurement/current-main-refresh/lib/write-producer-result.mjs",
-  "measurement/current-main-refresh/public-writer-census.json", "measurement/current-main-refresh/run-adult-hosting-invalidation.sh", "measurement/current-main-refresh/run-adult-hosting-producer.sh",
-  "measurement/current-main-refresh/run-browser-suite.sh", "measurement/current-main-refresh/run-cache-fault.sh", "measurement/current-main-refresh/run-cms-lifecycle.sh",
-  "measurement/current-main-refresh/run-correctness-producers.sh", "measurement/current-main-refresh/run-deploy-warmup.sh", "measurement/current-main-refresh/run-log-noise.sh",
-  "measurement/current-main-refresh/run-public-layout-writers.sh", "measurement/current-main-refresh/run-revalidation-300s.sh", "measurement/current-main-refresh/run-route-manifests.sh",
-  "measurement/current-main-refresh/run-setup-transition.sh", "measurement/current-main-refresh/run-source-census.sh", "measurement/current-main-refresh/run-stored-404.sh", "measurement/current-main-refresh/run-warm-db.sh", "measurement/current-main-refresh/run-wire-security.sh",
-  "measurement/current-main-refresh/self-test.mjs", "measurement/stack/docker-compose.measure.yml", "measurement/stack/measure-stack.sh",
+  "Caddyfile.staging", "docker-compose.yml", "measurement/current-main-refresh/bin/analyse-deploy-warmup.mjs",
+  "measurement/current-main-refresh/bin/analyse-log-noise.mjs", "measurement/current-main-refresh/bin/analyse-route-manifests.mjs", "measurement/current-main-refresh/bin/analyse-stored-404.mjs",
+  "measurement/current-main-refresh/bin/build-canonical-contract.mjs", "measurement/current-main-refresh/bin/build-producer-manifest.mjs", "measurement/current-main-refresh/bin/build-route-response-evidence.mjs",
+  "measurement/current-main-refresh/bin/build-stack-identity.mjs", "measurement/current-main-refresh/bin/create-immutable-inputs.mjs", "measurement/current-main-refresh/bin/extract-archive-member.mjs",
+  "measurement/current-main-refresh/bin/generate-source-census.mjs", "measurement/current-main-refresh/bin/observe-stored-404-browser.mjs", "measurement/current-main-refresh/bin/resolve-measure-container.mjs", "measurement/current-main-refresh/bin/run-browser-suite.mjs",
+  "measurement/current-main-refresh/bin/scan-image-build.mjs", "measurement/current-main-refresh/bin/validate-image-build-scan.mjs", "measurement/current-main-refresh/bin/validate-orchestrator-inputs.mjs", "measurement/current-main-refresh/check-census.json",
+  "measurement/current-main-refresh/lib/git-tar.mjs", "measurement/current-main-refresh/lib/local-auth-state.mjs", "measurement/current-main-refresh/lib/measure-container-identity.mjs", "measurement/current-main-refresh/lib/producer.sh", "measurement/current-main-refresh/lib/producer-source-set.mjs", "measurement/current-main-refresh/lib/write-producer-result.mjs",
+  "measurement/current-main-refresh/public-writer-census.json", "measurement/current-main-refresh/README.md", "measurement/current-main-refresh/run-adult-hosting-invalidation.sh",
+  "measurement/current-main-refresh/run-adult-hosting-producer.sh", "measurement/current-main-refresh/run-browser-suite.sh", "measurement/current-main-refresh/run-cache-fault.sh",
+  "measurement/current-main-refresh/run-cms-lifecycle.sh", "measurement/current-main-refresh/run-correctness-producers.sh", "measurement/current-main-refresh/run-deploy-warmup.sh",
+  "measurement/current-main-refresh/run-log-noise.sh", "measurement/current-main-refresh/run-public-layout-writers.sh", "measurement/current-main-refresh/run-revalidation-300s.sh",
+  "measurement/current-main-refresh/run-route-manifests.sh", "measurement/current-main-refresh/run-setup-transition.sh", "measurement/current-main-refresh/run-source-census.sh",
+  "measurement/current-main-refresh/run-stored-404.sh", "measurement/current-main-refresh/run-warm-db.sh", "measurement/current-main-refresh/run-wire-security.sh",
+  "measurement/current-main-refresh/self-test.mjs", "measurement/phase2/bin/aggregate-pairs.mjs", "measurement/phase2/bin/audit-app-environment.mjs",
+  "measurement/phase2/bin/correctness-contract.mjs", "measurement/phase2/bin/correctness-route-evidence.mjs", "measurement/phase2/bin/correctness-stack-identity.mjs",
+  "measurement/phase2/bin/finalize-correctness-evidence.mjs", "measurement/phase2/bin/finalize-pair-set.mjs", "measurement/phase2/bin/finalize-run.mjs",
+  "measurement/phase2/bin/git-archive.mjs", "measurement/phase2/bin/http-evidence.mjs", "measurement/phase2/bin/load.mjs",
+  "measurement/phase2/bin/measure-env-contract.mjs", "measurement/phase2/bin/measurement-profile.mjs", "measurement/phase2/bin/orchestrate-pairs.self-test.mjs",
+  "measurement/phase2/bin/orchestrate-pairs.sh", "measurement/phase2/bin/revalidation-evidence.mjs", "measurement/phase2/bin/run-pair.sh",
+  "measurement/phase2/bin/run-phase2.sh", "measurement/phase2/bin/runtime-identity.mjs", "measurement/phase2/bin/scan-evidence-secrets.mjs",
+  "measurement/phase2/bin/sealed-tree.mjs", "measurement/phase2/bin/self-test.mjs", "measurement/phase2/bin/statistics.mjs",
+  "measurement/phase2/bin/summarise.mjs", "measurement/phase2/bin/verify-binding.mjs", "measurement/phase2/bin/verify-completed-run.mjs",
+  "measurement/phase2/bin/verify-correctness-evidence.mjs", "measurement/phase2/bin/verify-database-isolation.mjs", "measurement/phase2/bin/verify-harness-manifest.mjs",
+  "measurement/phase2/bin/verify-harness-source.mjs", "measurement/phase2/bin/verify-http-proof.mjs", "measurement/phase2/bin/verify-warm-block.mjs",
+  "measurement/phase2/bin/write-correctness-census.mjs", "measurement/phase2/correctness-manifest.example.json", "measurement/phase2/correctness-report.example.json",
+  "measurement/phase2/README.md", "measurement/phase2/test-fixtures/mutated-body.txt", "measurement/phase2/test-fixtures/README.md",
+  "measurement/phase2/test-fixtures/wrong-cache.headers", "measurement/stack/docker-compose.measure.yml", "measurement/stack/measure-stack.sh",
 ].sort((left, right) => left.localeCompare(right)));
 
 export const expectedCheckIdsForSide = (side) => {
@@ -163,12 +182,52 @@ export function validateCensus(value) {
   return value;
 }
 
+export function classifyPreTimingResult(side, checks, secretScan) {
+  const expectedIds = expectedCheckIdsForSide(side);
+  if (!Array.isArray(checks) || JSON.stringify(checks.map((check) => check.id)) !== JSON.stringify(expectedIds)) fail("pre-timing correctness checks differ from the exact side census");
+  const deferredIds = PHASE2_DEFERRED_CHECK_IDS[side];
+  for (const check of checks) {
+    if (deferredIds.includes(check.id)) {
+      if (check.outcome !== "DEFERRED_TO_PHASE2" || check.applicability !== "deferred_to_phase2" || check.producer_ids?.length !== 0 || check.evidence?.length !== 0) fail(`phase2-owned check is not exactly deferred before timing: ${check.id}`);
+    } else if (check.outcome === "DEFERRED_TO_PHASE2" || check.applicability === "deferred_to_phase2") {
+      fail(`non-phase2 check cannot be deferred to timing: ${check.id}`);
+    }
+  }
+  if (!secretScan?.passed || !Array.isArray(secretScan.findings) || secretScan.findings.length) return "failed";
+  if (checks.some((check) => check.outcome === "FAIL")) return "failed";
+  if (checks.some((check) => check.outcome === "OWNER_DISPOSITION_NEEDED")) return "owner_disposition_needed";
+  if (checks.some((check) => !["PASS", "DEFERRED_TO_PHASE2"].includes(check.outcome))) return "unverified";
+  return "pre_timing_passed";
+}
+
+export function buildPhase2Correctness(side) {
+  if (!PHASE2_DEFERRED_CHECK_IDS[side]) fail(`invalid phase2 correctness side: ${side}`);
+  return {
+    schema_version: 1,
+    side,
+    result: "passed",
+    checks: PHASE2_DEFERRED_CHECK_IDS[side].map((id) => ({ id, outcome: "PASS", producer_id: "phase2-evidence", evidence_paths: [...PHASE2_EVIDENCE_PATHS[id]] })),
+  };
+}
+
+export function validatePhase2Correctness(value, side) {
+  exactKeys(value, ["schema_version", "side", "result", "checks"], "phase2 correctness result");
+  if (value.schema_version !== 1 || value.side !== side || value.result !== "passed" || !Array.isArray(value.checks)) fail(`phase2 correctness result is not an exact pass for ${side}`);
+  for (const [index, check] of value.checks.entries()) exactKeys(check, ["id", "outcome", "producer_id", "evidence_paths"], `phase2 correctness check ${index + 1}`);
+  const expected = buildPhase2Correctness(side);
+  if (JSON.stringify(value) !== JSON.stringify(expected)) fail(`phase2 correctness checks differ from the exact sealed ${side} contract`);
+  return value;
+}
+
 export function validateProducerFilesManifest(path, sourceArchivePath, expectedPaths = EXPECTED_PRODUCER_SOURCE_PATHS) {
-  const lines = readFileSync(path, "utf8").trim().split(/\r?\n/).filter(Boolean);
-  if (!lines.length) fail("producer-files manifest is empty");
   const archive = readGitArchive(sourceArchivePath);
+  const allLines = readFileSync(path, "utf8").trim().split(/\r?\n/);
+  const expectedHeaders = ["# schema_version=1", `# producer_source_archive_sha256=${sha256File(sourceArchivePath)}`, `# producer_source_commit=${archive.revision}`];
+  if (allLines.length < 4 || JSON.stringify(allLines.slice(0, 3)) !== JSON.stringify(expectedHeaders)) fail("producer-files manifest headers do not bind the exact producer source archive");
+  const lines = allLines.slice(3);
   const seen = new Set();
   const paths = [];
+  const hashes = new Map();
   for (const [index, line] of lines.entries()) {
     const match = /^([a-f0-9]{64})  (.+)$/.exec(line);
     if (!match) fail(`invalid producer-files manifest line ${index + 1}`);
@@ -176,7 +235,7 @@ export function validateProducerFilesManifest(path, sourceArchivePath, expectedP
     const folded = process.platform === "win32" ? sourcePath.toLowerCase() : sourcePath;
     const member = archive.files.get(sourcePath);
     if (seen.has(folded) || !member || sha256Bytes(member) !== match[1]) fail(`producer source archive binding failed at line ${index + 1}`);
-    seen.add(folded); paths.push(sourcePath);
+    seen.add(folded); paths.push(sourcePath); hashes.set(sourcePath, match[1]);
   }
   if (JSON.stringify(paths) !== JSON.stringify([...expectedPaths].sort((left, right) => left.localeCompare(right)))) fail("producer source manifest differs from the exact reviewed source-path census");
   if (expectedPaths === EXPECTED_PRODUCER_SOURCE_PATHS) {
@@ -185,11 +244,11 @@ export function validateProducerFilesManifest(path, sourceArchivePath, expectedP
       if (!seen.has(process.platform === "win32" ? sourcePath.toLowerCase() : sourcePath)) fail(`reviewed producer source is absent from the frozen census: ${producerId}`);
     }
   }
-  return { count: lines.length, archiveRevision: archive.revision, paths };
+  return { count: lines.length, archiveRevision: archive.revision, paths, hashes };
 }
 
 export function validateImmutableInputs(value, root) {
-  exactKeys(value, ["schema_version", "run_id", "side", "source", "producer_source", "image", "container", "stack_identity_before", "database", "environment", "check_census_path", "check_census_sha256", "producer_files_path", "producer_files_sha256", "created_at"], "immutable inputs");
+  exactKeys(value, ["schema_version", "run_id", "side", "source", "producer_source", "image", "container", "stack_identity_before", "database", "environment", "check_census_path", "check_census_sha256", "writer_census_path", "writer_census_sha256", "producer_files_path", "producer_files_sha256", "created_at"], "immutable inputs");
   exactKeys(value.source, ["commit", "archive_path", "archive_sha256"], "immutable source");
   exactKeys(value.producer_source, ["commit", "archive_path", "archive_sha256"], "immutable producer source");
   exactKeys(value.image, ["reference", "id", "oci_revision", "inspect_path", "inspect_sha256", "build_evidence"], "immutable image");
@@ -199,19 +258,20 @@ export function validateImmutableInputs(value, root) {
   exactKeys(value.environment, ["base_url", "compose_project", "release_id_sha256"], "immutable environment");
   if (value.schema_version !== 1 || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value.run_id ?? "") || !["current", "baseline"].includes(value.side) || !validUtc(value.created_at)) fail("immutable inputs identity is invalid");
   if (!/^[a-f0-9]{40,64}$/.test(value.source.commit ?? "") || value.image.oci_revision !== value.source.commit || !/^sha256:[a-f0-9]{64}$/.test(value.image.id ?? "") || typeof value.image.reference !== "string" || !value.image.reference.includes("sha256:")) fail("immutable source/image binding is invalid");
-  if (!/^[a-f0-9]{40,64}$/.test(value.producer_source.commit ?? "") || ![value.source.archive_sha256, value.producer_source.archive_sha256, value.image.inspect_sha256, value.container.inspect_sha256, value.database.archive_sha256, value.database.logical_fingerprint_before, value.environment.release_id_sha256, value.check_census_sha256, value.producer_files_sha256].every(hex)) fail("immutable inputs contain an invalid checksum");
+  if (!/^[a-f0-9]{40,64}$/.test(value.producer_source.commit ?? "") || ![value.source.archive_sha256, value.producer_source.archive_sha256, value.image.inspect_sha256, value.container.inspect_sha256, value.database.archive_sha256, value.database.logical_fingerprint_before, value.environment.release_id_sha256, value.check_census_sha256, value.writer_census_sha256, value.producer_files_sha256].every(hex)) fail("immutable inputs contain an invalid checksum");
   if (value.environment.base_url !== "http://127.0.0.1:8027" || value.environment.compose_project !== "tacbookings-measure") fail("immutable environment is not the isolated measurement stack");
   for (const [entry, label] of [[value.source, "app source archive"], [value.producer_source, "producer source archive"], [value.database, "database archive"]]) {
     if (!isAbsolute(entry.archive_path) || !existsSync(entry.archive_path) || lstatSync(entry.archive_path).isSymbolicLink() || !statSync(entry.archive_path).isFile() || sha256File(entry.archive_path) !== entry.archive_sha256) fail(`${label} immutable binding failed`);
   }
   const censusPath = join(root, "inputs", "check-census.json");
   const producersPath = join(root, "inputs", "producer-files.sha256");
+  const writerCensusPath = join(root, "inputs", "public-writer-census.json");
   const imageInspectPath = join(root, "inputs", "image-inspect.json");
   const containerInspectPath = join(root, "inputs", "container-inspect.json");
   const stackIdentityPath = join(root, "inputs", "stack-identity-before.json");
   const same = (left, right) => process.platform === "win32" ? resolve(left).toLowerCase() === resolve(right).toLowerCase() : resolve(left) === resolve(right);
-  if (!same(value.check_census_path, censusPath) || !same(value.producer_files_path, producersPath) || !same(value.image.inspect_path, imageInspectPath) || !same(value.container.inspect_path, containerInspectPath) || !same(value.stack_identity_before.path, stackIdentityPath)) fail("immutable input evidence paths are not the canonical run inputs");
-  if (sha256File(censusPath) !== value.check_census_sha256 || sha256File(producersPath) !== value.producer_files_sha256) fail("immutable inputs do not bind the census/producer manifest");
+  if (!same(value.check_census_path, censusPath) || !same(value.writer_census_path, writerCensusPath) || !same(value.producer_files_path, producersPath) || !same(value.image.inspect_path, imageInspectPath) || !same(value.container.inspect_path, containerInspectPath) || !same(value.stack_identity_before.path, stackIdentityPath)) fail("immutable input evidence paths are not the canonical run inputs");
+  if (sha256File(censusPath) !== value.check_census_sha256 || sha256File(writerCensusPath) !== value.writer_census_sha256 || sha256File(producersPath) !== value.producer_files_sha256) fail("immutable inputs do not bind the check/writer census and producer manifest");
   if (sha256File(imageInspectPath) !== value.image.inspect_sha256 || sha256File(containerInspectPath) !== value.container.inspect_sha256) fail("immutable inputs do not bind image/container inspection evidence");
   if (!hex(value.stack_identity_before.sha256) || sha256File(stackIdentityPath) !== value.stack_identity_before.sha256) fail("immutable inputs do not bind the before-run stack identity");
   validateCensus(JSON.parse(readFileSync(censusPath, "utf8")));
@@ -219,6 +279,8 @@ export function validateImmutableInputs(value, root) {
   if (appArchive.revision !== value.source.commit) fail("app source archive revision differs from the immutable app/image source commit");
   const producerManifest = validateProducerFilesManifest(producersPath, value.producer_source.archive_path);
   if (producerManifest.archiveRevision !== value.producer_source.commit) fail("producer source archive revision differs from the immutable producer source commit");
+  const archivedWriterCensus = readGitArchive(value.producer_source.archive_path).files.get("measurement/current-main-refresh/public-writer-census.json");
+  if (!archivedWriterCensus || sha256Bytes(archivedWriterCensus) !== value.writer_census_sha256 || !readFileSync(writerCensusPath).equals(archivedWriterCensus)) fail("writer census differs from the exact producer source archive member");
   if (value.producer_source.archive_path === value.source.archive_path || value.producer_source.archive_sha256 === value.source.archive_sha256) fail("app and producer source archives must remain explicit non-swappable identities");
   const imageInspect = JSON.parse(readFileSync(imageInspectPath, "utf8"));
   exactKeys(imageInspect, ["id", "oci_revision"], "image inspection");
@@ -358,7 +420,11 @@ export function deriveCorrectnessReport(root, immutable, rawEntries, secretScan)
   const checks = census.checks.filter((check) => check.required_sides.includes(immutable.side)).map((check) => {
     const observations = [...state.producers.values()].flatMap((producer) => producer.value.observations.map((observation) => ({ ...observation, producer_id: producer.value.producer_id, producer_ok: producer.value.exit_code === 0 && producer.value.cleanup.status === "passed" }))).filter((observation) => observation.check_id === check.id);
     let outcome;
-    if (check.id === "MC-03D") outcome = "OWNER_DISPOSITION_NEEDED";
+    const deferred = PHASE2_DEFERRED_CHECK_IDS[immutable.side].includes(check.id);
+    if (deferred) {
+      if (observations.length || JSON.stringify(check.allowed_producers) !== JSON.stringify(["phase2-evidence"])) fail(`phase2-only check has an invalid pre-timing producer contract: ${check.id}`);
+      outcome = "DEFERRED_TO_PHASE2";
+    } else if (check.id === "MC-03D") outcome = "OWNER_DISPOSITION_NEEDED";
     else if (observations.some((item) => item.outcome === "FAIL" || !item.producer_ok)) outcome = "FAIL";
     else if (observations.some((item) => item.outcome === "PASS" && item.producer_ok)) outcome = "PASS";
     else outcome = "UNVERIFIED";
@@ -368,13 +434,9 @@ export function deriveCorrectnessReport(root, immutable, rawEntries, secretScan)
       if (!entry || !entry.check_ids.includes(check.id)) fail(`report evidence is not bound to the check in the raw manifest: ${check.id}:${path}`);
       return { path, sha256: entry.sha256 };
     });
-    return { id: check.id, requirement_class: check.requirement_class, applicability: check.id === "MC-03D" ? "owner_disposition_needed" : "required", outcome, producer_ids: [...new Set(observations.map((item) => item.producer_id))].sort(), evidence, owner_disposition: null };
+    return { id: check.id, requirement_class: check.requirement_class, applicability: deferred ? "deferred_to_phase2" : check.id === "MC-03D" ? "owner_disposition_needed" : "required", outcome, producer_ids: [...new Set(observations.map((item) => item.producer_id))].sort(), evidence, owner_disposition: null };
   });
-  let result = "passed";
-  if (checks.some((check) => check.outcome === "FAIL")) result = "failed";
-  else if (checks.some((check) => check.outcome === "OWNER_DISPOSITION_NEEDED")) result = "owner_disposition_needed";
-  else if (checks.some((check) => check.outcome !== "PASS" && check.outcome !== "NOT_APPLICABLE")) result = "unverified";
-  if (!secretScan.passed || secretScan.findings.length) result = "failed";
+  const result = classifyPreTimingResult(immutable.side, checks, secretScan);
   return {
     schema_version: 2,
     run_id: immutable.run_id,
@@ -383,6 +445,7 @@ export function deriveCorrectnessReport(root, immutable, rawEntries, secretScan)
     bindings: {
       immutable_inputs_sha256: sha256File(join(root, "inputs", "immutable-inputs.json")),
       check_census_sha256: immutable.check_census_sha256,
+      writer_census_sha256: immutable.writer_census_sha256,
       producer_files_sha256: immutable.producer_files_sha256,
       raw_evidence_manifest_sha256: sha256File(join(root, "raw-evidence-manifest.json")),
       postconditions_sha256: sha256File(join(root, "postconditions.json")),
@@ -414,7 +477,7 @@ export function expectedCorrectnessCensus(root, rawManifest) {
   const files = [
     "inputs/app-container-inspect.json", "inputs/check-census.json", "inputs/container-inspect.json", "inputs/database-fingerprint.json",
     "inputs/image-build-identity.json", "inputs/image-build-runtime-env.json", "inputs/image-build-scan.raw.json", "inputs/image-inspect.json",
-    "inputs/immutable-inputs.json", "inputs/postgres-container-inspect.json", "inputs/postgres-server-version.json", "inputs/producer-files.sha256", "inputs/stack-identity-before.json",
+    "inputs/immutable-inputs.json", "inputs/postgres-container-inspect.json", "inputs/postgres-server-version.json", "inputs/producer-files.sha256", "inputs/public-writer-census.json", "inputs/stack-identity-before.json",
     ...rawManifest.entries.map((entry) => entry.path),
     "postcondition-evidence/app-container-inspect.json", "postcondition-evidence/database-fingerprint.json", "postcondition-evidence/postgres-container-inspect.json",
     "postcondition-evidence/postgres-server-version.json", "postcondition-evidence/stack-identity-after.json",

@@ -7,6 +7,7 @@ import { verifyRevalidationEvidence } from "./revalidation-evidence.mjs";
 import { parseStrictHttpHeaders } from "./http-evidence.mjs";
 import { classifySideProfile, PROFILE_FINAL, requireKnownProfile } from "./measurement-profile.mjs";
 import { verifySecretScan } from "./scan-evidence-secrets.mjs";
+import { buildPhase2Correctness } from "./correctness-contract.mjs";
 
 const verifyJsonMode = process.argv[2] === "--verify-json";
 const dir = resolve(process.argv[verifyJsonMode ? 3 : 2] ?? "");
@@ -161,7 +162,7 @@ if (context.final_profile_parameters_exact !== (derivedProfile === PROFILE_FINAL
 if (context.measurement_profile === PROFILE_FINAL && derivedProfile !== PROFILE_FINAL) fail("final-decision side parameters differ from the exact reviewed profile");
 const binding = json(join(dir, "env", "verified-binding.json"));
 if (
-  !binding.verified || binding.side !== context.side || binding.correctness_result !== "passed" ||
+  !binding.verified || binding.side !== context.side || binding.correctness_result !== "pre_timing_passed" ||
   !/^sha256:[a-f0-9]{64}$/.test(binding.image_id ?? "") ||
   !/^[a-f0-9]{40,64}$/.test(binding.oci_revision ?? "") || binding.source_archive_revision !== binding.oci_revision ||
   !/^[a-f0-9]{64}$/.test(binding.source_archive_sha256 ?? "") ||
@@ -331,7 +332,9 @@ const segments = segmentEvidence(context);
 if (Object.values(segments).some((segment) => segment.restart_delta !== 0 || segment.oom_delta !== 0 || segment.oom_kill_delta !== 0)) {
   fail("restart/OOM contamination occurred during a timed segment");
 }
-
+const databaseFingerprintBefore = readFileSync(join(dir, "env", "database-fingerprint-before.txt"), "utf8").trim();
+const databaseFingerprintAfter = readFileSync(join(dir, "env", "database-fingerprint-after.txt"), "utf8").trim();
+if (!/^[a-f0-9]{64}$/.test(databaseFingerprintBefore) || !/^[a-f0-9]{64}$/.test(databaseFingerprintAfter) || databaseFingerprintBefore !== databaseFingerprintAfter) fail("database before/after fingerprints are invalid or differ");
 const summary = {
   schema_version: 2,
   methodology: { median: "conventional median; even samples average the two middle values", p95: "sorted[floor(0.95*n)], capped at n-1" },
@@ -339,6 +342,7 @@ const summary = {
   name: basename(dir),
   context,
   immutable_binding: binding,
+  phase2_correctness: buildPhase2Correctness(context.side),
   environment_identity: {
     harness_manifest_sha256: harnessManifestSha,
     compose_uninterpolated_sha256: fileSha256(join(dir, "env", "compose-config-uninterpolated.yml")),
@@ -355,11 +359,8 @@ const summary = {
     runtime_identity: runtimeIdentityInitial,
     secret_scan_passed: true,
   },
-  database_fingerprint_after: (() => {
-    const fingerprint = readFileSync(join(dir, "env", "database-fingerprint-after.txt"), "utf8").trim();
-    if (!/^[a-f0-9]{64}$/.test(fingerprint)) fail("database after-fingerprint is invalid");
-    return fingerprint;
-  })(),
+  database_fingerprint_before: databaseFingerprintBefore,
+  database_fingerprint_after: databaseFingerprintAfter,
   phases: {
     cold: { "/about": timingCsv(join(dir, "cold", "about.csv")) },
     warm,

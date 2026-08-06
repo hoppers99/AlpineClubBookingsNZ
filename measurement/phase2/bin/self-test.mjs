@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { AUDITED_KEYS, LIVE_PROVIDER_KEYS, auditAppEnvironment } from "./audit-app-environment.mjs";
-import { EXPECTED_PRODUCER_SOURCE_PATHS, correctnessCensus, expectedCheckIdsForSide, sha256File, validateCensus, validateProducerFilesManifest, validateProducerResult } from "./correctness-contract.mjs";
+import { CORRECTNESS_CENSUS, EXPECTED_PRODUCER_SOURCE_PATHS, PHASE2_DEFERRED_CHECK_IDS, buildPhase2Correctness, classifyPreTimingResult, correctnessCensus, sha256File, validateCensus, validatePhase2Correctness, validateProducerFilesManifest, validateProducerResult } from "./correctness-contract.mjs";
 import { parseStrictHttpHeaders } from "./http-evidence.mjs";
 import { readGitArchive } from "./git-archive.mjs";
 import { verifyCorrectnessRouteEvidence } from "./correctness-route-evidence.mjs";
@@ -16,7 +16,7 @@ import { scanEvidence, verifySecretScan } from "./scan-evidence-secrets.mjs";
 import { finalizeSealedTree, verifySealedTree } from "./sealed-tree.mjs";
 import { conventionalMedian, rankedQuantile } from "./statistics.mjs";
 import { verifyPostFinalizationRuntimeIdentity } from "./runtime-identity.mjs";
-import { verifyCorrectnessCompletion } from "./verify-correctness-evidence.mjs";
+import { verifyHarnessAgainstProducerArchive } from "./verify-harness-source.mjs";
 
 const repo = resolve(import.meta.dirname, "../../..");
 const bin = resolve(import.meta.dirname);
@@ -99,7 +99,7 @@ for (const key of ["forbidden_integration_credential_count", "xero_token_count",
   rejects("verify-database-isolation.mjs", ["--input", input, "--out", join(temp, `db-${key}-out.json`)], /permits a live provider/);
 }
 
-const scanRoot = join(temp, "scan-safe"); mkdirs(scanRoot); writeFileSync(join(scanRoot, "safe.txt"), "AUTH_SECRET=${AUTH_SECRET}\nEMAIL_FROM=noreply@measurement.invalid\n");
+const scanRoot = join(temp, "scan-safe"); mkdirs(scanRoot); writeFileSync(join(scanRoot, "safe.txt"), "AUTH_SECRET=${AUTH_SECRET}\nSOME_API_KEY=placeholder\nTOKEN_COUNT=1\nEMAIL_FROM=noreply@measurement.invalid\n");
 const scanPath = join(scanRoot, "secret-scan.json");
 const scan = scanEvidence({ root: scanRoot, out: scanPath });
 verifySecretScan({ root: scanRoot, report: scan });
@@ -114,6 +114,10 @@ for (const [name, bytes, pattern] of [
   ["miro", Buffer.from("MIRO_JWT_KEY=miro-private-material\n"), /potential secrets/],
   ["xero", Buffer.from("XERO_WEBHOOK_KEY=xero-private-material\n"), /potential secrets/],
   ["generic-aws", Buffer.from("AWS_SECRET_ACCESS_KEY=aws-private-material\n"), /potential secrets/],
+  ["aws-session", Buffer.from("AWS_SESSION_TOKEN=very-private-session-token-material\n"), /potential secrets/],
+  ["aws-security", Buffer.from("AWS_SECURITY_TOKEN=very-private-security-token-material\n"), /potential secrets/],
+  ["anthropic", Buffer.from("ANTHROPIC_API_KEY=anthropic-private-material\n"), /potential secrets/],
+  ["generic-api-key", Buffer.from("SOME_API_KEY=generic-private-material\n"), /potential secrets/],
   ["backup", Buffer.from("BACKUP_S3_SECRET_ACCESS_KEY=backup-private-material\n"), /potential secrets/],
   ["allowed-substring", Buffer.from("AUTH_SECRET=real-measurement-secret\n"), /potential secrets/],
   ["nul-split", Buffer.from("A\0U\0T\0H\0_\0S\0E\0C\0R\0E\0T\0=\0n\0u\0l\0-\0s\0p\0l\0i\0t\0-\0s\0e\0c\0r\0e\0t\n"), /potential secrets/],
@@ -127,83 +131,23 @@ finalizeSealedTree({ root: sealed }); verifySealedTree(sealed);
 writeFileSync(join(sealed, "extra.txt"), "late\n"); assert.throws(() => verifySealedTree(sealed), /census differs/);
 const sealedExtraDir = join(temp, "sealed-extra-dir"); mkdirs(sealedExtraDir); writeFileSync(join(sealedExtraDir, "evidence.txt"), "immutable\n"); finalizeSealedTree({ root: sealedExtraDir }); mkdirSync(join(sealedExtraDir, "empty-extra")); assert.throws(() => verifySealedTree(sealedExtraDir), /census differs/);
 
-if (process.env.PHASE2_RUN_LEGACY_CORRECTNESS_FIXTURE === "1") {
-const revision = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).trim();
-const sourceArchive = join(temp, "source.tar"); execFileSync("git", ["archive", "--format=tar", `--output=${sourceArchive}`, revision], { cwd: repo });
-const databaseArchive = join(temp, "canonical.dump"); writeFileSync(databaseArchive, "canonical database fixture\n");
-const producerSource = join(temp, "producer-source.mjs"); writeFileSync(producerSource, "export const producer = true;\n");
-const imageId = `sha256:${"b".repeat(64)}`;
-
-function prepareCorrectness(name, side, mutate = {}) {
-  const root = join(temp, name); const producerId = `${side}-contract`;
-  mkdirs(join(root, "inputs"), join(root, "raw", producerId), join(root, "producer-results"));
-  let census = correctnessCensus(name);
-  if (mutate.missingCensusId) census = { ...census, checks: census.checks.slice(1) };
-  const censusPath = join(root, "inputs", "check-census.json"); writeFileSync(censusPath, `${JSON.stringify(census, null, 2)}\n`);
-  const producerManifest = join(root, "inputs", "producer-files.sha256"); writeFileSync(producerManifest, `${sha256File(producerSource)}  ${producerSource}\n`);
-  const immutable = {
-    schema_version: 1, run_id: name, side,
-    source: { commit: revision, archive_path: sourceArchive, archive_sha256: sha256File(sourceArchive) },
-    image: { reference: `fixture@${imageId}`, id: imageId, oci_revision: revision },
-    database: { archive_path: databaseArchive, archive_sha256: sha256File(databaseArchive), logical_fingerprint: "c".repeat(64) },
-    environment: { base_url: "http://127.0.0.1:8027", compose_project: "tacbookings-measure", release_id_sha256: "d".repeat(64) },
-    check_census_sha256: sha256File(censusPath), producer_files_sha256: sha256File(producerManifest), created_at: "2026-08-06T00:00:00.000Z",
-  };
-  writeFileSync(join(root, "inputs", "immutable-inputs.json"), `${JSON.stringify(immutable, null, 2)}\n`);
-  if (mutate.changeProducerSource) writeFileSync(producerSource, "export const producer = false;\n");
-  const evidencePath = `raw/${producerId}/evidence.txt`; writeFileSync(join(root, ...evidencePath.split("/")), "bound public evidence\n");
-  if (mutate.extraRaw) writeFileSync(join(root, "raw", producerId, "extra.txt"), "unreferenced\n");
-  const observations = expectedCheckIdsForSide(side).map((checkId) => ({ check_id: checkId, outcome: mutate.notApplicable ? "NOT_APPLICABLE" : "PASS", assertions: ["fixture-assertion"], evidence_paths: [mutate.cyclic ? "raw-evidence-manifest.json" : evidencePath] }));
-  const producer = { schema_version: 1, run_id: name, producer_id: producerId, side, started_at: "2026-08-06T00:00:00.000Z", ended_at: "2026-08-06T00:00:01.000Z", exit_code: 0, cleanup: { status: mutate.failedCleanup ? "failed" : "passed", evidence_paths: [evidencePath] }, observations };
-  writeFileSync(join(root, "producer-results", `${producerId}.json`), `${JSON.stringify(producer, null, 2)}\n`);
-  mkdirSync(join(root, "raw", "orchestrator"));
-  const healthPath = "raw/orchestrator/app-health.json";
-  writeFileSync(join(root, ...healthPath.split("/")), '{"status":"healthy"}\n');
-  writeFileSync(join(root, "postconditions.json"), `${JSON.stringify({ schema_version: 1, run_id: name, side, database_fingerprint_before: immutable.database.logical_fingerprint, database_fingerprint_after: immutable.database.logical_fingerprint, database_unchanged: true, app_health: { status: "passed", evidence_paths: [healthPath] }, completed_at: "2026-08-06T00:00:02.000Z" }, null, 2)}\n`);
-  return root;
-}
-
-const baselineCorrectness = prepareCorrectness("baseline-pass", "baseline");
-run("finalize-correctness-evidence.mjs", ["--dir", baselineCorrectness]);
-assert.equal(verifyCorrectnessCompletion(join(baselineCorrectness, "COMPLETED.json")).report.result, "passed");
-
-const currentBlocked = prepareCorrectness("current-blocked", "current");
-run("finalize-correctness-evidence.mjs", ["--dir", currentBlocked]);
-assert.equal(verifyCorrectnessCompletion(join(currentBlocked, "COMPLETED.json"), { requirePassed: false }).report.result, "owner_disposition_needed");
-assert.throws(() => verifyCorrectnessCompletion(join(currentBlocked, "COMPLETED.json")), /complete but not passed/);
-
-for (const [name, mutation, pattern] of [
-  ["missing-census", { missingCensusId: true }, /exact reviewed MC\/BND census/],
-  ["extra-raw", { extraRaw: true }, /unreferenced/],
-  ["unapproved-na", { notApplicable: true }, /producer observation is invalid/],
-  ["cyclic-reference", { cyclic: true }, /outside its create-only directory/],
-]) {
-  const root = prepareCorrectness(name, "baseline", mutation);
-  rejects("finalize-correctness-evidence.mjs", ["--dir", root], pattern);
-}
-const failedCleanup = prepareCorrectness("failed-cleanup", "baseline", { failedCleanup: true });
-run("finalize-correctness-evidence.mjs", ["--dir", failedCleanup]);
-assert.equal(verifyCorrectnessCompletion(join(failedCleanup, "COMPLETED.json"), { requirePassed: false }).report.result, "failed");
-assert.throws(() => verifyCorrectnessCompletion(join(failedCleanup, "COMPLETED.json")), /complete but not passed/);
-
-// Restore the producer source after the dedicated source-binding mutation.
-const sourceMutation = prepareCorrectness("source-mutation", "baseline", { changeProducerSource: true });
-rejects("finalize-correctness-evidence.mjs", ["--dir", sourceMutation], /producer source binding failed/);
-writeFileSync(producerSource, "export const producer = true;\n");
-
-const route = { next_cache: "ABSENT", etag: null, body_sha256: null };
-const bindingManifest = {
-  schema_version: 1, harness_scope: "issue-2352-phase2",
-  canonical_database: { archive_path: databaseArchive, archive_sha256: sha256File(databaseArchive) },
-  sides: { baseline: { image_reference: `fixture@${imageId}`, image_id: imageId, oci_revision: revision, source_archive: { path: sourceArchive, sha256: sha256File(sourceArchive) }, correctness_completion: { path: join(baselineCorrectness, "COMPLETED.json"), sha256: sha256File(join(baselineCorrectness, "COMPLETED.json")) }, routes: { "/about": route, "/": route, "/join": route, "/contact": route } } },
-};
-const bindingManifestPath = join(temp, "binding-manifest.json"); writeFileSync(bindingManifestPath, `${JSON.stringify(bindingManifest)}\n`);
-const inspectPath = join(temp, "image-inspect.json"); writeFileSync(inspectPath, `${JSON.stringify([{ Id: imageId, RepoDigests: [`fixture@${imageId}`], Config: { Labels: { "org.opencontainers.image.revision": revision } } }])}\n`);
-run("verify-binding.mjs", ["--manifest", bindingManifestPath, "--side", "baseline", "--image-reference", `fixture@${imageId}`, "--image-inspect", inspectPath, "--out", join(temp, "verified-binding.json")]);
-}
-
 assert.doesNotThrow(() => validateCensus(correctnessCensus()));
 assert.throws(() => validateCensus({ ...correctnessCensus(), checks: correctnessCensus().checks.slice(1) }), /exact reviewed MC\/BND census/);
+const preTimingChecks = CORRECTNESS_CENSUS.filter((check) => check.required_sides.includes("current")).map((check) => PHASE2_DEFERRED_CHECK_IDS.current.includes(check.id)
+  ? { id: check.id, applicability: "deferred_to_phase2", outcome: "DEFERRED_TO_PHASE2", producer_ids: [], evidence: [] }
+  : { id: check.id, applicability: "required", outcome: "PASS", producer_ids: [check.allowed_producers[0]], evidence: [{ path: `fixture/${check.id}`, sha256: "1".repeat(64) }] });
+assert.equal(classifyPreTimingResult("current", preTimingChecks, { passed: true, findings: [] }), "pre_timing_passed");
+assert.notEqual(classifyPreTimingResult("current", preTimingChecks, { passed: true, findings: [] }), "passed");
+const promotedBeforeTiming = preTimingChecks.map((check) => check.id === "MC-08B" ? { ...check, applicability: "required", outcome: "PASS" } : check);
+assert.throws(() => classifyPreTimingResult("current", promotedBeforeTiming, { passed: true, findings: [] }), /not exactly deferred/);
+const forgedDeferral = preTimingChecks.map((check) => check.id === "MC-01A" ? { ...check, applicability: "deferred_to_phase2", outcome: "DEFERRED_TO_PHASE2", producer_ids: [], evidence: [] } : check);
+assert.throws(() => classifyPreTimingResult("current", forgedDeferral, { passed: true, findings: [] }), /non-phase2 check cannot be deferred/);
+const currentPhase2 = buildPhase2Correctness("current");
+assert.doesNotThrow(() => validatePhase2Correctness(currentPhase2, "current"));
+assert.throws(() => validatePhase2Correctness({ ...currentPhase2, checks: currentPhase2.checks.slice(1) }, "current"), /exact sealed current contract/);
+assert.throws(() => validatePhase2Correctness({ ...currentPhase2, checks: currentPhase2.checks.map((check) => check.id === "MC-08B" ? { ...check, outcome: "FAIL" } : check) }, "current"), /exact sealed current contract/);
+assert.throws(() => validatePhase2Correctness({ ...currentPhase2, checks: currentPhase2.checks.map((check) => check.id === "MC-08B" ? { ...check, id: "BND-02" } : check) }, "current"), /exact sealed current contract/);
+assert.throws(() => validatePhase2Correctness({ ...currentPhase2, checks: currentPhase2.checks.map((check) => check.id === "MC-08B" ? { ...check, producer_id: "cms-lifecycle" } : check) }, "current"), /exact sealed current contract/);
 
 const sourceRepo = join(temp, "producer-source-repo"); mkdirs(sourceRepo);
 execFileSync("git", ["init", "--quiet"], { cwd: sourceRepo });
@@ -220,8 +164,16 @@ const exactSourceArchive = join(temp, "reviewed-producers.tar");
 execFileSync("git", ["archive", "--format=tar", `--output=${exactSourceArchive}`, sourceRevision], { cwd: sourceRepo });
 const exactSourceManifest = join(temp, "reviewed-producers.sha256");
 const archivedSources = readGitArchive(exactSourceArchive);
-writeFileSync(exactSourceManifest, `${EXPECTED_PRODUCER_SOURCE_PATHS.map((path) => `${sha(archivedSources.files.get(path))}  ${path}`).join("\n")}\n`);
+writeFileSync(exactSourceManifest, `# schema_version=1\n# producer_source_archive_sha256=${sha256File(exactSourceArchive)}\n# producer_source_commit=${sourceRevision}\n${EXPECTED_PRODUCER_SOURCE_PATHS.map((path) => `${sha(archivedSources.files.get(path))}  ${path}`).join("\n")}\n`);
 assert.equal(validateProducerFilesManifest(exactSourceManifest, exactSourceArchive).archiveRevision, sourceRevision);
+const harnessFixturePaths = EXPECTED_PRODUCER_SOURCE_PATHS.filter((path) => path.startsWith("measurement/phase2/bin/") || ["docker-compose.yml", "Caddyfile.staging", "measurement/stack/docker-compose.measure.yml", "measurement/stack/measure-stack.sh"].includes(path));
+const harnessFixtureManifest = join(temp, "live-harness.sha256");
+const writeHarnessFixture = () => writeFileSync(harnessFixtureManifest, `${harnessFixturePaths.map((path) => `${sha256File(join(sourceRepo, ...path.split("/")))}  ${join(sourceRepo, ...path.split("/"))}`).join("\n")}\n`);
+writeHarnessFixture();
+assert.doesNotThrow(() => verifyHarnessAgainstProducerArchive({ harnessManifestPath: harnessFixtureManifest, producerManifestPath: exactSourceManifest, producerArchivePath: exactSourceArchive, producerCommit: sourceRevision, repoRoot: sourceRepo }));
+writeFileSync(join(sourceRepo, "measurement", "phase2", "bin", "aggregate-pairs.mjs"), "modified after reviewed producer archive\n");
+writeHarnessFixture();
+assert.throws(() => verifyHarnessAgainstProducerArchive({ harnessManifestPath: harnessFixtureManifest, producerManifestPath: exactSourceManifest, producerArchivePath: exactSourceArchive, producerCommit: sourceRevision, repoRoot: sourceRepo }), /differ from the reviewed producer source archive/);
 writeFileSync(exactSourceManifest, `${readFileSync(exactSourceManifest, "utf8")} ${"0".repeat(64)}  arbitrary.txt\n`);
 assert.throws(() => validateProducerFilesManifest(exactSourceManifest, exactSourceArchive), /invalid producer-files|archive binding|source-path census/);
 

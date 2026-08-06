@@ -109,7 +109,7 @@ let correctness;
 try {
   correctness = verifyCorrectnessCompletion(resolve(binding.correctness_completion.path));
 } catch (error) {
-  fail(`${side} correctness completion chain did not verify as passed: ${error.message}`);
+  fail(`${side} correctness completion chain did not verify as pre-timing ready: ${error.message}`);
 }
 expectHex(manifest.canonical_database?.archive_sha256, "canonical_database.archive_sha256");
 const archive = requiredFile(manifest.canonical_database?.archive_path, "canonical database archive");

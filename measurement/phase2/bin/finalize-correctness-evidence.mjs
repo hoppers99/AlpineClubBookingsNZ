@@ -49,6 +49,7 @@ const completion = {
   sealed_directory_count: expected.directories.length,
   immutable_inputs_sha256: sha256File(immutablePath),
   check_census_sha256: immutable.check_census_sha256,
+  writer_census_sha256: immutable.writer_census_sha256,
   producer_files_sha256: immutable.producer_files_sha256,
   producer_source_archive_sha256: immutable.producer_source.archive_sha256,
   producer_source_commit: immutable.producer_source.commit,

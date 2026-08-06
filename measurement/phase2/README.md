@@ -19,8 +19,13 @@ owner's verbatim minimum of three.
 - Windows/WSL results support relative comparison only, not exact Tokoroa capacity.
 
 The word "approximately" is intentionally qualitative. The reporter records
-median and p95 but applies no invented autonomous p95 gate. Correctness and
-security must pass independently before timing; any failure stops progression.
+median and p95 but applies no invented autonomous p95 gate. Every non-timing
+correctness/security check must pass before timing; any failure stops
+progression. The pre-timing report marks only `MC-08B` (current) and `BND-09`
+(both sides) as `DEFERRED_TO_PHASE2`. It can reach only
+`pre_timing_passed`, never a final correctness pass. Each sealed timing side
+must replace its exact deferred set with independently derived `PASS` evidence
+before a pair, pair set, or aggregate can complete.
 
 ## Safety and prerequisites
 
@@ -58,8 +63,13 @@ security must pass independently before timing; any failure stops progression.
   `COMPLETED.json`, not a naked Boolean report. The verifier walks backwards
   through immutable inputs, the exact 35-ID `MC-*`/`BND-*` census, producer
   source hashes, create-only producer results/raw files, exact raw manifest,
-  secret scan, and independently derived report. A complete but failed,
-  unverified, or owner-disposition-needed chain cannot enter timing.
+  secret scan, and independently derived report. The reviewed producer source
+  archive contains every correctness and timing producer, its exact SHA-256
+  manifest, and the archived writer census. At orchestration start the complete
+  live timing harness is hashed again and every byte is matched to that archive;
+  this sealed binding is carried through pair-set completion and aggregation.
+  A complete but failed, unverified, or owner-disposition-needed chain cannot
+  enter timing, and no check outside the exact Phase 2-owned set may be deferred.
 - `MC-03D` (CMS deletion invalidation) currently has no product endpoint and no
   direct owner disposition. The current-image example must therefore remain
   `OWNER_DISPOSITION_NEEDED`; absence of an endpoint is never fabricated as a
@@ -231,6 +241,8 @@ Aggregation verifies every exact file-and-directory census (including no late
 or case-variant extras), nested checksum/completion marker, unique pair ID,
 exactly four final-profile pairs with equal C-B/B-C counts, non-overlapping chronology and
 bounded gaps, one common correctness/harness/archive/logical-DB fingerprint,
+the sealed live-harness-to-producer-archive binding, and the exact Phase 2-owned
+PASS set for each re-derived side summary,
 before/after database equality, response proof, exact sample shape,
 restart/OOM status, and load errors. It re-derives each preserved `summary.json`
 from sealed raw evidence instead of trusting summary fields. Aggregate JSON,
@@ -257,9 +269,12 @@ bash -n measurement/phase2/bin/orchestrate-pairs.sh
 bash -n measurement/stack/measure-stack.sh
 ```
 
-The fixtures mutate the exact correctness census and chain, producer cleanup,
+The fixtures mutate the exact correctness census and chain, the two-stage
+deferred/PASS boundary, missing/failing/forged Phase 2-owned IDs, producer cleanup,
 raw census/checksums, duplicate cache/ETag headers, UTF-16/NUL/quoted/argument
-secrets, measurement-env quoting/duplicates/reparse points/ambient overrides,
+secrets (including AWS session/security tokens and generic API keys), the
+live-harness-to-producer-archive binding, measurement-env
+quoting/duplicates/reparse points/ambient overrides,
 every live-provider environment key, app/database invariants, profile
 classification, and sealed file/directory census. They contain no credentials
 or measurement results.

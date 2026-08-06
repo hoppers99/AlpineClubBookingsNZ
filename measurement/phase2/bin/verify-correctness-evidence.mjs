@@ -38,7 +38,7 @@ export function verifyCorrectnessCompletion(completionPath, { requirePassed = tr
     artifact_count: expectedCorrectnessCensus(root, rawManifest).files.length - 1,
     sealed_file_count: expectedCorrectnessCensus(root, rawManifest).files.length,
     sealed_directory_count: expectedCorrectnessCensus(root, rawManifest).directories.length,
-    immutable_inputs_sha256: sha256File(immutablePath), check_census_sha256: immutable.check_census_sha256,
+    immutable_inputs_sha256: sha256File(immutablePath), check_census_sha256: immutable.check_census_sha256, writer_census_sha256: immutable.writer_census_sha256,
     producer_files_sha256: immutable.producer_files_sha256, producer_source_archive_sha256: immutable.producer_source.archive_sha256,
     producer_source_commit: immutable.producer_source.commit, raw_evidence_manifest_sha256: sha256File(rawPath),
     postconditions_sha256: sha256File(join(root, "postconditions.json")),
@@ -50,7 +50,7 @@ export function verifyCorrectnessCompletion(completionPath, { requirePassed = tr
   const actual = actualCorrectnessCensus(root);
   const census = expectedCorrectnessCensus(root, rawManifest);
   if (JSON.stringify(actual) !== JSON.stringify(census)) fail("correctness sealed-tree exact census failed");
-  if (requirePassed && report.result !== "passed") fail(`correctness evidence is complete but not passed: ${report.result}`);
+  if (requirePassed && report.result !== "pre_timing_passed") fail(`correctness evidence is complete but not pre-timing ready: ${report.result}`);
   return { root, completion, immutable, report, routeExpectations };
 }
 

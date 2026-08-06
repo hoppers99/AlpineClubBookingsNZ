@@ -463,7 +463,7 @@ done > "$HARNESS_MANIFEST"
 HARNESS_MANIFEST_SHA256="$(sha256_file "$HARNESS_MANIFEST")"
 node measurement/phase2/bin/verify-harness-manifest.mjs "$(winpath "$HARNESS_MANIFEST")" >/dev/null
 IFS=$'\t' read -r CURRENT_IMAGE_REFERENCE CURRENT_IMAGE_ID BASELINE_IMAGE_REFERENCE BASELINE_IMAGE_ID \
-  CANONICAL_DATABASE_ARCHIVE_PATH CANONICAL_DATABASE_ARCHIVE_SHA256 < <(
+  CANONICAL_DATABASE_ARCHIVE_PATH CANONICAL_DATABASE_ARCHIVE_SHA256 CURRENT_CORRECTNESS_COMPLETION BASELINE_CORRECTNESS_COMPLETION < <(
     node - "$(winpath "$IMMUTABLE_INPUTS")" <<'NODE'
 const input = require(process.argv[2]);
 process.stdout.write([
@@ -473,14 +473,26 @@ process.stdout.write([
   input.sides.baseline.image_id,
   input.canonical_database.archive_path,
   input.canonical_database.archive_sha256,
+  input.sides.current.correctness_completion.path,
+  input.sides.baseline.correctness_completion.path,
 ].join("\t"));
 NODE
   )
+
+HARNESS_SOURCE_BINDING="$OUTPUT_ROOT/inputs/harness-source-binding.json"
+node measurement/phase2/bin/verify-harness-source.mjs \
+  --harness-manifest "$(winpath "$HARNESS_MANIFEST")" \
+  --current-completion "$(winpath "$CURRENT_CORRECTNESS_COMPLETION")" \
+  --baseline-completion "$(winpath "$BASELINE_CORRECTNESS_COMPLETION")" \
+  --out "$(winpath "$HARNESS_SOURCE_BINDING")"
+HARNESS_SOURCE_BINDING_SHA256="$(sha256_file "$HARNESS_SOURCE_BINDING")"
+export HARNESS_SOURCE_BINDING HARNESS_SOURCE_BINDING_SHA256
 
 {
   printf '%s  %s\n' "$HARNESS_MANIFEST_SHA256" "$HARNESS_MANIFEST"
   printf '%s  %s\n' "$MANIFEST_SHA" "$MANIFEST_SNAPSHOT"
   printf '%s  %s\n' "$INPUTS_SHA" "$IMMUTABLE_INPUTS"
+  printf '%s  %s\n' "$HARNESS_SOURCE_BINDING_SHA256" "$HARNESS_SOURCE_BINDING"
 } > "$OUTPUT_ROOT/harness-and-inputs.sha256"
 
 printf 'pair_number\tpair_id\torder\n' > "$OUTPUT_ROOT/pair-plan.tsv"
@@ -557,12 +569,12 @@ const pair = JSON.parse(fs.readFileSync(path.join(root, "pair.json"), "utf8"));
 const completion = JSON.parse(fs.readFileSync(path.join(root, "COMPLETED.json"), "utf8"));
 const expectedSides = expectedOrder === "current-baseline" ? ["current", "baseline"] : ["baseline", "current"];
 const validUtc = (value) => typeof value === "string" && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z$/.test(value) && Number.isFinite(Date.parse(value));
-if (pair.status !== "COMPLETE" || pair.pair_id !== expectedId || pair.order !== expectedOrder) fail("pair identity/status mismatch");
+if (pair.status !== "COMPLETE" || pair.phase2_checks_passed !== true || pair.pair_id !== expectedId || pair.order !== expectedOrder) fail("pair identity/status mismatch");
 if (!validUtc(pair.started_at) || !validUtc(pair.ended_at) || Date.parse(pair.ended_at) < Date.parse(pair.started_at)) fail("invalid pair UTC timestamps");
 if (!Array.isArray(pair.sides) || pair.sides.length !== 2) fail("pair must contain exactly two sides");
 for (let index = 0; index < 2; index += 1) {
   const side = pair.sides[index];
-  if (side.sequence !== index + 1 || side.side !== expectedSides[index]) fail("side order/sequence mismatch");
+  if (side.sequence !== index + 1 || side.side !== expectedSides[index] || side.phase2_checks_passed !== true) fail("side order/sequence/phase2 correctness mismatch");
   for (const key of ["restore_started_at", "started_at", "ended_at"]) if (!validUtc(side[key])) fail(`invalid ${side.side} ${key}`);
   if (Date.parse(side.started_at) < Date.parse(side.restore_started_at) || Date.parse(side.ended_at) < Date.parse(side.started_at)) fail(`invalid ${side.side} timestamp order`);
   if (!Number.isInteger(side.gap_from_previous_seconds) || side.gap_from_previous_seconds < 0 || side.gap_from_previous_seconds > Number(maxGapRaw)) fail(`invalid ${side.side} inter-side gap`);
@@ -583,6 +595,7 @@ process.stdout.write(`${JSON.stringify({
   pair_ended_at_utc: pair.ended_at,
   sides: pair.sides,
   canonical_database_fingerprint: pair.sides[0].database_fingerprint_before,
+  phase2_checks_passed: true,
   status: "COMPLETE",
 })}\n`);
 NODE
@@ -637,6 +650,7 @@ node measurement/phase2/bin/scan-evidence-secrets.mjs "$(winpath "$OUTPUT_ROOT")
 node measurement/phase2/bin/finalize-pair-set.mjs \
   --dir "$(winpath "$OUTPUT_ROOT")" --output-id "$OUTPUT_ID" --pairs "$(winpath "$OUTPUT_ROOT/pairs.jsonl")" \
   --correctness-manifest-sha256 "$MANIFEST_SHA" --profile "$MEASUREMENT_PROFILE" \
+  --harness-source-binding-sha256 "$HARNESS_SOURCE_BINDING_SHA256" \
   --pair-count "$PAIR_COUNT" --max-side-gap "$MAX_INTER_SIDE_GAP_SECONDS" \
   --max-pair-gap "$MAX_INTER_PAIR_GAP_SECONDS" --monitor-interval "$QUIET_MONITOR_INTERVAL_SECONDS" \
   --pair-quiet-cpu-limit "$QUIET_CPU_LIMIT_PERCENT" --pair-quiet-samples "$QUIET_SAMPLES" \

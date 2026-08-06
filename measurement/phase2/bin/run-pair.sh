@@ -151,6 +151,8 @@ for index in 0 1; do
     echo "$side mutated the canonical database: before=$before_fingerprint after=$after_fingerprint" >&2; exit 1;
   }
   node measurement/phase2/bin/verify-completed-run.mjs "$(winpath "$PAIR_ROOT/$side")" > "$PAIR_ROOT/pair-evidence/$side-completion-verified.json"
+  phase2_checks_passed="$(node --input-type=module -e 'import fs from "node:fs";import {validatePhase2Correctness} from "./measurement/phase2/bin/correctness-contract.mjs";const s=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));validatePhase2Correctness(s.phase2_correctness,process.argv[2]);process.stdout.write("true")' "$(winpath "$PAIR_ROOT/$side/summary.json")" "$side")"
+  [ "$phase2_checks_passed" = true ] || { echo "$side phase2-owned correctness checks did not pass" >&2; exit 1; }
   node - "$(winpath "$PAIR_ROOT/$side/env/runtime-identity-initial.json")" "$(winpath "$PAIR_ROOT/$side.runtime-identity-after-finalization.json")" <<'NODE'
 const fs=require("node:fs");
 const before=JSON.parse(fs.readFileSync(process.argv[2],"utf8"));
@@ -159,7 +161,7 @@ if(JSON.stringify(before)!==JSON.stringify(after)||!after.verified) throw new Er
 NODE
   environment_hmac="$(node -e 'process.stdout.write(require(process.argv[1]).keyed_fingerprint_sha256)' "$(winpath "$PAIR_ROOT/$side/env/app-environment-audit.json")")"
   runtime_finalization_sha="$(sha256sum "$PAIR_ROOT/$side.runtime-identity-after-finalization.json" | awk '{print $1}')"
-  SIDE_RECORDS+=("$sequence|$side|$restore_started|$side_started|$side_ended|$gap|$before_fingerprint|$after_fingerprint|$environment_hmac|$runtime_finalization_sha")
+  SIDE_RECORDS+=("$sequence|$side|$restore_started|$side_started|$side_ended|$gap|$before_fingerprint|$after_fingerprint|$environment_hmac|$runtime_finalization_sha|$phase2_checks_passed")
   quiet_check "after-$side"
 done
 
@@ -169,8 +171,8 @@ export SIDE_RECORD_1="${SIDE_RECORDS[0]}" SIDE_RECORD_2="${SIDE_RECORDS[1]}"
 node - "$(winpath "$PAIR_ROOT/pair.json")" <<'NODE'
 const fs = require("node:fs");
 const parse = (raw) => {
-  const [sequence,side,restore_started_at,started_at,ended_at,gap_from_previous_seconds,database_fingerprint_before,database_fingerprint_after,environment_hmac_sha256,runtime_identity_after_finalization_sha256] = raw.split("|");
-  return {sequence:Number(sequence),side,restore_started_at,started_at,ended_at,gap_from_previous_seconds:Number(gap_from_previous_seconds),database_fingerprint_before,database_fingerprint_after,environment_hmac_sha256,runtime_identity_after_finalization_sha256};
+  const [sequence,side,restore_started_at,started_at,ended_at,gap_from_previous_seconds,database_fingerprint_before,database_fingerprint_after,environment_hmac_sha256,runtime_identity_after_finalization_sha256,phase2ChecksPassed] = raw.split("|");
+  return {sequence:Number(sequence),side,restore_started_at,started_at,ended_at,gap_from_previous_seconds:Number(gap_from_previous_seconds),database_fingerprint_before,database_fingerprint_after,environment_hmac_sha256,runtime_identity_after_finalization_sha256,phase2_checks_passed:phase2ChecksPassed==="true"};
 };
 const pair = {
   schema_version: 2,
@@ -185,6 +187,7 @@ const pair = {
   measurement_profile: process.env.MEASUREMENT_PROFILE,
   canonical_database_archive_sha256: process.env.ARCHIVE_SHA,
   sides: [parse(process.env.SIDE_RECORD_1), parse(process.env.SIDE_RECORD_2)],
+  phase2_checks_passed: true,
   status: "COMPLETE",
 };
 fs.writeFileSync(process.argv[2], `${JSON.stringify(pair,null,2)}\n`, {flag:"wx"});
