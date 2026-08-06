@@ -105,6 +105,8 @@ for header in 'Purpose: prefetch' 'Next-Router-Prefetch: 1' 'Sec-Purpose: prefet
   log "PASS prefetch $header retains the fixed public nonce"
 done
 
+docker logs --since "$PRODUCER_STARTED_AT" "$CORRECTNESS_APP_CONTAINER" > "$PRODUCER_RAW/app-scenario.log" 2>&1
+
 producer_write_cleanup_passed "read-only HTTP, container-environment, and manifest-boundary inspection"
 SUMMARY_REL="$(producer_relative "$SUMMARY")"
 NONCE_REL="$(producer_relative "$PRODUCER_RAW/release-nonce.txt")"

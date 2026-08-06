@@ -1,4 +1,5 @@
-import { lstatSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { lstatSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 
 const fail = (message) => {
@@ -94,6 +95,31 @@ if (normalizedCleanup.length === 0) fail("at least one cleanup evidence path is 
 const expectedOut = resolve(runRoot, "producer-results", `${producerId}.json`);
 if (out !== expectedOut) fail(`output must be ${expectedOut}`);
 
+const rawRoot = resolve(runRoot, "raw", producerId);
+const rawRootStat = lstatSync(rawRoot);
+if (!rawRootStat.isDirectory() || rawRootStat.isSymbolicLink() || realpathSync(rawRoot) !== rawRoot) fail("producer raw root is not a canonical directory");
+const ownedArtifacts = [];
+const walkOwned = (directory) => {
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    const absolute = resolve(directory, entry.name);
+    const stat = lstatSync(absolute);
+    if (stat.isSymbolicLink()) fail(`owned artifact is a symlink: ${absolute}`);
+    if (stat.isDirectory()) walkOwned(absolute);
+    else if (stat.isFile()) {
+      const path = relativeEvidencePath(relative(runRoot, absolute), "owned artifact");
+      if (!path.startsWith(`raw/${producerId}/`)) fail(`owned artifact escapes raw/${producerId}`);
+      ownedArtifacts.push({
+        path,
+        sha256: createHash("sha256").update(readFileSync(absolute)).digest("hex"),
+        size_bytes: stat.size,
+      });
+    } else fail(`owned artifact has an unsupported file type: ${absolute}`);
+  }
+};
+walkOwned(rawRoot);
+ownedArtifacts.sort((left, right) => left.path.localeCompare(right.path));
+if (ownedArtifacts.length === 0 || new Set(ownedArtifacts.map((row) => row.path)).size !== ownedArtifacts.length) fail("owned artifact manifest is empty or duplicated");
+
 const result = {
   schema_version: 1,
   run_id: runId,
@@ -104,6 +130,7 @@ const result = {
   exit_code: exitCode,
   cleanup: { status: "passed", evidence_paths: normalizedCleanup },
   observations: normalizedObservations,
+  owned_artifacts: ownedArtifacts,
 };
 
 writeFileSync(out, `${JSON.stringify(result, null, 2)}\n`, { encoding: "utf8", flag: "wx" });

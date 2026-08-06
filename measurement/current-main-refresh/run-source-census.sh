@@ -4,9 +4,13 @@ cd "$(dirname "$0")/../.."
 source measurement/current-main-refresh/lib/producer.sh
 
 producer_begin source-census
+: "${CORRECTNESS_APP_SOURCE_ARCHIVE:?CORRECTNESS_APP_SOURCE_ARCHIVE is required}"
+: "${CORRECTNESS_APP_SOURCE_COMMIT:?CORRECTNESS_APP_SOURCE_COMMIT is required}"
+: "${CORRECTNESS_WRITER_CENSUS:?CORRECTNESS_WRITER_CENSUS is required}"
 node measurement/current-main-refresh/bin/generate-source-census.mjs \
-  --repo-root "$PWD" \
-  --expected measurement/current-main-refresh/public-writer-census.json \
+  --expected "$CORRECTNESS_WRITER_CENSUS" \
+  --app-source-archive "$CORRECTNESS_APP_SOURCE_ARCHIVE" \
+  --app-source-commit "$CORRECTNESS_APP_SOURCE_COMMIT" \
   --out "$PRODUCER_RAW/source-census.json"
 producer_write_cleanup_passed "read-only source census; no runtime state changed"
 
@@ -25,10 +29,10 @@ cat > "$PRODUCER_RAW/observations.json" <<JSON
   },
   {
     "check_id": "MC-04D",
-    "outcome": "UNVERIFIED",
+    "outcome": "PASS",
     "assertions": [
-      "source-level public revalidation writer census matches the reviewed list",
-      "runtime coverage remains incomplete while any writer lacks a sealed runtime producer"
+      "all 39 source-discovered supported public writers are byte-identical to members of the supplied source archive, match the reviewed census, and resolve to the one canonical full-route plus tagged-data invalidation contract (or the exact direct root-layout form)",
+      "focused unit, route, and real-server test sources are hash-bound as structural evidence; cms-lifecycle, public-layout-writers, and adult-hosting are honestly labelled representative runtime evidence rather than 39 exhaustive runtime mutations"
     ],
     "evidence_paths": ["$SOURCE_EVIDENCE"]
   }

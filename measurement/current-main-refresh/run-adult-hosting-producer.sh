@@ -13,6 +13,7 @@ grep -Fqx 'PASS: adult-hosting policy write invalidated and replaced the warm CM
   echo "adult-hosting probe returned without its cleanup evidence" >&2
   exit 1
 }
+docker logs --since "$PRODUCER_STARTED_AT" "$CORRECTNESS_APP_CONTAINER" > "$PRODUCER_RAW/app-scenario.log" 2>&1
 
 producer_write_cleanup_passed \
   "probe rows/settings restored exactly; immutable audit entries retained as documented" \

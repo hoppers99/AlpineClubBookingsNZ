@@ -141,6 +141,8 @@ CLEANED=true
 printf '{"status":"passed","marker":"%s","audit_residue":"intentional"}\n' "$MARKER" > "$PRODUCER_RAW/mutation-cleanup.json"
 trap - EXIT
 
+docker logs --since "$PRODUCER_STARTED_AT" "$CORRECTNESS_APP_CONTAINER" > "$PRODUCER_RAW/app-scenario.log" 2>&1
+
 producer_write_cleanup_passed "unique clearing-trigger banner removed; immutable audit entry retained" \
   "mutation-cleanup.json" "banner-list-after-cleanup.json"
 ANALYSIS="$(producer_relative "$PRODUCER_RAW/analysis.json")"

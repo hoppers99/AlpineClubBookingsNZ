@@ -6,7 +6,9 @@ source measurement/current-main-refresh/lib/producer.sh
 : "${CORRECTNESS_APP_CONTAINER:?CORRECTNESS_APP_CONTAINER is required}"
 producer_begin route-manifests
 
-docker inspect "$CORRECTNESS_APP_CONTAINER" > "$PRODUCER_RAW/container-inspect.json"
+docker inspect "$CORRECTNESS_APP_CONTAINER" --format \
+  '{"container_id":"{{.Id}}","image_id":"{{.Image}}","compose_project":"{{index .Config.Labels "com.docker.compose.project"}}","compose_service":"{{index .Config.Labels "com.docker.compose.service"}}"}' \
+  > "$PRODUCER_RAW/container-inspect.json"
 mapfile -t manifest_roots < <(
   docker exec "$CORRECTNESS_APP_CONTAINER" sh -c \
     'find /app -type f -path "*/server/app-path-routes-manifest.json" -print' |

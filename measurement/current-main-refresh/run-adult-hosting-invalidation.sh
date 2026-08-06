@@ -7,11 +7,15 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
-BASE="http://localhost:8027"
-APP="tacbookings-measure-app-1"
-PG="tacbookings-measure-postgres-1"
-CADDY="tacbookings-measure-caddy-1"
-PROJECT="tacbookings-measure"
+BASE="${CORRECTNESS_BASE_URL:?CORRECTNESS_BASE_URL is required}"
+APP="${CORRECTNESS_APP_CONTAINER:?CORRECTNESS_APP_CONTAINER is required}"
+PG="${CORRECTNESS_POSTGRES_CONTAINER:?CORRECTNESS_POSTGRES_CONTAINER is required}"
+CADDY="${CORRECTNESS_CADDY_CONTAINER:?CORRECTNESS_CADDY_CONTAINER is required}"
+PROJECT="${CORRECTNESS_COMPOSE_PROJECT:?CORRECTNESS_COMPOSE_PROJECT is required}"
+[[ "$BASE" == "http://127.0.0.1:8027" && "$PROJECT" == "tacbookings-measure" ]] || {
+  echo "adult-hosting probe is restricted to the exact isolated measurement origin/project" >&2
+  exit 1
+}
 RUN_ID="$(date -u '+%Y%m%d-%H%M%S')-$$-$(node -e 'process.stdout.write(require("node:crypto").randomBytes(8).toString("hex"))')"
 PROBE_SLUG="measure-hosting-policy-probe-$RUN_ID"
 PROBE_PATH="/$PROBE_SLUG"
@@ -19,7 +23,7 @@ PROBE_TITLE="Measurement hosting policy probe $RUN_ID"
 PROBE_CONTENT_HTML="<p>hosting-policy-probe-$RUN_ID</p>{{booking-policy-summary}}"
 STAMP="$RUN_ID"
 OUT="${MEASURE_OUT_DIR:-measurement/current-main-refresh/adult-hosting-invalidation/$STAMP}"
-AUTH_STATE="e2e/.auth/e2e-admin.state.json"
+AUTH_STATE="${CORRECTNESS_AUTH_STATE:?CORRECTNESS_AUTH_STATE is required}"
 LOCK_DIR_IN_PG="/tmp/tacbookings-measure-adult-hosting-invalidation.lock"
 
 EXPECTED_BASELINE_COPY="Non-member guests are asked to stay with an adult member on the same booking. A booking without one is still made, and the club looks at it."
@@ -678,20 +682,22 @@ NODE
 done
 
 actual_image="$(docker inspect "$APP" --format '{{.Config.Image}}')"
-[[ "$actual_image" == "tacbookings-measure-app:current" ]] || {
-  log "FAIL app container uses $actual_image, not tacbookings-measure-app:current"
+actual_image_id="$(docker inspect "$APP" --format '{{.Image}}')"
+[[ "$actual_image" == "${CORRECTNESS_IMAGE_REFERENCE:?CORRECTNESS_IMAGE_REFERENCE is required}" && "$actual_image_id" == "${CORRECTNESS_IMAGE_ID:?CORRECTNESS_IMAGE_ID is required}" ]] || {
+  log "FAIL app container does not use the selected immutable reference and image ID"
   exit 1
 }
 
-expected_head="$(git rev-parse origin/main)"
+expected_head="${CORRECTNESS_PRODUCER_SOURCE_COMMIT:?CORRECTNESS_PRODUCER_SOURCE_COMMIT is required}"
+expected_image_head="${CORRECTNESS_APP_SOURCE_COMMIT:?CORRECTNESS_APP_SOURCE_COMMIT is required}"
 worktree_head="$(git rev-parse HEAD)"
 image_head="$(docker exec "$APP" printenv GIT_COMMIT_SHA | tr -d '\r')"
 [[ "$worktree_head" == "$expected_head" ]] || {
-  log "FAIL worktree HEAD is not current origin/main"
+  log "FAIL worktree HEAD is not the reviewed producer source commit"
   exit 1
 }
-[[ "$image_head" == "$expected_head" ]] || {
-  log "FAIL current image commit does not match current origin/main"
+[[ "$image_head" == "$expected_image_head" ]] || {
+  log "FAIL current image commit does not match the application source commit"
   exit 1
 }
 [[ "$(docker exec "$APP" printenv APP_RUNTIME_ROLE | tr -d '\r')" == "web-measure" ]] || {
@@ -728,11 +734,16 @@ LOCK_HELD=true
   log "FAIL missing $AUTH_STATE; run the measurement Playwright setup project"
   exit 1
 }
-COOKIE="$(node -e "const s=require('./$AUTH_STATE'); const c=s.cookies.find((v)=>v.name==='authjs.session-token'); if(!c) throw new Error('admin session cookie missing'); process.stdout.write(c.name+'='+c.value)")"
+COOKIE="$(node - "$AUTH_STATE" <<'NODE'
+const fs=require("node:fs");const s=JSON.parse(fs.readFileSync(process.argv[2],"utf8"));const c=s.cookies.find((v)=>v.name==="authjs.session-token");
+if(!c)throw new Error("admin session cookie missing");process.stdout.write(`${c.name}=${c.value}`);
+NODE
+)"
 
 {
   printf 'worktree_head=%s\n' "$worktree_head"
-  printf 'origin_main=%s\n' "$expected_head"
+  printf 'producer_source_commit=%s\n' "$expected_head"
+  printf 'app_source_commit=%s\n' "$expected_image_head"
   printf 'image_commit=%s\n' "$image_head"
   printf 'image=%s\n' "$actual_image"
   printf 'compose_project=%s\n' "$PROJECT"

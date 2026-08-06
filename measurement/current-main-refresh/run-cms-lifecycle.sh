@@ -7,6 +7,8 @@ source measurement/current-main-refresh/lib/producer.sh
 : "${CORRECTNESS_AUTH_STATE:?CORRECTNESS_AUTH_STATE is required}"
 : "${CORRECTNESS_APP_CONTAINER:?CORRECTNESS_APP_CONTAINER is required}"
 : "${CORRECTNESS_POSTGRES_CONTAINER:?CORRECTNESS_POSTGRES_CONTAINER is required}"
+: "${CORRECTNESS_IMAGE_REFERENCE:?CORRECTNESS_IMAGE_REFERENCE is required}"
+: "${CORRECTNESS_IMAGE_ID:?CORRECTNESS_IMAGE_ID is required}"
 producer_begin cms-lifecycle
 
 SLUG="measure-cms-lifecycle-$CORRECTNESS_RUN_ID"
@@ -85,6 +87,30 @@ cleanup() {
   exit "$final_status"
 }
 trap cleanup EXIT
+
+# The typed phase-2 route binding needs a genuine empty-store first request.
+# Recreate only the isolated app from the same immutable image, then capture the
+# exact four-route census before any lifecycle mutation can warm it.
+BINDING_CONTAINER_BEFORE="$(docker inspect "$CORRECTNESS_APP_CONTAINER" --format '{{.Id}}')"
+APP_IMAGE="$CORRECTNESS_IMAGE_REFERENCE" bash measurement/stack/measure-stack.sh compose up -d --wait --force-recreate app \
+  > "$PRODUCER_RAW/binding-recreate-app.txt"
+producer_refresh_app_container
+BINDING_CONTAINER_AFTER="$(docker inspect "$CORRECTNESS_APP_CONTAINER" --format '{{.Id}}')"
+[[ "$BINDING_CONTAINER_AFTER" != "$BINDING_CONTAINER_BEFORE" ]]
+[[ "$(docker inspect "$CORRECTNESS_APP_CONTAINER" --format '{{.Image}}')" == "$CORRECTNESS_IMAGE_ID" ]]
+binding_capture() {
+  local label="$1" route="$2" status
+  status="$(curl -sS -D "$PRODUCER_RAW/$label.headers" -o "$PRODUCER_RAW/$label.body.html" -w '%{http_code}' "$CORRECTNESS_BASE_URL$route")"
+  [[ "$status" == 200 ]] || { echo "$route binding capture returned HTTP $status" >&2; return 1; }
+}
+binding_capture binding-about-1 /about
+binding_capture binding-about-2 /about
+binding_capture binding-root /
+binding_capture binding-join /join
+binding_capture binding-contact /contact
+node measurement/current-main-refresh/bin/build-route-response-evidence.mjs \
+  --run-root "$CORRECTNESS_RUN_ROOT" --raw "$PRODUCER_RAW" --side "$CORRECTNESS_SIDE" \
+  --image-id "$CORRECTNESS_IMAGE_ID" --out "$PRODUCER_RAW/route-response-evidence.json"
 
 [[ -f "$CORRECTNESS_AUTH_STATE" ]] || { echo "auth storage state is missing" >&2; exit 1; }
 COOKIE="$(node - "$CORRECTNESS_AUTH_STATE" <<'NODE'
@@ -189,20 +215,19 @@ capture final-404
 
 # Cleanup is deliberately invoked before the result is written. A failed cleanup
 # therefore cannot leave a producer result that the finalizer could accept.
-CLEANUP_INVOKED=true
-cleanup
-trap - EXIT
-grep -Fq '"status":"passed"' "$PRODUCER_RAW/mutation-cleanup.json"
+docker logs --since "$PRODUCER_STARTED_AT" "$CORRECTNESS_APP_CONTAINER" > "$PRODUCER_RAW/app-scenario.log" 2>&1
+producer_complete_cleanup cleanup "$PRODUCER_RAW/mutation-cleanup.json"
 producer_write_cleanup_passed "unique CMS page deleted exactly; app restarted; immutable audit entries retained" \
   "mutation-cleanup.json" "cleanup-delete.txt" "cleanup-health.json"
 
 V1_HEADERS="$(producer_relative "$PRODUCER_RAW/v1-miss.headers")"
 V1_BODY="$(producer_relative "$PRODUCER_RAW/v1-miss.body.html")"
 CLEANUP="$(producer_relative "$PRODUCER_RAW/mutation-cleanup.json")"
+ROUTE_BINDING="$(producer_relative "$PRODUCER_RAW/route-response-evidence.json")"
 if [[ "$CORRECTNESS_SIDE" == baseline ]]; then
   cat > "$PRODUCER_RAW/observations.json" <<JSON
 [
-  {"check_id":"BND-02","outcome":"PASS","assertions":["the baseline returned correct stable bytes on two requests and emitted no ISR cache-class header"],"evidence_paths":["$V1_HEADERS","$V1_BODY","$CLEANUP"]}
+  {"check_id":"BND-02","outcome":"PASS","assertions":["the baseline returned correct stable bytes on two requests and emitted no ISR cache-class header; exact four-route timing bindings were typed from raw responses"],"evidence_paths":["$V1_HEADERS","$V1_BODY","$ROUTE_BINDING","$CLEANUP"]}
 ]
 JSON
 else
@@ -216,7 +241,7 @@ else
   {"check_id":"MC-03A","outcome":"PASS","assertions":["republishing restored the exact unique route on the next request"],"evidence_paths":["$REPUBLISHED"]},
   {"check_id":"MC-03B","outcome":"PASS","assertions":["saving v2 invalidated warm v1; the authenticated next request was MISS and anonymous follow-up was byte-identical HIT"],"evidence_paths":["$V2_AUTH","$V2_ANON"]},
   {"check_id":"MC-03C","outcome":"PASS","assertions":["unpublishing changed the exact unique route to 404 on the next request"],"evidence_paths":["$UNPUBLISHED"]},
-  {"check_id":"BND-02","outcome":"PASS","assertions":["the first exact-body request was MISS and the byte-identical second request was HIT, both private,no-store"],"evidence_paths":["$V1_HEADERS","$V1_BODY","$CLEANUP"]}
+  {"check_id":"BND-02","outcome":"PASS","assertions":["the first exact-body request was MISS and the byte-identical second request was HIT, both private,no-store; exact four-route timing bindings were typed from raw responses"],"evidence_paths":["$V1_HEADERS","$V1_BODY","$ROUTE_BINDING","$CLEANUP"]}
 ]
 JSON
 fi
