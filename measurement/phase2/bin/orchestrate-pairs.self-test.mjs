@@ -9,6 +9,8 @@ const here = dirname(fileURLToPath(import.meta.url));
 const script = resolve(here, "orchestrate-pairs.sh");
 const source = readFileSync(script, "utf8");
 const pairRunnerSource = readFileSync(resolve(here, "run-pair.sh"), "utf8");
+const setFinalizerSource = readFileSync(resolve(here, "finalize-pair-set.mjs"), "utf8");
+const sealedTreeSource = readFileSync(resolve(here, "sealed-tree.mjs"), "utf8");
 const gitBash = process.env.PHASE2_GIT_BASH ?? [
   "C:\\Program Files\\Git\\bin\\bash.exe",
   resolve(process.env.LOCALAPPDATA ?? "", "Programs", "Git", "bin", "bash.exe"),
@@ -85,14 +87,13 @@ for (const requiredContract of [
   /unexpected_running_containers/,
   /CONTAMINATION\.tsv/,
   /canonical_database_fingerprint/,
-  /set-output-manifest\.sha256/,
-  /set_output_manifest_sha256/,
-  /set_output_artifact_count/,
-  /PAIR-COMPLETED\.json/,
-  /flag: "wx"/,
+  /finalize-pair-set\.mjs/,
+  /scan-evidence-secrets\.mjs/,
 ]) {
   assert.match(source, requiredContract);
 }
+for (const finalizationContract of [/set-output-manifest\.sha256/, /PAIR-COMPLETED\.json/, /measurement-pair-set/, /final_profile_exact/, /orchestration_profile/, /pair_outputs/]) assert.match(setFinalizerSource, finalizationContract);
+assert.match(sealedTreeSource, /flag: "wx"/);
 assert.doesNotMatch(source, /pair complete:/,
   "the wrapper must not discover sealed output by parsing human-readable stdout");
 
@@ -113,13 +114,13 @@ for (const perPairContract of [
   assert.match(pairRunnerSource, perPairContract);
 }
 
-const completionWrite = source.indexOf('node - "$OUTPUT_ROOT/PAIR-COMPLETED.json"');
+const completionWrite = source.indexOf("finalize-pair-set.mjs");
 const completedPairsGuard = source.indexOf('[[ "$completed_pairs" -eq "$PAIR_COUNT" ]]');
 assert(completedPairsGuard >= 0 && completionWrite > completedPairsGuard,
   "set completion marker must be written only after the all-pairs guard");
 const teeWait = source.indexOf('wait "$TEE_PID"');
-const setManifestWrite = source.indexOf('SET_OUTPUT_MANIFEST="$OUTPUT_ROOT/set-output-manifest.sha256"');
-assert(teeWait >= 0 && setManifestWrite > teeWait && completionWrite > setManifestWrite,
-  "logging must close before the set manifest, which must precede completion");
+const secretScanWrite = source.indexOf("scan-evidence-secrets.mjs");
+assert(teeWait >= 0 && secretScanWrite > teeWait && completionWrite > secretScanWrite,
+  "logging must close before the exact secret scan and set finalization");
 
 console.log("orchestrate-pairs self-test: PASS");

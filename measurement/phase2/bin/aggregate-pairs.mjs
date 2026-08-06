@@ -3,9 +3,12 @@
 // judgments, and fewer than four evenly counterbalanced pairs is PRELIMINARY_ONLY.
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { conventionalMedian } from "./statistics.mjs";
+import { PROFILE_FINAL, classifyOrchestrationProfile, classifySideProfile, requireKnownProfile } from "./measurement-profile.mjs";
+import { isFuturePathInside, isPathInside, verifySealedTree } from "./sealed-tree.mjs";
+import { verifySecretScan } from "./scan-evidence-secrets.mjs";
 
 const OWNER_THRESHOLDS_VERBATIM = Object.freeze([
   "At least three contemporaneous current/baseline pairs are required.",
@@ -46,18 +49,13 @@ function verifyOrchestration(root) {
   const manifestPath = resolve(root, "set-output-manifest.sha256");
   const pairsPath = resolve(root, "pairs.jsonl");
   if (!existsSync(completionPath) || !existsSync(manifestPath) || !existsSync(pairsPath)) fail(`orchestration is incomplete: ${root}`);
-  const completion = json(completionPath);
-  if (completion.status !== "COMPLETE" || hash(manifestPath) !== completion.set_output_manifest_sha256 || hash(pairsPath) !== completion.pairs_manifest_sha256) fail(`orchestration completion checksum failed: ${root}`);
-  let count = 0;
-  for (const line of readFileSync(manifestPath, "utf8").trim().split(/\r?\n/)) {
-    const match = /^([a-f0-9]{64})  (\d+)  (.+)$/.exec(line);
-    if (!match) fail(`invalid set output manifest: ${root}`);
-    const path = resolve(root, match[3]);
-    if (!(path.startsWith(`${root}/`) || path.startsWith(`${root}\\`))) fail(`set output path escapes orchestration: ${match[3]}`);
-    if (!existsSync(path) || !statSync(path).isFile() || statSync(path).size !== Number(match[2]) || hash(path) !== match[1]) fail(`set output checksum mismatch: ${path}`);
-    count += 1;
-  }
-  if (count !== completion.set_output_artifact_count || completion.pair_count < 4 || completion.pair_count % 2 !== 0) fail(`orchestration set shape is invalid: ${root}`);
+  const sealed = verifySealedTree(root, { manifestName: "set-output-manifest.sha256", completionName: "PAIR-COMPLETED.json" });
+  const completion = sealed.completion;
+  if (completion.kind !== "measurement-pair-set" || hash(pairsPath) !== completion.pairs_manifest_sha256 || completion.pair_count < 4 || completion.pair_count % 2 !== 0) fail(`orchestration completion/set shape failed: ${root}`);
+  requireKnownProfile(completion.measurement_profile);
+  const derivedProfile = classifyOrchestrationProfile(completion.orchestration_profile);
+  if (completion.final_profile_exact !== (completion.measurement_profile === PROFILE_FINAL && derivedProfile === PROFILE_FINAL) || (completion.measurement_profile === PROFILE_FINAL && derivedProfile !== PROFILE_FINAL)) fail(`orchestration final-profile attestation is invalid: ${root}`);
+  verifySecretScan({ root, report: json(resolve(root, "secret-scan.json")), allowedLaterFiles: ["set-output-manifest.sha256", "PAIR-COMPLETED.json"] });
   const cb = completion.orders.filter((order) => order === "current-baseline").length;
   const bc = completion.orders.filter((order) => order === "baseline-current").length;
   if (cb !== bc || cb + bc !== completion.pair_count) fail(`orchestration order is not evenly counterbalanced: ${root}`);
@@ -73,7 +71,7 @@ function verifyOrchestration(root) {
     const started = Date.parse(pair.pair_started_at_utc);
     const ended = Date.parse(pair.pair_ended_at_utc);
     if (!(invoked <= started && started <= ended && ended <= returned)) fail(`pair ${index + 1} chronology is not nested inside its wrapper interval`);
-    if (!Number.isInteger(pair.inter_pair_gap_seconds) || pair.inter_pair_gap_seconds < 0 || pair.inter_pair_gap_seconds > completion.maximum_inter_pair_gap_seconds) fail(`pair ${index + 1} inter-pair gap is invalid`);
+    if (!Number.isInteger(pair.inter_pair_gap_seconds) || pair.inter_pair_gap_seconds < 0 || pair.inter_pair_gap_seconds > completion.orchestration_profile.maximum_inter_pair_gap_seconds) fail(`pair ${index + 1} inter-pair gap is invalid`);
     if (previous) {
       if (invoked < previous.returned || started < previous.ended) fail(`pair ${index + 1} overlaps the previous pair`);
       const observedGapSeconds = Math.floor((invoked - previous.returned) / 1000);
@@ -83,30 +81,26 @@ function verifyOrchestration(root) {
   }
   const outputs = pairs.map((pair) => resolve(pair.pair_output));
   if (JSON.stringify(outputs) !== JSON.stringify(completion.pair_outputs.map((value) => resolve(value)))) fail(`orchestration pair output binding mismatch: ${root}`);
+  if (outputs.some((output) => !isPathInside(root, output))) fail(`orchestration pair output escapes the exact sealed set: ${root}`);
+  const monitor = json(resolve(root, "quiet-host", "monitor-summary.json"));
+  if (!monitor.passed || monitor.exit_status !== 0 || monitor.sample_count < 2 || monitor.interval_seconds !== completion.orchestration_profile.quiet_monitor_interval_seconds) fail(`continuous monitor completion differs from the sealed profile: ${root}`);
+  if (Date.parse(monitor.first_sample_at_utc) > Date.parse(pairs[0].wrapper_invoked_at_utc) || Date.parse(monitor.last_sample_at_utc) + monitor.interval_seconds * 2000 < Date.parse(pairs.at(-1).wrapper_returned_at_utc)) fail(`continuous monitor timestamps do not cover the pair set: ${root}`);
+  const evaluations = [];
+  const visit = (dir) => { for (const entry of readdirSync(dir, { withFileTypes: true })) { const path = resolve(dir, entry.name); if (entry.isDirectory()) visit(path); else if (entry.name === "evaluation.json") evaluations.push(json(path)); } };
+  visit(resolve(root, "quiet-host"));
+  const expectedAllowed = completion.orchestration_profile.allowed_running_containers;
+  if (!evaluations.length || evaluations.some((evaluation) => !evaluation.passed || JSON.stringify(evaluation.allowed_running_containers) !== JSON.stringify(expectedAllowed))) fail(`quiet-host container allowlist evidence differs from the sealed profile: ${root}`);
   return { completion, outputs, pairs };
 }
 function verifyCompleted(root) {
-  const manifestPath = resolve(root, "output-manifest.sha256");
-  const completionPath = resolve(root, "COMPLETED.json");
-  if (!existsSync(manifestPath) || !existsSync(completionPath)) fail(`incomplete output: ${root}`);
-  const completion = json(completionPath);
-  if (completion.status !== "COMPLETE" || hash(manifestPath) !== completion.output_manifest_sha256) fail(`invalid completion marker: ${root}`);
-  let count = 0;
-  for (const line of readFileSync(manifestPath, "utf8").trim().split(/\r?\n/)) {
-    const match = /^([a-f0-9]{64})  (\d+)  (.+)$/.exec(line);
-    if (!match) fail(`invalid output manifest: ${root}`);
-    const path = resolve(root, match[3]);
-    if (!(path.startsWith(`${root}/`) || path.startsWith(`${root}\\`))) fail(`output path escapes pair: ${match[3]}`);
-    if (!existsSync(path) || !statSync(path).isFile() || statSync(path).size !== Number(match[2]) || hash(path) !== match[1]) fail(`output checksum mismatch: ${path}`);
-    count += 1;
-  }
-  if (count !== completion.artifact_count) fail(`artifact count mismatch: ${root}`);
-  return completion;
+  return verifySealedTree(root).completion;
 }
 function readPair(root) {
   verifyCompleted(root);
   const pair = json(resolve(root, "pair.json"));
   if (pair.schema_version !== 2 || pair.status !== "COMPLETE" || !pair.quiet_host_attested) fail(`invalid pair metadata: ${root}`);
+  requireKnownProfile(pair.measurement_profile);
+  if (pair.measurement_profile === PROFILE_FINAL && pair.maximum_inter_side_gap_seconds !== 600) fail(`final-decision pair has a non-exact side gap: ${root}`);
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{2,63}$/.test(pair.pair_id ?? "")) fail(`invalid pair id: ${root}`);
   if (![["current", "baseline"], ["baseline", "current"]].some((order) => JSON.stringify(order) === JSON.stringify(pair.sides.map((side) => side.side)))) fail(`invalid side order: ${root}`);
   if (pair.order !== pair.sides.map((side) => side.side).join("-")) fail(`declared order mismatch: ${root}`);
@@ -115,6 +109,7 @@ function readPair(root) {
     if (Date.parse(side.ended_at) < Date.parse(side.started_at)) fail(`side ended before it started: ${root}`);
     if (side.gap_from_previous_seconds > pair.maximum_inter_side_gap_seconds) fail(`maximum pair gap exceeded: ${root}`);
     if (side.database_fingerprint_before !== side.database_fingerprint_after) fail(`database drift in ${side.side}: ${root}`);
+    if (!/^[a-f0-9]{64}$/.test(side.environment_hmac_sha256 ?? "") || !/^[a-f0-9]{64}$/.test(side.runtime_identity_after_finalization_sha256 ?? "")) fail(`side environment/runtime finalization binding is invalid: ${root}`);
     if (Date.parse(side.restore_started_at) < Date.parse(pair.started_at) || Date.parse(side.started_at) < Date.parse(side.restore_started_at) || Date.parse(side.ended_at) > Date.parse(pair.ended_at)) fail(`side chronology falls outside pair bounds: ${root}`);
     if (index > 0) {
       const previousSide = pair.sides[index - 1];
@@ -140,7 +135,10 @@ function readPair(root) {
     if (!run.cache_proofs?.all_verified || run.evidence_totals.restart_delta !== 0 || run.evidence_totals.oom_delta !== 0 || run.evidence_totals.oom_kill_delta !== 0) fail(`integrity evidence failed for ${name}: ${root}`);
     if (run.concurrency.errors !== 0 || Object.keys(run.concurrency.statuses).some((status) => status !== "200")) fail(`load errors in ${name}: ${root}`);
     if (run.immutable_binding.canonical_database_archive_sha256 !== pair.canonical_database_archive_sha256) fail(`database archive binding mismatch: ${root}`);
+    if (run.context.measurement_profile !== pair.measurement_profile || (pair.measurement_profile === PROFILE_FINAL && classifySideProfile(run.context.parameters) !== PROFILE_FINAL)) fail(`measurement profile differs for ${name}: ${root}`);
+    if (run.environment_identity.app_environment_audit.keyed_fingerprint_sha256 !== pair.sides.find((side) => side.side === name).environment_hmac_sha256) fail(`environment HMAC binding mismatch for ${name}: ${root}`);
   }
+  if (pair.sides[0].environment_hmac_sha256 !== pair.sides[1].environment_hmac_sha256) fail(`sides do not share the exact sanitized runtime environment HMAC: ${root}`);
   if (current.immutable_binding.manifest_sha256 !== baseline.immutable_binding.manifest_sha256) fail(`side correctness manifests differ: ${root}`);
   if (current.database_fingerprint_after !== pair.sides.find((side) => side.side === "current").database_fingerprint_after || baseline.database_fingerprint_after !== pair.sides.find((side) => side.side === "baseline").database_fingerprint_after) fail(`summary database fingerprint mismatch: ${root}`);
   return { root, pair, current, baseline };
@@ -210,7 +208,7 @@ function pairObservation(entry) {
 }
 
 const args = argValues(process.argv.slice(2));
-if (args.outPrefix.startsWith(`${args.orchestration}/`) || args.outPrefix.startsWith(`${args.orchestration}\\`)) fail("aggregate output must be outside the sealed orchestration directory");
+if (isFuturePathInside(args.orchestration, args.outPrefix)) fail("aggregate output must be outside the real/case-folded sealed orchestration directory");
 const orchestration = verifyOrchestration(args.orchestration);
 if (args.pairs.length && JSON.stringify(args.pairs) !== JSON.stringify(orchestration.outputs)) fail("explicit --pair inputs do not exactly match the sealed orchestration order");
 const pairInputs = args.pairs.length ? args.pairs : orchestration.outputs;
@@ -229,6 +227,8 @@ const databaseFingerprints = new Set(entries.flatMap((entry) => entry.pair.sides
 if (databaseFingerprints.size !== 1) fail("pairs do not share one canonical logical database fingerprint");
 const harnessManifestShas = new Set(entries.flatMap((entry) => [entry.current.environment_identity.harness_manifest_sha256, entry.baseline.environment_identity.harness_manifest_sha256]));
 if (harnessManifestShas.size !== 1) fail("harness manifest differs across sides or pairs");
+const environmentHmacs = new Set(entries.flatMap((entry) => entry.pair.sides.map((side) => side.environment_hmac_sha256)));
+if (environmentHmacs.size !== 1) fail("sanitized runtime environment differs across sides or pairs");
 const shapes = entries.flatMap((entry) => [entry.current, entry.baseline]).map((run) => JSON.stringify({
   parameters: run.context.parameters,
   cold: Object.fromEntries(Object.entries(run.phases.cold).map(([route, value]) => [route, value.samples])),
@@ -246,7 +246,8 @@ const cpuReductions = observations.map((pair) => pair.about_warm_cpu.reduction_p
 const currentWarmMedians = observations.map((pair) => pair.about_warm_latency.current_median_ms);
 const currentWarmP95s = observations.map((pair) => pair.about_warm_latency.current_p95_ms);
 const orders = Object.fromEntries(["current-baseline", "baseline-current"].map((order) => [order, observations.filter((pair) => pair.order === order).length]));
-const sufficient = observations.length >= 4;
+const finalProfileExact = orchestration.completion.measurement_profile === PROFILE_FINAL && orchestration.completion.final_profile_exact && entries.every((entry) => entry.pair.measurement_profile === PROFILE_FINAL && classifySideProfile(entry.current.context.parameters) === PROFILE_FINAL && classifySideProfile(entry.baseline.context.parameters) === PROFILE_FINAL);
+const sufficient = finalProfileExact && observations.length === 4;
 const counterbalanced = orders["current-baseline"] > 0 && orders["current-baseline"] === orders["baseline-current"];
 const medianReduction = median(cpuReductions);
 const performanceSignal = medianReduction < 50
@@ -270,6 +271,10 @@ const report = {
     completed_pairs: observations.length,
     required_pairs: 4,
     sufficient_pairs: sufficient,
+    measurement_profile: orchestration.completion.measurement_profile,
+    final_profile_exact: finalProfileExact,
+    exact_orchestration_profile: orchestration.completion.orchestration_profile,
+    exact_side_parameters: entries[0].current.context.parameters,
     pair_ids_unique: true,
     order_counts: orders,
     counterbalanced,
@@ -277,6 +282,7 @@ const report = {
     common_canonical_database_archive_sha256: [...archiveShas][0],
     common_canonical_database_fingerprint: [...databaseFingerprints][0],
     common_harness_manifest_sha256: [...harnessManifestShas][0],
+    common_runtime_environment_hmac_sha256: [...environmentHmacs][0],
     outputs_checksum_verified: true,
     database_before_after_equal: true,
   },
@@ -324,7 +330,7 @@ const md = [
   "",
   `**Status: ${report.status}. Autonomous progression is not authorised.**`,
   "",
-  ...(report.preliminary_non_decisional ? ["> Preliminary/non-decisional: the final harness run requires at least four evenly counterbalanced pairs (the owner threshold remains at least three).", ""] : []),
+  ...(report.preliminary_non_decisional ? [`> Preliminary/non-decisional: profile=${orchestration.completion.measurement_profile}; only the exact reviewed final-decision profile with exactly four evenly counterbalanced pairs can reach owner review.`, ""] : []),
   "## Owner thresholds (verbatim)", "", ...OWNER_THRESHOLDS_VERBATIM.map((line) => `- ${line}`), "",
   "## Integrity", "",
   `- Pairs: ${observations.length}/4 harness minimum; pair IDs unique; order C-B=${orders["current-baseline"]}, B-C=${orders["baseline-current"]}.`,
@@ -348,6 +354,6 @@ writeFileSync(jsonPath, `${JSON.stringify(report, null, 2)}\n`, { encoding: "utf
 writeFileSync(markdownPath, md, { encoding: "utf8", flag: "wx" });
 const outputRecords = [jsonPath, markdownPath].map((path) => ({ path, bytes: statSync(path).size, sha256: hash(path) }));
 writeFileSync(outputManifestPath, `${outputRecords.map((record) => `${record.sha256}  ${record.bytes}  ${record.path}`).join("\n")}\n`, { encoding: "utf8", flag: "wx" });
-writeFileSync(completionPath, `${JSON.stringify({ schema_version: 1, status: "COMPLETE", completed_at: new Date().toISOString(), orchestration_output_manifest_sha256: orchestration.completion.set_output_manifest_sha256, aggregate_output_manifest_sha256: hash(outputManifestPath), artifact_count: outputRecords.length }, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
+writeFileSync(completionPath, `${JSON.stringify({ schema_version: 2, status: "COMPLETE", completed_at: new Date().toISOString(), measurement_profile: orchestration.completion.measurement_profile, final_profile_exact: finalProfileExact, orchestration_output_manifest_sha256: orchestration.completion.output_manifest_sha256, aggregate_output_manifest_sha256: hash(outputManifestPath), aggregate_files: outputRecords, artifact_count: outputRecords.length }, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
 console.log(`wrote ${jsonPath}, ${markdownPath}, and checksummed completion evidence`);
 console.log(`status: ${report.status}`);

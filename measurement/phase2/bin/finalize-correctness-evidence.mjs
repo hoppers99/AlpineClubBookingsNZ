@@ -1,0 +1,48 @@
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { actualCorrectnessCensus, buildRawManifest, deriveCorrectnessReport, expectedCorrectnessCensus, sha256File, validateImmutableInputs, validateRawManifest } from "./correctness-contract.mjs";
+import { scanEvidence } from "./scan-evidence-secrets.mjs";
+
+const fail = (message) => { throw new Error(message); };
+const index = process.argv.indexOf("--dir");
+if (index < 0 || !process.argv[index + 1]) fail("usage: finalize-correctness-evidence.mjs --dir <correctness-run-root>");
+const root = resolve(process.argv[index + 1]);
+if (!statSync(root).isDirectory()) fail("correctness run root is not a directory");
+const paths = Object.fromEntries(["raw-evidence-manifest.json", "secret-scan.json", "correctness-report.json", "COMPLETED.json"].map((name) => [name, join(root, name)]));
+for (const path of Object.values(paths)) if (existsSync(path)) fail(`refusing correctness finalization collision: ${path}`);
+const immutablePath = join(root, "inputs", "immutable-inputs.json");
+const immutable = validateImmutableInputs(JSON.parse(readFileSync(immutablePath, "utf8")), root);
+
+const rawManifest = buildRawManifest(root, immutable);
+writeFileSync(paths["raw-evidence-manifest.json"], `${JSON.stringify(rawManifest, null, 2)}\n`, { flag: "wx" });
+const rawEntries = validateRawManifest(rawManifest, root, immutable);
+
+const secretScan = scanEvidence({ root, out: paths["secret-scan.json"], manifest: paths["raw-evidence-manifest.json"] });
+if (!secretScan.passed) fail("correctness raw evidence secret scan failed");
+const report = deriveCorrectnessReport(root, immutable, rawEntries, secretScan);
+writeFileSync(paths["correctness-report.json"], `${JSON.stringify(report, null, 2)}\n`, { flag: "wx" });
+
+const beforeCompletion = actualCorrectnessCensus(root);
+const expected = expectedCorrectnessCensus(root, rawManifest);
+const expectedBefore = { files: expected.files.filter((file) => file !== "COMPLETED.json"), directories: expected.directories };
+if (JSON.stringify(beforeCompletion) !== JSON.stringify(expectedBefore)) fail("correctness tree contains missing/extra files or directories before completion");
+const completion = {
+  schema_version: 1,
+  status: "COMPLETE",
+  run_id: immutable.run_id,
+  side: immutable.side,
+  completed_at: new Date().toISOString(),
+  artifact_count: expected.files.length - 1,
+  sealed_file_count: expected.files.length,
+  sealed_directory_count: expected.directories.length,
+  immutable_inputs_sha256: sha256File(immutablePath),
+  check_census_sha256: immutable.check_census_sha256,
+  producer_files_sha256: immutable.producer_files_sha256,
+  raw_evidence_manifest_sha256: sha256File(paths["raw-evidence-manifest.json"]),
+  postconditions_sha256: sha256File(join(root, "postconditions.json")),
+  secret_scan_sha256: sha256File(paths["secret-scan.json"]),
+  correctness_report_sha256: sha256File(paths["correctness-report.json"]),
+  overall_result: report.result,
+};
+writeFileSync(paths["COMPLETED.json"], `${JSON.stringify(completion, null, 2)}\n`, { flag: "wx" });
+console.log(JSON.stringify(completion));

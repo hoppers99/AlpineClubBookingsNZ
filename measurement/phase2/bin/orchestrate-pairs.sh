@@ -38,12 +38,16 @@ new_guid() {
 }
 positive_integer() { [[ "$1" =~ ^[1-9][0-9]*$ ]]; }
 numeric_value() { [[ "$1" =~ ^[0-9]+([.][0-9]+)?$ ]]; }
+winpath() { cygpath -am "$1"; }
 
 CORRECTNESS_MANIFEST=
 OUTPUT_ID=
 PAIR_COUNT="${PAIR_COUNT:-4}"
 MAX_INTER_SIDE_GAP_SECONDS="${MAX_INTER_SIDE_GAP_SECONDS:-600}"
 MAX_INTER_PAIR_GAP_SECONDS="${MAX_INTER_PAIR_GAP_SECONDS:-600}"
+MEASUREMENT_PROFILE="${MEASUREMENT_PROFILE:-final-decision}"
+QUIET_MONITOR_INTERVAL_SECONDS="${QUIET_MONITOR_INTERVAL_SECONDS:-10}"
+ALLOWED_RUNNING_CONTAINERS="${ALLOWED_RUNNING_CONTAINERS:-tacbookings-measure-app-1,tacbookings-measure-caddy-1,tacbookings-measure-mailpit-1,tacbookings-measure-postgres-1}"
 PLAN_ONLY=false
 RESTORE_HOOK="${RESTORE_HOOK:-}"
 FINGERPRINT_HOOK="${FINGERPRINT_HOOK:-}"
@@ -67,6 +71,9 @@ positive_integer "$PAIR_COUNT" || usage
 }
 positive_integer "$MAX_INTER_SIDE_GAP_SECONDS" || usage
 positive_integer "$MAX_INTER_PAIR_GAP_SECONDS" || usage
+positive_integer "$QUIET_MONITOR_INTERVAL_SECONDS" || usage
+[[ "$ALLOWED_RUNNING_CONTAINERS" =~ ^[A-Za-z0-9_.-]+(,[A-Za-z0-9_.-]+)*$ ]] || usage
+case "$MEASUREMENT_PROFILE" in final-decision|nonfinal-test) ;; *) usage ;; esac
 
 print_plan() {
   local pair_number order
@@ -81,6 +88,10 @@ if [[ "$PLAN_ONLY" == true ]]; then
 fi
 if [[ -n "$RESTORE_HOOK" || -n "$FINGERPRINT_HOOK" ]]; then
   echo "restore/fingerprint hook environment variables are prohibited for final decision evidence" >&2
+  exit 2
+fi
+if [[ "$MEASUREMENT_PROFILE" == final-decision ]] && { [[ "$PAIR_COUNT" != 4 ]] || [[ "$MAX_INTER_SIDE_GAP_SECONDS" != 600 ]] || [[ "$MAX_INTER_PAIR_GAP_SECONDS" != 600 ]] || [[ "$QUIET_MONITOR_INTERVAL_SECONDS" != 10 ]] || [[ "$ALLOWED_RUNNING_CONTAINERS" != tacbookings-measure-app-1,tacbookings-measure-caddy-1,tacbookings-measure-mailpit-1,tacbookings-measure-postgres-1 ]]; }; then
+  echo "final-decision orchestration profile cannot weaken or change pair/gap/monitor/container controls" >&2
   exit 2
 fi
 
@@ -117,6 +128,7 @@ LOCK_DIR="$(cygpath -u "$WINDOWS_TEMP_PATH")/tacbookings-measure-phase2.lock"
 LOCK_HELD=false
 LOCK_TOKEN=
 MONITOR_PID=
+MONITOR_EXIT_RECORDED=false
 MONITOR_STOP="$OUTPUT_ROOT/quiet-host/STOP"
 CONTAMINATION_FILE="$OUTPUT_ROOT/quiet-host/CONTAMINATION.tsv"
 RUN_SUCCEEDED=false
@@ -206,7 +218,7 @@ evaluate_snapshot() {
   local dir="$1" host_cpu_limit="$2" host_memory_limit="$3"
   local host_disk_limit="$4" wsl_cpu_limit="$5" wsl_memory_limit="$6"
   ALLOWED_RUNNING_CONTAINERS="$ALLOWED_RUNNING_CONTAINERS" node - \
-    "$dir" "$host_cpu_limit" "$host_memory_limit" "$host_disk_limit" \
+    "$(winpath "$dir")" "$host_cpu_limit" "$host_memory_limit" "$host_disk_limit" \
     "$wsl_cpu_limit" "$wsl_memory_limit" <<'NODE'
 const fs = require("node:fs");
 const path = require("node:path");
@@ -298,16 +310,19 @@ monitor_loop() {
 stop_monitor() {
   if [[ -n "$MONITOR_PID" ]]; then
     : > "$MONITOR_STOP"
-    kill "$MONITOR_PID" 2>/dev/null || true
-    wait "$MONITOR_PID" 2>/dev/null || true
+    local monitor_status=0
+    wait "$MONITOR_PID" || monitor_status=$?
+    printf '%s\n' "$monitor_status" > "$OUTPUT_ROOT/quiet-host/monitor-exit-status.txt"
+    MONITOR_EXIT_RECORDED=true
     MONITOR_PID=
+    [[ "$monitor_status" -eq 0 ]]
   fi
 }
 
 cleanup() {
   local status="$?"
   set +e
-  stop_monitor
+  stop_monitor || true
   if [[ "$RUN_SUCCEEDED" != true ]]; then
     capture_snapshot cleanup-failure "$OUTPUT_ROOT/quiet-host/cleanup-failure" || true
     if [[ ! -e "$OUTPUT_ROOT/FAILED.txt" ]]; then
@@ -317,7 +332,7 @@ cleanup() {
   fi
   if [[ "$LOCK_HELD" == true ]]; then
     if [[ -f "$LOCK_DIR/owner.txt" ]] && grep -qx "token=$LOCK_TOKEN" "$LOCK_DIR/owner.txt"; then
-      rm -f "$LOCK_DIR/owner.txt"
+      rm -f "$LOCK_DIR/.env.measure.snapshot" "$LOCK_DIR/runtime-env-hmac.key" "$LOCK_DIR/owner.txt"
       rmdir "$LOCK_DIR" 2>/dev/null || true
     fi
   fi
@@ -345,16 +360,6 @@ node -e 'const v=process.argv.slice(1).map(Number);const caps=[25,90,60,25,95,40
   "$QUIET_MAX_WSL_CPU_PERCENT" "$QUIET_MAX_WSL_MEMORY_PERCENT" "$CONTINUOUS_MAX_HOST_CPU_PERCENT" \
   "$CONTINUOUS_MAX_HOST_MEMORY_PERCENT" "$CONTINUOUS_MAX_HOST_DISK_PERCENT" \
   "$CONTINUOUS_MAX_WSL_CPU_PERCENT" "$CONTINUOUS_MAX_WSL_MEMORY_PERCENT"
-QUIET_MONITOR_INTERVAL_SECONDS="${QUIET_MONITOR_INTERVAL_SECONDS:-10}"
-positive_integer "$QUIET_MONITOR_INTERVAL_SECONDS" || {
-  echo "QUIET_MONITOR_INTERVAL_SECONDS must be a positive integer" >&2
-  exit 2
-}
-ALLOWED_RUNNING_CONTAINERS="${ALLOWED_RUNNING_CONTAINERS:-tacbookings-measure-app-1,tacbookings-measure-caddy-1,tacbookings-measure-postgres-1,tacbookings-measure-mailpit-1}"
-[[ "$ALLOWED_RUNNING_CONTAINERS" =~ ^[A-Za-z0-9_.-]+(,[A-Za-z0-9_.-]+)*$ ]] || {
-  echo "ALLOWED_RUNNING_CONTAINERS must be an exact comma-separated name list" >&2
-  exit 2
-}
 export ALLOWED_RUNNING_CONTAINERS
 
 if ! mkdir "$LOCK_DIR" 2>/dev/null; then
@@ -364,13 +369,20 @@ fi
 LOCK_HELD=true
 LOCK_TOKEN="$(new_guid)"
 printf 'output_id=%s\npid=%s\nstarted_at_utc=%s\ntoken=%s\n' "$OUTPUT_ID" "$$" "$(utc_now)" "$LOCK_TOKEN" > "$LOCK_DIR/owner.txt"
+MEASURE_ENV_SOURCE="$(cygpath -am measurement/stack/.env.measure)"
+MEASURE_ENV_SNAPSHOT="$(cygpath -am "$LOCK_DIR/.env.measure.snapshot")"
+PHASE2_ENV_AUDIT_HMAC_KEY_FILE="$(cygpath -am "$LOCK_DIR/runtime-env-hmac.key")"
+node measurement/phase2/bin/measure-env-contract.mjs --snapshot-source "$MEASURE_ENV_SOURCE" --snapshot-out "$MEASURE_ENV_SNAPSHOT"
+printf '%s%s\n' "$(new_guid)" "$(new_guid)" > "$PHASE2_ENV_AUDIT_HMAC_KEY_FILE"
+chmod 600 "$LOCK_DIR/owner.txt" "$MEASURE_ENV_SNAPSHOT" "$PHASE2_ENV_AUDIT_HMAC_KEY_FILE"
+export MEASURE_ENV_SNAPSHOT PHASE2_ENV_AUDIT_HMAC_KEY_FILE MEASUREMENT_PROFILE
 
 MANIFEST_SNAPSHOT="$OUTPUT_ROOT/inputs/correctness-manifest.json"
 cp "$CORRECTNESS_MANIFEST" "$MANIFEST_SNAPSHOT"
 MANIFEST_SNAPSHOT="$(cd "$(dirname "$MANIFEST_SNAPSHOT")" && pwd -P)/$(basename "$MANIFEST_SNAPSHOT")"
 MANIFEST_SHA="$(sha256_file "$MANIFEST_SNAPSHOT")"
 IMMUTABLE_INPUTS="$OUTPUT_ROOT/inputs/immutable-inputs.json"
-node - "$CORRECTNESS_MANIFEST" "$MANIFEST_SNAPSHOT" "$MANIFEST_SHA" "$IMMUTABLE_INPUTS" <<'NODE'
+node - "$(winpath "$CORRECTNESS_MANIFEST")" "$(winpath "$MANIFEST_SNAPSHOT")" "$MANIFEST_SHA" "$(winpath "$IMMUTABLE_INPUTS")" <<'NODE'
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -409,7 +421,7 @@ for (const side of ["current", "baseline"]) {
     image_id: input.image_id,
     oci_revision: input.oci_revision,
     source_archive: checkedFile(input.source_archive, `${side}.source_archive`),
-    correctness_report: checkedFile(input.correctness_report, `${side}.correctness_report`),
+    correctness_completion: checkedFile(input.correctness_completion, `${side}.correctness_completion`),
     routes: input.routes,
   };
 }
@@ -437,10 +449,10 @@ HARNESS_MANIFEST="$OUTPUT_ROOT/inputs/harness-files.sha256"
   printf '%s  %s\n' "$(sha256_file "$harness_file")" "$(cygpath -am "$harness_file")"
 done > "$HARNESS_MANIFEST"
 HARNESS_MANIFEST_SHA256="$(sha256_file "$HARNESS_MANIFEST")"
-node measurement/phase2/bin/verify-harness-manifest.mjs "$HARNESS_MANIFEST" >/dev/null
+node measurement/phase2/bin/verify-harness-manifest.mjs "$(winpath "$HARNESS_MANIFEST")" >/dev/null
 IFS=$'\t' read -r CURRENT_IMAGE_REFERENCE CURRENT_IMAGE_ID BASELINE_IMAGE_REFERENCE BASELINE_IMAGE_ID \
   CANONICAL_DATABASE_ARCHIVE_PATH CANONICAL_DATABASE_ARCHIVE_SHA256 < <(
-    node - "$IMMUTABLE_INPUTS" <<'NODE'
+    node - "$(winpath "$IMMUTABLE_INPUTS")" <<'NODE'
 const input = require(process.argv[2]);
 process.stdout.write([
   input.sides.current.image_reference,
@@ -521,9 +533,9 @@ for ((pair_number = 1; pair_number <= PAIR_COUNT; pair_number += 1)); do
   [[ ! -s "$CONTAMINATION_FILE" ]] || { echo "continuous quiet-host contamination was detected" >&2; exit 1; }
 
   [[ -d "$pair_root" ]] || { echo "explicit pair output is missing: $pair_root" >&2; exit 1; }
-  node measurement/phase2/bin/verify-completed-run.mjs "$pair_root" \
+  node measurement/phase2/bin/verify-completed-run.mjs "$(winpath "$pair_root")" \
     > "$OUTPUT_ROOT/pair-$(printf '%02d' "$pair_number")-completion-verified.json"
-  node - "$pair_root" "$pair_id" "$order" "$MAX_INTER_SIDE_GAP_SECONDS" \
+  node - "$(winpath "$pair_root")" "$pair_id" "$order" "$MAX_INTER_SIDE_GAP_SECONDS" \
     "$pair_invoked_at" "$pair_returned_at" "$inter_pair_gap" >> "$OUTPUT_ROOT/pairs.jsonl" <<'NODE'
 const fs = require("node:fs");
 const path = require("node:path");
@@ -568,6 +580,23 @@ NODE
 done
 
 stop_monitor
+[[ "$MONITOR_EXIT_RECORDED" == true ]] || { echo "continuous monitor exit was not recorded" >&2; exit 1; }
+node - "$(winpath "$OUTPUT_ROOT/quiet-host")" "$QUIET_MONITOR_INTERVAL_SECONDS" <<'NODE'
+const fs = require("node:fs");
+const path = require("node:path");
+const [root, intervalRaw] = process.argv.slice(2);
+const samples = fs.readdirSync(root, { withFileTypes: true }).filter((entry) => entry.isDirectory() && /^continuous-\d{6}$/.test(entry.name)).sort();
+if (samples.length < 2) throw new Error("continuous monitor captured fewer than two samples");
+const timestamps = samples.map((entry) => {
+  const lines = fs.readFileSync(path.join(root, entry.name, "capture.env"), "utf8").trim().split(/\r?\n/);
+  const value = lines.find((line) => line.startsWith("captured_at_utc="))?.slice("captured_at_utc=".length);
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) throw new Error(`invalid monitor timestamp: ${entry.name}`);
+  return value;
+});
+if (fs.readFileSync(path.join(root, "monitor-exit-status.txt"), "utf8").trim() !== "0") throw new Error("continuous monitor did not exit successfully");
+fs.writeFileSync(path.join(root, "monitor-summary.json"), `${JSON.stringify({schema_version:1,interval_seconds:Number(intervalRaw),sample_count:samples.length,first_sample_at_utc:timestamps[0],last_sample_at_utc:timestamps.at(-1),exit_status:0,passed:true},null,2)}\n`, {flag:"wx"});
+NODE
 [[ ! -s "$CONTAMINATION_FILE" ]] || { echo "continuous quiet-host contamination was detected" >&2; exit 1; }
 [[ "$completed_pairs" -eq "$PAIR_COUNT" ]] || { echo "not all planned pairs completed" >&2; exit 1; }
 [[ "$(sha256_file "$MANIFEST_SNAPSHOT")" == "$MANIFEST_SHA" ]] || { echo "immutable manifest snapshot changed" >&2; exit 1; }
@@ -579,75 +608,17 @@ evaluate_snapshot "$OUTPUT_ROOT/quiet-host/final" \
   "$QUIET_MAX_HOST_DISK_PERCENT" "$QUIET_MAX_WSL_CPU_PERCENT" \
   "$QUIET_MAX_WSL_MEMORY_PERCENT"
 
-node measurement/phase2/bin/scan-evidence-secrets.mjs "$OUTPUT_ROOT" "$OUTPUT_ROOT/secret-scan.json"
-
 printf '%s\tset-finalizing\t-\t-\tclosing orchestrator log before sealing\n' \
   "$(utc_now)" >> "$OUTPUT_ROOT/events.tsv"
 exec 1>&3 2>&4
 wait "$TEE_PID"
 TEE_PID=
-
-SET_OUTPUT_MANIFEST="$OUTPUT_ROOT/set-output-manifest.sha256"
-node - "$OUTPUT_ROOT" "$SET_OUTPUT_MANIFEST" <<'NODE'
-const crypto = require("node:crypto");
-const fs = require("node:fs");
-const path = require("node:path");
-const [root, manifestPath] = process.argv.slice(2).map((value) => path.resolve(value));
-const completionPath = path.join(root, "PAIR-COMPLETED.json");
-const excluded = new Set([manifestPath, completionPath]);
-const files = [];
-const visit = (dir) => {
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    const absolute = path.join(dir, entry.name);
-    if (entry.isDirectory()) visit(absolute);
-    else if (entry.isFile()) files.push(absolute);
-    else throw new Error(`unsupported set-output entry: ${absolute}`);
-  }
-};
-visit(root);
-const records = files.filter((file) => !excluded.has(file)).map((file) => {
-  const bytes = fs.readFileSync(file);
-  return {
-    path: path.relative(root, file).split(path.sep).join("/"),
-    bytes: bytes.length,
-    sha256: crypto.createHash("sha256").update(bytes).digest("hex"),
-  };
-}).sort((left, right) => left.path.localeCompare(right.path));
-if (records.length === 0) throw new Error("refusing to seal an empty pair set");
-const body = records.map((record) => `${record.sha256}  ${record.bytes}  ${record.path}`).join("\n");
-fs.writeFileSync(manifestPath, `${body}\n`, { flag: "wx" });
-NODE
-
-OUTPUT_ID="$OUTPUT_ID" PAIR_COUNT="$PAIR_COUNT" MANIFEST_SHA="$MANIFEST_SHA" \
-MAX_INTER_SIDE_GAP_SECONDS="$MAX_INTER_SIDE_GAP_SECONDS" \
-MAX_INTER_PAIR_GAP_SECONDS="$MAX_INTER_PAIR_GAP_SECONDS" \
-node - "$OUTPUT_ROOT/PAIR-COMPLETED.json" "$OUTPUT_ROOT/pairs.jsonl" "$SET_OUTPUT_MANIFEST" <<'NODE'
-const crypto = require("node:crypto");
-const fs = require("node:fs");
-const path = require("node:path");
-const [out, pairsPath, setManifestPath] = process.argv.slice(2);
-const pairs = fs.readFileSync(pairsPath, "utf8").trim().split(/\r?\n/).filter(Boolean).map(JSON.parse);
-const expectedCount = Number(process.env.PAIR_COUNT);
-if (pairs.length !== expectedCount || pairs.some((pair) => pair.status !== "COMPLETE")) throw new Error("cannot complete a partial pair set");
-const setManifest = fs.readFileSync(setManifestPath);
-const artifactCount = setManifest.toString("utf8").trim().split(/\r?\n/).filter(Boolean).length;
-if (artifactCount === 0) throw new Error("cannot complete an empty set manifest");
-const completion = {
-  schema_version: 1,
-  output_id: process.env.OUTPUT_ID,
-  completed_at_utc: new Date().toISOString(),
-  pair_count: pairs.length,
-  orders: pairs.map((pair) => pair.order),
-  maximum_inter_side_gap_seconds: Number(process.env.MAX_INTER_SIDE_GAP_SECONDS),
-  maximum_inter_pair_gap_seconds: Number(process.env.MAX_INTER_PAIR_GAP_SECONDS),
-  correctness_manifest_sha256: process.env.MANIFEST_SHA,
-  pairs_manifest_sha256: crypto.createHash("sha256").update(fs.readFileSync(pairsPath)).digest("hex"),
-  set_output_manifest_sha256: crypto.createHash("sha256").update(setManifest).digest("hex"),
-  set_output_artifact_count: artifactCount,
-  pair_outputs: pairs.map((pair) => pair.pair_output),
-  status: "COMPLETE",
-};
-fs.writeFileSync(path.resolve(out), `${JSON.stringify(completion, null, 2)}\n`, { flag: "wx" });
-NODE
+node measurement/phase2/bin/scan-evidence-secrets.mjs "$(winpath "$OUTPUT_ROOT")" "$(winpath "$OUTPUT_ROOT/secret-scan.json")"
+node measurement/phase2/bin/finalize-pair-set.mjs \
+  --dir "$(winpath "$OUTPUT_ROOT")" --output-id "$OUTPUT_ID" --pairs "$(winpath "$OUTPUT_ROOT/pairs.jsonl")" \
+  --correctness-manifest-sha256 "$MANIFEST_SHA" --profile "$MEASUREMENT_PROFILE" \
+  --pair-count "$PAIR_COUNT" --max-side-gap "$MAX_INTER_SIDE_GAP_SECONDS" \
+  --max-pair-gap "$MAX_INTER_PAIR_GAP_SECONDS" --monitor-interval "$QUIET_MONITOR_INTERVAL_SECONDS" \
+  --allowed-containers "$ALLOWED_RUNNING_CONTAINERS"
 RUN_SUCCEEDED=true
 echo "==> complete counterbalanced pair set: $OUTPUT_ROOT/PAIR-COMPLETED.json"

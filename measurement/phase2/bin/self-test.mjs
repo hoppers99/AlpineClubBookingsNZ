@@ -1,260 +1,187 @@
+import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { execFileSync, spawn } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
-import { createServer } from "node:http";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import assert from "node:assert/strict";
+import { AUDITED_KEYS, LIVE_PROVIDER_KEYS, auditAppEnvironment } from "./audit-app-environment.mjs";
+import { correctnessCensus, expectedCheckIdsForSide, sha256File } from "./correctness-contract.mjs";
+import { parseStrictHttpHeaders } from "./http-evidence.mjs";
+import { MEASURE_ENV_KEYS, auditMeasureEnvFile, createMeasureEnvSnapshot, parseMeasureEnv } from "./measure-env-contract.mjs";
+import { FINAL_ORCHESTRATION_PROFILE, FINAL_SIDE_PARAMETERS, PROFILE_FINAL, PROFILE_NONFINAL, assertDeclaredProfile, classifyOrchestrationProfile, classifySideProfile } from "./measurement-profile.mjs";
+import { scanEvidence, verifySecretScan } from "./scan-evidence-secrets.mjs";
+import { finalizeSealedTree, verifySealedTree } from "./sealed-tree.mjs";
+import { conventionalMedian, rankedQuantile } from "./statistics.mjs";
+import { verifyCorrectnessCompletion } from "./verify-correctness-evidence.mjs";
 
-const root = resolve(import.meta.dirname, "../../..");
+const repo = resolve(import.meta.dirname, "../../..");
 const bin = resolve(import.meta.dirname);
-const fixtureRoot = resolve(import.meta.dirname, "../test-fixtures");
-const aggregateSource = readFileSync(join(bin, "aggregate-pairs.mjs"), "utf8");
-const { conventionalMedian, rankedQuantile } = await import("./statistics.mjs");
-const { verifyRevalidationEvidence } = await import("./revalidation-evidence.mjs");
-assert.equal(conventionalMedian([4, 1, 3, 2]), 2.5);
-assert.equal(conventionalMedian([3, 1, 2]), 2);
-assert.equal(rankedQuantile([1, 2, 3, 4], 0.95), 4);
-for (const contract of [
-  "At least three contemporaneous current/baseline pairs are required.",
-  "Preferred CPU reduction is at least 80%; below roughly 50% is the explicit stop condition; 50-80% requires owner review.",
-  "approximately_300_ms_guidance_interpretation: \"OWNER_REVIEW_REQUIRED\"",
-  "binding_p95_gate: null",
-  "autonomous_progression_authorised: false",
-  "--verify-json",
-  "refusing aggregate output collision",
-  ".output-manifest.sha256",
-  ".COMPLETED.json",
-  "orchestration_output_manifest_sha256",
-]) assert.match(aggregateSource, new RegExp(contract.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 const temp = mkdtempSync(join(tmpdir(), "issue-2352-phase2-selftest-"));
 const sha = (value) => createHash("sha256").update(value).digest("hex");
-const run = (script, args, options = {}) => execFileSync(process.execPath, [join(bin, script), ...args], { cwd: root, encoding: "utf8", stdio: "pipe", ...options });
-function rejects(script, args, pattern) {
-  assert.throws(() => run(script, args), pattern);
-}
-const harnessPaths = [
-  ...readdirSync(bin).map((name) => join(bin, name)).filter((path) => statSync(path).isFile()),
-  join(root, "docker-compose.yml"),
-  join(root, "Caddyfile.staging"),
-  join(root, "measurement/stack/docker-compose.measure.yml"),
-  join(root, "measurement/stack/measure-stack.sh"),
-].sort();
-const harnessManifestPath = join(temp, "harness-files.sha256");
-writeFileSync(harnessManifestPath, `${harnessPaths.map((path) => `${sha(readFileSync(path))}  ${path}`).join("\n")}\n`);
-run("verify-harness-manifest.mjs", [harnessManifestPath]);
-const incompleteHarnessManifestPath = join(temp, "incomplete-harness-files.sha256");
-writeFileSync(incompleteHarnessManifestPath, `${harnessPaths.slice(1).map((path) => `${sha(readFileSync(path))}  ${path}`).join("\n")}\n`);
-rejects("verify-harness-manifest.mjs", [incompleteHarnessManifestPath], /exact complete reviewed harness file set/);
+const run = (script, args, options = {}) => execFileSync(process.execPath, [join(bin, script), ...args], { cwd: repo, encoding: "utf8", stdio: "pipe", ...options });
+const rejects = (script, args, pattern) => assert.throws(() => run(script, args), pattern);
+const mkdirs = (...paths) => paths.forEach((path) => mkdirSync(path, { recursive: true }));
 
-const body = Buffer.from("bound fixture body\n");
-const bodyPath = join(temp, "body.txt");
-const headersPath = join(temp, "headers.txt");
-const sourcePath = join(temp, "source.tar");
-const reportPath = join(temp, "correctness.json");
-const archivePath = join(temp, "canonical.dump");
-writeFileSync(bodyPath, body);
-writeFileSync(headersPath, 'HTTP/1.1 200 OK\r\nETag: "fixture-etag"\r\nX-Nextjs-Cache: HIT\r\nCache-Control: private, no-store\r\n\r\n');
-writeFileSync(archivePath, "canonical database fixture");
-const imageId = `sha256:${"a".repeat(64)}`;
-const revision = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
-execFileSync("git", ["archive", "--format=tar", `--output=${sourcePath}`, revision], { cwd: root });
-const route = { next_cache: "ABSENT", etag: null, body_sha256: null };
-const currentRoutes = { "/about": { next_cache: "HIT", etag: '"fixture-etag"', body_sha256: sha(body) }, "/": route, "/join": route, "/contact": route };
-writeFileSync(reportPath, `${JSON.stringify({ schema_version: 1, result: "passed", side: "current", image_id: imageId, oci_revision: revision, source_archive_sha256: sha(readFileSync(sourcePath)), canonical_database_archive_sha256: sha(readFileSync(archivePath)), routes: currentRoutes })}\n`);
-const manifest = {
-  schema_version: 1,
-  harness_scope: "issue-2352-phase2",
-  canonical_database: { archive_path: archivePath, archive_sha256: sha(readFileSync(archivePath)) },
-  sides: {
-    current: {
-      image_reference: `fixture@${imageId}`,
-      image_id: imageId,
-      oci_revision: revision,
-      source_archive: { path: sourcePath, sha256: sha(readFileSync(sourcePath)) },
-      correctness_report: { path: reportPath, sha256: sha(readFileSync(reportPath)) },
-      routes: currentRoutes,
-    },
-  },
-};
-const manifestPath = join(temp, "manifest.json");
-const imageInspectPath = join(temp, "image-inspect.json");
-writeFileSync(manifestPath, `${JSON.stringify(manifest)}\n`);
-writeFileSync(imageInspectPath, `${JSON.stringify([{ Id: imageId, RepoDigests: ["fixture@sha256:immutable"], Config: { Labels: { "org.opencontainers.image.revision": revision } } }])}\n`);
+assert.equal(conventionalMedian([4, 1, 3, 2]), 2.5);
+assert.equal(rankedQuantile([1, 2, 3, 4], 0.95), 4);
+assert.equal(classifySideProfile(FINAL_SIDE_PARAMETERS), PROFILE_FINAL);
+assert.equal(classifyOrchestrationProfile(FINAL_ORCHESTRATION_PROFILE), PROFILE_FINAL);
+assert.equal(assertDeclaredProfile(PROFILE_NONFINAL, PROFILE_FINAL, "rehearsal"), PROFILE_NONFINAL);
+assert.throws(() => assertDeclaredProfile(PROFILE_FINAL, PROFILE_NONFINAL, "weakened"), /weakens or changes/);
 
-run("verify-binding.mjs", ["--manifest", manifestPath, "--side", "current", "--image-reference", `fixture@${imageId}`, "--image-inspect", imageInspectPath, "--out", join(temp, "binding.json")]);
-const failedReportPath = join(temp, "failed-correctness.json");
-const failedReport = JSON.parse(readFileSync(reportPath, "utf8"));
-failedReport.result = "failed";
-writeFileSync(failedReportPath, JSON.stringify(failedReport));
-const failedManifest = structuredClone(manifest);
-failedManifest.sides.current.correctness_report = { path: failedReportPath, sha256: sha(readFileSync(failedReportPath)) };
-const failedManifestPath = join(temp, "failed-correctness-manifest.json");
-writeFileSync(failedManifestPath, JSON.stringify(failedManifest));
-rejects("verify-binding.mjs", ["--manifest", failedManifestPath, "--side", "current", "--image-reference", `fixture@${imageId}`, "--image-inspect", imageInspectPath, "--out", join(temp, "failed-result-binding.json")], /bound correctness report payload must have schema_version 1 and result passed/);
-run("verify-http-proof.mjs", ["--manifest", manifestPath, "--side", "current", "--route", "/about", "--phase", "valid", "--headers", headersPath, "--body", bodyPath, "--out", join(temp, "proof.json")]);
-const warmEvidence = join(temp, "warm-evidence");
-mkdirSync(warmEvidence);
-for (const sample of [1, 2]) {
-  writeFileSync(join(warmEvidence, `sample-${sample}.headers`), readFileSync(headersPath));
-  writeFileSync(join(warmEvidence, `sample-${sample}.body`), body);
-}
-const warmCsv = join(temp, "warm.csv");
-writeFileSync(warmCsv, "200,0.001,0.002\n200,0.003,0.004\n");
-run("verify-warm-block.mjs", ["--manifest", manifestPath, "--side", "current", "--route", "/about", "--evidence-dir", warmEvidence, "--timing-csv", warmCsv, "--samples", "2", "--out", join(temp, "warm-proof.json")]);
-writeFileSync(join(warmEvidence, "sample-2.headers"), readFileSync(join(fixtureRoot, "wrong-cache.headers")));
-rejects("verify-warm-block.mjs", ["--manifest", manifestPath, "--side", "current", "--route", "/about", "--evidence-dir", warmEvidence, "--timing-csv", warmCsv, "--samples", "2", "--out", join(temp, "warm-cache-rejected.json")], /sample 2 cache classification changed/);
-writeFileSync(join(warmEvidence, "sample-2.headers"), readFileSync(headersPath));
-writeFileSync(join(warmEvidence, "sample-2.body"), readFileSync(join(fixtureRoot, "mutated-body.txt")));
-rejects("verify-warm-block.mjs", ["--manifest", manifestPath, "--side", "current", "--route", "/about", "--evidence-dir", warmEvidence, "--timing-csv", warmCsv, "--samples", "2", "--out", join(temp, "warm-body-rejected.json")], /sample 2 body checksum changed/);
+const headers = 'HTTP/1.1 103 Early Hints\r\nLink: </x>; rel=preload\r\n\r\nHTTP/1.1 200 OK\r\nETag: "bound"\r\nX-Nextjs-Cache: HIT\r\n\r\n';
+assert.equal(parseStrictHttpHeaders(headers).headers.etag, '"bound"');
+for (const duplicate of [
+  'HTTP/1.1 200 OK\r\nX-Nextjs-Cache: HIT\r\nx-nextjs-cache: HIT\r\n\r\n',
+  'HTTP/1.1 200 OK\r\nETag: "a"\r\netag: "a"\r\n\r\n',
+]) assert.throws(() => parseStrictHttpHeaders(duplicate), /duplicate/i);
+assert.throws(() => parseStrictHttpHeaders('HTTP/1.1 200 OK\r\n folded\r\n\r\n'), /folded|malformed/i);
 
-rejects("verify-http-proof.mjs", ["--manifest", manifestPath, "--side", "current", "--route", "/about", "--phase", "wrong-cache", "--headers", join(fixtureRoot, "wrong-cache.headers"), "--body", bodyPath, "--out", join(temp, "wrong-cache.json")], /expected X-Nextjs-Cache HIT/);
-rejects("verify-http-proof.mjs", ["--manifest", manifestPath, "--side", "current", "--route", "/about", "--phase", "mutated-body", "--headers", headersPath, "--body", join(fixtureRoot, "mutated-body.txt"), "--out", join(temp, "mutated-body.json")], /body checksum changed/);
-
-const revalidationDir = join(temp, "revalidation-evidence");
-mkdirSync(revalidationDir);
-const revalidationHeaders = (cache) => `HTTP/1.1 200 OK\r\nETag: "fixture-etag"\r\nX-Nextjs-Cache: ${cache}\r\n\r\n`;
-const revalidationProof = (phase, cache, accepted) => ({ schema_version: 1, side: "current", route: "/about", phase, status: 200, next_cache: cache, accepted_cache_values: accepted, etag: '"fixture-etag"', body_sha256: sha(body), verified: true });
-writeFileSync(join(revalidationDir, "first.csv"), "200,0.001,0.002\n");
-writeFileSync(join(revalidationDir, "window-cpu-usec.csv"), "/about,1,1,2,1\n");
-writeFileSync(join(revalidationDir, "first.headers"), revalidationHeaders("STALE"));
-writeFileSync(join(revalidationDir, "first.body"), body);
-writeFileSync(join(revalidationDir, "first-proof.json"), JSON.stringify(revalidationProof("revalidation-first", "STALE", ["STALE"])));
-for (const [attempt, cache] of [[1, "STALE"], [2, "HIT"]]) {
-  writeFileSync(join(revalidationDir, `attempt-${attempt}.headers`), revalidationHeaders(cache));
-  writeFileSync(join(revalidationDir, `attempt-${attempt}.body`), body);
-  writeFileSync(join(revalidationDir, `attempt-${attempt}-proof.json`), JSON.stringify(revalidationProof(`revalidation-attempt-${attempt}`, cache, ["STALE", "HIT"])));
-}
-const finalHitProof = readFileSync(join(revalidationDir, "attempt-2-proof.json"));
-writeFileSync(join(revalidationDir, "regenerated-proof.json"), finalHitProof);
-assert.equal(verifyRevalidationEvidence({ root: revalidationDir, side: "current", expected: currentRoutes["/about"] }).attempts.length, 2);
-unlinkSync(join(revalidationDir, "regenerated-proof.json"));
-assert.throws(() => verifyRevalidationEvidence({ root: revalidationDir, side: "current", expected: currentRoutes["/about"] }), /missing regenerated-proof/);
-writeFileSync(join(revalidationDir, "regenerated-proof.json"), finalHitProof);
-writeFileSync(join(revalidationDir, "first.headers"), revalidationHeaders("MISS"));
-assert.throws(() => verifyRevalidationEvidence({ root: revalidationDir, side: "current", expected: currentRoutes["/about"] }), /revalidation-first raw status\/cache proof failed/);
-writeFileSync(join(revalidationDir, "first.headers"), revalidationHeaders("STALE"));
-
-const badManifest = structuredClone(manifest);
-badManifest.canonical_database.archive_sha256 = "0".repeat(64);
-const badManifestPath = join(temp, "bad-manifest.json");
-writeFileSync(badManifestPath, JSON.stringify(badManifest));
-rejects("verify-binding.mjs", ["--manifest", badManifestPath, "--side", "current", "--image-reference", `fixture@${imageId}`, "--image-inspect", imageInspectPath, "--out", join(temp, "bad-binding.json")], /canonical database archive checksum mismatch/);
-
-const sealed = join(temp, "sealed");
-mkdirSync(sealed);
-writeFileSync(join(sealed, "evidence.txt"), "immutable evidence\n");
-run("finalize-run.mjs", ["--dir", sealed, "--side", "current", "--pair-id", "fixture-pair"]);
-run("verify-completed-run.mjs", [sealed]);
-writeFileSync(join(sealed, "evidence.txt"), "mutated evidence\n");
-rejects("verify-completed-run.mjs", [sealed], /manifest mismatch/);
-
-function runAsync(script, args) {
-  return new Promise((resolvePromise, rejectPromise) => {
-    const child = spawn(process.execPath, [join(bin, script), ...args], { cwd: root, stdio: ["ignore", "pipe", "pipe"] });
-    let stdout = ""; let stderr = "";
-    child.stdout.on("data", (chunk) => { stdout += chunk; });
-    child.stderr.on("data", (chunk) => { stderr += chunk; });
-    child.on("error", rejectPromise);
-    child.on("close", (code) => code === 0 ? resolvePromise(stdout) : rejectPromise(new Error(stderr)));
-  });
-}
-const server = createServer((request, response) => {
-  if (request.url === "/hang") return;
-  response.writeHead(200, { "content-type": "text/plain" });
-  response.end("ok");
-});
-await new Promise((resolvePromise) => server.listen(0, "127.0.0.1", resolvePromise));
+const envDir = join(temp, "env-contract");
+mkdirs(envDir);
+const envValues = Object.fromEntries(MEASURE_ENV_KEYS.map((key) => [key, key === "DB_PASSWORD" ? '"quoted=value"' : key === "APP_IMAGE" ? "fixture@sha256:" + "1".repeat(64) : ""]));
+const envPath = join(envDir, ".env.measure");
+writeFileSync(envPath, `${MEASURE_ENV_KEYS.map((key) => `${key}=${envValues[key]}`).join("\r\n")}\r\n`);
+assert.equal(parseMeasureEnv(envPath).values.DB_PASSWORD, "quoted=value");
+assert.doesNotThrow(() => auditMeasureEnvFile(envPath, { ambient: { APP_IMAGE: "ignored-command-selector" } }));
+assert.throws(() => auditMeasureEnvFile(envPath, { ambient: { AUTH_SECRET: "override" } }), /ambient environment overrides/);
+const snapshotPath = join(envDir, "private.snapshot");
+createMeasureEnvSnapshot(envPath, snapshotPath, { ambient: {} });
+assert.deepEqual(readFileSync(snapshotPath), readFileSync(envPath));
+const duplicateEnv = join(envDir, "duplicate.env");
+writeFileSync(duplicateEnv, `${readFileSync(envPath, "utf8")}DB_PASSWORD=again\n`);
+assert.throws(() => parseMeasureEnv(duplicateEnv), /duplicate key/);
+const controlEnv = join(envDir, "control.env");
+writeFileSync(controlEnv, Buffer.concat([readFileSync(envPath), Buffer.from([0])]));
+assert.throws(() => parseMeasureEnv(controlEnv), /control bytes/);
 try {
-  const address = server.address();
-  const ok = JSON.parse(await runAsync("load.mjs", ["--url", `http://127.0.0.1:${address.port}/ok`, "--concurrency", "2", "--duration", "0.1", "--timeout-ms", "500"]));
-  assert.equal(ok.schema_version, 2);
-  assert.ok(ok.actual_elapsed_ms >= 100);
-  assert.ok(ok.requests > 0 && ok.rps > 0);
-  assert.deepEqual(ok.error_classes, {});
-  const timedOut = JSON.parse(await runAsync("load.mjs", ["--url", `http://127.0.0.1:${address.port}/hang`, "--concurrency", "1", "--duration", "0.05", "--timeout-ms", "25"]));
-  assert.equal(timedOut.requests, 0);
-  assert.ok(timedOut.errors > 0);
-  assert.ok((timedOut.error_classes.timeout ?? 0) > 0);
-} finally {
-  await new Promise((resolvePromise) => server.close(resolvePromise));
+  const link = join(envDir, "linked.env"); symlinkSync(envPath, link, "file");
+  assert.throws(() => parseMeasureEnv(link), /non-reparse/);
+} catch (error) { if (error.code !== "EPERM") throw error; }
+
+const validRuntimeValues = Object.fromEntries(AUDITED_KEYS.map((key) => [key, ""]));
+Object.assign(validRuntimeValues, {
+  APP_RUNTIME_ROLE: "web-measure", CRON_ENABLED: "false", NODE_ENV: "production", TZ: "Pacific/Auckland", KEEP_ALIVE_TIMEOUT: "65000", LOG_LEVEL: "info",
+  AUTH_TRUST_HOST: "true", AUTH_SECRET: "fixture-auth", NEXTAUTH_SECRET: "fixture-auth", CRON_SECRET: "fixture-cron", NEXTAUTH_URL: "http://localhost:8027",
+  USE_AWS_SES: "false", USE_SMTP_RELAY: "true", EMAIL_SERVER_HOST: "mailpit", EMAIL_SERVER_PORT: "1025", EMAIL_SERVER_USER: "measurement", EMAIL_SERVER_PASSWORD: "measurement-only", EMAIL_FROM: "noreply@measurement.invalid",
+  DATABASE_URL: "postgresql://tac:fixture-db@postgres:5432/tacbookings?connection_limit=10&pool_timeout=10", SES_SNS_ALLOW_UNSAFE_MISSING_TOPIC_ARN: "false", BACKUP_CRON_SCHEDULE: "0 3 * * *", MIRO_JWT_EXP: "1h",
+});
+const inspectFor = (values, extras = {}) => [{ Config: { Env: Object.entries({ ...values, ...extras }).map(([key, value]) => `${key}=${value}`) } }];
+const hmacKey = "a".repeat(64);
+const runtimeAudit = auditAppEnvironment(inspectFor(validRuntimeValues), hmacKey);
+assert.equal(runtimeAudit.verified, true);
+assert.equal(runtimeAudit.keyed_fingerprint_sha256, auditAppEnvironment([{ Config: { Env: [...inspectFor(validRuntimeValues)[0].Config.Env].reverse() } }], hmacKey).keyed_fingerprint_sha256);
+for (const key of LIVE_PROVIDER_KEYS) assert.throws(() => auditAppEnvironment(inspectFor(validRuntimeValues, { [key]: "live-value" }), hmacKey), /prohibited live-provider/);
+assert.throws(() => auditAppEnvironment(inspectFor(validRuntimeValues, { ANTHROPIC_API_KEY: "" }), hmacKey), /unknown provider\/sensitive/);
+for (const [key, value] of [["APP_RUNTIME_ROLE", "web"], ["CRON_ENABLED", "true"], ["NEXTAUTH_URL", "https://live.example"], ["AUTH_SECRET", "different"], ["DATABASE_URL", "postgresql://tac:x@other:5432/tacbookings?connection_limit=10&pool_timeout=10"], ["USE_AWS_SES", "true"], ["NEXT_PUBLIC_GA_MEASUREMENT_ID", "G-live"]]) {
+  assert.throws(() => auditAppEnvironment(inspectFor({ ...validRuntimeValues, [key]: value }), hmacKey));
+}
+const duplicatedEnvInspect = inspectFor(validRuntimeValues); duplicatedEnvInspect[0].Config.Env.push("AUTH_SECRET=again");
+assert.throws(() => auditAppEnvironment(duplicatedEnvInspect, hmacKey), /duplicate key/);
+
+const databaseAudit = { schema_version: 1, forbidden_integration_credential_count: 0, xero_token_count: 0, club_module_settings_rows: 0, unsafe_club_module_settings_rows: 0, analytics_settings_rows: 0, unsafe_analytics_settings_rows: 0 };
+const dbInput = join(temp, "db-audit.json"); writeFileSync(dbInput, JSON.stringify(databaseAudit));
+run("verify-database-isolation.mjs", ["--input", dbInput, "--out", join(temp, "db-audit-verified.json")]);
+for (const key of ["forbidden_integration_credential_count", "xero_token_count", "unsafe_club_module_settings_rows", "unsafe_analytics_settings_rows"]) {
+  const input = join(temp, `db-${key}.json`); writeFileSync(input, JSON.stringify({ ...databaseAudit, [key]: 1 }));
+  rejects("verify-database-isolation.mjs", ["--input", input, "--out", join(temp, `db-${key}-out.json`)], /permits a live provider/);
 }
 
-// Build a tiny but fully checksummed four-pair set. This catches schema drift in
-// the aggregator without preserving or fabricating real measurement results.
-const orchestration = join(temp, "orchestration-fixture");
-mkdirSync(orchestration);
-const timing = (value) => ({ samples: 2, ttfb_ms: { median: value, p95: value + 1 }, total_ms: { median: value + 2, p95: value + 3 } });
-const pairRecords = [];
-for (let index = 1; index <= 4; index += 1) {
-  const pairId = `fixture-p${index}`;
-  const order = index % 2 ? "current-baseline" : "baseline-current";
-  const pairDir = join(orchestration, `pair-${index}`);
-  mkdirSync(pairDir);
-  const sideRecords = [];
-  for (const side of order.split("-")) {
-    const sideDir = join(pairDir, side);
-    mkdirSync(sideDir);
-    const current = side === "current";
-    const warmValue = current ? 100 + index : 200 + index;
-    const summary = {
-      schema_version: 2,
-      context: { side, pair_id: pairId, order, parameters: { runs: 2, warmup: 1, cold_runs: 1, idle_cycles: 1, idle_seconds: 1, revalidation_seconds: 300, concurrency: 1, duration_seconds: 1, request_timeout_seconds: 1 } },
-      immutable_binding: { correctness_result: "passed", manifest_sha256: "c".repeat(64), canonical_database_archive_sha256: "d".repeat(64) },
-      database_fingerprint_after: "e".repeat(64),
-      environment_identity: { compose_uninterpolated_sha256: "f".repeat(64), app_resource_shape: {}, postgres_resource_shape: {}, network_driver: "bridge", network_options: {}, app_database_target: { host: "postgres" } },
-      phases: {
-        cold: { "/about": timing(300) },
-        warm: { "/about": timing(warmValue), "/": timing(150), "/join": timing(160), "/contact": timing(170) },
-        idle: { cycles: [{ cycle: 1, first: timing(warmValue + 5), first_cpu_ms: current ? 3 : 8, first_cache: current ? "HIT" : "ABSENT", followup: timing(warmValue) }] },
-        revalidation: { first: timing(250), first_cpu_ms: 10, first_cache: current ? "STALE" : "ABSENT", recovered: { next_cache: current ? "HIT" : "ABSENT" } },
-      },
-      warm_cpu: {
-        "/about": { ms_per_request: current ? 20 + index : 100 + index },
-        "/": { ms_per_request: 50 }, "/join": { ms_per_request: 55 }, "/contact": { ms_per_request: 60 },
-      },
-      cache_proofs: { all_verified: true, count: 16, exact_pre_post_proofs: [
-        { route: "/about", phase: "warm-before", next_cache: current ? "HIT" : "ABSENT" },
-        { route: "/about", phase: "warm-after", next_cache: current ? "HIT" : "ABSENT" },
-      ] },
-      concurrency: { concurrency: 1, requested_duration_s: 1, request_timeout_ms: 1000, requests: 10, rps: current ? 10 : 8, errors: 0, error_classes: {}, statuses: { "200": 10 }, cpu: { ms_per_request: current ? 4 : 9 }, firstByte: { median_ms: current ? 90 : 180, p95_ms: current ? 100 : 200 } },
-      evidence_totals: { restart_delta: 0, oom_delta: 0, oom_kill_delta: 0, nr_throttled_delta: 0, throttled_usec_delta: 0, suspicious_log_lines: 0, maximum_observed_memory_bytes: current ? 1000 : 1100 },
-    };
-    writeFileSync(join(sideDir, "summary.json"), `${JSON.stringify(summary)}\n`);
-    run("finalize-run.mjs", ["--dir", sideDir, "--side", side, "--pair-id", pairId]);
-    const pairBase = Date.UTC(2026, 7, 6, 0, (index - 1) * 10, 0);
-    const first = sideRecords.length === 0;
-    sideRecords.push({ sequence: sideRecords.length + 1, side, restore_started_at: new Date(pairBase + (first ? 1 : 11) * 1000).toISOString(), started_at: new Date(pairBase + (first ? 2 : 12) * 1000).toISOString(), ended_at: new Date(pairBase + (first ? 10 : 20) * 1000).toISOString(), gap_from_previous_seconds: first ? 0 : 2, database_fingerprint_before: "e".repeat(64), database_fingerprint_after: "e".repeat(64) });
-  }
-  const pairBase = Date.UTC(2026, 7, 6, 0, (index - 1) * 10, 0);
-  const pair = { schema_version: 2, status: "COMPLETE", quiet_host_attested: true, pair_id: pairId, order, started_at: new Date(pairBase).toISOString(), ended_at: new Date(pairBase + 21_000).toISOString(), maximum_inter_side_gap_seconds: 600, canonical_database_archive_sha256: "d".repeat(64), sides: sideRecords };
-  writeFileSync(join(pairDir, "pair.json"), `${JSON.stringify(pair)}\n`);
-  run("finalize-run.mjs", ["--dir", pairDir, "--side", "pair", "--pair-id", pairId]);
-  pairRecords.push({ pair_id: pairId, order, pair_output: pairDir, status: "COMPLETE", wrapper_invoked_at_utc: new Date(pairBase - 1000).toISOString(), wrapper_returned_at_utc: new Date(pairBase + 22_000).toISOString(), pair_started_at_utc: pair.started_at, pair_ended_at_utc: pair.ended_at, inter_pair_gap_seconds: index === 1 ? 0 : 577 });
+const scanRoot = join(temp, "scan-safe"); mkdirs(scanRoot); writeFileSync(join(scanRoot, "safe.txt"), "AUTH_SECRET=${AUTH_SECRET}\nEMAIL_FROM=noreply@measurement.invalid\n");
+const scanPath = join(scanRoot, "secret-scan.json");
+const scan = scanEvidence({ root: scanRoot, out: scanPath });
+verifySecretScan({ root: scanRoot, report: scan });
+for (const [name, bytes, pattern] of [
+  ["quoted", Buffer.from('AUTH_SECRET="real-secret-material"\n'), /potential secrets/],
+  ["argument", Buffer.from('--token "real-command-token"\n'), /potential secrets/],
+  ["utf16", Buffer.from('DB_PASSWORD="utf16-secret-material"', "utf16le"), /potential secrets/],
+  ["nul-private-key", Buffer.concat([Buffer.from([0]), Buffer.from("-----BEGIN PRIVATE KEY-----")]), /potential secrets/],
+]) {
+  const root = join(temp, `scan-${name}`); mkdirs(root); writeFileSync(join(root, "evidence.bin"), bytes);
+  assert.throws(() => scanEvidence({ root, out: join(root, "secret-scan.json") }), pattern);
 }
-const pairsPath = join(orchestration, "pairs.jsonl");
-const setManifestPath = join(orchestration, "set-output-manifest.sha256");
-const setCompletionPath = join(orchestration, "PAIR-COMPLETED.json");
-function sealSyntheticSet(records) {
-  writeFileSync(pairsPath, `${records.map(JSON.stringify).join("\n")}\n`);
-  const setFiles = [];
-  const visit = (directory) => readdirSync(directory, { withFileTypes: true }).forEach((entry) => {
-    const path = join(directory, entry.name);
-    if (entry.isDirectory()) visit(path); else if (entry.isFile()) setFiles.push(path);
-  });
-  visit(orchestration);
-  const setLines = setFiles.filter((path) => path !== setManifestPath && path !== setCompletionPath).map((path) => {
-    const relative = path.slice(orchestration.length + 1).replaceAll("\\", "/");
-    return `${sha(readFileSync(path))}  ${statSync(path).size}  ${relative}`;
-  }).sort();
-  writeFileSync(setManifestPath, `${setLines.join("\n")}\n`);
-  const setCompletion = { status: "COMPLETE", pair_count: 4, orders: records.map((pair) => pair.order), maximum_inter_pair_gap_seconds: 600, pairs_manifest_sha256: sha(readFileSync(pairsPath)), set_output_manifest_sha256: sha(readFileSync(setManifestPath)), set_output_artifact_count: setLines.length, pair_outputs: records.map((pair) => pair.pair_output) };
-  writeFileSync(setCompletionPath, `${JSON.stringify(setCompletion)}\n`);
-}
-const overlapping = pairRecords.map((pair, index) => index === 1 ? { ...pair, wrapper_invoked_at_utc: pairRecords[0].wrapper_invoked_at_utc, pair_started_at_utc: pairRecords[0].pair_started_at_utc, inter_pair_gap_seconds: 0 } : pair);
-sealSyntheticSet(overlapping);
-rejects("aggregate-pairs.mjs", ["--orchestration", orchestration, "--out-prefix", join(temp, "chronology-rejected")], /overlaps|chronology/);
-sealSyntheticSet(pairRecords);
-rejects("aggregate-pairs.mjs", ["--orchestration", orchestration, "--out-prefix", join(temp, "summary-only-rejected")], /sealed raw evidence revalidation failed/);
 
-console.log("phase-2 self-test: all refutations passed");
+const sealed = join(temp, "sealed"); mkdirs(join(sealed, "nested")); writeFileSync(join(sealed, "nested", "evidence.txt"), "immutable\n");
+finalizeSealedTree({ root: sealed }); verifySealedTree(sealed);
+writeFileSync(join(sealed, "extra.txt"), "late\n"); assert.throws(() => verifySealedTree(sealed), /census differs/);
+const sealedExtraDir = join(temp, "sealed-extra-dir"); mkdirs(sealedExtraDir); writeFileSync(join(sealedExtraDir, "evidence.txt"), "immutable\n"); finalizeSealedTree({ root: sealedExtraDir }); mkdirSync(join(sealedExtraDir, "empty-extra")); assert.throws(() => verifySealedTree(sealedExtraDir), /census differs/);
+
+const revision = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).trim();
+const sourceArchive = join(temp, "source.tar"); execFileSync("git", ["archive", "--format=tar", `--output=${sourceArchive}`, revision], { cwd: repo });
+const databaseArchive = join(temp, "canonical.dump"); writeFileSync(databaseArchive, "canonical database fixture\n");
+const producerSource = join(temp, "producer-source.mjs"); writeFileSync(producerSource, "export const producer = true;\n");
+const imageId = `sha256:${"b".repeat(64)}`;
+
+function prepareCorrectness(name, side, mutate = {}) {
+  const root = join(temp, name); const producerId = `${side}-contract`;
+  mkdirs(join(root, "inputs"), join(root, "raw", producerId), join(root, "producer-results"));
+  let census = correctnessCensus(name);
+  if (mutate.missingCensusId) census = { ...census, checks: census.checks.slice(1) };
+  const censusPath = join(root, "inputs", "check-census.json"); writeFileSync(censusPath, `${JSON.stringify(census, null, 2)}\n`);
+  const producerManifest = join(root, "inputs", "producer-files.sha256"); writeFileSync(producerManifest, `${sha256File(producerSource)}  ${producerSource}\n`);
+  const immutable = {
+    schema_version: 1, run_id: name, side,
+    source: { commit: revision, archive_path: sourceArchive, archive_sha256: sha256File(sourceArchive) },
+    image: { reference: `fixture@${imageId}`, id: imageId, oci_revision: revision },
+    database: { archive_path: databaseArchive, archive_sha256: sha256File(databaseArchive), logical_fingerprint: "c".repeat(64) },
+    environment: { base_url: "http://127.0.0.1:8027", compose_project: "tacbookings-measure", release_id_sha256: "d".repeat(64) },
+    check_census_sha256: sha256File(censusPath), producer_files_sha256: sha256File(producerManifest), created_at: "2026-08-06T00:00:00.000Z",
+  };
+  writeFileSync(join(root, "inputs", "immutable-inputs.json"), `${JSON.stringify(immutable, null, 2)}\n`);
+  if (mutate.changeProducerSource) writeFileSync(producerSource, "export const producer = false;\n");
+  const evidencePath = `raw/${producerId}/evidence.txt`; writeFileSync(join(root, ...evidencePath.split("/")), "bound public evidence\n");
+  if (mutate.extraRaw) writeFileSync(join(root, "raw", producerId, "extra.txt"), "unreferenced\n");
+  const observations = expectedCheckIdsForSide(side).map((checkId) => ({ check_id: checkId, outcome: mutate.notApplicable ? "NOT_APPLICABLE" : "PASS", assertions: ["fixture-assertion"], evidence_paths: [mutate.cyclic ? "raw-evidence-manifest.json" : evidencePath] }));
+  const producer = { schema_version: 1, run_id: name, producer_id: producerId, side, started_at: "2026-08-06T00:00:00.000Z", ended_at: "2026-08-06T00:00:01.000Z", exit_code: 0, cleanup: { status: mutate.failedCleanup ? "failed" : "passed", evidence_paths: [evidencePath] }, observations };
+  writeFileSync(join(root, "producer-results", `${producerId}.json`), `${JSON.stringify(producer, null, 2)}\n`);
+  mkdirSync(join(root, "raw", "orchestrator"));
+  const healthPath = "raw/orchestrator/app-health.json";
+  writeFileSync(join(root, ...healthPath.split("/")), '{"status":"healthy"}\n');
+  writeFileSync(join(root, "postconditions.json"), `${JSON.stringify({ schema_version: 1, run_id: name, side, database_fingerprint_before: immutable.database.logical_fingerprint, database_fingerprint_after: immutable.database.logical_fingerprint, database_unchanged: true, app_health: { status: "passed", evidence_paths: [healthPath] }, completed_at: "2026-08-06T00:00:02.000Z" }, null, 2)}\n`);
+  return root;
+}
+
+const baselineCorrectness = prepareCorrectness("baseline-pass", "baseline");
+run("finalize-correctness-evidence.mjs", ["--dir", baselineCorrectness]);
+assert.equal(verifyCorrectnessCompletion(join(baselineCorrectness, "COMPLETED.json")).report.result, "passed");
+
+const currentBlocked = prepareCorrectness("current-blocked", "current");
+run("finalize-correctness-evidence.mjs", ["--dir", currentBlocked]);
+assert.equal(verifyCorrectnessCompletion(join(currentBlocked, "COMPLETED.json"), { requirePassed: false }).report.result, "owner_disposition_needed");
+assert.throws(() => verifyCorrectnessCompletion(join(currentBlocked, "COMPLETED.json")), /complete but not passed/);
+
+for (const [name, mutation, pattern] of [
+  ["missing-census", { missingCensusId: true }, /exact reviewed MC\/BND census/],
+  ["extra-raw", { extraRaw: true }, /unreferenced/],
+  ["unapproved-na", { notApplicable: true }, /producer observation is invalid/],
+  ["cyclic-reference", { cyclic: true }, /outside its create-only directory/],
+]) {
+  const root = prepareCorrectness(name, "baseline", mutation);
+  rejects("finalize-correctness-evidence.mjs", ["--dir", root], pattern);
+}
+const failedCleanup = prepareCorrectness("failed-cleanup", "baseline", { failedCleanup: true });
+run("finalize-correctness-evidence.mjs", ["--dir", failedCleanup]);
+assert.equal(verifyCorrectnessCompletion(join(failedCleanup, "COMPLETED.json"), { requirePassed: false }).report.result, "failed");
+assert.throws(() => verifyCorrectnessCompletion(join(failedCleanup, "COMPLETED.json")), /complete but not passed/);
+
+// Restore the producer source after the dedicated source-binding mutation.
+const sourceMutation = prepareCorrectness("source-mutation", "baseline", { changeProducerSource: true });
+rejects("finalize-correctness-evidence.mjs", ["--dir", sourceMutation], /producer source binding failed/);
+writeFileSync(producerSource, "export const producer = true;\n");
+
+const route = { next_cache: "ABSENT", etag: null, body_sha256: null };
+const bindingManifest = {
+  schema_version: 1, harness_scope: "issue-2352-phase2",
+  canonical_database: { archive_path: databaseArchive, archive_sha256: sha256File(databaseArchive) },
+  sides: { baseline: { image_reference: `fixture@${imageId}`, image_id: imageId, oci_revision: revision, source_archive: { path: sourceArchive, sha256: sha256File(sourceArchive) }, correctness_completion: { path: join(baselineCorrectness, "COMPLETED.json"), sha256: sha256File(join(baselineCorrectness, "COMPLETED.json")) }, routes: { "/about": route, "/": route, "/join": route, "/contact": route } } },
+};
+const bindingManifestPath = join(temp, "binding-manifest.json"); writeFileSync(bindingManifestPath, `${JSON.stringify(bindingManifest)}\n`);
+const inspectPath = join(temp, "image-inspect.json"); writeFileSync(inspectPath, `${JSON.stringify([{ Id: imageId, RepoDigests: [`fixture@${imageId}`], Config: { Labels: { "org.opencontainers.image.revision": revision } } }])}\n`);
+run("verify-binding.mjs", ["--manifest", bindingManifestPath, "--side", "baseline", "--image-reference", `fixture@${imageId}`, "--image-inspect", inspectPath, "--out", join(temp, "verified-binding.json")]);
+
+const aggregateSource = readFileSync(join(bin, "aggregate-pairs.mjs"), "utf8");
+for (const contract of ["finalProfileExact", "observations.length === 4", "PRELIMINARY_ONLY", "OWNER_REVIEW_REQUIRED", "isFuturePathInside", "common_runtime_environment_hmac_sha256", "autonomous_progression_authorised: false"]) assert.match(aggregateSource, new RegExp(contract.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+const orchestrationSource = readFileSync(join(bin, "orchestrate-pairs.sh"), "utf8");
+for (const contract of ["PAIR_COUNT:-4", "MAX_INTER_SIDE_GAP_SECONDS:-600", "MAX_INTER_PAIR_GAP_SECONDS:-600", "QUIET_MONITOR_INTERVAL_SECONDS:-10", "final-decision orchestration profile cannot weaken"]) assert.match(orchestrationSource, new RegExp(contract.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+
+console.log("phase-2 self-test: all contract mutations were rejected");

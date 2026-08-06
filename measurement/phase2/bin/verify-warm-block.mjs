@@ -2,25 +2,13 @@
 import { createHash } from "node:crypto";
 import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { parseStrictHttpHeaders } from "./http-evidence.mjs";
 
 const fail = (message) => { throw new Error(message); };
 const arg = (name) => {
   const index = process.argv.indexOf(`--${name}`);
   if (index < 0 || !process.argv[index + 1]) fail(`--${name} is required`);
   return process.argv[index + 1];
-};
-const parseHeaders = (text) => {
-  const blocks = text.trim().split(/\r?\n\r?\n(?=HTTP\/)/i);
-  const lines = blocks.at(-1).split(/\r?\n/);
-  const match = /^HTTP\/\S+\s+(\d+)/i.exec(lines.shift() ?? "");
-  if (!match) fail("captured headers have no HTTP status line");
-  const headers = {};
-  for (const line of lines) {
-    const colon = line.indexOf(":");
-    if (colon < 1) continue;
-    headers[line.slice(0, colon).trim().toLowerCase()] = line.slice(colon + 1).trim();
-  }
-  return { status: Number(match[1]), headers };
 };
 const manifestPath = resolve(arg("manifest"));
 const side = arg("side");
@@ -40,7 +28,7 @@ const actualFiles = readdirSync(evidenceDir);
 if (actualFiles.length !== expectedFiles.size || actualFiles.some((file) => !expectedFiles.has(file))) fail("warm evidence files are missing or unexpected");
 const samples = [];
 for (let sample = 1; sample <= expectedSamples; sample += 1) {
-  const parsed = parseHeaders(readFileSync(resolve(evidenceDir, `sample-${sample}.headers`), "utf8"));
+  const parsed = parseStrictHttpHeaders(readFileSync(resolve(evidenceDir, `sample-${sample}.headers`), "utf8"), `${side} ${route} warm sample ${sample} headers`);
   const bodySha = createHash("sha256").update(readFileSync(resolve(evidenceDir, `sample-${sample}.body`))).digest("hex");
   const nextCache = parsed.headers["x-nextjs-cache"] ?? "ABSENT";
   const etag = parsed.headers.etag;

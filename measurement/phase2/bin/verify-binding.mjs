@@ -2,6 +2,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync, statSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { verifyCorrectnessCompletion } from "./verify-correctness-evidence.mjs";
 
 function fail(message) { throw new Error(message); }
 function sha256(path) {
@@ -94,7 +95,7 @@ const revision = inspected.Config?.Labels?.["org.opencontainers.image.revision"]
 if (!/^[a-f0-9]{40,64}$/.test(binding.oci_revision ?? "")) fail(`${side}.oci_revision is invalid`);
 if (revision !== binding.oci_revision) fail(`OCI revision mismatch: expected ${binding.oci_revision}, got ${revision ?? "absent"}`);
 
-for (const [field, label] of [["source_archive", "source archive"], ["correctness_report", "correctness report"]]) {
+for (const [field, label] of [["source_archive", "source archive"], ["correctness_completion", "correctness completion"]]) {
   const entry = binding[field];
   if (!entry?.path) fail(`${side}.${field}.path is required`);
   expectHex(entry.sha256, `${side}.${field}.sha256`);
@@ -104,14 +105,11 @@ for (const [field, label] of [["source_archive", "source archive"], ["correctnes
 }
 const archiveRevision = gitArchiveRevision(resolve(binding.source_archive.path));
 if (archiveRevision !== binding.oci_revision) fail(`${side} source archive revision ${archiveRevision} does not match OCI revision ${binding.oci_revision}`);
-let correctnessReport;
+let correctness;
 try {
-  correctnessReport = JSON.parse(readFileSync(resolve(binding.correctness_report.path), "utf8"));
+  correctness = verifyCorrectnessCompletion(resolve(binding.correctness_completion.path));
 } catch (error) {
-  fail(`${side} correctness report is not valid JSON: ${error.message}`);
-}
-if (correctnessReport?.schema_version !== 1 || correctnessReport?.result !== "passed") {
-  fail(`${side} bound correctness report payload must have schema_version 1 and result passed`);
+  fail(`${side} correctness completion chain did not verify as passed: ${error.message}`);
 }
 expectHex(manifest.canonical_database?.archive_sha256, "canonical_database.archive_sha256");
 const archive = requiredFile(manifest.canonical_database?.archive_path, "canonical database archive");
@@ -142,14 +140,13 @@ const canonicalize = (value) => Array.isArray(value)
     : value;
 const canonicalJson = (value) => JSON.stringify(canonicalize(value));
 if (
-  correctnessReport.side !== side ||
-  correctnessReport.image_id !== binding.image_id ||
-  correctnessReport.oci_revision !== binding.oci_revision ||
-  correctnessReport.source_archive_sha256 !== binding.source_archive.sha256 ||
-  correctnessReport.canonical_database_archive_sha256 !== archiveSha ||
-  canonicalJson(correctnessReport.routes) !== canonicalJson(binding.routes)
+  correctness.immutable.side !== side ||
+  correctness.immutable.image.id !== binding.image_id ||
+  correctness.immutable.image.oci_revision !== binding.oci_revision ||
+  correctness.immutable.source.archive_sha256 !== binding.source_archive.sha256 ||
+  correctness.immutable.database.archive_sha256 !== archiveSha
 ) {
-  fail(`${side} correctness report payload is not bound to the exact image, source archive, database archive, and route expectations`);
+  fail(`${side} correctness completion chain is not bound to the exact image, source archive, and database archive`);
 }
 
 const result = {
@@ -163,8 +160,9 @@ const result = {
   oci_revision: revision,
   source_archive_sha256: binding.source_archive.sha256,
   source_archive_revision: archiveRevision,
-  correctness_report_sha256: binding.correctness_report.sha256,
-  correctness_result: correctnessReport.result,
+  correctness_completion_sha256: binding.correctness_completion.sha256,
+  correctness_report_sha256: correctness.completion.correctness_report_sha256,
+  correctness_result: correctness.report.result,
   canonical_database_archive_sha256: archiveSha,
   verified: true,
 };
