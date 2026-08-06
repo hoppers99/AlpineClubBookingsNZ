@@ -205,6 +205,7 @@ function makeStore(
   const updates: Array<{ id: string; data: Record<string, unknown> }> = [];
 
   const db = {
+    $executeRaw: vi.fn().mockResolvedValue(1),
     booking: {
       findUnique: vi.fn(async ({ where }: any) => byId.get(where.id) ?? null),
       findMany: vi.fn(async ({ where, select, orderBy, take }: any) => {
@@ -250,7 +251,12 @@ function makeStore(
       findMany: vi.fn().mockResolvedValue(options.policies ?? [policyRow()]),
     },
     lodge: { findFirst: vi.fn().mockResolvedValue({ name: "Ruapehu Lodge" }) },
-    member: { findMany: vi.fn().mockResolvedValue([]) },
+    member: {
+      findMany: vi.fn().mockResolvedValue([]),
+      findUnique: vi.fn(async ({ where }: any) =>
+        where.id === "missing-officer" ? null : { id: where.id },
+      ),
+    },
     hostingCoverageIncident: {
       findMany: vi.fn(async ({ where }: any) =>
         incidents.filter((incident) =>
@@ -1704,6 +1710,38 @@ function rowFromStore(db: any, id: string): Record<string, unknown> {
 describe("settling a dependent booking after the change (#2576 §7, §14, §16)", () => {
   const KID_NIGHTS = ["2026-07-03", "2026-07-04"];
 
+  it("takes the policy-set lock before reading policy or writing an incident", async () => {
+    const { db } = makeStore([
+      booking({ id: "b-main", guests: [guestRow("kid", KID_NIGHTS)] }),
+    ]);
+    const order: string[] = [];
+    db.$executeRaw.mockImplementation(async () => {
+      order.push("policy-set-lock");
+      return 1;
+    });
+    db.adultMemberHostingPolicy.findMany.mockImplementation(async () => {
+      order.push("policy-read");
+      return [policyRow()];
+    });
+    db.hostingCoverageIncident.create.mockImplementation(async ({ data }: any) => {
+      order.push("incident-write");
+      return { id: "incident-1", ...data };
+    });
+
+    await reconcileSameOwnerCoverageIncident(
+      { bookingId: "b-main", cause: "SYSTEM_CHANGE" },
+      db,
+    );
+
+    expect(order[0]).toBe("policy-set-lock");
+    expect(order.indexOf("policy-set-lock")).toBeLessThan(
+      order.indexOf("policy-read"),
+    );
+    expect(order.indexOf("policy-read")).toBeLessThan(
+      order.indexOf("incident-write"),
+    );
+  });
+
   it("opens ONE urgent incident and never touches the booking's lifecycle", async () => {
     const rows = [
       booking({ id: "b-main", guests: [guestRow("kid", KID_NIGHTS)] }),
@@ -1803,6 +1841,29 @@ describe("settling a dependent booking after the change (#2576 §7, §14, §16)"
       cause: "OFFICER_OVERRIDE",
       overriddenByMemberId: "officer-1",
       overrideReason: "Member asked us to cancel the other booking",
+    });
+  });
+
+  it("degrades a deleted queued actor to null before promoting attribution into the incident FK", async () => {
+    const { db, incidents } = makeStore([
+      booking({ id: "b-main", guests: [guestRow("kid", KID_NIGHTS)] }),
+    ]);
+
+    await expect(
+      reconcileSameOwnerCoverageIncident(
+        {
+          bookingId: "b-main",
+          cause: "OFFICER_OVERRIDE",
+          actorMemberId: "missing-officer",
+          reason: "Queued before the officer profile was deleted",
+        },
+        db,
+      ),
+    ).resolves.toMatchObject({ action: "opened" });
+    expect(incidents[0]).toMatchObject({
+      cause: "OFFICER_OVERRIDE",
+      overriddenByMemberId: null,
+      overrideReason: null,
     });
   });
 

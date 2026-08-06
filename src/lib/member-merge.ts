@@ -448,6 +448,9 @@ export const MEMBER_MERGE_SNAPSHOT_SCALAR_COLUMNS: readonly string[] = [
   // MOVED loser -> master by `MEMBER_MERGE_FK_LESS_MOVE_COLUMNS` / `applyMoves`,
   // matching its FK twin on the same row (`requestedByMemberId`, classified
   // `move`).
+  // `HostingCoverageReevaluation.actorMemberId` is the same exceptional live
+  // shape: although FK-less while queued, it is promoted into the incident's
+  // real `overriddenByMemberId` FK, so the move registry owns it as well.
 
   // -------------------------------------------------------------------------
   // #2243 — the rest of the columns `parseFkLessMemberIdColumns` detects.
@@ -1601,8 +1604,11 @@ function selfRelationMoveWhere(
  * `BookingRequest.convertedMemberId` is the identity pointer to the member a
  * booking request converted INTO, replayed as a live member id by
  * `claimAlreadyConvertedBookingRequest` — not an actor/audit snapshot.
+ * `HostingCoverageReevaluation.actorMemberId` is live too: the drain promotes
+ * it into the incident's real Member foreign key, so queued attribution must
+ * follow a merged person onto the surviving profile.
  */
-const MEMBER_MERGE_FK_LESS_MOVE_COLUMNS: readonly {
+export const MEMBER_MERGE_FK_LESS_MOVE_COLUMNS: readonly {
   key: string;
   delegate: string;
   column: string;
@@ -1611,6 +1617,11 @@ const MEMBER_MERGE_FK_LESS_MOVE_COLUMNS: readonly {
     key: "BookingRequest.convertedMemberId",
     delegate: "bookingRequest",
     column: "convertedMemberId",
+  },
+  {
+    key: "HostingCoverageReevaluation.actorMemberId",
+    delegate: "hostingCoverageReevaluation",
+    column: "actorMemberId",
   },
 ];
 
@@ -2772,15 +2783,10 @@ async function applyMoves(
   }
 
   // FK-LESS member-id columns carried as MOVES rather than snapshots (#2243).
-  // `BookingRequest.convertedMemberId` is not an actor/audit column: it is the
-  // identity pointer to the member the request converted INTO, handed straight
-  // back to the idempotent replay path as a live member id
-  // (`claimAlreadyConvertedBookingRequest` in booking-request-shared.ts, read by
-  // booking-request.ts and school-booking-request.ts). Left on a hard-deleted
-  // loser it would replay a conversion as a member that no longer exists. Its FK
-  // twin on the same row, `requestedByMemberId`, is classified `move` in the
-  // spec table above; this column carries no `@relation` and so cannot live
-  // there, hence `MEMBER_MERGE_FK_LESS_MOVE_COLUMNS`.
+  // Both are live identities even though the schema cannot express them as
+  // Member relations: one is replayed to conversion callers and the other is
+  // promoted into a real incident FK by the hosting drain. Left on a
+  // hard-deleted loser either would later name a member that no longer exists.
   for (const c of MEMBER_MERGE_FK_LESS_MOVE_COLUMNS) {
     const delegate = (tx as unknown as Record<string, {
       updateMany: (args: unknown) => Promise<{ count: number }>;

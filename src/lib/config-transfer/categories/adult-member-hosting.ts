@@ -26,6 +26,7 @@ import {
   enabledHostScopeList,
   hostScopeSetIsEmpty,
 } from "@/lib/policies/adult-member-hosting";
+import { enqueueActiveHostingIncidentPolicyReconciliation } from "@/lib/adult-member-hosting-policy-reconciliation";
 import { folderLodgeSlug, lodgeFolderSegments } from "./lodge-config";
 import { asStr, RowValidator } from "../values";
 
@@ -435,6 +436,7 @@ export async function applyAdultMemberHosting(
   );
   if (errors.length > 0) throw new Error(errors[0]);
   const parsedScopes = new Set<string>(parsed.map((row) => row.scope));
+  let hostingPolicyChanged = false;
 
   for (const row of parsed) {
     const existing = current.byScope.get(row.scope) ?? null;
@@ -456,6 +458,7 @@ export async function applyAdultMemberHosting(
         select: { id: true },
       });
       result.created += 1;
+      hostingPolicyChanged = true;
       continue;
     }
     const changed = changedFields(row.data, existing);
@@ -473,6 +476,7 @@ export async function applyAdultMemberHosting(
       );
     }
     result.updated += 1;
+    hostingPolicyChanged = true;
   }
 
   for (const [scope, existing] of current.byScope) {
@@ -486,5 +490,16 @@ export async function applyAdultMemberHosting(
       );
     }
     result.deleted += 1;
+    hostingPolicyChanged = true;
+  }
+
+  if (hostingPolicyChanged) {
+    await enqueueActiveHostingIncidentPolicyReconciliation(
+      {
+        beforePolicies: [...current.byScope.values()],
+        actorMemberId: ctx.actorMemberId,
+      },
+      ctx.tx,
+    );
   }
 }

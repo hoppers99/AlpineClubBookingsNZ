@@ -445,6 +445,58 @@ describe("executeMemberMerge", () => {
     });
   });
 
+  it("re-points queued hosting actor attribution before hard-deleting the loser", async () => {
+    const hostingCoverageReevaluation = {
+      ...defaultDelegate(),
+      count: vi.fn(({ where }: { where: Record<string, unknown> }) =>
+        Promise.resolve(where.actorMemberId === LOSER_ID ? 1 : 0),
+      ),
+      updateMany: vi.fn(({ where }: { where: Record<string, unknown> }) =>
+        Promise.resolve({ count: where.actorMemberId === LOSER_ID ? 1 : 0 }),
+      ),
+    };
+    const { client } = makeClient({ hostingCoverageReevaluation });
+    const core: MemberMergePreviewCore = {
+      fieldMerge: mergeMemberFields(
+        master as unknown as Record<string, unknown>,
+        loser as unknown as Record<string, unknown>,
+      ).diff,
+      relationMoves: [
+        {
+          model: "HostingCoverageReevaluation.actorMemberId",
+          count: 1,
+        },
+      ],
+      collisions: [],
+      blockers: [],
+      warnings: [],
+    };
+
+    const result = await executeMemberMerge({
+      masterId: MASTER_ID,
+      loserId: LOSER_ID,
+      actorMemberId: ACTOR_ID,
+      previewToken: buildMemberMergePreviewToken(
+        MASTER_ID,
+        LOSER_ID,
+        master.updatedAt,
+        loser.updatedAt,
+        core,
+      ),
+      confirmationText: "MERGE Dup Person",
+      db: client as never,
+    });
+
+    expect(hostingCoverageReevaluation.updateMany).toHaveBeenCalledWith({
+      where: { actorMemberId: LOSER_ID },
+      data: { actorMemberId: MASTER_ID },
+    });
+    expect(result.relationMoves).toContainEqual({
+      model: "HostingCoverageReevaluation.actorMemberId",
+      count: 1,
+    });
+  });
+
   it("hands the MASTER's id to the conversion replay path after the merge (#2243)", async () => {
     // End of the chain: `claimAlreadyConvertedBookingRequest` is what
     // booking-request.ts and school-booking-request.ts read the pointer through.

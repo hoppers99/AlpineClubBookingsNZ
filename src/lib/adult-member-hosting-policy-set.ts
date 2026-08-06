@@ -34,7 +34,7 @@ export const INACTIVE_ADULT_MEMBER_HOSTING_LODGE_MESSAGE =
  * the three cannot form a cycle.
  */
 export async function lockAdultMemberHostingPolicySet(
-  tx: Prisma.TransactionClient,
+  tx: Pick<Prisma.TransactionClient, "$executeRaw">,
 ): Promise<void> {
   await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${ADULT_MEMBER_HOSTING_POLICY_SET_LOCK_KEY}))`;
 }

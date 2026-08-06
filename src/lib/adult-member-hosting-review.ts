@@ -18,6 +18,7 @@ import {
   lockHostingCoverageOwner,
   lockHostingCoverageOwners,
 } from "@/lib/adult-member-hosting-coverage-lock";
+import { lockAdultMemberHostingPolicySet } from "@/lib/adult-member-hosting-policy-set";
 import { enqueueHostingCoverageReevaluation } from "@/lib/adult-member-hosting-coverage-queue";
 import {
   SameOwnerCoverageOverrideRequiredError,
@@ -122,6 +123,7 @@ export type AdultMemberHostingReviewDb = Pick<
   | "hostingCoverageIncident"
   | "hostingCoverageReevaluation"
   | "auditLog"
+  | "$executeRaw"
 >;
 
 /** The narrow client the policy read needs on its own. */
@@ -2082,6 +2084,28 @@ export async function reconcileSameOwnerCoverageIncident(
   // `incidentId` without a cast.
   { action: "none" } | { action: "resolved" } | HostingCoverageIncidentOutcome
 > {
+  // Serialise the effective-policy read and every resulting incident write with
+  // policy administration. Without this, a drain could read ENFORCED, race a
+  // demotion to Review/Disabled, and open a fresh urgent incident after the
+  // policy writer had already enumerated the active rows it needed to close.
+  // The policy-set key is first here; the evaluator's coverage-owner key is
+  // taken later, preserving policy-set -> owner -> incident/queue order.
+  await lockAdultMemberHostingPolicySet(db);
+
+  // Queue attribution is intentionally FK-less so the work survives ordinary
+  // member deletion. A merge re-points it (member-merge.ts), but an exceptional
+  // hard deletion between enqueue and drain can still leave a dangling id.
+  // Incident attribution IS a real FK, so verify at the promotion seam and
+  // degrade to anonymous system attribution rather than retrying a poison item.
+  const actorMemberId = params.actorMemberId
+    ? (
+        await db.member.findUnique({
+          where: { id: params.actorMemberId },
+          select: { id: true },
+        })
+      )?.id ?? null
+    : null;
+
   const outcome = await reconcileAdultMemberHostingReview(params.bookingId, db, {
     enforcement: "REVIEW_ONLY",
   });
@@ -2101,7 +2125,7 @@ export async function reconcileSameOwnerCoverageIncident(
       {
         bookingId: params.bookingId,
         resolution: "COVERAGE_RESTORED",
-        actorMemberId: params.actorMemberId ?? null,
+        actorMemberId,
       },
       db,
     );
@@ -2138,7 +2162,7 @@ export async function reconcileSameOwnerCoverageIncident(
       {
         bookingId: params.bookingId,
         resolution: "EXCEPTION_APPROVED",
-        actorMemberId: params.actorMemberId ?? null,
+        actorMemberId,
       },
       db,
     );
@@ -2179,9 +2203,9 @@ export async function reconcileSameOwnerCoverageIncident(
       violation: outcome.violation,
       override:
         params.cause === "OFFICER_OVERRIDE" &&
-        params.actorMemberId &&
+        actorMemberId &&
         params.reason?.trim()
-          ? { byMemberId: params.actorMemberId, reason: params.reason }
+          ? { byMemberId: actorMemberId, reason: params.reason }
           : null,
     },
     db,
