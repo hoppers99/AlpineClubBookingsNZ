@@ -573,6 +573,48 @@ describe("public PageContent token view models", () => {
     expect(JSON.stringify(on)).not.toContain("HOLD");
   });
 
+  it("publishes the configured same-owner scope instead of the built-in same-booking default (#2569)", async () => {
+    const stored = {
+      id: "hosting-club",
+      scopeKey: "club-wide",
+      lodgeId: null,
+      mode: "ENFORCED",
+      capacityMode: "HOLD",
+      version: 3,
+      hostScopeSameBooking: true,
+      hostScopeSameBookingOwner: true,
+    };
+    // Model Prisma's projection rather than returning fields the loader did not
+    // request. This kills the regression where the resolver silently received
+    // no scope columns and substituted its narrower built-in default.
+    mocks.hostingPolicies.mockImplementation(
+      ({ select }: { select: Record<string, boolean> }) =>
+        Promise.resolve([
+          Object.fromEntries(
+            Object.keys(select).map((key) => [
+              key,
+              stored[key as keyof typeof stored],
+            ]),
+          ),
+        ]),
+    );
+
+    const policy = await loadPublicBookingPolicy();
+
+    expect(policy?.adultMemberHosting).toContain(
+      "covered by an adult member staying at the lodge",
+    );
+    expect(policy?.adultMemberHosting).not.toContain("same booking");
+    expect(mocks.hostingPolicies).toHaveBeenCalledWith(
+      expect.objectContaining({
+        select: expect.objectContaining({
+          hostScopeSameBooking: true,
+          hostScopeSameBookingOwner: true,
+        }),
+      }),
+    );
+  });
+
   it("answers a lodge page from that lodge's override, and a club page from the club row (#2364)", async () => {
     mocks.lodge.mockResolvedValue({ id: "lodge-1", name: "Lodge One", slug: "one" });
     const clubOn = {
