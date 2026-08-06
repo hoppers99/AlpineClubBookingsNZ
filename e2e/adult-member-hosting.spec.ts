@@ -459,12 +459,41 @@ test("another booking on the same account supplies the cover, and cannot then be
   expect(survivor, "the refused cancel must have rolled back").toBeTruthy();
   expect(["CONFIRMED", "PAID"]).toContain(survivor!.status);
 
-  // 4. AN OFFICER IS NOT REFUSED (§7). The same cancellation, by an admin, goes
-  //    through — the dependent booking keeps its status rather than being cancelled
-  //    with it, and the club's record of the problem is the officer queue.
-  const overridden = await admin.post(
+  // 4. AN OFFICER GETS THE EXPLICIT OVERRIDE DOOR (§7). The first cancellation
+  //    names the affected booking and nights; the confirmed retry carries the
+  //    mandatory reason. The dependent booking keeps its status rather than being
+  //    cancelled with the source, and the club's record is the officer queue.
+  const needsOverride = await admin.post(
     `/api/bookings/${sourceBooking.id}/cancel`,
     { data: { refundMethod: "credit", notifyMember: false } },
+  );
+  expect(needsOverride.status()).toBe(409);
+  const needsOverrideBody = (await needsOverride.json()) as {
+    code?: string;
+    requiresOverrideReason?: boolean;
+    strandedBookings?: Array<{ bookingId: string; nights: string[] }>;
+  };
+  expect(needsOverrideBody).toMatchObject({
+    code: "SAME_OWNER_COVERAGE_OVERRIDE_REQUIRED",
+    requiresOverrideReason: true,
+  });
+  expect(needsOverrideBody.strandedBookings?.[0]).toMatchObject({
+    bookingId: dependentBooking.id,
+    nights: expect.arrayContaining([WINDOW.checkIn]),
+  });
+
+  const overridden = await admin.post(
+    `/api/bookings/${sourceBooking.id}/cancel`,
+    {
+      data: {
+        refundMethod: "credit",
+        notifyMember: false,
+        hostingCoverageOverride: {
+          acknowledged: true,
+          reason: "E2E officer confirms the dependent hosting incident",
+        },
+      },
+    },
   );
   expect(
     overridden.ok(),
