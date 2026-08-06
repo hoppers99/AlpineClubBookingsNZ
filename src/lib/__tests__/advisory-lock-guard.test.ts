@@ -35,11 +35,20 @@ const GLOBAL_BOOKING_MONEY_LOCK_INVENTORY: Record<string, number> = {
   // decisions share one helper that takes global -> immutable lodge before the
   // authoritative re-read and guarded claim; provider work remains outside.
   "src/app/api/admin/bookings/[id]/review/route.ts": 1,
-  // #1881: the two capacity-admission branches in confirm-pending-guests
+  // #1881 / #2593: the capacity-admission branches in confirm-pending-guests
   // deliberately compose global lifecycle lock(1) first with the canonical
   // per-lodge capacity lock. The global lock prevents cancellation/settlement
-  // resurrection while the lodge lock serialises the capacity claim.
-  "src/app/api/admin/bookings/[id]/confirm-pending-guests/route.ts": 2,
+  // resurrection while the lodge lock serialises both the capacity claim and
+  // the allocation reconciliation added by #2593.
+  "src/app/api/admin/bookings/[id]/confirm-pending-guests/route.ts": 3,
+  // #2593: these booking-confirmation / party-change routes can create or prune
+  // allocations as part of a booking lifecycle write. They therefore join the
+  // existing global cohort first and the immutable booking-lodge capacity key
+  // second, then re-read and reconcile through the lock-held lifecycle seam.
+  "src/app/api/admin/bookings/[id]/exclusive-hold/route.ts": 1,
+  "src/app/api/admin/bookings/[id]/force-confirm/route.ts": 1,
+  "src/app/api/bookings/[id]/confirm-draft/route.ts": 1,
+  "src/app/api/bookings/[id]/guests/route.ts": 1,
   "src/app/api/bookings/[id]/waitlist-confirm/route.ts": 1,
   // #2586: departure cleanup shares the consent writer's global -> lodge ->
   // roster -> BookingGuest order so it cannot deadlock by locking the guest
@@ -53,12 +62,18 @@ const GLOBAL_BOOKING_MONEY_LOCK_INVENTORY: Record<string, number> = {
   // its status writes did not exclude a concurrent cancel.
   "src/app/api/payments/create-payment-intent/route.ts": 1,
   "src/app/api/payments/switch-to-internet-banking/route.ts": 1,
-  // #2366: an existing-allocation move does not change booking status, but it
-  // composes with cancellation because cancellation prunes those rows. It
-  // therefore takes global lock(1) before the destination-lodge capacity lock,
-  // re-reads the source rows under both, and cannot resurrect a cancelled
-  // booking's allocation after the prune commits.
-  "src/lib/admin-bed-allocation.ts": 1,
+  // #2366 / #2593: allocation moves, manual/range assignment, approval,
+  // deletion, room/bed inventory changes and explicit auto-allocation all
+  // compose with lifecycle reconciliation because cancellation can prune the
+  // same rows. Every public wrapper takes global lock(1), then the immutable or
+  // explicitly selected lodge capacity lock, and delegates to a narrow
+  // lock-held implementation; auto-allocation also rebuilds its plan there.
+  "src/lib/admin-bed-allocation.ts": 11,
+  // #2593: the public reconciler owns global -> immutable booking lodge, while
+  // callers already holding either tier use the matching lock-held seam. The
+  // partner-shared cleanup site owns the same ordered topology for its sorted
+  // lodge set.
+  "src/lib/bed-allocation-lifecycle.ts": 2,
   "src/lib/booking-batch-modification-service.ts": 1,
   // #1881 residual: the fifth site protects the linked provisional-child
   // PENDING -> CANCELLED claim. That path also takes the child's per-lodge lock
@@ -88,10 +103,24 @@ const GLOBAL_BOOKING_MONEY_LOCK_INVENTORY: Record<string, number> = {
   // reservations for held policy-exception requests (#2365)".
   "src/lib/booking-exception-request-service.ts": 1,
   "src/lib/booking-guest-removal-service.ts": 1,
+  // #2593: creation/deletion/request-quote writers now reconcile allocation
+  // state in the same transaction as their booking-status mutation. These are
+  // lifecycle writers, not capacity-only admission checks, so they take the
+  // global cohort before the affected lodge key and re-read under both.
+  "src/lib/booking-create.ts": 2,
+  "src/lib/booking-delete.ts": 2,
+  "src/lib/booking-request-quotes.ts": 1,
   "src/lib/booking-request.ts": 1,
+  // #2593: completion and pending/waitlist cron claims can prune or rebuild
+  // allocation state. Candidate reads stay outside; each candidate transaction
+  // takes global -> immutable lodge, re-reads, status-guards the claim, and only
+  // then calls the lock-held reconciler.
+  "src/lib/cron-complete-bookings.ts": 1,
+  "src/lib/cron-confirm-pending.ts": 3,
   "src/lib/cron-group-settlement-reaper.ts": 2,
   "src/lib/cron-quote-expiry-reminders.ts": 2,
-  "src/lib/group-cancel.ts": 2,
+  "src/lib/cron-waitlist.ts": 1,
+  "src/lib/group-cancel.ts": 3,
   "src/lib/group-settlement.ts": 6,
   "src/lib/internet-banking-payment-cron.ts": 1,
   // "+ Add Member Guest" (#2307, epic #2305). Two sites, both in the
@@ -117,7 +146,13 @@ const GLOBAL_BOOKING_MONEY_LOCK_INVENTORY: Record<string, number> = {
   // closes the initially-empty partition race without making every booking
   // writer enumerate all possible roster dates.
   "src/lib/roster-lock.ts": 1,
-  "src/lib/school-booking-request.ts": 1,
+  // #2593: school conversion and waitlist offer/expiry paths are lifecycle
+  // counterparts of allocation reconciliation. Single-lodge paths take global
+  // before that lodge; cross-lodge paths acquire the sorted lodge union before
+  // their fresh read and guarded transition, so no path reverses the topology.
+  "src/lib/school-booking-request.ts": 2,
+  "src/lib/waitlist-cross-lodge.ts": 6,
+  "src/lib/waitlist.ts": 4,
   "src/lib/xero-group-settlement-invoices.ts": 3,
   "src/lib/xero-inbound/invoice-paid-effects.ts": 1,
 };
@@ -155,15 +190,13 @@ const SCOPED_ADVISORY_LOCK_INVENTORY: Record<string, number> = {
   // — a NEW keyspace in its own namespace, keyed on the booking OWNER.
   //
   // WHY IT EXISTS. `SAME_BOOKING_OWNER` makes one booking's compliance a function of
-  // ANOTHER booking's rows, and the per-lodge capacity key cannot serialise that even
-  // though coverage is same-lodge by definition: `booking-cancel.ts`'s claim
-  // transactions take `pg_advisory_xact_lock(1)` and never the lodge lock, while
-  // `booking-create.ts` and the guest-add route take the lodge lock and never
-  // `lock(1)`. Different keys at READ COMMITTED over disjoint rows, so a cancel
-  // removing the last qualifying adult could interleave with a create that had just
-  // read that adult as cover and the winner depended on commit order. Same reasoning
-  // that gave `lockBookingMemberNights` its own family: a per-member invariant cannot
-  // be serialised by a per-lodge key.
+  // ANOTHER booking's rows. When #2576 introduced this key, confirmed creation used
+  // lodge while cancellation used global, leaving the named race open. #2593 later
+  // made the allocation-participating confirmed-create and cancellation paths compose
+  // global → lodge. The owner key remains required because participant/member/queue
+  // producers do not all share those tiers and the invariant is cross-booking and
+  // per-owner. Same reasoning that gave `lockBookingMemberNights` its own family: a
+  // per-member invariant cannot be serialised by a per-lodge key alone.
   //
   // COMPOSITION AND ORDER. Taken LAST among the application locks a caller composes:
   // after `pg_advisory_xact_lock(1)`, `acquireLodgeCapacityLock`, roster-date locks,
@@ -213,6 +246,11 @@ const SCOPED_ADVISORY_LOCK_INVENTORY: Record<string, number> = {
   "src/lib/lodge-capacity-lock.ts": 1,
   "src/lib/member-credit.ts": 1,
   "src/lib/member-lifecycle-actions.ts": 2,
+  // #2593: one canonical helper mints member-lifecycle:{memberId}; it
+  // de-duplicates and sorts ids before acquisition. Deletion, bulk update,
+  // member-detail and seasonal-assignment writers all call this helper instead
+  // of reconstructing the scoped key at their individual call sites.
+  "src/lib/member-lifecycle-lock.ts": 1,
   // #2363: every minimum-stay policy writer takes the one global policy-set
   // key before reading/planning. The migration's BEFORE STATEMENT trigger
   // takes the exact same key for draining old-colour INSERT/UPDATE/DELETE before
@@ -399,14 +437,14 @@ describe("advisory lock guard (#182 / H1 regression class)", () => {
     )?.text;
     expect(school).toBeDefined();
 
-    const approval =
-      school?.slice(
-        school.indexOf("export async function approveSchoolBookingRequest"),
-      ) ?? "";
+    const approvalStart =
+      school?.indexOf("export async function approveSchoolBookingRequest") ?? -1;
+    const approvalEnd =
+      school?.indexOf("export type MemberWholeLodgeApprovalOverride") ?? -1;
+    const approval = school?.slice(approvalStart, approvalEnd) ?? "";
     const locator = approval.indexOf("const heldLodgeLocator = expectedHeldBookingId");
     const transaction = approval.indexOf("conversion = await prisma.$transaction");
-    const conditionalGlobal = approval.indexOf("if (expectedHeldBookingId)");
-    const globalLock = approval.indexOf("pg_advisory_xact_lock(1)", conditionalGlobal);
+    const globalLock = approval.indexOf("pg_advisory_xact_lock(1)");
     const heldKey = approval.indexOf("expectedHeldLodgeId!", globalLock);
     const lodgeLock = approval.indexOf("acquireLodgeCapacityLock(tx, bookingLodgeId)");
     const requestReread = approval.indexOf(
@@ -421,7 +459,6 @@ describe("advisory lock guard (#182 / H1 regression class)", () => {
     for (const marker of [
       locator,
       transaction,
-      conditionalGlobal,
       globalLock,
       heldKey,
       lodgeLock,
@@ -432,9 +469,9 @@ describe("advisory lock guard (#182 / H1 regression class)", () => {
     ]) {
       expect(marker).toBeGreaterThanOrEqual(0);
     }
+    expect(approval.match(/pg_advisory_xact_lock\(1\)/g) ?? []).toHaveLength(1);
     expect(locator).toBeLessThan(transaction);
-    expect(transaction).toBeLessThan(conditionalGlobal);
-    expect(conditionalGlobal).toBeLessThan(globalLock);
+    expect(transaction).toBeLessThan(globalLock);
     expect(globalLock).toBeLessThan(heldKey);
     expect(heldKey).toBeLessThan(lodgeLock);
     expect(globalLock).toBeLessThan(lodgeLock);

@@ -15,8 +15,14 @@ vi.mock("@/lib/xero-contact-groups", () => ({
 // #2106: the age-tier reconciliation depends on these; mock them so the tier
 // logic can be asserted without a live sweep/DB.
 const mockSweep = vi.fn().mockResolvedValue([]);
+const mockAcquireFuturePartnerSharedAllocationLocks = vi
+  .fn()
+  .mockResolvedValue(undefined);
 vi.mock("@/lib/bed-allocation-lifecycle", () => ({
-  sweepFuturePartnerSharedAllocations: (...args: unknown[]) => mockSweep(...args),
+  sweepFuturePartnerSharedAllocationsWithLocksHeld: (...args: unknown[]) =>
+    mockSweep(...args),
+  acquireFuturePartnerSharedAllocationLocks: (...args: unknown[]) =>
+    mockAcquireFuturePartnerSharedAllocationLocks(...args),
   describePartnerSharedSweepReason: vi.fn(() => "age tier changed"),
   partnerShareSweepCounterpartNames: vi.fn(() => "Partner"),
   partnerShareSweepNights: vi.fn(() => 0),
@@ -213,6 +219,7 @@ function makePreviewDb() {
     auditLog: {
       create: vi.fn().mockResolvedValue({}),
     },
+    $executeRaw: vi.fn().mockResolvedValue(1),
     $transaction: vi.fn(async (callback: any) => callback(db)),
   };
 
@@ -303,6 +310,7 @@ function makeRollForwardDb() {
     auditLog: {
       create: vi.fn().mockResolvedValue({}),
     },
+    $executeRaw: vi.fn().mockResolvedValue(1),
     $transaction: vi.fn(async (callback: any) => callback(db)),
   };
 
@@ -533,6 +541,18 @@ describe("seasonal membership assignment preview and save", () => {
     expect(mockSweep).toHaveBeenCalledWith(
       expect.objectContaining({ memberId: "member-1", reason: "member_age_tier_changed" }),
     );
+    expect(mockAcquireFuturePartnerSharedAllocationLocks).toHaveBeenCalledWith(
+      db,
+      ["member-1"],
+    );
+    const acquireOrder =
+      mockAcquireFuturePartnerSharedAllocationLocks.mock.invocationCallOrder[0];
+    const memberLockOrder = db.$executeRaw.mock.invocationCallOrder[0];
+    const memberWriteOrder = db.member.update.mock.invocationCallOrder[0];
+    const heldSweepOrder = mockSweep.mock.invocationCallOrder[0];
+    expect(acquireOrder).toBeLessThan(memberLockOrder);
+    expect(memberLockOrder).toBeLessThan(memberWriteOrder);
+    expect(memberWriteOrder).toBeLessThan(heldSweepOrder);
     expect(db.auditLog.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
@@ -868,6 +888,7 @@ describe("seasonal membership assignment roll-forward", () => {
       auditLog: {
         create: vi.fn().mockResolvedValue({}),
       },
+      $executeRaw: vi.fn().mockResolvedValue(1),
       $transaction: vi.fn(async (callback: any) => callback(db)),
     };
 
@@ -960,7 +981,11 @@ describe("seasonal membership assignment roll-forward", () => {
           if (where.memberId?.in) {
             return where.memberId.in.map((id: string) => ({
               memberId: id,
-              membershipType: { allowedAgeTiers: exemptionByMember[id] },
+              membershipType: {
+                subscriptionBehavior:
+                  id === "member-forced" ? "FORCED" : "REQUIRED",
+                allowedAgeTiers: exemptionByMember[id],
+              },
             }));
           }
           if (where.seasonYear === priorSeason) return candidates;
@@ -977,7 +1002,12 @@ describe("seasonal membership assignment roll-forward", () => {
         }),
         update: vi.fn().mockResolvedValue({}),
       },
+      memberSubscription: {
+        findUnique: vi.fn().mockResolvedValue(null),
+        updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+      },
       auditLog: { create: vi.fn().mockResolvedValue({}) },
+      $executeRaw: vi.fn().mockResolvedValue(1),
       $transaction: vi.fn(async (callback: any) => callback(db)),
     };
 
@@ -1060,7 +1090,10 @@ describe("seasonal membership assignment roll-forward", () => {
           if (where.memberId?.in) {
             return where.memberId.in.map((id: string) => ({
               memberId: id,
-              membershipType: { allowedAgeTiers: [{ ageTier: "NOT_APPLICABLE" }] },
+              membershipType: {
+                subscriptionBehavior: "FORCED",
+                allowedAgeTiers: [{ ageTier: "NOT_APPLICABLE" }],
+              },
             }));
           }
           if (where.seasonYear === priorSeason) return candidates;
@@ -1083,6 +1116,7 @@ describe("seasonal membership assignment roll-forward", () => {
         }),
       },
       auditLog: { create: vi.fn().mockResolvedValue({}) },
+      $executeRaw: vi.fn().mockResolvedValue(1),
       $transaction: vi.fn(async (callback: any) => callback(db)),
     };
 

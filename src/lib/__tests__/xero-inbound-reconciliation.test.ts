@@ -66,6 +66,7 @@ const mocks = vi.hoisted(() => ({
   buildSubscriptionInvoiceMatchOptions: vi.fn(),
   getAccountMapping: vi.fn(),
   lodgeFindFirst: vi.fn(),
+  acquireLodgeCapacityLock: vi.fn(),
   checkCapacity: vi.fn(),
   processWaitlist: vi.fn(),
   txLinkFindFirst: vi.fn(),
@@ -169,6 +170,7 @@ vi.mock("@/lib/capacity", async (importOriginal) => {
 
   return {
     ...actual,
+    acquireLodgeCapacityLock: mocks.acquireLodgeCapacityLock,
     checkCapacityForGuestRanges: mocks.checkCapacity,
   };
 });
@@ -208,6 +210,8 @@ vi.mock("@/lib/bed-allocation-lifecycle", async (importOriginal) => {
   return {
     ...actual,
     reconcileBedAllocationsForBooking: mocks.reconcileBedAllocations,
+    reconcileBedAllocationsForBookingWithLodgeLockHeld:
+      mocks.reconcileBedAllocations,
   };
 });
 
@@ -489,6 +493,7 @@ describe("processStoredXeroInboundEvents", () => {
     mocks.paymentTransactionCreate.mockResolvedValue({});
     mocks.memberCreditFindFirst.mockResolvedValue(null);
     mocks.reconcileBedAllocations.mockResolvedValue(undefined);
+    mocks.acquireLodgeCapacityLock.mockResolvedValue(undefined);
     mocks.recordBookingEvent.mockResolvedValue(undefined);
     mocks.txExecuteRaw.mockResolvedValue(undefined);
     mocks.subscriptionFindMany.mockResolvedValue([]);
@@ -1042,9 +1047,10 @@ describe("processStoredXeroInboundEvents", () => {
           booking: {
             id: "booking_ib_1",
             memberId: "mem_1",
+            lodgeId: "lodge-1",
             checkIn: new Date("2026-07-10"),
             checkOut: new Date("2026-07-12"),
-            status: "PAYMENT_PENDING",
+            status: "CONFIRMED",
             finalPriceCents: 12345,
             discountCents: 0,
             promoAdjustmentCents: 0,
@@ -1082,9 +1088,10 @@ describe("processStoredXeroInboundEvents", () => {
       booking: {
         id: "booking_ib_1",
         memberId: "mem_1",
+        lodgeId: "lodge-1",
         checkIn: new Date("2026-07-10"),
         checkOut: new Date("2026-07-12"),
-        status: "PAYMENT_PENDING",
+        status: "CONFIRMED",
         finalPriceCents: 12345,
         discountCents: 0,
         promoAdjustmentCents: 0,
@@ -1158,13 +1165,30 @@ describe("processStoredXeroInboundEvents", () => {
         xeroInvoiceNumber: "INV-IB-001",
       },
     });
-    expect(mocks.bookingUpdate).toHaveBeenCalledWith({
-      where: { id: "booking_ib_1" },
+    expect(mocks.bookingUpdateMany).toHaveBeenCalledWith({
+      where: { id: "booking_ib_1", status: "CONFIRMED" },
       data: {
         status: "PAID",
         draftExpiresAt: null,
       },
     });
+    expect(mocks.paymentFindUnique).toHaveBeenCalledTimes(2);
+    expect(mocks.acquireLodgeCapacityLock).toHaveBeenCalledWith(
+      expect.anything(),
+      "lodge-1",
+    );
+    expect(mocks.acquireLodgeCapacityLock.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.paymentFindUnique.mock.invocationCallOrder[1],
+    );
+    expect(mocks.paymentFindUnique.mock.invocationCallOrder[1]).toBeLessThan(
+      mocks.bookingUpdateMany.mock.invocationCallOrder.at(-1)!,
+    );
+    expect(mocks.bookingUpdateMany.mock.invocationCallOrder.at(-1)!).toBeLessThan(
+      mocks.reconcileBedAllocations.mock.invocationCallOrder[0],
+    );
+    expect(mocks.reconcileBedAllocations.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.enqueueOwnHostingCoverage.mock.invocationCallOrder[0],
+    );
     expect(mocks.auditLogCreate).toHaveBeenCalledWith({
       data: expect.objectContaining({
         action: "booking.payment.confirmed",
@@ -1190,7 +1214,7 @@ describe("processStoredXeroInboundEvents", () => {
       // Multi-lodge phase 8: the options now carry the booking's lodge so
       // the email renders that lodge's identity (undefined here because the
       // fixture booking has no lodgeId).
-      { lodgeId: undefined }
+      { lodgeId: "lodge-1" }
     );
   });
 
@@ -1325,8 +1349,8 @@ describe("processStoredXeroInboundEvents", () => {
     });
     // The booking still settles exactly as it did before — the PAID flip itself
     // is untouched by this change.
-    expect(mocks.bookingUpdate).toHaveBeenCalledWith({
-      where: { id: "booking_ib_1" },
+    expect(mocks.bookingUpdateMany).toHaveBeenCalledWith({
+      where: { id: "booking_ib_1", status: "PAYMENT_PENDING" },
       data: { status: "PAID", draftExpiresAt: null },
     });
     // The member's note, and the officer's.
@@ -1719,8 +1743,8 @@ describe("processStoredXeroInboundEvents", () => {
 
     // The booking was cancelled and the offsetting local credit was created in
     // the same transaction.
-    expect(mocks.bookingUpdate).toHaveBeenCalledWith({
-      where: { id: "booking_ib_cap" },
+    expect(mocks.bookingUpdateMany).toHaveBeenCalledWith({
+      where: { id: "booking_ib_cap", status: "PAYMENT_PENDING" },
       data: {
         status: "CANCELLED",
         draftExpiresAt: null,
@@ -1777,8 +1801,8 @@ describe("processStoredXeroInboundEvents", () => {
     });
 
     // Settled, not cancelled.
-    expect(mocks.bookingUpdate).toHaveBeenCalledWith({
-      where: { id: "booking_ib_cap" },
+    expect(mocks.bookingUpdateMany).toHaveBeenCalledWith({
+      where: { id: "booking_ib_cap", status: "PAYMENT_PENDING" },
       data: { status: "PAID", draftExpiresAt: null },
     });
     expect(mocks.bookingUpdate).not.toHaveBeenCalledWith(
@@ -1804,8 +1828,8 @@ describe("processStoredXeroInboundEvents", () => {
     await processStoredXeroInboundEvents();
 
     // We are on the capacity-claim branch (booking cancelled, credit minted).
-    expect(mocks.bookingUpdate).toHaveBeenCalledWith({
-      where: { id: "booking_ib_cap" },
+    expect(mocks.bookingUpdateMany).toHaveBeenCalledWith({
+      where: { id: "booking_ib_cap", status: "PAYMENT_PENDING" },
       data: { status: "CANCELLED", draftExpiresAt: null },
     });
 
@@ -1816,13 +1840,10 @@ describe("processStoredXeroInboundEvents", () => {
       rawCalls.some((c) => sqlOf(c).includes("pg_advisory_xact_lock(1)"))
     ).toBe(true);
     // ...AND the per-lodge capacity lock keyed to the booking's lodge.
-    expect(
-      rawCalls.some(
-        (c) =>
-          sqlOf(c).includes("pg_advisory_xact_lock(hashtextextended(") &&
-          c[1] === "lodge_ib_cap"
-      )
-    ).toBe(true);
+    expect(mocks.acquireLodgeCapacityLock).toHaveBeenCalledWith(
+      expect.anything(),
+      "lodge_ib_cap",
+    );
   });
 
   // #1587: an unheld PAYMENT_PENDING reconcile takes the booking's lodge lock
@@ -1854,7 +1875,10 @@ describe("processStoredXeroInboundEvents", () => {
             findFirst: vi.fn().mockResolvedValue({ id: "ptx_primary" }),
             create: mocks.paymentTransactionCreate,
           },
-          booking: { update: mocks.bookingUpdate },
+          booking: {
+            update: mocks.bookingUpdate,
+            updateMany: mocks.bookingUpdateMany,
+          },
           memberCredit: {
             findFirst: mocks.memberCreditFindFirst,
             create: mocks.memberCreditCreate,
@@ -1934,12 +1958,8 @@ describe("processStoredXeroInboundEvents", () => {
     const lockedPostLock = {
       ...freshPreLock,
       booking: {
-        id: "booking_ib_pl",
-        lodgeId: "lodge_ib_pl",
-        checkIn: new Date("2026-07-10"),
-        checkOut: new Date("2026-07-12"),
+        ...freshPreLock.booking,
         status: params.lockedBookingStatus,
-        guests: [{ id: "guest_pl", nights: [] }],
       },
     };
 
@@ -1957,15 +1977,11 @@ describe("processStoredXeroInboundEvents", () => {
       ]);
 
     // The reconcile loop reads the payment twice inside its transaction: once
-    // before the lodge lock (full member/guest include) and once after (guests
-    // only). Return the post-lock snapshot only for the guests-only re-read.
-    mocks.paymentFindUnique.mockImplementation((args: unknown) => {
-      const includesMember = Boolean(
-        (args as { include?: { booking?: { include?: { member?: unknown } } } })
-          ?.include?.booking?.include?.member
-      );
-      return Promise.resolve(includesMember ? freshPreLock : lockedPostLock);
-    });
+    // under the global lock and once after adding the lodge lock.
+    let paymentReadCount = 0;
+    mocks.paymentFindUnique.mockImplementation(() =>
+      Promise.resolve(paymentReadCount++ === 0 ? freshPreLock : lockedPostLock),
+    );
 
     mocks.memberCreditFindFirst.mockResolvedValue(null);
     mocks.startXeroSyncOperation.mockResolvedValue({ id: "op_account_credit_pl" });
@@ -2016,15 +2032,10 @@ describe("processStoredXeroInboundEvents", () => {
 
     // We reached the post-lock position: the booking's per-lodge lock was taken
     // and the re-read ran BEFORE the interception.
-    const rawCalls = mocks.txExecuteRaw.mock.calls as unknown[][];
-    const sqlOf = (call: unknown[]) => (call[0] as string[]).join("?");
-    expect(
-      rawCalls.some(
-        (c) =>
-          sqlOf(c).includes("pg_advisory_xact_lock(hashtextextended(") &&
-          c[1] === "lodge_ib_pl"
-      )
-    ).toBe(true);
+    expect(mocks.acquireLodgeCapacityLock).toHaveBeenCalledWith(
+      expect.anything(),
+      "lodge_ib_pl",
+    );
 
     // The load-bearing assertion: NO status write at all — the booking is never
     // flipped to PAID (no phantom capacity claim) and the arm never touches
@@ -2076,8 +2087,8 @@ describe("processStoredXeroInboundEvents", () => {
     // The #1587 guard falls through cleanly for a still-active booking: the
     // capacity gate runs and the PAID flip happens exactly as before.
     expect(mocks.checkCapacity).toHaveBeenCalled();
-    expect(mocks.bookingUpdate).toHaveBeenCalledWith({
-      where: { id: "booking_ib_pl" },
+    expect(mocks.bookingUpdateMany).toHaveBeenCalledWith({
+      where: { id: "booking_ib_pl", status: "PAYMENT_PENDING" },
       data: {
         status: "PAID",
         draftExpiresAt: null,
@@ -3388,8 +3399,8 @@ describe("processStoredXeroInboundEvents", () => {
         xeroInvoiceNumber: "INV-IB-GATE",
       },
     });
-    expect(mocks.bookingUpdate).toHaveBeenCalledWith({
-      where: { id: "booking_ib_gate" },
+    expect(mocks.bookingUpdateMany).toHaveBeenCalledWith({
+      where: { id: "booking_ib_gate", status: "PAYMENT_PENDING" },
       data: { status: "PAID", draftExpiresAt: null },
     });
     expect(sendBookingConfirmedEmail).toHaveBeenCalled();
@@ -3455,8 +3466,8 @@ describe("processStoredXeroInboundEvents", () => {
       skipped: 0,
     });
 
-    expect(mocks.bookingUpdate).toHaveBeenCalledWith({
-      where: { id: "booking_ib_gate" },
+    expect(mocks.bookingUpdateMany).toHaveBeenCalledWith({
+      where: { id: "booking_ib_gate", status: "PAYMENT_PENDING" },
       data: { status: "PAID", draftExpiresAt: null },
     });
     expect(sendBookingConfirmedEmail).toHaveBeenCalled();

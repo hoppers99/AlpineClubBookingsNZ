@@ -1537,6 +1537,20 @@ reported `NO_BOOKING_ADULT` and removed from demand):
    its adults room together (one room when they fit) and its students take
    their own rooms.
 
+The selected lodge's `BedAllocationSettings` governs both the explicit board
+run and this lifecycle reconcile (#2593). After placement count and the hard
+school/age-mix rules, feasible layouts are compared lexicographically in the
+saved top-to-bottom order: booking cohesion, stay continuity, requested room,
+and direct-family cohesion by default. Any subset — including `[]` — is valid;
+omitted settings use the default. The split planner executes at most 24
+deterministic matching-layout candidates, including connected-family,
+direct-group, direct-pair, capacity-aware high-affinity room packing, and
+maximum-cardinality direct-edge pairing orders; whole-room, legacy, and
+displacement trials are additional. This is a bounded
+heuristic rather than a global optimum. Saving a different order is not a
+lifecycle transition and rewrites no allocation: it changes only plans made
+after the save.
+
 **Cross-booking age-mix invariant (#1768, all phases and both placement
 directions):** a room-night holding minors from booking X never also holds an
 adult from a DIFFERENT booking — the planner neither places a minor beside
@@ -1591,8 +1605,13 @@ records commit in that same transaction. Bucket-to-board bulk placement keeps
 its older per-night conflict semantics.
 
 The board's "Run Auto Allocation" uses the same whole-stay planner without
-displacement, and the board raises a
-stay-level `ROOM_SWITCH` warning when a booking's rooms change between nights,
+displacement. Its displayed suggestions are only a preview: the action takes
+global booking `lock(1)` then the selected lodge lock, authoritatively rebuilds
+only after confirming that lodge is still active, then rebuilds the scoped
+inventory/booking/occupancy/hold plan through that transaction and constructs
+and inserts AUTO rows. A room or bed deactivated/retyped
+after preview therefore cannot be written from the stale plan. The board raises
+a stay-level `ROOM_SWITCH` warning when a booking's rooms change between nights,
 plus a `MINOR_ADULT_MIX` warning on any persisted room-night that mixes one
 booking's minors with another booking's adults (#1768).
 

@@ -761,6 +761,41 @@ Use these ownership boundaries when adding new code:
 | Database | `prisma/schema.prisma`, `prisma/migrations/` | Schema changes must include deployable migrations and respect the blue/green migration policy. |
 | Operations | `scripts/`, `deploy/`, Compose files | Deployment helpers should be reusable by forks through environment overrides. |
 
+### Bed-allocation preference resolution
+
+`src/lib/bed-allocation-settings.ts` is the closed-vocabulary boundary and the
+single effective-settings resolver for the board, explicit board run, and
+booking-lifecycle reconcile. `BedAllocationSettings.id = lodgeId` is the
+authoritative per-lodge row. During the expand-compatible transition, the
+legacy `id = "default"` row applies only when it is unlinked or linked to the
+same lodge; otherwise the resolver uses code defaults. A lodge never inherits
+another lodge's row, and the settings API requires one active `lodgeId` for
+both reads and writes. Reads require `bookings:view`; writes require
+`bookings:edit` and use the standard per-section Edit → dirty Save/Cancel UI.
+
+The ordered values are `BOOKING_COHESION`, `STAY_CONTINUITY`,
+`REQUESTED_ROOM`, and `FAMILY_COHESION`. Missing settings use that historical
+order; an explicitly saved empty array is valid neutral ordering. Invalid,
+unknown, or duplicate persisted values fail closed instead of silently
+changing planner behavior. Preferences are lexicographic after hard placement
+count and invariant scores: the split matcher maximizes guest-night cardinality
+for each bounded candidate, and at most 24 matching-layout candidates are
+executed per booking. Those candidates include a capacity-aware, direct-family
+high-affinity packing order as well as connected-component, direct-group,
+direct-pair, and maximum-cardinality pairing orders. Whole-room, legacy, and
+displacement trials remain
+separate and may scale with room count. The overall booking-first planner is a
+bounded deterministic heuristic, not a global optimum across all bookings.
+Changing preferences affects future suggestions and lifecycle reconciliation;
+it never rewrites existing allocation rows by itself.
+
+Migration `20260806020000_add_bed_allocation_priority_order` is an additive
+EXPAND on the cold settings table: one non-null `TEXT[]` column with the
+historical constant default. Old-colour clients omit and ignore it; old-colour
+inserts receive that default; no `BedAllocation` row is touched or replanned.
+The exact lock/rollback and migration-prefix coordination statement is recorded
+in [`BLUE_GREEN_MIGRATION_SAFETY.tsv`](BLUE_GREEN_MIGRATION_SAFETY.tsv).
+
 The largest current files are historical consolidation points rather than a
 preferred style. When changing them, extract focused helpers around the code
 being touched and keep tests close to the extracted domain helper so public
@@ -855,12 +890,12 @@ Booking Policies sections (#2142) and is now the **default across the admin
 tree** (#2160, extended by #2168 and #2324) — not a claim that nothing is left.
 Measured
 on the current tree by `view-only-banner-contract.test.ts`, which asserts these
-figures rather than trusting a hand count: **83 components render a banner, and
-261 of the 310 `ViewOnlyActionButton` call sites opt out** of the per-button
+figures rather than trusting a hand count: **84 components render a banner, and
+262 of the 311 `ViewOnlyActionButton` call sites opt out** of the per-button
 reason. (Earlier revisions of this page published 76/232/264/211 — those were
 upstream-historical and had drifted; the numbers here are the ones the contract
-test currently pins, which is the only authority.) Those 261 split by WHICH rule
-covers them: **234** pass the literal
+test currently pins, which is the only authority.) Those 262 split by WHICH rule
+covers them: **235** pass the literal
 `describeReason={false}` and are covered by a banner in the same file, and **27**
 pass `describeReason={!ancestorRendersViewOnlyBanner}` and are covered by a
 verified vouching parent — 22 by a parent's own JSX render site (#2168), 5 by the

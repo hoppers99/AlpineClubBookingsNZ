@@ -186,7 +186,7 @@ vi.mock("@/lib/email", () => ({
 
 vi.mock("@/lib/audit", () => ({ logAudit: vi.fn() }));
 vi.mock("@/lib/bed-allocation-lifecycle", () => ({
-  reconcileBedAllocationsForBooking: vi.fn().mockResolvedValue(undefined),
+  reconcileBedAllocationsForBookingWithGlobalLockHeld: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock("@/lib/capacity", () => ({
   acquireLodgeCapacityLock: vi.fn().mockResolvedValue(undefined),
@@ -237,7 +237,7 @@ import {
   BookingMemberNightConflictError,
 } from "@/lib/booking-member-night-conflicts";
 import { checkCapacityForGuestRanges } from "@/lib/capacity";
-import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
+import { reconcileBedAllocationsForBookingWithGlobalLockHeld as reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
 import { isEffectiveModuleEnabled } from "@/lib/admin-modules";
 
 const mockedModuleEnabled = vi.mocked(isEffectiveModuleEnabled);

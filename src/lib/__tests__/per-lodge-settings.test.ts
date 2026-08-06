@@ -5,6 +5,9 @@ import {
   loadSchoolGroupSoftCap,
 } from "@/lib/lodge-settings";
 import { resolveAutoAllocationEnabled } from "@/lib/bed-allocation-lifecycle";
+import {
+  resolveEffectiveBedAllocationSettings,
+} from "@/lib/bed-allocation-settings";
 
 // Settings-singleton conversion (lodge-scoping contract, audited
 // 2026-07-03): a lodge's settings row is keyed by its lodge id, the legacy
@@ -25,7 +28,18 @@ function bedSettingsDb(rows: Record<string, Record<string, unknown>>) {
   return {
     bedAllocationSettings: {
       findUnique: vi.fn(async ({ where }: { where: { id: string } }) =>
-        (rows[where.id] as never) ?? null,
+        rows[where.id]
+          ? ({
+              id: where.id,
+              allocationPriorityOrder: [
+                "BOOKING_COHESION",
+                "STAY_CONTINUITY",
+                "REQUESTED_ROOM",
+                "FAMILY_COHESION",
+              ],
+              ...rows[where.id],
+            } as never)
+          : null,
       ),
     },
   };
@@ -131,4 +145,28 @@ describe("resolveAutoAllocationEnabled per-lodge resolution", () => {
   it("defaults to enabled when no rows exist", async () => {
     expect(await resolveAutoAllocationEnabled(bedSettingsDb({}) as never, "lodge-b")).toBe(true);
   });
+
+  it.each([
+    ["a non-array", "BOOKING_COHESION"],
+    ["an unknown value", ["UNKNOWN_PRIORITY"]],
+    ["a duplicate value", ["BOOKING_COHESION", "BOOKING_COHESION"]],
+  ])(
+    "rejects persisted priority order containing %s",
+    async (_case, value) => {
+      const db = bedSettingsDb({
+        "lodge-b": {
+          autoAllocationEnabled: true,
+          allocationPriorityOrder: value,
+          lodgeId: "lodge-b",
+        },
+      });
+
+      await expect(
+        resolveEffectiveBedAllocationSettings(db as never, "lodge-b"),
+      ).rejects.toMatchObject({
+        name: "BedAllocationSettingsValidationError",
+        status: 500,
+      });
+    },
+  );
 });

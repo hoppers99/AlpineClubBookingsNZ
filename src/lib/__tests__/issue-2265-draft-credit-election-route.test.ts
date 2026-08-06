@@ -104,7 +104,8 @@ vi.mock("@/lib/lodges", () => ({
   getDefaultLodgeId: vi.fn().mockResolvedValue("lodge-1"),
 }));
 vi.mock("@/lib/bed-allocation-lifecycle", () => ({
-  reconcileBedAllocationsForBooking: mocks.reconcileBedAllocationsForBooking,
+  reconcileBedAllocationsForBookingWithLodgeLockHeld:
+    mocks.reconcileBedAllocationsForBooking,
 }));
 vi.mock("@/lib/booking-payment-cleanup", () => ({
   queueSupersededPrimaryIntentCancellations:

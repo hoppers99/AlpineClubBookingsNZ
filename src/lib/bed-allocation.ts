@@ -1,9 +1,15 @@
 import type { AgeTier } from "@prisma/client";
 import {
+  addDaysDateOnly,
   eachDateOnlyInRange,
   formatDateOnly,
   parseDateOnly,
 } from "@/lib/date-only";
+import {
+  BED_ALLOCATION_PRIORITY_VOCABULARY,
+  parseBedAllocationPriorityOrder,
+  type BedAllocationPriority,
+} from "@/lib/bed-allocation-settings";
 
 type BedAllocationSource = "AUTO" | "MANUAL";
 // Matches the DB enum so freshly-read guest rows type-check. Guests are
@@ -40,6 +46,10 @@ interface BedAllocationGuest {
   stayStart: Date;
   stayEnd: Date;
   ageTier?: BedAllocationAgeTier | null;
+  /** Canonical BookingGuestNight rows. Present (including []) beats envelopes. */
+  nights?: Array<string | Date>;
+  /** Direct canonical FamilyGroup memberships for the linked registered guest. */
+  familyGroupIds?: string[];
 }
 
 export interface BedAllocationBooking {
@@ -83,6 +93,11 @@ interface OccupiedBedNight {
   bookingGuestId?: string | null;
   roomId?: string | null;
   ageTier?: BedAllocationAgeTier | null;
+  familyGroupIds?: string[];
+  /** Read-only booking context used when a provisional occupant is relocated. */
+  bookingRequestedRoomId?: string | null;
+  /** Read-only SCHOOL classification used to preserve separation on relocation. */
+  bookingIsSchoolGroup?: boolean;
   /**
    * Whether the occupying booking holds lodge capacity (issue #1387). Only
    * consulted when `prioritizeCapacityHolding` is set. A capacity-holding
@@ -171,6 +186,7 @@ export interface BuildBedAllocationPlanInput {
   rooms: BedAllocationRoom[];
   bookings: BedAllocationBooking[];
   occupiedBedNights?: OccupiedBedNight[];
+  allocationPriorityOrder?: BedAllocationPriority[];
   /**
    * When true (issue #1387, the lifecycle auto-allocation path), capacity-
    * holding bookings are allocated before provisional ones and may displace
@@ -287,22 +303,13 @@ function roomsForBooking(
   rooms: SortedRoomWithBeds[],
   booking: BedAllocationBooking,
 ): SortedRoomWithBeds[] {
-  const lodgeScoped = roomsAtLodge(rooms, booking.lodgeId);
-  const requestedRoomId = booking.requestedRoomId;
-  if (!requestedRoomId) return lodgeScoped;
-
-  const requestedIndex = lodgeScoped.findIndex(
-    (room) => room.id === requestedRoomId,
-  );
-  if (requestedIndex <= 0) return lodgeScoped;
-
-  const reordered = [...lodgeScoped];
-  const [requestedRoom] = reordered.splice(requestedIndex, 1);
-  reordered.unshift(requestedRoom);
-  return reordered;
+  return roomsAtLodge(rooms, booking.lodgeId);
 }
 
 function guestStayNights(guest: BedAllocationGuest): string[] {
+  if (guest.nights !== undefined) {
+    return [...new Set(guest.nights.map(normalizeStayDate))].sort();
+  }
   return eachDateOnlyInRange(guest.stayStart, guest.stayEnd).map(formatDateOnly);
 }
 
@@ -314,6 +321,7 @@ function isAdultAgeTier(ageTier?: BedAllocationAgeTier | null): boolean {
 interface PartyGuest {
   id: string;
   ageTier?: BedAllocationAgeTier | null;
+  familyGroupIds?: string[];
 }
 
 /** A party guest with the (sorted, date-only) nights it still needs a bed on. */
@@ -355,6 +363,7 @@ function adultsFirst<T extends PartyGuest>(guests: T[]): T[] {
 function groupBookingGuests(booking: BedAllocationBooking): StayGuest[] {
   const nightSets = new Map<string, Set<string>>();
   const ageTiers = new Map<string, BedAllocationAgeTier | null | undefined>();
+  const familyGroups = new Map<string, string[]>();
   const order: string[] = [];
 
   for (const guest of booking.guests) {
@@ -363,6 +372,7 @@ function groupBookingGuests(booking: BedAllocationBooking): StayGuest[] {
       nights = new Set();
       nightSets.set(guest.id, nights);
       ageTiers.set(guest.id, guest.ageTier);
+      familyGroups.set(guest.id, [...new Set(guest.familyGroupIds ?? [])].sort());
       order.push(guest.id);
     }
     for (const night of guestStayNights(guest)) {
@@ -373,6 +383,7 @@ function groupBookingGuests(booking: BedAllocationBooking): StayGuest[] {
   return order.map((id) => ({
     id,
     ageTier: ageTiers.get(id),
+    familyGroupIds: familyGroups.get(id) ?? [],
     nights: [...(nightSets.get(id) ?? [])].sort(),
   }));
 }
@@ -406,6 +417,9 @@ interface OccupantInfo {
   bedId: string;
   stayDate: string;
   ageTier?: BedAllocationAgeTier | null;
+  familyGroupIds: string[];
+  bookingRequestedRoomId: string | null;
+  bookingIsSchoolGroup: boolean;
   holdsCapacity: boolean;
   /** Admin-approved (#776 lock): pins the whole booking (issues #1387/#1677). */
   isApproved: boolean;
@@ -477,6 +491,8 @@ interface PlannerState {
     stayDate: string;
     isAdult: boolean;
   }>;
+  allocationPriorityOrder: BedAllocationPriority[];
+  bookingById: Map<string, BedAllocationBooking>;
 }
 
 function roomNightMixKey(roomId: string, stayDate: string) {
@@ -604,11 +620,13 @@ function liveExistingAdultRoomIds(
   stayDate: string,
 ): Set<string> {
   const rooms = new Set<string>();
-  const rows = state.occupantsByBooking.get(bookingId);
-  if (!rows) return rooms;
-  for (const row of rows.values()) {
-    if (row.stayDate !== stayDate || !row.roomId) continue;
-    if (isAdultAgeTier(row.ageTier)) rooms.add(row.roomId);
+  // Read the live composition index rather than only seeded DB occupants:
+  // allocations created earlier in this same plan also contribute here.
+  for (const room of state.activeRooms) {
+    const counts = state.roomNightAgeMix
+      .get(roomNightMixKey(room.id, stayDate))
+      ?.get(bookingId);
+    if ((counts?.adults ?? 0) > 0) rooms.add(room.id);
   }
   return rooms;
 }
@@ -1079,20 +1097,127 @@ function applyAdultCoverageCarveOut(
  * Lodge scoping (`roomsAtLodge`, inside `roomsForBooking`) stays mandatory.
  * The count sort is stable, so ties keep the requested-first/sortOrder order.
  */
+function shareDirectFamilyGroup(
+  a: { familyGroupIds?: string[] },
+  b: { familyGroupIds?: string[] },
+): boolean {
+  if (!a.familyGroupIds?.length || !b.familyGroupIds?.length) return false;
+  const bGroups = new Set(b.familyGroupIds);
+  return a.familyGroupIds.some((id) => bGroups.has(id));
+}
+
+function candidateRoomPriorityVector(
+  state: PlannerState,
+  booking: BedAllocationBooking,
+  demand: BookingStayDemand,
+  room: SortedRoomWithBeds,
+): number[] {
+  const rows = state.occupantsByBooking.get(booking.id);
+  const existing = rows ? [...rows.values()] : [];
+  const vector: number[] = [];
+
+  for (const priority of state.allocationPriorityOrder) {
+    if (priority === "BOOKING_COHESION") {
+      let distinctRoomTotal = 0;
+      for (const night of demand.nights) {
+        const roomIds = new Set(
+          existing
+            .filter((row) => row.stayDate === night)
+            .map((row) => row.roomId),
+        );
+        if ((demand.guestsByNight.get(night)?.length ?? 0) > 0) roomIds.add(room.id);
+        distinctRoomTotal += roomIds.size;
+      }
+      vector.push(distinctRoomTotal);
+      continue;
+    }
+
+    if (priority === "STAY_CONTINUITY") {
+      let sameBedLinks = 0;
+      let sameRoomLinks = 0;
+      let roomSwitches = 0;
+      for (const guest of demand.guests) {
+        const existingForGuest = existing.filter(
+          (row) => row.bookingGuestId === guest.id,
+        );
+        const roomByNight = new Map<string, string>();
+        const bedByNight = new Map<string, string>();
+        for (const row of existingForGuest) {
+          roomByNight.set(row.stayDate, row.roomId);
+          bedByNight.set(row.stayDate, row.bedId);
+        }
+        for (const night of guest.nights) roomByNight.set(night, room.id);
+        const actualNights = [...roomByNight.keys()].sort();
+        for (let index = 1; index < actualNights.length; index += 1) {
+          const previous = actualNights[index - 1];
+          const current = actualNights[index];
+          const sameRoom = roomByNight.get(previous) === roomByNight.get(current);
+          if (sameRoom) sameRoomLinks += 1;
+          else roomSwitches += 1;
+          if (
+            bedByNight.has(previous) &&
+            bedByNight.get(previous) === bedByNight.get(current)
+          ) {
+            sameBedLinks += 1;
+          }
+        }
+      }
+      vector.push(-sameBedLinks, -sameRoomLinks, roomSwitches);
+      continue;
+    }
+
+    if (priority === "REQUESTED_ROOM") {
+      const placedGuestNights = demand.guests.reduce(
+        (total, guest) => total + guest.nights.length,
+        0,
+      );
+      vector.push(room.id === booking.requestedRoomId ? -placedGuestNights : 0);
+      continue;
+    }
+
+    let splitFamilyPairs = 0;
+    for (const night of demand.nights) {
+      const demanded = demand.guestsByNight.get(night) ?? [];
+      const fixed = existing.filter((row) => row.stayDate === night);
+      for (const guest of demanded) {
+        for (const occupant of fixed) {
+          if (
+            shareDirectFamilyGroup(guest, occupant) &&
+            room.id !== occupant.roomId
+          ) {
+            splitFamilyPairs += 1;
+          }
+        }
+      }
+    }
+    vector.push(splitFamilyPairs);
+  }
+
+  return vector;
+}
+
+function compareNumberVectors(a: number[], b: number[]): number {
+  for (let index = 0; index < Math.max(a.length, b.length); index += 1) {
+    const diff = (a[index] ?? 0) - (b[index] ?? 0);
+    if (diff !== 0) return diff;
+  }
+  return 0;
+}
+
+/** Saved preferences order feasible rooms; canonical order breaks exact ties. */
 function orderedCandidateRooms(
   state: PlannerState,
   booking: BedAllocationBooking,
+  demand: BookingStayDemand,
 ): SortedRoomWithBeds[] {
   const base = roomsForBooking(state.activeRooms, booking);
-  const rows = state.occupantsByBooking.get(booking.id);
-  if (!rows || rows.size === 0) return base;
+  if (state.allocationPriorityOrder.length === 0) return base;
 
-  const counts = new Map<string, number>();
-  for (const row of rows.values()) {
-    counts.set(row.roomId, (counts.get(row.roomId) ?? 0) + 1);
-  }
-  return [...base].sort(
-    (a, b) => (counts.get(b.id) ?? 0) - (counts.get(a.id) ?? 0),
+  return [...base].sort((a, b) =>
+    compareNumberVectors(
+      candidateRoomPriorityVector(state, booking, demand, a),
+      candidateRoomPriorityVector(state, booking, demand, b),
+    ),
   );
 }
 
@@ -1184,13 +1309,18 @@ function assignGuestsToRoomBeds(
   ) => boolean,
 ): RoomBedAssignment[] {
   const assignments: RoomBedAssignment[] = [];
+  const continuityEnabled = state.allocationPriorityOrder.includes(
+    "STAY_CONTINUITY",
+  );
   const usable = (guest: StayGuest, bedId: string, night: string) =>
     bedNightUsableForGuest
       ? bedNightUsableForGuest(guest, bedId, night)
       : !state.occupied.has(occupiedKey(bedId, night));
 
   for (const guest of adultsFirst(guests)) {
-    const preferredBedId = preferredBedByGuest?.get(guest.id);
+    const preferredBedId = continuityEnabled
+      ? preferredBedByGuest?.get(guest.id)
+      : undefined;
     const bedsInOrder = preferredBedId
       ? [
           ...room.beds.filter((bed) => bed.id === preferredBedId),
@@ -1198,9 +1328,11 @@ function assignGuestsToRoomBeds(
         ]
       : room.beds;
 
-    const stableBed = bedsInOrder.find((bed) =>
-      guest.nights.every((night) => usable(guest, bed.id, night)),
-    );
+    const stableBed = continuityEnabled
+      ? bedsInOrder.find((bed) =>
+          guest.nights.every((night) => usable(guest, bed.id, night)),
+        )
+      : undefined;
     if (stableBed) {
       for (const night of guest.nights) {
         state.occupied.add(occupiedKey(stableBed.id, night));
@@ -1263,6 +1395,962 @@ function placePartyInRoom(
       source: "AUTO",
     });
   }
+}
+
+function clonePlannerState(state: PlannerState): PlannerState {
+  return {
+    ...state,
+    occupied: new Set(state.occupied),
+    occupiedAtStart: new Set(state.occupiedAtStart),
+    permanentlyOccupied: new Set(state.permanentlyOccupied),
+    occupantByKey: new Map(state.occupantByKey),
+    occupantsByBooking: new Map(
+      [...state.occupantsByBooking].map(([bookingId, rows]) => [
+        bookingId,
+        new Map(rows),
+      ]),
+    ),
+    allocatedGuestNights: new Set(state.allocatedGuestNights),
+    allocations: [...state.allocations],
+    unallocatedGuestNights: [...state.unallocatedGuestNights],
+    displacementByGuestNight: new Map(state.displacementByGuestNight),
+    roomNightAgeMix: new Map(
+      [...state.roomNightAgeMix].map(([key, byBooking]) => [
+        key,
+        new Map(
+          [...byBooking].map(([bookingId, counts]) => [
+            bookingId,
+            { ...counts },
+          ]),
+        ),
+      ]),
+    ),
+    unknownRoomNightRows: [...state.unknownRoomNightRows],
+  };
+}
+
+interface FreeSpaceStrategy {
+  state: PlannerState;
+  score: number[];
+  canonicalKey: string;
+  split: boolean;
+  placementCount: number;
+  compatibilityRank: number;
+}
+
+/** Hard bound for matching-layout candidates; other strategy families are separate. */
+export const BED_ALLOCATION_MAX_MATCHING_LAYOUTS = 24;
+
+function uniqueGuestOrders(orders: StayGuest[][]): StayGuest[][] {
+  const seen = new Set<string>();
+  return orders.filter((order) => {
+    const key = order.map((guest) => guest.id).join("|");
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+/** Deterministic Edmonds matching for one direct-family component. */
+function maximumCardinalityFamilyPairs(component: StayGuest[]): number[] {
+  const size = component.length;
+  const adjacency = component.map((guest, index) =>
+    component
+      .map((candidate, candidateIndex) => ({ candidate, candidateIndex }))
+      .filter(
+        ({ candidate, candidateIndex }) =>
+          candidateIndex !== index && shareDirectFamilyGroup(guest, candidate),
+      )
+      .map(({ candidateIndex }) => candidateIndex),
+  );
+  const match = Array<number>(size).fill(-1);
+  const parent = Array<number>(size).fill(-1);
+  const base = Array.from({ length: size }, (_, index) => index);
+  const used = Array<boolean>(size).fill(false);
+  const blossom = Array<boolean>(size).fill(false);
+
+  const lowestCommonAncestor = (leftStart: number, rightStart: number) => {
+    const path = Array<boolean>(size).fill(false);
+    let left = leftStart;
+    while (true) {
+      left = base[left];
+      path[left] = true;
+      if (match[left] === -1) break;
+      left = parent[match[left]];
+    }
+    let right = rightStart;
+    while (true) {
+      right = base[right];
+      if (path[right]) return right;
+      right = parent[match[right]];
+    }
+  };
+
+  const markBlossomPath = (
+    start: number,
+    commonBase: number,
+    childStart: number,
+  ) => {
+    let vertex = start;
+    let child = childStart;
+    while (base[vertex] !== commonBase) {
+      blossom[base[vertex]] = true;
+      blossom[base[match[vertex]]] = true;
+      parent[vertex] = child;
+      child = match[vertex];
+      vertex = parent[match[vertex]];
+    }
+  };
+
+  const augmentFrom = (root: number): boolean => {
+    used.fill(false);
+    parent.fill(-1);
+    for (let index = 0; index < size; index += 1) base[index] = index;
+    const queue = [root];
+    used[root] = true;
+    for (let head = 0; head < queue.length; head += 1) {
+      const vertex = queue[head];
+      for (const candidate of adjacency[vertex]) {
+        if (
+          base[vertex] === base[candidate] ||
+          match[vertex] === candidate
+        ) {
+          continue;
+        }
+        if (
+          candidate === root ||
+          (match[candidate] !== -1 && parent[match[candidate]] !== -1)
+        ) {
+          const commonBase = lowestCommonAncestor(vertex, candidate);
+          blossom.fill(false);
+          markBlossomPath(vertex, commonBase, candidate);
+          markBlossomPath(candidate, commonBase, vertex);
+          for (let index = 0; index < size; index += 1) {
+            if (!blossom[base[index]]) continue;
+            base[index] = commonBase;
+            if (used[index]) continue;
+            used[index] = true;
+            queue.push(index);
+          }
+          continue;
+        }
+        if (parent[candidate] !== -1) continue;
+        parent[candidate] = vertex;
+        if (match[candidate] === -1) {
+          let current = candidate;
+          while (current !== -1) {
+            const previous = parent[current];
+            const next = previous === -1 ? -1 : match[previous];
+            match[current] = previous;
+            if (previous !== -1) match[previous] = current;
+            current = next;
+          }
+          return true;
+        }
+        const matched = match[candidate];
+        used[matched] = true;
+        queue.push(matched);
+      }
+    }
+    return false;
+  };
+
+  for (let vertex = 0; vertex < size; vertex += 1) {
+    if (match[vertex] === -1) augmentFrom(vertex);
+  }
+  return match;
+}
+
+function matchedFamilyComponentOrder(components: StayGuest[][]): StayGuest[] {
+  const paired: StayGuest[] = [];
+  const unmatched: StayGuest[] = [];
+  for (const component of components) {
+    const match = maximumCardinalityFamilyPairs(component);
+    const emitted = new Set<number>();
+    for (let index = 0; index < component.length; index += 1) {
+      if (emitted.has(index)) continue;
+      const partner = match[index];
+      if (partner === -1) {
+        unmatched.push(component[index]);
+        emitted.add(index);
+        continue;
+      }
+      paired.push(component[index], component[partner]);
+      emitted.add(index);
+      emitted.add(partner);
+    }
+  }
+  // Pair blocks from every component stay adjacent before any singleton or
+  // unmatched vertex can consume half of a capacity-two room.
+  return [...paired, ...unmatched];
+}
+
+const BED_ALLOCATION_MAX_FAMILY_BLOCK_SEEDS = 24;
+
+function overlappingNightCount(left: StayGuest, right: StayGuest): number {
+  let leftIndex = 0;
+  let rightIndex = 0;
+  let count = 0;
+  while (leftIndex < left.nights.length && rightIndex < right.nights.length) {
+    const comparison = left.nights[leftIndex].localeCompare(
+      right.nights[rightIndex],
+    );
+    if (comparison === 0) {
+      count += 1;
+      leftIndex += 1;
+      rightIndex += 1;
+    } else if (comparison < 0) {
+      leftIndex += 1;
+    } else {
+      rightIndex += 1;
+    }
+  }
+  return count;
+}
+
+function sampledFamilyBlockSeeds(guests: StayGuest[]): StayGuest[] {
+  if (guests.length <= BED_ALLOCATION_MAX_FAMILY_BLOCK_SEEDS) return guests;
+  return Array.from(
+    { length: BED_ALLOCATION_MAX_FAMILY_BLOCK_SEEDS },
+    (_, index) =>
+      guests[
+        Math.floor(
+          (index * (guests.length - 1)) /
+            (BED_ALLOCATION_MAX_FAMILY_BLOCK_SEEDS - 1),
+        )
+      ],
+  );
+}
+
+/**
+ * Builds one capacity-aware family layout without enumerating room partitions.
+ * For each room-sized block, try at most 24 evenly sampled seeds, greedily add
+ * the guest with the largest direct-family overlapping-night gain, then retain
+ * the highest scoring block (canonical input order breaks every tie). Building
+ * edge weights is O(g^2 * overlapping nights); block search is O(R * 24 * C *
+ * g). This adds exactly one bounded layout and can preserve useful triples or
+ * larger groups that pair matching necessarily misses. It remains a
+ * deterministic heuristic rather than an exact graph-partition optimizer.
+ */
+function capacityAwareFamilyBlockOrder(
+  guests: StayGuest[],
+  roomCapacities: number[],
+  directFamilyWeights: Map<string, Map<string, number>>,
+): StayGuest[] {
+  let remaining = [...guests];
+  const ordered: StayGuest[] = [];
+
+  for (const capacity of roomCapacities) {
+    if (remaining.length === 0) break;
+    const blockSize = Math.min(capacity, remaining.length);
+    if (blockSize <= 0) continue;
+
+    let bestBlock: StayGuest[] | undefined;
+    let bestScore = -1;
+    for (const seed of sampledFamilyBlockSeeds(remaining)) {
+      const block = [seed];
+      const available = remaining.filter((guest) => guest !== seed);
+      const marginalEdges = new Map(
+        available.map((guest) => [
+          guest.id,
+          directFamilyWeights.get(seed.id)?.get(guest.id) ?? 0,
+        ]),
+      );
+      let score = 0;
+
+      while (block.length < blockSize) {
+        let selectedIndex = 0;
+        for (let index = 1; index < available.length; index += 1) {
+          if (
+            (marginalEdges.get(available[index].id) ?? 0) >
+            (marginalEdges.get(available[selectedIndex].id) ?? 0)
+          ) {
+            selectedIndex = index;
+          }
+        }
+        const [selected] = available.splice(selectedIndex, 1);
+        const gain = marginalEdges.get(selected.id) ?? 0;
+        score += gain;
+        block.push(selected);
+        for (const candidate of available) {
+          marginalEdges.set(
+            candidate.id,
+            (marginalEdges.get(candidate.id) ?? 0) +
+              (directFamilyWeights.get(selected.id)?.get(candidate.id) ?? 0),
+          );
+        }
+      }
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestBlock = block;
+      }
+    }
+
+    if (!bestBlock) continue;
+    ordered.push(...bestBlock);
+    const selectedIds = new Set(bestBlock.map((guest) => guest.id));
+    remaining = remaining.filter((guest) => !selectedIds.has(guest.id));
+  }
+
+  return [...ordered, ...remaining];
+}
+
+function splitGuestOrderVariants(
+  state: PlannerState,
+  booking: BedAllocationBooking,
+  guests: StayGuest[],
+): StayGuest[][] {
+  const canonical = adultsFirst(guests);
+  const existing = state.occupantsByBooking.get(booking.id);
+  const returningIds = new Set(
+    existing ? [...existing.values()].map((row) => row.bookingGuestId) : [],
+  );
+  const continuity = [...canonical].sort(
+    (a, b) => Number(returningIds.has(b.id)) - Number(returningIds.has(a.id)),
+  );
+  const minorsFirst = [...canonical].sort(
+    (a, b) => Number(isAdultGuest(a)) - Number(isAdultGuest(b)),
+  );
+  const foundational = uniqueGuestOrders([
+    canonical,
+    ...(state.allocationPriorityOrder.includes("STAY_CONTINUITY")
+      ? [continuity]
+      : []),
+    ...(booking.isSchoolGroup ? [minorsFirst] : []),
+    [...canonical].reverse(),
+  ]);
+  if (!state.allocationPriorityOrder.includes("FAMILY_COHESION")) {
+    return foundational;
+  }
+  const familyVariants: StayGuest[][] = [];
+
+  // Direct-family membership is a graph, not a single grouping key: a guest
+  // may belong to several groups and a useful pair may share only a later id.
+  // First cluster every connected component at once. This is the whole-family
+  // candidate that can seat three or more interleaved, independent subsets
+  // without spending one candidate per subset.
+  const canonicalIndex = new Map(
+    canonical.map((guest, index) => [guest.id, index]),
+  );
+  const neighbours = new Map(
+    canonical.map((guest) => [guest.id, new Set<string>()]),
+  );
+  const directFamilyWeights = new Map(
+    canonical.map((guest) => [guest.id, new Map<string, number>()]),
+  );
+  for (let left = 0; left < canonical.length; left += 1) {
+    for (let right = left + 1; right < canonical.length; right += 1) {
+      const a = canonical[left];
+      const b = canonical[right];
+      if (!shareDirectFamilyGroup(a, b)) continue;
+      neighbours.get(a.id)?.add(b.id);
+      neighbours.get(b.id)?.add(a.id);
+      const weight = overlappingNightCount(a, b);
+      directFamilyWeights.get(a.id)?.set(b.id, weight);
+      directFamilyWeights.get(b.id)?.set(a.id, weight);
+    }
+  }
+  const guestById = new Map(canonical.map((guest) => [guest.id, guest]));
+  const visited = new Set<string>();
+  const components: StayGuest[][] = [];
+  for (const guest of canonical) {
+    if (visited.has(guest.id)) continue;
+    const pending = [guest.id];
+    const component: StayGuest[] = [];
+    visited.add(guest.id);
+    while (pending.length > 0) {
+      const guestId = pending.shift();
+      if (!guestId) continue;
+      const member = guestById.get(guestId);
+      if (member) component.push(member);
+      const nextIds = [...(neighbours.get(guestId) ?? [])].sort(
+        (a, b) =>
+          (canonicalIndex.get(a) ?? 9999) -
+          (canonicalIndex.get(b) ?? 9999),
+      );
+      for (const nextId of nextIds) {
+        if (visited.has(nextId)) continue;
+        visited.add(nextId);
+        pending.push(nextId);
+      }
+    }
+    component.sort(
+      (a, b) =>
+        (canonicalIndex.get(a.id) ?? 9999) -
+        (canonicalIndex.get(b.id) ?? 9999),
+    );
+    components.push(component);
+  }
+  const componentCluster = components.flat();
+  const capacityAwareFamilyBlocks = capacityAwareFamilyBlockOrder(
+    canonical,
+    roomsForBooking(state.activeRooms, booking).map((room) => room.beds.length),
+    directFamilyWeights,
+  );
+  const requiredFamilyVariants = uniqueGuestOrders([
+    componentCluster,
+    components.flatMap((component) => [...component].reverse()),
+    matchedFamilyComponentOrder(components),
+    capacityAwareFamilyBlocks,
+  ]).filter(
+    (candidate) =>
+      !foundational.some(
+        (base) =>
+          base.length === candidate.length &&
+          base.every((guest, index) => guest.id === candidate[index]?.id),
+      ),
+  );
+
+  // Retain direct-pair-front candidates for overlapping or impossible chains:
+  // a connected component may not have any linear order that makes every
+  // directly related pair share a capacity-constrained room.
+  for (let left = 0; left < canonical.length; left += 1) {
+    for (let right = left + 1; right < canonical.length; right += 1) {
+      const a = canonical[left];
+      const b = canonical[right];
+      if (!shareDirectFamilyGroup(a, b)) continue;
+      const others = canonical.filter((guest) => guest !== a && guest !== b);
+      familyVariants.push([a, b, ...others], [b, a, ...others]);
+    }
+  }
+
+  // Finally cluster each direct group inside every component simultaneously.
+  // These bounded subset variants let the scorer choose which shared-group
+  // edges to preserve when an overlapping component cannot preserve them all.
+  const groupIds = [
+    ...new Set(canonical.flatMap((guest) => guest.familyGroupIds ?? [])),
+  ].sort();
+  for (const groupId of groupIds) {
+    const clustered = components.flatMap((component) => [
+      ...component.filter((guest) => guest.familyGroupIds?.includes(groupId)),
+      ...component.filter((guest) => !guest.familyGroupIds?.includes(groupId)),
+    ]);
+    const members = clustered.filter((guest) =>
+      guest.familyGroupIds?.includes(groupId),
+    );
+    if (members.length < 2) continue;
+    familyVariants.push(
+      clustered,
+      components.flatMap((component) => [
+        ...component
+          .filter((guest) => guest.familyGroupIds?.includes(groupId))
+          .reverse(),
+        ...component.filter(
+          (guest) => !guest.familyGroupIds?.includes(groupId),
+        ),
+      ]),
+    );
+  }
+
+  const distinctFamilyVariants = uniqueGuestOrders(familyVariants).filter(
+    (candidate) =>
+      !foundational.some(
+        (base) =>
+          base.length === candidate.length &&
+          base.every((guest, index) => guest.id === candidate[index]?.id),
+      ) &&
+      !requiredFamilyVariants.some(
+        (required) =>
+          required.length === candidate.length &&
+          required.every(
+            (guest, index) => guest.id === candidate[index]?.id,
+          ),
+      ),
+  );
+  const remaining = Math.max(
+    BED_ALLOCATION_MAX_MATCHING_LAYOUTS -
+      foundational.length -
+      requiredFamilyVariants.length,
+    0,
+  );
+  if (distinctFamilyVariants.length <= remaining) {
+    return [
+      ...foundational,
+      ...requiredFamilyVariants,
+      ...distinctFamilyVariants,
+    ];
+  }
+  // Sample the full deterministic family candidate set evenly and include both
+  // endpoints. In particular, the final high-sorted group candidate must not
+  // disappear merely because the total matching budget is bounded.
+  const spreadFamilyVariants = Array.from({ length: remaining }, (_, index) => {
+    const sampledIndex =
+      remaining === 1
+        ? distinctFamilyVariants.length - 1
+        : Math.floor(
+            (index * (distinctFamilyVariants.length - 1)) / (remaining - 1),
+          );
+    return distinctFamilyVariants[sampledIndex];
+  });
+  return [
+    ...foundational,
+    ...requiredFamilyVariants,
+    ...spreadFamilyVariants,
+  ];
+}
+
+interface PreferredBedRow {
+  bedId: string;
+  stayDate: string;
+  stayTimeMs: number;
+}
+
+function indexPreferredBedRows(
+  state: PlannerState,
+  bookingId: string,
+): Map<string, PreferredBedRow[]> {
+  const rowsByGuest = new Map<string, PreferredBedRow[]>();
+  const add = (guestId: string, row: PreferredBedRow) => {
+    const rows = rowsByGuest.get(guestId) ?? [];
+    rows.push(row);
+    rowsByGuest.set(guestId, rows);
+  };
+  for (const row of state.occupantsByBooking.get(bookingId)?.values() ?? []) {
+    add(row.bookingGuestId, {
+      bedId: row.bedId,
+      stayDate: row.stayDate,
+      stayTimeMs: parseDateOnly(row.stayDate).getTime(),
+    });
+  }
+  // Scan the candidate rows ONCE per layout. The former per-guest/per-night
+  // full-array filter made a 100-guest, 31-night plan quadratic in its 3,100
+  // newly produced rows.
+  for (const row of state.allocations) {
+    if (row.bookingId !== bookingId) continue;
+    add(row.bookingGuestId, {
+      bedId: row.bedId,
+      stayDate: row.stayDate,
+      stayTimeMs: parseDateOnly(row.stayDate).getTime(),
+    });
+  }
+  return rowsByGuest;
+}
+
+function preferredBedIdsForGuest(
+  rowsByGuest: Map<string, PreferredBedRow[]>,
+  guestId: string,
+  stayDate: string,
+): string[] {
+  const targetTimeMs = parseDateOnly(stayDate).getTime();
+  const rows = [...(rowsByGuest.get(guestId) ?? [])].sort((a, b) => {
+    const aDistance = Math.abs(a.stayTimeMs - targetTimeMs);
+    const bDistance = Math.abs(b.stayTimeMs - targetTimeMs);
+    return aDistance - bDistance || a.stayDate.localeCompare(b.stayDate);
+  });
+  return [...new Set(rows.map((row) => row.bedId))];
+}
+
+/**
+ * Maximum-cardinality split placement for one night. The augmenting-path
+ * matcher guarantees the hard first objective (place as many guest-nights as
+ * possible); deterministic guest/room variants give the lexicographic scorer
+ * materially different feasible layouts to compare.
+ */
+function allocateMaximumSplitBookingNight(
+  state: PlannerState,
+  booking: BedAllocationBooking,
+  guests: StayGuest[],
+  stayDate: string,
+  rooms: SortedRoomWithBeds[],
+  preferredRowsByGuest: Map<string, PreferredBedRow[]>,
+): void {
+  const stayTimeMs = parseDateOnly(stayDate).getTime();
+  const beds = rooms.flatMap((room) =>
+    room.beds
+      .filter((bed) => !state.occupied.has(occupiedKey(bed.id, stayDate)))
+      .map((bed) => ({ room, bed })),
+  );
+  const guestById = new Map(guests.map((guest) => [guest.id, guest]));
+  const candidatesByGuest = new Map<string, typeof beds>();
+  for (const guest of guests) {
+    const preferred = new Map(
+      preferredBedIdsForGuest(preferredRowsByGuest, guest.id, stayDate).map(
+        (bedId, index) => [bedId, index],
+      ),
+    );
+    candidatesByGuest.set(
+      guest.id,
+      beds
+        .filter(({ room }) =>
+          isAdultGuest(guest)
+            ? !roomNightBlocksAdults(state, room.id, stayDate, booking.id)
+            : !roomNightBlocksMinors(state, room.id, stayDate, booking.id),
+        )
+        .sort((a, b) => {
+          if (state.allocationPriorityOrder.includes("STAY_CONTINUITY")) {
+            const preferredDiff =
+              (preferred.get(a.bed.id) ?? 9999) -
+              (preferred.get(b.bed.id) ?? 9999);
+            if (preferredDiff !== 0) return preferredDiff;
+          }
+          return 0;
+        }),
+    );
+  }
+
+  const bedToGuest = new Map<string, string>();
+  const greedyBedToGuest = new Map<string, string>();
+  const greedyUsedBeds = new Set<string>();
+  let greedyComplete = true;
+  for (const guest of guests) {
+    const candidate = (candidatesByGuest.get(guest.id) ?? []).find(
+      ({ bed }) => !greedyUsedBeds.has(bed.id),
+    );
+    if (!candidate) {
+      greedyComplete = false;
+      break;
+    }
+    greedyUsedBeds.add(candidate.bed.id);
+    greedyBedToGuest.set(candidate.bed.id, guest.id);
+  }
+  if (greedyComplete) {
+    for (const [bedId, guestId] of greedyBedToGuest) {
+      bedToGuest.set(bedId, guestId);
+    }
+  } else {
+    // A failed greedy trial proves nothing about cardinality. Discard it
+    // completely and run augmenting paths from an empty matching.
+    const assign = (guestId: string, seenBeds: Set<string>): boolean => {
+      for (const { bed } of candidatesByGuest.get(guestId) ?? []) {
+        if (seenBeds.has(bed.id)) continue;
+        seenBeds.add(bed.id);
+        const occupyingGuestId = bedToGuest.get(bed.id);
+        if (!occupyingGuestId || assign(occupyingGuestId, seenBeds)) {
+          bedToGuest.set(bed.id, guestId);
+          return true;
+        }
+      }
+      return false;
+    };
+    for (const guest of guests) assign(guest.id, new Set());
+  }
+
+  const assignedGuestIds = new Set<string>();
+  for (const { bed } of beds) {
+    const guestId = bedToGuest.get(bed.id);
+    if (!guestId) continue;
+    const guest = guestById.get(guestId);
+    if (!guest) continue;
+    assignedGuestIds.add(guest.id);
+    state.allocations.push(
+      createAllocation(state, booking.id, guest, bed, stayDate),
+    );
+    const preferredRows = preferredRowsByGuest.get(guest.id) ?? [];
+    preferredRows.push({ bedId: bed.id, stayDate, stayTimeMs });
+    preferredRowsByGuest.set(guest.id, preferredRows);
+  }
+  addUnallocatedGuestNights(
+    booking.id,
+    guests.filter((guest) => !assignedGuestIds.has(guest.id)),
+    stayDate,
+    allocationReasonForNoBed(state.allBeds),
+    state.unallocatedGuestNights,
+  );
+}
+
+function freeSpaceStrategyScore(
+  state: PlannerState,
+  booking: BedAllocationBooking,
+  demand: BookingStayDemand,
+  allocationStart: number,
+): { score: number[]; canonicalKey: string } {
+  const guestById = new Map(demand.guests.map((guest) => [guest.id, guest]));
+  const rows = [
+    ...[...(state.occupantsByBooking.get(booking.id)?.values() ?? [])].map(
+      (row) => ({
+        guestId: row.bookingGuestId,
+        stayDate: row.stayDate,
+        roomId: row.roomId,
+        bedId: row.bedId,
+        ageTier: row.ageTier,
+        familyGroupIds: row.familyGroupIds,
+        isNew: false,
+      }),
+    ),
+    ...state.allocations.slice(allocationStart).map((row) => ({
+      guestId: row.bookingGuestId,
+      stayDate: row.stayDate,
+      roomId: row.roomId,
+      bedId: row.bedId,
+      ageTier: guestById.get(row.bookingGuestId)?.ageTier,
+      familyGroupIds: guestById.get(row.bookingGuestId)?.familyGroupIds ?? [],
+      isNew: true,
+    })),
+  ];
+  const score: number[] = [];
+  const rowsByNight = new Map<string, typeof rows>();
+  const rowsByGuest = new Map<string, typeof rows>();
+  for (const row of rows) {
+    const nightRows = rowsByNight.get(row.stayDate) ?? [];
+    nightRows.push(row);
+    rowsByNight.set(row.stayDate, nightRows);
+    const guestRows = rowsByGuest.get(row.guestId) ?? [];
+    guestRows.push(row);
+    rowsByGuest.set(row.guestId, guestRows);
+  }
+
+  if (booking.isSchoolGroup === true) {
+    const roomNights = new Map<string, { adults: number; minors: number }>();
+    for (const row of rows) {
+      const key = `${row.roomId}:${row.stayDate}`;
+      const counts = roomNights.get(key) ?? { adults: 0, minors: 0 };
+      if (isAdultAgeTier(row.ageTier)) {
+        counts.adults += 1;
+      } else {
+        counts.minors += 1;
+      }
+      roomNights.set(key, counts);
+    }
+    score.push(
+      [...roomNights.values()].filter(
+        (counts) => counts.adults > 0 && counts.minors > 0,
+      ).length,
+    );
+    const adultRoomsByNight = new Map<string, Set<string>>();
+    for (const row of rows) {
+      if (!isAdultAgeTier(row.ageTier)) continue;
+      const roomIds = adultRoomsByNight.get(row.stayDate) ?? new Set<string>();
+      roomIds.add(row.roomId);
+      adultRoomsByNight.set(row.stayDate, roomIds);
+    }
+    score.push(
+      [...adultRoomsByNight.values()].reduce(
+        (total, roomIds) => total + roomIds.size,
+        0,
+      ),
+    );
+  }
+
+  for (const priority of state.allocationPriorityOrder) {
+    if (priority === "BOOKING_COHESION") {
+      let roomCount = 0;
+      for (const nightRows of rowsByNight.values()) {
+        roomCount += new Set(nightRows.map((row) => row.roomId)).size;
+      }
+      score.push(roomCount);
+      continue;
+    }
+    if (priority === "STAY_CONTINUITY") {
+      let sameBedLinks = 0;
+      let sameRoomLinks = 0;
+      let roomSwitches = 0;
+      for (const rowsForGuest of rowsByGuest.values()) {
+        const guestRows = [...rowsForGuest].sort((a, b) =>
+          a.stayDate.localeCompare(b.stayDate),
+        );
+        for (let index = 1; index < guestRows.length; index += 1) {
+          const previous = guestRows[index - 1];
+          const current = guestRows[index];
+          if (previous.roomId === current.roomId) sameRoomLinks += 1;
+          else roomSwitches += 1;
+          if (previous.bedId === current.bedId) sameBedLinks += 1;
+        }
+      }
+      score.push(-sameBedLinks, -sameRoomLinks, roomSwitches);
+      continue;
+    }
+    if (priority === "REQUESTED_ROOM") {
+      score.push(
+        -rows.filter(
+          (row) => row.isNew && row.roomId === booking.requestedRoomId,
+        ).length,
+      );
+      continue;
+    }
+
+    let splitFamilyPairs = 0;
+    for (const nightRows of rowsByNight.values()) {
+      for (let left = 0; left < nightRows.length; left += 1) {
+        for (let right = left + 1; right < nightRows.length; right += 1) {
+          const a = nightRows[left];
+          const b = nightRows[right];
+        if (
+          a.roomId !== b.roomId &&
+          shareDirectFamilyGroup(a, b)
+        ) {
+          splitFamilyPairs += 1;
+        }
+        }
+      }
+    }
+    score.push(splitFamilyPairs);
+  }
+
+  const roomOrder = new Map(
+    state.activeRooms.map((room, index) => [room.id, index]),
+  );
+  const bedOrder = new Map(
+    state.activeRooms.flatMap((room) =>
+      room.beds.map((bed, index) => [bed.id, index] as const),
+    ),
+  );
+  const canonicalKey = state.allocations
+    .slice(allocationStart)
+    .map(
+      (row) =>
+        `${row.stayDate}:${String(roomOrder.get(row.roomId) ?? 9999).padStart(4, "0")}:${String(bedOrder.get(row.bedId) ?? 9999).padStart(4, "0")}:${row.bookingGuestId}`,
+    )
+    .sort()
+    .join("|");
+  return { score, canonicalKey };
+}
+
+/**
+ * Compare bounded deterministic whole-room and split strategies. Placement
+ * count is the fixed first objective; saved preferences compare the layouts
+ * lexicographically. Existing whole/legacy strategies win an exact score tie
+ * for default-output compatibility, then the canonical allocation key breaks
+ * ties within that class.
+ */
+function chooseFreeSpaceStrategy(
+  state: PlannerState,
+  booking: BedAllocationBooking,
+  demand: BookingStayDemand,
+  allowDisplacement: boolean,
+): FreeSpaceStrategy | null {
+  const rooms = roomsForBooking(state.activeRooms, booking);
+  const allocationStart = state.allocations.length;
+  const strategies: FreeSpaceStrategy[] = [];
+  const addStrategy = (
+    trial: PlannerState,
+    split: boolean,
+    compatibilityRank = 0,
+  ) => {
+    const placedCount = trial.allocations.length - allocationStart;
+    const scored = freeSpaceStrategyScore(
+      trial,
+      booking,
+      demand,
+      allocationStart,
+    );
+    strategies.push({
+      state: trial,
+      score: [-placedCount, ...scored.score],
+      canonicalKey: scored.canonicalKey,
+      split,
+      placementCount: placedCount,
+      compatibilityRank,
+    });
+  };
+
+  for (const room of rooms) {
+    if (!roomHostsWholeStay(state, room, demand, booking.id)) continue;
+    const trial = clonePlannerState(state);
+    placePartyInRoom(trial, booking, room, demand);
+    addStrategy(trial, false);
+  }
+
+  // Preserve the exact pre-scoring Phase-3 layout as a tie candidate: whole
+  // party per night when possible, then the legacy split allocator. The
+  // maximum matcher may beat its placement count, but an exact score tie keeps
+  // the established bed assignment.
+  const fallbackTrial = clonePlannerState(state);
+  for (const stayDate of demand.nights) {
+    const guests = demand.guestsByNight.get(stayDate) ?? [];
+    const existingAdultRooms = liveExistingAdultRoomIds(
+      fallbackTrial,
+      booking.id,
+      stayDate,
+    );
+    const placedWhole = tryAllocateWholeBookingNight(
+      fallbackTrial,
+      booking.id,
+      guests,
+      stayDate,
+      rooms,
+      existingAdultRooms,
+    );
+    if (!placedWhole) {
+      allocateSplitBookingNight(
+        fallbackTrial,
+        booking,
+        guests,
+        stayDate,
+        rooms,
+        existingAdultRooms,
+      );
+    }
+  }
+  addStrategy(fallbackTrial, true);
+
+  for (let firstIndex = 0; firstIndex < Math.max(rooms.length, 1); firstIndex += 1) {
+    const orderedRooms = [
+      rooms[firstIndex],
+      ...rooms.filter((_, index) => index !== firstIndex),
+    ].filter((room): room is SortedRoomWithBeds => Boolean(room));
+    const legacyTrial = clonePlannerState(state);
+    for (const stayDate of demand.nights) {
+      const guests = demand.guestsByNight.get(stayDate) ?? [];
+      allocateSplitBookingNight(
+        legacyTrial,
+        booking,
+        guests,
+        stayDate,
+        orderedRooms,
+        liveExistingAdultRoomIds(legacyTrial, booking.id, stayDate),
+      );
+    }
+    addStrategy(legacyTrial, true, 1);
+  }
+
+  const guestOrders = splitGuestOrderVariants(state, booking, demand.guests);
+  const matchingLayoutCount = Math.min(
+    BED_ALLOCATION_MAX_MATCHING_LAYOUTS,
+    rooms.length * guestOrders.length,
+  );
+  for (let layoutIndex = 0; layoutIndex < matchingLayoutCount; layoutIndex += 1) {
+    // Guest variants advance fastest: every priority-aware ordering receives
+    // room rotation zero before a second rotation can consume the hard budget.
+    const guestOrder = guestOrders[layoutIndex % guestOrders.length];
+    const firstIndex =
+      Math.floor(layoutIndex / guestOrders.length) % rooms.length;
+    const orderedRooms = [
+      rooms[firstIndex],
+      ...rooms.filter((_, index) => index !== firstIndex),
+    ];
+    const orderByGuestId = new Map(
+      guestOrder.map((guest, index) => [guest.id, index]),
+    );
+    const trial = clonePlannerState(state);
+    const preferredRowsByGuest = indexPreferredBedRows(trial, booking.id);
+    for (const stayDate of demand.nights) {
+      const guests = [...(demand.guestsByNight.get(stayDate) ?? [])].sort(
+        (a, b) =>
+          (orderByGuestId.get(a.id) ?? 9999) -
+          (orderByGuestId.get(b.id) ?? 9999),
+      );
+      allocateMaximumSplitBookingNight(
+        trial,
+        booking,
+        guests,
+        stayDate,
+        orderedRooms,
+        preferredRowsByGuest,
+      );
+    }
+    addStrategy(trial, true, 2);
+  }
+
+  if (allowDisplacement) {
+    for (const room of rooms) {
+      const trial = clonePlannerState(state);
+      if (tryWholeStayWithDisplacement(trial, booking, demand, [room])) {
+        addStrategy(trial, false);
+      }
+    }
+  }
+
+  return (
+    strategies.sort((a, b) => {
+      const preference = compareNumberVectors(a.score, b.score);
+      if (preference !== 0) return preference;
+      const legacyPreference = a.compatibilityRank - b.compatibilityRank;
+      return legacyPreference !== 0
+        ? legacyPreference
+        : a.canonicalKey.localeCompare(b.canonicalKey);
+    })[0] ?? null
+  );
 }
 
 interface DisplacedBookingSnapshot {
@@ -1338,12 +2426,14 @@ function relocateOrUnallocateBooking(
     string,
     BedAllocationAgeTier | null | undefined
   >();
+  const familyGroupsByGuest = new Map<string, string[]>();
   for (const row of rows) {
     let nights = nightsByGuest.get(row.bookingGuestId);
     if (!nights) {
       nights = [];
       nightsByGuest.set(row.bookingGuestId, nights);
       ageTierByGuest.set(row.bookingGuestId, row.ageTier);
+      familyGroupsByGuest.set(row.bookingGuestId, row.familyGroupIds);
       guestOrder.push(row.bookingGuestId);
     }
     nights.push(row.stayDate);
@@ -1352,6 +2442,7 @@ function relocateOrUnallocateBooking(
     guestOrder.map((guestId) => ({
       id: guestId,
       ageTier: ageTierByGuest.get(guestId),
+      familyGroupIds: familyGroupsByGuest.get(guestId) ?? [],
       nights: [...(nightsByGuest.get(guestId) ?? [])].sort(),
     })),
   );
@@ -1373,16 +2464,13 @@ function relocateOrUnallocateBooking(
     if (state.occupied.has(key)) return false;
     return !state.occupiedAtStart.has(key) || ownRowKeys.has(key);
   };
-  const bedNightUsableForGuest = (
-    guest: StayGuest,
-    bedId: string,
-    night: string,
-  ) => {
-    const key = occupiedKey(bedId, night);
-    if (state.occupied.has(key)) return false;
-    if (!state.occupiedAtStart.has(key)) return true;
-    return ownKeysByGuest.get(guest.id)?.has(key) ?? false;
-  };
+  const bedNightUsableForGuest = (currentState: PlannerState) =>
+    (guest: StayGuest, bedId: string, night: string) => {
+      const key = occupiedKey(bedId, night);
+      if (currentState.occupied.has(key)) return false;
+      if (!currentState.occupiedAtStart.has(key)) return true;
+      return ownKeysByGuest.get(guest.id)?.has(key) ?? false;
+    };
 
   // Lodge isolation through the re-plan (defence in depth): the booking may
   // only be relocated within the lodge of the rooms it already occupies.
@@ -1395,13 +2483,27 @@ function relocateOrUnallocateBooking(
       break;
     }
   }
-  const scoped = roomsAtLodge(state.activeRooms, lodgeId);
-  const counts = new Map<string, number>();
-  for (const row of rows) {
-    counts.set(row.roomId, (counts.get(row.roomId) ?? 0) + 1);
-  }
-  const ordered = [...scoped].sort(
-    (a, b) => (counts.get(b.id) ?? 0) - (counts.get(a.id) ?? 0),
+  const knownBooking = state.bookingById.get(bookingId);
+  const relocationBooking: BedAllocationBooking = knownBooking ?? {
+    id: bookingId,
+    createdAt: new Date(0),
+    lodgeId,
+    requestedRoomId: rows[0]?.bookingRequestedRoomId ?? null,
+    isSchoolGroup: rows[0]?.bookingIsSchoolGroup === true,
+    guests: demand.guests.map((guest) => ({
+      ...guest,
+      bookingId,
+      stayStart: parseDateOnly(guest.nights[0]),
+      stayEnd: addDaysDateOnly(
+        parseDateOnly(guest.nights[guest.nights.length - 1]),
+        1,
+      ),
+    })),
+  };
+  const ordered = orderedCandidateRooms(
+    state,
+    { ...relocationBooking, lodgeId },
+    demand,
   );
 
   const unallocateAllRows = () => {
@@ -1418,11 +2520,48 @@ function relocateOrUnallocateBooking(
     }
   };
 
-  const destination = ordered.find(
-    (room) =>
-      room.id !== excludedRoomId &&
-      roomHostsWholeStay(state, room, demand, bookingId, bedNightUsable),
-  );
+  const destinations = ordered
+    .filter(
+      (room) =>
+        room.id !== excludedRoomId &&
+        roomHostsWholeStay(state, room, demand, bookingId, bedNightUsable),
+    )
+    .flatMap((room) => {
+      const trial = clonePlannerState(state);
+      const allocationStart = trial.allocations.length;
+      const assignments = assignGuestsToRoomBeds(
+        trial,
+        room,
+        demand.guests,
+        preferredBedsInRoom(rows, room.id),
+        bedNightUsableForGuest(trial),
+      );
+      if (assignments.length !== rows.length) return [];
+      trial.allocations.push(
+        ...assignments.map((assignment) => ({
+          bookingId,
+          bookingGuestId: assignment.guest.id,
+          roomId: room.id,
+          bedId: assignment.bed.id,
+          stayDate: assignment.stayDate,
+          source: "AUTO" as const,
+        })),
+      );
+      const scored = freeSpaceStrategyScore(
+        trial,
+        relocationBooking,
+        demand,
+        allocationStart,
+      );
+      return [{ room, ...scored }];
+    })
+    .sort((a, b) => {
+      const preference = compareNumberVectors(a.score, b.score);
+      return preference !== 0
+        ? preference
+        : a.canonicalKey.localeCompare(b.canonicalKey);
+    });
+  const destination = destinations[0]?.room;
 
   if (!destination) {
     unallocateAllRows();
@@ -1435,7 +2574,7 @@ function relocateOrUnallocateBooking(
     destination,
     demand.guests,
     preferred,
-    bedNightUsableForGuest,
+    bedNightUsableForGuest(state),
   );
   if (assignments.length !== rows.length) {
     // Defensive: the per-guest availability restriction can, in pathological
@@ -1855,6 +2994,7 @@ export function buildFirstFitBedAllocationPlan({
   rooms,
   bookings,
   occupiedBedNights = [],
+  allocationPriorityOrder = [...BED_ALLOCATION_PRIORITY_VOCABULARY],
   prioritizeCapacityHolding = false,
 }: BuildBedAllocationPlanInput): BedAllocationPlan {
   if (!enabled) {
@@ -1865,7 +3005,7 @@ export function buildFirstFitBedAllocationPlan({
   const allBeds = activeRooms.flatMap((room) => room.beds);
   const bedRoomIds = new Map(allBeds.map((bed) => [bed.id, bed.roomId]));
 
-  const state: PlannerState = {
+  let state: PlannerState = {
     activeRooms,
     allBeds,
     occupied: new Set(),
@@ -1879,6 +3019,11 @@ export function buildFirstFitBedAllocationPlan({
     displacementByGuestNight: new Map(),
     roomNightAgeMix: new Map(),
     unknownRoomNightRows: [],
+    allocationPriorityOrder: parseBedAllocationPriorityOrder(
+      allocationPriorityOrder,
+      "allocationPriorityOrder",
+    ),
+    bookingById: new Map(bookings.map((booking) => [booking.id, booking])),
   };
 
   // Age-tier fallback for occupant rows that do not carry their own tier:
@@ -1934,6 +3079,9 @@ export function buildFirstFitBedAllocationPlan({
       bedId: night.bedId,
       stayDate,
       ageTier,
+      familyGroupIds: [...new Set(night.familyGroupIds ?? [])].sort(),
+      bookingRequestedRoomId: night.bookingRequestedRoomId ?? null,
+      bookingIsSchoolGroup: night.bookingIsSchoolGroup === true,
       holdsCapacity: night.holdsCapacity === true,
       isApproved: Boolean(night.approvedAt),
       bookingCreatedAtMs: night.bookingCreatedAt
@@ -1962,6 +3110,43 @@ export function buildFirstFitBedAllocationPlan({
   const fallbackBookingIds: string[] = [];
 
   for (const booking of sortedBookings) {
+    const bookingAllocationStart = state.allocations.length;
+    const displacementKeysBefore = new Set(
+      state.displacementByGuestNight.keys(),
+    );
+    let adoptedPartialFreeSpace = false;
+    const restoreBookingOutputOrder = () => {
+      if (!adoptedPartialFreeSpace) return;
+      const prefix = state.allocations.slice(0, bookingAllocationStart);
+      const additions = state.allocations
+        .slice(bookingAllocationStart)
+        .map((allocation, index) => ({ allocation, index }))
+        .sort(
+          (a, b) =>
+            a.allocation.stayDate.localeCompare(b.allocation.stayDate) ||
+            a.index - b.index,
+        )
+        .map(({ allocation }) => allocation);
+      state.allocations = [...prefix, ...additions];
+      const priorDisplacements = [
+        ...state.displacementByGuestNight.entries(),
+      ].filter(([key]) => displacementKeysBefore.has(key));
+      const newDisplacements = [
+        ...state.displacementByGuestNight.entries(),
+      ]
+        .filter(([key]) => !displacementKeysBefore.has(key))
+        .sort(([, a], [, b]) => {
+          const date = a.stayDate.localeCompare(b.stayDate);
+          if (date !== 0) return date;
+          const room = a.fromRoomId.localeCompare(b.fromRoomId);
+          if (room !== 0) return room;
+          return a.fromBedId.localeCompare(b.fromBedId);
+        });
+      state.displacementByGuestNight = new Map([
+        ...priorDisplacements,
+        ...newDisplacements,
+      ]);
+    };
     // Only the missing guest-nights are planned; existing rows are never
     // rewritten (only provisional displacement moves rows).
     const demanded = groupBookingGuests(booking)
@@ -1979,30 +3164,97 @@ export function buildFirstFitBedAllocationPlan({
     const demand = buildStayDemand(covered);
     if (demand.guests.length === 0) continue;
 
-    const candidateRooms = orderedCandidateRooms(state, booking);
+    let remainingDemand = demand;
+    let candidateRooms = orderedCandidateRooms(
+      state,
+      booking,
+      remainingDemand,
+    );
 
     // Phase 1 — whole-stay placement in free space.
-    const freeRoom = candidateRooms.find((room) =>
-      roomHostsWholeStay(state, room, demand, booking.id),
+    const freeSpaceStrategy = chooseFreeSpaceStrategy(
+      state,
+      booking,
+      demand,
+      prioritizeCapacityHolding && booking.holdsCapacity === true,
     );
-    if (freeRoom) {
-      placePartyInRoom(state, booking, freeRoom, demand);
-      continue;
+    const expectedPlacements = demand.guests.reduce(
+      (total, guest) => total + guest.nights.length,
+      0,
+    );
+    if (freeSpaceStrategy) {
+      const isComplete =
+        freeSpaceStrategy.placementCount === expectedPlacements;
+      const isCapacityHolding =
+        prioritizeCapacityHolding && booking.holdsCapacity === true;
+      if (isComplete || !isCapacityHolding) {
+        state = freeSpaceStrategy.state;
+        if (freeSpaceStrategy.split) fallbackBookingIds.push(booking.id);
+        continue;
+      }
+
+      // Preserve the maximum-cardinality free-space result before a held
+      // booking asks displacement to fill ONLY its remaining guest-nights.
+      // Throwing this state away lets the older greedy fallback place fewer
+      // rows than the matcher already proved feasible.
+      state = freeSpaceStrategy.state;
+      adoptedPartialFreeSpace = true;
+      if (
+        freeSpaceStrategy.split &&
+        !fallbackBookingIds.includes(booking.id)
+      ) {
+        fallbackBookingIds.push(booking.id);
+      }
+      const demandedKeys = new Set(
+        demand.guests.flatMap((guest) =>
+          guest.nights.map((night) => guestNightKey(guest.id, night)),
+        ),
+      );
+      state.unallocatedGuestNights = state.unallocatedGuestNights.filter(
+        (row) =>
+          row.bookingId !== booking.id ||
+          !demandedKeys.has(guestNightKey(row.bookingGuestId, row.stayDate)),
+      );
+      remainingDemand = buildStayDemand(
+        demand.guests
+          .map((guest) => ({
+            ...guest,
+            nights: guest.nights.filter(
+              (night) =>
+                !state.allocatedGuestNights.has(guestNightKey(guest.id, night)),
+            ),
+          }))
+          .filter((guest) => guest.nights.length > 0),
+      );
+      if (remainingDemand.guests.length === 0) continue;
+      candidateRooms = orderedCandidateRooms(
+        state,
+        booking,
+        remainingDemand,
+      );
     }
 
     // Phase 2 — held-only whole-stay via whole-booking displacement.
     if (
       prioritizeCapacityHolding &&
       booking.holdsCapacity &&
-      tryWholeStayWithDisplacement(state, booking, demand, candidateRooms)
+      tryWholeStayWithDisplacement(
+        state,
+        booking,
+        remainingDemand,
+        candidateRooms,
+      )
     ) {
+      restoreBookingOutputOrder();
       continue;
     }
 
     // Phase 3 — per-night split fallback (last resort).
-    fallbackBookingIds.push(booking.id);
-    for (const stayDate of demand.nights) {
-      const guests = (demand.guestsByNight.get(stayDate) ?? []).filter(
+    if (!fallbackBookingIds.includes(booking.id)) {
+      fallbackBookingIds.push(booking.id);
+    }
+    for (const stayDate of remainingDemand.nights) {
+      const guests = (remainingDemand.guestsByNight.get(stayDate) ?? []).filter(
         (guest) =>
           !state.allocatedGuestNights.has(guestNightKey(guest.id, stayDate)),
       );
@@ -2056,6 +3308,7 @@ export function buildFirstFitBedAllocationPlan({
         }
       }
     }
+    restoreBookingOutputOrder();
   }
 
   // A guest-night displaced more than once can collapse to its original bed —

@@ -335,6 +335,13 @@ async function prepareBedAllocationSnapPreview(page: Page): Promise<void> {
   if (!targetNight) {
     throw new Error("Dave's seeded booking has no lodge nights");
   }
+  // This capture deliberately scrolls before taking a full-page screenshot.
+  // Keep the app chrome in normal document flow so Chromium does not paint the
+  // sticky header/sidebar at that mid-page scroll offset in the final image.
+  await page.addStyleTag({
+    content:
+      'header.sticky, aside[class*="md:sticky"] { position: static !important; }',
+  });
   const dragHandle = page
     .getByRole("button", {
       name: /Drag Dave Davis to another bed; original lodge night .* will be kept/,

@@ -27,6 +27,8 @@ const mocks = vi.hoisted(() => ({
   cancelPaymentIntent: vi.fn(),
   checkCapacity: vi.fn(),
   reconcileBedAllocations: vi.fn(),
+  enqueueHostingCoverage: vi.fn(),
+  settleHostingCoverage: vi.fn(),
   recordBookingEvent: vi.fn(),
   enqueueXeroInvoice: vi.fn(),
   enqueueSettlementInvoice: vi.fn(),
@@ -104,6 +106,14 @@ vi.mock("@/lib/capacity", () => ({
 }));
 vi.mock("@/lib/bed-allocation-lifecycle", () => ({
   reconcileBedAllocationsForBooking: mocks.reconcileBedAllocations,
+  reconcileBedAllocationsForBookingWithLodgeLockHeld:
+    mocks.reconcileBedAllocations,
+}));
+vi.mock("@/lib/adult-member-hosting-review", () => ({
+  enqueueOwnHostingCoverageReevaluation: mocks.enqueueHostingCoverage,
+}));
+vi.mock("@/lib/adult-member-hosting-coverage-drain", () => ({
+  settleHostingCoverageAfterCommit: mocks.settleHostingCoverage,
 }));
 vi.mock("@/lib/booking-events", () => ({
   recordBookingEvent: mocks.recordBookingEvent,
@@ -170,6 +180,8 @@ beforeEach(() => {
   mocks.lodgeFindFirst.mockResolvedValue({ id: "lodge-1" });
   mocks.acquireLodgeCapacityLock.mockResolvedValue(undefined);
   mocks.reconcileBedAllocations.mockResolvedValue(undefined);
+  mocks.enqueueHostingCoverage.mockResolvedValue(undefined);
+  mocks.settleHostingCoverage.mockResolvedValue(undefined);
   mocks.recordBookingEvent.mockResolvedValue(undefined);
   mocks.enqueueXeroInvoice.mockResolvedValue({ queueOperationId: null });
   mocks.enqueueSettlementInvoice.mockResolvedValue({ queueOperationId: "op_settle_1" });
@@ -261,11 +273,22 @@ describe("createGroupSettlementIntent", () => {
     expect(result.childCount).toBe(2);
     expect(result.clientSecret).toBe("cs_settle_1");
     // Both children committed to CONFIRMED.
-    expect(mocks.bookingUpdate).toHaveBeenCalledTimes(2);
-    expect(mocks.bookingUpdate).toHaveBeenCalledWith(
+    expect(mocks.bookingUpdateMany).toHaveBeenCalledTimes(2);
+    expect(mocks.bookingUpdateMany).toHaveBeenCalledWith(
       expect.objectContaining({
+        where: expect.objectContaining({
+          status: BookingStatus.PAYMENT_PENDING,
+        }),
         data: expect.objectContaining({ status: BookingStatus.CONFIRMED }),
       })
+    );
+    expect(mocks.enqueueHostingCoverage).toHaveBeenCalledTimes(2);
+    expect(mocks.settleHostingCoverage).toHaveBeenCalledTimes(1);
+    expect(mocks.enqueueHostingCoverage.mock.invocationCallOrder.at(-1)!).toBeLessThan(
+      mocks.settleHostingCoverage.mock.invocationCallOrder[0],
+    );
+    expect(mocks.settleHostingCoverage.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.createPaymentIntent.mock.invocationCallOrder[0],
     );
     // One combined intent for the full total, tagged for the settlement webhook.
     expect(mocks.createPaymentIntent).toHaveBeenCalledWith(
@@ -286,6 +309,44 @@ describe("createGroupSettlementIntent", () => {
         }),
       })
     );
+  });
+
+  it("runs no allocation, hosting, or provider side effect after a lost child claim", async () => {
+    mocks.groupBookingFindUnique.mockResolvedValue(organiserPaysGroup());
+    mocks.bookingFindMany.mockResolvedValue([
+      {
+        id: "child-1",
+        finalPriceCents: 4500,
+        status: BookingStatus.PAYMENT_PENDING,
+      },
+    ]);
+    mocks.bookingFindUnique.mockResolvedValue({
+      id: "child-1",
+      lodgeId: "lodge-1",
+      status: BookingStatus.PAYMENT_PENDING,
+      checkIn: new Date("2026-07-01"),
+      checkOut: new Date("2026-07-03"),
+      guests: [],
+    });
+    mocks.checkCapacity.mockResolvedValue({ available: true, nightDetails: [] });
+    mocks.bookingUpdateMany.mockResolvedValueOnce({ count: 0 });
+
+    await expect(
+      createGroupSettlementIntent("ABCD2345", ORGANISER),
+    ).rejects.toMatchObject({ status: 409 });
+
+    expect(mocks.bookingUpdateMany).toHaveBeenCalledWith({
+      where: {
+        id: "child-1",
+        status: BookingStatus.PAYMENT_PENDING,
+      },
+      data: expect.objectContaining({ status: BookingStatus.CONFIRMED }),
+    });
+    expect(mocks.reconcileBedAllocations).not.toHaveBeenCalled();
+    expect(mocks.enqueueHostingCoverage).not.toHaveBeenCalled();
+    expect(mocks.settleHostingCoverage).not.toHaveBeenCalled();
+    expect(mocks.createPaymentIntent).not.toHaveBeenCalled();
+    expect(mocks.enqueueSettlementInvoice).not.toHaveBeenCalled();
   });
 
   it("locks the CHILD's lodge, not the default, when committing children (H1)", async () => {
@@ -382,8 +443,11 @@ describe("createGroupSettlementIntent", () => {
 
     expect(result.outcome).toBe("ready");
     // The child is committed to CONFIRMED, not aborted.
-    expect(mocks.bookingUpdate).toHaveBeenCalledWith(
+    expect(mocks.bookingUpdateMany).toHaveBeenCalledWith(
       expect.objectContaining({
+        where: expect.objectContaining({
+          status: BookingStatus.PAYMENT_PENDING,
+        }),
         data: expect.objectContaining({ status: BookingStatus.CONFIRMED }),
       })
     );
@@ -416,10 +480,21 @@ describe("createGroupSettlementIntent", () => {
     expect(result.childCount).toBe(2);
     expect(result.reference).toBe(`GROUP-${GROUP_ID.slice(0, 8).toUpperCase()}`);
     // Beds held: both children committed to CONFIRMED.
-    expect(mocks.bookingUpdate).toHaveBeenCalledWith(
+    expect(mocks.bookingUpdateMany).toHaveBeenCalledWith(
       expect.objectContaining({
+        where: expect.objectContaining({
+          status: BookingStatus.PAYMENT_PENDING,
+        }),
         data: expect.objectContaining({ status: BookingStatus.CONFIRMED }),
       })
+    );
+    expect(mocks.enqueueHostingCoverage).toHaveBeenCalledTimes(2);
+    expect(mocks.settleHostingCoverage).toHaveBeenCalledTimes(1);
+    expect(mocks.enqueueHostingCoverage.mock.invocationCallOrder.at(-1)!).toBeLessThan(
+      mocks.settleHostingCoverage.mock.invocationCallOrder[0],
+    );
+    expect(mocks.settleHostingCoverage.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.enqueueSettlementInvoice.mock.invocationCallOrder[0],
     );
     // The settlement records the Internet Banking source, no Stripe intent.
     expect(mocks.settlementUpsert).toHaveBeenCalledWith(
@@ -751,10 +826,15 @@ describe("createGroupSettlementIntent", () => {
         { id: "child-1", finalPriceCents: 4500, status: BookingStatus.CONFIRMED },
         { id: "child-2", finalPriceCents: 4500, status: BookingStatus.CONFIRMED },
       ])
+      // Settlement pre-lock discovery: acquire the complete lodge union.
+      .mockResolvedValueOnce([
+        { id: "child-1", lodgeId: "lodge-1" },
+        { id: "child-2", lodgeId: "lodge-1" },
+      ])
       // Inside apply's settle transaction the children have drifted (#1033).
       .mockResolvedValueOnce([
-        { id: "child-1", finalPriceCents: 4500, checkIn: new Date(), checkOut: new Date() },
-        { id: "child-2", finalPriceCents: 12500, checkIn: new Date(), checkOut: new Date() },
+        { id: "child-1", lodgeId: "lodge-1", finalPriceCents: 4500, checkIn: new Date(), checkOut: new Date() },
+        { id: "child-2", lodgeId: "lodge-1", finalPriceCents: 12500, checkIn: new Date(), checkOut: new Date() },
       ]);
     mocks.getPaymentIntent.mockResolvedValue({
       id: "pi_settle_1",
@@ -1234,10 +1314,15 @@ describe("applyGroupSettlementSucceeded", () => {
         },
       })
       .mockResolvedValueOnce({ status: PaymentStatus.PENDING });
-    mocks.bookingFindMany.mockResolvedValueOnce([
-      { id: "child-1", finalPriceCents: 4500, checkIn: new Date(), checkOut: new Date() },
-      { id: "child-2", finalPriceCents: 2500, checkIn: new Date(), checkOut: new Date() },
-    ]);
+    mocks.bookingFindMany
+      .mockResolvedValueOnce([
+        { id: "child-1", lodgeId: "lodge-1" },
+        { id: "child-2", lodgeId: "lodge-1" },
+      ])
+      .mockResolvedValueOnce([
+        { id: "child-1", lodgeId: "lodge-1", finalPriceCents: 4500, checkIn: new Date(), checkOut: new Date() },
+        { id: "child-2", lodgeId: "lodge-1", finalPriceCents: 2500, checkIn: new Date(), checkOut: new Date() },
+      ]);
 
     const result = await applyGroupSettlementSucceeded({ id: "pi_1", amount: 9000 });
 
@@ -1268,10 +1353,15 @@ describe("applyGroupSettlementSucceeded", () => {
       // Second call: inside the lock, re-confirm still unpaid.
       .mockResolvedValueOnce({ status: PaymentStatus.PENDING });
     mocks.bookingFindMany
+      // Pre-lock discovery: acquire every child lodge before any write.
+      .mockResolvedValueOnce([
+        { id: "child-1", lodgeId: "lodge-1" },
+        { id: "child-2", lodgeId: "lodge-1" },
+      ])
       // Inside the lock: the confirmed children to settle.
       .mockResolvedValueOnce([
-        { id: "child-1", finalPriceCents: 4500, checkIn: new Date(), checkOut: new Date() },
-        { id: "child-2", finalPriceCents: 4500, checkIn: new Date(), checkOut: new Date() },
+        { id: "child-1", lodgeId: "lodge-1", finalPriceCents: 4500, checkIn: new Date(), checkOut: new Date() },
+        { id: "child-2", lodgeId: "lodge-1", finalPriceCents: 4500, checkIn: new Date(), checkOut: new Date() },
       ])
       // After commit: the settled bookings re-loaded for the joiner emails.
       .mockResolvedValueOnce([
@@ -1366,10 +1456,15 @@ describe("applyGroupSettlementSucceededFromInvoice", () => {
     });
     mocks.settlementFindUnique.mockResolvedValueOnce({ status: PaymentStatus.PENDING });
     // The children were repriced after the combined invoice was issued.
-    mocks.bookingFindMany.mockResolvedValueOnce([
-      { id: "child-1", finalPriceCents: 4500, checkIn: new Date(), checkOut: new Date() },
-      { id: "child-2", finalPriceCents: 9500, checkIn: new Date(), checkOut: new Date() },
-    ]);
+    mocks.bookingFindMany
+      .mockResolvedValueOnce([
+        { id: "child-1", lodgeId: "lodge-1" },
+        { id: "child-2", lodgeId: "lodge-1" },
+      ])
+      .mockResolvedValueOnce([
+        { id: "child-1", lodgeId: "lodge-1", finalPriceCents: 4500, checkIn: new Date(), checkOut: new Date() },
+        { id: "child-2", lodgeId: "lodge-1", finalPriceCents: 9500, checkIn: new Date(), checkOut: new Date() },
+      ]);
 
     const result = await applyGroupSettlementSucceededFromInvoice("xinv_1");
 
@@ -1402,10 +1497,15 @@ describe("applyGroupSettlementSucceededFromInvoice", () => {
     // Inside the lock: re-confirm still unpaid.
     mocks.settlementFindUnique.mockResolvedValueOnce({ status: PaymentStatus.PENDING });
     mocks.bookingFindMany
+      // Pre-lock discovery: acquire every child lodge before any write.
+      .mockResolvedValueOnce([
+        { id: "child-1", lodgeId: "lodge-1" },
+        { id: "child-2", lodgeId: "lodge-1" },
+      ])
       // Inside the lock: the confirmed children to settle.
       .mockResolvedValueOnce([
-        { id: "child-1", finalPriceCents: 4500, checkIn: new Date(), checkOut: new Date() },
-        { id: "child-2", finalPriceCents: 4500, checkIn: new Date(), checkOut: new Date() },
+        { id: "child-1", lodgeId: "lodge-1", finalPriceCents: 4500, checkIn: new Date(), checkOut: new Date() },
+        { id: "child-2", lodgeId: "lodge-1", finalPriceCents: 4500, checkIn: new Date(), checkOut: new Date() },
       ])
       // After commit: the settled bookings re-loaded for the joiner emails.
       .mockResolvedValueOnce([

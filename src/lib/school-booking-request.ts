@@ -43,7 +43,7 @@ import { createAuditLog, logAudit } from "@/lib/audit";
 import { formatDateOnly } from "@/lib/date-only";
 import {
   MAX_AUDITED_PRUNED_ALLOCATIONS,
-  reconcileBedAllocationsForBooking,
+  reconcileBedAllocationsForBookingWithLodgeLockHeld,
 } from "@/lib/bed-allocation-lifecycle";
 import {
   assertMappableOwnerContact,
@@ -764,15 +764,11 @@ export async function approveSchoolBookingRequest(input: {
 
   try {
     conversion = await prisma.$transaction(async (tx) => {
-      // A held conversion is both a lifecycle transition (the same
-      // AWAITING_REVIEW row can be cancelled/released) and a capacity write.
-      // Compose the canonical locks in global -> lodge order so approval
-      // cannot resurrect a hold that a global-lock cancellation just won.
-      // A fresh approval creates a new booking and therefore remains
-      // lodge-only; do not unnecessarily serialise unrelated lodges.
-      if (expectedHeldBookingId) {
-        await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
-      }
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
+      // Both fresh creation and held reuse reconcile bed allocations in this
+      // transaction. Take the canonical global tier once, then the concrete
+      // lodge tier below: global fences cancellation/pruning while lodge
+      // fences capacity and allocation writers.
 
       // Held reuse locks the concrete lodge stamped onto the booking when the
       // hold was created. A null request lodge must not be re-resolved through
@@ -1155,7 +1151,7 @@ export async function approveSchoolBookingRequest(input: {
           take: MAX_AUDITED_PRUNED_ALLOCATIONS + 1,
         });
 
-        const reconcile = await reconcileBedAllocationsForBooking({
+        const reconcile = await reconcileBedAllocationsForBookingWithLodgeLockHeld({
           bookingId: booking.id,
           db: tx,
         });
@@ -1924,10 +1920,10 @@ export async function approveMemberWholeLodgeRequest(input: {
 
   try {
     conversion = await prisma.$transaction(async (tx) => {
-      // Fresh create only (no held booking is reachable here, guarded above), so
-      // the per-lodge capacity lock alone is the right scope — exactly as the
-      // school fresh-create branch does. Taking the global lifecycle lock too
-      // would needlessly serialise unrelated lodges.
+      // Whole-lodge conversion composes a booking lifecycle transition with
+      // allocation pruning, so it joins the global cohort before the booking's
+      // lodge capacity key. The held reconcile below reuses that lock prefix.
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
       const bookingLodgeId = request.lodgeId ?? (await getDefaultLodgeId(tx));
       await acquireLodgeCapacityLock(tx, bookingLodgeId);
 
@@ -2109,7 +2105,7 @@ export async function approveMemberWholeLodgeRequest(input: {
         orderBy: [{ stayDate: "asc" }, { bedId: "asc" }],
         take: MAX_AUDITED_PRUNED_ALLOCATIONS + 1,
       });
-      const reconcile = await reconcileBedAllocationsForBooking({
+      const reconcile = await reconcileBedAllocationsForBookingWithLodgeLockHeld({
         bookingId: booking.id,
         db: tx,
       });
