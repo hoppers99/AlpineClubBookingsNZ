@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -167,7 +167,15 @@ export function PolicyExceptionRequestsPanel({
   // member's own screen — which is the whole reason the split exists.
   const [internalNotes, setInternalNotes] = useState("");
   const [confirmed, setConfirmed] = useState(false);
-  const [busyId, setBusyId] = useState<string | null>(null);
+  /**
+   * Ref-backed because a disabled button is not a synchronous claim: two clicks
+   * dispatched in one React batch otherwise both enter `decide`. State mirrors the
+   * per-request claims for rendering and leaves unrelated rows usable (#2562).
+   */
+  const decisionInFlightRef = useRef(new Set<string>());
+  const [decisionInFlight, setDecisionInFlight] = useState<Set<string>>(
+    () => new Set(),
+  );
   // How a refund arising from an approved CHANGE is settled. Not part of the
   // reviewed proposal (the proposal decides WHAT changes; this decides how the
   // money moves), so it lives on the decision form rather than the request.
@@ -261,7 +269,9 @@ export function PolicyExceptionRequestsPanel({
       );
       return;
     }
-    setBusyId(item.id);
+    if (decisionInFlightRef.current.has(item.id)) return;
+    decisionInFlightRef.current.add(item.id);
+    setDecisionInFlight((current) => new Set(current).add(item.id));
     setError("");
     try {
       const response = await fetch(
@@ -320,7 +330,12 @@ export function PolicyExceptionRequestsPanel({
         err instanceof Error ? err.message : "The decision could not be recorded",
       );
     } finally {
-      setBusyId(null);
+      decisionInFlightRef.current.delete(item.id);
+      setDecisionInFlight((current) => {
+        const next = new Set(current);
+        next.delete(item.id);
+        return next;
+      });
     }
   }
 
@@ -748,7 +763,7 @@ export function PolicyExceptionRequestsPanel({
                                 size="sm"
                                 onClick={() => decide(item, "approve")}
                                 disabled={
-                                  busyId === item.id ||
+                                  decisionInFlight.has(item.id) ||
                                   !confirmed ||
                                   (needsReason && !hasNotes)
                                 }
@@ -761,7 +776,9 @@ export function PolicyExceptionRequestsPanel({
                                 size="sm"
                                 variant="outline"
                                 onClick={() => decide(item, "reject")}
-                                disabled={busyId === item.id || !hasNotes}
+                                disabled={
+                                  decisionInFlight.has(item.id) || !hasNotes
+                                }
                               >
                                 Refuse
                               </ViewOnlyActionButton>
@@ -769,7 +786,7 @@ export function PolicyExceptionRequestsPanel({
                                 size="sm"
                                 variant="ghost"
                                 onClick={resetDecisionForm}
-                                disabled={busyId === item.id}
+                                disabled={decisionInFlight.has(item.id)}
                               >
                                 Cancel
                               </Button>

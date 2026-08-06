@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import "@testing-library/jest-dom/vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { PolicyExceptionRequestsPanel } from "@/components/admin/booking-requests/policy-exception-requests-panel";
@@ -27,6 +27,14 @@ function jsonResponse(data: unknown, status = 200) {
     status,
     headers: { "Content-Type": "application/json" },
   });
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
 }
 
 function queueItem(overrides: Record<string, unknown> = {}) {
@@ -241,6 +249,72 @@ describe("the officer decision form labels who reads what, before submission", (
         JSON.parse(String((patch?.[1] as RequestInit).body)).internalNotes,
       ).toBeUndefined();
     });
+  });
+
+  it("claims one request synchronously while its PATCH is pending", async () => {
+    queueResponse = () =>
+      jsonResponse({
+        data: [
+          queueItem(),
+          queueItem({
+            id: "req-2",
+            bookingId: "bk-2",
+            requestedBy: {
+              id: "m-2",
+              firstName: "Bea",
+              lastName: "Tui",
+              email: "bea@example.com",
+            },
+          }),
+        ],
+        page: 1,
+        pageSize: 100,
+        total: 2,
+      });
+    const patchGate = deferred<Response>();
+    fetchMock.mockImplementation(async (input: unknown, init?: RequestInit) => {
+      const url = String(input);
+      if (init?.method === "PATCH") return patchGate.promise;
+      if (url.includes("/api/admin/booking-exception-requests?")) {
+        return queueResponse();
+      }
+      return jsonResponse({ proposedGuests: [] });
+    });
+
+    render(<PolicyExceptionRequestsPanel />);
+    const openButtons = await screen.findAllByRole("button", {
+      name: /Decide this request/i,
+    });
+    fireEvent.click(openButtons[0]);
+    const memberField = screen.getByLabelText(/Explanation for the member/i);
+    fireEvent.change(memberField, {
+      target: { value: "That weekend is already full." },
+    });
+    const refuse = screen.getByRole("button", { name: "Refuse" });
+
+    // Both clicks are dispatched before React can commit the disabled state. The
+    // synchronous ref claim, not the button, is what limits this to one PATCH.
+    act(() => {
+      refuse.click();
+      refuse.click();
+    });
+
+    expect(
+      fetchMock.mock.calls.filter(
+        ([url, init]) =>
+          (init as RequestInit | undefined)?.method === "PATCH" &&
+          String(url).includes("/req-1"),
+      ),
+    ).toHaveLength(1);
+    expect(refuse).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: /Decide this request/i }),
+    ).not.toBeDisabled();
+
+    patchGate.resolve(jsonResponse({ error: "Please try again." }, 500));
+    await waitFor(() => expect(refuse).not.toBeDisabled());
+    expect(memberField).toHaveValue("That weekend is already full.");
   });
 
   it("omits an internal note that was left blank rather than sending an empty string", async () => {

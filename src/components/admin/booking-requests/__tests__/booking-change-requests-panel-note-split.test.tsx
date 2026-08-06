@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import "@testing-library/jest-dom/vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { BookingChangeRequestsPanel } from "@/components/admin/booking-requests/booking-change-requests-panel";
@@ -34,6 +34,14 @@ function jsonResponse(data: unknown, status = 200) {
     status,
     headers: { "Content-Type": "application/json" },
   });
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
 }
 
 function changeRequest(overrides: Record<string, unknown> = {}) {
@@ -316,6 +324,58 @@ describe("the locked-period decision form names who reads what", () => {
         screen.getAllByLabelText(/Explanation for the member/i)[0],
       ).toHaveValue("Ada's road was closed, allowing it.");
     });
+  });
+
+  it("claims one row synchronously while its PATCH is pending", async () => {
+    listResponse = () =>
+      jsonResponse({
+        data: [changeRequest(), secondChangeRequest()],
+        page: 1,
+        pageSize: 25,
+        total: 2,
+      });
+    const patchGate = deferred<Response>();
+    fetchMock.mockImplementation(async (input: unknown, init?: RequestInit) => {
+      const url = String(input);
+      if (init?.method === "PATCH") return patchGate.promise;
+      if (url.includes("/api/admin/booking-change-requests")) {
+        return listResponse();
+      }
+      return jsonResponse({});
+    });
+
+    render(<BookingChangeRequestsPanel />);
+    const memberFields = await screen.findAllByLabelText(
+      /Explanation for the member/i,
+    );
+    fireEvent.change(memberFields[0], {
+      target: { value: "Ada's request cannot be approved." },
+    });
+    fireEvent.change(memberFields[1], {
+      target: { value: "Bea's request cannot be approved." },
+    });
+    const rejectButtons = screen.getAllByRole("button", { name: "Reject" });
+
+    // One React batch: the DOM cannot receive the disabled prop between these two
+    // native clicks. Removing the ref-backed claim makes this produce two PATCHes.
+    act(() => {
+      rejectButtons[0].click();
+      rejectButtons[0].click();
+    });
+
+    expect(
+      fetchMock.mock.calls.filter(
+        ([url, init]) =>
+          (init as RequestInit | undefined)?.method === "PATCH" &&
+          String(url).includes("/req-1"),
+      ),
+    ).toHaveLength(1);
+    expect(rejectButtons[0]).toBeDisabled();
+    expect(rejectButtons[1]).not.toBeDisabled();
+
+    patchGate.resolve(jsonResponse({ error: "Please try again." }, 500));
+    await waitFor(() => expect(rejectButtons[0]).not.toBeDisabled());
+    expect(memberFields[0]).toHaveValue("Ada's request cannot be approved.");
   });
 
   it("sends the two notes as separate fields", async () => {

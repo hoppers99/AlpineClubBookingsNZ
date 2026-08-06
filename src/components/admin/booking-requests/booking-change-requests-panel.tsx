@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
@@ -203,6 +203,15 @@ export function BookingChangeRequestsPanel({
   const [decisionDrafts, setDecisionDrafts] = useState<
     Record<string, DecisionDraft>
   >({});
+  /**
+   * The ref is the synchronous claim; the state is only its rendered mirror.
+   * React can batch two clicks before a disabled prop commits, so state alone lets
+   * both handlers PATCH the same request (#2562). A Set keeps other rows usable.
+   */
+  const decisionInFlightRef = useRef(new Set<string>());
+  const [decisionInFlight, setDecisionInFlight] = useState<Set<string>>(
+    () => new Set(),
+  );
   /** This row's draft as typed, or the empty one. Never another row's. */
   function decisionDraftFor(id: string): DecisionDraft {
     return decisionDrafts[id] ?? EMPTY_DECISION_DRAFT;
@@ -263,6 +272,10 @@ export function BookingChangeRequestsPanel({
     request: BookingChangeRequestData,
     status: "APPROVED" | "REJECTED"
   ) {
+    if (decisionInFlightRef.current.has(request.id)) return;
+    decisionInFlightRef.current.add(request.id);
+    setDecisionInFlight((current) => new Set(current).add(request.id));
+
     // This row's own draft, and nothing else (#2562 review): another row's
     // half-written note is not this member's. Trimmed here so the stored draft
     // keeps the officer's own spacing while the wire body carries neither.
@@ -307,6 +320,13 @@ export function BookingChangeRequestsPanel({
       await fetchRequests();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to review request");
+    } finally {
+      decisionInFlightRef.current.delete(request.id);
+      setDecisionInFlight((current) => {
+        const next = new Set(current);
+        next.delete(request.id);
+        return next;
+      });
     }
   }
 
@@ -576,7 +596,10 @@ export function BookingChangeRequestsPanel({
                           describeReason={false}
                           size="sm"
                           onClick={() => reviewRequest(request, "APPROVED")}
-                          disabled={!decisionDraftFor(request.id).adminNotes.trim()}
+                          disabled={
+                            decisionInFlight.has(request.id) ||
+                            !decisionDraftFor(request.id).adminNotes.trim()
+                          }
                         >
                           Acknowledge as approved
                         </ViewOnlyActionButton>
@@ -586,7 +609,10 @@ export function BookingChangeRequestsPanel({
                           size="sm"
                           variant="outline"
                           onClick={() => reviewRequest(request, "REJECTED")}
-                          disabled={!decisionDraftFor(request.id).adminNotes.trim()}
+                          disabled={
+                            decisionInFlight.has(request.id) ||
+                            !decisionDraftFor(request.id).adminNotes.trim()
+                          }
                         >
                           Reject
                         </ViewOnlyActionButton>
