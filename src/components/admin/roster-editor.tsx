@@ -164,6 +164,7 @@ export function RosterEditor({
   onRosterUpdate,
   onDirtyChange,
   onEditingChange,
+  ancestorRendersViewOnlyBanner = false,
 }: {
   roster: RosterData
   canEdit: boolean | undefined
@@ -171,6 +172,7 @@ export function RosterEditor({
   onRosterUpdate: (roster: RosterData) => void
   onDirtyChange: (dirty: boolean) => void
   onEditingChange: (editing: boolean) => void
+  ancestorRendersViewOnlyBanner?: boolean
 }) {
   const [acknowledgeCompletedReset, setAcknowledgeCompletedReset] = useState(false)
   const [rowErrors, setRowErrors] = useState<Record<string, string>>({})
@@ -351,7 +353,7 @@ export function RosterEditor({
               ) : (
                 <ViewOnlyActionButton
                   canEdit={canEdit}
-                  describeReason={false}
+                  describeReason={!ancestorRendersViewOnlyBanner}
                   onClick={startEditing}
                 >
                   Edit roster

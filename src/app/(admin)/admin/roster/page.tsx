@@ -122,7 +122,7 @@ export default function RosterPage() {
   useEffect(() => {
     if (!error) return
     pageAlertRef.current?.focus()
-    pageAlertRef.current?.scrollIntoView({ block: "center" })
+    pageAlertRef.current?.scrollIntoView?.({ block: "center" })
   }, [error])
 
   const loadMonthStatus = useCallback(async (month: string) => {
@@ -445,6 +445,7 @@ export default function RosterPage() {
               onRosterUpdate={setRoster}
               onDirtyChange={setEditorDirty}
               onEditingChange={setEditorActive}
+              ancestorRendersViewOnlyBanner
             />
           </>
         )}
