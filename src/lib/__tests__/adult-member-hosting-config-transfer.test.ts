@@ -284,7 +284,6 @@ describe("adult-member hosting configuration transfer (#2364)", () => {
           expect.objectContaining(clubPolicy),
           expect.objectContaining(lodgePolicy),
         ]),
-        actorMemberId: "admin-1",
       },
       tx,
     );

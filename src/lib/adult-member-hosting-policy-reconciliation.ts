@@ -1,7 +1,12 @@
-import type { PrismaClient } from "@prisma/client";
+import { Prisma, type PrismaClient } from "@prisma/client";
 
-import { enqueueHostingCoverageReevaluation } from "@/lib/adult-member-hosting-coverage-queue";
-import { eachDateOnlyInRange, formatDateOnly } from "@/lib/date-only";
+import { HOSTING_COVERAGE_SOURCE_BOOKING_STATUSES } from "@/lib/booking-status";
+import {
+  eachDateOnlyInRange,
+  formatDateOnly,
+  parseDateOnly,
+  todayDateOnlyForTimeZone,
+} from "@/lib/date-only";
 import {
   resolveAdultMemberHostingPolicy,
   type ResolvedAdultMemberHostingPolicy,
@@ -37,9 +42,7 @@ export type HostingPolicyReconciliationSnapshot = {
 
 type HostingPolicyReconciliationDb = Pick<
   PrismaClient,
-  | "adultMemberHostingPolicy"
-  | "hostingCoverageIncident"
-  | "hostingCoverageReevaluation"
+  "adultMemberHostingPolicy" | "booking" | "hostingCoverageReevaluation"
 >;
 
 function incidentMaterialPolicy(
@@ -65,24 +68,37 @@ function incidentPolicyChanged(
 }
 
 /**
- * Durably schedule every currently-active incident whose effective enforcement
- * mode or host-scope set changed in the policy mutation that just ran.
+ * Durably schedule every accepted booking, plus every booking with a currently
+ * active incident, whose effective enforcement mode or host-scope set changed
+ * in the policy mutation that just ran.
  *
  * This runs INSIDE the authoritative policy transaction, after its writes. Each
  * queue item still names exactly one booking owner, one lodge and that booking's
  * explicit lodge nights; policy administration never introduces a lodge-wide
- * work item. The post-commit drain then re-reads current facts and either closes
- * the now-inapplicable incident or refreshes it under the new scope set.
+ * work item. The post-commit drain then re-reads current facts and either opens
+ * a newly-required incident, closes one that is no longer applicable, or
+ * refreshes it under the new scope set.
  *
- * Reading all active incidents is intentional: a club-wide row can affect some
- * lodges through mode inheritance and a different set through host-scope
- * inheritance. Resolving before/after per incident lodge is both complete and
- * narrower than guessing from the row that was edited.
+ * TWO BOUNDED DATABASE CALLS follow the after-policy read: one candidate booking
+ * read and, when at least one lodge was affected, one `createMany`. There is no
+ * per-booking query or insert. Each resulting row is still bounded to exactly
+ * one owner, lodge and explicit night list; the cardinality of the write is the
+ * complete finite candidate result, because truncating a policy-wide repair
+ * would silently leave accepted bookings under the old rule.
+ *
+ * Reading every accepted booking is necessary for a tightening: a compliant
+ * confirmed booking has no active incident yet, but the new rule may make it
+ * uncovered. Reading active incidents as the other OR branch is necessary for
+ * a relaxation: an incident still has to close even if its booking has since
+ * left the accepted status set. A club-wide row can affect different lodges
+ * through different inheritance paths, so before/after policy is resolved once
+ * per candidate lodge rather than inferred from the edited row.
  */
 export async function enqueueActiveHostingIncidentPolicyReconciliation(
   params: {
     beforePolicies: readonly HostingPolicyReconciliationSnapshot[];
-    actorMemberId?: string | null;
+    /** Test seam for the New Zealand lodge-night boundary. */
+    todayDateOnly?: string;
   },
   db: HostingPolicyReconciliationDb,
 ): Promise<number> {
@@ -90,26 +106,34 @@ export async function enqueueActiveHostingIncidentPolicyReconciliation(
     select: HOSTING_POLICY_RECONCILIATION_SELECT,
   })) as HostingPolicyReconciliationSnapshot[];
 
-  const activeIncidents = await db.hostingCoverageIncident.findMany({
-    where: { resolvedAt: null },
-    orderBy: [{ openedAt: "asc" }, { id: "asc" }],
-    select: {
-      booking: {
-        select: {
-          id: true,
-          memberId: true,
-          lodgeId: true,
-          checkIn: true,
-          checkOut: true,
+  const candidates = await db.booking.findMany({
+    where: {
+      OR: [
+        {
+          deletedAt: null,
+          status: { in: [...HOSTING_COVERAGE_SOURCE_BOOKING_STATUSES] },
+          checkOut: {
+            gt: parseDateOnly(
+              params.todayDateOnly ?? todayDateOnlyForTimeZone(),
+            ),
+          },
         },
-      },
+        { hostingCoverageIncidents: { some: { resolvedAt: null } } },
+      ],
+    },
+    orderBy: [{ checkIn: "asc" }, { id: "asc" }],
+    select: {
+      id: true,
+      memberId: true,
+      lodgeId: true,
+      checkIn: true,
+      checkOut: true,
     },
   });
 
   const changedByLodge = new Map<string, boolean>();
-  let queued = 0;
-  for (const incident of activeIncidents) {
-    const booking = incident.booking;
+  const queueRows: Prisma.HostingCoverageReevaluationCreateManyInput[] = [];
+  for (const booking of candidates) {
     let affected = changedByLodge.get(booking.lodgeId);
     if (affected === undefined) {
       affected = incidentPolicyChanged(
@@ -121,20 +145,27 @@ export async function enqueueActiveHostingIncidentPolicyReconciliation(
     }
     if (!affected) continue;
 
-    const id = await enqueueHostingCoverageReevaluation(
-      {
-        memberId: booking.memberId,
-        lodgeId: booking.lodgeId,
-        nights: eachDateOnlyInRange(booking.checkIn, booking.checkOut).map(
-          formatDateOnly,
-        ),
-        cause: "SYSTEM_CHANGE",
-        sourceBookingId: booking.id,
-        actorMemberId: params.actorMemberId ?? null,
-      },
-      db,
+    const nights = eachDateOnlyInRange(booking.checkIn, booking.checkOut).map(
+      formatDateOnly,
     );
-    if (id !== null) queued += 1;
+    if (nights.length === 0) continue;
+    queueRows.push({
+      memberId: booking.memberId,
+      lodgeId: booking.lodgeId,
+      nights,
+      cause: "SYSTEM_CHANGE",
+      sourceBookingId: booking.id,
+      // The policy mutation has its own admin audit row. This background
+      // consequence is a system transition, not an officer override, and must
+      // not retain a stale admin id until the queue eventually drains.
+      actorMemberId: null,
+      reason: null,
+    });
   }
-  return queued;
+  if (queueRows.length === 0) return 0;
+
+  const created = await db.hostingCoverageReevaluation.createMany({
+    data: queueRows,
+  });
+  return created.count;
 }

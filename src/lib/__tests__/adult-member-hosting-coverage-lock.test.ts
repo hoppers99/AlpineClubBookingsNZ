@@ -134,6 +134,30 @@ describe("the per-owner coverage lock (#2576 §9)", () => {
     expect(doc).toContain("hosting-coverage-owner");
   });
 
+  it("pins policy reconciliation to policy-set then Member KEY SHARE then coverage-owner", () => {
+    const review = readRepoFile("src/lib/adult-member-hosting-review.ts");
+    const start = review.indexOf(
+      "function reconcileSameOwnerCoverageIncident(",
+    );
+    expect(start).toBeGreaterThan(-1);
+    const body = review.slice(start, start + 7500);
+    const policyLock = body.indexOf("lockAdultMemberHostingPolicySet(db)");
+    const actorLock = body.indexOf("FOR KEY SHARE");
+    const ownerReconciliation = body.indexOf(
+      "reconcileAdultMemberHostingReview(params.bookingId",
+    );
+    expect(policyLock).toBeGreaterThan(-1);
+    expect(actorLock).toBeGreaterThan(policyLock);
+    expect(ownerReconciliation).toBeGreaterThan(actorLock);
+    expect(body).toContain(
+      "policy-set -> Member KEY SHARE -> coverage-owner",
+    );
+
+    const doc = readRepoFile("docs/CONCURRENCY_AND_LOCKING.md");
+    expect(doc).toContain("policy-set → Member KEY SHARE → coverage-owner");
+    expect(doc).toContain("no queue tuple");
+  });
+
   it("keeps queued reconciliation in a real transaction and email after it", () => {
     const drain = readRepoFile("src/lib/adult-member-hosting-coverage-drain.ts");
     const itemTransaction = drain.indexOf("await db.$transaction((tx) =>");

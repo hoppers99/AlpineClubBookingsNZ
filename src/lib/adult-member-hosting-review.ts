@@ -2090,15 +2090,21 @@ export async function reconcileSameOwnerCoverageIncident(
   // policy administration. Without this, a drain could read ENFORCED, race a
   // demotion to Review/Disabled, and open a fresh urgent incident after the
   // policy writer had already enumerated the active rows it needed to close.
-  // The policy-set key is first here; the evaluator's coverage-owner key is
-  // taken later, preserving policy-set -> owner -> incident/queue order.
+  // The policy-set key is first here; an optional actor Member KEY SHARE comes
+  // next, and the evaluator's coverage-owner key is taken after that. The
+  // complete composed order is therefore:
+  // policy-set -> Member KEY SHARE -> coverage-owner -> incident/queue.
+  // The queue lease was claimed and committed before this transaction, so no
+  // queue row lock is held while acquiring Member; there is no queue -> Member
+  // inversion.
   await lockAdultMemberHostingPolicySet(db);
 
   // Queue attribution is intentionally FK-less so the work survives ordinary
   // member deletion. A merge re-points it (member-merge.ts), but an exceptional
   // hard deletion between enqueue and drain can still leave a dangling id.
   // Incident attribution IS a real FK, so verify at the promotion seam and
-  // degrade to anonymous system attribution rather than retrying a poison item.
+  // degrade to anonymous officer attribution rather than retrying a poison item.
+  // The mandatory reason is independent evidence and is preserved below.
   // `FOR KEY SHARE` closes the existence-check/FK-write race: a present actor
   // cannot be hard-deleted until this reconciliation transaction commits.
   let actorMemberId: string | null = null;
@@ -2221,7 +2227,6 @@ export async function reconcileSameOwnerCoverageIncident(
       violation: outcome.violation,
       override:
         params.cause === "OFFICER_OVERRIDE" &&
-        actorMemberId &&
         params.reason?.trim()
           ? { byMemberId: actorMemberId, reason: params.reason }
           : null,

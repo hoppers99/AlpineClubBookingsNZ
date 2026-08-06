@@ -497,7 +497,6 @@ export async function applyAdultMemberHosting(
     await enqueueActiveHostingIncidentPolicyReconciliation(
       {
         beforePolicies: [...current.byScope.values()],
-        actorMemberId: ctx.actorMemberId,
       },
       ctx.tx,
     );

@@ -370,7 +370,7 @@ describe("adult-member hosting policy route (#2364)", () => {
       "post-commit-drain",
     ]);
     expect(mocks.enqueuePolicyReconciliation).toHaveBeenCalledWith(
-      { beforePolicies: [stored], actorMemberId: "admin-1" },
+      { beforePolicies: [stored] },
       expect.objectContaining({
         adultMemberHostingPolicy: expect.any(Object),
       }),

@@ -1844,7 +1844,7 @@ describe("settling a dependent booking after the change (#2576 §7, §14, §16)"
     });
   });
 
-  it("degrades a deleted queued actor to null before promoting attribution into the incident FK", async () => {
+  it("degrades a deleted queued actor to null while preserving the mandatory reason", async () => {
     const { db, incidents } = makeStore([
       booking({ id: "b-main", guests: [guestRow("kid", KID_NIGHTS)] }),
     ]);
@@ -1863,7 +1863,7 @@ describe("settling a dependent booking after the change (#2576 §7, §14, §16)"
     expect(incidents[0]).toMatchObject({
       cause: "OFFICER_OVERRIDE",
       overriddenByMemberId: null,
-      overrideReason: null,
+      overrideReason: "Queued before the officer profile was deleted",
     });
     expect(
       db.$executeRaw.mock.calls.some((call: unknown[]) =>

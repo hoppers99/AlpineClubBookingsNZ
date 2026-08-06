@@ -34,88 +34,95 @@ const lodge = (
   ...overrides,
 });
 
-function incident(id: string, lodgeId: string, memberId = `owner-${id}`) {
+function candidate(id: string, lodgeId: string, memberId = `owner-${id}`) {
   return {
-    booking: {
-      id: `booking-${id}`,
-      memberId,
-      lodgeId,
-      checkIn: new Date("2026-08-01T00:00:00.000Z"),
-      checkOut: new Date("2026-08-03T00:00:00.000Z"),
-    },
+    id: `booking-${id}`,
+    memberId,
+    lodgeId,
+    checkIn: new Date("2026-08-01T00:00:00.000Z"),
+    checkOut: new Date("2026-08-03T00:00:00.000Z"),
   };
 }
 
 function dbDouble(params: {
   afterPolicies: HostingPolicyReconciliationSnapshot[];
-  incidents: ReturnType<typeof incident>[];
+  candidates: ReturnType<typeof candidate>[];
 }) {
-  const create = vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
-    id: `queue-${String(data.sourceBookingId)}`,
-  }));
+  const createMany = vi.fn(
+    async ({ data }: { data: Array<Record<string, unknown>> }) => ({
+      count: data.length,
+    }),
+  );
+  const findCandidates = vi.fn().mockResolvedValue(params.candidates);
+  const findPolicies = vi.fn().mockResolvedValue(params.afterPolicies);
   return {
-    create,
+    createMany,
+    findCandidates,
+    findPolicies,
     db: {
-      adultMemberHostingPolicy: {
-        findMany: vi.fn().mockResolvedValue(params.afterPolicies),
-      },
-      hostingCoverageIncident: {
-        findMany: vi.fn().mockResolvedValue(params.incidents),
-      },
-      hostingCoverageReevaluation: { create },
+      adultMemberHostingPolicy: { findMany: findPolicies },
+      booking: { findMany: findCandidates },
+      hostingCoverageReevaluation: { createMany },
     } as never,
   };
 }
 
 describe("adult-hosting policy incident reconciliation", () => {
-  it("queues every active incident whose inherited enforcement changed, but not an unaffected override", async () => {
-    const before = [
-      club(),
-      lodge("lodge-b", {
-        mode: "ENFORCED",
-        hostScopeSameBooking: true,
-        hostScopeSameBookingOwner: false,
-      }),
-    ];
-    const after = [
-      club({ mode: "ADMIN_REVIEW_REQUIRED", version: 2 }),
-      before[1],
-    ];
-    const { db, create } = dbDouble({
-      afterPolicies: after,
-      incidents: [incident("a", "lodge-a"), incident("b", "lodge-b")],
+  it("discovers a confirmed booking with no incident when policy tightens", async () => {
+    const before = [club({ mode: "ADMIN_REVIEW_REQUIRED" })];
+    const { db, createMany, findCandidates } = dbDouble({
+      afterPolicies: [club({ mode: "ENFORCED", version: 2 })],
+      candidates: [candidate("accepted", "lodge-a")],
     });
 
     await expect(
       enqueueActiveHostingIncidentPolicyReconciliation(
-        { beforePolicies: before, actorMemberId: "admin-1" },
+        { beforePolicies: before, todayDateOnly: "2026-08-01" },
         db,
       ),
     ).resolves.toBe(1);
-    expect(create).toHaveBeenCalledTimes(1);
-    expect(create).toHaveBeenCalledWith({
-      data: expect.objectContaining({
-        memberId: "owner-a",
-        lodgeId: "lodge-a",
-        nights: ["2026-08-01", "2026-08-02"],
-        cause: "SYSTEM_CHANGE",
-        sourceBookingId: "booking-a",
-        actorMemberId: "admin-1",
-      }),
-      select: { id: true },
+    expect(findCandidates).toHaveBeenCalledWith({
+      where: {
+        OR: [
+          {
+            deletedAt: null,
+            status: { in: ["CONFIRMED", "PAID"] },
+            checkOut: { gt: new Date("2026-08-01T00:00:00.000Z") },
+          },
+          { hostingCoverageIncidents: { some: { resolvedAt: null } } },
+        ],
+      },
+      orderBy: [{ checkIn: "asc" }, { id: "asc" }],
+      select: {
+        id: true,
+        memberId: true,
+        lodgeId: true,
+        checkIn: true,
+        checkOut: true,
+      },
+    });
+    expect(createMany).toHaveBeenCalledWith({
+      data: [
+        expect.objectContaining({
+          memberId: "owner-accepted",
+          lodgeId: "lodge-a",
+          nights: ["2026-08-01", "2026-08-02"],
+          cause: "SYSTEM_CHANGE",
+          sourceBookingId: "booking-accepted",
+          actorMemberId: null,
+          reason: null,
+        }),
+      ],
     });
   });
 
-  it("queues a still-enforced incident when its effective host scopes change", async () => {
-    const before = [club()];
-    const { db, create } = dbDouble({
-      afterPolicies: [
-        club({
-          version: 2,
-          hostScopeSameBookingOwner: true,
-        }),
-      ],
-      incidents: [incident("a", "lodge-a")],
+  it("keeps an active-incident booking as a relaxation closure candidate", async () => {
+    const before = [club({ mode: "ENFORCED" })];
+    const { db, createMany } = dbDouble({
+      afterPolicies: [club({ mode: "DISABLED", version: 2 })],
+      // The query's active-incident OR branch returns this even if it has left
+      // the accepted status set; the drain must still close its incident.
+      candidates: [candidate("cancelled-with-incident", "lodge-a")],
     });
 
     await expect(
@@ -124,32 +131,120 @@ describe("adult-hosting policy incident reconciliation", () => {
         db,
       ),
     ).resolves.toBe(1);
-    expect(create).toHaveBeenCalledTimes(1);
+    expect(createMany).toHaveBeenCalledWith({
+      data: [
+        expect.objectContaining({
+          sourceBookingId: "booking-cancelled-with-incident",
+          cause: "SYSTEM_CHANGE",
+        }),
+      ],
+    });
   });
 
-  it("does not queue for revision or capacity-only changes", async () => {
-    const before = [club()];
-    const { db, create } = dbDouble({
-      afterPolicies: [club({ version: 2, capacityMode: "HOLD" })],
-      incidents: [incident("a", "lodge-a")],
+  it("uses one set-based insert for every affected booking and never stamps the admin actor", async () => {
+    const before = [club({ mode: "ADMIN_REVIEW_REQUIRED" })];
+    const { db, createMany, findCandidates, findPolicies } = dbDouble({
+      afterPolicies: [club({ mode: "ENFORCED", version: 2 })],
+      candidates: [
+        candidate("a", "lodge-a"),
+        candidate("b", "lodge-a"),
+        candidate("c", "lodge-b"),
+      ],
     });
 
     await expect(
       enqueueActiveHostingIncidentPolicyReconciliation(
-        { beforePolicies: before, actorMemberId: "admin-1" },
+        { beforePolicies: before },
+        db,
+      ),
+    ).resolves.toBe(3);
+    expect(findPolicies).toHaveBeenCalledTimes(1);
+    expect(findCandidates).toHaveBeenCalledTimes(1);
+    expect(createMany).toHaveBeenCalledTimes(1);
+    const rows = createMany.mock.calls[0][0].data;
+    expect(rows).toHaveLength(3);
+    expect(rows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ sourceBookingId: "booking-a" }),
+        expect.objectContaining({ sourceBookingId: "booking-b" }),
+        expect.objectContaining({ sourceBookingId: "booking-c" }),
+      ]),
+    );
+    expect(rows.every((row) => row.actorMemberId === null)).toBe(true);
+  });
+
+  it("queues only lodges whose effective inherited policy changed", async () => {
+    const before = [
+      club({ mode: "ENFORCED" }),
+      lodge("lodge-b", {
+        mode: "ENFORCED",
+        hostScopeSameBooking: true,
+        hostScopeSameBookingOwner: false,
+      }),
+    ];
+    const { db, createMany } = dbDouble({
+      afterPolicies: [
+        club({ mode: "ADMIN_REVIEW_REQUIRED", version: 2 }),
+        before[1],
+      ],
+      candidates: [candidate("a", "lodge-a"), candidate("b", "lodge-b")],
+    });
+
+    await expect(
+      enqueueActiveHostingIncidentPolicyReconciliation(
+        { beforePolicies: before },
+        db,
+      ),
+    ).resolves.toBe(1);
+    expect(createMany.mock.calls[0][0].data).toEqual([
+      expect.objectContaining({ sourceBookingId: "booking-a" }),
+    ]);
+  });
+
+  it("queues a still-enforced booking when its effective host scopes change", async () => {
+    const before = [club()];
+    const { db, createMany } = dbDouble({
+      afterPolicies: [
+        club({
+          version: 2,
+          hostScopeSameBookingOwner: true,
+        }),
+      ],
+      candidates: [candidate("a", "lodge-a")],
+    });
+
+    await expect(
+      enqueueActiveHostingIncidentPolicyReconciliation(
+        { beforePolicies: before },
+        db,
+      ),
+    ).resolves.toBe(1);
+    expect(createMany).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not write queue rows for revision or capacity-only changes", async () => {
+    const before = [club()];
+    const { db, createMany } = dbDouble({
+      afterPolicies: [club({ version: 2, capacityMode: "HOLD" })],
+      candidates: [candidate("a", "lodge-a")],
+    });
+
+    await expect(
+      enqueueActiveHostingIncidentPolicyReconciliation(
+        { beforePolicies: before },
         db,
       ),
     ).resolves.toBe(0);
-    expect(create).not.toHaveBeenCalled();
+    expect(createMany).not.toHaveBeenCalled();
   });
 
-  it("propagates an enqueue failure so the authoritative policy transaction can roll back", async () => {
+  it("propagates a bulk enqueue failure so the policy transaction can roll back", async () => {
     const before = [club()];
-    const { db, create } = dbDouble({
+    const { db, createMany } = dbDouble({
       afterPolicies: [club({ mode: "DISABLED", version: 2 })],
-      incidents: [incident("a", "lodge-a")],
+      candidates: [candidate("a", "lodge-a")],
     });
-    create.mockRejectedValueOnce(new Error("queue unavailable"));
+    createMany.mockRejectedValueOnce(new Error("queue unavailable"));
 
     await expect(
       enqueueActiveHostingIncidentPolicyReconciliation(

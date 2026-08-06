@@ -259,8 +259,8 @@ export async function PUT(request: NextRequest) {
       // Snapshot the complete tiny policy set under its advisory lock. A
       // club-wide edit can change mode inheritance for one lodge and host-scope
       // inheritance for another, so only a before/after effective comparison is
-      // complete. The helper below queues only active incident bookings whose
-      // effective mode/scopes actually moved.
+      // complete. The helper below queues accepted future bookings plus active
+      // incident bookings only at lodges whose effective mode/scopes moved.
       const beforePolicies = await tx.adultMemberHostingPolicy.findMany({
         select: HOSTING_POLICY_RECONCILIATION_SELECT,
       });
@@ -291,7 +291,6 @@ export async function PUT(request: NextRequest) {
             await enqueueActiveHostingIncidentPolicyReconciliation(
               {
                 beforePolicies,
-                actorMemberId: session.user.id,
               },
               tx,
             ),
@@ -341,7 +340,6 @@ export async function PUT(request: NextRequest) {
           await enqueueActiveHostingIncidentPolicyReconciliation(
             {
               beforePolicies,
-              actorMemberId: session.user.id,
             },
             tx,
           ),
