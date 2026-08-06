@@ -68,10 +68,7 @@ are listed on the booking for you to relay.
 1. Switch to the **Changes** tab. Filter by **Requested**, **Approved**,
    **Rejected**, or **All**.
 
-   ![Booking Requests, Changes tab: a locked-period change request with Admin notes and an Acknowledge as approved button](../images/admin/admin-booking-requests-changes.png)
-
-   (The screenshot predates the two note fields described in step 3, so it still
-   shows the single **Admin notes** box.)
+   ![Booking Requests, Changes tab showing a locked-period change request with separate member explanation and internal note fields](../images/admin/admin-booking-requests-changes.png)
 
 2. Read the request summary and reason, then use **Open booking** to make the
    actual edit on the booking page — approving here only *acknowledges* the
