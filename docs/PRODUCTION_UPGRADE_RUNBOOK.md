@@ -570,14 +570,19 @@ and nomination. There is no ordering that keeps both versions working.
    passed to `prisma migrate deploy` alone are inert — they gate the validator, not
    Prisma.
 
-   9(a) **Validate.** Name every pending migration's `migration.sql`. In a combined
-   window that is both of them:
+   9(a) **Validate.** Name every pending migration's `migration.sql`. For this
+   release the complete ordered set is six migrations; do not validate only the two
+   windowed rows:
    ```bash
    ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS=1 \
    BLUE_GREEN_MIGRATION_OVERRIDE_REASON="#2543 + #2520 windowed maintenance window <DATE>: public traffic removed, web and all workers stopped, no old connections, fresh verified backup taken, pre-migration checks recorded" \
    ./scripts/validate-blue-green-migrations.sh \
      prisma/migrations/20260803010000_contract_subscription_lockout_drop_enabled/migration.sql \
-     prisma/migrations/20260803030000_contract_drop_family_group_member_role/migration.sql
+     prisma/migrations/20260803020000_add_adult_member_hosting_enforced_and_host_scopes/migration.sql \
+     prisma/migrations/20260803030000_contract_drop_family_group_member_role/migration.sql \
+     prisma/migrations/20260803070000_add_hosting_coverage_incidents/migration.sql \
+     prisma/migrations/20260806000000_add_hosting_notification_delivery_claim/migration.sql \
+     prisma/migrations/20260806010000_fence_hosting_coverage_delivery_claims/migration.sql
    ```
    Expect exit 0 with the override reason echoed back as a `WARNING:` line. It
    exits 1 without **both** variables, and exits 1 regardless if `rollback.sql` is
@@ -651,6 +656,22 @@ scheduling note gives the shape rather than a number.
 - **Do not restart the old application version, and do not route traffic back to
   it.** Its client names a column that no longer exists; it will fail across the
   family surface, and re-pointing Caddy does not fix that.
+- **Before starting any old image, prove that no hosting policy still uses the
+  new `ENFORCED` enum value:**
+  ```sql
+  SELECT "id", "scopeKey", "lodgeId", "mode"
+  FROM "AdultMemberHostingPolicy"
+  WHERE "mode" = 'ENFORCED';
+  ```
+  This must return zero rows. The previous Prisma client does not know `ENFORCED`,
+  and `loadAdultMemberHostingPolicy` is on every booking write path, so starting it
+  while even one row remains is a booking outage. Prefer a forward-fix. If rollback
+  is unavoidable, record the intended fallback for every returned club/lodge row
+  and, while the replacement runtime is still available, save each as
+  `ADMIN_REVIEW_REQUIRED` or `DISABLED`; then repeat the query. Do not guess a
+  fallback or start the old runtime until the result is empty. If the replacement
+  runtime cannot perform the reset, stop and use a separately reviewed operator SQL
+  mapping or restore the verified backup.
 - A rollback to the old version requires **first** either running
   `prisma/migrations/20260803030000_contract_drop_family_group_member_role/rollback.sql`
   by hand as the migration role, **or** restoring the verified step 7 backup.
@@ -667,6 +688,9 @@ scheduling note gives the shape rather than a number.
   rehearsed ([§7.2](#72-windowed-migration-rehearsal-20260803030000_contract_drop_family_group_member_role)).
   `20260803000000_subscription_lockout_three_way_mode` needs no reverse script: it
   is additive and the previous release's client never names `mode`.
+- `20260803020000`, `20260803070000`, `20260806000000` and `20260806010000`
+  are additive and need no reverse scripts. Their extra columns, tables and types
+  remain inert to the old client after the mandatory `ENFORCED` preflight above.
 - `rollback.sql` recreates the column as `TEXT NOT NULL DEFAULT 'MEMBER'` —
   byte-identical to the shape
   `20260407120000_add_family_group_member_join_table` created and exactly what the

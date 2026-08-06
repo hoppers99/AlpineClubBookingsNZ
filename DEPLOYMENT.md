@@ -709,7 +709,10 @@ says which governs when:
    dedicated compose service the deploy script uses,
    `docker compose --profile migrate run --rm migrate` — not `npx`, which this host
    is not documented as having and which is deliberately removed from the runtime
-   image. Exact commands: `docs/PRODUCTION_UPGRADE_RUNBOOK.md` §2.4.1 step 9.
+   image. Pass all six pending migration files, in order — `20260803010000`,
+   `20260803020000`, `20260803030000`, `20260803070000`, `20260806000000` and
+   `20260806010000` — including the additive rows; exact commands are in
+   `docs/PRODUCTION_UPGRADE_RUNBOOK.md` §2.4.1 step 9.
 7. **Verify the migrate step**: the dropped column is gone and
    `_prisma_migrations` records each migration once.
 8. **Start the replacement release and replacement workers only**, confirm
@@ -726,6 +729,24 @@ the reverse script or restoring the backup**: after the drop commits, its client
 names a column that no longer exists, so re-pointing traffic at it does not restore
 service. Restore from backup only if the **data** is wrong rather than the schema.
 
+**Before starting any previous-release image, run this mandatory compatibility
+preflight:**
+
+```sql
+SELECT "id", "scopeKey", "lodgeId", "mode"
+FROM "AdultMemberHostingPolicy"
+WHERE "mode" = 'ENFORCED';
+```
+
+The result must be empty. The previous Prisma client cannot decode `ENFORCED`, and
+the policy loader is on every booking write path. If any row is returned, prefer a
+forward-fix. If rollback is unavoidable, record an operator-approved fallback for
+each returned club/lodge policy, use the replacement runtime to save it as
+`ADMIN_REVIEW_REQUIRED` or `DISABLED`, and repeat the query. Never guess the policy
+or start the old runtime while the query still returns a row. If the replacement
+runtime is unavailable, stop for a separately reviewed SQL mapping or restore the
+verified backup.
+
 **When both windowed migrations were applied in the one window, roll back BOTH, in
 the reverse of the order they were applied** — `20260803030000` first, then
 `20260803010000`. One is not enough: whichever you skip leaves its column missing
@@ -734,6 +755,10 @@ broken is every booking write path, while the family-group pages look fine and
 suggest the rollback worked. The two touch different tables, so the order cannot
 corrupt anything; it is the rule to follow because it generalises. Rehearsed both
 scripts in that order.
+
+The four additive hosting migrations (`20260803020000`, `20260803070000`,
+`20260806000000`, and `20260806010000`) need no reverse scripts; their added schema
+is inert to the previous client once the `ENFORCED` preflight is empty.
 
 **After a `rollback.sql` the migration history lies, and nothing in the deploy path
 notices.** `_prisma_migrations` still records the migration as applied, so

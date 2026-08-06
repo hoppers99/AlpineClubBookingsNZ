@@ -375,12 +375,23 @@ it commits. `settleHostingCoverageAfterCommit` is the wrapper the mutation paths
 for that, and it never accepts a caller's `tx`;
 `adult-member-hosting-call-sites.test.ts` asserts so tree-wide.
 
-Concurrency inside the drain is handled by guarded claims rather than locks, the
-same pattern the rest of this repository uses for exactly-one-claimant: a queue item
-is claimed by an `updateMany` guarded on `processedAt: null` AND the `attempts` value
-just read. Owner notification uses a separate, expiring delivery lease; a successful
-transport stamps `notifiedStateKey`, while a failed/non-send releases the lease so
-unchanged reconciliation can retry. The one-active-incident-per-booking rule uses the partial
+Concurrency inside the drain is handled by expiring, opaque-token claims rather than
+long-lived locks. A queue item is claimed by an `updateMany` guarded on
+`processedAt: null`, the `attempts` value just read, and either no current token or an
+expired token. The claim atomically writes a fresh random token and 15-minute expiry
+while incrementing `attempts`. Completion and failure both match that exact token;
+once an expired claim has been reclaimed, its stale worker can neither mark the item
+processed nor clear the replacement claim or overwrite its `lastError`. A crashed
+worker therefore burns one attempt, but cannot burn another or be retried until its
+lease expires. A worker that loses either completion or failure fencing reports a
+lost claim rather than a processed item.
+
+Owner notification uses a separate 15-minute delivery lease with the same exact
+claimant rule: claim writes an opaque token, and completion/release must match that
+token as well as the incident and state key. A successful transport stamps
+`notifiedStateKey`; a failed/non-send releases only its own lease so unchanged
+reconciliation can retry. The email provider call stays outside every database
+transaction. The one-active-incident-per-booking rule uses the partial
 unique index `HostingCoverageIncident_active_booking_unique` (a concurrent second
 opener loses on the index and folds into the winner). No new key is added to the
 lock-ordering table.

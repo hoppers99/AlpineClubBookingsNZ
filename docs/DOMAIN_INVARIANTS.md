@@ -2872,10 +2872,15 @@ compliant indefinitely.
   into the winner instead of surfacing a constraint violation. The stored `stateKey`
   is a fixed-width digest of the material-identity key, so a large party cannot
   outrun the column and make two different problems compare equal. The owner's
-  notification takes a short delivery lease before the send, but `notifiedStateKey`
-  is stamped only after transport reports success. A failed/non-send releases the
-  lease and unchanged reconciliation retries; two concurrent drains cannot both own
-  the lease. A crashed sender's lease expires after 15 minutes.
+  notification takes a short delivery lease with an opaque claimant token before
+  the send, but `notifiedStateKey` is stamped only after transport reports success.
+  Completion and release match that exact token, so a stale sender cannot complete
+  or clear a lease that another drain reclaimed after expiry. A failed/non-send
+  releases its own lease and unchanged reconciliation retries; two concurrent drains
+  cannot both own the lease. A crashed sender's lease expires after 15 minutes. The
+  re-evaluation queue uses the same 15-minute token fencing for completion and
+  failure: a crashed claim is not retried before expiry, and its stale worker cannot
+  consume or mutate the replacement claim.
 - **Resolution is recorded, not inferred**, as one of `COVERAGE_RESTORED`,
   `BOOKING_AMENDED`, `EXCEPTION_APPROVED` or `BOOKING_CANCELLED` — inferring it from
   the absence of a hazard would report restored cover for a booking somebody
