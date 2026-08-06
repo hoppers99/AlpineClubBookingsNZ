@@ -310,22 +310,20 @@ booking OWNER.
 argument was that coverage is same-lodge by definition (§4), so "every path that can
 confirm a booking and every path that can remove exact-night attendance already takes
 `acquireLodgeCapacityLock` for that lodge", leaving two interacting writers always
-contending for the same per-lodge key. That is false in both directions:
+contending for the same per-lodge key. When #2576 introduced the owner key, that was
+false in both directions:
 
-- `booking-cancel.ts`'s four claim transactions take `pg_advisory_xact_lock(1)` and
-  never `acquireLodgeCapacityLock`;
-- `booking-create.ts` and the guest-add route take `acquireLodgeCapacityLock` and
-  never `pg_advisory_xact_lock(1)`.
+- `booking-cancel.ts`'s four claim transactions took `pg_advisory_xact_lock(1)` and
+  not `acquireLodgeCapacityLock`;
+- `booking-create.ts` and the guest-add route took `acquireLodgeCapacityLock` and
+  not `pg_advisory_xact_lock(1)`.
 
-Those are different keys, these transactions run at READ COMMITTED, and the two
-writers touch no row in common — so nothing serialised them. The race §9 names was
-open, and non-deterministically so: member O owns booking A (CONFIRMED, adult member
-M attending nights N at lodge L). T1 creates booking B (non-member guests, lodge L,
-nights N), takes the lodge lock, reads A as CONFIRMED, finds cover and writes B.
-Concurrently T2 cancels A under `lock(1)`, cannot see uncommitted B, finds nothing
-stranded, and commits. B lands CONFIRMED with no cover, no refusal, no queue row,
-therefore no incident, no owner email and nothing in the officer queue. The mirror
-ordering is safe, which is exactly what §9 forbids.
+Those different keys at READ COMMITTED left the named create-versus-cancel race
+open. #2593 later made the allocation-participating confirmed-create and cancellation
+paths compose global → lodge. That later overlap does not retire the owner key:
+coverage is a cross-booking, per-owner invariant, and participant/member/queue
+producers do not all share those tiers. The coverage-owner key remains the
+authoritative common serialisation point and stays last.
 
 The invariant is per-OWNER, so the key is the owner — the same reasoning that gave
 `lockBookingMemberNights` its own family, because per-lodge locks cannot serialise a

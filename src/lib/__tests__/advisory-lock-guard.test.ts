@@ -150,7 +150,7 @@ const GLOBAL_BOOKING_MONEY_LOCK_INVENTORY: Record<string, number> = {
   // counterparts of allocation reconciliation. Single-lodge paths take global
   // before that lodge; cross-lodge paths acquire the sorted lodge union before
   // their fresh read and guarded transition, so no path reverses the topology.
-  "src/lib/school-booking-request.ts": 3,
+  "src/lib/school-booking-request.ts": 2,
   "src/lib/waitlist-cross-lodge.ts": 6,
   "src/lib/waitlist.ts": 4,
   "src/lib/xero-group-settlement-invoices.ts": 3,
@@ -190,15 +190,13 @@ const SCOPED_ADVISORY_LOCK_INVENTORY: Record<string, number> = {
   // — a NEW keyspace in its own namespace, keyed on the booking OWNER.
   //
   // WHY IT EXISTS. `SAME_BOOKING_OWNER` makes one booking's compliance a function of
-  // ANOTHER booking's rows, and the per-lodge capacity key cannot serialise that even
-  // though coverage is same-lodge by definition: `booking-cancel.ts`'s claim
-  // transactions take `pg_advisory_xact_lock(1)` and never the lodge lock, while
-  // `booking-create.ts` and the guest-add route take the lodge lock and never
-  // `lock(1)`. Different keys at READ COMMITTED over disjoint rows, so a cancel
-  // removing the last qualifying adult could interleave with a create that had just
-  // read that adult as cover and the winner depended on commit order. Same reasoning
-  // that gave `lockBookingMemberNights` its own family: a per-member invariant cannot
-  // be serialised by a per-lodge key.
+  // ANOTHER booking's rows. When #2576 introduced this key, confirmed creation used
+  // lodge while cancellation used global, leaving the named race open. #2593 later
+  // made the allocation-participating confirmed-create and cancellation paths compose
+  // global → lodge. The owner key remains required because participant/member/queue
+  // producers do not all share those tiers and the invariant is cross-booking and
+  // per-owner. Same reasoning that gave `lockBookingMemberNights` its own family: a
+  // per-member invariant cannot be serialised by a per-lodge key alone.
   //
   // COMPOSITION AND ORDER. Taken LAST among the application locks a caller composes:
   // after `pg_advisory_xact_lock(1)`, `acquireLodgeCapacityLock`, roster-date locks,
@@ -439,14 +437,14 @@ describe("advisory lock guard (#182 / H1 regression class)", () => {
     )?.text;
     expect(school).toBeDefined();
 
-    const approval =
-      school?.slice(
-        school.indexOf("export async function approveSchoolBookingRequest"),
-      ) ?? "";
+    const approvalStart =
+      school?.indexOf("export async function approveSchoolBookingRequest") ?? -1;
+    const approvalEnd =
+      school?.indexOf("export type MemberWholeLodgeApprovalOverride") ?? -1;
+    const approval = school?.slice(approvalStart, approvalEnd) ?? "";
     const locator = approval.indexOf("const heldLodgeLocator = expectedHeldBookingId");
     const transaction = approval.indexOf("conversion = await prisma.$transaction");
-    const conditionalGlobal = approval.indexOf("if (expectedHeldBookingId)");
-    const globalLock = approval.indexOf("pg_advisory_xact_lock(1)", conditionalGlobal);
+    const globalLock = approval.indexOf("pg_advisory_xact_lock(1)");
     const heldKey = approval.indexOf("expectedHeldLodgeId!", globalLock);
     const lodgeLock = approval.indexOf("acquireLodgeCapacityLock(tx, bookingLodgeId)");
     const requestReread = approval.indexOf(
@@ -461,7 +459,6 @@ describe("advisory lock guard (#182 / H1 regression class)", () => {
     for (const marker of [
       locator,
       transaction,
-      conditionalGlobal,
       globalLock,
       heldKey,
       lodgeLock,
@@ -472,9 +469,9 @@ describe("advisory lock guard (#182 / H1 regression class)", () => {
     ]) {
       expect(marker).toBeGreaterThanOrEqual(0);
     }
+    expect(approval.match(/pg_advisory_xact_lock\(1\)/g) ?? []).toHaveLength(1);
     expect(locator).toBeLessThan(transaction);
-    expect(transaction).toBeLessThan(conditionalGlobal);
-    expect(conditionalGlobal).toBeLessThan(globalLock);
+    expect(transaction).toBeLessThan(globalLock);
     expect(globalLock).toBeLessThan(heldKey);
     expect(heldKey).toBeLessThan(lodgeLock);
     expect(globalLock).toBeLessThan(lodgeLock);

@@ -41,16 +41,31 @@ describe("bed allocation lock topology", () => {
     ]);
   });
 
-  it("locks global then lodge before the school whole-lodge conversion", () => {
+  it("locks global exactly once then lodge before each school conversion", () => {
     const school = source("src/lib/school-booking-request.ts");
-    const conversion = school.slice(
-      school.lastIndexOf("conversion = await prisma.$transaction"),
-    );
-    expectInOrder(conversion, [
-      "pg_advisory_xact_lock(1)",
-      "acquireLodgeCapacityLock",
-      "reconcileBedAllocationsForBookingWithLodgeLockHeld",
-    ]);
+    const conversions = [
+      between(
+        school,
+        "export async function approveSchoolBookingRequest(",
+        "export type MemberWholeLodgeApprovalOverride",
+      ),
+      school.slice(
+        school.indexOf(
+          "export async function approveMemberWholeLodgeRequest(",
+        ),
+      ),
+    ];
+
+    for (const conversion of conversions) {
+      expect(conversion.match(/pg_advisory_xact_lock\(1\)/g) ?? []).toHaveLength(
+        1,
+      );
+      expectInOrder(conversion, [
+        "pg_advisory_xact_lock(1)",
+        "acquireLodgeCapacityLock",
+        "reconcileBedAllocationsForBookingWithLodgeLockHeld",
+      ]);
+    }
   });
 
   it("locks global, lodge, then member credit for internet-banking expiry", () => {
