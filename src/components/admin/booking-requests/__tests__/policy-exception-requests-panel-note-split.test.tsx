@@ -2,7 +2,7 @@
 
 import "@testing-library/jest-dom/vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { PolicyExceptionRequestsPanel } from "@/components/admin/booking-requests/policy-exception-requests-panel";
 
@@ -86,6 +86,8 @@ function queueItem(overrides: Record<string, unknown> = {}) {
 let queueResponse: () => Response;
 let decisionResponse: () => Response;
 let fetchMock: ReturnType<typeof vi.fn>;
+let scrollIntoView: ReturnType<typeof vi.fn>;
+const originalScrollIntoView = HTMLElement.prototype.scrollIntoView;
 
 function installFetch() {
   queueResponse = () => jsonResponse({ data: [queueItem()], page: 1, pageSize: 100, total: 1 });
@@ -101,6 +103,22 @@ function installFetch() {
 
 beforeEach(() => {
   installFetch();
+  scrollIntoView = vi.fn();
+  Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+    configurable: true,
+    value: scrollIntoView,
+  });
+});
+
+afterEach(() => {
+  if (originalScrollIntoView) {
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: originalScrollIntoView,
+    });
+  } else {
+    delete (HTMLElement.prototype as { scrollIntoView?: unknown }).scrollIntoView;
+  }
 });
 
 async function openDecisionForm() {
@@ -110,6 +128,57 @@ async function openDecisionForm() {
 }
 
 describe("the officer decision form labels who reads what, before submission", () => {
+  it("keeps a permanent alert and focuses and scrolls load failures", async () => {
+    const loadGate = deferred<Response>();
+    fetchMock.mockImplementation(async (input: unknown) => {
+      if (String(input).includes("/api/admin/booking-exception-requests?")) {
+        return loadGate.promise;
+      }
+      return jsonResponse({ proposedGuests: [] });
+    });
+    render(<PolicyExceptionRequestsPanel />);
+
+    const alert = document.getElementById("policy-exception-error");
+    expect(alert).toHaveAttribute("role", "alert");
+    expect(alert).toBeEmptyDOMElement();
+    loadGate.resolve(jsonResponse({ error: "Queue service unavailable" }, 503));
+    expect(await screen.findByText("Queue service unavailable")).toBeInTheDocument();
+    expect(document.getElementById("policy-exception-error")).toBe(alert);
+    expect(document.activeElement).toBe(alert);
+    expect(scrollIntoView).toHaveBeenCalledWith({
+      behavior: "smooth",
+      block: "center",
+    });
+  });
+
+  it("focuses a decision failure without discarding the open decision draft", async () => {
+    decisionResponse = () => jsonResponse({ error: "Decision service unavailable" }, 503);
+    await openDecisionForm();
+    const memberNote = screen.getByLabelText(/Explanation for the member/i);
+    const privateNote = screen.getByLabelText(/Internal note/i);
+    fireEvent.change(memberNote, {
+      target: { value: "Member-visible draft must remain." },
+    });
+    fireEvent.change(privateNote, {
+      target: { value: "Officer-only draft must remain." },
+    });
+    fireEvent.click(screen.getByLabelText(/I have read the proposal above/i));
+    fireEvent.click(screen.getByRole("button", { name: /Approve and apply/i }));
+
+    expect(
+      await screen.findByText("Decision service unavailable"),
+    ).toBeInTheDocument();
+    const alert = document.getElementById("policy-exception-error");
+    expect(document.activeElement).toBe(alert);
+    expect(memberNote).toHaveValue("Member-visible draft must remain.");
+    expect(privateNote).toHaveValue("Officer-only draft must remain.");
+    expect(screen.getByLabelText(/I have read the proposal above/i)).toBeChecked();
+    expect(scrollIntoView).toHaveBeenCalledWith({
+      behavior: "smooth",
+      block: "center",
+    });
+  });
+
   it("draws two fields, and names the audience of each", async () => {
     await openDecisionForm();
     expect(screen.getByLabelText(/Explanation for the member/i)).toBeInTheDocument();

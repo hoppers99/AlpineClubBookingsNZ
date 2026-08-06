@@ -197,6 +197,7 @@ export function PolicyExceptionRequestsPanel({
   const [filter, setFilter] = useState<StatusFilter>("REQUESTED");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const errorRef = useRef<HTMLDivElement>(null);
   const [openId, setOpenId] = useState<string | null>(null);
   // The MEMBER-FACING decision explanation. Named `notes` since #2526 and kept
   // that way so every existing reference reads the same field; the label beside
@@ -267,6 +268,16 @@ export function PolicyExceptionRequestsPanel({
   useEffect(() => {
     fetchItems();
   }, [fetchItems]);
+
+  useEffect(() => {
+    if (!error) return;
+    const alert = errorRef.current;
+    if (!alert) return;
+    alert.focus({ preventScroll: true });
+    if (typeof alert.scrollIntoView === "function") {
+      alert.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }, [error]);
 
   function resetDecisionForm() {
     setOpenId(null);
@@ -453,14 +464,27 @@ export function PolicyExceptionRequestsPanel({
           no adult still goes to a child-safety review.
         </p>
 
-        {error && (
-          <div className="rounded-md bg-destructive/10 px-4 py-3 text-destructive">
-            {error}
-            <button onClick={() => setError("")} className="ml-2 underline">
-              Dismiss
-            </button>
-          </div>
-        )}
+        <div
+          id="policy-exception-error"
+          ref={errorRef}
+          role="alert"
+          aria-atomic="true"
+          tabIndex={-1}
+          className={
+            error
+              ? "rounded-md bg-destructive/10 px-4 py-3 text-destructive"
+              : undefined
+          }
+        >
+          {error ? (
+            <>
+              {error}
+              <button onClick={() => setError("")} className="ml-2 underline">
+                Dismiss
+              </button>
+            </>
+          ) : null}
+        </div>
 
         <div className="flex flex-wrap gap-2">
           {STATUS_FILTERS.map((status) => (
