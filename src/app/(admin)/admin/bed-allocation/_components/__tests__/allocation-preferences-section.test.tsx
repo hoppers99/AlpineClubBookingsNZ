@@ -93,7 +93,9 @@ describe("AllocationPreferencesSection", () => {
     fireEvent.click(screen.getByRole("button", { name: "Edit" }));
     fireEvent.click(toggle);
     fireEvent.click(
-      screen.getAllByRole("button", { name: /^Disable$/ })[0]!,
+      screen.getByRole("button", {
+        name: "Disable Keep each booking together",
+      }),
     );
 
     expect(toggle.checked).toBe(false);
@@ -210,7 +212,7 @@ describe("AllocationPreferencesSection", () => {
     expect(disabledRow).not.toBeNull();
     fireEvent.click(
       within(disabledRow as HTMLElement).getByRole("button", {
-        name: "Enable",
+        name: "Enable Honour the requested room",
       }),
     );
 
@@ -246,7 +248,9 @@ describe("AllocationPreferencesSection", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Edit" }));
     fireEvent.click(
-      screen.getAllByRole("button", { name: /^Disable$/ })[0]!,
+      screen.getByRole("button", {
+        name: "Disable Keep each booking together",
+      }),
     );
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
@@ -277,7 +281,9 @@ describe("AllocationPreferencesSection", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Edit" }));
     fireEvent.click(
-      screen.getAllByRole("button", { name: /^Disable$/ })[0]!,
+      screen.getByRole("button", {
+        name: "Disable Keep each booking together",
+      }),
     );
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
@@ -297,7 +303,9 @@ describe("AllocationPreferencesSection", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Edit" }));
     fireEvent.click(
-      screen.getAllByRole("button", { name: /^Disable$/ })[0]!,
+      screen.getByRole("button", {
+        name: "Disable Keep each booking together",
+      }),
     );
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
@@ -313,7 +321,7 @@ describe("AllocationPreferencesSection", () => {
       }) as HTMLButtonElement).disabled,
     ).toBe(true);
     for (const button of screen.getAllByRole("button", {
-      name: /^(Enable|Disable)$/,
+      name: /^(Enable|Disable) /,
     })) {
       expect((button as HTMLButtonElement).disabled).toBe(true);
     }
@@ -340,7 +348,9 @@ describe("AllocationPreferencesSection", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Edit" }));
     fireEvent.click(
-      screen.getAllByRole("button", { name: /^Disable$/ })[0]!,
+      screen.getByRole("button", {
+        name: "Disable Keep each booking together",
+      }),
     );
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     view.unmount();
