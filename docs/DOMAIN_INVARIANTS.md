@@ -897,27 +897,41 @@ Future reviews and issues should cite this file when proposing changes.
   The same three paths (single-night/drag placements, `source: "AUTO"`
   suggestions, and move re-drafts) are why draft rows persist under #2251's
   auto-approve, and why a confirmation affordance stays meaningful.
-- **Existing allocation moves preserve their lodge nights and commit atomically
-  (#2366):** an existing-chip drag selects a destination bed only. The hovered
-  column is presentation input, never a target date; the server accepts
-  allocation ids and re-reads each persisted `stayDate` under global booking
-  `lock(1)` followed by the destination lodge's capacity lock. The shared
-  global key makes cancellation's allocation prune and the move mutually
-  exclusive, so a move can never resurrect a row after cancellation. A
-  first-visible chip proxies for that guest's currently
-  visible allocated nights, while a later chip represents only its own night.
-  Every selected row keeps its original NZ date. A same-bed normalized move is a
-  no-op at both client and service boundaries, with no request from the normal
-  client and no audit even if another client calls the route directly.
-  Multi-night existing-allocation moves are all-or-nothing: one destination
-  conflict, inactive bed/room, lodge mismatch, status/guest-date failure,
-  custodian hold or invalid double-bed share rolls back every row. The row
-  updates, any second-occupant promotions, and all corresponding audit entries
-  live in the same transaction. Each promotion audit identifies both the
-  promoted row/guest and the causal moved allocation/guest. This does not
-  change bucket-to-board placement,
-  whose existing bulk path continues to report and skip individual conflicting
-  nights while placing the rest.
+- **Existing allocation moves preserve their lodge nights, require review, and
+  commit atomically (#2366, #2595):** an existing-chip drag or **Move to bed**
+  menu choice selects a destination bed only. The hovered column is
+  presentation input, never a target date, and both pointer and keyboard paths
+  open the same confirmation dialog before any write. The reviewed request is
+  an exclusive typed shape: anchor allocation, destination bed,
+  `ALLOCATION_NIGHT` or `BOOKING_GUEST` scope, and `v1:<sha256>` preview digest.
+  The unchanged legacy `{ allocationIds, bedId }` request remains capped at the
+  31-night board limit for older callers; the board no longer uses it for an
+  existing-chip move.
+
+  Night scope resolves the anchor only. Person scope resolves every existing
+  row for that guest on that booking, including sparse/off-screen nights, up to
+  366; it creates no missing guest-night or allocation. Preview needs
+  `bookings:view`, writes nothing, and separates changed/noop rows while showing
+  approval re-draft, shared-double promotions, and every hard refusal. The
+  digest binds the full selected and relevant occupant sets plus booking,
+  guest-night, consent, member/age, partner-link, destination, custodian-hold,
+  whole-lodge-hold and derived feasibility state. Counterpart identities never
+  enter the response.
+
+  Apply needs `bookings:edit` and takes global `lock(1)` -> the complete sorted
+  source/destination/booking/occupant lodge union -> sorted member-lifecycle ->
+  sorted member-partner-link -> deterministic allocation-row locks. It re-reads
+  and re-digests before one guarded `UPDATE ... FROM (VALUES ...)` statement
+  (up to 366 rows, explicit 30-second transaction and 10-second acquisition
+  budgets). Cancellation uses the same global key, so a move can never resurrect
+  a pruned row. Changed rows keep their original NZ dates, become unapproved
+  `MANUAL` drafts, and commit with any partner promotions and bounded causal
+  audits. Unchanged rows are digest-bound but excluded from feasibility,
+  promotion, write, re-draft, and audit. An all-noop confirmation succeeds with
+  explicit feedback and no audit. Any stale fact, conflict, or guarded-count
+  mismatch returns/refuses atomically; a stale digest carries a refreshed
+  preview and requires confirmation again. Bucket-to-board placement keeps its
+  separate per-night partial-conflict contract.
 - **Destructive allocation removal is preview-bound and never replans
   (#2594):** every UI entry point uses
   `POST`/`PUT /api/admin/bed-allocation/allocations/removal`; the old direct
@@ -982,8 +996,8 @@ Future reviews and issues should cite this file when proposing changes.
   the board's READ window, not this write: lodge capacity is the active bed
   count and never reads `BedAllocation` rows. Placement paths nevertheless take
   the destination lodge's capacity lock because custodian holds share the bed
-  inventory (#2286); existing-allocation moves follow destination-key read →
-  lock → authoritative re-read. The separate write bound
+  inventory (#2286); reviewed existing-allocation moves take their complete
+  sorted lodge/member/row topology before an authoritative re-read. The separate write bound
   (`MAX_BED_ALLOCATION_ASSIGN_RANGE_NIGHTS`, 366) exists only to keep one
   transaction finite, and is **refused at, never silently truncated to** — as is
   every board window the admin types.

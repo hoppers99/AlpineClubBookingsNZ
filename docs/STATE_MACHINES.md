@@ -1584,26 +1584,33 @@ the reconcile range (`min(checkIn) .. max(checkOut)` union the range) so the
 planner sees whole stays, while the set of bookings planned stays restricted
 to those overlapping the original range (no cascade).
 
-On the admin allocation board, dragging or menu-moving the first visible
-allocated night for a guest reassigns that guest's visible allocated nights to
-the target bed while preserving each date-only lodge night. The hovered date
-column never changes an existing allocation's night: pointer preview and
-keyboard announcement name the destination bed plus the snapped original
-night(s). Later-night moves remain single-night adjustments, same-bed drops are
-no-ops with no request or audit, and cancel sends no request.
+On the admin allocation board, every existing-chip drag/drop and nested
+**Move to bed** choice opens one reviewed move dialog. The hovered date column
+never changes an existing allocation's night. Pointer and keyboard interactions
+name the destination and original night, then stop at confirmation; cancel sends
+no request and restores focus. The current bed stays selectable so the admin can
+review a person-wide consolidation or an all-noop outcome.
 
-The existing-allocation move endpoint accepts allocation ids plus a destination
-bed, never a target date. It resolves only the destination's immutable lodge key
-before the transaction, then takes global booking `lock(1)` followed by that
-lodge's capacity lock and re-reads the source rows, original dates,
-guest/booking state, active destination room/bed, custodian holds and sharing
-state under both. Cancellation prunes allocations under the same global key, so
-either the move finishes first or the post-cancel move sees no source row and
-cannot resurrect it. A first-chip multi-night move is all-or-nothing: one
-conflict rolls back every row, partner promotion and audit entry. Successful
-row changes, shared-double promotions and their causally attributed audit
-records commit in that same transaction. Bucket-to-board bulk placement keeps
-its older per-night conflict semantics.
+The dialog starts at `ALLOCATION_NIGHT` and may widen to `BOOKING_GUEST`, which
+resolves every existing row for that guest on the booking (including sparse and
+off-screen rows, up to 366) without creating any. Its read-only preview separates
+changed and unchanged rows, exact NZ nights, approval-to-draft consequences,
+shared-double promotions, and hard conflicts. Apply carries that scope plus the
+anchor, destination and digest — never a target date — and takes global booking
+`lock(1)`, the complete sorted lodge union, sorted member-lifecycle and
+member-partner-link families, then deterministic allocation-row locks before an
+authoritative re-preview. Cancellation uses the same global key, so a post-cancel
+move cannot resurrect a row.
+
+A matching apply writes every changed row with one guarded bulk statement,
+preserving dates and making approved rows unapproved `MANUAL` drafts. Partner
+promotions and their cross-booking causal audit attribution commit in that same
+transaction. Any conflict or stale fact refuses the whole move; digest drift
+returns a refreshed preview and requires a second confirmation. Unchanged rows
+are never re-drafted, promoted, written, or audited, and an all-noop confirmation
+succeeds audit-free. Bucket-to-board bulk placement keeps its older per-night
+conflict semantics. The legacy allocation-id/destination request remains capped
+at 31 rows for older callers but is no longer the board's existing-chip seam.
 
 The board's "Run Auto Allocation" uses the same whole-stay planner without
 displacement. Its displayed suggestions are only a preview: the action takes
