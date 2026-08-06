@@ -6,6 +6,7 @@ import {
   E2E_ADMIN,
   WAITLIST_FULL_WINDOW,
 } from "./helpers/fixtures";
+import { calendarMonthDirection } from "./helpers/calendar-navigation";
 import { calendarDayLabel } from "./helpers/stay-dates";
 
 // docs/END_TO_END_TEST_MATRIX.md row "Admin retroactive create (#1695)": a Full
@@ -72,26 +73,33 @@ function pickPastWindow(): { checkIn: string; checkOut: string } {
 
 const { checkIn: pastCheckIn, checkOut: pastCheckOut } = pickPastWindow();
 
-// Navigate the booking calendar backwards to the month holding dateOnly, then
-// click the day. The shared selectCalendarDay only walks forward (Next), so a
-// past date needs its own Prev walk.
-async function selectPastCalendarDay(page: Page, dateOnly: string): Promise<void> {
+// Navigate from the month the calendar currently displays to the month holding
+// dateOnly, then click the day. A retroactive stay can cross a month boundary:
+// after its past check-in is selected, its check-out can be in the NEXT month.
+async function selectPastCalendarDay(
+  page: Page,
+  dateOnly: string,
+  displayedDateOnly: string,
+): Promise<void> {
   const [y, m] = dateOnly.split("-").map(Number);
   const monthHeading = new Date(y, m - 1).toLocaleDateString("en-NZ", {
     month: "long",
     year: "numeric",
   });
+  const direction = calendarMonthDirection(displayedDateOnly, dateOnly);
+  const navigationButton = direction === "previous" ? /Prev/ : /Next/;
+  const heading = page.getByRole("heading", { name: monthHeading });
   for (let hops = 0; hops < 14; hops += 1) {
-    if (
-      await page
-        .getByRole("heading", { name: monthHeading })
-        .isVisible()
-        .catch(() => false)
-    ) {
+    if (await heading.isVisible().catch(() => false)) {
       break;
     }
-    await page.getByRole("button", { name: /Prev/ }).click();
+    await page.getByRole("button", { name: navigationButton }).click();
   }
+  await expect(
+    heading,
+    `calendar never reached ${monthHeading} while moving ${direction} from ` +
+      `${displayedDateOnly} to ${dateOnly}`,
+  ).toBeVisible();
   await page.getByRole("button", { name: calendarDayLabel(dateOnly) }).click();
 }
 
@@ -182,8 +190,8 @@ test("an admin records a past stay on behalf of a member without emailing them",
 
   // Opt into retroactive booking, then pick past dates inside the seeded season.
   await page.getByRole("checkbox", { name: /Record a past stay/ }).check();
-  await selectPastCalendarDay(page, pastCheckIn);
-  await selectPastCalendarDay(page, pastCheckOut);
+  await selectPastCalendarDay(page, pastCheckIn, isoDay(0));
+  await selectPastCalendarDay(page, pastCheckOut, pastCheckIn);
 
   // Quick-add the member themselves as the guest.
   await page
