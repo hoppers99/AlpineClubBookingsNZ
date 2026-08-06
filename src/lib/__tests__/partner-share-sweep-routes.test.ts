@@ -44,6 +44,7 @@ vi.mock("@/lib/prisma", () => ({
     },
     auditLog: { create: vi.fn().mockResolvedValue({}) },
     xeroContactCache: { findUnique: vi.fn().mockResolvedValue(null) },
+    $executeRaw: vi.fn().mockResolvedValue(1),
     $transaction: vi.fn(),
   },
 }));
@@ -175,11 +176,18 @@ const piotrPrimaryRow = {
 /** Serve the sweep's queries: Uma is a second occupant; Piotr her primary. */
 function mockSharedDoubleForUser2() {
   vi.mocked(prisma.bedAllocation.findMany).mockImplementation((async (args: {
-    where?: { isSecondOccupant?: boolean; OR?: unknown };
+    where?: {
+      isSecondOccupant?: boolean;
+      OR?: unknown;
+      bookingGuest?: { memberId?: { in?: string[] } };
+    };
   }) => {
     const where = args?.where ?? {};
     if (where.isSecondOccupant === true) return [umaSecondOccupantRow];
     if (where.isSecondOccupant === false && where.OR) return [piotrPrimaryRow];
+    if (where.bookingGuest?.memberId?.in) {
+      return [{ room: { lodgeId: "lodge-1" } }];
+    }
     return [];
   }) as never);
   vi.mocked(prisma.bedAllocation.deleteMany).mockResolvedValue({ count: 1 } as never);
@@ -203,6 +211,7 @@ function putMember(id: string, body: Record<string, unknown>) {
 function mockTransaction() {
   vi.mocked(prisma.$transaction).mockImplementation((async (op: any) =>
     op({
+      $executeRaw: prisma.$executeRaw,
       member: {
         update: prisma.member.update,
         updateMany: prisma.member.updateMany,

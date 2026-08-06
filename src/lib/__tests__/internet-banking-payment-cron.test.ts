@@ -37,7 +37,8 @@ vi.mock("@/lib/audit", () => ({
 }));
 
 vi.mock("@/lib/bed-allocation-lifecycle", () => ({
-  reconcileBedAllocationsForBooking: mocks.reconcileBedAllocationsForBooking,
+  reconcileBedAllocationsForBookingWithLodgeLockHeld:
+    mocks.reconcileBedAllocationsForBooking,
 }));
 
 vi.mock("@/lib/booking-events", () => ({

@@ -1,5 +1,11 @@
 import { type BrowserContext, expect, test } from "@playwright/test";
 import { storageStatePath } from "./helpers/auth";
+import {
+  overrideSingleLodgeAutoAllocation,
+  setBedAllocationSettings,
+  type BedAllocationSettingsSnapshot,
+} from "./helpers/bed-allocation-settings";
+import { completeMemberDetailsGateIfShown } from "./helpers/booking";
 import { DEMO_BOOKING_WINDOWS, E2E_ADMIN } from "./helpers/fixtures";
 import { personas } from "./helpers/personas";
 
@@ -20,6 +26,7 @@ import { personas } from "./helpers/personas";
 test.describe.configure({ mode: "serial" });
 
 let adminContext: BrowserContext;
+let bedAllocationSettingsBefore: BedAllocationSettingsSnapshot | undefined;
 
 function addUtcDays(dateOnly: string, days: number) {
   const date = new Date(`${dateOnly}T00:00:00.000Z`);
@@ -35,23 +42,21 @@ test.beforeAll(async ({ browser }) => {
   });
 
   // Disable auto-allocation so approval parks Ken in the manual bucket.
-  const disabled = await adminContext.request.put(
-    "/api/admin/bed-allocation/settings",
-    { data: { autoAllocationEnabled: false } },
+  bedAllocationSettingsBefore = await overrideSingleLodgeAutoAllocation(
+    adminContext.request,
+    false,
   );
-  expect(
-    disabled.ok(),
-    `disable auto-allocation (${disabled.status()})`,
-  ).toBeTruthy();
 });
 
 test.afterAll(async () => {
   try {
     if (adminContext) {
-      // Restore the default (schema default is true).
-      await adminContext.request.put("/api/admin/bed-allocation/settings", {
-        data: { autoAllocationEnabled: true },
-      });
+      if (bedAllocationSettingsBefore) {
+        await setBedAllocationSettings(
+          adminContext.request,
+          bedAllocationSettingsBefore,
+        );
+      }
     }
   } finally {
     await adminContext?.close();
@@ -640,6 +645,7 @@ test("an admin confirms this booking's beds from the booking page, and the membe
   try {
     const memberPage = await memberContext.newPage();
     await memberPage.goto("/bookings");
+    await completeMemberDetailsGateIfShown(memberPage);
     // The whole booking card is one anchor (my-bookings-list.tsx), so target
     // the href rather than a label.
     const firstBooking = memberPage

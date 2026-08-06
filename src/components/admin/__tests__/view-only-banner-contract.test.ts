@@ -311,22 +311,22 @@ const NOTICE = "AdminViewOnlyNotice";
 /*
   The published census, in ONE place.
 
-  Four documents and one JSDoc block quote these numbers as fact, and they have
+  Three documents and one JSDoc block quote these numbers as fact, and they have
   drifted twice — once by being counted from raw text (a `describeReason={false}`
   inside a comment counted as a call site), and once by a doc being updated while
   a sibling doc was not. The census test below measures them; the
-  "figures the docs publish" test below that reads the four documents and fails
+  "figures the docs publish" test below reads those sources and fails
   when any of them no longer states the measured value. So a rollout change
   cannot land with the prose out of step: both tests fail, and the fix is always
   to re-measure and update every place together — never to loosen an assertion.
 */
 const FIGURES = {
   /** Every `<ViewOnlyActionButton>` render site in the admin tree. */
-  callSites: 310,
+  callSites: 311,
   /** Those that hand their explanation to a banner, by either rule. */
-  optOuts: 261,
+  optOuts: 262,
   /** `describeReason={false}` — needs a banner in the SAME file. */
-  staticOptOuts: 234,
+  staticOptOuts: 235,
   /** `describeReason={!ancestorRendersViewOnlyBanner}` — needs a vouch. */
   vouchedOptOuts: 27,
   /** …of the vouched: proved at a parent's own JSX render site (#2168). */
@@ -340,7 +340,7 @@ const FIGURES = {
   leafControls: 36,
   leafFiles: 21,
   /** Components that render an `AdminViewOnlySectionBanner`. */
-  bannerComponents: 83,
+  bannerComponents: 84,
 } as const;
 
 const WIZARD_SHELL = "IntegrationWizard";
@@ -1250,6 +1250,12 @@ describe("view-only section banner coverage (#2160)", () => {
                vouched by the roster page's unconditional lodge-access banner,
                so static opt-outs move 237 -> 234, render-site vouches move
                21 -> 22, and total opt-outs move 263 -> 261.
+          311  +1  #2593 replaces the old Save Mode site with two Edit/Save
+               sites in the per-lodge allocation-preferences card. It owns a
+               banner for standalone reuse, while the bed-allocation page
+               suppresses that child banner and covers both control sites with
+               the page's existing bookings-area banner.
+               static opt-outs move 234 -> 235 and banner components 83 -> 84.
       */
       // #2259 adds the per-booking "No emails"
       // switch (`booking-no-emails-controls.tsx`), a leaf control dropped into
@@ -1350,9 +1356,9 @@ describe("view-only section banner coverage (#2160)", () => {
 
       Both halves are needed, and the gap between them is where the drift has
       actually happened: the numbers moved, the census was updated, and one of the
-      four documents was not. That leaves a reader trusting a figure no test
-      disagrees with. Here every document that quotes a figure has to still quote
-      the measured one.
+      one of the three documents or the JSDoc was not. That leaves a reader
+      trusting a figure no test disagrees with. Here every document that quotes
+      a figure has to still quote the measured one.
 
       Matching is on whitespace-collapsed, markup-stripped text, so re-wrapping a
       paragraph or bolding a number is free; changing a number is not. The
@@ -1382,10 +1388,6 @@ describe("view-only section banner coverage (#2160)", () => {
         // The style guide publishes the exception TOTAL only, on purpose.
         `${f.exceptions} controls still carry their own per-button reason`,
       ],
-      "CHANGELOG.md": [
-        `${f.callSites} gated admin controls, ${f.optOuts} of them covered by a banner (${f.staticOptOuts} in their own file, ${f.vouchedOptOuts} by a verified vouching parent — ${f.shellVouchedOptOuts} of those through the wizard frame)`,
-        `and ${f.exceptions} across ${f.exceptionFiles} files deliberately keeping their own reason`,
-      ],
       "src/components/admin/view-only-action.tsx": [
         `pass describeReason={false} here (${f.staticOptOuts} of ${f.callSites} call sites)`,
         `a further ${f.vouchedOptOuts} pass describeReason={!${VOUCH_PROP}}`,
@@ -1394,6 +1396,10 @@ describe("view-only section banner coverage (#2160)", () => {
         `counts ${f.leafControls} controls here`,
       ],
     };
+    const changelogPhrases = [
+      `${f.callSites} gated admin controls, ${f.optOuts} of them covered by a banner (${f.staticOptOuts} in their own file, ${f.vouchedOptOuts} by a verified vouching parent — ${f.shellVouchedOptOuts} of those through the wizard frame)`,
+      `and ${f.exceptions} across ${f.exceptionFiles} files deliberately keeping their own reason`,
+    ];
 
     // Collapse the formatting a prose edit is free to change: line wrapping,
     // markdown emphasis, inline code fences, and JSDoc's leading ` * `.
@@ -1406,15 +1412,14 @@ describe("view-only section banner coverage (#2160)", () => {
     /*
       #2452 moved changelog entries OUT of CHANGELOG.md: a PR now writes its
       entry as a `changelog.d/<pr>-<slug>.md` fragment, and the release compile
-      folds the fragments into a version section later. A stale figure written
-      into a fragment therefore dodges the scan above entirely — it is invisible
-      until the release that publishes it, by which point the PR that introduced
-      it merged green and is long gone.
+      folds the fragments into the compiled CHANGELOG ledger later. Feature PRs
+      do not edit that ledger or its Unreleased list, so current census
+      enforcement applies to the source documents and new fragments instead.
 
-      So every fragment is scanned in the same bucket as CHANGELOG.md, and a
-      stale figure fails on its OWN pull request. The difference is presence: a
-      fragment is not REQUIRED to quote these sentences (almost none do), it is
-      only forbidden from quoting a superseded version of one.
+      Every new fragment is therefore scanned separately, and a stale figure
+      fails on its OWN pull request. A fragment is not REQUIRED to quote these
+      sentences (almost none do); it is only forbidden from quoting a
+      superseded version of one.
     */
     const fragmentsDir = join(process.cwd(), "changelog.d");
     const scanned: { rel: string; phrases: string[]; requirePresence: boolean }[] = [
@@ -1428,7 +1433,7 @@ describe("view-only section banner coverage (#2160)", () => {
             .filter((name) => name.endsWith(".md") && name !== "README.md")
             .map((name) => ({
               rel: `changelog.d/${name}`,
-              phrases: published["CHANGELOG.md"],
+              phrases: changelogPhrases,
               requirePresence: false,
             }))
         : []),
@@ -1448,14 +1453,10 @@ describe("view-only section banner coverage (#2160)", () => {
           offenders.push(`${rel}: "${phrase}"`);
           continue;
         }
-        // A CORRECT SENTENCE ELSEWHERE IN THE SAME FILE MUST NOT EXCUSE A STALE
-        // ONE, and that is not hypothetical: `includes` only answers "does the
-        // measured figure appear at least once". A CHANGELOG quotes this
-        // sentence once per release that moved the numbers, so a new entry
-        // carrying the right figure let an older entry keep publishing a
-        // superseded one — a reader landing on the wrong paragraph is told a
-        // number no test disagrees with, which is the exact failure the census
-        // above exists to prevent.
+        // A CORRECT SENTENCE ELSEWHERE IN THE SAME CURRENT DOCUMENT MUST NOT
+        // EXCUSE A STALE ONE: `includes` only answers "does the measured figure
+        // appear at least once". Release-compiler-owned CHANGELOG entries are
+        // not in this set; current changelog fragments are.
         //
         // So every occurrence of each sentence's SHAPE — the same words with any
         // digits in the numeric slots — has to carry the measured figures.
@@ -1475,8 +1476,8 @@ describe("view-only section banner coverage (#2160)", () => {
       offenders,
       `These documents no longer state the figures the census above measures. ` +
         `A rollout change moves the numbers; re-measure and update AGENTS.md, ` +
-        `docs/ARCHITECTURE.md, docs/STYLE_GUIDE.md, CHANGELOG.md (and any ` +
-        `changelog.d/ fragment quoting them) and the ` +
+        `docs/ARCHITECTURE.md, docs/STYLE_GUIDE.md, any changelog.d/ fragment ` +
+        `quoting them, and the ` +
         `ViewOnlyActionButton JSDoc together.`,
     ).toEqual([]);
   });

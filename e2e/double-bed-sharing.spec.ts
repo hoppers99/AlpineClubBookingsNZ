@@ -1,5 +1,10 @@
 import { type BrowserContext, expect, test } from "@playwright/test";
 import { storageStatePath } from "./helpers/auth";
+import {
+  overrideSingleLodgeAutoAllocation,
+  setBedAllocationSettings,
+  type BedAllocationSettingsSnapshot,
+} from "./helpers/bed-allocation-settings";
 import { DEMO_BOOKING_WINDOWS, E2E_ADMIN } from "./helpers/fixtures";
 import { overrideModules, setModuleSettings, type ModuleSettings } from "./helpers/modules";
 
@@ -64,6 +69,7 @@ let S2_WINDOW: Window;
 let S4_WINDOW: Window;
 
 let adminContext: BrowserContext;
+let bedAllocationSettingsBefore: BedAllocationSettingsSnapshot | undefined;
 
 // Captured-for-restore state (afterAll runs defensively over all of it).
 let doubleBedId = "";
@@ -300,10 +306,10 @@ test.beforeAll(async ({ browser }) => {
 
   // Disable auto-allocation so nothing auto-places a bed under our manual
   // board steps (schema default is true; restored in afterAll).
-  const disabled = await api().put("/api/admin/bed-allocation/settings", {
-    data: { autoAllocationEnabled: false },
-  });
-  expect(disabled.ok(), `disable auto-allocation (${disabled.status()})`).toBeTruthy();
+  bedAllocationSettingsBefore = await overrideSingleLodgeAutoAllocation(
+    api(),
+    false,
+  );
 
   for (const local of ["carol", "dave", "erin", "frank", "grace", "heidi"]) {
     members[local] = await resolveMember(local);
@@ -428,11 +434,11 @@ test.afterAll(async () => {
         .delete(`/api/admin/members/${link.memberId}/partner-link?id=${link.linkId}`)
         .catch(() => undefined);
     }
-    await api()
-      .put("/api/admin/bed-allocation/settings", {
-        data: { autoAllocationEnabled: true },
-      })
-      .catch(() => undefined);
+    if (bedAllocationSettingsBefore) {
+      await setBedAllocationSettings(api(), bedAllocationSettingsBefore).catch(
+        () => undefined,
+      );
+    }
   } finally {
     await adminContext?.close();
   }

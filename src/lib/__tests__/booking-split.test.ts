@@ -98,7 +98,8 @@ vi.mock("@/lib/booking-review", () => ({
 }));
 
 vi.mock("@/lib/bed-allocation-lifecycle", () => ({
-  reconcileBedAllocationsForBooking: (...a: unknown[]) => h.reconcileBedAllocationsForBooking(...a),
+  reconcileBedAllocationsForBookingWithGlobalLockHeld: (...a: unknown[]) =>
+    h.reconcileBedAllocationsForBooking(...a),
 }));
 
 vi.mock("@/lib/logger", () => ({

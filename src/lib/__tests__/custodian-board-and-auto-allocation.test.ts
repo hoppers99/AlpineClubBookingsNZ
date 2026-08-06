@@ -19,13 +19,19 @@ const mocks = vi.hoisted(() => ({
   createMany: vi.fn(),
   lodgeRoomFindManyForLocks: vi.fn(),
   dropAllocationRows: vi.fn(),
+  db: undefined as any,
 }));
 
 vi.mock("@/lib/prisma", () => ({
-  prisma: {
-    $transaction: mocks.transaction,
-    $executeRaw: mocks.executeRaw,
-  },
+  prisma: new Proxy(
+    {},
+    {
+      get: (_target, property) =>
+        property === "$transaction"
+          ? mocks.transaction
+          : mocks.db?.[property as keyof typeof mocks.db],
+    },
+  ),
 }));
 
 vi.mock("@/lib/lodge-capacity", () => ({
@@ -45,10 +51,12 @@ vi.mock("@/lib/bed-allocation-lifecycle", async (importOriginal) => {
 });
 
 import {
+  BedAllocationAdminError,
   getBedAllocationDashboard,
   parseBedAllocationDateRange,
   runAutoBedAllocation,
 } from "@/lib/admin-bed-allocation";
+import { BED_ALLOCATION_PRIORITY_VOCABULARY } from "@/lib/bed-allocation-settings";
 
 const LODGE = "lodge-1";
 
@@ -95,6 +103,7 @@ function bookingRow(overrides: Record<string, unknown> = {}) {
         ageTier: "ADULT",
         stayStart: parseDateOnly("2026-07-01"),
         stayEnd: parseDateOnly("2026-07-02"),
+        nights: [{ stayDate: parseDateOnly("2026-07-01") }],
       },
     ],
     ...overrides,
@@ -122,9 +131,13 @@ function holdRow(bedId = "bed-a-1") {
 function buildDb(overrides: Record<string, unknown> = {}) {
   return {
     $executeRaw: mocks.executeRaw,
+    lodge: {
+      findUnique: vi.fn().mockResolvedValue({ id: LODGE, active: true }),
+    },
     bedAllocationSettings: {
       findUnique: vi.fn().mockResolvedValue({
         autoAllocationEnabled: true,
+        allocationPriorityOrder: [...BED_ALLOCATION_PRIORITY_VOCABULARY],
         updatedByMemberId: null,
         updatedAt: parseDateOnly("2026-06-30"),
       }),
@@ -138,6 +151,17 @@ function buildDb(overrides: Record<string, unknown> = {}) {
     hutLeaderAssignment: { findMany: mocks.hutLeaderAssignmentFindMany },
     ...overrides,
   } as never;
+}
+
+async function runAutoWithDb(
+  db: ReturnType<typeof buildDb>,
+  input: Parameters<typeof runAutoBedAllocation>[0],
+) {
+  mocks.db = db;
+  mocks.transaction.mockImplementation(
+    async (callback: (tx: typeof db) => unknown) => callback(db),
+  );
+  return runAutoBedAllocation(input);
 }
 
 // The board range is half-open: nights are [fromDate, toDate), so this window
@@ -227,6 +251,113 @@ describe("board payload (chokepoint 2)", () => {
 });
 
 describe("runAutoBedAllocation (chokepoint 4)", () => {
+  it.each([null, { id: LODGE, active: false }])(
+    "rejects an unknown or inactive lodge under the locks before planning or writing",
+    async (lodge) => {
+      const lodgeFindUnique = vi.fn().mockResolvedValue(lodge);
+      const roomFindMany = vi.fn();
+      const db = buildDb({
+        lodge: { findUnique: lodgeFindUnique },
+        lodgeRoom: { findMany: roomFindMany },
+      });
+
+      await expect(
+        runAutoWithDb(db, { range, lodgeId: LODGE }),
+      ).rejects.toEqual(
+        expect.objectContaining<Partial<BedAllocationAdminError>>({
+          message: "Lodge not found or not active",
+          status: 400,
+        }),
+      );
+
+      expect(mocks.transaction).toHaveBeenCalledOnce();
+      expect(mocks.executeRaw).toHaveBeenCalled();
+      expect(lodgeFindUnique).toHaveBeenCalledWith({
+        where: { id: LODGE },
+        select: { id: true, active: true },
+      });
+      expect(roomFindMany).not.toHaveBeenCalled();
+      expect(mocks.createMany).not.toHaveBeenCalled();
+    },
+  );
+
+  it("rebuilds after the locks and never writes the bed deactivated/retyped after preview", async () => {
+    let inventory = room;
+    const roomFindMany = vi.fn(async () => [inventory]);
+    const db = buildDb({ lodgeRoom: { findMany: roomFindMany } });
+
+    const preview = await getBedAllocationDashboard({
+      range,
+      lodgeId: LODGE,
+      db,
+    });
+    expect(preview.suggestedAllocations).toEqual([
+      expect.objectContaining({ bedId: "bed-a-1" }),
+    ]);
+
+    // The transaction callback is the interleaving seam: the inventory writer
+    // wins after the action starts but before global -> lodge is acquired. The
+    // pre-fix implementation planned before opening this transaction and wrote
+    // bed-a-1 from that stale snapshot. Retyping is included in the same edit.
+    roomFindMany.mockClear();
+    mocks.db = db;
+    mocks.transaction.mockImplementation(
+      async (callback: (tx: typeof db) => unknown) => {
+        inventory = {
+          ...room,
+          beds: room.beds.map((bed) =>
+            bed.id === "bed-a-1"
+              ? { ...bed, active: false, bedType: "DOUBLE" }
+              : bed,
+          ),
+        };
+        return callback(db);
+      },
+    );
+    mocks.createMany.mockResolvedValue({ count: 1 });
+
+    const result = await runAutoBedAllocation({ range, lodgeId: LODGE });
+
+    expect(result).toEqual({ count: 1 });
+    expect(roomFindMany).toHaveBeenCalledOnce();
+    expect(mocks.createMany).toHaveBeenCalledWith({
+      data: [expect.objectContaining({ bedId: "bed-a-2" })],
+      skipDuplicates: true,
+    });
+    expect(
+      mocks.createMany.mock.calls[0][0].data.some(
+        (row: { bedId: string }) => row.bedId === "bed-a-1",
+      ),
+    ).toBe(false);
+  });
+
+  it("rebuilds after the locks and writes nothing into a room deactivated after preview", async () => {
+    let inventory = room;
+    const roomFindMany = vi.fn(async () => [inventory]);
+    const db = buildDb({ lodgeRoom: { findMany: roomFindMany } });
+
+    const preview = await getBedAllocationDashboard({
+      range,
+      lodgeId: LODGE,
+      db,
+    });
+    expect(preview.suggestedAllocations).toHaveLength(1);
+
+    roomFindMany.mockClear();
+    mocks.db = db;
+    mocks.transaction.mockImplementation(
+      async (callback: (tx: typeof db) => unknown) => {
+        inventory = { ...room, active: false };
+        return callback(db);
+      },
+    );
+    const result = await runAutoBedAllocation({ range, lodgeId: LODGE });
+
+    expect(result).toEqual({ count: 0 });
+    expect(roomFindMany).toHaveBeenCalledOnce();
+    expect(mocks.createMany).not.toHaveBeenCalled();
+  });
+
   it("re-filters suggestions against custodian holds read inside its own locked transaction", async () => {
     // The dashboard read sees no hold; the in-transaction read does. That is
     // exactly the race the re-filter exists for.
@@ -237,7 +368,7 @@ describe("runAutoBedAllocation (chokepoint 4)", () => {
     });
 
     const db = buildDb();
-    const result = await runAutoBedAllocation({ range, lodgeId: LODGE, db });
+    const result = await runAutoWithDb(db, { range, lodgeId: LODGE });
 
     expect(result).toEqual({ count: 0 });
     expect(mocks.createMany).not.toHaveBeenCalled();
@@ -246,7 +377,7 @@ describe("runAutoBedAllocation (chokepoint 4)", () => {
   it("writes the suggestions that do not touch a held bed-night", async () => {
     mocks.createMany.mockResolvedValue({ count: 1 });
     const db = buildDb();
-    const result = await runAutoBedAllocation({ range, lodgeId: LODGE, db });
+    const result = await runAutoWithDb(db, { range, lodgeId: LODGE });
 
     expect(result).toMatchObject({ count: 1 });
     expect(mocks.createMany).toHaveBeenCalledOnce();
@@ -254,32 +385,19 @@ describe("runAutoBedAllocation (chokepoint 4)", () => {
 
   it("takes the per-lodge advisory lock before writing — it took none at all before #2286", async () => {
     const db = buildDb();
-    await runAutoBedAllocation({ range, lodgeId: LODGE, db });
+    await runAutoWithDb(db, { range, lodgeId: LODGE });
     expect(mocks.executeRaw).toHaveBeenCalled();
   });
 
-  it("locks a CLUB-WIDE run's lodges in sorted order (#2286 review L5)", async () => {
-    // The route accepts an omitted lodgeId, so one transaction can span several
-    // lodges. Sorted acquisition is the codebase's multi-lodge pattern and is
-    // the only thing that stops this deadlocking against the per-lodge
-    // transactions taking the same keys one at a time.
-    const db = buildDb({
-      // Unsorted on purpose: the room lookup answers in whatever order the
-      // database returns, and the sort must happen here.
-      lodgeRoom: {
-        findMany: vi
-          .fn()
-          // 1st call: the dashboard's room load. 2nd: the lock-key resolution.
-          .mockResolvedValueOnce([room])
-          .mockResolvedValue([{ lodgeId: "lodge-zulu" }, { lodgeId: "lodge-alpha" }]),
-      },
-    });
+  it("locks exactly the board's required lodge scope", async () => {
+    const db = buildDb();
 
-    await runAutoBedAllocation({ range, db });
+    await runAutoWithDb(db, { range, lodgeId: LODGE });
 
     const lockedKeys = mocks.executeRaw.mock.calls.flatMap((call) =>
       call.slice(1),
     );
-    expect(lockedKeys).toEqual(["lodge-alpha", "lodge-zulu"]);
+    expect(lockedKeys).toEqual([LODGE]);
+    expect(mocks.transaction).toHaveBeenCalledOnce();
   });
 });

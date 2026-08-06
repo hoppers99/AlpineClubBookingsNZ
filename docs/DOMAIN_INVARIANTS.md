@@ -555,6 +555,32 @@ Future reviews and issues should cite this file when proposing changes.
   envelope. Existing allocation rows are never rewritten by planning — only
   provisional displacement moves rows — and re-planning a fully-allocated
   state is a no-op.
+- **Allocation preferences are per lodge and advisory, never safety
+  overrides (#2593):** the board and lifecycle resolve the same strict saved
+  order for the booking's lodge. The canonical default is booking cohesion →
+  stay continuity → requested room → direct-family cohesion; an explicitly
+  saved empty list is valid deterministic neutral behavior. Every hard
+  invariant (maximum feasible placement count within a candidate, school
+  separation, adult coverage, cross-booking age mix, lodge isolation,
+  custodian/exclusive holds, approved-row pins, and displacement safety) is
+  scored or enforced ahead of those preferences. Preference values then
+  compare the bounded feasible candidates lexicographically from top to bottom;
+  disabling a value removes only that comparison. Family cohesion means guests
+  sharing at least one family-group id **directly**; connected components,
+  direct subsets, capacity-aware high-affinity room packing, and
+  maximum-cardinality direct-edge pairings provide bounded candidates but do
+  not turn transitive acquaintances into a scored family pair. The planner
+  executes at most 24 matching-layout candidates per booking, alongside its
+  whole-room, legacy, and displacement trials. This is a deterministic bounded
+  heuristic, not a claim of global optimality across all bookings. A settings
+  save never moves an existing row: it affects later board suggestions and
+  later lifecycle reconciliation only. The board's visible suggestions are a
+  preview, never a persistence payload: Run Auto Allocation takes global then
+  the selected lodge lock, refuses an unknown or inactive selected lodge, and
+  rebuilds the complete scoped plan on that transaction client before writing,
+  so a bed/room deactivate, retype, lodge
+  mismatch, allocation/approval change, or hard-predicate change committed
+  after preview cannot receive a stale AUTO row.
 - **Cross-booking age mix (#1768, owner-set):** a room-night containing minors
   from booking X must never also contain an adult from a DIFFERENT booking —
   planner-enforced in both placement directions on every path (whole-stay,
@@ -588,7 +614,8 @@ Future reviews and issues should cite this file when proposing changes.
   Dissolving a CONFIRMED link (`removeOwnPartnerLink` /
   `adminRemovePartnerLink`), deactivating a member (member edit, bulk update,
   or account-deletion anonymisation), or correcting an ADULT to a minor/N-A
-  tier runs `sweepFuturePartnerSharedAllocations`
+  tier acquires `acquireFuturePartnerSharedAllocationLocks` and runs
+  `sweepFuturePartnerSharedAllocationsWithLocksHeld`
   (`bed-allocation-lifecycle.ts`) in the SAME transaction as the breaking
   event: the pair's future (tonight onwards, NZ date-only) second-occupant
   rows are deleted back to the awaiting-allocation queue — never the primary,

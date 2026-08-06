@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 /*
  * POST /api/admin/bed-allocation/approve — the `bookingId` selector (#2252).
  *
- * The real route handler and the real requireBedAllocationAdmin guard run;
+ * The real route handler and the real requireBedAllocationWrite guard run;
  * approveBedAllocations is mocked at the lib seam so the route's own contracts
  * can be driven directly. The contract that matters most here is scope: the
  * in-booking Bed allocation panel's Confirm sends `{ bookingId }` and NOTHING

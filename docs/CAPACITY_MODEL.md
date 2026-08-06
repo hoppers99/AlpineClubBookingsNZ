@@ -81,7 +81,7 @@ above the base ceiling counts as used shared slots.
 
 **Stale-pair sweep interplay (#1756):** when a pair breaks (partner link
 dissolved, member deactivated, ADULT→minor tier correction),
-`sweepFuturePartnerSharedAllocations` removes the pair's future
+the lock-held partner-share sweep removes the pair's future
 `isSecondOccupant` *placements* — deliberately NOT the second occupant's
 `BookingGuest` row, which stays on its booking in the awaiting-allocation
 queue for an admin to resolve. Shared-slot accounting is occupancy-derived

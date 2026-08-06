@@ -310,22 +310,20 @@ booking OWNER.
 argument was that coverage is same-lodge by definition (§4), so "every path that can
 confirm a booking and every path that can remove exact-night attendance already takes
 `acquireLodgeCapacityLock` for that lodge", leaving two interacting writers always
-contending for the same per-lodge key. That is false in both directions:
+contending for the same per-lodge key. When #2576 introduced the owner key, that was
+false in both directions:
 
-- `booking-cancel.ts`'s four claim transactions take `pg_advisory_xact_lock(1)` and
-  never `acquireLodgeCapacityLock`;
-- `booking-create.ts` and the guest-add route take `acquireLodgeCapacityLock` and
-  never `pg_advisory_xact_lock(1)`.
+- `booking-cancel.ts`'s four claim transactions took `pg_advisory_xact_lock(1)` and
+  not `acquireLodgeCapacityLock`;
+- `booking-create.ts` and the guest-add route took `acquireLodgeCapacityLock` and
+  not `pg_advisory_xact_lock(1)`.
 
-Those are different keys, these transactions run at READ COMMITTED, and the two
-writers touch no row in common — so nothing serialised them. The race §9 names was
-open, and non-deterministically so: member O owns booking A (CONFIRMED, adult member
-M attending nights N at lodge L). T1 creates booking B (non-member guests, lodge L,
-nights N), takes the lodge lock, reads A as CONFIRMED, finds cover and writes B.
-Concurrently T2 cancels A under `lock(1)`, cannot see uncommitted B, finds nothing
-stranded, and commits. B lands CONFIRMED with no cover, no refusal, no queue row,
-therefore no incident, no owner email and nothing in the officer queue. The mirror
-ordering is safe, which is exactly what §9 forbids.
+Those different keys at READ COMMITTED left the named create-versus-cancel race
+open. #2593 later made the allocation-participating confirmed-create and cancellation
+paths compose global → lodge. That later overlap does not retire the owner key:
+coverage is a cross-booking, per-owner invariant, and participant/member/queue
+producers do not all share those tiers. The coverage-owner key remains the
+authoritative common serialisation point and stays last.
 
 The invariant is per-OWNER, so the key is the owner — the same reasoning that gave
 `lockBookingMemberNights` its own family, because per-lodge locks cannot serialise a
@@ -1121,6 +1119,36 @@ conflict rolls the group back. This writer takes no member lock because it
 preserves every member-night footprint. Its custodian-hold counterpart takes
 the same lodge key, cancellation takes the same global key, and the fixed
 global -> lodge order introduces no inverse.
+
+Bed-allocation mutation boundaries follow the same composition rule (#2593).
+The public lifecycle reconciler owns a transaction and takes global `lock(1)`
+before resolving and taking the booking's immutable lodge lock; callers already
+holding global use `reconcileBedAllocationsForBookingWithGlobalLockHeld`, and
+callers holding both use the explicitly named lodge-lock-held seam. Room/bed
+inventory update/delete, manual placement/range assignment, allocation delete,
+and approval similarly expose transaction-owning public wrappers plus narrow
+`*WithLocksHeld` internals for existing transactions. A caller must never pass a
+client into a public wrapper to bypass lock ownership. The explicit board
+auto-allocation write takes global first, then the selected lodge lock, and
+re-validates that the selected lodge is still active before rebuilding the
+complete scoped dashboard and plan through that transaction client and
+constructing any insert row. The authoritative under-lock rebuild
+re-reads active rooms and beds (including their current lodge/type/bunk shape),
+booking/guest nights and eligibility, existing and approved allocations,
+whole-lodge holds, and custodian bed holds, so a visible preview is never itself
+a write plan. The narrow booking and hold checks are then repeated immediately
+beside `createMany` as defence in depth. The planner's per-lodge priority order
+changes candidate choice but introduces no lock key and never weakens these
+hard predicates.
+
+Cron/waitlist counterpart writers keep their guarded claims inside that same
+topology. Completion and past-waitlist cancellation re-read each candidate
+under global → lodge before the status claim and reconciliation. Cross-lodge
+waitlist offer/confirm paths lock affected lodges in sorted order, re-read the
+offer/version epoch, and only the winning guarded claim reconciles. A lost
+claim performs no allocation side effect. This is why settings or planner
+changes must still reconcile against the current writer matrix rather than
+assuming a route-local plan is safe to apply.
 
 ### Global-cohort money / status transition → global `lock(1)`
 

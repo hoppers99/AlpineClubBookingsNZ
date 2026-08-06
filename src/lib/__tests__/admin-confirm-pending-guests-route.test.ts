@@ -14,6 +14,8 @@ const mocks = vi.hoisted(() => ({
   chargePaymentMethod: vi.fn(),
   markBookingPaymentSucceeded: vi.fn(),
   reconcile: vi.fn(),
+  enqueueHosting: vi.fn(),
+  settleHosting: vi.fn(),
   enqueueXero: vi.fn(),
   kickXero: vi.fn(),
   sendConfirmedEmail: vi.fn(),
@@ -58,6 +60,14 @@ vi.mock("@/lib/payment-reconciliation", () => ({
 }));
 vi.mock("@/lib/bed-allocation-lifecycle", () => ({
   reconcileBedAllocationsForBooking: mocks.reconcile,
+  reconcileBedAllocationsForBookingWithGlobalLockHeld: mocks.reconcile,
+  reconcileBedAllocationsForBookingWithLodgeLockHeld: mocks.reconcile,
+}));
+vi.mock("@/lib/adult-member-hosting-review", () => ({
+  enqueueOwnHostingCoverageReevaluation: mocks.enqueueHosting,
+}));
+vi.mock("@/lib/adult-member-hosting-coverage-drain", () => ({
+  settleHostingCoverageAfterCommit: mocks.settleHosting,
 }));
 vi.mock("@/lib/xero-operation-outbox", () => ({
   enqueueXeroBookingInvoiceOperation: mocks.enqueueXero,
@@ -160,6 +170,8 @@ beforeEach(() => {
   mocks.getAuditRequestContext.mockReturnValue({});
   mocks.createStructuredAuditLog.mockResolvedValue(undefined);
   mocks.reconcile.mockResolvedValue({ enabled: false, deletedCount: 0, createdCount: 0 });
+  mocks.enqueueHosting.mockResolvedValue(undefined);
+  mocks.settleHosting.mockResolvedValue(undefined);
   mocks.bookingUpdate.mockResolvedValue({});
   mocks.bookingUpdateMany.mockResolvedValue({ count: 1 });
   mocks.paymentUpsert.mockResolvedValue({ id: "pay1" });
@@ -607,6 +619,25 @@ describe("POST /api/admin/bookings/[id]/confirm-pending-guests", () => {
       where: { id: "b1", status: "PENDING" },
       data: { status: "PAID", nonMemberHoldUntil: null },
     });
+    expect(mocks.reconcile).toHaveBeenCalledWith({
+      bookingId: "b1",
+      db: txClient,
+      previousRange: expect.objectContaining({
+        checkIn: expect.any(Date),
+        checkOut: expect.any(Date),
+      }),
+    });
+    expect(mocks.enqueueHosting).toHaveBeenCalledWith("b1", txClient, {
+      cause: "SYSTEM_CHANGE",
+      actorMemberId: "admin1",
+    });
+    expect(mocks.settleHosting).toHaveBeenCalledWith({ bookingId: "b1" });
+    expect(mocks.reconcile.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.enqueueHosting.mock.invocationCallOrder[0],
+    );
+    expect(mocks.enqueueHosting.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.settleHosting.mock.invocationCallOrder[0],
+    );
     expect(mocks.paymentUpsert).toHaveBeenCalled();
     expect(mocks.chargePaymentMethod).not.toHaveBeenCalled();
   });

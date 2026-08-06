@@ -4,12 +4,11 @@
 // WHY THIS FILE EXISTS AT ALL. The lane's first design argued no new lock was
 // needed, on the claim that "every path that can confirm a booking and every path
 // that can remove exact-night attendance already takes the per-lodge capacity lock".
-// That claim is measurably false in both directions — `booking-cancel.ts`'s claim
-// transactions take `pg_advisory_xact_lock(1)` and never the lodge lock, while
-// `booking-create.ts` and the guest-add route take the lodge lock and never
-// `lock(1)` — so a cancel removing the last qualifying adult could interleave with a
-// create that had just read that adult as cover, and which booking won depended on
-// commit order. §9 forbids exactly that non-determinism.
+// When #2576 introduced the owner key, cancellation and confirmed creation used
+// different global/lodge tiers, so the named race remained open. #2593 later made
+// the allocation-participating create/cancel paths compose global → lodge, but the
+// owner key remains authoritative because the cross-booking participant/member/queue
+// writers do not all share those tiers. §9 forbids commit-order-dependent coverage.
 //
 // A unit test cannot prove two Postgres transactions serialise. What it CAN pin is
 // everything that would silently disable the lock: the SQL shape, the namespace, the

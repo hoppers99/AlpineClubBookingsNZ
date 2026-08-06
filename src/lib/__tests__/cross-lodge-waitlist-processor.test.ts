@@ -46,7 +46,8 @@ vi.mock("@/lib/capacity", () => ({
   checkCapacityForGuestRanges: mocks.checkCapacityForGuestRanges,
 }));
 vi.mock("@/lib/bed-allocation-lifecycle", () => ({
-  reconcileBedAllocationsForBooking: mocks.reconcileBedAllocations,
+  reconcileBedAllocationsForBookingWithGlobalLockHeld:
+    mocks.reconcileBedAllocations,
 }));
 vi.mock("@/lib/lodge-access", () => ({
   isMemberEligibleToBookLodge: mocks.isMemberEligibleToBookLodge,
@@ -96,6 +97,7 @@ function candidate(input: {
 
 function makeTx(candidates: ReturnType<typeof candidate>[]) {
   return {
+    $executeRaw: vi.fn().mockResolvedValue(1),
     lodge: {
       findMany: vi.fn().mockResolvedValue([{ id: "lodge-a" }, { id: "lodge-b" }]),
       findUnique: vi.fn().mockResolvedValue({ name: "River Lodge" }),

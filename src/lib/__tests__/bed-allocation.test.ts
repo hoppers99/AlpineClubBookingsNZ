@@ -3,12 +3,15 @@ import path from "path";
 import { describe, expect, it, vi } from "vitest";
 import { parseDateOnly } from "@/lib/date-only";
 import {
+  BED_ALLOCATION_MAX_MATCHING_LAYOUTS,
   buildFirstFitBedAllocationPlan,
   replaceBedAllocationsForBooking,
   type BedAllocationAgeTier,
   type BedAllocationBooking,
   type BedAllocationRoom,
 } from "@/lib/bed-allocation";
+import { BED_ALLOCATION_PRIORITY_VOCABULARY } from "@/lib/bed-allocation-settings";
+import { realElapsedMs } from "@/lib/__tests__/helpers/clock";
 
 const rooms: BedAllocationRoom[] = [
   {
@@ -57,6 +60,7 @@ function multiGuestBooking(
   guests: Array<{
     id: string;
     ageTier?: BedAllocationAgeTier;
+    familyGroupIds?: string[];
     stayStart?: string;
     stayEnd?: string;
   }>,
@@ -70,6 +74,7 @@ function multiGuestBooking(
       id: guest.id,
       bookingId: id,
       ageTier: guest.ageTier ?? "ADULT",
+      familyGroupIds: guest.familyGroupIds,
       stayStart: parseDateOnly(guest.stayStart ?? "2026-07-01"),
       stayEnd: parseDateOnly(guest.stayEnd ?? "2026-07-02"),
     })),
@@ -80,6 +85,15 @@ function readRepoFile(relativePath: string) {
   // Test helper: reads a fixed repo file under process.cwd(); relativePath is test-controlled, not user input.
   // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
   return readFileSync(path.resolve(process.cwd(), relativePath), "utf8");
+}
+
+function permutations<T>(values: readonly T[]): T[][] {
+  if (values.length === 0) return [[]];
+  return values.flatMap((value, index) =>
+    permutations(values.filter((_, candidateIndex) => candidateIndex !== index)).map(
+      (rest) => [value, ...rest],
+    ),
+  );
 }
 
 describe("bed allocation planner", () => {
@@ -533,6 +547,1323 @@ describe("bed allocation planner", () => {
     ]);
   });
 
+  it("lets requested-room-first split an equal-count placement when booking cohesion is omitted", () => {
+    const input = {
+      enabled: true,
+      rooms,
+      bookings: [
+        multiGuestBooking(
+          "booking-1",
+          "2026-06-01",
+          [{ id: "guest-1" }, { id: "guest-2" }],
+          "room-b",
+        ),
+      ],
+    };
+
+    const cohesive = buildFirstFitBedAllocationPlan(input);
+    const requestedFirst = buildFirstFitBedAllocationPlan({
+      ...input,
+      allocationPriorityOrder: ["REQUESTED_ROOM"],
+    });
+    const tiedContinuityThenRequested = buildFirstFitBedAllocationPlan({
+      ...input,
+      allocationPriorityOrder: [
+        "STAY_CONTINUITY",
+        "REQUESTED_ROOM",
+        "BOOKING_COHESION",
+      ],
+    });
+
+    expect(cohesive.allocations).toHaveLength(2);
+    expect(new Set(cohesive.allocations.map((row) => row.roomId))).toEqual(
+      new Set(["room-a"]),
+    );
+    expect(requestedFirst.allocations).toHaveLength(2);
+    expect(requestedFirst.allocations[0]).toMatchObject({
+      bookingGuestId: "guest-1",
+      roomId: "room-b",
+    });
+    expect(new Set(requestedFirst.allocations.map((row) => row.roomId))).toEqual(
+      new Set(["room-a", "room-b"]),
+    );
+    expect(
+      new Set(tiedContinuityThenRequested.allocations.map((row) => row.roomId)),
+    ).toEqual(new Set(["room-a", "room-b"]));
+  });
+
+  it("does not use stable-bed continuity when that preference is disabled", () => {
+    const continuityRooms: BedAllocationRoom[] = [
+      {
+        id: "room-a",
+        name: "Room A",
+        sortOrder: 1,
+        beds: [
+          { id: "bed-a1", roomId: "room-a", name: "A1", sortOrder: 1 },
+          { id: "bed-a2", roomId: "room-a", name: "A2", sortOrder: 2 },
+        ],
+      },
+    ];
+    const input = {
+      enabled: true,
+      rooms: continuityRooms,
+      bookings: [booking("booking-1", "2026-06-01", "guest-1")],
+      occupiedBedNights: [
+        { bedId: "bed-a1", stayDate: "2026-07-02", ageTier: "ADULT" as const },
+      ],
+    };
+
+    const withContinuity = buildFirstFitBedAllocationPlan(input);
+    const neutral = buildFirstFitBedAllocationPlan({
+      ...input,
+      allocationPriorityOrder: [],
+    });
+
+    expect(withContinuity.allocations.map((row) => row.bedId)).toEqual([
+      "bed-a2",
+      "bed-a2",
+    ]);
+    expect(neutral.allocations.map((row) => row.bedId)).toEqual([
+      "bed-a1",
+      "bed-a2",
+    ]);
+  });
+
+  it("maximizes mixed-party placement under every saved priority permutation", () => {
+    const priorityOrders = permutations(BED_ALLOCATION_PRIORITY_VOCABULARY);
+    expect(priorityOrders).toHaveLength(24);
+    const constrainedRooms: BedAllocationRoom[] = [
+      {
+        id: "flexible",
+        name: "Flexible",
+        sortOrder: 1,
+        beds: [{ id: "flex-1", roomId: "flexible", name: "F1", sortOrder: 1 }],
+      },
+      {
+        id: "adult-only",
+        name: "Adult only tonight",
+        sortOrder: 2,
+        beds: [
+          { id: "adult-1", roomId: "adult-only", name: "A1", sortOrder: 1 },
+          { id: "adult-2", roomId: "adult-only", name: "A2", sortOrder: 2 },
+        ],
+      },
+    ];
+    const mixed = multiGuestBooking("mixed", "2026-06-01", [
+      { id: "adult", ageTier: "ADULT" },
+      { id: "minor-1", ageTier: "CHILD" },
+      { id: "minor-2", ageTier: "YOUTH" },
+    ]);
+
+    for (const allocationPriorityOrder of priorityOrders) {
+      const plan = buildFirstFitBedAllocationPlan({
+        enabled: true,
+        rooms: constrainedRooms,
+        bookings: [mixed],
+        allocationPriorityOrder,
+        occupiedBedNights: [
+          {
+            bedId: "adult-1",
+            roomId: "adult-only",
+            bookingId: "other",
+            bookingGuestId: "other-adult",
+            ageTier: "ADULT",
+            stayDate: "2026-07-01",
+          },
+        ],
+      });
+
+      expect(plan.allocations, allocationPriorityOrder.join(" > ")).toEqual([
+        {
+          bookingId: "mixed",
+          bookingGuestId: "adult",
+          roomId: "adult-only",
+          bedId: "adult-2",
+          stayDate: "2026-07-01",
+          source: "AUTO",
+        },
+        {
+          bookingId: "mixed",
+          bookingGuestId: "minor-1",
+          roomId: "flexible",
+          bedId: "flex-1",
+          stayDate: "2026-07-01",
+          source: "AUTO",
+        },
+      ]);
+      expect(plan.unallocatedGuestNights).toEqual([
+        {
+          bookingId: "mixed",
+          bookingGuestId: "minor-2",
+          stayDate: "2026-07-01",
+          reason: "NO_BED_AVAILABLE",
+        },
+      ]);
+    }
+  });
+
+  it("keeps a held booking's maximum partial match before displacing only the remainder", () => {
+    const plan = buildFirstFitBedAllocationPlan({
+      enabled: true,
+      prioritizeCapacityHolding: true,
+      rooms: [
+        {
+          id: "flexible",
+          name: "Flexible",
+          sortOrder: 1,
+          beds: [
+            { id: "flex-1", roomId: "flexible", name: "F1", sortOrder: 1 },
+          ],
+        },
+        {
+          id: "adult-only",
+          name: "Adult only tonight",
+          sortOrder: 2,
+          beds: [
+            { id: "adult-1", roomId: "adult-only", name: "A1", sortOrder: 1 },
+            { id: "adult-2", roomId: "adult-only", name: "A2", sortOrder: 2 },
+          ],
+        },
+      ],
+      bookings: [
+        {
+          ...multiGuestBooking("held-mixed", "2026-06-01", [
+            { id: "held-adult", ageTier: "ADULT" },
+            { id: "held-minor-1", ageTier: "CHILD" },
+            { id: "held-minor-2", ageTier: "YOUTH" },
+          ]),
+          holdsCapacity: true,
+        },
+      ],
+      occupiedBedNights: [
+        {
+          bedId: "adult-1",
+          roomId: "adult-only",
+          ageTier: "ADULT",
+          stayDate: "2026-07-01",
+        },
+      ],
+    });
+
+    expect(plan.allocations).toHaveLength(2);
+    expect(plan.allocations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          bookingGuestId: "held-adult",
+          bedId: "adult-2",
+        }),
+        expect.objectContaining({
+          bookingGuestId: "held-minor-1",
+          bedId: "flex-1",
+        }),
+      ]),
+    );
+    expect(plan.unallocatedGuestNights).toEqual([
+      {
+        bookingId: "held-mixed",
+        bookingGuestId: "held-minor-2",
+        stayDate: "2026-07-01",
+        reason: "NO_BED_AVAILABLE",
+      },
+    ]);
+  });
+
+  it("preserves a multi-night partial match and displaces only its attributed remainder", () => {
+    const plan = buildFirstFitBedAllocationPlan({
+      enabled: true,
+      prioritizeCapacityHolding: true,
+      rooms: [
+        {
+          id: "room",
+          name: "Room",
+          sortOrder: 1,
+          beds: [
+            { id: "free-1", roomId: "room", name: "1", sortOrder: 1 },
+            { id: "free-2", roomId: "room", name: "2", sortOrder: 2 },
+            { id: "blocked", roomId: "room", name: "3", sortOrder: 3 },
+          ],
+        },
+      ],
+      bookings: [
+        {
+          ...multiGuestBooking("held", "2026-06-01", [
+            { id: "held-1", stayEnd: "2026-07-03" },
+            { id: "held-2", stayEnd: "2026-07-03" },
+            { id: "held-3", stayEnd: "2026-07-03" },
+          ]),
+          holdsCapacity: true,
+        },
+      ],
+      occupiedBedNights: ["2026-07-01", "2026-07-02"].map((stayDate) => ({
+        bedId: "blocked",
+        roomId: "room",
+        bookingId: "provisional",
+        bookingGuestId: "provisional-guest",
+        ageTier: "ADULT" as const,
+        holdsCapacity: false,
+        bookingCreatedAt: "2026-06-02T00:00:00.000Z",
+        stayExtendsBeyondWindow: false,
+        stayDate,
+      })),
+    });
+
+    expect(plan.allocations).toHaveLength(6);
+    expect(plan.allocations.map((row) => row.stayDate)).toEqual([
+      "2026-07-01",
+      "2026-07-01",
+      "2026-07-01",
+      "2026-07-02",
+      "2026-07-02",
+      "2026-07-02",
+    ]);
+    expect(
+      plan.allocations.filter((row) => row.bedId !== "blocked"),
+    ).toHaveLength(4);
+    expect(
+      plan.allocations.filter((row) => row.bedId === "blocked"),
+    ).toHaveLength(2);
+    expect(plan.displacements).toEqual(
+      ["2026-07-01", "2026-07-02"].map((stayDate) => ({
+        type: "UNALLOCATE",
+        bookingId: "provisional",
+        bookingGuestId: "provisional-guest",
+        fromRoomId: "room",
+        fromBedId: "blocked",
+        stayDate,
+        displacedByBookingId: "held",
+      })),
+    );
+    expect(plan.unallocatedGuestNights).toEqual([]);
+  });
+
+  it("preserves school separation after maximizing a constrained mixed party", () => {
+    const school = {
+      ...multiGuestBooking("school", "2026-06-01", [
+        { id: "teacher", ageTier: "ADULT" },
+        { id: "student-1", ageTier: "CHILD" },
+        { id: "student-2", ageTier: "YOUTH" },
+      ]),
+      isSchoolGroup: true,
+    };
+    const plan = buildFirstFitBedAllocationPlan({
+      enabled: true,
+      rooms: [
+        {
+          id: "student-room",
+          name: "Student room",
+          sortOrder: 1,
+          beds: [{ id: "s1", roomId: "student-room", name: "S1" }],
+        },
+        {
+          id: "adult-room",
+          name: "Adult room",
+          sortOrder: 2,
+          beds: [
+            { id: "a1", roomId: "adult-room", name: "A1" },
+            { id: "a2", roomId: "adult-room", name: "A2" },
+          ],
+        },
+      ],
+      bookings: [school],
+      occupiedBedNights: [
+        {
+          bedId: "a1",
+          roomId: "adult-room",
+          bookingId: "other",
+          bookingGuestId: "other-adult",
+          ageTier: "ADULT",
+          stayDate: "2026-07-01",
+        },
+      ],
+    });
+
+    expect(plan.allocations).toHaveLength(2);
+    expect(plan.unallocatedGuestNights).toHaveLength(1);
+    expect(
+      plan.allocations.find((row) => row.bookingGuestId === "teacher")?.roomId,
+    ).toBe("adult-room");
+    expect(
+      new Set(plan.allocations.filter((row) => row.bookingGuestId.startsWith("student-")).map((row) => row.roomId)),
+    ).toEqual(new Set(["student-room"]));
+  });
+
+  it("groups direct family pairs that share only a later or overlapping group", () => {
+    const plan = buildFirstFitBedAllocationPlan({
+      enabled: true,
+      allocationPriorityOrder: ["FAMILY_COHESION"],
+      rooms: [
+        {
+          id: "r1",
+          name: "R1",
+          sortOrder: 1,
+          beds: [
+            { id: "r1-1", roomId: "r1", name: "1" },
+            { id: "r1-2", roomId: "r1", name: "2" },
+          ],
+        },
+        {
+          id: "r2",
+          name: "R2",
+          sortOrder: 2,
+          beds: [
+            { id: "r2-1", roomId: "r2", name: "1" },
+            { id: "r2-2", roomId: "r2", name: "2" },
+          ],
+        },
+      ],
+      bookings: [
+        multiGuestBooking("families", "2026-06-01", [
+          { id: "a", familyGroupIds: ["a-only", "shared-ab"] },
+          { id: "c", familyGroupIds: ["shared-cd"] },
+          { id: "b", familyGroupIds: ["shared-ab", "overlap"] },
+          { id: "d", familyGroupIds: ["overlap", "shared-cd"] },
+        ]),
+      ],
+    });
+    const roomByGuest = new Map(
+      plan.allocations.map((row) => [row.bookingGuestId, row.roomId]),
+    );
+
+    expect(roomByGuest.get("a")).toBe(roomByGuest.get("b"));
+    expect(roomByGuest.get("c")).toBe(roomByGuest.get("d"));
+  });
+
+  it("clusters three interleaved family subsets in one bounded layout", () => {
+    const familyRooms: BedAllocationRoom[] = Array.from(
+      { length: 3 },
+      (_, roomIndex) => ({
+        id: `family-room-${roomIndex}`,
+        name: `Family room ${roomIndex}`,
+        sortOrder: roomIndex,
+        beds: Array.from({ length: 2 }, (_, bedIndex) => ({
+          id: `family-bed-${roomIndex}-${bedIndex}`,
+          roomId: `family-room-${roomIndex}`,
+          name: `Bed ${bedIndex}`,
+          sortOrder: bedIndex,
+        })),
+      }),
+    );
+    const plan = buildFirstFitBedAllocationPlan({
+      enabled: true,
+      allocationPriorityOrder: ["FAMILY_COHESION"],
+      rooms: familyRooms,
+      bookings: [
+        multiGuestBooking("three-families", "2026-06-01", [
+          { id: "a", familyGroupIds: ["family-ab"] },
+          { id: "c", familyGroupIds: ["family-cd"] },
+          { id: "e", familyGroupIds: ["family-ef"] },
+          { id: "b", familyGroupIds: ["family-ab"] },
+          { id: "d", familyGroupIds: ["family-cd"] },
+          { id: "f", familyGroupIds: ["family-ef"] },
+        ]),
+      ],
+    });
+    const roomByGuest = new Map(
+      plan.allocations.map((row) => [row.bookingGuestId, row.roomId]),
+    );
+
+    expect(roomByGuest.get("a")).toBe(roomByGuest.get("b"));
+    expect(roomByGuest.get("c")).toBe(roomByGuest.get("d"));
+    expect(roomByGuest.get("e")).toBe(roomByGuest.get("f"));
+  });
+
+  it("pairs the maximum number of direct-family edges in every disconnected chain", () => {
+    const chainRooms: BedAllocationRoom[] = Array.from(
+      { length: 4 },
+      (_, roomIndex) => ({
+        id: `chain-room-${roomIndex}`,
+        name: `Chain room ${roomIndex}`,
+        sortOrder: roomIndex,
+        beds: Array.from({ length: 2 }, (_, bedIndex) => ({
+          id: `chain-bed-${roomIndex}-${bedIndex}`,
+          roomId: `chain-room-${roomIndex}`,
+          name: `Bed ${bedIndex}`,
+          sortOrder: bedIndex,
+        })),
+      }),
+    );
+    const groupsByGuest: Record<string, string[]> = {
+      a: ["ab"],
+      b: ["ab", "bc"],
+      c: ["bc", "cd"],
+      d: ["cd"],
+      e: ["ef"],
+      f: ["ef", "fg"],
+      g: ["fg", "gh"],
+      h: ["gh"],
+    };
+    const input = {
+      enabled: true,
+      allocationPriorityOrder: ["FAMILY_COHESION" as const],
+      rooms: chainRooms,
+      bookings: [
+        multiGuestBooking(
+          "family-chains",
+          "2026-06-01",
+          ["c", "g", "b", "e", "d", "h", "f", "a"].map((id) => ({
+            id,
+            familyGroupIds: groupsByGuest[id],
+          })),
+        ),
+      ],
+    };
+    const plan = buildFirstFitBedAllocationPlan(input);
+    const roomByGuest = new Map(
+      plan.allocations.map((row) => [row.bookingGuestId, row.roomId]),
+    );
+
+    expect(roomByGuest.get("a")).toBe(roomByGuest.get("b"));
+    expect(roomByGuest.get("c")).toBe(roomByGuest.get("d"));
+    expect(roomByGuest.get("e")).toBe(roomByGuest.get("f"));
+    expect(roomByGuest.get("g")).toBe(roomByGuest.get("h"));
+    expect(buildFirstFitBedAllocationPlan(input)).toEqual(plan);
+  });
+
+  it("keeps pair blocks from later components ahead of unmatched guests", () => {
+    const pairRooms: BedAllocationRoom[] = Array.from(
+      { length: 4 },
+      (_, roomIndex) => ({
+        id: `pair-block-room-${roomIndex}`,
+        name: `Pair block room ${roomIndex}`,
+        sortOrder: roomIndex,
+        beds: Array.from({ length: 2 }, (_, bedIndex) => ({
+          id: `pair-block-bed-${roomIndex}-${bedIndex}`,
+          roomId: `pair-block-room-${roomIndex}`,
+          name: `Bed ${bedIndex}`,
+          sortOrder: bedIndex,
+        })),
+      }),
+    );
+    const groupsByGuest: Record<string, string[]> = {
+      g0: ["g0-g7"],
+      g1: [],
+      g2: ["g2-g3"],
+      g3: ["g2-g3"],
+      g4: [],
+      g5: ["g5-g6"],
+      g6: ["g5-g6"],
+      g7: ["g0-g7"],
+    };
+    const input = {
+      enabled: true,
+      allocationPriorityOrder: ["FAMILY_COHESION" as const],
+      rooms: pairRooms,
+      bookings: [
+        multiGuestBooking(
+          "pair-blocks",
+          "2026-06-01",
+          ["g7", "g0", "g4", "g2", "g6", "g3", "g1", "g5"].map(
+            (id) => ({ id, familyGroupIds: groupsByGuest[id] }),
+          ),
+        ),
+      ],
+    };
+    const plan = buildFirstFitBedAllocationPlan(input);
+    const roomByGuest = new Map(
+      plan.allocations.map((row) => [row.bookingGuestId, row.roomId]),
+    );
+
+    expect(roomByGuest.get("g0")).toBe(roomByGuest.get("g7"));
+    expect(roomByGuest.get("g2")).toBe(roomByGuest.get("g3"));
+    expect(roomByGuest.get("g5")).toBe(roomByGuest.get("g6"));
+    expect(buildFirstFitBedAllocationPlan(input)).toEqual(plan);
+  });
+
+  it("reserves the maximum direct-edge matching candidate above the sampling cap", () => {
+    const denseRooms: BedAllocationRoom[] = Array.from(
+      { length: 4 },
+      (_, roomIndex) => ({
+        id: `dense-room-${roomIndex}`,
+        name: `Dense room ${roomIndex}`,
+        sortOrder: roomIndex,
+        beds: Array.from({ length: 2 }, (_, bedIndex) => ({
+          id: `dense-bed-${roomIndex}-${bedIndex}`,
+          roomId: `dense-room-${roomIndex}`,
+          name: `Bed ${bedIndex}`,
+          sortOrder: bedIndex,
+        })),
+      }),
+    );
+    const edges = [
+      ["g0", "g1"],
+      ["g0", "g3"],
+      ["g0", "g7"],
+      ["g1", "g2"],
+      ["g1", "g3"],
+      ["g1", "g4"],
+      ["g1", "g7"],
+      ["g2", "g4"],
+      ["g3", "g4"],
+      ["g4", "g5"],
+    ] as const;
+    const familyGroupIds = Object.fromEntries(
+      Array.from({ length: 8 }, (_, index) => [`g${index}`, [] as string[]]),
+    );
+    for (const [left, right] of edges) {
+      const groupId = `${left}-${right}`;
+      familyGroupIds[left].push(groupId);
+      familyGroupIds[right].push(groupId);
+    }
+    const input = {
+      enabled: true,
+      allocationPriorityOrder: ["FAMILY_COHESION" as const],
+      rooms: denseRooms,
+      bookings: [
+        multiGuestBooking(
+          "dense-family",
+          "2026-06-01",
+          ["g4", "g2", "g0", "g5", "g1", "g3", "g6", "g7"].map(
+            (id) => ({ id, familyGroupIds: familyGroupIds[id] }),
+          ),
+        ),
+      ],
+    };
+    const plan = buildFirstFitBedAllocationPlan(input);
+    const roomByGuest = new Map(
+      plan.allocations.map((row) => [row.bookingGuestId, row.roomId]),
+    );
+    const preservedEdges = edges.filter(
+      ([left, right]) => roomByGuest.get(left) === roomByGuest.get(right),
+    );
+
+    expect(preservedEdges).toHaveLength(3);
+    expect(roomByGuest.get("g4")).toBe(roomByGuest.get("g5"));
+    expect(roomByGuest.get("g2")).toBe(roomByGuest.get("g1"));
+    expect(roomByGuest.get("g0")).toBe(roomByGuest.get("g3"));
+    expect(buildFirstFitBedAllocationPlan(input)).toEqual(plan);
+  });
+
+  it("uses room-capacity family blocks when pair matching leaves avoidable splits", () => {
+    const capacityThreeRooms: BedAllocationRoom[] = Array.from(
+      { length: 3 },
+      (_, roomIndex) => ({
+        id: `capacity-three-room-${roomIndex}`,
+        name: `Capacity three room ${roomIndex}`,
+        sortOrder: roomIndex,
+        beds: Array.from({ length: 3 }, (_, bedIndex) => ({
+          id: `capacity-three-bed-${roomIndex}-${bedIndex}`,
+          roomId: `capacity-three-room-${roomIndex}`,
+          name: `Bed ${bedIndex}`,
+          sortOrder: bedIndex,
+        })),
+      }),
+    );
+    const edges = [
+      ["g0", "g1"],
+      ["g0", "g3"],
+      ["g0", "g4"],
+      ["g1", "g2"],
+      ["g1", "g8"],
+      ["g2", "g5"],
+      ["g2", "g6"],
+      ["g3", "g6"],
+      ["g4", "g7"],
+      ["g4", "g8"],
+      ["g5", "g7"],
+      ["g7", "g8"],
+    ] as const;
+    const familyGroupIds = Object.fromEntries(
+      Array.from({ length: 9 }, (_, index) => [`g${index}`, [] as string[]]),
+    );
+    for (const [left, right] of edges) {
+      const groupId = `${left}-${right}`;
+      familyGroupIds[left].push(groupId);
+      familyGroupIds[right].push(groupId);
+    }
+    const input = {
+      enabled: true,
+      allocationPriorityOrder: ["FAMILY_COHESION" as const],
+      rooms: capacityThreeRooms,
+      bookings: [
+        multiGuestBooking(
+          "capacity-three-family",
+          "2026-06-01",
+          ["g5", "g0", "g4", "g7", "g1", "g6", "g3", "g2", "g8"].map(
+            (id) => ({ id, familyGroupIds: familyGroupIds[id] }),
+          ),
+        ),
+      ],
+    };
+    const plan = buildFirstFitBedAllocationPlan(input);
+    const roomByGuest = new Map(
+      plan.allocations.map((row) => [row.bookingGuestId, row.roomId]),
+    );
+    const preservedEdges = edges.filter(
+      ([left, right]) => roomByGuest.get(left) === roomByGuest.get(right),
+    );
+
+    expect(preservedEdges).toHaveLength(7);
+    expect(buildFirstFitBedAllocationPlan(input)).toEqual(plan);
+  });
+
+  it("aligns family blocks to unequal room capacities", () => {
+    const variableRooms: BedAllocationRoom[] = [4, 3, 2].map(
+      (capacity, roomIndex) => ({
+        id: `variable-room-${roomIndex}`,
+        name: `Variable room ${roomIndex}`,
+        sortOrder: roomIndex,
+        beds: Array.from({ length: capacity }, (_, bedIndex) => ({
+          id: `variable-bed-${roomIndex}-${bedIndex}`,
+          roomId: `variable-room-${roomIndex}`,
+          name: `Bed ${bedIndex}`,
+          sortOrder: bedIndex,
+        })),
+      }),
+    );
+    const groupByGuest: Record<string, string[]> = {
+      a0: ["family-a"],
+      a1: ["family-a"],
+      a2: ["family-a"],
+      a3: ["family-a"],
+      b0: ["family-b"],
+      b1: ["family-b"],
+      b2: ["family-b"],
+      c0: ["family-c"],
+      c1: ["family-c"],
+    };
+    const input = {
+      enabled: true,
+      allocationPriorityOrder: ["FAMILY_COHESION" as const],
+      rooms: variableRooms,
+      bookings: [
+        multiGuestBooking(
+          "variable-capacity-family",
+          "2026-06-01",
+          ["b0", "a0", "c0", "b1", "a1", "c1", "b2", "a2", "a3"].map(
+            (id) => ({ id, familyGroupIds: groupByGuest[id] }),
+          ),
+        ),
+      ],
+    };
+    const plan = buildFirstFitBedAllocationPlan(input);
+    const roomByGuest = new Map(
+      plan.allocations.map((row) => [row.bookingGuestId, row.roomId]),
+    );
+
+    for (const prefix of ["a", "b", "c"]) {
+      expect(
+        new Set(
+          [...roomByGuest]
+            .filter(([guestId]) => guestId.startsWith(prefix))
+            .map(([, roomId]) => roomId),
+        ).size,
+      ).toBe(1);
+    }
+    expect(buildFirstFitBedAllocationPlan(input)).toEqual(plan);
+  });
+
+  it("weights capacity-aware family edges by overlapping guest nights", () => {
+    const weightedRooms: BedAllocationRoom[] = [3, 2, 2].map(
+      (capacity, roomIndex) => ({
+        id: `weighted-room-${roomIndex}`,
+        name: `Weighted room ${roomIndex}`,
+        sortOrder: roomIndex,
+        beds: Array.from({ length: capacity }, (_, bedIndex) => ({
+          id: `weighted-bed-${roomIndex}-${bedIndex}`,
+          roomId: `weighted-room-${roomIndex}`,
+          name: `Bed ${bedIndex}`,
+          sortOrder: bedIndex,
+        })),
+      }),
+    );
+    const edges = [
+      ["a", "d"],
+      ["b", "d"],
+      ["c", "f"],
+      ["d", "f"],
+      ["e", "f"],
+      ["f", "g"],
+    ] as const;
+    const familyGroupIds = Object.fromEntries(
+      ["a", "b", "c", "d", "e", "f", "g"].map((id) => [
+        id,
+        [] as string[],
+      ]),
+    );
+    for (const [left, right] of edges) {
+      const groupId = `${left}-${right}`;
+      familyGroupIds[left].push(groupId);
+      familyGroupIds[right].push(groupId);
+    }
+    const ranges: Record<string, [string, string]> = {
+      a: ["2026-07-04", "2026-07-05"],
+      b: ["2026-07-02", "2026-07-04"],
+      c: ["2026-07-03", "2026-07-05"],
+      d: ["2026-07-02", "2026-07-04"],
+      e: ["2026-07-02", "2026-07-03"],
+      f: ["2026-07-03", "2026-07-05"],
+      g: ["2026-07-02", "2026-07-05"],
+    };
+    const input = {
+      enabled: true,
+      allocationPriorityOrder: ["FAMILY_COHESION" as const],
+      rooms: weightedRooms,
+      bookings: [
+        multiGuestBooking(
+          "weighted-family",
+          "2026-06-01",
+          ["a", "b", "c", "d", "e", "f", "g"].map((id) => ({
+            id,
+            familyGroupIds: familyGroupIds[id],
+            stayStart: ranges[id][0],
+            stayEnd: ranges[id][1],
+          })),
+        ),
+      ],
+    };
+    const plan = buildFirstFitBedAllocationPlan(input);
+    const roomByGuestNight = new Map(
+      plan.allocations.map((row) => [
+        `${row.bookingGuestId}:${row.stayDate}`,
+        row.roomId,
+      ]),
+    );
+    const preservedEdgeNights = [
+      "2026-07-02",
+      "2026-07-03",
+      "2026-07-04",
+    ]
+      .flatMap((stayDate) =>
+        edges.map(([left, right]) => ({ left, right, stayDate })),
+      )
+      .filter(({ left, right, stayDate }) => {
+        const leftRoom = roomByGuestNight.get(`${left}:${stayDate}`);
+        return (
+          leftRoom !== undefined &&
+          leftRoom === roomByGuestNight.get(`${right}:${stayDate}`)
+        );
+      });
+
+    expect(preservedEdgeNights).toHaveLength(6);
+    for (const stayDate of ["2026-07-03", "2026-07-04"]) {
+      expect(
+        new Set(
+          ["c", "f", "g"].map((guestId) =>
+            roomByGuestNight.get(`${guestId}:${stayDate}`),
+          ),
+        ).size,
+      ).toBe(1);
+    }
+    for (const stayDate of ["2026-07-02", "2026-07-03"]) {
+      expect(roomByGuestNight.get(`b:${stayDate}`)).toBe(
+        roomByGuestNight.get(`d:${stayDate}`),
+      );
+    }
+    expect(roomByGuestNight.get("d:2026-07-03")).not.toBe(
+      roomByGuestNight.get("f:2026-07-03"),
+    );
+    expect(buildFirstFitBedAllocationPlan(input)).toEqual(plan);
+  });
+
+  it("retains a direct-pair choice inside an overlapping family chain", () => {
+    const plan = buildFirstFitBedAllocationPlan({
+      enabled: true,
+      allocationPriorityOrder: ["FAMILY_COHESION"],
+      rooms: [
+        {
+          id: "pair-room",
+          name: "Pair room",
+          sortOrder: 1,
+          beds: [
+            { id: "pair-1", roomId: "pair-room", name: "1" },
+            { id: "pair-2", roomId: "pair-room", name: "2" },
+          ],
+        },
+        {
+          id: "single-room",
+          name: "Single room",
+          sortOrder: 2,
+          beds: [{ id: "single-1", roomId: "single-room", name: "1" }],
+        },
+      ],
+      bookings: [
+        multiGuestBooking("overlap-chain", "2026-06-01", [
+          { id: "left", familyGroupIds: ["left-middle"] },
+          { id: "right", familyGroupIds: ["middle-right"] },
+          {
+            id: "middle",
+            familyGroupIds: ["left-middle", "middle-right"],
+          },
+        ]),
+      ],
+    });
+    const roomByGuest = new Map(
+      plan.allocations.map((row) => [row.bookingGuestId, row.roomId]),
+    );
+
+    expect(
+      roomByGuest.get("middle") === roomByGuest.get("left") ||
+        roomByGuest.get("middle") === roomByGuest.get("right"),
+    ).toBe(true);
+  });
+
+  it("reaches family-aware guest variants before rotating across 25 rooms", () => {
+    const manyRooms: BedAllocationRoom[] = Array.from(
+      { length: 25 },
+      (_, roomIndex) => ({
+        id: `room-${roomIndex}`,
+        name: `Room ${roomIndex}`,
+        sortOrder: roomIndex,
+        beds: Array.from({ length: 2 }, (_, bedIndex) => ({
+          id: `bed-${roomIndex}-${bedIndex}`,
+          roomId: `room-${roomIndex}`,
+          name: `Bed ${bedIndex}`,
+          sortOrder: bedIndex,
+        })),
+      }),
+    );
+    const plan = buildFirstFitBedAllocationPlan({
+      enabled: true,
+      allocationPriorityOrder: ["FAMILY_COHESION"],
+      rooms: manyRooms,
+      bookings: [
+        multiGuestBooking("many-room-families", "2026-06-01", [
+          { id: "a", familyGroupIds: ["family-ab"] },
+          { id: "c", familyGroupIds: ["family-cd"] },
+          { id: "b", familyGroupIds: ["family-ab"] },
+          { id: "d", familyGroupIds: ["family-cd"] },
+        ]),
+      ],
+    });
+    const roomByGuest = new Map(
+      plan.allocations.map((row) => [row.bookingGuestId, row.roomId]),
+    );
+
+    expect(roomByGuest.get("a")).toBe(roomByGuest.get("b"));
+    expect(roomByGuest.get("c")).toBe(roomByGuest.get("d"));
+  });
+
+  it("samples the high-sorted family endpoint when candidates exceed the cap", () => {
+    const guestCount = 30;
+    const targetIndexes = new Set([0, 5, 11, 17, 23, 28]);
+    const guests = Array.from({ length: guestCount }, (_, index) => ({
+      id: `guest-${String(index).padStart(2, "0")}`,
+      familyGroupIds: [
+        ...(index > 0 ? [`chain-${String(index - 1).padStart(2, "0")}`] : []),
+        ...(index < guestCount - 1
+          ? [`chain-${String(index).padStart(2, "0")}`]
+          : []),
+        ...(targetIndexes.has(index) ? ["zz-target-family"] : []),
+      ],
+    }));
+    const capRooms: BedAllocationRoom[] = Array.from(
+      { length: 5 },
+      (_, roomIndex) => ({
+        id: `cap-room-${roomIndex}`,
+        name: `Cap room ${roomIndex}`,
+        sortOrder: roomIndex,
+        beds: Array.from({ length: 6 }, (_, bedIndex) => ({
+          id: `cap-bed-${roomIndex}-${bedIndex}`,
+          roomId: `cap-room-${roomIndex}`,
+          name: `Bed ${bedIndex}`,
+          sortOrder: bedIndex,
+        })),
+      }),
+    );
+    const input = {
+      enabled: true,
+      allocationPriorityOrder: ["FAMILY_COHESION" as const],
+      rooms: capRooms,
+      bookings: [
+        multiGuestBooking("capped-families", "2026-06-01", guests),
+      ],
+    };
+    const plan = buildFirstFitBedAllocationPlan(input);
+    const targetRooms = new Set(
+      plan.allocations
+        .filter((row) =>
+          targetIndexes.has(Number(row.bookingGuestId.slice("guest-".length))),
+        )
+        .map((row) => row.roomId),
+    );
+
+    expect(BED_ALLOCATION_MAX_MATCHING_LAYOUTS).toBe(24);
+    expect(guestCount).toBeGreaterThan(BED_ALLOCATION_MAX_MATCHING_LAYOUTS);
+    expect(targetRooms).toEqual(new Set(["cap-room-0"]));
+    expect(buildFirstFitBedAllocationPlan(input)).toEqual(plan);
+  });
+
+  it("uses allocation context outside the planned nights for continuity", () => {
+    const plan = buildFirstFitBedAllocationPlan({
+      enabled: true,
+      allocationPriorityOrder: ["STAY_CONTINUITY"],
+      rooms,
+      bookings: [
+        multiGuestBooking("booking-1", "2026-06-01", [
+          { id: "guest-1", stayStart: "2026-07-01", stayEnd: "2026-07-02" },
+        ]),
+      ],
+      occupiedBedNights: [
+        {
+          bedId: "bed-b1",
+          roomId: "room-b",
+          bookingId: "booking-1",
+          bookingGuestId: "guest-1",
+          ageTier: "ADULT",
+          stayDate: "2026-06-30",
+        },
+      ],
+    });
+
+    expect(plan.allocations).toHaveLength(1);
+    expect(plan.allocations[0].bedId).toBe("bed-b1");
+  });
+
+  it("reassigns an earlier guest so a returning guest keeps the only continuous bed", () => {
+    const continuityRooms: BedAllocationRoom[] = [
+      {
+        id: "room-a",
+        name: "A",
+        sortOrder: 1,
+        beds: [{ id: "bed-a", roomId: "room-a", name: "A" }],
+      },
+      {
+        id: "room-b",
+        name: "B",
+        sortOrder: 2,
+        beds: [{ id: "bed-b", roomId: "room-b", name: "B" }],
+      },
+    ];
+    const plan = buildFirstFitBedAllocationPlan({
+      enabled: true,
+      allocationPriorityOrder: ["STAY_CONTINUITY"],
+      rooms: continuityRooms,
+      bookings: [
+        multiGuestBooking("booking-1", "2026-06-01", [
+          { id: "g1" },
+          { id: "g2" },
+        ]),
+      ],
+      occupiedBedNights: [
+        {
+          bedId: "bed-a",
+          roomId: "room-a",
+          bookingId: "booking-1",
+          bookingGuestId: "g2",
+          ageTier: "ADULT",
+          stayDate: "2026-06-30",
+        },
+      ],
+    });
+    const bedByGuest = new Map(
+      plan.allocations.map((row) => [row.bookingGuestId, row.bedId]),
+    );
+
+    expect(bedByGuest).toEqual(
+      new Map([
+        ["g1", "bed-b"],
+        ["g2", "bed-a"],
+      ]),
+    );
+  });
+
+  it("reverses meaningful layout conflicts when priority order is reversed", () => {
+    const twoGuests = multiGuestBooking(
+      "booking-1",
+      "2026-06-01",
+      [
+        { id: "g1", familyGroupIds: ["family"] },
+        { id: "g2", familyGroupIds: ["family"] },
+      ],
+      "room-b",
+    );
+    const planFor = (allocationPriorityOrder: Array<(typeof BED_ALLOCATION_PRIORITY_VOCABULARY)[number]>) =>
+      buildFirstFitBedAllocationPlan({
+        enabled: true,
+        rooms,
+        bookings: [twoGuests],
+        allocationPriorityOrder,
+      });
+
+    expect(
+      new Set(
+        planFor(["BOOKING_COHESION", "REQUESTED_ROOM"]).allocations.map(
+          (row) => row.roomId,
+        ),
+      ),
+    ).toEqual(new Set(["room-a"]));
+    expect(
+      new Set(
+        planFor(["REQUESTED_ROOM", "BOOKING_COHESION"]).allocations.map(
+          (row) => row.roomId,
+        ),
+      ),
+    ).toEqual(new Set(["room-a", "room-b"]));
+
+    for (const allocationPriorityOrder of permutations(
+      BED_ALLOCATION_PRIORITY_VOCABULARY,
+    )) {
+      const firstLayoutPriority = allocationPriorityOrder.find((priority) =>
+        ["BOOKING_COHESION", "FAMILY_COHESION", "REQUESTED_ROOM"].includes(
+          priority,
+        ),
+      );
+      const allocatedRooms = new Set(
+        planFor(allocationPriorityOrder).allocations.map((row) => row.roomId),
+      );
+      expect(
+        allocatedRooms,
+        allocationPriorityOrder.join(" > "),
+      ).toEqual(
+        firstLayoutPriority === "REQUESTED_ROOM"
+          ? new Set(["room-a", "room-b"])
+          : new Set(["room-a"]),
+      );
+    }
+    expect(
+      new Set(
+        planFor(["FAMILY_COHESION", "REQUESTED_ROOM"]).allocations.map(
+          (row) => row.roomId,
+        ),
+      ),
+    ).toEqual(new Set(["room-a"]));
+    expect(
+      new Set(
+        planFor(["REQUESTED_ROOM", "FAMILY_COHESION"]).allocations.map(
+          (row) => row.roomId,
+        ),
+      ),
+    ).toEqual(new Set(["room-a", "room-b"]));
+
+    const returning = multiGuestBooking(
+      "returning",
+      "2026-06-01",
+      [{ id: "returning-guest" }],
+      "room-b",
+    );
+    const continuityInput = {
+      enabled: true,
+      rooms,
+      bookings: [returning],
+      occupiedBedNights: [
+        {
+          bedId: "bed-a1",
+          roomId: "room-a",
+          bookingId: "returning",
+          bookingGuestId: "returning-guest",
+          ageTier: "ADULT" as const,
+          stayDate: "2026-06-30",
+        },
+      ],
+    };
+    expect(
+      buildFirstFitBedAllocationPlan({
+        ...continuityInput,
+        allocationPriorityOrder: ["STAY_CONTINUITY", "REQUESTED_ROOM"],
+      }).allocations[0].roomId,
+    ).toBe("room-a");
+    expect(
+      buildFirstFitBedAllocationPlan({
+        ...continuityInput,
+        allocationPriorityOrder: ["REQUESTED_ROOM", "STAY_CONTINUITY"],
+      }).allocations[0].roomId,
+    ).toBe("room-b");
+    for (const allocationPriorityOrder of permutations(
+      BED_ALLOCATION_PRIORITY_VOCABULARY,
+    )) {
+      const firstRelevant = allocationPriorityOrder.find((priority) =>
+        ["STAY_CONTINUITY", "REQUESTED_ROOM"].includes(priority),
+      );
+      expect(
+        buildFirstFitBedAllocationPlan({
+          ...continuityInput,
+          allocationPriorityOrder,
+        }).allocations[0].roomId,
+        allocationPriorityOrder.join(" > "),
+      ).toBe(firstRelevant === "STAY_CONTINUITY" ? "room-a" : "room-b");
+    }
+  });
+
+  it("reverses booking-cohesion versus continuity layouts", () => {
+    const conflictRooms: BedAllocationRoom[] = [
+      {
+        id: "room-a",
+        name: "A",
+        sortOrder: 1,
+        beds: [
+          { id: "a-1", roomId: "room-a", name: "1", sortOrder: 1 },
+          { id: "a-2", roomId: "room-a", name: "2", sortOrder: 2 },
+        ],
+      },
+      {
+        id: "room-b",
+        name: "B",
+        sortOrder: 2,
+        beds: [
+          { id: "b-1", roomId: "room-b", name: "1", sortOrder: 1 },
+          { id: "b-2", roomId: "room-b", name: "2", sortOrder: 2 },
+        ],
+      },
+    ];
+    const conflictBooking = multiGuestBooking("conflict", "2026-06-01", [
+      { id: "guest-a" },
+      { id: "guest-b" },
+    ]);
+    const occupiedBedNights = [
+      {
+        bedId: "a-1",
+        roomId: "room-a",
+        bookingId: "conflict",
+        bookingGuestId: "guest-a",
+        ageTier: "ADULT" as const,
+        stayDate: "2026-06-30",
+      },
+      {
+        bedId: "b-1",
+        roomId: "room-b",
+        bookingId: "conflict",
+        bookingGuestId: "guest-b",
+        ageTier: "ADULT" as const,
+        stayDate: "2026-06-30",
+      },
+    ];
+    const currentRooms = (allocationPriorityOrder: Array<(typeof BED_ALLOCATION_PRIORITY_VOCABULARY)[number]>) =>
+      new Set(
+        buildFirstFitBedAllocationPlan({
+          enabled: true,
+          rooms: conflictRooms,
+          bookings: [conflictBooking],
+          occupiedBedNights,
+          allocationPriorityOrder,
+        }).allocations.map((row) => row.roomId),
+      );
+
+    expect(
+      currentRooms(["BOOKING_COHESION", "STAY_CONTINUITY"]),
+    ).toHaveLength(1);
+    expect(
+      currentRooms(["STAY_CONTINUITY", "BOOKING_COHESION"]),
+    ).toEqual(new Set(["room-a", "room-b"]));
+  });
+
+  it("reverses family-cohesion versus continuity layouts", () => {
+    const conflictRooms: BedAllocationRoom[] = [
+      {
+        id: "room-a",
+        name: "A",
+        sortOrder: 1,
+        beds: [
+          { id: "a-1", roomId: "room-a", name: "1", sortOrder: 1 },
+          { id: "a-2", roomId: "room-a", name: "2", sortOrder: 2 },
+        ],
+      },
+      {
+        id: "room-b",
+        name: "B",
+        sortOrder: 2,
+        beds: [
+          { id: "b-1", roomId: "room-b", name: "1", sortOrder: 1 },
+          { id: "b-2", roomId: "room-b", name: "2", sortOrder: 2 },
+        ],
+      },
+    ];
+    const conflictBooking = multiGuestBooking("family-conflict", "2026-06-01", [
+      { id: "guest-a", familyGroupIds: ["family"] },
+      { id: "guest-b", familyGroupIds: ["family"] },
+    ]);
+    const occupiedBedNights = [
+      {
+        bedId: "a-1",
+        roomId: "room-a",
+        bookingId: "family-conflict",
+        bookingGuestId: "guest-a",
+        ageTier: "ADULT" as const,
+        familyGroupIds: ["family"],
+        stayDate: "2026-06-30",
+      },
+      {
+        bedId: "b-1",
+        roomId: "room-b",
+        bookingId: "family-conflict",
+        bookingGuestId: "guest-b",
+        ageTier: "ADULT" as const,
+        familyGroupIds: ["family"],
+        stayDate: "2026-06-30",
+      },
+    ];
+    const currentRooms = (allocationPriorityOrder: Array<(typeof BED_ALLOCATION_PRIORITY_VOCABULARY)[number]>) =>
+      new Set(
+        buildFirstFitBedAllocationPlan({
+          enabled: true,
+          rooms: conflictRooms,
+          bookings: [conflictBooking],
+          occupiedBedNights,
+          allocationPriorityOrder,
+        }).allocations.map((row) => row.roomId),
+      );
+
+    expect(
+      currentRooms(["FAMILY_COHESION", "STAY_CONTINUITY"]),
+    ).toHaveLength(1);
+    expect(
+      currentRooms(["STAY_CONTINUITY", "FAMILY_COHESION"]),
+    ).toEqual(new Set(["room-a", "room-b"]));
+  });
+
+  it("rejects duplicate and unknown priority values at the planner boundary", () => {
+    const input = {
+      enabled: true,
+      rooms,
+      bookings: [booking("booking-1", "2026-06-01", "guest-1")],
+    };
+    expect(() =>
+      buildFirstFitBedAllocationPlan({
+        ...input,
+        allocationPriorityOrder: [
+          "BOOKING_COHESION",
+          "BOOKING_COHESION",
+        ] as never,
+      }),
+    ).toThrow(/duplicate/i);
+    expect(() =>
+      buildFirstFitBedAllocationPlan({
+        ...input,
+        allocationPriorityOrder: ["NOT_A_PRIORITY"] as never,
+      }),
+    ).toThrow(/unknown/i);
+  });
+
+  it("bounds a realistic 31-night school matching plan", () => {
+    expect(BED_ALLOCATION_MAX_MATCHING_LAYOUTS).toBe(24);
+    const largeRooms: BedAllocationRoom[] = Array.from(
+      { length: 20 },
+      (_, roomIndex) => ({
+        id: `large-room-${roomIndex}`,
+        name: `Large room ${roomIndex}`,
+        sortOrder: roomIndex,
+        beds: Array.from({ length: 5 }, (_, bedIndex) => ({
+          id: `large-bed-${roomIndex}-${bedIndex}`,
+          roomId: `large-room-${roomIndex}`,
+          name: `Bed ${bedIndex}`,
+          sortOrder: bedIndex,
+        })),
+      }),
+    );
+    const largeBooking = multiGuestBooking(
+      "large-booking",
+      "2026-06-01",
+      Array.from({ length: 100 }, (_, index) => ({
+        id: `large-guest-${index}`,
+        ageTier: index < 10 ? ("ADULT" as const) : ("CHILD" as const),
+        stayStart: "2026-08-01",
+        stayEnd: "2026-09-01",
+        familyGroupIds: [`family-${index % 25}`],
+      })),
+    );
+    largeBooking.isSchoolGroup = true;
+    const startedAt = process.hrtime.bigint();
+    const plan = buildFirstFitBedAllocationPlan({
+      enabled: true,
+      rooms: largeRooms,
+      bookings: [largeBooking],
+    });
+
+    expect(plan.allocations).toHaveLength(100 * 31);
+    // Coarse synchronous-latency guard with CI headroom: the pre-indexed
+    // implementation took about 7.2s for this exact 3,100-row shape.
+    expect(realElapsedMs(startedAt)).toBeLessThan(5_000);
+  });
+
   it("falls back silently to first-fit when the requested room is full", () => {
     const plan = buildFirstFitBedAllocationPlan({
       enabled: true,
@@ -813,8 +2144,8 @@ describe("bed allocation whole-stay room continuity (issue #1677)", () => {
     ]);
   });
 
-  it("switches beds within the room only when no single bed spans the stay", () => {
-    // A1 is taken on night 2 and A2 on night 1: no bed is free for the whole
+  it("uses a stable bed in another room when cohesion ties and continuity decides", () => {
+    // A1 is taken on night 2 and A2 on night 1, while B1 spans the whole stay.
     // stay, but room A still hosts every night — the guest stays in ONE room
     // and switches beds, never rooms.
     const plan = buildFirstFitBedAllocationPlan({
@@ -853,16 +2184,16 @@ describe("bed allocation whole-stay room continuity (issue #1677)", () => {
       {
         bookingId: "booking-1",
         bookingGuestId: "guest-1",
-        roomId: "room-a",
-        bedId: "bed-a1",
+        roomId: "room-b",
+        bedId: "bed-b1",
         stayDate: "2026-07-01",
         source: "AUTO",
       },
       {
         bookingId: "booking-1",
         bookingGuestId: "guest-1",
-        roomId: "room-a",
-        bedId: "bed-a2",
+        roomId: "room-b",
+        bedId: "bed-b1",
         stayDate: "2026-07-02",
         source: "AUTO",
       },
@@ -1179,14 +2510,34 @@ describe("cross-booking age mix and minors-only rooms (#1768)", () => {
     for (const allocation of minorAllocations) {
       expect(allocation.roomId).toBe("r2");
     }
-    // The party of 3 cannot fit r2 alone: adult pairs with one minor in r2 and
-    // the other minor is reported rather than placed beside the stranger.
-    expect(plan.unallocatedGuestNights).toEqual([
+    // Maximum-cardinality matching moves the adult into r1's remaining bed and
+    // keeps both minors together in r2, placing all three without cross-booking
+    // adult/minor mixing.
+    expect(plan.unallocatedGuestNights).toEqual([]);
+    expect(plan.allocations).toEqual([
+      {
+        bookingId: "booking-family",
+        bookingGuestId: "adult-1",
+        roomId: "r1",
+        bedId: "bed-r1-2",
+        stayDate: "2026-07-01",
+        source: "AUTO",
+      },
+      {
+        bookingId: "booking-family",
+        bookingGuestId: "minor-1",
+        roomId: "r2",
+        bedId: "bed-r2-1",
+        stayDate: "2026-07-01",
+        source: "AUTO",
+      },
       {
         bookingId: "booking-family",
         bookingGuestId: "minor-2",
+        roomId: "r2",
+        bedId: "bed-r2-2",
         stayDate: "2026-07-01",
-        reason: "NO_BED_AVAILABLE",
+        source: "AUTO",
       },
     ]);
   });
@@ -1680,6 +3031,51 @@ describe("bed allocation first-claim displacement (issue #1387)", () => {
     };
   }
 
+  it("does not preserve a displaced booking's bed when continuity is disabled", () => {
+    const plan = buildFirstFitBedAllocationPlan({
+      enabled: true,
+      prioritizeCapacityHolding: true,
+      rooms: twoRooms,
+      bookings: [
+        heldBooking(
+          "held-new",
+          "2026-07-01",
+          [
+            { id: "held-adult", ageTier: "ADULT" },
+            { id: "held-child", ageTier: "CHILD" },
+          ],
+          true,
+        ),
+      ],
+      occupiedBedNights: [
+        {
+          bedId: "bed-a2",
+          roomId: "room-a",
+          bookingId: "provisional",
+          bookingGuestId: "provisional-guest",
+          stayDate: "2026-07-01",
+          ageTier: "ADULT",
+          holdsCapacity: false,
+        },
+        {
+          bedId: "bed-b2",
+          roomId: "room-b",
+          bookingId: "provisional",
+          bookingGuestId: "provisional-guest",
+          stayDate: "2026-07-02",
+          ageTier: "ADULT",
+          holdsCapacity: false,
+        },
+      ],
+      allocationPriorityOrder: [],
+    });
+
+    expect(plan.displacements).toEqual([
+      expect.objectContaining({ stayDate: "2026-07-01", toBedId: "bed-b1" }),
+      expect.objectContaining({ stayDate: "2026-07-02", toBedId: "bed-b1" }),
+    ]);
+  });
+
   it("emits no displacements when the flag is off: a provisional-occupied bed still blocks a held booking", () => {
     // Planning is whole-stay-first for every caller (#1677), but displacement
     // stays exclusive to the prioritizeCapacityHolding lifecycle path: with
@@ -1717,6 +3113,57 @@ describe("bed allocation first-claim displacement (issue #1387)", () => {
         bookingGuestId: "hn",
         stayDate: "2026-07-01",
         reason: "NO_BED_AVAILABLE",
+      },
+    ]);
+  });
+
+  it("scores every relocation destination using read-only occupant booking context", () => {
+    const plan = buildFirstFitBedAllocationPlan({
+      enabled: true,
+      prioritizeCapacityHolding: true,
+      allocationPriorityOrder: ["REQUESTED_ROOM"],
+      rooms: [
+        ...twoRooms,
+        {
+          id: "room-c",
+          name: "Room C",
+          sortOrder: 3,
+          beds: [{ id: "bed-c1", roomId: "room-c", name: "C1" }],
+        },
+      ],
+      bookings: [
+        heldBooking(
+          "held-new",
+          "2026-07-01",
+          [{ id: "held-1" }, { id: "held-2" }],
+          true,
+        ),
+      ],
+      occupiedBedNights: [
+        {
+          bedId: "bed-a2",
+          roomId: "room-a",
+          bookingId: "provisional",
+          bookingGuestId: "provisional-guest",
+          stayDate: "2026-07-01",
+          ageTier: "ADULT",
+          holdsCapacity: false,
+          bookingRequestedRoomId: "room-c",
+        },
+      ],
+    });
+
+    expect(plan.displacements).toEqual([
+      {
+        type: "MOVE",
+        bookingId: "provisional",
+        bookingGuestId: "provisional-guest",
+        stayDate: "2026-07-01",
+        fromBedId: "bed-a2",
+        fromRoomId: "room-a",
+        toRoomId: "room-c",
+        toBedId: "bed-c1",
+        displacedByBookingId: "held-new",
       },
     ]);
   });

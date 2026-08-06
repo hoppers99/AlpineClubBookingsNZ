@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 /*
  * POST /api/admin/bed-allocation/allocations/range (#2251).
  *
- * The real route handler and the real requireBedAllocationAdmin guard run;
+ * The real route handler and the real requireBedAllocationWrite guard run;
  * assignBedRange is mocked at the lib seam so the route's own contracts can be
  * driven directly: strict input validation, 400-vs-409 on a refusal, the
  * explicit night list passed straight through, and Prisma write-conflict codes
