@@ -1,5 +1,9 @@
 import { type BrowserContext, expect, test } from "@playwright/test";
 import { storageStatePath } from "./helpers/auth";
+import {
+  type BookingCreateIsolation,
+  bookingCreateIsolation,
+} from "./helpers/booking-create-client-ip";
 import { DEMO_BOOKING_WINDOWS, E2E_ADMIN } from "./helpers/fixtures";
 import { overrideModules, setModuleSettings, type ModuleSettings } from "./helpers/modules";
 
@@ -206,8 +210,9 @@ async function createHoldingBooking(opts: {
   forMemberId: string;
   guests: ReturnType<typeof memberGuest | typeof nonMemberGuest>[];
   window: { checkIn: string; checkOut: string };
-}): Promise<{ id: string; status: string }> {
+}, isolation: BookingCreateIsolation): Promise<{ id: string; status: string }> {
   const res = await api().post("/api/bookings", {
+    headers: isolation.headers,
     data: {
       checkIn: opts.window.checkIn,
       checkOut: opts.window.checkOut,
@@ -472,7 +477,8 @@ test("S1 — admin edit panel offers and adds a confirmed partner (#1746)", asyn
 // (#1745). On a window filled to exactly the base, an ordinary guest is refused
 // but Carol's confirmed partner is admitted via the reserved double slot; with
 // the double removed (headroom → 0) the same partner is refused.
-test("S2 — full-by-beds admits an eligible partner via the reserved slot, bounded by the double count (#1745/#1746)", async () => {
+test("S2 — full-by-beds admits an eligible partner via the reserved slot, bounded by the double count (#1745/#1746)", async ({}, testInfo) => {
+  const isolation = bookingCreateIsolation("double-bed-capacity", testInfo.retry);
   const status = (await getRoomsConfig()).capacity;
   const base = status.capacity;
   expect(status.activeDoubleBedCount).toBeGreaterThanOrEqual(1);
@@ -487,12 +493,12 @@ test("S2 — full-by-beds admits an eligible partner via the reserved slot, boun
     forMemberId: members.grace.id,
     guests: fillerGuests,
     window: S2_WINDOW,
-  });
+  }, isolation);
   const anchor = await createHoldingBooking({
     forMemberId: members.carol.id,
     guests: [memberGuest(members.carol)],
     window: S2_WINDOW,
-  });
+  }, isolation);
 
   // The base is genuinely full: an ORDINARY extra guest cannot be admitted (it
   // may never consume the partner-reserved slot).
@@ -599,7 +605,8 @@ test("S3 — non-partners rejected; partnerless booking offers no candidates (#1
 // then orphan auto-promote when the primary allocation is removed (#1701/#1743).
 // Runs last: it carries the heaviest setup (module + IB-settings toggles + a
 // created holding booking), so a setup failure here never masks S1–S3.
-test("S4 — second-occupant placement and orphan auto-promote (#1701/#1743)", async () => {
+test("S4 — second-occupant placement and orphan auto-promote (#1701/#1743)", async ({}, testInfo) => {
+  const isolation = bookingCreateIsolation("double-bed-allocation", testInfo.retry);
   // The second-occupant rule requires the primary's booking to HOLD capacity, so
   // the anchor is a CONFIRMED future booking for Erin (IB + holdBedSlots, enabled
   // in beforeAll; a fully-past booking cannot take a guest addition).
@@ -607,7 +614,7 @@ test("S4 — second-occupant placement and orphan auto-promote (#1701/#1743)", a
     forMemberId: members.erin.id,
     guests: [memberGuest(members.erin)],
     window: S4_WINDOW,
-  });
+  }, isolation);
 
   // (i) admit Erin's confirmed partner Frank onto the booking.
   const admit = await modifyApply(anchor.id, {

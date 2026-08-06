@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { storageStatePath } from "./helpers/auth";
+import { bookingCreateIsolation } from "./helpers/booking-create-client-ip";
 import {
   bookSelfToReviewStep,
   confirmBookingToPaymentStep,
@@ -43,7 +44,9 @@ test.skip(!configured, STRIPE_SKIP_REASON);
 // past the review step (the member-night guard), which is how run 30586027310
 // turned one Stripe challenge into three failures whose reported error was the
 // collision rather than the challenge. `stayWindowForAttempt` gives every
-// attempt its own window; attempt 0 is unchanged.
+// attempt its own window; attempt 0 is unchanged. The create itself also uses
+// the shared booking-create census: a Stripe retry gets a new limiter bucket,
+// so it cannot turn a later waitlist or whole-lodge setup into request 21.
 test.describe.configure({ retries: 2 });
 
 test("test-mode card payment succeeds and confirms the booking", async ({
@@ -52,7 +55,10 @@ test("test-mode card payment succeeds and confirms the booking", async ({
   const window = stayWindowForAttempt(1, testInfo.retry);
   const occupiedBefore = await fetchOccupiedBeds(page, window.nights);
   await bookSelfToReviewStep(page, personas.booker, window);
-  await confirmBookingToPaymentStep(page);
+  await confirmBookingToPaymentStep(
+    page,
+    bookingCreateIsolation("stripe-success", testInfo.retry),
+  );
 
   await payWithCard(page, TEST_CARDS.success);
 
@@ -100,7 +106,10 @@ test("declined test-mode card leaves the booking payable", async ({
 }, testInfo) => {
   const window = stayWindowForAttempt(2, testInfo.retry);
   await bookSelfToReviewStep(page, personas.booker, window);
-  await confirmBookingToPaymentStep(page);
+  await confirmBookingToPaymentStep(
+    page,
+    bookingCreateIsolation("stripe-decline", testInfo.retry),
+  );
 
   await payWithCard(page, TEST_CARDS.declined);
 

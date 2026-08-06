@@ -5,6 +5,7 @@ import {
   confirmBookingToPaymentStep,
   selectCalendarDay,
 } from "./helpers/booking";
+import { bookingCreateIsolation } from "./helpers/booking-create-client-ip";
 import { DUAL_HAT_ADMIN, E2E_ADMIN, ROLE_PERSONAS } from "./helpers/fixtures";
 import { personas } from "./helpers/personas";
 import { stayWindowForAttempt } from "./helpers/stay-dates";
@@ -44,7 +45,10 @@ test("a dual-hat admin books their own stay through the member wizard", async ({
   // Creating the booking proves the API accepts a dual-hat self-booking and
   // that it takes the normal member payment path (payment owed immediately),
   // not any admin on-behalf shortcut.
-  await confirmBookingToPaymentStep(page);
+  await confirmBookingToPaymentStep(
+    page,
+    bookingCreateIsolation("dual-hat-member-create", testInfo.retry),
+  );
 });
 
 // The admin-only account never exercises the login flow here — it only checks

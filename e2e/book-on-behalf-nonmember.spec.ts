@@ -1,6 +1,10 @@
 import { expect, test, type Page } from "@playwright/test";
 import { storageStatePath } from "./helpers/auth";
 import { selectCalendarDay } from "./helpers/booking";
+import {
+  bookingCreateIsolation,
+  withBookingCreateClientIp,
+} from "./helpers/booking-create-client-ip";
 import { E2E_ADMIN } from "./helpers/fixtures";
 import {
   assertNoEmailToDomain,
@@ -250,13 +254,19 @@ test("inline-creates a non-member owner, prices them as a non-member, and emails
   const emailThem = page.getByRole("button", { name: "Create and email them" });
   await expect(emailThem).toBeVisible();
 
-  const [createResponse] = await Promise.all([
-    page.waitForResponse(
-      (r) => r.url().endsWith("/api/bookings") && r.request().method() === "POST",
-      { timeout: 30_000 },
-    ),
-    emailThem.click(),
-  ]);
+  const [createResponse] = await withBookingCreateClientIp(
+    page,
+    bookingCreateIsolation("on-behalf-inline-owner", testInfo.retry),
+    () =>
+      Promise.all([
+        page.waitForResponse(
+          (r) =>
+            r.url().endsWith("/api/bookings") && r.request().method() === "POST",
+          { timeout: 30_000 },
+        ),
+        emailThem.click(),
+      ]),
+  );
   expect(
     createResponse.status(),
     `non-member on-behalf create (${createResponse.status()})`,
@@ -322,14 +332,20 @@ test("suggest-and-pick reuses the existing non-member contact instead of duplica
 
   await expect(page.getByText("Booking Summary")).toBeVisible();
   await page.getByRole("button", { name: "Confirm Booking" }).click();
-  const [createResponse] = await Promise.all([
-    page.waitForResponse(
-      (r) => r.url().endsWith("/api/bookings") && r.request().method() === "POST",
-      { timeout: 30_000 },
-    ),
-    // Keep this leg email-free; the owner-email contract is asserted elsewhere.
-    page.getByRole("button", { name: "Create without emailing" }).click(),
-  ]);
+  const [createResponse] = await withBookingCreateClientIp(
+    page,
+    bookingCreateIsolation("on-behalf-existing-owner", testInfo.retry),
+    () =>
+      Promise.all([
+        page.waitForResponse(
+          (r) =>
+            r.url().endsWith("/api/bookings") && r.request().method() === "POST",
+          { timeout: 30_000 },
+        ),
+        // Keep this leg email-free; the owner-email contract is asserted elsewhere.
+        page.getByRole("button", { name: "Create without emailing" }).click(),
+      ]),
+  );
   expect(
     createResponse.status(),
     `reused-owner create (${createResponse.status()})`,
@@ -373,13 +389,19 @@ test("a no-email walk-in owner is created with a placeholder and never emailed",
   // Clear the mailbox first so any leaked placeholder-recipient send would be
   // caught fresh.
   await clearMailbox();
-  const [createResponse] = await Promise.all([
-    page.waitForResponse(
-      (r) => r.url().endsWith("/api/bookings") && r.request().method() === "POST",
-      { timeout: 30_000 },
-    ),
-    page.getByRole("button", { name: "Confirm Booking" }).click(),
-  ]);
+  const [createResponse] = await withBookingCreateClientIp(
+    page,
+    bookingCreateIsolation("on-behalf-walk-in-owner", testInfo.retry),
+    () =>
+      Promise.all([
+        page.waitForResponse(
+          (r) =>
+            r.url().endsWith("/api/bookings") && r.request().method() === "POST",
+          { timeout: 30_000 },
+        ),
+        page.getByRole("button", { name: "Confirm Booking" }).click(),
+      ]),
+  );
   expect(
     createResponse.status(),
     `walk-in create (${createResponse.status()})`,

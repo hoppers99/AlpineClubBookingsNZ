@@ -452,6 +452,24 @@ Four rules follow, and a new spec must satisfy all four:
   most 14 hops on any run date and the bound is 24, so nothing in range can run
   out — and if a future base or stride does, `selectCalendarDay` now fails on the
   month it could not reach rather than timing out on a day button.
+- **Give each retryable booking-create spec attempt its own client-IP bucket.**
+  `POST /api/bookings` is protected by the real 20-per-hour `bookingCreate`
+  limiter before authentication. The serial suite therefore must not let an
+  unrelated retry spend the shared runner-IP budget that a later spec needs.
+  `bookingCreateIsolation(key, testInfo.retry)`
+  (`e2e/helpers/booking-create-client-ip.ts`) is the closed census: repeated
+  booking-create calls in one logical test attempt share one `10.240.0.0/16`
+  bucket, while different registered tests and retry numbers cannot collide.
+  Pass its `headers` on a direct `APIRequestContext.post`, or use
+  `withBookingCreateClientIp` around exactly the browser action that emits the
+  create. Never put this header on a whole browser/admin context: login,
+  availability and policy requests must keep their own client identity. The
+  login helper's `10.99.0.0/16` and whole-lodge submission worlds'
+  `10.77.1.0/24` remain separate and unchanged. This is isolation, not a bypass:
+  every create still traverses production rate limiting and the suite never
+  resets or mocks its storage. A future test that deliberately shares or
+  exhausts the limiter must be classified `intentional-limiter` in the census
+  and must not use the isolation helper.
 - **Restore shared state in `afterAll`, never at the end of the test body.**
   `xero-setup-wizard-completion.spec.ts` used to disconnect Xero and rewind the
   wizard on its last line; when it failed earlier it stranded the sibling spec on

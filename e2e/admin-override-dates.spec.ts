@@ -1,5 +1,6 @@
 import { type BrowserContext, expect, test, type Page } from "@playwright/test";
 import { bookSelfToReviewStep, confirmBookingToPaymentStep } from "./helpers/booking";
+import { bookingCreateIsolation } from "./helpers/booking-create-client-ip";
 import { personas } from "./helpers/personas";
 import { E2E_ADMIN } from "./helpers/fixtures";
 import { storageStatePath } from "./helpers/auth";
@@ -156,10 +157,13 @@ test.afterAll(async () => {
   await adminContext?.close();
 });
 
-test("member books a future stay for the admin to override", async () => {
+test("member books a future stay for the admin to override", async ({}, testInfo) => {
   const page = await memberContext.newPage();
   await bookSelfToReviewStep(page, personas.booker, window);
-  await confirmBookingToPaymentStep(page);
+  await confirmBookingToPaymentStep(
+    page,
+    bookingCreateIsolation("admin-override-seed", testInfo.retry),
+  );
 
   // The wizard stays on /book at the in-wizard PayStep (no navigation happens
   // until payment completes), but the booking already exists — follow the

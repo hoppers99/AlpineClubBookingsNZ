@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { storageStatePath } from "./helpers/auth";
+import { bookingCreateIsolation } from "./helpers/booking-create-client-ip";
 import {
   bookSelfToReviewStep,
   confirmBookingToPaymentStep,
@@ -57,11 +58,14 @@ test.beforeAll(async ({ browser }) => {
 
 test("member books a bed through /book and the booking owes payment", async ({
   page,
-}) => {
+}, testInfo) => {
   const occupiedBefore = await fetchOccupiedBeds(page, window.nights);
 
   await bookSelfToReviewStep(page, personas.booker, window);
-  await confirmBookingToPaymentStep(page);
+  await confirmBookingToPaymentStep(
+    page,
+    bookingCreateIsolation("booking-payment-pending", testInfo.retry),
+  );
 
   // Issue #737: no money committed yet, so the payment-pending booking must
   // not consume lodge capacity.
