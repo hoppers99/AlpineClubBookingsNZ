@@ -5,7 +5,9 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { MyBookingsList, type MyBookingItem } from "./_components/my-bookings-list";
 import { MyWholeLodgeRequests } from "./_components/my-whole-lodge-requests";
+import { MyExceptionRequests } from "./_components/my-exception-requests";
 import { toMyWholeLodgeRequestItem } from "@/lib/member-whole-lodge-requests";
+import { readMemberExceptionRequests } from "@/lib/booking-exception-request-service";
 
 export default async function MyBookingsPage() {
   const session = await auth();
@@ -44,6 +46,12 @@ export default async function MyBookingsPage() {
       guestCount: Array.isArray(row.guests) ? row.guests.length : 0,
     }),
   );
+
+  // #2562 — the member's own booking-policy exception requests, both flavours.
+  // Projected by `readMemberExceptionRequests`, which is the ONE place a request
+  // row is reduced to something a member may see: a strict allowlist with no slot
+  // for the officer's internal note, whose column the read does not even select.
+  const exceptionRequests = await readMemberExceptionRequests(session.user.id);
 
   const bookings = await prisma.booking.findMany({
     where: {
@@ -141,6 +149,14 @@ export default async function MyBookingsPage() {
           even mounted for the ordinary member who has never used the feature. */}
       {wholeLodgeRequests.length > 0 ? (
         <MyWholeLodgeRequests requests={wholeLodgeRequests} />
+      ) : null}
+
+      {/* Hidden entirely for a member who has never raised one, on the same
+          reasoning as the whole-lodge section above (#2263 D3): an ordinary member
+          never meets a feature they are not using, and the client bundle for it is
+          not mounted for them either. */}
+      {exceptionRequests.length > 0 ? (
+        <MyExceptionRequests requests={exceptionRequests} />
       ) : null}
     </div>
   );

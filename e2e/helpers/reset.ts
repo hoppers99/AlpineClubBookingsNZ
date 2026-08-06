@@ -271,6 +271,71 @@ export async function deactivateMinimumStayPolicies(
 }
 
 /**
+ * Withdraw every booking-policy exception request this member still has open —
+ * BOTH flavours (#2562).
+ *
+ * Why it is a shared helper and not three copies. The member read
+ * (`GET /api/bookings/exception-requests`) answers the MEMBER DTO
+ * (`src/lib/member-exception-requests.ts`), whose `status` is the member's own
+ * word (`pending`, `pending-capacity-conflict`, ...) and NOT the Prisma enum. Two
+ * specs each carried their own loop keyed on `status === "REQUESTED"`, so when
+ * #2562 unified that read they would each have silently matched nothing, left the
+ * member's open request in place, and failed the NEXT attempt on
+ * `OPEN_EXCEPTION_REQUEST` — a cleanup that reports success while cleaning up
+ * nothing is the #2302 pathology exactly.
+ *
+ * It keys on `canWithdraw` instead, which is the DTO field derived from the very
+ * condition the cancel services' guarded claims name, so it cannot drift from
+ * "the API would accept a withdrawal" the way a copied status string can. A
+ * MODIFICATION request is withdrawn on its booking's own route; a NEW_BOOKING one
+ * on the standalone route.
+ *
+ * Idempotent: a member with nothing open does nothing, and a lost claim (an
+ * officer decided it in between) is tolerated rather than asserted, because the
+ * post-condition below is the assertion that matters.
+ */
+export async function cancelOpenExceptionRequests(
+  memberRequest: APIRequestContext,
+): Promise<number> {
+  type MemberExceptionRow = {
+    id: string;
+    source: "NEW_BOOKING" | "MODIFICATION";
+    bookingId: string | null;
+    canWithdraw: boolean;
+  };
+
+  async function listOpen(): Promise<MemberExceptionRow[]> {
+    const listed = await memberRequest.get("/api/bookings/exception-requests");
+    if (!listed.ok()) return [];
+    const rows = (await listed.json()) as MemberExceptionRow[];
+    return rows.filter((row) => row.canWithdraw);
+  }
+
+  const open = await listOpen();
+  for (const row of open) {
+    const path =
+      row.source === "MODIFICATION" && row.bookingId
+        ? `/api/bookings/${row.bookingId}/exception-requests/${row.id}`
+        : `/api/bookings/exception-requests/${row.id}`;
+    await memberRequest.patch(path, { data: { action: "cancel" } });
+  }
+
+  if (open.length > 0) {
+    // Post-condition: they really are closed. Without this the helper reports a
+    // count and proves nothing, which is what the copies it replaces did.
+    const surviving = await listOpen();
+    expect(
+      surviving.map((row) => `${row.source}:${row.id}`),
+      "open booking-policy exception requests survived the reset — this attempt " +
+        "would be refused with OPEN_EXCEPTION_REQUEST (see " +
+        'docs/E2E_PLAYWRIGHT.md → "Retry idempotency")',
+    ).toEqual([]);
+  }
+
+  return open.length;
+}
+
+/**
  * Returns the Xero setup wizard to its pre-attempt state: disconnected, with the
  * persisted step cursor rewound to step one.
  *

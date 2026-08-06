@@ -471,6 +471,10 @@ const EMAIL_AUDIT_DEFAULTS_BASE = {
     "defaultSubject": "The request to add you to a lodge booking has lapsed",
     "defaultBody": "That request has lapsed\n\nHi {{firstName}}, the request from {{bookerName}} to add you to a booking at {{CLUB_LODGE_NAME}} on {{checkIn}} - {{checkOut}} has lapsed, and the bed that was held for you has been released.\n\nYou do not need to do anything. If you did want to come, ask {{bookerName}} to add you again."
   },
+  "booking-policy-exception-refused": {
+    "defaultSubject": "Your request was not approved - {{CLUB_LODGE_NAME}}",
+    "defaultBody": "Your request was not approved\n\nHi {{firstName}}, a Booking Officer has looked at {{askDescription}} at {{CLUB_LODGE_NAME}} and decided not to allow it this time.\n\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\n\n{{reasonLine}}\n\nNothing was booked and nothing was changed. Any beds this request was holding have gone back into the pool.\n\nYou can ask again with different dates or a different party. Your requests are listed under My booking-rule requests on your My Bookings page.\n\nIf you would like to talk it through, contact the club at {{SUPPORT_EMAIL}}."
+  },
   "policy-exception-request-expired": {
     "defaultSubject": "Your exception request has lapsed - {{CLUB_LODGE_NAME}}",
     "defaultBody": "Your exception request has lapsed\n\nHi {{firstName}}, the exception request you raised for your stay at {{CLUB_LODGE_NAME}} was not decided by {{expiresAt}}, so it has lapsed and the beds it was holding have been released.\n\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\n\nYour booking itself has not changed. Only the change you asked the club to allow has lapsed.\n\nIf you still want that change, you can raise a fresh request from your booking. If you have any questions, contact the club at {{SUPPORT_EMAIL}}."

@@ -18,6 +18,10 @@ vi.mock("@/lib/prisma", () => ({
     // "My requests" section. Defaulted to empty so these nesting cases keep
     // asserting only what they are about; the section is hidden when empty.
     bookingRequest: { findMany: vi.fn(async () => []) },
+    // #2562: and the viewer's own booking-policy exception requests, from both
+    // tables. Defaulted to empty for the same reason as the section above.
+    newBookingPolicyExceptionRequest: { findMany: vi.fn(async () => []) },
+    bookingChangeRequest: { findMany: vi.fn(async () => []) },
   },
 }));
 

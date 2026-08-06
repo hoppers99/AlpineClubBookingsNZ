@@ -5,6 +5,7 @@ import { E2E_ADMIN, WAITLIST_FULL_WINDOW } from "./helpers/fixtures";
 import { personas } from "./helpers/personas";
 import {
   cancelMemberBookingsOnDate,
+  cancelOpenExceptionRequests,
   deactivateMinimumStayPolicies,
 } from "./helpers/reset";
 import { stayWindowForAttempt } from "./helpers/stay-dates";
@@ -45,22 +46,20 @@ async function deleteSpecPolicies(api: APIRequestContext) {
   await deactivateMinimumStayPolicies(api, { namePrefix: POLICY_NAME });
 }
 
-/** Withdraw every open exception request this member left behind. */
+/**
+ * Withdraw every open exception request this member left behind.
+ *
+ * The loop itself is the shared `cancelOpenExceptionRequests` helper (#2562): the
+ * member read now answers the member DTO, whose `status` is the member's own word
+ * rather than the Prisma enum, so a locally-copied `status === "REQUESTED"` check
+ * would match nothing and clean up nothing.
+ */
 async function cancelOpenRequestsFor(
   member: APIRequestContext,
   memberEmailId: string,
 ) {
-  const listed = await member.get("/api/bookings/exception-requests");
-  if (!listed.ok()) return;
-  const rows = (await listed.json()) as Array<{ id: string; status: string }>;
-  for (const row of rows) {
-    if (row.status === "REQUESTED") {
-      await member.patch(`/api/bookings/exception-requests/${row.id}`, {
-        data: { action: "cancel" },
-      });
-    }
-  }
   expect(memberEmailId).toBeTruthy();
+  await cancelOpenExceptionRequests(member);
 }
 
 async function memberIdFor(api: APIRequestContext, email: string): Promise<string> {

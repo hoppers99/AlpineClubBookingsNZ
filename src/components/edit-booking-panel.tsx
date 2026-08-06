@@ -33,6 +33,15 @@ import {
 import { describeMemberGuestConsentBadge } from "@/lib/member-guest-consent-card";
 import type { MemberGuestCandidate } from "@/lib/member-guest-find";
 import { BookingNoEmailsNotice } from "@/components/booking-no-emails-notice";
+import {
+  RequestOfficerApprovalCard,
+  type ExceptionRequestSubmitResult,
+} from "@/components/booking/request-officer-approval-card";
+import {
+  readExceptionOffer,
+  type ExceptionOffer,
+} from "@/lib/booking-exception-offer";
+import { countNightsDateOnly, parseDateOnly } from "@/lib/date-only";
 import { PromoCodeInput, type PromoResult } from "@/components/promo-code-input";
 import { useScrollToFeedback } from "@/hooks/use-scroll-to-feedback";
 // Both constants live in `member-guest-refusal.ts`, which has NO imports of its
@@ -470,6 +479,153 @@ interface QuoteResult {
   subscriptionMemberRateNotice?: string | null;
 }
 
+/**
+ * The parts of a pending modification that a policy-exception proposal cannot
+ * carry (#2562), named for the member.
+ *
+ * The proposal shape is a party and a set of nights — dates, guests added, guests
+ * removed, per-guest stay ranges. Everything else this panel can send is a
+ * different kind of change, so an approval will not apply it, and the request card
+ * says so before the member submits rather than leaving them to discover it. The
+ * list is derived from the ACTUAL payload keys, so a key added to the builder
+ * later cannot be silently dropped without appearing here.
+ */
+const EXCEPTION_PROPOSAL_PAYLOAD_KEYS = [
+  "checkIn",
+  "checkOut",
+  "addGuests",
+  "removeGuestIds",
+  "guestStayRanges",
+] as const;
+
+/**
+ * The omitted payload keys that change what the club would CHARGE (#2562 review).
+ *
+ * WHY THIS MATTERS ON SCREEN. `modify-quote` prices the WHOLE payload the member
+ * typed: `netChargeCents` is built from `newFinalPriceCents = newTotalPriceCents +
+ * newPromoAdjustmentCents`, so a promo in the payload is baked into the figure.
+ * The exception request carries none of that, so the frozen proposal prices
+ * without it — and the card was printing the promo-inclusive number directly above
+ * its own warning that the promo is not included. The two contradicted each other
+ * and the number was the wrong one.
+ *
+ * `linkGuestToMember` is in this set deliberately: linking a placeholder guest to
+ * a real member can move that guest onto member rates, so it is a price change
+ * dressed as a tidy-up. `settlementMethod`, `guestUpdates`,
+ * `memberReviewJustification`, `confirmOverCapacity` and `notifyMember` are not:
+ * they change how a change is settled, recorded or announced, never its price.
+ */
+const EXCEPTION_PRICE_AFFECTING_OMITTED_KEYS: ReadonlySet<string> = new Set([
+  "promoCode",
+  "removePromoCode",
+  "promoGuestIds",
+  "promoAddedGuestIndexes",
+  "applyCreditCents",
+  "partnerSharedGuests",
+  "linkGuestToMember",
+  "adminOverride",
+  "pricingMode",
+]);
+
+const EXCEPTION_OMITTED_CHANGE_LABELS: Record<string, string> = {
+  guestUpdates: "guest name corrections",
+  linkGuestToMember: "linking a placeholder guest to a member",
+  promoCode: "the promo code",
+  removePromoCode: "removing the promo code",
+  promoGuestIds: "who the promo code applies to",
+  promoAddedGuestIndexes: "who the promo code applies to",
+  applyCreditCents: "using account credit",
+  partnerSharedGuests: "partner-shared places",
+  adminOverride: "the admin date override",
+  pricingMode: "the admin pricing mode",
+  confirmOverCapacity: "the over-capacity confirmation",
+  settlementMethod: "how a refund is settled",
+  memberReviewJustification: "the review reason",
+};
+
+export function exceptionRequestPayloadFromModification(
+  body: Record<string, unknown>,
+): {
+  payload: Record<string, unknown>;
+  omittedChanges: string[];
+  /**
+   * True when at least one dropped key would have changed the price, so the
+   * quote's `netChargeCents` is NOT the figure the frozen proposal would produce
+   * and must not be shown as one.
+   */
+  omitsPricedChange: boolean;
+} {
+  const payload: Record<string, unknown> = {};
+  for (const key of EXCEPTION_PROPOSAL_PAYLOAD_KEYS) {
+    if (body[key] !== undefined) payload[key] = body[key];
+  }
+  const omitted = new Set<string>();
+  let omitsPricedChange = false;
+  for (const key of Object.keys(body)) {
+    if ((EXCEPTION_PROPOSAL_PAYLOAD_KEYS as readonly string[]).includes(key)) {
+      continue;
+    }
+    // An unknown key is still reported, by its own name, rather than dropped
+    // silently: a wrong-looking word on screen is recoverable, a change the member
+    // believes they submitted is not.
+    omitted.add(EXCEPTION_OMITTED_CHANGE_LABELS[key] ?? key);
+    // FAIL SAFE on an unrecognised key: assume it moved the price. Suppressing a
+    // figure costs the member a sentence about normal rates; showing a figure no
+    // approval can produce costs them the difference.
+    if (
+      EXCEPTION_PRICE_AFFECTING_OMITTED_KEYS.has(key) ||
+      !(key in EXCEPTION_OMITTED_CHANGE_LABELS)
+    ) {
+      omitsPricedChange = true;
+    }
+  }
+  return { payload, omittedChanges: [...omitted].sort(), omitsPricedChange };
+}
+
+/**
+ * The identity of the PROPOSAL inside a pending modification (#2562 re-review).
+ *
+ * An offer to ask a Booking Officer describes ONE refused proposal: these dates,
+ * this party, these per-guest ranges. The panel used to keep the offer in a plain
+ * state slot and rely on the debounced quote effect to clear it, which it does not
+ * do: the effect only clears on a RESOLVED quote or an empty payload, so a member
+ * who moved a date after a refusal was still shown the old rule's wording and the
+ * old payload's figure — labelled as the club's quote for "this proposal as it
+ * stands" — for as long as they kept editing, and a failed quote left the offer
+ * standing indefinitely. Submitting inside that window posts the CURRENT payload
+ * while they read the previous one, and a now-legal proposal comes back 400
+ * `NoEligiblePolicyExceptionError`, which has no remedy branch on the card.
+ *
+ * So the offer is stored WITH this signature and compared during render, exactly as
+ * the new-booking wizard does (`exceptionProposalSignature` in
+ * `use-booking-wizard.ts`): a mismatch retires it in the same render the change
+ * lands in, with no frame in which the stale card is on screen.
+ *
+ * Narrowed through `exceptionRequestPayloadFromModification` on purpose, so the
+ * signature covers exactly what the request would carry. Changing a promo code or a
+ * settlement choice does not retire an offer — those are not part of the proposal an
+ * officer would freeze, and the card already refuses to show a figure that was
+ * priced with them.
+ */
+function exceptionProposalSignature(body: Record<string, unknown>): string {
+  return JSON.stringify(exceptionRequestPayloadFromModification(body).payload);
+}
+
+/**
+ * The same signature for a payload that has already been serialised — the form the
+ * quote fetch holds. FAILS CLOSED: a body that will not parse yields a signature
+ * that matches nothing, so the offer retires rather than outliving its proposal.
+ */
+function exceptionProposalSignatureFromJson(payloadJson: string): string {
+  try {
+    const parsed = JSON.parse(payloadJson);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return "";
+    return exceptionProposalSignature(parsed as Record<string, unknown>);
+  } catch {
+    return "";
+  }
+}
+
 function previousDateOnly(dateString: string | null) {
   if (!dateString) return null;
   const date = new Date(`${dateString}T00:00:00.000Z`);
@@ -493,9 +649,17 @@ function formatSignedCents(cents: number) {
 export function EditBookingPanel({
   booking,
   canAdminOverride = false,
+  replaceExceptionRequestId = null,
   onDone,
 }: {
   booking: BookingData;
+  /**
+   * #2562: the open policy-exception request this edit is here to REPLACE, from
+   * `/bookings/<id>?replaceRequest=<id>` — the link the member's request area
+   * renders. Passed through as `supersedeRequestId`; the service does the guarded
+   * claim, so a stale or foreign id loses it and creates nothing.
+   */
+  replaceExceptionRequestId?: string | null;
   // Issue #1668: admin override lifts the date-window locks for this booking.
   // (Whether the standard self-service path is available is expressed by the
   // booking.editPolicy fields the panel already reads.)
@@ -666,6 +830,25 @@ export function EditBookingPanel({
   const [quoteLoading, setQuoteLoading] = useState(false);
   const [quoteError, setQuoteError] = useState("");
   const [settlementMethod, setSettlementMethod] = useState<"card" | "credit" | null>(null);
+  /**
+   * #2562 — the server-confirmed offer to ask a Booking Officer, or null.
+   *
+   * Set ONLY from a refusal the SERVER classified as reviewable, through the one
+   * shared rule in `readExceptionOffer`, and set from BOTH refusal points on this
+   * path: the quote (modify-quote answers 409 PAID_UP_ADULT_MEMBER_REQUIRED instead
+   * of a quote) and the save (the modify paths hard-block a minimum-stay breach with
+   * a 400 carrying the frozen review). A hard failure — a full lodge, invalid dates,
+   * a consent or authority refusal — can never open it.
+   *
+   * STORED WITH THE PROPOSAL IT BELONGS TO (#2562 re-review). The signature is the
+   * refused proposal's own identity, compared during render below, so an offer
+   * cannot outlive the dates and party it was refused for. See
+   * `exceptionProposalSignature`.
+   */
+  const [exceptionOfferState, setExceptionOfferState] = useState<{
+    offer: ExceptionOffer;
+    proposalSignature: string;
+  } | null>(null);
 
   // #2337: the placeholder→member links this edit will apply, keyed by the
   // existing guest row id. `linkFinderGuestId` is the row currently choosing a
@@ -1253,10 +1436,33 @@ export function EditBookingPanel({
               : null,
           );
           setQuote(null);
+          // #2562: a refused QUOTE is a real blockage on this path — the member
+          // cannot save what they cannot price — so the reviewable ones open the
+          // request door here rather than making them press Save to find out.
+          //
+          // Recorded against THE PAYLOAD THIS FETCH SENT, not against whatever is on
+          // screen when the answer lands (#2562 re-review): the fetch is debounced,
+          // so the member may have edited on since, and the offer belongs to the
+          // proposal the server actually refused. The render comparison then retires
+          // it immediately if that is no longer what they are proposing.
+          const offer = readExceptionOffer(data);
+          setExceptionOfferState(
+            offer
+              ? {
+                  offer,
+                  proposalSignature:
+                    exceptionProposalSignatureFromJson(payloadJson),
+                }
+              : null,
+          );
           return;
         }
         setMemberGuestAddError(null);
         setQuote(data);
+        // A quote that came back is not a refusal, so no request is on offer.
+        // Cleared here rather than only on the next attempt, so a member who fixes
+        // the proposal is not still looking at a door they no longer need.
+        setExceptionOfferState(null);
         // A fresh quote that no longer needs an over-capacity confirm clears any
         // stale apply-side warning (#1668).
         if (!data.overCapacityConfirmRequired) {
@@ -1291,10 +1497,42 @@ export function EditBookingPanel({
     hasChanges && overrideQuoteReady
       ? JSON.stringify(buildModificationPayload())
       : null;
+  /**
+   * What an exception request would DROP from the pending edit, and whether any of
+   * it moved the price (#2562 review).
+   *
+   * Computed from the SAME builder the quote and the request itself use, once per
+   * render, so the card's disclosure list, its figure and the payload that is
+   * actually posted cannot disagree. `omitsPricedChange` is what suppresses the
+   * quote's `netChargeCents` — that number prices the whole payload, promo and
+   * credit included, and the frozen proposal carries neither.
+   */
+  const exceptionOmissions = exceptionRequestPayloadFromModification(
+    buildModificationPayload(),
+  );
+  /**
+   * The offer, but ONLY while it still describes the proposal on screen.
+   *
+   * A mismatch means the member changed the dates, the party or a guest's nights
+   * after the refusal, so the offer describes something they are no longer
+   * proposing — and the figure beside it was priced on those old nights. Answering
+   * null retires both in the same render the change lands in: no effect, no
+   * cleared-too-late window, and no dependence on the debounced quote resolving
+   * (which is what left the stale card up).
+   */
+  const exceptionOffer =
+    exceptionOfferState &&
+    // `exceptionProposalSignature` applied to the payload the omissions above were
+    // derived from, so the render builds the modification payload once.
+    exceptionOfferState.proposalSignature ===
+      JSON.stringify(exceptionOmissions.payload)
+      ? exceptionOfferState.offer
+      : null;
   useEffect(() => {
     if (quoteTimeoutRef.current) clearTimeout(quoteTimeoutRef.current);
     if (!modificationPayloadJson) {
       setQuote(null);
+      setExceptionOfferState(null);
       return;
     }
     quoteTimeoutRef.current = setTimeout(
@@ -1629,6 +1867,59 @@ export function EditBookingPanel({
     void handleSave();
   }
 
+  /**
+   * Send the exception request the current refusal opened the door to (#2562).
+   *
+   * The delta is the SAME payload the refused quote or save sent, narrowed by
+   * `exceptionRequestPayloadFromModification` to the five fields a proposal is
+   * made of. Narrowed rather than rebuilt, so the proposal an officer freezes is
+   * the change that was actually refused; the fields a proposal cannot carry are
+   * named to the member on the card before they submit.
+   *
+   * Throws an Error carrying the server's own sentence, plus its `code` where it
+   * sent one, so the card can name the right next step for the two 409s whose
+   * remedy is not "try again".
+   */
+  async function submitExceptionRequest(input: {
+    memberMessage: string;
+    supersedeRequestId: string | null;
+  }): Promise<ExceptionRequestSubmitResult> {
+    const { payload } = exceptionRequestPayloadFromModification(
+      buildModificationPayload(),
+    );
+    const res = await fetch(`/api/bookings/${booking.id}/exception-requests`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...payload,
+        memberMessage: input.memberMessage,
+        supersedeRequestId: input.supersedeRequestId ?? undefined,
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const failure = new Error(
+        typeof data?.error === "string" && data.error
+          ? data.error
+          : "The request could not be sent. Try again.",
+      ) as Error & { code?: string };
+      if (typeof data?.code === "string") failure.code = data.code;
+      throw failure;
+    }
+    return {
+      id: String(data.id),
+      proposal: data.proposal,
+      capacityHeld: data.capacityHeld === true,
+      // The frozen aggregate, for the receipt's capacity sentence: on this path
+      // "nothing held" means "needs nothing" only under HOLD.
+      capacityMode:
+        data.aggregateCapacityMode === "HOLD" ||
+        data.aggregateCapacityMode === "NO_HOLD"
+          ? data.aggregateCapacityMode
+          : null,
+    };
+  }
+
   async function handleSave(notifyMemberChoice?: boolean) {
     setSaveError("");
     // #2104: block submission with an inline error adjacent to the field (not the
@@ -1646,6 +1937,8 @@ export function EditBookingPanel({
       return;
     }
     setSaving(true);
+    // A fresh save attempt retires the previous refusal's offer (#2562).
+    setExceptionOfferState(null);
 
     try {
       const body = buildModificationPayload();
@@ -1674,6 +1967,17 @@ export function EditBookingPanel({
 
       const data = await res.json();
       if (!res.ok) {
+        // The proposal this save attempt actually sent, for any offer its refusal
+        // opens (#2562 re-review). Same rule as the quote path: the offer belongs to
+        // the payload the server refused, and the render comparison retires it the
+        // moment the member proposes something else.
+        const refusedProposalSignature = exceptionProposalSignature(body);
+        const recordExceptionOffer = (offer: ExceptionOffer | null) =>
+          setExceptionOfferState(
+            offer
+              ? { offer, proposalSignature: refusedProposalSignature }
+              : null,
+          );
         // #2104: the server tripped the no-adult review rule but the local
         // predicate missed it (client/server drift). Reveal the justification
         // field, show the message adjacent to it, and bring it into view.
@@ -1717,9 +2021,16 @@ export function EditBookingPanel({
               : data.error ||
                   "These dates do not meet the minimum-stay rules, so the change was not saved.",
           );
+          // #2562: this refusal is exactly what the workflow exists for, so offer
+          // the request — subject, as always, to the shared rule's own gates.
+          recordExceptionOffer(readExceptionOffer(data));
           return;
         }
         setSaveError(data.error || "Failed to save changes");
+        // Every other refusal goes through the same shared rule, which answers null
+        // for all of them: the reviewable codes are an explicit allowlist and no
+        // hard-stop code is on it.
+        recordExceptionOffer(readExceptionOffer(data));
         return;
       }
 
@@ -3301,6 +3612,80 @@ export function EditBookingPanel({
           {saveError && (
             <div className="rounded-md bg-danger-3 p-3 text-sm text-danger-11">{saveError}</div>
           )}
+
+          {/* #2562 — the exception-request door, drawn ONLY when the server's own
+              refusal said every blocking failure is reviewable. It sits under Save
+              because at this point saving cannot succeed: the member's next honest
+              move is to change the proposal or to ask. */}
+          {exceptionOffer ? (
+            <RequestOfficerApprovalCard
+              source="MODIFICATION"
+              offer={exceptionOffer}
+              replaceRequestId={replaceExceptionRequestId}
+              onSubmit={submitExceptionRequest}
+              proposal={{
+                lodgeName: null,
+                checkIn,
+                checkOut,
+                envelopeNightCount: countNightsDateOnly(
+                  parseDateOnly(checkIn),
+                  parseDateOnly(checkOut),
+                ),
+                base: {
+                  checkIn: booking.checkIn,
+                  checkOut: booking.checkOut,
+                  guestCount: booking.guests.length,
+                },
+                // The server's own figure when it produced one, and ONLY when the
+                // request carries everything that figure was priced on. A refusal
+                // answered INSTEAD of a quote leaves this null; so does a quote
+                // whose payload included a promo, a credit election or anything
+                // else the proposal drops (#2562 review) — `netChargeCents` bakes
+                // those in, so it is not the number an approval would produce. In
+                // both cases the card falls back to saying how pricing actually
+                // works rather than showing a figure nobody will ever charge.
+                priceImpact:
+                  quote && !exceptionOmissions.omitsPricedChange
+                    ? {
+                        label:
+                          quote.netChargeCents >= 0
+                            ? "Extra to pay if this is approved"
+                            : "Refund due if this is approved",
+                        amountCents: Math.abs(quote.netChargeCents),
+                      }
+                    : null,
+                omittedChanges: exceptionOmissions.omittedChanges,
+                guests: [
+                  ...remainingGuests.map((guest) => ({
+                    firstName: guest.firstName,
+                    lastName: guest.lastName,
+                    ageTierLabel:
+                      ageTierOptions.find((option) => option.tier === guest.ageTier)
+                        ?.label ?? guest.ageTier,
+                    isMember: guest.isMember,
+                    nights: existingGuestNights[guest.id] ?? [],
+                    stay:
+                      guest.stayStart && guest.stayEnd
+                        ? { start: guest.stayStart, end: guest.stayEnd }
+                        : null,
+                  })),
+                  ...addedGuests.map((guest) => ({
+                    firstName: guest.firstName,
+                    lastName: guest.lastName,
+                    ageTierLabel:
+                      ageTierOptions.find((option) => option.tier === guest.ageTier)
+                        ?.label ?? guest.ageTier,
+                    isMember: guest.isMember,
+                    nights: guest.nights ?? [],
+                    stay:
+                      guest.stayStart && guest.stayEnd
+                        ? { start: guest.stayStart, end: guest.stayEnd }
+                        : null,
+                  })),
+                ],
+              }}
+            />
+          ) : null}
         </>
       )}
 

@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -99,7 +99,10 @@ interface QueueItem {
   proposedCheckIn: string | null;
   proposedCheckOut: string | null;
   proposedGuestCount: number | null;
+  /** The MEMBER-FACING decision explanation (#2562) — the member reads this. */
   adminNotes: string | null;
+  /** The officer's PRIVATE note (#2562) — admin surfaces only, never the member. */
+  internalNotes: string | null;
   createdBookingId: string | null;
   attemptCount: number;
   conflictCount: number;
@@ -155,9 +158,24 @@ export function PolicyExceptionRequestsPanel({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [openId, setOpenId] = useState<string | null>(null);
+  // The MEMBER-FACING decision explanation. Named `notes` since #2526 and kept
+  // that way so every existing reference reads the same field; the label beside
+  // it, and the state below, are what #2562 added.
   const [notes, setNotes] = useState("");
+  // The officer's PRIVATE note. A separate field so an officer who needs to
+  // record a judgement about a member has somewhere to put it that is not the
+  // member's own screen — which is the whole reason the split exists.
+  const [internalNotes, setInternalNotes] = useState("");
   const [confirmed, setConfirmed] = useState(false);
-  const [busyId, setBusyId] = useState<string | null>(null);
+  /**
+   * Ref-backed because a disabled button is not a synchronous claim: two clicks
+   * dispatched in one React batch otherwise both enter `decide`. State mirrors the
+   * per-request claims for rendering and leaves unrelated rows usable (#2562).
+   */
+  const decisionInFlightRef = useRef(new Set<string>());
+  const [decisionInFlight, setDecisionInFlight] = useState<Set<string>>(
+    () => new Set(),
+  );
   // How a refund arising from an approved CHANGE is settled. Not part of the
   // reviewed proposal (the proposal decides WHAT changes; this decides how the
   // money moves), so it lives on the decision form rather than the request.
@@ -208,6 +226,7 @@ export function PolicyExceptionRequestsPanel({
   function resetDecisionForm() {
     setOpenId(null);
     setNotes("");
+    setInternalNotes("");
     setConfirmed(false);
     setSettlementMethod("");
   }
@@ -231,7 +250,28 @@ export function PolicyExceptionRequestsPanel({
   }, []);
 
   async function decide(item: QueueItem, action: "approve" | "reject") {
-    setBusyId(item.id);
+    /*
+      THE DRAFT BELONGS TO THE OPEN CARD, and this says so rather than assuming it
+      (#2562 re-review). This queue keeps one decision draft and one `openId`: the
+      form — and the two decision buttons — are drawn only inside the card whose id
+      `openId` names, and opening another card resets the draft, so the notes read
+      below have always been this card's own. The SIBLING panel on the same table
+      (`booking-change-requests-panel`) had the same shape with several cards' forms
+      mounted at once and leaked one member's decision explanation onto another
+      member's request. Nothing here can reach that state, and a guard that fails
+      closed costs one comparison and removes the possibility that a later refactor
+      (drawing more than one form, or keeping a draft across cards) re-opens it
+      silently. `adminNotes` is read verbatim by the member.
+    */
+    if (openId !== item.id) {
+      setError(
+        "Open the request you want to decide before sending a decision, so the notes go to the right member.",
+      );
+      return;
+    }
+    if (decisionInFlightRef.current.has(item.id)) return;
+    decisionInFlightRef.current.add(item.id);
+    setDecisionInFlight((current) => new Set(current).add(item.id));
     setError("");
     try {
       const response = await fetch(
@@ -244,6 +284,7 @@ export function PolicyExceptionRequestsPanel({
             source: item.source,
             expectedVersion: item.version,
             adminNotes: notes.trim() || undefined,
+            internalNotes: internalNotes.trim() || undefined,
             ...(action === "approve" ? { confirm: true } : {}),
             ...(action === "approve" && settlementMethod
               ? { settlementMethod }
@@ -289,7 +330,12 @@ export function PolicyExceptionRequestsPanel({
         err instanceof Error ? err.message : "The decision could not be recorded",
       );
     } finally {
-      setBusyId(null);
+      decisionInFlightRef.current.delete(item.id);
+      setDecisionInFlight((current) => {
+        const next = new Set(current);
+        next.delete(item.id);
+        return next;
+      });
     }
   }
 
@@ -374,7 +420,15 @@ export function PolicyExceptionRequestsPanel({
               const hasNotes = notes.trim().length > 0;
 
               return (
-                <Card key={item.id}>
+                // #2562: the request id is carried on the card so the member-UI
+                // browser spec can decide THE request it just raised rather than
+                // "the first card", which in a shared, age-ordered queue is a
+                // different request the moment anything else is waiting.
+                <Card
+                  key={item.id}
+                  data-testid="policy-exception-request"
+                  data-request-id={item.id}
+                >
                   <CardHeader>
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                       <div>
@@ -591,6 +645,7 @@ export function PolicyExceptionRequestsPanel({
                             onClick={() => {
                               setOpenId(item.id);
                               setNotes("");
+                              setInternalNotes("");
                               setConfirmed(false);
                             }}
                           >
@@ -598,11 +653,24 @@ export function PolicyExceptionRequestsPanel({
                           </ViewOnlyActionButton>
                         ) : (
                           <>
+                            {/* #2562 — the note SPLIT, and the labelling that makes
+                                it safe. Before this, one field served both jobs and
+                                was member-visible, so an officer recording a
+                                judgement about the member had no honest option. The
+                                two fields are drawn together, each saying plainly
+                                who reads it, BEFORE the decision is submitted. */}
                             <div className="space-y-1">
                               <Label htmlFor={`exception-notes-${item.id}`}>
-                                Reason for the decision
-                                {needsReason ? " (required)" : " (optional on approve)"}
+                                Explanation for the member
+                                {needsReason
+                                  ? " (required)"
+                                  : " (required to refuse; optional on approve)"}
                               </Label>
+                              <p className="text-xs font-semibold text-warning-11">
+                                The member will see this. It is shown on their own
+                                request list and, on an approval, in the email they
+                                get.
+                              </p>
                               <Textarea
                                 id={`exception-notes-${item.id}`}
                                 value={notes}
@@ -614,7 +682,33 @@ export function PolicyExceptionRequestsPanel({
                                 }
                                 onChange={(event) => setNotes(event.target.value)}
                                 maxLength={2000}
-                                placeholder="What you decided and why. The member sees this on ANY decision — approval or refusal — and it is kept on the booking's record."
+                                placeholder="What you decided and why, written for the member. It is kept on the booking's record."
+                              />
+                            </div>
+                            <div className="space-y-1">
+                              <Label htmlFor={`exception-internal-${item.id}`}>
+                                Internal note (optional)
+                              </Label>
+                              <p className="text-xs text-muted-foreground">
+                                Only admins see this. It is never shown to the
+                                member, never emailed to them, and never sent to any
+                                member-facing screen — put anything here that you
+                                would not say to their face.
+                              </p>
+                              <Textarea
+                                id={`exception-internal-${item.id}`}
+                                value={internalNotes}
+                                disabled={!canEdit}
+                                title={
+                                  canEdit === false
+                                    ? ADMIN_VIEW_ONLY_ACTION_REASON
+                                    : undefined
+                                }
+                                onChange={(event) =>
+                                  setInternalNotes(event.target.value)
+                                }
+                                maxLength={2000}
+                                placeholder="Context for the next officer. The member never reads this."
                               />
                             </div>
                             {item.source === "MODIFICATION" ? (
@@ -669,7 +763,7 @@ export function PolicyExceptionRequestsPanel({
                                 size="sm"
                                 onClick={() => decide(item, "approve")}
                                 disabled={
-                                  busyId === item.id ||
+                                  decisionInFlight.has(item.id) ||
                                   !confirmed ||
                                   (needsReason && !hasNotes)
                                 }
@@ -682,7 +776,9 @@ export function PolicyExceptionRequestsPanel({
                                 size="sm"
                                 variant="outline"
                                 onClick={() => decide(item, "reject")}
-                                disabled={busyId === item.id || !hasNotes}
+                                disabled={
+                                  decisionInFlight.has(item.id) || !hasNotes
+                                }
                               >
                                 Refuse
                               </ViewOnlyActionButton>
@@ -690,7 +786,7 @@ export function PolicyExceptionRequestsPanel({
                                 size="sm"
                                 variant="ghost"
                                 onClick={resetDecisionForm}
-                                disabled={busyId === item.id}
+                                disabled={decisionInFlight.has(item.id)}
                               >
                                 Cancel
                               </Button>
@@ -707,10 +803,28 @@ export function PolicyExceptionRequestsPanel({
                         {item.reviewedBy
                           ? ` by ${item.reviewedBy.firstName} ${item.reviewedBy.lastName}`
                           : ""}
+                        {/* #2562: after the decision the two notes stay visually
+                            separated and labelled, so an officer reading a colleague's
+                            decision knows which half the member has already read. */}
                         {item.adminNotes ? (
-                          <p className="mt-2 whitespace-pre-wrap">
-                            {item.adminNotes}
-                          </p>
+                          <div className="mt-2 rounded-md border border-border bg-background p-2">
+                            <p className="text-xs font-semibold text-foreground">
+                              Explanation the member can see
+                            </p>
+                            <p className="mt-1 whitespace-pre-wrap">
+                              {item.adminNotes}
+                            </p>
+                          </div>
+                        ) : null}
+                        {item.internalNotes ? (
+                          <div className="mt-2 rounded-md border border-dashed border-border bg-background p-2">
+                            <p className="text-xs font-semibold text-foreground">
+                              Internal note — admins only, never shown to the member
+                            </p>
+                            <p className="mt-1 whitespace-pre-wrap">
+                              {item.internalNotes}
+                            </p>
+                          </div>
                         ) : null}
                       </div>
                     )}

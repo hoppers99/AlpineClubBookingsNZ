@@ -183,7 +183,11 @@ describe("booking change requests", () => {
     });
 
     expect(response.status).toBe(201);
-    expect(mocks.bookingChangeRequestCreate).toHaveBeenCalledWith({
+    expect(mocks.bookingChangeRequestCreate).toHaveBeenCalledWith(
+      // #2562 review: the create also carries the member-readable manifest as its
+      // `select`, so the 201 body cannot name the officer's private note. Matched
+      // loosely here and pinned exactly in its own case below.
+      expect.objectContaining({
       data: expect.objectContaining({
         bookingId: "booking-1",
         requestedByMemberId: "member-1",
@@ -204,7 +208,8 @@ describe("booking change requests", () => {
           }),
         }),
       }),
-    });
+      }),
+    );
     expect(mocks.sendAdminBookingChangeRequestAlert).toHaveBeenCalledWith(
       expect.objectContaining({
         bookingId: "booking-1",
@@ -553,6 +558,112 @@ describe("booking change requests", () => {
     expect(mocks.bookingChangeRequestUpdateMany).not.toHaveBeenCalled();
   });
 
+  /**
+   * #2562 review — the locked-period half of this table gets the note split too.
+   *
+   * The lane declared the officer-note audience rule TABLE-WIDE in the schema and
+   * in DOMAIN_INVARIANTS, but only rewrote the policy-exception surface. This route
+   * writes the SAME member-visible `adminNotes` column from a panel whose box was
+   * headed just "Admin notes", and it had no field for the private note the lane
+   * created — so the remedy did not reach the surface whose label most invited the
+   * mistake. These assertions pin both halves of the fix at the route: the private
+   * note is stored, and the audit row records only that one exists.
+   */
+  it("stores the officer's private note beside the member-facing one (#2562)", async () => {
+    mocks.auth.mockResolvedValue({ user: { id: "admin-1", role: "ADMIN", accessRoles: [{ role: "ADMIN" }] } });
+    mocks.bookingChangeRequestFindUnique
+      .mockResolvedValueOnce({
+        id: "request-1",
+        status: "REQUESTED",
+        kind: "LOCKED_PERIOD",
+        booking: { id: "booking-1", memberId: "member-1" },
+      })
+      .mockResolvedValueOnce({
+        id: "request-1",
+        status: "REJECTED",
+        booking: { id: "booking-1", memberId: "member-1" },
+      });
+    mocks.bookingChangeRequestUpdateMany.mockResolvedValue({ count: 1 });
+
+    const request = new NextRequest(
+      "http://localhost/api/admin/booking-change-requests/request-1",
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          status: "REJECTED",
+          adminNotes: "Those nights are already committed, sorry.",
+          internalNotes: "Third ask this month, do not encourage.",
+        }),
+      },
+    );
+
+    const response = await patchAdminBookingChangeRequest(request, {
+      params: Promise.resolve({ id: "request-1" }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(mocks.bookingChangeRequestUpdateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          adminNotes: "Those nights are already committed, sorry.",
+          internalNotes: "Third ask this month, do not encourage.",
+        }),
+      }),
+    );
+    // The audit trail records EXISTENCE, never the text: it is read by more
+    // surfaces than this queue, and the copy would be private in one place only.
+    const audit = mocks.logAudit.mock.calls.at(-1)?.[0] as {
+      details?: unknown;
+      metadata?: Record<string, unknown>;
+    };
+    expect(audit.metadata?.internalNoteRecorded).toBe(true);
+    expect(JSON.stringify(audit)).not.toContain("do not encourage");
+  });
+
+  it("records no internal note when the officer left none (#2562)", async () => {
+    mocks.auth.mockResolvedValue({ user: { id: "admin-1", role: "ADMIN", accessRoles: [{ role: "ADMIN" }] } });
+    mocks.bookingChangeRequestFindUnique
+      .mockResolvedValueOnce({
+        id: "request-1",
+        status: "REQUESTED",
+        kind: "LOCKED_PERIOD",
+        booking: { id: "booking-1", memberId: "member-1" },
+      })
+      .mockResolvedValueOnce({
+        id: "request-1",
+        status: "REJECTED",
+        booking: { id: "booking-1", memberId: "member-1" },
+      });
+    mocks.bookingChangeRequestUpdateMany.mockResolvedValue({ count: 1 });
+
+    const request = new NextRequest(
+      "http://localhost/api/admin/booking-change-requests/request-1",
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          status: "REJECTED",
+          adminNotes: "Those nights are already committed, sorry.",
+        }),
+      },
+    );
+
+    await patchAdminBookingChangeRequest(request, {
+      params: Promise.resolve({ id: "request-1" }),
+    });
+
+    expect(mocks.bookingChangeRequestUpdateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ internalNotes: null }),
+      }),
+    );
+    const audit = mocks.logAudit.mock.calls.at(-1)?.[0] as {
+      metadata?: Record<string, unknown>;
+    };
+    expect(audit.metadata?.internalNoteRecorded).toBe(false);
+  });
+
   it("rejects approval when the linked booking modification does not exist", async () => {
     mocks.auth.mockResolvedValue({ user: { id: "admin-1", role: "ADMIN", accessRoles: [{ role: "ADMIN" }] } });
     mocks.bookingChangeRequestFindUnique.mockResolvedValueOnce({
@@ -652,5 +763,155 @@ describe("booking change requests", () => {
         take: 50,
       })
     );
+  });
+
+  /**
+   * #2562 — the officer's PRIVATE note must not travel on this route.
+   *
+   * The read is authorised for the booking's OWNER as well as an officer, and it
+   * returns every change request on the booking with no `kind` filter, so
+   * POLICY_EXCEPTION rows come back here too. It used to read with `include:`,
+   * which returns every scalar column on the model — including `internalNotes`
+   * once #2562 added it. These two cases pin the projection rather than the
+   * absence of a leak in one fixture: the first proves the query names its
+   * columns and never asks for the note, the second proves the route does not
+   * pass a note through even if a stale mock (or a future raw query) hands it one.
+   */
+  it("never asks the database for the officer's internal note", async () => {
+    mocks.bookingFindUnique.mockResolvedValue({ memberId: "member-1" });
+    mocks.bookingChangeRequestFindMany.mockResolvedValue([]);
+
+    const request = new NextRequest(
+      "http://localhost/api/bookings/booking-1/change-requests"
+    );
+    await getMemberBookingChangeRequests(request, {
+      params: Promise.resolve({ id: "booking-1" }),
+    });
+
+    const args = mocks.bookingChangeRequestFindMany.mock.calls[0][0] as {
+      select?: Record<string, unknown>;
+      include?: unknown;
+    };
+    // An explicit projection, not `include:` — the shape that cannot leak the
+    // NEXT column either.
+    expect(args.include).toBeUndefined();
+    expect(args.select).toBeDefined();
+    expect(args.select).not.toHaveProperty("internalNotes");
+    expect(args.select).not.toHaveProperty("openStateKey");
+    // The member-facing explanation is still readable; the split is only safe
+    // while a refused member can read why.
+    expect(args.select).toHaveProperty("adminNotes", true);
+    expect(args.select).toHaveProperty("requestedBy");
+    expect(args.select).toHaveProperty("reviewedBy");
+  });
+
+  it("does not serialise an internal note even if one reaches the route", async () => {
+    mocks.bookingFindUnique.mockResolvedValue({ memberId: "member-1" });
+    mocks.bookingChangeRequestFindMany.mockResolvedValue([
+      {
+        id: "request-1",
+        kind: "POLICY_EXCEPTION",
+        adminNotes: "Not that weekend, sorry.",
+        internalNotes: "Chases every officer until somebody says yes.",
+      },
+    ]);
+
+    const request = new NextRequest(
+      "http://localhost/api/bookings/booking-1/change-requests"
+    );
+    const response = await getMemberBookingChangeRequests(request, {
+      params: Promise.resolve({ id: "booking-1" }),
+    });
+    const raw = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(raw).toContain("Not that weekend, sorry.");
+    expect(raw).not.toContain("internalNotes");
+    expect(raw).not.toContain("Chases every officer");
+  });
+
+  /**
+   * #2562 review — the POST on this route returns a row to the member too.
+   *
+   * The GET was projected and pinned; the create was not. `prisma.create` with no
+   * `select` returns every scalar column, and line ~473 hands that row straight
+   * back as the 201 body, so the member's browser received `"internalNotes": null`.
+   * Nothing leaked TODAY, because a row this new cannot carry a note yet — but the
+   * lane's own written boundary ("names its columns explicitly and omits
+   * internalNotes") was false for this handler, and neither the manifest census nor
+   * the two GET cases watched it. These two pin the query and the serialisation
+   * separately, so the next edit that returns a row which is NOT brand new (an
+   * upsert so a member can resubmit into their open request, a re-read after
+   * `linkedModificationId` is set, a shared helper reused here) fails here.
+   */
+  it("creates through the member-readable manifest, never every column", async () => {
+    mocks.bookingFindUnique.mockResolvedValue(makeBooking());
+
+    const request = new NextRequest(
+      "http://localhost/api/bookings/booking-1/change-requests",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          checkOut: "2026-05-24",
+          reason: "Weather closed the road.",
+        }),
+      },
+    );
+    const response = await postBookingChangeRequest(request, {
+      params: Promise.resolve({ id: "booking-1" }),
+    });
+
+    expect(response.status).toBe(201);
+    const args = mocks.bookingChangeRequestCreate.mock.calls[0][0] as {
+      select?: Record<string, unknown>;
+      include?: unknown;
+    };
+    expect(args.include).toBeUndefined();
+    expect(args.select).toBeDefined();
+    expect(args.select).not.toHaveProperty("internalNotes");
+    expect(args.select).not.toHaveProperty("openStateKey");
+    // The member-facing explanation stays readable, exactly as on the GET.
+    expect(args.select).toHaveProperty("adminNotes", true);
+  });
+
+  it("does not serialise an internal note out of the create either", async () => {
+    mocks.bookingFindUnique.mockResolvedValue(makeBooking());
+    // A stale mock standing in for a future raw query, an `include:` regression or
+    // a shared helper: the row reaching the handler carries the private note, and
+    // the whitelist re-projection is what stops it reaching the wire.
+    mocks.bookingChangeRequestCreate.mockResolvedValue({
+      id: "request-1",
+      bookingId: "booking-1",
+      requestedByMemberId: "member-1",
+      status: "REQUESTED",
+      requestedChanges: {},
+      reason: "Weather closed the road.",
+      adminNotes: "We will look at this on Monday.",
+      internalNotes: "Third ask this month, do not encourage.",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const request = new NextRequest(
+      "http://localhost/api/bookings/booking-1/change-requests",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          checkOut: "2026-05-24",
+          reason: "Weather closed the road.",
+        }),
+      },
+    );
+    const response = await postBookingChangeRequest(request, {
+      params: Promise.resolve({ id: "booking-1" }),
+    });
+    const raw = await response.text();
+
+    expect(response.status).toBe(201);
+    expect(raw).toContain("We will look at this on Monday.");
+    expect(raw).not.toContain("internalNotes");
+    expect(raw).not.toContain("do not encourage");
   });
 });

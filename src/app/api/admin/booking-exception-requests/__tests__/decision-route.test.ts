@@ -15,8 +15,19 @@ const mocks = vi.hoisted(() => ({
   nbFindUnique: vi.fn(),
   // Rest-typed like every other model stub here, so the `(...a) => mock(...a)`
   // forwarding below typechecks under `tsconfig.test.json`.
-  fgmFindMany: vi.fn(async (..._args: unknown[]) => []),
-  memberFindMany: vi.fn(async (..._args: unknown[]) => []),
+  fgmFindMany: vi.fn(async (...args: unknown[]) => {
+    void args;
+    return [];
+  }),
+  memberFindMany: vi.fn(async (...args: unknown[]) => {
+    void args;
+    return [];
+  }),
+  // #2562 review: the refusal notice. Mocked because a real send would reach the
+  // mailer, and asserted because before this the member was told nothing at all.
+  sendRefused: vi.fn(async (...args: unknown[]) => {
+    void args;
+  }),
 }));
 
 vi.mock("@/lib/session-guards", () => ({ requireAdmin: mocks.requireAdmin }));
@@ -28,6 +39,10 @@ vi.mock("@/lib/rate-limit", () => ({
 }));
 vi.mock("@/lib/logger", () => ({
   default: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
+}));
+vi.mock("@/lib/email", () => ({
+  sendBookingPolicyExceptionRefusedEmail: (...a: unknown[]) =>
+    mocks.sendRefused(...a),
 }));
 vi.mock("@/lib/prisma", () => ({
   prisma: {
@@ -170,6 +185,9 @@ function modificationRow(
     },
     memberMessage: "Please allow the one-night stay.",
     adminNotes: null,
+    // #2562: the private half of the decision. Present on the row the admin detail
+    // read returns, and on no member-facing surface.
+    internalNotes: null,
     proposalSnapshot: SNAPSHOT,
     proposalHash: computeProposalHash(SNAPSHOT),
     frozenEvidence: freezePolicyExceptionEvidence(violations),
@@ -192,6 +210,61 @@ function modificationRow(
         email: "ada@example.com",
       },
     },
+  };
+}
+
+/**
+ * A NEW-booking request row, for the half of the refusal path that has no booking
+ * at all (#2562 review). Deliberately minimal: the reject branch reads the
+ * requester, the frozen snapshot's proposed nights and the lodge, and nothing else.
+ */
+function newBookingRow() {
+  const snapshot = {
+    kind: "NEW_BOOKING" as const,
+    lodgeId: LODGE,
+    proposed: {
+      checkIn: "2026-08-14",
+      checkOut: "2026-08-15",
+      guests: [
+        {
+          firstName: "Ada",
+          lastName: "Lovelace",
+          ageTier: "ADULT" as const,
+          isMember: true,
+          memberId: "m-1",
+          nights: ["2026-08-14"],
+        },
+      ],
+    },
+  };
+  return {
+    id: "req-1",
+    status: "REQUESTED",
+    version: 2,
+    lodgeId: LODGE,
+    requestedByMemberId: "m-1",
+    createdAt: new Date("2026-08-01T00:00:00.000Z"),
+    reviewedAt: null,
+    reviewedBy: null,
+    requestedBy: {
+      id: "m-1",
+      firstName: "Ada",
+      lastName: "Lovelace",
+      email: "ada@example.com",
+    },
+    memberMessage: "Driving up after work on the Friday.",
+    adminNotes: null,
+    internalNotes: null,
+    proposalSnapshot: snapshot,
+    proposalHash: computeProposalHash(snapshot),
+    frozenEvidence: freezePolicyExceptionEvidence([MIN_STAY]),
+    aggregateCapacityMode: "NO_HOLD",
+    conflictCount: 0,
+    lastConflictAt: null,
+    lastConflictReason: null,
+    supersededByRequestId: null,
+    createdBookingId: null,
+    lodge: { id: LODGE, name: "Example Lodge" },
   };
 }
 
@@ -626,5 +699,242 @@ describe("PATCH — reject", () => {
     );
     expect(res.status).toBe(409);
     expect(mocks.logAudit).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * #2562 — the officer-note split.
+ *
+ * `adminNotes` is the member-facing decision explanation and always was; the new
+ * `internalNotes` column is the private half. Three properties are load-bearing and
+ * all three are pinned here: the two travel to separate columns, an internal note
+ * can never stand in for the member-facing reason a refusal requires, and the audit
+ * log records that a private note EXISTS without copying its text.
+ */
+describe("PATCH — the officer-note split", () => {
+  it("carries both notes to the terminal claim, in their own fields", async () => {
+    const res = await PATCH(
+      patchRequest({
+        action: "reject",
+        source: "MODIFICATION",
+        expectedVersion: 3,
+        adminNotes: "That weekend is always full, sorry.",
+        internalNotes: "Third time this season; have a word at the AGM.",
+      }),
+      { params },
+    );
+    expect(res.status).toBe(200);
+    expect(mocks.resolveTerminal.mock.calls[0][0]).toMatchObject({
+      adminNotes: "That weekend is always full, sorry.",
+      internalNotes: "Third time this season; have a word at the AGM.",
+    });
+  });
+
+  it("refuses a refusal that has ONLY an internal note", async () => {
+    // The member would be left with a bare "not approved" and something written
+    // about them they cannot see. The gate reads `adminNotes` for exactly that
+    // reason, and says so.
+    const res = await PATCH(
+      patchRequest({
+        action: "reject",
+        source: "MODIFICATION",
+        expectedVersion: 3,
+        internalNotes: "Not worth the argument.",
+      }),
+      { params },
+    );
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/not a substitute/i);
+    expect(mocks.resolveTerminal).not.toHaveBeenCalled();
+  });
+
+  it("records only THAT an internal note exists in the refusal audit, never its text", async () => {
+    await PATCH(
+      patchRequest({
+        action: "reject",
+        source: "MODIFICATION",
+        expectedVersion: 3,
+        adminNotes: "Not this weekend.",
+        internalNotes: "Chases every officer until somebody says yes.",
+      }),
+      { params },
+    );
+    const entry = mocks.logAudit.mock.calls[0][0] as {
+      details?: unknown;
+      metadata?: Record<string, unknown>;
+    };
+    expect(entry.metadata?.internalNoteRecorded).toBe(true);
+    // The audit log is read by more surfaces than the officer queue, so the private
+    // text must not be duplicated into it.
+    expect(JSON.stringify(entry)).not.toContain("Chases every officer");
+    expect(entry.details).toBe("Not this weekend.");
+  });
+
+  it("hands both notes to the approval hooks, and audits only the flag", async () => {
+    await PATCH(
+      patchRequest({
+        action: "approve",
+        source: "MODIFICATION",
+        expectedVersion: 3,
+        confirm: true,
+        adminNotes: "Allowed this once.",
+        internalNotes: "Watch the pattern next season.",
+      }),
+      { params },
+    );
+    expect(mocks.buildHooks.mock.calls[0][0]).toMatchObject({
+      adminNotes: "Allowed this once.",
+      internalNotes: "Watch the pattern next season.",
+    });
+    const entry = mocks.logAudit.mock.calls[0][0] as {
+      metadata?: Record<string, unknown>;
+    };
+    expect(entry.metadata?.internalNoteRecorded).toBe(true);
+    expect(JSON.stringify(entry)).not.toContain("Watch the pattern");
+  });
+
+  it("does not satisfy the hosting-override reason rule with an internal note", async () => {
+    mocks.bcrFindFirst.mockResolvedValue(modificationRow([HOSTING]));
+    const res = await PATCH(
+      patchRequest({
+        action: "approve",
+        source: "MODIFICATION",
+        expectedVersion: 3,
+        confirm: true,
+        internalNotes: "Fine, they are sensible people.",
+      }),
+      { params },
+    );
+    // D-R4 wants an attributable reason ON THE RECORD the member also reads.
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/member-facing explanation/i);
+    expect(mocks.approve).not.toHaveBeenCalled();
+  });
+
+  it("exposes both notes on the admin detail read, which is admin-guarded", async () => {
+    mocks.bcrFindFirst.mockResolvedValue({
+      ...modificationRow(),
+      adminNotes: "Allowed this once.",
+      internalNotes: "Watch the pattern next season.",
+    });
+    const res = await GET(
+      new NextRequest("http://localhost/api/admin/booking-exception-requests/req-1"),
+      { params },
+    );
+    const body = await res.json();
+    expect(body.adminNotes).toBe("Allowed this once.");
+    expect(body.internalNotes).toBe("Watch the pattern next season.");
+  });
+
+  it("refuses an internal note longer than the column allows", async () => {
+    const res = await PATCH(
+      patchRequest({
+        action: "reject",
+        source: "MODIFICATION",
+        expectedVersion: 3,
+        adminNotes: "No.",
+        internalNotes: "x".repeat(2001),
+      }),
+      { params },
+    );
+    expect(res.status).toBe(400);
+    expect(mocks.resolveTerminal).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * #2562 review — a refusal that notifies the member nowhere.
+ *
+ * The reject branch recorded `adminNotes` (mandatory, precisely so the member can
+ * act on it), wrote the audit row and released the held beds, then told the member
+ * nothing: no email, and there is no in-app notification centre in this app. Their
+ * only signal was a badge on My Bookings they would have to go looking for, so the
+ * realistic next act was the telephone call the whole workflow exists to remove, or
+ * a duplicate request raised days later in ignorance.
+ */
+describe("PATCH — reject notifies the member", () => {
+  it("emails the requester the officer's member-facing explanation", async () => {
+    const res = await PATCH(
+      patchRequest({
+        action: "reject",
+        source: "MODIFICATION",
+        expectedVersion: 3,
+        adminNotes: "The lodge is full that weekend every year.",
+        internalNotes: "Third ask this month, do not encourage.",
+      }),
+      { params },
+    );
+    expect(res.status).toBe(200);
+    expect(mocks.sendRefused).toHaveBeenCalledTimes(1);
+    const sent = mocks.sendRefused.mock.calls[0][0] as Record<string, unknown>;
+    expect(sent).toMatchObject({
+      email: "ada@example.com",
+      recipientMemberId: "m-1",
+      firstName: "Ada",
+      source: "MODIFICATION",
+      adminNotes: "The lodge is full that weekend every year.",
+      lodgeId: LODGE,
+    });
+    // A refused CHANGE belongs to its booking, so the per-booking "No emails"
+    // switch can still withhold it.
+    expect(sent.bookingContext).toEqual({ bookingId: "bk-1" });
+    // The PROPOSED nights, which are what the member asked about.
+    expect((sent.checkIn as Date).toISOString().slice(0, 10)).toBe("2026-07-01");
+    expect((sent.checkOut as Date).toISOString().slice(0, 10)).toBe("2026-07-02");
+    // The private note reaches no member surface, and an email is one.
+    expect(JSON.stringify(sent)).not.toContain("do not encourage");
+  });
+
+  it("sends nothing when the guarded claim was lost", async () => {
+    // No refusal was recorded, so there is nothing to tell anybody about.
+    mocks.resolveTerminal.mockResolvedValue({ claimed: false, released: 0 });
+    const res = await PATCH(
+      patchRequest({
+        action: "reject",
+        source: "MODIFICATION",
+        expectedVersion: 3,
+        adminNotes: "No longer relevant.",
+      }),
+      { params },
+    );
+    expect(res.status).toBe(409);
+    expect(mocks.sendRefused).not.toHaveBeenCalled();
+  });
+
+  it("still reports the refusal when the notice itself fails", async () => {
+    // The refusal is already committed by the time the notice runs, so a mail
+    // failure must never be reported to the officer as a failed decision.
+    mocks.sendRefused.mockRejectedValueOnce(new Error("SES is down"));
+    const res = await PATCH(
+      patchRequest({
+        action: "reject",
+        source: "MODIFICATION",
+        expectedVersion: 3,
+        adminNotes: "No room.",
+      }),
+      { params },
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ status: "REJECTED" });
+  });
+
+  it("passes no booking context for a refused NEW-booking request", async () => {
+    // There is no booking to silence and none to link, so the sender is told so
+    // explicitly rather than being handed a booking id that does not exist.
+    mocks.bcrFindFirst.mockResolvedValue(null);
+    mocks.nbFindUnique.mockResolvedValue(newBookingRow());
+    const res = await PATCH(
+      patchRequest({
+        action: "reject",
+        source: "NEW_BOOKING",
+        expectedVersion: 2,
+        adminNotes: "Not that weekend, sorry.",
+      }),
+      { params },
+    );
+    expect(res.status).toBe(200);
+    const sent = mocks.sendRefused.mock.calls[0][0] as Record<string, unknown>;
+    expect(sent.bookingContext).toBe("none");
+    expect(sent).toMatchObject({ source: "NEW_BOOKING", lodgeId: LODGE });
   });
 });
