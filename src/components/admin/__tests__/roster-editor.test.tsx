@@ -203,24 +203,27 @@ describe("RosterEditor staged whole-roster editing", () => {
     expect(first.value).toBe("younger")
   })
 
-  it("always shows due-chore staffing and booking-grouped zero/one/many guest checks with repeat counts", () => {
+  it("always shows due staffing and booking-grouped zero/one/two/three assignment checks", () => {
     const roster = {
       ...BASE,
       assignments: [
         ...BASE.assignments,
         { ...BASE.assignments[1], id: "a-3" },
         { ...BASE.assignments[0], id: "a-4", bookingGuestId: "younger", guestName: "Mika Bell", guestAgeTier: "CHILD" },
+        { ...BASE.assignments[0], id: "a-5", bookingGuestId: "unknown-a", bookingId: "booking-b", guestName: "Alex Chen" },
+        { ...BASE.assignments[1], id: "a-6", bookingGuestId: "unknown-a", bookingId: "booking-b", guestName: "Alex Chen" },
       ],
     }
     renderEditor(roster)
-    expect(screen.getByText("Kitchen:").parentElement?.textContent).toBe("Kitchen: 2 assigned — within recommendation 1–3")
-    expect(screen.getByText("Firewood:").parentElement?.textContent).toBe("Firewood: 2 assigned — over recommendation 1")
+    expect(screen.getByText("Kitchen:").parentElement?.textContent).toBe("Kitchen: 3 assigned — within recommendation 1–3")
+    expect(screen.getByText("Firewood:").parentElement?.textContent).toBe("Firewood: 3 assigned — over recommendation 1")
     expect(screen.getByText("Bathrooms:").parentElement?.textContent).toBe("Bathrooms: 0 assigned — under recommendation 1")
     expect(screen.queryByText("Weekly check:")).toBeNull()
     const familyA = screen.getByRole("region", { name: "Booking for Aroha Bell" })
     expect(within(familyA).getByText(/3 assignments: Kitchen, Firewood ×2/)).toBeTruthy()
     expect(within(familyA).getByText(/1 assignment: Kitchen/)).toBeTruthy()
     const familyB = screen.getByRole("region", { name: "Booking for Taylor Chen" })
-    expect(within(familyB).getAllByText("No chore assigned")).toHaveLength(2)
+    expect(within(familyB).getByText(/2 assignments: Kitchen, Firewood/)).toBeTruthy()
+    expect(within(familyB).getByText("No chore assigned")).toBeTruthy()
   })
 })

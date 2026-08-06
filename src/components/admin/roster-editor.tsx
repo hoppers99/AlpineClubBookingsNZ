@@ -424,7 +424,7 @@ export function RosterEditor({
       })}
 
       <Card>
-        <CardHeader><CardTitle className="text-base">Chore staffing</CardTitle><CardDescription>Every active chore due this night, in roster order.</CardDescription></CardHeader>
+        <CardHeader><CardTitle role="heading" aria-level={2} className="text-base">Chore staffing</CardTitle><CardDescription>Every active chore due this night, in roster order.</CardDescription></CardHeader>
         <CardContent><ul className="space-y-2">
           {roster.templates.filter((template) => template.isDueOnDate).map((template) => {
             const count = (byTemplate.get(template.id) ?? []).filter((assignment) => assignment.bookingGuestId).length
@@ -443,7 +443,7 @@ export function RosterEditor({
       </Card>
 
       <Card>
-        <CardHeader><CardTitle className="text-base">Guest assignment check</CardTitle><CardDescription>Every eligible guest, kept with their booking or family group.</CardDescription></CardHeader>
+        <CardHeader><CardTitle role="heading" aria-level={2} className="text-base">Guest assignment check</CardTitle><CardDescription>Every eligible guest, kept with their booking or family group.</CardDescription></CardHeader>
         <CardContent className="space-y-4">
           {guestGroups.map((group) => (
             <section key={group.key} aria-label={group.label}>
