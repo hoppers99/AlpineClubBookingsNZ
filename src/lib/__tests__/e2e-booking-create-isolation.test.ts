@@ -813,6 +813,22 @@ function isPrivateIpv4(address: string): boolean {
 }
 
 describe("E2E booking-create retry isolation (#2599)", () => {
+  it("keeps ordered same-stack runtime evidence reproducible without resetting auth", () => {
+    const stackScript = source("scripts/e2e-stack.sh");
+    const guide = source("docs/E2E_PLAYWRIGHT.md");
+
+    expect(stackScript).toContain(
+      'if [[ "${E2E_PRESERVE_AUTH_STATE:-0}" != "1" ]]; then',
+    );
+    expect(stackScript).toMatch(
+      /if \[\[ "\$\{E2E_PRESERVE_AUTH_STATE:-0\}" != "1" \]\]; then\s+rm -rf e2e\/\.auth\s+fi/,
+    );
+    expect(guide).toContain(
+      "E2E_PRESERVE_AUTH_STATE=1 scripts/e2e-stack.sh run " +
+        "e2e/waitlist.spec.ts e2e/whole-lodge-request.spec.ts",
+    );
+  });
+
   it("allocates a stable valid private IP per spec attempt without collisions", () => {
     const addresses = E2E_BOOKING_CREATE_CENSUS.flatMap((entry) =>
       [0, 1, 2].map((retry) => bookingCreateIsolation(entry.key, retry).clientIp),
