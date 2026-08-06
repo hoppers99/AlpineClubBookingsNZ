@@ -157,10 +157,12 @@ async function expectRequestStatus(requestId: string, status: string) {
 }
 
 /**
- * Pick a stay in the `/book` wizard and press confirm, leaving the review step
- * showing whatever the server answered.
+ * Pick a stay in the `/book` wizard and submit the guest step for a quote.
+ *
+ * Hard policy failures stop here; exception-eligible refusals continue to the
+ * review step so the member can confirm the attempted booking.
  */
-async function bookThroughWizard(
+async function submitGuestStepForQuote(
   page: Page,
   checkIn: string,
   checkOut: string,
@@ -181,6 +183,18 @@ async function bookThroughWizard(
     }),
   ).toBeVisible();
   await page.getByRole("button", { name: "Continue", exact: true }).click();
+}
+
+/**
+ * Pick a stay in the `/book` wizard and press confirm, leaving the review step
+ * showing whatever the server answered.
+ */
+async function bookThroughWizard(
+  page: Page,
+  checkIn: string,
+  checkOut: string,
+): Promise<void> {
+  await submitGuestStepForQuote(page, checkIn, checkOut);
 
   await expect(page.getByText("Booking Summary")).toBeVisible();
   await page
@@ -301,7 +315,7 @@ test("a hard failure offers no exception request at all", async () => {
   // The member now holds the compliant window, so asking for it again is refused
   // by the one-booking-per-member-night rule — a hard stop no officer can waive.
   const page = await memberContext.newPage();
-  await bookThroughWizard(page, compliant.checkIn, compliant.checkOut);
+  await submitGuestStepForQuote(page, compliant.checkIn, compliant.checkOut);
 
   await expect(
     page.getByText(/already on another booking|already on other bookings/i).first(),
