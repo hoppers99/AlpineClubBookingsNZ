@@ -67,7 +67,7 @@ vi.mock("@/lib/group-settlement", () => ({
   applyGroupSettlementSucceededFromInvoice: vi.fn(),
 }));
 vi.mock("@/lib/bed-allocation-lifecycle", () => ({
-  reconcileBedAllocationsForBooking: vi.fn(),
+  reconcileBedAllocationsForBookingWithLodgeLockHeld: vi.fn(),
 }));
 vi.mock("@/lib/capacity", () => ({
   acquireLodgeCapacityLock: vi.fn(),

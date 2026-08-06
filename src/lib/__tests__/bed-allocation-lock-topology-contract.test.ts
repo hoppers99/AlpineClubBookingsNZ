@@ -117,6 +117,36 @@ describe("bed allocation lock topology", () => {
     ]);
   });
 
+  it("locks partner-share lodges then the member before the member-detail write and held sweep", () => {
+    const memberDetail = source("src/lib/admin-member-detail-service.ts");
+    const transaction = between(
+      memberDetail,
+      "const updated = await prisma.$transaction(async (tx) => {",
+      "    if (\n      existing.active !== updated.active",
+    );
+    expectInOrder(transaction, [
+      "acquireFuturePartnerSharedAllocationLocks(tx, [id])",
+      "acquireMemberLifecycleLocks(tx, [id])",
+      "const updatedMember = await tx.member.update",
+      "sweepFuturePartnerSharedAllocationsWithLocksHeld",
+    ]);
+  });
+
+  it("locks partner-share lodges then every member before the bulk write and held sweep", () => {
+    const bulkUpdate = source("src/app/api/admin/members/bulk-update/route.ts");
+    const transaction = between(
+      bulkUpdate,
+      "const result = await prisma.$transaction(async (tx) => {",
+      "    for (const { memberId, reason, swept } of sweptSharesByMember)",
+    );
+    expectInOrder(transaction, [
+      "acquireFuturePartnerSharedAllocationLocks(tx, sweepLockMemberIds)",
+      "acquireMemberLifecycleLocks(tx, sweepLockMemberIds)",
+      "await tx.member.updateMany",
+      "sweepFuturePartnerSharedAllocationsWithLocksHeld",
+    ]);
+  });
+
   it("status-guards every cross-lodge waitlist unwind before reconciliation", () => {
     const text = source("src/lib/waitlist-cross-lodge.ts");
     const revert = between(

@@ -2,16 +2,68 @@ import { BookingStatus } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  acquireFuturePartnerSharedAllocationLocks,
   BED_ALLOCATABLE_BOOKING_STATUSES,
   partnerShareSweepCounterpartNames,
   partnerShareSweepNights,
   reconcileBedAllocationsForBookingWithLodgeLockHeld,
   sweepFuturePartnerSharedAllocationsWithLocksHeld as sweepFuturePartnerSharedAllocations,
 } from "@/lib/bed-allocation-lifecycle";
+import { acquireMemberLifecycleLocks } from "@/lib/member-lifecycle-lock";
 import { BED_ALLOCATION_PRIORITY_VOCABULARY } from "@/lib/bed-allocation-settings";
 import { eachDateOnlyInRange, parseDateOnly } from "@/lib/date-only";
 
 const NORMALIZED_GUEST_NIGHTS = Symbol("normalizedGuestNights");
+
+describe("partner-share lock prefix", () => {
+  it("deduplicates and sorts lodge then member locks behind the global lock", async () => {
+    const events: unknown[] = [];
+    const executeRaw = vi.fn(
+      async (_strings: TemplateStringsArray, ...values: unknown[]) => {
+        events.push(values[0] ?? "global");
+        return 1;
+      },
+    );
+    const findMany = vi.fn(async () => {
+      events.push("discover-lodges");
+      return [
+        { room: { lodgeId: "lodge-z" } },
+        { room: { lodgeId: "lodge-a" } },
+        { room: { lodgeId: "lodge-z" } },
+        { room: { lodgeId: null } },
+      ];
+    });
+    const tx = {
+      $executeRaw: executeRaw,
+      bedAllocation: { findMany },
+    } as any;
+
+    await acquireFuturePartnerSharedAllocationLocks(tx, [
+      "member-2",
+      "member-1",
+      "member-2",
+    ]);
+    await acquireMemberLifecycleLocks(tx, ["member-2", "member-1", "member-2"]);
+
+    expect(findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          bookingGuest: {
+            memberId: { in: ["member-2", "member-1"] },
+          },
+        }),
+      }),
+    );
+    expect(events).toEqual([
+      "global",
+      "discover-lodges",
+      "lodge-a",
+      "lodge-z",
+      "member-lifecycle:member-1",
+      "member-lifecycle:member-2",
+    ]);
+  });
+});
 
 function addSelectedNights<T>(value: T): T {
   const rows = Array.isArray(value) ? value : [value];

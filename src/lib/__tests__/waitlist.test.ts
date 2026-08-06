@@ -108,6 +108,9 @@ vi.mock("@/lib/bed-allocation-lifecycle", async () => {
     );
   return {
     ...actual,
+    reconcileBedAllocationsForBookingWithGlobalLockHeld: (
+      ...args: unknown[]
+    ) => mockReconcileBedAllocations(...args),
     reconcileBedAllocationsForBookingWithLodgeLockHeld: (
       ...args: unknown[]
     ) => mockReconcileBedAllocations(...args),

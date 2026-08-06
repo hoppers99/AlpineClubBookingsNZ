@@ -152,6 +152,7 @@ describe("Phase 3b: Member Detail Edit — PUT /api/admin/members/[id]", () => {
       }
 
       return operation({
+        $executeRaw: vi.fn().mockResolvedValue(1),
         member: {
           update: prisma.member.update,
           // #1604 last-admin guard counts active Full Admins inside the

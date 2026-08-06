@@ -86,7 +86,8 @@ vi.mock("@/lib/booking-modification-settlement", () => ({
     mocks.createModificationAdditionalPaymentIntent,
 }));
 vi.mock("@/lib/bed-allocation-lifecycle", () => ({
-  reconcileBedAllocationsForBooking: mocks.reconcileBedAllocationsForBooking,
+  reconcileBedAllocationsForBookingWithLodgeLockHeld:
+    mocks.reconcileBedAllocationsForBooking,
 }));
 vi.mock("@/lib/xero-booking-edit-settlement", () => ({
   queueXeroBookingEditSettlement: mocks.queueXeroBookingEditSettlement,

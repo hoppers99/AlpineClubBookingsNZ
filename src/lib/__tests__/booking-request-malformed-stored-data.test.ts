@@ -97,7 +97,7 @@ vi.mock("@/lib/cancellation", () => ({
   getNonMemberHoldDays: vi.fn().mockResolvedValue(2),
 }));
 vi.mock("@/lib/bed-allocation-lifecycle", () => ({
-  reconcileBedAllocationsForBooking: vi.fn().mockResolvedValue({}),
+  reconcileBedAllocationsForBookingWithLodgeLockHeld: vi.fn().mockResolvedValue({}),
   MAX_AUDITED_PRUNED_ALLOCATIONS: 50,
 }));
 vi.mock("@/lib/xero-operation-outbox", () => ({

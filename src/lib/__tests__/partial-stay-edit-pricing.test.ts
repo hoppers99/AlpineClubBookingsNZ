@@ -168,7 +168,8 @@ vi.mock("@/lib/waitlist", () => ({
   WAITLIST_OFFER_HOURS: 48,
 }));
 vi.mock("@/lib/bed-allocation-lifecycle", () => ({
-  reconcileBedAllocationsForBooking: vi.fn().mockResolvedValue(undefined),
+  reconcileBedAllocationsForBookingWithGlobalLockHeld: vi.fn().mockResolvedValue(undefined),
+  reconcileBedAllocationsForBookingWithLodgeLockHeld: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock("@/lib/member-credit", () => ({
   createBookingModificationCredit: vi.fn().mockResolvedValue({ id: "credit1" }),

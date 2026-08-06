@@ -159,6 +159,7 @@ function putMember(id: string, body: Record<string, unknown>) {
 function mockUpdateTransaction() {
   vi.mocked(prisma.$transaction).mockImplementation(async (operation: any) =>
     operation({
+      $executeRaw: vi.fn().mockResolvedValue(1),
       member: {
         update: prisma.member.update,
         updateMany: prisma.member.updateMany,

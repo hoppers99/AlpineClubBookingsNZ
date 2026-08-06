@@ -66,7 +66,7 @@ vi.mock("@/lib/booking-status", () => ({
   RELEASE_WHOLE_LODGE_HOLD_UPDATE: {},
 }));
 vi.mock("@/lib/bed-allocation-lifecycle", () => ({
-  reconcileBedAllocationsForBooking: vi.fn(),
+  reconcileBedAllocationsForBookingWithLodgeLockHeld: vi.fn(),
 }));
 vi.mock("@/lib/payment-link", () => ({ revokePaymentLinksForBooking: vi.fn() }));
 vi.mock("@/lib/group-cancel", () => ({ settleGroupBookingOnOrganiserCancel: vi.fn() }));

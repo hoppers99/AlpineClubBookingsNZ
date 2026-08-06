@@ -40,6 +40,7 @@ vi.mock("@/lib/prisma", () => ({
     },
     auditLog: { create: vi.fn().mockResolvedValue({}) },
     xeroContactCache: { findUnique: vi.fn().mockResolvedValue(null) },
+    $executeRaw: vi.fn().mockResolvedValue(1),
     $transaction: vi.fn(),
   },
 }));
@@ -164,6 +165,7 @@ function putMember(id: string, body: Record<string, unknown>) {
 function mockTransaction() {
   vi.mocked(prisma.$transaction).mockImplementation(async (op: any) =>
     op({
+      $executeRaw: prisma.$executeRaw,
       member: {
         update: prisma.member.update,
         updateMany: prisma.member.updateMany,
