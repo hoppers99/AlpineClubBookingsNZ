@@ -222,9 +222,12 @@ count as covering it. A lodge may override one and inherit the other.
    the booking gates use, so it cannot disagree with them.
 5. Choose **Exception capacity handling**. It has no automatic default, so pick
    one even while the requirement is off: it is what the club falls back on the
-   moment you turn it on. As with minimum stay, this release stores, transfers
-   and shows the choice but reserves no beds from it; the request-and-approve
-   workflow arrives separately.
+   moment you turn it on. The request-and-approve workflow uses this choice for
+   a change to an existing booking: **Hold** keeps any extra beds the proposed
+   change needs while it waits, while **Do not hold** leaves them available to
+   somebody else. A request for a brand-new booking never holds beds because no
+   booking exists yet. Availability is checked again when an officer approves
+   either kind of request.
 6. With two or more lodges a **Rules for** selector appears. A lodge can follow
    the club ("Use the club-wide setting") or make its own decision. The
    club-wide scope has no inherit option — there is nothing above it.
@@ -233,12 +236,15 @@ count as covering it. A lodge may override one and inherit the other.
    a config import saves first, yours is refused and the current settings are
    reloaded; reopen **Edit** and apply your change to those.
 
-**Who counts as the adult member.** They must be on the booking as a guest in
-their own right, on that night. Being the person who MADE the booking is not
-enough — plenty of members book for family who are travelling without them — and
-child or youth members do not count, and neither does a member guest who has
-been invited but has not accepted yet — they are not counted as being at the
-lodge anywhere else either, so they cannot be the responsible adult here.
+**Who counts as the adult member.** They must be a guest in their own right at
+that lodge on that night. With **Eligible adult member on the same booking**, the
+adult must be on the booking being checked. With **Another booking on the same
+account**, they may instead be on another confirmed booking owned by the same
+member account. Merely making or owning a booking is never enough — plenty of
+members book for family who are travelling without them. Child or youth members
+do not count, and neither does a member guest who has been invited but has not
+accepted yet — they are not counted as being at the lodge anywhere else either,
+so they cannot be the responsible adult here.
 
 A member whose membership is inactive, cancelled or archived does not count
 either, and for this rule the club treats them the same way it treats a guest:
@@ -281,11 +287,14 @@ adult member on those nights, the change goes through and nothing is flagged,
 because the rule asks whether cover exists, not whether one particular person is
 still there.
 
-**You are never stopped, and that is why the incident exists.** An officer's change
-always goes through — you are the authority the member's message points at, so
-refusing you would be circular, and some changes (a membership lapsing, an
-administrative cancellation, a failed payment) cannot sensibly be blocked at all.
-What happens instead:
+**An officer can proceed, but never silently.** If your change would remove the
+cover another booking relies on, the first attempt writes nothing and shows the
+exact affected booking references, lodge and nights. Review that evidence, give
+a private operational reason of at least 10 characters, confirm the warning and
+try the change again. That acknowledged retry may proceed. Some system-driven
+changes, such as a membership lapsing or a failed payment, cannot pause for that
+interaction; they record the same problem for officer attention instead. In
+either case:
 
 - the affected booking **stays confirmed**, keeps its beds and keeps its payments.
   Nothing is ever cancelled automatically;

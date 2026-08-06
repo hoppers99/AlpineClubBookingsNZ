@@ -43,7 +43,7 @@ import { acquireLodgeCapacityLock, checkCapacityForGuestRanges } from "@/lib/cap
 import { bookingHasCapacityOverride } from "@/lib/booking-status";
 import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
 import { enqueueOwnHostingCoverageReevaluation } from "@/lib/adult-member-hosting-review";
-import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
+import { reconcileBedAllocationsForBookingWithLodgeLockHeld } from "@/lib/bed-allocation-lifecycle";
 import { recordBookingEvent } from "@/lib/booking-events";
 import {
   enqueueXeroBookingInvoiceOperation,
@@ -240,7 +240,11 @@ export async function createGroupSettlementIntent(
 
   // Lock, re-read and claim before deriving provider amount. Repricing writers
   // share lock(1), so this returned snapshot is authoritative for this attempt.
-  const committedChildren = await commitChildrenToConfirmed(group.id, children);
+  const { children: committedChildren, hostingCoverageQueued } =
+    await commitChildrenToConfirmed(group.id, children);
+  if (hostingCoverageQueued) {
+    await settleHostingCoverageAfterCommit({ limit: 25 });
+  }
   const amountCents = committedChildren.reduce(
     (sum, child) => sum + child.finalPriceCents,
     0
@@ -421,10 +425,11 @@ async function createGroupSettlementInvoice(
     );
   }
 
-  const committedChildren = await commitChildrenToConfirmed(
-    groupBookingId,
-    children
-  );
+  const { children: committedChildren, hostingCoverageQueued } =
+    await commitChildrenToConfirmed(groupBookingId, children);
+  if (hostingCoverageQueued) {
+    await settleHostingCoverageAfterCommit({ limit: 25 });
+  }
   const amountCents = committedChildren.reduce(
     (sum, child) => sum + child.finalPriceCents,
     0
@@ -529,7 +534,10 @@ async function cancelSupersededSettlementIntent(
 async function commitChildrenToConfirmed(
   groupBookingId: string,
   children: SettleableChild[]
-): Promise<SettleableChild[]> {
+): Promise<{
+  children: SettleableChild[];
+  hostingCoverageQueued: boolean;
+}> {
   return prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
     const currentGroup = await tx.groupBooking.findUnique({
@@ -562,6 +570,7 @@ async function commitChildrenToConfirmed(
     }
 
     const committed: SettleableChild[] = [];
+    let hostingCoverageQueued = false;
     for (const child of children) {
       // Re-read inside the lock; another path may have already moved it.
       const fresh = await tx.booking.findUnique({
@@ -615,8 +624,11 @@ async function commitChildrenToConfirmed(
         );
       }
 
-      await tx.booking.update({
-        where: { id: fresh.id },
+      const claimed = await tx.booking.updateMany({
+        where: {
+          id: fresh.id,
+          status: BookingStatus.PAYMENT_PENDING,
+        },
         data: {
           status: BookingStatus.CONFIRMED,
           draftExpiresAt: null,
@@ -630,8 +642,14 @@ async function commitChildrenToConfirmed(
           creditElectionCents: null,
         },
       });
+      if (claimed.count !== 1) {
+        throw new GroupBookingError(
+          "A group booking changed while settlement was being prepared",
+          409,
+        );
+      }
       // CONFIRMED holds capacity, so the next child's check counts these beds.
-      await reconcileBedAllocationsForBooking({
+      await reconcileBedAllocationsForBookingWithLodgeLockHeld({
         bookingId: fresh.id,
         db: tx,
         previousRange: { checkIn: fresh.checkIn, checkOut: fresh.checkOut },
@@ -650,13 +668,17 @@ async function commitChildrenToConfirmed(
       await enqueueOwnHostingCoverageReevaluation(fresh.id, tx, {
         cause: "SYSTEM_CHANGE",
       });
+      hostingCoverageQueued = true;
       committed.push({
         id: fresh.id,
         finalPriceCents: fresh.finalPriceCents ?? child.finalPriceCents,
         status: BookingStatus.CONFIRMED,
       });
     }
-    return committed;
+    return {
+      children: committed,
+      hostingCoverageQueued,
+    };
   });
 }
 
@@ -740,9 +762,9 @@ async function settleConfirmedChildrenAndNotify(
     // FAILED claim take, so settle can never interleave a reap/fail/refund of the
     // same settlement. (The pre-#1881 default-lodge key did NOT exclude the
     // reaper's lock(1), so a settle could race a reap into an inconsistent
-    // settlement/child state.) No per-lodge lock is needed here because nothing
-    // claims capacity; a path that CLAIMS capacity (commitChildrenToConfirmed)
-    // still takes the specific child lodge locks.
+    // settlement/child state.) Bed reconciliation is still an allocation
+    // writer, so after the global tier this transaction discovers and acquires
+    // the complete sorted child-lodge union before mutating any child.
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
 
     // Re-confirm the settlement is still unpaid inside the lock (idempotency).
@@ -769,6 +791,27 @@ async function settleConfirmedChildrenAndNotify(
       return "refunded" as const;
     }
 
+    const candidateChildren = await tx.booking.findMany({
+      where: {
+        parentBookingId: settlement.groupBooking.organiserBookingId,
+        organiserSettled: true,
+        deletedAt: null,
+        status: BookingStatus.CONFIRMED,
+      },
+      select: {
+        id: true,
+        finalPriceCents: true,
+        checkIn: true,
+        checkOut: true,
+        lodgeId: true,
+      },
+    });
+    const lockedLodgeIds = new Set(
+      candidateChildren.map((child) => child.lodgeId),
+    );
+    for (const lodgeId of [...lockedLodgeIds].sort()) {
+      await acquireLodgeCapacityLock(tx, lodgeId);
+    }
     const children = await tx.booking.findMany({
       where: {
         parentBookingId: settlement.groupBooking.organiserBookingId,
@@ -776,8 +819,19 @@ async function settleConfirmedChildrenAndNotify(
         deletedAt: null,
         status: BookingStatus.CONFIRMED,
       },
-      select: { id: true, finalPriceCents: true, checkIn: true, checkOut: true },
+      select: {
+        id: true,
+        finalPriceCents: true,
+        checkIn: true,
+        checkOut: true,
+        lodgeId: true,
+      },
     });
+    if (children.some((child) => !lockedLodgeIds.has(child.lodgeId))) {
+      throw new Error(
+        "Group settlement child lodge changed during lock acquisition; retry",
+      );
+    }
 
     // Re-verify the settlement total against the children as they exist NOW,
     // under the lock (#1033). A joiner can modify their CONFIRMED child
@@ -845,7 +899,7 @@ async function settleConfirmedChildrenAndNotify(
           "Group settlement child status changed concurrently during the PAID claim (#1881)"
         );
       }
-      await reconcileBedAllocationsForBooking({
+      await reconcileBedAllocationsForBookingWithLodgeLockHeld({
         bookingId: child.id,
         db: tx,
         previousRange: { checkIn: child.checkIn, checkOut: child.checkOut },

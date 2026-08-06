@@ -555,6 +555,32 @@ Future reviews and issues should cite this file when proposing changes.
   envelope. Existing allocation rows are never rewritten by planning — only
   provisional displacement moves rows — and re-planning a fully-allocated
   state is a no-op.
+- **Allocation preferences are per lodge and advisory, never safety
+  overrides (#2593):** the board and lifecycle resolve the same strict saved
+  order for the booking's lodge. The canonical default is booking cohesion →
+  stay continuity → requested room → direct-family cohesion; an explicitly
+  saved empty list is valid deterministic neutral behavior. Every hard
+  invariant (maximum feasible placement count within a candidate, school
+  separation, adult coverage, cross-booking age mix, lodge isolation,
+  custodian/exclusive holds, approved-row pins, and displacement safety) is
+  scored or enforced ahead of those preferences. Preference values then
+  compare the bounded feasible candidates lexicographically from top to bottom;
+  disabling a value removes only that comparison. Family cohesion means guests
+  sharing at least one family-group id **directly**; connected components,
+  direct subsets, capacity-aware high-affinity room packing, and
+  maximum-cardinality direct-edge pairings provide bounded candidates but do
+  not turn transitive acquaintances into a scored family pair. The planner
+  executes at most 24 matching-layout candidates per booking, alongside its
+  whole-room, legacy, and displacement trials. This is a deterministic bounded
+  heuristic, not a claim of global optimality across all bookings. A settings
+  save never moves an existing row: it affects later board suggestions and
+  later lifecycle reconciliation only. The board's visible suggestions are a
+  preview, never a persistence payload: Run Auto Allocation takes global then
+  the selected lodge lock, refuses an unknown or inactive selected lodge, and
+  rebuilds the complete scoped plan on that transaction client before writing,
+  so a bed/room deactivate, retype, lodge
+  mismatch, allocation/approval change, or hard-predicate change committed
+  after preview cannot receive a stale AUTO row.
 - **Cross-booking age mix (#1768, owner-set):** a room-night containing minors
   from booking X must never also contain an adult from a DIFFERENT booking —
   planner-enforced in both placement directions on every path (whole-stay,
@@ -2866,16 +2892,39 @@ compliant indefinitely.
   nobody confirmed in front of an officer as an emergency. It does not RESOLVE a
   standing incident on a regressed booking either, because that booking still holds
   its beds and reporting `COVERAGE_RESTORED` would be untrue.
-- **One active incident per booking, one successful message per transition** (§16). The partial
+- **One active incident per booking; owner notification is fenced, at-least-once delivery** (§16). The partial
   unique index `HostingCoverageIncident_active_booking_unique` makes the first an
   invariant against a concurrent second opener rather than a hope; the loser folds
   into the winner instead of surfacing a constraint violation. The stored `stateKey`
   is a fixed-width digest of the material-identity key, so a large party cannot
   outrun the column and make two different problems compare equal. The owner's
-  notification takes a short delivery lease before the send, but `notifiedStateKey`
-  is stamped only after transport reports success. A failed/non-send releases the
-  lease and unchanged reconciliation retries; two concurrent drains cannot both own
-  the lease. A crashed sender's lease expires after 15 minutes.
+  notification takes a short delivery lease with an opaque claimant token before
+  the send, but `notifiedStateKey` is stamped only after transport reports success.
+  Immediately before provider input is read, a guarded update renews the lease only
+  while the incident is unresolved, unnotified, and that exact state/token is still
+  current. An expired-but-unreclaimed claimant can therefore continue, while a
+  successor token and the old worker race on the row and only one wins. A final exact
+  read then freezes recipient data and the incident's own evidence at the renewed
+  timestamp; a stale or reclaimed worker calls no provider and never substitutes a
+  later live booking review into an older claim. Completion and release match the
+  same token, so a stale sender cannot complete or clear a successor's lease. Missing email,
+  placeholder/bounce suppression and a deliberate per-booking `noEmails` switch are
+  terminal while the incident stays visible to officers. An unreadable `noEmails`
+  flag is transient: the notification lease is released and the exact queue claim
+  fails, because `hosting-coverage-lost` deliberately has no independent EmailLog
+  retry authority. The provider stays outside transactions, leaving only the narrow
+  race after the final token read rather than holding a transaction across delivery.
+  At most one exact claimant is active for each renewed lease. There is still one
+  unavoidable post-provider ambiguity: if the provider accepts the message and the
+  process dies before `notifiedStateKey` is stamped, the next lease may send the same
+  transition again. The provider has no idempotency-key contract; stamping before
+  transport would trade that rare duplicate for a permanently lost notice. This is
+  therefore at-least-once delivery with one durable success stamp, not an
+  exactly-once email guarantee. A crashed sender's lease expires after 15 minutes.
+  The re-evaluation queue uses the
+  same 15-minute token fencing for completion and failure, claims serial work one row
+  at a time, and excludes ids already attempted by that drain: a slow later item is
+  not pre-leased and a released failure cannot burn several attempts in one pass.
 - **Resolution is recorded, not inferred**, as one of `COVERAGE_RESTORED`,
   `BOOKING_AMENDED`, `EXCEPTION_APPROVED` or `BOOKING_CANCELLED` — inferring it from
   the absence of a hazard would report restored cover for a booking somebody
@@ -2901,12 +2950,16 @@ compliant indefinitely.
   officer's own decision. Approval means approval for THIS hazard: a materially
   different uncovered state reopens the review as PENDING and drops the decision, so a
   stale approval cannot suppress a new problem.
-- **The queue is at-least-once and every effect is idempotent.** Work is recorded in
+- **The queue is at-least-once; database effects are idempotent and provider delivery
+  has an explicit ambiguity.** Work is recorded in
   the transaction that caused it, drained inline immediately after that commit
   (best-effort, since the authoritative change must not be undone by a follow-up
   problem) and again by the `hosting-coverage-reevaluation` general-cron job, which
   is the authority on completion. `attempts` increments at CLAIM time, so a process
-  that dies mid-item still counts up and a poison item retires.
+  that dies mid-item still counts up and a poison item retires. Incident/review and
+  queue completion effects are guarded and idempotent; email is the stated
+  at-least-once exception when a crash lands after provider acceptance but before
+  the durable success stamp.
 - **The Booking Officer queue is in the bookings area.** Every unresolved incident
   appears prominently above the ordinary `/admin/bookings` list, with booking
   reference, owner, lodge, dates, uncovered guest-night count, cause and direct

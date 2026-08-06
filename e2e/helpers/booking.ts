@@ -71,6 +71,13 @@ export async function completeMemberDetailsGateIfShown(page: Page): Promise<void
     await fillIfEmpty(/address line 1/i, "12 Mountain Rd");
     await fillIfEmpty(/city|town/i, "Alpine Village");
     await fillIfEmpty(/postcode|postal code/i, "3420");
+    const postalAddressMissing = dialog.getByText("Postal Address Line 1", {
+      exact: true,
+    });
+    if (await postalAddressMissing.isVisible().catch(() => false)) {
+      await dialog.getByRole("button", { name: "Postal address" }).click();
+      await dialog.getByLabel("Postal same as physical").check();
+    }
     await saveAndContinue.click();
   }
 

@@ -7,7 +7,6 @@ import {
   type BedAllocationRoom,
 } from "@/lib/bed-allocation";
 import { createAuditLog } from "@/lib/audit";
-import { DEFAULT_BED_ALLOCATION_SETTINGS } from "@/config/club-settings-defaults";
 import { bookingHoldsCapacity } from "@/lib/booking-status";
 import {
   addDaysDateOnly,
@@ -31,6 +30,7 @@ import { lodgeNullTolerantScope } from "@/lib/lodges";
 import logger from "@/lib/logger";
 import { OPERATIONALLY_PRESENT_GUEST_WHERE } from "@/lib/member-guest-consent";
 import { prisma } from "@/lib/prisma";
+import { resolveEffectiveBedAllocationSettings } from "@/lib/bed-allocation-settings";
 
 type BedAllocationLifecycleDb = Prisma.TransactionClient | typeof prisma;
 
@@ -285,7 +285,6 @@ async function sweepAllocationsWithPromotion(
 
 interface ReconcileBedAllocationsForBookingInput {
   bookingId: string;
-  db?: BedAllocationLifecycleDb;
   // Retained for API stability and as pruning context for the ~45 call sites
   // that pass a booking's pre-change dates. Since #1686 the auto-placement
   // range is the booking's CURRENT range only; stale rows outside it are
@@ -532,17 +531,6 @@ function normalizeRange(
   return range;
 }
 
-function clampRange(
-  stayStart: Date,
-  stayEnd: Date,
-  range: BedAllocationLifecycleRange,
-): BedAllocationLifecycleRange | null {
-  return normalizeRange({
-    checkIn: stayStart > range.checkIn ? stayStart : range.checkIn,
-    checkOut: stayEnd < range.checkOut ? stayEnd : range.checkOut,
-  });
-}
-
 async function loadBookingForBedAllocation(
   db: BedAllocationLifecycleDb,
   bookingId: string,
@@ -585,6 +573,13 @@ async function loadBookingForBedAllocation(
           // included night, so non-contiguous stays only hold beds on the
           // nights the guest actually stays.
           nights: { select: { stayDate: true } },
+          member: {
+            select: {
+              familyGroupMemberships: {
+                select: { familyGroupId: true },
+              },
+            },
+          },
         },
         orderBy: [{ createdAt: "asc" }, { id: "asc" }],
       },
@@ -603,18 +598,13 @@ function getGuestNightDatesInRange(
 ): Date[] {
   const rangeStartKey = formatDateOnly(range.checkIn);
   const rangeEndKey = formatDateOnly(range.checkOut); // exclusive
-  if (guest.nights && guest.nights.length > 0) {
-    return guest.nights
-      .map((night) => night.stayDate)
-      .filter((stayDate) => {
-        const key = formatDateOnly(stayDate);
-        return key >= rangeStartKey && key < rangeEndKey;
-      })
-      .sort((a, b) => a.getTime() - b.getTime());
-  }
-  const clamped = clampRange(guest.stayStart, guest.stayEnd, range);
-  if (!clamped) return [];
-  return eachDateOnlyInRange(clamped.checkIn, clamped.checkOut);
+  return (guest.nights ?? [])
+    .map((night) => night.stayDate)
+    .filter((stayDate) => {
+      const key = formatDateOnly(stayDate);
+      return key >= rangeStartKey && key < rangeEndKey;
+    })
+    .sort((a, b) => a.getTime() - b.getTime());
 }
 
 async function pruneAllocationsForBooking(
@@ -648,7 +638,6 @@ async function pruneAllocationsForBooking(
 
   for (const guest of booking.guests) {
     const nightDates = guest.nights?.map((night) => night.stayDate) ?? [];
-    if (nightDates.length > 0) {
       // Prune any allocation on a night the guest no longer stays — this covers
       // gaps in a non-contiguous stay and nights switched off in the grid
       // (issue #713), not just the range edges.
@@ -656,18 +645,6 @@ async function pruneAllocationsForBooking(
         bookingGuestId: guest.id,
         stayDate: { notIn: nightDates },
       });
-    } else {
-      staleGuestNightClauses.push(
-        {
-          bookingGuestId: guest.id,
-          stayDate: { lt: guest.stayStart },
-        },
-        {
-          bookingGuestId: guest.id,
-          stayDate: { gte: guest.stayEnd },
-        },
-      );
-    }
   }
 
   // Stale guest-night sweep (date change / night dropped / guest removed):
@@ -690,25 +667,18 @@ export async function resolveAutoAllocationEnabled(
     bedAllocationSettings: {
       findUnique: (args: {
         where: { id: string };
-      }) => Promise<{ autoAllocationEnabled: boolean; lodgeId?: string | null } | null>;
+      }) => Promise<{
+        id: string;
+        autoAllocationEnabled: boolean;
+        allocationPriorityOrder: unknown;
+        lodgeId?: string | null;
+      } | null>;
     };
   },
   lodgeId?: string | null,
 ): Promise<boolean> {
-  if (lodgeId && lodgeId !== "default") {
-    const ownRow = await db.bedAllocationSettings.findUnique({
-      where: { id: lodgeId },
-    });
-    if (ownRow) return ownRow.autoAllocationEnabled;
-  }
-  const legacy = await db.bedAllocationSettings.findUnique({
-    where: { id: "default" },
-  });
-  if (!legacy) return DEFAULT_BED_ALLOCATION_SETTINGS.autoAllocationEnabled;
-  if (lodgeId && legacy.lodgeId && legacy.lodgeId !== lodgeId) {
-    return DEFAULT_BED_ALLOCATION_SETTINGS.autoAllocationEnabled;
-  }
-  return legacy.autoAllocationEnabled;
+  return (await resolveEffectiveBedAllocationSettings(db, lodgeId))
+    .autoAllocationEnabled;
 }
 
 async function autoAllocateMissingBedNights({
@@ -717,8 +687,8 @@ async function autoAllocateMissingBedNights({
   range,
   lodgeId,
 }: AutoAllocateMissingBedNightsInput): Promise<number> {
-  const enabled = await resolveAutoAllocationEnabled(db, lodgeId);
-  if (!enabled) {
+  const settings = await resolveEffectiveBedAllocationSettings(db, lodgeId);
+  if (!settings.autoAllocationEnabled) {
     return 0;
   }
 
@@ -754,6 +724,7 @@ async function autoAllocateMissingBedNights({
       select: {
         id: true,
         createdAt: true,
+        lodgeId: true,
         requestedRoomId: true,
         // #1677 envelope widening: the overlapping bookings' own stay windows
         // widen the loads below so the planner sees WHOLE stays.
@@ -788,6 +759,13 @@ async function autoAllocateMissingBedNights({
             stayStart: true,
             stayEnd: true,
             nights: { select: { stayDate: true } },
+            member: {
+              select: {
+                familyGroupMemberships: {
+                  select: { familyGroupId: true },
+                },
+              },
+            },
           },
           orderBy: [{ createdAt: "asc" }, { id: "asc" }],
         },
@@ -854,13 +832,23 @@ async function autoAllocateMissingBedNights({
           createdAt: true,
           checkIn: true,
           checkOut: true,
-          originBookingRequest: { select: { id: true } },
+          lodgeId: true,
+          requestedRoomId: true,
+          originBookingRequest: { select: { id: true, type: true } },
+          heldForBookingRequest: { select: { type: true } },
           adminCapacityHoldAt: true,
         },
       },
       bookingGuest: {
         select: {
           ageTier: true,
+          member: {
+            select: {
+              familyGroupMemberships: {
+                select: { familyGroupId: true },
+              },
+            },
+          },
         },
       },
     },
@@ -907,6 +895,11 @@ async function autoAllocateMissingBedNights({
             ageTier: guest.ageTier,
             stayStart: stayDate,
             stayEnd: addDaysDateOnly(stayDate, 1),
+            nights: [stayDate],
+            familyGroupIds:
+              guest.member?.familyGroupMemberships.map(
+                (membership) => membership.familyGroupId,
+              ) ?? [],
           });
         }
       }
@@ -915,6 +908,7 @@ async function autoAllocateMissingBedNights({
         ? {
             id: booking.id,
             createdAt: booking.createdAt,
+            lodgeId: booking.lodgeId,
             requestedRoomId: booking.requestedRoomId,
             holdsCapacity: bookingHoldsCapacity({
               status: booking.status,
@@ -941,6 +935,7 @@ async function autoAllocateMissingBedNights({
     name: room.name,
     sortOrder: room.sortOrder,
     active: room.active,
+    lodgeId: room.lodgeId,
     beds: room.beds.map((bed) => ({
       id: bed.id,
       roomId: bed.roomId,
@@ -998,6 +993,7 @@ async function autoAllocateMissingBedNights({
     // allocation is moved aside or unallocated so a held booking always gets a
     // bed the availability math already admitted it to.
     prioritizeCapacityHolding: true,
+    allocationPriorityOrder: settings.allocationPriorityOrder,
     rooms: plannerRooms,
     bookings: plannerBookings,
     occupiedBedNights: [
@@ -1020,6 +1016,15 @@ async function autoAllocateMissingBedNights({
         roomId: allocation.roomId,
         stayDate: allocation.stayDate,
         ageTier: allocation.bookingGuest.ageTier,
+        familyGroupIds:
+          allocation.bookingGuest.member?.familyGroupMemberships.map(
+            (membership) => membership.familyGroupId,
+          ) ?? [],
+        bookingRequestedRoomId:
+          allocation.booking?.requestedRoomId ?? null,
+        bookingIsSchoolGroup:
+          allocation.booking?.originBookingRequest?.type === "SCHOOL" ||
+          allocation.booking?.heldForBookingRequest?.type === "SCHOOL",
         approvedAt: allocation.approvedAt,
         // #1677: newest provisional bookings are evicted first when a held
         // booking needs a whole room.
@@ -1321,10 +1326,16 @@ async function recordBedDisplacementAudit(
   }
 }
 
-export async function reconcileBedAllocationsForBooking({
+/**
+ * Internal reconciliation entrypoint for callers that already hold the global
+ * booking lock followed by this booking's lodge-capacity lock.
+ */
+export async function reconcileBedAllocationsForBookingWithLodgeLockHeld({
   bookingId,
-  db = prisma,
-}: ReconcileBedAllocationsForBookingInput): Promise<BedAllocationLifecycleResult> {
+  db,
+}: ReconcileBedAllocationsForBookingInput & {
+  db: BedAllocationLifecycleDb;
+}): Promise<BedAllocationLifecycleResult> {
   const enabled = await isEffectiveModuleEnabled("bedAllocation", db);
 
   if (!enabled) {
@@ -1371,6 +1382,47 @@ export async function reconcileBedAllocationsForBooking({
     : 0;
 
   return { enabled: true, deletedCount, createdCount, promotedCount };
+}
+
+/**
+ * Composition boundary for a transaction that already owns global lock(1)
+ * but has not yet acquired the booking's lodge key. It resolves that key under
+ * the global lock, acquires the lodge tier, then delegates to the fully-held
+ * implementation. Call this before any member-family lock is acquired.
+ */
+export async function reconcileBedAllocationsForBookingWithGlobalLockHeld(
+  input: ReconcileBedAllocationsForBookingInput & {
+    db: BedAllocationLifecycleDb;
+  },
+): Promise<BedAllocationLifecycleResult> {
+  const bookingKey = await input.db.booking.findUnique({
+    where: { id: input.bookingId },
+    select: { lodgeId: true },
+  });
+  if (bookingKey?.lodgeId) {
+    await acquireLodgeCapacityLock(input.db, bookingKey.lodgeId);
+  }
+  return reconcileBedAllocationsForBookingWithLodgeLockHeld(input);
+}
+
+/**
+ * Self-locking public boundary. It owns its transaction and acquires global
+ * then the booking's immutable lodge key; composed transactions use one of the
+ * explicit held entrypoints above. Mutable booking/allocation state is re-read
+ * by the internal implementation after lock acquisition.
+ */
+export async function reconcileBedAllocationsForBooking(
+  input: ReconcileBedAllocationsForBookingInput,
+): Promise<BedAllocationLifecycleResult> {
+  const runLocked = async (tx: BedAllocationLifecycleDb) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
+    return reconcileBedAllocationsForBookingWithGlobalLockHeld({
+      ...input,
+      db: tx,
+    });
+  };
+
+  return prisma.$transaction(runLocked);
 }
 
 // ---------------------------------------------------------------------------
@@ -1586,9 +1638,69 @@ export async function sweepFuturePartnerSharedAllocations(params: {
   memberId: string;
   partnerMemberId?: string;
   reason: PartnerSharedSweepReason;
-  db?: BedAllocationLifecycleDb;
 }): Promise<SweptPartnerSharedAllocation[]> {
-  const db = params.db ?? prisma;
+  return prisma.$transaction(async (tx) => {
+    await acquireFuturePartnerSharedAllocationLocks(tx, [
+      params.memberId,
+      ...(params.partnerMemberId ? [params.partnerMemberId] : []),
+    ]);
+    return sweepFuturePartnerSharedAllocationsWithLocksHeld({
+      ...params,
+      db: tx,
+    });
+  });
+}
+
+/**
+ * Acquire the complete lock prefix for a transaction that will invalidate
+ * future partner-shared placements. Call this before any member/link mutation:
+ * the sweep may touch allocations in several lodges, so the canonical order is
+ * global cohort, then every affected lodge in sorted order, then any member
+ * lifecycle locks owned by the caller.
+ */
+export async function acquireFuturePartnerSharedAllocationLocks(
+  tx: Prisma.TransactionClient,
+  memberIds: readonly string[],
+): Promise<void> {
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
+  const uniqueMemberIds = [...new Set(memberIds.filter(Boolean))];
+  if (uniqueMemberIds.length === 0) return;
+
+  // Either occupant's own allocation names the affected lodge. This may lock
+  // a lodge where the member has another, non-shared future placement too; the
+  // conservative over-lock keeps discovery bounded and cannot miss the lodge
+  // of a shared bed-night whose counterpart belongs to another booking.
+  const allocationLodges = await tx.bedAllocation.findMany({
+    where: {
+      stayDate: { gte: getTodayDateOnly() },
+      bookingGuest: { memberId: { in: uniqueMemberIds } },
+    },
+    select: { room: { select: { lodgeId: true } } },
+  });
+  const lodgeIds = [
+    ...new Set(
+      allocationLodges
+        .map((allocation) => allocation.room.lodgeId)
+        .filter((lodgeId): lodgeId is string => Boolean(lodgeId)),
+    ),
+  ].sort();
+  for (const lodgeId of lodgeIds) {
+    await acquireLodgeCapacityLock(tx, lodgeId);
+  }
+}
+
+/**
+ * Internal sweep for callers that already hold the global cohort lock and all
+ * affected lodge locks through `acquireFuturePartnerSharedAllocationLocks`.
+ * The candidate rows are deliberately re-read after those locks.
+ */
+export async function sweepFuturePartnerSharedAllocationsWithLocksHeld(params: {
+  memberId: string;
+  partnerMemberId?: string;
+  reason: PartnerSharedSweepReason;
+  db: BedAllocationLifecycleDb;
+}): Promise<SweptPartnerSharedAllocation[]> {
+  const db = params.db;
   const today = getTodayDateOnly();
   const scopeIds = params.partnerMemberId
     ? [params.memberId, params.partnerMemberId]

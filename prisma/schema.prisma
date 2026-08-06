@@ -2527,14 +2527,16 @@ model BedAllocation {
 }
 
 model BedAllocationSettings {
-  id                    String   @id @default("default")
-  autoAllocationEnabled Boolean  @default(true)
-  // Soft link for the phase-7 singleton-to-per-lodge conversion
-  // (docs/multi-lodge/implementation-plan.md); unused by runtime reads today.
-  lodgeId               String?
-  updatedByMemberId     String?
-  createdAt             DateTime @default(now())
-  updatedAt             DateTime @updatedAt
+  id                      String   @id @default("default")
+  autoAllocationEnabled   Boolean  @default(true)
+  allocationPriorityOrder String[] @default(["BOOKING_COHESION", "STAY_CONTINUITY", "REQUESTED_ROOM", "FAMILY_COHESION"])
+  // Compatibility link for the historical `id = "default"` row. Runtime
+  // settings are now resolved per lodge: a lodge-id row wins, then the legacy
+  // row only when it is unlinked or linked to that lodge, then code defaults.
+  lodgeId                 String?
+  updatedByMemberId       String?
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
 
   @@index([updatedByMemberId])
 }
@@ -3362,6 +3364,7 @@ model HostingCoverageIncident {
   /// sender releases this claim so the durable re-evaluation can retry.
   ownerNotificationClaimStateKey String?   @db.VarChar(300)
   ownerNotificationClaimedAt     DateTime?
+  ownerNotificationClaimToken    String?   @db.VarChar(64)
 
   openedAt   DateTime  @default(now())
   updatedAt  DateTime  @updatedAt
@@ -3422,6 +3425,8 @@ model HostingCoverageReevaluation {
   processedAt DateTime?
   attempts    Int       @default(0)
   lastError   String?   @db.VarChar(1000)
+  claimToken     String?   @db.VarChar(64)
+  claimExpiresAt DateTime?
 
   member Member @relation("HostingCoverageReevaluations", fields: [memberId], references: [id], onDelete: Cascade)
 

@@ -8,6 +8,7 @@ import { acquireConfigImportLock } from "@/lib/config-transfer-lock";
 import { acquireLodgeCapacityLock } from "@/lib/lodge-capacity-lock";
 import { lockMinimumStayPolicySet } from "@/lib/minimum-stay-policy-set";
 import { lockAdultMemberHostingPolicySet } from "@/lib/adult-member-hosting-policy-set";
+import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
 import { readBundle, sha256Hex } from "./bundle";
 import { buildImportPlanFromParsed, CATEGORY_IMPORTERS } from "./import";
 import { mediaApplies, recreateBundleMedia } from "./media";
@@ -395,6 +396,14 @@ export async function applyConfigImport(
       },
     },
   });
+
+  // Adult-hosting policy replacement queues every affected active incident in
+  // the import transaction. Drain only after that transaction and its audit
+  // have committed; provider delivery remains outside the authoritative write,
+  // and the cron retains any work the bounded inline pass does not finish.
+  if (appliedEntities.includes("adult-member-hosting-policy")) {
+    await settleHostingCoverageAfterCommit({ limit: 5 }, prisma);
+  }
 
   return {
     perCategory,

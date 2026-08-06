@@ -8,6 +8,7 @@ set -Eeuo pipefail
 
 ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS="${ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS:-0}"
 BLUE_GREEN_MIGRATION_OVERRIDE_REASON="${BLUE_GREEN_MIGRATION_OVERRIDE_REASON:-}"
+BLUE_GREEN_OLD_APP_AND_WORKERS_STOPPED="${BLUE_GREEN_OLD_APP_AND_WORKERS_STOPPED:-0}"
 MIGRATION_SAFETY_LEDGER="${MIGRATION_SAFETY_LEDGER:-docs/BLUE_GREEN_MIGRATION_SAFETY.tsv}"
 
 # Whole-statement splitter, shared with scripts/check-data-migration-verification.sh
@@ -493,6 +494,7 @@ validate_ledger_entry() {
 
 found_breaking=0
 found_failure=0
+found_windowed=0
 pending_count=0
 
 # Split the single ledger pass into its two outputs. awk (not grep) so a scan with
@@ -622,6 +624,7 @@ for migration_sql in "$@"; do
   # reviewed-no-outage waiver above: if the row says the outage is real, the gate
   # believes the row.
   if [ "$ledger_declared_windowed" = "1" ]; then
+    found_windowed=1
     found_breaking=1
     printf 'Ledger declares this migration windowed (old colour NOT kept compatible; deploy-window only): %s\n' "$migration_sql" >&2
 
@@ -642,6 +645,20 @@ for migration_sql in "$@"; do
     fi
   fi
 done
+
+# An override is only permission to run a reviewed window; it is not evidence
+# that the window actually exists. In particular, 20260806010000 is additive SQL
+# but an old hosting worker ignores the newly added claimant tokens and can steal
+# or complete work leased by the new protocol. Refuse an override-backed windowed
+# deploy until the operator separately attests that the old web colour and every
+# old worker/scheduler/queue consumer have stopped. The PR-time coverage sweep sets
+# this explicitly for its non-deploy fixture run.
+if [ "$found_windowed" = "1" ] &&
+  [ "$ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS" = "1" ] &&
+  [ "$BLUE_GREEN_OLD_APP_AND_WORKERS_STOPPED" != "1" ]; then
+  echo "Pending windowed migrations cannot run until the old app and every old worker are stopped. Set BLUE_GREEN_OLD_APP_AND_WORKERS_STOPPED=1 only after removing traffic, stopping the old web colour and all workers/schedulers/queue consumers, and verifying no old connection remains." >&2
+  found_failure=1
+fi
 
 if [ "$found_failure" = "1" ]; then
   echo "Pending migrations are missing required blue/green safety documentation." >&2

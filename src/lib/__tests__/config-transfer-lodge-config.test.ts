@@ -7,6 +7,7 @@ import { buildConfigExport } from "@/lib/config-transfer/export";
 import { buildImportPlan } from "@/lib/config-transfer/import";
 import { readBundle } from "@/lib/config-transfer/bundle";
 import { parseCsv } from "@/lib/config-transfer/csv";
+import { lodgeFolderFiles } from "@/lib/config-transfer/categories/lodge-config";
 import type { ReadDb } from "@/lib/config-transfer/import-types";
 
 const LODGE_JSON = "lodge-config/lodges/main/lodge.json";
@@ -24,7 +25,7 @@ function sourceDb(): ReadDb {
     lodge: {
       findMany: vi.fn().mockResolvedValue([
         {
-          slug: "main", name: "Main Lodge", active: true, travelNote: "Turn left",
+          id: "lodge-main", slug: "main", name: "Main Lodge", active: true, travelNote: "Turn left",
           doorCode: "9999", isDefault: true,
           displayConfig: { "wifi-code": "alpine1234" },
           displayNameGranularity: "FULL_NAME",
@@ -81,6 +82,20 @@ function sourceDb(): ReadDb {
     // reads both tables even when empty.
     displayLayout: { findMany: vi.fn().mockResolvedValue([]) },
     displayTemplate: { findMany: vi.fn().mockResolvedValue([]) },
+    bedAllocationSettings: {
+      findUnique: vi.fn().mockImplementation(async ({ where }: { where: { id: string } }) =>
+        where.id === "lodge-main"
+          ? {
+              id: "lodge-main",
+              lodgeId: "lodge-main",
+              autoAllocationEnabled: false,
+              allocationPriorityOrder: ["REQUESTED_ROOM", "BOOKING_COHESION"],
+              updatedByMemberId: null,
+              updatedAt: null,
+            }
+          : null,
+      ),
+    },
   } as unknown as ReadDb;
 }
 
@@ -118,6 +133,13 @@ async function exportLodges(includeDoorCodes: boolean) {
 }
 
 describe("config-transfer lodge-config (per-lodge folders)", () => {
+  it("publishes the complete eight-file per-lodge path contract", () => {
+    expect(lodgeFolderFiles("main").bedAllocationSettings).toBe(
+      "lodge-config/lodges/main/bed-allocation-settings.json",
+    );
+    expect(Object.keys(lodgeFolderFiles("main"))).toHaveLength(8);
+  });
+
   it("exports a lodge folder with lodge.json + collection CSVs (lodge implied by folder)", async () => {
     const { zip } = await exportLodges(false);
     const { files } = readBundle(zip);

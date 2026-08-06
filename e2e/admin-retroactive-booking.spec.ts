@@ -1,6 +1,11 @@
 import { type BrowserContext, expect, test, type Page } from "@playwright/test";
 import { storageStatePath } from "./helpers/auth";
 import {
+  overrideSingleLodgeAutoAllocation,
+  setBedAllocationSettings,
+  type BedAllocationSettingsSnapshot,
+} from "./helpers/bed-allocation-settings";
+import {
   bookingCreateIsolation,
   postBookingCreate,
   withBookingCreateClientIp,
@@ -32,6 +37,7 @@ test.describe.configure({ mode: "serial" });
 
 let memberContext: BrowserContext;
 let adminContext: BrowserContext;
+let bedAllocationSettingsBefore: BedAllocationSettingsSnapshot | undefined;
 
 function isoDay(offsetDays: number): string {
   const d = new Date();
@@ -146,22 +152,21 @@ test.beforeAll(async ({ browser }) => {
   // auto-place bookings lodge-wide; disable auto-allocation for this spec so it
   // never disturbs the bed-allocation spec's fixtures (which owns the same
   // setting for its own run).
-  const disabled = await adminContext.request.put(
-    "/api/admin/bed-allocation/settings",
-    { data: { autoAllocationEnabled: false } },
+  bedAllocationSettingsBefore = await overrideSingleLodgeAutoAllocation(
+    adminContext.request,
+    false,
   );
-  expect(
-    disabled.ok(),
-    `disable auto-allocation (${disabled.status()})`,
-  ).toBeTruthy();
 });
 
 test.afterAll(async () => {
   try {
     if (adminContext) {
-      await adminContext.request.put("/api/admin/bed-allocation/settings", {
-        data: { autoAllocationEnabled: true },
-      });
+      if (bedAllocationSettingsBefore) {
+        await setBedAllocationSettings(
+          adminContext.request,
+          bedAllocationSettingsBefore,
+        );
+      }
     }
   } finally {
     await memberContext?.close();

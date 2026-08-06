@@ -3,7 +3,8 @@ import { BookingStatus } from "@prisma/client";
 import { expireStaleOffers } from "./waitlist";
 import { getTodayDateOnly } from "@/lib/date-only";
 import logger from "@/lib/logger";
-import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
+import { reconcileBedAllocationsForBookingWithLodgeLockHeld } from "@/lib/bed-allocation-lifecycle";
+import { acquireLodgeCapacityLock } from "@/lib/capacity";
 
 const DEFAULT_WAITLIST_TRANSACTION_RETRY_ATTEMPTS = 3;
 const DEFAULT_WAITLIST_TRANSACTION_RETRY_DELAY_MS = 500;
@@ -84,35 +85,68 @@ async function processWaitlistCronOnce(): Promise<{
   // (F32, #1888).
   const today = getTodayDateOnly();
 
-  const pastWaitlisted = await prisma.booking.findMany({
+  const candidates = await prisma.booking.findMany({
     where: {
       status: { in: [BookingStatus.WAITLISTED, BookingStatus.WAITLIST_OFFERED] },
       checkOut: { lte: today },
     },
-    select: { id: true, checkIn: true, checkOut: true },
+    select: { id: true },
   });
-
-  if (pastWaitlisted.length > 0) {
-    await prisma.booking.updateMany({
-      where: {
-        id: { in: pastWaitlisted.map((b) => b.id) },
-      },
-      data: {
-        status: BookingStatus.CANCELLED,
-        waitlistPosition: null,
-        waitlistOfferedAt: null,
-        waitlistOfferExpiresAt: null,
-      },
-    });
-    for (const booking of pastWaitlisted) {
-      await reconcileBedAllocationsForBooking({
+  const pastWaitlisted: Array<{
+    id: string;
+    checkIn: Date;
+    checkOut: Date;
+    lodgeId: string;
+  }> = [];
+  for (const candidate of candidates) {
+    const cancelled = await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
+      const key = await tx.booking.findUnique({
+        where: { id: candidate.id },
+        select: { lodgeId: true },
+      });
+      if (!key) return null;
+      await acquireLodgeCapacityLock(tx, key.lodgeId);
+      const booking = await tx.booking.findUnique({
+        where: { id: candidate.id },
+        select: { id: true, checkIn: true, checkOut: true, lodgeId: true, status: true },
+      });
+      if (
+        !booking ||
+        (booking.status !== BookingStatus.WAITLISTED &&
+          booking.status !== BookingStatus.WAITLIST_OFFERED) ||
+        booking.checkOut > today
+      ) {
+        return null;
+      }
+      const claimed = await tx.booking.updateMany({
+        where: {
+          id: booking.id,
+          status: { in: [BookingStatus.WAITLISTED, BookingStatus.WAITLIST_OFFERED] },
+          checkOut: { lte: today },
+        },
+        data: {
+          status: BookingStatus.CANCELLED,
+          waitlistPosition: null,
+          waitlistOfferedAt: null,
+          waitlistOfferExpiresAt: null,
+        },
+      });
+      if (claimed.count === 0) return null;
+      await reconcileBedAllocationsForBookingWithLodgeLockHeld({
         bookingId: booking.id,
+        db: tx,
         previousRange: {
           checkIn: booking.checkIn,
           checkOut: booking.checkOut,
         },
       });
-    }
+      return booking;
+    });
+    if (cancelled) pastWaitlisted.push(cancelled);
+  }
+
+  if (pastWaitlisted.length > 0) {
 
     logger.info(
       { count: pastWaitlisted.length, job: "processWaitlistCron" },
@@ -131,7 +165,7 @@ async function processWaitlistCronOnce(): Promise<{
 /**
  * Waitlist processor cron job.
  * - Expires stale WAITLIST_OFFERED bookings and re-offers to next candidates
- * - Auto-cancels WAITLISTED bookings where all dates are in the past
+ * - Auto-cancels WAITLISTED and WAITLIST_OFFERED bookings whose dates passed
  * - Retries transient Prisma transaction-start failures; each attempt is safe
  *   because waitlist mutations are guarded by statuses and advisory locks.
  */

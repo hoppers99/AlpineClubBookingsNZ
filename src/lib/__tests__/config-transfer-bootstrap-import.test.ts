@@ -6,8 +6,25 @@ vi.mock("server-only", () => ({}));
 // proves runDatabaseBackup is never called on that path.
 vi.mock("@/lib/backup", () => ({ runDatabaseBackup: vi.fn() }));
 vi.mock("@/lib/audit", () => ({ createAuditLog: vi.fn(async () => undefined) }));
-// Keep the module's config-provenance import inert and deterministic.
-vi.mock("@/config/club", () => ({ clubConfigSource: "safe-default" }));
+// Every exercised path injects its database client. Keep accidental transitive
+// imports from constructing the process-wide Prisma singleton in this unit test.
+vi.mock("@/lib/prisma", () => ({ prisma: {} }));
+// Adult-hosting delivery is covered by its own config-transfer tests; keeping
+// that post-commit seam inert prevents this bootstrap suite from constructing
+// the application Prisma singleton during module import.
+vi.mock("@/lib/adult-member-hosting-coverage-drain", () => ({
+  settleHostingCoverageAfterCommit: vi.fn(async () => undefined),
+}));
+// Keep the module's config-provenance import inert and deterministic while
+// preserving the complete safe-default surface used by transitive imports.
+vi.mock("@/config/club", async () => {
+  const { SAFE_DEFAULT_CONFIG } = await import("@/config/safe-default-config");
+  return {
+    clubConfig: SAFE_DEFAULT_CONFIG,
+    clubConfigSource: "safe-default",
+    SAFE_DEFAULT_CONFIG,
+  };
+});
 
 import type { PrismaClient } from "@prisma/client";
 

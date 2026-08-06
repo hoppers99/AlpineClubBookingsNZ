@@ -13,7 +13,11 @@ import { markBookingPaymentSucceeded } from "@/lib/payment-reconciliation";
 import { upsertPaymentIntentTransaction } from "@/lib/payment-transactions";
 import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
 import { enqueueOwnHostingCoverageReevaluation } from "@/lib/adult-member-hosting-review";
-import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
+import {
+  reconcileBedAllocationsForBooking,
+  reconcileBedAllocationsForBookingWithGlobalLockHeld,
+  reconcileBedAllocationsForBookingWithLodgeLockHeld,
+} from "@/lib/bed-allocation-lifecycle";
 import {
   acquireLodgeCapacityLock,
   checkCapacityForGuestRanges,
@@ -252,6 +256,16 @@ export async function POST(
           return { error: "Booking is no longer pending" as const, status: 409 };
         }
 
+        await reconcileBedAllocationsForBookingWithLodgeLockHeld({
+          bookingId,
+          db: tx,
+          previousRange,
+        });
+        await enqueueOwnHostingCoverageReevaluation(bookingId, tx, {
+          cause: "SYSTEM_CHANGE",
+          actorMemberId: session.user.id,
+        });
+
         return { ok: true as const };
       });
 
@@ -271,7 +285,7 @@ export async function POST(
         );
       }
 
-      await reconcileBedAllocationsForBooking({ bookingId, previousRange });
+      await settleHostingCoverageAfterCommit({ bookingId });
       await prisma.payment.upsert({
         where: { bookingId },
         create: { bookingId, amountCents: 0, status: PaymentStatus.SUCCEEDED },
@@ -393,7 +407,7 @@ export async function POST(
       if (claimed.count === 0) {
         return { error: "Booking is no longer pending" as const, status: 409 };
       }
-      await reconcileBedAllocationsForBooking({
+      await reconcileBedAllocationsForBookingWithLodgeLockHeld({
         bookingId,
         db: tx,
         previousRange,
@@ -455,6 +469,7 @@ export async function POST(
     // CONFIRMED keeps holding the beds the member just paid for.
     const releaseChargeClaim = async () => {
       await prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
         await acquireLodgeCapacityLock(tx, booking.lodgeId);
         const released = await tx.booking.updateMany({
           where: { id: bookingId, status: BookingStatus.CONFIRMED },
@@ -464,7 +479,7 @@ export async function POST(
           },
         });
         if (released.count > 0) {
-          await reconcileBedAllocationsForBooking({
+          await reconcileBedAllocationsForBookingWithGlobalLockHeld({
             bookingId,
             db: tx,
             previousRange,

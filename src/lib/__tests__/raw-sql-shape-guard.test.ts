@@ -64,6 +64,10 @@ const RAW_READ_INVENTORY: Record<string, number> = {
   // or the read-modify-write race it exists to close reopens. Its result goes
   // through `decodeRawRows`.
   "src/lib/rate-limit.ts": 1,
+  // The non-blocking adult-hosting policy-set lock reads the one boolean
+  // returned by `pg_try_advisory_xact_lock`; the row is schema-decoded before
+  // the worker decides whether it may proceed.
+  "src/lib/adult-member-hosting-policy-set.ts": 1,
 };
 
 /**

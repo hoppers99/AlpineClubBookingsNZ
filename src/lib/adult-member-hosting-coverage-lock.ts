@@ -7,21 +7,21 @@ import type { Prisma } from "@prisma/client";
  * WHY A NEW LOCK FAMILY, when the review module's first draft argued none was
  * needed. That argument was that "every path that can confirm a booking and every
  * path that can remove exact-night attendance already takes the per-lodge capacity
- * lock", so two interacting writers always contend for the same key. It is false
- * in both directions, and measurably so:
+ * lock", so two interacting writers always contend for the same key. When #2576
+ * introduced this key, it was false in both directions, and measurably so:
  *
- *  - `booking-cancel.ts`'s four claim transactions take `pg_advisory_xact_lock(1)`
- *    and never `acquireLodgeCapacityLock`;
- *  - `booking-create.ts` and the guest-add route take `acquireLodgeCapacityLock`
- *    and never `pg_advisory_xact_lock(1)`.
+ *  - `booking-cancel.ts`'s four claim transactions took `pg_advisory_xact_lock(1)`
+ *    and not `acquireLodgeCapacityLock`;
+ *  - `booking-create.ts` and the guest-add route took `acquireLodgeCapacityLock`
+ *    and not `pg_advisory_xact_lock(1)`.
  *
- * `pg_advisory_xact_lock(1)` and `pg_advisory_xact_lock(hashtextextended(lodgeId, 0))`
- * are DIFFERENT KEYS, these transactions run at READ COMMITTED, and the two
- * writers touch no row in common. So nothing serialised them, and §9's named race
- * was open: a cancel that removes the last qualifying adult could commit
- * concurrently with a create that had just read that adult as cover, and neither
- * side could see the other. Which booking won depended on commit order — exactly
- * the non-determinism §9 forbids.
+ * Those keys were different at READ COMMITTED over disjoint rows, so the named
+ * create-versus-cancel race was open. #2593 later made the allocation-participating
+ * confirmed-create and cancellation paths compose global → lodge. That later
+ * overlap does not retire the owner key: coverage is a cross-booking, per-owner
+ * invariant, and participant/member/queue producers do not all share those tiers.
+ * The coverage-owner key remains the authoritative common serialisation point and
+ * stays last.
  *
  * THE INVARIANT IS PER-OWNER, SO THE KEY IS THE OWNER. Same-owner coverage is a
  * property of one `Booking.memberId` at one lodge (§1, §4), and the repository
@@ -32,11 +32,13 @@ import type { Prisma } from "@prisma/client";
  * locks.
  *
  * ACQUISITION ORDER — ALWAYS LAST. Callers take this AFTER any
- * `pg_advisory_xact_lock(1)`, after `acquireLodgeCapacityLock`, and after
- * `lockBookingMemberNights`, giving the tree one consistent order
- * (global → lodge → member-night → coverage-owner) that cannot deadlock. Where
- * several owners are involved the keys are taken in sorted order, the same
- * discipline the member-night lock uses.
+ * `pg_advisory_xact_lock(1)`, after `acquireLodgeCapacityLock`, after any
+ * roster-date locks, and after the applicable member-night and member-credit
+ * locks. That gives the full tree one consistent order (global → lodge →
+ * roster-date → member-night → member-credit → coverage-owner) that cannot
+ * deadlock; paths that do not use a tier simply omit it. Where several owners
+ * are involved the keys are taken in sorted order, the same discipline the
+ * member-night lock uses.
  *
  * RE-ENTRANT, SO CHEAP TO BE THOROUGH. Postgres advisory locks are per-session
  * and re-entrant, so acquiring the same owner key twice inside one transaction is

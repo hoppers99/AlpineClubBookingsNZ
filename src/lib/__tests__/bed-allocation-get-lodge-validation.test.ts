@@ -7,12 +7,14 @@ import { NextRequest } from "next/server";
 // left un-mocked so the real validation runs against the mocked prisma.
 const {
   mockLodgeFindUnique,
-  mockRequireBedAllocationAdmin,
+  mockRequireBedAllocationRead,
+  mockRequireBedInventoryRead,
   mockGetBedAllocationDashboard,
   mockGetRoomsAndBedsConfiguration,
 } = vi.hoisted(() => ({
   mockLodgeFindUnique: vi.fn(),
-  mockRequireBedAllocationAdmin: vi.fn(),
+  mockRequireBedAllocationRead: vi.fn(),
+  mockRequireBedInventoryRead: vi.fn(),
   mockGetBedAllocationDashboard: vi.fn(),
   mockGetRoomsAndBedsConfiguration: vi.fn(),
 }));
@@ -31,7 +33,8 @@ vi.mock("@/lib/public-content-revalidation", () => ({
 }));
 
 vi.mock("@/lib/admin-bed-allocation-routes", () => ({
-  requireBedAllocationAdmin: () => mockRequireBedAllocationAdmin(),
+  requireBedAllocationRead: () => mockRequireBedAllocationRead(),
+  requireBedInventoryRead: () => mockRequireBedInventoryRead(),
   bedAllocationErrorResponse: vi.fn(),
 }));
 
@@ -50,7 +53,7 @@ vi.mock("@/lib/admin-bed-allocation", () => ({
 describe("GET /api/admin/bed-allocation lodge validation (Low 2)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockRequireBedAllocationAdmin.mockResolvedValue({
+    mockRequireBedAllocationRead.mockResolvedValue({
       ok: true,
       session: { user: { id: "admin-1" } },
     });
@@ -106,7 +109,7 @@ describe("GET /api/admin/bed-allocation lodge validation (Low 2)", () => {
 describe("GET /api/admin/bed-allocation/rooms lodge validation (Low 2)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockRequireBedAllocationAdmin.mockResolvedValue({
+    mockRequireBedInventoryRead.mockResolvedValue({
       ok: true,
       session: { user: { id: "admin-1" } },
     });

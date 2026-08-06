@@ -45,12 +45,15 @@ const issue675MalformedJsonRoutes = [
   "src/app/api/promo-codes/validate/route.ts",
 ] as const;
 
-// Shared cross-file wrappers that perform requireAdmin internally. Adding a
-// wrapper here requires its defining module to call requireAdmin (asserted in
-// the method-reachability test below), so the allowlist cannot rot into a
-// bypass.
+// Shared cross-file wrappers that perform requireAdmin internally. Keep this
+// closed list synchronized with the exported route guards; the defining module
+// must still call requireAdmin (asserted in the method-reachability test below),
+// so adding a wrapper cannot silently turn the allowlist into a bypass.
 const sharedAdminGuardWrappers: Record<string, string> = {
-  requireBedAllocationAdmin: "src/lib/admin-bed-allocation-routes.ts",
+  requireBedAllocationRead: "src/lib/admin-bed-allocation-routes.ts",
+  requireBedAllocationWrite: "src/lib/admin-bed-allocation-routes.ts",
+  requireBedInventoryRead: "src/lib/admin-bed-allocation-routes.ts",
+  requireBedInventoryWrite: "src/lib/admin-bed-allocation-routes.ts",
   requireFullAdminForConfigTransfer: "src/lib/config-transfer/route-helpers.ts",
 };
 
@@ -336,7 +339,7 @@ describe("API route boundary metadata", () => {
   // marker check above has the same blind spot issue #812 found for member
   // routes: one guarded method lets a second unguarded exported method ride
   // along. Admin handlers either call requireAdmin directly, call a local
-  // helper that does, or call a shared wrapper from the allowlist below.
+  // helper that does, or call a shared wrapper from the closed allowlist above.
   // -------------------------------------------------------------------------
 
   // (The shared wrapper allowlist is hoisted to module scope above so the

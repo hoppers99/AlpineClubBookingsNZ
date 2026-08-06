@@ -1,25 +1,61 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { updateBedAllocationSettings } from "@/lib/admin-bed-allocation";
+import {
+  getEffectiveBedAllocationSettings,
+  updateBedAllocationSettings,
+} from "@/lib/admin-bed-allocation";
 import {
   bedAllocationErrorResponse,
-  requireBedAllocationAdmin,
+  requireBedAllocationRead,
+  requireBedAllocationWrite,
 } from "@/lib/admin-bed-allocation-routes";
 import { parseJsonRequestBody } from "@/lib/api-json";
 import { createAuditLog } from "@/lib/audit";
+import { parseBedAllocationPriorityOrder } from "@/lib/bed-allocation-settings";
+import { resolveOptionalActiveLodgeId } from "@/lib/lodges";
+import { prisma } from "@/lib/prisma";
 
-// requireAdmin() is enforced by requireBedAllocationAdmin().
+// Explicit bookings:view / bookings:edit is enforced by the split guards.
 const settingsSchema = z
   .object({
     autoAllocationEnabled: z.boolean(),
-    // Lodge whose auto-allocation switch is edited; omitted keeps the
-    // legacy club-wide row (lodge-scoping contract).
-    lodgeId: z.string().min(1).optional(),
+    allocationPriorityOrder: z.array(z.unknown()),
+    // Settings editing is always scoped to exactly one lodge.
+    lodgeId: z.string().min(1),
   })
   .strict();
 
+export async function GET(request: Request) {
+  const guard = await requireBedAllocationRead();
+  if (!guard.ok) return guard.response;
+
+  try {
+    const lodgeIdResult = z
+      .string()
+      .min(1)
+      .safeParse(new URL(request.url).searchParams.get("lodgeId"));
+    if (!lodgeIdResult.success) {
+      return NextResponse.json(
+        { error: "A lodgeId is required." },
+        { status: 400 },
+      );
+    }
+    const lodgeId = lodgeIdResult.data;
+    if (!(await resolveOptionalActiveLodgeId(prisma, lodgeId))) {
+      return NextResponse.json(
+        { error: "Lodge not found or not active" },
+        { status: 400 },
+      );
+    }
+    const settings = await getEffectiveBedAllocationSettings(undefined, lodgeId);
+    return NextResponse.json({ settings });
+  } catch (error) {
+    return bedAllocationErrorResponse(error);
+  }
+}
+
 export async function PUT(request: Request) {
-  const guard = await requireBedAllocationAdmin();
+  const guard = await requireBedAllocationWrite();
   if (!guard.ok) return guard.response;
 
   try {
@@ -34,17 +70,33 @@ export async function PUT(request: Request) {
       );
     }
 
+    const lodgeId = await resolveOptionalActiveLodgeId(
+      prisma,
+      body.data.lodgeId,
+    );
+    if (!lodgeId) {
+      return NextResponse.json(
+        { error: "Lodge not found or not active" },
+        { status: 400 },
+      );
+    }
+
     const settings = await updateBedAllocationSettings({
       autoAllocationEnabled: body.data.autoAllocationEnabled,
+      allocationPriorityOrder: parseBedAllocationPriorityOrder(
+        body.data.allocationPriorityOrder,
+        "allocationPriorityOrder",
+        400,
+      ),
       updatedByMemberId: guard.session.user.id,
-      lodgeId: body.data.lodgeId,
+      lodgeId,
     });
 
     await createAuditLog({
       action: "BED_ALLOCATION_SETTINGS_UPDATED",
       memberId: guard.session.user.id,
       entityType: "BedAllocationSettings",
-      entityId: body.data.lodgeId ?? "default",
+      entityId: lodgeId,
       category: "admin",
       severity: "important",
       outcome: "success",
