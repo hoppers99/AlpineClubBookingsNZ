@@ -324,6 +324,63 @@ describe("hosting coverage drain claim fences (#2596)", () => {
     expect(mocks.resolveIncidents).not.toHaveBeenCalled();
   });
 
+  it("reconciles the bounded scope-on cohort and resolves its verified terminal source", async () => {
+    const item = { ...CLAIMED_ITEM, sourceBookingId: "source-cancelled" };
+    const dependents = Array.from(
+      { length: 25 },
+      (_, index) => `dependent-${index + 1}`,
+    );
+    mocks.claim.mockReset();
+    mocks.claim.mockResolvedValueOnce([item]).mockResolvedValue([]);
+    mocks.loadClaimed.mockResolvedValue(item);
+    mocks.loadPolicy.mockResolvedValue({
+      hostScopes: { sameBookingOwner: true },
+    });
+    mocks.loadDependents.mockResolvedValue(dependents);
+    mocks.reconcile.mockResolvedValue({ action: "none" });
+    mocks.sourceBookingIsTerminal.mockResolvedValue(true);
+    mocks.resolveIncidents.mockResolvedValue(1);
+
+    const result = await drainHostingCoverageReevaluations({}, makeDb());
+
+    expect(result).toMatchObject({ claimed: 1, processed: 1, incidentsResolved: 1 });
+    expect(mocks.reconcile).toHaveBeenCalledTimes(25);
+    expect(mocks.reconcile.mock.calls.map(([input]) => input.bookingId)).toEqual(
+      dependents,
+    );
+    expect(mocks.resolveIncidents).toHaveBeenCalledTimes(1);
+    expect(mocks.resolveIncidents).toHaveBeenCalledWith(
+      expect.objectContaining({
+        bookingId: "source-cancelled",
+        resolution: "BOOKING_CANCELLED",
+      }),
+      expect.anything(),
+    );
+  });
+
+  it("reconciles exactly an active scope-off source without calling the fan-out or cancelling it", async () => {
+    const item = { ...CLAIMED_ITEM, sourceBookingId: "source-active" };
+    mocks.claim.mockReset();
+    mocks.claim.mockResolvedValueOnce([item]).mockResolvedValue([]);
+    mocks.loadClaimed.mockResolvedValue(item);
+    mocks.loadPolicy.mockResolvedValue({
+      hostScopes: { sameBookingOwner: false },
+    });
+    mocks.sourceBookingIsTerminal.mockResolvedValue(false);
+    mocks.reconcile.mockResolvedValue({ action: "none" });
+
+    const result = await drainHostingCoverageReevaluations({}, makeDb());
+
+    expect(result).toMatchObject({ claimed: 1, processed: 1, incidentsResolved: 0 });
+    expect(mocks.loadDependents).not.toHaveBeenCalled();
+    expect(mocks.reconcile).toHaveBeenCalledTimes(1);
+    expect(mocks.reconcile).toHaveBeenCalledWith(
+      expect.objectContaining({ bookingId: "source-active" }),
+      expect.anything(),
+    );
+    expect(mocks.resolveIncidents).not.toHaveBeenCalled();
+  });
+
   it("locks the sorted claimed identities before refresh when the drain wins", async () => {
     const claimed = {
       ...CLAIMED_ITEM,
