@@ -825,7 +825,8 @@ describe("E2E booking-create retry isolation (#2599)", () => {
     );
     expect(guide).toContain(
       "E2E_PRESERVE_AUTH_STATE=1 scripts/e2e-stack.sh run " +
-        "e2e/waitlist.spec.ts e2e/whole-lodge-request.spec.ts",
+        "e2e/waitlist.spec.ts e2e/whole-lodge-request.spec.ts " +
+        '--grep "placement then admin force-confirm|acknowledgement is byte-identical"',
     );
   });
 

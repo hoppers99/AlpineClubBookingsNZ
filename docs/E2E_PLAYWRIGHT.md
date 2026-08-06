@@ -484,7 +484,7 @@ Four rules follow, and a new spec must satisfy all four:
 
   ```bash
   scripts/e2e-stack.sh run e2e/booking-create-rate-isolation.spec.ts --project=chromium --workers=1
-  E2E_PRESERVE_AUTH_STATE=1 scripts/e2e-stack.sh run e2e/waitlist.spec.ts e2e/whole-lodge-request.spec.ts --project=chromium --workers=1
+  E2E_PRESERVE_AUTH_STATE=1 scripts/e2e-stack.sh run e2e/waitlist.spec.ts e2e/whole-lodge-request.spec.ts --grep "placement then admin force-confirm|acknowledgement is byte-identical" --project=chromium --workers=1
   ```
 
   The first command requires no Stripe credentials: all three probes are
@@ -492,9 +492,11 @@ Four rules follow, and a new spec must satisfy all four:
   second command explicitly preserves only the gitignored browser/TOTP files
   created by the first command; the database and its limiter counters are
   already preserved because neither command prepares or resets the stack. It
-  fails on any cross-spec 429 because waitlist pins 409 then 201,
-  while the whole-lodge anchor requires a successful confirmed create. Neither
-  command resets, bypasses, mocks, nor increases the limiter.
+  runs the retry-sensitive real-path anchors rather than unrelated scenarios in
+  those large files. It fails on any cross-spec 429 because waitlist pins 409
+  then 201, while the whole-lodge setup requires a successful confirmed held-
+  world booking create before its three privacy-safe request submissions.
+  Neither command resets, bypasses, mocks, nor increases the limiter.
 - **Restore shared state in `afterAll`, never at the end of the test body.**
   `xero-setup-wizard-completion.spec.ts` used to disconnect Xero and rewind the
   wizard on its last line; when it failed earlier it stranded the sibling spec on
