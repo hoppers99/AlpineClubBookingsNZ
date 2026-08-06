@@ -1,6 +1,8 @@
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { actualCorrectnessCensus, buildRawManifest, deriveCorrectnessReport, expectedCorrectnessCensus, sha256File, validateImmutableInputs, validateRawManifest } from "./correctness-contract.mjs";
+import { verifyCorrectnessRouteEvidence } from "./correctness-route-evidence.mjs";
+import { compareStackIdentities, verifyStackIdentity } from "./correctness-stack-identity.mjs";
 import { scanEvidence } from "./scan-evidence-secrets.mjs";
 
 const fail = (message) => { throw new Error(message); };
@@ -8,14 +10,24 @@ const index = process.argv.indexOf("--dir");
 if (index < 0 || !process.argv[index + 1]) fail("usage: finalize-correctness-evidence.mjs --dir <correctness-run-root>");
 const root = resolve(process.argv[index + 1]);
 if (!statSync(root).isDirectory()) fail("correctness run root is not a directory");
-const paths = Object.fromEntries(["raw-evidence-manifest.json", "secret-scan.json", "correctness-report.json", "COMPLETED.json"].map((name) => [name, join(root, name)]));
+const paths = Object.fromEntries(["raw-evidence-manifest.json", "route-expectations.json", "secret-scan.json", "correctness-report.json", "COMPLETED.json"].map((name) => [name, join(root, name)]));
 for (const path of Object.values(paths)) if (existsSync(path)) fail(`refusing correctness finalization collision: ${path}`);
 const immutablePath = join(root, "inputs", "immutable-inputs.json");
 const immutable = validateImmutableInputs(JSON.parse(readFileSync(immutablePath, "utf8")), root);
+const stackOptions = { imageId: immutable.image.id, composeProject: immutable.environment.compose_project, databaseFingerprint: immutable.database.logical_fingerprint_before };
+const stackBefore = verifyStackIdentity(root, "inputs/stack-identity-before.json", { ...stackOptions, stage: "before" });
+const stackAfter = verifyStackIdentity(root, "postcondition-evidence/stack-identity-after.json", { ...stackOptions, stage: "after" });
+compareStackIdentities(stackBefore, stackAfter);
+if (Date.parse(stackBefore.aggregate.captured_at) > Date.parse(immutable.created_at) || Date.parse(stackAfter.aggregate.captured_at) < Date.parse(immutable.created_at)) fail("correctness stack identity capture chronology is invalid");
 
 const rawManifest = buildRawManifest(root, immutable);
+const postconditions = JSON.parse(readFileSync(join(root, "postconditions.json"), "utf8"));
+if (Date.parse(postconditions.completed_at) < Date.parse(stackAfter.aggregate.captured_at)) fail("correctness postconditions precede the after-run stack identity capture");
 writeFileSync(paths["raw-evidence-manifest.json"], `${JSON.stringify(rawManifest, null, 2)}\n`, { flag: "wx" });
 const rawEntries = validateRawManifest(rawManifest, root, immutable);
+const routeEvidence = verifyCorrectnessRouteEvidence(root, immutable, rawEntries);
+const routeExpectations = { schema_version: 1, run_id: immutable.run_id, side: immutable.side, evidence_path: routeEvidence.evidencePath, evidence_sha256: routeEvidence.evidenceSha256, routes: routeEvidence.routes };
+writeFileSync(paths["route-expectations.json"], `${JSON.stringify(routeExpectations, null, 2)}\n`, { flag: "wx" });
 
 const secretScan = scanEvidence({ root, out: paths["secret-scan.json"], manifest: paths["raw-evidence-manifest.json"] });
 if (!secretScan.passed) fail("correctness raw evidence secret scan failed");
@@ -38,9 +50,14 @@ const completion = {
   immutable_inputs_sha256: sha256File(immutablePath),
   check_census_sha256: immutable.check_census_sha256,
   producer_files_sha256: immutable.producer_files_sha256,
+  producer_source_archive_sha256: immutable.producer_source.archive_sha256,
+  producer_source_commit: immutable.producer_source.commit,
   raw_evidence_manifest_sha256: sha256File(paths["raw-evidence-manifest.json"]),
   postconditions_sha256: sha256File(join(root, "postconditions.json")),
   secret_scan_sha256: sha256File(paths["secret-scan.json"]),
+  route_expectations_sha256: sha256File(paths["route-expectations.json"]),
+  stack_identity_before_sha256: stackBefore.aggregate_sha256,
+  stack_identity_after_sha256: stackAfter.aggregate_sha256,
   correctness_report_sha256: sha256File(paths["correctness-report.json"]),
   overall_result: report.result,
 };

@@ -128,7 +128,7 @@ function segmentEvidence(context) {
     for (const container of requiredContainers) {
       if (samplesByContainer[container] < 2) fail(`segment ${name} has fewer than two docker-stats samples for ${container}`);
       const times = sampleTimes[container];
-      if (times[0] < startedAt - 1000 || times.at(-1) > endedAt + 1000 || times.some((value, index) => index > 0 && (value < times[index - 1] || value - times[index - 1] > 3000))) fail(`segment ${name} sampler timestamps/gaps are invalid for ${container}`);
+      if (times[0] < startedAt - 3000 || times[0] > startedAt + 1000 || times.at(-1) < endedAt - 3000 || times.at(-1) > endedAt + 1000 || times.some((value, index) => index > 0 && (value <= times[index - 1] || value - times[index - 1] > 3000))) fail(`segment ${name} sampler timestamps/gaps/boundary coverage are invalid for ${container}`);
     }
     if (new Set(Object.values(samplesByContainer)).size !== 1) fail(`segment ${name} docker-stats sample counts differ by container`);
     for (const suffix of ["before", "after"]) {
@@ -149,6 +149,7 @@ function segmentEvidence(context) {
       suspicious_log_lines: errorLines,
       docker_stats_rows: statsLines.length,
       docker_stats_samples_by_container: samplesByContainer,
+      maximum_docker_stats_gap_ms: Math.max(...Object.values(sampleTimes).flatMap((times) => times.slice(1).map((value, index) => value - times[index]))),
     }];
   }));
 }

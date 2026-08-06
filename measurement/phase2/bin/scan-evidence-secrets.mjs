@@ -11,16 +11,17 @@ const canonicalRelative = (value) => {
 const fold = (value) => process.platform === "win32" ? value.toLowerCase() : value;
 const safeValue = (value) => {
   const normalized = value.trim().replace(/^["']|["']$/g, "");
-  return normalized === "" || normalized.startsWith("${") || /^(?:0|false|null|none|redacted|placeholder|changeme)$/i.test(normalized) || /(?:example|dummy|fixture|measurement|localhost|\.invalid|<[^>]+>)/i.test(normalized);
+  return normalized === "" || /^\$\{[A-Za-z_][A-Za-z0-9_]*(?::-[^}]*)?\}$/.test(normalized) || /^(?:0|false|null|none|redacted|placeholder|changeme|example|dummy|fixture|measurement|localhost|<[^>]+>)$/i.test(normalized);
 };
 
 const PATTERNS = [
   ["private-key", /-----BEGIN (?:RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----/g, 0],
   ["aws-access-key", /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g, 0],
+  ["sentry-dsn", /https?:\/\/[^\s/@:]+(?::[^\s/@]*)?@[^\s/]*sentry(?:\.io)?\/[^\s"']+/gi, 0],
   ["bearer-token", /\b(?:authorization\s*[:=]\s*)?bearer\s+([A-Za-z0-9._~+/=-]{12,})/gi, 1],
   ["postgres-credential", /postgres(?:ql)?:\/\/[^:\s/@]+:([^@\s/]+)@/gi, 1],
-  ["sensitive-assignment", /\b(?:DATABASE_URL|DB_PASSWORD|SEED_ADMIN_PASSWORD|SEED_LODGE_PASSWORD|CRON_SECRET|NEXTAUTH_SECRET|AUTH_SECRET|STRIPE_(?:SECRET_KEY|WEBHOOK_SECRET)|AWS_SES_(?:ACCESS_KEY_ID|SECRET_ACCESS_KEY)|EMAIL_SERVER_PASSWORD|SMTP_PASSWORD|ADDY_API_(?:KEY|SECRET)|SENTRY_AUTH_TOKEN|XERO_(?:CLIENT_ID|CLIENT_SECRET)|GOOGLE_(?:CLIENT_ID|CLIENT_SECRET)|BACKUP_(?:ENCRYPTION_KEY|PASSWORD)|COOKIE_SECRET)\b\s*(?:=|:)\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^\s,;]+)/gi, 1],
-  ["sensitive-json", /["'](?:password|secret|token|api[_-]?key|client[_-]?secret|private[_-]?key|cookie)["']\s*:\s*["']([^"']+)["']/gi, 1],
+  ["sensitive-assignment", /\b(?:DATABASE_URL|AI_DIAGNOSTICS_DATABASE_URL|DB_PASSWORD|SEED_ADMIN_PASSWORD|SEED_LODGE_PASSWORD|CRON_SECRET|NEXTAUTH_SECRET|AUTH_SECRET|STRIPE_(?:SECRET_KEY|WEBHOOK_SECRET)|AWS(?:_SES|_S3)?_(?:ACCESS_KEY_ID|SECRET_ACCESS_KEY)|EMAIL_SERVER_PASSWORD|SMTP_PASSWORD|ADDY_API_(?:KEY|SECRET)|SENTRY_(?:AUTH_TOKEN|DSN)|NEXT_PUBLIC_SENTRY_DSN|LEGACY_DASHBOARD_EXPORT_TOKEN|MIRO(?:TALK)?_(?:JWT_KEY|MEETING_PASSWORD|MEETING_USERNAME|MEETING_PRESENTER)|XERO_(?:CLIENT_ID|CLIENT_SECRET|ENCRYPTION_KEY|WEBHOOK_KEY)|GOOGLE_(?:CLIENT_ID|CLIENT_SECRET)|BACKUP_(?:S3_(?:ACCESS_KEY_ID|SECRET_ACCESS_KEY)|ENCRYPTION_KEY|PASSWORD|CREDENTIALS?)|COOKIE_SECRET)\b\s*(?:=|:)\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^\s,;]+)/gi, 1],
+  ["sensitive-json", /["'](?:password|secret|token|dsn|api[_-]?key|access[_-]?key(?:[_-]?id)?|client[_-]?secret|encryption[_-]?key|webhook[_-]?key|private[_-]?key|cookie)["']\s*:\s*["']([^"']+)["']/gi, 1],
   ["sensitive-argument", /--(?:password|secret|token|api-key|client-secret)(?:=|\s+)("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^\s]+)/gi, 1],
   ["stripe-secret", /\b(?:sk|rk|whsec)_(?:live|test)?_?[A-Za-z0-9]{12,}\b/g, 0],
   ["cookie-value", /\b(?:cookie|set-cookie)\s*:\s*[^\r\n=;]+=(?!deleted\b)([^;\r\n]{12,})/gi, 1],
@@ -28,6 +29,7 @@ const PATTERNS = [
 
 function decodedViews(bytes) {
   const result = [{ encoding: "utf8", text: bytes.toString("utf8") }];
+  if (bytes.includes(0)) result.push({ encoding: "nul-stripped-utf8", text: bytes.toString("utf8").replaceAll("\0", "") });
   const nulEven = bytes.length > 2 && Array.from({ length: Math.min(bytes.length, 512) }, (_, index) => index).filter((index) => bytes[index] === 0 && index % 2 === 0).length;
   const nulOdd = bytes.length > 2 && Array.from({ length: Math.min(bytes.length, 512) }, (_, index) => index).filter((index) => bytes[index] === 0 && index % 2 === 1).length;
   if ((bytes[0] === 0xff && bytes[1] === 0xfe) || nulOdd > 3) result.push({ encoding: "utf16le", text: bytes.toString("utf16le") });

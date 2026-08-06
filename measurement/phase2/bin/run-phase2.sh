@@ -4,6 +4,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/../../.."
 case "$(uname -s)" in MINGW*|MSYS*) ;; *) echo "run-phase2 requires the reviewed Git Bash on Windows environment" >&2; exit 2 ;; esac
+[[ "$(node --version)" =~ ^v24\. ]] || { echo "run-phase2 requires repository Node 24" >&2; exit 2; }
 ROOT="$(pwd)"
 winpath() { cygpath -am "$1"; }
 
@@ -20,6 +21,7 @@ case "$SIDE" in current|baseline) ;; *) echo "usage: run-phase2.sh {current|base
 : "${HARNESS_MANIFEST_SHA256:?HARNESS_MANIFEST_SHA256 missing}"
 : "${MEASUREMENT_PROFILE:?MEASUREMENT_PROFILE missing}"
 : "${MEASURE_ENV_SNAPSHOT:?private measurement env snapshot missing}"
+: "${MEASURE_ENV_SNAPSHOT_HMAC_SHA256:?private measurement env snapshot HMAC missing}"
 : "${PHASE2_ENV_AUDIT_HMAC_KEY_FILE:?private runtime environment HMAC key missing}"
 
 IMAGE="$SIDE_IMAGE_REFERENCE"
@@ -139,20 +141,20 @@ NODE
 }
 segment_start() {
   local segment="$1"
-  date -u +%Y-%m-%dT%H:%M:%S.%NZ > "$OUT/segments/$segment-started-at.txt"
   capture_cgroup "$OUT/segments/$segment-cgroup-before.txt"
   docker inspect "$APP" --format '{{.RestartCount}}' > "$OUT/segments/$segment-restarts-before.txt"
   capture_runtime_identity "$OUT/segments/$segment-runtime-identity-before.json"
   start_sampler "$segment"
+  date -u +%Y-%m-%dT%H:%M:%S.%NZ > "$OUT/segments/$segment-started-at.txt"
 }
 segment_end() {
   local segment="$1"
   stop_sampler "$segment"
+  date -u +%Y-%m-%dT%H:%M:%S.%NZ > "$OUT/segments/$segment-ended-at.txt"
   capture_cgroup "$OUT/segments/$segment-cgroup-after.txt"
   docker inspect "$APP" --format '{{.RestartCount}}' > "$OUT/segments/$segment-restarts-after.txt"
   capture_runtime_identity "$OUT/segments/$segment-runtime-identity-after.json"
   docker logs --since "$(cat "$OUT/segments/$segment-started-at.txt")" "$APP" > "$OUT/segments/$segment-app.log" 2> "$OUT/segments/$segment-app-log.stderr"
-  date -u +%Y-%m-%dT%H:%M:%S.%NZ > "$OUT/segments/$segment-ended-at.txt"
 }
 
 printf '{"schema_version":2,"pair_id":"%s","side":"%s","order":"%s","sequence":%s,"started_at":"%s","measurement_profile":"%s","final_profile_parameters_exact":%s,"parameters":{"runs":%s,"warmup":%s,"cold_runs":%s,"idle_cycles":%s,"idle_seconds":%s,"revalidation_seconds":%s,"concurrency":%s,"duration_seconds":%s,"request_timeout_seconds":%s}}\n' \

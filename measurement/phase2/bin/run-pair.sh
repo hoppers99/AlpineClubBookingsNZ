@@ -3,6 +3,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/../../.."
 case "$(uname -s)" in MINGW*|MSYS*) ;; *) echo "run-pair requires the reviewed Git Bash on Windows environment" >&2; exit 2 ;; esac
+[[ "$(node --version)" =~ ^v24\. ]] || { echo "run-pair requires repository Node 24" >&2; exit 2; }
 winpath() { cygpath -am "$1"; }
 
 usage() {
@@ -33,6 +34,7 @@ case "$PAIR_ORDER" in current-baseline) SIDES=(current baseline) ;; baseline-cur
 [ "${QUIET_HOST_ATTESTED:-}" = YES ] || { echo "QUIET_HOST_ATTESTED=YES is required after the operator closes heavy host work" >&2; exit 1; }
 : "${MEASUREMENT_PROFILE:?MEASUREMENT_PROFILE missing}"
 : "${MEASURE_ENV_SNAPSHOT:?private measurement env snapshot missing}"
+: "${MEASURE_ENV_SNAPSHOT_HMAC_SHA256:?private measurement env snapshot HMAC missing}"
 : "${PHASE2_ENV_AUDIT_HMAC_KEY_FILE:?private runtime environment HMAC key missing}"
 case "$MEASUREMENT_PROFILE" in final-decision|nonfinal-test) ;; *) usage ;; esac
 [[ "$MAX_GAP_SECONDS" =~ ^[1-9][0-9]*$ ]] || usage
@@ -64,6 +66,7 @@ QUIET_CPU_LIMIT_PERCENT="${QUIET_CPU_LIMIT_PERCENT:-20}"
 QUIET_SAMPLES="${QUIET_SAMPLES:-5}"
 [[ "$QUIET_CPU_LIMIT_PERCENT" =~ ^[0-9]+([.][0-9]+)?$ ]] || { echo "invalid QUIET_CPU_LIMIT_PERCENT" >&2; exit 1; }
 [[ "$QUIET_SAMPLES" =~ ^[1-9][0-9]*$ ]] || { echo "invalid QUIET_SAMPLES" >&2; exit 1; }
+if [ "$MEASUREMENT_PROFILE" = final-decision ] && { [ "$QUIET_CPU_LIMIT_PERCENT" != 20 ] || [ "$QUIET_SAMPLES" != 5 ]; }; then echo "final-decision pair quiet controls must remain exactly 20 percent and 5 samples" >&2; exit 2; fi
 
 quiet_check() {
   local label="$1" dir="$PAIR_ROOT/pair-evidence/quiet-$1"
@@ -161,7 +164,7 @@ NODE
 done
 
 PAIR_ENDED_AT="$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)"
-export PAIR_STARTED_AT PAIR_ENDED_AT ARCHIVE_SHA MAX_GAP_SECONDS
+export PAIR_STARTED_AT PAIR_ENDED_AT ARCHIVE_SHA MAX_GAP_SECONDS QUIET_CPU_LIMIT_PERCENT QUIET_SAMPLES
 export SIDE_RECORD_1="${SIDE_RECORDS[0]}" SIDE_RECORD_2="${SIDE_RECORDS[1]}"
 node - "$(winpath "$PAIR_ROOT/pair.json")" <<'NODE'
 const fs = require("node:fs");
@@ -176,6 +179,8 @@ const pair = {
   started_at: process.env.PAIR_STARTED_AT,
   ended_at: process.env.PAIR_ENDED_AT,
   maximum_inter_side_gap_seconds: Number(process.env.MAX_GAP_SECONDS),
+  quiet_cpu_limit_percent: Number(process.env.QUIET_CPU_LIMIT_PERCENT),
+  quiet_samples: Number(process.env.QUIET_SAMPLES),
   quiet_host_attested: true,
   measurement_profile: process.env.MEASUREMENT_PROFILE,
   canonical_database_archive_sha256: process.env.ARCHIVE_SHA,

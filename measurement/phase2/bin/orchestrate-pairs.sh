@@ -47,6 +47,8 @@ MAX_INTER_SIDE_GAP_SECONDS="${MAX_INTER_SIDE_GAP_SECONDS:-600}"
 MAX_INTER_PAIR_GAP_SECONDS="${MAX_INTER_PAIR_GAP_SECONDS:-600}"
 MEASUREMENT_PROFILE="${MEASUREMENT_PROFILE:-final-decision}"
 QUIET_MONITOR_INTERVAL_SECONDS="${QUIET_MONITOR_INTERVAL_SECONDS:-10}"
+QUIET_CPU_LIMIT_PERCENT="${QUIET_CPU_LIMIT_PERCENT:-20}"
+QUIET_SAMPLES="${QUIET_SAMPLES:-5}"
 ALLOWED_RUNNING_CONTAINERS="${ALLOWED_RUNNING_CONTAINERS:-tacbookings-measure-app-1,tacbookings-measure-caddy-1,tacbookings-measure-mailpit-1,tacbookings-measure-postgres-1}"
 PLAN_ONLY=false
 RESTORE_HOOK="${RESTORE_HOOK:-}"
@@ -72,6 +74,8 @@ positive_integer "$PAIR_COUNT" || usage
 positive_integer "$MAX_INTER_SIDE_GAP_SECONDS" || usage
 positive_integer "$MAX_INTER_PAIR_GAP_SECONDS" || usage
 positive_integer "$QUIET_MONITOR_INTERVAL_SECONDS" || usage
+numeric_value "$QUIET_CPU_LIMIT_PERCENT" || usage
+positive_integer "$QUIET_SAMPLES" || usage
 [[ "$ALLOWED_RUNNING_CONTAINERS" =~ ^[A-Za-z0-9_.-]+(,[A-Za-z0-9_.-]+)*$ ]] || usage
 case "$MEASUREMENT_PROFILE" in final-decision|nonfinal-test) ;; *) usage ;; esac
 
@@ -86,11 +90,13 @@ if [[ "$PLAN_ONLY" == true ]]; then
   print_plan
   exit 0
 fi
+NODE_VERSION="$(node --version)"
+[[ "$NODE_VERSION" =~ ^v24\. ]] || { echo "phase-2 final execution requires repository Node 24, got $NODE_VERSION" >&2; exit 2; }
 if [[ -n "$RESTORE_HOOK" || -n "$FINGERPRINT_HOOK" ]]; then
   echo "restore/fingerprint hook environment variables are prohibited for final decision evidence" >&2
   exit 2
 fi
-if [[ "$MEASUREMENT_PROFILE" == final-decision ]] && { [[ "$PAIR_COUNT" != 4 ]] || [[ "$MAX_INTER_SIDE_GAP_SECONDS" != 600 ]] || [[ "$MAX_INTER_PAIR_GAP_SECONDS" != 600 ]] || [[ "$QUIET_MONITOR_INTERVAL_SECONDS" != 10 ]] || [[ "$ALLOWED_RUNNING_CONTAINERS" != tacbookings-measure-app-1,tacbookings-measure-caddy-1,tacbookings-measure-mailpit-1,tacbookings-measure-postgres-1 ]]; }; then
+if [[ "$MEASUREMENT_PROFILE" == final-decision ]] && { [[ "$PAIR_COUNT" != 4 ]] || [[ "$MAX_INTER_SIDE_GAP_SECONDS" != 600 ]] || [[ "$MAX_INTER_PAIR_GAP_SECONDS" != 600 ]] || [[ "$QUIET_MONITOR_INTERVAL_SECONDS" != 10 ]] || [[ "$QUIET_CPU_LIMIT_PERCENT" != 20 ]] || [[ "$QUIET_SAMPLES" != 5 ]] || [[ "$ALLOWED_RUNNING_CONTAINERS" != tacbookings-measure-app-1,tacbookings-measure-caddy-1,tacbookings-measure-mailpit-1,tacbookings-measure-postgres-1 ]]; }; then
   echo "final-decision orchestration profile cannot weaken or change pair/gap/monitor/container controls" >&2
   exit 2
 fi
@@ -117,6 +123,7 @@ if ! mkdir "$OUTPUT_ROOT" 2>/dev/null; then
   exit 1
 fi
 mkdir "$OUTPUT_ROOT/inputs" "$OUTPUT_ROOT/quiet-host" "$OUTPUT_ROOT/pairs"
+printf '%s\n' "$NODE_VERSION" > "$OUTPUT_ROOT/inputs/node-version.txt"
 exec 3>&1 4>&2
 exec > >(tee -a "$OUTPUT_ROOT/orchestrator.log" >&3) 2>&1
 TEE_PID=$!
@@ -360,7 +367,7 @@ node -e 'const v=process.argv.slice(1).map(Number);const caps=[25,90,60,25,95,40
   "$QUIET_MAX_WSL_CPU_PERCENT" "$QUIET_MAX_WSL_MEMORY_PERCENT" "$CONTINUOUS_MAX_HOST_CPU_PERCENT" \
   "$CONTINUOUS_MAX_HOST_MEMORY_PERCENT" "$CONTINUOUS_MAX_HOST_DISK_PERCENT" \
   "$CONTINUOUS_MAX_WSL_CPU_PERCENT" "$CONTINUOUS_MAX_WSL_MEMORY_PERCENT"
-export ALLOWED_RUNNING_CONTAINERS
+export ALLOWED_RUNNING_CONTAINERS QUIET_CPU_LIMIT_PERCENT QUIET_SAMPLES
 
 if ! mkdir "$LOCK_DIR" 2>/dev/null; then
   echo "another phase-2 pair orchestrator is active, or stale lock requires review: $LOCK_DIR" >&2
@@ -372,10 +379,15 @@ printf 'output_id=%s\npid=%s\nstarted_at_utc=%s\ntoken=%s\n' "$OUTPUT_ID" "$$" "
 MEASURE_ENV_SOURCE="$(cygpath -am measurement/stack/.env.measure)"
 MEASURE_ENV_SNAPSHOT="$(cygpath -am "$LOCK_DIR/.env.measure.snapshot")"
 PHASE2_ENV_AUDIT_HMAC_KEY_FILE="$(cygpath -am "$LOCK_DIR/runtime-env-hmac.key")"
-node measurement/phase2/bin/measure-env-contract.mjs --snapshot-source "$MEASURE_ENV_SOURCE" --snapshot-out "$MEASURE_ENV_SNAPSHOT"
 printf '%s%s\n' "$(new_guid)" "$(new_guid)" > "$PHASE2_ENV_AUDIT_HMAC_KEY_FILE"
+chmod 600 "$LOCK_DIR/owner.txt" "$PHASE2_ENV_AUDIT_HMAC_KEY_FILE"
+MEASURE_ENV_SNAPSHOT_AUDIT="$OUTPUT_ROOT/inputs/measure-env-snapshot-audit.json"
+node measurement/phase2/bin/measure-env-contract.mjs \
+  --snapshot-source "$MEASURE_ENV_SOURCE" --snapshot-out "$MEASURE_ENV_SNAPSHOT" \
+  --hmac-key-file "$PHASE2_ENV_AUDIT_HMAC_KEY_FILE" --audit-out "$(winpath "$MEASURE_ENV_SNAPSHOT_AUDIT")"
+MEASURE_ENV_SNAPSHOT_HMAC_SHA256="$(node -e 'const v=require(process.argv[1]);if(!/^[a-f0-9]{64}$/.test(v.snapshot_hmac_sha256))process.exit(2);process.stdout.write(v.snapshot_hmac_sha256)' "$(winpath "$MEASURE_ENV_SNAPSHOT_AUDIT")")"
 chmod 600 "$LOCK_DIR/owner.txt" "$MEASURE_ENV_SNAPSHOT" "$PHASE2_ENV_AUDIT_HMAC_KEY_FILE"
-export MEASURE_ENV_SNAPSHOT PHASE2_ENV_AUDIT_HMAC_KEY_FILE MEASUREMENT_PROFILE
+export MEASURE_ENV_SNAPSHOT MEASURE_ENV_SNAPSHOT_HMAC_SHA256 PHASE2_ENV_AUDIT_HMAC_KEY_FILE MEASUREMENT_PROFILE
 
 MANIFEST_SNAPSHOT="$OUTPUT_ROOT/inputs/correctness-manifest.json"
 cp "$CORRECTNESS_MANIFEST" "$MANIFEST_SNAPSHOT"
@@ -581,10 +593,11 @@ done
 
 stop_monitor
 [[ "$MONITOR_EXIT_RECORDED" == true ]] || { echo "continuous monitor exit was not recorded" >&2; exit 1; }
-node - "$(winpath "$OUTPUT_ROOT/quiet-host")" "$QUIET_MONITOR_INTERVAL_SECONDS" <<'NODE'
+node - "$(winpath "$OUTPUT_ROOT/quiet-host")" "$QUIET_MONITOR_INTERVAL_SECONDS" "$(winpath "$OUTPUT_ROOT/pairs.jsonl")" <<'NODE'
 const fs = require("node:fs");
 const path = require("node:path");
-const [root, intervalRaw] = process.argv.slice(2);
+const [root, intervalRaw, pairsPath] = process.argv.slice(2);
+const interval = Number(intervalRaw);
 const samples = fs.readdirSync(root, { withFileTypes: true }).filter((entry) => entry.isDirectory() && /^continuous-\d{6}$/.test(entry.name)).sort();
 if (samples.length < 2) throw new Error("continuous monitor captured fewer than two samples");
 const timestamps = samples.map((entry) => {
@@ -592,10 +605,17 @@ const timestamps = samples.map((entry) => {
   const value = lines.find((line) => line.startsWith("captured_at_utc="))?.slice("captured_at_utc=".length);
   const parsed = Date.parse(value);
   if (!Number.isFinite(parsed)) throw new Error(`invalid monitor timestamp: ${entry.name}`);
-  return value;
+  return {value, parsed};
 });
+for(let i=1;i<timestamps.length;i++) if(timestamps[i].parsed<=timestamps[i-1].parsed) throw new Error("continuous monitor timestamps are not strictly increasing");
+const maximumGapSeconds=Math.max(...timestamps.slice(1).map((value,index)=>(value.parsed-timestamps[index].parsed)/1000));
+if(maximumGapSeconds>interval*2) throw new Error(`continuous monitor gap ${maximumGapSeconds}s exceeds ${interval*2}s`);
+const pairs=fs.readFileSync(pairsPath,"utf8").trim().split(/\r?\n/).filter(Boolean).map(JSON.parse);
+if(!pairs.length) throw new Error("continuous monitor has no completed pair chronology");
+const coverageStarted=pairs[0].wrapper_invoked_at_utc,coverageEnded=pairs.at(-1).wrapper_returned_at_utc;
+if(timestamps[0].parsed>Date.parse(coverageStarted)||timestamps.at(-1).parsed+interval*2000<Date.parse(coverageEnded)) throw new Error("continuous monitor does not cover pair-set boundaries");
 if (fs.readFileSync(path.join(root, "monitor-exit-status.txt"), "utf8").trim() !== "0") throw new Error("continuous monitor did not exit successfully");
-fs.writeFileSync(path.join(root, "monitor-summary.json"), `${JSON.stringify({schema_version:1,interval_seconds:Number(intervalRaw),sample_count:samples.length,first_sample_at_utc:timestamps[0],last_sample_at_utc:timestamps.at(-1),exit_status:0,passed:true},null,2)}\n`, {flag:"wx"});
+fs.writeFileSync(path.join(root, "monitor-summary.json"), `${JSON.stringify({schema_version:1,interval_seconds:interval,sample_count:samples.length,first_sample_at_utc:timestamps[0].value,last_sample_at_utc:timestamps.at(-1).value,maximum_gap_seconds:maximumGapSeconds,coverage_started_at_utc:coverageStarted,coverage_ended_at_utc:coverageEnded,exit_status:0,passed:true},null,2)}\n`, {flag:"wx"});
 NODE
 [[ ! -s "$CONTAMINATION_FILE" ]] || { echo "continuous quiet-host contamination was detected" >&2; exit 1; }
 [[ "$completed_pairs" -eq "$PAIR_COUNT" ]] || { echo "not all planned pairs completed" >&2; exit 1; }
@@ -619,6 +639,7 @@ node measurement/phase2/bin/finalize-pair-set.mjs \
   --correctness-manifest-sha256 "$MANIFEST_SHA" --profile "$MEASUREMENT_PROFILE" \
   --pair-count "$PAIR_COUNT" --max-side-gap "$MAX_INTER_SIDE_GAP_SECONDS" \
   --max-pair-gap "$MAX_INTER_PAIR_GAP_SECONDS" --monitor-interval "$QUIET_MONITOR_INTERVAL_SECONDS" \
+  --pair-quiet-cpu-limit "$QUIET_CPU_LIMIT_PERCENT" --pair-quiet-samples "$QUIET_SAMPLES" \
   --allowed-containers "$ALLOWED_RUNNING_CONTAINERS"
 RUN_SUCCEEDED=true
 echo "==> complete counterbalanced pair set: $OUTPUT_ROOT/PAIR-COMPLETED.json"

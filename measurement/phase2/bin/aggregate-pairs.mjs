@@ -9,6 +9,7 @@ import { conventionalMedian } from "./statistics.mjs";
 import { PROFILE_FINAL, classifyOrchestrationProfile, classifySideProfile, requireKnownProfile } from "./measurement-profile.mjs";
 import { isFuturePathInside, isPathInside, verifySealedTree } from "./sealed-tree.mjs";
 import { verifySecretScan } from "./scan-evidence-secrets.mjs";
+import { verifyPostFinalizationRuntimeIdentity } from "./runtime-identity.mjs";
 
 const OWNER_THRESHOLDS_VERBATIM = Object.freeze([
   "At least three contemporaneous current/baseline pairs are required.",
@@ -56,6 +57,7 @@ function verifyOrchestration(root) {
   const derivedProfile = classifyOrchestrationProfile(completion.orchestration_profile);
   if (completion.final_profile_exact !== (completion.measurement_profile === PROFILE_FINAL && derivedProfile === PROFILE_FINAL) || (completion.measurement_profile === PROFILE_FINAL && derivedProfile !== PROFILE_FINAL)) fail(`orchestration final-profile attestation is invalid: ${root}`);
   verifySecretScan({ root, report: json(resolve(root, "secret-scan.json")), allowedLaterFiles: ["set-output-manifest.sha256", "PAIR-COMPLETED.json"] });
+  if (!/^v24\./.test(readFileSync(resolve(root, "inputs", "node-version.txt"), "utf8").trim())) fail(`orchestration did not record repository Node 24: ${root}`);
   const cb = completion.orders.filter((order) => order === "current-baseline").length;
   const bc = completion.orders.filter((order) => order === "baseline-current").length;
   if (cb !== bc || cb + bc !== completion.pair_count) fail(`orchestration order is not evenly counterbalanced: ${root}`);
@@ -84,7 +86,15 @@ function verifyOrchestration(root) {
   if (outputs.some((output) => !isPathInside(root, output))) fail(`orchestration pair output escapes the exact sealed set: ${root}`);
   const monitor = json(resolve(root, "quiet-host", "monitor-summary.json"));
   if (!monitor.passed || monitor.exit_status !== 0 || monitor.sample_count < 2 || monitor.interval_seconds !== completion.orchestration_profile.quiet_monitor_interval_seconds) fail(`continuous monitor completion differs from the sealed profile: ${root}`);
-  if (Date.parse(monitor.first_sample_at_utc) > Date.parse(pairs[0].wrapper_invoked_at_utc) || Date.parse(monitor.last_sample_at_utc) + monitor.interval_seconds * 2000 < Date.parse(pairs.at(-1).wrapper_returned_at_utc)) fail(`continuous monitor timestamps do not cover the pair set: ${root}`);
+  const sampleDirectories = readdirSync(resolve(root, "quiet-host"), { withFileTypes: true }).filter((entry) => entry.isDirectory() && /^continuous-\d{6}$/.test(entry.name)).sort();
+  const sampleTimes = sampleDirectories.map((entry) => {
+    const capture = readFileSync(resolve(root, "quiet-host", entry.name, "capture.env"), "utf8").split(/\r?\n/).find((line) => line.startsWith("captured_at_utc="))?.slice("captured_at_utc=".length);
+    const parsed = Date.parse(capture); if (!Number.isFinite(parsed)) fail(`continuous monitor sample timestamp is invalid: ${entry.name}`); return parsed;
+  });
+  if (sampleTimes.length !== monitor.sample_count || sampleTimes.some((value, index) => index > 0 && value <= sampleTimes[index - 1])) fail(`continuous monitor sample census/chronology is invalid: ${root}`);
+  const maximumGapSeconds = Math.max(...sampleTimes.slice(1).map((value, index) => (value - sampleTimes[index]) / 1000));
+  if (Date.parse(monitor.first_sample_at_utc) !== sampleTimes[0] || Date.parse(monitor.last_sample_at_utc) !== sampleTimes.at(-1) || monitor.maximum_gap_seconds !== maximumGapSeconds || maximumGapSeconds > monitor.interval_seconds * 2) fail(`continuous monitor gap evidence is invalid: ${root}`);
+  if (monitor.coverage_started_at_utc !== pairs[0].wrapper_invoked_at_utc || monitor.coverage_ended_at_utc !== pairs.at(-1).wrapper_returned_at_utc || sampleTimes[0] > Date.parse(monitor.coverage_started_at_utc) || sampleTimes.at(-1) + monitor.interval_seconds * 2000 < Date.parse(monitor.coverage_ended_at_utc)) fail(`continuous monitor timestamps do not cover the pair set: ${root}`);
   const evaluations = [];
   const visit = (dir) => { for (const entry of readdirSync(dir, { withFileTypes: true })) { const path = resolve(dir, entry.name); if (entry.isDirectory()) visit(path); else if (entry.name === "evaluation.json") evaluations.push(json(path)); } };
   visit(resolve(root, "quiet-host"));
@@ -100,10 +110,14 @@ function readPair(root) {
   const pair = json(resolve(root, "pair.json"));
   if (pair.schema_version !== 2 || pair.status !== "COMPLETE" || !pair.quiet_host_attested) fail(`invalid pair metadata: ${root}`);
   requireKnownProfile(pair.measurement_profile);
-  if (pair.measurement_profile === PROFILE_FINAL && pair.maximum_inter_side_gap_seconds !== 600) fail(`final-decision pair has a non-exact side gap: ${root}`);
+  if (pair.measurement_profile === PROFILE_FINAL && (pair.maximum_inter_side_gap_seconds !== 600 || pair.quiet_cpu_limit_percent !== 20 || pair.quiet_samples !== 5)) fail(`final-decision pair has non-exact side-gap/quiet controls: ${root}`);
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{2,63}$/.test(pair.pair_id ?? "")) fail(`invalid pair id: ${root}`);
   if (![["current", "baseline"], ["baseline", "current"]].some((order) => JSON.stringify(order) === JSON.stringify(pair.sides.map((side) => side.side)))) fail(`invalid side order: ${root}`);
   if (pair.order !== pair.sides.map((side) => side.side).join("-")) fail(`declared order mismatch: ${root}`);
+  for (const label of ["before", "after-current", "after-baseline"]) {
+    const evaluation = json(resolve(root, "pair-evidence", `quiet-${label}`, "evaluation.json"));
+    if (evaluation.schema_version !== 1 || evaluation.limit_percent !== pair.quiet_cpu_limit_percent || !Array.isArray(evaluation.samples) || evaluation.samples.length !== pair.quiet_samples || evaluation.samples.some((sample) => !Number.isFinite(sample)) || evaluation.maximum_percent !== Math.max(...evaluation.samples) || evaluation.maximum_percent > pair.quiet_cpu_limit_percent || evaluation.passed !== true || !Array.isArray(evaluation.unexpected_containers) || evaluation.unexpected_containers.length !== 0) fail(`pair quiet-host evidence differs from the sealed controls: ${root}:${label}`);
+  }
   for (const [index, side] of pair.sides.entries()) {
     if (side.sequence !== index + 1 || !Number.isFinite(Date.parse(side.restore_started_at)) || !Number.isFinite(Date.parse(side.started_at)) || !Number.isFinite(Date.parse(side.ended_at))) fail(`invalid side timestamps: ${root}`);
     if (Date.parse(side.ended_at) < Date.parse(side.started_at)) fail(`side ended before it started: ${root}`);
@@ -137,6 +151,11 @@ function readPair(root) {
     if (run.immutable_binding.canonical_database_archive_sha256 !== pair.canonical_database_archive_sha256) fail(`database archive binding mismatch: ${root}`);
     if (run.context.measurement_profile !== pair.measurement_profile || (pair.measurement_profile === PROFILE_FINAL && classifySideProfile(run.context.parameters) !== PROFILE_FINAL)) fail(`measurement profile differs for ${name}: ${root}`);
     if (run.environment_identity.app_environment_audit.keyed_fingerprint_sha256 !== pair.sides.find((side) => side.side === name).environment_hmac_sha256) fail(`environment HMAC binding mismatch for ${name}: ${root}`);
+    const sideRecord = pair.sides.find((side) => side.side === name);
+    verifyPostFinalizationRuntimeIdentity(resolve(root, `${name}.runtime-identity-after-finalization.json`), {
+      claimedSha256: sideRecord.runtime_identity_after_finalization_sha256,
+      expected: run.environment_identity.runtime_identity,
+    });
   }
   if (pair.sides[0].environment_hmac_sha256 !== pair.sides[1].environment_hmac_sha256) fail(`sides do not share the exact sanitized runtime environment HMAC: ${root}`);
   if (current.immutable_binding.manifest_sha256 !== baseline.immutable_binding.manifest_sha256) fail(`side correctness manifests differ: ${root}`);
@@ -222,7 +241,9 @@ const pairIds = entries.map((entry) => entry.pair.pair_id);
 if (new Set(pairIds).size !== pairIds.length) fail("pair IDs must be unique");
 const archiveShas = new Set(entries.map((entry) => entry.pair.canonical_database_archive_sha256));
 const manifestShas = new Set(entries.map((entry) => entry.current.immutable_binding.manifest_sha256));
-if (archiveShas.size !== 1 || manifestShas.size !== 1) fail("pairs do not share one canonical database/correctness manifest");
+const producerSourceShas = new Set(entries.flatMap((entry) => [entry.current.immutable_binding.producer_source_archive_sha256, entry.baseline.immutable_binding.producer_source_archive_sha256]));
+const producerSourceCommits = new Set(entries.flatMap((entry) => [entry.current.immutable_binding.producer_source_commit, entry.baseline.immutable_binding.producer_source_commit]));
+if (archiveShas.size !== 1 || manifestShas.size !== 1 || producerSourceShas.size !== 1 || producerSourceCommits.size !== 1 || !/^[a-f0-9]{64}$/.test([...producerSourceShas][0] ?? "") || !/^[a-f0-9]{40,64}$/.test([...producerSourceCommits][0] ?? "")) fail("pairs do not share one canonical database/correctness manifest/producer source");
 const databaseFingerprints = new Set(entries.flatMap((entry) => entry.pair.sides.map((side) => side.database_fingerprint_before)));
 if (databaseFingerprints.size !== 1) fail("pairs do not share one canonical logical database fingerprint");
 const harnessManifestShas = new Set(entries.flatMap((entry) => [entry.current.environment_identity.harness_manifest_sha256, entry.baseline.environment_identity.harness_manifest_sha256]));
@@ -279,6 +300,8 @@ const report = {
     order_counts: orders,
     counterbalanced,
     common_correctness_manifest_sha256: [...manifestShas][0],
+    common_producer_source_archive_sha256: [...producerSourceShas][0],
+    common_producer_source_commit: [...producerSourceCommits][0],
     common_canonical_database_archive_sha256: [...archiveShas][0],
     common_canonical_database_fingerprint: [...databaseFingerprints][0],
     common_harness_manifest_sha256: [...harnessManifestShas][0],

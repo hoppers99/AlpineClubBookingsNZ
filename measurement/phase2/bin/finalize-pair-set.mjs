@@ -6,7 +6,7 @@ import { finalizeSealedTree } from "./sealed-tree.mjs";
 
 const fail = (message) => { throw new Error(message); };
 const args = Object.fromEntries(process.argv.slice(2).reduce((result, value, index, all) => index % 2 === 0 ? [...result, [value.replace(/^--/, ""), all[index + 1]]] : result, []));
-for (const name of ["dir", "output-id", "pairs", "correctness-manifest-sha256", "profile", "pair-count", "max-side-gap", "max-pair-gap", "monitor-interval", "allowed-containers"]) if (!args[name]) fail(`--${name} is required`);
+for (const name of ["dir", "output-id", "pairs", "correctness-manifest-sha256", "profile", "pair-count", "max-side-gap", "max-pair-gap", "monitor-interval", "pair-quiet-cpu-limit", "pair-quiet-samples", "allowed-containers"]) if (!args[name]) fail(`--${name} is required`);
 const root = resolve(args.dir);
 const pairsPath = resolve(args.pairs);
 const pairs = readFileSync(pairsPath, "utf8").trim().split(/\r?\n/).filter(Boolean).map(JSON.parse);
@@ -18,6 +18,8 @@ const orchestrationProfile = {
   maximum_inter_side_gap_seconds: Number(args["max-side-gap"]),
   maximum_inter_pair_gap_seconds: Number(args["max-pair-gap"]),
   quiet_monitor_interval_seconds: Number(args["monitor-interval"]),
+  pair_quiet_cpu_limit_percent: Number(args["pair-quiet-cpu-limit"]),
+  pair_quiet_samples: Number(args["pair-quiet-samples"]),
   allowed_running_containers: args["allowed-containers"].split(",").sort(),
 };
 const derived = classifyOrchestrationProfile(orchestrationProfile);

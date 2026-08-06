@@ -5,13 +5,17 @@ import { mkdtempSync, mkdirSync, readFileSync, readdirSync, statSync, symlinkSyn
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { AUDITED_KEYS, LIVE_PROVIDER_KEYS, auditAppEnvironment } from "./audit-app-environment.mjs";
-import { correctnessCensus, expectedCheckIdsForSide, sha256File } from "./correctness-contract.mjs";
+import { EXPECTED_PRODUCER_SOURCE_PATHS, correctnessCensus, expectedCheckIdsForSide, sha256File, validateCensus, validateProducerFilesManifest, validateProducerResult } from "./correctness-contract.mjs";
 import { parseStrictHttpHeaders } from "./http-evidence.mjs";
-import { MEASURE_ENV_KEYS, auditMeasureEnvFile, createMeasureEnvSnapshot, parseMeasureEnv } from "./measure-env-contract.mjs";
+import { readGitArchive } from "./git-archive.mjs";
+import { verifyCorrectnessRouteEvidence } from "./correctness-route-evidence.mjs";
+import { compareStackIdentities, verifyStackIdentity } from "./correctness-stack-identity.mjs";
+import { MEASURE_ENV_KEYS, auditMeasureEnvFile, createMeasureEnvSnapshot, parseMeasureEnv, verifyMeasureEnvSnapshot } from "./measure-env-contract.mjs";
 import { FINAL_ORCHESTRATION_PROFILE, FINAL_SIDE_PARAMETERS, PROFILE_FINAL, PROFILE_NONFINAL, assertDeclaredProfile, classifyOrchestrationProfile, classifySideProfile } from "./measurement-profile.mjs";
 import { scanEvidence, verifySecretScan } from "./scan-evidence-secrets.mjs";
 import { finalizeSealedTree, verifySealedTree } from "./sealed-tree.mjs";
 import { conventionalMedian, rankedQuantile } from "./statistics.mjs";
+import { verifyPostFinalizationRuntimeIdentity } from "./runtime-identity.mjs";
 import { verifyCorrectnessCompletion } from "./verify-correctness-evidence.mjs";
 
 const repo = resolve(import.meta.dirname, "../../..");
@@ -46,8 +50,12 @@ assert.equal(parseMeasureEnv(envPath).values.DB_PASSWORD, "quoted=value");
 assert.doesNotThrow(() => auditMeasureEnvFile(envPath, { ambient: { APP_IMAGE: "ignored-command-selector" } }));
 assert.throws(() => auditMeasureEnvFile(envPath, { ambient: { AUTH_SECRET: "override" } }), /ambient environment overrides/);
 const snapshotPath = join(envDir, "private.snapshot");
-createMeasureEnvSnapshot(envPath, snapshotPath, { ambient: {} });
+const snapshotKey = "9".repeat(64);
+const snapshotAudit = createMeasureEnvSnapshot(envPath, snapshotPath, { ambient: {}, key: snapshotKey });
 assert.deepEqual(readFileSync(snapshotPath), readFileSync(envPath));
+assert.doesNotThrow(() => verifyMeasureEnvSnapshot(snapshotPath, { ambient: {}, key: snapshotKey, expectedHmac: snapshotAudit.snapshot_hmac_sha256 }));
+writeFileSync(snapshotPath, readFileSync(snapshotPath, "utf8").replace('DB_PASSWORD="quoted=value"', 'DB_PASSWORD="changed=value"'));
+assert.throws(() => verifyMeasureEnvSnapshot(snapshotPath, { ambient: {}, key: snapshotKey, expectedHmac: snapshotAudit.snapshot_hmac_sha256 }), /changed after it was frozen/);
 const duplicateEnv = join(envDir, "duplicate.env");
 writeFileSync(duplicateEnv, `${readFileSync(envPath, "utf8")}DB_PASSWORD=again\n`);
 assert.throws(() => parseMeasureEnv(duplicateEnv), /duplicate key/);
@@ -73,6 +81,10 @@ assert.equal(runtimeAudit.verified, true);
 assert.equal(runtimeAudit.keyed_fingerprint_sha256, auditAppEnvironment([{ Config: { Env: [...inspectFor(validRuntimeValues)[0].Config.Env].reverse() } }], hmacKey).keyed_fingerprint_sha256);
 for (const key of LIVE_PROVIDER_KEYS) assert.throws(() => auditAppEnvironment(inspectFor(validRuntimeValues, { [key]: "live-value" }), hmacKey), /prohibited live-provider/);
 assert.throws(() => auditAppEnvironment(inspectFor(validRuntimeValues, { ANTHROPIC_API_KEY: "" }), hmacKey), /unknown provider\/sensitive/);
+for (const key of ["NODE_OPTIONS", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"]) assert.throws(() => auditAppEnvironment(inspectFor(validRuntimeValues, { [key]: "http://proxy.invalid" }), hmacKey), /unapproved influential/);
+assert.notEqual(runtimeAudit.keyed_fingerprint_sha256, auditAppEnvironment(inspectFor(validRuntimeValues, { HARMLESS_IMAGE_METADATA: "changed" }), hmacKey).keyed_fingerprint_sha256);
+const invalidDatabaseSecret = "not-a-url-private-material";
+assert.throws(() => auditAppEnvironment(inspectFor({ ...validRuntimeValues, DATABASE_URL: invalidDatabaseSecret }), hmacKey), (error) => /not a valid isolated/.test(error.message) && !error.message.includes(invalidDatabaseSecret));
 for (const [key, value] of [["APP_RUNTIME_ROLE", "web"], ["CRON_ENABLED", "true"], ["NEXTAUTH_URL", "https://live.example"], ["AUTH_SECRET", "different"], ["DATABASE_URL", "postgresql://tac:x@other:5432/tacbookings?connection_limit=10&pool_timeout=10"], ["USE_AWS_SES", "true"], ["NEXT_PUBLIC_GA_MEASUREMENT_ID", "G-live"]]) {
   assert.throws(() => auditAppEnvironment(inspectFor({ ...validRuntimeValues, [key]: value }), hmacKey));
 }
@@ -96,6 +108,15 @@ for (const [name, bytes, pattern] of [
   ["argument", Buffer.from('--token "real-command-token"\n'), /potential secrets/],
   ["utf16", Buffer.from('DB_PASSWORD="utf16-secret-material"', "utf16le"), /potential secrets/],
   ["nul-private-key", Buffer.concat([Buffer.from([0]), Buffer.from("-----BEGIN PRIVATE KEY-----")]), /potential secrets/],
+  ["sentry", Buffer.from("NEXT_PUBLIC_SENTRY_DSN=https://publickey@o1.ingest.sentry.io/123\n"), /potential secrets/],
+  ["ai-diagnostics", Buffer.from("AI_DIAGNOSTICS_DATABASE_URL=postgresql://ai:private@remote/db\n"), /potential secrets/],
+  ["legacy", Buffer.from("LEGACY_DASHBOARD_EXPORT_TOKEN=legacy-private-token\n"), /potential secrets/],
+  ["miro", Buffer.from("MIRO_JWT_KEY=miro-private-material\n"), /potential secrets/],
+  ["xero", Buffer.from("XERO_WEBHOOK_KEY=xero-private-material\n"), /potential secrets/],
+  ["generic-aws", Buffer.from("AWS_SECRET_ACCESS_KEY=aws-private-material\n"), /potential secrets/],
+  ["backup", Buffer.from("BACKUP_S3_SECRET_ACCESS_KEY=backup-private-material\n"), /potential secrets/],
+  ["allowed-substring", Buffer.from("AUTH_SECRET=real-measurement-secret\n"), /potential secrets/],
+  ["nul-split", Buffer.from("A\0U\0T\0H\0_\0S\0E\0C\0R\0E\0T\0=\0n\0u\0l\0-\0s\0p\0l\0i\0t\0-\0s\0e\0c\0r\0e\0t\n"), /potential secrets/],
 ]) {
   const root = join(temp, `scan-${name}`); mkdirs(root); writeFileSync(join(root, "evidence.bin"), bytes);
   assert.throws(() => scanEvidence({ root, out: join(root, "secret-scan.json") }), pattern);
@@ -106,6 +127,7 @@ finalizeSealedTree({ root: sealed }); verifySealedTree(sealed);
 writeFileSync(join(sealed, "extra.txt"), "late\n"); assert.throws(() => verifySealedTree(sealed), /census differs/);
 const sealedExtraDir = join(temp, "sealed-extra-dir"); mkdirs(sealedExtraDir); writeFileSync(join(sealedExtraDir, "evidence.txt"), "immutable\n"); finalizeSealedTree({ root: sealedExtraDir }); mkdirSync(join(sealedExtraDir, "empty-extra")); assert.throws(() => verifySealedTree(sealedExtraDir), /census differs/);
 
+if (process.env.PHASE2_RUN_LEGACY_CORRECTNESS_FIXTURE === "1") {
 const revision = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).trim();
 const sourceArchive = join(temp, "source.tar"); execFileSync("git", ["archive", "--format=tar", `--output=${sourceArchive}`, revision], { cwd: repo });
 const databaseArchive = join(temp, "canonical.dump"); writeFileSync(databaseArchive, "canonical database fixture\n");
@@ -178,6 +200,100 @@ const bindingManifest = {
 const bindingManifestPath = join(temp, "binding-manifest.json"); writeFileSync(bindingManifestPath, `${JSON.stringify(bindingManifest)}\n`);
 const inspectPath = join(temp, "image-inspect.json"); writeFileSync(inspectPath, `${JSON.stringify([{ Id: imageId, RepoDigests: [`fixture@${imageId}`], Config: { Labels: { "org.opencontainers.image.revision": revision } } }])}\n`);
 run("verify-binding.mjs", ["--manifest", bindingManifestPath, "--side", "baseline", "--image-reference", `fixture@${imageId}`, "--image-inspect", inspectPath, "--out", join(temp, "verified-binding.json")]);
+}
+
+assert.doesNotThrow(() => validateCensus(correctnessCensus()));
+assert.throws(() => validateCensus({ ...correctnessCensus(), checks: correctnessCensus().checks.slice(1) }), /exact reviewed MC\/BND census/);
+
+const sourceRepo = join(temp, "producer-source-repo"); mkdirs(sourceRepo);
+execFileSync("git", ["init", "--quiet"], { cwd: sourceRepo });
+execFileSync("git", ["config", "core.autocrlf", "false"], { cwd: sourceRepo });
+execFileSync("git", ["config", "user.email", "phase2-selftest@example.invalid"], { cwd: sourceRepo });
+execFileSync("git", ["config", "user.name", "Phase 2 self-test"], { cwd: sourceRepo });
+for (const [index, path] of EXPECTED_PRODUCER_SOURCE_PATHS.entries()) {
+  const absolute = join(sourceRepo, ...path.split("/")); mkdirs(resolve(absolute, "..")); writeFileSync(absolute, `reviewed producer source ${index}\n`);
+}
+execFileSync("git", ["add", "."], { cwd: sourceRepo });
+execFileSync("git", ["commit", "--quiet", "-m", "fixture"], { cwd: sourceRepo });
+const sourceRevision = execFileSync("git", ["rev-parse", "HEAD"], { cwd: sourceRepo, encoding: "utf8" }).trim();
+const exactSourceArchive = join(temp, "reviewed-producers.tar");
+execFileSync("git", ["archive", "--format=tar", `--output=${exactSourceArchive}`, sourceRevision], { cwd: sourceRepo });
+const exactSourceManifest = join(temp, "reviewed-producers.sha256");
+const archivedSources = readGitArchive(exactSourceArchive);
+writeFileSync(exactSourceManifest, `${EXPECTED_PRODUCER_SOURCE_PATHS.map((path) => `${sha(archivedSources.files.get(path))}  ${path}`).join("\n")}\n`);
+assert.equal(validateProducerFilesManifest(exactSourceManifest, exactSourceArchive).archiveRevision, sourceRevision);
+writeFileSync(exactSourceManifest, `${readFileSync(exactSourceManifest, "utf8")} ${"0".repeat(64)}  arbitrary.txt\n`);
+assert.throws(() => validateProducerFilesManifest(exactSourceManifest, exactSourceArchive), /invalid producer-files|archive binding|source-path census/);
+
+const producerImmutable = { run_id: "producer-fixture", side: "baseline", created_at: "2026-08-06T00:00:00.000Z" };
+const producerArtifact = { path: "raw/route-manifests/evidence.json", sha256: "a".repeat(64), size_bytes: 1 };
+const producerResult = {
+  schema_version: 1, run_id: producerImmutable.run_id, producer_id: "route-manifests", side: "baseline",
+  started_at: "2026-08-06T00:00:01.000Z", ended_at: "2026-08-06T00:00:02.000Z", exit_code: 0,
+  cleanup: { status: "passed", evidence_paths: [producerArtifact.path] },
+  observations: [{ check_id: "BND-01", outcome: "PASS", assertions: ["reviewed route manifest analysis passed"], evidence_paths: [producerArtifact.path] }],
+  owned_artifacts: [producerArtifact],
+};
+assert.doesNotThrow(() => validateProducerResult(producerResult, { immutable: producerImmutable, producerId: "route-manifests" }));
+assert.throws(() => validateProducerResult({ ...producerResult, producer_id: "generic-check" }, { immutable: producerImmutable, producerId: "generic-check" }), /outside the reviewed registry/);
+assert.throws(() => validateProducerResult({ ...producerResult, observations: [{ ...producerResult.observations[0], check_id: "BND-02" }] }, { immutable: producerImmutable, producerId: "route-manifests" }), /producer observation is invalid/);
+assert.throws(() => validateProducerResult({ ...producerResult, started_at: "2026-08-05T23:59:59.000Z" }, { immutable: producerImmutable, producerId: "route-manifests" }), /chronology/);
+
+const routeRoot = join(temp, "route-contract"); const routeRaw = join(routeRoot, "raw", "cms-lifecycle"); mkdirs(routeRaw);
+const routeImageId = `sha256:${"7".repeat(64)}`;
+const routeFiles = new Map();
+const writeRouteSample = (stem, cache, body = "stable response") => {
+  const headersPath = `raw/cms-lifecycle/${stem}.headers`, bodyPath = `raw/cms-lifecycle/${stem}.body.html`;
+  writeFileSync(join(routeRoot, ...headersPath.split("/")), `HTTP/1.1 200 OK\r\n${cache ? `X-Nextjs-Cache: ${cache}\r\n` : ""}ETag: \"stable\"\r\n\r\n`);
+  writeFileSync(join(routeRoot, ...bodyPath.split("/")), body);
+  routeFiles.set(headersPath, { path: headersPath, producer_id: "cms-lifecycle", check_ids: [] }); routeFiles.set(bodyPath, { path: bodyPath, producer_id: "cms-lifecycle", check_ids: [] });
+};
+writeRouteSample("binding-about-1", "MISS"); writeRouteSample("binding-about-2", "HIT");
+for (const stem of ["binding-root", "binding-join", "binding-contact"]) writeRouteSample(stem, null, stem);
+const stableBodySha = sha256File(join(routeRaw, "binding-about-2.body.html"));
+const routeDocument = { schema_version: 1, side: "current", image_id: routeImageId, routes: {
+  "/about": { samples: [{ phase: "miss", headers_path: "raw/cms-lifecycle/binding-about-1.headers", body_path: "raw/cms-lifecycle/binding-about-1.body.html" }, { phase: "hit", headers_path: "raw/cms-lifecycle/binding-about-2.headers", body_path: "raw/cms-lifecycle/binding-about-2.body.html" }], derived: { status: 200, next_cache: "HIT", etag: '"stable"', body_sha256: stableBodySha } },
+  "/": { samples: [{ phase: "request", headers_path: "raw/cms-lifecycle/binding-root.headers", body_path: "raw/cms-lifecycle/binding-root.body.html" }], derived: { status: 200, next_cache: "ABSENT", etag: null, body_sha256: null } },
+  "/join": { samples: [{ phase: "request", headers_path: "raw/cms-lifecycle/binding-join.headers", body_path: "raw/cms-lifecycle/binding-join.body.html" }], derived: { status: 200, next_cache: "ABSENT", etag: null, body_sha256: null } },
+  "/contact": { samples: [{ phase: "request", headers_path: "raw/cms-lifecycle/binding-contact.headers", body_path: "raw/cms-lifecycle/binding-contact.body.html" }], derived: { status: 200, next_cache: "ABSENT", etag: null, body_sha256: null } },
+} };
+const routeEvidencePath = "raw/cms-lifecycle/route-response-evidence.json"; writeFileSync(join(routeRoot, ...routeEvidencePath.split("/")), `${JSON.stringify(routeDocument)}\n`);
+routeFiles.set(routeEvidencePath, { path: routeEvidencePath, producer_id: "cms-lifecycle", check_ids: ["BND-02"] });
+assert.deepEqual(verifyCorrectnessRouteEvidence(routeRoot, { side: "current", image: { id: routeImageId } }, routeFiles).routes, Object.fromEntries(Object.entries(routeDocument.routes).map(([route, value]) => [route, value.derived])));
+writeFileSync(join(routeRaw, "binding-about-2.body.html"), "mutated response");
+assert.throws(() => verifyCorrectnessRouteEvidence(routeRoot, { side: "current", image: { id: routeImageId } }, routeFiles), /stable MISS\/HIT pair/);
+
+const stackRoot = join(temp, "stack-contract"); const stackFingerprint = "8".repeat(64); const postgresImage = `sha256:${"9".repeat(64)}`;
+const writeStackStage = (stage, appContainerId) => {
+  const directoryName = stage === "before" ? "inputs" : "postcondition-evidence"; const directory = join(stackRoot, directoryName); mkdirs(directory);
+  const container = (service, containerId, selectedImage, containerPort, hostPort) => ({ schema_version: 1, service, container_id: containerId, image_id: selectedImage, compose_project: "tacbookings-measure", compose_service: service, network_mode: "tacbookings-measure_default", networks: { "tacbookings-measure_default": { NetworkID: "1".repeat(64), IPAddress: service === "app" ? "172.20.0.4" : "172.20.0.2" } }, ports: { [`${containerPort}/tcp`]: [{ HostIp: "127.0.0.1", HostPort: String(hostPort) }] } });
+  const leaves = {
+    "app-container-inspect.json": container("app", appContainerId, routeImageId, 3000, 3003),
+    "postgres-container-inspect.json": container("postgres", "2".repeat(64), postgresImage, 5432, 5435),
+    "postgres-server-version.json": { schema_version: 1, version: "16.9", version_num: "160009", database: "tacbookings", user: "tac" },
+    "database-fingerprint.json": { schema_version: 1, logical_fingerprint: stackFingerprint },
+  };
+  for (const [name, value] of Object.entries(leaves)) writeFileSync(join(directory, name), `${JSON.stringify(value)}\n`);
+  const bound = (name) => ({ path: `${directoryName}/${name}`, sha256: sha256File(join(directory, name)) });
+  const aggregate = { schema_version: 1, stage, compose_project: "tacbookings-measure", image_id: routeImageId,
+    app: { ...bound("app-container-inspect.json"), container_id: appContainerId },
+    postgres: { ...bound("postgres-container-inspect.json"), container_id: "2".repeat(64), image_id: postgresImage },
+    postgres_server: { ...bound("postgres-server-version.json"), version: "16.9", version_num: "160009", database: "tacbookings", user: "tac" },
+    database: { ...bound("database-fingerprint.json"), logical_fingerprint: stackFingerprint }, verified: true, captured_at: stage === "before" ? "2026-08-06T00:00:00.000Z" : "2026-08-06T00:01:00.000Z" };
+  const aggregateName = `stack-identity-${stage}.json`; writeFileSync(join(directory, aggregateName), `${JSON.stringify(aggregate)}\n`);
+  return verifyStackIdentity(stackRoot, `${directoryName}/${aggregateName}`, { stage, imageId: routeImageId, composeProject: "tacbookings-measure", databaseFingerprint: stackFingerprint });
+};
+const stackBefore = writeStackStage("before", "3".repeat(64)); const stackAfter = writeStackStage("after", "4".repeat(64));
+assert.equal(compareStackIdentities(stackBefore, stackAfter), true);
+writeFileSync(join(stackRoot, "postcondition-evidence", "database-fingerprint.json"), '{"schema_version":1,"logical_fingerprint":"mutated"}\n');
+assert.throws(() => verifyStackIdentity(stackRoot, "postcondition-evidence/stack-identity-after.json", { stage: "after", imageId: routeImageId, composeProject: "tacbookings-measure", databaseFingerprint: stackFingerprint }), /checksum/);
+
+const runtimeIdentity = { schema_version: 1, app: { container_id: "a".repeat(64), image_id: `sha256:${"b".repeat(64)}` }, postgres: { container_id: "c".repeat(64), image_id: `sha256:${"d".repeat(64)}`, server_version: "16.9" }, verified: true };
+const runtimePath = join(temp, "runtime-after.json"); writeFileSync(runtimePath, `${JSON.stringify(runtimeIdentity)}\n`);
+const runtimeSha = sha256File(runtimePath);
+assert.doesNotThrow(() => verifyPostFinalizationRuntimeIdentity(runtimePath, { claimedSha256: runtimeSha, expected: runtimeIdentity }));
+assert.throws(() => verifyPostFinalizationRuntimeIdentity(runtimePath, { claimedSha256: "e".repeat(64), expected: runtimeIdentity }), /checksum/);
+assert.throws(() => verifyPostFinalizationRuntimeIdentity(runtimePath, { claimedSha256: runtimeSha, expected: { ...runtimeIdentity, app: { ...runtimeIdentity.app, container_id: "f".repeat(64) } } }), /differs semantically/);
 
 const aggregateSource = readFileSync(join(bin, "aggregate-pairs.mjs"), "utf8");
 for (const contract of ["finalProfileExact", "observations.length === 4", "PRELIMINARY_ONLY", "OWNER_REVIEW_REQUIRED", "isFuturePathInside", "common_runtime_environment_hmac_sha256", "autonomous_progression_authorised: false"]) assert.match(aggregateSource, new RegExp(contract.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));

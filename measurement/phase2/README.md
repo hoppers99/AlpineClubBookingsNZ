@@ -26,6 +26,17 @@ security must pass independently before timing; any failure stops progression.
 
 - Run the harness from Git Bash on Windows. Direct WSL/Linux execution has not
   been cleared for this host and fails closed.
+- Activate the repository runtime in that same Git Bash process before the
+  final run; the system `node` may otherwise be Node 22:
+
+  ```bash
+  eval "$(fnm env --shell bash)"
+  fnm use --install-if-missing
+  node --version # must print v24.x
+  ```
+
+  The orchestrator and both runners reject any other major and seal the
+  observed version in `inputs/node-version.txt`.
 - Use only the isolated `tacbookings-measure` Compose project and its loopback
   ports. Never use production/staging credentials, databases, backups, or live
   providers.

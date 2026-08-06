@@ -22,9 +22,15 @@ cd "$(dirname "$0")/../.."
 ROOT="$(pwd)"
 
 : "${MEASURE_ENV_SNAPSHOT:?MEASURE_ENV_SNAPSHOT must point to the private orchestrator snapshot}"
+: "${MEASURE_ENV_SNAPSHOT_HMAC_SHA256:?MEASURE_ENV_SNAPSHOT_HMAC_SHA256 must bind the private snapshot}"
+: "${PHASE2_ENV_AUDIT_HMAC_KEY_FILE:?PHASE2_ENV_AUDIT_HMAC_KEY_FILE must point to the private HMAC key}"
 case "$MEASURE_ENV_SNAPSHOT" in /*|[A-Za-z]:/*) ;; *) echo "MEASURE_ENV_SNAPSHOT must be absolute" >&2; exit 1 ;; esac
 ENV_FILE="$(cygpath -am "$MEASURE_ENV_SNAPSHOT")"
-node measurement/phase2/bin/measure-env-contract.mjs --verify-snapshot "$ENV_FILE"
+verify_env_snapshot() {
+  node measurement/phase2/bin/measure-env-contract.mjs --verify-snapshot "$ENV_FILE" \
+    --hmac-key-file "$PHASE2_ENV_AUDIT_HMAC_KEY_FILE" --expected-hmac "$MEASURE_ENV_SNAPSHOT_HMAC_SHA256"
+}
+verify_env_snapshot
 PROJECT=tacbookings-measure
 
 # Host-side view of the measure database, for migrate + seeds.
@@ -35,6 +41,7 @@ DEFAULT_MEASURE_APP_IMAGE="$(env_value APP_IMAGE)"
 export HOST_DATABASE_URL="postgresql://tac:${DB_PASSWORD}@localhost:5435/tacbookings"
 
 compose() {
+  verify_env_snapshot
   local image="${MEASURE_APP_IMAGE:-$DEFAULT_MEASURE_APP_IMAGE}"
   local clean_env=("PATH=$PATH") name
   for name in SystemRoot SYSTEMROOT COMSPEC DOCKER_HOST DOCKER_CONTEXT DOCKER_CONFIG DOCKER_CERT_PATH DOCKER_TLS_VERIFY HOME USERPROFILE TEMP TMP; do

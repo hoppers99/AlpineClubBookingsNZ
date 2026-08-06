@@ -118,27 +118,15 @@ if (archiveSha !== manifest.canonical_database.archive_sha256) {
   fail(`canonical database archive checksum mismatch: expected ${manifest.canonical_database.archive_sha256}, got ${archiveSha}`);
 }
 
-const routes = binding.routes;
-for (const route of ["/about", "/", "/join", "/contact"]) {
-  const expected = routes?.[route];
-  if (!expected) fail(`${side}.routes[${JSON.stringify(route)}] is required`);
-  const allowed = side === "current" && route === "/about" ? ["HIT"] : ["ABSENT"];
-  if (!allowed.includes(expected.next_cache)) {
-    fail(`${side} ${route} next_cache must be ${allowed.join(" or ")}, got ${expected.next_cache}`);
-  }
-  if (side === "current" && route === "/about") {
-    expectHex(expected.body_sha256, `${side} ${route} body_sha256`);
-    if (!expected.etag) fail(`${side} ${route} etag is required`);
-  } else if (expected.body_sha256 !== null || expected.etag !== null) {
-    fail(`${side} ${route} is dynamic; body_sha256 and etag must be null rather than pretending per-request nonce output is stable`);
-  }
-}
 const canonicalize = (value) => Array.isArray(value)
   ? value.map(canonicalize)
   : value && typeof value === "object"
     ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonicalize(value[key])]))
     : value;
 const canonicalJson = (value) => JSON.stringify(canonicalize(value));
+if (canonicalJson(binding.routes) !== canonicalJson(correctness.routeExpectations.routes)) {
+  fail(`${side}.routes differs from the independently parsed sealed correctness route evidence`);
+}
 if (
   correctness.immutable.side !== side ||
   correctness.immutable.image.id !== binding.image_id ||
@@ -160,6 +148,8 @@ const result = {
   oci_revision: revision,
   source_archive_sha256: binding.source_archive.sha256,
   source_archive_revision: archiveRevision,
+  producer_source_archive_sha256: correctness.immutable.producer_source.archive_sha256,
+  producer_source_commit: correctness.immutable.producer_source.commit,
   correctness_completion_sha256: binding.correctness_completion.sha256,
   correctness_report_sha256: correctness.completion.correctness_report_sha256,
   correctness_result: correctness.report.result,

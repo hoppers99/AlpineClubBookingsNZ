@@ -15,6 +15,8 @@ export const FINAL_ORCHESTRATION_PROFILE = Object.freeze({
   maximum_inter_side_gap_seconds: 600,
   maximum_inter_pair_gap_seconds: 600,
   quiet_monitor_interval_seconds: 10,
+  pair_quiet_cpu_limit_percent: 20,
+  pair_quiet_samples: 5,
   allowed_running_containers: Object.freeze([
     "tacbookings-measure-app-1",
     "tacbookings-measure-caddy-1",

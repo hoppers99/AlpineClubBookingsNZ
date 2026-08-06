@@ -20,22 +20,28 @@ export const LIVE_PROVIDER_KEYS = Object.freeze([
   "XERO_CLIENT_SECRET", "XERO_ENCRYPTION_KEY", "XERO_REDIRECT_URI", "XERO_WEBHOOK_KEY",
 ]);
 const SENSITIVE_KEY_PATTERN = /(?:^|_)(?:ADDY|AI_DIAGNOSTICS|ANTHROPIC|AUTH|AWS|BACKUP|COOKIE|CRON|DATABASE|DB|EMAIL|GA|GOOGLE|MIRO|NEXTAUTH|PASSWORD|SECRET|SEED|SENTRY|SES|SMTP|STRIPE|TOKEN|XERO)(?:_|$)/i;
+const INFLUENTIAL_FORBIDDEN_KEYS = Object.freeze(["ALL_PROXY", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "NODE_OPTIONS"]);
 
 export function auditAppEnvironment(inspect, hmacKey) {
   if (!/^[a-f0-9]{64}$/.test(hmacKey ?? "")) fail("app environment audit HMAC key is invalid");
   if (!Array.isArray(inspect) || inspect.length !== 1 || !Array.isArray(inspect[0]?.Config?.Env)) fail("app environment audit requires one Docker inspect payload with Config.Env");
   const values = {};
+  const foldedKeys = new Set();
   for (const item of inspect[0].Config.Env) {
     const equals = item.indexOf("=");
     if (equals < 1) fail("app environment contains a malformed entry");
     const key = item.slice(0, equals);
-    if (Object.hasOwn(values, key)) fail(`app environment contains duplicate key ${key}`);
+    const folded = key.toUpperCase();
+    if (Object.hasOwn(values, key) || foldedKeys.has(folded)) fail(`app environment contains duplicate key ${key}`);
+    foldedKeys.add(folded);
     values[key] = item.slice(equals + 1);
   }
   for (const key of AUDITED_KEYS) if (!Object.hasOwn(values, key)) fail(`app environment is missing audited key ${key}`);
   const known = new Set([...AUDITED_KEYS, ...LIVE_PROVIDER_KEYS]);
   const unknownSensitive = Object.keys(values).filter((key) => SENSITIVE_KEY_PATTERN.test(key) && !known.has(key));
   if (unknownSensitive.length) fail(`app environment contains unknown provider/sensitive keys: ${unknownSensitive.sort().join(",")}`);
+  const influential = Object.keys(values).filter((key) => INFLUENTIAL_FORBIDDEN_KEYS.includes(key.toUpperCase()));
+  if (influential.length) fail(`app environment contains unapproved influential keys: ${influential.sort().join(",")}`);
   const forbidden = LIVE_PROVIDER_KEYS.filter((key) => (values[key] ?? "") !== "");
   if (forbidden.length) fail(`app environment contains nonblank prohibited live-provider keys: ${forbidden.join(",")}`);
   if (values.APP_RUNTIME_ROLE !== "web-measure" || values.CRON_ENABLED !== "false" || values.NODE_ENV !== "production" || values.TZ !== "Pacific/Auckland" || values.KEEP_ALIVE_TIMEOUT !== "65000" || values.LOG_LEVEL !== "info") fail("measurement app runtime role/cron/runtime constants differ from the reviewed profile");
@@ -48,12 +54,16 @@ export function auditAppEnvironment(inspect, hmacKey) {
   }
   if (values.SES_SNS_ALLOW_UNSAFE_MISSING_TOPIC_ARN !== "false") fail("unsafe missing SES topic mode must be disabled");
   if (values.NEXTAUTH_URL !== "http://localhost:8027") fail("NEXTAUTH_URL is not the local measurement Caddy");
-  const database = new URL(values.DATABASE_URL);
+  let database;
+  try { database = new URL(values.DATABASE_URL); }
+  catch { fail("DATABASE_URL is not a valid isolated measurement Postgres URL"); }
   if (database.protocol !== "postgresql:" || database.username !== "tac" || database.password === "" || database.hostname !== "postgres" || database.port !== "5432" || database.pathname !== "/tacbookings" || database.searchParams.size !== 2 || database.searchParams.get("connection_limit") !== "10" || database.searchParams.get("pool_timeout") !== "10") fail("DATABASE_URL is not exactly the isolated measurement Postgres contract");
-  const canonical = AUDITED_KEYS.map((key) => `${key.length}:${key}:${values[key].length}:${values[key]}`).join("|");
+  const runtimeKeys = Object.keys(values).sort();
+  const canonical = runtimeKeys.map((key) => `${key.length}:${key}:${values[key].length}:${values[key]}`).join("|");
   return {
     schema_version: 1,
     audited_key_names: AUDITED_KEYS,
+    runtime_key_names: runtimeKeys,
     prohibited_live_provider_keys: [],
     unknown_sensitive_key_names: [],
     classifications: {

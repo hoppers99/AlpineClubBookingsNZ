@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 
@@ -12,6 +13,14 @@ export const MEASURE_ENV_KEYS = Object.freeze([
 ].sort());
 
 const fail = (message) => { throw new Error(message); };
+const hmacKey = (path) => {
+  const absolute = resolve(path);
+  if (!isAbsolute(path) || !existsSync(absolute) || lstatSync(absolute).isSymbolicLink() || !statSync(absolute).isFile()) fail("measurement env HMAC key must be an absolute private regular file");
+  const value = readFileSync(absolute, "utf8").trim();
+  if (!/^[a-f0-9]{64}$/.test(value)) fail("measurement env HMAC key is invalid");
+  return value;
+};
+const keyedSnapshotHmac = (bytes, key) => createHmac("sha256", Buffer.from(key, "hex")).update(bytes).digest("hex");
 const AMBIENT_FORBIDDEN_KEYS = Object.freeze([...new Set([
   ...MEASURE_ENV_KEYS,
   "AI_DIAGNOSTICS_DB_PASSWORD", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "BACKUP_ENABLED", "BACKUP_S3_ACCESS_KEY_ID",
@@ -56,7 +65,7 @@ export function auditMeasureEnvFile(path, { ambient = process.env } = {}) {
   return { schema_version: 1, key_names: MEASURE_ENV_KEYS, ambient_override_keys: [], ignored_non_authoritative_keys: ambientUpper.has("APP_IMAGE") ? ["APP_IMAGE"] : [], authoritative_private_snapshot: true, verified: true };
 }
 
-export function createMeasureEnvSnapshot(source, destination, { ambient = process.env } = {}) {
+export function createMeasureEnvSnapshot(source, destination, { ambient = process.env, key = null } = {}) {
   const audit = auditMeasureEnvFile(source, { ambient });
   const target = resolve(destination);
   if (!isAbsolute(destination) || existsSync(target)) fail("measurement env snapshot destination must be a new absolute path");
@@ -65,18 +74,28 @@ export function createMeasureEnvSnapshot(source, destination, { ambient = proces
   if (lstatSync(target).isSymbolicLink() || !statSync(target).isFile() || !readFileSync(target).equals(sourceBytes)) fail("measurement env private snapshot does not exactly match its source");
   if (process.platform !== "win32" && (statSync(target).mode & 0o077) !== 0) fail("measurement env private snapshot permissions are not restrictive");
   parseMeasureEnv(target);
-  return audit;
+  if (key !== null && !/^[a-f0-9]{64}$/.test(key)) fail("measurement env HMAC key is invalid");
+  return { ...audit, snapshot_hmac_sha256: key === null ? null : keyedSnapshotHmac(sourceBytes, key) };
+}
+
+export function verifyMeasureEnvSnapshot(path, { key, expectedHmac, ambient = process.env } = {}) {
+  const audit = auditMeasureEnvFile(path, { ambient });
+  if (!/^[a-f0-9]{64}$/.test(key ?? "") || !/^[a-f0-9]{64}$/.test(expectedHmac ?? "")) fail("measurement env snapshot HMAC verification inputs are invalid");
+  const actual = keyedSnapshotHmac(readFileSync(resolve(path)), key);
+  if (actual !== expectedHmac) fail("measurement env private snapshot changed after it was frozen");
+  return { ...audit, snapshot_hmac_sha256: actual };
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === resolve(import.meta.filename)) {
   const args = process.argv.slice(2);
-  if (args.length === 4 && args[0] === "--snapshot-source" && args[2] === "--snapshot-out") {
-    createMeasureEnvSnapshot(args[1], args[3]);
-  } else if (args.length === 2 && args[0] === "--verify-snapshot") {
-    auditMeasureEnvFile(args[1]);
+  if (args.length === 8 && args[0] === "--snapshot-source" && args[2] === "--snapshot-out" && args[4] === "--hmac-key-file" && args[6] === "--audit-out") {
+    const audit = createMeasureEnvSnapshot(args[1], args[3], { key: hmacKey(args[5]) });
+    writeFileSync(resolve(args[7]), `${JSON.stringify(audit, null, 2)}\n`, { flag: "wx" });
+  } else if (args.length === 6 && args[0] === "--verify-snapshot" && args[2] === "--hmac-key-file" && args[4] === "--expected-hmac") {
+    verifyMeasureEnvSnapshot(args[1], { key: hmacKey(args[3]), expectedHmac: args[5] });
   } else if (args.length === 4 && args[0] === "--get" && args[2] === "--env-file") {
     const parsed = parseMeasureEnv(args[3]);
     if (!Object.hasOwn(parsed.values, args[1])) fail(`measurement env has no key ${args[1]}`);
     process.stdout.write(parsed.values[args[1]]);
-  } else fail("usage: measure-env-contract.mjs --snapshot-source <absolute> --snapshot-out <private-absolute> | --verify-snapshot <private-absolute> | --get <key> --env-file <private-absolute>");
+  } else fail("usage: measure-env-contract.mjs --snapshot-source <absolute> --snapshot-out <private-absolute> --hmac-key-file <private-key> --audit-out <new-json> | --verify-snapshot <private-absolute> --hmac-key-file <private-key> --expected-hmac <hex> | --get <key> --env-file <private-absolute>");
 }
