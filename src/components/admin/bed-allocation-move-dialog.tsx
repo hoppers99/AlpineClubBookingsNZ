@@ -433,7 +433,7 @@ export function BedAllocationMoveDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <div role="alert" aria-live="assertive" className="min-h-0">
+        <div className="min-h-0">
           {error ? (
             <Alert role="presentation" variant="error">
               {error}

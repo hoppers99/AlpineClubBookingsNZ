@@ -311,13 +311,15 @@ describe("BedAllocationMoveDialog", () => {
     await screen.findByText("Destination no longer exists");
 
     const alerts = screen.getAllByRole("alert");
-    expect(alerts).toHaveLength(2);
+    expect(alerts).toHaveLength(1);
     expect(alerts[0]).toHaveTextContent(
       "Move preview failed. Destination no longer exists",
     );
-    expect(alerts[1].querySelector('[role="presentation"]')).toHaveTextContent(
-      "Destination no longer exists",
-    );
+    expect(
+      screen.getByText("Destination no longer exists").closest(
+        '[role="presentation"]',
+      ),
+    ).toBeInTheDocument();
   });
 
   it("keeps the selected scope and requires another confirmation after a stale apply", async () => {
