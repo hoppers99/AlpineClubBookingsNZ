@@ -574,7 +574,12 @@ Future reviews and issues should cite this file when proposing changes.
   whole-room, legacy, and displacement trials. This is a deterministic bounded
   heuristic, not a claim of global optimality across all bookings. A settings
   save never moves an existing row: it affects later board suggestions and
-  later lifecycle reconciliation only.
+  later lifecycle reconciliation only. The board's visible suggestions are a
+  preview, never a persistence payload: Run Auto Allocation takes global then
+  the selected lodge lock and rebuilds the complete scoped plan on that
+  transaction client before writing, so a bed/room deactivate, retype, lodge
+  mismatch, allocation/approval change, or hard-predicate change committed
+  after preview cannot receive a stale AUTO row.
 - **Cross-booking age mix (#1768, owner-set):** a room-night containing minors
   from booking X must never also contain an adult from a DIFFERENT booking —
   planner-enforced in both placement directions on every path (whole-stay,

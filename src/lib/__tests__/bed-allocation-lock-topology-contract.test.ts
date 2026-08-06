@@ -26,6 +26,21 @@ function expectInOrder(text: string, tokens: readonly string[]): void {
 }
 
 describe("bed allocation lock topology", () => {
+  it("rebuilds the board auto-allocation plan only after global then lodge", () => {
+    const autoRun = between(
+      source("src/lib/admin-bed-allocation.ts"),
+      "export async function runAutoBedAllocation(",
+      "async function assertGuestAndBedForAllocation(",
+    );
+    expectInOrder(autoRun, [
+      "pg_advisory_xact_lock(1)",
+      "acquireLodgeCapacityLock(tx, lodgeId)",
+      "getBedAllocationDashboard",
+      "suggestedAllocations.map",
+      "bedAllocation.createMany",
+    ]);
+  });
+
   it("locks global then lodge before the school whole-lodge conversion", () => {
     const school = source("src/lib/school-booking-request.ts");
     const conversion = school.slice(

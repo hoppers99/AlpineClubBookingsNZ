@@ -1028,11 +1028,16 @@ inventory update/delete, manual placement/range assignment, allocation delete,
 and approval similarly expose transaction-owning public wrappers plus narrow
 `*WithLocksHeld` internals for existing transactions. A caller must never pass a
 client into a public wrapper to bypass lock ownership. The explicit board
-auto-allocation write takes global first, then all affected lodge locks in
-sorted id order, and re-reads booking eligibility, whole-lodge holds, and
-custodian bed holds before inserting. The planner's per-lodge priority order
+auto-allocation write takes global first, then the selected lodge lock, and
+rebuilds the complete scoped dashboard and plan through that transaction client
+before constructing any insert row. The authoritative under-lock rebuild
+re-reads active rooms and beds (including their current lodge/type/bunk shape),
+booking/guest nights and eligibility, existing and approved allocations,
+whole-lodge holds, and custodian bed holds, so a visible preview is never itself
+a write plan. The narrow booking and hold checks are then repeated immediately
+beside `createMany` as defence in depth. The planner's per-lodge priority order
 changes candidate choice but introduces no lock key and never weakens these
-write-time re-reads.
+hard predicates.
 
 Cron/waitlist counterpart writers keep their guarded claims inside that same
 topology. Completion and past-waitlist cancellation re-read each candidate
