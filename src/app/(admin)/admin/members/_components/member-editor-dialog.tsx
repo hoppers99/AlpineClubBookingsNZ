@@ -242,15 +242,20 @@ export function MemberEditorDialog({
 
   const reportXeroPartialSuccess = async (
     error: AdminMemberXeroActionError,
+    affectedMemberId?: string,
   ) => {
-    const guidance = isXeroPartialSuccessRecovery(error.recovery)
-      ? getXeroPartialSuccessGuidance(error.recovery)
+    const recovery =
+      affectedMemberId && !error.recovery.memberId
+        ? { ...error.recovery, memberId: affectedMemberId }
+        : error.recovery;
+    const guidance = isXeroPartialSuccessRecovery(recovery)
+      ? getXeroPartialSuccessGuidance(recovery)
       : "A Xero action completed only in part. Do not repeat it until the member's current Xero status has been checked.";
     setXeroChoice("");
     closePendingXeroCreateDecision();
     onOpenChange(false);
     if (onRecoveryWarning) {
-      await onRecoveryWarning(error.recovery);
+      await onRecoveryWarning(recovery);
     } else {
       onWarning(guidance);
       onSaved();
@@ -293,7 +298,7 @@ export function MemberEditorDialog({
             ? { ...member, xeroContactId: null, xeroContactGroups: [] }
             : member,
         );
-        await reportXeroPartialSuccess(err);
+        await reportXeroPartialSuccess(err, memberId);
         return;
       }
       setFormError(
@@ -326,7 +331,7 @@ export function MemberEditorDialog({
         setCurrentEditingMember((member) =>
           member ? { ...member, xeroContactId: contactId } : member,
         );
-        await reportXeroPartialSuccess(err);
+        await reportXeroPartialSuccess(err, memberId);
         return;
       }
       setFormError(
@@ -400,7 +405,7 @@ export function MemberEditorDialog({
               : member,
           );
         }
-        await reportXeroPartialSuccess(err);
+        await reportXeroPartialSuccess(err, memberId);
         return;
       }
       setFormError(
@@ -451,7 +456,10 @@ export function MemberEditorDialog({
             xeroContactId: pendingXeroDecisionContactId,
           });
         }
-        await reportXeroPartialSuccess(err);
+        await reportXeroPartialSuccess(
+          err,
+          pendingXeroCreateDecision.memberId,
+        );
         return;
       }
       setPendingXeroDecisionError(
@@ -518,7 +526,10 @@ export function MemberEditorDialog({
               err.recovery.xeroContactId ?? currentEditingMember.xeroContactId,
           });
         }
-        await reportXeroPartialSuccess(err);
+        await reportXeroPartialSuccess(
+          err,
+          pendingXeroCreateDecision.memberId,
+        );
         return;
       }
       setPendingXeroDecisionError(
@@ -743,7 +754,7 @@ export function MemberEditorDialog({
       onOpenChange(false);
       onSuccess(successMessage);
       if (xeroPartialRecovery) {
-        await reportXeroPartialSuccess(xeroPartialRecovery);
+        await reportXeroPartialSuccess(xeroPartialRecovery, data.id);
         return;
       }
       if (warning) onWarning(warning);

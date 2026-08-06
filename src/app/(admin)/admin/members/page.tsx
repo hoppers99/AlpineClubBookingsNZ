@@ -1,6 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import Link from "next/link"
 import { useSession } from "next-auth/react"
 import { isFullAdmin } from "@/lib/access-roles"
 import { Download, RefreshCw, Upload } from "lucide-react"
@@ -76,6 +77,7 @@ export default function MembersPage() {
   const [error, setError] = useState("")
   const [xeroRecoveryError, setXeroRecoveryError] = useState("")
   const [xeroRecoveryAttention, setXeroRecoveryAttention] = useState(0)
+  const [xeroRecoveryMemberId, setXeroRecoveryMemberId] = useState<string | null>(null)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [createDialogOpen, setCreateDialogOpen] = useState(false)
   const [importDialogOpen, setImportDialogOpen] = useState(false)
@@ -131,6 +133,11 @@ export default function MembersPage() {
     const guidance = isXeroPartialSuccessRecovery(recovery)
       ? getXeroPartialSuccessGuidance(recovery)
       : "A Xero action completed only in part. Do not repeat it until the member's current Xero status has been checked."
+    setXeroRecoveryMemberId(
+      typeof recovery.memberId === "string" && recovery.memberId.length > 0
+        ? recovery.memberId
+        : null,
+    )
     setXeroRecoveryError(`${guidance} Refreshing the member list now...`)
     setXeroRecoveryAttention((value) => value + 1)
     const refreshed = await fetchMembersWithResult()
@@ -377,6 +384,17 @@ export default function MembersPage() {
         error={xeroRecoveryError}
         attentionKey={xeroRecoveryAttention}
         className="scroll-mt-20"
+        action={
+          xeroRecoveryMemberId ? (
+            <Button asChild variant="outline" size="sm">
+              <Link
+                href={`/admin/members/${encodeURIComponent(xeroRecoveryMemberId)}`}
+              >
+                Open affected member
+              </Link>
+            </Button>
+          ) : undefined
+        }
       />
 
       {error && (

@@ -159,6 +159,15 @@ export default function MemberDetailPage({
   const [xeroRecoveryMemberId, setXeroRecoveryMemberId] =
     useState<string | null>(null);
   const [xeroRecoveryAttention, setXeroRecoveryAttention] = useState(0);
+  // A provider-created/local-link-unconfirmed recovery may arrive while the
+  // page still holds the member snapshot from before that action. Require one
+  // later successful member GET before that old `pending=false` value is
+  // allowed to clear the recovery. Failed reads do not advance this version,
+  // so the warning and Create suppression remain available for recovery.
+  const [authoritativeMemberReadVersion, setAuthoritativeMemberReadVersion] =
+    useState(0);
+  const [xeroRecoveryClearAfterReadVersion, setXeroRecoveryClearAfterReadVersion] =
+    useState<number | null>(null);
   const relationshipErrorRef = useRef<HTMLDivElement>(null);
   const xeroErrorRef = useRef<HTMLDivElement>(null);
   const { scrollToError } = useScrollToFeedback();
@@ -174,6 +183,7 @@ export default function MemberDetailPage({
         return false;
       }
       setMember(await res.json());
+      setAuthoritativeMemberReadVersion((version) => version + 1);
       setPageError("");
       return true;
     } catch {
@@ -208,6 +218,9 @@ export default function MemberDetailPage({
       });
       setXeroRecoveryMemberId(id);
       setXeroRecoveryGuidance(guidance);
+      setXeroRecoveryClearAfterReadVersion(
+        authoritativeMemberReadVersion + 1,
+      );
       setXeroRecoveryError(
         `${guidance} The unresolved local Xero operation was confirmed; check the current Xero link before taking another action.`,
       );
@@ -216,14 +229,24 @@ export default function MemberDetailPage({
     }
     if (
       recoveryKind === "CONTACT_CREATED_LINK_UNCONFIRMED" &&
-      xeroRecoveryMemberId === id
+      xeroRecoveryMemberId === id &&
+      xeroRecoveryClearAfterReadVersion !== null &&
+      authoritativeMemberReadVersion >= xeroRecoveryClearAfterReadVersion
     ) {
       setXeroRecovery(null);
       setXeroRecoveryMemberId(null);
       setXeroRecoveryGuidance("");
       setXeroRecoveryError("");
+      setXeroRecoveryClearAfterReadVersion(null);
     }
-  }, [id, member, xeroRecovery?.recoveryKind, xeroRecoveryMemberId]);
+  }, [
+    authoritativeMemberReadVersion,
+    id,
+    member,
+    xeroRecovery?.recoveryKind,
+    xeroRecoveryClearAfterReadVersion,
+    xeroRecoveryMemberId,
+  ]);
 
   const refreshAfterXeroPartialSuccess = useCallback(
     async (guidance: string) => {
@@ -249,9 +272,14 @@ export default function MemberDetailPage({
       setXeroRecoveryGuidance(guidance);
       setXeroRecovery(error.recovery);
       setXeroRecoveryMemberId(id);
+      setXeroRecoveryClearAfterReadVersion(
+        error.recovery.recoveryKind === "CONTACT_CREATED_LINK_UNCONFIRMED"
+          ? authoritativeMemberReadVersion + 1
+          : null,
+      );
       await refreshAfterXeroPartialSuccess(guidance);
     },
-    [id, refreshAfterXeroPartialSuccess],
+    [authoritativeMemberReadVersion, id, refreshAfterXeroPartialSuccess],
   );
 
   const xeroCreateSuppressed =
