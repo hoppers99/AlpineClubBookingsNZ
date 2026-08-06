@@ -493,7 +493,7 @@ async function prepareBookingBedAllocationRemoval(page: Page): Promise<void> {
     timeout: 30_000,
   });
   await page
-    .getByRole("heading", { name: "Bed allocation" })
+    .locator("#bed-allocation:visible")
     .waitFor({ state: "visible", timeout: 15_000 });
   await page.getByRole("button", { name: "Remove", exact: true }).first().click();
   await page.getByRole("button", { name: "Preview removal" }).click();

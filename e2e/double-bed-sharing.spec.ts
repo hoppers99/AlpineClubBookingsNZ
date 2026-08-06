@@ -191,7 +191,7 @@ async function allocate(bookingGuestId: string, bedId: string, stayDate: string)
     allocationId: body.allocation.id,
     bookingId: body.allocation.bookingId,
     bookingGuestId: body.allocation.bookingGuestId,
-    lodgeId: booking.lodgeId,
+    lodgeId: bedAllocationSettingsBefore!.lodgeId,
     stayDate,
   });
   return body.allocation as {
@@ -213,11 +213,12 @@ async function deleteAllocation(id: string) {
     "/api/admin/bed-allocation/allocations/removal",
     { data: { scope, categories: ["MANUAL_DRAFT"] } },
   );
+  const previewBody = await preview.text();
   expect(
     preview.ok(),
-    `preview allocation removal ${id} (${preview.status()})`,
+    `preview allocation removal ${id} (${preview.status()}): ${previewBody}`,
   ).toBeTruthy();
-  const reviewed = await preview.json();
+  const reviewed = JSON.parse(previewBody);
   const apply = await api().put(
     "/api/admin/bed-allocation/allocations/removal",
     {

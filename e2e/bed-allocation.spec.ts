@@ -674,3 +674,115 @@ test("an admin confirms this booking's beds from the booking page, and the membe
     await memberContext.close();
   }
 });
+
+// High row (issue #2594): Reset is deliberately category-neutral, while a
+// row-triggered removal starts from that row's mutually-exclusive category.
+// This serial step reuses Ken's approved allocation from the journeys above,
+// applies the booking-panel flow, and proves that enabling auto allocation does
+// not make Apply silently replace the removed row.
+test("staged removal previews an approved booking row and leaves it unallocated", async () => {
+  const ken = DEMO_BOOKING_WINDOWS.kenReview;
+  const page = await adminContext.newPage();
+  await page.goto(
+    `/admin/bed-allocation?from=${ken.checkIn}&to=${ken.checkOut}`,
+  );
+
+  await page.getByRole("button", { name: /Reset allocations/ }).click();
+  const resetDialog = page.getByRole("dialog", {
+    name: "Remove bed allocations",
+  });
+  for (const category of ["Auto draft", "Manual draft", "Approved"]) {
+    await expect(
+      resetDialog.getByRole("checkbox", {
+        name: new RegExp(`^${category}\\b`, "i"),
+      }),
+    ).not.toBeChecked();
+  }
+  await expect(
+    resetDialog.getByRole("button", { name: "Preview removal" }),
+  ).toBeDisabled();
+  await resetDialog.getByRole("button", { name: "Cancel" }).click();
+
+  const dashboard = await adminContext.request.get(
+    `/api/admin/bed-allocation?from=${ken.checkIn}&to=${ken.checkOut}`,
+  );
+  expect(dashboard.ok(), `read Ken's allocation (${dashboard.status()})`).toBeTruthy();
+  const before = (await dashboard.json()) as {
+    allocations: Array<{
+      bookingId: string;
+      guestName: string;
+      approvedAt: string | null;
+    }>;
+  };
+  const approvedKen = before.allocations.find(
+    (allocation) =>
+      allocation.guestName.includes("Ken") && allocation.approvedAt !== null,
+  );
+  expect(approvedKen, "Ken has one approved row to remove").toBeTruthy();
+
+  await page.goto(`/bookings/${approvedKen!.bookingId}`);
+  const panel = page.locator("#bed-allocation:visible");
+  await expect(panel).toBeVisible({ timeout: 30_000 });
+  await panel
+    .getByRole("button", { name: "Remove", exact: true })
+    .first()
+    .click();
+
+  const removalDialog = page.getByRole("dialog", {
+    name: "Remove bed allocations",
+  });
+  await expect(
+    removalDialog.getByRole("checkbox", { name: /^Approved\b/i }),
+  ).toBeChecked();
+  await expect(
+    removalDialog.getByText("Approved beds will be removed"),
+  ).toBeVisible();
+  await removalDialog.getByLabel("Removal scope").click();
+  await page
+    .getByRole("option", {
+      name: "This person on this booking, including off-screen nights",
+    })
+    .click();
+  await removalDialog
+    .getByRole("button", { name: "Preview removal" })
+    .click();
+  await expect(
+    removalDialog.getByText("Preview ready: 2 allocations will be removed."),
+  ).toBeVisible();
+  await expect(
+    removalDialog.getByText("Requested-room editing will re-open"),
+  ).toBeVisible();
+
+  await setBedAllocationSettings(adminContext.request, {
+    ...bedAllocationSettingsBefore!,
+    autoAllocationEnabled: true,
+  });
+  await removalDialog
+    .getByRole("button", { name: "Remove reviewed allocations" })
+    .click();
+  await expect(
+    page.getByText(
+      "2 reviewed bed nights removed for this booking; no automatic allocation was run",
+    ),
+  ).toBeVisible();
+  await expect(panel.getByText("No bed on any night of this page.")).toBeVisible();
+
+  const afterResponse = await adminContext.request.get(
+    `/api/admin/bed-allocation?from=${ken.checkIn}&to=${ken.checkOut}`,
+  );
+  expect(
+    afterResponse.ok(),
+    `re-read Ken's allocation (${afterResponse.status()})`,
+  ).toBeTruthy();
+  const after = (await afterResponse.json()) as {
+    allocations: Array<{ bookingId: string }>;
+  };
+  expect(
+    after.allocations.some(
+      (allocation) => allocation.bookingId === approvedKen!.bookingId,
+    ),
+    "reviewed removal must not auto-create a replacement row",
+  ).toBe(false);
+
+  await page.close();
+});
