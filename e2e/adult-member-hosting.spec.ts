@@ -5,7 +5,6 @@ import { E2E_ADMIN, WAITLISTER } from "./helpers/fixtures";
 import {
   overrideModules,
   setModuleSettings,
-  type ModuleSettings,
 } from "./helpers/modules";
 import { cancelMemberBookingsOnDate } from "./helpers/reset";
 import { stayWindowForAttempt } from "./helpers/stay-dates";
@@ -53,7 +52,6 @@ let memberContext: BrowserContext;
 let admin: APIRequestContext;
 let member: APIRequestContext;
 let ownerMemberId: string;
-let previousModules: ModuleSettings | null = null;
 
 /** A future in-season window with room, chosen once so both bookings share it. */
 let WINDOW: { checkIn: string; checkOut: string };
@@ -244,13 +242,6 @@ test.beforeAll(async ({ browser }) => {
     storageState: storageStatePath(E2E_ADMIN.email),
   });
   admin = adminContext.request;
-  // These bookings use Internet Banking so an all-member source reaches a
-  // confirmed active-attendance state without live Stripe. The isolated seed
-  // leaves both switches off; restore the exact snapshot in afterAll.
-  previousModules = await overrideModules(admin, {
-    xeroIntegration: true,
-    internetBankingPayments: true,
-  });
 
   // Wanda is seeded PAID with a complete, confirmed profile. Alice's booking
   // setup deliberately completes her profile in another spec, so using Alice
@@ -281,19 +272,12 @@ test.afterAll(async () => {
   try {
     await setClubHostingPolicy({ mode: "DISABLED", hostScopes: null });
   } finally {
-    try {
-      await cancelMemberBookingsOnDate(admin, {
-        memberName: MEMBER_NAME,
-        checkIn: WINDOW.checkIn,
-      }).catch(() => undefined);
-    } finally {
-      try {
-        if (previousModules) await setModuleSettings(admin, previousModules);
-      } finally {
-        await adminContext?.close();
-        await memberContext?.close();
-      }
-    }
+    await cancelMemberBookingsOnDate(admin, {
+      memberName: MEMBER_NAME,
+      checkIn: WINDOW.checkIn,
+    }).catch(() => undefined);
+    await adminContext?.close();
+    await memberContext?.close();
   }
 });
 
@@ -370,7 +354,20 @@ test("an enforcing club refuses a booking with no adult member cover (#2569 §1)
 test("another booking on the same account supplies the cover, and cannot then be pulled away (#2576)", async () => {
   // 1. THE SOURCE. A booking carrying the member themselves, who is a qualifying
   //    adult member attending those exact nights at that exact lodge.
-  const source = await createCoveringBooking();
+  // Internet Banking is the isolated suite's provider-free route to CONFIRMED,
+  // but enabling Xero globally would make Wanda's later member calls hit the
+  // separate Xero-contact gate. Hold both switches only around this admin
+  // on-behalf create, then restore the exact module snapshot before proceeding.
+  const moduleSnapshot = await overrideModules(admin, {
+    xeroIntegration: true,
+    internetBankingPayments: true,
+  });
+  let source: Awaited<ReturnType<typeof createCoveringBooking>>;
+  try {
+    source = await createCoveringBooking();
+  } finally {
+    await setModuleSettings(admin, moduleSnapshot);
+  }
   expect(
     source.ok(),
     `create the covering booking (${source.status()}): ${await source.text()}`,
