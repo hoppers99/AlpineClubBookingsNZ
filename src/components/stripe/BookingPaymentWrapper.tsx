@@ -6,6 +6,11 @@ import { type BookingPaymentMode } from "@/lib/booking-payment-flow";
 import StripeProvider from "./StripeProvider";
 import PaymentForm from "./PaymentForm";
 import SetupForm from "./SetupForm";
+import { FocusedActionError } from "@/components/focused-action-error";
+import {
+  isPaymentReceivedStatusUnconfirmed,
+  PAYMENT_RECEIVED_STATUS_UNCONFIRMED_MESSAGE,
+} from "@/lib/payment-recovery-contract";
 
 /**
  * Report a payment-initialization failure to ops WITHOUT ever surfacing the raw
@@ -69,6 +74,7 @@ export default function BookingPaymentWrapper({
   const [initFailed, setInitFailed] = useState(false);
   const [initRecoveryError, setInitRecoveryError] = useState("");
   const [confirmationError, setConfirmationError] = useState("");
+  const [recoveryHeading, setRecoveryHeading] = useState("");
   const [loading, setLoading] = useState(true);
   const handleAlreadyComplete = useEffectEvent(() => onPaymentComplete());
 
@@ -80,6 +86,8 @@ export default function BookingPaymentWrapper({
         setLoading(true);
         setInitFailed(false);
         setInitRecoveryError("");
+        setConfirmationError("");
+        setRecoveryHeading("");
 
         const endpoint = paymentMode === "setup"
           ? "/api/payments/create-setup-intent"
@@ -100,8 +108,19 @@ export default function BookingPaymentWrapper({
             data.paymentReceived === true &&
             data.finalisationPending === true
           ) {
+            setRecoveryHeading("Payment received - finalisation pending");
             setInitRecoveryError(
               `${data.error || "The booking could not be finalised."} Your card payment was received, but booking finalisation is still pending. Reload this page and check the booking status before trying any payment again.`,
+            );
+            return;
+          }
+          if (
+            response.status === 409 &&
+            isPaymentReceivedStatusUnconfirmed(data)
+          ) {
+            setRecoveryHeading("Payment received - check booking status");
+            setInitRecoveryError(
+              PAYMENT_RECEIVED_STATUS_UNCONFIRMED_MESSAGE,
             );
             return;
           }
@@ -151,51 +170,10 @@ export default function BookingPaymentWrapper({
     );
   }
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center p-8">
-        <div className="h-8 w-8 animate-spin rounded-full border-4 border-info-7 border-t-transparent" />
-        <span className="ml-3 text-muted-foreground">Preparing payment...</span>
-      </div>
-    );
-  }
-
-  if (initFailed) {
-    return (
-      <div className="rounded-md bg-danger-3 p-4 text-sm text-danger-11">
-        <p className="font-medium">Payment Error</p>
-        <p className="mt-1">
-          We couldn&apos;t start the card payment. Your booking is saved — you can
-          pay later from your booking page.
-        </p>
-      </div>
-    );
-  }
-
-  if (initRecoveryError) {
-    return (
-      <div
-        role="alert"
-        aria-atomic="true"
-        className="rounded-md bg-warning-3 p-4 text-sm text-warning-11"
-      >
-        <p className="font-medium">Payment received - finalisation pending</p>
-        <p className="mt-1">{initRecoveryError}</p>
-      </div>
-    );
-  }
-
-  if (!clientSecret) {
-    return (
-      <div className="rounded-md bg-warning-3 p-4 text-sm text-warning-11">
-        Unable to initialize payment. Please try again.
-      </div>
-    );
-  }
-
   async function handlePaymentSuccess(paymentIntentId: string) {
     try {
       setConfirmationError("");
+      setRecoveryHeading("");
       const response = await fetch(`/api/bookings/${bookingId}/confirm-payment`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -209,6 +187,7 @@ export default function BookingPaymentWrapper({
           finalisationPending?: boolean;
         };
         if (data.code === "HOSTING_COVERAGE_PARTICIPANT_RETRY") {
+          setRecoveryHeading("Payment received - finalisation pending");
           setConfirmationError(
             `${data.error || "The booking could not be finalised."}${
               data.paymentReceived && data.finalisationPending
@@ -226,38 +205,53 @@ export default function BookingPaymentWrapper({
     onPaymentComplete();
   }
 
+  const initializationError = initFailed
+    ? "We couldn't start the card payment. Your booking is saved - you can pay later from your booking page."
+    : !loading && !clientSecret && !initRecoveryError
+      ? "Unable to initialize payment. Please try again."
+      : "";
+  const visibleError =
+    initRecoveryError || confirmationError || initializationError;
+  const visibleHeading =
+    initRecoveryError || confirmationError ? recoveryHeading : "Payment Error";
+  const suppressPaymentContent = Boolean(
+    initFailed || initRecoveryError || (!loading && !clientSecret),
+  );
+
   return (
     <>
-      <div
-        role="alert"
-        aria-atomic="true"
-        className={
-          confirmationError
-            ? "mb-4 rounded-md bg-danger-3 p-4 text-sm text-danger-11"
-            : "sr-only"
-        }
-      >
-        {confirmationError}
-      </div>
-      <StripeProvider clientSecret={clientSecret}>
-        {paymentMode === "payment" ? (
-          <PaymentForm
-            amountCents={amountCents}
-            chargedAmountCents={chargedAmountCents}
-            isSplit={isSplit}
-            deferredGuestAmountCents={deferredGuestAmountCents}
-            returnUrl={returnUrl}
-            onSuccess={handlePaymentSuccess}
-            onError={() => undefined}
-          />
-        ) : (
-          <SetupForm
-            returnUrl={returnUrl}
-            onSuccess={() => onPaymentComplete()}
-            onError={() => undefined}
-          />
-        )}
-      </StripeProvider>
+      <FocusedActionError
+        id="booking-payment-recovery-error"
+        error={visibleError}
+        heading={visibleHeading}
+        className="mb-4"
+      />
+      {loading ? (
+        <div className="flex items-center justify-center p-8">
+          <div className="h-8 w-8 animate-spin rounded-full border-4 border-info-7 border-t-transparent" />
+          <span className="ml-3 text-muted-foreground">Preparing payment...</span>
+        </div>
+      ) : suppressPaymentContent ? null : (
+        <StripeProvider clientSecret={clientSecret!}>
+          {paymentMode === "payment" ? (
+            <PaymentForm
+              amountCents={amountCents}
+              chargedAmountCents={chargedAmountCents}
+              isSplit={isSplit}
+              deferredGuestAmountCents={deferredGuestAmountCents}
+              returnUrl={returnUrl}
+              onSuccess={handlePaymentSuccess}
+              onError={() => undefined}
+            />
+          ) : (
+            <SetupForm
+              returnUrl={returnUrl}
+              onSuccess={() => onPaymentComplete()}
+              onError={() => undefined}
+            />
+          )}
+        </StripeProvider>
+      )}
     </>
   );
 }

@@ -6,6 +6,7 @@ import type { ReactNode } from "react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { ContactSyncPanel } from "../contact-sync-panel"
+import { XERO_ACTION_NETWORK_ERROR } from "../api"
 
 vi.mock("@/components/ui/select", () => ({
   Select: ({ children }: { children: ReactNode }) => <div>{children}</div>,
@@ -118,5 +119,34 @@ describe("ContactSyncPanel participant retry recovery (#2597)", () => {
     })
     expect(screen.getByText(/Member ID: member-1 - already linked to Xero/i)).toBeInTheDocument()
     expect(onRefreshDiagnostics).toHaveBeenCalledTimes(1)
+  })
+
+  it("shows and focuses a network error even when the panel starts collapsed", async () => {
+    render(
+      <ContactSyncPanel
+        connected
+        open={false}
+        onToggle={vi.fn()}
+        clubName="Test Club"
+        syncing={null}
+        setSyncing={vi.fn()}
+        setSyncResult={vi.fn()}
+        onMessage={vi.fn()}
+        onRefreshOperations={vi.fn()}
+        onRefreshDiagnostics={vi.fn()}
+      />,
+    )
+
+    const alert = document.getElementById("xero-contact-sync-error")
+    expect(alert).toHaveAttribute("role", "alert")
+    expect(alert).toBeEmptyDOMElement()
+    fireEvent.click(screen.getByRole("button", { name: /Sync Contacts from Xero/i }))
+
+    await waitFor(() => expect(alert).toHaveTextContent(XERO_ACTION_NETWORK_ERROR))
+    expect(document.activeElement).toBe(alert)
+    expect(scrollIntoView).toHaveBeenCalledWith({
+      behavior: "smooth",
+      block: "center",
+    })
   })
 })

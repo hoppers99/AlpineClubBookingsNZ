@@ -1,12 +1,15 @@
 // @vitest-environment jsdom
 
+import "@testing-library/jest-dom/vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as Sentry from "@sentry/nextjs";
 import BookingPaymentWrapper from "@/components/stripe/BookingPaymentWrapper";
+import { PAYMENT_RECEIVED_STATUS_UNCONFIRMED_MESSAGE } from "@/lib/payment-recovery-contract";
 
 const fetchMock = vi.fn();
+const scrollIntoView = vi.fn();
 
 vi.mock("@sentry/nextjs", () => ({
   captureException: vi.fn(),
@@ -69,6 +72,10 @@ describe("BookingPaymentWrapper", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     global.fetch = fetchMock as typeof fetch;
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: scrollIntoView,
+    });
   });
 
   it("keeps the payment form mounted after a recoverable payment error", async () => {
@@ -184,6 +191,76 @@ describe("BookingPaymentWrapper", () => {
     expect(screen.queryByText("payment-form")).toBeNull();
     expect(Sentry.captureException).not.toHaveBeenCalled();
     expect(onPaymentComplete).not.toHaveBeenCalled();
+    await waitFor(() => expect(document.activeElement).toBe(alert));
+    expect(scrollIntoView).toHaveBeenCalledWith({
+      behavior: "smooth",
+      block: "center",
+    });
+  });
+
+  it("suppresses payment retry and focuses ordinary post-capture status recovery", async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: false,
+      status: 409,
+      json: async () => ({
+        code: "PAYMENT_RECEIVED_STATUS_UNCONFIRMED",
+        error: "raw server text must not be shown",
+        paymentReceived: true,
+        bookingStatusUnconfirmed: true,
+      }),
+    });
+
+    render(
+      <BookingPaymentWrapper
+        bookingId="booking-1"
+        amountCents={12500}
+        paymentMode="payment"
+        returnUrl="http://localhost/bookings/booking-1"
+        onPaymentComplete={vi.fn()}
+      />,
+    );
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Payment received - check booking status");
+    expect(alert).toHaveTextContent(PAYMENT_RECEIVED_STATUS_UNCONFIRMED_MESSAGE);
+    expect(alert).not.toHaveTextContent("raw server text");
+    expect(alert).not.toHaveTextContent("finalisation pending");
+    expect(screen.queryByText("payment-form")).toBeNull();
+    await waitFor(() => expect(document.activeElement).toBe(alert));
+    expect(scrollIntoView).toHaveBeenCalledWith({
+      behavior: "smooth",
+      block: "center",
+    });
+  });
+
+  it("requires the exact ordinary post-capture marker before suppressing payment", async () => {
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    fetchMock.mockResolvedValueOnce({
+      ok: false,
+      status: 409,
+      json: async () => ({
+        code: "PAYMENT_RECEIVED_STATUS_UNCONFIRMED",
+        error: "not an accepted recovery marker",
+        paymentReceived: true,
+        bookingStatusUnconfirmed: true,
+        finalisationPending: true,
+      }),
+    });
+
+    render(
+      <BookingPaymentWrapper
+        bookingId="booking-1"
+        amountCents={12500}
+        paymentMode="payment"
+        returnUrl="http://localhost/bookings/booking-1"
+        onPaymentComplete={vi.fn()}
+      />,
+    );
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Payment Error");
+    expect(alert).not.toHaveTextContent("Payment received - check booking status");
+    consoleErrorSpy.mockRestore();
   });
 
   it("keeps a pre-capture participant retry on the ordinary payment-start recovery", async () => {
@@ -354,6 +431,11 @@ describe("BookingPaymentWrapper", () => {
     expect(screen.queryByText("payment-form")).toBeNull();
     expect(screen.getByText("Payment successful!")).not.toBeNull();
     expect(onPaymentComplete).not.toHaveBeenCalled();
+    await waitFor(() => expect(document.activeElement).toBe(alert));
+    expect(scrollIntoView).toHaveBeenCalledWith({
+      behavior: "smooth",
+      block: "center",
+    });
   });
 
   it.each([true, false])(

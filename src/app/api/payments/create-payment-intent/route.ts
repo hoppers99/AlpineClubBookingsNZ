@@ -39,6 +39,7 @@ import {
 import { recordBookingEvent } from "@/lib/booking-events";
 import { sendBookingConfirmedEmail } from "@/lib/email";
 import { getProvisionalNonMemberChildSummary } from "@/lib/booking-split-summary";
+import { PAYMENT_RECEIVED_STATUS_UNCONFIRMED_BODY } from "@/lib/payment-recovery-contract";
 
 class PaymentIntentCapacityError extends Error {
   constructor() {
@@ -733,6 +734,16 @@ export async function POST(request: NextRequest) {
     );
     if (hostingRetry) return hostingRetry;
     logger.error({ err: error }, "Error creating payment intent");
+    if (receivedPaymentIntentId) {
+      // Stripe is authoritative for capture. Any non-participant error after
+      // that fact was observed leaves the browser unable to distinguish a
+      // rolled-back reconciliation from one that committed before a later
+      // local failure. Never send the member back to a payment form or claim
+      // finalisation is definitely pending; require a fresh status read.
+      return NextResponse.json(PAYMENT_RECEIVED_STATUS_UNCONFIRMED_BODY, {
+        status: 409,
+      });
+    }
     // The pay transaction's capacity refusal and its status-conflict bail both
     // carry an intentionally user-facing message; keep them (and their 409).
     // Every other unexpected error gets the fixed generic message so internal

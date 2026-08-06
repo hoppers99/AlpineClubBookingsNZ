@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import type { XeroSearchResult } from "@/components/admin/xero-suggested-contact-card";
 import { useXeroEntranceFeeDecision } from "@/lib/admin-xero-entrance-fee";
 import {
+  AdminMemberXeroActionError,
   linkMemberXeroContact,
   pushMemberToXero,
   searchXeroContacts,
@@ -56,6 +57,34 @@ export function useMemberXero({
   const [xeroDecisionContactId, setXeroDecisionContactId] = useState("");
   const [xeroDecisionError, setXeroDecisionError] = useState("");
 
+  const recoverCommittedXeroLink = async (
+    error: AdminMemberXeroActionError,
+  ) => {
+    setXeroSearchOpen(false);
+    setXeroCreateOpen(false);
+    setXeroCreateDecisionOpen(false);
+    setXeroError(
+      `${error.message} The Xero link may already have changed. The member has been reloaded; check the current contact before linking again, then run the Member Status Repair Backfill to repair subscription history.`,
+    );
+    setLoading(true);
+    await fetchMember();
+  };
+
+  const recoverCreatedXeroContact = async (
+    error: AdminMemberXeroActionError,
+  ) => {
+    setXeroCreateOpen(false);
+    setXeroCreateDecisionOpen(false);
+    setXeroCreateDecisionResults([]);
+    setXeroDecisionContactId("");
+    setXeroDecisionError("");
+    setXeroError(
+      `${error.message} The Xero contact was created and linked, but subscription history still needs repair. Do not create another contact; the member has been reloaded. Run the Member Status Repair Backfill.`,
+    );
+    setLoading(true);
+    await fetchMember();
+  };
+
   const handleXeroSearch = async () => {
     if (!xeroSearchQuery || xeroSearchQuery.length < 2) return;
     setXeroSearching(true);
@@ -85,6 +114,13 @@ export function useMemberXero({
       setLoading(true);
       await fetchMember();
     } catch (err) {
+      if (
+        err instanceof AdminMemberXeroActionError &&
+        err.recovery.xeroLinkMayHaveChanged
+      ) {
+        await recoverCommittedXeroLink(err);
+        return;
+      }
       setXeroError(err instanceof Error ? err.message : "Link failed");
     } finally {
       setXeroLinking(false);
@@ -174,6 +210,14 @@ export function useMemberXero({
         entranceFeeInvoiceOptions.createEntranceFeeInvoice,
       );
     } catch (err) {
+      if (
+        err instanceof AdminMemberXeroActionError &&
+        err.recovery.xeroContactCreated &&
+        err.recovery.xeroContactLinked
+      ) {
+        await recoverCreatedXeroContact(err);
+        return;
+      }
       const message = err instanceof Error ? err.message : "Push failed";
       if (forceCreate) {
         setXeroDecisionError(message);
@@ -203,6 +247,13 @@ export function useMemberXero({
       setLoading(true);
       await fetchMember();
     } catch (err) {
+      if (
+        err instanceof AdminMemberXeroActionError &&
+        err.recovery.xeroLinkMayHaveChanged
+      ) {
+        await recoverCommittedXeroLink(err);
+        return;
+      }
       setXeroDecisionError(err instanceof Error ? err.message : "Link failed");
     } finally {
       setXeroLinking(false);

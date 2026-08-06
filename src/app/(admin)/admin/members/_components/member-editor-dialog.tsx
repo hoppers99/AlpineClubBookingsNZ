@@ -51,6 +51,7 @@ import {
 } from "@/lib/member-address";
 import { useScrollToFeedback } from "@/hooks/use-scroll-to-feedback";
 import {
+  AdminMemberXeroActionError,
   linkMemberXeroContact,
   pushMemberToXero,
   searchXeroContacts,
@@ -282,6 +283,20 @@ export function MemberEditorDialog({
       onDialogSuccess(`Linked to Xero contact: ${data.contactName}`);
       onSaved();
     } catch (err) {
+      if (
+        err instanceof AdminMemberXeroActionError &&
+        err.recovery.xeroLinkMayHaveChanged
+      ) {
+        setCurrentEditingMember((member) =>
+          member ? { ...member, xeroContactId: contactId } : member,
+        );
+        setXeroChoice("");
+        setFormError(
+          `${err.message} The Xero link may already have changed. Check the current contact before linking again, then run the Member Status Repair Backfill to repair subscription history.`,
+        );
+        onSaved();
+        return;
+      }
       setFormError(
         err instanceof Error ? err.message : "Failed to link Xero contact",
       );
@@ -339,6 +354,26 @@ export function MemberEditorDialog({
       if (warningMessage) onWarning(warningMessage);
       onSaved();
     } catch (err) {
+      if (
+        err instanceof AdminMemberXeroActionError &&
+        err.recovery.xeroContactCreated &&
+        err.recovery.xeroContactLinked
+      ) {
+        setCurrentEditingMember((member) =>
+          member
+            ? {
+                ...member,
+                xeroContactId: err.recovery.xeroContactId ?? member.xeroContactId,
+              }
+            : member,
+        );
+        setXeroChoice("");
+        setFormError(
+          `${err.message} The Xero contact was created and linked, but subscription history still needs repair. Do not create another contact; run the Member Status Repair Backfill.`,
+        );
+        onSaved();
+        return;
+      }
       setFormError(
         err instanceof Error ? err.message : "Failed to create Xero contact",
       );
@@ -377,6 +412,24 @@ export function MemberEditorDialog({
       onDialogSuccess(`Linked to Xero contact: ${data.contactName}`);
       onSaved();
     } catch (err) {
+      if (
+        err instanceof AdminMemberXeroActionError &&
+        err.recovery.xeroLinkMayHaveChanged
+      ) {
+        if (currentEditingMember?.id === pendingXeroCreateDecision.memberId) {
+          setCurrentEditingMember({
+            ...currentEditingMember,
+            xeroContactId: pendingXeroDecisionContactId,
+          });
+        }
+        closePendingXeroCreateDecision();
+        setXeroChoice("");
+        setFormError(
+          `${err.message} The Xero link may already have changed. Check the current contact before linking again, then run the Member Status Repair Backfill to repair subscription history.`,
+        );
+        onSaved();
+        return;
+      }
       setPendingXeroDecisionError(
         err instanceof Error ? err.message : "Failed to link Xero contact",
       );
@@ -427,6 +480,26 @@ export function MemberEditorDialog({
       if (warning) onWarning(warning);
       onSaved();
     } catch (err) {
+      if (
+        err instanceof AdminMemberXeroActionError &&
+        err.recovery.xeroContactCreated &&
+        err.recovery.xeroContactLinked
+      ) {
+        if (currentEditingMember?.id === pendingXeroCreateDecision.memberId) {
+          setCurrentEditingMember({
+            ...currentEditingMember,
+            xeroContactId:
+              err.recovery.xeroContactId ?? currentEditingMember.xeroContactId,
+          });
+        }
+        closePendingXeroCreateDecision();
+        setXeroChoice("");
+        setFormError(
+          `${err.message} The Xero contact was created and linked, but subscription history still needs repair. Do not create another contact; run the Member Status Repair Backfill.`,
+        );
+        onSaved();
+        return;
+      }
       setPendingXeroDecisionError(
         err instanceof Error ? err.message : "Failed to create Xero contact",
       );

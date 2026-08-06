@@ -21,6 +21,7 @@ import { upsertPaymentIntentTransaction } from "@/lib/payment-transactions";
 import { checkCapacityForGuestRanges } from "@/lib/capacity";
 import { bookingHasCapacityOverride } from "@/lib/booking-status";
 import { hasAdminAccess } from "@/lib/access-roles";
+import { PAYMENT_RECEIVED_STATUS_UNCONFIRMED_BODY } from "@/lib/payment-recovery-contract";
 
 const ChargeSavedMethodSchema = z.object({
   bookingId: z.string().min(1),
@@ -277,8 +278,7 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     logger.error({ err: error }, "Error charging saved method");
 
-    const hostingParticipantRetry =
-      isHostingCoverageParticipantRetry(error);
+    const hostingParticipantRetry = isHostingCoverageParticipantRetry(error);
     if (hostingParticipantRetry && capturedPaymentContext) {
       sendAdminPaymentFailureAlert({
         ...capturedPaymentContext,
@@ -288,6 +288,19 @@ export async function POST(request: NextRequest) {
         logger.error(
           { err: alertError, paymentIntentId: capturedPaymentIntentId },
           "Failed to alert admins about captured saved-method charge awaiting finalisation",
+        ),
+      );
+    }
+
+    if (!hostingParticipantRetry && capturedPaymentContext) {
+      sendAdminPaymentFailureAlert({
+        ...capturedPaymentContext,
+        errorMessage:
+          "The saved-method charge succeeded, but the booking status could not be confirmed after a local error. Check the booking and payment status before retrying any charge.",
+      }).catch((alertError) =>
+        logger.error(
+          { err: alertError, paymentIntentId: capturedPaymentIntentId },
+          "Failed to alert admins about a captured saved-method charge with unconfirmed booking status",
         ),
       );
     }
@@ -303,6 +316,12 @@ export async function POST(request: NextRequest) {
         paymentIntentId: capturedPaymentIntentId,
       });
       if (hostingRetry) return hostingRetry;
+    }
+
+    if (paymentSucceeded && capturedPaymentIntentId) {
+      return NextResponse.json(PAYMENT_RECEIVED_STATUS_UNCONFIRMED_BODY, {
+        status: 409,
+      });
     }
 
     if (!paymentSucceeded) {

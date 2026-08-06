@@ -69,6 +69,11 @@ vi.mock("@/lib/xero-operation-outbox", () => ({
 
 import { POST } from "@/app/api/admin/members/[id]/xero-push/route";
 import { XeroContactValidationError } from "@/lib/xero";
+import {
+  HOSTING_COVERAGE_RETRY_CODE,
+  HOSTING_COVERAGE_RETRY_MESSAGE,
+  HostingCoverageParticipantRetryError,
+} from "@/lib/adult-member-hosting-queue-participants";
 
 function okGuard(userId = "admin-1") {
   return { ok: true as const, session: { user: { id: userId } } };
@@ -180,5 +185,23 @@ describe("POST /api/admin/members/[id]/xero-push (#2089)", () => {
     const res = await POST(postReq(), { params });
     expect(res.status).toBe(409);
     expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  it("marks a newly created contact as linked when history refresh is deferred", async () => {
+    mockCreate.mockResolvedValue("contact-1");
+    mockSyncHistory.mockRejectedValue(new HostingCoverageParticipantRetryError());
+
+    const res = await POST(postReq(), { params });
+
+    expect(res.status).toBe(409);
+    await expect(res.json()).resolves.toEqual({
+      error: HOSTING_COVERAGE_RETRY_MESSAGE,
+      code: HOSTING_COVERAGE_RETRY_CODE,
+      xeroContactCreated: true,
+      xeroContactLinked: true,
+      xeroContactId: "contact-1",
+      subscriptionRefreshPending: true,
+    });
+    expect(mockCreate).toHaveBeenCalledTimes(1);
   });
 });

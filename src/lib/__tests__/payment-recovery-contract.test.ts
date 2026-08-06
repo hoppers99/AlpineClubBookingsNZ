@@ -1,0 +1,36 @@
+import { describe, expect, it } from "vitest";
+import {
+  isPaymentReceivedStatusUnconfirmed,
+  PAYMENT_RECEIVED_STATUS_UNCONFIRMED_BODY,
+} from "@/lib/payment-recovery-contract";
+
+describe("ordinary post-capture payment recovery contract", () => {
+  it("accepts only the exact status-unconfirmed marker", () => {
+    expect(
+      isPaymentReceivedStatusUnconfirmed(
+        PAYMENT_RECEIVED_STATUS_UNCONFIRMED_BODY,
+      ),
+    ).toBe(true);
+    expect(
+      isPaymentReceivedStatusUnconfirmed({
+        ...PAYMENT_RECEIVED_STATUS_UNCONFIRMED_BODY,
+        bookingStatusUnconfirmed: false,
+      }),
+    ).toBe(false);
+    expect(
+      isPaymentReceivedStatusUnconfirmed({
+        ...PAYMENT_RECEIVED_STATUS_UNCONFIRMED_BODY,
+        finalisationPending: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("does not expose an intent id or claim finalisation is pending", () => {
+    expect(PAYMENT_RECEIVED_STATUS_UNCONFIRMED_BODY).not.toHaveProperty(
+      "paymentIntentId",
+    );
+    expect(PAYMENT_RECEIVED_STATUS_UNCONFIRMED_BODY).not.toHaveProperty(
+      "finalisationPending",
+    );
+  });
+});

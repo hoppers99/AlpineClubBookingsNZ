@@ -68,6 +68,7 @@ export async function POST(
     return NextResponse.json({ error: "Member already linked to Xero" }, { status: 409 });
   }
 
+  let createdXeroContactId: string | null = null;
   try {
     let body: unknown = {};
     const rawBody = await req.text();
@@ -118,6 +119,7 @@ export async function POST(
     const xeroContactId = await createXeroContactForMember(id, {
       createdByMemberId: session.user.id,
     });
+    createdXeroContactId = xeroContactId;
 
     let entranceFeeInvoiceQueued = false;
     let entranceFeeInvoiceMessage: string | undefined;
@@ -270,7 +272,17 @@ export async function POST(
       ...(warning ? { warning } : {}),
     });
   } catch (err) {
-    const hostingRetry = hostingCoverageParticipantRetryResponse(err);
+    const hostingRetry = hostingCoverageParticipantRetryResponse(
+      err,
+      createdXeroContactId
+        ? {
+            xeroContactCreated: true,
+            xeroContactLinked: true,
+            xeroContactId: createdXeroContactId,
+            subscriptionRefreshPending: true,
+          }
+        : undefined,
+    );
     if (hostingRetry) return hostingRetry;
     if (err instanceof XeroContactValidationError) {
       return NextResponse.json(

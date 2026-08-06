@@ -140,6 +140,7 @@ import {
   HOSTING_COVERAGE_RETRY_MESSAGE,
   HostingCoverageParticipantRetryError,
 } from "@/lib/adult-member-hosting-queue-participants";
+import { PAYMENT_RECEIVED_STATUS_UNCONFIRMED_BODY } from "@/lib/payment-recovery-contract";
 
 const mockPrisma = prisma as unknown as {
   booking: {
@@ -600,6 +601,100 @@ describe("payment intent routes", () => {
       paymentIntentId: "pi_captured_retry",
     });
     expect(mocks.queueXeroInvoiceForPaidBooking).not.toHaveBeenCalled();
+    expect(mockStripeCreatePaymentIntent).not.toHaveBeenCalled();
+  });
+
+  it("returns privacy-safe status recovery when ordinary reconciliation fails after capture", async () => {
+    mockPrisma.booking.findUnique.mockResolvedValue({
+      id: "booking-1",
+      memberId: "member-1",
+      status: "CONFIRMED",
+      hasNonMembers: false,
+      organiserSettled: false,
+      finalPriceCents: 12500,
+      member: {
+        id: "member-1",
+        email: "member@example.com",
+        firstName: "Test",
+        lastName: "Member",
+      },
+      guests: [],
+      payment: {
+        stripePaymentIntentId: "pi_status_unknown",
+        status: "PROCESSING",
+      },
+    });
+    mockGetPaymentIntent.mockResolvedValue({
+      id: "pi_status_unknown",
+      amount: 12500,
+      payment_method: "pm_123",
+      status: "succeeded",
+    });
+    mocks.markBookingPaymentSucceeded.mockRejectedValue(
+      new Error('constraint "Payment_secret_fkey" on postgres://private'),
+    );
+
+    const response = await createPaymentIntentRoute(
+      new NextRequest("http://localhost/api/payments/create-payment-intent", {
+        method: "POST",
+        body: JSON.stringify({ bookingId: "booking-1" }),
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(409);
+    expect(body).toEqual(PAYMENT_RECEIVED_STATUS_UNCONFIRMED_BODY);
+    expect(body).not.toHaveProperty("finalisationPending");
+    expect(body).not.toHaveProperty("paymentIntentId");
+    expect(JSON.stringify(body)).not.toContain("postgres://private");
+    expect(mocks.queueXeroInvoiceForPaidBooking).not.toHaveBeenCalled();
+    expect(mockStripeCreatePaymentIntent).not.toHaveBeenCalled();
+  });
+
+  it("keeps status unconfirmed when a post-reconciliation Xero queue step fails", async () => {
+    mockPrisma.booking.findUnique.mockResolvedValue({
+      id: "booking-1",
+      memberId: "member-1",
+      status: "CONFIRMED",
+      hasNonMembers: false,
+      organiserSettled: false,
+      finalPriceCents: 12500,
+      member: {
+        id: "member-1",
+        email: "member@example.com",
+        firstName: "Test",
+        lastName: "Member",
+      },
+      guests: [],
+      payment: {
+        stripePaymentIntentId: "pi_xero_queue_unknown",
+        status: "PROCESSING",
+      },
+    });
+    mockGetPaymentIntent.mockResolvedValue({
+      id: "pi_xero_queue_unknown",
+      amount: 12500,
+      payment_method: "pm_123",
+      status: "succeeded",
+    });
+    mocks.queueXeroInvoiceForPaidBooking.mockRejectedValue(
+      new Error("Xero queue storage unavailable"),
+    );
+
+    const response = await createPaymentIntentRoute(
+      new NextRequest("http://localhost/api/payments/create-payment-intent", {
+        method: "POST",
+        body: JSON.stringify({ bookingId: "booking-1" }),
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual(
+      PAYMENT_RECEIVED_STATUS_UNCONFIRMED_BODY,
+    );
+    expect(mocks.markBookingPaymentSucceeded).toHaveBeenCalledTimes(1);
     expect(mockStripeCreatePaymentIntent).not.toHaveBeenCalled();
   });
 

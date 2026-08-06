@@ -1,11 +1,12 @@
 "use client"
 
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useState } from "react"
 import { Button } from "@/components/ui/button"
+import { FocusedActionError } from "@/components/focused-action-error"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { fetchJson, postJson, type ActionResponse } from "./api"
+import { fetchJson, postJson, XERO_ACTION_NETWORK_ERROR, type ActionResponse } from "./api"
 import { SectionCard, type ToggleSection } from "./shared"
 import type { ForceSyncBookingOption, ForceSyncMemberOption, ForceSyncXeroContactOption, SyncResult } from "./types"
 
@@ -48,16 +49,7 @@ export function ContactSyncPanel({
   const [bookingResults, setBookingResults] = useState<ForceSyncBookingOption[]>([])
   const [bookingSearching, setBookingSearching] = useState(false)
   const [selectedBooking, setSelectedBooking] = useState<ForceSyncBookingOption | null>(null)
-  const errorRef = useRef<HTMLDivElement>(null)
   const [errorAttentionVersion, setErrorAttentionVersion] = useState(0)
-
-  useEffect(() => {
-    if (!error || errorAttentionVersion === 0) return
-    const alert = errorRef.current
-    if (!alert) return
-    alert.focus({ preventScroll: true })
-    alert.scrollIntoView?.({ behavior: "smooth", block: "center" })
-  }, [error, errorAttentionVersion])
 
   const showActionError = (message: string) => {
     setError(message)
@@ -229,11 +221,16 @@ export function ContactSyncPanel({
     setError("")
     onMessage("")
     try {
-      const response = await fetch("/api/admin/xero/import-member-contact", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ xeroContactId: contact.contactId }),
-      })
+      let response: Response
+      try {
+        response = await fetch("/api/admin/xero/import-member-contact", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ xeroContactId: contact.contactId }),
+        })
+      } catch {
+        throw new Error(XERO_ACTION_NETWORK_ERROR)
+      }
       const data = (await response.json().catch(() => ({}))) as ActionResponse & {
         error?: string
         memberImported?: boolean
@@ -295,25 +292,22 @@ export function ContactSyncPanel({
   }
 
   return (
-    <SectionCard
-      id="xero-section-contactSync"
-      title="Contact Sync"
-      description="Run a broad link pass, or repair a single record with a targeted force sync."
-      open={open}
-      onToggle={(nextOpen) => onToggle("contactSync", nextOpen)}
-      actions={<Button onClick={() => void syncContacts()} disabled={syncing !== null || !connected}>{syncing === "contacts" ? "Syncing..." : "Sync Contacts from Xero"}</Button>}
-    >
-      <div className="space-y-4">
-        <div
-          id="xero-contact-sync-error"
-          ref={errorRef}
-          role="alert"
-          aria-atomic="true"
-          tabIndex={-1}
-          className={error ? "rounded-md bg-danger-3 p-3 text-sm text-danger-11" : "sr-only"}
-        >
-          {error}
-        </div>
+    <>
+      <FocusedActionError
+        id="xero-contact-sync-error"
+        error={error}
+        attentionKey={errorAttentionVersion}
+        className="mb-3"
+      />
+      <SectionCard
+        id="xero-section-contactSync"
+        title="Contact Sync"
+        description="Run a broad link pass, or repair a single record with a targeted force sync."
+        open={open}
+        onToggle={(nextOpen) => onToggle("contactSync", nextOpen)}
+        actions={<Button onClick={() => void syncContacts()} disabled={syncing !== null || !connected}>{syncing === "contacts" ? "Syncing..." : "Sync Contacts from Xero"}</Button>}
+      >
+        <div className="space-y-4">
         <p className="text-sm text-muted-foreground">
           Link existing {clubName} members to their Xero contacts by email address, or push a single member or booking without running a full sweep.
         </p>
@@ -375,8 +369,9 @@ export function ContactSyncPanel({
                 : "Search for the member by name or email, then refresh that member's subscription state from Xero invoices."}
           </p>
         </div>
-      </div>
-    </SectionCard>
+        </div>
+      </SectionCard>
+    </>
   )
 }
 

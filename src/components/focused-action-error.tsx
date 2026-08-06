@@ -13,10 +13,14 @@ import { cn } from "@/lib/utils";
 export function FocusedActionError({
   id,
   error,
+  heading,
+  attentionKey,
   className,
 }: {
   id: string;
   error: string;
+  heading?: string;
+  attentionKey?: number;
   className?: string;
 }) {
   const errorRef = useRef<HTMLDivElement>(null);
@@ -27,7 +31,7 @@ export function FocusedActionError({
     if (!alert) return;
     alert.focus({ preventScroll: true });
     alert.scrollIntoView?.({ behavior: "smooth", block: "center" });
-  }, [error]);
+  }, [attentionKey, error]);
 
   return (
     <div
@@ -45,7 +49,16 @@ export function FocusedActionError({
           : "sr-only"
       }
     >
-      {error}
+      {error ? (
+        heading ? (
+          <>
+            <p className="font-medium">{heading}</p>
+            <p className="mt-1">{error}</p>
+          </>
+        ) : (
+          error
+        )
+      ) : null}
     </div>
   );
 }

@@ -125,6 +125,7 @@ import {
   HOSTING_COVERAGE_RETRY_MESSAGE,
   HostingCoverageParticipantRetryError,
 } from "@/lib/adult-member-hosting-queue-participants";
+import { PAYMENT_RECEIVED_STATUS_UNCONFIRMED_BODY } from "@/lib/payment-recovery-contract";
 
 describe("POST /api/payments/charge-saved-method", () => {
   beforeEach(() => {
@@ -296,13 +297,15 @@ describe("POST /api/payments/charge-saved-method", () => {
     expect(mockMarkBookingPaymentSucceeded).toHaveBeenCalled();
   });
 
-  it("does not revert the booking to PENDING when local persistence fails after a successful charge", async () => {
+  it("returns privacy-safe status recovery without reverting after a successful charge", async () => {
     mockChargePaymentMethod.mockResolvedValue({
       id: "pi_success_2",
       status: "succeeded",
       amount: 12500,
     });
-    mockMarkBookingPaymentSucceeded.mockRejectedValue(new Error("Payment update failed"));
+    mockMarkBookingPaymentSucceeded.mockRejectedValue(
+      new Error('Payment update failed: constraint "Payment_secret_fkey"'),
+    );
 
     const request = new NextRequest("http://localhost/api/payments/charge-saved-method", {
       method: "POST",
@@ -313,9 +316,15 @@ describe("POST /api/payments/charge-saved-method", () => {
     const response = await POST(request);
     const body = await response.json();
 
-    expect(response.status).toBe(500);
-    expect(body).toEqual({ error: "Failed to charge saved payment method" });
+    expect(response.status).toBe(409);
+    expect(body).toEqual(PAYMENT_RECEIVED_STATUS_UNCONFIRMED_BODY);
+    expect(body).not.toHaveProperty("finalisationPending");
+    expect(body).not.toHaveProperty("paymentIntentId");
+    expect(JSON.stringify(body)).not.toContain("Payment_secret_fkey");
     expect(mockBookingUpdateMany).not.toHaveBeenCalled();
+    expect(mockSendAdminPaymentFailureAlert).toHaveBeenCalledWith(
+      expect.objectContaining({ paymentIntentId: "pi_success_2" }),
+    );
   });
 
   it("returns the fixed recovery 409 to an admin after a captured charge hits participant contention", async () => {
@@ -384,6 +393,36 @@ describe("POST /api/payments/charge-saved-method", () => {
       ),
     ).rejects.toMatchObject({ code: HOSTING_COVERAGE_RETRY_CODE });
     expect(mockUpsertPaymentIntentTransaction).toHaveBeenCalled();
+    expect(mockSendAdminPaymentFailureAlert).toHaveBeenCalled();
+  });
+
+  it("returns status-unconfirmed recovery for an ordinary cron failure after capture", async () => {
+    mockIsValidCronSecret.mockReturnValue(true);
+    mockAuth.mockResolvedValue(null);
+    mockChargePaymentMethod.mockResolvedValue({
+      id: "pi_cron_status_unknown",
+      status: "succeeded",
+      amount: 12500,
+    });
+    mockMarkBookingPaymentSucceeded.mockRejectedValue(
+      new Error("local persistence unavailable"),
+    );
+
+    const response = await POST(
+      new NextRequest("http://localhost/api/payments/charge-saved-method", {
+        method: "POST",
+        body: JSON.stringify({ bookingId: "booking-1" }),
+        headers: {
+          "content-type": "application/json",
+          "x-cron-secret": "test",
+        },
+      }),
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual(
+      PAYMENT_RECEIVED_STATUS_UNCONFIRMED_BODY,
+    );
     expect(mockSendAdminPaymentFailureAlert).toHaveBeenCalled();
   });
 

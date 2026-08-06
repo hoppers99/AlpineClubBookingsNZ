@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  AdminMemberXeroActionError,
   linkMemberXeroContact,
+  MEMBER_XERO_NETWORK_ERROR,
   pushMemberToXero,
   searchXeroContacts,
   unlinkMemberXeroContact,
@@ -73,6 +75,34 @@ describe("linkMemberXeroContact", () => {
     await expect(linkMemberXeroContact("mem_1", "contact_1")).rejects.toThrow(
       "Contact already linked",
     );
+  });
+
+  it("preserves committed-link recovery metadata for the UI", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse(
+        {
+          error: "retry safely",
+          xeroLinkMayHaveChanged: true,
+          xeroContactLinked: true,
+          xeroContactId: "contact_1",
+          subscriptionRefreshPending: true,
+        },
+        { ok: false, status: 409 },
+      ),
+    );
+
+    const error = await linkMemberXeroContact("mem_1", "contact_1").catch(
+      (caught: unknown) => caught,
+    );
+
+    expect(error).toBeInstanceOf(AdminMemberXeroActionError);
+    expect((error as AdminMemberXeroActionError).recovery).toEqual({
+      xeroLinkMayHaveChanged: true,
+      xeroContactCreated: undefined,
+      xeroContactLinked: true,
+      xeroContactId: "contact_1",
+      subscriptionRefreshPending: true,
+    });
   });
 });
 
@@ -152,6 +182,34 @@ describe("pushMemberToXero", () => {
     ).rejects.toThrow("Xero rate limited");
   });
 
+  it("preserves created-and-linked recovery metadata instead of offering duplicate create", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse(
+        {
+          error: "retry safely",
+          xeroContactCreated: true,
+          xeroContactLinked: true,
+          xeroContactId: "contact_new",
+          subscriptionRefreshPending: true,
+        },
+        { ok: false, status: 409 },
+      ),
+    );
+
+    const error = await pushMemberToXero("mem_1", {
+      createEntranceFeeInvoice: false,
+    }).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(AdminMemberXeroActionError);
+    expect((error as AdminMemberXeroActionError).recovery).toEqual({
+      xeroLinkMayHaveChanged: undefined,
+      xeroContactCreated: true,
+      xeroContactLinked: true,
+      xeroContactId: "contact_new",
+      subscriptionRefreshPending: true,
+    });
+  });
+
   it("passes forceCreate through and includes the skip-reason narration fields", async () => {
     fetchMock.mockResolvedValue(jsonResponse({ xeroContactId: "contact_new" }));
 
@@ -170,6 +228,17 @@ describe("pushMemberToXero", () => {
       entranceFeeInvoiceAmountCents: undefined,
       entranceFeeInvoiceNarration: undefined,
       forceCreate: true,
+    });
+  });
+});
+
+describe("Xero action network failures", () => {
+  it("uses actionable copy and leaves caller-owned draft state untouched", async () => {
+    fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
+
+    await expect(searchXeroContacts("draft query")).rejects.toMatchObject({
+      message: MEMBER_XERO_NETWORK_ERROR,
+      recovery: {},
     });
   });
 });
