@@ -54,6 +54,7 @@ const pg = vi.hoisted(() => {
     forbidden_role_names: [] as string[],
     writable_relations: 0,
     undeclared_readable_relations: 0,
+    undeclared_readable_columns: 0,
     executable_security_definer_routines: 0,
   };
 
@@ -162,7 +163,7 @@ import {
   getDiagnosticsDatabase,
   runDiagnosticsReadOnlyQuery,
 } from "../database";
-import { FORBIDDEN_PREDEFINED_ROLES } from "../provision-role";
+import { FORBIDDEN_PREDEFINED_ROLES, SELECT_GRANTS } from "../provision-role";
 import { DIAGNOSTICS_TOOL_BOUNDS } from "../types";
 
 const DIAG_URL = "postgresql://ai_diagnostics_ro:secret@db:5432/tacbookings";
@@ -254,9 +255,47 @@ describe("getDiagnosticsDatabase — the verified pool (#2374, ADR-007)", () => 
     expect(probe.sql).not.toContain("pg_read_file(text)");
     expect(probe.values?.[0]).toEqual([...FORBIDDEN_PREDEFINED_ROLES]);
     expect(probe.values?.[1]).toEqual([...FORBIDDEN_SERVER_FILE_FUNCTIONS]);
-    // The declared SELECT allowlist — empty in AID-5, so any readable relation in
-    // schema `public` is undeclared and refuses.
-    expect(probe.values?.[2]).toEqual([]);
+    // The declared SELECT allowlist, in the three forms the probe compares against:
+    // every declared relation (so a readable relation outside it refuses), every
+    // declared COLUMN of a column-restricted relation, and the relations declared
+    // for the WHOLE relation (whose columns are all legitimately readable and are
+    // therefore skipped by the column count).
+    expect(probe.values?.[2]).toEqual(
+      SELECT_GRANTS.map((grant) => `${grant.schema}.${grant.relation}`),
+    );
+    expect(probe.values?.[3]).toEqual(
+      SELECT_GRANTS.flatMap((grant) =>
+        (grant.columns ?? []).map(
+          (column) => `${grant.schema}.${grant.relation}.${column}`,
+        ),
+      ),
+    );
+    expect(probe.values?.[4]).toEqual(
+      SELECT_GRANTS.filter((grant) => grant.columns === undefined).map(
+        (grant) => `${grant.schema}.${grant.relation}`,
+      ),
+    );
+    // Not a vacuous comparison: AID-6A declares at least one column-restricted
+    // relation, so the column list is non-empty and the whole-relation list is not
+    // the same thing as the relation list.
+    expect((probe.values?.[3] as string[]).length).toBeGreaterThan(0);
+  });
+
+  it("asks the server for the COLUMNS the role can read, not only the relations", async () => {
+    // The gate a column-restricted grant depends on (AID-6A, #2375). A hand-added
+    // table-level grant on a relation the allowlist DOES declare leaves the
+    // relation-level count at zero while the role gains every withheld column, so
+    // the probe has to ask at column granularity or the allowlist is decorative.
+    await getDiagnosticsDatabase();
+    const probe = pools[0].poolQueries[0];
+    expect(probe.sql).toContain("undeclared_readable_columns");
+    expect(probe.sql).toContain(
+      "pg_catalog.has_column_privilege(current_user, c.oid, a.attnum, 'SELECT')",
+    );
+    expect(probe.sql).toContain("pg_catalog.pg_attribute");
+    // Dropped columns keep their `pg_attribute` row; counting them would refuse a
+    // deployment for a column that no longer exists.
+    expect(probe.sql).toContain("NOT a.attisdropped");
   });
 
   it("refuses without connecting when the credential is not configured", async () => {
@@ -576,7 +615,7 @@ describe("runDiagnosticsReadOnlyQuery — the bounded read-only read (#2374)", (
     return { result, client };
   }
 
-  it("opens BEGIN READ ONLY, sets all four bounds, then commits and releases", async () => {
+  it("opens BEGIN READ ONLY, sets every bound and pin, then commits and releases", async () => {
     fixture.readRows = [{ one: 1 }];
     const { result, client } = await run({
       sql: "SELECT 1 AS one",
@@ -593,6 +632,13 @@ describe("runDiagnosticsReadOnlyQuery — the bounded read-only read (#2374)", (
       // `search_path` pinned so a role- or database-level setting cannot redirect
       // an unqualified relation name in a registry query.
       "SET LOCAL search_path TO public",
+      // `TimeZone` pinned for the same reason, as a CORRECTNESS control (AID-6A,
+      // #2375): every instant in this platform is a naive `timestamp` holding UTC, so
+      // any expression that crosses to `timestamptz` — a comparison against `now()`,
+      // or `to_char` after an `AT TIME ZONE` — resolves through the session setting. A
+      // deployment set to `Pacific/Auckland` would otherwise shift a window by 12-13
+      // hours and stamp a local time with a `Z`.
+      "SET LOCAL TimeZone TO 'UTC'",
       "SELECT * FROM (SELECT 1 AS one) AS diagnostics_tool_result LIMIT ($1)::bigint",
       "COMMIT",
     ]);

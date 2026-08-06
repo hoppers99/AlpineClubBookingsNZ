@@ -212,6 +212,7 @@ const SAFE: DiagnosticsRolePrivilegeReport = {
   forbiddenRoleNames: [],
   writableRelations: 0,
   undeclaredReadableRelations: 0,
+  undeclaredReadableColumns: 0,
   executableSecurityDefinerRoutines: 0,
 };
 
@@ -232,6 +233,26 @@ describe("isDiagnosticsRolePrivilegeSafe (#2374, ADR-007)", () => {
     "canReadServerFiles",
   ] as const)("refuses a role holding %s", (field) => {
     expect(isDiagnosticsRolePrivilegeSafe({ ...SAFE, [field]: true })).toBe(false);
+  });
+
+  it("refuses a role that can read an undeclared COLUMN of a declared relation", () => {
+    // The column-level gate (AID-6A, #2375). `AuditLog` is granted eight columns
+    // because the rest of the table is IP addresses, user agents, free text,
+    // arbitrary JSON and member ids — so a hand-added table-level
+    // `GRANT SELECT ON "AuditLog"` leaves `undeclaredReadableRelations` at ZERO (the
+    // relation IS declared) while the role gains every one of them. This count is
+    // the only one that notices, which is why it is its own gate rather than a
+    // refinement of the relation count.
+    expect(
+      isDiagnosticsRolePrivilegeSafe({ ...SAFE, undeclaredReadableColumns: 1 }),
+    ).toBe(false);
+    expect(
+      isDiagnosticsRolePrivilegeSafe({
+        ...SAFE,
+        undeclaredReadableRelations: 0,
+        undeclaredReadableColumns: 14,
+      }),
+    ).toBe(false);
   });
 
   it("refuses a role that is a member of any escalating predefined role", () => {

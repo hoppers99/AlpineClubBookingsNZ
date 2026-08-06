@@ -100,6 +100,19 @@ export const DIAGNOSTICS_TOOL_BOUNDS = {
    * refusal this substrate promises, never a readiness request that hangs.
    */
   privilegeProbeTimeoutMs: 12_000,
+  /**
+   * Deadline on ONE `server_owned` evidence read (AID-6A, #2375) — the fixed
+   * first-party calculations a tool may read instead of the SELECT-only database
+   * (readiness, budget/usage, cron health, deployed-bundle identity).
+   *
+   * Above `privilegeProbeTimeoutMs` on purpose. The canonical readiness answer
+   * INCLUDES the role-privilege probe, so a deadline at or below the probe's own
+   * would turn "the role could not be reached, and readiness says so" — the exact
+   * answer an operator needs — into a timeout that says nothing. This bound is the
+   * backstop for a calculation that hangs on something with no deadline of its own,
+   * and it fails closed: an expired read returns `evidence_unavailable` and no rows.
+   */
+  serverEvidenceTimeoutMs: 15_000,
   /** Hard cap on the rendered evidence block handed to the model. */
   renderedBlockMaxChars: 8_000,
 } as const;
@@ -150,6 +163,16 @@ export type DiagnosticsToolFailureReason =
   | "database_role_unsafe"
   /** The read failed, or the statement timeout cancelled it. */
   | "query_failed"
+  /**
+   * A `server_owned` evidence source (AID-6A, #2375) refused or did not answer
+   * inside `serverEvidenceTimeoutMs`. Deliberately DISTINCT from `query_failed`:
+   * that one means the SELECT-only database read failed, and an operator's next
+   * step for it (check the diagnostics role, ask a narrower question) is not the
+   * next step here (the first-party calculation this tool reads is unavailable —
+   * usually because the application's own database is unreachable). Conflating
+   * them would send an operator to the wrong credential.
+   */
+  | "evidence_unavailable"
   /** The projected result exceeded the tool's byte ceiling. Never truncated. */
   | "result_too_large"
   /** A projection or redaction step threw. Evidence is discarded, not partial. */
@@ -220,6 +243,18 @@ export interface DiagnosticsToolSuccess {
    * it reports "the first N" rather than presenting a partial set as complete.
    */
   truncated: boolean;
+  /**
+   * The entry's server-owned sentence describing WHAT it searched (AID-6A, #2375).
+   * Copied from the registry, never derived from a row or an argument.
+   *
+   * It exists because an empty result plus `not_found` reads as "there is no
+   * evidence of this" — a wider claim than a tool with a narrow fixed filter is
+   * entitled to make. A correlation entry, for instance, filters on a closed set of
+   * audit categories that does NOT partition the same way the admin permission areas
+   * do, so nothing-matched has to be qualified by the scope or the model will narrate
+   * domain-wide absence from a category-shaped hole.
+   */
+  evidenceScope?: string;
   observedAt: string;
   audit: DiagnosticsToolAudit;
 }
@@ -272,6 +307,8 @@ export const DIAGNOSTICS_TOOL_FAILURE_MESSAGES: Record<
     "The diagnostics database credential does not have the restricted, read-only privileges this feature requires, so no tool was run.",
   query_failed:
     "That diagnostics read did not complete (it may have taken too long), so no results are available.",
+  evidence_unavailable:
+    "The system evidence that diagnostics tool reads could not be gathered just now, so no results are available.",
   result_too_large:
     "That diagnostics read returned more data than this feature is allowed to handle. Ask a narrower question.",
   redaction_failed:

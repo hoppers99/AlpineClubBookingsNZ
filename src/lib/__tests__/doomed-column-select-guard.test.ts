@@ -44,20 +44,22 @@ const SCAN_ROOTS = ["src", "prisma", "scripts"].map((dir) =>
 // Named for what the guard enforces NOW (narrow selects on these models), not
 // for the three columns it originally protected — those are dropped.
 //
-// `familyGroupMember` was added by #2520, which is the case the "KEPT
-// DELIBERATELY" note above anticipated: the next contraction wanted this guard
-// already in place. FamilyGroupMember.role is retired and awaiting a CONTRACT
-// `DROP COLUMN`, so until that lands no read or write on the join table may
-// project the model's scalars unnarrowed. Registering it here rather than
-// re-implementing the same scan under a new name is deliberate: this guard
-// already walks scripts/ as well as src/ and prisma/, and its
-// PROJECTING_METHODS already include the four mutations whose implicit
-// RETURNING is the hazard.
-const NARROW_SELECT_MODELS = [
-  "xeroItemCodeMapping",
-  "ageTierSetting",
-  "familyGroupMember",
-];
+// `familyGroupMember` was registered here by #2520's RUNTIME half (PR #2565) and
+// REMOVED again by its CONTRACT half: `FamilyGroupMember.role` no longer exists.
+// `20260803030000_contract_drop_family_group_member_role` dropped the column and
+// the same release removed the field from prisma/schema.prisma, so an unnarrowed
+// read of that model can no longer name a doomed column — there is none, and the
+// generated client could not name it if there were. Keeping the registration
+// would enforce narrowing on a model with nothing left to protect, which is not
+// what this guard is for and would misdescribe why it is here. What still needs
+// policing after the drop is raw SQL, which this scan never covered; that lives
+// in src/lib/__tests__/family-group-role-retirement.test.ts.
+//
+// The two models below stay for the reasons in "KEPT DELIBERATELY" above: they
+// are the standing legacy-column surface, and #2520 is the second contraction to
+// have wanted this guard already in place rather than reintroduced under time
+// pressure.
+const NARROW_SELECT_MODELS = ["xeroItemCodeMapping", "ageTierSetting"];
 
 const PROJECTING_METHODS = [
   "findUnique",

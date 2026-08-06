@@ -19,6 +19,8 @@ vi.mock("@/lib/prisma", () => ({
 import {
   getPublishedPageContentByPath,
   getSanitizedPageContentByPath,
+  isCmsPagePathPublished,
+  listPublishedCmsPagePaths,
   listWebsiteMenuPages,
   pageContentHtmlToPlainText,
   sanitizePageContentHtml,
@@ -398,5 +400,68 @@ describe("listWebsiteMenuPages", () => {
     const pages = await listWebsiteMenuPages();
 
     expect(pages.map((page) => page.slug)).toEqual(["about", "trips/pay"]);
+  });
+});
+
+describe("listPublishedCmsPagePaths (#2566 warm-up discovery)", () => {
+  beforeEach(() => {
+    mocks.pageContentFindMany.mockReset();
+  });
+
+  it("asks the database for published pages only, so a draft is never warmed", async () => {
+    mocks.pageContentFindMany.mockResolvedValue([
+      { slug: "about", path: "/about" },
+      { slug: "faq", path: "/faq" },
+    ]);
+
+    const paths = await listPublishedCmsPagePaths();
+
+    expect(mocks.pageContentFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { published: true } }),
+    );
+    expect(paths).toEqual(["/about", "/faq"]);
+  });
+
+  it("keeps an unadvertised page and drops one the website will not serve", async () => {
+    // No menuTitle is "not in the navigation", not "unpublished": a visitor
+    // following a direct link still pays the cold render. An address under another
+    // route group's prefix is a different matter — the catch-all refuses it, so
+    // warming it would only ever store a 404.
+    mocks.pageContentFindMany.mockResolvedValue([
+      { slug: "unlisted", path: "/unlisted" },
+      { slug: "lodge/history", path: "/lodge/history" },
+      { slug: "pay", path: "/pay" },
+    ]);
+
+    await expect(listPublishedCmsPagePaths()).resolves.toEqual(["/unlisted"]);
+  });
+});
+
+describe("isCmsPagePathPublished (#2566 unpublished-during-warmup race)", () => {
+  beforeEach(() => {
+    mocks.pageContentFindUnique.mockReset();
+  });
+
+  it("distinguishes still-published from hidden, missing, and unservable", async () => {
+    mocks.pageContentFindUnique.mockResolvedValue({
+      slug: "about",
+      published: true,
+    });
+    await expect(isCmsPagePathPublished("/about")).resolves.toBe(true);
+
+    mocks.pageContentFindUnique.mockResolvedValue({
+      slug: "about",
+      published: false,
+    });
+    await expect(isCmsPagePathPublished("/about")).resolves.toBe(false);
+
+    mocks.pageContentFindUnique.mockResolvedValue(null);
+    await expect(isCmsPagePathPublished("/about")).resolves.toBe(false);
+
+    mocks.pageContentFindUnique.mockResolvedValue({
+      slug: "lodge/history",
+      published: true,
+    });
+    await expect(isCmsPagePathPublished("/lodge/history")).resolves.toBe(false);
   });
 });

@@ -49,6 +49,22 @@ function readEnv(name: string): string | undefined {
   return value ? value : undefined;
 }
 
+/**
+ * The declared allowlist, in a form an operator can act on. Counting relations alone
+ * stopped being enough when AID-6A (#2375) introduced COLUMN grants: "1 relation" and
+ * "1 relation, 8 of its columns" are very different privileges, and the second is the
+ * one an operator should be able to confirm from the console output.
+ */
+function describeDeclaredGrants(): string {
+  if (SELECT_GRANTS.length === 0) return "SELECT grants declared: none.";
+  const parts = SELECT_GRANTS.map((grant) =>
+    grant.columns === undefined
+      ? `${grant.schema}.${grant.relation} (whole relation)`
+      : `${grant.schema}.${grant.relation} (${grant.columns.length} columns: ${grant.columns.join(", ")})`,
+  );
+  return `SELECT grants declared: ${parts.join("; ")}.`;
+}
+
 function fail(message: string): never {
   console.error(`[provision-ai-diagnostics-role] ${message}`);
   process.exit(1);
@@ -177,7 +193,7 @@ function main(): void {
     );
     for (const statement of statements) console.log(`${statement}\n`);
     console.log(
-      `-- ${statements.length} statements. SELECT grants declared: ${SELECT_GRANTS.length}.`,
+      `-- ${statements.length} statements. ${describeDeclaredGrants()}`,
     );
     return;
   }
@@ -261,7 +277,7 @@ async function run(
   console.log(
     [
       `[provision-ai-diagnostics-role] Provisioned SELECT-only role "${info.roleName}" on ${info.databaseName}.`,
-      `  SELECT grants declared in provision-role.ts: ${SELECT_GRANTS.length}`,
+      `  ${describeDeclaredGrants()} (declared in provision-role.ts)`,
       // Said out loud because it is the one thing an operator is most likely to undo
       // by hand: "let diagnostics read one more table" is usually a GRANT of some
       // existing role, and the runtime refuses the credential outright for it.

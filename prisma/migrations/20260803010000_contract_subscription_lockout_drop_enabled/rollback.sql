@@ -17,6 +17,19 @@
 -- migrations ship together (that is the whole point of the #2561 directive). If you
 -- are rolling back further than that, use the verified backup instead.
 --
+-- THIS SCRIPT ALONE IS NOT A ROLLBACK OF THIS RELEASE. The release also carries a
+-- SECOND windowed migration, 20260803030000_contract_drop_family_group_member_role
+-- (#2520), which drops "FamilyGroupMember"."role". If both were applied in the one
+-- window — the normal case — going back needs BOTH reverse scripts, in the reverse
+-- of the order they were applied: 20260803030000's FIRST, then this one. Running
+-- only this one restores the booking path and leaves the previous release raising
+-- Prisma P2022 across the whole family surface (member profile, admin family
+-- groups, onboarding, family join/invite/removal, member merge, Xero member
+-- import, nomination), because that release's client names the dropped column in
+-- ordinary reads, in every insert's column list and in a WHERE clause. Full
+-- reasoning and the rehearsal are in that migration's rollback.sql and in
+-- docs/PRODUCTION_UPGRADE_RUNBOOK.md 2.4.1 / 7.2.
+--
 -- WHAT IT RESTORES, AND WHAT IT DOES NOT.
 --
 --   * `enabled` is recreated and repopulated from `mode`: NO_BLOCK -> false, and

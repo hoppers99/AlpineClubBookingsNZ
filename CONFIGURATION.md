@@ -2423,6 +2423,14 @@ rate-limited, or temporarily unavailable.
 | `PRUNE_STALE_DEPLOY_WORKSPACES`        | Whether the wrapper removes stale deployment workspaces.              |
 | `PROJECT_DIR`                          | Low-level blue/green deploy project directory.                        |
 | `HEALTH_TIMEOUT_SECONDS`               | Readiness wait timeout for blue/green deploy.                         |
+| `DEPLOY_WARMUP_ENABLED`                | Whether the pre-cutover warm-up gate runs at step 16 of 20 (#2566). Default `1`; `1`, `true`, `yes`, and `on` enable it and any other value disables it. Disabling is refused unless `DEPLOY_WARMUP_OVERRIDE_REASON` is also set. |
+| `DEPLOY_WARMUP_OVERRIDE_REASON`        | The written justification required when `DEPLOY_WARMUP_ENABLED` is off. Default empty. Printed in the deploy log and repeated after the completion banner. |
+| `DEPLOY_WARMUP_SERVICES`               | Which app services the gate warms, space-separated. Default empty, meaning the target colour plus the `app` cron leader. Only `app`, `app_blue`, and `app_green` are accepted, and a value that resolves to no services is refused rather than treated as "nothing to check". |
+| `DEPLOY_WARMUP_CONCURRENCY`            | Warm-up requests in flight at once. Default `3`, accepted `1`-`8`.     |
+| `DEPLOY_WARMUP_REQUEST_TIMEOUT_SECONDS` | Per-request ceiling for one warm-up request. Default `20`, accepted `1`-`120`. |
+| `DEPLOY_WARMUP_TOTAL_TIMEOUT_SECONDS`  | Whole-gate ceiling, applied **per warmed service**. Default `240`, accepted `5`-`1800`; with the default two services the gate can add up to 480s to the migrate-to-cutover window. |
+| `DEPLOY_WARMUP_MAX_FAILED_CMS_ROUTES`  | The count half of the tolerated non-critical CMS failures. Default `1`, accepted `0`-`100`. |
+| `DEPLOY_WARMUP_MAX_FAILED_CMS_PERCENT` | The percentage half of the same tolerance. Default `10`, accepted `0`-`100`. Both halves must hold, so a club with fewer than ten published pages tolerates none. Ranges are enforced by the deploy script and again by the endpoint — see `DEPLOYMENT.md` → "Pre-cutover warm-up gate". |
 | `PRUNE_UNTIL`                          | Docker prune age window used by deploy scripts.                       |
 | `FORCE_NO_CACHE`                       | Forces local Docker rebuilds without cache.                           |
 | `SKIP_APP_IMAGE_BUILD`                 | Skips local app image build when using prebuilt images.               |

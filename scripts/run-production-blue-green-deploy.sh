@@ -421,6 +421,23 @@ ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS="${ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS:-0}
 BLUE_GREEN_MIGRATION_OVERRIDE_REASON="${BLUE_GREEN_MIGRATION_OVERRIDE_REASON:-}"
 MIGRATION_SAFETY_LEDGER="${MIGRATION_SAFETY_LEDGER:-docs/BLUE_GREEN_MIGRATION_SAFETY.tsv}"
 
+# Pre-cutover warm-up gate (#2566). The defaults are the owner's: bounded
+# concurrency of three, and a tolerance of at most ONE failed non-critical CMS page
+# AND at most 10% of those discovered — both conditions, so a club with fewer than
+# ten published pages tolerates none. Widening either is allowed and logged; it is
+# never silent. DEPLOY_WARMUP_SERVICES defaults to the target colour plus the cron
+# leader (see `warmup_services`).
+DEPLOY_WARMUP_ENABLED="${DEPLOY_WARMUP_ENABLED:-1}"
+DEPLOY_WARMUP_OVERRIDE_REASON="${DEPLOY_WARMUP_OVERRIDE_REASON:-}"
+DEPLOY_WARMUP_SERVICES="${DEPLOY_WARMUP_SERVICES:-}"
+DEPLOY_WARMUP_CONCURRENCY="${DEPLOY_WARMUP_CONCURRENCY:-3}"
+DEPLOY_WARMUP_REQUEST_TIMEOUT_SECONDS="${DEPLOY_WARMUP_REQUEST_TIMEOUT_SECONDS:-20}"
+DEPLOY_WARMUP_TOTAL_TIMEOUT_SECONDS="${DEPLOY_WARMUP_TOTAL_TIMEOUT_SECONDS:-240}"
+DEPLOY_WARMUP_MAX_FAILED_CMS_ROUTES="${DEPLOY_WARMUP_MAX_FAILED_CMS_ROUTES:-1}"
+DEPLOY_WARMUP_MAX_FAILED_CMS_PERCENT="${DEPLOY_WARMUP_MAX_FAILED_CMS_PERCENT:-10}"
+DEPLOY_WARMUP_PATH="/api/deploy/warmup"
+DEPLOY_WARMUP_VERDICT_SENTINEL="WARMUP-GATE-VERDICT"
+
 POSTGRES_SERVICE="postgres"
 CRON_SERVICE="app"
 CADDY_SERVICE="caddy"
@@ -1364,6 +1381,411 @@ verify_cron_registration() {
     "Xero membership refresh disabled by XERO_ENABLE_DAILY_MEMBERSHIP_REFRESH"
 }
 
+# --------------------------------------------------------------------------
+# Pre-cutover warm-up gate (#2566, owner decision Option 4)
+#
+# The gate itself lives in the application (`src/app/api/deploy/warmup/route.ts`)
+# and runs INSIDE the container it is warming, for three reasons set out in that
+# file's header: the process that stores each page is then the process that
+# answered, so warming the wrong colour is structurally impossible; untrusted CMS
+# paths never touch a shell; and the tiered rules are unit-testable TypeScript
+# rather than bash.
+#
+# This function's whole job is therefore to ask, print what came back, and refuse
+# to cut over on anything that is not an acceptable verdict — including an
+# unreadable answer.
+# --------------------------------------------------------------------------
+
+# Defined here rather than reused from the wrapper on purpose: the wrapper's
+# `env_flag_is_true` lives INSIDE `run_production_wrapper`, and the internal engine
+# runs as a separate invocation of this script, so that definition does not exist in
+# this shell. Calling it would fail at the gate with "command not found" — i.e. it
+# would block every deploy — which is the fail-closed direction but for the wrong
+# reason.
+warmup_gate_is_enabled() {
+  case "$DEPLOY_WARMUP_ENABLED" in
+    1|true|TRUE|yes|YES|on|ON) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# One numeric warm-up setting, checked against the SAME range the endpoint enforces.
+#
+# The range is mirrored here rather than left to the endpoint for a plain operational
+# reason: the endpoint answers HTTP 400 with the offending parameter named in the body,
+# and the container's only HTTP client is busybox `wget`, which on a non-2xx status
+# writes no body at all. The endpoint now also answers the text form with a readable
+# `blocked` report, so the reason survives either way — but catching it HERE means the
+# operator is told which setting is wrong before a container is even asked, and the
+# ranges cannot drift unnoticed because the argument list reads like the endpoint's.
+#
+# Ranges as at src/app/api/deploy/warmup/route.ts:
+#   concurrency 1-8, requestTimeoutSeconds 1-120, totalTimeoutSeconds 5-1800,
+#   maxFailedCmsRoutes 0-100, maxFailedCmsPercent 0-100.
+require_integer_setting_in_range() {
+  local name="$1"
+  local value="$2"
+  local min="$3"
+  local max="$4"
+
+  if ! printf '%s' "$value" | grep -Eq '^[0-9]+$'; then
+    echo "${name} must be a non-negative integer. Got: ${value}" >&2
+    return 1
+  fi
+
+  if [ "$value" -lt "$min" ] || [ "$value" -gt "$max" ]; then
+    echo "${name} must be between ${min} and ${max} (the warm-up endpoint refuses anything else). Got: ${value}" >&2
+    return 1
+  fi
+}
+
+validate_warmup_settings() {
+  local services
+
+  # `|| return 1` on each, rather than leaning on the script's `set -e`: this function
+  # is the one place a mistyped setting is caught, and its refusal should be readable in
+  # the source rather than a property of a shell option set 1,400 lines earlier.
+  require_integer_setting_in_range DEPLOY_WARMUP_CONCURRENCY "$DEPLOY_WARMUP_CONCURRENCY" 1 8 || return 1
+  require_integer_setting_in_range DEPLOY_WARMUP_REQUEST_TIMEOUT_SECONDS "$DEPLOY_WARMUP_REQUEST_TIMEOUT_SECONDS" 1 120 || return 1
+  require_integer_setting_in_range DEPLOY_WARMUP_TOTAL_TIMEOUT_SECONDS "$DEPLOY_WARMUP_TOTAL_TIMEOUT_SECONDS" 5 1800 || return 1
+  require_integer_setting_in_range DEPLOY_WARMUP_MAX_FAILED_CMS_ROUTES "$DEPLOY_WARMUP_MAX_FAILED_CMS_ROUTES" 0 100 || return 1
+  require_integer_setting_in_range DEPLOY_WARMUP_MAX_FAILED_CMS_PERCENT "$DEPLOY_WARMUP_MAX_FAILED_CMS_PERCENT" 0 100 || return 1
+
+  # Assigned first so `warmup_services`'s own refusal is not swallowed by the `for`
+  # list, which discards a command substitution's exit status.
+  services="$(warmup_services)" || return 1
+
+  local service
+  for service in $services; do
+    case "$service" in
+      "$CRON_SERVICE"|"$BLUE_SERVICE"|"$GREEN_SERVICE") ;;
+      *)
+        echo "DEPLOY_WARMUP_SERVICES may only name app services (${CRON_SERVICE}, ${BLUE_SERVICE}, ${GREEN_SERVICE}). Got: ${service}" >&2
+        return 1
+        ;;
+    esac
+  done
+}
+
+# Every web instance that can serve public traffic after this deploy, and so every
+# instance with its own page store to fill.
+#
+# The default is the target colour AND the cron leader, which is not belt and
+# braces: `write_active_upstream_file` lists the cron leader as the SECOND
+# upstream (`to <target>:3000 app:3000`), so Caddy serves public pages from it
+# whenever the target fails its health probe. A warm target beside a cold
+# fallback would hand the worst page loads of the release to exactly the moment
+# the site is already struggling. The owner's decision anticipates this under
+# "Future scaling": warm every instance separately, because one instance's
+# in-memory store says nothing about another's.
+# An EMPTY resolved list is refused rather than accepted, and that refusal is the
+# point of the loop below. `[ -n "$DEPLOY_WARMUP_SERVICES" ]` is true for a value that
+# is only whitespace — the shape a command substitution that produced nothing leaves
+# behind — and printing it verbatim then word-split to nothing, so both callers
+# iterated zero times, the gate returned success, and the deploy cut over having asked
+# not one question about the release. It is the only path where this gate could report
+# a pass without proving anything, and it printed nothing an operator would notice.
+warmup_services() {
+  local resolved=""
+  local service
+
+  if [ -n "$DEPLOY_WARMUP_SERVICES" ]; then
+    for service in $DEPLOY_WARMUP_SERVICES; do
+      resolved="${resolved:+$resolved }$service"
+    done
+  else
+    resolved="$TARGET_SERVICE $CRON_SERVICE"
+  fi
+
+  if [ -z "$resolved" ]; then
+    echo "DEPLOY_WARMUP_SERVICES resolved to no services, so the warm-up gate would prove nothing about this release. Name the app services to warm, or unset it for the default (${TARGET_SERVICE} and ${CRON_SERVICE})." >&2
+    return 1
+  fi
+
+  printf '%s' "$resolved"
+}
+
+# The release identifier the gate should expect to find in the container it warms.
+#
+# A registry deploy pins both images by commit SHA, so the tag IS the expectation.
+# A digest-pinned reference is deliberately not used: the digest is not the commit,
+# and passing it would produce a false mismatch and block a good deploy. The local
+# build path falls back to the checked-out commit, which is what
+# `prepare_application_images` exports as RELEASE_ID for that path anyway.
+resolve_expected_release() {
+  local tag
+
+  if [ -n "$APP_IMAGE" ] && [ "${APP_IMAGE#*@}" = "$APP_IMAGE" ]; then
+    tag="${APP_IMAGE##*:}"
+    if printf '%s' "$tag" | grep -Eq '^[0-9a-fA-F]{7,64}$'; then
+      printf '%s' "$tag"
+      return 0
+    fi
+  fi
+
+  if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    git rev-parse HEAD
+    return 0
+  fi
+
+  printf ''
+}
+
+# Warnings that must outlive the step they were printed in.
+#
+# The owner's decision asks for a deploy that completed with a tolerated failure to be
+# "clearly labelled" and for the failure to be "visible to the operator completing the
+# deployment". Printing it once at step 16 of 20 does not achieve that: four more steps,
+# a container table and 80 lines of application logs scroll past before the completion
+# banner, there is no log file (the wrapper runs the engine with no `tee`), and the
+# operator's terminal is the only record. So each warning is accumulated here and
+# re-printed AFTER the banner, and the banner itself names the state.
+WARMUP_WARNINGS=""
+
+record_warmup_warning() {
+  if [ -z "$WARMUP_WARNINGS" ]; then
+    WARMUP_WARNINGS="$1"
+    return 0
+  fi
+
+  # `printf` rather than a literal newline inside the expansion: a `}` at column zero
+  # inside a string reads like the end of the function to a human and to anything that
+  # extracts a function body by line.
+  WARMUP_WARNINGS="$(printf '%s\n%s' "$WARMUP_WARNINGS" "$1")"
+}
+
+# Accumulates every line of one report's WARNINGS block, whatever the verdict was.
+#
+# Keying the accumulator on the verdict alone lost warnings that arrive with a plain
+# `pass`, and `evaluateWarmup` returns exactly that in several real cases
+# (`src/lib/deploy/warmup-evaluate.ts`): the configured Book Now target unpublished
+# between discovery and warming, a published CMS page unpublished the same way, a Book
+# Now setting the gate could not read, an image carrying no release identifier, a
+# deploy that could not say which release to expect, and a tolerance the operator
+# widened. Each of those is a thing the operator has to act on, and each of them
+# scrolled off screen with the step 16 report.
+#
+# Fed from a HERE-DOCUMENT rather than a pipe on purpose: `record_warmup_warning`
+# assigns a global, and a `while` loop on the right of a pipe runs in a subshell, so
+# every line would be recorded into a copy that is discarded at the closing `done`.
+record_gate_warnings() {
+  local service="$1"
+  local warnings="$2"
+  local line
+
+  if [ -z "$warnings" ]; then
+    return 0
+  fi
+
+  while IFS= read -r line; do
+    if [ -n "$line" ]; then
+      record_warmup_warning "${service}: warm-up warning — ${line}"
+    fi
+  done <<EOF
+$warnings
+EOF
+}
+
+# Re-prints the accumulated warnings and returns 0 when there were any, so the caller
+# can label the completion banner rather than guess.
+print_deploy_warning_summary() {
+  if [ -z "$WARMUP_WARNINGS" ]; then
+    return 1
+  fi
+
+  echo
+  echo "============================================"
+  echo "  DEPLOY COMPLETED WITH WARNINGS"
+  echo "============================================"
+  printf '%s\n' "$WARMUP_WARNINGS" | while IFS= read -r line; do
+    printf '  ! %s\n' "$line"
+  done
+  echo
+  echo "  Do not close this deploy out until each line above is recorded on a"
+  echo "  follow-up issue. The full warm-up summary is at step 16 of 20 above."
+  echo "============================================"
+  return 0
+}
+
+warmup_gate_url() {
+  local expected_release="$1"
+  local url
+
+  url="http://127.0.0.1:3000${DEPLOY_WARMUP_PATH}?format=text"
+  url="${url}&concurrency=${DEPLOY_WARMUP_CONCURRENCY}"
+  url="${url}&requestTimeoutSeconds=${DEPLOY_WARMUP_REQUEST_TIMEOUT_SECONDS}"
+  url="${url}&totalTimeoutSeconds=${DEPLOY_WARMUP_TOTAL_TIMEOUT_SECONDS}"
+  url="${url}&maxFailedCmsRoutes=${DEPLOY_WARMUP_MAX_FAILED_CMS_ROUTES}"
+  url="${url}&maxFailedCmsPercent=${DEPLOY_WARMUP_MAX_FAILED_CMS_PERCENT}"
+  if [ -n "$expected_release" ]; then
+    url="${url}&expectedRelease=${expected_release}"
+  fi
+
+  printf '%s' "$url"
+}
+
+# Runs the gate against one service and returns non-zero unless the verdict allows
+# a cutover.
+#
+# The cron secret is read INSIDE the container, from the environment the app
+# already has, so it never appears in a host process list — the same concern
+# `curl_with_cron_secret_header` addresses for the external check. Only the URL is
+# passed in, and every value in it has been validated as an integer or a hex commit
+# id above, so there is nothing to escape and no shell expansion of untrusted data.
+run_warmup_gate_for_service() {
+  local service="$1"
+  local expected_release="$2"
+  local url
+  local exec_timeout
+  local report
+  local stderr_file
+  local verdict
+  local skipped_reason
+  local failed_paths
+  local gate_warnings
+
+  url="$(warmup_gate_url "$expected_release")"
+  # The container-side deadline must expire first, so a slow release produces a
+  # readable report rather than a severed exec.
+  exec_timeout=$((DEPLOY_WARMUP_TOTAL_TIMEOUT_SECONDS + 60))
+  stderr_file="$(mktemp)"
+
+  info "Warming ${service} directly (bounded to ${DEPLOY_WARMUP_CONCURRENCY} requests at a time)."
+
+  if ! report="$(
+    docker compose exec -T \
+      -e "WARMUP_GATE_URL=$url" \
+      -e "WARMUP_GATE_TIMEOUT=$exec_timeout" \
+      "$service" \
+      /bin/sh -lc 'wget -O - -T "$WARMUP_GATE_TIMEOUT" --header="x-cron-secret: $CRON_SECRET" "$WARMUP_GATE_URL"' \
+      2>"$stderr_file"
+  )"; then
+    printf '%s\n' "$report"
+    cat "$stderr_file" >&2
+    rm -f "$stderr_file"
+    echo "The warm-up gate on ${service} could not be read, so nothing has been proved about this release. Refusing to switch traffic." >&2
+    return 1
+  fi
+
+  rm -f "$stderr_file"
+  printf '%s\n' "$report"
+
+  # The sentinel line, read through the one constant so the script and the report
+  # renderer cannot drift. Last occurrence wins, and an absent line is refused
+  # below rather than treated as a pass.
+  # `|| true` is load-bearing under `set -o pipefail`: a report with no sentinel
+  # makes grep exit non-zero, and without this the assignment would abort the
+  # deploy with no explanation instead of reaching the "no readable verdict"
+  # message below. The refusal is the same either way; the operator's information
+  # is not.
+  verdict="$(
+    printf '%s\n' "$report" |
+      grep -F "${DEPLOY_WARMUP_VERDICT_SENTINEL}:" |
+      tail -n 1 |
+      awk '{print $2}' || true
+  )"
+
+  # The failed addresses out of the summary's FAILED ROUTES block, so the end-of-deploy
+  # warning names them rather than pointing at scrolled-off output. Each such line is
+  # `    ! /path [tier] kind — detail`; a WARNINGS line also begins `    ! ` but never
+  # with an address, which is what the `/` and the following ` [` select on.
+  failed_paths="$(
+    printf '%s\n' "$report" |
+      sed -n 's|^[[:space:]]*![[:space:]]*\(/[^[:space:]]*\)[[:space:]]\[.*|\1|p' |
+      tr '\n' ' ' |
+      sed 's/[[:space:]]*$//' || true
+  )"
+
+  # Every line of the report's WARNINGS block, read out of the report rather than
+  # inferred from the verdict. The block runs from the `WARNINGS (n):` header to the
+  # blank line the renderer puts before the next block
+  # (`src/lib/deploy/warmup-report.ts`), and each line inside it is `    ! <text>`.
+  gate_warnings="$(
+    printf '%s\n' "$report" |
+      awk '
+        /^[[:space:]]*WARNINGS \(/ { in_block = 1; next }
+        in_block && /^[[:space:]]*$/ { in_block = 0; next }
+        in_block { sub(/^[[:space:]]*![[:space:]]*/, ""); print }
+      ' || true
+  )"
+
+  case "$verdict" in
+    pass)
+      if [ -n "$gate_warnings" ]; then
+        # A pass is still a pass — but it is not a clean one, and the reasons above
+        # are repeated after the completion banner rather than left to scroll away.
+        warn "Warm-up gate passed on ${service} with warnings. The cutover proceeds; each warning above is repeated after the completion banner and needs recording before this deploy is closed out."
+      else
+        info "Warm-up gate passed on ${service}."
+      fi
+      ;;
+    pass-with-warning)
+      warn "Warm-up gate passed on ${service} WITH WARNINGS. The deployment is completing with a known non-critical page failure — record the failed path above and file (or link) a follow-up issue for it before closing this deploy out."
+      record_warmup_warning "${service}: passed WITH WARNINGS — a non-critical published page failed. Failed path(s): ${failed_paths:-see the step 16 summary above}. File or link a follow-up issue before closing this deploy out."
+      ;;
+    skipped)
+      skipped_reason="$(printf '%s\n' "$report" | sed -n 's/^[[:space:]]*SKIPPED: //p' | head -n 1 || true)"
+      warn "Warm-up gate skipped on ${service}: ${skipped_reason:-no reason reported}"
+      record_warmup_warning "${service}: the warm-up gate was SKIPPED, so this cutover is unverified — ${skipped_reason:-no reason reported}"
+      ;;
+    blocked)
+      echo "The warm-up gate BLOCKED the cutover on ${service}. See the blocked reasons above." >&2
+      return 1
+      ;;
+    *)
+      echo "The warm-up gate on ${service} returned no readable verdict (expected a '${DEPLOY_WARMUP_VERDICT_SENTINEL}: ...' line). Refusing to switch traffic." >&2
+      return 1
+      ;;
+  esac
+
+  # After the case and outside it, so this cannot be keyed on the verdict again: the
+  # reasons the gate reported are carried to the end of the deploy for every verdict
+  # that reaches here, `pass` included.
+  record_gate_warnings "$service" "$gate_warnings"
+}
+
+run_warmup_gate() {
+  local expected_release
+  local service
+  local services
+
+  if ! warmup_gate_is_enabled; then
+    if [ -z "$DEPLOY_WARMUP_OVERRIDE_REASON" ]; then
+      echo "DEPLOY_WARMUP_ENABLED=${DEPLOY_WARMUP_ENABLED} disables the pre-cutover warm-up gate, which requires a written justification." >&2
+      echo "Set DEPLOY_WARMUP_OVERRIDE_REASON to the reason this deploy may cut over unwarmed, or leave the gate enabled." >&2
+      return 1
+    fi
+
+    warn "================================================================"
+    warn "PRE-CUTOVER WARM-UP GATE DISABLED for this deploy."
+    warn "Reason: ${DEPLOY_WARMUP_OVERRIDE_REASON}"
+    warn "Nothing has verified that the new release renders its public pages or"
+    warn "populates its page cache. The first visitor to each page pays a cold"
+    warn "render, and a broken public page will reach members rather than this log."
+    warn "================================================================"
+    record_warmup_warning "The pre-cutover warm-up gate was DISABLED for this deploy (reason given: ${DEPLOY_WARMUP_OVERRIDE_REASON}). Nothing verified that this release serves its public pages."
+    return 0
+  fi
+
+  validate_warmup_settings || return 1
+
+  expected_release="$(resolve_expected_release)"
+  if [ -z "$expected_release" ]; then
+    warn "Could not determine which commit this deploy is releasing, so the gate cannot confirm it warmed the intended release."
+    record_warmup_warning "The gate could not confirm it warmed the intended release: this deploy could not determine which commit it is releasing."
+  fi
+
+  # Assigned first so an empty resolution refuses the deploy instead of being silently
+  # iterated zero times. See `warmup_services`.
+  services="$(warmup_services)" || return 1
+
+  for service in $services; do
+    # Explicit rather than relying on `set -e` to abort the run: this is the refusal
+    # that stops a bad release reaching members, so it is spelled out here.
+    run_warmup_gate_for_service "$service" "$expected_release" || return 1
+  done
+}
+
 get_active_service() {
   local file="$PROJECT_DIR/$ACTIVE_UPSTREAM_FILE_REL"
 
@@ -1495,74 +1917,83 @@ cd "$PROJECT_DIR"
 ACTIVE_SERVICE="$(get_active_service)"
 TARGET_SERVICE="$(choose_target_service "$ACTIVE_SERVICE")"
 
-step "1/19" "Refreshing code (if appropriate)"
+step "1/20" "Refreshing code (if appropriate)"
 maybe_pull_latest
 
-step "2/19" "Validating host deployment prerequisites"
+step "2/20" "Validating host deployment prerequisites"
 validate_host_contract
 info "Host has the required deployment commands."
 
-step "3/19" "Validating deployment environment contract"
+step "3/20" "Validating deployment environment contract"
 validate_env_contract
 validate_image_reference_contract
 info ".env contains the required production settings."
 
-step "4/19" "Validating repository deployment files"
+step "4/20" "Validating repository deployment files"
 validate_repo_contract
 validate_caddy_contract
 info "Docker, Prisma, and Caddy config files are present and valid."
 
-step "5/19" "Validating Docker Compose configuration"
+step "5/20" "Validating Docker Compose configuration"
 docker compose config -q
 info "docker compose config is valid."
 
-step "6/19" "Selecting target web service"
+step "6/20" "Selecting target web service"
 info "Current live upstream: ${ACTIVE_SERVICE}"
 info "Target web service: ${TARGET_SERVICE}"
 
-step "7/19" "Pruning stale Docker cache before image preparation"
+step "7/20" "Pruning stale Docker cache before image preparation"
 prune_stale_docker_assets "before image preparation"
 
-step "8/19" "Pulling infrastructure images"
+step "8/20" "Pulling infrastructure images"
 docker compose pull "$POSTGRES_SERVICE" "$CADDY_SERVICE"
 
-step "9/19" "Preparing app, target web, and migration images"
+step "9/20" "Preparing app, target web, and migration images"
 prepare_application_images
 
-step "10/19" "Validating runtime image contract"
+step "10/20" "Validating runtime image contract"
 validate_runtime_image_contract
 info "App image contains the expected runtime artifacts."
 
-step "11/19" "Ensuring postgres is healthy"
+step "11/20" "Ensuring postgres is healthy"
 docker compose up -d "$POSTGRES_SERVICE"
 wait_for_health "$POSTGRES_SERVICE" "$HEALTH_TIMEOUT_SECONDS"
 verify_postgres_query
 info "Postgres is healthy and accepting queries."
 
-step "12/19" "Validating Prisma schema against committed migrations"
+step "12/20" "Validating Prisma schema against committed migrations"
 validate_prisma_schema_matches_migrations
 validate_pending_migrations_blue_green_safe
 info "Prisma schema matches the committed migration history."
 
-step "13/19" "Running Prisma migrations"
+step "13/20" "Running Prisma migrations"
 docker compose --profile "$MIGRATE_SERVICE" run --rm "$MIGRATE_SERVICE"
 verify_prisma_migration_status
 info "Prisma migration status reports the database is up to date."
 
-step "14/19" "Starting target web service"
+step "14/20" "Starting target web service"
 docker compose up -d --force-recreate "$TARGET_SERVICE"
 wait_for_health "$TARGET_SERVICE" "$HEALTH_TIMEOUT_SECONDS"
 verify_internal_health "$TARGET_SERVICE"
 info "Target web service is healthy before cutover."
 
-step "15/19" "Refreshing cron leader on the new release before cutover"
+step "15/20" "Refreshing cron leader on the new release before cutover"
 docker compose up -d --force-recreate "$CRON_SERVICE"
 wait_for_health "$CRON_SERVICE" "$HEALTH_TIMEOUT_SECONDS"
 verify_internal_health "$CRON_SERVICE"
 verify_cron_registration
 info "Cron leader is healthy and scheduled jobs are registered before cutover."
 
-step "16/19" "Switching Caddy upstream to target web service"
+# The seam #2352 slice 1 left here, filled by #2566. It sits AFTER both web
+# instances are healthy and BEFORE the Caddy switch, which is the order the owner's
+# decision sets out: migrate, start the target, pass readiness, discover, warm,
+# verify the store, evaluate, and only then move traffic. A non-zero return from
+# this step propagates through `set -e` and the ERR trap, so the cutover below
+# never runs and the old colour keeps serving.
+step "16/20" "Warming the new release and verifying its page cache before cutover"
+run_warmup_gate
+
+step "17/20" "Switching Caddy upstream to target web service"
 docker compose up -d "$CADDY_SERVICE"
 PREVIOUS_UPSTREAM_CONTENTS="$(cat "$PROJECT_DIR/$ACTIVE_UPSTREAM_FILE_REL" 2>/dev/null || true)"
 write_active_upstream_file "$TARGET_SERVICE" "$CRON_SERVICE"
@@ -1579,16 +2010,25 @@ EXTERNAL_HEALTH_VERIFIED=1
 info "External and direct target readiness checks passed after cutover."
 drain_previous_connections "$BLUE_GREEN_DRAIN_SECONDS"
 
-step "17/19" "Removing inactive web service containers"
+step "18/20" "Removing inactive web service containers"
 cleanup_inactive_web_services
 
-step "18/19" "Removing orphan containers"
+step "19/20" "Removing orphan containers"
 remove_compose_orphans
 info "Removed any orphaned Compose containers."
 
-step "19/19" "Cleaning stale Docker cache after deploy"
+step "20/20" "Cleaning stale Docker cache after deploy"
 prune_stale_docker_assets "after deploy"
-info "Blue/green deploy complete."
+
+# The completion line NAMES the state. A deploy that tolerated a failed public page, or
+# skipped the gate, or could not identify the release it warmed, is not the same event
+# as a clean one, and an operator reading the last line at 2am must not have to
+# remember a warning from four steps ago to know which they got.
+if [ -n "$WARMUP_WARNINGS" ]; then
+  warn "Blue/green deploy complete WITH WARNINGS. See the summary below."
+else
+  info "Blue/green deploy complete."
+fi
 
 echo
 echo "============================================"
@@ -1597,6 +2037,10 @@ echo "============================================"
 docker compose ps
 echo
 docker compose logs "$TARGET_SERVICE" --tail 80
+
+# Last, deliberately: after the container table and the application logs, so it is the
+# final thing on screen rather than the thing they scrolled past.
+print_deploy_warning_summary || true
 }
 
 case "${1:-}" in

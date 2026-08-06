@@ -141,6 +141,7 @@ describe("diagnostics privilege proof DB safety guard (#2374)", () => {
     let PgClientCtor: typeof import("pg").Client;
     let buildAiDiagnosticsRoleSql: typeof import("@/lib/diagnostics/tools/provision-role")["buildAiDiagnosticsRoleSql"];
     let FORBIDDEN_PREDEFINED_ROLES: typeof import("@/lib/diagnostics/tools/provision-role")["FORBIDDEN_PREDEFINED_ROLES"];
+    let SELECT_GRANTS: typeof import("@/lib/diagnostics/tools/provision-role")["SELECT_GRANTS"];
     let FORBIDDEN_SERVER_FILE_FUNCTIONS: typeof import("@/lib/diagnostics/tools/database")["FORBIDDEN_SERVER_FILE_FUNCTIONS"];
     let getDiagnosticsDatabase: typeof import("@/lib/diagnostics/tools/database")["getDiagnosticsDatabase"];
     let closeDiagnosticsDatabase: typeof import("@/lib/diagnostics/tools/database")["closeDiagnosticsDatabase"];
@@ -267,9 +268,8 @@ describe("diagnostics privilege proof DB safety guard (#2374)", () => {
       adminRole = decodeURIComponent(parsed.username);
 
       ({ Client: PgClientCtor } = await import("pg"));
-      ({ buildAiDiagnosticsRoleSql, FORBIDDEN_PREDEFINED_ROLES } = await import(
-        "@/lib/diagnostics/tools/provision-role"
-      ));
+      ({ buildAiDiagnosticsRoleSql, FORBIDDEN_PREDEFINED_ROLES, SELECT_GRANTS } =
+        await import("@/lib/diagnostics/tools/provision-role"));
       ({ FORBIDDEN_SERVER_FILE_FUNCTIONS } = await import(
         "@/lib/diagnostics/tools/database"
       ));
@@ -465,15 +465,26 @@ describe("diagnostics privilege proof DB safety guard (#2374)", () => {
       expect(other.rows[0].reload_conf).toBe(false);
     });
 
-    it("holds no table privilege at all on the migrated schema", async () => {
+    it("can read nothing on the migrated schema but the declared allowlist", async () => {
       // The property the role is NAMED for, asserted against the real schema rather
-      // than inferred from the provisioning statements. The scratch grants this suite
-      // adds are excluded, so what is left is every application table.
+      // than inferred from the provisioning statements. The scratch tables this suite
+      // grants on are excluded from both counts.
+      //
+      // The relations `SELECT_GRANTS` declares — which AID-6A (#2375) makes non-empty
+      // for the first time: `AuditLog`, by column, for the audit-correlation tools —
+      // are excluded from the READABLE count only, deliberately. They are allowed to
+      // be readable and nothing else, so keeping them inside the WRITABLE count is
+      // what proves a declared relation did not also pick up a write privilege on the
+      // way in. Excluding them from both would have made this assertion blind to
+      // exactly the mistake a new grant can introduce.
       const result = await admin.query(
         `SELECT
            count(*) FILTER (
-             WHERE pg_catalog.has_table_privilege($1, c.oid, 'SELECT')
-               OR pg_catalog.has_any_column_privilege($1, c.oid, 'SELECT')
+             WHERE (
+                 pg_catalog.has_table_privilege($1, c.oid, 'SELECT')
+                 OR pg_catalog.has_any_column_privilege($1, c.oid, 'SELECT')
+               )
+               AND c.relname <> ALL ($3::text[])
            )::int AS readable,
            count(*) FILTER (
              WHERE pg_catalog.has_table_privilege($1, c.oid, 'INSERT')
@@ -489,12 +500,149 @@ describe("diagnostics privilege proof DB safety guard (#2374)", () => {
          WHERE n.nspname = 'public'
            AND c.relkind = ANY (ARRAY['r','v','m','f','p'])
            AND c.relname <> ALL ($2::text[])`,
-        [TEST_ROLE, [GRANTED_TABLE, WRITABLE_TABLE, UNGRANTED_TABLE]],
+        [
+          TEST_ROLE,
+          [GRANTED_TABLE, WRITABLE_TABLE, UNGRANTED_TABLE],
+          SELECT_GRANTS.map((grant) => grant.relation),
+        ],
       );
       // The migrations really are deployed, so "zero readable" is not vacuous.
       expect(result.rows[0].relations).toBeGreaterThan(50);
       expect(result.rows[0].readable).toBe(0);
       expect(result.rows[0].writable).toBe(0);
+    });
+
+    it("reads ONLY the declared columns of a column-granted relation", async () => {
+      // The AID-6A grant is by COLUMN, and this is the assertion that makes that a
+      // server-enforced boundary rather than an application one. `AuditLog` carries
+      // `ipAddress`, `userAgent`, `summary`, `details`, `metadata` and three
+      // member-identifying columns; the tools project none of them, and as this role
+      // PostgreSQL itself refuses to return them.
+      for (const grant of SELECT_GRANTS) {
+        if (grant.columns === undefined) continue;
+        const declared = new Set<string>(grant.columns);
+
+        const columns = await admin.query(
+          `SELECT a.attname::text AS name,
+                  pg_catalog.has_column_privilege($1, c.oid, a.attnum, 'SELECT') AS readable
+             FROM pg_catalog.pg_class c
+             JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+             JOIN pg_catalog.pg_attribute a
+               ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
+            WHERE n.nspname = $2 AND c.relname = $3`,
+          [TEST_ROLE, grant.schema, grant.relation],
+        );
+        // A real relation with more columns than the allowlist names, so neither half
+        // of the assertion below is vacuous.
+        expect(columns.rows.length).toBeGreaterThan(declared.size);
+        for (const row of columns.rows) {
+          expect(
+            row.readable,
+            `${grant.relation}.${row.name} readable=${row.readable}`,
+          ).toBe(declared.has(String(row.name)));
+        }
+
+        // Table-level SELECT is ABSENT, which is exactly why the runtime self-check
+        // needs its own column-level count: `has_any_column_privilege` is true here
+        // while `has_table_privilege` is false, so a relation-level check cannot tell
+        // a column grant from a table grant.
+        const tableLevel = await admin.query(
+          `SELECT pg_catalog.has_table_privilege($1, $2, 'SELECT') AS table_level,
+                  pg_catalog.has_any_column_privilege($1, $2, 'SELECT') AS any_column`,
+          [TEST_ROLE, `${grant.schema}."${grant.relation}"`],
+        );
+        expect(tableLevel.rows[0].table_level).toBe(false);
+        expect(tableLevel.rows[0].any_column).toBe(true);
+
+        // And the server refuses the read, not merely the privilege function.
+        const allowed = [...declared][0];
+        expect(
+          await sqlStateAsRole(
+            `SELECT "${allowed}" FROM ${grant.schema}."${grant.relation}" LIMIT 1`,
+          ),
+        ).toBeNull();
+        for (const withheld of ["ipAddress", "userAgent", "summary", "metadata"]) {
+          if (declared.has(withheld)) continue;
+          expect(
+            await sqlStateAsRole(
+              `SELECT "${withheld}" FROM ${grant.schema}."${grant.relation}" LIMIT 1`,
+            ),
+            `${grant.relation}.${withheld} must be refused`,
+          ).toBe("42501");
+        }
+        // `SELECT *` is refused too — it expands to every column, including the
+        // withheld ones, so a tool that lost its projection could not fall back to it.
+        expect(
+          await sqlStateAsRole(
+            `SELECT * FROM ${grant.schema}."${grant.relation}" LIMIT 1`,
+          ),
+        ).toBe("42501");
+      }
+    });
+
+    it("re-provisioning REVOKES a hand-widened column grant", async () => {
+      // The narrowing direction. PostgreSQL's REVOKE reference states that revoking a
+      // privilege on a table also revokes the corresponding column privileges, which
+      // is what lets an allowlist entry lose a column in a later release instead of
+      // accumulating forever. Proven rather than trusted.
+      const grant = SELECT_GRANTS.find((entry) => entry.columns !== undefined);
+      expect(grant, "AID-6A declares a column-restricted grant").toBeDefined();
+      if (!grant?.columns) return;
+
+      const target = `${grant.schema}."${grant.relation}"`;
+      await admin.query(
+        `GRANT SELECT ("ipAddress") ON ${target} TO "${TEST_ROLE}"`,
+      );
+      expect(
+        await sqlStateAsRole(`SELECT "ipAddress" FROM ${target} LIMIT 1`),
+      ).toBeNull();
+
+      await provision();
+      await grantScratchPrivileges();
+
+      expect(
+        await sqlStateAsRole(`SELECT "ipAddress" FROM ${target} LIMIT 1`),
+      ).toBe("42501");
+      expect(
+        await sqlStateAsRole(
+          `SELECT "${grant.columns[0]}" FROM ${target} LIMIT 1`,
+        ),
+      ).toBeNull();
+    });
+
+    it("REFUSES the role when a column grant widens to the whole relation", async () => {
+      // The drift this count exists for. A hand-added table-level grant on a relation
+      // the allowlist DOES declare leaves `undeclaredReadableRelations` at zero, so
+      // without the column-level count the self-check would accept a role that can
+      // read every audit IP address, user agent, summary and member id.
+      const grant = SELECT_GRANTS.find((entry) => entry.columns !== undefined);
+      if (!grant?.columns) return;
+      const target = `${grant.schema}."${grant.relation}"`;
+      const declaredColumns = grant.columns
+        .map((column) => `"${column}"`)
+        .join(", ");
+
+      await withDeclaredGrantsOnly(async () => {
+        await admin.query(`GRANT SELECT ON ${target} TO "${TEST_ROLE}"`);
+        await closeDiagnosticsDatabase();
+        try {
+          const handle = await getDiagnosticsDatabase();
+          expect(handle.ok).toBe(false);
+          if (!handle.ok) {
+            expect(handle.reason).toBe("database_role_unsafe");
+            expect(handle.report?.undeclaredReadableRelations).toBe(0);
+            expect(handle.report?.undeclaredReadableColumns).toBeGreaterThan(0);
+          }
+        } finally {
+          await admin.query(
+            `REVOKE ALL PRIVILEGES ON ${target} FROM "${TEST_ROLE}"`,
+          );
+          await admin.query(
+            `GRANT SELECT (${declaredColumns}) ON ${target} TO "${TEST_ROLE}"`,
+          );
+          await closeDiagnosticsDatabase();
+        }
+      });
     });
 
     it("may execute no SECURITY DEFINER routine, though PUBLIC gives it EXECUTE on the rest", async () => {
@@ -613,11 +761,44 @@ describe("diagnostics privilege proof DB safety guard (#2374)", () => {
     it.each([
       ["Member", `SELECT count(*) FROM public."Member"`],
       ["Booking", `SELECT count(*) FROM public."Booking"`],
-      ["AuditLog", `SELECT count(*) FROM public."AuditLog"`],
       ["Payment", `SELECT count(*) FROM public."Payment"`],
     ])("cannot read the un-granted table %s", async (_label, sql) => {
       const code = await sqlStateAsRole(sql);
       expect(code).toBe(INSUFFICIENT_PRIVILEGE);
+    });
+
+    it("counts rows on the column-granted AuditLog, but reads no withheld column", async () => {
+      // `AuditLog` left the un-granted list when AID-6A (#2375) granted the
+      // audit-correlation tools eight of its columns, and the distinction is worth
+      // pinning rather than deleting a case for: PostgreSQL permits `count(*)` for a
+      // role holding SELECT on ANY column of the relation, so a table-shaped assertion
+      // would now pass for the wrong reason. The boundary that matters is per COLUMN,
+      // and it is the server's own.
+      expect(
+        await sqlStateAsRole(`SELECT count(*) FROM public."AuditLog"`),
+      ).toBeNull();
+      expect(
+        await sqlStateAsRole(`SELECT "action" FROM public."AuditLog" LIMIT 1`),
+      ).toBeNull();
+      for (const withheld of [
+        "entityId",
+        "memberId",
+        "actorMemberId",
+        "subjectMemberId",
+        "targetId",
+        "summary",
+        "details",
+        "metadata",
+        "ipAddress",
+        "userAgent",
+      ]) {
+        expect(
+          await sqlStateAsRole(
+            `SELECT "${withheld}" FROM public."AuditLog" LIMIT 1`,
+          ),
+          `AuditLog.${withheld} must be refused`,
+        ).toBe(INSUFFICIENT_PRIVILEGE);
+      }
     });
 
     it("cannot read a table created after provisioning (no default privileges)", async () => {
@@ -1126,6 +1307,8 @@ describe("diagnostics privilege proof DB safety guard (#2374)", () => {
         if (!handle.ok) return;
 
         const probe = DIAGNOSTICS_TOOLS[0];
+        expect(probe.source).toBe("select_only_sql");
+        if (probe.source !== "select_only_sql") return;
         const result = await runDiagnosticsReadOnlyQuery(
           { sql: probe.sql, params: [], rowLimit: probe.rowLimit, toolId: probe.id },
           handle.pool,
@@ -1147,6 +1330,159 @@ describe("diagnostics privilege proof DB safety guard (#2374)", () => {
         expect(row.statementTimeout).not.toBe("");
         expect(row.statementTimeout).not.toBe("0");
       });
+    });
+
+    it("runs EVERY registered SELECT-only entry, with its real parameters and grants", async () => {
+      // The proof a unit test cannot give, and the one AID-6A (#2375) most needs: each
+      // registered statement is executed as the least-privilege role against the
+      // migrated schema, with the parameters the entry's own `bind` produced. Four
+      // things can only fail here — a column the allowlist does not grant (42501), a
+      // mis-numbered `$n`, a statement that does not parse, and a driver value the
+      // entry's projection cannot handle — and every one of them would otherwise first
+      // appear the first time an operator asked the question that reaches the tool.
+      await withDeclaredGrantsOnly(async () => {
+        const handle = await getDiagnosticsDatabase();
+        expect(handle.ok).toBe(true);
+        if (!handle.ok) return;
+
+        const sqlEntries = DIAGNOSTICS_TOOLS.filter(
+          (entry) => entry.source === "select_only_sql",
+        );
+        // The probe plus AID-6A's five correlation entries, so this is not vacuous.
+        expect(sqlEntries.length).toBeGreaterThan(1);
+
+        for (const entry of sqlEntries) {
+          if (entry.source !== "select_only_sql") continue;
+          // Bare arguments: every registered entry either takes none or defaults them.
+          const binding = entry.parseArgs({});
+          expect(binding.ok, entry.id).toBe(true);
+          if (!binding.ok || binding.source !== "select_only_sql") continue;
+
+          const result = await runDiagnosticsReadOnlyQuery(
+            {
+              sql: entry.sql,
+              params: binding.params,
+              rowLimit: entry.rowLimit,
+              toolId: entry.id,
+            },
+            handle.pool,
+          );
+          expect(result.ok, `${entry.id} was refused by the database`).toBe(true);
+          if (!result.ok) continue;
+          // Whatever came back must survive the entry's own projection: a real driver
+          // hands timestamps and nullable columns over in shapes a mock does not.
+          for (const row of result.rows) {
+            const projected = entry.project(row);
+            expect(Object.keys(projected).length, entry.id).toBeGreaterThan(0);
+          }
+        }
+      });
+    });
+
+    it("correlates a REAL audit row and returns none of the withheld values", async () => {
+      // The end-to-end privacy assertion, on a row that carries every withheld value a
+      // real audit entry can: an IP address, a user agent, a description, free text,
+      // arbitrary JSON metadata and three member references. The projection cannot be
+      // the only thing keeping them out of the evidence channel here — the role holds
+      // no privilege on those columns at all — so this proves both layers at once.
+      const auditId = "aid6a_realdb_probe_row";
+      const requestId = "aid6a-realdb-probe";
+      await admin.query(
+        `INSERT INTO public."AuditLog"
+           ("id","action","category","severity","outcome","entityType","requestId",
+            "createdAt","ipAddress","userAgent","summary","details","metadata",
+            "memberId","actorMemberId","subjectMemberId","entityId")
+         VALUES ($1,'diagnostics.realdb_probe','system','info','success','system',$2,
+                 pg_catalog.now(),'203.0.113.7','Mozilla/5.0 probe',
+                 'Refund for Jane Tramper','raw detail text','{"secret":"value"}',
+                 'cmqmember0001','cmqadmin0001','cmqmember0002','cmqentity0001')
+         ON CONFLICT ("id") DO NOTHING`,
+        [auditId, requestId],
+      );
+      try {
+        await withDeclaredGrantsOnly(async () => {
+          const handle = await getDiagnosticsDatabase();
+          expect(handle.ok).toBe(true);
+          if (!handle.ok) return;
+
+          const entry = DIAGNOSTICS_TOOLS.find(
+            (candidate) => candidate.id === "diagnostics.system_event_correlation",
+          );
+          expect(entry, "the system correlation entry is registered").toBeDefined();
+          if (!entry || entry.source !== "select_only_sql") return;
+
+          const binding = entry.parseArgs({ window: "1h", requestId });
+          expect(binding.ok).toBe(true);
+          if (!binding.ok || binding.source !== "select_only_sql") return;
+
+          const result = await runDiagnosticsReadOnlyQuery(
+            {
+              sql: entry.sql,
+              params: binding.params,
+              rowLimit: entry.rowLimit,
+              toolId: entry.id,
+            },
+            handle.pool,
+          );
+          expect(result.ok).toBe(true);
+          if (!result.ok) return;
+          expect(result.rows).toHaveLength(1);
+
+          const projected = entry.project(result.rows[0]);
+          expect(projected.eventRef).toBe(auditId);
+          expect(projected.action).toBe("diagnostics.realdb_probe");
+          expect(projected.requestId).toBe(requestId);
+          // Formatted in SQL, so it arrives as a flat scalar rather than a `Date` the
+          // projection would have to convert (and the executor would refuse).
+          expect(typeof projected.occurredAtUtc).toBe("string");
+          expect(projected.occurredAtUtc).toMatch(
+            /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/,
+          );
+
+          const serialised = JSON.stringify(projected);
+          for (const withheld of [
+            "203.0.113.7",
+            "Mozilla",
+            "Jane Tramper",
+            "raw detail text",
+            "secret",
+            "cmqmember0001",
+            "cmqadmin0001",
+            "cmqmember0002",
+            "cmqentity0001",
+          ]) {
+            expect(serialised, withheld).not.toContain(withheld);
+          }
+
+          // TIMEZONE INDEPENDENCE, proven rather than reasoned about. `createdAt` is a
+          // naive `timestamp` holding UTC, so a statement that let the session's
+          // `TimeZone` into the comparison or the formatting would, on a deployment set
+          // to `Pacific/Auckland`, shift the window by 12-13 hours (dropping this row
+          // entirely) and stamp a local time with a `Z`. The executor pins UTC per
+          // transaction; this runs the same statement OUTSIDE that pin to show the
+          // statement does not depend on it.
+          await admin.query("SET TimeZone TO 'Pacific/Auckland'");
+          try {
+            const shifted = await admin.query(entry.sql, [...binding.params]);
+            const shiftedRow = shifted.rows.find(
+              (row) => row.event_ref === auditId,
+            );
+            expect(
+              shiftedRow,
+              "the window must not move with the session TimeZone",
+            ).toBeDefined();
+            expect(shiftedRow?.occurred_at_utc).toBe(
+              result.rows[0].occurred_at_utc,
+            );
+          } finally {
+            await admin.query("RESET TimeZone");
+          }
+        });
+      } finally {
+        await admin.query(`DELETE FROM public."AuditLog" WHERE "id" = $1`, [
+          auditId,
+        ]);
+      }
     });
 
     it("caps rows in SQL, whatever the query would have returned", async () => {
@@ -1172,11 +1508,10 @@ describe("diagnostics privilege proof DB safety guard (#2374)", () => {
 
     it("binds a registry entry's OWN parameters and still appends its LIMIT", async () => {
       // The executor wraps an entry's SQL and appends the row limit as the LAST
-      // parameter, so the entry's own `$1`/`$2` keep their meaning. Every shipped
-      // entry binds zero parameters today, so this path first runs in production
-      // when a tool pack (AID-6A/B/C) lands — and a real server is the only thing
-      // that can confirm the numbering, since a wrong `$n` is a runtime error rather
-      // than a type error.
+      // parameter, so the entry's own `$1`/`$2` keep their meaning. AID-6A's
+      // correlation entries bind three, and the test above runs them for real; this
+      // one isolates the numbering on a statement whose expected row count is known
+      // exactly, because a wrong `$n` is a runtime error rather than a type error.
       await withDeclaredGrantsOnly(async () => {
         const handle = await getDiagnosticsDatabase();
         expect(handle.ok).toBe(true);
