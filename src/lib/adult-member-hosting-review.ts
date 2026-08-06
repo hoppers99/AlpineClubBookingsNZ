@@ -124,7 +124,6 @@ export type AdultMemberHostingReviewDb = Pick<
   | "hostingCoverageReevaluation"
   | "auditLog"
   | "$executeRaw"
-  | "$queryRaw"
 >;
 
 /** The narrow client the policy read needs on its own. */
@@ -2102,16 +2101,28 @@ export async function reconcileSameOwnerCoverageIncident(
   // degrade to anonymous system attribution rather than retrying a poison item.
   // `FOR KEY SHARE` closes the existence-check/FK-write race: a present actor
   // cannot be hard-deleted until this reconciliation transaction commits.
-  const actorMemberId = params.actorMemberId
-    ? (
-        await db.$queryRaw<Array<{ id: string }>>`
-          SELECT "id"
-          FROM "Member"
-          WHERE "id" = ${params.actorMemberId}
-          FOR KEY SHARE
-        `
-      )[0]?.id ?? null
-    : null;
+  let actorMemberId: string | null = null;
+  if (params.actorMemberId) {
+    // Lock raw, read typed (#2289). The row count matters: at READ COMMITTED a
+    // zero-match lock followed by a model read could see a newly inserted row
+    // that this transaction never locked. Member ids are immutable, but keeping
+    // the zero-match guard makes this split read exactly match one locked read.
+    const locked = await db.$executeRaw`
+      SELECT 1
+      FROM "Member"
+      WHERE "id" = ${params.actorMemberId}
+      FOR KEY SHARE
+    `;
+    actorMemberId =
+      locked > 0
+        ? (
+            await db.member.findUnique({
+              where: { id: params.actorMemberId },
+              select: { id: true },
+            })
+          )?.id ?? null
+        : null;
+  }
 
   const outcome = await reconcileAdultMemberHostingReview(params.bookingId, db, {
     enforcement: "REVIEW_ONLY",

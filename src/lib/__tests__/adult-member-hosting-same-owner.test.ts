@@ -205,9 +205,8 @@ function makeStore(
   const updates: Array<{ id: string; data: Record<string, unknown> }> = [];
 
   const db = {
-    $executeRaw: vi.fn().mockResolvedValue(1),
-    $queryRaw: vi.fn(async (_query: unknown, actorMemberId: string) =>
-      actorMemberId === "missing-officer" ? [] : [{ id: actorMemberId }],
+    $executeRaw: vi.fn(async (_query: unknown, actorMemberId?: string) =>
+      actorMemberId === "missing-officer" ? 0 : 1,
     ),
     booking: {
       findUnique: vi.fn(async ({ where }: any) => byId.get(where.id) ?? null),
@@ -254,7 +253,10 @@ function makeStore(
       findMany: vi.fn().mockResolvedValue(options.policies ?? [policyRow()]),
     },
     lodge: { findFirst: vi.fn().mockResolvedValue({ name: "Ruapehu Lodge" }) },
-    member: { findMany: vi.fn().mockResolvedValue([]) },
+    member: {
+      findMany: vi.fn().mockResolvedValue([]),
+      findUnique: vi.fn(async ({ where }: any) => ({ id: where.id })),
+    },
     hostingCoverageIncident: {
       findMany: vi.fn(async ({ where }: any) =>
         incidents.filter((incident) =>
@@ -1863,7 +1865,12 @@ describe("settling a dependent booking after the change (#2576 §7, §14, §16)"
       overriddenByMemberId: null,
       overrideReason: null,
     });
-    expect(db.$queryRaw).toHaveBeenCalledTimes(1);
+    expect(
+      db.$executeRaw.mock.calls.some(([, actorMemberId]) =>
+        actorMemberId === "missing-officer",
+      ),
+    ).toBe(true);
+    expect(db.member.findUnique).not.toHaveBeenCalled();
   });
 
   it("does not refuse from inside the drain, however the club is configured", async () => {
