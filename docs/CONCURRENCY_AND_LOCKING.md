@@ -105,7 +105,7 @@ are the literal `1`.
 | **Global booking / money** | `1` (literal) | inline `tx.$executeRaw` | 2 | Booking-status + money side effects that must exclude across the whole booking regardless of lodge: cancel, capture/settle, hold-release, group-settlement reaper/settle/refund/organiser-cancel, refunds, credit restore. |
 | **Per-lodge capacity** | `hashtextextended(<lodgeId>, 0)` | `acquireLodgeCapacityLock(tx, lodgeId)` (`lodge-capacity-lock.ts`, re-exported by `capacity.ts`) | 1 | Capacity claims/checks for one lodge; roster eligibility snapshots; and direct or config-transfer chore-template changes, which serialize active-template validation for that lodge. |
 | **Per-member night footprint** | `hashtext("booking-member-night"), hashtext(<memberId>)` | `lockBookingMemberNights(tx, guests)` (`booking-member-night-conflicts.ts`) | cross-lodge | Serialises the person-night guard ACROSS lodges (see below). |
-| **Per-owner hosting coverage** | `hashtext("hosting-coverage-owner"), hashtext(<Booking.memberId>)` | `lockHostingCoverageOwner` / `lockHostingCoverageOwners` (`adult-member-hosting-coverage-lock.ts`) | cross-booking | Serialises `SAME_BOOKING_OWNER` coverage (#2576 §9): one booking's compliance depends on another booking of the SAME owner, and per-lodge locks cannot serialise that because the cancel paths take only `lock(1)` while the create paths take only the lodge lock. Taken LAST among the application lock families a caller composes. Roster-aware modification paths take global → lodge → roster-date → any applicable member keys → coverage-owner; queued incident reconciliation takes hosting policy-set → sorted claimed member-lifecycle keys → sorted claimed `Member FOR KEY SHARE` rows → coverage-owner. Paths that do not use roster or member keys omit those tiers. Several owners are sorted, and the key is taken only when the lodge actually has the scope enabled. |
+| **Per-owner hosting coverage** | `hashtext("hosting-coverage-owner"), hashtext(<Booking.memberId>)` | `lockHostingCoverageOwner` / `lockHostingCoverageOwners` (`adult-member-hosting-coverage-lock.ts`) | cross-booking | Serialises `SAME_BOOKING_OWNER` coverage (#2576 §9): one booking's compliance depends on another booking of the SAME owner, so the key remains authoritative even though #2600 made allocation-participating confirmation and cancellation compose global → lodge. Taken LAST among the application lock families a caller composes. Roster-aware modification paths take global → lodge → roster-date → any applicable member keys → sorted queue-participant `Member FOR KEY SHARE NOWAIT` rows → coverage-owner; queued incident reconciliation takes hosting policy-set → sorted claimed member-lifecycle keys → sorted claimed `Member FOR KEY SHARE` rows → coverage-owner. Paths that do not use roster or member keys omit those tiers. Ordinary producers try sorted owner keys before re-entering the blocking helper, while merge takes its sorted owner keys only after its one sorted participant `FOR UPDATE` statement. The key is taken only when the lodge actually has the scope enabled. |
 | **Per-member credit ledger** | `hashtext("member-credit-ledger"), hashtext(<memberId>)` | `lockMemberCreditLedger(memberId, tx)` (`member-credit.ts`) | — | A member's credit-ledger balance operations (spend, negative-adjustment validation, orphan-restore repair, the Xero inbound applied-credit repair, and the F20 pre-payment-reduction applied-credit clamp `clampAppliedCreditToBookingPrice`, taken inside the modification transaction only when the booking carries applied credit, and the #2265 stored-election consumption `consumeStoredCreditElection`, taken inside the `create-payment-intent` pay transaction and the Internet Banking switch transaction only when the booking carries an outstanding election). |
 | **Member lifecycle** | `hashtext("member-lifecycle:<memberId>")` | inline (`member-lifecycle-actions.ts`, `nomination.ts` approval mapping, `admin-family-group-requests-service.ts`, `member-merge.ts`, `adult-member-hosting-coverage-drain.ts`) | — | Archive/delete of one member; overwrite of one member by application-approval mapping (E10, #1936); linking/removing one member into/from a family group on admin request review; **member merge** (dual-lock on master + loser, E11 #1937, see below); and the queue-drain handshake that prevents a claimed hosting item from using identities while merge re-points them. |
 | **Membership application** | `hashtext(<application key>)` | `membershipApplicationLockKey` (`nomination.ts`) | — | State transitions of one membership application. |
@@ -417,13 +417,43 @@ no lifecycle, Member-row or coverage-owner lock, so no counterpart reverses this
 chain. The queue read is deliberately not a `FOR UPDATE`: no queue tuple lock is
 held while the member tiers are acquired, so there is no queue → Member inversion.
 
-This claim-side handshake does not claim to fence a new queue row inserted after
-member merge's relation sweep. Policy reconciliation now shares the policy-set lock
-with merge and is fully serialised, but ordinary booking/member producers still
-compose the real queue-owner FK, the FK-less actor, and repeated multi-owner
-fan-outs. Fixing those paths safely requires transaction-wide participant planning,
-not another lock in the drain. Public blocker #2597 owns that remaining repair and
-must land before the downstream Tokoroa deployment.
+Ordinary producers close the new-row side of that handshake at each high-level
+enqueue seam (#2597). Before any coverage-owner key they plan the exact source
+booking owners plus the non-null actor, sort and de-duplicate the ids, and lock those
+`Member` rows in one `FOR KEY SHARE NOWAIT` statement. They then verify typed Member
+existence and re-read each source booking's authoritative owner and lodge. A missing
+participant, `55P03`, changed source attribution, or final queue owner/actor outside
+the runtime-issued exact proof throws the fixed
+`HOSTING_COVERAGE_PARTICIPANT_RETRY` 409 and rolls the caller's complete outer
+transaction back. Interactive callers tell the operator to reload before retrying
+and to check payment status where applicable; automated callers retain their
+existing retry/redelivery boundary.
+
+The acquisition is deliberately per seam, not a transaction-wide pre-plan. A bulk
+transaction can call a fan-out more than once, so compatible Member key-share locks
+alone would still let two transactions hold different coverage-owner keys and wait
+on one another's later key. Each ordinary seam therefore also tries its sorted
+coverage-owner keys with `pg_try_advisory_xact_lock` before re-entering the blocking
+helper. A later conflict fails immediately and rolls back the earlier work too. This
+keeps the existing #2600 order: global → sorted lodge keys → sorted roster dates →
+applicable member keys → participant Member rows → coverage-owner. It does not add a
+late member-lifecycle key or source-Booking row lock, either of which would invert a
+counterpart writer.
+
+Member merge owns the blocking counterpart. After its bounded relation moves it
+plans the survivor's attendance plus the captured loser-owned bookings, then takes
+one sorted `Member FOR UPDATE` statement over master, loser and every ancillary
+queue owner. It re-plans under those rows; a new guest, booking, owner or lodge that
+changes the participant fingerprint returns the merge's existing safe 409 rather
+than acquiring another row late. Only then does it take the sorted coverage-owner
+keys, sweep both live queue pointers (`memberId` and the FK-less `actorMemberId`),
+fold those late counts into the existing relation totals, enqueue actorless
+merge-generated `SYSTEM_CHANGE` work under the private exact proof, and delete the
+loser. `MEMBER_MERGED` remains the Full Admin attribution. If ordinary enqueue wins,
+merge waits at `FOR UPDATE` and the late sweep carries the committed row forward; if
+merge wins, the ordinary `NOWAIT` fails before writing. No obligation is cascaded
+away and an `OFFICER_OVERRIDE` cause/reason is never replaced by merge's generic
+fan-out.
 
 Concurrency inside the drain is handled by expiring, opaque-token claims rather than
 long-lived locks. Items are claimed **just in time, one at a time**, not leased as a
@@ -1049,9 +1079,33 @@ The hosting drain is the other multi-key participant: it may hold the claimed
 owner and actor keys, also sorted and de-duplicated, to exclude merge before
 relation moves begin for an already-existing queue row. It takes the hosting
 policy-set first; no other member-lifecycle participant takes that policy key, so
-this edge is one-way. Ordinary queue rows inserted after the move sweep are the
-separate #2597 producer-topology contract; policy reconciliation cannot do that
-because it shares the policy-set key with merge.
+this edge is one-way. Policy CRUD and configuration transfer share the policy-set
+key for their complete enumerate-and-enqueue transaction: policy first creates a
+complete loser-attributed row that merge moves, while merge first makes the policy
+writer wait and enumerate the survivor after commit. Configuration transfer keeps
+its wider fixed prefix — config-import → minimum-stay policy-set → hosting
+policy-set — and no provider call moves inside either transaction.
+
+Ordinary booking/member producers do not take the policy-set key. Their #2597
+handshake is instead one exact, sorted `Member FOR KEY SHARE NOWAIT` statement per
+high-level enqueue seam, containing every planned source owner plus the non-null
+actor. Merge takes the blocking counterpart only after its relation moves: one
+sorted `Member FOR UPDATE` statement over master, loser and every ancillary owner
+in the bounded survivor-attendance/captured-booking plan. It then re-plans under
+those rows, takes sorted coverage-owner keys, runs the late owner and actor queue
+sweeps, emits actorless merge work under the exact participant proof, and deletes
+the loser. A plan mismatch returns 409; it never acquires a participant late.
+
+That gives both commit orders a safe result. An ordinary producer that already
+holds key share finishes its attributed queue write before merge's `FOR UPDATE`
+can proceed, so the late sweep moves it. A merge that owns `FOR UPDATE` makes the
+ordinary `NOWAIT` fail before any queue write, rolling back the complete caller
+transaction. Repeated bulk calls also try coverage-owner keys without waiting; a
+later conflict rolls back earlier calls instead of forming a hold-and-wait cycle.
+The composed merge order is **hosting policy-set → sorted member-lifecycle →
+relation moves → one sorted master/loser/ancillary Member FOR UPDATE → under-lock
+re-plan → sorted coverage-owner → late owner+actor sweeps → actorless enqueue →
+loser delete**.
 
 Inside the locks the merge re-reads both members, re-runs the full guard matrix,
 and re-verifies the HMAC preview token (which bakes in both `updatedAt` values)

@@ -89,6 +89,27 @@ sibling always enters at PENDING — the `(none) -> APPROVED` edge needs an
 explicit reason from the admin who was asked, and nobody was asked about a
 booking they only reached through another one.
 
+An accepted booking that later loses same-owner cover has a separate durable
+incident lifecycle, still without changing `Booking.status`:
+
+```text
+(none) -> OPEN                 committed cover loss is reconciled after the write
+OPEN -> RESOLVED               COVERAGE_RESTORED | BOOKING_AMENDED |
+                               EXCEPTION_APPROVED | BOOKING_CANCELLED
+RESOLVED -> OPEN               a later materially different uncovered state appears
+```
+
+Adding a new active covering booking therefore resolves the existing incident as
+`COVERAGE_RESTORED`; it does not cancel or recreate the dependent booking. The
+queue item that drives this transition is part of the mutation transaction. Under
+#2597, an ordinary producer first locks its exact owner/actor Member participants
+with sorted `FOR KEY SHARE NOWAIT`, while member merge takes one sorted blocking
+`FOR UPDATE` set, re-plans, and sweeps late owner and actor rows before deleting the
+loser. If either side cannot prove the exact attribution, the complete mutation
+returns the safe retry outcome and none of the booking, member, queue or incident
+states advance. Merge-generated work is actorless; the critical `MEMBER_MERGED`
+audit remains its human attribution.
+
 There is no transition into the shared `AWAITING_REVIEW` booking status and no
 check-in block, unlike the minors-only rule (#1372/#1422). Capacity is not
 reserved from the frozen `HOLD` value; that, the member request state and the

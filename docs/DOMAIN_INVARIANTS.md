@@ -2853,7 +2853,13 @@ compliant indefinitely.
   scope: a lapse removes cover under `SAME_BOOKING` just as surely, and the drain
   reconciles through the shared evaluator, which honours whichever scopes the lodge
   has on. Member-guest consent loss reaches the same place through the shared removal
-  path, which reconciles inside the caller's transaction.
+  path, which reconciles inside the caller's transaction. Each high-level enqueue
+  invocation first proves its exact source owners and non-null actor under one sorted,
+  de-duplicated `Member FOR KEY SHARE NOWAIT` statement. A missing member, contended
+  row, changed source owner/lodge, or final attribution outside that private proof
+  rejects the complete outer mutation with the fixed safe 409; a later call in one
+  bulk transaction also fails fast and rolls back the earlier work rather than
+  waiting while it holds a different participant set (#2597).
 - **Every confirming path re-reads the facts at confirmation, and the census proves
   it two ways** (§9). Most reconcile inside their own transaction, which REFUSES an
   uncovered booking at an enforcing club. Those that cannot — capacity claimed, money
@@ -2872,7 +2878,9 @@ compliant indefinitely.
   distinction is load-bearing: DRAFT, WAITLISTED and WAITLIST_OFFERED are all outside
   `ACTIVE_BOOKING_STATUSES` and so invisible to the strand check, making those gaps
   deterministic rather than races.
-- **The race is closed by a per-OWNER advisory lock** (`hosting-coverage-owner`).
+- **The coverage race and the member-merge attribution race have one ordered
+  handshake** (#2576, #2597). The coverage decision is closed by a per-OWNER
+  advisory lock (`hosting-coverage-owner`).
   An earlier design argued no new lock was needed because coverage is same-lodge by
   definition, so the per-lodge capacity lock already serialised both sides. That was
   false in both directions: `booking-cancel.ts`'s claim transactions take
@@ -2882,9 +2890,24 @@ compliant indefinitely.
   interleave with a create that had just read that adult as cover, and the outcome
   depended on commit order. The invariant is per-owner, so the key is the owner (the
   same reasoning behind `lockBookingMemberNights`); it is taken by the evaluator, the
-  settle step, the enqueue-only seam and the member fan-out, always LAST in the
-  order global → lodge → member-night → coverage-owner, and only where the scope is
-  enabled. See `docs/CONCURRENCY_AND_LOCKING.md`.
+  settle step, the enqueue-only seam and the member fan-out, always LAST after the
+  existing global → sorted lodge → roster-date → applicable member tiers and the
+  queue-participant Member rows, and only where the scope is enabled. Ordinary seams
+  try sorted owner keys before their re-entrant blocking acquisition, so a repeated
+  bulk call cannot wait while holding an earlier key.
+
+  Member merge takes the counterpart direction without losing an obligation. After
+  its relation moves it plans the bounded survivor-attendance and captured
+  loser-owned booking union, locks master, loser and every ancillary owner in one
+  sorted `Member FOR UPDATE`, and re-plans under those rows. Drift returns 409; no
+  participant is added late. It then takes sorted coverage-owner keys, re-points both
+  queue owner and FK-less actor rows that landed after the ordinary relation sweep,
+  folds the actual counts into the critical merge audit, creates actorless
+  `SYSTEM_CHANGE` work, and only then deletes the loser. Ordinary-first therefore
+  commits before the merge sweep, while merge-first makes ordinary `NOWAIT` and roll
+  back. Policy CRUD/config-transfer retain their earlier policy-set serialization,
+  and notification providers retain #2596's exact-token, post-transaction boundary.
+  See [`CONCURRENCY_AND_LOCKING.md`](CONCURRENCY_AND_LOCKING.md).
 - **An incident is only ever opened for a booking the club has accepted.** §7 and
   §16 are about a booking that becomes uncovered AFTER confirmation, so the opener
   requires confirmed active attendance. This is load-bearing rather than tidy: the
