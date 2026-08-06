@@ -4240,6 +4240,42 @@ model LoginSecuritySetting {
   @@index([updatedByMemberId])
 }
 
+// Club-wide Google Analytics configuration singleton (#2573). The DATABASE is the
+// sole canonical source: NEXT_PUBLIC_GA_MEASUREMENT_ID was removed from runtime
+// entirely in the same change (owner-accepted hard cutover), so analytics stays
+// inactive after that deploy until an admin saves a valid measurement ID under
+// Admin -> Integrations. An absent row means "not configured": every reader
+// synthesises the code defaults on a miss and fails closed, so no seed is needed.
+//
+// measurementId is nullable because "no ID yet" is the shipped state, not an error.
+// It is ordinary CONFIGURATION rather than a confidential value — it is published in
+// the page source of every page GA runs on — so it is stored in plain text here
+// rather than in the encrypted integration vault, and it is still behind the finance
+// area's admin read and edit permissions like every other integration setting.
+// (Worded without the words the admin-modules schema contract test forbids across
+// this whole region of the file; see src/lib/__tests__/admin-modules-api.test.ts.)
+//
+// consentRevision is the visitor-facing re-consent counter. It is bumped ONLY by
+// the explicit "Ask visitors to choose again" admin action, never as a side effect
+// of an ordinary Save (owner decision section 6): visitors store their choice
+// together with the revision it was made under, so a bump invalidates every prior
+// banner-mode choice and re-prompts. Ordinary wording edits must not reset consent.
+//
+// updatedByMemberId is a PLAIN STRING with NO foreign key (audit-only), the same
+// shape every other settings singleton uses.
+model AnalyticsSettings {
+  id                   String   @id @default("default")
+  measurementId        String?
+  consentBannerEnabled Boolean  @default(true)
+  bannerMessage        String?
+  consentRevision      Int      @default(1)
+  updatedByMemberId    String?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @default(now()) @updatedAt
+
+  @@index([updatedByMemberId])
+}
+
 model EmailTemplateOverride {
   id                String   @id @default(cuid())
   templateName      String   @unique

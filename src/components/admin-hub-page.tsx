@@ -62,6 +62,7 @@ export function AdminHubPage({
   backHref,
   backLabel,
   lead,
+  extraCards,
 }: {
   title: string;
   description: string;
@@ -80,6 +81,19 @@ export function AdminHubPage({
    * with it.
    */
   lead?: ReactNode;
+  /**
+   * Extra cards rendered inside the SAME grid as the destination cards, after them
+   * (#2573). For an integration whose configuration opens in place rather than at
+   * its own route, so it still reads as a peer of Xero and Stripe instead of being
+   * pushed above or below the grid as a `lead`.
+   *
+   * The hub does not gate these: a caller passes them already filtered by whatever
+   * module flag and permission applies, exactly as `getVisibleAdminHubSections`
+   * filters the link cards. Deliberately a node rather than another section shape,
+   * because these cards own their own interaction and cannot be described by an
+   * `href`.
+   */
+  extraCards?: ReactNode;
   // Optional back-to-parent link, rendered above the title for a sub-hub that
   // is drilled into from another hub (e.g. the Setup sub-hubs off /admin/setup).
   // Top-level sidebar destinations omit these.
@@ -106,7 +120,7 @@ export function AdminHubPage({
 
       {lead}
 
-      {visibleSections.length > 0 ? (
+      {visibleSections.length > 0 || extraCards ? (
         <div className="grid gap-4 sm:grid-cols-2">
           {visibleSections.map(
             ({ href, title, description, icon: Icon, hardNavigate }) => {
@@ -138,6 +152,7 @@ export function AdminHubPage({
               );
             },
           )}
+          {extraCards}
         </div>
       ) : (
         <div className="rounded-md border bg-muted px-4 py-3 text-sm text-muted-foreground">

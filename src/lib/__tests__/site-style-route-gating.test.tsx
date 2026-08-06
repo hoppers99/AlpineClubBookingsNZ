@@ -66,6 +66,11 @@ vi.mock("@/lib/public-layout-config", async () => {
     // wrapper now. Delegate to the same stub so the existing "theme was read"
     // assertion still means what it says.
     getCachedWebsiteThemeRenderState: mocks.getWebsiteThemeRenderState,
+    // #2573: the website chrome now resolves the club's Google Analytics runtime
+    // configuration through the same tagged cache. `null` is the fail-closed answer
+    // — no measurement ID saved, so no analytics — which is what this suite wants:
+    // it is testing whether the website route group renders at all, not analytics.
+    getCachedAnalyticsRuntimeConfig: vi.fn(async () => null),
   };
 });
 
