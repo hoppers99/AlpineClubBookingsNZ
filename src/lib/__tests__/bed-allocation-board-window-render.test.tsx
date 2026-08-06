@@ -19,6 +19,7 @@ import type { DashboardPayload } from "@/app/(admin)/admin/bed-allocation/_compo
 
 const openRemovalDialogMock = vi.hoisted(() => vi.fn());
 const openMoveDialogMock = vi.hoisted(() => vi.fn());
+const moveDialogOptionsMock = vi.hoisted(() => vi.fn());
 const editAccessMock = vi.hoisted(() => vi.fn());
 
 vi.mock("next/navigation", () => ({
@@ -71,10 +72,13 @@ vi.mock("@/components/admin/bed-allocation-removal-dialog", () => ({
   }),
 }));
 vi.mock("@/components/admin/bed-allocation-move-dialog", () => ({
-  useBedAllocationMoveDialog: () => ({
-    openMoveDialog: openMoveDialogMock,
-    dialog: <div data-testid="move-dialog-seam" />,
-  }),
+  useBedAllocationMoveDialog: (options: unknown) => {
+    moveDialogOptionsMock(options);
+    return {
+      openMoveDialog: openMoveDialogMock,
+      dialog: <div data-testid="move-dialog-seam" />,
+    };
+  },
 }));
 
 // The board's contents are covered by their own component tests; here we only
@@ -172,6 +176,7 @@ describe("bed allocation board — refused window", () => {
   beforeEach(() => {
     openRemovalDialogMock.mockReset();
     openMoveDialogMock.mockReset();
+    moveDialogOptionsMock.mockReset();
     editAccessMock.mockReturnValue(true);
     vi.stubGlobal(
       "fetch",
@@ -289,6 +294,37 @@ describe("bed allocation board — refused window", () => {
       },
       origin,
     );
+  });
+
+  it("rejects the real page move callback when its committed move cannot refresh", async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValue({ ok: true, json: async () => buildPayload() });
+    vi.stubGlobal("fetch", fetch);
+    render(<AdminBedAllocationPage />);
+    await screen.findByTestId("room-table");
+    const callsBeforeRefresh = fetch.mock.calls.length;
+    fetch.mockRejectedValueOnce(new Error("refresh unavailable"));
+
+    const options = moveDialogOptionsMock.mock.calls.at(-1)?.[0] as {
+      onApplied: (result: {
+        noop: boolean;
+        movedRowCount: number;
+        promotedRowCount: number;
+        affectedNights: string[];
+      }) => Promise<void>;
+    };
+    await expect(
+      options.onApplied({
+        noop: false,
+        movedRowCount: 1,
+        promotedRowCount: 0,
+        affectedNights: ["2026-07-01"],
+      }),
+    ).rejects.toThrow(
+      "The allocation moved, but the board could not be refreshed",
+    );
+    expect(fetch).toHaveBeenCalledTimes(callsBeforeRefresh + 1);
   });
 });
 
