@@ -5,8 +5,10 @@ vi.mock("server-only", () => ({}));
 const mocks = vi.hoisted(() => ({
   claim: vi.fn(),
   complete: vi.fn(),
+  defer: vi.fn(),
   fail: vi.fn(),
   loadClaimed: vi.fn(),
+  renew: vi.fn(),
   lockPolicySet: vi.fn(),
   lockMember: vi.fn(),
   loadPolicy: vi.fn(),
@@ -15,6 +17,7 @@ const mocks = vi.hoisted(() => ({
   claimNotification: vi.fn(),
   loadNotificationDelivery: vi.fn(),
   completeNotification: vi.fn(),
+  pendingNotification: vi.fn(),
   releaseNotification: vi.fn(),
   resolveIncidents: vi.fn(),
   sendEmail: vi.fn(),
@@ -25,8 +28,10 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@/lib/adult-member-hosting-coverage-queue", () => ({
   claimHostingCoverageReevaluations: mocks.claim,
   completeHostingCoverageReevaluation: mocks.complete,
+  deferHostingCoverageReevaluation: mocks.defer,
   failHostingCoverageReevaluation: mocks.fail,
   loadClaimedHostingCoverageReevaluation: mocks.loadClaimed,
+  renewHostingCoverageReevaluationClaim: mocks.renew,
 }));
 
 vi.mock("@/lib/adult-member-hosting-policy-set", () => ({
@@ -35,6 +40,7 @@ vi.mock("@/lib/adult-member-hosting-policy-set", () => ({
 
 vi.mock("@/lib/adult-member-hosting-coverage-incidents", () => ({
   claimHostingCoverageOwnerNotification: mocks.claimNotification,
+  isHostingCoverageOwnerNotificationPending: mocks.pendingNotification,
   loadHostingCoverageOwnerNotificationDelivery: mocks.loadNotificationDelivery,
   completeHostingCoverageOwnerNotification: mocks.completeNotification,
   releaseHostingCoverageOwnerNotification: mocks.releaseNotification,
@@ -98,10 +104,12 @@ describe("hosting coverage drain claim fences (#2596)", () => {
     mocks.claim.mockReset();
     mocks.claim.mockResolvedValueOnce([{ ...CLAIMED_ITEM }]).mockResolvedValue([]);
     mocks.complete.mockResolvedValue(true);
+    mocks.defer.mockResolvedValue(true);
     mocks.fail.mockResolvedValue(true);
     mocks.loadClaimed.mockResolvedValue({ ...CLAIMED_ITEM });
     mocks.lockPolicySet.mockResolvedValue(undefined);
     mocks.lockMember.mockResolvedValue(1);
+    mocks.renew.mockResolvedValue(true);
     mocks.loadPolicy.mockResolvedValue({
       hostScopes: { sameBookingOwner: true },
     });
@@ -109,6 +117,7 @@ describe("hosting coverage drain claim fences (#2596)", () => {
     mocks.resolveIncidents.mockResolvedValue(0);
     mocks.loadNotificationDelivery.mockResolvedValue({ ...DELIVERY });
     mocks.completeNotification.mockResolvedValue(true);
+    mocks.pendingNotification.mockResolvedValue(false);
     mocks.releaseNotification.mockResolvedValue(true);
   });
 
@@ -275,6 +284,89 @@ describe("hosting coverage drain claim fences (#2596)", () => {
     expect(mocks.warn).toHaveBeenCalledWith(
       expect.objectContaining({ itemId: "queue-1" }),
       expect.stringContaining("claim was replaced"),
+    );
+  });
+
+  it("rejects a replaced queue claimant before provider delivery and releases its notice", async () => {
+    mocks.loadDependents.mockResolvedValue(["booking-1"]);
+    mocks.reconcile.mockResolvedValue({
+      action: "opened",
+      incidentId: "incident-1",
+      stateKey: "v1:state-a",
+    });
+    mocks.claimNotification.mockResolvedValue({
+      incidentId: "incident-1",
+      stateKey: "v1:state-a",
+      claimToken: "notification-current",
+    });
+    mocks.renew.mockResolvedValue(false);
+
+    const result = await drainHostingCoverageReevaluations({}, makeDb());
+
+    expect(result).toMatchObject({ claimed: 1, processed: 0, notified: 0, failed: 0 });
+    expect(mocks.renew).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "queue-1", claimToken: "claim-current" }),
+      expect.anything(),
+    );
+    expect(mocks.loadNotificationDelivery).not.toHaveBeenCalled();
+    expect(mocks.sendEmail).not.toHaveBeenCalled();
+    expect(mocks.complete).not.toHaveBeenCalled();
+    expect(mocks.fail).not.toHaveBeenCalled();
+    expect(mocks.releaseNotification).toHaveBeenCalledWith(
+      expect.objectContaining({ claimToken: "notification-current" }),
+      expect.anything(),
+    );
+  });
+
+  it("parks a successor behind a crashed sender without burning an attempt, then retries", async () => {
+    mocks.loadDependents.mockResolvedValue(["booking-1"]);
+    mocks.reconcile.mockResolvedValue({
+      action: "unchanged",
+      incidentId: "incident-1",
+      stateKey: "v1:state-a",
+    });
+    mocks.claimNotification.mockResolvedValue(null);
+    mocks.pendingNotification.mockResolvedValue(true);
+
+    const successor = await drainHostingCoverageReevaluations({}, makeDb());
+
+    expect(successor).toMatchObject({ claimed: 1, processed: 0, notified: 0, failed: 0 });
+    expect(mocks.sendEmail).not.toHaveBeenCalled();
+    expect(mocks.complete).not.toHaveBeenCalled();
+    expect(mocks.fail).not.toHaveBeenCalled();
+    expect(mocks.defer).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "queue-1", claimToken: "claim-current" }),
+      expect.anything(),
+    );
+
+    const retryItem = { ...CLAIMED_ITEM, claimToken: "claim-retry" };
+    mocks.claim.mockReset();
+    mocks.claim.mockResolvedValueOnce([retryItem]).mockResolvedValue([]);
+    mocks.loadClaimed.mockResolvedValue(retryItem);
+    mocks.claimNotification.mockResolvedValue({
+      incidentId: "incident-1",
+      stateKey: "v1:state-a",
+      claimToken: "notification-retry",
+    });
+    mocks.pendingNotification.mockResolvedValue(false);
+    mocks.sendEmail.mockResolvedValue({
+      status: "sent",
+      emailLogId: "mail-retry",
+      bookingId: "booking-1",
+      messageId: "provider-retry",
+    });
+
+    const retry = await drainHostingCoverageReevaluations({}, makeDb());
+
+    expect(retry).toMatchObject({ claimed: 1, processed: 1, notified: 1, failed: 0 });
+    expect(mocks.sendEmail).toHaveBeenCalledTimes(1);
+    expect(mocks.completeNotification).toHaveBeenCalledWith(
+      expect.objectContaining({ claimToken: "notification-retry" }),
+      expect.anything(),
+    );
+    expect(mocks.complete).toHaveBeenCalledWith(
+      expect.objectContaining({ claimToken: "claim-retry" }),
+      expect.anything(),
     );
   });
 

@@ -3,6 +3,7 @@ import type { Prisma } from "@prisma/client";
 import {
   claimHostingCoverageOwnerNotification,
   completeHostingCoverageOwnerNotification,
+  isHostingCoverageOwnerNotificationPending,
   loadHostingCoverageOwnerNotificationDelivery,
   releaseHostingCoverageOwnerNotification,
   resolveHostingCoverageIncidents,
@@ -10,8 +11,10 @@ import {
 import {
   claimHostingCoverageReevaluations,
   completeHostingCoverageReevaluation,
+  deferHostingCoverageReevaluation,
   failHostingCoverageReevaluation,
   loadClaimedHostingCoverageReevaluation,
+  renewHostingCoverageReevaluationClaim,
   type HostingCoverageReevaluationItem,
 } from "@/lib/adult-member-hosting-coverage-queue";
 import { lockAdultMemberHostingPolicySet } from "@/lib/adult-member-hosting-policy-set";
@@ -154,6 +157,11 @@ type HostingCoverageReconciliationOutcome = {
   incidentsOpened: number;
   incidentsUpdated: number;
   incidentsResolved: number;
+  notificationObligations: Array<{
+    bookingId: string;
+    incidentId: string;
+    stateKey: string;
+  }>;
   notifications: Array<{
     bookingId: string;
     incidentId: string;
@@ -238,8 +246,18 @@ export async function drainHostingCoverageReevaluations(
       result.incidentsUpdated += outcome.incidentsUpdated;
       result.incidentsResolved += outcome.incidentsResolved;
 
+      const terminalNotificationStates = new Set<string>();
+      let deliveryClaimLost = false;
       for (const notification of outcome.notifications) {
         try {
+          // The notification token alone is not authority to continue this queue
+          // item. A successor may have replaced the queue lease while the database
+          // reconciliation ran. Renew the exact queue token immediately before
+          // every provider unit; a stale worker performs no provider call.
+          if (!(await renewHostingCoverageReevaluationClaim(item, db))) {
+            deliveryClaimLost = true;
+            break;
+          }
           const delivery = await notifyOwnerOfLostCoverage(notification, db);
           if (delivery === "sent") {
             const completed = await completeHostingCoverageOwnerNotification(
@@ -256,6 +274,7 @@ export async function drainHostingCoverageReevaluations(
             // queue item: the officer incident remains visible, but retrying the
             // identical state cannot make an intentionally withheld message send.
             await releaseHostingCoverageOwnerNotification(notification, db);
+            terminalNotificationStates.add(notificationStateKey(notification));
           }
         } catch (err) {
           await releaseHostingCoverageOwnerNotification(notification, db).catch(
@@ -264,6 +283,57 @@ export async function drainHostingCoverageReevaluations(
           throw err;
         }
       }
+      if (deliveryClaimLost) {
+        // Claims were acquired together in the reconciliation transaction. Release
+        // every still-current one when the queue token is gone; completed claims
+        // simply match zero. The successor will retry without waiting 15 minutes.
+        await Promise.all(
+          outcome.notifications.map((notification) =>
+            releaseHostingCoverageOwnerNotification(notification, db).catch(
+              () => false,
+            ),
+          ),
+        );
+        logger.warn(
+          { itemId: item.id, memberId: item.memberId, lodgeId: item.lodgeId },
+          "Hosting coverage re-evaluation claim was replaced before provider delivery",
+        );
+        continue;
+      }
+
+      // Renew once more immediately before the terminal decision. Completion is
+      // allowed only while this exact queue token is current.
+      if (!(await renewHostingCoverageReevaluationClaim(item, db))) {
+        logger.warn(
+          { itemId: item.id, memberId: item.memberId, lodgeId: item.lodgeId },
+          "Hosting coverage re-evaluation claim was replaced before completion",
+        );
+        continue;
+      }
+
+      let pendingNotification = false;
+      for (const obligation of outcome.notificationObligations) {
+        if (terminalNotificationStates.has(notificationStateKey(obligation))) {
+          continue;
+        }
+        if (await isHostingCoverageOwnerNotificationPending(obligation, db)) {
+          pendingNotification = true;
+          break;
+        }
+      }
+      if (pendingNotification) {
+        // Another sender owns (or has just released) an uncompleted notice. Park
+        // this renewed queue token until expiry and undo this claim's attempt
+        // increment. Completing or failing-and-releasing here can respectively
+        // lose the notice or burn every attempt while the sender is still live.
+        await deferHostingCoverageReevaluation(item, db);
+        logger.warn(
+          { itemId: item.id, memberId: item.memberId, lodgeId: item.lodgeId },
+          "Hosting coverage re-evaluation remains pending behind an owner notification",
+        );
+        continue;
+      }
+
       const completed = await completeHostingCoverageReevaluation(item, db);
       if (completed) {
         result.processed += 1;
@@ -365,6 +435,11 @@ async function processHostingCoverageReevaluation(
     incidentsOpened: 0,
     incidentsUpdated: 0,
     incidentsResolved: 0,
+    notificationObligations: [] as Array<{
+      bookingId: string;
+      incidentId: string;
+      stateKey: string;
+    }>,
     notifications: [] as Array<{
       bookingId: string;
       incidentId: string;
@@ -404,6 +479,11 @@ async function processHostingCoverageReevaluation(
     if (outcome.action === "opened") counts.incidentsOpened += 1;
     else if (outcome.action === "updated") counts.incidentsUpdated += 1;
 
+    counts.notificationObligations.push({
+      bookingId,
+      incidentId: outcome.incidentId,
+      stateKey: outcome.stateKey,
+    });
     const claimed = await claimHostingCoverageOwnerNotification(
       { incidentId: outcome.incidentId, stateKey: outcome.stateKey },
       db,
@@ -434,6 +514,13 @@ async function processHostingCoverageReevaluation(
   }
 
   return counts;
+}
+
+function notificationStateKey(params: {
+  incidentId: string;
+  stateKey: string;
+}): string {
+  return `${params.incidentId}\u0000${params.stateKey}`;
 }
 
 /**

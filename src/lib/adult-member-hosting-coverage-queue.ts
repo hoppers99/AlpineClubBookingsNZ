@@ -233,6 +233,49 @@ export async function loadClaimedHostingCoverageReevaluation(
   };
 }
 
+/**
+ * Extend one exact queue claim immediately before an external delivery or final
+ * completion. An expired-but-unreplaced owner may renew; a successor replacement
+ * and this guarded update contend on the row, and only the token left current can
+ * proceed. This is the queue-side fence that prevents a stale worker from calling
+ * a provider after its lease was replaced.
+ */
+export async function renewHostingCoverageReevaluationClaim(
+  claim: HostingCoverageReevaluationClaim,
+  db: HostingCoverageQueueDb,
+  now: Date = new Date(),
+): Promise<boolean> {
+  const renewed = await db.hostingCoverageReevaluation.updateMany({
+    where: { id: claim.id, processedAt: null, claimToken: claim.claimToken },
+    data: {
+      claimExpiresAt: new Date(
+        now.getTime() + HOSTING_COVERAGE_REEVALUATION_LEASE_MS,
+      ),
+    },
+  });
+  return renewed.count === 1;
+}
+
+/**
+ * Park an exact queue claim behind somebody else's in-flight notification.
+ *
+ * Claiming increments `attempts`, but this worker did not fail the obligation: it
+ * found its provider unit already owned. Roll that increment back while retaining
+ * the renewed lease, so repeated overlap cannot retire otherwise-valid work at
+ * `maxAttempts`. The next sweep may replace the token only after expiry, which is
+ * later than the notification lease this worker just observed.
+ */
+export async function deferHostingCoverageReevaluation(
+  claim: HostingCoverageReevaluationClaim,
+  db: HostingCoverageQueueDb,
+): Promise<boolean> {
+  const deferred = await db.hostingCoverageReevaluation.updateMany({
+    where: { id: claim.id, processedAt: null, claimToken: claim.claimToken },
+    data: { attempts: { decrement: 1 } },
+  });
+  return deferred.count === 1;
+}
+
 /** Mark an item done. Idempotent: a second call matches nothing. */
 export async function completeHostingCoverageReevaluation(
   claim: HostingCoverageReevaluationClaim,

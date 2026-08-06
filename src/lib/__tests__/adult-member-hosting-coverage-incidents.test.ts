@@ -17,6 +17,7 @@ import {
   claimHostingCoverageOwnerNotification,
   completeHostingCoverageOwnerNotification,
   hostingCoverageStateKey,
+  isHostingCoverageOwnerNotificationPending,
   loadHostingCoverageOwnerNotificationDelivery,
   openOrUpdateHostingCoverageIncident,
   releaseHostingCoverageOwnerNotification,
@@ -25,9 +26,11 @@ import {
 import {
   claimHostingCoverageReevaluations,
   completeHostingCoverageReevaluation,
+  deferHostingCoverageReevaluation,
   enqueueHostingCoverageReevaluation,
   failHostingCoverageReevaluation,
   loadClaimedHostingCoverageReevaluation,
+  renewHostingCoverageReevaluationClaim,
 } from "@/lib/adult-member-hosting-coverage-queue";
 import type { AdultMemberHostingPolicyExceptionViolation } from "@/lib/booking-policy-exceptions";
 
@@ -540,6 +543,31 @@ function makeNotificationDeliveryDb(
 }
 
 describe("the owner is told once per transition (#2576 §16)", () => {
+  it("reports only an unresolved, exact-state, still-unnotified obligation as pending", async () => {
+    const { db, row } = makeNotificationDeliveryDb();
+
+    await expect(isHostingCoverageOwnerNotificationPending(
+      { incidentId: "incident-1", stateKey: "v1:a" }, db,
+    )).resolves.toBe(true);
+
+    row.notifiedStateKey = "v1:a";
+    await expect(isHostingCoverageOwnerNotificationPending(
+      { incidentId: "incident-1", stateKey: "v1:a" }, db,
+    )).resolves.toBe(false);
+
+    row.notifiedStateKey = null;
+    row.stateKey = "v1:b";
+    await expect(isHostingCoverageOwnerNotificationPending(
+      { incidentId: "incident-1", stateKey: "v1:a" }, db,
+    )).resolves.toBe(false);
+
+    row.stateKey = "v1:a";
+    row.resolvedAt = new Date("2026-07-01T12:05:00.000Z");
+    await expect(isHostingCoverageOwnerNotificationPending(
+      { incidentId: "incident-1", stateKey: "v1:a" }, db,
+    )).resolves.toBe(false);
+  });
+
   it("leases a fresh notification once, then stamps it only after success", async () => {
     const { db, rows } = makeIncidentDb([
       {
@@ -947,14 +975,18 @@ function makeQueueDb(seed: Array<Record<string, unknown>> = []) {
         });
         for (const row of matched) {
           for (const [key, value] of Object.entries(data)) {
-            if (
-              value &&
-              typeof value === "object" &&
-              "increment" in (value as Record<string, unknown>)
-            ) {
-              row[key] =
-                (row[key] as number) +
-                ((value as { increment: number }).increment ?? 0);
+            if (value && typeof value === "object") {
+              const operation = value as {
+                increment?: number;
+                decrement?: number;
+              };
+              if (operation.increment !== undefined) {
+                row[key] = (row[key] as number) + operation.increment;
+              } else if (operation.decrement !== undefined) {
+                row[key] = (row[key] as number) - operation.decrement;
+              } else {
+                row[key] = value;
+              }
             } else {
               row[key] = value;
             }
@@ -1202,6 +1234,43 @@ describe("the bounded re-evaluation queue (#2576 §8, §10)", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("renews only the exact queue token and parks without consuming its attempt", async () => {
+    const { db, rows } = makeQueueDb([{
+      id: "queue-1",
+      memberId: "owner-1",
+      lodgeId: "lodge-a",
+      nights: ["2026-07-03"],
+      cause: "SYSTEM_CHANGE",
+      sourceBookingId: null,
+      actorMemberId: null,
+      reason: null,
+      attempts: 5,
+      processedAt: null,
+      claimToken: "claim-current",
+      claimExpiresAt: new Date("2026-07-01T00:01:00.000Z"),
+      enqueuedAt: new Date("2026-07-01T00:00:00.000Z"),
+    }]);
+    const now = new Date("2026-07-01T00:02:00.000Z");
+
+    await expect(renewHostingCoverageReevaluationClaim(
+      { id: "queue-1", claimToken: "claim-replaced" }, db, now,
+    )).resolves.toBe(false);
+    await expect(renewHostingCoverageReevaluationClaim(
+      { id: "queue-1", claimToken: "claim-current" }, db, now,
+    )).resolves.toBe(true);
+    expect(rows[0].claimExpiresAt).toEqual(new Date("2026-07-01T00:17:00.000Z"));
+
+    await expect(deferHostingCoverageReevaluation(
+      { id: "queue-1", claimToken: "claim-current" }, db,
+    )).resolves.toBe(true);
+    expect(rows[0]).toMatchObject({
+      attempts: 4,
+      claimToken: "claim-current",
+      processedAt: null,
+    });
+    expect(rows[0].claimExpiresAt).toEqual(new Date("2026-07-01T00:17:00.000Z"));
   });
 
   it("drops a night list that is not a list of dates rather than widening the bound", async () => {

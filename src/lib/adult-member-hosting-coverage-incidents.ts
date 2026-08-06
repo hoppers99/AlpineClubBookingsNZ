@@ -448,6 +448,34 @@ export async function loadHostingCoverageOwnerNotificationDelivery(
   };
 }
 
+/**
+ * Whether this exact current incident state still owes its owner notification.
+ *
+ * This deliberately ignores who owns the notification claim. A successor queue
+ * worker that cannot claim because an older sender is still live must keep the
+ * queue obligation pending; if the sender later crashes, expiry makes the notice
+ * claimable again. Conversely, a completed, resolved, or superseded state is no
+ * longer an obstacle to completing this queue item.
+ */
+export async function isHostingCoverageOwnerNotificationPending(
+  params: Pick<HostingCoverageOwnerNotificationClaim, "incidentId" | "stateKey">,
+  db: Pick<PrismaClient, "hostingCoverageIncident">,
+): Promise<boolean> {
+  const pending = await db.hostingCoverageIncident.findFirst({
+    where: {
+      id: params.incidentId,
+      resolvedAt: null,
+      stateKey: params.stateKey,
+      OR: [
+        { notifiedStateKey: null },
+        { notifiedStateKey: { not: params.stateKey } },
+      ],
+    },
+    select: { id: true },
+  });
+  return pending !== null;
+}
+
 /** Stamp a notification only after the transport reports a successful send. */
 export async function completeHostingCoverageOwnerNotification(
   params: HostingCoverageOwnerNotificationClaim,
