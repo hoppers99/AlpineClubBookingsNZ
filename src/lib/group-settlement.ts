@@ -43,7 +43,10 @@ import { acquireLodgeCapacityLock, checkCapacityForGuestRanges } from "@/lib/cap
 import { bookingHasCapacityOverride } from "@/lib/booking-status";
 import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
 import { enqueueOwnHostingCoverageReevaluation } from "@/lib/adult-member-hosting-review";
-import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
+import {
+  reconcileBedAllocationsForBookingWithGlobalLockHeld,
+  reconcileBedAllocationsForBookingWithLodgeLockHeld,
+} from "@/lib/bed-allocation-lifecycle";
 import { recordBookingEvent } from "@/lib/booking-events";
 import {
   enqueueXeroBookingInvoiceOperation,
@@ -631,7 +634,7 @@ async function commitChildrenToConfirmed(
         },
       });
       // CONFIRMED holds capacity, so the next child's check counts these beds.
-      await reconcileBedAllocationsForBooking({
+      await reconcileBedAllocationsForBookingWithLodgeLockHeld({
         bookingId: fresh.id,
         db: tx,
         previousRange: { checkIn: fresh.checkIn, checkOut: fresh.checkOut },
@@ -845,7 +848,7 @@ async function settleConfirmedChildrenAndNotify(
           "Group settlement child status changed concurrently during the PAID claim (#1881)"
         );
       }
-      await reconcileBedAllocationsForBooking({
+      await reconcileBedAllocationsForBookingWithGlobalLockHeld({
         bookingId: child.id,
         db: tx,
         previousRange: { checkIn: child.checkIn, checkOut: child.checkOut },

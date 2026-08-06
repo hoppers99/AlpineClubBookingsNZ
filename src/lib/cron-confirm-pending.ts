@@ -9,7 +9,7 @@ import {
 
 import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
 import { enqueueOwnHostingCoverageReevaluation } from "@/lib/adult-member-hosting-review";
-import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
+import { reconcileBedAllocationsForBookingWithGlobalLockHeld } from "@/lib/bed-allocation-lifecycle";
 import { recordBookingEvent } from "@/lib/booking-events";
 import { bookingHasCapacityOverride } from "@/lib/booking-status";
 import { recordWithheldBookingEmail } from "@/lib/booking-email-suppression";
@@ -387,6 +387,7 @@ async function resolveHoldWindowUnderLock(
   now: Date
 ): Promise<HoldResolution> {
   return prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
     // Pre-lock read: only the fields the early bail and the lock key need.
     // lodgeId is immutable, so keying the lock from this read is safe; every
     // capacity-relevant field is taken from the post-lock re-read below.
@@ -469,7 +470,7 @@ async function resolveHoldWindowUnderLock(
         return { type: "already_processed" };
       }
 
-      await reconcileBedAllocationsForBooking({
+      await reconcileBedAllocationsForBookingWithGlobalLockHeld({
         bookingId: booking.id,
         db: tx,
         previousRange: {
@@ -511,7 +512,7 @@ async function resolveHoldWindowUnderLock(
         return { type: "already_processed" };
       }
 
-      await reconcileBedAllocationsForBooking({
+      await reconcileBedAllocationsForBookingWithGlobalLockHeld({
         bookingId: booking.id,
         db: tx,
         previousRange: {
@@ -577,7 +578,7 @@ async function resolveHoldWindowUnderLock(
             return { type: "already_processed" };
           }
 
-          await reconcileBedAllocationsForBooking({
+          await reconcileBedAllocationsForBookingWithGlobalLockHeld({
             bookingId: booking.id,
             db: tx,
             previousRange: {
@@ -690,7 +691,7 @@ async function resolveHoldWindowUnderLock(
             return { type: "already_processed" };
           }
 
-          await reconcileBedAllocationsForBooking({
+          await reconcileBedAllocationsForBookingWithGlobalLockHeld({
             bookingId: booking.id,
             db: tx,
             previousRange: {
@@ -823,7 +824,7 @@ async function resolveHoldWindowUnderLock(
     // Mirrors the bump path's revocation above.
     await revokePaymentLinksForBooking(booking.id, tx);
 
-    await reconcileBedAllocationsForBooking({
+    await reconcileBedAllocationsForBookingWithGlobalLockHeld({
       bookingId: booking.id,
       db: tx,
       previousRange: {
@@ -863,6 +864,7 @@ async function releaseChargeClaim(
   claim: Extract<HoldResolution, { type: "claimed_for_charge" }>
 ) {
   await prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
     const claimLodgeId = claim.booking.lodgeId ?? (await getDefaultLodgeId(tx));
     await acquireLodgeCapacityLock(tx, claimLodgeId);
 
@@ -875,7 +877,7 @@ async function releaseChargeClaim(
     });
 
     if (released.count > 0) {
-      await reconcileBedAllocationsForBooking({
+      await reconcileBedAllocationsForBookingWithGlobalLockHeld({
         bookingId: claim.booking.id,
         db: tx,
         previousRange: {
@@ -1555,6 +1557,7 @@ export async function confirmPendingBookings(): Promise<CronConfirmResult> {
         await sendConfirmationEmail(resolution.booking);
       } else {
         await prisma.$transaction(async (tx) => {
+          await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
           await upsertPaymentIntentTransaction({
             paymentId: resolution.paymentId,
             kind: PaymentTransactionKind.PRIMARY,
@@ -1566,7 +1569,7 @@ export async function confirmPendingBookings(): Promise<CronConfirmResult> {
             store: tx,
           });
 
-          await tx.booking.updateMany({
+          const released = await tx.booking.updateMany({
             where: {
               id: resolution.booking.id,
               status: BookingStatus.CONFIRMED,
@@ -1576,7 +1579,12 @@ export async function confirmPendingBookings(): Promise<CronConfirmResult> {
               nonMemberHoldUntil: resolution.previousHoldUntil,
             },
           });
-          await reconcileBedAllocationsForBooking({
+          if (released.count === 0) {
+            throw new Error(
+              "Pending-hold charge release lost its CONFIRMED claim",
+            );
+          }
+          await reconcileBedAllocationsForBookingWithGlobalLockHeld({
             bookingId: resolution.booking.id,
             db: tx,
             previousRange: {

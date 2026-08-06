@@ -13,7 +13,7 @@ import {
 } from "@/lib/xero-operation-outbox";
 import logger from "@/lib/logger";
 import { requireActiveSessionUser } from "@/lib/session-guards";
-import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
+import { reconcileBedAllocationsForBookingWithLodgeLockHeld } from "@/lib/bed-allocation-lifecycle";
 import {
   acquireLodgeCapacityLock,
   checkCapacityForGuestRanges,
@@ -187,7 +187,7 @@ export async function POST(
           },
         });
         if (restored.count === 1) {
-          await reconcileBedAllocationsForBooking({
+          await reconcileBedAllocationsForBookingWithLodgeLockHeld({
             bookingId,
             db: tx,
             previousRange: {
@@ -223,7 +223,7 @@ export async function POST(
         cause: "SYSTEM_CHANGE",
         actorMemberId: session.user.id,
       });
-      await reconcileBedAllocationsForBooking({
+      await reconcileBedAllocationsForBookingWithLodgeLockHeld({
         bookingId,
         db: tx,
         previousRange: {

@@ -38,7 +38,10 @@ import {
   toSubscriptionLockoutParticipants,
 } from "@/lib/subscription-lockout-enforcement";
 import { getSeasonYear } from "@/lib/utils";
-import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
+import {
+  reconcileBedAllocationsForBookingWithGlobalLockHeld,
+  reconcileBedAllocationsForBookingWithLodgeLockHeld,
+} from "@/lib/bed-allocation-lifecycle";
 import { logAudit } from "@/lib/audit";
 import { recordBookingEvent } from "@/lib/booking-events";
 import logger from "@/lib/logger";
@@ -226,7 +229,7 @@ type CrossLodgeOfferEntry = Prisma.BookingGetPayload<{
 
 async function revertOfferToWaitlisted(
   tx: Prisma.TransactionClient,
-  entry: { id: string; checkIn: Date; checkOut: Date },
+  entry: { id: string; checkIn: Date; checkOut: Date; lodgeId: string },
 ): Promise<void> {
   await tx.booking.update({
     where: { id: entry.id },
@@ -238,7 +241,7 @@ async function revertOfferToWaitlisted(
       waitlistOfferedPriceCents: null,
     },
   });
-  await reconcileBedAllocationsForBooking({
+  await reconcileBedAllocationsForBookingWithLodgeLockHeld({
     bookingId: entry.id,
     db: tx,
     previousRange: { checkIn: entry.checkIn, checkOut: entry.checkOut },
@@ -341,12 +344,21 @@ export async function confirmCrossLodgeWaitlistOffer(
       // lodge (or this one again once the rule allows it).
       try {
         await prisma.$transaction(async (tx) => {
-          await acquireLodgeCapacityLock(tx, offeredLodgeId);
+          await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
           const current = await tx.booking.findUnique({
             where: { id: bookingId },
-            select: { id: true, status: true, checkIn: true, checkOut: true },
+            select: {
+              id: true,
+              status: true,
+              checkIn: true,
+              checkOut: true,
+              lodgeId: true,
+            },
           });
           if (current?.status !== BookingStatus.WAITLIST_OFFERED) return;
+          for (const lodgeId of [offeredLodgeId, current.lodgeId].sort()) {
+            await acquireLodgeCapacityLock(tx, lodgeId);
+          }
           await revertOfferToWaitlisted(tx, current);
         });
       } catch (err) {
@@ -409,12 +421,21 @@ export async function confirmCrossLodgeWaitlistOffer(
       // or ask a Booking Officer instead of the offer being burnt.
       try {
         await prisma.$transaction(async (tx) => {
-          await acquireLodgeCapacityLock(tx, offeredLodgeId);
+          await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
           const current = await tx.booking.findUnique({
             where: { id: bookingId },
-            select: { id: true, status: true, checkIn: true, checkOut: true },
+            select: {
+              id: true,
+              status: true,
+              checkIn: true,
+              checkOut: true,
+              lodgeId: true,
+            },
           });
           if (current?.status !== BookingStatus.WAITLIST_OFFERED) return;
+          for (const lodgeId of [offeredLodgeId, current.lodgeId].sort()) {
+            await acquireLodgeCapacityLock(tx, lodgeId);
+          }
           await revertOfferToWaitlisted(tx, current);
         });
       } catch (err) {
@@ -451,6 +472,7 @@ export async function confirmCrossLodgeWaitlistOffer(
   let validated: Validated | { ok: false; result: CrossLodgeConfirmResult };
   try {
     validated = await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
       const entry = await tx.booking.findUnique({
         where: { id: bookingId },
         include: {
@@ -481,7 +503,9 @@ export async function confirmCrossLodgeWaitlistOffer(
         };
       }
 
-      await acquireLodgeCapacityLock(tx, offeredLodgeId);
+      for (const lodgeId of [offeredLodgeId, entry.lodgeId].sort()) {
+        await acquireLodgeCapacityLock(tx, lodgeId);
+      }
 
       const offeredLodge = await tx.lodge.findUnique({
         where: { id: offeredLodgeId },
@@ -709,7 +733,10 @@ export async function confirmCrossLodgeWaitlistOffer(
   if (outcome.type === "capacityExceeded") {
     try {
       await prisma.$transaction(async (tx) => {
-        await acquireLodgeCapacityLock(tx, offeredLodgeId);
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
+        for (const lodgeId of [offeredLodgeId, entry.lodgeId].sort()) {
+          await acquireLodgeCapacityLock(tx, lodgeId);
+        }
         await revertOfferToWaitlisted(tx, entry);
       });
     } catch (err) {
@@ -729,11 +756,12 @@ export async function confirmCrossLodgeWaitlistOffer(
     // cancel the fresh booking, refresh the stored quote, and ask again.
     try {
       await prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
         await tx.booking.update({
           where: { id: newBooking.id },
           data: { status: BookingStatus.CANCELLED },
         });
-        await reconcileBedAllocationsForBooking({
+        await reconcileBedAllocationsForBookingWithGlobalLockHeld({
           bookingId: newBooking.id,
           db: tx,
           previousRange: { checkIn: newBooking.checkIn, checkOut: newBooking.checkOut },
@@ -763,6 +791,7 @@ export async function confirmCrossLodgeWaitlistOffer(
   // confirm, it just leaves cleanup for an admin (loudly logged).
   try {
     await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
       await tx.booking.update({
         where: { id: entry.id },
         data: {
@@ -780,7 +809,7 @@ export async function confirmCrossLodgeWaitlistOffer(
             .join("\n"),
         },
       });
-      await reconcileBedAllocationsForBooking({
+      await reconcileBedAllocationsForBookingWithGlobalLockHeld({
         bookingId: entry.id,
         db: tx,
         previousRange: { checkIn: entry.checkIn, checkOut: entry.checkOut },

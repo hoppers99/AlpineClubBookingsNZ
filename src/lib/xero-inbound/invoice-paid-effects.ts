@@ -16,7 +16,7 @@ import {
   type ManualSettlementConflictEventSnapshot,
 } from "@/lib/manual-settlement-reversal-event";
 import { applyGroupSettlementSucceededFromInvoice } from "@/lib/group-settlement";
-import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
+import { reconcileBedAllocationsForBookingWithLodgeLockHeld } from "@/lib/bed-allocation-lifecycle";
 import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
 import { enqueueOwnHostingCoverageReevaluation } from "@/lib/adult-member-hosting-review";
 import {
@@ -918,7 +918,7 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
               draftExpiresAt: null,
             },
           });
-          await reconcileBedAllocationsForBooking({
+          await reconcileBedAllocationsForBookingWithLodgeLockHeld({
             bookingId: fresh.bookingId,
             db: tx,
           });
@@ -1009,7 +1009,7 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
           draftExpiresAt: null,
         },
       });
-      await reconcileBedAllocationsForBooking({
+      await reconcileBedAllocationsForBookingWithLodgeLockHeld({
         bookingId: fresh.bookingId,
         db: tx,
       });

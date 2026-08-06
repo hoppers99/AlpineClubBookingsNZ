@@ -43,7 +43,8 @@ import { createAuditLog, logAudit } from "@/lib/audit";
 import { formatDateOnly } from "@/lib/date-only";
 import {
   MAX_AUDITED_PRUNED_ALLOCATIONS,
-  reconcileBedAllocationsForBooking,
+  reconcileBedAllocationsForBookingWithGlobalLockHeld,
+  reconcileBedAllocationsForBookingWithLodgeLockHeld,
 } from "@/lib/bed-allocation-lifecycle";
 import {
   assertMappableOwnerContact,
@@ -764,6 +765,7 @@ export async function approveSchoolBookingRequest(input: {
 
   try {
     conversion = await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
       // A held conversion is both a lifecycle transition (the same
       // AWAITING_REVIEW row can be cancelled/released) and a capacity write.
       // Compose the canonical locks in global -> lodge order so approval
@@ -1155,7 +1157,7 @@ export async function approveSchoolBookingRequest(input: {
           take: MAX_AUDITED_PRUNED_ALLOCATIONS + 1,
         });
 
-        const reconcile = await reconcileBedAllocationsForBooking({
+        const reconcile = await reconcileBedAllocationsForBookingWithLodgeLockHeld({
           bookingId: booking.id,
           db: tx,
         });
@@ -2109,7 +2111,7 @@ export async function approveMemberWholeLodgeRequest(input: {
         orderBy: [{ stayDate: "asc" }, { bedId: "asc" }],
         take: MAX_AUDITED_PRUNED_ALLOCATIONS + 1,
       });
-      const reconcile = await reconcileBedAllocationsForBooking({
+      const reconcile = await reconcileBedAllocationsForBookingWithGlobalLockHeld({
         bookingId: booking.id,
         db: tx,
       });

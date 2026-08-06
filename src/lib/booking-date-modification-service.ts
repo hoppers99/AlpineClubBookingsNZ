@@ -110,7 +110,7 @@ import {
   assertProposedCheckInClearsXeroLockDate,
   assertProposedDateEditClearsXeroLockDate,
 } from "@/lib/xero-period-lock-guard";
-import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
+import { reconcileBedAllocationsForBookingWithLodgeLockHeld } from "@/lib/bed-allocation-lifecycle";
 import { getSeasonYear } from "@/lib/utils";
 
 export type ModifyBookingDatesInput = {
@@ -909,7 +909,7 @@ export async function modifyBookingDates({
       include: { guests: true, payment: true },
     });
 
-    await reconcileBedAllocationsForBooking({
+    await reconcileBedAllocationsForBookingWithLodgeLockHeld({
       bookingId,
       db: tx,
       previousRange: {
@@ -1592,7 +1592,7 @@ export async function adminShiftBookingDates({
       ...rangeCleanup.choreWarnings,
     ];
 
-    await reconcileBedAllocationsForBooking({
+    await reconcileBedAllocationsForBookingWithLodgeLockHeld({
       bookingId,
       db: tx,
       previousRange: { checkIn: oldCheckIn, checkOut: oldCheckOut },
