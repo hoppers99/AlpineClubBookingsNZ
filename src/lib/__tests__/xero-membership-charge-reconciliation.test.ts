@@ -23,6 +23,8 @@ const mocks = vi.hoisted(() => ({
   getOnlineInvoice: vi.fn(),
   startOperation: vi.fn(),
   completeOperation: vi.fn(),
+  enqueueHostingCoverage: vi.fn().mockResolvedValue(0),
+  settleHostingCoverage: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("@/lib/prisma", () => ({
@@ -84,6 +86,12 @@ vi.mock("@/lib/xero-sync-cursors", () => ({
   throttle: vi.fn().mockResolvedValue(undefined),
   upsertXeroSyncCursor: vi.fn().mockResolvedValue(undefined),
 }));
+vi.mock("@/lib/adult-member-hosting-review", () => ({
+  enqueueHostingCoverageReevaluationForMember: mocks.enqueueHostingCoverage,
+}));
+vi.mock("@/lib/adult-member-hosting-coverage-drain", () => ({
+  settleHostingCoverageAfterCommit: mocks.settleHostingCoverage,
+}));
 
 import {
   checkMembershipStatus,
@@ -129,7 +137,13 @@ describe("membership charge reconciliation", () => {
     mocks.transaction.mockImplementation(async (callback: (tx: unknown) => unknown) => callback({
       membershipSubscriptionChargeCoverage: { findFirst: mocks.coverageFindFirst, updateMany: mocks.coverageUpdateMany },
       membershipSubscriptionCharge: { updateMany: mocks.chargeUpdateMany },
-      memberSubscription: { update: mocks.subscriptionUpdate, updateMany: mocks.subscriptionUpdateMany },
+      memberSubscription: {
+        findUnique: mocks.subscriptionFindUnique,
+        upsert: mocks.subscriptionUpsert,
+        update: mocks.subscriptionUpdate,
+        updateMany: mocks.subscriptionUpdateMany,
+        createMany: mocks.subscriptionCreateMany,
+      },
       xeroObjectLink: { updateMany: mocks.objectLinkUpdateMany },
     }));
     mocks.memberFindMany.mockResolvedValue([]);
@@ -227,6 +241,12 @@ describe("membership charge reconciliation", () => {
     });
     // No blind PAID/UNPAID write of the voided invoice back onto the row.
     expect(mocks.subscriptionUpsert).not.toHaveBeenCalled();
+    expect(mocks.enqueueHostingCoverage).toHaveBeenCalledWith(
+      "family-member-2",
+      expect.any(Object),
+      { cause: "SYSTEM_CHANGE" },
+    );
+    expect(mocks.settleHostingCoverage).toHaveBeenCalledWith({ limit: 50 });
   });
 
   it("refreshes a non-recipient family subscription by its immutable charge invoice", async () => {
@@ -367,6 +387,8 @@ describe("membership charge reconciliation", () => {
         update: expect.objectContaining({ status: "PAID", xeroInvoiceId: "invoice-family" }),
       }));
     }
+    expect(mocks.enqueueHostingCoverage).toHaveBeenCalledTimes(2);
+    expect(mocks.settleHostingCoverage).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -411,6 +433,12 @@ describe("flushMemberSubscriptionHistory (#1944)", () => {
         where: expect.objectContaining({ localId: { in: ["sub-derived"] } }),
       })
     );
+    expect(mocks.enqueueHostingCoverage).toHaveBeenCalledWith(
+      "member-1",
+      expect.any(Object),
+      { cause: "SYSTEM_CHANGE" },
+    );
+    expect(mocks.settleHostingCoverage).toHaveBeenCalledWith({ limit: 50 });
     expect(result.deletedCount).toBe(1);
   });
 

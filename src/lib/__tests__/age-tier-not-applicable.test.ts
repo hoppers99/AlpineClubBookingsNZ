@@ -6,6 +6,11 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { NextRequest } from "next/server";
 
+const hostingMocks = vi.hoisted(() => ({
+  enqueue: vi.fn().mockResolvedValue(0),
+  settle: vi.fn().mockResolvedValue(undefined),
+}));
+
 vi.mock("@/lib/prisma", () => ({
   prisma: {
     member: {
@@ -66,6 +71,12 @@ vi.mock("@/lib/rate-limit", () => ({
   applyRateLimit: vi.fn().mockReturnValue(null),
 }));
 vi.mock("@/lib/email", () => ({ sendMemberSetupInviteEmail: vi.fn() }));
+vi.mock("@/lib/adult-member-hosting-review", () => ({
+  enqueueHostingCoverageReevaluationForMember: hostingMocks.enqueue,
+}));
+vi.mock("@/lib/adult-member-hosting-coverage-drain", () => ({
+  settleHostingCoverageAfterCommit: hostingMocks.settle,
+}));
 vi.mock("@/lib/audit", () => ({
   buildStructuredAuditLogCreateArgs: vi.fn((event) => ({ data: event })),
   getAuditEmailDomain: vi.fn(() => null),
@@ -250,6 +261,12 @@ describe("#1440 — server-side NOT_APPLICABLE enforcement on member writes", ()
           data: expect.objectContaining({ ageTier: "YOUTH" }),
         }),
       );
+      expect(hostingMocks.enqueue).toHaveBeenCalledWith(
+        "org1",
+        expect.any(Object),
+        { cause: "SYSTEM_CHANGE", actorMemberId: "actor1" },
+      );
+      expect(hostingMocks.settle).toHaveBeenCalledWith({ limit: 50 });
     });
 
     it("falls back to ADULT on reclassification when the member has no date of birth", async () => {
@@ -268,6 +285,12 @@ describe("#1440 — server-side NOT_APPLICABLE enforcement on member writes", ()
           data: expect.objectContaining({ ageTier: "ADULT" }),
         }),
       );
+      expect(hostingMocks.enqueue).toHaveBeenCalledWith(
+        "org1",
+        expect.any(Object),
+        { cause: "SYSTEM_CHANGE", actorMemberId: "actor1" },
+      );
+      expect(hostingMocks.settle).toHaveBeenCalledWith({ limit: 50 });
     });
   });
 

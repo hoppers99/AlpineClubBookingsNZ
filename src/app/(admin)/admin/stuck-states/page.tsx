@@ -127,7 +127,7 @@ function ItemRow({ item }: { item: StuckStateItem }) {
             {item.details.map((detail) => (
               <li
                 key={detail.id}
-                className="flex flex-wrap items-center justify-between gap-2 rounded-md border bg-muted/30 p-2"
+                className="flex flex-wrap items-center justify-between gap-2 rounded-md border bg-muted p-2"
               >
                 <div>
                   <div className="text-sm font-medium">{detail.title}</div>

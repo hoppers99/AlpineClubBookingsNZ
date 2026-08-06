@@ -30,6 +30,7 @@ const mocks = vi.hoisted(() => ({
   requiresPaidSubscriptionForMemberForBooking: vi.fn(),
   findUnpaidMemberGuests: vi.fn(),
   createConfirmedBooking: vi.fn(),
+  evaluateProposedAdultMemberHosting: vi.fn(),
 }));
 
 vi.mock("@/lib/prisma", () => ({
@@ -99,6 +100,15 @@ vi.mock("@/lib/booking-create", async () => {
     "@/lib/booking-create",
   );
   return { ...actual, createConfirmedBooking: mocks.createConfirmedBooking };
+});
+vi.mock("@/lib/adult-member-hosting-review", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/lib/adult-member-hosting-review")>();
+  return {
+    ...actual,
+    evaluateProposedAdultMemberHosting:
+      mocks.evaluateProposedAdultMemberHosting,
+  };
 });
 
 import {
@@ -215,6 +225,7 @@ describe("joinGroupBookingAsMember caps against the group's lodge", () => {
     mocks.requiresPaidSubscriptionForMemberForBooking.mockResolvedValue(false);
     mocks.findUnpaidMemberGuests.mockResolvedValue([]);
     mocks.validateMinimumStay.mockResolvedValue({ valid: true, violations: [] });
+    mocks.evaluateProposedAdultMemberHosting.mockResolvedValue(null);
   });
 
   it("sizes the member-join cap with the group's lodge, not the default lodge", async () => {
@@ -301,6 +312,13 @@ describe("joinGroupBookingAsMember caps against the group's lodge", () => {
       checkIn,
       checkOut,
       LODGE_B,
+    );
+    expect(mocks.evaluateProposedAdultMemberHosting).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        bookingOwnerMemberId: "joiner-1",
+        lodgeId: LODGE_B,
+      }),
     );
     expect(mocks.createConfirmedBooking).not.toHaveBeenCalled();
   });

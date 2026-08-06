@@ -49,6 +49,8 @@ const h = vi.hoisted(() => ({
   logAudit: vi.fn(),
   sendOutcomeEmail: vi.fn(),
   sendExpiredEmail: vi.fn(),
+  enqueueHostingCoverage: vi.fn().mockResolvedValue(0),
+  settleHostingCoverage: vi.fn().mockResolvedValue(undefined),
   // Declared inside vi.hoisted so the class exists before the hoisted vi.mock
   // factory below closes over it. The service narrows refusals with
   // `instanceof`, so the blocked-decline test has to throw this exact class.
@@ -101,6 +103,12 @@ vi.mock("@/lib/audit", () => ({ logAudit: h.logAudit }));
 vi.mock("@/lib/email/member-guest", () => ({
   sendMemberGuestConsentOutcomeEmail: h.sendOutcomeEmail,
   sendMemberGuestConsentExpiredEmail: h.sendExpiredEmail,
+}));
+vi.mock("@/lib/adult-member-hosting-review", () => ({
+  enqueueHostingCoverageReevaluationForMember: h.enqueueHostingCoverage,
+}));
+vi.mock("@/lib/adult-member-hosting-coverage-drain", () => ({
+  settleHostingCoverageAfterCommit: h.settleHostingCoverage,
 }));
 vi.mock("@/lib/logger", () => ({
   default: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
@@ -422,6 +430,14 @@ describe("APPROVE", () => {
       bookingId: BOOKING_ID,
     });
     expect(h.removeBookingGuestInTransaction).not.toHaveBeenCalled();
+    expect(h.enqueueHostingCoverage).toHaveBeenCalledWith(
+      TARGET_ID,
+      expect.any(Object),
+      { cause: "SYSTEM_CHANGE", actorMemberId: TARGET_ID },
+    );
+    expect(h.settleHostingCoverage).toHaveBeenCalledWith({
+      bookingId: BOOKING_ID,
+    });
     expect(h.sendOutcomeEmail).toHaveBeenCalledTimes(1);
     expect(h.logAudit).toHaveBeenCalledTimes(1);
     expect(h.logAudit.mock.calls[0][0]).toMatchObject({
@@ -448,6 +464,14 @@ describe("APPROVE", () => {
     expect(h.guestUpdateMany.mock.calls[0][0].data.consentRespondedByMemberId).toBe(
       DELEGATE_ID,
     );
+    expect(h.enqueueHostingCoverage).toHaveBeenCalledWith(
+      TARGET_ID,
+      expect.any(Object),
+      { cause: "SYSTEM_CHANGE", actorMemberId: DELEGATE_ID },
+    );
+    expect(h.settleHostingCoverage).toHaveBeenCalledWith({
+      bookingId: BOOKING_ID,
+    });
   });
 
   it("reports a lost claim as success, with no second set of side effects", async () => {
