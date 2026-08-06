@@ -3738,7 +3738,10 @@ describe("bed allocation lock semantics are two-way (#2252)", () => {
 
     const db = {
       bedAllocation: {
-        findFirst: vi.fn(async () => rows[0] ?? null),
+        findFirst: vi.fn(async (args: unknown) => {
+          void args;
+          return rows[0] ?? null;
+        }),
         delete: vi.fn(async ({ where }: { where: { id: string } }) => {
           const removed = rows.find((row) => row.id === where.id);
           rows = rows.filter((row) => row.id !== where.id);
