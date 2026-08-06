@@ -146,6 +146,55 @@ const assertStackPreparationOrdering = (source) => {
 };
 assertStackPreparationOrdering(measureStackSource);
 
+const EXPECTED_PUBLIC_STACK_ACTIONS = [
+  "with-private-env",
+  "prepare",
+  "prepare-canonical-dump",
+  "restore-canonical-dump",
+  "database-fingerprint",
+  "provider-isolation-audit",
+  "app-image",
+  "restart-app",
+  "up",
+  "stop",
+  "down",
+  "destroy",
+  "compose",
+];
+const assertPublicStackActionCensus = (source) => {
+  const wrapperMatch = /if \[\[ "\$\{1:-\}" == ([a-z][a-z0-9-]*) \]\]; then/.exec(source);
+  if (!wrapperMatch) throw new Error("public stack action census is missing the private wrapper");
+  const actions = sourceSection(source, 'case "${1:-}" in', null);
+  const caseActions = [...actions.matchAll(/^  ([a-z][a-z0-9-]*)\)/gm)].map((match) => match[1]);
+  const actual = [wrapperMatch[1], ...caseActions];
+  if (JSON.stringify(actual) !== JSON.stringify(EXPECTED_PUBLIC_STACK_ACTIONS)) {
+    throw new Error(`public stack action census differs: ${actual.join(",")}`);
+  }
+  if (!/prepare-canonical-dump\)[\s\S]*?prepare_stack "\$1"/.test(actions)) {
+    throw new Error("the public canonical dump action must use guarded stack preparation");
+  }
+  const header = sourceSection(source, "#!/usr/bin/env bash", "set -euo pipefail");
+  if (/^#\s+measurement\/stack\/measure-stack\.sh create-canonical-dump\b/m.test(header)
+      || /\|create-canonical-dump <(?:absolute-)?path>/.test(actions)) {
+    throw new Error("standalone canonical dump action must not be documented or advertised");
+  }
+};
+assertPublicStackActionCensus(measureStackSource);
+
+const directDumpActionMutation = measureStackSource.replace(
+  "  restore-canonical-dump)",
+  '  create-canonical-dump)\n    create_canonical_dump "$1"\n    ;;\n  restore-canonical-dump)',
+);
+assert.notEqual(directDumpActionMutation, measureStackSource, "direct-dump action mutation fixture must apply");
+assert.throws(() => assertPublicStackActionCensus(directDumpActionMutation), /public stack action census differs/);
+
+const unguardedCombinedActionMutation = measureStackSource.replace(
+  '    prepare_stack "$1"',
+  '    create_canonical_dump "$1"',
+);
+assert.notEqual(unguardedCombinedActionMutation, measureStackSource, "unguarded combined-action mutation fixture must apply");
+assert.throws(() => assertPublicStackActionCensus(unguardedCombinedActionMutation), /must use guarded stack preparation/);
+
 const missingPreResetStopMutation = measureStackSource.replace(
   '  stop_application_writers\n\n  echo "==> Resetting database schema"',
   '  : # mutation: schema reset would retain live writers\n\n  echo "==> Resetting database schema"',

@@ -15,7 +15,6 @@
 # exported its HMAC-bound private snapshot.
 #
 #   measurement/stack/measure-stack.sh prepare          # postgres + schema + seeds + app + caddy
-#   measurement/stack/measure-stack.sh create-canonical-dump <absolute-path>
 #   measurement/stack/measure-stack.sh restore-canonical-dump <absolute-path> <sha256>
 #   measurement/stack/measure-stack.sh database-fingerprint
 #   measurement/stack/measure-stack.sh app-image <tag>  # swap the app image (e.g. tacbookings-measure-app:baseline)
@@ -282,11 +281,6 @@ case "${1:-}" in
     [ -n "${1:-}" ] || { echo "usage: $0 prepare-canonical-dump <absolute-path>" >&2; exit 1; }
     prepare_stack "$1"
     ;;
-  create-canonical-dump)
-    shift
-    [ -n "${1:-}" ] || { echo "usage: $0 create-canonical-dump <absolute-path>" >&2; exit 1; }
-    create_canonical_dump "$1"
-    ;;
   restore-canonical-dump)
     shift
     [ -n "${1:-}" ] && [ -n "${2:-}" ] || {
@@ -314,7 +308,7 @@ case "${1:-}" in
     compose "$@"
     ;;
   *)
-    echo "Usage: $0 {with-private-env -- <command> [args...]|prepare|prepare-canonical-dump <path>|create-canonical-dump <path>|restore-canonical-dump <path> <sha256>|database-fingerprint|provider-isolation-audit|app-image <tag>|restart-app|up|stop|down|destroy|compose ...}" >&2
+    echo "Usage: $0 {with-private-env -- <command> [args...]|prepare|prepare-canonical-dump <path>|restore-canonical-dump <path> <sha256>|database-fingerprint|provider-isolation-audit|app-image <tag>|restart-app|up|stop|down|destroy|compose ...}" >&2
     exit 1
     ;;
 esac
