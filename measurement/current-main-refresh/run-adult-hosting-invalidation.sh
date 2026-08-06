@@ -32,6 +32,7 @@ stamp() { date -u '+%Y-%m-%dT%H:%M:%SZ'; }
 log() { printf '%s  %s\n' "$(stamp)" "$*" | tee -a "$OUT/timeline.txt"; }
 
 COOKIE=""
+PG_CONTAINER_ID=""
 ORIGINAL_SETTINGS_COUNT=""
 ORIGINAL_HOST_COUNT=""
 ORIGINAL_AUDIT_COUNT=""
@@ -46,7 +47,7 @@ TEST_PASSED=false
 LOCK_HELD=false
 
 psql_scalar() {
-  docker exec "$PG" psql -X -U tac -d tacbookings -v ON_ERROR_STOP=1 -tAc "$1" |
+  docker exec "$PG_CONTAINER_ID" psql -X -U tac -d tacbookings -v ON_ERROR_STOP=1 -tAc "$1" |
     tr -d '[:space:]'
 }
 
@@ -191,13 +192,17 @@ const isScopeSet = (value) =>
   Object.keys(value).sort().join(",") === "sameBooking,sameBookingOwner" &&
   typeof value.sameBooking === "boolean" &&
   typeof value.sameBookingOwner === "boolean";
+const isNonEmptyScopeSet = (value) =>
+  isScopeSet(value) && (value.sameBooking || value.sameBookingOwner);
 if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("body is not an object");
 if (body.scopeKey !== "club-wide" || body.lodgeId !== null) throw new Error("response is not club-wide");
 if (!modes.has(body.mode)) throw new Error("club-wide mode must be concrete and cannot inherit");
 if (body.capacityMode !== null && body.capacityMode !== "HOLD" && body.capacityMode !== "NO_HOLD") {
   throw new Error("invalid capacityMode");
 }
-if (body.hostScopes !== null && !isScopeSet(body.hostScopes)) throw new Error("invalid hostScopes");
+if (body.hostScopes !== null && !isNonEmptyScopeSet(body.hostScopes)) {
+  throw new Error("stored hostScopes must enable at least one scope");
+}
 if (!Number.isInteger(body.version) || typeof body.configured !== "boolean") {
   throw new Error("invalid version/configured fields");
 }
@@ -214,7 +219,7 @@ if (body.configured) {
 }
 const effective = body.effective;
 if (!effective || typeof effective !== "object" || Array.isArray(effective) ||
-    !effectiveModes.has(effective.mode) || !isScopeSet(effective.hostScopes) ||
+    !effectiveModes.has(effective.mode) || !isNonEmptyScopeSet(effective.hostScopes) ||
     typeof effective.preview !== "string" || effective.preview.trim().length === 0) {
   throw new Error("invalid effective policy block");
 }
@@ -270,7 +275,7 @@ csp_header() {
 
 release_lock() {
   if [[ "$LOCK_HELD" == true ]]; then
-    if ! docker exec "$PG" rmdir "$LOCK_DIR_IN_PG"; then
+    if ! docker exec "$PG_CONTAINER_ID" rmdir "$LOCK_DIR_IN_PG"; then
       log "FAIL could not release Postgres-container single-flight lock $LOCK_DIR_IN_PG"
       return 1
     fi
@@ -338,7 +343,7 @@ NODE
         cleanup_failed=true
       fi
     elif [[ "$ORIGINAL_HOST_COUNT" == "0" ]]; then
-      if ! docker exec "$PG" psql -X -U tac -d tacbookings -v ON_ERROR_STOP=1 \
+      if ! docker exec "$PG_CONTAINER_ID" psql -X -U tac -d tacbookings -v ON_ERROR_STOP=1 \
         -c 'DELETE FROM "AdultMemberHostingPolicy" WHERE "scopeKey" = '\''club-wide'\'';' \
         > "$OUT/91-hosting-delete.txt" 2>&1; then
         cleanup_failed=true
@@ -362,7 +367,7 @@ NODE
         cleanup_failed=true
       fi
     elif [[ "$ORIGINAL_SETTINGS_COUNT" == "0" ]]; then
-      if ! docker exec "$PG" psql -X -U tac -d tacbookings -v ON_ERROR_STOP=1 \
+      if ! docker exec "$PG_CONTAINER_ID" psql -X -U tac -d tacbookings -v ON_ERROR_STOP=1 \
         -c 'DELETE FROM "PublicContentSettings" WHERE "id" = '\''default'\'';' \
         > "$OUT/92-public-settings-delete.txt" 2>&1; then
         cleanup_failed=true
@@ -399,7 +404,7 @@ NODE
           "$OUT/93-page-unpublish.request.json"; then
           cleanup_failed=true
         fi
-        if ! docker exec "$PG" psql -X -U tac -d tacbookings -v ON_ERROR_STOP=1 \
+        if ! docker exec "$PG_CONTAINER_ID" psql -X -U tac -d tacbookings -v ON_ERROR_STOP=1 \
           -c "DELETE FROM \"PageContent\" WHERE \"id\" = '$PAGE_ID' AND \"slug\" = '$PROBE_SLUG' AND \"path\" = '$PROBE_PATH' AND \"caption\" = '$PROBE_TITLE' AND \"menuTitle\" = '' AND \"title\" = '$PROBE_TITLE' AND \"headerText\" = '' AND \"sortOrder\" = 9300 AND \"contentHtml\" IN ('', '$PROBE_CONTENT_HTML') AND \"published\" = false;" \
           > "$OUT/94-page-delete.txt" 2>&1; then
           cleanup_failed=true
@@ -560,17 +565,29 @@ log "preflight: verifying the isolated current-main measurement stack"
 for container_and_service in "$APP:app" "$PG:postgres" "$CADDY:caddy"; do
   container="${container_and_service%%:*}"
   expected_service="${container_and_service#*:}"
-  actual_project="$(docker inspect "$container" --format '{{ index .Config.Labels "com.docker.compose.project" }}')"
+  container_id="$(docker inspect "$container" --format '{{.Id}}')"
+  [[ "$container_id" =~ ^[[:xdigit:]]{64}$ ]] || {
+    log "FAIL $container did not resolve to an immutable full container id"
+    exit 1
+  }
+  actual_project="$(docker inspect "$container_id" --format '{{ index .Config.Labels "com.docker.compose.project" }}')"
   [[ "$actual_project" == "$PROJECT" ]] || {
     log "FAIL $container belongs to compose project $actual_project, not $PROJECT"
     exit 1
   }
-  actual_service="$(docker inspect "$container" --format '{{ index .Config.Labels "com.docker.compose.service" }}')"
+  actual_service="$(docker inspect "$container_id" --format '{{ index .Config.Labels "com.docker.compose.service" }}')"
   [[ "$actual_service" == "$expected_service" ]] || {
     log "FAIL $container is compose service $actual_service, not $expected_service"
     exit 1
   }
+  if [[ "$expected_service" == "postgres" ]]; then
+    PG_CONTAINER_ID="$container_id"
+  fi
 done
+[[ -n "$PG_CONTAINER_ID" ]] || {
+  log "FAIL measurement Postgres immutable container id was not captured"
+  exit 1
+}
 
 EXPECTED_NETWORK="${PROJECT}_default"
 actual_network_project="$(docker network inspect "$EXPECTED_NETWORK" --format '{{ index .Labels "com.docker.compose.project" }}')"
@@ -580,19 +597,23 @@ actual_network_project="$(docker network inspect "$EXPECTED_NETWORK" --format '{
 }
 expected_network_id="$(docker network inspect "$EXPECTED_NETWORK" --format '{{.Id}}')"
 for container in "$APP" "$PG" "$CADDY"; do
-  network_names="$(docker inspect "$container" --format '{{range $name, $_ := .NetworkSettings.Networks}}{{$name}}{{"\n"}}{{end}}' | sed '/^$/d' | sort)"
+  inspect_target="$container"
+  if [[ "$container" == "$PG" ]]; then
+    inspect_target="$PG_CONTAINER_ID"
+  fi
+  network_names="$(docker inspect "$inspect_target" --format '{{range $name, $_ := .NetworkSettings.Networks}}{{$name}}{{"\n"}}{{end}}' | sed '/^$/d' | sort)"
   [[ "$network_names" == "$EXPECTED_NETWORK" ]] || {
     log "FAIL $container network set is not exactly $EXPECTED_NETWORK"
     exit 1
   }
-  container_network_id="$(docker inspect "$container" --format "{{(index .NetworkSettings.Networks \"$EXPECTED_NETWORK\").NetworkID}}")"
+  container_network_id="$(docker inspect "$inspect_target" --format "{{(index .NetworkSettings.Networks \"$EXPECTED_NETWORK\").NetworkID}}")"
   [[ "$container_network_id" == "$expected_network_id" ]] || {
     log "FAIL $container is not attached to the inspected $EXPECTED_NETWORK identity"
     exit 1
   }
 done
 
-postgres_aliases="$(docker inspect "$PG" --format "{{json (index .NetworkSettings.Networks \"$EXPECTED_NETWORK\").Aliases}}")"
+postgres_aliases="$(docker inspect "$PG_CONTAINER_ID" --format "{{json (index .NetworkSettings.Networks \"$EXPECTED_NETWORK\").Aliases}}")"
 POSTGRES_ALIASES="$postgres_aliases" node <<'NODE'
 const aliases = JSON.parse(process.env.POSTGRES_ALIASES ?? "null");
 if (!Array.isArray(aliases) || !aliases.includes("postgres")) {
@@ -624,7 +645,7 @@ process.stdout.write(
 );
 ' > "$OUT/00-database-identity.txt"
 
-postgres_network_ip="$(docker inspect "$PG" --format "{{(index .NetworkSettings.Networks \"$EXPECTED_NETWORK\").IPAddress}}")"
+postgres_network_ip="$(docker inspect "$PG_CONTAINER_ID" --format "{{(index .NetworkSettings.Networks \"$EXPECTED_NETWORK\").IPAddress}}")"
 [[ "$postgres_network_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
   log "FAIL measurement postgres has no IPv4 identity on $EXPECTED_NETWORK"
   exit 1
@@ -697,7 +718,7 @@ NODE
 
 # Serialize harness runs in the already-verified measurement Postgres container,
 # not in one checkout's host /tmp. Atomic mkdir also fails closed on a stale lock.
-if ! docker exec "$PG" mkdir "$LOCK_DIR_IN_PG"; then
+if ! docker exec "$PG_CONTAINER_ID" mkdir "$LOCK_DIR_IN_PG"; then
   log "FAIL another adult-hosting invalidation probe is active, or stale Postgres-container lock $LOCK_DIR_IN_PG needs review"
   exit 1
 fi
@@ -716,6 +737,7 @@ COOKIE="$(node -e "const s=require('./$AUTH_STATE'); const c=s.cookies.find((v)=
   printf 'image=%s\n' "$actual_image"
   printf 'compose_project=%s\n' "$PROJECT"
   printf 'compose_network=%s\n' "$EXPECTED_NETWORK"
+  printf 'postgres_container_id=%s\n' "$PG_CONTAINER_ID"
   printf 'base_url=%s\n' "$BASE"
   printf 'database_identity=%s\n' "$OUT/00-database-identity.txt"
   printf 'app_runtime_role=web-measure\n'

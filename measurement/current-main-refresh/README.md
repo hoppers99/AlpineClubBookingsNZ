@@ -41,6 +41,9 @@ semantics and must not carry `public`, `s-maxage`, or
 
 The container lock serializes this harness against another copy of itself; it
 does not exclude administrators, scripts, or any other database/API writer.
+The probe captures the verified Postgres container's immutable full ID and uses
+that ID for the lock and every direct `psql` operation, so an EXIT trap from an
+old container cannot remove a replacement container's newer lock.
 Run it only while the isolated measurement stack has no other writers. A page
 create HTTP 409 is treated as a proven collision and is never recovered or
 deleted as though the colliding row belonged to this run.
