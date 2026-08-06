@@ -103,7 +103,7 @@ are the literal `1`.
 | Lock | Key | Helper / where | Tier | Serialises |
 | --- | --- | --- | --- | --- |
 | **Global booking / money** | `1` (literal) | inline `tx.$executeRaw` | 2 | Booking-status + money side effects that must exclude across the whole booking regardless of lodge: cancel, capture/settle, hold-release, group-settlement reaper/settle/refund/organiser-cancel, refunds, credit restore. |
-| **Per-lodge capacity** | `hashtextextended(<lodgeId>, 0)` | `acquireLodgeCapacityLock(tx, lodgeId)` (`capacity.ts`) | 1 | Capacity claims/checks for one lodge; roster eligibility snapshots; and chore-template update/delete, which serialize active-template validation for that lodge. |
+| **Per-lodge capacity** | `hashtextextended(<lodgeId>, 0)` | `acquireLodgeCapacityLock(tx, lodgeId)` (`capacity.ts`) | 1 | Capacity claims/checks for one lodge; roster eligibility snapshots; and direct or config-transfer chore-template changes, which serialize active-template validation for that lodge. |
 | **Per-member night footprint** | `hashtext("booking-member-night"), hashtext(<memberId>)` | `lockBookingMemberNights(tx, guests)` (`booking-member-night-conflicts.ts`) | cross-lodge | Serialises the person-night guard ACROSS lodges (see below). |
 | **Per-member credit ledger** | `hashtext("member-credit-ledger"), hashtext(<memberId>)` | `lockMemberCreditLedger(memberId, tx)` (`member-credit.ts`) | — | A member's credit-ledger balance operations (spend, negative-adjustment validation, orphan-restore repair, the Xero inbound applied-credit repair, and the F20 pre-payment-reduction applied-credit clamp `clampAppliedCreditToBookingPrice`, taken inside the modification transaction only when the booking carries applied credit, and the #2265 stored-election consumption `consumeStoredCreditElection`, taken inside the `create-payment-intent` pay transaction and the Internet Banking switch transaction only when the booking carries an outstanding election). |
 | **Member lifecycle** | `hashtext("member-lifecycle:<memberId>")` | inline (`member-lifecycle-actions.ts`, `nomination.ts` approval mapping, `admin-family-group-requests-service.ts`, `member-merge.ts`) | — | Archive/delete of one member; overwrite of one member by application-approval mapping (E10, #1936); linking/removing one member into/from a family group on admin request review; and **member merge** (dual-lock on master + loser, E11 #1937, see below). |
@@ -163,7 +163,12 @@ It then deletes removed rows and creates/updates retained rows in that same
 transaction, writing both authoritative booking and guest foreign keys.
 Admin chore-template update/delete takes the same lodge tier before its
 post-lock re-read and tuple mutation, so deactivation cannot commit between a
-roster action's active-template check and assignment write.
+roster action's active-template check and assignment write. Configuration
+transfer takes its singleton first, then any selected policy-set locks, then
+every existing lodge represented by the lodge-config bundle in sorted id order,
+all before its in-lock re-plan. Its chore-template fingerprint and writes are
+therefore protected by the same lodge tier; a newly created lodge needs no key
+because its id is not visible to a concurrent roster transaction before commit.
 
 Roster email **selection** uses the short eligibility transaction and rejects an
 ineligible guest or inactive template before minting any token. Effective-email

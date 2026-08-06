@@ -56,7 +56,17 @@ const ROSTER_LEGEND: Array<{ tone: CalendarTone; label: string }> = [
 ]
 
 function actionFailure(action: string) {
-  return `${action} failed because the service could not be reached. Nothing was changed; try again.`
+  if (action === "Sending roster emails") {
+    return "Sending roster emails could not be verified because the service could not be reached. Some recipients may already have received new links; check Email Deliverability before trying again."
+  }
+  return `${action} could not be verified because the service could not be reached. Reload the roster and check its current status before trying again.`
+}
+
+function unreadableActionFailure(action: string) {
+  if (action === "Sending roster emails") {
+    return "Sending roster emails could not be verified because the service returned an unreadable response. Some recipients may already have received new links; check Email Deliverability before trying again."
+  }
+  return `${action} could not be verified because the service returned an unreadable response. Reload the roster and check its current status before trying again.`
 }
 
 export default function RosterPage() {
@@ -216,7 +226,7 @@ export default function RosterPage() {
       try {
         data = await response.json()
       } catch {
-        throw new Error(`${failureLabel} failed because the service returned an unreadable response. Nothing was changed; try again.`)
+        throw new Error(unreadableActionFailure(failureLabel))
       }
       if (!response.ok) throw new Error(data.error || actionFailure(failureLabel))
       return data
@@ -263,7 +273,7 @@ export default function RosterPage() {
     }
     const skipped = data.skipped ? ` ${data.skipped} guest(s) skipped because they opted out.` : ""
     window.alert(data.partialFailure
-      ? `Roster emails sent with ${data.failed} failure(s).${skipped}`
+      ? `The roster was sent to successful recipients, with ${data.failed} failure(s). Check Email Deliverability before retrying so successful recipients are not sent another fresh link.${skipped}`
       : `Roster emails sent successfully.${skipped}`)
   }
 

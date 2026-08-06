@@ -234,6 +234,52 @@ describe("admin roster page draft transitions", () => {
     await renderLoaded(fetchMock)
     vi.spyOn(window, "confirm").mockReturnValue(true)
     fireEvent.click(screen.getByRole("button", { name: "Regenerate Roster" }))
-    await waitFor(() => expect(screen.getByText("Regenerating the roster failed because the service returned an unreadable response. Nothing was changed; try again.")).toBeTruthy())
+    await waitFor(() => expect(screen.getByText("Regenerating the roster could not be verified because the service returned an unreadable response. Reload the roster and check its current status before trying again.")).toBeTruthy())
+  })
+
+  it("does not claim a rejected action transport left server state unchanged", async () => {
+    const fetchMock = successfulFetch()
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.startsWith("/api/admin/roster/status")) {
+        return new Response(JSON.stringify({ statuses: [] }), { status: 200 })
+      }
+      if (init?.method === "PUT") throw new TypeError("Failed to fetch")
+      return new Response(JSON.stringify(roster()), { status: 200 })
+    })
+    await renderLoaded(fetchMock)
+    vi.spyOn(window, "confirm").mockReturnValue(true)
+    fireEvent.click(screen.getByRole("button", { name: "Regenerate Roster" }))
+
+    await waitFor(() => expect(screen.getByText(
+      "Regenerating the roster could not be verified because the service could not be reached. Reload the roster and check its current status before trying again.",
+    )).toBeTruthy())
+  })
+
+  it("warns that a partial email send already reached successful recipients before retry", async () => {
+    const confirmedRoster = roster()
+    confirmedRoster.assignments[0].status = "CONFIRMED"
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.startsWith("/api/admin/roster/status")) {
+        return new Response(JSON.stringify({ statuses: [] }), { status: 200 })
+      }
+      if (init?.method === "PUT") {
+        return new Response(JSON.stringify({
+          success: true,
+          partialFailure: true,
+          failed: 1,
+          skipped: 2,
+        }), { status: 200 })
+      }
+      return new Response(JSON.stringify(confirmedRoster), { status: 200 })
+    })
+    const alertMock = vi.spyOn(window, "alert").mockImplementation(() => undefined)
+    await renderLoaded(fetchMock)
+
+    fireEvent.click(screen.getByRole("button", { name: "Email Roster to Guests" }))
+    fireEvent.click(screen.getByRole("button", { name: "Email guests the roster" }))
+
+    await waitFor(() => expect(alertMock).toHaveBeenCalledWith(
+      "The roster was sent to successful recipients, with 1 failure(s). Check Email Deliverability before retrying so successful recipients are not sent another fresh link. 2 guest(s) skipped because they opted out.",
+    ))
   })
 })

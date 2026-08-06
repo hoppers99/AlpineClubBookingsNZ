@@ -82,6 +82,24 @@ describe("roster-date lock source contract (#2586)", () => {
     expect(templateMutation.indexOf("acquireLodgeCapacityLock(tx, effectiveLodgeId)")).toBeLessThan(
       templateMutation.indexOf("tx.choreTemplate.update"),
     )
+
+    const configApply = source("src/lib/config-transfer/apply.ts")
+    const configLock = configApply.indexOf("await acquireConfigImportLock(tx)")
+    const importedLodgeLocks = configApply.indexOf("await lockAffectedLodgeConfigLodges(tx, parsed.files)")
+    const inLockReplan = configApply.indexOf("const replan = await buildImportPlanFromParsed")
+    expect(configLock).toBeGreaterThan(-1)
+    expect(importedLodgeLocks).toBeGreaterThan(configLock)
+    expect(inLockReplan).toBeGreaterThan(importedLodgeLocks)
+    const importedLodgeLockHelper = configApply.slice(
+      configApply.indexOf("async function lockAffectedLodgeConfigLodges"),
+      configApply.indexOf("export type BootstrapBackupSkip"),
+    )
+    expect(importedLodgeLockHelper).toContain("lodges.map(({ id }) => id).sort()")
+    expect(importedLodgeLockHelper).toContain("await acquireLodgeCapacityLock(tx, lodgeId)")
+
+    const lodgeOps = source("src/lib/config-transfer/categories/lodge-ops.ts")
+    expect(lodgeOps).toContain("ctx.tx.choreTemplate.update")
+    expect(configApply).toContain("await acquireLodgeCapacityLock(tx, lodgeId)")
   })
 
   it("keeps every roster-eligibility writer on a shared global or lodge tier", () => {
