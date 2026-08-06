@@ -177,6 +177,7 @@ describe("RosterEditor staged whole-roster editing", () => {
     const network = "Roster not saved because the service could not be reached. Your draft is still here; try Save again."
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({ error: "Forbidden" }), { status: 403 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ code: "ROSTER_SERVICE_UNAVAILABLE", error: "internal detail" }), { status: 500 }))
       .mockRejectedValueOnce(new TypeError("Failed to fetch"))
     vi.stubGlobal("fetch", fetchMock)
     renderEditor()
@@ -193,7 +194,11 @@ describe("RosterEditor staged whole-roster editing", () => {
     await waitFor(() => expect(screen.getByText(network)).toBeTruthy())
     expect(screen.getByText(network)).toBe(document.activeElement)
     expect(first.value).toBe("younger")
-    expect(fetchMock).toHaveBeenCalledTimes(2)
+
+    fireEvent.click(screen.getByRole("button", { name: "Save roster" }))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3))
+    expect(screen.getByText(network)).toBe(document.activeElement)
+    expect(first.value).toBe("younger")
   })
 
   it("always shows due-chore staffing and booking-grouped zero/one/many guest checks with repeat counts", () => {

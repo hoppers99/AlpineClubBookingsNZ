@@ -9,14 +9,15 @@ import { isDateOnlyString, parseDateOnly } from "@/lib/date-only"
 import { resolveOptionalActiveLodgeId } from "@/lib/lodges"
 import { prisma } from "@/lib/prisma"
 import { requireAdmin } from "@/lib/session-guards"
+import logger from "@/lib/logger"
 
 const paramsSchema = z.object({
   date: z.string().min(1),
 })
 
 const rosterQuerySchema = z.object({
-  regenerate: z.string().optional(),
-  includeNonEssential: z.string().optional(),
+  regenerate: z.enum(["true", "false"]).optional(),
+  includeNonEssential: z.enum(["true", "false"]).optional(),
 }).transform((value) => ({
   regenerate: value.regenerate === "true",
   includeNonEssential:
@@ -26,7 +27,10 @@ const rosterQuerySchema = z.object({
 }))
 
 function unauthorizedResponse() {
-  return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+  return NextResponse.json(
+    { code: "ROSTER_UNAUTHORIZED", error: "Roster access requires an administrator account. Sign in and try again." },
+    { status: 401 },
+  )
 }
 
 function rosterWriteForbiddenResponse() {
@@ -54,7 +58,7 @@ async function resolveRosterLodgeId(req: NextRequest) {
     return {
       ok: false as const,
       response: NextResponse.json(
-        { error: "Lodge not found or not active" },
+        { code: "ROSTER_LODGE_INVALID", error: "Roster request could not be completed. Choose an active lodge and try again." },
         { status: 400 },
       ),
     }
@@ -64,11 +68,17 @@ async function resolveRosterLodgeId(req: NextRequest) {
 
 function parseRosterDate(dateStr: string) {
   if (!isDateOnlyString(dateStr)) {
-    return { ok: false as const, response: NextResponse.json({ error: "Invalid date format" }, { status: 400 }) }
+    return { ok: false as const, response: NextResponse.json(
+      { code: "ROSTER_DATE_INVALID", error: "Roster date is invalid. Choose a valid lodge night and try again." },
+      { status: 400 },
+    ) }
   }
   const date = parseDateOnly(dateStr)
   if (isNaN(date.getTime())) {
-    return { ok: false as const, response: NextResponse.json({ error: "Invalid date" }, { status: 400 }) }
+    return { ok: false as const, response: NextResponse.json(
+      { code: "ROSTER_DATE_INVALID", error: "Roster date is invalid. Choose a valid lodge night and try again." },
+      { status: 400 },
+    ) }
   }
   return { ok: true as const, date }
 }
@@ -85,6 +95,7 @@ export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ date: string }> }
 ) {
+  try {
   const guard = await requireAdmin({
     ...adminGuardOptions,
     permission: { area: "lodge", level: "view" },
@@ -94,7 +105,7 @@ export async function GET(
   const parsedParams = paramsSchema.safeParse(await params)
   if (!parsedParams.success) {
     return NextResponse.json(
-      { error: "Invalid route parameters", details: parsedParams.error.flatten() },
+      { code: "ROSTER_PARAMS_INVALID", error: "Roster could not be loaded because its route parameters were invalid. Choose a valid lodge night and try again.", details: parsedParams.error.flatten() },
       { status: 400 }
     )
   }
@@ -108,7 +119,7 @@ export async function GET(
   })
   if (!parsedQuery.success) {
     return NextResponse.json(
-      { error: "Invalid query parameters", details: parsedQuery.error.flatten() },
+      { code: "ROSTER_QUERY_INVALID", error: "Roster options were invalid. Review the selected options and try again.", details: parsedQuery.error.flatten() },
       { status: 400 }
     )
   }
@@ -124,6 +135,13 @@ export async function GET(
     lodgeId: lodge.lodgeId,
   })
   return NextResponse.json(result.body, result.init)
+  } catch (error) {
+    logger.error({ error }, "Failed to load admin roster")
+    return NextResponse.json(
+      { code: "ROSTER_LOAD_FAILED", error: "Roster could not be loaded because the service is unavailable. Try again." },
+      { status: 500 },
+    )
+  }
 }
 
 /**
@@ -135,6 +153,8 @@ export async function PUT(
   req: NextRequest,
   { params }: { params: Promise<{ date: string }> }
 ) {
+  let parsedAction: string | undefined
+  try {
   const guard = await requireAdmin({
     forbiddenResponse: rosterWriteForbiddenResponse,
     permission: { area: "lodge", level: "edit" },
@@ -144,7 +164,7 @@ export async function PUT(
   const parsedParams = paramsSchema.safeParse(await params)
   if (!parsedParams.success) {
     return NextResponse.json(
-      { error: "Invalid route parameters", details: parsedParams.error.flatten() },
+      { code: "ROSTER_PARAMS_INVALID", error: "Roster not saved because its route parameters were invalid. Choose a valid lodge night and try again.", details: parsedParams.error.flatten() },
       { status: 400 }
     )
   }
@@ -156,16 +176,20 @@ export async function PUT(
   try {
     body = await req.json()
   } catch {
-    return NextResponse.json({ error: "Invalid JSON" }, { status: 400 })
+    return NextResponse.json(
+      { code: "ROSTER_JSON_INVALID", error: "Roster not saved because the request could not be read. Reload the roster and try again." },
+      { status: 400 },
+    )
   }
 
   const parsedBody = rosterActionSchema.safeParse(body)
   if (!parsedBody.success) {
     return NextResponse.json(
-      { error: "Invalid input", details: parsedBody.error.flatten() },
+      { code: "ROSTER_INPUT_INVALID", error: "Roster not saved because the submitted changes were invalid. Review the roster and try again.", details: parsedBody.error.flatten() },
       { status: 400 }
     )
   }
+  parsedAction = parsedBody.data.action
 
   const lodge = await resolveRosterLodgeId(req)
   if (!lodge.ok) return lodge.response
@@ -178,4 +202,14 @@ export async function PUT(
     adminMemberId: guard.session.user.id,
   })
   return NextResponse.json(result.body, result.init)
+  } catch (error) {
+    logger.error({ error }, "Failed to update admin roster")
+    const saveFailed = parsedAction === "save"
+    return NextResponse.json(
+      saveFailed
+        ? { code: "ROSTER_SERVICE_UNAVAILABLE", error: "Roster not saved because the service could not be reached. Your draft is still here; try Save again." }
+        : { code: "ROSTER_ACTION_FAILED", error: "Roster action could not be completed because the service is unavailable. Nothing was changed; try again." },
+      { status: 500 },
+    )
+  }
 }

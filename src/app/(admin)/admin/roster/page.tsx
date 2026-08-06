@@ -173,12 +173,14 @@ export default function RosterPage() {
 
   function changeDate(nextDate: string) {
     if (!confirmDiscardDraft()) return
+    rosterRequestRef.current += 1
     setRoster(null)
     setSelectedDate(nextDate)
   }
 
   function changeLodge(nextLodgeId: string | null) {
     if (!confirmDiscardDraft()) return
+    rosterRequestRef.current += 1
     setRoster(null)
     setLodgeId(nextLodgeId)
   }

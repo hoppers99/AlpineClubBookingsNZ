@@ -8,12 +8,17 @@ const mocks = vi.hoisted(() => ({
   assignmentDeleteMany: vi.fn(),
   assignmentUpdateMany: vi.fn(),
   assignmentCreate: vi.fn(),
+  assignmentCreateMany: vi.fn(),
+  directAssignmentFindMany: vi.fn(),
   assignmentGroupBy: vi.fn(),
   templateFindMany: vi.fn(),
 }))
 
 vi.mock("@/lib/prisma", () => ({
-  prisma: { $transaction: (callback: (tx: unknown) => unknown) => mocks.transaction(callback) },
+  prisma: {
+    $transaction: (callback: (tx: unknown) => unknown) => mocks.transaction(callback),
+    choreAssignment: { findMany: mocks.directAssignmentFindMany },
+  },
 }))
 vi.mock("@/lib/email", () => ({ sendChoreRosterEmail: vi.fn(), shouldSendChoreRoster: vi.fn() }))
 vi.mock("@/lib/guest-chore-token", () => ({ createGuestChoreToken: vi.fn() }))
@@ -24,6 +29,7 @@ vi.mock("@/lib/audit", () => ({ logAudit: vi.fn() }))
 import {
   createRosterRevision,
   getAdminRosterForDate,
+  type RosterActionInput,
   updateAdminRosterForDate,
 } from "@/lib/admin-roster-service"
 
@@ -92,6 +98,7 @@ function tx() {
       deleteMany: mocks.assignmentDeleteMany,
       updateMany: mocks.assignmentUpdateMany,
       create: mocks.assignmentCreate,
+      createMany: mocks.assignmentCreateMany,
       groupBy: mocks.assignmentGroupBy,
     },
     choreTemplate: { findMany: mocks.templateFindMany },
@@ -130,6 +137,8 @@ describe("admin whole-roster save", () => {
       args.select ? [{ id: "kitchen" }, { id: "wood" }] : [template("kitchen"), template("wood", 2)],
     )
     mocks.assignmentCreate.mockResolvedValue({ id: "assignment-new" })
+    mocks.assignmentCreateMany.mockResolvedValue({ count: 0 })
+    mocks.directAssignmentFindMany.mockResolvedValue([])
     mocks.assignmentFindMany.mockImplementation(async (args: { select?: unknown; where?: { date?: unknown }; include?: unknown }) => {
       if (args.select) return [CURRENT]
       if (args.where?.date && typeof args.where.date === "object" && "gte" in (args.where.date as object)) return []
@@ -231,6 +240,103 @@ describe("admin whole-roster save", () => {
     }))
   })
 
+  it("scopes GET snapshot assignment reads through both booking and chore template lodge relations", async () => {
+    await getAdminRosterForDate({
+      date: DATE,
+      dateString: "2026-08-10",
+      regenerate: false,
+      lodgeId: "lodge-1",
+    })
+    expect(mocks.assignmentFindMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { date: DATE, booking: { lodgeId: "lodge-1" }, choreTemplate: { lodgeId: "lodge-1" } },
+      include: expect.any(Object),
+    }))
+  })
+
+  it("scopes regenerate reads and deletion through both booking and chore template lodge relations", async () => {
+    await updateAdminRosterForDate({
+      date: DATE,
+      dateString: "2026-08-10",
+      lodgeId: "lodge-1",
+      data: { action: "regenerate", overwriteConfirmed: true },
+    })
+    expect(mocks.assignmentFindMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { date: DATE, booking: { lodgeId: "lodge-1" }, choreTemplate: { lodgeId: "lodge-1" } },
+      select: { status: true },
+    }))
+    expect(mocks.assignmentDeleteMany).toHaveBeenCalledWith({
+      where: { date: DATE, booking: { lodgeId: "lodge-1" }, choreTemplate: { lodgeId: "lodge-1" } },
+    })
+  })
+
+  it("scopes confirm through both booking and chore template lodge relations", async () => {
+    await updateAdminRosterForDate({
+      date: DATE,
+      dateString: "2026-08-10",
+      lodgeId: "lodge-1",
+      data: { action: "confirm" },
+    })
+    expect(mocks.assignmentUpdateMany).toHaveBeenCalledWith({
+      where: {
+        date: DATE,
+        booking: { lodgeId: "lodge-1" },
+        choreTemplate: { lodgeId: "lodge-1" },
+        status: "SUGGESTED",
+      },
+      data: { status: "CONFIRMED" },
+    })
+  })
+
+  it("scopes save reads and writes through both booking and chore template lodge relations", async () => {
+    await save([{ rowKey: "assignment-1", assignmentId: "assignment-1", choreTemplateId: "kitchen", bookingGuestId: "guest-2" }])
+    expect(mocks.assignmentFindMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { date: DATE, booking: { lodgeId: "lodge-1" }, choreTemplate: { lodgeId: "lodge-1" } },
+      select: expect.any(Object),
+    }))
+    expect(mocks.assignmentUpdateMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: {
+        id: "assignment-1",
+        date: DATE,
+        booking: { lodgeId: "lodge-1" },
+        choreTemplate: { lodgeId: "lodge-1" },
+      },
+    }))
+  })
+
+  it("scopes roster email selection through both booking and chore template lodge relations", async () => {
+    await updateAdminRosterForDate({
+      date: DATE,
+      dateString: "2026-08-10",
+      lodgeId: "lodge-1",
+      data: { action: "email" },
+    })
+    expect(mocks.directAssignmentFindMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { date: DATE, booking: { lodgeId: "lodge-1" }, choreTemplate: { lodgeId: "lodge-1" } },
+    }))
+  })
+
+  it.each([
+    ["save", "ROSTER_SERVICE_UNAVAILABLE", "Roster not saved because the service could not be reached. Your draft is still here; try Save again."],
+    ["regenerate", "ROSTER_REGENERATE_FAILED", "Roster was not regenerated because the service is unavailable. Nothing was changed; try again."],
+    ["confirm", "ROSTER_CONFIRM_FAILED", "Roster was not confirmed because the service is unavailable. Nothing was changed; try again."],
+    ["email", "ROSTER_EMAIL_FAILED", "Roster emails were not sent because the service is unavailable. Nothing was changed; try again."],
+  ] as const)("returns stable actionable %s failure codes without leaking exceptions", async (action, code, error) => {
+    if (action === "email") mocks.directAssignmentFindMany.mockRejectedValueOnce(new Error("secret provider detail"))
+    else mocks.transaction.mockRejectedValueOnce(new Error("secret database detail"))
+    const data: RosterActionInput = action === "save"
+      ? { action, baseRevision: "revision", acknowledgeCompletedReset: false, assignments: [] }
+      : { action }
+    const result = await updateAdminRosterForDate({
+      date: DATE,
+      dateString: "2026-08-10",
+      lodgeId: "lodge-1",
+      data,
+    })
+    expect(result.init?.status).toBe(500)
+    expect(result.body).toEqual({ code, error })
+    expect(JSON.stringify(result.body)).not.toContain("secret")
+  })
+
   it("groups by booking and applies D-R2 known-DOB then unknown-name order without exposing DOB", async () => {
     const stayEnd = new Date("2026-08-11T00:00:00.000Z")
     const guest = (id: string, firstName: string, lastName: string, dateOfBirth: Date | null) => ({
@@ -254,7 +360,9 @@ describe("admin whole-roster save", () => {
         guests: [
           guest("unknown-z", "Zoe", "Bell", null),
           guest("young", "Mika", "Bell", new Date("2012-01-01T00:00:00.000Z")),
+          guest("equal-z", "Zoe", "Dale", new Date("2000-01-01T00:00:00.000Z")),
           guest("unknown-a", "Alex", "Bell", null),
+          guest("equal-a", "Alex", "Dale", new Date("2000-01-01T00:00:00.000Z")),
           guest("old", "Aroha", "Bell", new Date("1975-01-01T00:00:00.000Z")),
         ],
       },
@@ -270,12 +378,16 @@ describe("admin whole-roster save", () => {
     const guests = (result.body as { guests: Array<Record<string, unknown>> }).guests
     expect(guests.map((entry) => entry.id)).toEqual([
       "old",
+      "equal-a",
+      "equal-z",
       "young",
       "unknown-a",
       "unknown-z",
       "other",
     ])
-    expect(guests.slice(0, 4).map((entry) => entry.bookingGroupLabel)).toEqual([
+    expect(guests.slice(0, 6).map((entry) => entry.bookingGroupLabel)).toEqual([
+      "Booking for Aroha Bell",
+      "Booking for Aroha Bell",
       "Booking for Aroha Bell",
       "Booking for Aroha Bell",
       "Booking for Aroha Bell",

@@ -173,7 +173,11 @@ export function RosterEditor({
         if (!response.ok) throw new Error(NETWORK_COPY)
       }
       if (!response.ok) {
-        const message = response.status === 403 ? PERMISSION_COPY : (body.error ?? NETWORK_COPY)
+        const message = response.status === 403
+          ? PERMISSION_COPY
+          : response.status >= 500
+            ? NETWORK_COPY
+            : (body.error ?? NETWORK_COPY)
         if (body.details?.rowKey) {
           setRowErrors({ [body.details.rowKey]: message })
           requestAnimationFrame(() => {

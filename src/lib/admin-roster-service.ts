@@ -160,14 +160,15 @@ async function getGuestsForDate(
       .sort((a, b) => {
         const aDob = a.member?.dateOfBirth?.getTime()
         const bDob = b.member?.dateOfBirth?.getTime()
-        if (aDob !== undefined && bDob !== undefined && aDob !== bDob) {
-          return aDob - bDob
+        const byName = () => `${a.lastName}\u0000${a.firstName}\u0000${a.id}`.localeCompare(
+          `${b.lastName}\u0000${b.firstName}\u0000${b.id}`,
+        )
+        if (aDob !== undefined && bDob !== undefined) {
+          return aDob === bDob ? byName() : aDob - bDob
         }
         if (aDob !== undefined) return -1
         if (bDob !== undefined) return 1
-        return `${a.lastName}\u0000${a.firstName}\u0000${a.id}`.localeCompare(
-          `${b.lastName}\u0000${b.firstName}\u0000${b.id}`,
-        )
+        return byName()
       })
 
     return activeGuests.map((guest) => ({
@@ -619,12 +620,10 @@ export async function updateAdminRosterForDate(params: {
       })
 
       if (regenerateResult.conflict) {
-        return jsonResult(
-          {
-            error:
-              "Roster already confirmed. Confirm overwrite to regenerate it.",
-          },
-          { status: 409 }
+        return rosterError(
+          "ROSTER_REGENERATE_CONFLICT",
+          "Roster was not regenerated because it contains confirmed or completed chores. Confirm the overwrite warning and try again.",
+          409,
         )
       }
       break
@@ -810,7 +809,26 @@ export async function updateAdminRosterForDate(params: {
   }
   } catch (err) {
     logger.error({ err }, "Error processing roster action")
-    return jsonResult({ error: "Failed to process roster action" }, { status: 500 })
+    const failures = {
+      save: {
+        code: "ROSTER_SERVICE_UNAVAILABLE",
+        error: "Roster not saved because the service could not be reached. Your draft is still here; try Save again.",
+      },
+      regenerate: {
+        code: "ROSTER_REGENERATE_FAILED",
+        error: "Roster was not regenerated because the service is unavailable. Nothing was changed; try again.",
+      },
+      confirm: {
+        code: "ROSTER_CONFIRM_FAILED",
+        error: "Roster was not confirmed because the service is unavailable. Nothing was changed; try again.",
+      },
+      email: {
+        code: "ROSTER_EMAIL_FAILED",
+        error: "Roster emails were not sent because the service is unavailable. Nothing was changed; try again.",
+      },
+    } as const
+    const failure = failures[data.action]
+    return rosterError(failure.code, failure.error, 500)
   }
 
   return jsonResult({ success: true })
