@@ -65,6 +65,32 @@ allocation ran. Freed nights remain awaiting allocation until a later manual
 placement or explicit board auto-run. The retired per-id DELETE and optimistic
 board update are never used.
 
+## Reviewed bed-allocation moves (#2595)
+
+Dragging an existing chip to any bed, or choosing any destination under its
+**Move to bed** menu (including its current bed), opens one **Move allocation**
+dialog. Pointer and keyboard paths share that seam and send no write while the
+dialog opens. A bookings-view admin can load the authoritative preview; only a
+bookings-edit admin can confirm it. Closing or succeeding restores focus to the
+originating chip/menu control. The in-booking bed-allocation panel has no move
+scope control.
+
+The dialog starts with **This allocation night** and also offers **This person
+on this booking**. Person scope resolves every existing allocation row for that
+guest on the booking, including sparse and off-screen nights (up to 366), but
+does not create missing nights. The preview names the destination and exact NZ
+lodge nights, separates changing and unchanged counts, warns that changed
+approved rows become unapproved Manual drafts, and shows shared-double
+promotions or hard refusals. Counterpart occupants are never identified.
+
+**Confirm move** applies the exact digest-reviewed set atomically and never runs
+auto-allocation. A changed destination, allocation, booking, guest-night, hold,
+occupant, member, or partner fact returns a refreshed 409 preview, preserves the
+chosen scope, and requires **Confirm refreshed move**. An all-noop confirmation
+succeeds with explicit **No change** feedback and writes neither an allocation
+nor an audit entry. Feedback live regions remain mounted throughout loading,
+errors, stale review, and success.
+
 ## Minimum-stay exception foundation (#2363)
 
 An operator creating or editing a minimum-stay rule must choose whether a later

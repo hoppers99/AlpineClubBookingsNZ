@@ -105,7 +105,7 @@ const CAPTURES: Capture[] = [
     route: `/admin/bed-allocation?from=${DEMO_BOOKING_WINDOWS.daveConfirmed.checkIn}&to=${DEMO_BOOKING_WINDOWS.daveConfirmed.checkOut}`,
     area: "admin",
     waitForText: "Dave Davis",
-    prepare: prepareBedAllocationSnapPreview,
+    prepare: prepareBedAllocationMovePreview,
   },
   { name: "admin-waitlist", route: "/admin/waitlist", area: "admin" },
   {
@@ -333,118 +333,35 @@ async function prepareAdminRosterDocumentation(page: Page): Promise<void> {
 }
 
 /**
- * #2366 screenshot AC: Dave's past CONFIRMED demo booking is seeded with three
- * existing allocations on its exact relative fixture nights. Pick up the first
- * chip and hover A4 on Dave's last seeded night, which is genuinely rendered
- * and horizontally different from the first chip. The screenshot therefore
- * captures the REAL pointer preview stating that the original seeded lodge
- * nights are snapped/kept.
- *
- * The pointer remains down until `shoot` closes the page, so this is preview
- * only: no PATCH is emitted and the reusable demo fixture is never changed.
+ * #2595 screenshot AC: open the real reviewed move seam from Dave's seeded chip
+ * and widen it to every existing allocation night. Preview is read-only, so the
+ * reusable documentation fixture is never changed.
  */
-async function prepareBedAllocationSnapPreview(page: Page): Promise<void> {
-  const fixture = DEMO_BOOKING_WINDOWS.daveConfirmed;
-  const targetNight = fixture.nights.at(-1);
-  if (!targetNight) {
-    throw new Error("Dave's seeded booking has no lodge nights");
-  }
-  // This capture deliberately scrolls before taking a full-page screenshot.
-  // Keep the app chrome in normal document flow so Chromium does not paint the
-  // sticky header/sidebar at that mid-page scroll offset in the final image.
-  await page.addStyleTag({
-    content:
-      'header.sticky, aside[class*="md:sticky"] { position: static !important; }',
-  });
-  const dragHandle = page
-    .getByRole("button", {
-      name: /Drag Dave Davis to another bed; original lodge night .* will be kept/,
-    })
+async function prepareBedAllocationMovePreview(page: Page): Promise<void> {
+  const manage = page
+    .getByRole("button", { name: "Manage allocation for Dave Davis" })
     .first();
-  const targetRow = page
-    .getByRole("row")
-    .filter({ has: page.getByText("A4", { exact: true }) });
-  const targetCell = targetRow.locator(
-    `td[data-stay-date="${targetNight}"]`,
-  );
-  await dragHandle.waitFor({ state: "visible", timeout: 15_000 });
-  await targetCell.waitFor({ state: "visible", timeout: 15_000 });
-  await targetCell.scrollIntoViewIfNeeded();
-  await dragHandle.scrollIntoViewIfNeeded();
+  await manage.scrollIntoViewIfNeeded();
+  await manage.click();
 
-  const [from, target, dragged] = await Promise.all([
-    dragHandle.boundingBox(),
-    targetCell.boundingBox(),
-    dragHandle.locator("xpath=..").boundingBox(),
-  ]);
-  if (!from || !target || !dragged) {
-    throw new Error(
-      "Could not resolve the seeded bed-allocation drag-preview geometry",
-    );
-  }
-  const viewport = page.viewportSize();
-  if (!viewport) {
-    throw new Error("Could not resolve the screenshot viewport");
-  }
-  for (const [label, box] of [
-    ["drag handle", from],
-    ["target cell", target],
-  ] as const) {
-    const center = {
-      x: box.x + box.width / 2,
-      y: box.y + box.height / 2,
-    };
-    if (
-      center.x < 0 ||
-      center.x >= viewport.width ||
-      center.y < 0 ||
-      center.y >= viewport.height
-    ) {
-      throw new Error(`${label} is outside the screenshot viewport`);
-    }
-  }
-  // DndContext uses closestCenter. Keep the handle-to-card-centre grab offset
-  // so the dragged card aims at A4, then clamp the cursor one pixel inside A4
-  // when that ideal alignment falls just beyond the cell boundary.
-  const idealTarget = {
-    x:
-      target.x +
-      target.width / 2 +
-      (from.x + from.width / 2 - (dragged.x + dragged.width / 2)),
-    y:
-      target.y +
-      target.height / 2 +
-      (from.y + from.height / 2 - (dragged.y + dragged.height / 2)),
-  };
-  const to = {
-    x: Math.min(
-      Math.max(idealTarget.x, target.x + 1),
-      target.x + target.width - 1,
-    ),
-    y: Math.min(
-      Math.max(idealTarget.y, target.y + 1),
-      target.y + target.height - 1,
-    ),
-  };
-  if (
-    to.x < target.x ||
-    to.x >= target.x + target.width ||
-    to.y < target.y ||
-    to.y >= target.y + target.height
-  ) {
-    throw new Error("Adjusted pointer destination is outside A4");
-  }
-  await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
-  await page.mouse.down();
-  await page.mouse.move(to.x, to.y, {
-    steps: 12,
+  const room = page.getByRole("menuitem", {
+    name: "Move Dave Davis to a bed in Bunk Room A",
   });
+  await room.hover();
   await page
-    .getByTestId("bed-allocation-drag-feedback")
-    .filter({
-      hasText: "Dave Davis to Bunk Room A / A4, snapped to original lodge nights",
-    })
-    .waitFor({ state: "visible", timeout: 10_000 });
+    .getByRole("menuitem", { name: "Move Dave Davis to Bunk Room A / A4" })
+    .click();
+
+  const dialog = page.getByRole("dialog", {
+    name: /Move Dave Davis to Bunk Room A \/ A4/,
+  });
+  await dialog
+    .getByRole("radio", { name: /This person on this booking/ })
+    .check();
+  await dialog.getByText(/changing, .* unchanged, .* total/).waitFor({
+    state: "visible",
+    timeout: 15_000,
+  });
 }
 
 /**

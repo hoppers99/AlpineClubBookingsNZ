@@ -60,10 +60,16 @@ const MOVE_AUDIT_ACTIONS = [
   "BED_ALLOCATION_MANUAL_SET",
   "BED_ALLOCATION_PARTNER_PROMOTED",
 ] as const;
+const REVIEWED_MOVE_AUDIT_ACTIONS = [
+  "BED_ALLOCATION_MOVE_APPLIED",
+  "BED_ALLOCATION_PARTNERS_PROMOTED",
+] as const;
 const REQUESTED_ROOM_AUDIT_ACTIONS = [
   "booking.requested_room.updated",
   "booking.requested_room.cleared",
 ] as const;
+const MOVE_366_DELAY_TRIGGER = "race_2595_move_statement_delay_trigger";
+const MOVE_366_DELAY_FUNCTION = "race_2595_move_statement_delay_fn";
 
 type RemovalRollbackFailureStage = "delete" | "promotion" | "audit";
 
@@ -88,6 +94,8 @@ const ROLLBACK_FAILURE_OBJECTS = {
 let prisma: typeof import("@/lib/prisma")["prisma"];
 let previewBedAllocationRemoval: typeof import("@/lib/bed-allocation-removal")["previewBedAllocationRemoval"];
 let applyBedAllocationRemoval: typeof import("@/lib/bed-allocation-removal")["applyBedAllocationRemoval"];
+let previewBedAllocationMove: typeof import("@/lib/bed-allocation-move")["previewBedAllocationMove"];
+let applyBedAllocationMove: typeof import("@/lib/bed-allocation-move")["applyBedAllocationMove"];
 let moveBedAllocationsSameDate: typeof import("@/lib/admin-bed-allocation")["moveBedAllocationsSameDate"];
 let runAutoBedAllocation: typeof import("@/lib/admin-bed-allocation")["runAutoBedAllocation"];
 let deleteBedAllocationRoom: typeof import("@/lib/admin-bed-allocation")["deleteBedAllocationRoom"];
@@ -394,6 +402,23 @@ async function reviewedTargetRemoval(stayDate: string) {
   };
 }
 
+async function reviewedTargetMove() {
+  const request = {
+    anchorAllocationId: TARGET_ALLOCATION_ID,
+    destinationBedId: DESTINATION_BED_ID,
+    scope: "ALLOCATION_NIGHT" as const,
+  };
+  const preview = await previewBedAllocationMove(request);
+  return {
+    preview,
+    apply: () =>
+      applyBedAllocationMove({
+        actorMemberId: ACTOR_ID,
+        request: { ...request, previewDigest: preview.digest },
+      }),
+  };
+}
+
 async function actionCount(actions: readonly string[]): Promise<number> {
   return prisma.auditLog.count({
     where: { memberId: ACTOR_ID, action: { in: [...actions] } },
@@ -439,6 +464,36 @@ async function dropRemovalRollbackFailureInjection(): Promise<void> {
       `DROP FUNCTION IF EXISTS ${object.function}()`,
     );
   }
+}
+
+async function dropMove366StatementDelay(): Promise<void> {
+  await prisma.$executeRawUnsafe(
+    `DROP TRIGGER IF EXISTS ${MOVE_366_DELAY_TRIGGER} ON "BedAllocation"`,
+  );
+  await prisma.$executeRawUnsafe(
+    `DROP FUNCTION IF EXISTS ${MOVE_366_DELAY_FUNCTION}()`,
+  );
+}
+
+async function installMove366StatementDelay(): Promise<void> {
+  await dropMove366StatementDelay();
+  await prisma.$executeRawUnsafe(`
+    CREATE FUNCTION ${MOVE_366_DELAY_FUNCTION}()
+    RETURNS trigger
+    LANGUAGE plpgsql
+    AS $race2595$
+    BEGIN
+      PERFORM pg_sleep(0.02);
+      RETURN NULL;
+    END;
+    $race2595$
+  `);
+  await prisma.$executeRawUnsafe(`
+    CREATE TRIGGER ${MOVE_366_DELAY_TRIGGER}
+    BEFORE UPDATE ON "BedAllocation"
+    FOR EACH STATEMENT
+    EXECUTE FUNCTION ${MOVE_366_DELAY_FUNCTION}()
+  `);
 }
 
 async function installRemovalRollbackFailureInjection(
@@ -614,6 +669,9 @@ describe("bed-allocation removal race DB safety guard (#2594)", () => {
       ({ previewBedAllocationRemoval, applyBedAllocationRemoval } = await import(
         "@/lib/bed-allocation-removal"
       ));
+      ({ previewBedAllocationMove, applyBedAllocationMove } = await import(
+        "@/lib/bed-allocation-move"
+      ));
       ({
         deleteBedAllocationRoom,
         moveBedAllocationsSameDate,
@@ -730,6 +788,7 @@ describe("bed-allocation removal race DB safety guard (#2594)", () => {
 
     beforeEach(async () => {
       await dropRemovalRollbackFailureInjection();
+      await dropMove366StatementDelay();
       await clearBookingFixtures();
       await recreateRequestedRoomRaceFixture();
     });
@@ -738,6 +797,11 @@ describe("bed-allocation removal race DB safety guard (#2594)", () => {
       const cleanupErrors: unknown[] = [];
       try {
         await dropRemovalRollbackFailureInjection();
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+      try {
+        await dropMove366StatementDelay();
       } catch (error) {
         cleanupErrors.push(error);
       }
@@ -770,6 +834,7 @@ describe("bed-allocation removal race DB safety guard (#2594)", () => {
       };
       if (typeof prisma !== "undefined") {
         await attempt(dropRemovalRollbackFailureInjection);
+        await attempt(dropMove366StatementDelay);
         await attempt(clearBookingFixtures);
         await attempt(() =>
           prisma.bedAllocationSettings.deleteMany({ where: { id: LODGE_ID } }),
@@ -1000,6 +1065,166 @@ describe("bed-allocation removal race DB safety guard (#2594)", () => {
       },
     );
 
+    it.each(["MOVE_FIRST", "REMOVAL_FIRST"] as const)(
+      "serializes reviewed move and reviewed removal when %s is queued first",
+      async (order) => {
+        await seedBookings();
+        await seedTargetWithPartner();
+        const move = await reviewedTargetMove();
+        const removal = await reviewedTargetRemoval(FIRST_NIGHT_DATE_ONLY);
+
+        const outcomes =
+          order === "MOVE_FIRST"
+            ? await runWritersInGlobalQueueOrder(move.apply, removal.apply)
+            : await runWritersInGlobalQueueOrder(removal.apply, move.apply);
+        const [moveOutcome, removalOutcome] =
+          order === "MOVE_FIRST"
+            ? outcomes
+            : [outcomes[1], outcomes[0]];
+
+        const [target, partner, reviewedMoveAudits, removalAudits] =
+          await Promise.all([
+            prisma.bedAllocation.findUnique({
+              where: { id: TARGET_ALLOCATION_ID },
+              select: { bedId: true, source: true, approvedAt: true },
+            }),
+            prisma.bedAllocation.findUniqueOrThrow({
+              where: { id: PARTNER_ALLOCATION_ID },
+              select: { isSecondOccupant: true },
+            }),
+            actionCount(REVIEWED_MOVE_AUDIT_ACTIONS),
+            actionCount(REMOVAL_AUDIT_ACTIONS),
+          ]);
+
+        expect(partner.isSecondOccupant).toBe(false);
+        if (order === "MOVE_FIRST") {
+          expect(moveOutcome.status).toBe("fulfilled");
+          expect(rejectionStatus(removalOutcome)).toBe(409);
+          expect(target).toEqual({
+            bedId: DESTINATION_BED_ID,
+            source: "MANUAL",
+            approvedAt: null,
+          });
+          expect(reviewedMoveAudits).toBe(2);
+          expect(removalAudits).toBe(0);
+        } else {
+          expect(removalOutcome.status).toBe("fulfilled");
+          expect(rejectionStatus(moveOutcome)).toBe(409);
+          if (moveOutcome.status === "rejected") {
+            expect(moveOutcome.reason).toMatchObject({
+              refreshedPreview: expect.objectContaining({
+                conflicts: [
+                  expect.objectContaining({ code: "ALLOCATION_UNAVAILABLE" }),
+                ],
+              }),
+            });
+          }
+          expect(target).toBeNull();
+          expect(reviewedMoveAudits).toBe(1);
+          expect(removalAudits).toBe(2);
+        }
+      },
+    );
+
+    it("applies all 366 person rows in one guarded statement beyond the old default transaction shape", async () => {
+      const nights = Array.from(
+        { length: 366 },
+        (_, index) => new Date(Date.UTC(2099, 3, 1 + index)),
+      );
+      const checkOut = new Date(Date.UTC(2099, 3, 1 + nights.length));
+      const allocationIds = nights.map(
+        (_, index) => `race-2595-bulk-${String(index).padStart(3, "0")}`,
+      );
+      await seedBookings("CONFIRMED", false);
+      await prisma.booking.update({
+        where: { id: BOOKING_ID },
+        data: { checkOut },
+      });
+      await prisma.bookingGuest.update({
+        where: { id: GUEST_ID },
+        data: { stayEnd: checkOut },
+      });
+      await prisma.bookingGuestNight.deleteMany({
+        where: { bookingGuestId: GUEST_ID },
+      });
+      await prisma.bookingGuestNight.createMany({
+        data: nights.map((stayDate) => ({
+          bookingGuestId: GUEST_ID,
+          stayDate,
+          priceCents: 100,
+        })),
+      });
+      await prisma.bedAllocation.createMany({
+        data: nights.map((stayDate, index) => ({
+          id: allocationIds[index],
+          bookingId: BOOKING_ID,
+          bookingGuestId: GUEST_ID,
+          roomId: ROOM_ID,
+          bedId: OLD_DOUBLE_BED_ID,
+          bedType: "DOUBLE" as const,
+          stayDate,
+          source: "AUTO" as const,
+        })),
+      });
+
+      await installMove366StatementDelay();
+      const oldShapeStartedAt = process.hrtime.bigint();
+      await expect(
+        prisma.$transaction(async (tx) => {
+          for (const id of allocationIds) {
+            await tx.bedAllocation.updateMany({
+              where: { id },
+              data: { source: "MANUAL" },
+            });
+          }
+        }),
+      ).rejects.toMatchObject({ code: "P2028" });
+      expect(realElapsedMs(oldShapeStartedAt)).toBeGreaterThanOrEqual(4_500);
+      expect(
+        await prisma.bedAllocation.count({
+          where: {
+            id: { in: allocationIds },
+            source: "AUTO",
+            bedId: OLD_DOUBLE_BED_ID,
+          },
+        }),
+      ).toBe(366);
+
+      const request = {
+        anchorAllocationId: allocationIds[0],
+        destinationBedId: DESTINATION_BED_ID,
+        scope: "BOOKING_GUEST" as const,
+      };
+      const preview = await previewBedAllocationMove(request);
+      expect(preview).toMatchObject({
+        resolvedRowCount: 366,
+        changedRowCount: 366,
+        unchangedRowCount: 0,
+        conflicts: [],
+      });
+
+      const result = await applyBedAllocationMove({
+        actorMemberId: ACTOR_ID,
+        request: { ...request, previewDigest: preview.digest },
+      });
+      expect(result).toMatchObject({
+        noop: false,
+        movedRowCount: 366,
+        promotedRowCount: 0,
+      });
+      expect(
+        await prisma.bedAllocation.count({
+          where: {
+            id: { in: allocationIds },
+            source: "MANUAL",
+            bedId: DESTINATION_BED_ID,
+            approvedAt: null,
+          },
+        }),
+      ).toBe(366);
+      expect(await actionCount(["BED_ALLOCATION_MOVE_APPLIED"])).toBe(1);
+    });
+
     it("serializes an explicit auto run before reset, records no reset-triggered planning, and permits a later explicit rebuild", async () => {
       await seedBookings("CONFIRMED", false);
       await prisma.bedAllocation.create({
@@ -1178,6 +1403,48 @@ describe("bed-allocation removal race DB safety guard (#2594)", () => {
       expect(target).toBeNull();
       expect(partner.isSecondOccupant).toBe(false);
       expect(removalAudits).toBe(0);
+    });
+
+    it("returns an unavailable refreshed move preview after production cancellation wins", async () => {
+      await seedBookings("AWAITING_REVIEW");
+      await seedTargetWithPartner();
+      const move = await reviewedTargetMove();
+
+      const [cancelOutcome, moveOutcome] = await runWritersInGlobalQueueOrder(
+        () =>
+          cancelBooking(
+            BOOKING_ID,
+            ACTOR_ID,
+            "ADMIN",
+            "127.0.0.1",
+            "card",
+            {
+              suppressCustomerNotification: true,
+              notifyMember: false,
+            },
+          ),
+        move.apply,
+      );
+
+      expect(cancelOutcome.status).toBe("fulfilled");
+      expect(rejectionStatus(moveOutcome)).toBe(409);
+      if (moveOutcome.status === "rejected") {
+        expect(moveOutcome.reason).toMatchObject({
+          code: "STALE_PREVIEW",
+          refreshedPreview: expect.objectContaining({
+            conflicts: [
+              expect.objectContaining({ code: "ALLOCATION_UNAVAILABLE" }),
+            ],
+          }),
+        });
+      }
+      await waitForAuditAction("booking.cancel");
+      expect(
+        await prisma.bedAllocation.findUnique({
+          where: { id: TARGET_ALLOCATION_ID },
+        }),
+      ).toBeNull();
+      expect(await actionCount(["BED_ALLOCATION_MOVE_APPLIED"])).toBe(0);
     });
   },
 );

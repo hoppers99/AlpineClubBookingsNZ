@@ -1144,7 +1144,40 @@ a 409 refreshed preview with no partial mutation. The reset path never invokes a
 planner; the separate explicit `runAutoBedAllocation` writer is merely a
 counterpart taking the same global/lodge tiers.
 
-The counterpart inventory is deliberate. Move, explicit auto-allocation,
+Reviewed bed-allocation moves (`applyBedAllocationMove`, #2595) extend that
+topology because a move can change both room occupancy and a confirmed-partner
+shared-double consequence. PREVIEW is read-only and takes no lock. APPLY takes
+**global `lock(1)` -> the complete sorted source, destination, allocation-booking,
+guest-booking, and relevant-occupant lodge union -> sorted member-lifecycle
+locks -> sorted canonical member-partner-link locks -> every selected and
+causal `BedAllocation` tuple ordered by bed, night, primary/second flag, and
+id**. It then re-reads the complete state and recomputes the `v1:<sha256>`
+preview digest before any write. A newly discovered lodge or member family is a
+stale-preview refusal, never an unlocked expansion. This path deliberately
+takes no member-night lock: it preserves each guest's existing lodge-night
+footprint and creates no missing guest-night or allocation row.
+
+The authoritative preview covers every existing row for the selected night or
+for that booking guest (up to 366 rows), including sparse and off-screen rows,
+as well as destination room-night occupants, old-bed promotion candidates,
+booking/guest/lifecycle facts, partner links, whole-lodge and custodian holds,
+and exact guest-night eligibility. Unchanged rows participate in the digest
+but not feasibility checks, promotions, writes, approval reset, or audit. A
+changed approved row becomes an unapproved `MANUAL` draft; a vacated
+shared-double second occupant is promoted in the same transaction. Guarded
+update or promotion count drift rolls the transaction back. All changed rows
+are written by one guarded `UPDATE ... FROM (VALUES ...)` statement rather than
+up to 366 sequential round trips; the interactive transaction carries the same
+explicit 30-second timeout and 10-second acquisition wait as the supported
+366-night range writer. The disposable-PostgreSQL rehearsal installs a small
+per-UPDATE-statement delay, proves the former sequential/default-5-second shape
+times out and rolls back, then moves all 366 rows through the production path.
+An all-noop apply
+writes no allocation and no audit; a stale digest returns a refreshed preview
+with no partial mutation.
+
+The counterpart inventory is deliberate. Legacy same-date move, reviewed move,
+explicit auto-allocation,
 lifecycle reconcile, cancellation prune, room/bed inventory changes, manual
 placement/range assignment, and reviewed removal all share global → sorted
 lodge order before their allocation writes. Approval also row-locks the exact
@@ -1162,13 +1195,13 @@ delete/promotion/audit failures, and requested-room write versus room deletion;
 the source contracts also pin approval and requested-room topology.
 
 Bed-allocation mutation boundaries follow the same composition rule (#2593,
-#2594).
+#2594, #2595).
 The public lifecycle reconciler owns a transaction and takes global `lock(1)`
 before resolving and taking the booking's immutable lodge lock; callers already
 holding global use `reconcileBedAllocationsForBookingWithGlobalLockHeld`, and
 callers holding both use the explicitly named lodge-lock-held seam. Room/bed
 inventory update/delete, manual placement/range assignment, reviewed removal,
-and approval similarly expose transaction-owning public wrappers plus narrow
+reviewed move, and approval similarly expose transaction-owning public wrappers plus narrow
 `*WithLocksHeld` internals for existing transactions. A caller must never pass a
 client into a public wrapper to bypass lock ownership. The explicit board
 auto-allocation write takes global first, then the selected lodge lock, and

@@ -1150,6 +1150,56 @@ function bounded(values: string[]) {
   };
 }
 
+async function updateReviewedMoveRows(
+  tx: Prisma.TransactionClient,
+  rows: MoveAllocationRow[],
+  state: MoveState,
+): Promise<number> {
+  const reviewedRows = Prisma.join(
+    rows.map(
+      (row) => Prisma.sql`(
+        ${row.id}::text,
+        ${row.bookingId}::text,
+        ${row.bookingGuestId}::text,
+        ${row.roomId}::text,
+        ${row.bedId}::text,
+        ${row.stayDate}::date,
+        ${row.updatedAt}::timestamp(3),
+        ${(state.targetSecondByAllocationId.get(row.id) ?? false)}::boolean
+      )`,
+    ),
+  );
+  return tx.$executeRaw`
+    UPDATE "BedAllocation" AS allocation
+    SET
+      "roomId" = ${state.destination.roomId},
+      "bedId" = ${state.destination.id},
+      "source" = 'MANUAL'::"BedAllocationSource",
+      "approvedAt" = NULL,
+      "approvedByMemberId" = NULL,
+      "isSecondOccupant" = reviewed."targetSecond",
+      "bedType" = ${state.destination.bedType}::"BedType",
+      "updatedAt" = CURRENT_TIMESTAMP
+    FROM (VALUES ${reviewedRows}) AS reviewed(
+      "id",
+      "bookingId",
+      "bookingGuestId",
+      "roomId",
+      "bedId",
+      "stayDate",
+      "updatedAt",
+      "targetSecond"
+    )
+    WHERE allocation."id" = reviewed."id"
+      AND allocation."bookingId" = reviewed."bookingId"
+      AND allocation."bookingGuestId" = reviewed."bookingGuestId"
+      AND allocation."roomId" = reviewed."roomId"
+      AND allocation."bedId" = reviewed."bedId"
+      AND allocation."stayDate" = reviewed."stayDate"
+      AND allocation."updatedAt" = reviewed."updatedAt"
+  `;
+}
+
 export async function applyBedAllocationMove(input: {
   request: BedAllocationMoveApplyRequest;
   actorMemberId: string;
@@ -1281,36 +1331,18 @@ export async function applyBedAllocationMove(input: {
         causalMovedBookingGuestId: causalMove.bookingGuestId,
       };
     });
-    for (const row of orderedChanges) {
-      const updated = await tx.bedAllocation.updateMany({
-        where: {
-          id: row.id,
-          bookingId: row.bookingId,
-          bookingGuestId: row.bookingGuestId,
-          roomId: row.roomId,
-          bedId: row.bedId,
-          stayDate: row.stayDate,
-          updatedAt: row.updatedAt,
-        },
-        data: {
-          roomId: authoritative.destination.roomId,
-          bedId: authoritative.destination.id,
-          source: "MANUAL",
-          approvedAt: null,
-          approvedByMemberId: null,
-          isSecondOccupant:
-            authoritative.targetSecondByAllocationId.get(row.id) ?? false,
-          bedType: authoritative.destination.bedType,
-        },
-      });
-      if (updated.count !== 1) {
-        throw new BedAllocationMoveError(
-          "An allocation changed while the move was applying. Nothing was moved.",
-          409,
-          "STALE_PREVIEW",
-          authoritative.preview,
-        );
-      }
+    const movedCount = await updateReviewedMoveRows(
+      tx,
+      orderedChanges,
+      authoritative,
+    );
+    if (movedCount !== orderedChanges.length) {
+      throw new BedAllocationMoveError(
+        "An allocation changed while the move was applying. Nothing was moved.",
+        409,
+        "STALE_PREVIEW",
+        authoritative.preview,
+      );
     }
 
     if (authoritative.promotionRows.length > 0) {
@@ -1403,5 +1435,5 @@ export async function applyBedAllocationMove(input: {
       promotedRowCount: authoritative.promotionRows.length,
       affectedNights,
     };
-  });
+  }, { timeout: 30_000, maxWait: 10_000 });
 }

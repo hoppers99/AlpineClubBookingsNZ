@@ -292,6 +292,29 @@ function install(input: {
       return { count: matched.length };
     },
   );
+  prismaMock.$executeRaw.mockImplementation(
+    async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      if (!strings.join("").includes('UPDATE "BedAllocation" AS allocation')) {
+        return 1;
+      }
+      const reviewed = values.at(-1) as { values: unknown[] };
+      for (let offset = 0; offset < reviewed.values.length; offset += 8) {
+        const id = reviewed.values[offset] as string;
+        const row = input.rows.find((candidate) => candidate.id === id);
+        if (!row) continue;
+        Object.assign(row, {
+          roomId: target.roomId,
+          bedId: target.id,
+          source: "MANUAL",
+          approvedAt: null,
+          approvedByMemberId: null,
+          isSecondOccupant: reviewed.values[offset + 7] as boolean,
+          bedType: target.bedType,
+        });
+      }
+      return reviewed.values.length / 8;
+    },
+  );
   return target;
 }
 
@@ -311,7 +334,7 @@ describe("authoritative bed-allocation move", () => {
     custodianHoldsMock.mockResolvedValue([]);
     lifecycleLocksMock.mockResolvedValue(undefined);
     partnerLocksMock.mockResolvedValue(undefined);
-    prismaMock.$executeRaw.mockResolvedValue(0);
+    prismaMock.$executeRaw.mockResolvedValue(1);
     prismaMock.$transaction.mockImplementation(
       async (callback: (tx: typeof prismaMock) => unknown) => callback(prismaMock),
     );
@@ -491,6 +514,10 @@ describe("authoritative bed-allocation move", () => {
       promotedRowCount: 0,
       affectedNights: ["2026-08-01"],
     });
+    expect(prismaMock.$transaction).toHaveBeenCalledWith(
+      expect.any(Function),
+      { timeout: 30_000, maxWait: 10_000 },
+    );
     expect(rows[0]).toMatchObject({
       bedId: "bed-destination",
       roomId: "room-destination",
@@ -502,7 +529,7 @@ describe("authoritative bed-allocation move", () => {
     expect(lifecycleLocksMock).toHaveBeenCalledWith(prismaMock, ["member-1"]);
     expect(partnerLocksMock).toHaveBeenCalledWith(prismaMock, ["member-1"]);
     const rawCalls = prismaMock.$executeRaw.mock.invocationCallOrder;
-    expect(rawCalls).toHaveLength(2);
+    expect(rawCalls).toHaveLength(3);
     expect(rawCalls[0]).toBeLessThan(
       capacityLockMock.mock.invocationCallOrder[0],
     );
