@@ -2866,7 +2866,7 @@ compliant indefinitely.
   nobody confirmed in front of an officer as an emergency. It does not RESOLVE a
   standing incident on a regressed booking either, because that booking still holds
   its beds and reporting `COVERAGE_RESTORED` would be untrue.
-- **One active incident per booking, one successful message per transition** (§16). The partial
+- **One active incident per booking; owner notification is fenced, at-least-once delivery** (§16). The partial
   unique index `HostingCoverageIncident_active_booking_unique` makes the first an
   invariant against a concurrent second opener rather than a hope; the loser folds
   into the winner instead of surfacing a constraint violation. The stored `stateKey`
@@ -2885,7 +2885,14 @@ compliant indefinitely.
   fails, because `hosting-coverage-lost` deliberately has no independent EmailLog
   retry authority. The provider stays outside transactions, leaving only the narrow
   race after the final token read rather than holding a transaction across delivery.
-  A crashed sender's lease expires after 15 minutes. The re-evaluation queue uses the
+  The final read also rejects an expired lease. There is still one unavoidable
+  post-provider ambiguity: if the provider accepts the message and the process dies
+  before `notifiedStateKey` is stamped, the 15-minute retry may send the same
+  transition again. The provider has no idempotency-key contract; stamping before
+  transport would trade that rare duplicate for a permanently lost notice. This is
+  therefore at-least-once delivery with one durable success stamp, not an
+  exactly-once email guarantee. A crashed sender's lease expires after 15 minutes.
+  The re-evaluation queue uses the
   same 15-minute token fencing for completion and failure, claims serial work one row
   at a time, and excludes ids already attempted by that drain: a slow later item is
   not pre-leased and a released failure cannot burn several attempts in one pass.

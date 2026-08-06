@@ -316,7 +316,11 @@ export async function resolveHostingCoverageIncidents(
  *
  * The durable success stamp is written only AFTER transport success. A failed
  * sender releases the lease, and a crashed sender's lease expires, so unchanged
- * reconciliation retries instead of permanently suppressing delivery.
+ * reconciliation retries instead of permanently suppressing delivery. This is
+ * deliberately at-least-once: if the provider accepts the message and the process
+ * dies before the success stamp commits, a later retry can send a duplicate. The
+ * provider offers no idempotency key, and stamping before transport would turn the
+ * same crash into a permanently lost notice.
  */
 export async function claimHostingCoverageOwnerNotification(
   params: { incidentId: string; stateKey: string },

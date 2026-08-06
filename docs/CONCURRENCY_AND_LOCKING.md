@@ -408,7 +408,7 @@ Owner notification uses a separate 15-minute delivery lease with the same exact
 claimant rule: claim writes an opaque token, and completion/release must match that
 token as well as the incident and state key. Immediately before transport, one final
 guarded read proves the incident is unresolved and the incident/state/token are still
-current, then freezes the booking recipient plus the uncovered nights from the
+current **and unexpired**, then freezes the booking recipient plus the uncovered nights from the
 incident's evidence. A stale/resolved/reclaimed claim sends nothing, and the delivery
 never re-reads `Booking.adultMemberHostingReview`, which may already describe a later
 state. A successful transport stamps `notifiedStateKey`. Missing recipients and
@@ -417,7 +417,13 @@ unreadable booking `noEmails` flag is transient, releases the exact notification
 lease, and fails the exact queue claim for a later outbox retry. The email provider
 call stays outside every database transaction. That leaves one unavoidable interval
 after the final token read in which state can move before the provider call; closing
-it would hold a transaction across email delivery. The one-active-incident-per-booking rule uses the partial
+it would hold a transaction across email delivery. There is a second unavoidable
+at-least-once ambiguity after transport: if the provider accepts the message and the
+process dies before `notifiedStateKey` is stamped, the expired lease is retried and
+can send a duplicate. The provider exposes no idempotency key, while stamping before
+transport would make the same crash lose the notice permanently. The contract is one
+active sender per current lease and one durable success stamp per transition, not
+exactly-once provider delivery. The one-active-incident-per-booking rule uses the partial
 unique index `HostingCoverageIncident_active_booking_unique` (a concurrent second
 opener loses on the index and folds into the winner). No new key is added to the
 lock-ordering table.
