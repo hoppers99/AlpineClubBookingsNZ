@@ -62,12 +62,12 @@ module is on.
 | Chore Name | The chore's display name | — | Required |
 | Sort Order | Order within its time-of-day group | next in list | Integer |
 | Description | What the chore involves | — | Optional; shown on the roster |
-| Min People / Max People | Recommended people for the chore | 1 / 2 | Integers ≥ 1; shown as a range on the roster |
+| Min People / Max People | Recommended people for the chore | 1 / 2 | Integers ≥ 1; the roster's staffing summary compares the staged count with this exact single value or range |
 | Minimum Age | Youngest guest who may be assigned | 0 | Integer years |
 | Age Restriction | Any age · Adults only (18+) · Mixed (adult + child preferred) · Adult supervised | Any age | Drives who the roster auto-suggests |
 | Conditional Note | A note about when the chore applies | — | Optional; free text |
 | Time of Day | Morning · Evening · Anytime | Anytime | Groups the chore on this page and the roster |
-| Frequency | Daily · Every X days · Specific days of week | Daily | "Every X days" needs an interval; "Specific days" needs the ticked days |
+| Frequency | Daily · Every X days · Specific days of week | Daily | "Every X days" needs an interval; "Specific days" needs the ticked days. The roster's due-chore summary uses this lodge's own prior assignment history |
 | Essential | Whether the chore is always rostered | off | Essential chores appear every day regardless of occupancy |
 | Active | Whether the chore is in the library | on | Inactive chores are dimmed and not rostered |
 | Lodge selector | Which lodge's chores are shown | first/only lodge | Only shown with more than one active lodge; a chore's lodge is fixed at creation |

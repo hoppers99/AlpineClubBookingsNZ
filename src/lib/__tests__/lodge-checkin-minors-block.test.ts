@@ -60,11 +60,14 @@ import {
 } from "@/lib/lodge-date-scoping";
 import { routeParams } from "@/lib/__tests__/helpers/requests";
 
-// #1422: the where-fragment is now reason-agnostic — it excludes ANY pending
-// admin review, not just the adult-supervision reason.
-const BLOCK_FRAGMENT = {
-  requiresAdminReview: true,
-  adminReviewStatus: AdminReviewStatus.PENDING,
+// #1422 / #2586: the reason-agnostic enforcement fragment admits bookings
+// requiring no review or carrying explicit approval. Pending, rejected, and
+// malformed unresolved review states all remain excluded.
+const REVIEW_ALLOWED_FRAGMENT = {
+  OR: [
+    { requiresAdminReview: false },
+    { adminReviewStatus: AdminReviewStatus.APPROVED },
+  ],
 };
 
 function dateOnly(y: number, m: number, d: number) {
@@ -86,7 +89,7 @@ describe("lodge check-in blocks a pending minors-only review (#1372)", () => {
     expect(prismaMocks.bookingGuestFindFirst).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
-          booking: expect.objectContaining({ NOT: BLOCK_FRAGMENT }),
+          booking: expect.objectContaining(REVIEW_ALLOWED_FRAGMENT),
         }),
       }),
     );
@@ -100,7 +103,7 @@ describe("lodge check-in blocks a pending minors-only review (#1372)", () => {
     expect(prismaMocks.bookingGuestFindFirst).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
-          booking: expect.objectContaining({ NOT: BLOCK_FRAGMENT }),
+          booking: expect.objectContaining(REVIEW_ALLOWED_FRAGMENT),
         }),
       }),
     );
@@ -117,7 +120,7 @@ describe("lodge check-in blocks a pending minors-only review (#1372)", () => {
     expect(prismaMocks.bookingGuestFindMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
-          booking: expect.objectContaining({ NOT: BLOCK_FRAGMENT }),
+          booking: expect.objectContaining(REVIEW_ALLOWED_FRAGMENT),
         }),
       }),
     );
@@ -189,7 +192,7 @@ describe("lodge check-in blocks a pending minors-only review (#1372)", () => {
     expect(res.status).toBe(200);
     expect(prismaMocks.bookingFindMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: expect.objectContaining({ NOT: BLOCK_FRAGMENT }),
+        where: expect.objectContaining(REVIEW_ALLOWED_FRAGMENT),
       }),
     );
   });
@@ -214,7 +217,7 @@ describe("lodge check-in blocks a pending minors-only review (#1372)", () => {
     expect(prismaMocks.bookingGuestFindFirst).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
-          booking: expect.objectContaining({ NOT: BLOCK_FRAGMENT }),
+          booking: expect.objectContaining(REVIEW_ALLOWED_FRAGMENT),
         }),
       }),
     );

@@ -4,6 +4,8 @@ import type { PrismaClient } from "@prisma/client";
 
 import { createAuditLog } from "@/lib/audit";
 import { runDatabaseBackup, type BackupResult } from "@/lib/backup";
+import { acquireConfigImportLock } from "@/lib/config-transfer-lock";
+import { acquireLodgeCapacityLock } from "@/lib/lodge-capacity-lock";
 import { lockMinimumStayPolicySet } from "@/lib/minimum-stay-policy-set";
 import { lockAdultMemberHostingPolicySet } from "@/lib/adult-member-hosting-policy-set";
 import { readBundle, sha256Hex } from "./bundle";
@@ -19,6 +21,10 @@ import {
 } from "./import-types";
 import type { ConfigTransferCategory } from "./manifest";
 import type { BootstrapEmptyTargetProof } from "./bootstrap-import";
+import {
+  folderLodgeSlug,
+  lodgeFolderSegments,
+} from "./categories/lodge-config";
 
 // Apply orchestrator. Order (ADR-002): parse once → pre-apply database backup →
 // ONE transaction { advisory lock → re-plan against in-lock state → refuse on
@@ -53,9 +59,32 @@ export class ConfigImportBackupError extends Error {
   }
 }
 
-/** Single-flight lock so two imports cannot apply concurrently. */
-async function acquireConfigImportLock(tx: TxDb): Promise<void> {
-  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('config-transfer-import'))`;
+/**
+ * A lodge-config bundle may activate or deactivate chore templates. Lock every
+ * existing affected lodge before the in-lock re-plan so roster validation and
+ * the eventual config write observe one serialized template state. New lodges
+ * need no lock: no committed roster can refer to their not-yet-visible id.
+ */
+async function lockAffectedLodgeConfigLodges(
+  tx: TxDb,
+  files: Map<string, Uint8Array>,
+): Promise<void> {
+  const slugs = [
+    ...new Set(
+      lodgeFolderSegments(files)
+        .map((segment) => folderLodgeSlug(files, segment))
+        .filter((slug): slug is string => slug !== null),
+    ),
+  ];
+  if (slugs.length === 0) return;
+
+  const lodges = await tx.lodge.findMany({
+    where: { slug: { in: slugs } },
+    select: { id: true },
+  });
+  for (const lodgeId of lodges.map(({ id }) => id).sort()) {
+    await acquireLodgeCapacityLock(tx, lodgeId);
+  }
 }
 
 /**
@@ -230,6 +259,16 @@ export async function applyConfigImport(
         // CRUD takes only one of the last two, and no writer takes them in any
         // other order, so the three cannot form a cycle.
         await lockAdultMemberHostingPolicySet(tx);
+      }
+
+      const lodgeConfigSelected =
+        parsed.manifest.includedCategories.includes("lodge-config") &&
+        (!params.selectedCategories ||
+          params.selectedCategories.includes("lodge-config"));
+      if (lodgeConfigSelected) {
+        // Permanent order: config-transfer singleton -> policy-set locks (when
+        // selected) -> affected lodge ids in lexical order -> in-lock re-plan.
+        await lockAffectedLodgeConfigLodges(tx, parsed.files);
       }
 
       // ADR-003 bootstrap only: re-run the emptiness probe INSIDE the lock,

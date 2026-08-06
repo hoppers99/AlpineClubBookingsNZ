@@ -115,12 +115,12 @@ export function isCheckinBlockedByPendingReview(booking: ReviewGate): boolean {
 }
 
 /**
- * Prisma `where` fragment (AND-able) that EXCLUDES bookings blocked from lodge
- * check-in by a pending admin review (#1372 / #1422). Spread it into any
+ * Prisma `where` fragment (AND-able) that admits bookings requiring no review
+ * or carrying explicit APPROVED review state (#1372 / #1422 / #2586). Spread it into any
  * lodge-scoped `booking` filter — never hand-roll the condition — so every
  * check-in enforcement surface (arrive/depart, roster generate/confirm) applies
- * the block identically and the gate can't be applied in one place and missed
- * in another.
+ * the block identically. REJECTED and malformed unresolved legacy states remain
+ * ineligible rather than becoming operational during a follow-up transition.
  *
  * NOTE (#1422): the guest LIST (check-in roster the kiosk shows staff) no
  * longer spreads this filter — it INCLUDES blocked bookings and flags them via
@@ -129,10 +129,14 @@ export function isCheckinBlockedByPendingReview(booking: ReviewGate): boolean {
  */
 export function checkinNotBlockedByPendingReviewFilter(): Prisma.BookingWhereInput {
   return {
-    NOT: {
-      requiresAdminReview: true,
-      adminReviewStatus: AdminReviewStatus.PENDING,
-    },
+    OR: [
+      // Most bookings never require review. Once review is required, only an
+      // explicit approval is operationally admissible; PENDING, REJECTED and
+      // malformed legacy null states all remain blocked. The explicit OR also
+      // avoids nullable `not` semantics silently admitting a null status.
+      { requiresAdminReview: false },
+      { adminReviewStatus: AdminReviewStatus.APPROVED },
+    ],
   };
 }
 

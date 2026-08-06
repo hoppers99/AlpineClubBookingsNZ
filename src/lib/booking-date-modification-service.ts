@@ -98,6 +98,7 @@ import {
   calculateBookingHoldDecision,
   toGroupDiscountConfig,
 } from "@/lib/policies/booking-route-decisions";
+import { lockRosterDateRangesAndDates } from "@/lib/roster-lock";
 import { processWaitlistForDates } from "@/lib/waitlist";
 import { queueXeroBookingEditSettlement } from "@/lib/xero-booking-edit-settlement";
 import {
@@ -388,6 +389,19 @@ export async function modifyBookingDates({
     if (newCheckOut <= newCheckIn) {
       throw new ApiError("Check-out must be after check-in", 400);
     }
+
+    const existingAssignmentDates = await tx.choreAssignment.findMany({
+      where: { bookingId },
+      select: { date: true },
+    });
+    await lockRosterDateRangesAndDates(
+      tx,
+      [
+        { start: booking.checkIn, end: booking.checkOut },
+        { start: newCheckIn, end: newCheckOut },
+      ],
+      existingAssignmentDates.map((assignment) => assignment.date),
+    );
 
     if (
       actor.role !== "ADMIN" &&
@@ -847,10 +861,12 @@ export async function modifyBookingDates({
       bookingId,
       newCheckIn,
       newCheckOut,
+      { rosterDatesAlreadyLocked: true },
     );
     const rangeCleanup = await cleanupChoreAssignmentsForGuestStayRanges(
       tx,
       bookingId,
+      { rosterDatesAlreadyLocked: true },
     );
     const choreWarnings = [
       ...dateCleanup.choreWarnings,
@@ -1356,6 +1372,19 @@ export async function adminShiftBookingDates({
       throw new ApiError("The booking already has these dates", 400);
     }
 
+    const existingAssignmentDates = await tx.choreAssignment.findMany({
+      where: { bookingId },
+      select: { date: true },
+    });
+    await lockRosterDateRangesAndDates(
+      tx,
+      [
+        { start: oldCheckIn, end: oldCheckOut },
+        { start: newCheckIn, end: newCheckOut },
+      ],
+      existingAssignmentDates.map((assignment) => assignment.date),
+    );
+
     // Whole-day delta between two UTC-midnight date-only values (DST-safe).
     const MS_PER_DAY = 24 * 60 * 60 * 1000;
     const deltaDays = Math.round(
@@ -1517,10 +1546,12 @@ export async function adminShiftBookingDates({
       bookingId,
       newCheckIn,
       newCheckOut,
+      { rosterDatesAlreadyLocked: true },
     );
     const rangeCleanup = await cleanupChoreAssignmentsForGuestStayRanges(
       tx,
       bookingId,
+      { rosterDatesAlreadyLocked: true },
     );
     const choreWarnings = [
       ...dateCleanup.choreWarnings,

@@ -3,6 +3,8 @@ import { NextRequest } from "next/server";
 
 const mockAuth = vi.fn();
 const mockChoreAssignmentFindMany = vi.fn();
+const mockBookingFindMany = vi.fn();
+const mockExecuteRaw = vi.fn();
 const mockGuestTokenDeleteMany = vi.fn();
 const mockSendChoreRosterEmail = vi.fn();
 const mockShouldSendChoreRoster = vi.fn();
@@ -10,6 +12,30 @@ const mockCreateGuestChoreToken = vi.fn();
 const mockMemberCount = vi.fn();
 const mockLodgeFindFirst = vi.fn();
 const mockLogAudit = vi.fn();
+
+const transactionClient = {
+  $executeRaw: mockExecuteRaw,
+  choreAssignment: {
+    findMany: async (...args: unknown[]) => {
+      const assignments = await mockChoreAssignmentFindMany(...args);
+      return assignments.map((assignment: {
+        bookingGuestId?: string | null;
+        bookingGuest?: { id: string } | null;
+        choreTemplate: Record<string, unknown>;
+      }) => ({
+        ...assignment,
+        bookingGuestId: assignment.bookingGuestId ?? assignment.bookingGuest?.id ?? null,
+        choreTemplate: { active: true, ...assignment.choreTemplate },
+      }));
+    },
+  },
+  booking: {
+    findMany: mockBookingFindMany,
+  },
+};
+const mockTransaction = vi.fn(async (callback: (tx: typeof transactionClient) => unknown) =>
+  callback(transactionClient),
+);
 
 vi.mock("@/lib/auth", () => ({
   auth: () => mockAuth(),
@@ -41,8 +67,12 @@ vi.mock("@/lib/session-guards", () => ({
 
 vi.mock("@/lib/prisma", () => ({
   prisma: {
+    $transaction: mockTransaction,
     choreAssignment: {
       findMany: mockChoreAssignmentFindMany,
+    },
+    booking: {
+      findMany: mockBookingFindMany,
     },
     member: {
       count: mockMemberCount,
@@ -78,6 +108,36 @@ describe("PUT /api/admin/roster/[date] email action", () => {
     vi.clearAllMocks();
     mockAuth.mockResolvedValue({ user: { id: "admin1", role: "ADMIN", accessRoles: [{ role: "ADMIN" }] } });
     mockCreateGuestChoreToken.mockResolvedValue("token-1");
+    mockExecuteRaw.mockResolvedValue(undefined);
+    mockBookingFindMany.mockResolvedValue([
+      {
+        id: "booking-1",
+        createdAt: new Date("2026-01-01T00:00:00.000Z"),
+        checkIn: new Date("2026-04-10T00:00:00.000Z"),
+        checkOut: new Date("2026-04-11T00:00:00.000Z"),
+        member: { firstName: "Booking", lastName: "Owner" },
+        guests: [
+          {
+            id: "guest-1",
+            firstName: "Alice",
+            lastName: "Smith",
+            stayStart: new Date("2026-04-10T00:00:00.000Z"),
+            stayEnd: new Date("2026-04-11T00:00:00.000Z"),
+            member: { ageTier: "ADULT", dateOfBirth: null },
+            nights: [],
+          },
+          {
+            id: "guest-2",
+            firstName: "Bob",
+            lastName: "Jones",
+            stayStart: new Date("2026-04-10T00:00:00.000Z"),
+            stayEnd: new Date("2026-04-11T00:00:00.000Z"),
+            member: { ageTier: "ADULT", dateOfBirth: null },
+            nights: [],
+          },
+        ],
+      },
+    ]);
     mockMemberCount.mockResolvedValue(1);
     mockLodgeFindFirst.mockResolvedValue({ id: "default-lodge" });
     // Default: recipient wants the roster. The hybrid resolution itself is unit

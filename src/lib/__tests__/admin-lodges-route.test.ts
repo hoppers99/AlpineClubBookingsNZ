@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   memberLodgeAccessCount: vi.fn(),
   auditLogCreate: vi.fn(),
   transaction: vi.fn(),
+  executeRaw: vi.fn(),
   revalidatePublicPageContent: vi.fn(),
 }));
 
@@ -95,9 +96,11 @@ function params(id: string) {
 function installTransactionMock() {
   mocks.transaction.mockImplementation(async (callback) =>
     callback({
+      $executeRaw: mocks.executeRaw,
       lodge: {
         create: mocks.lodgeCreate,
         update: mocks.lodgeUpdate,
+        findFirst: mocks.lodgeFindFirst,
         findMany: mocks.lodgeFindMany,
       },
       auditLog: {
@@ -114,6 +117,7 @@ beforeEach(() => {
   mocks.bookingCount.mockResolvedValue(0);
   mocks.hutLeaderAssignmentCount.mockResolvedValue(0);
   mocks.memberLodgeAccessCount.mockResolvedValue(0);
+  mocks.executeRaw.mockResolvedValue(undefined);
   installTransactionMock();
 });
 

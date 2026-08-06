@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { AdminReviewStatus, BookingStatus } from "@prisma/client";
+import { AdminReviewStatus, BookingStatus, type Prisma } from "@prisma/client";
 
 import { logAudit } from "@/lib/audit";
 import { prisma } from "@/lib/prisma";
@@ -12,6 +12,7 @@ import {
 } from "@/lib/email";
 import logger from "@/lib/logger";
 import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
+import { acquireLodgeCapacityLock } from "@/lib/capacity";
 
 const reviewSchema = z
   .object({
@@ -28,6 +29,28 @@ const reviewSchema = z
     message: "Admin notes are required when rejecting",
     path: ["adminNotes"],
   });
+
+async function loadPendingReviewUnderEligibilityLocks(
+  tx: Prisma.TransactionClient,
+  bookingId: string,
+  lodgeId: string,
+) {
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
+  await acquireLodgeCapacityLock(tx, lodgeId);
+
+  const current = await tx.booking.findUnique({
+    where: { id: bookingId },
+    include: { member: true },
+  });
+  if (
+    !current ||
+    current.deletedAt ||
+    current.adminReviewStatus !== AdminReviewStatus.PENDING
+  ) {
+    return null;
+  }
+  return current;
+}
 
 // Approve/decline a booking request: a bookings write. Explicit bookings:edit
 // matches the area the route-area matrix already infers for /api/admin/bookings
@@ -70,8 +93,6 @@ export async function PATCH(
       { status: 409 },
     );
   }
-  const parkedForReview = booking.status === BookingStatus.AWAITING_REVIEW;
-
   const reviewedAt = new Date();
   const ipAddress =
     req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
@@ -83,52 +104,62 @@ export async function PATCH(
     parsed.data.notifyMember === false ? { notifyMember: false } : {};
 
   if (parsed.data.status === "APPROVED") {
-    // Atomic claim: only one admin can approve. Mirrors the change-request
-    // pattern of updateMany guarded by the prior status.
-    const claim = await prisma.booking.updateMany({
-      where: {
-        id: bookingId,
-        adminReviewStatus: AdminReviewStatus.PENDING,
-        status: booking.status,
-      },
-      data: {
-        adminReviewStatus: AdminReviewStatus.APPROVED,
-        adminReviewNotes: parsed.data.adminNotes || null,
-        adminReviewedById: session.user.id,
-        adminReviewedAt: reviewedAt,
-        // Only a parked pre-payment booking is released toward payment; a
-        // flagged paid/confirmed booking keeps its status (#1100) — the
-        // approval clears the review, never re-opens the payment lifecycle.
-        ...(parkedForReview ? { status: BookingStatus.PAYMENT_PENDING } : {}),
-      },
+    // Approval can make a live booking operationally eligible for the roster.
+    // Join the roster's global -> immutable-lodge order, then re-read and claim
+    // under those locks so an empty roster partition cannot validate the old
+    // PENDING state and insert after this commit.
+    const reviewedBooking = await prisma.$transaction(async (tx) => {
+      const current = await loadPendingReviewUnderEligibilityLocks(
+        tx,
+        bookingId,
+        booking.lodgeId,
+      );
+      if (!current) return null;
+
+      const parkedForReview = current.status === BookingStatus.AWAITING_REVIEW;
+      const claim = await tx.booking.updateMany({
+        where: {
+          id: bookingId,
+          deletedAt: null,
+          adminReviewStatus: AdminReviewStatus.PENDING,
+          status: current.status,
+        },
+        data: {
+          adminReviewStatus: AdminReviewStatus.APPROVED,
+          adminReviewNotes: parsed.data.adminNotes || null,
+          adminReviewedById: session.user.id,
+          adminReviewedAt: reviewedAt,
+          // Only a parked pre-payment booking is released toward payment; a
+          // flagged paid/confirmed booking keeps its status (#1100) — the
+          // approval clears the review, never re-opens the payment lifecycle.
+          ...(parkedForReview ? { status: BookingStatus.PAYMENT_PENDING } : {}),
+        },
+      });
+      if (claim.count !== 1) return null;
+
+      await reconcileBedAllocationsForBooking({ bookingId, db: tx });
+      return current;
     });
 
-    if (claim.count !== 1) {
+    if (!reviewedBooking) {
       return NextResponse.json(
         { error: "This booking has already been reviewed" },
         { status: 409 },
       );
     }
-    await reconcileBedAllocationsForBooking({
-      bookingId,
-      previousRange: {
-        checkIn: booking.checkIn,
-        checkOut: booking.checkOut,
-      },
-    });
 
     // #1790: approve always emails the member unless the admin chose not to
     // notify (default is notify; the suppression is audited below).
     if (parsed.data.notifyMember !== false) {
       sendBookingReviewApprovedEmail({
-        email: booking.member.email,
-        firstName: booking.member.firstName,
-        checkIn: booking.checkIn,
-        checkOut: booking.checkOut,
+        email: reviewedBooking.member.email,
+        firstName: reviewedBooking.member.firstName,
+        checkIn: reviewedBooking.checkIn,
+        checkOut: reviewedBooking.checkOut,
         adminNotes: parsed.data.adminNotes,
         bookingId,
-        recipientMemberId: booking.memberId,
-        lodgeId: booking.lodgeId,
+        recipientMemberId: reviewedBooking.memberId,
+        lodgeId: reviewedBooking.lodgeId,
       }).catch((err) =>
         logger.error({ err, bookingId }, "Failed to send booking review approved email"),
       );
@@ -138,7 +169,7 @@ export async function PATCH(
       action: "booking.review.approve",
       memberId: session.user.id,
       targetId: bookingId,
-      subjectMemberId: booking.memberId,
+      subjectMemberId: reviewedBooking.memberId,
       entityType: "Booking",
       entityId: bookingId,
       category: "booking",
@@ -152,60 +183,55 @@ export async function PATCH(
     return NextResponse.json({ success: true, decision: "APPROVED" });
   }
 
-  // REJECTED — record the review fields and then cancel via the shared
-  // cancellation flow. A parked AWAITING_REVIEW booking has no payment so
-  // cancelBooking short-circuits the refund branch; a flagged paid booking
-  // (#1100) is refunded per the cancellation policy by the same shared flow.
-  const claim = await prisma.booking.updateMany({
-    where: {
-      id: bookingId,
-      adminReviewStatus: AdminReviewStatus.PENDING,
-      status: booking.status,
-    },
-    data: {
-      adminReviewStatus: AdminReviewStatus.REJECTED,
-      adminReviewNotes: parsed.data.adminNotes,
-      adminReviewedById: session.user.id,
-      adminReviewedAt: reviewedAt,
-    },
+  // A rejected review remains operationally ineligible until cancellation has
+  // finished. Claim it in the same global -> lodge order as approval and the
+  // roster, eliminating the old PENDING -> REJECTED eligibility window. The
+  // shared cancellation flow runs after commit because it owns its own global
+  // transaction and may call payment providers outside that transaction.
+  const reviewedBooking = await prisma.$transaction(async (tx) => {
+    const current = await loadPendingReviewUnderEligibilityLocks(
+      tx,
+      bookingId,
+      booking.lodgeId,
+    );
+    if (!current) return null;
+
+    const legacyDraft = current.status === BookingStatus.DRAFT;
+    const claim = await tx.booking.updateMany({
+      where: {
+        id: bookingId,
+        deletedAt: null,
+        adminReviewStatus: AdminReviewStatus.PENDING,
+        status: current.status,
+      },
+      data: {
+        adminReviewStatus: AdminReviewStatus.REJECTED,
+        adminReviewNotes: parsed.data.adminNotes,
+        adminReviewedById: session.user.id,
+        adminReviewedAt: reviewedAt,
+        ...(legacyDraft
+          ? { status: BookingStatus.CANCELLED, draftExpiresAt: null }
+          : {}),
+      },
+    });
+    if (claim.count !== 1) return null;
+
+    if (legacyDraft) {
+      await reconcileBedAllocationsForBooking({ bookingId, db: tx });
+    }
+    return current;
   });
 
-  if (claim.count !== 1) {
+  if (!reviewedBooking) {
     return NextResponse.json(
       { error: "This booking has already been reviewed" },
       { status: 409 },
     );
   }
 
-  // #2266 robustness: a PENDING review can only sit on a cancellable status
-  // (parked AWAITING_REVIEW, or a flagged paid/confirmed booking) — the modify
-  // path now parks review-flagged DRAFTs to AWAITING_REVIEW, so a DRAFT queue
-  // entry should no longer be creatable. But a legacy row from before that fix
-  // (review PENDING while still DRAFT) would 500 here: cancelBooking rightly
-  // refuses DRAFT, and the review is already recorded by the claim above.
-  // Handle it directly instead — a DRAFT holds no capacity and has no payment,
-  // so a guarded DRAFT -> CANCELLED flip is the whole cancellation.
-  if (booking.status === BookingStatus.DRAFT) {
-    const cancelled = await prisma.booking.updateMany({
-      where: { id: bookingId, status: BookingStatus.DRAFT },
-      data: { status: BookingStatus.CANCELLED, draftExpiresAt: null },
-    });
-    if (cancelled.count !== 1) {
-      // A concurrent action moved the draft (expiry sweep, member delete).
-      // The rejection is recorded; surface the benign race, not a fault.
-      return NextResponse.json(
-        { error: "Review recorded, but the draft is no longer cancellable" },
-        { status: 409 },
-      );
-    }
-    await reconcileBedAllocationsForBooking({
-      bookingId,
-      previousRange: {
-        checkIn: booking.checkIn,
-        checkOut: booking.checkOut,
-      },
-    });
-  } else {
+  // Legacy PENDING+DRAFT rows are rejected and cancelled in the claim above;
+  // every other status uses the shared cancellation/refund flow after commit.
+  if (reviewedBooking.status !== BookingStatus.DRAFT) {
     const cancelResult = await cancelBooking(
       bookingId,
       session.user.id,
@@ -241,14 +267,14 @@ export async function PATCH(
   // only the rejection notice — the shared cancelBooking flow is untouched.
   if (parsed.data.notifyMember !== false) {
     sendBookingReviewRejectedEmail({
-      bookingId: booking.id,
-      recipientMemberId: booking.memberId,
-      email: booking.member.email,
-      firstName: booking.member.firstName,
-      checkIn: booking.checkIn,
-      checkOut: booking.checkOut,
+      bookingId: reviewedBooking.id,
+      recipientMemberId: reviewedBooking.memberId,
+      email: reviewedBooking.member.email,
+      firstName: reviewedBooking.member.firstName,
+      checkIn: reviewedBooking.checkIn,
+      checkOut: reviewedBooking.checkOut,
       adminNotes: parsed.data.adminNotes,
-      lodgeId: booking.lodgeId,
+      lodgeId: reviewedBooking.lodgeId,
     }).catch((err) =>
       logger.error({ err, bookingId }, "Failed to send booking review rejected email"),
     );
@@ -258,7 +284,7 @@ export async function PATCH(
     action: "booking.review.reject",
     memberId: session.user.id,
     targetId: bookingId,
-    subjectMemberId: booking.memberId,
+    subjectMemberId: reviewedBooking.memberId,
     entityType: "Booking",
     entityId: bookingId,
     category: "booking",

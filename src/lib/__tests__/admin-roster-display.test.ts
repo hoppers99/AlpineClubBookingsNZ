@@ -62,6 +62,7 @@ vi.mock("@/lib/prisma", () => ({
 
 vi.mock("@/lib/chore-allocator", () => ({
   allocateChores: vi.fn(),
+  filterChoresByFrequency: (templates: unknown[]) => templates,
 }));
 
 vi.mock("@/lib/email", () => ({
@@ -89,11 +90,14 @@ describe("GET /api/admin/roster/[date] age tier display", () => {
     mockTransaction.mockImplementation(async (callback: (tx: unknown) => unknown) =>
       callback({
         $executeRaw: mockTxExecuteRaw,
+        booking: { findMany: mockBookingFindMany },
         choreAssignment: {
           findMany: mockTxChoreAssignmentFindMany,
           deleteMany: vi.fn(),
           createMany: vi.fn(),
+          groupBy: vi.fn().mockResolvedValue([]),
         },
+        choreTemplate: { findMany: mockChoreTemplateFindMany },
       })
     );
   });
@@ -110,12 +114,17 @@ describe("GET /api/admin/roster/[date] age tier display", () => {
             firstName: "Malia",
             lastName: "Hartley-Smith",
             ageTier: "CHILD",
-            member: { ageTier: "YOUTH" },
+            stayStart: new Date("2026-07-10T00:00:00.000Z"),
+            stayEnd: new Date("2026-07-11T00:00:00.000Z"),
+            nights: [],
+            member: { ageTier: "YOUTH", dateOfBirth: new Date("2010-01-01T00:00:00.000Z") },
           },
         ],
       },
     ]);
-    mockTxChoreAssignmentFindMany.mockResolvedValue([
+    mockTxChoreAssignmentFindMany.mockImplementation(async (args: { where?: { date?: unknown }; select?: unknown }) => {
+      if (args.where?.date && typeof args.where.date === "object" && "gte" in args.where.date) return []
+      return [
       {
         id: "assignment-1",
         choreTemplateId: "chore-1",
@@ -135,7 +144,8 @@ describe("GET /api/admin/roster/[date] age tier display", () => {
         bookingId: "booking-1",
         status: "CONFIRMED",
       },
-    ]);
+    ]
+    });
     mockChoreTemplateFindMany.mockResolvedValue([
       {
         id: "chore-1",
@@ -149,6 +159,9 @@ describe("GET /api/admin/roster/[date] age tier display", () => {
         minAge: 0,
         sortOrder: 1,
         active: true,
+        frequencyMode: "DAILY",
+        frequencyDays: null,
+        frequencyDaysOfWeek: [],
       },
     ]);
     mockChoreAssignmentFindMany.mockResolvedValue([]);
@@ -162,6 +175,6 @@ describe("GET /api/admin/roster/[date] age tier display", () => {
     expect(res.status).toBe(200);
     expect(data.guests[0].ageTier).toBe("YOUTH");
     expect(data.assignments[0].guestAgeTier).toBe("YOUTH");
-    expect(mockTxExecuteRaw).toHaveBeenCalledTimes(1);
+    expect(mockTxExecuteRaw).toHaveBeenCalledTimes(3);
   });
 });

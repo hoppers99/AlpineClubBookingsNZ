@@ -226,7 +226,10 @@ export async function getRosterMonthStatus(input: {
     where: {
       date: { gte: startDate, lt: endDate },
       ...(input.lodgeId
-        ? { booking: lodgeNullTolerantScope(input.lodgeId) }
+        ? {
+            booking: lodgeNullTolerantScope(input.lodgeId),
+            choreTemplate: lodgeNullTolerantScope(input.lodgeId),
+          }
         : {}),
     },
     select: {
@@ -301,7 +304,10 @@ export async function countRosterNightsNeedingChores(input: {
       where: {
         date: { gte: from, lt: to },
         ...(input.lodgeId
-          ? { booking: lodgeNullTolerantScope(input.lodgeId) }
+          ? {
+              booking: lodgeNullTolerantScope(input.lodgeId),
+              choreTemplate: lodgeNullTolerantScope(input.lodgeId),
+            }
           : {}),
       },
       select: {

@@ -135,6 +135,7 @@ export const DEMO_BOOKING_WINDOWS = {
   kenReview: relWindow(45, 2), // AWAITING_REVIEW (bed-allocation.spec)
   larsFailed: relWindow(33, 2), // PENDING (failed payment)
   mallorySplit: relWindow(-37, 2), // CONFIRMED split parent/child
+  rosterEdit: relWindow(150, 1), // two PAID bookings for staged roster editing (#2586)
 } as const;
 
 // --- Role-boundary personas (e2e/admin-roles.spec.ts) --------------------

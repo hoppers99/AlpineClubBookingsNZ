@@ -924,11 +924,15 @@ describe("N-01: sendCheckinReminders", () => {
     await sendCheckinReminders();
 
     // A blocked booking can't check in until an admin clears the review, so the
-    // reminder query carries the shared NOT where-fragment that excludes it.
+    // reminder query carries the shared positive eligibility fragment, so
+    // rejected and malformed unresolved review states stay blocked too.
     expect(mockPrisma.booking.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
-          NOT: { requiresAdminReview: true, adminReviewStatus: "PENDING" },
+          OR: [
+            { requiresAdminReview: false },
+            { adminReviewStatus: "APPROVED" },
+          ],
         }),
       }),
     );

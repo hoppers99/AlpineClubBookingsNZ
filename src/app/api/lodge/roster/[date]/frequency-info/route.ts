@@ -50,6 +50,7 @@ export async function GET(
     by: ["choreTemplateId"],
     where: {
       date: { lt: date },
+      booking: lodgeNullTolerantScope(kioskLodgeId),
       choreTemplate: lodgeNullTolerantScope(kioskLodgeId),
     },
     _max: { date: true },

@@ -322,15 +322,15 @@ const NOTICE = "AdminViewOnlyNotice";
 */
 const FIGURES = {
   /** Every `<ViewOnlyActionButton>` render site in the admin tree. */
-  callSites: 312,
+  callSites: 310,
   /** Those that hand their explanation to a banner, by either rule. */
-  optOuts: 263,
+  optOuts: 261,
   /** `describeReason={false}` — needs a banner in the SAME file. */
-  staticOptOuts: 237,
+  staticOptOuts: 234,
   /** `describeReason={!ancestorRendersViewOnlyBanner}` — needs a vouch. */
-  vouchedOptOuts: 26,
+  vouchedOptOuts: 27,
   /** …of the vouched: proved at a parent's own JSX render site (#2168). */
-  renderSiteVouchedOptOuts: 21,
+  renderSiteVouchedOptOuts: 22,
   /** …of the vouched: proved through the wizard shell's channel (#2324). */
   shellVouchedOptOuts: 5,
   /** Controls that KEEP the per-button reason, and the files holding them. */
@@ -1244,6 +1244,12 @@ describe("view-only section banner coverage (#2160)", () => {
                exceptions and the leaf bucket are untouched, because nothing
                here is gated on anything narrower than the finance area the
                banner states.
+          310  -2  #2586 replaces the roster's three immediate row-write call
+               sites (Add Person, Remove and the unassigned-chore picker) with
+               one staged whole-roster Edit control. That child control is
+               vouched by the roster page's unconditional lodge-access banner,
+               so static opt-outs move 237 -> 234, render-site vouches move
+               21 -> 22, and total opt-outs move 263 -> 261.
       */
       // #2259 adds the per-booking "No emails"
       // switch (`booking-no-emails-controls.tsx`), a leaf control dropped into

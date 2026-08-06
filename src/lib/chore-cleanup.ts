@@ -7,6 +7,7 @@
  */
 
 import type { PrismaClient } from "@prisma/client";
+import { lockRosterDates } from "@/lib/roster-lock";
 
 type Tx = Omit<PrismaClient, "$connect" | "$disconnect" | "$on" | "$transaction" | "$use" | "$extends">;
 
@@ -28,24 +29,39 @@ export async function cleanupChoreAssignmentsForDateChange(
   tx: Tx,
   bookingId: string,
   newCheckIn: Date,
-  newCheckOut: Date
+  newCheckOut: Date,
+  options: { rosterDatesAlreadyLocked?: boolean } = {},
 ): Promise<ChoreCleanupResult> {
   const choreWarnings: string[] = [];
   let deletedCount = 0;
 
-  // Find assignments outside the new date range
+  const where = {
+    bookingId,
+    OR: [{ date: { lt: newCheckIn } }, { date: { gte: newCheckOut } }],
+  };
+  if (!options.rosterDatesAlreadyLocked) {
+    // The first query derives the advisory keys only. It is not authoritative:
+    // a whole-roster Save may reattribute a row while we wait for those locks.
+    const lockCandidates = await tx.choreAssignment.findMany({
+      where,
+      select: { date: true },
+    });
+    await lockRosterDates(tx, lockCandidates.map((assignment) => assignment.date));
+  }
+
+  // Re-read under the date locks. Warnings and deletes must come only from this
+  // snapshot, not ids captured before a wait.
   const outOfRangeAssignments = await tx.choreAssignment.findMany({
-    where: {
-      bookingId,
-      OR: [{ date: { lt: newCheckIn } }, { date: { gte: newCheckOut } }],
-    },
+    where,
     include: { choreTemplate: true },
   });
 
   for (const assignment of outOfRangeAssignments) {
     if (assignment.status === "SUGGESTED") {
-      await tx.choreAssignment.delete({ where: { id: assignment.id } });
-      deletedCount++;
+      const deleted = await tx.choreAssignment.deleteMany({
+        where: { id: assignment.id, ...where, status: "SUGGESTED" },
+      });
+      deletedCount += deleted.count;
     } else {
       choreWarnings.push(
         `${assignment.choreTemplate.name} on ${assignment.date.toISOString().split("T")[0]} is ${assignment.status} and was not auto-removed`
@@ -58,16 +74,23 @@ export async function cleanupChoreAssignmentsForDateChange(
 
 export async function cleanupChoreAssignmentsForGuestStayRanges(
   tx: Tx,
-  bookingId: string
+  bookingId: string,
+  options: { rosterDatesAlreadyLocked?: boolean } = {},
 ): Promise<ChoreCleanupResult> {
   const choreWarnings: string[] = [];
   let deletedCount = 0;
 
+  const where = { bookingId, bookingGuestId: { not: null } };
+  if (!options.rosterDatesAlreadyLocked) {
+    const lockCandidates = await tx.choreAssignment.findMany({
+      where,
+      select: { date: true },
+    });
+    await lockRosterDates(tx, lockCandidates.map((assignment) => assignment.date));
+  }
+
   const assignments = await tx.choreAssignment.findMany({
-    where: {
-      bookingId,
-      bookingGuestId: { not: null },
-    },
+    where,
     include: {
       choreTemplate: true,
       bookingGuest: {
@@ -95,8 +118,15 @@ export async function cleanupChoreAssignmentsForGuestStayRanges(
     }
 
     if (assignment.status === "SUGGESTED") {
-      await tx.choreAssignment.delete({ where: { id: assignment.id } });
-      deletedCount++;
+      const deleted = await tx.choreAssignment.deleteMany({
+        where: {
+          id: assignment.id,
+          bookingId,
+          bookingGuestId: assignment.bookingGuestId,
+          status: "SUGGESTED",
+        },
+      });
+      deletedCount += deleted.count;
     } else {
       choreWarnings.push(
         `${assignment.choreTemplate.name} on ${assignment.date.toISOString().split("T")[0]} is ${assignment.status} and falls outside the guest's stay range`

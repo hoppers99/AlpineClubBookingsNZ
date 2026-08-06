@@ -7,6 +7,7 @@ import { prisma } from "@/lib/prisma";
 import { logAudit } from "@/lib/audit";
 import { z } from "zod";
 import logger from "@/lib/logger";
+import { lockRosterDate } from "@/lib/roster-lock";
 
 const dateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 
@@ -59,7 +60,11 @@ export async function GET(
   }
 
   const assignments = await prisma.choreAssignment.findMany({
-    where: { date, booking: lodgeNullTolerantScope(lodgeId) },
+    where: {
+      date,
+      booking: lodgeNullTolerantScope(lodgeId),
+      choreTemplate: lodgeNullTolerantScope(lodgeId),
+    },
     include: {
       choreTemplate: true,
       bookingGuest: {
@@ -147,51 +152,57 @@ export async function PUT(
   try {
     const lodgeId = await resolveKioskLodgeId(authResult, prisma);
 
-    const assignment = await prisma.choreAssignment.findFirst({
-      where: {
-        id: data.assignmentId,
-        date,
-        booking: lodgeNullTolerantScope(lodgeId),
-      },
-      select: {
-        id: true,
-        choreTemplateId: true,
-        bookingId: true,
-        bookingGuestId: true,
-        bookingGuest: {
-          select: {
-            memberId: true,
-            firstName: true,
-            lastName: true,
+    const assignment = await prisma.$transaction(async (tx) => {
+      await lockRosterDate(tx, date);
+      const current = await tx.choreAssignment.findFirst({
+        where: {
+          id: data.assignmentId,
+          date,
+          booking: lodgeNullTolerantScope(lodgeId),
+          choreTemplate: lodgeNullTolerantScope(lodgeId),
+        },
+        select: {
+          id: true,
+          choreTemplateId: true,
+          bookingId: true,
+          bookingGuestId: true,
+          bookingGuest: {
+            select: {
+              memberId: true,
+              firstName: true,
+              lastName: true,
+            },
           },
         },
-      },
+      });
+      if (!current) return null;
+
+      if (data.action === "complete") {
+        await tx.choreAssignment.update({
+          where: { id: data.assignmentId },
+          data: {
+            status: "COMPLETED",
+            completedAt: new Date(),
+            completedVia: "KIOSK",
+          },
+        });
+      } else {
+        await tx.choreAssignment.update({
+          where: { id: data.assignmentId },
+          data: {
+            status: "CONFIRMED",
+            completedAt: null,
+            completedVia: null,
+          },
+        });
+      }
+      return current;
     });
     if (!assignment) {
       return NextResponse.json(
         { error: "Assignment not found for this date" },
         { status: 404 }
       );
-    }
-
-    if (data.action === "complete") {
-      await prisma.choreAssignment.update({
-        where: { id: data.assignmentId },
-        data: {
-          status: "COMPLETED",
-          completedAt: new Date(),
-          completedVia: "KIOSK",
-        },
-      });
-    } else {
-      await prisma.choreAssignment.update({
-        where: { id: data.assignmentId },
-        data: {
-          status: "CONFIRMED",
-          completedAt: null,
-          completedVia: null,
-        },
-      });
     }
 
     const completed = data.action === "complete";

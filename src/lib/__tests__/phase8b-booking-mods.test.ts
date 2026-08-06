@@ -343,7 +343,7 @@ function makeTx(booking: ReturnType<typeof makeBooking>) {
     choreAssignment: {
       findMany: vi.fn().mockResolvedValue([]),
       delete: vi.fn().mockResolvedValue({}),
-      deleteMany: vi.fn().mockResolvedValue({}),
+      deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
     },
   };
 }
@@ -771,7 +771,17 @@ describe("PUT /api/bookings/[id]/modify-dates", () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     // SUGGESTED deleted, CONFIRMED kept with warning
-    expect(tx.choreAssignment.delete).toHaveBeenCalledWith({ where: { id: "ca1" } });
+    expect(tx.choreAssignment.deleteMany).toHaveBeenCalledWith({
+      where: {
+        id: "ca1",
+        bookingId: booking.id,
+        OR: [
+          { date: { lt: new Date("2026-06-02T00:00:00.000Z") } },
+          { date: { gte: new Date("2026-06-04T00:00:00.000Z") } },
+        ],
+        status: "SUGGESTED",
+      },
+    });
     expect(body.choreWarnings).toHaveLength(1);
     expect(body.choreWarnings[0]).toContain("CONFIRMED");
   });
