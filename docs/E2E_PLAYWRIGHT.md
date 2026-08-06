@@ -19,7 +19,7 @@ the demo seed (`prisma/demo-seed.ts`).
 | `e2e/admin-roles.spec.ts` | Role boundaries (High) | One persona per bundled access role (ADMIN_READONLY, ADMIN_BOOKINGS, ADMIN_MEMBERSHIP, ADMIN_CONTENT, FINANCE_USER, FINANCE_ADMIN, LODGE). Each asserts an in-area page renders and an out-of-area page is blocked (redirect), per the authoritative matrix in `src/lib/admin-permissions.ts` and the `/finance` (finance-auth) and `/lodge` (kiosk) gates |
 | `e2e/waitlist.spec.ts` | Waitlist / force-confirm / offer (High) | Member is refused a seeded-full night and joins the waitlist (WAITLISTED); admin force-confirms it off the waitlist (overbook branch) through `/admin/waitlist`; member accepts a seeded, non-expired offer through the offer card; the admin waitlist surfaces offer + expiry state |
 | `e2e/double-bed-sharing.spec.ts` | Partner relationship and reviewed bed-allocation removal (#1742, #2594, High) | Partner declaration/admission and shared-double placement. S4 previews then applies removal through the production `POST`/`PUT /api/admin/bed-allocation/allocations/removal` boundary and proves the surviving second occupant is promoted to primary. This is the production-stack shared-double consequence proof; stale refresh and permission affordances remain in focused component/route suites. |
-| `e2e/bed-allocation.spec.ts` | Admin bed allocation, explicit moves, booking confirmation, and reviewed removal (#2252, #2366, #2594, High) | Approves and allocates the seeded Ken booking, preserves original lodge nights through pointer and keyboard moves, confirms from booking detail, and keeps the panel absent for members. The reviewed-removal journey opens the shared dialog from Reset, the chip menu, a pointer drop to the unallocated bucket, and booking detail; applies an approved person-wide removal with auto-allocation enabled; proves no replacement; and restores the exact guest-nights and approvals. Retry setup repairs a killed worker's approved/allocation state through product APIs. |
+| `e2e/bed-allocation.spec.ts` | Admin bed allocation, reviewed moves, booking confirmation, and reviewed removal (#2252, #2366, #2594, #2595, High) | Approves and allocates the seeded Ken booking, then proves every move entry point uses the reviewed confirmation seam. A pointer drop opens the dialog without writing, switches to **This person on this booking**, shows the exact changing/unchanged/total counts and approval consequence, and sends the typed scope plus preview digest only after confirmation while preserving the original lodge nights. A keyboard drop opens the same dialog, Cancel writes nothing and restores focus, and the chip menu can confirm a current-bed person-scope all-noop without changing placement or approval. The reviewed-removal journey opens the shared dialog from Reset, the chip menu, a pointer drop to the unallocated bucket, and booking detail; applies an approved person-wide removal with auto-allocation enabled; proves no replacement; and restores the exact guest-nights and approvals. Retry cleanup repairs a killed worker's placement and approval state through product APIs. |
 | `e2e/internet-banking.spec.ts` | Internet Banking settlement (Critical) | With Xero **absent**, a card PAYMENT_PENDING booking is switched to Internet Banking; the detail page shows the Internet Banking card with a `BOOKING-…` reference and does not crash (the Xero invoice is queued but never sent while disconnected). Toggles the Xero + Internet Banking modules on for its run and restores them |
 | `e2e/membership-application.spec.ts` | Membership application (High) | Public application submit; both nominators agree through the real `/nominations/<token>` pages; admin approves; the applicant then exists as a member |
 | `e2e/additional-payment-chase.spec.ts` | Outstanding additional payment (#2350, High) | The officer loop for money still owed after a booking change: the bookings list filtered to **Additional Payment: Still owing** marks the booking **Partly paid** with the amount due (its status chip still reading Paid); the booking page's **Additional payment outstanding** panel names the amount and reports nobody has been chased yet; **Resend payment request email** sends and the message is captured from mailpit; a second click inside the hour is refused instead of sending. The owing booking is **seeded** (`ADDITIONAL_OWED_BOOKING_ID`) rather than raised through an admin edit, because raising a real one mints a Stripe PaymentIntent and this journey must run whether or not Stripe test-mode keys are configured |
@@ -414,13 +414,15 @@ Four rules follow, and a new spec must satisfy all four:
   own admin API, so no spec needs direct database access and no test-only
   endpoint is added. A clean first attempt is a no-op.
 
-  `bed-allocation.spec.ts` now carries that repair in its serial setup (#2594):
+  `bed-allocation.spec.ts` now carries that repair in its serial setup (#2594,
+  #2595):
   the first journey approves or allocates only when the retry database still
   needs that step, so it restores Ken's approved full-stay placement after a
-  killed removal worker. The staged-removal journey also recreates and approves
-  the exact removed guest-nights in `finally`, and the settings teardown always
-  restores the demo seed's enabled default rather than trusting a dirty retry
-  snapshot.
+  killed removal or move worker. The reviewed-move journey restores Ken to the
+  original bed and re-approves exactly the allocations that were approved on
+  entry; the staged-removal journey recreates and approves the exact removed
+  guest-nights in `finally`. The settings teardown always restores the demo
+  seed's enabled default rather than trusting a dirty retry snapshot.
 
   **A per-member SLOT is state too.** A member may hold only one open
   booking-policy exception request at a time, so a leftover one is refused as a
