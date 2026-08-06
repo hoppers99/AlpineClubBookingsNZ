@@ -405,7 +405,7 @@ function containsForwardedFor(
           ts.isShorthandPropertyAssignment(property)
         ) {
           const name = propertyName(property.name, bindings);
-          if (name === "x-forwarded-for") return true;
+          if (name?.toLowerCase() === "x-forwarded-for") return true;
           if (name === null) unresolved = true;
         }
       }
@@ -666,19 +666,34 @@ function analyzeBlanketContexts(sourceFile: ts.SourceFile, file: string) {
   const present: string[] = [];
   const unresolved: string[] = [];
   const visit = (node: ts.Node): void => {
-    if (ts.isCallExpression(node) && calledName(node) === "newContext") {
-      const headers = objectPropertyExpressions(
-        node.arguments[0],
-        "extraHTTPHeaders",
-        bindings,
-      );
+    if (ts.isCallExpression(node)) {
+      const surface = calledName(node);
+      const location = `${file}:${enclosingFunctionName(node) ?? "<top-level>"}:${surface}`;
+      const headers =
+        surface === "newContext" || surface === "newPage"
+          ? objectPropertyExpressions(
+              node.arguments[0],
+              "extraHTTPHeaders",
+              bindings,
+            )
+          : surface === "setExtraHTTPHeaders"
+            ? node.arguments[0]
+              ? [node.arguments[0]]
+              : null
+            : undefined;
+      if (headers === undefined) {
+        ts.forEachChild(node, visit);
+        return;
+      }
       if (headers === null) {
-        unresolved.push(`${file}:${node.getText(sourceFile)}`);
+        unresolved.push(`${location}:${node.getText(sourceFile)}`);
       } else {
         for (const header of headers) {
           const status = containsForwardedFor(header, bindings);
-          if (status === true) present.push(file);
-          if (status === null) unresolved.push(`${file}:${header.getText(sourceFile)}`);
+          if (status === true) present.push(location);
+          if (status === null) {
+            unresolved.push(`${location}:${header.getText(sourceFile)}`);
+          }
         }
       }
     }
@@ -817,15 +832,25 @@ describe("E2E booking-create retry isolation (#2599)", () => {
         'function makeHeaders() { return { "x-forwarded-for": "10.240.250.2" }; }',
         "function makeOptions() { return { extraHTTPHeaders: makeHeaders() }; }",
         "browser.newContext(makeOptions());",
+        'browser.newPage({ extraHTTPHeaders: { "X-Forwarded-For": "10.240.250.3" } });',
+        'page.setExtraHTTPHeaders({ ["X-" + "Forwarded-For"]: "10.240.250.4" });',
+        "context.setExtraHTTPHeaders(makeHeaders());",
         "browser.newContext({ extraHTTPHeaders: buildAtRuntime(runtimeSeed) });",
         'browser.newContext({ extraHTTPHeaders: { authorization: "Bearer ***" } });',
+        'page.setExtraHTTPHeaders({ authorization: "Bearer ***" });',
       ].join("\n"),
     );
 
     expect(analyzeBlanketContexts(sourceFile, "fixture")).toEqual({
-      present: ["fixture", "fixture"],
+      present: [
+        "fixture:<top-level>:newContext",
+        "fixture:<top-level>:newContext",
+        "fixture:<top-level>:newPage",
+        "fixture:<top-level>:setExtraHTTPHeaders",
+        "fixture:<top-level>:setExtraHTTPHeaders",
+      ],
       unresolved: [
-        "fixture:buildAtRuntime(runtimeSeed)",
+        "fixture:<top-level>:newContext:buildAtRuntime(runtimeSeed)",
       ],
     });
   });
@@ -1120,7 +1145,9 @@ describe("E2E booking-create retry isolation (#2599)", () => {
       unresolvedContexts.push(...result.unresolved);
     }
 
-    expect(blanketContexts).toEqual([]);
+    expect(blanketContexts).toEqual([
+      "e2e/helpers/auth.ts:submitLoginForm:setExtraHTTPHeaders",
+    ]);
     expect(unresolvedContexts).toEqual([]);
   });
 });
