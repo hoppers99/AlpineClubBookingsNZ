@@ -170,7 +170,7 @@ test("an admin approves a review-flagged booking then allocates a bed to its gue
   await page.close();
 });
 
-test("existing-chip pointer and keyboard drops preserve dates, while keyboard cancel is silent", async ({}, testInfo) => {
+test("pointer, keyboard and menu moves share reviewed scopes and preserve original dates", async ({}, testInfo) => {
   const ken = DEMO_BOOKING_WINDOWS.kenReview;
   // Include the checkout date as one extra visible column so the pointer can
   // hover horizontally over a date Ken is not allocated on. Existing-chip
@@ -240,6 +240,12 @@ test("existing-chip pointer and keyboard drops preserve dates, while keyboard ca
   if (!originalBedId) {
     throw new Error("Ken's seeded full-stay placement has no source bed");
   }
+  const originalBed = payload.rooms
+    .flatMap((room) =>
+      room.beds.map((bed) => ({ ...bed, roomName: room.name })),
+    )
+    .find((bed) => bed.id === originalBedId);
+  expect(originalBed, "the source bed remains in active board inventory").toBeTruthy();
   const allocationIds = kensAllocations.map((allocation) => allocation.id);
   const originalApprovedAllocationIds = kensAllocations
     .filter((allocation) => allocation.approvedAt !== null)
@@ -251,9 +257,10 @@ test("existing-chip pointer and keyboard drops preserve dates, while keyboard ca
 
   const page = await adminContext.newPage();
   const moveRequests: Array<{
-    allocationIds: string[];
-    bedId: string;
-    stayDate?: string;
+    anchorAllocationId: string;
+    destinationBedId: string;
+    scope: "ALLOCATION_NIGHT" | "BOOKING_GUEST";
+    previewDigest: string;
   }> = [];
   let scenarioError: unknown;
   try {
@@ -265,9 +272,10 @@ test("existing-chip pointer and keyboard drops preserve dates, while keyboard ca
       ) {
         moveRequests.push(
           request.postDataJSON() as {
-            allocationIds: string[];
-            bedId: string;
-            stayDate?: string;
+            anchorAllocationId: string;
+            destinationBedId: string;
+            scope: "ALLOCATION_NIGHT" | "BOOKING_GUEST";
+            previewDigest: string;
           },
         );
       }
@@ -402,19 +410,39 @@ test("existing-chip pointer and keyboard drops preserve dates, while keyboard ca
     await expect(dragCard()).toBeHidden();
     await expect.poll(() => moveRequests.length).toBe(0);
 
-    // Pointer success: release over the real cell, then prove the page emitted
-    // the date-free PATCH and the server persisted the original nights.
+    // Pointer success opens the authoritative dialog and sends no write until
+    // the operator widens scope, reviews the exact rows, and confirms.
     await startPointerDragToTarget();
     await page.mouse.up();
-    await expect(page.getByText("Visible guest nights moved")).toBeVisible({
-      timeout: 30_000,
+    const moveDialog = page.getByRole("dialog", {
+      name: new RegExp(`Move Ken King to ${destination!.roomName} / ${destination!.name}`),
     });
+    await expect(moveDialog).toBeVisible();
+    await expect.poll(() => moveRequests.length).toBe(0);
+    await expect(
+      moveDialog.getByRole("radio", { name: /This allocation night/ }),
+    ).toBeChecked();
+    await moveDialog
+      .getByRole("radio", { name: /This person on this booking/ })
+      .check();
+    await expect(
+      moveDialog.getByText(
+        `${allocationIds.length} changing, 0 unchanged, ${allocationIds.length} total`,
+        { exact: false },
+      ),
+    ).toBeVisible({ timeout: 30_000 });
+    await expect(
+      moveDialog.getByText(/approved allocations? will become unapproved Manual drafts/),
+    ).toBeVisible();
+    await moveDialog.getByRole("button", { name: "Confirm move" }).click();
+    await expect(moveDialog).toBeHidden({ timeout: 30_000 });
     expect(moveRequests).toHaveLength(1);
-    expect(moveRequests[0]).toEqual({
-      allocationIds,
-      bedId: destination!.id,
+    expect(moveRequests[0]).toMatchObject({
+      destinationBedId: destination!.id,
+      scope: "BOOKING_GUEST",
     });
-    expect(moveRequests[0]).not.toHaveProperty("stayDate");
+    expect(allocationIds).toContain(moveRequests[0].anchorAllocationId);
+    expect(moveRequests[0].previewDigest).toMatch(/^v1:[0-9a-f]{64}$/);
 
     const readPersisted = async () => {
       const response = await adminContext.request.get(dashboardPath);
@@ -505,28 +533,65 @@ test("existing-chip pointer and keyboard drops preserve dates, while keyboard ca
       persisted.every((allocation) => allocation.bedId === originalBedId),
     ).toBe(true);
 
-    // Keyboard drop: the live preview is followed by a real Space drop and a
-    // second date-free PATCH. The persisted nights remain byte-for-byte equal.
+    // Keyboard drop opens the same reviewed seam, still without a PATCH. Cancel
+    // and prove focus returns to the originating drag handle.
     await dragHandle().focus();
     await page.keyboard.press("Space");
     await moveKeyboardFocusToDestination();
     await page.keyboard.press("Space");
-    await expect(page.getByText("Visible guest nights moved")).toBeVisible({
-      timeout: 30_000,
-    });
-    expect(moveRequests).toHaveLength(2);
-    expect(moveRequests[1]).toEqual({
-      allocationIds,
-      bedId: destination!.id,
-    });
-    expect(moveRequests[1]).not.toHaveProperty("stayDate");
+    await expect(moveDialog).toBeVisible();
+    expect(moveRequests).toHaveLength(1);
+    await moveDialog.getByRole("button", { name: "Cancel" }).click();
+    await expect(dragHandle()).toBeFocused();
     persisted = await readPersisted();
     expect(persisted.map((allocation) => allocation.stayDate)).toEqual(
       originalDates,
     );
     expect(
-      persisted.every((allocation) => allocation.bedId === destination!.id),
+      persisted.every((allocation) => allocation.bedId === originalBedId),
     ).toBe(true);
+
+    // The nested menu uses the same seam. Selecting the current bed keeps that
+    // option reachable for person-scope consolidation; here every row is
+    // already there, so confirm is a real typed all-noop request.
+    const manageAllocation = page
+      .getByRole("button", { name: "Manage allocation for Ken King" })
+      .first();
+    await manageAllocation.click();
+    const sourceRoomMenu = page.getByRole("menuitem", {
+      name: `Move Ken King to a bed in ${originalBed!.roomName}`,
+    });
+    await sourceRoomMenu.hover();
+    await page
+      .getByRole("menuitem", {
+        name: `Move Ken King to ${originalBed!.roomName} / ${originalBed!.name}`,
+      })
+      .click();
+    const noopDialog = page.getByRole("dialog", {
+      name: new RegExp(
+        `Move Ken King to ${originalBed!.roomName} / ${originalBed!.name}`,
+      ),
+    });
+    await noopDialog
+      .getByRole("radio", { name: /This person on this booking/ })
+      .check();
+    await expect(
+      noopDialog.getByText(
+        `0 changing, ${allocationIds.length} unchanged, ${allocationIds.length} total`,
+        { exact: false },
+      ),
+    ).toBeVisible({ timeout: 30_000 });
+    await expect(
+      noopDialog.getByText(/No allocation will change and no approval or audit record/),
+    ).toBeVisible();
+    await noopDialog.getByRole("button", { name: "Confirm move" }).click();
+    await expect(noopDialog).toBeHidden({ timeout: 30_000 });
+    expect(moveRequests).toHaveLength(2);
+    expect(moveRequests[1]).toMatchObject({
+      destinationBedId: originalBedId,
+      scope: "BOOKING_GUEST",
+    });
+    await expect(manageAllocation).toBeFocused();
 
   } catch (error) {
     scenarioError = error;
