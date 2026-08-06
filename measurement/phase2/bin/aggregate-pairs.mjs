@@ -2,8 +2,10 @@
 // autonomously authorises progression: qualitative thresholds remain owner
 // judgments, and fewer than four evenly counterbalanced pairs is PRELIMINARY_ONLY.
 import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { conventionalMedian } from "./statistics.mjs";
 
 const OWNER_THRESHOLDS_VERBATIM = Object.freeze([
   "At least three contemporaneous current/baseline pairs are required.",
@@ -17,8 +19,7 @@ const hash = (path) => createHash("sha256").update(readFileSync(path)).digest("h
 const json = (path) => JSON.parse(readFileSync(path, "utf8"));
 const median = (values) => {
   if (!values.length || values.some((value) => !Number.isFinite(value))) fail("cannot aggregate invalid values");
-  const sorted = [...values].sort((a, b) => a - b);
-  return round(sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.5))]);
+  return round(conventionalMedian(values));
 };
 const percentChange = (current, baseline) => {
   if (!(baseline > 0)) fail("baseline comparison value must be positive");
@@ -62,9 +63,27 @@ function verifyOrchestration(root) {
   if (cb !== bc || cb + bc !== completion.pair_count) fail(`orchestration order is not evenly counterbalanced: ${root}`);
   const pairs = readFileSync(pairsPath, "utf8").trim().split(/\r?\n/).filter(Boolean).map(JSON.parse);
   if (pairs.length !== completion.pair_count || pairs.some((pair) => pair.status !== "COMPLETE")) fail(`orchestration pair records are incomplete: ${root}`);
+  let previous;
+  for (const [index, pair] of pairs.entries()) {
+    for (const field of ["wrapper_invoked_at_utc", "wrapper_returned_at_utc", "pair_started_at_utc", "pair_ended_at_utc"]) {
+      if (!Number.isFinite(Date.parse(pair[field]))) fail(`invalid orchestration chronology field ${field} for pair ${index + 1}`);
+    }
+    const invoked = Date.parse(pair.wrapper_invoked_at_utc);
+    const returned = Date.parse(pair.wrapper_returned_at_utc);
+    const started = Date.parse(pair.pair_started_at_utc);
+    const ended = Date.parse(pair.pair_ended_at_utc);
+    if (!(invoked <= started && started <= ended && ended <= returned)) fail(`pair ${index + 1} chronology is not nested inside its wrapper interval`);
+    if (!Number.isInteger(pair.inter_pair_gap_seconds) || pair.inter_pair_gap_seconds < 0 || pair.inter_pair_gap_seconds > completion.maximum_inter_pair_gap_seconds) fail(`pair ${index + 1} inter-pair gap is invalid`);
+    if (previous) {
+      if (invoked < previous.returned || started < previous.ended) fail(`pair ${index + 1} overlaps the previous pair`);
+      const observedGapSeconds = Math.floor((invoked - previous.returned) / 1000);
+      if (Math.abs(observedGapSeconds - pair.inter_pair_gap_seconds) > 1) fail(`pair ${index + 1} recorded inter-pair gap does not match timestamps`);
+    } else if (pair.inter_pair_gap_seconds !== 0) fail("first pair inter-pair gap must be zero");
+    previous = { returned, ended };
+  }
   const outputs = pairs.map((pair) => resolve(pair.pair_output));
   if (JSON.stringify(outputs) !== JSON.stringify(completion.pair_outputs.map((value) => resolve(value)))) fail(`orchestration pair output binding mismatch: ${root}`);
-  return { completion, outputs };
+  return { completion, outputs, pairs };
 }
 function verifyCompleted(root) {
   const manifestPath = resolve(root, "output-manifest.sha256");
@@ -92,13 +111,27 @@ function readPair(root) {
   if (![["current", "baseline"], ["baseline", "current"]].some((order) => JSON.stringify(order) === JSON.stringify(pair.sides.map((side) => side.side)))) fail(`invalid side order: ${root}`);
   if (pair.order !== pair.sides.map((side) => side.side).join("-")) fail(`declared order mismatch: ${root}`);
   for (const [index, side] of pair.sides.entries()) {
-    if (side.sequence !== index + 1 || !Number.isFinite(Date.parse(side.started_at)) || !Number.isFinite(Date.parse(side.ended_at))) fail(`invalid side timestamps: ${root}`);
+    if (side.sequence !== index + 1 || !Number.isFinite(Date.parse(side.restore_started_at)) || !Number.isFinite(Date.parse(side.started_at)) || !Number.isFinite(Date.parse(side.ended_at))) fail(`invalid side timestamps: ${root}`);
     if (Date.parse(side.ended_at) < Date.parse(side.started_at)) fail(`side ended before it started: ${root}`);
     if (side.gap_from_previous_seconds > pair.maximum_inter_side_gap_seconds) fail(`maximum pair gap exceeded: ${root}`);
     if (side.database_fingerprint_before !== side.database_fingerprint_after) fail(`database drift in ${side.side}: ${root}`);
+    if (Date.parse(side.restore_started_at) < Date.parse(pair.started_at) || Date.parse(side.started_at) < Date.parse(side.restore_started_at) || Date.parse(side.ended_at) > Date.parse(pair.ended_at)) fail(`side chronology falls outside pair bounds: ${root}`);
+    if (index > 0) {
+      const previousSide = pair.sides[index - 1];
+      if (Date.parse(side.restore_started_at) < Date.parse(previousSide.ended_at) || Date.parse(side.started_at) < Date.parse(previousSide.ended_at)) fail(`pair sides overlap: ${root}`);
+      const observedGap = Math.floor((Date.parse(side.started_at) - Date.parse(previousSide.ended_at)) / 1000);
+      if (Math.abs(observedGap - side.gap_from_previous_seconds) > 1) fail(`inter-side gap does not match timestamps: ${root}`);
+    } else if (side.gap_from_previous_seconds !== 0) fail(`first side gap must be zero: ${root}`);
   }
-  const current = json(resolve(root, "current", "summary.json"));
-  const baseline = json(resolve(root, "baseline", "summary.json"));
+  const derive = (side) => {
+    try {
+      return JSON.parse(execFileSync(process.execPath, [resolve("measurement/phase2/bin/summarise.mjs"), "--verify-json", resolve(root, side)], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 }));
+    } catch (error) {
+      fail(`sealed raw evidence revalidation failed for ${side} in ${root}: ${error.stderr?.toString().trim() || error.message}`);
+    }
+  };
+  const current = derive("current");
+  const baseline = derive("baseline");
   verifyCompleted(resolve(root, "current"));
   verifyCompleted(resolve(root, "baseline"));
   for (const [name, run] of [["current", current], ["baseline", baseline]]) {
@@ -182,11 +215,20 @@ const orchestration = verifyOrchestration(args.orchestration);
 if (args.pairs.length && JSON.stringify(args.pairs) !== JSON.stringify(orchestration.outputs)) fail("explicit --pair inputs do not exactly match the sealed orchestration order");
 const pairInputs = args.pairs.length ? args.pairs : orchestration.outputs;
 const entries = pairInputs.map(readPair);
+for (const [index, entry] of entries.entries()) {
+  const record = orchestration.pairs[index];
+  if (record.pair_id !== entry.pair.pair_id || record.order !== entry.pair.order || Date.parse(record.pair_started_at_utc) !== Date.parse(entry.pair.started_at) || Date.parse(record.pair_ended_at_utc) !== Date.parse(entry.pair.ended_at)) fail(`orchestration record does not match sealed pair ${index + 1}`);
+  if (record.canonical_database_fingerprint && record.canonical_database_fingerprint !== entry.pair.sides[0].database_fingerprint_before) fail(`orchestration database fingerprint does not match pair ${index + 1}`);
+}
 const pairIds = entries.map((entry) => entry.pair.pair_id);
 if (new Set(pairIds).size !== pairIds.length) fail("pair IDs must be unique");
 const archiveShas = new Set(entries.map((entry) => entry.pair.canonical_database_archive_sha256));
 const manifestShas = new Set(entries.map((entry) => entry.current.immutable_binding.manifest_sha256));
 if (archiveShas.size !== 1 || manifestShas.size !== 1) fail("pairs do not share one canonical database/correctness manifest");
+const databaseFingerprints = new Set(entries.flatMap((entry) => entry.pair.sides.map((side) => side.database_fingerprint_before)));
+if (databaseFingerprints.size !== 1) fail("pairs do not share one canonical logical database fingerprint");
+const harnessManifestShas = new Set(entries.flatMap((entry) => [entry.current.environment_identity.harness_manifest_sha256, entry.baseline.environment_identity.harness_manifest_sha256]));
+if (harnessManifestShas.size !== 1) fail("harness manifest differs across sides or pairs");
 const shapes = entries.flatMap((entry) => [entry.current, entry.baseline]).map((run) => JSON.stringify({
   parameters: run.context.parameters,
   cold: Object.fromEntries(Object.entries(run.phases.cold).map(([route, value]) => [route, value.samples])),
@@ -207,6 +249,11 @@ const orders = Object.fromEntries(["current-baseline", "baseline-current"].map((
 const sufficient = observations.length >= 4;
 const counterbalanced = orders["current-baseline"] > 0 && orders["current-baseline"] === orders["baseline-current"];
 const medianReduction = median(cpuReductions);
+const performanceSignal = medianReduction < 50
+  ? "STOP_CPU_REDUCTION_BELOW_50_PERCENT_NUMERIC_REFERENCE"
+  : medianReduction < 80
+    ? "OWNER_REVIEW_REQUIRED_50_TO_80_PERCENT"
+    : "PREFERRED_CPU_REFERENCE_MET_OWNER_REVIEW_STILL_REQUIRED";
 const report = {
   schema_version: 2,
   generated_at: new Date().toISOString(),
@@ -214,6 +261,8 @@ const report = {
   status: sufficient && counterbalanced ? "OWNER_REVIEW_REQUIRED" : "PRELIMINARY_ONLY",
   preliminary_non_decisional: !(sufficient && counterbalanced),
   autonomous_progression_authorised: false,
+  methodology: { cross_pair_median: "conventional median; even pair counts average the two middle values", single_side_p95: "sorted[floor(0.95*n)], capped at n-1" },
+  performance_signal: performanceSignal,
   owner_thresholds_verbatim: OWNER_THRESHOLDS_VERBATIM,
   integrity: {
     orchestration_directory: args.orchestration,
@@ -226,6 +275,8 @@ const report = {
     counterbalanced,
     common_correctness_manifest_sha256: [...manifestShas][0],
     common_canonical_database_archive_sha256: [...archiveShas][0],
+    common_canonical_database_fingerprint: [...databaseFingerprints][0],
+    common_harness_manifest_sha256: [...harnessManifestShas][0],
     outputs_checksum_verified: true,
     database_before_after_equal: true,
   },
@@ -237,6 +288,8 @@ const report = {
       max_reduction_percent: Math.max(...cpuReductions),
       preferred_at_least_80_reference_met: medianReduction >= 80,
       below_roughly_50_stop_signal: medianReduction < 50,
+      pair_stop_signals: observations.map((pair) => ({ pair_id: pair.pair_id, triggered: pair.about_warm_cpu.reduction_percent < 50 })),
+      classification: performanceSignal,
       interpretation: "OWNER_REVIEW_REQUIRED",
     },
     current_about_warm_ttfb_ms: {
@@ -286,7 +339,15 @@ const md = [
   "", "Absolute Windows/WSL results are relative comparison evidence only, not exact Tokoroa capacity.", "",
 ].join("\n");
 mkdirSync(dirname(args.outPrefix), { recursive: true });
-writeFileSync(`${args.outPrefix}.json`, `${JSON.stringify(report, null, 2)}\n`, "utf8");
-writeFileSync(`${args.outPrefix}.md`, md, "utf8");
-console.log(`wrote ${args.outPrefix}.json and ${args.outPrefix}.md`);
+const jsonPath = `${args.outPrefix}.json`;
+const markdownPath = `${args.outPrefix}.md`;
+const outputManifestPath = `${args.outPrefix}.output-manifest.sha256`;
+const completionPath = `${args.outPrefix}.COMPLETED.json`;
+for (const path of [jsonPath, markdownPath, outputManifestPath, completionPath]) if (existsSync(path)) fail(`refusing aggregate output collision: ${path}`);
+writeFileSync(jsonPath, `${JSON.stringify(report, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
+writeFileSync(markdownPath, md, { encoding: "utf8", flag: "wx" });
+const outputRecords = [jsonPath, markdownPath].map((path) => ({ path, bytes: statSync(path).size, sha256: hash(path) }));
+writeFileSync(outputManifestPath, `${outputRecords.map((record) => `${record.sha256}  ${record.bytes}  ${record.path}`).join("\n")}\n`, { encoding: "utf8", flag: "wx" });
+writeFileSync(completionPath, `${JSON.stringify({ schema_version: 1, status: "COMPLETE", completed_at: new Date().toISOString(), orchestration_output_manifest_sha256: orchestration.completion.set_output_manifest_sha256, aggregate_output_manifest_sha256: hash(outputManifestPath), artifact_count: outputRecords.length }, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
+console.log(`wrote ${jsonPath}, ${markdownPath}, and checksummed completion evidence`);
 console.log(`status: ${report.status}`);

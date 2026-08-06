@@ -1,6 +1,6 @@
 // Dependency-free, infrastructure-free contract tests for orchestrate-pairs.sh.
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
@@ -9,9 +9,14 @@ const here = dirname(fileURLToPath(import.meta.url));
 const script = resolve(here, "orchestrate-pairs.sh");
 const source = readFileSync(script, "utf8");
 const pairRunnerSource = readFileSync(resolve(here, "run-pair.sh"), "utf8");
+const gitBash = process.env.PHASE2_GIT_BASH ?? [
+  "C:\\Program Files\\Git\\bin\\bash.exe",
+  resolve(process.env.LOCALAPPDATA ?? "", "Programs", "Git", "bin", "bash.exe"),
+].find(existsSync);
+assert.ok(gitBash, "Git Bash is required for the orchestration contract self-test");
 
 function plan(count) {
-  const result = spawnSync("bash", ["./orchestrate-pairs.sh", "--plan-only", "--pair-count", String(count)], {
+  const result = spawnSync(gitBash, ["./orchestrate-pairs.sh", "--plan-only", "--pair-count", String(count)], {
     cwd: here,
     encoding: "utf8",
     env: { ...process.env },
@@ -43,6 +48,9 @@ for (const invalid of [1, 2, 3, 5, 7]) {
   assert.notEqual(result.status, 0, `pair count ${invalid} must fail closed`);
   assert.match(result.stderr, /underpowered or unbalanced/);
 }
+const forbiddenHook = spawnSync(gitBash, ["./orchestrate-pairs.sh", "--plan-only", "--restore-hook", "fixture"], { cwd: here, encoding: "utf8", env: { ...process.env } });
+assert.notEqual(forbiddenHook.status, 0);
+assert.match(forbiddenHook.stderr, /hooks are prohibited for final decision evidence/);
 
 for (const requiredContract of [
   /mkdir "\$OUTPUT_ROOT"/,
@@ -50,6 +58,8 @@ for (const requiredContract of [
   /--pair-id "\$pair_id"/,
   /--order "\$order"/,
   /--manifest "\$MANIFEST_SNAPSHOT"/,
+  /--harness-manifest "\$HARNESS_MANIFEST"/,
+  /--harness-manifest-sha256 "\$HARNESS_MANIFEST_SHA256"/,
   /--current-image "\$CURRENT_IMAGE_REFERENCE"/,
   /--baseline-image "\$BASELINE_IMAGE_REFERENCE"/,
   /--canonical-archive "\$CANONICAL_DATABASE_ARCHIVE_PATH"/,
@@ -57,8 +67,13 @@ for (const requiredContract of [
   /--max-gap-seconds "\$MAX_INTER_SIDE_GAP_SECONDS"/,
   /--output-root "\$pair_root"/,
   /integration contract is incomplete/,
-  /--restore-hook "\$RESTORE_HOOK"/,
-  /--fingerprint-hook "\$FINGERPRINT_HOOK"/,
+  /restore\/fingerprint hooks are prohibited for final decision evidence/,
+  /tacbookings-measure-phase2\.lock/,
+  /token=%s/,
+  /cygpath -am "\$harness_file"/,
+  /verify-harness-manifest\.mjs/,
+  /tacbookings-measure-mailpit-1/,
+  /CONTINUOUS_MAX_HOST_CPU_PERCENT:=40/,
   /MAX_INTER_PAIR_GAP_SECONDS/,
   /docker ps -a --no-trunc/,
   /docker stats --all --no-stream/,
@@ -87,6 +102,8 @@ for (const perPairContract of [
   /--canonical-archive\) CANONICAL_ARCHIVE=/,
   /--canonical-sha256\) CANONICAL_SHA256=/,
   /--output-root\) OUTPUT_ROOT=/,
+  /--harness-manifest\) HARNESS_MANIFEST=/,
+  /--harness-manifest-sha256\) HARNESS_MANIFEST_SHA256=/,
   /--restore-hook\) RESTORE_HOOK=/,
   /--fingerprint-hook\) PHASE2_FINGERPRINT_HOOK=/,
   /\[ ! -e "\$OUTPUT_ROOT" \]/,

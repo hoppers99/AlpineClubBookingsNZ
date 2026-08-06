@@ -2,17 +2,20 @@
 # Orchestrates one contemporaneous, counterbalanced current/baseline pair.
 set -euo pipefail
 cd "$(dirname "$0")/../../.."
+case "$(uname -s)" in MINGW*|MSYS*) ;; *) echo "run-pair requires the reviewed Git Bash on Windows environment" >&2; exit 2 ;; esac
 
 usage() {
-  echo "usage: QUIET_HOST_ATTESTED=YES run-pair.sh --pair-id <id> --order current-baseline|baseline-current --manifest <absolute-json> --current-image <reference> --baseline-image <reference> --canonical-archive <absolute-path> --canonical-sha256 <sha256> --output-root <absolute-new-directory> [--restore-hook <executable>] [--fingerprint-hook <executable>] [--max-gap-seconds 600]" >&2
+  echo "usage: QUIET_HOST_ATTESTED=YES run-pair.sh --pair-id <id> --order current-baseline|baseline-current --manifest <absolute-json> --harness-manifest <absolute-file> --harness-manifest-sha256 <sha256> --current-image <reference> --baseline-image <reference> --canonical-archive <absolute-path> --canonical-sha256 <sha256> --output-root <absolute-new-directory> [--restore-hook <executable>] [--fingerprint-hook <executable>] [--max-gap-seconds 600]" >&2
   exit 1
 }
-PAIR_ID= PAIR_ORDER= CORRECTNESS_MANIFEST_SOURCE= CURRENT_IMAGE= BASELINE_IMAGE= CANONICAL_ARCHIVE= CANONICAL_SHA256= OUTPUT_ROOT= RESTORE_HOOK= PHASE2_FINGERPRINT_HOOK= MAX_GAP_SECONDS=600
+PAIR_ID= PAIR_ORDER= CORRECTNESS_MANIFEST_SOURCE= HARNESS_MANIFEST= HARNESS_MANIFEST_SHA256= CURRENT_IMAGE= BASELINE_IMAGE= CANONICAL_ARCHIVE= CANONICAL_SHA256= OUTPUT_ROOT= RESTORE_HOOK= PHASE2_FINGERPRINT_HOOK= MAX_GAP_SECONDS=600
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --pair-id) PAIR_ID="${2:-}"; shift 2 ;;
     --order) PAIR_ORDER="${2:-}"; shift 2 ;;
     --manifest) CORRECTNESS_MANIFEST_SOURCE="${2:-}"; shift 2 ;;
+    --harness-manifest) HARNESS_MANIFEST="${2:-}"; shift 2 ;;
+    --harness-manifest-sha256) HARNESS_MANIFEST_SHA256="${2:-}"; shift 2 ;;
     --current-image) CURRENT_IMAGE="${2:-}"; shift 2 ;;
     --baseline-image) BASELINE_IMAGE="${2:-}"; shift 2 ;;
     --canonical-archive) CANONICAL_ARCHIVE="${2:-}"; shift 2 ;;
@@ -29,6 +32,10 @@ case "$PAIR_ORDER" in current-baseline) SIDES=(current baseline) ;; baseline-cur
 [ "${QUIET_HOST_ATTESTED:-}" = YES ] || { echo "QUIET_HOST_ATTESTED=YES is required after the operator closes heavy host work" >&2; exit 1; }
 [[ "$MAX_GAP_SECONDS" =~ ^[1-9][0-9]*$ ]] || usage
 [ -f "$CORRECTNESS_MANIFEST_SOURCE" ] || { echo "correctness manifest missing: $CORRECTNESS_MANIFEST_SOURCE" >&2; exit 1; }
+[ -f "$HARNESS_MANIFEST" ] || { echo "harness manifest missing: $HARNESS_MANIFEST" >&2; exit 1; }
+[[ "$HARNESS_MANIFEST_SHA256" =~ ^[a-f0-9]{64}$ ]] || usage
+[ "$(sha256sum "$HARNESS_MANIFEST" | awk '{print $1}')" = "$HARNESS_MANIFEST_SHA256" ] || { echo "harness manifest checksum mismatch" >&2; exit 1; }
+node measurement/phase2/bin/verify-harness-manifest.mjs "$HARNESS_MANIFEST" >/dev/null
 [ -n "$CURRENT_IMAGE" ] && [ -n "$BASELINE_IMAGE" ] || usage
 [ -f "$CANONICAL_ARCHIVE" ] || { echo "canonical archive missing: $CANONICAL_ARCHIVE" >&2; exit 1; }
 [[ "$CANONICAL_SHA256" =~ ^[a-f0-9]{64}$ ]] || usage
@@ -121,7 +128,7 @@ for index in 0 1; do
   else gap=0; fi
   if [ "$side" = current ]; then SIDE_IMAGE_REFERENCE="$CURRENT_IMAGE"; else SIDE_IMAGE_REFERENCE="$BASELINE_IMAGE"; fi
   DATABASE_FINGERPRINT_BEFORE="$before_fingerprint"
-  export PAIR_ID PAIR_ORDER CORRECTNESS_MANIFEST PAIR_ROOT SIDE_IMAGE_REFERENCE DATABASE_FINGERPRINT_BEFORE PHASE2_FINGERPRINT_HOOK
+  export PAIR_ID PAIR_ORDER CORRECTNESS_MANIFEST PAIR_ROOT SIDE_IMAGE_REFERENCE DATABASE_FINGERPRINT_BEFORE PHASE2_FINGERPRINT_HOOK HARNESS_MANIFEST HARNESS_MANIFEST_SHA256
   export PAIR_SEQUENCE="$sequence"
   bash measurement/phase2/bin/run-phase2.sh "$side"
   side_ended="$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)"

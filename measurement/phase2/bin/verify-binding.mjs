@@ -23,6 +23,50 @@ function arg(name) {
 function expectHex(value, label) {
   if (!/^[a-f0-9]{64}$/.test(value ?? "")) fail(`${label} must be a lowercase SHA-256`);
 }
+function tarText(buffer, offset, length) {
+  const end = buffer.indexOf(0, offset);
+  return buffer.subarray(offset, end >= offset && end < offset + length ? end : offset + length).toString("utf8");
+}
+function gitArchiveRevision(path) {
+  const archive = readFileSync(path);
+  const revisions = new Set();
+  for (let offset = 0; offset + 512 <= archive.length;) {
+    const header = archive.subarray(offset, offset + 512);
+    if (header.every((byte) => byte === 0)) break;
+    const checksumText = tarText(header, 148, 8).trim();
+    if (!/^[0-7]+$/.test(checksumText)) fail("source archive contains an invalid tar checksum field");
+    const expectedChecksum = Number.parseInt(checksumText, 8);
+    const actualChecksum = header.reduce((sum, byte, index) => sum + (index >= 148 && index < 156 ? 0x20 : byte), 0);
+    if (actualChecksum !== expectedChecksum) fail("source archive contains an invalid tar header checksum");
+    const sizeText = tarText(header, 124, 12).trim();
+    if (!/^[0-7]+$/.test(sizeText)) fail("source archive contains an invalid tar size field");
+    const size = Number.parseInt(sizeText, 8);
+    const dataOffset = offset + 512;
+    if (!Number.isSafeInteger(size) || dataOffset + size > archive.length) fail("source archive contains a truncated tar member");
+    if (header[156] === 0x67) {
+      const payload = archive.subarray(dataOffset, dataOffset + size).toString("utf8");
+      for (let cursor = 0; cursor < payload.length;) {
+        const space = payload.indexOf(" ", cursor);
+        if (space < 0) fail("source archive contains an invalid PAX record");
+        const lengthText = payload.slice(cursor, space);
+        if (!/^[1-9][0-9]*$/.test(lengthText)) fail("source archive contains an invalid PAX record length");
+        const recordLength = Number.parseInt(lengthText, 10);
+        const record = payload.slice(space + 1, cursor + recordLength);
+        if (record.length !== cursor + recordLength - space - 1 || !record.endsWith("\n")) {
+          fail("source archive contains a truncated PAX record");
+        }
+        const equals = record.indexOf("=");
+        if (equals > 0 && record.slice(0, equals) === "comment") revisions.add(record.slice(equals + 1, -1));
+        cursor += recordLength;
+      }
+    }
+    offset = dataOffset + Math.ceil(size / 512) * 512;
+  }
+  if (revisions.size !== 1) fail(`source archive must contain exactly one git archive revision, found ${revisions.size}`);
+  const [revision] = revisions;
+  if (!/^[a-f0-9]{40,64}$/.test(revision)) fail("source archive git revision is invalid");
+  return revision;
+}
 
 const manifestPath = requiredFile(arg("manifest"), "correctness manifest");
 const inspectPath = requiredFile(arg("image-inspect"), "image inspect");
@@ -58,8 +102,16 @@ for (const [field, label] of [["source_archive", "source archive"], ["correctnes
   const actual = sha256(path);
   if (actual !== entry.sha256) fail(`${label} checksum mismatch: expected ${entry.sha256}, got ${actual}`);
 }
-if (binding.correctness_report.result !== "passed") {
-  fail(`${side} correctness report must be explicitly recorded as passed before timing`);
+const archiveRevision = gitArchiveRevision(resolve(binding.source_archive.path));
+if (archiveRevision !== binding.oci_revision) fail(`${side} source archive revision ${archiveRevision} does not match OCI revision ${binding.oci_revision}`);
+let correctnessReport;
+try {
+  correctnessReport = JSON.parse(readFileSync(resolve(binding.correctness_report.path), "utf8"));
+} catch (error) {
+  fail(`${side} correctness report is not valid JSON: ${error.message}`);
+}
+if (correctnessReport?.schema_version !== 1 || correctnessReport?.result !== "passed") {
+  fail(`${side} bound correctness report payload must have schema_version 1 and result passed`);
 }
 expectHex(manifest.canonical_database?.archive_sha256, "canonical_database.archive_sha256");
 const archive = requiredFile(manifest.canonical_database?.archive_path, "canonical database archive");
@@ -83,6 +135,22 @@ for (const route of ["/about", "/", "/join", "/contact"]) {
     fail(`${side} ${route} is dynamic; body_sha256 and etag must be null rather than pretending per-request nonce output is stable`);
   }
 }
+const canonicalize = (value) => Array.isArray(value)
+  ? value.map(canonicalize)
+  : value && typeof value === "object"
+    ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonicalize(value[key])]))
+    : value;
+const canonicalJson = (value) => JSON.stringify(canonicalize(value));
+if (
+  correctnessReport.side !== side ||
+  correctnessReport.image_id !== binding.image_id ||
+  correctnessReport.oci_revision !== binding.oci_revision ||
+  correctnessReport.source_archive_sha256 !== binding.source_archive.sha256 ||
+  correctnessReport.canonical_database_archive_sha256 !== archiveSha ||
+  canonicalJson(correctnessReport.routes) !== canonicalJson(binding.routes)
+) {
+  fail(`${side} correctness report payload is not bound to the exact image, source archive, database archive, and route expectations`);
+}
 
 const result = {
   schema_version: 1,
@@ -94,8 +162,9 @@ const result = {
   repo_digests: inspected.RepoDigests ?? [],
   oci_revision: revision,
   source_archive_sha256: binding.source_archive.sha256,
+  source_archive_revision: archiveRevision,
   correctness_report_sha256: binding.correctness_report.sha256,
-  correctness_result: binding.correctness_report.result,
+  correctness_result: correctnessReport.result,
   canonical_database_archive_sha256: archiveSha,
   verified: true,
 };

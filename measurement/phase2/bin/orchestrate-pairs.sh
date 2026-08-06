@@ -5,6 +5,7 @@
 # each pair's canonical database restore, per-side fingerprints and side runs.
 set -euo pipefail
 cd "$(dirname "$0")/../../.."
+case "$(uname -s)" in MINGW*|MSYS*) ;; *) echo "phase-2 is cleared only for Git Bash on Windows; direct WSL/Linux execution is prohibited" >&2; exit 2 ;; esac
 
 usage() {
   cat >&2 <<'EOF'
@@ -12,7 +13,6 @@ usage: QUIET_HOST_ATTESTED=YES orchestrate-pairs.sh --manifest <absolute-json>
        [--output-id <unique-id>] [--pair-count <even-number-at-least-4>]
        [--max-inter-side-gap-seconds <seconds>]
        [--max-inter-pair-gap-seconds <seconds>]
-       [--restore-hook <executable>] [--fingerprint-hook <executable>]
 
        orchestrate-pairs.sh --plan-only [--pair-count <even-number-at-least-4>]
 EOF
@@ -54,8 +54,7 @@ while [[ "$#" -gt 0 ]]; do
     --pair-count) PAIR_COUNT="${2:-}"; shift 2 ;;
     --max-inter-side-gap-seconds) MAX_INTER_SIDE_GAP_SECONDS="${2:-}"; shift 2 ;;
     --max-inter-pair-gap-seconds) MAX_INTER_PAIR_GAP_SECONDS="${2:-}"; shift 2 ;;
-    --restore-hook) RESTORE_HOOK="${2:-}"; shift 2 ;;
-    --fingerprint-hook) FINGERPRINT_HOOK="${2:-}"; shift 2 ;;
+    --restore-hook|--fingerprint-hook) echo "restore/fingerprint hooks are prohibited for final decision evidence" >&2; exit 2 ;;
     --plan-only) PLAN_ONLY=true; shift ;;
     *) usage ;;
   esac
@@ -80,6 +79,10 @@ if [[ "$PLAN_ONLY" == true ]]; then
   print_plan
   exit 0
 fi
+if [[ -n "$RESTORE_HOOK" || -n "$FINGERPRINT_HOOK" ]]; then
+  echo "restore/fingerprint hook environment variables are prohibited for final decision evidence" >&2
+  exit 2
+fi
 
 [[ "${QUIET_HOST_ATTESTED:-}" == YES ]] || {
   echo "QUIET_HOST_ATTESTED=YES is required after the operator closes heavy host work" >&2
@@ -88,15 +91,6 @@ fi
 [[ -n "$CORRECTNESS_MANIFEST" && -f "$CORRECTNESS_MANIFEST" ]] || usage
 manifest_dir="$(cd "$(dirname "$CORRECTNESS_MANIFEST")" && pwd -P)"
 CORRECTNESS_MANIFEST="$manifest_dir/$(basename "$CORRECTNESS_MANIFEST")"
-for hook_name in RESTORE_HOOK FINGERPRINT_HOOK; do
-  hook_path="${!hook_name}"
-  if [[ -n "$hook_path" ]]; then
-    [[ -x "$hook_path" ]] || { echo "$hook_name is not executable: $hook_path" >&2; exit 1; }
-    hook_dir="$(cd "$(dirname "$hook_path")" && pwd -P)"
-    printf -v "$hook_name" '%s/%s' "$hook_dir" "$(basename "$hook_path")"
-  fi
-done
-
 OUTPUT_ID="${OUTPUT_ID:-$(date -u +%Y%m%dT%H%M%SZ)-$(new_guid)}"
 [[ "$OUTPUT_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{2,54}$ ]] || {
   echo "output id must be 3-55 characters from [A-Za-z0-9._-] and start alphanumeric" >&2
@@ -116,8 +110,12 @@ exec 3>&1 4>&2
 exec > >(tee -a "$OUTPUT_ROOT/orchestrator.log" >&3) 2>&1
 TEE_PID=$!
 
-LOCK_DIR="$RESULTS_ROOT/.phase2-pair-orchestrator.lock"
+# This lock binds the fixed Compose/database resource, not a configurable
+# results directory. Changing PAIR_RESULTS_ROOT must never permit two writers.
+WINDOWS_TEMP_PATH="$(powershell.exe -NoProfile -NonInteractive -Command '[IO.Path]::GetTempPath()' | tr -d '\0\r\n')"
+LOCK_DIR="$(cygpath -u "$WINDOWS_TEMP_PATH")/tacbookings-measure-phase2.lock"
 LOCK_HELD=false
+LOCK_TOKEN=
 MONITOR_PID=
 MONITOR_STOP="$OUTPUT_ROOT/quiet-host/STOP"
 CONTAMINATION_FILE="$OUTPUT_ROOT/quiet-host/CONTAMINATION.tsv"
@@ -318,8 +316,10 @@ cleanup() {
     fi
   fi
   if [[ "$LOCK_HELD" == true ]]; then
-    rm -f "$LOCK_DIR/owner.txt"
-    rmdir "$LOCK_DIR" 2>/dev/null || true
+    if [[ -f "$LOCK_DIR/owner.txt" ]] && grep -qx "token=$LOCK_TOKEN" "$LOCK_DIR/owner.txt"; then
+      rm -f "$LOCK_DIR/owner.txt"
+      rmdir "$LOCK_DIR" 2>/dev/null || true
+    fi
   fi
   exit "$status"
 }
@@ -333,19 +333,24 @@ for value in \
   "${QUIET_MAX_HOST_DISK_PERCENT:=60}" \
   "${QUIET_MAX_WSL_CPU_PERCENT:=25}" \
   "${QUIET_MAX_WSL_MEMORY_PERCENT:=95}" \
-  "${CONTINUOUS_MAX_HOST_CPU_PERCENT:=100}" \
-  "${CONTINUOUS_MAX_HOST_MEMORY_PERCENT:=98}" \
-  "${CONTINUOUS_MAX_HOST_DISK_PERCENT:=1000}" \
-  "${CONTINUOUS_MAX_WSL_CPU_PERCENT:=100}" \
-  "${CONTINUOUS_MAX_WSL_MEMORY_PERCENT:=98}"; do
+  "${CONTINUOUS_MAX_HOST_CPU_PERCENT:=40}" \
+  "${CONTINUOUS_MAX_HOST_MEMORY_PERCENT:=92}" \
+  "${CONTINUOUS_MAX_HOST_DISK_PERCENT:=80}" \
+  "${CONTINUOUS_MAX_WSL_CPU_PERCENT:=40}" \
+  "${CONTINUOUS_MAX_WSL_MEMORY_PERCENT:=95}"; do
   numeric_value "$value" || { echo "quiet-host limits must be non-negative numbers" >&2; exit 2; }
 done
+node -e 'const v=process.argv.slice(1).map(Number);const caps=[25,90,60,25,95,40,92,80,40,95];if(v.some((x,i)=>x>caps[i])){throw new Error("quiet-host thresholds may not be relaxed above the reviewed fail-closed caps")}' \
+  "$QUIET_MAX_HOST_CPU_PERCENT" "$QUIET_MAX_HOST_MEMORY_PERCENT" "$QUIET_MAX_HOST_DISK_PERCENT" \
+  "$QUIET_MAX_WSL_CPU_PERCENT" "$QUIET_MAX_WSL_MEMORY_PERCENT" "$CONTINUOUS_MAX_HOST_CPU_PERCENT" \
+  "$CONTINUOUS_MAX_HOST_MEMORY_PERCENT" "$CONTINUOUS_MAX_HOST_DISK_PERCENT" \
+  "$CONTINUOUS_MAX_WSL_CPU_PERCENT" "$CONTINUOUS_MAX_WSL_MEMORY_PERCENT"
 QUIET_MONITOR_INTERVAL_SECONDS="${QUIET_MONITOR_INTERVAL_SECONDS:-10}"
 positive_integer "$QUIET_MONITOR_INTERVAL_SECONDS" || {
   echo "QUIET_MONITOR_INTERVAL_SECONDS must be a positive integer" >&2
   exit 2
 }
-ALLOWED_RUNNING_CONTAINERS="${ALLOWED_RUNNING_CONTAINERS:-tacbookings-measure-app-1,tacbookings-measure-caddy-1,tacbookings-measure-postgres-1}"
+ALLOWED_RUNNING_CONTAINERS="${ALLOWED_RUNNING_CONTAINERS:-tacbookings-measure-app-1,tacbookings-measure-caddy-1,tacbookings-measure-postgres-1,tacbookings-measure-mailpit-1}"
 [[ "$ALLOWED_RUNNING_CONTAINERS" =~ ^[A-Za-z0-9_.-]+(,[A-Za-z0-9_.-]+)*$ ]] || {
   echo "ALLOWED_RUNNING_CONTAINERS must be an exact comma-separated name list" >&2
   exit 2
@@ -357,7 +362,8 @@ if ! mkdir "$LOCK_DIR" 2>/dev/null; then
   exit 1
 fi
 LOCK_HELD=true
-printf 'output_id=%s\npid=%s\nstarted_at_utc=%s\n' "$OUTPUT_ID" "$$" "$(utc_now)" > "$LOCK_DIR/owner.txt"
+LOCK_TOKEN="$(new_guid)"
+printf 'output_id=%s\npid=%s\nstarted_at_utc=%s\ntoken=%s\n' "$OUTPUT_ID" "$$" "$(utc_now)" "$LOCK_TOKEN" > "$LOCK_DIR/owner.txt"
 
 MANIFEST_SNAPSHOT="$OUTPUT_ROOT/inputs/correctness-manifest.json"
 cp "$CORRECTNESS_MANIFEST" "$MANIFEST_SNAPSHOT"
@@ -420,6 +426,18 @@ fs.writeFileSync(outPath, `${JSON.stringify(exactInputs, null, 2)}\n`, { flag: "
 NODE
 INPUTS_SHA="$(sha256_file "$IMMUTABLE_INPUTS")"
 chmod a-w "$MANIFEST_SNAPSHOT" "$IMMUTABLE_INPUTS" 2>/dev/null || true
+
+HARNESS_MANIFEST="$OUTPUT_ROOT/inputs/harness-files.sha256"
+{
+  find measurement/phase2/bin -maxdepth 1 -type f -print
+  printf '%s\n' docker-compose.yml Caddyfile.staging \
+    measurement/stack/docker-compose.measure.yml measurement/stack/measure-stack.sh
+} | sort -u | while IFS= read -r harness_file; do
+  [[ "$harness_file" != *'.env.measure'* ]] || { echo "refusing to hash .env.measure" >&2; exit 1; }
+  printf '%s  %s\n' "$(sha256_file "$harness_file")" "$(cygpath -am "$harness_file")"
+done > "$HARNESS_MANIFEST"
+HARNESS_MANIFEST_SHA256="$(sha256_file "$HARNESS_MANIFEST")"
+node measurement/phase2/bin/verify-harness-manifest.mjs "$HARNESS_MANIFEST" >/dev/null
 IFS=$'\t' read -r CURRENT_IMAGE_REFERENCE CURRENT_IMAGE_ID BASELINE_IMAGE_REFERENCE BASELINE_IMAGE_ID \
   CANONICAL_DATABASE_ARCHIVE_PATH CANONICAL_DATABASE_ARCHIVE_SHA256 < <(
     node - "$IMMUTABLE_INPUTS" <<'NODE'
@@ -436,9 +454,7 @@ NODE
   )
 
 {
-  printf '%s  %s\n' "$(sha256_file measurement/phase2/bin/orchestrate-pairs.sh)" "measurement/phase2/bin/orchestrate-pairs.sh"
-  printf '%s  %s\n' "$(sha256_file "$PAIR_RUNNER")" "$PAIR_RUNNER"
-  printf '%s  %s\n' "$(sha256_file measurement/phase2/bin/run-phase2.sh)" "measurement/phase2/bin/run-phase2.sh"
+  printf '%s  %s\n' "$HARNESS_MANIFEST_SHA256" "$HARNESS_MANIFEST"
   printf '%s  %s\n' "$MANIFEST_SHA" "$MANIFEST_SNAPSHOT"
   printf '%s  %s\n' "$INPUTS_SHA" "$IMMUTABLE_INPUTS"
 } > "$OUTPUT_ROOT/harness-and-inputs.sha256"
@@ -490,6 +506,8 @@ for ((pair_number = 1; pair_number <= PAIR_COUNT; pair_number += 1)); do
     --pair-id "$pair_id" \
     --order "$order" \
     --manifest "$MANIFEST_SNAPSHOT" \
+    --harness-manifest "$HARNESS_MANIFEST" \
+    --harness-manifest-sha256 "$HARNESS_MANIFEST_SHA256" \
     --current-image "$CURRENT_IMAGE_REFERENCE" \
     --baseline-image "$BASELINE_IMAGE_REFERENCE" \
     --canonical-archive "$CANONICAL_DATABASE_ARCHIVE_PATH" \
@@ -497,8 +515,6 @@ for ((pair_number = 1; pair_number <= PAIR_COUNT; pair_number += 1)); do
     --max-gap-seconds "$MAX_INTER_SIDE_GAP_SECONDS" \
     --output-root "$pair_root"
   )
-  [[ -z "$RESTORE_HOOK" ]] || pair_args+=(--restore-hook "$RESTORE_HOOK")
-  [[ -z "$FINGERPRINT_HOOK" ]] || pair_args+=(--fingerprint-hook "$FINGERPRINT_HOOK")
   QUIET_HOST_ATTESTED=YES bash "$PAIR_RUNNER" "${pair_args[@]}" | tee "$pair_log"
   previous_pair_finished_epoch="$(epoch_now)"
   pair_returned_at="$(utc_now)"
@@ -562,6 +578,8 @@ evaluate_snapshot "$OUTPUT_ROOT/quiet-host/final" \
   "$QUIET_MAX_HOST_CPU_PERCENT" "$QUIET_MAX_HOST_MEMORY_PERCENT" \
   "$QUIET_MAX_HOST_DISK_PERCENT" "$QUIET_MAX_WSL_CPU_PERCENT" \
   "$QUIET_MAX_WSL_MEMORY_PERCENT"
+
+node measurement/phase2/bin/scan-evidence-secrets.mjs "$OUTPUT_ROOT" "$OUTPUT_ROOT/secret-scan.json"
 
 printf '%s\tset-finalizing\t-\t-\tclosing orchestrator log before sealing\n' \
   "$(utc_now)" >> "$OUTPUT_ROOT/events.tsv"

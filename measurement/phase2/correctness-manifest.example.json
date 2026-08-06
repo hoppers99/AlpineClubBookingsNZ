@@ -11,7 +11,7 @@
       "image_id": "sha256:replace-with-64-lowercase-hex",
       "oci_revision": "replace-with-exact-source-commit",
       "source_archive": { "path": "C:/absolute/path/current.tar", "sha256": "replace-with-64-lowercase-hex" },
-      "correctness_report": { "path": "C:/absolute/path/current-correctness.json", "sha256": "replace-with-64-lowercase-hex", "result": "passed" },
+      "correctness_report": { "path": "C:/absolute/path/current-correctness.json", "sha256": "replace-with-64-lowercase-hex" },
       "routes": {
         "/about": { "next_cache": "HIT", "etag": "replace-exact-etag", "body_sha256": "replace-with-64-lowercase-hex" },
         "/": { "next_cache": "ABSENT", "etag": null, "body_sha256": null },
@@ -24,7 +24,7 @@
       "image_id": "sha256:replace-with-64-lowercase-hex",
       "oci_revision": "replace-with-exact-source-commit",
       "source_archive": { "path": "C:/absolute/path/baseline.tar", "sha256": "replace-with-64-lowercase-hex" },
-      "correctness_report": { "path": "C:/absolute/path/baseline-correctness.json", "sha256": "replace-with-64-lowercase-hex", "result": "passed" },
+      "correctness_report": { "path": "C:/absolute/path/baseline-correctness.json", "sha256": "replace-with-64-lowercase-hex" },
       "routes": {
         "/about": { "next_cache": "ABSENT", "etag": null, "body_sha256": null },
         "/": { "next_cache": "ABSENT", "etag": null, "body_sha256": null },

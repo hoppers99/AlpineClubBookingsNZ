@@ -3,6 +3,7 @@
 // a real per-request timeout, drains every response body, and preserves error
 // classes rather than collapsing failures into one counter.
 import { performance } from "node:perf_hooks";
+import { conventionalMedian, rankedQuantile } from "./statistics.mjs";
 
 function fail(message) {
   throw new Error(message);
@@ -80,11 +81,10 @@ async function worker() {
 function stats(list) {
   if (list.length === 0) return null;
   const sorted = [...list].sort((a, b) => a - b);
-  const at = (q) => sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))];
   return {
     count: sorted.length,
-    median_ms: Number(at(0.5).toFixed(3)),
-    p95_ms: Number(at(0.95).toFixed(3)),
+    median_ms: Number(conventionalMedian(sorted).toFixed(3)),
+    p95_ms: Number(rankedQuantile(sorted, 0.95).toFixed(3)),
     max_ms: Number(sorted[sorted.length - 1].toFixed(3)),
   };
 }

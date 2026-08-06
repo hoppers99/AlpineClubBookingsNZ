@@ -78,16 +78,24 @@ database_fingerprint() {
     | sha256sum | awk '{print $1}'
 }
 
-create_canonical_dump() {
+create_canonical_dump() (
   local archive="$1"
+  local temp_archive
   require_absolute_file_path "$archive"
   [ ! -e "$archive" ] || { echo "refusing to overwrite canonical archive: $archive" >&2; exit 1; }
   mkdir -p "$(dirname "$archive")"
+  temp_archive="$(mktemp "${archive}.tmp.XXXXXXXX")"
+  cleanup_canonical_temp() { rm -f -- "$temp_archive"; }
+  trap cleanup_canonical_temp EXIT
   compose exec -T postgres pg_dump -U tac -d tacbookings \
-    --format=custom --no-owner --no-privileges --schema=public > "$archive"
-  [ -s "$archive" ] || { echo "canonical archive is empty: $archive" >&2; exit 1; }
+    --format=custom --no-owner --no-privileges --schema=public > "$temp_archive"
+  [ -s "$temp_archive" ] || { echo "canonical archive is empty: $temp_archive" >&2; exit 1; }
+  compose exec -T postgres pg_restore --list < "$temp_archive" > /dev/null
+  # Same-directory hard-link publication is atomic and refuses a destination
+  # created by a racing writer; unlinking the temporary name leaves one inode.
+  node -e 'const fs=require("node:fs");fs.linkSync(process.argv[1],process.argv[2]);fs.unlinkSync(process.argv[1])' "$temp_archive" "$archive"
   sha256sum "$archive"
-}
+)
 
 restore_canonical_dump() {
   local archive="$1"

@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "result": "passed",
+  "side": "current",
+  "image_id": "sha256:replace-with-64-lowercase-hex",
+  "oci_revision": "replace-with-git-archive-commit",
+  "source_archive_sha256": "replace-with-64-lowercase-hex",
+  "canonical_database_archive_sha256": "replace-with-64-lowercase-hex",
+  "routes": {
+    "/about": { "next_cache": "HIT", "etag": "replace-exact-etag", "body_sha256": "replace-with-64-lowercase-hex" },
+    "/": { "next_cache": "ABSENT", "etag": null, "body_sha256": null },
+    "/join": { "next_cache": "ABSENT", "etag": null, "body_sha256": null },
+    "/contact": { "next_cache": "ABSENT", "etag": null, "body_sha256": null }
+  }
+}
