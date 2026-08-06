@@ -97,12 +97,17 @@ describe("E2E booking-create retry isolation (#2599)", () => {
       url: () => "http://127.0.0.1:3000/api/bookings",
       headers: () => ({ cookie: "session=***" }),
     };
+    const nonCreateRequest = {
+      ...bookingRequest,
+      method: () => "GET",
+    };
     const page = {
       route: vi.fn(async (_pattern, registered) => {
         handler = registered;
       }),
       waitForRequest: vi.fn(
         async (predicate: (request: typeof bookingRequest) => boolean) => {
+          expect(predicate(nonCreateRequest)).toBe(false);
           expect(predicate(bookingRequest)).toBe(true);
           return bookingRequest;
         },
@@ -116,6 +121,13 @@ describe("E2E booking-create retry isolation (#2599)", () => {
       expect(handler).toBeTypeOf("function");
       await handler!(
         {
+          request: () => ({ ...nonCreateRequest }),
+          continue: continueRequest,
+        } as unknown as Route,
+        {} as PlaywrightRequest,
+      );
+      await handler!(
+        {
           request: () => ({
             ...bookingRequest,
           }),
@@ -126,7 +138,8 @@ describe("E2E booking-create retry isolation (#2599)", () => {
     });
 
     expect(page.route).toHaveBeenCalledWith("**/api/bookings", expect.any(Function));
-    expect(continueRequest).toHaveBeenCalledWith({
+    expect(continueRequest).toHaveBeenNthCalledWith(1);
+    expect(continueRequest).toHaveBeenNthCalledWith(2, {
       headers: {
         cookie: "session=***",
         "x-forwarded-for": isolation.clientIp,
