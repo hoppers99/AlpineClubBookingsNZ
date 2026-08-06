@@ -95,6 +95,8 @@ let adminContext: BrowserContext;
 let memberContext: BrowserContext;
 let admin: APIRequestContext;
 let member: APIRequestContext;
+/** The signed-in booker's canonical id, read through the wizard's family API. */
+let memberSelfId: string;
 let compliant: StayWindow;
 let shortStay: StayWindow;
 /** One night on the short window: check out the morning after the first night. */
@@ -238,6 +240,21 @@ test.beforeAll(async ({ browser }) => {
   });
   admin = adminContext.request;
   member = memberContext.request;
+
+  // The duplicate-request probe below must replay the wizard's EXACT proposal.
+  // A member guest with no memberId is a different (unlinked) proposal and gets
+  // a different hash, so omitting this id would not exercise the active-slot
+  // guard at all.
+  const family = await member.get("/api/members/family");
+  expect(family.ok(), `member family (${family.status()})`).toBeTruthy();
+  const familyBody = (await family.json()) as {
+    familyMembers?: Array<{ id?: string; relationship?: string }>;
+  };
+  const self = familyBody.familyMembers?.find(
+    (candidate) => candidate.relationship === "self",
+  );
+  expect(self?.id, "signed-in member id from family endpoint").toBeTruthy();
+  memberSelfId = self!.id!;
 });
 
 test.beforeAll(async ({}, testInfo) => {
@@ -423,6 +440,7 @@ test("the request area tracks it, and a duplicate attempt is sent to replace it"
           lastName: MEMBER.lastName,
           ageTier: "ADULT",
           isMember: true,
+          memberId: memberSelfId,
         },
       ],
       memberMessage: "Asking twice by mistake.",
