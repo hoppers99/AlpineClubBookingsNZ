@@ -10,6 +10,7 @@ the demo seed (`prisma/demo-seed.ts`).
 
 | Spec | Matrix row | Journey |
 | --- | --- | --- |
+| `e2e/booking-create-rate-isolation.spec.ts` | Booking-create retry isolation (#2599, Medium) | Provider-independent real-route proof: unauthenticated attempt/retry probes stop at the auth boundary only after the production `bookingCreate` limiter runs, and read-only snapshots prove each exact synthetic-IP key advanced in the shared PostgreSQL `RateLimitCounter` store rather than the in-process fallback. Run before the waitlist and whole-lodge specs on the same prepared isolated stack. |
 | `e2e/two-factor-login.spec.ts` | Global two-factor enforcement (Critical) | Forced TOTP enrollment on first login, recovery codes, protected-route gating for unverified sessions, wrong-code rejection, TOTP re-login, single-use recovery codes |
 | `e2e/two-factor-email.spec.ts` | Global two-factor enforcement — email method (Critical) | Forced **email-code** enrollment on first login (send → capture the emailed code from the mailpit SMTP capture → enroll → recovery codes), then an email-code re-login that rejects a wrong code and accepts the emailed one. The code is read back over mailpit's HTTP API (`e2e/helpers/mailpit.ts`); no live mail provider is used |
 | `e2e/booking.spec.ts` | Create booking with capacity lock (Critical) | Member books a bed through `/book` (confirm-details gate → dates → guests → review → payment step) with the booker **pre-selected by default** (#1680); while payment is owed the booking holds **no** bed (issue #737 — only committed money reserves capacity); the same member cannot hold the same lodge night twice; the booker can also opt out (remove themselves) and continue with another guest to a priced review |
@@ -17,6 +18,8 @@ the demo seed (`prisma/demo-seed.ts`).
 | `e2e/stripe-payment.spec.ts` | Stripe payment success/failure (Critical) | In-wizard step-4 card payment with Stripe test cards: `4242…` confirms the booking and the paid booking occupies its beds; `4000 0000 0000 0002` declines and leaves it payable. **Skips unless genuine Stripe test-mode keys are configured** |
 | `e2e/admin-roles.spec.ts` | Role boundaries (High) | One persona per bundled access role (ADMIN_READONLY, ADMIN_BOOKINGS, ADMIN_MEMBERSHIP, ADMIN_CONTENT, FINANCE_USER, FINANCE_ADMIN, LODGE). Each asserts an in-area page renders and an out-of-area page is blocked (redirect), per the authoritative matrix in `src/lib/admin-permissions.ts` and the `/finance` (finance-auth) and `/lodge` (kiosk) gates |
 | `e2e/waitlist.spec.ts` | Waitlist / force-confirm / offer (High) | Member is refused a seeded-full night and joins the waitlist (WAITLISTED); admin force-confirms it off the waitlist (overbook branch) through `/admin/waitlist`; member accepts a seeded, non-expired offer through the offer card; the admin waitlist surfaces offer + expiry state |
+| `e2e/double-bed-sharing.spec.ts` | Partner relationship and reviewed bed-allocation removal (#1742, #2594, High) | Partner declaration/admission and shared-double placement. S4 previews then applies removal through the production `POST`/`PUT /api/admin/bed-allocation/allocations/removal` boundary and proves the surviving second occupant is promoted to primary. This is the production-stack shared-double consequence proof; stale refresh and permission affordances remain in focused component/route suites. |
+| `e2e/bed-allocation.spec.ts` | Admin bed allocation, explicit moves, booking confirmation, and reviewed removal (#2252, #2366, #2594, High) | Approves and allocates the seeded Ken booking, preserves original lodge nights through pointer and keyboard moves, confirms from booking detail, and keeps the panel absent for members. The reviewed-removal journey opens the shared dialog from Reset, the chip menu, a pointer drop to the unallocated bucket, and booking detail; applies an approved person-wide removal with auto-allocation enabled; proves no replacement; and restores the exact guest-nights and approvals. Retry setup repairs a killed worker's approved/allocation state through product APIs. |
 | `e2e/internet-banking.spec.ts` | Internet Banking settlement (Critical) | With Xero **absent**, a card PAYMENT_PENDING booking is switched to Internet Banking; the detail page shows the Internet Banking card with a `BOOKING-…` reference and does not crash (the Xero invoice is queued but never sent while disconnected). Toggles the Xero + Internet Banking modules on for its run and restores them |
 | `e2e/membership-application.spec.ts` | Membership application (High) | Public application submit; both nominators agree through the real `/nominations/<token>` pages; admin approves; the applicant then exists as a member |
 | `e2e/additional-payment-chase.spec.ts` | Outstanding additional payment (#2350, High) | The officer loop for money still owed after a booking change: the bookings list filtered to **Additional Payment: Still owing** marks the booking **Partly paid** with the amount due (its status chip still reading Paid); the booking page's **Additional payment outstanding** panel names the amount and reports nobody has been chased yet; **Resend payment request email** sends and the message is captured from mailpit; a second click inside the hour is refused instead of sending. The owing booking is **seeded** (`ADDITIONAL_OWED_BOOKING_ID`) rather than raised through an admin edit, because raising a real one mints a Stripe PaymentIntent and this journey must run whether or not Stripe test-mode keys are configured |
@@ -411,6 +414,14 @@ Four rules follow, and a new spec must satisfy all four:
   own admin API, so no spec needs direct database access and no test-only
   endpoint is added. A clean first attempt is a no-op.
 
+  `bed-allocation.spec.ts` now carries that repair in its serial setup (#2594):
+  the first journey approves or allocates only when the retry database still
+  needs that step, so it restores Ken's approved full-stay placement after a
+  killed removal worker. The staged-removal journey also recreates and approves
+  the exact removed guest-nights in `finally`, and the settings teardown always
+  restores the demo seed's enabled default rather than trusting a dirty retry
+  snapshot.
+
   **A per-member SLOT is state too.** A member may hold only one open
   booking-policy exception request at a time, so a leftover one is refused as a
   duplicate (409 `OPEN_EXCEPTION_REQUEST`) on the next attempt.
@@ -453,6 +464,55 @@ Four rules follow, and a new spec must satisfy all four:
   most 14 hops on any run date and the bound is 24, so nothing in range can run
   out — and if a future base or stride does, `selectCalendarDay` now fails on the
   month it could not reach rather than timing out on a day button.
+- **Give each retryable booking-create spec attempt its own client-IP bucket.**
+  `POST /api/bookings` is protected by the real 20-per-hour `bookingCreate`
+  limiter before authentication. The serial suite therefore must not let an
+  unrelated retry spend the shared runner-IP budget that a later spec needs.
+  `E2E_BOOKING_CREATE_CENSUS`
+  (`e2e/helpers/booking-create-client-ip.ts`) is the closed census. Ordinary
+  journey/setup entries are classified `isolated-setup` and must use
+  `bookingCreateIsolation(key, testInfo.retry)`: repeated booking-create calls
+  in one logical test attempt share one `10.240.0.0/16` bucket, while different
+  registered tests and retry numbers cannot collide. A spec whose purpose is
+  exercising the limiter is classified `intentional-limiter` and must use the
+  separate typed `bookingCreateLimiterProbe`; using either allocator with the
+  other classification fails both at typecheck and in the structural contract.
+  Use `postBookingCreate` for a direct `APIRequestContext` create, or use
+  `withBookingCreateClientIp` around exactly the browser action that emits the
+  create. Both paths are structurally tied to the census. The same contract
+  inventories direct request calls, aliases, and a bare browser/global
+  `fetch("/api/bookings", { method: "POST" })`; default-GET fetches remain
+  outside the create census. Never put this header on a whole browser/admin
+  context: login,
+  availability and policy requests must keep their own client identity. The
+  login helper's `10.99.0.0/16` and whole-lodge submission worlds'
+  `10.77.1.0/24` remain separate and unchanged. This is isolation, not a bypass:
+  every create still traverses production rate limiting and the suite never
+  resets or mocks its storage. The fast #2599 unit contract reproduces
+  the old exhausted runner bucket through the shipped `bookingCreate`
+  configuration, client-IP resolver, and in-process fallback counter. Runtime
+  acceptance belongs to `booking-create-rate-isolation.spec.ts`: it sends
+  attempt, retry-1, and retry-2 probes through the real route, then proves each
+  exact counter advanced in shared PostgreSQL. Run these two commands in order
+  on the **same already-prepared isolated stack**, with no `prepare` between
+  them, so the later real waitlist and whole-lodge create paths follow those
+  staged retry dimensions:
+
+  ```bash
+  scripts/e2e-stack.sh run e2e/booking-create-rate-isolation.spec.ts --project=chromium --workers=1
+  E2E_PRESERVE_AUTH_STATE=1 scripts/e2e-stack.sh run e2e/waitlist.spec.ts e2e/whole-lodge-request.spec.ts --grep "placement then admin force-confirm|acknowledgement is byte-identical" --project=chromium --workers=1
+  ```
+
+  The first command requires no Stripe credentials: all three probes are
+  deliberately unauthenticated and must return 401 after rate limiting. The
+  second command explicitly preserves only the gitignored browser/TOTP files
+  created by the first command; the database and its limiter counters are
+  already preserved because neither command prepares or resets the stack. It
+  runs the retry-sensitive real-path anchors rather than unrelated scenarios in
+  those large files. It fails on any cross-spec 429 because waitlist pins 409
+  then 201, while the whole-lodge setup requires a successful confirmed held-
+  world booking create before its three privacy-safe request submissions.
+  Neither command resets, bypasses, mocks, nor increases the limiter.
 - **Restore shared state in `afterAll`, never at the end of the test body.**
   `xero-setup-wizard-completion.spec.ts` used to disconnect Xero and rewind the
   wizard on its last line; when it failed earlier it stranded the sibling spec on

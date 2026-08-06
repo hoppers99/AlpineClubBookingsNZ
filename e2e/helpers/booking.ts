@@ -1,4 +1,8 @@
 import { expect, type Page } from "@playwright/test";
+import {
+  type BookingCreateIsolation,
+  withBookingCreateClientIp,
+} from "./booking-create-client-ip";
 import type { Persona } from "./personas";
 import { calendarDayLabel, type StayWindow } from "./stay-dates";
 
@@ -49,6 +53,18 @@ export async function completeMemberDetailsGateIfShown(page: Page): Promise<void
   const dialog = page.getByRole("dialog");
 
   const saveAndContinue = dialog.getByRole("button", { name: "Save and continue" });
+  const confirmCorrect = dialog.getByRole("button", {
+    name: "Confirm details are correct",
+  });
+  // The title and the current step do not mount in the same commit. Sampling
+  // Save immediately after the title can therefore see neither step, skip the
+  // profile form, and wait until the whole test times out for Confirm. Wait for
+  // either legitimate step action before deciding which branch is active.
+  await dialog
+    .getByRole("button", {
+      name: /Save and continue|Confirm details are correct/,
+    })
+    .waitFor({ state: "visible", timeout: 5_000 });
   if (await saveAndContinue.isVisible().catch(() => false)) {
     const dob = dialog.getByLabel(/date of birth/i);
     if ((await dob.inputValue().catch(() => "")) === "") {
@@ -77,9 +93,6 @@ export async function completeMemberDetailsGateIfShown(page: Page): Promise<void
     await saveAndContinue.click();
   }
 
-  const confirmCorrect = dialog.getByRole("button", {
-    name: "Confirm details are correct",
-  });
   await confirmCorrect.waitFor({ state: "visible" });
   await confirmCorrect.click();
 
@@ -173,13 +186,18 @@ export async function bookSelfToReviewStep(
 
 // Confirms the reviewed booking. Member bookings owe payment immediately, so
 // the wizard continues to the in-wizard card payment step (step 4).
-export async function confirmBookingToPaymentStep(page: Page): Promise<void> {
-  await page
-    .getByRole("button", { name: /Continue to Payment|Confirm Booking/ })
-    .click();
-  // "Complete Payment" appears both as the step-4 indicator and as the card
-  // title, so match loosely and just require the payment step to be showing.
-  await expect(page.getByText("Complete Payment").first()).toBeVisible({
-    timeout: 30_000,
+export async function confirmBookingToPaymentStep(
+  page: Page,
+  isolation: BookingCreateIsolation,
+): Promise<void> {
+  await withBookingCreateClientIp(page, isolation, async () => {
+    await page
+      .getByRole("button", { name: /Continue to Payment|Confirm Booking/ })
+      .click();
+    // "Complete Payment" appears both as the step-4 indicator and as the card
+    // title, so match loosely and just require the payment step to be showing.
+    await expect(page.getByText("Complete Payment").first()).toBeVisible({
+      timeout: 30_000,
+    });
   });
 }

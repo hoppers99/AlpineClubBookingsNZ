@@ -1,10 +1,19 @@
-import { type BrowserContext, expect, test } from "@playwright/test";
+import {
+  type APIResponse,
+  type BrowserContext,
+  expect,
+  test,
+} from "@playwright/test";
 import { storageStatePath } from "./helpers/auth";
 import {
   overrideSingleLodgeAutoAllocation,
   setBedAllocationSettings,
   type BedAllocationSettingsSnapshot,
 } from "./helpers/bed-allocation-settings";
+import {
+  bookingCreateIsolation,
+  postBookingCreate,
+} from "./helpers/booking-create-client-ip";
 import { DEMO_BOOKING_WINDOWS, E2E_ADMIN } from "./helpers/fixtures";
 import { overrideModules, setModuleSettings, type ModuleSettings } from "./helpers/modules";
 
@@ -80,7 +89,14 @@ let ibSettingsBefore:
   | undefined;
 const createdBookingIds: string[] = [];
 const createdLinks: Array<{ memberId: string; linkId: string }> = [];
-const createdAllocationIds: string[] = [];
+type CreatedAllocation = {
+  allocationId: string;
+  bookingId: string;
+  bookingGuestId: string;
+  lodgeId: string;
+  stayDate: string;
+};
+const createdAllocations: CreatedAllocation[] = [];
 
 type Member = { id: string; firstName: string; lastName: string; email: string };
 const members: Record<string, Member> = {};
@@ -170,7 +186,23 @@ async function allocate(bookingGuestId: string, bedId: string, stayDate: string)
     `allocate ${bookingGuestId} -> ${bedId} @ ${stayDate} (${res.status()}): ${await res.text()}`,
   ).toBeTruthy();
   const body = await res.json();
-  createdAllocationIds.push(body.allocation.id);
+  const nextNight = new Date(`${stayDate}T00:00:00.000Z`);
+  nextNight.setUTCDate(nextNight.getUTCDate() + 1);
+  const board = await getBoard(stayDate, nextNight.toISOString().slice(0, 10));
+  const booking = board.bookings.find(
+    (candidate: { id: string }) => candidate.id === body.allocation.bookingId,
+  );
+  expect(
+    booking,
+    `allocation booking ${body.allocation.bookingId} missing from board`,
+  ).toBeTruthy();
+  createdAllocations.push({
+    allocationId: body.allocation.id,
+    bookingId: body.allocation.bookingId,
+    bookingGuestId: body.allocation.bookingGuestId,
+    lodgeId: bedAllocationSettingsBefore!.lodgeId,
+    stayDate,
+  });
   return body.allocation as {
     id: string;
     bookingGuestId: string;
@@ -181,10 +213,39 @@ async function allocate(bookingGuestId: string, bedId: string, stayDate: string)
 }
 
 async function deleteAllocation(id: string) {
-  const res = await api().delete(`/api/admin/bed-allocation/allocations/${id}`);
-  expect(res.ok(), `delete allocation ${id} (${res.status()})`).toBeTruthy();
-  const index = createdAllocationIds.indexOf(id);
-  if (index >= 0) createdAllocationIds.splice(index, 1);
+  const anchor = createdAllocations.find(
+    (allocation) => allocation.allocationId === id,
+  );
+  expect(anchor, `tracked allocation anchor ${id} missing`).toBeTruthy();
+  const scope = { type: "ALLOCATION", ...anchor };
+  const preview = await api().post(
+    "/api/admin/bed-allocation/allocations/removal",
+    { data: { scope, categories: ["MANUAL_DRAFT"] } },
+  );
+  const previewBody = await preview.text();
+  expect(
+    preview.ok(),
+    `preview allocation removal ${id} (${preview.status()}): ${previewBody}`,
+  ).toBeTruthy();
+  const reviewed = JSON.parse(previewBody);
+  const apply = await api().put(
+    "/api/admin/bed-allocation/allocations/removal",
+    {
+      data: {
+        scope,
+        categories: ["MANUAL_DRAFT"],
+        previewDigest: reviewed.digest,
+      },
+    },
+  );
+  expect(
+    apply.ok(),
+    `apply allocation removal ${id} (${apply.status()})`,
+  ).toBeTruthy();
+  const index = createdAllocations.findIndex(
+    (allocation) => allocation.allocationId === id,
+  );
+  if (index >= 0) createdAllocations.splice(index, 1);
 }
 
 function memberGuest(member: Member) {
@@ -208,12 +269,12 @@ function nonMemberGuest(i: number) {
 
 // Create a CONFIRMED (capacity-holding) booking via Internet Banking with
 // holdBedSlots on — no Stripe. Tracked for teardown. Enabled once in beforeAll.
-async function createHoldingBooking(opts: {
+function holdingBookingOptions(opts: {
   forMemberId: string;
   guests: ReturnType<typeof memberGuest | typeof nonMemberGuest>[];
   window: { checkIn: string; checkOut: string };
-}): Promise<{ id: string; status: string }> {
-  const res = await api().post("/api/bookings", {
+}) {
+  return {
     data: {
       checkIn: opts.window.checkIn,
       checkOut: opts.window.checkOut,
@@ -221,7 +282,12 @@ async function createHoldingBooking(opts: {
       forMemberId: opts.forMemberId,
       paymentMethod: "internet_banking",
     },
-  });
+  };
+}
+
+async function recordHoldingBooking(
+  res: APIResponse,
+): Promise<{ id: string; status: string }> {
   expect(
     res.ok(),
     `create holding booking (${res.status()}): ${await res.text()}`,
@@ -393,10 +459,8 @@ test.afterAll(async () => {
   // booking BEFORE restoring the bed type: a DOUBLE with a second-occupant row
   // cannot be retyped.
   try {
-    for (const id of [...createdAllocationIds]) {
-      await api()
-        .delete(`/api/admin/bed-allocation/allocations/${id}`)
-        .catch(() => undefined);
+    for (const allocation of [...createdAllocations]) {
+      await deleteAllocation(allocation.allocationId).catch(() => undefined);
     }
     // Holding bookings are CONFIRMED, so they cannot be hard-deleted (only
     // DRAFTs can); cancel them instead — nothing was paid, so the credit-method
@@ -478,7 +542,7 @@ test("S1 — admin edit panel offers and adds a confirmed partner (#1746)", asyn
 // (#1745). On a window filled to exactly the base, an ordinary guest is refused
 // but Carol's confirmed partner is admitted via the reserved double slot; with
 // the double removed (headroom → 0) the same partner is refused.
-test("S2 — full-by-beds admits an eligible partner via the reserved slot, bounded by the double count (#1745/#1746)", async () => {
+test("S2 — full-by-beds admits an eligible partner via the reserved slot, bounded by the double count (#1745/#1746)", async ({}, testInfo) => {
   const status = (await getRoomsConfig()).capacity;
   const base = status.capacity;
   expect(status.activeDoubleBedCount).toBeGreaterThanOrEqual(1);
@@ -489,16 +553,28 @@ test("S2 — full-by-beds admits an eligible partner via the reserved slot, boun
   // own guest count stays ≤ base (the per-booking cap would otherwise reject
   // before the partner-shared branch even runs).
   const fillerGuests = Array.from({ length: base - 1 }, (_, i) => nonMemberGuest(i));
-  await createHoldingBooking({
-    forMemberId: members.grace.id,
-    guests: fillerGuests,
-    window: S2_WINDOW,
-  });
-  const anchor = await createHoldingBooking({
-    forMemberId: members.carol.id,
-    guests: [memberGuest(members.carol)],
-    window: S2_WINDOW,
-  });
+  await recordHoldingBooking(
+    await postBookingCreate(
+      api(),
+      bookingCreateIsolation("double-bed-capacity", testInfo.retry),
+      holdingBookingOptions({
+        forMemberId: members.grace.id,
+        guests: fillerGuests,
+        window: S2_WINDOW,
+      }),
+    ),
+  );
+  const anchor = await recordHoldingBooking(
+    await postBookingCreate(
+      api(),
+      bookingCreateIsolation("double-bed-capacity", testInfo.retry),
+      holdingBookingOptions({
+        forMemberId: members.carol.id,
+        guests: [memberGuest(members.carol)],
+        window: S2_WINDOW,
+      }),
+    ),
+  );
 
   // The base is genuinely full: an ORDINARY extra guest cannot be admitted (it
   // may never consume the partner-reserved slot).
@@ -605,15 +681,21 @@ test("S3 — non-partners rejected; partnerless booking offers no candidates (#1
 // then orphan auto-promote when the primary allocation is removed (#1701/#1743).
 // Runs last: it carries the heaviest setup (module + IB-settings toggles + a
 // created holding booking), so a setup failure here never masks S1–S3.
-test("S4 — second-occupant placement and orphan auto-promote (#1701/#1743)", async () => {
+test("S4 — second-occupant placement and orphan auto-promote (#1701/#1743)", async ({}, testInfo) => {
   // The second-occupant rule requires the primary's booking to HOLD capacity, so
   // the anchor is a CONFIRMED future booking for Erin (IB + holdBedSlots, enabled
   // in beforeAll; a fully-past booking cannot take a guest addition).
-  const anchor = await createHoldingBooking({
-    forMemberId: members.erin.id,
-    guests: [memberGuest(members.erin)],
-    window: S4_WINDOW,
-  });
+  const anchor = await recordHoldingBooking(
+    await postBookingCreate(
+      api(),
+      bookingCreateIsolation("double-bed-allocation", testInfo.retry),
+      holdingBookingOptions({
+        forMemberId: members.erin.id,
+        guests: [memberGuest(members.erin)],
+        window: S4_WINDOW,
+      }),
+    ),
+  );
 
   // (i) admit Erin's confirmed partner Frank onto the booking.
   const admit = await modifyApply(anchor.id, {

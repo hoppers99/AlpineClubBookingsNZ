@@ -199,8 +199,7 @@ export function AllocationChip({
             variant="ghost"
             className="h-5 w-5 shrink-0"
             aria-label={`Manage allocation for ${allocation.guestName}`}
-            disabled={pending || !canEdit}
-            title={canEdit === false ? ADMIN_VIEW_ONLY_ACTION_REASON : undefined}
+            disabled={pending || canEdit === undefined}
           >
             <X className="h-3 w-3" />
           </Button>
@@ -215,6 +214,7 @@ export function AllocationChip({
             <DropdownMenuSub key={group.roomId}>
               <DropdownMenuSubTrigger
                 aria-label={`Move ${allocation.guestName} to a bed in ${group.roomName}`}
+                disabled={!canEdit}
               >
                 {group.roomName}
               </DropdownMenuSubTrigger>
@@ -227,6 +227,7 @@ export function AllocationChip({
                     key={bed.id}
                     aria-label={`Move ${allocation.guestName} to ${bed.label}`}
                     onSelect={() => onReassignBed(bed.id)}
+                    disabled={!canEdit}
                   >
                     {bed.bedName}
                   </DropdownMenuItem>
@@ -238,6 +239,7 @@ export function AllocationChip({
           <DropdownMenuItem
             onSelect={onAssignRange}
             aria-label={`Assign a range of nights for ${allocation.guestName}`}
+            disabled={!canEdit}
           >
             Assign range…
           </DropdownMenuItem>

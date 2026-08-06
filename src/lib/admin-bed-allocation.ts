@@ -4273,31 +4273,6 @@ export async function isBookingBedAllocationLocked(input: {
   return approved !== null;
 }
 
-/**
- * How many of a booking's bed nights are already approved — the booking-wide
- * count, ignoring any date window (#2252 review).
- *
- * `isBookingBedAllocationLocked` above answers "is the member's room request
- * locked?", which only needs existence. The in-booking panel needs the COUNT,
- * because it must decide whether the run an officer is about to remove holds
- * the booking's LAST approved nights — and on a stay longer than the 31-night
- * read window, the panel's own page cannot see the approved nights sitting on
- * the other pages. Deciding from the page alone made the "this re-opens the
- * member's room request" warning fire on stays where it was simply false.
- */
-export async function countApprovedBedAllocationNights(input: {
-  bookingId: string;
-  db?: BedAllocationDb;
-}): Promise<number> {
-  const db = input.db ?? prisma;
-  return db.bedAllocation.count({
-    where: {
-      bookingId: input.bookingId,
-      approvedAt: { not: null },
-    },
-  });
-}
-
 interface ApproveBedAllocationsInput {
   approvedByMemberId: string;
   allocationIds?: string[];
@@ -4317,52 +4292,36 @@ interface ApproveBedAllocationsInput {
   lodgeId?: string;
 }
 
-export async function approveBedAllocationsWithLocksHeld(
-  input: ApproveBedAllocationsInput & { db: BedAllocationDb },
-) {
-  const where: Prisma.BedAllocationWhereInput = {
-    approvedAt: null,
-  };
-
+function buildApproveBedAllocationsWhere(
+  input: ApproveBedAllocationsInput,
+): Prisma.BedAllocationWhereInput {
+  const where: Prisma.BedAllocationWhereInput = { approvedAt: null };
   if (input.bookingId) {
     where.bookingId = input.bookingId;
-    /*
-     * ADR-003 lodge scope on the BOOKING selector too (#2252 review).
-     *
-     * The in-booking panel's read is lodge-scoped, so a row of this booking
-     * sitting in another lodge's room — an anomaly, but a reachable one across
-     * a booking that moved lodge, or a pre-backfill row — is invisible on the
-     * card. Without this the approve would stamp it anyway, making the write
-     * scope strictly wider than the read: the officer would confirm a bed they
-     * were never shown. Scoped, Confirm can only approve what was on screen.
-     *
-     * Omitting `lodgeId` still means club-wide, exactly as before, so the
-     * board's own selector forms are untouched (the board never sends a
-     * bookingId).
-     */
-    if (input.lodgeId) {
-      where.room = lodgeNullTolerantScope(input.lodgeId);
-    }
+    if (input.lodgeId) where.room = lodgeNullTolerantScope(input.lodgeId);
   }
-
   if (input.allocationIds?.length) {
     where.id = { in: input.allocationIds };
   } else if (input.range) {
-    where.stayDate = {
-      gte: input.range.from,
-      lt: input.range.to,
-    };
-    if (input.lodgeId) {
-      where.room = lodgeNullTolerantScope(input.lodgeId);
-    }
+    where.stayDate = { gte: input.range.from, lt: input.range.to };
+    if (input.lodgeId) where.room = lodgeNullTolerantScope(input.lodgeId);
   } else if (!input.bookingId) {
-    // Fires only when NONE of the three selectors is given: an unselected
-    // approve would otherwise stamp every pending allocation in the database.
     throw new BedAllocationAdminError(
       "Select allocations, a booking, or a date range to approve.",
       400,
     );
   }
+  // A supplied lodge scope narrows EVERY selector form, including explicit ids.
+  // Otherwise `allocationIds + lodgeId` could lock only the supplied lodge while
+  // row-locking and approving ids from another lodge.
+  if (input.lodgeId) where.room = lodgeNullTolerantScope(input.lodgeId);
+  return where;
+}
+
+export async function approveBedAllocationsWithLocksHeld(
+  input: ApproveBedAllocationsInput & { db: BedAllocationDb },
+) {
+  const where = buildApproveBedAllocationsWhere(input);
 
   return input.db.bedAllocation.updateMany({
     where,
@@ -4374,29 +4333,72 @@ export async function approveBedAllocationsWithLocksHeld(
 }
 
 export async function approveBedAllocations(input: ApproveBedAllocationsInput) {
-  const lockWhere: Prisma.BedAllocationWhereInput = input.allocationIds?.length
-    ? { id: { in: input.allocationIds } }
-    : input.range
-      ? { stayDate: { gte: input.range.from, lt: input.range.to } }
-      : input.bookingId
-        ? { bookingId: input.bookingId }
-        : { id: { in: [] } };
+  const lockWhere = buildApproveBedAllocationsWhere(input);
+  // Resolve only immutable lodge keys before opening the transaction. A
+  // mutable allocation pre-read is not sufficient here: a writer already
+  // holding global lock(1) could commit a newly matching row after that read,
+  // and approval would then include its lodge without having taken that lodge's
+  // capacity lock. Lodge-scoped callers stay narrow; the supported legacy
+  // club-wide selector conservatively locks the immutable lodge-id superset.
+  const lodgeIds = input.lodgeId
+    ? [input.lodgeId]
+    : (
+        await prisma.lodge.findMany({
+          select: { id: true },
+          orderBy: { id: "asc" },
+        })
+      ).map((lodge) => lodge.id);
+
   return prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
-    const lockRows = input.lodgeId
-      ? []
-      : await tx.bedAllocation.findMany({
-          where: lockWhere,
-          select: { room: { select: { lodgeId: true } } },
-        });
-    const lodgeIds = input.lodgeId
-      ? [input.lodgeId]
-      : ([
-          ...new Set(lockRows.map((row) => row.room.lodgeId).filter(Boolean)),
-        ].sort() as string[]);
     for (const lodgeId of lodgeIds) {
       await acquireLodgeCapacityLock(tx, lodgeId);
     }
-    return approveBedAllocationsWithLocksHeld({ ...input, db: tx });
+
+    // Canonical row locks make approval serialize with reset/move on the exact
+    // allocation identities. The update still re-applies its full selector and
+    // `approvedAt: null` fence after these locks.
+    const rowsToLock = await tx.bedAllocation.findMany({
+      where: lockWhere,
+      select: { id: true },
+      orderBy: { id: "asc" },
+    });
+    const rowIds = rowsToLock.map((row) => row.id);
+    if (rowIds.length > 0) {
+      await tx.$executeRaw`
+        SELECT 1
+        FROM "BedAllocation"
+        WHERE "id" IN (${Prisma.join(rowIds)})
+        ORDER BY "id"
+        FOR UPDATE
+      `;
+    }
+
+    const result = await approveBedAllocationsWithLocksHeld({ ...input, db: tx });
+    await createAuditLog(
+      {
+        action: "BED_ALLOCATION_APPROVED",
+        memberId: input.approvedByMemberId,
+        entityType: "BedAllocation",
+        category: "admin",
+        outcome: "success",
+        summary: "Bed allocations approved",
+        targetId: input.bookingId,
+        metadata: {
+          approvedCount: result.count,
+          allocationIds: input.allocationIds?.slice(0, 250),
+          bookingId: input.bookingId,
+          range: input.range
+            ? {
+                from: formatDateOnly(input.range.from),
+                to: formatDateOnly(input.range.to),
+              }
+            : undefined,
+          lodgeId: input.lodgeId,
+        },
+      },
+      tx,
+    );
+    return result;
   });
 }

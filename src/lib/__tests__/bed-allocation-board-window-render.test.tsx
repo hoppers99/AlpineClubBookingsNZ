@@ -13,9 +13,12 @@
 
 import "@testing-library/jest-dom/vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import type { ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DashboardPayload } from "@/app/(admin)/admin/bed-allocation/_components/types";
+
+const openRemovalDialogMock = vi.hoisted(() => vi.fn());
+const editAccessMock = vi.hoisted(() => vi.fn());
 
 vi.mock("next/navigation", () => ({
   useSearchParams: () => new URLSearchParams(),
@@ -38,7 +41,7 @@ vi.mock("sonner", () => ({
 vi.mock("@/hooks/use-admin-area-edit-access", async (importOriginal) => {
   const actual =
     await importOriginal<typeof import("@/hooks/use-admin-area-edit-access")>();
-  return { ...actual, useAdminAreaEditAccess: () => true };
+  return { ...actual, useAdminAreaEditAccess: () => editAccessMock() };
 });
 
 // #2286: the board's custodian copy uses the club's own word for the role.
@@ -47,8 +50,24 @@ vi.mock("@/components/club-identity-provider", () => ({
 }));
 
 vi.mock("@/components/lodge-select", () => ({
-  LodgeSelect: () => null,
-  useLodgeOptions: () => ({ lodges: [], loading: false }),
+  LodgeSelect: ({ onChange }: { onChange: (value: string) => void }) => {
+    useEffect(() => onChange("lodge-1"), [onChange]);
+    return null;
+  },
+  useLodgeOptions: () => ({
+    lodges: [{ id: "lodge-1", name: "Test Lodge" }],
+    loading: false,
+  }),
+}));
+vi.mock("@/components/admin/bed-allocation-removal-dialog", () => ({
+  bedAllocationRemovalCategoryForAnchor: (
+    source: "AUTO" | "MANUAL",
+    approvedAt: string | null,
+  ) => (approvedAt ? "APPROVED" : source === "AUTO" ? "AUTO_DRAFT" : "MANUAL_DRAFT"),
+  useBedAllocationRemovalDialog: () => ({
+    openRemovalDialog: openRemovalDialogMock,
+    dialog: <div data-testid="removal-dialog-seam" />,
+  }),
 }));
 
 // The board's contents are covered by their own component tests; here we only
@@ -69,6 +88,12 @@ function buildPayload(): DashboardPayload {
   return {
     settings: {
       autoAllocationEnabled: true,
+      allocationPriorityOrder: [
+        "BOOKING_COHESION",
+        "STAY_CONTINUITY",
+        "REQUESTED_ROOM",
+        "FAMILY_COHESION",
+      ],
       updatedAt: null,
       updatedByMemberId: null,
     },
@@ -107,6 +132,8 @@ function buildPayload(): DashboardPayload {
 
 describe("bed allocation board — refused window", () => {
   beforeEach(() => {
+    openRemovalDialogMock.mockReset();
+    editAccessMock.mockReturnValue(true);
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue({
@@ -165,6 +192,42 @@ describe("bed allocation board — refused window", () => {
     expect(
       screen.queryByText("The board window is out of range"),
     ).not.toBeInTheDocument();
+  });
+
+  it("opens the shared staged dialog from Reset allocations", async () => {
+    render(<AdminBedAllocationPage />);
+    await screen.findByTestId("room-table");
+
+    const reset = screen.getByRole("button", { name: "Reset allocations…" });
+    await waitFor(() => expect(reset).toBeEnabled());
+    fireEvent.click(reset);
+
+    expect(openRemovalDialogMock).toHaveBeenCalledWith({
+      allocations: [],
+      lodgeId: "lodge-1",
+      lodgeName: "Test Lodge",
+      window: { from: "2026-07-01", to: "2026-07-08" },
+      initialScope: "WINDOW",
+      initialCategories: [],
+    });
+  });
+
+  it("lets a view-only admin open the non-mutating reset preview", async () => {
+    editAccessMock.mockReturnValue(false);
+    render(<AdminBedAllocationPage />);
+    await screen.findByTestId("room-table");
+
+    const reset = screen.getByRole("button", { name: /Reset allocations/ });
+    expect(reset).toBeEnabled();
+    fireEvent.click(reset);
+
+    expect(openRemovalDialogMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        lodgeId: "lodge-1",
+        initialScope: "WINDOW",
+        initialCategories: [],
+      }),
+    );
   });
 });
 

@@ -82,7 +82,6 @@ import {
   isPaymentOwedBookingStatus,
 } from "@/lib/booking-status";
 import {
-  countApprovedBedAllocationNights,
   isBookingBedAllocationLocked,
 } from "@/lib/admin-bed-allocation";
 import { BED_ALLOCATABLE_BOOKING_STATUSES } from "@/lib/bed-allocation-lifecycle";
@@ -231,6 +230,7 @@ export default async function BookingDetailPage({
         },
       },
       member: { select: { firstName: true, lastName: true } },
+      lodge: { select: { name: true } },
       // Admin capacity hold (#1764): who placed it, for the admin tools card.
       adminCapacityHoldBy: { select: { firstName: true, lastName: true } },
       // Exclusive whole-lodge hold (#121): who set it, for the admin tools card.
@@ -647,16 +647,6 @@ export default async function BookingDetailPage({
         booking.status,
       )
     : false;
-  /*
-   * This booking's approved bed nights, counted across the WHOLE booking. The
-   * panel's "removing these re-opens the member's room request" warning is a
-   * booking-wide claim, and on a stay longer than the 31-night read window the
-   * panel's own page cannot see the confirmed nights on the other pages (#2252
-   * review). Only counted when the card actually renders.
-   */
-  const approvedBedNightCount = showBedAllocationPanel
-    ? await countApprovedBedAllocationNights({ bookingId: booking.id })
-    : 0;
   const requestedRoomEditableStatus =
     booking.status !== "CANCELLED" && booking.status !== "COMPLETED";
   const editPolicy = getBookingEditPolicy({
@@ -1848,6 +1838,7 @@ export default async function BookingDetailPage({
         <BookingBedAllocationPanel
           bookingId={booking.id}
           lodgeId={booking.lodgeId}
+          lodgeName={booking.lodge.name}
           memberName={`${booking.member.firstName} ${booking.member.lastName}`}
           checkIn={formatDateOnly(booking.checkIn)}
           checkOut={formatDateOnly(booking.checkOut)}
@@ -1855,7 +1846,6 @@ export default async function BookingDetailPage({
           bookingStatus={booking.status}
           isDeleted={isDeleted}
           canHoldBeds={bookingCanHoldBeds}
-          approvedBedNightCount={approvedBedNightCount}
           guests={booking.guests.map((guest) => ({
             id: guest.id,
             name: `${guest.firstName} ${guest.lastName}`,

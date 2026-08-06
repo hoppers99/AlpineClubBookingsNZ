@@ -111,7 +111,14 @@ prepare() {
 }
 
 run() {
-  rm -rf e2e/.auth
+  # A normal run starts from fresh browser/TOTP state. A small number of
+  # ordered, same-stack evidence runs intentionally need the second command to
+  # reuse the TOTP secrets created by the first command while preserving the
+  # database between them. Make that exceptional behaviour explicit at the
+  # call site instead of silently carrying auth state between ordinary runs.
+  if [[ "${E2E_PRESERVE_AUTH_STATE:-0}" != "1" ]]; then
+    rm -rf e2e/.auth
+  fi
   npx playwright test "$@"
 }
 

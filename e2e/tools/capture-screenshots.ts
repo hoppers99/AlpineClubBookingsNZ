@@ -87,6 +87,20 @@ const CAPTURES: Capture[] = [
   { name: "admin-bookings", route: "/admin/bookings", area: "admin" },
   { name: "admin-bed-allocation", route: "/admin/bed-allocation", area: "admin" },
   {
+    name: "admin-bed-allocation-reset-preview",
+    route: `/admin/bed-allocation?from=${DEMO_BOOKING_WINDOWS.daveConfirmed.checkIn}&to=${DEMO_BOOKING_WINDOWS.daveConfirmed.checkOut}`,
+    area: "admin",
+    waitForText: "Dave Davis",
+    prepare: prepareBedAllocationResetPreview,
+  },
+  {
+    name: "admin-booking-bed-allocation-removal",
+    route: `/admin/bed-allocation?from=${DEMO_BOOKING_WINDOWS.daveConfirmed.checkIn}&to=${DEMO_BOOKING_WINDOWS.daveConfirmed.checkOut}`,
+    area: "admin",
+    waitForText: "Dave Davis",
+    prepare: prepareBookingBedAllocationRemoval,
+  },
+  {
     name: "admin-bed-allocation-snap-preview",
     route: `/admin/bed-allocation?from=${DEMO_BOOKING_WINDOWS.daveConfirmed.checkIn}&to=${DEMO_BOOKING_WINDOWS.daveConfirmed.checkOut}`,
     area: "admin",
@@ -431,6 +445,62 @@ async function prepareBedAllocationSnapPreview(page: Page): Promise<void> {
       hasText: "Dave Davis to Bunk Room A / A4, snapped to original lodge nights",
     })
     .waitFor({ state: "visible", timeout: 10_000 });
+}
+
+/**
+ * Open the board's staged window reset and load its exact server preview. The
+ * capture never clicks Apply, so the reusable demo allocations stay untouched.
+ */
+async function prepareBedAllocationResetPreview(page: Page): Promise<void> {
+  await page.getByRole("button", { name: /Reset allocations/ }).click();
+  await page.getByRole("checkbox", { name: /Auto draft/ }).click();
+  await page.getByRole("button", { name: "Preview removal" }).click();
+  await page
+    .getByRole("status")
+    .getByText(/Preview ready:/)
+    .waitFor({ state: "visible", timeout: 15_000 });
+}
+
+/**
+ * Resolve Dave's deterministic seeded booking through the read API, navigate to
+ * its admin-only bed-allocation card, and preview one run through the same
+ * removal dialog as the board. This remains read-only: no Apply click occurs.
+ */
+async function prepareBookingBedAllocationRemoval(page: Page): Promise<void> {
+  const fixture = DEMO_BOOKING_WINDOWS.daveConfirmed;
+  const bookingId = await page.evaluate(
+    async ({ from, to }) => {
+      const response = await fetch(
+        `/api/admin/bed-allocation?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
+      );
+      if (!response.ok) {
+        throw new Error(`Could not read the seeded allocation board (${response.status})`);
+      }
+      const payload = (await response.json()) as {
+        bookings: Array<{ id: string; memberName: string }>;
+      };
+      return payload.bookings.find((booking) => booking.memberName === "Dave Davis")
+        ?.id;
+    },
+    { from: fixture.checkIn, to: fixture.checkOut },
+  );
+  if (!bookingId) {
+    throw new Error("Could not resolve Dave Davis's seeded booking");
+  }
+
+  await page.goto(`/bookings/${bookingId}`, {
+    waitUntil: "load",
+    timeout: 30_000,
+  });
+  await page
+    .locator("#bed-allocation:visible")
+    .waitFor({ state: "visible", timeout: 15_000 });
+  await page.getByRole("button", { name: "Remove", exact: true }).first().click();
+  await page.getByRole("button", { name: "Preview removal" }).click();
+  await page
+    .getByRole("status")
+    .getByText(/Preview ready:/)
+    .waitFor({ state: "visible", timeout: 15_000 });
 }
 
 function outputPath(capture: Capture): string {

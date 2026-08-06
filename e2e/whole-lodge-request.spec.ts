@@ -5,6 +5,10 @@ import {
   test,
 } from "@playwright/test";
 import { loginPersona, storageStatePath } from "./helpers/auth";
+import {
+  bookingCreateIsolation,
+  postBookingCreate,
+} from "./helpers/booking-create-client-ip";
 import { personas } from "./helpers/personas";
 import {
   E2E_ADMIN,
@@ -63,7 +67,10 @@ import { overrideModules, setModuleSettings, type ModuleSettings } from "./helpe
       open member-origin request a previous attempt left behind, so the
       2-open-request cap cannot either; and world C reuses an existing booking
       and tolerates an already-set hold. Without all three, attempt 3 fails on a
-      limiter or a duplicate rather than on the behaviour under test.
+      limiter or a duplicate rather than on the behaviour under test. The
+      capacity-holding anchor's separate `POST /api/bookings` uses the shared
+      booking-create census as well, so earlier spec retries cannot exhaust its
+      setup bucket.
 */
 
 test.describe.configure({ mode: "serial" });
@@ -432,9 +439,8 @@ let aliceRequestId: string | null = null;
 let wandaRequestId: string | null = null;
 let approvedBookingId: string | null = null;
 
-test("the acknowledgement is byte-identical whether the lodge is clear, full, or exclusively held", async () => {
+test("the acknowledgement is byte-identical whether the lodge is clear, full, or exclusively held", async ({}, testInfo) => {
   test.setTimeout(180_000);
-
   await clearLeftoverOpenRequests(adminContext.request);
 
   // --- World C setup: make HELD_WINDOW exclusively held ---------------------
@@ -488,8 +494,9 @@ test("the acknowledgement is byte-identical whether the lodge is clear, full, or
     const wandaMemberId = session.user?.id;
     expect(wandaMemberId, "could not resolve Wanda's member id").toBeTruthy();
 
-    const holdBookingResponse = await adminContext.request.post(
-      "/api/bookings",
+    const holdBookingResponse = await postBookingCreate(
+      adminContext.request,
+      bookingCreateIsolation("whole-lodge-held-anchor", testInfo.retry),
       {
         data: {
           checkIn: HELD_WINDOW.checkIn,

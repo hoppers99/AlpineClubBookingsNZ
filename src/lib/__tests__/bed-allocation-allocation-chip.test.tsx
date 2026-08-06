@@ -42,16 +42,19 @@ vi.mock("@/components/ui/dropdown-menu", () => ({
     children,
     onSelect,
     className,
+    disabled,
     "aria-label": ariaLabel,
   }: ComponentProps<"div"> & {
     onSelect?: () => void;
+    disabled?: boolean;
   }) => (
     <div
       aria-label={ariaLabel}
       className={className}
       role="menuitem"
-      tabIndex={0}
-      onClick={onSelect}
+      aria-disabled={disabled || undefined}
+      tabIndex={disabled ? -1 : 0}
+      onClick={disabled ? undefined : onSelect}
     >
       {children}
     </div>
@@ -78,12 +81,14 @@ vi.mock("@/components/ui/dropdown-menu", () => ({
   ),
   DropdownMenuSubTrigger: ({
     children,
+    disabled,
     "aria-label": ariaLabel,
   }: {
     children: ReactNode;
+    disabled?: boolean;
     "aria-label"?: string;
   }) => (
-    <button aria-label={ariaLabel} type="button">
+    <button aria-label={ariaLabel} type="button" disabled={disabled}>
       {children}
     </button>
   ),
@@ -289,8 +294,14 @@ describe("AllocationChip held vs provisional state (#1251)", () => {
     }
   });
 
-  it("disables drag and manage controls for view-only booking access", () => {
-    renderChip({ canEdit: false });
+  it("keeps removal preview reachable while disabling view-only move writes", () => {
+    const onRemove = vi.fn();
+    renderChip({
+      canEdit: false,
+      onRemove,
+      options: bedOptions,
+      groups: bedOptionGroups,
+    });
 
     expect(
       screen.getByRole("button", {
@@ -299,7 +310,14 @@ describe("AllocationChip held vs provisional state (#1251)", () => {
     ).toBeDisabled();
     expect(
       screen.getByRole("button", { name: /Manage allocation for Example Guest/i }),
+    ).toBeEnabled();
+    expect(
+      screen.getByRole("button", {
+        name: "Move Example Guest to a bed in Room One",
+      }),
     ).toBeDisabled();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Remove allocation" }));
+    expect(onRemove).toHaveBeenCalledOnce();
   });
 
   it("groups move targets by room and omits the current bed", () => {

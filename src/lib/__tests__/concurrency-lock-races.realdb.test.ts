@@ -42,6 +42,11 @@ import "./ai-diagnostics-budget-race.realdb.test";
 // drift, and the existing policy/config/merge lock order against production
 // seams. It remains a no-op unless RUN_CONCURRENCY_RACE_TESTS=1.
 import "./adult-member-hosting-queue-merge.realdb.test";
+// #2594 reuses this guarded disposable PostgreSQL to force the reviewed reset
+// apply path against the real move, explicit auto-allocation, lifecycle, and
+// cancellation writers. Its own describe stays skipped unless the shared race
+// flag is set, and its uniquely-namespaced fixtures are cleaned independently.
+import "./bed-allocation-removal-races.realdb.test";
 // #2374 (AID-5) deliberately is NOT imported here, unlike the two suites above.
 // `ai-diagnostics-select-only-role.realdb.test.ts` provisions and drops a cluster
 // ROLE and revokes `TEMPORARY ... FROM PUBLIC` on the shared throwaway database

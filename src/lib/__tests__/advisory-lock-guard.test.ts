@@ -64,13 +64,20 @@ const GLOBAL_BOOKING_MONEY_LOCK_INVENTORY: Record<string, number> = {
   // its status writes did not exclude a concurrent cancel.
   "src/app/api/payments/create-payment-intent/route.ts": 1,
   "src/app/api/payments/switch-to-internet-banking/route.ts": 1,
-  // #2366 / #2593: allocation moves, manual/range assignment, approval,
-  // deletion, room/bed inventory changes and explicit auto-allocation all
+  // #2366 / #2593 / #2594: allocation moves, manual/range assignment,
+  // approval, room/bed inventory changes, explicit auto-allocation and
+  // reviewed removal all
   // compose with lifecycle reconciliation because cancellation can prune the
   // same rows. Every public wrapper takes global lock(1), then the immutable or
   // explicitly selected lodge capacity lock, and delegates to a narrow
   // lock-held implementation; auto-allocation also rebuilds its plan there.
   "src/lib/admin-bed-allocation.ts": 11,
+  // #2594: removal applies a reviewed digest under global -> sorted immutable
+  // lodge -> sorted allocation-row locks. Requested-room editing shares the
+  // global cohort and locks/re-reads the booking before its guarded write so it
+  // cannot cross approval or removal's final-approved consequence.
+  "src/lib/bed-allocation-removal.ts": 1,
+  "src/lib/requested-room-write.ts": 1,
   // #2593: the public reconciler owns global -> immutable booking lodge, while
   // callers already holding either tier use the matching lock-held seam. The
   // partner-shared cleanup site owns the same ordered topology for its sorted
@@ -288,7 +295,13 @@ const SCOPED_ADVISORY_LOCK_INVENTORY: Record<string, number> = {
 // statement whose result IS read (`rate-limit.ts`) takes no lock and goes
 // through `decodeRawRows`. `raw-sql-shape-guard.test.ts` holds that line.
 const ROW_LOCK_SITE_INVENTORY: Record<string, number> = {
-  "src/lib/admin-bed-allocation.ts": 1,
+  // The room bunk-group writer and #2594 allocation approval each use one
+  // lock-only row statement. Reviewed removal locks its selected/causal rows,
+  // and requested-room editing locks the booking before its authoritative
+  // approval check and guarded update.
+  "src/lib/admin-bed-allocation.ts": 2,
+  "src/lib/bed-allocation-removal.ts": 1,
+  "src/lib/requested-room-write.ts": 1,
   "src/lib/booking-create-promo.ts": 1,
   // Promo usage caps (#2299): `lockPromoCodeRowsForUpdate` takes a
   // `SELECT 1 … FOR UPDATE` on the promo row for the modification paths,

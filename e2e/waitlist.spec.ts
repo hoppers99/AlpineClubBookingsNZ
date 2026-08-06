@@ -1,6 +1,10 @@
 import { type BrowserContext, expect, test } from "@playwright/test";
 import { loginPersona, storageStatePath } from "./helpers/auth";
 import {
+  bookingCreateIsolation,
+  postBookingCreate,
+} from "./helpers/booking-create-client-ip";
+import {
   E2E_ADMIN,
   WAITLIST_FULL_WINDOW,
   WAITLIST_OFFER_BOOKING_ID,
@@ -37,7 +41,9 @@ import { cancelMemberBookingsOnDate } from "./helpers/reset";
 // independent tests: a failure in either retries that test alone and can never
 // drag the placement pair back through a database it has already mutated. That
 // pairing — narrow serial groups plus an idempotent group `beforeAll` — is the
-// rule for this suite; see e2e/helpers/reset.ts and docs/E2E_PLAYWRIGHT.md.
+// rule for this suite. Both create calls deliberately share this test attempt's
+// registered booking-create IP, while a retry gets a different bucket; see
+// e2e/helpers/reset.ts and docs/E2E_PLAYWRIGHT.md.
 
 let memberContext: BrowserContext;
 let adminContext: BrowserContext;
@@ -84,7 +90,7 @@ test.describe("placement then admin force-confirm", () => {
     });
   });
 
-  test("a full lodge night is refused and the member can join the waitlist", async () => {
+  test("a full lodge night is refused and the member can join the waitlist", async ({}, testInfo) => {
     const session = (await (
       await memberContext.request.get("/api/auth/session")
     ).json()) as { user?: { id?: string } };
@@ -103,13 +109,17 @@ test.describe("placement then admin force-confirm", () => {
     };
 
     // A plain booking on the seeded-full window is refused for capacity.
-    const refused = await memberContext.request.post("/api/bookings", {
-      data: {
-        checkIn: WAITLIST_FULL_WINDOW.checkIn,
-        checkOut: WAITLIST_FULL_WINDOW.checkOut,
-        guests: [guest],
+    const refused = await postBookingCreate(
+      memberContext.request,
+      bookingCreateIsolation("waitlist-placement", testInfo.retry),
+      {
+        data: {
+          checkIn: WAITLIST_FULL_WINDOW.checkIn,
+          checkOut: WAITLIST_FULL_WINDOW.checkOut,
+          guests: [guest],
+        },
       },
-    });
+    );
     const refusedBody = (await refused.json().catch(() => ({}))) as {
       code?: string;
     };
@@ -127,14 +137,18 @@ test.describe("placement then admin force-confirm", () => {
 
     // Opting into the waitlist creates a WAITLISTED booking (the exact retry the
     // /book wizard performs after the 409).
-    const waitlisted = await memberContext.request.post("/api/bookings", {
-      data: {
-        checkIn: WAITLIST_FULL_WINDOW.checkIn,
-        checkOut: WAITLIST_FULL_WINDOW.checkOut,
-        guests: [guest],
-        waitlist: true,
+    const waitlisted = await postBookingCreate(
+      memberContext.request,
+      bookingCreateIsolation("waitlist-placement", testInfo.retry),
+      {
+        data: {
+          checkIn: WAITLIST_FULL_WINDOW.checkIn,
+          checkOut: WAITLIST_FULL_WINDOW.checkOut,
+          guests: [guest],
+          waitlist: true,
+        },
       },
-    });
+    );
     const waitlistedBody = (await waitlisted.json().catch(() => ({}))) as {
       status?: string;
     };
