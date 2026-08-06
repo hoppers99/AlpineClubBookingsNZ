@@ -1,11 +1,16 @@
 import {
   type APIRequestContext,
+  type APIResponse,
   type BrowserContext,
   type Page,
   expect,
   test,
 } from "@playwright/test";
 import { loginPersona } from "../helpers/auth";
+import {
+  bookingCreateIsolation,
+  postBookingCreate,
+} from "../helpers/booking-create-client-ip";
 import {
   E2E_ADMIN,
   NOMINATOR_TWO,
@@ -102,11 +107,11 @@ async function resolveMemberId(
 }
 
 /** A booking with the booker alone on it — the state MG4's edit path acts on. */
-async function createSoloBooking(window: {
+function soloBookingOptions(window: {
   checkIn: string;
   checkOut: string;
-}): Promise<string> {
-  const res = await wandaPage.request.post("/api/bookings", {
+}) {
+  return {
     data: {
       checkIn: window.checkIn,
       checkOut: window.checkOut,
@@ -120,7 +125,10 @@ async function createSoloBooking(window: {
         },
       ],
     },
-  });
+  };
+}
+
+async function soloBookingIdFromResponse(res: APIResponse): Promise<string> {
   expect(res.status(), `POST /api/bookings (${res.status()})`).toBe(201);
   return ((await res.json()) as { id: string }).id;
 }
@@ -195,7 +203,13 @@ test("a member adds a member guest from the edit panel, and the target is asked"
   // to zero sends would otherwise "pass" on attempt 2 against attempt 1's
   // leftover message.
   await clearMailbox();
-  const bookingId = await createSoloBooking(memberEditWindow(testInfo.retry));
+  const bookingId = await soloBookingIdFromResponse(
+    await postBookingCreate(
+      wandaPage.request,
+      bookingCreateIsolation("multi-lodge-member-edit", testInfo.retry),
+      soloBookingOptions(memberEditWindow(testInfo.retry)),
+    ),
+  );
 
   await wandaPage.goto(`/bookings/${bookingId}`);
   await findMemberGuest(wandaPage, NOMINATOR_TWO.email);
@@ -238,7 +252,13 @@ test("an officer adding on somebody's booking tells the member instead of asking
   // consent-free and immediate, and the member is told — which is the half a
   // reader is most likely to assume is optional.
   await clearMailbox();
-  const bookingId = await createSoloBooking(adminEditWindow(testInfo.retry));
+  const bookingId = await soloBookingIdFromResponse(
+    await postBookingCreate(
+      wandaPage.request,
+      bookingCreateIsolation("multi-lodge-officer-edit", testInfo.retry),
+      soloBookingOptions(adminEditWindow(testInfo.retry)),
+    ),
+  );
 
   await officerPage.goto(`/bookings/${bookingId}`);
   await officerPage

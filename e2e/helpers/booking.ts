@@ -1,4 +1,8 @@
 import { expect, type Page } from "@playwright/test";
+import {
+  type BookingCreateIsolation,
+  withBookingCreateClientIp,
+} from "./booking-create-client-ip";
 import type { Persona } from "./personas";
 import { calendarDayLabel, type StayWindow } from "./stay-dates";
 
@@ -173,13 +177,18 @@ export async function bookSelfToReviewStep(
 
 // Confirms the reviewed booking. Member bookings owe payment immediately, so
 // the wizard continues to the in-wizard card payment step (step 4).
-export async function confirmBookingToPaymentStep(page: Page): Promise<void> {
-  await page
-    .getByRole("button", { name: /Continue to Payment|Confirm Booking/ })
-    .click();
-  // "Complete Payment" appears both as the step-4 indicator and as the card
-  // title, so match loosely and just require the payment step to be showing.
-  await expect(page.getByText("Complete Payment").first()).toBeVisible({
-    timeout: 30_000,
+export async function confirmBookingToPaymentStep(
+  page: Page,
+  isolation: BookingCreateIsolation,
+): Promise<void> {
+  await withBookingCreateClientIp(page, isolation, async () => {
+    await page
+      .getByRole("button", { name: /Continue to Payment|Confirm Booking/ })
+      .click();
+    // "Complete Payment" appears both as the step-4 indicator and as the card
+    // title, so match loosely and just require the payment step to be showing.
+    await expect(page.getByText("Complete Payment").first()).toBeVisible({
+      timeout: 30_000,
+    });
   });
 }

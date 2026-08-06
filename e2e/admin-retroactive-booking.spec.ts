@@ -5,6 +5,11 @@ import {
   setBedAllocationSettings,
   type BedAllocationSettingsSnapshot,
 } from "./helpers/bed-allocation-settings";
+import {
+  bookingCreateIsolation,
+  postBookingCreate,
+  withBookingCreateClientIp,
+} from "./helpers/booking-create-client-ip";
 import { personas } from "./helpers/personas";
 import {
   DEMO_BOOKING_WINDOWS,
@@ -169,7 +174,7 @@ test.afterAll(async () => {
   }
 });
 
-test("an admin records a past stay on behalf of a member without emailing them", async () => {
+test("an admin records a past stay on behalf of a member without emailing them", async ({}, testInfo) => {
   const page = await adminContext.newPage();
   await page.goto("/admin/book");
   await expect(
@@ -221,14 +226,19 @@ test("an admin records a past stay on behalf of a member without emailing them",
   // Wait for the POST itself — the Confirm button flips to "Creating booking..."
   // the instant the dialog choice fires, so a button-state wait would race the
   // in-flight request and the caller's navigation could abort it.
-  const [response] = await Promise.all([
-    page.waitForResponse(
-      (r) =>
-        r.url().endsWith("/api/bookings") && r.request().method() === "POST",
-      { timeout: 30_000 },
-    ),
-    withoutEmail.click(),
-  ]);
+  const [response] = await withBookingCreateClientIp(
+    page,
+    bookingCreateIsolation("admin-retroactive-record", testInfo.retry),
+    () =>
+      Promise.all([
+        page.waitForResponse(
+          (r) =>
+            r.url().endsWith("/api/bookings") && r.request().method() === "POST",
+          { timeout: 30_000 },
+        ),
+        withoutEmail.click(),
+      ]),
+  );
   expect(response.status(), `retroactive create (${response.status()})`).toBe(
     201,
   );
@@ -278,21 +288,28 @@ test("a member's own /book calendar keeps past days disabled", async () => {
   await page.close();
 });
 
-test("a member POST carrying allowPastDates is rejected 403", async () => {
-  const res = await memberContext.request.post("/api/bookings", {
-    data: {
-      checkIn: isoDay(30),
-      checkOut: isoDay(32),
-      guests: [
-        {
-          firstName: "Alice",
-          lastName: "Anderson",
-          ageTier: "ADULT",
-          isMember: true,
-        },
-      ],
-      allowPastDates: true,
+test("a member POST carrying allowPastDates is rejected 403", async ({}, testInfo) => {
+  const res = await postBookingCreate(
+    memberContext.request,
+    bookingCreateIsolation(
+      "admin-retroactive-member-rejection",
+      testInfo.retry,
+    ),
+    {
+      data: {
+        checkIn: isoDay(30),
+        checkOut: isoDay(32),
+        guests: [
+          {
+            firstName: "Alice",
+            lastName: "Anderson",
+            ageTier: "ADULT",
+            isMember: true,
+          },
+        ],
+        allowPastDates: true,
+      },
     },
-  });
+  );
   expect(res.status(), `member allowPastDates (${res.status()})`).toBe(403);
 });

@@ -1,6 +1,10 @@
 import { type APIRequestContext, type BrowserContext, expect, test } from "@playwright/test";
 
 import { loginPersona, storageStatePath } from "./helpers/auth";
+import {
+  bookingCreateIsolation,
+  postBookingCreate,
+} from "./helpers/booking-create-client-ip";
 import { E2E_ADMIN, ROLE_PERSONAS, WAITLISTER } from "./helpers/fixtures";
 import {
   overrideModules,
@@ -157,14 +161,21 @@ async function resolveOwnerMemberId(): Promise<string> {
 }
 
 /** Create a booking as the member, returning the response for the caller to judge. */
-function createMemberBooking(guests: Array<Record<string, unknown>>) {
-  return member.post("/api/bookings", {
-    data: {
-      checkIn: WINDOW.checkIn,
-      checkOut: WINDOW.checkOut,
-      guests,
+function createMemberBooking(
+  guests: Array<Record<string, unknown>>,
+  retry: number,
+) {
+  return postBookingCreate(
+    member,
+    bookingCreateIsolation("adult-hosting-refusal", retry),
+    {
+      data: {
+        checkIn: WINDOW.checkIn,
+        checkOut: WINDOW.checkOut,
+        guests,
+      },
     },
-  });
+  );
 }
 
 /**
@@ -172,24 +183,28 @@ function createMemberBooking(guests: Array<Record<string, unknown>>) {
  * live Stripe, and deliberately makes `createdById` differ from `Booking.memberId`:
  * if coverage accidentally keys on the creator, the dependent below is refused.
  */
-function createCoveringBooking() {
-  return admin.post("/api/bookings", {
-    data: {
-      checkIn: WINDOW.checkIn,
-      checkOut: WINDOW.checkOut,
-      forMemberId: ownerMemberId,
-      paymentMethod: "internet_banking",
-      guests: [
-        {
-          firstName: WAITLISTER.firstName,
-          lastName: WAITLISTER.lastName,
-          ageTier: "ADULT",
-          isMember: true,
-          memberId: ownerMemberId,
-        },
-      ],
+function createCoveringBooking(retry: number) {
+  return postBookingCreate(
+    admin,
+    bookingCreateIsolation("adult-hosting-cross-booking", retry),
+    {
+      data: {
+        checkIn: WINDOW.checkIn,
+        checkOut: WINDOW.checkOut,
+        forMemberId: ownerMemberId,
+        paymentMethod: "internet_banking",
+        guests: [
+          {
+            firstName: WAITLISTER.firstName,
+            lastName: WAITLISTER.lastName,
+            ageTier: "ADULT",
+            isMember: true,
+            memberId: ownerMemberId,
+          },
+        ],
+      },
     },
-  });
+  );
 }
 
 /**
@@ -200,23 +215,27 @@ function createCoveringBooking() {
  * a merely PENDING booking is protected from losing prospective cover, but it does
  * not receive an urgent incident until the club has accepted it (§7, §16).
  */
-function createConfirmedDependentBooking() {
-  return bookingOfficer.post("/api/bookings", {
-    data: {
-      checkIn: WINDOW.checkIn,
-      checkOut: WINDOW.checkOut,
-      forMemberId: ownerMemberId,
-      paymentMethod: "internet_banking",
-      guests: [
-        {
-          firstName: "Covered",
-          lastName: "Guest",
-          ageTier: "ADULT",
-          isMember: false,
-        },
-      ],
+function createConfirmedDependentBooking(retry: number) {
+  return postBookingCreate(
+    bookingOfficer,
+    bookingCreateIsolation("adult-hosting-cross-booking", retry),
+    {
+      data: {
+        checkIn: WINDOW.checkIn,
+        checkOut: WINDOW.checkOut,
+        forMemberId: ownerMemberId,
+        paymentMethod: "internet_banking",
+        guests: [
+          {
+            firstName: "Covered",
+            lastName: "Guest",
+            ageTier: "ADULT",
+            isMember: false,
+          },
+        ],
+      },
     },
-  });
+  );
 }
 
 /**
@@ -365,10 +384,10 @@ test("the card resolves and states the two dimensions independently (#2569)", as
   await page.close();
 });
 
-test("an enforcing club refuses a booking with no adult member cover (#2569 §1)", async () => {
+test("an enforcing club refuses a booking with no adult member cover (#2569 §1)", async ({}, testInfo) => {
   const refused = await createMemberBooking([
     { firstName: "Hosting", lastName: "Guest", ageTier: "ADULT", isMember: false },
-  ]);
+  ], testInfo.retry);
   expect(
     refused.status(),
     `uncovered booking must be refused, not recorded (${refused.status()}): ` +
@@ -394,7 +413,7 @@ test("an enforcing club refuses a booking with no adult member cover (#2569 §1)
   ).toEqual([]);
 });
 
-test("another booking on the same account supplies the cover, and cannot then be pulled away (#2576)", async () => {
+test("another booking on the same account supplies the cover, and cannot then be pulled away (#2576)", async ({}, testInfo) => {
   // 1. THE SOURCE. A booking carrying the member themselves, who is a qualifying
   //    adult member attending those exact nights at that exact lodge.
   // Internet Banking is the isolated suite's provider-free route to CONFIRMED,
@@ -434,8 +453,8 @@ test("another booking on the same account supplies the cover, and cannot then be
       enabled.ok(),
       `enable Internet Banking holds (${enabled.status()}): ${await enabled.text()}`,
     ).toBe(true);
-    source = await createCoveringBooking();
-    dependent = await createConfirmedDependentBooking();
+    source = await createCoveringBooking(testInfo.retry);
+    dependent = await createConfirmedDependentBooking(testInfo.retry);
   } finally {
     if (bankingSnapshot) {
       const restored = await admin.put("/api/admin/internet-banking-settings", {
