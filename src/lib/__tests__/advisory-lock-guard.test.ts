@@ -336,13 +336,15 @@ const ROW_LOCK_SITE_INVENTORY: Record<string, number> = {
   // docs/CONCURRENCY_AND_LOCKING.md → "Member photo writer".
   "src/app/api/members/[id]/photo/route.ts": 2,
   // Adult-member-hosting queue participants (#2597): the shared helper mints
-  // the reviewed `FOR UPDATE` protocol for member merge over master, loser, and
-  // every planned ancillary owner. Ordinary seams use the separate sorted
-  // `FOR KEY SHARE NOWAIT` protocol in this helper. It issues the runtime
-  // exact-participant proofs consumed by queue writes.
+  // one reviewed `FOR UPDATE` protocol for member merge over master, loser and
+  // every planned ancillary owner, plus the shared standing-subject barrier
+  // that excludes a late BookingGuest FK `KEY SHARE` for every member-standing
+  // fan-out. Ordinary seams use the separate sorted `FOR KEY SHARE NOWAIT`
+  // protocol in this helper. It issues the runtime exact-participant proofs
+  // consumed by queue writes.
   // See docs/CONCURRENCY_AND_LOCKING.md → "Adult-member-hosting queue
   // participant fencing" and "Member merge".
-  "src/lib/adult-member-hosting-queue-participants.ts": 1,
+  "src/lib/adult-member-hosting-queue-participants.ts": 2,
 };
 
 const CAPACITY_LOCK_MINT = "src/lib/lodge-capacity-lock.ts";
