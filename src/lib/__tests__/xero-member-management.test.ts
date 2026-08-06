@@ -104,6 +104,11 @@ import { GET as getMembers } from "@/app/api/admin/members/route";
 import { POST as xeroUnlink } from "@/app/api/admin/members/[id]/xero-unlink/route";
 import { POST as xeroLink } from "@/app/api/admin/members/[id]/xero-link/route";
 import { GET as searchXeroContacts } from "@/app/api/admin/xero/search-contacts/route";
+import {
+  HOSTING_COVERAGE_RETRY_CODE,
+  HOSTING_COVERAGE_RETRY_MESSAGE,
+  HostingCoverageParticipantRetryError,
+} from "@/lib/adult-member-hosting-queue-participants";
 
 const mockedAuth = vi.mocked(auth);
 const adminSession = { user: { id: "admin1", role: "ADMIN", accessRoles: [{ role: "ADMIN" }] } } as any;
@@ -531,6 +536,51 @@ describe("Xero Member Management", () => {
       expect(res.status).toBe(409);
       const data = await res.json();
       expect(data.error).toContain("already linked");
+    });
+
+    it("does not swallow participant contention as a successful history warning after the link persisted", async () => {
+      mockedAuth.mockResolvedValue(adminSession);
+      vi.mocked(prisma.member.findUnique).mockResolvedValue({
+        id: "m1",
+        firstName: "John",
+        lastName: "Doe",
+        xeroContactId: "old-xero-id",
+      } as any);
+      vi.mocked(prisma.member.findFirst).mockResolvedValue(null);
+      vi.mocked(prisma.member.update).mockResolvedValue({ id: "m1" } as any);
+      mockGetAuthenticatedXeroClient.mockResolvedValue({
+        xero: { accountingApi: { getContact: vi.fn() } },
+        tenantId: "t1",
+      });
+      mockCallXeroApi.mockResolvedValue({
+        body: { contacts: [{ contactID: "new-xero-id", name: "Jane Doe" }] },
+      });
+      mockSyncMemberSubscriptionHistoryForLinkedContact.mockRejectedValue(
+        new HostingCoverageParticipantRetryError(),
+      );
+
+      const response = await xeroLink(
+        new NextRequest("http://localhost/api/admin/members/m1/xero-link", {
+          method: "POST",
+          body: JSON.stringify({ xeroContactId: "new-xero-id" }),
+        }),
+        { params: Promise.resolve({ id: "m1" }) },
+      );
+
+      expect(response.status).toBe(409);
+      await expect(response.json()).resolves.toEqual({
+        error: HOSTING_COVERAGE_RETRY_MESSAGE,
+        code: HOSTING_COVERAGE_RETRY_CODE,
+        xeroLinkMayHaveChanged: true,
+        subscriptionRefreshPending: true,
+      });
+      expect(prisma.member.update).toHaveBeenCalledWith({
+        where: { id: "m1" },
+        data: { xeroContactId: "new-xero-id" },
+      });
+      expect(logAudit).not.toHaveBeenCalledWith(
+        expect.objectContaining({ action: "XERO_LINK" }),
+      );
     });
   });
 });

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import {
   AdminReviewStatus,
   AgeTier,
+  BookingStatus,
   type MemberGuestConsentStatus,
 } from "@prisma/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -555,6 +556,64 @@ describe("split-pair reconciliation (#2364 review finding)", () => {
       }),
     ).rejects.toThrow(/explicit decision reason/i);
     expect(bad.update).not.toHaveBeenCalled();
+  });
+
+  it("uses the fenced sibling-aware seam when a new booking is confirmed cover", async () => {
+    const [parent, child] = splitPair(
+      ["2026-07-04", "2026-07-05"],
+      ["2026-07-04", "2026-07-05"],
+    );
+    const family = makeFamilyDb(
+      [
+        { ...parent, status: BookingStatus.CONFIRMED, deletedAt: null },
+        {
+          ...child,
+          status: BookingStatus.PENDING,
+          deletedAt: null,
+          adultMemberHostingReview: {
+            reasonCode: "ADULT_MEMBER_HOSTING_REQUIRED",
+            policyId: "policy-club",
+            policyVersion: 3,
+            requirements: {
+              uncovered: [{ guestRef: "g1", night: "2026-07-05" }],
+            },
+          },
+          adultMemberHostingReviewStatus: AdminReviewStatus.PENDING,
+        },
+      ],
+      [CLUB_ON],
+    );
+
+    await recordAdultMemberHostingReviewForNewBooking(
+      "parent-1",
+      family.db,
+      null,
+    );
+
+    expect(family.rowFor("child-1").adultMemberHostingReviewStatus).toBeNull();
+    expect(family.db.booking.findMany).toHaveBeenCalled();
+  });
+
+  it("keeps draft and waitlist creation on the single-booking review path", async () => {
+    for (const status of [BookingStatus.DRAFT, BookingStatus.WAITLISTED]) {
+      const family = makeFamilyDb(
+        splitPair(["2026-07-04"], ["2026-07-04", "2026-07-05"]).map(
+          (row) => ({ ...row, status, deletedAt: null }),
+        ),
+        [CLUB_ON],
+      );
+      await recordAdultMemberHostingReviewForNewBooking(
+        "parent-1",
+        family.db,
+        null,
+      );
+      expect(
+        family.db.booking.findMany.mock.calls.some(
+          ([args]: any[]) =>
+            args.select?.id === true && Object.keys(args.select).length === 1,
+        ),
+      ).toBe(false);
+    }
   });
 });
 

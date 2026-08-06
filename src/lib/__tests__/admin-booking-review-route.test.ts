@@ -59,6 +59,11 @@ vi.mock("@/lib/logger", () => ({
 }));
 
 import { PATCH } from "@/app/api/admin/bookings/[id]/review/route";
+import {
+  HOSTING_COVERAGE_RETRY_CODE,
+  HOSTING_COVERAGE_RETRY_MESSAGE,
+  HostingCoverageParticipantRetryError,
+} from "@/lib/adult-member-hosting-queue-participants";
 
 function makeRequest(body: unknown) {
   return new NextRequest("https://example.test/api/admin/bookings/b1/review", {
@@ -274,6 +279,41 @@ describe("PATCH /api/admin/bookings/[id]/review", () => {
       expect.anything(),
       "card",
     );
+  });
+
+  it("reports that rejection committed when cancellation participant fencing contends", async () => {
+    mocks.bookingFindUnique.mockResolvedValue({
+      id: "b1",
+      memberId: "m1",
+      adminReviewStatus: "PENDING",
+      status: "PAID",
+      member: { email: "member@example.com", firstName: "Alex" },
+      checkIn: new Date("2026-07-01"),
+      checkOut: new Date("2026-07-03"),
+    });
+    mocks.bookingUpdateMany.mockResolvedValue({ count: 1 });
+    mocks.cancelBooking.mockRejectedValue(
+      new HostingCoverageParticipantRetryError(),
+    );
+
+    const response = await PATCH(
+      makeRequest({ status: "REJECTED", adminNotes: "No adult attending." }),
+      { params },
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      error: HOSTING_COVERAGE_RETRY_MESSAGE,
+      code: HOSTING_COVERAGE_RETRY_CODE,
+      reviewRecorded: true,
+      cancellationPending: true,
+    });
+    expect(mocks.bookingUpdateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ adminReviewStatus: "REJECTED" }),
+      }),
+    );
+    expect(mocks.sendRejectedEmail).not.toHaveBeenCalled();
   });
 
   it("rejects: records decision, cancels booking, sends rejection email", async () => {

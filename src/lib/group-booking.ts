@@ -53,6 +53,11 @@ import {
 } from "@/lib/email";
 import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
 import {
+  HOSTING_COVERAGE_RETRY_CODE,
+  HOSTING_COVERAGE_RETRY_MESSAGE,
+  isHostingCoverageParticipantRetry,
+} from "@/lib/adult-member-hosting-queue-participants";
+import {
   AdultMemberHostingRequiredError,
   buildAdultMemberHostingRefusalBody,
   evaluateProposedAdultMemberHosting,
@@ -946,6 +951,11 @@ export async function joinGroupBookingAsMember(
     internetBankingSettings,
     });
   } catch (err) {
+    if (isHostingCoverageParticipantRetry(err)) {
+      throw new GroupBookingError(HOSTING_COVERAGE_RETRY_MESSAGE, 409, {
+        code: HOSTING_COVERAGE_RETRY_CODE,
+      });
+    }
     if (err instanceof GroupJoinConflictError) {
       throw new GroupBookingError("You have already joined this group", 409);
     }

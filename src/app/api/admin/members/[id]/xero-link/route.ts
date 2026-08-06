@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import { hostingCoverageParticipantRetryResponse } from "@/lib/adult-member-hosting-retry-response";
+import { isHostingCoverageParticipantRetry } from "@/lib/adult-member-hosting-queue-participants";
 import { requireAdmin } from "@/lib/session-guards";
 import { prisma } from "@/lib/prisma";
 import {
@@ -134,6 +136,9 @@ export async function POST(
         );
       }
     } catch (historyError) {
+      if (isHostingCoverageParticipantRetry(historyError)) {
+        throw historyError;
+      }
       warning =
         "Member linked, but subscription history refresh did not complete. Run the Member Status Repair Backfill to retry.";
       logger.warn(
@@ -182,6 +187,11 @@ export async function POST(
       ...(warning ? { warning } : {}),
     });
   } catch (err) {
+    const hostingRetry = hostingCoverageParticipantRetryResponse(err, {
+      xeroLinkMayHaveChanged: true,
+      subscriptionRefreshPending: true,
+    });
+    if (hostingRetry) return hostingRetry;
     const xeroError = getXeroApiErrorInfo(err, "Failed to link to Xero contact");
     if (!xeroError.handled) {
       logger.error(

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { hostingCoverageParticipantRetryResponse } from "@/lib/adult-member-hosting-retry-response";
 import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { getPaymentIntent } from "@/lib/stripe";
@@ -235,6 +236,12 @@ export async function POST(
 
     return NextResponse.json({ success: true });
   } catch (err) {
+    const hostingRetry = hostingCoverageParticipantRetryResponse(err, {
+      paymentReceived: true,
+      finalisationPending: true,
+      paymentIntentId,
+    });
+    if (hostingRetry) return hostingRetry;
     // #1888 — never echo an unexpected error's message to the client (it can
     // carry Prisma constraint names or infrastructure detail); the raw error
     // stays in the log only.

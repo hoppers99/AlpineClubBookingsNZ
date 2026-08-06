@@ -188,11 +188,17 @@ describe("the per-owner coverage lock (#2576 §9)", () => {
     const mergePolicyLock = merge.indexOf("lockAdultMemberHostingPolicySet(tx)");
     const mergeLifecycleLock = merge.indexOf("member-lifecycle:${lockA}");
     const relationMoves = merge.indexOf("const relationMoves = await applyMoves(");
-    const mergeMemberRows = merge.indexOf('ORDER BY "id" FOR UPDATE', relationMoves);
+    const mergeMemberRows = merge.indexOf(
+      "lockMemberMergeHostingCoverageParticipants(tx,",
+      relationMoves,
+    );
     expect(mergePolicyLock).toBeGreaterThan(-1);
     expect(mergeLifecycleLock).toBeGreaterThan(mergePolicyLock);
     expect(relationMoves).toBeGreaterThan(mergeLifecycleLock);
     expect(mergeMemberRows).toBeGreaterThan(relationMoves);
+    expect(
+      readRepoFile("src/lib/adult-member-hosting-queue-participants.ts"),
+    ).toMatch(/ORDER BY "id"\s+FOR UPDATE/);
   });
 
   it("keeps queued reconciliation in a real transaction and email after it", () => {

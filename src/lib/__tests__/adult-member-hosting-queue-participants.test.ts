@@ -6,9 +6,11 @@ import { buildMemberMergeHostingCoveragePlan } from "@/lib/adult-member-hosting-
 import {
   acquireHostingCoverageQueueParticipantProof,
   HOSTING_COVERAGE_RETRY_CODE,
+  HOSTING_COVERAGE_RETRY_BODY,
   HOSTING_COVERAGE_RETRY_MESSAGE,
   HostingCoverageParticipantRetryError,
   isPostgresLockNotAvailable,
+  isHostingCoverageParticipantRetry,
   lockMemberMergeHostingCoverageParticipants,
   type HostingCoverageQueueParticipantProof,
 } from "@/lib/adult-member-hosting-queue-participants";
@@ -178,6 +180,23 @@ describe("hosting coverage queue participant fence (#2597)", () => {
       expect(db.member.findMany).not.toHaveBeenCalled();
       expect(db.hostingCoverageReevaluation.create).not.toHaveBeenCalled();
     }
+  });
+
+  it("recognises only the stable retry code through retained service causes", () => {
+    const direct = new HostingCoverageParticipantRetryError();
+    expect(isHostingCoverageParticipantRetry(direct)).toBe(true);
+    expect(
+      isHostingCoverageParticipantRetry({ cause: { error: direct } }),
+    ).toBe(true);
+    expect(
+      isHostingCoverageParticipantRetry({
+        message: HOSTING_COVERAGE_RETRY_MESSAGE,
+      }),
+    ).toBe(false);
+    expect(HOSTING_COVERAGE_RETRY_BODY).toEqual({
+      error: HOSTING_COVERAGE_RETRY_MESSAGE,
+      code: HOSTING_COVERAGE_RETRY_CODE,
+    });
   });
 
   it("refuses missing typed identities after the raw lock", async () => {

@@ -173,7 +173,6 @@ describe("combined member refusal and officer queue contracts", () => {
       "src/lib/member-guest-consent-service.ts",
       "src/lib/manual-subscription-payment.ts",
       "src/lib/xero-membership-sync.ts",
-      "src/lib/member-merge.ts",
     ]) {
       const source = readRepoCode(file);
       expect(source, file).toContain(
@@ -181,9 +180,10 @@ describe("combined member refusal and officer queue contracts", () => {
       );
       expect(source, file).toContain("settleHostingCoverageAfterCommit(");
     }
-    expect(readRepoCode("src/lib/member-merge.ts")).toContain(
-      "enqueueOwnHostingCoverageReevaluation(",
-    );
+    const merge = readRepoCode("src/lib/member-merge.ts");
+    expect(merge).toContain("buildMemberMergeHostingCoveragePlan(");
+    expect(merge).toContain("enqueueMemberMergeHostingCoveragePlan(");
+    expect(merge).toContain("settleHostingCoverageAfterCommit(");
   });
 
   it("returns both paid-up and hosting reasons through the redacted refusal shape", () => {
@@ -476,7 +476,6 @@ describe("the same-owner refusal and the escalation seam (#2576 §6, §8, §9)",
       "src/lib/cron-confirm-pending.ts",
       "src/lib/cron-group-settlement-reaper.ts",
       "src/lib/group-settlement.ts",
-      "src/lib/member-merge.ts",
       "src/lib/payment-reconciliation.ts",
       "src/lib/xero-inbound/invoice-paid-effects.ts",
     ]);

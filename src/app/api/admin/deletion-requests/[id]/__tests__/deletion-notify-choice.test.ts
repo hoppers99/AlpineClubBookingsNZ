@@ -69,6 +69,11 @@ vi.mock("@/lib/logger", () => ({
 }));
 
 import { POST } from "@/app/api/admin/deletion-requests/[id]/route";
+import {
+  HOSTING_COVERAGE_RETRY_CODE,
+  HOSTING_COVERAGE_RETRY_MESSAGE,
+  HostingCoverageParticipantRetryError,
+} from "@/lib/adult-member-hosting-queue-participants";
 
 const member = {
   id: "m1",
@@ -173,6 +178,30 @@ describe("POST /api/admin/deletion-requests/[id] reject notify choice (#1788)", 
 });
 
 describe("POST /api/admin/deletion-requests/[id] approve carve-out (#1788)", () => {
+  it("reports earlier cancellations truthfully when a later participant fence contends", async () => {
+    h.prisma.booking.findMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ id: "booking-1" }, { id: "booking-2" }]);
+    h.cancelBooking
+      .mockResolvedValueOnce({ status: 200, data: {} })
+      .mockRejectedValueOnce(new HostingCoverageParticipantRetryError());
+
+    const response = await POST(req({ action: "approve" }), { params });
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      error: HOSTING_COVERAGE_RETRY_MESSAGE,
+      code: HOSTING_COVERAGE_RETRY_CODE,
+      cancelledBookings: 1,
+      cancellationPending: true,
+      retryBookingId: "booking-2",
+      memberDataAnonymised: false,
+    });
+    expect(h.cancelBooking).toHaveBeenCalledTimes(2);
+    expect(h.sendAccountDeletionApprovedEmail).not.toHaveBeenCalled();
+    expect(h.prisma.member.update).not.toHaveBeenCalled();
+  });
+
   it("always sends the approval receipt and ignores a notifyMember suppression", async () => {
     const res = await POST(req({ action: "approve", notifyMember: false }), {
       params,

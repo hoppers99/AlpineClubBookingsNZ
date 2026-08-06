@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { hostingCoverageParticipantRetryResponse } from "@/lib/adult-member-hosting-retry-response";
 import { z } from "zod";
 import {
   BookingRequestError,
@@ -56,6 +57,11 @@ export async function POST(
 
     return NextResponse.json(serializeBookingRequestForAdmin(updated!));
   } catch (err) {
+    const hostingRetry = hostingCoverageParticipantRetryResponse(err, {
+      requestDeclined: true,
+      holdReleasePending: true,
+    });
+    if (hostingRetry) return hostingRetry;
     if (err instanceof BookingRequestError) {
       return NextResponse.json({ error: err.message }, { status: err.status });
     }

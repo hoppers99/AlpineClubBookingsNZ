@@ -1,4 +1,6 @@
 import { after, NextRequest, NextResponse } from "next/server";
+import { hostingCoverageParticipantRetryResponse } from "@/lib/adult-member-hosting-retry-response";
+import { isHostingCoverageParticipantRetry } from "@/lib/adult-member-hosting-queue-participants";
 import { requireAdmin } from "@/lib/session-guards";
 import { prisma } from "@/lib/prisma";
 import {
@@ -149,6 +151,9 @@ export async function POST(
         );
       }
     } catch (historyErr) {
+      if (isHostingCoverageParticipantRetry(historyErr)) {
+        throw historyErr;
+      }
       warning =
         "Xero contact created, but subscription history refresh did not complete. Run the Member Status Repair Backfill to retry.";
       logger.warn(
@@ -265,6 +270,8 @@ export async function POST(
       ...(warning ? { warning } : {}),
     });
   } catch (err) {
+    const hostingRetry = hostingCoverageParticipantRetryResponse(err);
+    if (hostingRetry) return hostingRetry;
     if (err instanceof XeroContactValidationError) {
       return NextResponse.json(
         {

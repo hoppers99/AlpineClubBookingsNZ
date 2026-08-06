@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { hostingCoverageParticipantRetryResponse } from "@/lib/adult-member-hosting-retry-response";
 import { z } from "zod";
 import {
   BookingRequestQuoteError,
@@ -75,6 +76,8 @@ export async function POST(
       reused: result.reused,
     });
   } catch (err) {
+    const hostingRetry = hostingCoverageParticipantRetryResponse(err);
+    if (hostingRetry) return hostingRetry;
     if (err instanceof BookingMemberNightConflictError) {
       return NextResponse.json(
         getBookingMemberNightConflictResponse(err.conflicts),

@@ -30,6 +30,11 @@ vi.mock("@/lib/booking-request", () => ({
 vi.mock("@/lib/rate-limit", () => ({ getClientIp: () => "127.0.0.1" }));
 
 import { POST } from "@/app/api/admin/booking-requests/[id]/decline/route";
+import {
+  HOSTING_COVERAGE_RETRY_CODE,
+  HOSTING_COVERAGE_RETRY_MESSAGE,
+  HostingCoverageParticipantRetryError,
+} from "@/lib/adult-member-hosting-queue-participants";
 
 function req(body: unknown) {
   return new NextRequest(
@@ -94,5 +99,21 @@ describe("POST /api/admin/booking-requests/[id]/decline notify choice (#1791)", 
 
     expect(res.status).toBe(400);
     expect(h.declineBookingRequest).not.toHaveBeenCalled();
+  });
+
+  it("reports the committed decline and pending hold release on participant contention", async () => {
+    h.declineBookingRequest.mockRejectedValue(
+      new HostingCoverageParticipantRetryError(),
+    );
+
+    const response = await POST(req({ reason: "Fully booked" }), { params });
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      error: HOSTING_COVERAGE_RETRY_MESSAGE,
+      code: HOSTING_COVERAGE_RETRY_CODE,
+      requestDeclined: true,
+      holdReleasePending: true,
+    });
   });
 });

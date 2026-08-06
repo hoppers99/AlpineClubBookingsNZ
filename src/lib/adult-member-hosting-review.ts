@@ -1211,10 +1211,32 @@ export async function recordAdultMemberHostingReviewForNewBooking(
   tx: AdultMemberHostingReviewDb,
   admin: { reason: string; byMemberId: string } | null,
 ): Promise<HostingReviewOutcome> {
-  return reconcileAdultMemberHostingReview(bookingId, tx, {
+  const options: HostingReconcileOptions = {
     openedStatus: admin ? AdminReviewStatus.APPROVED : AdminReviewStatus.PENDING,
     decision: admin,
+  };
+  const booking = await tx.booking.findUnique({
+    where: { id: bookingId },
+    select: { status: true, deletedAt: true },
   });
+
+  // A newly-created CONFIRMED/PAID booking is immediately authoritative cover
+  // for its split siblings and same-owner dependants. Route that live source
+  // through the fenced high-level seam so the review snapshot, sibling
+  // restoration and any durable re-evaluation obligation commit atomically.
+  // Draft, waitlist and provisional states still receive their own review
+  // snapshot, but cannot supply cover and therefore must not fan out queue work.
+  if (
+    booking?.deletedAt == null &&
+    isHostingCoverageSourceBookingStatus(String(booking?.status))
+  ) {
+    return reconcileAdultMemberHostingReviewWithSiblings(
+      bookingId,
+      tx,
+      options,
+    );
+  }
+  return reconcileAdultMemberHostingReview(bookingId, tx, options);
 }
 
 /**

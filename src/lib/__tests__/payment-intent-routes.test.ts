@@ -135,6 +135,11 @@ import {
 import { POST as createPaymentIntentRoute } from "@/app/api/payments/create-payment-intent/route";
 import { POST as createSetupIntentRoute } from "@/app/api/payments/create-setup-intent/route";
 import { POST as confirmPaymentRoute } from "@/app/api/bookings/[id]/confirm-payment/route";
+import {
+  HOSTING_COVERAGE_RETRY_CODE,
+  HOSTING_COVERAGE_RETRY_MESSAGE,
+  HostingCoverageParticipantRetryError,
+} from "@/lib/adult-member-hosting-queue-participants";
 
 const mockPrisma = prisma as unknown as {
   booking: {
@@ -839,6 +844,50 @@ describe("confirm-payment route: booking confirmation email (issue #772)", () =>
 // only; intentional user-facing messages (typed/domain branches) are
 // unchanged.
 describe("generic-catch error-message leak (F31 #1888)", () => {
+  it("confirm-payment returns a fixed recovery 409 after a succeeded Stripe payment hits participant contention", async () => {
+    mockPrisma.payment.findUnique.mockResolvedValue({
+      id: "payment-1",
+      stripePaymentIntentId: "pi_hosting_retry",
+      status: "PROCESSING",
+      booking: {
+        memberId: "member-1",
+        finalPriceCents: 12500,
+        status: "CONFIRMED",
+      },
+    });
+    mockGetPaymentIntent.mockResolvedValue({
+      id: "pi_hosting_retry",
+      amount: 12500,
+      payment_method: "pm_123",
+      status: "succeeded",
+    });
+    mocks.markBookingPaymentSucceeded.mockRejectedValue(
+      new HostingCoverageParticipantRetryError(),
+    );
+
+    const response = await confirmPaymentRoute(
+      new NextRequest(
+        "http://localhost/api/bookings/booking-1/confirm-payment",
+        {
+          method: "POST",
+          body: JSON.stringify({ paymentIntentId: "pi_hosting_retry" }),
+          headers: { "Content-Type": "application/json" },
+        },
+      ),
+      { params: Promise.resolve({ id: "booking-1" }) },
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      error: HOSTING_COVERAGE_RETRY_MESSAGE,
+      code: HOSTING_COVERAGE_RETRY_CODE,
+      paymentReceived: true,
+      finalisationPending: true,
+      paymentIntentId: "pi_hosting_retry",
+    });
+    expect(mocks.queueXeroInvoiceForPaidBooking).not.toHaveBeenCalled();
+  });
+
   it("confirm-payment: unexpected reconciliation error returns the fixed generic message, not the raw error", async () => {
     mockPrisma.payment.findUnique.mockResolvedValue({
       id: "payment-1",

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { hostingCoverageParticipantRetryResponse } from "@/lib/adult-member-hosting-retry-response";
 import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
 import { getDefaultLodgeId } from "@/lib/lodges";
 import { prisma } from "@/lib/prisma";
@@ -714,6 +715,8 @@ export async function POST(request: NextRequest) {
       creditElection,
     });
   } catch (error) {
+    const hostingRetry = hostingCoverageParticipantRetryResponse(error);
+    if (hostingRetry) return hostingRetry;
     logger.error({ err: error }, "Error creating payment intent");
     // The pay transaction's capacity refusal and its status-conflict bail both
     // carry an intentionally user-facing message; keep them (and their 409).

@@ -117,6 +117,11 @@ import {
   buildContactEditForm,
   buildContactPayload,
 } from "@/lib/admin-member-edit-groups";
+import {
+  HOSTING_COVERAGE_RETRY_CODE,
+  HOSTING_COVERAGE_RETRY_MESSAGE,
+  HostingCoverageParticipantRetryError,
+} from "@/lib/adult-member-hosting-queue-participants";
 
 const mockedAuth = vi.mocked(auth);
 const adminSession = { user: { id: "admin1", role: "ADMIN", accessRoles: [{ role: "ADMIN" }] } } as any;
@@ -353,6 +358,36 @@ describe("Phase 3b: Member Detail Edit — PUT /api/admin/members/[id]", () => {
     await expect(res.json()).resolves.toMatchObject({
       error: "Failed to update member",
     });
+  });
+
+  it("returns the fixed 409 when member fan-out participant fencing rolls back an account change", async () => {
+    mockedAuth.mockResolvedValue(adminSession);
+    vi.mocked(prisma.member.findUnique).mockResolvedValue(baseMember as any);
+    vi.mocked(prisma.member.update).mockResolvedValue({
+      ...baseMember,
+      active: false,
+      xeroContactId: null,
+    } as any);
+    hostingMocks.enqueue.mockRejectedValueOnce(
+      new HostingCoverageParticipantRetryError(),
+    );
+
+    const response = await updateMember(
+      makePutRequest("m1", {
+        active: false,
+        canLogin: true,
+        role: "USER",
+        accessRoles: ["USER"],
+      }),
+      { params: Promise.resolve({ id: "m1" }) },
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      error: HOSTING_COVERAGE_RETRY_MESSAGE,
+      code: HOSTING_COVERAGE_RETRY_CODE,
+    });
+    expect(hostingMocks.settle).not.toHaveBeenCalled();
   });
 
   // Every shape a unique-constraint failure can arrive in. Which one the RAW

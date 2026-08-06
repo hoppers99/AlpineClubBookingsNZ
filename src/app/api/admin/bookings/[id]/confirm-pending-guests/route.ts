@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { hostingCoverageParticipantRetryResponse } from "@/lib/adult-member-hosting-retry-response";
 import {
   BookingStatus,
   PaymentStatus,
@@ -626,6 +627,15 @@ export async function POST(
         )
       );
       await audit("charged_finalisation_pending", true);
+      const hostingRetry = hostingCoverageParticipantRetryResponse(
+        reconcileErr,
+        {
+          paymentReceived: true,
+          finalisationPending: true,
+          paymentIntentId: paymentIntent.id,
+        },
+      );
+      if (hostingRetry) return hostingRetry;
       return NextResponse.json(
         {
           error:
@@ -714,6 +724,8 @@ export async function POST(
     }
     return NextResponse.json({ success: true, status: "PAID", charged: true });
   } catch (err) {
+    const hostingRetry = hostingCoverageParticipantRetryResponse(err);
+    if (hostingRetry) return hostingRetry;
     logger.error({ err, bookingId }, "Failed to confirm pending guests");
     return NextResponse.json(
       { error: "Failed to confirm pending guests" },

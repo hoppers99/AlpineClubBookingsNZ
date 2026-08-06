@@ -4,6 +4,7 @@
  * Body: { action: "approve" | "reject", note?: string }
  */
 import { NextRequest, NextResponse } from "next/server";
+import { hostingCoverageParticipantRetryResponse } from "@/lib/adult-member-hosting-retry-response";
 import { z } from "zod";
 import { requireAdmin } from "@/lib/session-guards";
 import { getTodayDateOnly } from "@/lib/date-only";
@@ -229,12 +230,24 @@ export async function POST(
     const cancelledBookingIds: string[] = [];
     const failedBookingIds: string[] = [];
     for (const booking of futureBookings) {
-      const result = await cancelBooking(
-        booking.id,
-        session.user.id,
-        "ADMIN",
-        ip
-      );
+      let result;
+      try {
+        result = await cancelBooking(
+          booking.id,
+          session.user.id,
+          "ADMIN",
+          ip,
+        );
+      } catch (err) {
+        const hostingRetry = hostingCoverageParticipantRetryResponse(err, {
+          cancelledBookings: cancelledBookingIds.length,
+          cancellationPending: true,
+          retryBookingId: booking.id,
+          memberDataAnonymised: false,
+        });
+        if (hostingRetry) return hostingRetry;
+        throw err;
+      }
       if (result.status === 200) {
         cancelledBookingIds.push(booking.id);
       } else {
@@ -422,6 +435,8 @@ export async function POST(
       orphanedLinks: detachedFamilyLinks,
     });
   } catch (err) {
+    const hostingRetry = hostingCoverageParticipantRetryResponse(err);
+    if (hostingRetry) return hostingRetry;
     if (err instanceof AdminAccountGuardError) {
       return NextResponse.json(
         { error: err.message },

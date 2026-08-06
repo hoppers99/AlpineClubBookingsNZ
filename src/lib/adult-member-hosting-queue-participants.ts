@@ -9,6 +9,10 @@ export const HOSTING_COVERAGE_RETRY_CODE =
   "HOSTING_COVERAGE_PARTICIPANT_RETRY";
 export const HOSTING_COVERAGE_RETRY_MESSAGE =
   "The database update could not be completed because this booking or member changed. Reload before trying again. If a payment was involved, check its status before retrying.";
+export const HOSTING_COVERAGE_RETRY_BODY = Object.freeze({
+  error: HOSTING_COVERAGE_RETRY_MESSAGE,
+  code: HOSTING_COVERAGE_RETRY_CODE,
+});
 
 export type HostingCoverageSourceParticipant = Readonly<{
   bookingId: string;
@@ -32,6 +36,24 @@ export class HostingCoverageParticipantRetryError extends ApiError {
     super(HOSTING_COVERAGE_RETRY_MESSAGE, 409);
     this.name = "HostingCoverageParticipantRetryError";
   }
+}
+
+/**
+ * Match only the stable queue-participant retry code, including a wrapped
+ * service error that retained its cause. Never infer this outcome from message
+ * text: the fixed 409 is safe precisely because unrelated failures cannot be
+ * accidentally downgraded into a retry prompt.
+ */
+export function isHostingCoverageParticipantRetry(
+  error: unknown,
+  depth = 0,
+): boolean {
+  if (depth > 5 || !error || typeof error !== "object") return false;
+  const candidate = error as Record<string, unknown>;
+  if (candidate.code === HOSTING_COVERAGE_RETRY_CODE) return true;
+  return ["cause", "error"].some((key) =>
+    isHostingCoverageParticipantRetry(candidate[key], depth + 1),
+  );
 }
 
 function sortedUnique(ids: readonly (string | null | undefined)[]): string[] {

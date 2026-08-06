@@ -18,6 +18,10 @@ import {
 } from "@/lib/capacity";
 import { bookingHasCapacityOverride } from "@/lib/booking-status";
 import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
+import {
+  HOSTING_COVERAGE_RETRY_BODY,
+  isHostingCoverageParticipantRetry,
+} from "@/lib/adult-member-hosting-queue-participants";
 import { enqueueOwnHostingCoverageReevaluation } from "@/lib/adult-member-hosting-review";
 import { reconcileBedAllocationsForBookingWithLodgeLockHeld } from "@/lib/bed-allocation-lifecycle";
 import { loadEffectiveModuleFlags } from "@/lib/module-settings";
@@ -359,8 +363,15 @@ export async function POST(request: NextRequest) {
     if (err instanceof CreditCoversWholeBookingError) {
       return { type: "creditCoversBooking" as const };
     }
+    if (isHostingCoverageParticipantRetry(err)) {
+      return { type: "hostingCoverageRetry" as const };
+    }
     throw err;
   });
+
+  if (paymentResult.type === "hostingCoverageRetry") {
+    return NextResponse.json(HOSTING_COVERAGE_RETRY_BODY, { status: 409 });
+  }
 
   if (paymentResult.type === "creditCoversBooking") {
     return NextResponse.json(

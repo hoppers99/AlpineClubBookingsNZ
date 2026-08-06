@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { hostingCoverageParticipantRetryResponse } from "@/lib/adult-member-hosting-retry-response";
 import { requireAdmin } from "@/lib/session-guards";
 import { prisma } from "@/lib/prisma";
 import { logAudit } from "@/lib/audit";
@@ -85,6 +86,11 @@ export async function POST(
         flushedSubscriptionHistory.deletedCount,
     });
   } catch (err) {
+    const hostingRetry = hostingCoverageParticipantRetryResponse(err, {
+      xeroLinkMayHaveChanged: true,
+      subscriptionRefreshPending: true,
+    });
+    if (hostingRetry) return hostingRetry;
     logger.error({ err, memberId: id }, "Error unlinking member from Xero contact");
     return NextResponse.json({ error: "Failed to unlink from Xero contact" }, { status: 500 });
   }

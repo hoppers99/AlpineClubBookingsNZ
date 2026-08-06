@@ -89,6 +89,11 @@ vi.mock("@/lib/logger", () => ({
 }));
 
 import { POST } from "@/app/api/admin/bookings/[id]/confirm-pending-guests/route";
+import {
+  HOSTING_COVERAGE_RETRY_CODE,
+  HOSTING_COVERAGE_RETRY_MESSAGE,
+  HostingCoverageParticipantRetryError,
+} from "@/lib/adult-member-hosting-queue-participants";
 
 const params = Promise.resolve({ id: "b1" });
 
@@ -190,6 +195,25 @@ beforeEach(() => {
 });
 
 describe("POST /api/admin/bookings/[id]/confirm-pending-guests", () => {
+  it("returns the fixed 409 before charging when the participant fence contends", async () => {
+    mocks.bookingFindUnique.mockResolvedValue(makeBooking());
+    mocks.enqueueHosting.mockRejectedValue(
+      new HostingCoverageParticipantRetryError(),
+    );
+
+    const response = await POST(makeRequest(), { params });
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      error: HOSTING_COVERAGE_RETRY_MESSAGE,
+      code: HOSTING_COVERAGE_RETRY_CODE,
+    });
+    expect(mocks.chargePaymentMethod).not.toHaveBeenCalled();
+    expect(mocks.upsertPaymentIntentTransaction).not.toHaveBeenCalled();
+    expect(mocks.markBookingPaymentSucceeded).not.toHaveBeenCalled();
+    expect(mocks.sendPaymentFailureAlert).not.toHaveBeenCalled();
+  });
+
   it("charges the saved card and confirms to PAID, clearing the hold", async () => {
     mocks.bookingFindUnique.mockResolvedValue(makeBooking());
     mocks.chargePaymentMethod.mockResolvedValue({
@@ -391,6 +415,47 @@ describe("POST /api/admin/bookings/[id]/confirm-pending-guests", () => {
       })
     );
     // No confirmation email for an unfinalised booking.
+    expect(mocks.sendConfirmedEmail).not.toHaveBeenCalled();
+  });
+
+  it("keeps captured-payment recovery intact and returns the fixed participant 409", async () => {
+    mocks.bookingFindUnique.mockResolvedValue(makeBooking());
+    mocks.chargePaymentMethod.mockResolvedValue({
+      id: "pi_hosting_retry",
+      status: "succeeded",
+      amount: 10000,
+      payment_method: "pm_1",
+    });
+    mocks.markBookingPaymentSucceeded.mockRejectedValue(
+      new HostingCoverageParticipantRetryError(),
+    );
+
+    const response = await POST(makeRequest(), { params });
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      error: HOSTING_COVERAGE_RETRY_MESSAGE,
+      code: HOSTING_COVERAGE_RETRY_CODE,
+      paymentReceived: true,
+      finalisationPending: true,
+      paymentIntentId: "pi_hosting_retry",
+    });
+    expect(mocks.upsertPaymentIntentTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        paymentIntentId: "pi_hosting_retry",
+        status: "SUCCEEDED",
+      }),
+    );
+    expect(mocks.sendPaymentFailureAlert).toHaveBeenCalledWith(
+      expect.objectContaining({ paymentIntentId: "pi_hosting_retry" }),
+    );
+    expect(mocks.createStructuredAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          outcome: "charged_finalisation_pending",
+        }),
+      }),
+    );
     expect(mocks.sendConfirmedEmail).not.toHaveBeenCalled();
   });
 

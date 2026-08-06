@@ -31,6 +31,7 @@ import { getSeasonStartMonth } from "@/lib/financial-year";
 import { loadMembershipLockoutSettings } from "@/lib/membership-lockout-settings";
 import { requiresPaidSubscriptionForAgeTierFromSettings } from "@/lib/member-subscription-eligibility";
 import { enqueueHostingCoverageReevaluationForMember } from "@/lib/adult-member-hosting-review";
+import { isHostingCoverageParticipantRetry } from "@/lib/adult-member-hosting-queue-participants";
 import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
 import { resolveMembershipTypePolicyForMember } from "@/lib/membership-type-policy";
 import {
@@ -344,12 +345,7 @@ export async function syncMemberSubscriptionHistoryForLinkedContact(
         ...result,
       });
     } catch (error) {
-      errors.push({
-        seasonYear,
-        error: parseXeroError(error),
-      });
-
-      if (error instanceof XeroDailyLimitError) {
+      if (recordLinkedContactSubscriptionSyncError(errors, seasonYear, error)) {
         break;
       }
     }
@@ -361,6 +357,19 @@ export async function syncMemberSubscriptionHistoryForLinkedContact(
     results,
     errors,
   };
+}
+
+/** Testable error boundary for the linked-contact per-season loop. */
+export function recordLinkedContactSubscriptionSyncError(
+  errors: Array<{ seasonYear: number; error: string }>,
+  seasonYear: number,
+  error: unknown,
+): boolean {
+  if (isHostingCoverageParticipantRetry(error)) {
+    throw error;
+  }
+  errors.push({ seasonYear, error: parseXeroError(error) });
+  return error instanceof XeroDailyLimitError;
 }
 
 /**

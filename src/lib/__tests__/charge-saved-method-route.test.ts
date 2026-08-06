@@ -16,6 +16,8 @@ const {
   mockPrismaTransaction,
   mockMarkBookingPaymentSucceeded,
   mockCheckCapacityForGuestRanges,
+  mockUpsertPaymentIntentTransaction,
+  mockIsValidCronSecret,
 } = vi.hoisted(() => ({
   mockAuth: vi.fn(),
   mockRequireActiveSessionUser: vi.fn().mockResolvedValue(null),
@@ -40,6 +42,8 @@ const {
   mockPrismaTransaction: vi.fn(),
   mockMarkBookingPaymentSucceeded: vi.fn(),
   mockCheckCapacityForGuestRanges: vi.fn(),
+  mockUpsertPaymentIntentTransaction: vi.fn().mockResolvedValue(undefined),
+  mockIsValidCronSecret: vi.fn().mockReturnValue(false),
 }));
 
 vi.mock("@/lib/auth", () => ({
@@ -52,6 +56,10 @@ vi.mock("@/lib/session-guards", () => ({
 
 vi.mock("@/lib/stripe", () => ({
   chargePaymentMethod: (...args: unknown[]) => mockChargePaymentMethod(...args),
+}));
+
+vi.mock("@/lib/cron-auth", () => ({
+  isValidCronSecret: (...args: unknown[]) => mockIsValidCronSecret(...args),
 }));
 
 vi.mock("@/lib/xero-operation-outbox", () => ({
@@ -72,6 +80,11 @@ vi.mock("@/lib/audit", () => ({
 vi.mock("@/lib/payment-reconciliation", () => ({
   markBookingPaymentSucceeded: (...args: unknown[]) =>
     mockMarkBookingPaymentSucceeded(...args),
+}));
+
+vi.mock("@/lib/payment-transactions", () => ({
+  upsertPaymentIntentTransaction: (...args: unknown[]) =>
+    mockUpsertPaymentIntentTransaction(...args),
 }));
 
 vi.mock("@/lib/capacity", () => ({
@@ -107,11 +120,17 @@ vi.mock("@/lib/prisma", () => ({
 }));
 
 import { POST } from "@/app/api/payments/charge-saved-method/route";
+import {
+  HOSTING_COVERAGE_RETRY_CODE,
+  HOSTING_COVERAGE_RETRY_MESSAGE,
+  HostingCoverageParticipantRetryError,
+} from "@/lib/adult-member-hosting-queue-participants";
 
 describe("POST /api/payments/charge-saved-method", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockAuth.mockResolvedValue({ user: { id: "admin-1", role: "ADMIN", accessRoles: [{ role: "ADMIN" }] } });
+    mockIsValidCronSecret.mockReturnValue(false);
     mockBookingFindUnique.mockResolvedValue({
       id: "booking-1",
       memberId: "member-1",
@@ -132,6 +151,7 @@ describe("POST /api/payments/charge-saved-method", () => {
         },
       ],
       payment: {
+        id: "payment-1",
         stripePaymentMethodId: "pm_123",
         stripeCustomerId: "cus_123",
       },
@@ -296,6 +316,75 @@ describe("POST /api/payments/charge-saved-method", () => {
     expect(response.status).toBe(500);
     expect(body).toEqual({ error: "Failed to charge saved payment method" });
     expect(mockBookingUpdateMany).not.toHaveBeenCalled();
+  });
+
+  it("returns the fixed recovery 409 to an admin after a captured charge hits participant contention", async () => {
+    mockChargePaymentMethod.mockResolvedValue({
+      id: "pi_hosting_retry",
+      status: "succeeded",
+      amount: 12500,
+    });
+    mockMarkBookingPaymentSucceeded.mockRejectedValue(
+      new HostingCoverageParticipantRetryError(),
+    );
+
+    const response = await POST(
+      new NextRequest("http://localhost/api/payments/charge-saved-method", {
+        method: "POST",
+        body: JSON.stringify({ bookingId: "booking-1" }),
+        headers: { "content-type": "application/json" },
+      }),
+    );
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({
+      error: HOSTING_COVERAGE_RETRY_MESSAGE,
+      code: HOSTING_COVERAGE_RETRY_CODE,
+      paymentReceived: true,
+      finalisationPending: true,
+      paymentIntentId: "pi_hosting_retry",
+    });
+    expect(mockUpsertPaymentIntentTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        paymentId: "payment-1",
+        paymentIntentId: "pi_hosting_retry",
+        status: "SUCCEEDED",
+      }),
+    );
+    expect(mockSendAdminPaymentFailureAlert).toHaveBeenCalledWith(
+      expect.objectContaining({ paymentIntentId: "pi_hosting_retry" }),
+    );
+    expect(mockLogAudit).not.toHaveBeenCalledWith(
+      expect.objectContaining({ action: "booking.payment.failed" }),
+    );
+  });
+
+  it("rethrows participant contention for the cron caller after preserving the captured charge", async () => {
+    mockIsValidCronSecret.mockReturnValue(true);
+    mockAuth.mockResolvedValue(null);
+    mockChargePaymentMethod.mockResolvedValue({
+      id: "pi_cron_hosting_retry",
+      status: "succeeded",
+      amount: 12500,
+    });
+    mockMarkBookingPaymentSucceeded.mockRejectedValue(
+      new HostingCoverageParticipantRetryError(),
+    );
+
+    await expect(
+      POST(
+        new NextRequest("http://localhost/api/payments/charge-saved-method", {
+          method: "POST",
+          body: JSON.stringify({ bookingId: "booking-1" }),
+          headers: {
+            "content-type": "application/json",
+            "x-cron-secret": "test",
+          },
+        }),
+      ),
+    ).rejects.toMatchObject({ code: HOSTING_COVERAGE_RETRY_CODE });
+    expect(mockUpsertPaymentIntentTransaction).toHaveBeenCalled();
+    expect(mockSendAdminPaymentFailureAlert).toHaveBeenCalled();
   });
 
   it("still succeeds when Xero invoice queueing fails after a successful charge", async () => {

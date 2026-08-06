@@ -4,6 +4,10 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
 import { enqueueHostingCoverageReevaluationForMember } from "@/lib/adult-member-hosting-review";
+import {
+  HOSTING_COVERAGE_RETRY_BODY,
+  isHostingCoverageParticipantRetry,
+} from "@/lib/adult-member-hosting-queue-participants";
 import { computeAgeTier, getSeasonStartDate } from "@/lib/age-tier";
 import { getSeasonYear } from "@/lib/utils";
 import {
@@ -1508,6 +1512,9 @@ export async function updateAdminMember(params: {
 
     return jsonResult(updated);
   } catch (error) {
+    if (isHostingCoverageParticipantRetry(error)) {
+      return jsonResult(HOSTING_COVERAGE_RETRY_BODY, { status: 409 });
+    }
     if (error instanceof AdminAccountGuardError) {
       return jsonResult(
         { error: error.message },
