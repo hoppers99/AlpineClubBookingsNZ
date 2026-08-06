@@ -10,6 +10,7 @@ the demo seed (`prisma/demo-seed.ts`).
 
 | Spec | Matrix row | Journey |
 | --- | --- | --- |
+| `e2e/booking-create-rate-isolation.spec.ts` | Booking-create retry isolation (#2599, Medium) | Provider-independent real-route proof: unauthenticated attempt/retry probes stop at the auth boundary only after the production `bookingCreate` limiter runs, and read-only snapshots prove each exact synthetic-IP key advanced in the shared PostgreSQL `RateLimitCounter` store rather than the in-process fallback. Run before the waitlist and whole-lodge specs on the same prepared isolated stack. |
 | `e2e/two-factor-login.spec.ts` | Global two-factor enforcement (Critical) | Forced TOTP enrollment on first login, recovery codes, protected-route gating for unverified sessions, wrong-code rejection, TOTP re-login, single-use recovery codes |
 | `e2e/two-factor-email.spec.ts` | Global two-factor enforcement — email method (Critical) | Forced **email-code** enrollment on first login (send → capture the emailed code from the mailpit SMTP capture → enroll → recovery codes), then an email-code re-login that rejects a wrong code and accepts the emailed one. The code is read back over mailpit's HTTP API (`e2e/helpers/mailpit.ts`); no live mail provider is used |
 | `e2e/booking.spec.ts` | Create booking with capacity lock (Critical) | Member books a bed through `/book` (confirm-details gate → dates → guests → review → payment step) with the booker **pre-selected by default** (#1680); while payment is owed the booking holds **no** bed (issue #737 — only committed money reserves capacity); the same member cannot hold the same lodge night twice; the booker can also opt out (remove themselves) and continue with another guest to a priced review |
@@ -471,12 +472,26 @@ Four rules follow, and a new spec must satisfy all four:
   every create still traverses production rate limiting and the suite never
   resets or mocks its storage. A future test that deliberately shares or
   exhausts the limiter must be classified `intentional-limiter` in the census
-  and must not use the isolation helper. The focused #2599 executable contract
-  also reproduces the old exhausted runner bucket through the shipped
-  `bookingCreate` configuration, client-IP resolver, and in-process fallback
-  counter, then executes retry 1 and retry 2 around downstream waitlist and
-  whole-lodge bucket probes. It does not need Stripe credentials or a
-  provider success, and it neither resets nor mocks the limiter store.
+  and must not use the isolation helper. The fast #2599 unit contract reproduces
+  the old exhausted runner bucket through the shipped `bookingCreate`
+  configuration, client-IP resolver, and in-process fallback counter. Runtime
+  acceptance belongs to `booking-create-rate-isolation.spec.ts`: it sends
+  attempt, retry-1, and retry-2 probes through the real route, then proves each
+  exact counter advanced in shared PostgreSQL. Run these two commands in order
+  on the **same already-prepared isolated stack**, with no `prepare` between
+  them, so the later real waitlist and whole-lodge create paths follow those
+  staged retry dimensions:
+
+  ```bash
+  scripts/e2e-stack.sh run e2e/booking-create-rate-isolation.spec.ts --project=chromium --workers=1
+  scripts/e2e-stack.sh run e2e/waitlist.spec.ts e2e/whole-lodge-request.spec.ts --project=chromium --workers=1
+  ```
+
+  The first command requires no Stripe credentials: all three probes are
+  deliberately unauthenticated and must return 401 after rate limiting. The
+  second command fails on any cross-spec 429 because waitlist pins 409 then 201,
+  while the whole-lodge anchor requires a successful confirmed create. Neither
+  command resets, bypasses, mocks, nor increases the limiter.
 - **Restore shared state in `afterAll`, never at the end of the test body.**
   `xero-setup-wizard-completion.spec.ts` used to disconnect Xero and rewind the
   wizard on its last line; when it failed earlier it stranded the sibling spec on

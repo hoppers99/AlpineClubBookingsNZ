@@ -48,6 +48,13 @@ export const E2E_BOOKING_CREATE_CENSUS = [
     classification: "isolated-setup",
   },
   {
+    key: "booking-create-shared-store-proof",
+    file: "e2e/booking-create-rate-isolation.spec.ts",
+    transport: "api",
+    classification: "isolated-setup",
+    requestsPerAttempt: 3,
+  },
+  {
     key: "double-bed-capacity",
     file: "e2e/double-bed-sharing.spec.ts",
     transport: "api",
@@ -62,6 +69,12 @@ export const E2E_BOOKING_CREATE_CENSUS = [
   },
   {
     key: "dual-hat-member-create",
+    file: "e2e/dual-hat-booking.spec.ts",
+    transport: "browser",
+    classification: "isolated-setup",
+  },
+  {
+    key: "dual-hat-officer-draft",
     file: "e2e/dual-hat-booking.spec.ts",
     transport: "browser",
     classification: "isolated-setup",

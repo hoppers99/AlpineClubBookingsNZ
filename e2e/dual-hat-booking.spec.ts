@@ -5,7 +5,10 @@ import {
   confirmBookingToPaymentStep,
   selectCalendarDay,
 } from "./helpers/booking";
-import { bookingCreateIsolation } from "./helpers/booking-create-client-ip";
+import {
+  bookingCreateIsolation,
+  withBookingCreateClientIp,
+} from "./helpers/booking-create-client-ip";
 import { DUAL_HAT_ADMIN, E2E_ADMIN, ROLE_PERSONAS } from "./helpers/fixtures";
 import { personas } from "./helpers/personas";
 import { stayWindowForAttempt } from "./helpers/stay-dates";
@@ -110,7 +113,11 @@ test("a booking officer completes an on-behalf booking draft", async ({
   // was silently priced as themselves and then 403'd on submit).
   await expect(page.getByText("3. Review & Confirm")).toBeVisible();
 
-  await page.getByRole("button", { name: "Save as Draft" }).click();
+  await withBookingCreateClientIp(
+    page,
+    bookingCreateIsolation("dual-hat-officer-draft", testInfo.retry),
+    () => page.getByRole("button", { name: "Save as Draft" }).click(),
+  );
 
   // Creation succeeded: the officer lands on the new booking's detail page
   // (bookings:edit holders can view it per #1313).

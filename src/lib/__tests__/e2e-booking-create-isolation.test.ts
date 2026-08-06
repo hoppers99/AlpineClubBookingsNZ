@@ -490,6 +490,7 @@ const BOOKING_CREATE_BUTTON_NAMES = [
   "Create without emailing",
   "Create and email them",
   "Continue to Payment",
+  "Save as Draft",
 ] as const;
 
 type BrowserTrigger =
@@ -905,6 +906,7 @@ describe("E2E booking-create retry isolation (#2599)", () => {
         "page.getByText(`${createText}`).press(`Enter`);",
         "page.locator(`button:has-text('Create and email them')`).dispatchEvent(`click`);",
         'page.getByText("Continue to Payment").dispatchEvent("submit");',
+        'page.getByRole("button", { name: "Save as Draft" }).click();',
         'const keyboardSubmit = page.getByRole("button", { name: "Confirm Booking" });',
         "keyboardSubmit.focus();",
         'page.keyboard.press("Enter");',
@@ -922,12 +924,31 @@ describe("E2E booking-create retry isolation (#2599)", () => {
         "fixture:Create without emailing",
         "fixture:Create and email them",
         "fixture:Continue to Payment",
+        "fixture:Save as Draft",
         "fixture:Confirm Booking",
       ],
       unresolved: [
         'fixture:page.getByRole(`button`, { name: confirmBookingLabel }).click()',
       ],
     });
+  });
+
+  it("detects the dual-hat draft action when its exact wrapper is mutated away", () => {
+    const actual = source("e2e/dual-hat-booking.spec.ts");
+    const mutated = actual.replace(
+      "await withBookingCreateClientIp(",
+      "await withoutBookingCreateClientIp(",
+    );
+    expect(mutated).not.toBe(actual);
+
+    const result = analyzeBrowserTriggers(
+      parseSourceText("dual-hat-wrapper-mutation.ts", mutated),
+      "e2e/dual-hat-booking.spec.ts",
+    );
+    expect(result.create).toContain(
+      "e2e/dual-hat-booking.spec.ts:Save as Draft",
+    );
+    expect(result.unresolved).toEqual([]);
   });
 
   it("fails closed for form submit and raw Enter in registered browser-create specs", () => {
@@ -1244,14 +1265,14 @@ describe("E2E booking-create retry isolation (#2599)", () => {
     );
   });
 
-  it("binds the complete 27-request census to explicit typed consumers", () => {
-    expect(E2E_BOOKING_CREATE_CENSUS).toHaveLength(24);
+  it("binds the complete 31-request census to explicit typed consumers", () => {
+    expect(E2E_BOOKING_CREATE_CENSUS).toHaveLength(26);
     expect(
       E2E_BOOKING_CREATE_CENSUS.reduce(
         (total, entry) => total + ("requestsPerAttempt" in entry ? entry.requestsPerAttempt : 1),
         0,
       ),
-    ).toBe(27);
+    ).toBe(31);
     expect(
       E2E_BOOKING_CREATE_CENSUS.every(
         (entry) => entry.classification === "isolated-setup",
@@ -1263,6 +1284,7 @@ describe("E2E booking-create retry isolation (#2599)", () => {
       ["withBookingCreateClientIp", "browser"],
       ["confirmBookingToPaymentStep", "browser"],
       ["bookThroughWizard", "browser"],
+      ["postBookingCreateSharedStoreProbe", "api"],
     ]);
     const uses: Array<{
       consumer: string | null;
@@ -1315,9 +1337,22 @@ describe("E2E booking-create retry isolation (#2599)", () => {
       );
     }
 
-    for (const [file, functionName] of [
-      ["e2e/helpers/booking.ts", "confirmBookingToPaymentStep"],
-      ["e2e/member-policy-exception-requests.spec.ts", "bookThroughWizard"],
+    for (const [file, functionName, requiredChild] of [
+      [
+        "e2e/helpers/booking.ts",
+        "confirmBookingToPaymentStep",
+        "withBookingCreateClientIp",
+      ],
+      [
+        "e2e/member-policy-exception-requests.spec.ts",
+        "bookThroughWizard",
+        "withBookingCreateClientIp",
+      ],
+      [
+        "e2e/booking-create-rate-isolation.spec.ts",
+        "postBookingCreateSharedStoreProbe",
+        "postBookingCreate",
+      ],
     ] as const) {
       const sourceFile = parseSource(path.join(process.cwd(), file));
       const declaration = sourceFile.statements.find(
@@ -1326,8 +1361,8 @@ describe("E2E booking-create retry isolation (#2599)", () => {
       );
       expect(declaration, `${functionName} must remain a declared helper`).toBeDefined();
       expect(
-        childCallNamed(declaration!, "withBookingCreateClientIp"),
-        `${functionName} must keep its browser create action inside the route wrapper`,
+        childCallNamed(declaration!, requiredChild),
+        `${functionName} must keep its create action inside ${requiredChild}`,
       ).not.toBeNull();
     }
   });
