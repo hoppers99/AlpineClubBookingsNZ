@@ -314,12 +314,15 @@ async function processHostingCoverageReevaluation(
   item: HostingCoverageReevaluationItem,
   db: Prisma.TransactionClient,
 ): Promise<HostingCoverageReconciliationTransactionResult> {
-  // MEMBER-MERGE HANDSHAKE. A claim is an in-memory snapshot. Take policy first,
-  // then the same sorted lifecycle keys merge takes at transaction entry, before
-  // it re-points relations. The later sorted row locks protect promotion into
-  // incident FKs. If drain wins, merge waits; if merge wins, the exact typed read
-  // sees the survivor. Never row-lock the queue: merge writes it after Member
-  // locks, so queue -> Member would invert the counterpart order.
+  // MEMBER-MERGE HANDSHAKE FOR AN EXISTING QUEUE ROW. A claim is an in-memory
+  // snapshot. Take policy first, then the same sorted lifecycle keys merge takes
+  // at transaction entry, before it re-points relations. The later sorted row
+  // locks protect promotion into incident FKs. If drain wins, merge waits; if a
+  // merge already re-pointed this persisted row, the exact typed read sees the
+  // survivor. The separate producer/member-merge topology repair in #2597 owns
+  // rows inserted after merge's relation sweep. Never row-lock the queue: merge
+  // writes it after Member locks, so queue -> Member would invert the counterpart
+  // order.
   await lockAdultMemberHostingPolicySet(db);
   const claimedMemberIds = [
     ...new Set(
