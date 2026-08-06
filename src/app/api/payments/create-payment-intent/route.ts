@@ -79,10 +79,11 @@ class PaymentIntentReviewPendingError extends Error {
 }
 
 export async function POST(request: NextRequest) {
-  // Set only after Stripe has authoritatively reported a succeeded intent and
-  // the local refund-history discriminator has proved it is a captured payment
-  // awaiting reconciliation. The outer retry mapper can then distinguish this
-  // recovery seam from an ordinary pre-capture participant conflict.
+  // Arm after Stripe authoritatively reports a succeeded intent, while its
+  // captured-versus-refunded classification is still unknown. Clear it once
+  // the local ledger proves a refund; otherwise the outer retry mapper uses it
+  // to distinguish status/reconciliation recovery from an ordinary
+  // pre-capture participant conflict.
   let receivedPaymentIntentId: string | null = null;
   let succeededPaymentIntentObserved = false;
   try {
@@ -598,6 +599,12 @@ export async function POST(request: NextRequest) {
             creditElection,
           });
         }
+
+        // The local ledger has now authoritatively proved that this succeeded
+        // intent was refunded. Any later failure belongs to the new repayment
+        // attempt, so it must retain the ordinary initialization retry contract
+        // instead of being misreported as an unknown existing card transaction.
+        succeededPaymentIntentObserved = false;
 
         // Refund history (#1765): the succeeded-then-refunded intent is
         // settlement history, not a recoverable payment — reconciling it would

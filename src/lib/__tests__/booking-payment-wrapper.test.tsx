@@ -153,6 +153,38 @@ describe("BookingPaymentWrapper", () => {
     consoleErrorSpy.mockRestore();
   });
 
+  it("keeps a refunded-payment replacement failure on the retryable initialization UI", async () => {
+    const consoleErrorSpy = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    fetchMock.mockResolvedValueOnce({
+      ok: false,
+      status: 500,
+      json: async () => ({ error: "Failed to create payment intent" }),
+    });
+
+    render(
+      <BookingPaymentWrapper
+        bookingId="booking-1"
+        amountCents={12500}
+        paymentMode="payment"
+        returnUrl="http://localhost/bookings/booking-1"
+        onPaymentComplete={vi.fn()}
+      />,
+    );
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Payment Error");
+    expect(alert).toHaveTextContent(/pay later from your booking page/i);
+    expect(alert).not.toHaveTextContent(
+      "Card transaction found - check payment status",
+    );
+    expect(alert).not.toHaveTextContent(
+      "Payment received - check booking status",
+    );
+    consoleErrorSpy.mockRestore();
+  });
+
   it("reports captured-card finalisation recovery instead of a payment-start failure", async () => {
     const onPaymentComplete = vi.fn();
     const retryMessage =
