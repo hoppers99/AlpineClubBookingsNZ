@@ -83,7 +83,7 @@ vi.mock("@/lib/email", () => ({
 }));
 
 vi.mock("@/lib/bed-allocation-lifecycle", () => ({
-  reconcileBedAllocationsForBooking: (...args: unknown[]) =>
+  reconcileBedAllocationsForBookingWithLodgeLockHeld: (...args: unknown[]) =>
     mocks.reconcileBedAllocationsForBooking(...args),
 }));
 

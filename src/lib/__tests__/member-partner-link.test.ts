@@ -43,7 +43,8 @@ vi.mock("@/lib/email", () => ({
 // through this helper; the sweep's own behaviour is covered in
 // bed-allocation-lifecycle.test.ts, so here it is a spy.
 vi.mock("@/lib/bed-allocation-lifecycle", () => ({
-  sweepFuturePartnerSharedAllocations: vi.fn().mockResolvedValue([]),
+  acquireFuturePartnerSharedAllocationLocks: vi.fn().mockResolvedValue(undefined),
+  sweepFuturePartnerSharedAllocationsWithLocksHeld: vi.fn().mockResolvedValue([]),
   partnerShareSweepNights: vi.fn(() => [new Date("2026-08-01T00:00:00.000Z")]),
   describePartnerSharedSweepReason: vi.fn(() => "Partner link dissolved"),
 }));
@@ -56,7 +57,7 @@ import {
   sendPartnerLinkRemovedEmail,
   sendAdminPartnerShareSweptAlert,
 } from "@/lib/email";
-import { sweepFuturePartnerSharedAllocations } from "@/lib/bed-allocation-lifecycle";
+import { sweepFuturePartnerSharedAllocationsWithLocksHeld as sweepFuturePartnerSharedAllocations } from "@/lib/bed-allocation-lifecycle";
 import {
   canonicalPartnerPair,
   listOneStepPartnerCandidates,

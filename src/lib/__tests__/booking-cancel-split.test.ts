@@ -79,7 +79,8 @@ vi.mock("@/lib/payment-link", () => ({
   revokePaymentLinksForBooking: mocks.revokePaymentLinksForBooking,
 }));
 vi.mock("@/lib/bed-allocation-lifecycle", () => ({
-  reconcileBedAllocationsForBooking: mocks.reconcileBedAllocationsForBooking,
+  reconcileBedAllocationsForBookingWithLodgeLockHeld:
+    mocks.reconcileBedAllocationsForBooking,
 }));
 vi.mock("@/lib/logger", () => ({
   default: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
@@ -167,7 +168,7 @@ describe("cancelBooking split cascade (#738)", () => {
       "lodge_1"
     );
     // The child transaction takes global lock(1) before its per-lodge lock.
-    expect(mocks.txExecuteRaw.mock.invocationCallOrder.at(-1)).toBeLessThan(
+    expect(mocks.txExecuteRaw.mock.invocationCallOrder[0]).toBeLessThan(
       mocks.acquireLodgeCapacityLock.mock.invocationCallOrder[0]
     );
     // ...and conditionally claims only a still-provisional child.

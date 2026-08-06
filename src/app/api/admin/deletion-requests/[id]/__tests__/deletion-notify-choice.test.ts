@@ -29,6 +29,7 @@ const h = vi.hoisted(() => ({
     },
     familyGroupMember: { deleteMany: vi.fn() },
     bookingGuest: { updateMany: vi.fn() },
+    $executeRaw: vi.fn().mockResolvedValue(1),
     $transaction: vi.fn(),
   },
 }));
@@ -57,7 +58,9 @@ vi.mock("@/lib/bed-allocation-lifecycle", () => ({
   describePartnerSharedSweepReason: vi.fn().mockReturnValue("reason"),
   partnerShareSweepCounterpartNames: vi.fn().mockReturnValue(""),
   partnerShareSweepNights: vi.fn().mockReturnValue(0),
-  sweepFuturePartnerSharedAllocations: h.sweepFuturePartnerSharedAllocations,
+  acquireFuturePartnerSharedAllocationLocks: vi.fn().mockResolvedValue(undefined),
+  sweepFuturePartnerSharedAllocationsWithLocksHeld:
+    h.sweepFuturePartnerSharedAllocations,
 }));
 vi.mock("@/lib/logger", () => ({
   default: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() },

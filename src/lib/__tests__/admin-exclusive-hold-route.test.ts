@@ -11,6 +11,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // (issue #154) so a hold set cannot race a concurrent admission.
 const mocks = vi.hoisted(() => {
   const tx = {
+    $executeRaw: vi.fn(),
     booking: {
       findUnique: vi.fn(),
       updateMany: vi.fn(),
@@ -77,7 +78,8 @@ vi.mock("@/lib/logger", () => ({
 // records); the reconcile's own held-booking semantics are covered by
 // bed-allocation-lifecycle.test.ts and held-booking-allocation-agreement.test.ts.
 vi.mock("@/lib/bed-allocation-lifecycle", () => ({
-  reconcileBedAllocationsForBooking: mocks.reconcileBedAllocations,
+  reconcileBedAllocationsForBookingWithGlobalLockHeld:
+    mocks.reconcileBedAllocations,
   MAX_AUDITED_PRUNED_ALLOCATIONS: 50,
 }));
 

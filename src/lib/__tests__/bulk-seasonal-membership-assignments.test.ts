@@ -20,7 +20,9 @@ vi.mock("@/lib/xero-contact-groups", () => ({
 
 const mockSweep = vi.fn().mockResolvedValue([]);
 vi.mock("@/lib/bed-allocation-lifecycle", () => ({
-  sweepFuturePartnerSharedAllocations: (...args: unknown[]) => mockSweep(...args),
+  acquireFuturePartnerSharedAllocationLocks: vi.fn().mockResolvedValue(undefined),
+  sweepFuturePartnerSharedAllocationsWithLocksHeld: (...args: unknown[]) =>
+    mockSweep(...args),
   describePartnerSharedSweepReason: vi.fn(() => "age tier changed"),
   partnerShareSweepCounterpartNames: vi.fn(() => "Partner"),
   partnerShareSweepNights: vi.fn(() => 0),

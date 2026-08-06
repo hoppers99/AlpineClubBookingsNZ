@@ -61,7 +61,8 @@ vi.mock("@/lib/group-cancel", () => ({
     mocks.settleGroupBookingOnOrganiserCancel,
 }));
 vi.mock("@/lib/bed-allocation-lifecycle", () => ({
-  reconcileBedAllocationsForBooking: mocks.reconcileBedAllocations,
+  reconcileBedAllocationsForBookingWithLodgeLockHeld:
+    mocks.reconcileBedAllocations,
 }));
 vi.mock("@/lib/booking-events", () => ({
   recordBookingEvent: mocks.recordBookingEvent,

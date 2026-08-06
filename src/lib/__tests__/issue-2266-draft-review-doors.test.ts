@@ -108,7 +108,8 @@ vi.mock("@/lib/membership-type-policy", () => ({
   requiresPaidSubscriptionForMemberForBooking: vi.fn().mockResolvedValue(false),
 }));
 vi.mock("@/lib/bed-allocation-lifecycle", () => ({
-  reconcileBedAllocationsForBooking: vi.fn().mockResolvedValue(undefined),
+  reconcileBedAllocationsForBookingWithGlobalLockHeld: vi.fn().mockResolvedValue(undefined),
+  reconcileBedAllocationsForBookingWithLodgeLockHeld: vi.fn().mockResolvedValue(undefined),
 }));
 // create-payment-intent extras
 vi.mock("@/lib/stripe", () => ({
