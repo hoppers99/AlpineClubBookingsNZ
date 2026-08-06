@@ -20,7 +20,7 @@ PROBE_CONTENT_HTML="<p>hosting-policy-probe-$RUN_ID</p>{{booking-policy-summary}
 STAMP="$RUN_ID"
 OUT="${MEASURE_OUT_DIR:-measurement/current-main-refresh/adult-hosting-invalidation/$STAMP}"
 AUTH_STATE="e2e/.auth/e2e-admin.state.json"
-LOCK_DIR="${TMPDIR:-/tmp}/tacbookings-measure-adult-hosting-invalidation.lock"
+LOCK_DIR_IN_PG="/tmp/tacbookings-measure-adult-hosting-invalidation.lock"
 
 EXPECTED_BASELINE_COPY="Non-member guests are asked to stay with an adult member on the same booking. A booking without one is still made, and the club looks at it."
 EXPECTED_CHANGED_COPY="Non-member guests are asked to be covered by an adult member staying at the lodge. A booking without one is not confirmed until it is corrected or the club decides otherwise."
@@ -39,6 +39,7 @@ STATE_CAPTURED=false
 PAGE_CREATED=false
 PAGE_TOUCHED=false
 PAGE_ID=""
+PAGE_CREATE_RECOVERY_ALLOWED=false
 SETTINGS_TOUCHED=false
 HOST_TOUCHED=false
 TEST_PASSED=false
@@ -123,17 +124,51 @@ const fs = require("node:fs");
 const lines = fs.readFileSync(process.argv[2], "utf8").split(/\r?\n/);
 const values = lines
   .filter((line) => /^cache-control\s*:/i.test(line))
-  .map((line) => line.replace(/^[^:]+:/, "").trim().toLowerCase());
+  .map((line) => line.replace(/^[^:]+:/, "").trim());
 if (values.length !== 1) {
   throw new Error(`expected exactly one Cache-Control header, got ${values.length}`);
 }
-const directives = values[0].split(",").map((value) => value.trim());
-if (!directives.includes("private") || !directives.includes("no-store")) {
+const parts = [];
+let current = "";
+let inQuotes = false;
+let escaped = false;
+for (const character of values[0]) {
+  if (escaped) {
+    current += character;
+    escaped = false;
+  } else if (inQuotes && character === "\\") {
+    current += character;
+    escaped = true;
+  } else if (character === '"') {
+    current += character;
+    inQuotes = !inQuotes;
+  } else if (character === "," && !inQuotes) {
+    parts.push(current);
+    current = "";
+  } else {
+    current += character;
+  }
+}
+if (inQuotes || escaped) throw new Error("Cache-Control contains an unterminated quoted value");
+parts.push(current);
+if (parts.some((part) => part.trim().length === 0)) {
+  throw new Error("Cache-Control contains an empty directive");
+}
+const directivePattern = /^([!#$%&'*+\-.^_`|~0-9A-Za-z]+)(?:\s*=\s*([!#$%&'*+\-.^_`|~0-9A-Za-z]+|"(?:[^"\\]|\\.)*"))?$/;
+const directives = new Map();
+for (const part of parts) {
+  const match = directivePattern.exec(part.trim());
+  if (!match) throw new Error(`malformed Cache-Control directive: ${part.trim()}`);
+  const name = match[1].toLowerCase();
+  if (directives.has(name)) throw new Error(`duplicate Cache-Control directive: ${name}`);
+  directives.set(name, match[2]);
+}
+if (!directives.has("private") || directives.get("private") !== undefined ||
+    !directives.has("no-store") || directives.get("no-store") !== undefined) {
   throw new Error("Cache-Control must include exact private and no-store directives");
 }
 for (const forbidden of ["public", "s-maxage", "stale-while-revalidate"]) {
-  if (directives.some((directive) =>
-    directive === forbidden || directive.startsWith(`${forbidden}=`))) {
+  if (directives.has(forbidden)) {
     throw new Error(`Cache-Control contains forbidden ${forbidden} directive`);
   }
 }
@@ -149,9 +184,8 @@ assert_hosting_response_shape() {
   if ! node - "$file" <<'NODE'
 const fs = require("node:fs");
 const body = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
-const modes = new Set(["INHERIT", "DISABLED", "ADMIN_REVIEW_REQUIRED", "ENFORCED"]);
+const modes = new Set(["DISABLED", "ADMIN_REVIEW_REQUIRED", "ENFORCED"]);
 const effectiveModes = new Set(["DISABLED", "ADMIN_REVIEW_REQUIRED", "ENFORCED"]);
-const sources = new Set(["LODGE", "CLUB_WIDE", "BUILT_IN_DEFAULT"]);
 const isScopeSet = (value) =>
   value !== null && typeof value === "object" && !Array.isArray(value) &&
   Object.keys(value).sort().join(",") === "sameBooking,sameBookingOwner" &&
@@ -159,7 +193,7 @@ const isScopeSet = (value) =>
   typeof value.sameBookingOwner === "boolean";
 if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("body is not an object");
 if (body.scopeKey !== "club-wide" || body.lodgeId !== null) throw new Error("response is not club-wide");
-if (!modes.has(body.mode)) throw new Error("invalid mode");
+if (!modes.has(body.mode)) throw new Error("club-wide mode must be concrete and cannot inherit");
 if (body.capacityMode !== null && body.capacityMode !== "HOLD" && body.capacityMode !== "NO_HOLD") {
   throw new Error("invalid capacityMode");
 }
@@ -168,18 +202,40 @@ if (!Number.isInteger(body.version) || typeof body.configured !== "boolean") {
   throw new Error("invalid version/configured fields");
 }
 if (body.configured) {
-  if (body.version < 1 || body.capacityMode === null || typeof body.id !== "string" || body.id.length === 0) {
+  if (body.version < 1 || body.capacityMode === null ||
+      typeof body.id !== "string" || body.id.trim().length === 0) {
     throw new Error("configured response lacks persisted-row fields");
   }
-} else if (body.version !== 0 || body.capacityMode !== null || body.mode !== "DISABLED") {
-  throw new Error("unconfigured response is not the documented synthetic club default");
+} else {
+  if (body.version !== 0 || body.capacityMode !== null || body.mode !== "DISABLED" ||
+      body.hostScopes !== null || Object.hasOwn(body, "id")) {
+    throw new Error("unconfigured response is not the documented synthetic club default");
+  }
 }
 const effective = body.effective;
 if (!effective || typeof effective !== "object" || Array.isArray(effective) ||
-    !effectiveModes.has(effective.mode) || !sources.has(effective.modeSource) ||
-    !isScopeSet(effective.hostScopes) || !sources.has(effective.hostScopeSource) ||
-    typeof effective.preview !== "string") {
+    !effectiveModes.has(effective.mode) || !isScopeSet(effective.hostScopes) ||
+    typeof effective.preview !== "string" || effective.preview.trim().length === 0) {
   throw new Error("invalid effective policy block");
+}
+if (effective.mode !== body.mode) throw new Error("effective mode disagrees with club-wide mode");
+const expectedModeSource = body.configured ? "CLUB_WIDE" : "BUILT_IN_DEFAULT";
+if (effective.modeSource !== expectedModeSource || effective.modeSource === "LODGE") {
+  throw new Error("effective mode source disagrees with configured state");
+}
+const scopesEqual = (left, right) =>
+  left.sameBooking === right.sameBooking &&
+  left.sameBookingOwner === right.sameBookingOwner;
+const builtInScopes = { sameBooking: true, sameBookingOwner: false };
+if (body.hostScopes === null) {
+  if (effective.hostScopeSource !== "BUILT_IN_DEFAULT" ||
+      !scopesEqual(effective.hostScopes, builtInScopes)) {
+    throw new Error("inherited club scopes disagree with the built-in default");
+  }
+} else if (effective.hostScopeSource !== "CLUB_WIDE" ||
+           effective.hostScopeSource === "LODGE" ||
+           !scopesEqual(effective.hostScopes, body.hostScopes)) {
+  throw new Error("effective host scopes disagree with the configured club scopes");
 }
 NODE
   then
@@ -214,8 +270,8 @@ csp_header() {
 
 release_lock() {
   if [[ "$LOCK_HELD" == true ]]; then
-    if ! rmdir "$LOCK_DIR"; then
-      log "FAIL could not release single-flight lock $LOCK_DIR"
+    if ! docker exec "$PG" rmdir "$LOCK_DIR_IN_PG"; then
+      log "FAIL could not release Postgres-container single-flight lock $LOCK_DIR_IN_PG"
       return 1
     fi
     LOCK_HELD=false
@@ -321,7 +377,7 @@ NODE
         log "WARN discarding an unexpected response page id and recovering only from exact probe material"
         PAGE_ID=""
       fi
-      if [[ -z "$PAGE_ID" ]]; then
+      if [[ -z "$PAGE_ID" && "$PAGE_CREATE_RECOVERY_ALLOWED" == true ]]; then
         recoverable_page_count="$(psql_scalar "SELECT count(*) FROM \"PageContent\" WHERE \"slug\" = '$PROBE_SLUG' AND \"path\" = '$PROBE_PATH' AND \"caption\" = '$PROBE_TITLE' AND \"menuTitle\" = '' AND \"title\" = '$PROBE_TITLE' AND \"headerText\" = '' AND \"sortOrder\" = 9300 AND \"contentHtml\" IN ('', '$PROBE_CONTENT_HTML');" 2>/dev/null)"
         if [[ "$recoverable_page_count" == "1" ]]; then
           PAGE_ID="$(psql_scalar "SELECT \"id\" FROM \"PageContent\" WHERE \"slug\" = '$PROBE_SLUG' AND \"path\" = '$PROBE_PATH' AND \"caption\" = '$PROBE_TITLE' AND \"menuTitle\" = '' AND \"title\" = '$PROBE_TITLE' AND \"headerText\" = '' AND \"sortOrder\" = 9300 AND \"contentHtml\" IN ('', '$PROBE_CONTENT_HTML');" 2>/dev/null)"
@@ -378,6 +434,14 @@ NODE
     cleanup_failed=true
   fi
   if [[ "$current_page_count" != "0" ]]; then
+    cleanup_failed=true
+  fi
+  if [[ ! "$current_audit_count" =~ ^[0-9]+$ ||
+        ! "$ORIGINAL_AUDIT_COUNT" =~ ^[0-9]+$ ]]; then
+    log "FAIL audit row counts are not integers"
+    cleanup_failed=true
+  elif (( current_audit_count <= ORIGINAL_AUDIT_COUNT )); then
+    log "FAIL audit row count did not increase during the mutation probe"
     cleanup_failed=true
   fi
 
@@ -492,12 +556,6 @@ NODE
 }
 trap cleanup EXIT
 
-if ! mkdir "$LOCK_DIR" 2>/dev/null; then
-  log "FAIL another adult-hosting invalidation probe is active, or stale lock $LOCK_DIR needs review"
-  exit 1
-fi
-LOCK_HELD=true
-
 log "preflight: verifying the isolated current-main measurement stack"
 for container_and_service in "$APP:app" "$PG:postgres" "$CADDY:caddy"; do
   container="${container_and_service%%:*}"
@@ -545,7 +603,12 @@ NODE
 docker exec "$APP" node -e '
 const raw = process.env.DATABASE_URL;
 if (!raw) throw new Error("measurement app DATABASE_URL is empty");
-const url = new URL(raw);
+let url;
+try {
+  url = new URL(raw);
+} catch {
+  throw new Error("measurement app DATABASE_URL is not a valid URL");
+}
 if (url.protocol !== "postgresql:" || url.username !== "tac" || !url.password ||
     url.hostname !== "postgres" || url.port !== "5432" || url.pathname !== "/tacbookings") {
   throw new Error("measurement app DATABASE_URL does not identify tac@postgres:5432/tacbookings");
@@ -632,6 +695,14 @@ if (health?.status !== "healthy" || health?.checks?.db?.status !== "ok") {
 }
 NODE
 
+# Serialize harness runs in the already-verified measurement Postgres container,
+# not in one checkout's host /tmp. Atomic mkdir also fails closed on a stale lock.
+if ! docker exec "$PG" mkdir "$LOCK_DIR_IN_PG"; then
+  log "FAIL another adult-hosting invalidation probe is active, or stale Postgres-container lock $LOCK_DIR_IN_PG needs review"
+  exit 1
+fi
+LOCK_HELD=true
+
 [[ -f "$AUTH_STATE" ]] || {
   log "FAIL missing $AUTH_STATE; run the measurement Playwright setup project"
   exit 1
@@ -660,6 +731,10 @@ ORIGINAL_AUDIT_COUNT="$(psql_scalar 'SELECT count(*) FROM "AuditLog";')"
 }
 [[ "$ORIGINAL_HOST_COUNT" =~ ^[01]$ ]] || {
   log "FAIL unexpected club-wide hosting row count: $ORIGINAL_HOST_COUNT"
+  exit 1
+}
+[[ "$ORIGINAL_AUDIT_COUNT" =~ ^[0-9]+$ ]] || {
+  log "FAIL unexpected AuditLog row count: $ORIGINAL_AUDIT_COUNT"
   exit 1
 }
 
@@ -724,9 +799,23 @@ NODE
 # Arm cleanup before sending the write: curl can lose the response after the
 # server commits, so cleanup can recover only this run's exact unique material.
 PAGE_CREATED=true
-api_json POST "/api/admin/page-content" \
+PAGE_CREATE_RECOVERY_ALLOWED=true
+if ! api_json POST "/api/admin/page-content" \
   "$OUT/02-page-create.json" \
-  "$OUT/02-page-create.request.json"
+  "$OUT/02-page-create.request.json"; then
+  create_status=""
+  if [[ -f "$OUT/02-page-create.json.status" ]]; then
+    create_status="$(tr -d '[:space:]' < "$OUT/02-page-create.json.status")"
+  fi
+  if [[ "$create_status" == "409" ]]; then
+    # A completed conflict response proves this run did not create the row.
+    # Never reinterpret the colliding row as ours, recover it, or delete it.
+    PAGE_CREATE_RECOVERY_ALLOWED=false
+    PAGE_CREATED=false
+    log "FAIL page create returned HTTP 409; collision cleanup is deliberately disarmed"
+  fi
+  exit 1
+fi
 PAGE_ID="$(node - \
   "$OUT/02-page-create.json" "$PROBE_SLUG" "$PROBE_PATH" "$PROBE_TITLE" <<'NODE'
 const fs = require("node:fs");
@@ -746,6 +835,7 @@ NODE
   log "FAIL unexpected page id shape"
   exit 1
 }
+PAGE_CREATE_RECOVERY_ALLOWED=false
 
 node - "$PAGE_ID" "$PROBE_SLUG" "$PROBE_TITLE" "$PROBE_CONTENT_HTML" "$OUT/03-page-save.request.json" <<'NODE'
 const fs = require("node:fs");
@@ -831,11 +921,11 @@ assert_hosting_response_shape "$OUT/08-hosting-baseline.json"
 
 log "warming the CMS probe under the baseline hosting policy"
 public_get "09-baseline-miss"
-assert_header "$OUT/09-baseline-miss.headers" '^X-Nextjs-Cache:[[:space:]]*MISS' \
+assert_header "$OUT/09-baseline-miss.headers" '^X-Nextjs-Cache:[[:space:]]*MISS[[:space:]]*$' \
   "baseline first request was not an ISR MISS"
-assert_header "$OUT/09-baseline-miss.headers" '^X-Nextjs-Prerender:[[:space:]]*1' \
+assert_header "$OUT/09-baseline-miss.headers" '^X-Nextjs-Prerender:[[:space:]]*1[[:space:]]*$' \
   "baseline response was not prerendered"
-assert_header "$OUT/09-baseline-miss.headers" '^X-Nextjs-Stale-Time:[[:space:]]*300' \
+assert_header "$OUT/09-baseline-miss.headers" '^X-Nextjs-Stale-Time:[[:space:]]*300[[:space:]]*$' \
   "baseline response did not carry the 300-second ISR window"
 assert_private_no_store_cache "$OUT/09-baseline-miss.headers" \
   "baseline MISS did not retain the strict private/no-store wire-cache boundary"
@@ -847,7 +937,7 @@ assert_not_contains "$OUT/09-baseline-miss.body.html" "$EXPECTED_CHANGED_COPY" \
   "changed hosting wording appeared before the policy change"
 
 public_get "10-baseline-hit"
-assert_header "$OUT/10-baseline-hit.headers" '^X-Nextjs-Cache:[[:space:]]*HIT' \
+assert_header "$OUT/10-baseline-hit.headers" '^X-Nextjs-Cache:[[:space:]]*HIT[[:space:]]*$' \
   "baseline second request was not an ISR HIT"
 assert_private_no_store_cache "$OUT/10-baseline-hit.headers" \
   "baseline HIT did not retain the strict private/no-store wire-cache boundary"
@@ -882,11 +972,11 @@ api_json PUT "/api/admin/booking-policies/adult-member-hosting" \
 assert_hosting_response_shape "$OUT/11-hosting-change.json"
 
 public_get "12-after-change-miss"
-assert_header "$OUT/12-after-change-miss.headers" '^X-Nextjs-Cache:[[:space:]]*MISS' \
+assert_header "$OUT/12-after-change-miss.headers" '^X-Nextjs-Cache:[[:space:]]*MISS[[:space:]]*$' \
   "first request after the hosting write was not an ISR MISS"
-assert_header "$OUT/12-after-change-miss.headers" '^X-Nextjs-Prerender:[[:space:]]*1' \
+assert_header "$OUT/12-after-change-miss.headers" '^X-Nextjs-Prerender:[[:space:]]*1[[:space:]]*$' \
   "regenerated response was not prerendered"
-assert_header "$OUT/12-after-change-miss.headers" '^X-Nextjs-Stale-Time:[[:space:]]*300' \
+assert_header "$OUT/12-after-change-miss.headers" '^X-Nextjs-Stale-Time:[[:space:]]*300[[:space:]]*$' \
   "regenerated response did not carry the 300-second ISR window"
 assert_private_no_store_cache "$OUT/12-after-change-miss.headers" \
   "regenerated MISS did not retain the strict private/no-store wire-cache boundary"
@@ -909,7 +999,7 @@ changed_csp="$(csp_header "$OUT/12-after-change-miss.headers")"
 }
 
 public_get "13-after-change-hit"
-assert_header "$OUT/13-after-change-hit.headers" '^X-Nextjs-Cache:[[:space:]]*HIT' \
+assert_header "$OUT/13-after-change-hit.headers" '^X-Nextjs-Cache:[[:space:]]*HIT[[:space:]]*$' \
   "second request after the hosting write was not an ISR HIT"
 assert_private_no_store_cache "$OUT/13-after-change-hit.headers" \
   "regenerated HIT did not retain the strict private/no-store wire-cache boundary"
