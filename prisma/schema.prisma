@@ -3364,6 +3364,7 @@ model HostingCoverageIncident {
   /// sender releases this claim so the durable re-evaluation can retry.
   ownerNotificationClaimStateKey String?   @db.VarChar(300)
   ownerNotificationClaimedAt     DateTime?
+  ownerNotificationClaimToken    String?   @db.VarChar(64)
 
   openedAt   DateTime  @default(now())
   updatedAt  DateTime  @updatedAt
@@ -3424,6 +3425,8 @@ model HostingCoverageReevaluation {
   processedAt DateTime?
   attempts    Int       @default(0)
   lastError   String?   @db.VarChar(1000)
+  claimToken     String?   @db.VarChar(64)
+  claimExpiresAt DateTime?
 
   member Member @relation("HostingCoverageReevaluations", fields: [memberId], references: [id], onDelete: Cascade)
 

@@ -18,6 +18,7 @@ import {
   lockHostingCoverageOwner,
   lockHostingCoverageOwners,
 } from "@/lib/adult-member-hosting-coverage-lock";
+import { lockAdultMemberHostingPolicySet } from "@/lib/adult-member-hosting-policy-set";
 import { enqueueHostingCoverageReevaluation } from "@/lib/adult-member-hosting-coverage-queue";
 import {
   SameOwnerCoverageOverrideRequiredError,
@@ -122,6 +123,7 @@ export type AdultMemberHostingReviewDb = Pick<
   | "hostingCoverageIncident"
   | "hostingCoverageReevaluation"
   | "auditLog"
+  | "$executeRaw"
 >;
 
 /** The narrow client the policy read needs on its own. */
@@ -586,7 +588,7 @@ export async function evaluateBookingAdultMemberHosting(
  * JUDGED rather than for the bookings supplying evidence — the two questions are
  * different and both need answering.
  */
-function bookingAttendanceIsTerminal(
+export function bookingAttendanceIsTerminal(
   booking: Pick<LoadedHostingBooking, "status" | "deletedAt">,
 ): boolean {
   if (booking.deletedAt != null) return true;
@@ -594,6 +596,31 @@ function bookingAttendanceIsTerminal(
     booking.status === BookingStatus.CANCELLED ||
     booking.status === BookingStatus.BUMPED
   );
+}
+
+/**
+ * Read whether the queued SOURCE booking is no longer attending (#2596).
+ *
+ * This is deliberately a direct id lookup rather than an inference from
+ * `loadSameOwnerCoverageDependentIds`: that list is capped, so an active source
+ * can legitimately sort beyond its first 25 rows. A missing row is a hard-deleted
+ * booking and therefore terminal for the same purpose as the soft-delete and
+ * terminal lifecycle states handled by `bookingAttendanceIsTerminal`.
+ *
+ * The drain passes its existing transaction client after taking the policy-set,
+ * member-lifecycle and Member-row locks, so this authoritative lifecycle read is
+ * made in the same reconciliation transaction as the bounded dependent read and
+ * incident writes.
+ */
+export async function isHostingCoverageSourceBookingTerminal(
+  bookingId: string,
+  db: AdultMemberHostingReviewDb,
+): Promise<boolean> {
+  const booking = await db.booking.findUnique({
+    where: { id: bookingId },
+    select: { status: true, deletedAt: true },
+  });
+  return booking === null || bookingAttendanceIsTerminal(booking);
 }
 
 /**
@@ -2060,7 +2087,9 @@ export async function loadSameOwnerCoverageDependentIds(
  *    closed rather than left standing, and no loss-of-cover message is sent;
  *  - a hazard, no incident or a materially different one → open or update, and
  *    report the state key so the caller can notify ONCE for that transition;
- *  - a hazard identical to the recorded one → `unchanged`, and no notification.
+ *  - a hazard identical to the recorded one → `unchanged`, with no incident write;
+ *    the caller still checks the delivery lease because a prior transient transport
+ *    failure may have left this exact state unnotified.
  *
  * The review snapshot is reconciled first, with `REVIEW_ONLY`. That is not a
  * carve-out from the enforced consequence: the booking already exists and was
@@ -2082,6 +2111,50 @@ export async function reconcileSameOwnerCoverageIncident(
   // `incidentId` without a cast.
   { action: "none" } | { action: "resolved" } | HostingCoverageIncidentOutcome
 > {
+  // Serialise the effective-policy read and every resulting incident write with
+  // policy administration. Without this, a drain could read ENFORCED, race a
+  // demotion to Review/Disabled, and open a fresh urgent incident after the
+  // policy writer had already enumerated the active rows it needed to close.
+  // The policy-set key is first here; an optional actor Member KEY SHARE comes
+  // next, and the evaluator's coverage-owner key is taken after that. The
+  // direct-call order is policy-set -> Member KEY SHARE -> coverage-owner.
+  // The queue drain has a stronger outer handshake: policy-set -> sorted claimed
+  // lifecycle keys -> sorted claimed Member rows -> exact typed queue refresh,
+  // then re-enters here with the refreshed actor. Neither layer locks the queue
+  // row, so there is no queue -> Member inversion.
+  await lockAdultMemberHostingPolicySet(db);
+
+  // Queue attribution is intentionally FK-less so the work survives ordinary
+  // member deletion. A merge re-points it (member-merge.ts), but an exceptional
+  // hard deletion between enqueue and drain can still leave a dangling id.
+  // Incident attribution IS a real FK, so verify at the promotion seam and
+  // degrade to anonymous officer attribution rather than retrying a poison item.
+  // The mandatory reason is independent evidence and is preserved below.
+  // `FOR KEY SHARE` closes the existence-check/FK-write race: a present actor
+  // cannot be hard-deleted until this reconciliation transaction commits.
+  let actorMemberId: string | null = null;
+  if (params.actorMemberId) {
+    // Lock raw, read typed (#2289). The row count matters: at READ COMMITTED a
+    // zero-match lock followed by a model read could see a newly inserted row
+    // that this transaction never locked. Member ids are immutable, but keeping
+    // the zero-match guard makes this split read exactly match one locked read.
+    const locked = await db.$executeRaw`
+      SELECT 1
+      FROM "Member"
+      WHERE "id" = ${params.actorMemberId}
+      FOR KEY SHARE
+    `;
+    actorMemberId =
+      locked > 0
+        ? (
+            await db.member.findUnique({
+              where: { id: params.actorMemberId },
+              select: { id: true },
+            })
+          )?.id ?? null
+        : null;
+  }
+
   const outcome = await reconcileAdultMemberHostingReview(params.bookingId, db, {
     enforcement: "REVIEW_ONLY",
   });
@@ -2101,7 +2174,7 @@ export async function reconcileSameOwnerCoverageIncident(
       {
         bookingId: params.bookingId,
         resolution: "COVERAGE_RESTORED",
-        actorMemberId: params.actorMemberId ?? null,
+        actorMemberId,
       },
       db,
     );
@@ -2138,7 +2211,7 @@ export async function reconcileSameOwnerCoverageIncident(
       {
         bookingId: params.bookingId,
         resolution: "EXCEPTION_APPROVED",
-        actorMemberId: params.actorMemberId ?? null,
+        actorMemberId,
       },
       db,
     );
@@ -2179,9 +2252,8 @@ export async function reconcileSameOwnerCoverageIncident(
       violation: outcome.violation,
       override:
         params.cause === "OFFICER_OVERRIDE" &&
-        params.actorMemberId &&
         params.reason?.trim()
-          ? { byMemberId: params.actorMemberId, reason: params.reason }
+          ? { byMemberId: actorMemberId, reason: params.reason }
           : null,
     },
     db,

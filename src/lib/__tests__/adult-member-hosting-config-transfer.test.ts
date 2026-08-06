@@ -2,6 +2,12 @@ import { strFromU8, strToU8 } from "fflate";
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
+const reconciliationMocks = vi.hoisted(() => ({
+  enqueue: vi.fn(async () => 0),
+}));
+vi.mock("@/lib/adult-member-hosting-policy-reconciliation", () => ({
+  enqueueActiveHostingIncidentPolicyReconciliation: reconciliationMocks.enqueue,
+}));
 
 import {
   bookingPoliciesExporter,
@@ -240,6 +246,7 @@ describe("adult-member hosting configuration transfer (#2364)", () => {
   });
 
   it("applies with version-guarded updates, creates and deletes", async () => {
+    reconciliationMocks.enqueue.mockClear();
     const { tx, create, updateMany, deleteMany } = txDouble();
     const result = await bookingPoliciesImporter.apply(
       applyContext(
@@ -270,6 +277,16 @@ describe("adult-member hosting configuration transfer (#2364)", () => {
     expect(create).not.toHaveBeenCalled();
     expect(deleteMany).not.toHaveBeenCalled();
     expect(result.updated).toBe(2);
+    expect(reconciliationMocks.enqueue).toHaveBeenCalledTimes(1);
+    expect(reconciliationMocks.enqueue).toHaveBeenCalledWith(
+      {
+        beforePolicies: expect.arrayContaining([
+          expect.objectContaining(clubPolicy),
+          expect.objectContaining(lodgePolicy),
+        ]),
+      },
+      tx,
+    );
   });
 
   it("creates a row with the scope key the CHECK constraint demands", async () => {
@@ -289,6 +306,18 @@ describe("adult-member hosting configuration transfer (#2364)", () => {
       },
       select: { id: true },
     });
+  });
+
+  it("does not enqueue incident work for an unchanged hosting policy set", async () => {
+    reconciliationMocks.enqueue.mockClear();
+    const { tx } = txDouble();
+    await bookingPoliciesImporter.apply(
+      applyContext(
+        `${HEADER}club-wide,ADMIN_REVIEW_REQUIRED,HOLD,\nlodge:tukino,INHERIT,NO_HOLD,\n`,
+        tx,
+      ),
+    );
+    expect(reconciliationMocks.enqueue).not.toHaveBeenCalled();
   });
 
   it("aborts the whole import when a row moved under the apply", async () => {

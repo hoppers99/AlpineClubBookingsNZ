@@ -193,9 +193,17 @@ export default async function AdminBookingsPage({
   // permission area, not only on the support dashboard.
   const [hostingCoverageIncidentCount, hostingCoverageIncidents] =
     await Promise.all([
-      prisma.hostingCoverageIncident.count({ where: { resolvedAt: null } }),
+      prisma.hostingCoverageIncident.count({
+        where: {
+          resolvedAt: null,
+          ...(query.lodgeId ? { lodgeId: query.lodgeId } : {}),
+        },
+      }),
       prisma.hostingCoverageIncident.findMany({
-        where: { resolvedAt: null },
+        where: {
+          resolvedAt: null,
+          ...(query.lodgeId ? { lodgeId: query.lodgeId } : {}),
+        },
         orderBy: [{ openedAt: "asc" }, { id: "asc" }],
         take: 50,
         select: {
@@ -365,7 +373,7 @@ export default async function AdminBookingsPage({
                   <Link
                     href={buildHrefWithReturnTo(
                       `/bookings/${incident.bookingId}`,
-                      "/admin/bookings#hosting-coverage-incidents",
+                      `${currentBookingsPath}#hosting-coverage-incidents`,
                     )}
                     className="app-button-secondary shrink-0"
                   >

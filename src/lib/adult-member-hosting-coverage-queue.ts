@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import type { Prisma, PrismaClient } from "@prisma/client";
 
 import type { HostingCoverageIncidentCause } from "@/lib/adult-member-hosting-coverage-incidents";
@@ -55,7 +57,16 @@ export interface HostingCoverageReevaluationItem {
   actorMemberId: string | null;
   reason: string | null;
   attempts: number;
+  /** Opaque ownership proof for this one delivery attempt. */
+  claimToken: string;
 }
+
+export type HostingCoverageReevaluationClaim = Pick<
+  HostingCoverageReevaluationItem,
+  "id" | "claimToken"
+>;
+
+const HOSTING_COVERAGE_REEVALUATION_LEASE_MS = 15 * 60 * 1000;
 
 /**
  * Record one bounded unit of re-evaluation work, INSIDE the caller's transaction.
@@ -93,11 +104,13 @@ export async function enqueueHostingCoverageReevaluation(
 /**
  * Claim up to `limit` unprocessed items, oldest first.
  *
- * A GUARDED CLAIM per row rather than a `SELECT ... FOR UPDATE SKIP LOCKED`
- * batch, because the cost model does not need the latter: this queue carries a
- * handful of items after a membership-lapse sweep, not thousands, and a guarded
- * `updateMany` on `processedAt: null` is the pattern the rest of this repository
- * uses for exactly-one-claimant. Two concurrent drains simply split the work.
+ * A GUARDED, EXPIRING CLAIM per row rather than a `SELECT ... FOR UPDATE SKIP
+ * LOCKED` batch, because processing and provider delivery deliberately happen
+ * after the claim transaction. The opaque token is the ownership proof used by
+ * completion and failure; `claimExpiresAt` is what makes a crashed worker
+ * retryable without making an item visible while a live worker still owns it.
+ * Two simultaneous or staggered drains therefore split the work instead of
+ * repeatedly incrementing `attempts` for the same in-flight item.
  *
  * `attempts` is incremented AT CLAIM TIME, not on failure. A poison item that
  * throws every time therefore still counts up, and `maxAttempts` retires it —
@@ -121,15 +134,22 @@ export async function claimHostingCoverageReevaluations(
     maxAttempts?: number;
     memberId?: string | null;
     lodgeId?: string | null;
+    /** Rows already attempted by this drain; a released failure must not be reclaimed inline. */
+    excludeIds?: readonly string[];
   } = {},
   db: HostingCoverageQueueDb,
 ): Promise<HostingCoverageReevaluationItem[]> {
   const limit = options.limit ?? 25;
   const maxAttempts = options.maxAttempts ?? 5;
+  const claimedAt = new Date();
   const candidates = await db.hostingCoverageReevaluation.findMany({
     where: {
       processedAt: null,
       attempts: { lt: maxAttempts },
+      OR: [{ claimToken: null }, { claimExpiresAt: { lt: claimedAt } }],
+      ...(options.excludeIds && options.excludeIds.length > 0
+        ? { id: { notIn: [...options.excludeIds] } }
+        : {}),
       ...(options.memberId ? { memberId: options.memberId } : {}),
       ...(options.lodgeId ? { lodgeId: options.lodgeId } : {}),
     },
@@ -150,41 +170,173 @@ export async function claimHostingCoverageReevaluations(
 
   const claimed: HostingCoverageReevaluationItem[] = [];
   for (const candidate of candidates) {
+    const claimToken = randomUUID();
+    const claimExpiresAt = new Date(
+      claimedAt.getTime() + HOSTING_COVERAGE_REEVALUATION_LEASE_MS,
+    );
     const claim = await db.hostingCoverageReevaluation.updateMany({
-      where: { id: candidate.id, processedAt: null, attempts: candidate.attempts },
-      data: { attempts: { increment: 1 } },
+      where: {
+        id: candidate.id,
+        processedAt: null,
+        attempts: candidate.attempts,
+        OR: [{ claimToken: null }, { claimExpiresAt: { lt: claimedAt } }],
+      },
+      data: {
+        attempts: { increment: 1 },
+        claimToken,
+        claimExpiresAt,
+      },
     });
     if (claim.count !== 1) continue;
     claimed.push({
       ...candidate,
       nights: parseNights(candidate.nights),
       attempts: candidate.attempts + 1,
+      claimToken,
     });
   }
   return claimed;
 }
 
+/**
+ * Re-read one claimed item's authoritative payload inside its reconciliation
+ * transaction. Member merge can re-point both live member identities after the
+ * claim commits, so the drain uses its snapshot only for the existing-row merge
+ * handshake and reconciles exclusively from this exact-token refresh. Ordinary
+ * booking/member producer rows inserted after merge's relation sweep are the
+ * separate #2597 topology repair; policy/config-transfer reconciliation is
+ * serialised by the shared policy-set lock.
+ */
+export async function loadClaimedHostingCoverageReevaluation(
+  claim: HostingCoverageReevaluationClaim,
+  db: HostingCoverageQueueDb,
+): Promise<HostingCoverageReevaluationItem | null> {
+  const row = await db.hostingCoverageReevaluation.findFirst({
+    where: { id: claim.id, claimToken: claim.claimToken, processedAt: null },
+    select: {
+      id: true,
+      memberId: true,
+      lodgeId: true,
+      nights: true,
+      cause: true,
+      sourceBookingId: true,
+      actorMemberId: true,
+      reason: true,
+      attempts: true,
+      claimToken: true,
+    },
+  });
+  if (!row) return null;
+  return {
+    ...row,
+    nights: parseNights(row.nights),
+    // The exact-token predicate proves this is non-null; Prisma does not narrow
+    // selected nullable columns from a where clause.
+    claimToken: claim.claimToken,
+  };
+}
+
+/**
+ * Extend one exact queue claim immediately before an external delivery or final
+ * completion. An expired-but-unreplaced owner may renew; a successor replacement
+ * and this guarded update contend on the row, and only the token left current can
+ * proceed. This is the queue-side fence that prevents a stale worker from calling
+ * a provider after its lease was replaced.
+ */
+export async function renewHostingCoverageReevaluationClaim(
+  claim: HostingCoverageReevaluationClaim,
+  db: HostingCoverageQueueDb,
+  now: Date = new Date(),
+): Promise<boolean> {
+  const renewed = await db.hostingCoverageReevaluation.updateMany({
+    where: { id: claim.id, processedAt: null, claimToken: claim.claimToken },
+    data: {
+      claimExpiresAt: new Date(
+        now.getTime() + HOSTING_COVERAGE_REEVALUATION_LEASE_MS,
+      ),
+    },
+  });
+  return renewed.count === 1;
+}
+
+/**
+ * Park an exact queue claim behind somebody else's in-flight notification.
+ *
+ * Claiming increments `attempts`, but this worker did not fail the obligation: it
+ * found its provider unit already owned. Roll that increment back while retaining
+ * the renewed lease, so repeated overlap cannot retire otherwise-valid work at
+ * `maxAttempts`. The next sweep may replace the token only after expiry, which is
+ * later than the notification lease this worker just observed.
+ */
+export async function deferHostingCoverageReevaluation(
+  claim: HostingCoverageReevaluationClaim,
+  db: HostingCoverageQueueDb,
+): Promise<boolean> {
+  const deferred = await db.hostingCoverageReevaluation.updateMany({
+    where: { id: claim.id, processedAt: null, claimToken: claim.claimToken },
+    data: { attempts: { decrement: 1 } },
+  });
+  return deferred.count === 1;
+}
+
+/**
+ * Release a claim that could not start because the policy-set lock was busy.
+ *
+ * This differs deliberately from notification deferral above. A live provider
+ * sender needs the queue row parked until its lease expires; policy contention
+ * has performed no reconciliation or provider work, and member merge runs its own
+ * post-commit drain. Clear the exact token immediately so that successor can claim
+ * the obligation, while undoing this claim's attempt increment because contention
+ * is not a poison-item failure. The drain's `seenIds` prevents a same-invocation
+ * hot loop.
+ */
+export async function releaseHostingCoverageReevaluationContention(
+  claim: HostingCoverageReevaluationClaim,
+  db: HostingCoverageQueueDb,
+): Promise<boolean> {
+  const released = await db.hostingCoverageReevaluation.updateMany({
+    where: { id: claim.id, processedAt: null, claimToken: claim.claimToken },
+    data: {
+      attempts: { decrement: 1 },
+      claimToken: null,
+      claimExpiresAt: null,
+    },
+  });
+  return released.count === 1;
+}
+
 /** Mark an item done. Idempotent: a second call matches nothing. */
 export async function completeHostingCoverageReevaluation(
-  id: string,
+  claim: HostingCoverageReevaluationClaim,
   db: HostingCoverageQueueDb,
-): Promise<void> {
-  await db.hostingCoverageReevaluation.updateMany({
-    where: { id, processedAt: null },
-    data: { processedAt: new Date(), lastError: null },
+): Promise<boolean> {
+  const completed = await db.hostingCoverageReevaluation.updateMany({
+    where: { id: claim.id, processedAt: null, claimToken: claim.claimToken },
+    data: {
+      processedAt: new Date(),
+      lastError: null,
+      claimToken: null,
+      claimExpiresAt: null,
+    },
   });
+  return completed.count === 1;
 }
 
 /** Record why an item failed, leaving it unprocessed for the next sweep. */
 export async function failHostingCoverageReevaluation(
-  id: string,
+  claim: HostingCoverageReevaluationClaim,
   message: string,
   db: HostingCoverageQueueDb,
-): Promise<void> {
-  await db.hostingCoverageReevaluation.updateMany({
-    where: { id, processedAt: null },
-    data: { lastError: message.slice(0, 1000) },
+): Promise<boolean> {
+  const failed = await db.hostingCoverageReevaluation.updateMany({
+    where: { id: claim.id, processedAt: null, claimToken: claim.claimToken },
+    data: {
+      lastError: message.slice(0, 1000),
+      claimToken: null,
+      claimExpiresAt: null,
+    },
   });
+  return failed.count === 1;
 }
 
 /**

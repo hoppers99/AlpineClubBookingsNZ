@@ -169,15 +169,22 @@ const SCOPED_ADVISORY_LOCK_INVENTORY: Record<string, number> = {
   // #2586: every roster-date writer calls the shared helper; the key is minted
   // once here and writer participation is pinned by roster-lock-contract.test.
   "src/lib/roster-lock.ts": 1,
-  // #2364: lockAdultMemberHostingPolicySet takes the single global
+  // #2364/#2596: lockAdultMemberHostingPolicySet takes the single blocking global
   // adult-member-hosting-policy-set key before any read by an admin CRUD write
   // or a configuration import, and the migration's BEFORE STATEMENT trigger
   // takes the same key ahead of any tuple lock so operator DML joins the same
-  // order. It composes with exactly one other key, in one fixed direction —
-  // config-transfer-import, then minimum-stay-policy-set, then this — and no
-  // booking or capacity path ever takes it, so the keyspaces are disjoint.
-  // Counterpart analysis in docs/CONCURRENCY_AND_LOCKING.md.
+  // order. The drain's fail-fast `pg_try_advisory_xact_lock` helper lives in this
+  // file too, but deliberately does not match the blocking-call inventory below.
+  // Config import, member merge and drain compose the key only in the documented
+  // forward order; no counterpart reverses it. Counterpart analysis in
+  // docs/CONCURRENCY_AND_LOCKING.md.
   "src/lib/adult-member-hosting-policy-set.ts": 1,
+  // #2596: after the hosting policy-set key, the drain takes sorted
+  // member-lifecycle keys for claimed owner + actor before Member rows and the
+  // exact payload refresh. Merge takes those keys before relation moves. No
+  // lifecycle participant takes the policy key and the drain never locks the
+  // queue row, so there is no reverse policy or queue -> Member edge.
+  "src/lib/adult-member-hosting-coverage-drain.ts": 1,
   // Same-owner hosting coverage (#2576 §9). `lockHostingCoverageOwner` takes
   // `pg_advisory_xact_lock(hashtext('hosting-coverage-owner'), hashtext(<Booking.memberId>))`
   // — a NEW keyspace in its own namespace, keyed on the booking OWNER.
@@ -252,10 +259,11 @@ const SCOPED_ADVISORY_LOCK_INVENTORY: Record<string, number> = {
   // PostgreSQL reaches tuple locks. Config import orders its existing singleton
   // first, then this key; live CRUD takes only this key.
   "src/lib/minimum-stay-policy-set.ts": 1,
-  // #1937: executeMemberMerge takes the shared member-lifecycle:{id} key for
-  // BOTH the master and the loser, in sorted id order (deadlock-free), so a
-  // merge serialises with any concurrent delete/archive/merge touching either
-  // member (same dual-lock pattern as member-lifecycle-actions.ts).
+  // #1937/#2596: executeMemberMerge first calls the shared hosting policy-set
+  // helper, then takes the two raw member-lifecycle:{id} keys in sorted order.
+  // Only the raw locks are counted here; the helper owns its single raw site in
+  // adult-member-hosting-policy-set.ts. This order serialises policy enumeration
+  // before relation moves and every delete/archive/merge touching either member.
   "src/lib/member-merge.ts": 2,
   "src/lib/member-partner-link.ts": 1,
   // #2148: reconcileSubscriptionBillingExceptions takes the SAME

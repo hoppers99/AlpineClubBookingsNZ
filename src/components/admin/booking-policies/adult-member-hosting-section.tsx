@@ -435,6 +435,7 @@ export function AdultMemberHostingSection() {
                 </Label>
                 <select
                   id="hostingScopeSource"
+                  aria-describedby="hostingScopeHint"
                   value={draft.hostScopes === null ? "INHERIT" : "CUSTOM"}
                   disabled={!editing}
                   onChange={(event) =>
@@ -462,7 +463,11 @@ export function AdultMemberHostingSection() {
                 <fieldset
                   className="space-y-2"
                   disabled={!editing || draft.hostScopes === null}
+                  aria-describedby="hostingScopeHint"
                 >
+                  <legend className="sr-only">
+                    Qualifying adult-member sources
+                  </legend>
                   {HOST_SCOPE_ORDER.map((key) => (
                     <label
                       key={key}

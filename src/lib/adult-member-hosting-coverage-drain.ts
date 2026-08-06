@@ -3,16 +3,24 @@ import type { Prisma } from "@prisma/client";
 import {
   claimHostingCoverageOwnerNotification,
   completeHostingCoverageOwnerNotification,
+  isHostingCoverageOwnerNotificationPending,
+  loadHostingCoverageOwnerNotificationDelivery,
   releaseHostingCoverageOwnerNotification,
   resolveHostingCoverageIncidents,
 } from "@/lib/adult-member-hosting-coverage-incidents";
 import {
   claimHostingCoverageReevaluations,
   completeHostingCoverageReevaluation,
+  deferHostingCoverageReevaluation,
   failHostingCoverageReevaluation,
+  loadClaimedHostingCoverageReevaluation,
+  releaseHostingCoverageReevaluationContention,
+  renewHostingCoverageReevaluationClaim,
   type HostingCoverageReevaluationItem,
 } from "@/lib/adult-member-hosting-coverage-queue";
+import { tryLockAdultMemberHostingPolicySet } from "@/lib/adult-member-hosting-policy-set";
 import {
+  isHostingCoverageSourceBookingTerminal,
   loadSameOwnerCoverageDependentIds,
   loadAdultMemberHostingPolicy,
   reconcileSameOwnerCoverageIncident,
@@ -144,6 +152,31 @@ export async function settleHostingCoverageAfterCommit(
  * that the work is somebody else's backlog and belongs to the cron.
  */
 const INLINE_DRAIN_LIMIT = 5;
+const MAX_MEMBER_ID_STABILIZATION_ATTEMPTS = 3;
+
+type HostingCoverageReconciliationOutcome = {
+  kind: "processed";
+  incidentsOpened: number;
+  incidentsUpdated: number;
+  incidentsResolved: number;
+  notificationObligations: Array<{
+    bookingId: string;
+    incidentId: string;
+    stateKey: string;
+  }>;
+  notifications: Array<{
+    bookingId: string;
+    incidentId: string;
+    stateKey: string;
+    claimToken: string;
+  }>;
+};
+
+type HostingCoverageReconciliationTransactionResult =
+  | HostingCoverageReconciliationOutcome
+  | { kind: "deferred" }
+  | { kind: "lost" }
+  | { kind: "retry"; item: HostingCoverageReevaluationItem };
 
 export async function drainHostingCoverageReevaluations(
   options: {
@@ -154,34 +187,125 @@ export async function drainHostingCoverageReevaluations(
   } = {},
   db: typeof prisma = prisma,
 ): Promise<HostingCoverageDrainResult> {
-  const items = await claimHostingCoverageReevaluations(options, db);
-  if (items.length === 0) return { ...EMPTY_RESULT };
+  const limit = options.limit ?? 25;
+  if (limit <= 0) return { ...EMPTY_RESULT };
 
-  const result: HostingCoverageDrainResult = { ...EMPTY_RESULT, claimed: items.length };
-  for (const item of items) {
+  // Claim only when an item is about to run. A serial batch leased up front gives
+  // every later item the same expiry even though it may wait behind slow database
+  // and provider work. `seenIds` also prevents a failure whose lease was released
+  // below from being immediately reclaimed by this same drain and burning all of
+  // its attempts in one invocation.
+  const seenIds = new Set<string>();
+  const result: HostingCoverageDrainResult = { ...EMPTY_RESULT };
+  while (result.claimed < limit) {
+    const [item] = await claimHostingCoverageReevaluations(
+      { ...options, limit: 1, excludeIds: [...seenIds] },
+      db,
+    );
+    if (!item) break;
+    seenIds.add(item.id);
+    result.claimed += 1;
+
     try {
       // The evaluator takes transaction-scoped owner advisory locks. Run all
       // database reconciliation for one bounded item in a REAL transaction so
       // those locks remain held through its reads and incident writes. Email is
       // deliberately handled after this transaction commits.
-      const outcome = await db.$transaction((tx) =>
-        processHostingCoverageReevaluation(item, tx),
-      );
+      let reconciliationItem = item;
+      let outcome: HostingCoverageReconciliationOutcome | null = null;
+      let claimLost = false;
+      let policyLockContended = false;
+      for (
+        let attempt = 0;
+        attempt < MAX_MEMBER_ID_STABILIZATION_ATTEMPTS;
+        attempt += 1
+      ) {
+        const reconciliation = await db.$transaction((tx) =>
+          processHostingCoverageReevaluation(reconciliationItem, tx),
+        );
+        if (reconciliation.kind === "deferred") {
+          policyLockContended = true;
+          break;
+        }
+        if (reconciliation.kind === "lost") {
+          claimLost = true;
+          break;
+        }
+        if (reconciliation.kind === "retry") {
+          reconciliationItem = reconciliation.item;
+          continue;
+        }
+        outcome = reconciliation;
+        break;
+      }
+      if (policyLockContended) {
+        const released = await releaseHostingCoverageReevaluationContention(
+          item,
+          db,
+        );
+        logger.warn(
+          { itemId: item.id, memberId: item.memberId, lodgeId: item.lodgeId },
+          released
+            ? "Hosting coverage re-evaluation deferred behind the policy-set lock"
+            : "Hosting coverage re-evaluation policy-lock deferral arrived after its claim was replaced",
+        );
+        continue;
+      }
+      if (claimLost) {
+        logger.warn(
+          { itemId: item.id, memberId: item.memberId, lodgeId: item.lodgeId },
+          "Hosting coverage re-evaluation claim disappeared before its authoritative payload read",
+        );
+        continue;
+      }
+      if (!outcome) {
+        throw new Error(
+          "Hosting coverage re-evaluation member identities did not stabilise after merge",
+        );
+      }
       result.incidentsOpened += outcome.incidentsOpened;
       result.incidentsUpdated += outcome.incidentsUpdated;
       result.incidentsResolved += outcome.incidentsResolved;
 
+      const terminalNotificationStates = new Set<string>();
+      let deliveryClaimLost = false;
       for (const notification of outcome.notifications) {
         try {
-          const sent = await notifyOwnerOfLostCoverage(notification.bookingId, db);
-          if (sent) {
+          // The notification token alone is not authority to continue this queue
+          // item. A successor may have replaced the queue lease while the database
+          // reconciliation ran. Renew the exact queue token immediately before
+          // every provider unit; a stale worker performs no provider call.
+          if (!(await renewHostingCoverageReevaluationClaim(item, db))) {
+            deliveryClaimLost = true;
+            break;
+          }
+          const delivery = await notifyOwnerOfLostCoverage(notification, db);
+          if (delivery === "sent") {
             const completed = await completeHostingCoverageOwnerNotification(
               notification,
               db,
             );
             if (completed) result.notified += 1;
+          } else if (delivery === "retry") {
+            throw new Error(
+              'Hosting coverage notification was withheld because the booking "No emails" flag could not be read',
+            );
           } else {
-            await releaseHostingCoverageOwnerNotification(notification, db);
+            // Missing recipients and intentional suppression are terminal for this
+            // queue item: the officer incident remains visible, but retrying the
+            // identical state cannot make an intentionally withheld message send.
+            const released = await releaseHostingCoverageOwnerNotification(
+              notification,
+              db,
+            );
+            // A null delivery also means the exact notification token may have
+            // been replaced. Only the worker that still owns and releases that
+            // token may classify missing-recipient/suppression as terminal. A
+            // failed release leaves the exact state for the authoritative pending
+            // check below, so a crashed successor cannot be stranded by Q.
+            if (released) {
+              terminalNotificationStates.add(notificationStateKey(notification));
+            }
           }
         } catch (err) {
           await releaseHostingCoverageOwnerNotification(notification, db).catch(
@@ -190,19 +314,84 @@ export async function drainHostingCoverageReevaluations(
           throw err;
         }
       }
-      await completeHostingCoverageReevaluation(item.id, db);
-      result.processed += 1;
+      if (deliveryClaimLost) {
+        // Claims were acquired together in the reconciliation transaction. Release
+        // every still-current one when the queue token is gone; completed claims
+        // simply match zero. The successor will retry without waiting 15 minutes.
+        await Promise.all(
+          outcome.notifications.map((notification) =>
+            releaseHostingCoverageOwnerNotification(notification, db).catch(
+              () => false,
+            ),
+          ),
+        );
+        logger.warn(
+          { itemId: item.id, memberId: item.memberId, lodgeId: item.lodgeId },
+          "Hosting coverage re-evaluation claim was replaced before provider delivery",
+        );
+        continue;
+      }
+
+      // Renew once more immediately before the terminal decision. Completion is
+      // allowed only while this exact queue token is current.
+      if (!(await renewHostingCoverageReevaluationClaim(item, db))) {
+        logger.warn(
+          { itemId: item.id, memberId: item.memberId, lodgeId: item.lodgeId },
+          "Hosting coverage re-evaluation claim was replaced before completion",
+        );
+        continue;
+      }
+
+      let pendingNotification = false;
+      for (const obligation of outcome.notificationObligations) {
+        if (terminalNotificationStates.has(notificationStateKey(obligation))) {
+          continue;
+        }
+        if (await isHostingCoverageOwnerNotificationPending(obligation, db)) {
+          pendingNotification = true;
+          break;
+        }
+      }
+      if (pendingNotification) {
+        // Another sender owns (or has just released) an uncompleted notice. Park
+        // this renewed queue token until expiry and undo this claim's attempt
+        // increment. Completing or failing-and-releasing here can respectively
+        // lose the notice or burn every attempt while the sender is still live.
+        await deferHostingCoverageReevaluation(item, db);
+        logger.warn(
+          { itemId: item.id, memberId: item.memberId, lodgeId: item.lodgeId },
+          "Hosting coverage re-evaluation remains pending behind an owner notification",
+        );
+        continue;
+      }
+
+      const completed = await completeHostingCoverageReevaluation(item, db);
+      if (completed) {
+        result.processed += 1;
+      } else {
+        logger.warn(
+          { itemId: item.id, memberId: item.memberId, lodgeId: item.lodgeId },
+          "Hosting coverage re-evaluation finished after its claim was replaced",
+        );
+      }
     } catch (err) {
-      result.failed += 1;
       logger.error(
         { err, itemId: item.id, memberId: item.memberId, lodgeId: item.lodgeId },
         "Failed to re-evaluate same-owner hosting coverage",
       );
-      await failHostingCoverageReevaluation(
-        item.id,
+      const failureRecorded = await failHostingCoverageReevaluation(
+        item,
         err instanceof Error ? err.message : String(err),
         db,
-      ).catch(() => undefined);
+      ).catch(() => false);
+      if (failureRecorded) {
+        result.failed += 1;
+      } else {
+        logger.warn(
+          { itemId: item.id, memberId: item.memberId, lodgeId: item.lodgeId },
+          "Hosting coverage re-evaluation failure arrived after its claim was replaced",
+        );
+      }
     }
   }
   return result;
@@ -225,42 +414,108 @@ export async function drainHostingCoverageReevaluations(
 async function processHostingCoverageReevaluation(
   item: HostingCoverageReevaluationItem,
   db: Prisma.TransactionClient,
-): Promise<{
-  incidentsOpened: number;
-  incidentsUpdated: number;
-  incidentsResolved: number;
-  notifications: Array<{
-    bookingId: string;
-    incidentId: string;
-    stateKey: string;
-  }>;
-}> {
+): Promise<HostingCoverageReconciliationTransactionResult> {
+  // MEMBER-MERGE HANDSHAKE FOR AN EXISTING QUEUE ROW. A claim is an in-memory
+  // snapshot. Take policy first, then the same sorted lifecycle keys merge takes
+  // at transaction entry, before it re-points relations. The later sorted row
+  // locks protect promotion into incident FKs. If drain wins, merge waits; if a
+  // merge already re-pointed this persisted row, the exact typed read sees the
+  // survivor. The separate producer/member-merge topology repair in #2597 owns
+  // ordinary rows inserted after merge's relation sweep. Never row-lock the queue:
+  // merge writes it after Member locks, so queue -> Member would invert the
+  // counterpart order.
+  if (!(await tryLockAdultMemberHostingPolicySet(db))) {
+    // Fail fast before lifecycle locks, reads or incident writes. Member merge can
+    // hold the policy key for longer than Prisma's default interactive-transaction
+    // timeout; waiting here would turn ordinary contention into a consumed queue
+    // attempt. The caller releases this exact claim for the merge's post-commit
+    // drain (or the next cron sweep) to retry immediately.
+    return { kind: "deferred" };
+  }
+  const claimedMemberIds = [
+    ...new Set(
+      [item.memberId, item.actorMemberId].filter(
+        (memberId): memberId is string => Boolean(memberId),
+      ),
+    ),
+  ].sort();
+  for (const memberId of claimedMemberIds) {
+    await db.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`member-lifecycle:${memberId}`}))`;
+  }
+  for (const memberId of claimedMemberIds) {
+    await db.$executeRaw`
+      SELECT 1
+      FROM "Member"
+      WHERE "id" = ${memberId}
+      FOR KEY SHARE
+    `;
+  }
+  const refreshedItem = await loadClaimedHostingCoverageReevaluation(item, db);
+  if (!refreshedItem) return { kind: "lost" };
+  const refreshedMemberIds = [
+    ...new Set(
+      [refreshedItem.memberId, refreshedItem.actorMemberId].filter(
+        (memberId): memberId is string => Boolean(memberId),
+      ),
+    ),
+  ].sort();
+  if (
+    refreshedMemberIds.length !== claimedMemberIds.length ||
+    refreshedMemberIds.some(
+      (memberId, index) => memberId !== claimedMemberIds[index],
+    )
+  ) {
+    // End this transaction before acquiring any newly discovered key. Starting a
+    // fresh transaction with the refreshed snapshot preserves sorted acquisition
+    // and handles chained merges without lifecycle-key inversion.
+    return { kind: "retry", item: refreshedItem };
+  }
+
   const counts = {
+    kind: "processed" as const,
     incidentsOpened: 0,
     incidentsUpdated: 0,
     incidentsResolved: 0,
-    notifications: [] as Array<{
+    notificationObligations: [] as Array<{
       bookingId: string;
       incidentId: string;
       stateKey: string;
     }>,
+    notifications: [] as Array<{
+      bookingId: string;
+      incidentId: string;
+      stateKey: string;
+      claimToken: string;
+    }>,
   };
-  const policy = await loadAdultMemberHostingPolicy(item.lodgeId, db);
+  const policy = await loadAdultMemberHostingPolicy(refreshedItem.lodgeId, db);
+  const sourceBookingIsTerminal = refreshedItem.sourceBookingId
+    ? await isHostingCoverageSourceBookingTerminal(
+        refreshedItem.sourceBookingId,
+        db,
+      )
+    : false;
   const dependentIds =
-    policy.hostScopes.sameBookingOwner || !item.sourceBookingId
+    policy.hostScopes.sameBookingOwner || !refreshedItem.sourceBookingId
       ? await loadSameOwnerCoverageDependentIds(
-          { memberId: item.memberId, lodgeId: item.lodgeId, nights: item.nights },
+          {
+            memberId: refreshedItem.memberId,
+            lodgeId: refreshedItem.lodgeId,
+            nights: refreshedItem.nights,
+          },
           db,
         )
-      : [item.sourceBookingId];
+      : sourceBookingIsTerminal
+        ? []
+        : [refreshedItem.sourceBookingId];
 
   for (const bookingId of dependentIds) {
     const outcome = await reconcileSameOwnerCoverageIncident(
       {
         bookingId,
-        cause: item.cause,
-        actorMemberId: item.actorMemberId,
-        reason: item.reason,
+        cause: refreshedItem.cause,
+        actorMemberId: refreshedItem.actorMemberId,
+        reason: refreshedItem.reason,
       },
       db,
     );
@@ -273,6 +528,11 @@ async function processHostingCoverageReevaluation(
     if (outcome.action === "opened") counts.incidentsOpened += 1;
     else if (outcome.action === "updated") counts.incidentsUpdated += 1;
 
+    counts.notificationObligations.push({
+      bookingId,
+      incidentId: outcome.incidentId,
+      stateKey: outcome.stateKey,
+    });
     const claimed = await claimHostingCoverageOwnerNotification(
       { incidentId: outcome.incidentId, stateKey: outcome.stateKey },
       db,
@@ -280,21 +540,21 @@ async function processHostingCoverageReevaluation(
     if (!claimed) continue;
     counts.notifications.push({
       bookingId,
-      incidentId: outcome.incidentId,
-      stateKey: outcome.stateKey,
+      ...claimed,
     });
   }
 
-  // The SOURCE booking itself may have been cancelled by the change that queued
-  // this work, in which case any incident it was carrying is moot: nobody can
-  // restore cover for a stay that is not happening. §7 lists cancellation of the
-  // affected booking as one of the four automatic resolutions.
-  if (item.sourceBookingId && !dependentIds.includes(item.sourceBookingId)) {
+  // The SOURCE booking itself may have ended before the drain runs, in which case
+  // any incident it was carrying is moot: nobody can restore cover for a stay that
+  // is not happening. Its absence from `dependentIds` is NOT evidence of that —
+  // the same-owner query is capped and may omit a still-active source. Only the
+  // direct lifecycle lookup above can justify §7's cancellation resolution.
+  if (refreshedItem.sourceBookingId && sourceBookingIsTerminal) {
     counts.incidentsResolved += await resolveHostingCoverageIncidents(
       {
-        bookingId: item.sourceBookingId,
+        bookingId: refreshedItem.sourceBookingId,
         resolution: "BOOKING_CANCELLED",
-        actorMemberId: item.actorMemberId,
+        actorMemberId: refreshedItem.actorMemberId,
       },
       db,
     );
@@ -303,52 +563,53 @@ async function processHostingCoverageReevaluation(
   return counts;
 }
 
+function notificationStateKey(params: {
+  incidentId: string;
+  stateKey: string;
+}): string {
+  return `${params.incidentId}\u0000${params.stateKey}`;
+}
+
 /**
  * Send the owner the loss-of-cover notice, having already claimed it.
  *
- * Returns whether a message was actually sent. A missing email address is not an
- * error and not a retry: the incident is still open, still in the officer queue,
- * and an officer contacting a member with no address on file is the club's normal
- * process. Re-queueing forever over an absent address would hide real failures.
+ * A missing email address or intentional suppression is terminal: the incident is
+ * still open in the officer queue and an officer can contact the member another way.
+ * An unreadable booking-level email flag is different: it is a transient fail-closed
+ * result and must fail the exact queue claim so this non-retryable EmailLog template
+ * is attempted again by the hosting outbox.
  */
 async function notifyOwnerOfLostCoverage(
-  bookingId: string,
+  notification: {
+    bookingId: string;
+    incidentId: string;
+    stateKey: string;
+    claimToken: string;
+  },
   db: typeof prisma,
-): Promise<boolean> {
-  const booking = await db.booking.findUnique({
-    where: { id: bookingId },
-    select: {
-      id: true,
-      memberId: true,
-      lodgeId: true,
-      checkIn: true,
-      checkOut: true,
-      adultMemberHostingReview: true,
-      member: { select: { firstName: true, email: true } },
-    },
-  });
-  if (!booking?.member?.email) return false;
-
-  const review = booking.adultMemberHostingReview as {
-    affectedNights?: unknown;
-  } | null;
-  const nights = Array.isArray(review?.affectedNights)
-    ? review.affectedNights.filter(
-        (night): night is string => typeof night === "string",
-      )
-    : [];
+): Promise<"sent" | "terminal" | "retry"> {
+  const delivery = await loadHostingCoverageOwnerNotificationDelivery(
+    notification,
+    db,
+  );
+  if (!delivery?.email) return "terminal";
 
   const outcome = await sendHostingCoverageLostEmail({
-    bookingId: booking.id,
-    recipientMemberId: booking.memberId,
-    email: booking.member.email,
-    firstName: booking.member.firstName,
-    checkIn: booking.checkIn,
-    checkOut: booking.checkOut,
-    // The nights come off the snapshot the reconciliation just wrote, so the
-    // email cannot describe a different problem from the incident.
-    uncoveredNights: nights.length > 0 ? nights.join(", ") : "see your booking",
-    lodgeId: booking.lodgeId,
+    bookingId: delivery.bookingId,
+    recipientMemberId: delivery.recipientMemberId,
+    email: delivery.email,
+    firstName: delivery.firstName,
+    checkIn: delivery.checkIn,
+    checkOut: delivery.checkOut,
+    uncoveredNights: delivery.uncoveredNights,
+    lodgeId: delivery.lodgeId,
   });
-  return outcome.status === "sent";
+  if (outcome.status === "sent") return "sent";
+  if (
+    outcome.status === "withheld_for_booking" &&
+    outcome.reason === "booking_flag_unreadable"
+  ) {
+    return "retry";
+  }
+  return "terminal";
 }
