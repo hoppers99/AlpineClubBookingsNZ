@@ -1,5 +1,6 @@
 import type { Prisma } from "@prisma/client";
 import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
+import { enqueueHostingCoverageReevaluationForMember } from "@/lib/adult-member-hosting-review";
 import { acquireLodgeCapacityLock } from "@/lib/capacity";
 import {
   BookingGuestRemovalError,
@@ -430,9 +431,12 @@ export async function respondToMemberGuestConsent(params: {
           actorMemberId,
           now,
         );
-        return claimed
-          ? ({ outcome: "APPROVED" } as const)
-          : ({ outcome: "ALREADY_RESOLVED" } as const);
+        if (!claimed) return { outcome: "ALREADY_RESOLVED" } as const;
+        await enqueueHostingCoverageReevaluationForMember(targetMemberId, tx, {
+          cause: "SYSTEM_CHANGE",
+          actorMemberId,
+        });
+        return { outcome: "APPROVED" } as const;
       }
 
       const claimed = await claimConsentTransition(
@@ -676,7 +680,11 @@ export async function finaliseMemberGuestConsentTransition(params: {
   // member's decline never runs another account's backlog, and best-effort for the
   // reason every other drain site is: the transition is committed and the cron sweep
   // is the authority on completion.
-  if (outcome.outcome === "DECLINED" || outcome.outcome === "EXPIRED") {
+  if (
+    outcome.outcome === "APPROVED" ||
+    outcome.outcome === "DECLINED" ||
+    outcome.outcome === "EXPIRED"
+  ) {
     await settleHostingCoverageAfterCommit({ bookingId });
   }
 

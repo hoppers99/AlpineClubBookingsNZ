@@ -5,6 +5,8 @@ import { createAuditLog } from "@/lib/audit";
 import { sendMembershipPaymentRecordedEmail } from "@/lib/email/membership";
 import logger from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
+import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
+import { enqueueHostingCoverageReevaluationForMember } from "@/lib/adult-member-hosting-review";
 
 /**
  * E14 (#1944): audited manual mark-paid / mark-unpaid for a member subscription,
@@ -272,6 +274,14 @@ export async function applyManualSubscriptionPayment(
         },
         tx,
       );
+      await enqueueHostingCoverageReevaluationForMember(
+        subscription.memberId,
+        tx,
+        {
+          cause: "SYSTEM_CHANGE",
+          actorMemberId: input.actingMemberId,
+        },
+      );
       // The receipt needs the amount and the recipient read before commit;
       // the send itself happens after the transaction returns.
       const amountCents = receiptAmountCents(
@@ -366,6 +376,14 @@ export async function applyManualSubscriptionPayment(
       },
       tx,
     );
+    await enqueueHostingCoverageReevaluationForMember(
+      subscription.memberId,
+      tx,
+      {
+        cause: "SYSTEM_CHANGE",
+        actorMemberId: input.actingMemberId,
+      },
+    );
     return {
       result: {
         ...updated,
@@ -375,6 +393,8 @@ export async function applyManualSubscriptionPayment(
       recipient: null,
     };
   });
+
+  await settleHostingCoverageAfterCommit({ limit: 50 });
 
   // #2260: dispatched only on the paid path, and only when the admin chose it.
   // A send failure must never undo or 500 the committed money state — but it

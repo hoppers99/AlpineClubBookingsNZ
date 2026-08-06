@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // reversal status logic, and the invariant that NO Xero module is ever imported
 // or called on this path.
 
-const { prismaMock, auditMock, emailMock, loggerMock } = vi.hoisted(() => ({
+const { prismaMock, auditMock, emailMock, loggerMock, hostingMock } = vi.hoisted(() => ({
   prismaMock: {
     $transaction: vi.fn(),
     memberSubscription: {
@@ -18,6 +18,10 @@ const { prismaMock, auditMock, emailMock, loggerMock } = vi.hoisted(() => ({
   auditMock: { createAuditLog: vi.fn() },
   emailMock: { sendMembershipPaymentRecordedEmail: vi.fn() },
   loggerMock: { error: vi.fn(), warn: vi.fn(), info: vi.fn() },
+  hostingMock: {
+    enqueueHostingCoverageReevaluationForMember: vi.fn(async () => 0),
+    settleHostingCoverageAfterCommit: vi.fn(async () => ({})),
+  },
 }));
 
 vi.mock("@/lib/prisma", () => ({ prisma: prismaMock }));
@@ -25,6 +29,13 @@ vi.mock("@/lib/audit", () => auditMock);
 vi.mock("@/lib/email/membership", () => emailMock);
 vi.mock("@/lib/logger", () => ({
   default: loggerMock,
+}));
+vi.mock("@/lib/adult-member-hosting-review", () => ({
+  enqueueHostingCoverageReevaluationForMember:
+    hostingMock.enqueueHostingCoverageReevaluationForMember,
+}));
+vi.mock("@/lib/adult-member-hosting-coverage-drain", () => ({
+  settleHostingCoverageAfterCommit: hostingMock.settleHostingCoverageAfterCommit,
 }));
 vi.mock("server-only", () => ({}));
 
@@ -112,6 +123,13 @@ describe("applyManualSubscriptionPayment (#1944)", () => {
       }),
       expect.anything(),
     );
+    expect(
+      hostingMock.enqueueHostingCoverageReevaluationForMember,
+    ).toHaveBeenCalledWith("m-1", tx, {
+      cause: "SYSTEM_CHANGE",
+      actorMemberId: "admin-1",
+    });
+    expect(hostingMock.settleHostingCoverageAfterCommit).toHaveBeenCalledTimes(1);
     expect(xeroCall).not.toHaveBeenCalled();
   });
 
@@ -204,6 +222,13 @@ describe("applyManualSubscriptionPayment (#1944)", () => {
       }),
       expect.anything(),
     );
+    expect(
+      hostingMock.enqueueHostingCoverageReevaluationForMember,
+    ).toHaveBeenCalledWith("m-1", tx, {
+      cause: "SYSTEM_CHANGE",
+      actorMemberId: "admin-1",
+    });
+    expect(hostingMock.settleHostingCoverageAfterCommit).toHaveBeenCalledTimes(1);
     expect(xeroCall).not.toHaveBeenCalled();
   });
 

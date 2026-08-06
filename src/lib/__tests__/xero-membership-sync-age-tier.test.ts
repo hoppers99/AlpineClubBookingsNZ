@@ -10,17 +10,32 @@ const mocks = vi.hoisted(() => ({
   createMany: vi.fn(),
   resolvePolicy: vi.fn(),
   requiresPaidForAgeTier: vi.fn(),
+  enqueueHostingCoverage: vi.fn(async () => 0),
+  settleHostingCoverage: vi.fn(async () => ({})),
 }));
 
 vi.mock("@/lib/prisma", () => ({
-  prisma: {
+  prisma: (() => {
+    const client = {
     member: { findUnique: mocks.memberFindUnique },
+    booking: { findMany: vi.fn(async () => []) },
     memberSubscription: {
       findUnique: mocks.subFindUnique,
       updateMany: mocks.updateMany,
       createMany: mocks.createMany,
     },
-  },
+    };
+    return {
+      ...client,
+      $transaction: (cb: (tx: typeof client) => unknown) => cb(client),
+    };
+  })(),
+}));
+vi.mock("@/lib/adult-member-hosting-review", () => ({
+  enqueueHostingCoverageReevaluationForMember: mocks.enqueueHostingCoverage,
+}));
+vi.mock("@/lib/adult-member-hosting-coverage-drain", () => ({
+  settleHostingCoverageAfterCommit: mocks.settleHostingCoverage,
 }));
 vi.mock("@/lib/membership-type-policy", () => ({
   resolveMembershipTypePolicyForMember: mocks.resolvePolicy,
@@ -55,6 +70,12 @@ describe("checkMembershipStatus BASED_ON_AGE_TIER dominance (#2041)", () => {
     expect(mocks.resolvePolicy).toHaveBeenCalledTimes(1);
     // Dominance short-circuits the tier check entirely.
     expect(mocks.requiresPaidForAgeTier).not.toHaveBeenCalled();
+    expect(mocks.enqueueHostingCoverage).toHaveBeenCalledWith(
+      "m1",
+      expect.anything(),
+      { cause: "SYSTEM_CHANGE" },
+    );
+    expect(mocks.settleHostingCoverage).toHaveBeenCalledTimes(1);
   });
 
   it("consults the type policy (membership type is the sole authority, #2149), then defers to the age-tier flag", async () => {

@@ -394,7 +394,7 @@ export async function POST(req: NextRequest) {
       // silently non-compliant with no incident, no owner email and no officer-queue
       // entry. Recorded per member inside this transaction so the deactivation and
       // the obligation commit together; never refuses the deactivation.
-      if (action === "deactivate") {
+      if (action === "deactivate" || action === "reactivate") {
         for (const memberId of idsToUpdate) {
           await enqueueHostingCoverageReevaluationForMember(memberId, tx, {
             cause: "SYSTEM_CHANGE",
@@ -432,6 +432,12 @@ export async function POST(req: NextRequest) {
                 : {}),
             },
           });
+          if (reconciledAgeTier !== undefined) {
+            await enqueueHostingCoverageReevaluationForMember(member.id, tx, {
+              cause: "SYSTEM_CHANGE",
+              actorMemberId: currentUserId,
+            });
+          }
           // #1756: an ORG grant that moves the member off ADULT breaks the
           // double-bed sharing precondition, so sweep their future shared-double
           // placements in the same transaction.
@@ -529,7 +535,11 @@ export async function POST(req: NextRequest) {
 
     // #2576 §8: settle what the deactivation recorded, now it has committed.
     // Unfiltered, because a bulk action spans owners and lodges by definition.
-    if (action === "deactivate") {
+    if (
+      action === "deactivate" ||
+      action === "reactivate" ||
+      ageTierReconById.size > 0
+    ) {
       await settleHostingCoverageAfterCommit({ limit: 50 });
     }
 

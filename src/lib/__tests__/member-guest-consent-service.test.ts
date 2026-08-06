@@ -64,6 +64,8 @@ const h = vi.hoisted(() => {
     acquireLodgeCapacityLock: vi.fn(),
     getDefaultLodgeId: vi.fn(),
     reconcileBeds: vi.fn(),
+    enqueueHostingCoverage: vi.fn(async () => 0),
+    settleHostingCoverage: vi.fn(async () => ({})),
     logAudit: vi.fn(),
     sendOutcomeEmail: vi.fn(),
     sendExpiredEmail: vi.fn(),
@@ -105,6 +107,12 @@ vi.mock("@/lib/capacity", () => ({
 vi.mock("@/lib/lodges", () => ({ getDefaultLodgeId: h.getDefaultLodgeId }));
 vi.mock("@/lib/bed-allocation-lifecycle", () => ({
   reconcileBedAllocationsForBooking: h.reconcileBeds,
+}));
+vi.mock("@/lib/adult-member-hosting-review", () => ({
+  enqueueHostingCoverageReevaluationForMember: h.enqueueHostingCoverage,
+}));
+vi.mock("@/lib/adult-member-hosting-coverage-drain", () => ({
+  settleHostingCoverageAfterCommit: h.settleHostingCoverage,
 }));
 vi.mock("@/lib/audit", () => ({ logAudit: h.logAudit }));
 vi.mock("@/lib/email/member-guest", () => ({
@@ -439,6 +447,10 @@ describe("respondToMemberGuestConsent — authorization", () => {
     });
     // An approval adds an occupant, so nothing is removed.
     expect(h.removeGuest).not.toHaveBeenCalled();
+    expect(h.enqueueHostingCoverage).toHaveBeenCalledWith(TARGET, expect.anything(), {
+      cause: "SYSTEM_CHANGE",
+      actorMemberId: TARGET,
+    });
   });
 
   it("records the DELEGATE as the responder, not the target they answered for", async () => {
@@ -741,6 +753,7 @@ describe("the status-guarded claim resolves every race to one winner", () => {
       entityId: GUEST,
       subjectMemberId: TARGET,
     });
+    expect(h.settleHostingCoverage).toHaveBeenCalledWith({ bookingId: BOOKING });
   });
 
   it("audits a blocked row as important-and-failed so an operator sees it", async () => {

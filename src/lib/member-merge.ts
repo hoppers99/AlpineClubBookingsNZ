@@ -15,6 +15,11 @@ import {
 import { deleteOwnedMemberPhotoBlobs } from "@/lib/member-photo";
 import { memberDisplayName } from "@/lib/member-serialization";
 import { prisma } from "@/lib/prisma";
+import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
+import {
+  enqueueHostingCoverageReevaluationForMember,
+  enqueueOwnHostingCoverageReevaluation,
+} from "@/lib/adult-member-hosting-review";
 import logger from "@/lib/logger";
 
 /**
@@ -2122,7 +2127,7 @@ export async function executeMemberMerge(params: {
     );
   }
 
-  return client.$transaction(async (tx) => {
+  const result = await client.$transaction(async (tx) => {
     // Dual advisory lock in sorted id order (deadlock-free) on the shared
     // member-lifecycle key space, so a merge serialises with any concurrent
     // delete/archive/merge touching either member.
@@ -2203,6 +2208,10 @@ export async function executeMemberMerge(params: {
 
     // Collect a bounded moved-id sample BEFORE mutating.
     const movedIdSample = await collectMovedIdSample(tx, masterId, loserId);
+    const loserOwnedBookingIds = await tx.booking.findMany({
+      where: { memberId: loserId },
+      select: { id: true },
+    });
 
     // 1) Null master self-relation cycles first — value-conditionally: a
     // pointer that moved since the snapshot refuses here with the family-link
@@ -2470,6 +2479,20 @@ export async function executeMemberMerge(params: {
       });
     }
 
+    // Booking ownership and member-guest attendance were both repointed by the
+    // generic relation move. Record the surviving identity's attendance and each
+    // booking whose account owner moved before deleting the loser.
+    await enqueueHostingCoverageReevaluationForMember(masterId, tx, {
+      cause: "SYSTEM_CHANGE",
+      actorMemberId,
+    });
+    for (const booking of loserOwnedBookingIds) {
+      await enqueueOwnHostingCoverageReevaluation(booking.id, tx, {
+        cause: "SYSTEM_CHANGE",
+        actorMemberId,
+      });
+    }
+
     // 8) Hard-delete the loser (cascade drops its auth/token rows).
     await tx.member.delete({ where: { id: loserId } });
 
@@ -2494,6 +2517,8 @@ export async function executeMemberMerge(params: {
     timeout: 120_000,
     maxWait: 10_000,
   }).catch((error) => refuseMergeOrRethrow(client, refusalContext, error));
+  await settleHostingCoverageAfterCommit({ limit: 50 }, client);
+  return result;
 }
 
 function getRequestContext(request: Request) {
