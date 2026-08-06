@@ -1,6 +1,8 @@
 import type { Prisma } from "@prisma/client";
 import { formatDateOnly } from "@/lib/date-only";
 
+type RosterLockTx = Pick<Prisma.TransactionClient, "$executeRaw">;
+
 /**
  * Serialise every writer that can change the roster for one NZ lodge night.
  *
@@ -10,7 +12,7 @@ import { formatDateOnly } from "@/lib/date-only";
  * unambiguous lock family while every query is independently lodge-scoped.
  */
 export async function lockRosterDate(
-  tx: Prisma.TransactionClient,
+  tx: RosterLockTx,
   date: Date,
 ) {
   const lockKey = `roster:${formatDateOnly(date)}`;
@@ -19,7 +21,7 @@ export async function lockRosterDate(
 
 /** Acquire several roster-date locks in deterministic date order. */
 export async function lockRosterDates(
-  tx: Prisma.TransactionClient,
+  tx: RosterLockTx,
   dates: Iterable<Date>,
 ) {
   const uniqueDates = new Map<string, Date>();

@@ -6,6 +6,8 @@ import { prisma } from "@/lib/prisma";
 import { z } from "zod";
 import logger from "@/lib/logger";
 import { logAudit, getAuditRequestContext } from "@/lib/audit";
+import { lodgeNullTolerantScope } from "@/lib/lodges";
+import { lockRosterDates } from "@/lib/roster-lock";
 
 const dateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 const bodySchema = z.object({
@@ -74,6 +76,19 @@ export async function PUT(
     const departedAt = guest.departedAt ? null : new Date();
 
     await prisma.$transaction(async (tx) => {
+      const futureSuggested = departedAt
+        ? await tx.choreAssignment.findMany({
+            where: {
+              bookingGuestId: parsed.data.bookingGuestId,
+              date: { gt: date },
+              status: "SUGGESTED",
+              booking: lodgeNullTolerantScope(lodgeId),
+              choreTemplate: lodgeNullTolerantScope(lodgeId),
+            },
+            select: { date: true },
+          })
+        : [];
+      await lockRosterDates(tx, futureSuggested.map((assignment) => assignment.date));
       await tx.bookingGuest.update({
         where: { id: parsed.data.bookingGuestId },
         data: { departedAt },
@@ -85,6 +100,8 @@ export async function PUT(
             bookingGuestId: parsed.data.bookingGuestId,
             date: { gt: date },
             status: "SUGGESTED",
+            booking: lodgeNullTolerantScope(lodgeId),
+            choreTemplate: lodgeNullTolerantScope(lodgeId),
           },
         });
       }

@@ -20,9 +20,10 @@ const BASE: RosterData = {
     { id: "a-2", choreTemplateId: "wood", choreTemplateName: "Firewood", choreDescription: null, choreSortOrder: 2, bookingGuestId: "older", guestName: "Aroha Bell", guestAgeTier: "ADULT", bookingId: "booking-a", status: "SUGGESTED" },
   ],
   templates: [
-    { id: "kitchen", name: "Kitchen", description: null, recommendedPeopleMin: 1, recommendedPeopleMax: 2, isEssential: true, ageRestriction: "ANY", conditionalNote: null, minAge: 0, sortOrder: 1, active: true, isDueOnDate: true },
+    { id: "kitchen", name: "Kitchen", description: null, recommendedPeopleMin: 1, recommendedPeopleMax: 3, isEssential: true, ageRestriction: "ANY", conditionalNote: null, minAge: 0, sortOrder: 1, active: true, isDueOnDate: true },
     { id: "wood", name: "Firewood", description: null, recommendedPeopleMin: 1, recommendedPeopleMax: 1, isEssential: false, ageRestriction: "ANY", conditionalNote: null, minAge: 0, sortOrder: 2, active: true, isDueOnDate: true },
-    { id: "weekly", name: "Weekly check", description: null, recommendedPeopleMin: 1, recommendedPeopleMax: 1, isEssential: false, ageRestriction: "ANY", conditionalNote: null, minAge: 0, sortOrder: 3, active: true, isDueOnDate: false },
+    { id: "bathrooms", name: "Bathrooms", description: null, recommendedPeopleMin: 1, recommendedPeopleMax: 1, isEssential: true, ageRestriction: "ANY", conditionalNote: null, minAge: 0, sortOrder: 3, active: true, isDueOnDate: true },
+    { id: "weekly", name: "Weekly check", description: null, recommendedPeopleMin: 1, recommendedPeopleMax: 1, isEssential: false, ageRestriction: "ANY", conditionalNote: null, minAge: 0, sortOrder: 4, active: true, isDueOnDate: false },
   ],
   guestHistory: {},
 }
@@ -171,6 +172,30 @@ describe("RosterEditor staged whole-roster editing", () => {
     expect(first.getAttribute("aria-describedby")).toBeTruthy()
   })
 
+  it("uses exact permission and network save copy while preserving the draft", async () => {
+    const permission = "Roster not saved. Your account no longer has Lodge edit access. Ask a full admin to update it."
+    const network = "Roster not saved because the service could not be reached. Your draft is still here; try Save again."
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: "Forbidden" }), { status: 403 }))
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+    vi.stubGlobal("fetch", fetchMock)
+    renderEditor()
+    fireEvent.click(screen.getByRole("button", { name: "Edit roster" }))
+    const first = screen.getAllByRole("combobox")[0] as HTMLSelectElement
+    fireEvent.change(first, { target: { value: "younger" } })
+
+    fireEvent.click(screen.getByRole("button", { name: "Save roster" }))
+    await waitFor(() => expect(screen.getByText(permission)).toBeTruthy())
+    expect(screen.getByText(permission)).toBe(document.activeElement)
+    expect(first.value).toBe("younger")
+
+    fireEvent.click(screen.getByRole("button", { name: "Save roster" }))
+    await waitFor(() => expect(screen.getByText(network)).toBeTruthy())
+    expect(screen.getByText(network)).toBe(document.activeElement)
+    expect(first.value).toBe("younger")
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
   it("always shows due-chore staffing and booking-grouped zero/one/many guest checks with repeat counts", () => {
     const roster = {
       ...BASE,
@@ -181,13 +206,14 @@ describe("RosterEditor staged whole-roster editing", () => {
       ],
     }
     renderEditor(roster)
-    expect(screen.getByText("Kitchen:").parentElement?.textContent).toBe("Kitchen: 2 assigned — within recommendation 1–2")
+    expect(screen.getByText("Kitchen:").parentElement?.textContent).toBe("Kitchen: 2 assigned — within recommendation 1–3")
     expect(screen.getByText("Firewood:").parentElement?.textContent).toBe("Firewood: 2 assigned — over recommendation 1")
+    expect(screen.getByText("Bathrooms:").parentElement?.textContent).toBe("Bathrooms: 0 assigned — under recommendation 1")
     expect(screen.queryByText("Weekly check:")).toBeNull()
     const familyA = screen.getByRole("region", { name: "Booking for Aroha Bell" })
     expect(within(familyA).getByText(/3 assignments: Kitchen, Firewood ×2/)).toBeTruthy()
     expect(within(familyA).getByText(/1 assignment: Kitchen/)).toBeTruthy()
     const familyB = screen.getByRole("region", { name: "Booking for Taylor Chen" })
-    expect(within(familyB).getAllByText(/No assignments/)).toHaveLength(2)
+    expect(within(familyB).getAllByText("No chore assigned")).toHaveLength(2)
   })
 })

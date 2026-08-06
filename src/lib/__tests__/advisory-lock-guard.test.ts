@@ -116,7 +116,9 @@ const SCOPED_ADVISORY_LOCK_INVENTORY: Record<string, number> = {
   // catch the race). Single-lock holders; composition and counterpart analysis
   // in docs/CONCURRENCY_AND_LOCKING.md.
   "src/lib/admin-family-group-requests-service.ts": 2,
-  "src/lib/admin-roster-service.ts": 1,
+  // #2586: every roster-date writer calls the shared helper; the key is minted
+  // once here and writer participation is pinned by roster-lock-contract.test.
+  "src/lib/roster-lock.ts": 1,
   // #2364: lockAdultMemberHostingPolicySet takes the single global
   // adult-member-hosting-policy-set key before any read by an admin CRUD write
   // or a configuration import, and the migration's BEFORE STATEMENT trigger

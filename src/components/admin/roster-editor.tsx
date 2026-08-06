@@ -112,7 +112,7 @@ function groupedGuests(guests: RosterGuest[]) {
 }
 
 function assignmentSummary(names: string[]) {
-  if (names.length === 0) return "No assignments"
+  if (names.length === 0) return "No chore assigned"
   const counts = new Map<string, number>()
   for (const name of names) counts.set(name, (counts.get(name) ?? 0) + 1)
   const list = [...counts].map(([name, count]) => count > 1 ? `${name} ×${count}` : name)

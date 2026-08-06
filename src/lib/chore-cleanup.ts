@@ -7,6 +7,7 @@
  */
 
 import type { PrismaClient } from "@prisma/client";
+import { lockRosterDates } from "@/lib/roster-lock";
 
 type Tx = Omit<PrismaClient, "$connect" | "$disconnect" | "$on" | "$transaction" | "$use" | "$extends">;
 
@@ -41,6 +42,7 @@ export async function cleanupChoreAssignmentsForDateChange(
     },
     include: { choreTemplate: true },
   });
+  await lockRosterDates(tx, outOfRangeAssignments.map((assignment) => assignment.date));
 
   for (const assignment of outOfRangeAssignments) {
     if (assignment.status === "SUGGESTED") {
@@ -78,6 +80,7 @@ export async function cleanupChoreAssignmentsForGuestStayRanges(
       },
     },
   });
+  await lockRosterDates(tx, assignments.map((assignment) => assignment.date));
 
   for (const assignment of assignments) {
     if (!assignment.bookingGuest) {

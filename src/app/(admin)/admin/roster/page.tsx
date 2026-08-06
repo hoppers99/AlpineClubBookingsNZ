@@ -77,6 +77,7 @@ export default function RosterPage() {
   const [lodgeId, setLodgeId] = useState<string | null>(initialLodgeIdFromLocation)
   const [overlayByDate, setOverlayByDate] = useState<Record<string, { tone: CalendarTone; label: string }>>({})
   const lodgeIdRef = useRef(lodgeId)
+  const rosterRequestRef = useRef(0)
   const pageAlertRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -118,32 +119,45 @@ export default function RosterPage() {
   }, [lodgeId])
 
   const fetchRoster = useCallback(async (date: string, signal?: AbortSignal) => {
+    const requestId = ++rosterRequestRef.current
+    // Invalidate the previous date/lodge partition before this request can
+    // yield. A stale roster must never render beneath a newly-selected key.
+    setRoster(null)
     setLoading(true)
     setError("")
     try {
-      const response = await fetch(
-        rosterUrl(
-          date,
-          includeNonEssential === null ? {} : { includeNonEssential: String(includeNonEssential) },
-        ),
-        { signal },
-      )
-      const body = await response.json()
+      const response = await fetch(rosterUrl(date), { signal })
+      let body: { error?: string } & Partial<RosterData>
+      try {
+        body = await response.json()
+      } catch {
+        throw new Error("Roster could not be loaded because the service returned an unreadable response. Try again.")
+      }
+      if (requestId !== rosterRequestRef.current) return
       if (!response.ok) throw new Error(body.error || "Roster could not be loaded. Try again.")
-      setRoster(body)
+      setRoster(body as RosterData)
       setRosterLoadVersion((version) => version + 1)
       setLastEmailSuppressed(false)
       void loadMonthStatus(date.slice(0, 7))
     } catch (loadError) {
+      if (requestId !== rosterRequestRef.current) return
       if (loadError instanceof DOMException && loadError.name === "AbortError") return
       // A failed date/lodge load clears the prior partition rather than
       // presenting stale row ids under the newly-selected key.
       setRoster(null)
-      setError(loadError instanceof Error ? loadError.message : "Roster could not be loaded. Try again.")
+      setError(
+        loadError instanceof DOMException && loadError.name === "AbortError"
+          ? ""
+          : loadError instanceof TypeError
+            ? "Roster could not be loaded because the service could not be reached. Try again."
+            : loadError instanceof Error
+              ? loadError.message
+              : "Roster could not be loaded because the service could not be reached. Try again.",
+      )
     } finally {
-      setLoading(false)
+      if (requestId === rosterRequestRef.current) setLoading(false)
     }
-  }, [includeNonEssential, loadMonthStatus, rosterUrl])
+  }, [loadMonthStatus, rosterUrl])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -159,11 +173,13 @@ export default function RosterPage() {
 
   function changeDate(nextDate: string) {
     if (!confirmDiscardDraft()) return
+    setRoster(null)
     setSelectedDate(nextDate)
   }
 
   function changeLodge(nextLodgeId: string | null) {
     if (!confirmDiscardDraft()) return
+    setRoster(null)
     setLodgeId(nextLodgeId)
   }
 
@@ -174,13 +190,23 @@ export default function RosterPage() {
     setSavingAction(true)
     setError("")
     try {
-      const response = await fetch(rosterUrl(selectedDate), {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      })
+      let response: Response
+      try {
+        response = await fetch(rosterUrl(selectedDate), {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        })
+      } catch {
+        throw new Error(actionFailure(failureLabel))
+      }
       if (response.status === 403) throw new Error(ADMIN_FORBIDDEN_SAVE_REASON)
-      const data = await response.json()
+      let data: { error?: string; [key: string]: unknown }
+      try {
+        data = await response.json()
+      } catch {
+        throw new Error(`${failureLabel} failed because the service returned an unreadable response. Nothing was changed; try again.`)
+      }
       if (!response.ok) throw new Error(data.error || actionFailure(failureLabel))
       return data
     } catch (actionError) {

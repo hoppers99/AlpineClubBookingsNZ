@@ -27,6 +27,7 @@ import {
   cleanupChoreAssignmentsForDateChange,
   cleanupChoreAssignmentsForGuestStayRanges,
 } from "@/lib/chore-cleanup";
+import { lockRosterDates } from "@/lib/roster-lock";
 import {
   daysUntilDate,
   loadCancellationPolicy,
@@ -2002,6 +2003,17 @@ export async function applyGuestChanges(
     return { createdGuests };
   }
 
+  const removedGuestIds = removedGuests.map((guest) => guest.id);
+  if (removedGuestIds.length > 0) {
+    const removedGuestAssignments = await tx.choreAssignment.findMany({
+      where: { bookingGuestId: { in: removedGuestIds } },
+      select: { date: true },
+    });
+    await lockRosterDates(
+      tx,
+      removedGuestAssignments.map((assignment) => assignment.date),
+    );
+  }
   for (const guest of removedGuests) {
     await tx.choreAssignment.deleteMany({
       where: { bookingGuestId: guest.id },

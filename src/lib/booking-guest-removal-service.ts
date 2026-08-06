@@ -45,6 +45,7 @@ import {
 import type { SupersededPrimaryPaymentIntent } from "@/lib/booking-payment-cleanup";
 import { createBookingModificationCredit } from "@/lib/member-credit";
 import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
+import { lockRosterDates } from "@/lib/roster-lock";
 import { getSeasonYear } from "@/lib/utils";
 import type { SubscriptionLockoutMode } from "@/lib/membership-lockout-settings";
 import {
@@ -839,6 +840,8 @@ async function removeGuestChoreAssignments(
       );
     }
   }
+
+  await lockRosterDates(tx, guestAssignments.map((assignment) => assignment.date));
 
   await tx.choreAssignment.deleteMany({
     where: { bookingGuestId: guestId },
