@@ -44,6 +44,9 @@ const IDS = {
   fanoutBookingB: "race-2597-booking-fanout-b",
   fanoutGuestA: "race-2597-guest-fanout-a",
   fanoutGuestB: "race-2597-guest-fanout-b",
+  deletionHoldBooking: "race-2597-booking-deletion-hold",
+  deletionHoldAdult: "race-2597-guest-deletion-hold-adult",
+  deletionHoldNonMember: "race-2597-guest-deletion-hold-nonmember",
   mergeGuestBeforeLock: "race-2597-guest-merge-before-lock",
   mergeGuestAfterLock: "race-2597-guest-merge-after-lock",
 } as const;
@@ -65,6 +68,7 @@ const BOOKING_IDS = [
   IDS.fanoutBookingA,
   IDS.fanoutBookingB,
 ];
+const ALL_BOOKING_IDS = [...BOOKING_IDS, IDS.deletionHoldBooking];
 const MARKER_ACTION = "RACE_2597_OUTER_TRANSACTION_MARKER";
 
 export function assertSafeHostingQueueRaceDbUrl(url: string): void {
@@ -259,12 +263,17 @@ let mergeB: PrismaClient;
 let observer: PrismaClient;
 
 let acquireHostingCoverageQueueParticipantProof: (typeof import("@/lib/adult-member-hosting-queue-participants"))["acquireHostingCoverageQueueParticipantProof"];
+let lockHostingCoverageMemberLifecycleTarget: (typeof import("@/lib/adult-member-hosting-queue-participants"))["lockHostingCoverageMemberLifecycleTarget"];
 let lockMemberMergeHostingCoverageParticipants: (typeof import("@/lib/adult-member-hosting-queue-participants"))["lockMemberMergeHostingCoverageParticipants"];
 let HostingCoverageParticipantRetryError: (typeof import("@/lib/adult-member-hosting-queue-participants"))["HostingCoverageParticipantRetryError"];
 let HOSTING_COVERAGE_RETRY_CODE: (typeof import("@/lib/adult-member-hosting-queue-participants"))["HOSTING_COVERAGE_RETRY_CODE"];
 let HOSTING_COVERAGE_RETRY_MESSAGE: (typeof import("@/lib/adult-member-hosting-queue-participants"))["HOSTING_COVERAGE_RETRY_MESSAGE"];
 let enqueueOwnHostingCoverageReevaluation: (typeof import("@/lib/adult-member-hosting-review"))["enqueueOwnHostingCoverageReevaluation"];
 let enqueueHostingCoverageReevaluationForMember: (typeof import("@/lib/adult-member-hosting-review"))["enqueueHostingCoverageReevaluationForMember"];
+let reconcileAdultMemberHostingReviewWithSiblings: (typeof import("@/lib/adult-member-hosting-review"))["reconcileAdultMemberHostingReviewWithSiblings"];
+let acquireFuturePartnerSharedAllocationLocks: (typeof import("@/lib/bed-allocation-lifecycle"))["acquireFuturePartnerSharedAllocationLocks"];
+let acquireMemberLifecycleLocks: (typeof import("@/lib/member-lifecycle-lock"))["acquireMemberLifecycleLocks"];
+let acquireLodgeCapacityLock: (typeof import("@/lib/capacity"))["acquireLodgeCapacityLock"];
 let buildMemberMergePreview: (typeof import("@/lib/member-merge"))["buildMemberMergePreview"];
 let executeMemberMerge: (typeof import("@/lib/member-merge"))["executeMemberMerge"];
 let acquireConfigImportLock: (typeof import("@/lib/config-transfer-lock"))["acquireConfigImportLock"];
@@ -279,14 +288,14 @@ let HOSTING_POLICY_RECONCILIATION_SELECT: (typeof import("@/lib/adult-member-hos
   () => {
     async function clearFixtures(): Promise<void> {
       await primary.hostingCoverageIncident.deleteMany({
-        where: { bookingId: { in: BOOKING_IDS } },
+        where: { bookingId: { in: ALL_BOOKING_IDS } },
       });
       await primary.hostingCoverageReevaluation.deleteMany({
         where: {
           OR: [
             { memberId: { in: MEMBER_IDS } },
             { actorMemberId: { in: MEMBER_IDS } },
-            { sourceBookingId: { in: BOOKING_IDS } },
+            { sourceBookingId: { in: ALL_BOOKING_IDS } },
           ],
         },
       });
@@ -300,9 +309,11 @@ let HOSTING_POLICY_RECONCILIATION_SELECT: (typeof import("@/lib/adult-member-hos
         },
       });
       await primary.bookingGuest.deleteMany({
-        where: { bookingId: { in: BOOKING_IDS } },
+        where: { bookingId: { in: ALL_BOOKING_IDS } },
       });
-      await primary.booking.deleteMany({ where: { id: { in: BOOKING_IDS } } });
+      await primary.booking.deleteMany({
+        where: { id: { in: ALL_BOOKING_IDS } },
+      });
       await primary.adultMemberHostingPolicy.deleteMany({
         where: { id: IDS.policy },
       });
@@ -433,6 +444,82 @@ let HOSTING_POLICY_RECONCILIATION_SELECT: (typeof import("@/lib/adult-member-hos
       return { operation, pause };
     }
 
+    async function createBookingRequestHoldEffect(
+      tx: Prisma.TransactionClient,
+    ): Promise<void> {
+      // This is the production hold's database effect: lodge lock, active held
+      // booking with linked guests, then the production hosting reconciler.
+      // Calling the whole public-request service would add bcrypt and quote
+      // setup without changing the contested rows or lock topology.
+      await acquireLodgeCapacityLock(tx, IDS.lodge);
+      await tx.booking.create({
+        data: {
+          id: IDS.deletionHoldBooking,
+          memberId: IDS.ownerA,
+          lodgeId: IDS.lodge,
+          checkIn: new Date("2099-04-01"),
+          checkOut: new Date("2099-04-03"),
+          status: "AWAITING_REVIEW",
+          totalPriceCents: 200,
+          finalPriceCents: 200,
+          hasNonMembers: true,
+          guests: {
+            create: [
+              {
+                id: IDS.deletionHoldAdult,
+                memberId: IDS.target,
+                firstName: "Target",
+                lastName: "Adult",
+                ageTier: "ADULT",
+                isMember: true,
+                stayStart: new Date("2099-04-01"),
+                stayEnd: new Date("2099-04-03"),
+                priceCents: 100,
+              },
+              {
+                id: IDS.deletionHoldNonMember,
+                firstName: "Non-member",
+                lastName: "Guest",
+                ageTier: "ADULT",
+                isMember: false,
+                stayStart: new Date("2099-04-01"),
+                stayEnd: new Date("2099-04-03"),
+                priceCents: 100,
+              },
+            ],
+          },
+        },
+      });
+      await reconcileAdultMemberHostingReviewWithSiblings(
+        IDS.deletionHoldBooking,
+        tx,
+      );
+    }
+
+    async function applyDeletionHostingEffect(
+      tx: Prisma.TransactionClient,
+      afterTargetLock?: () => Promise<void>,
+    ): Promise<number> {
+      await acquireFuturePartnerSharedAllocationLocks(tx, [IDS.target]);
+      await acquireMemberLifecycleLocks(tx, [IDS.target]);
+      await lockHostingCoverageMemberLifecycleTarget(tx, IDS.target);
+      await afterTargetLock?.();
+      const queued = await enqueueHostingCoverageReevaluationForMember(
+        IDS.target,
+        tx,
+        { cause: "SYSTEM_CHANGE", actorMemberId: IDS.actor },
+      );
+      await tx.member.update({
+        where: { id: IDS.target },
+        data: { active: false },
+      });
+      await tx.bookingGuest.updateMany({
+        where: { memberId: IDS.target },
+        data: { memberId: null },
+      });
+      return queued;
+    }
+
     async function applyConfigTransferPolicyReconciliation(
       tx: Prisma.TransactionClient,
     ) {
@@ -496,6 +583,9 @@ let HOSTING_POLICY_RECONCILIATION_SELECT: (typeof import("@/lib/adult-member-hos
         minimumLock,
         hostingLock,
         policyReconciliation,
+        bedAllocationLifecycle,
+        memberLifecycle,
+        capacity,
       ] = await Promise.all([
         import("@/lib/adult-member-hosting-queue-participants"),
         import("@/lib/adult-member-hosting-review"),
@@ -504,9 +594,14 @@ let HOSTING_POLICY_RECONCILIATION_SELECT: (typeof import("@/lib/adult-member-hos
         import("@/lib/minimum-stay-policy-set"),
         import("@/lib/adult-member-hosting-policy-set"),
         import("@/lib/adult-member-hosting-policy-reconciliation"),
+        import("@/lib/bed-allocation-lifecycle"),
+        import("@/lib/member-lifecycle-lock"),
+        import("@/lib/capacity"),
       ]);
       acquireHostingCoverageQueueParticipantProof =
         participants.acquireHostingCoverageQueueParticipantProof;
+      lockHostingCoverageMemberLifecycleTarget =
+        participants.lockHostingCoverageMemberLifecycleTarget;
       lockMemberMergeHostingCoverageParticipants =
         participants.lockMemberMergeHostingCoverageParticipants;
       HostingCoverageParticipantRetryError =
@@ -518,6 +613,8 @@ let HOSTING_POLICY_RECONCILIATION_SELECT: (typeof import("@/lib/adult-member-hos
         review.enqueueOwnHostingCoverageReevaluation;
       enqueueHostingCoverageReevaluationForMember =
         review.enqueueHostingCoverageReevaluationForMember;
+      reconcileAdultMemberHostingReviewWithSiblings =
+        review.reconcileAdultMemberHostingReviewWithSiblings;
       buildMemberMergePreview = merge.buildMemberMergePreview;
       executeMemberMerge = merge.executeMemberMerge;
       acquireConfigImportLock = configLock.acquireConfigImportLock;
@@ -528,6 +625,10 @@ let HOSTING_POLICY_RECONCILIATION_SELECT: (typeof import("@/lib/adult-member-hos
         policyReconciliation.enqueueActiveHostingIncidentPolicyReconciliation;
       HOSTING_POLICY_RECONCILIATION_SELECT =
         policyReconciliation.HOSTING_POLICY_RECONCILIATION_SELECT;
+      acquireFuturePartnerSharedAllocationLocks =
+        bedAllocationLifecycle.acquireFuturePartnerSharedAllocationLocks;
+      acquireMemberLifecycleLocks = memberLifecycle.acquireMemberLifecycleLocks;
+      acquireLodgeCapacityLock = capacity.acquireLodgeCapacityLock;
 
       const [
         { PrismaClient: SeparatePrismaClient },
@@ -570,6 +671,122 @@ let HOSTING_POLICY_RECONCILIATION_SELECT: (typeof import("@/lib/adult-member-hos
         ),
       );
     }, 60_000);
+
+    it("hold wins the target FK row, so deletion waits and queues the committed active booking before unlinking", async () => {
+      const holdReady = deferred();
+      const releaseHold = deferred();
+      const hold = ordinary.$transaction(
+        async (tx) => {
+          await createBookingRequestHoldEffect(tx);
+          holdReady.resolve();
+          await releaseHold.promise;
+        },
+        { timeout: 30_000 },
+      );
+      await holdReady.promise;
+
+      const deletion = mergeA.$transaction(
+        (tx) => applyDeletionHostingEffect(tx),
+        { timeout: 30_000 },
+      );
+      try {
+        await waitForClientToBlock("race-2597-merge-a");
+      } finally {
+        releaseHold.resolve();
+      }
+
+      const [, queued] = await Promise.all([hold, deletion]);
+      expect(queued).toBe(1);
+      await expect(
+        primary.hostingCoverageReevaluation.findFirst({
+          where: {
+            sourceBookingId: IDS.deletionHoldBooking,
+            memberId: IDS.ownerA,
+            actorMemberId: IDS.actor,
+            cause: "SYSTEM_CHANGE",
+          },
+          select: { id: true },
+        }),
+      ).resolves.not.toBeNull();
+      await expect(
+        primary.bookingGuest.findUniqueOrThrow({
+          where: { id: IDS.deletionHoldAdult },
+          select: { memberId: true },
+        }),
+      ).resolves.toEqual({ memberId: null });
+      await expect(
+        primary.member.findUniqueOrThrow({
+          where: { id: IDS.target },
+          select: { active: true },
+        }),
+      ).resolves.toEqual({ active: false });
+    });
+
+    it("deletion wins target FOR UPDATE, so a stale-preflight hold waits, re-evaluates the inactive member, and rolls back", async () => {
+      const preflightRead = deferred();
+      const allowInsert = deferred();
+      const targetLocked = deferred();
+      const releaseDeletion = deferred();
+
+      const hold = ordinary
+        .$transaction(
+          async (tx) => {
+            await acquireLodgeCapacityLock(tx, IDS.lodge);
+            const target = await tx.member.findUniqueOrThrow({
+              where: { id: IDS.target },
+              select: { active: true },
+            });
+            expect(target.active).toBe(true);
+            preflightRead.resolve();
+            await allowInsert.promise;
+            await createBookingRequestHoldEffect(tx);
+          },
+          { timeout: 30_000 },
+        )
+        .then(
+          () => ({ kind: "committed" as const, error: null }),
+          (error: unknown) => ({ kind: "rolled-back" as const, error }),
+        );
+      await preflightRead.promise;
+
+      const deletion = mergeA.$transaction(
+        (tx) =>
+          applyDeletionHostingEffect(tx, async () => {
+            targetLocked.resolve();
+            await releaseDeletion.promise;
+          }),
+        { timeout: 30_000 },
+      );
+      await targetLocked.promise;
+      allowInsert.resolve();
+      try {
+        await waitForClientToBlock("race-2597-ordinary");
+      } finally {
+        releaseDeletion.resolve();
+      }
+
+      await expect(deletion).resolves.toBe(0);
+      const holdOutcome = await hold;
+      expect(holdOutcome.kind).toBe("rolled-back");
+      expect(holdOutcome.error).toBeTruthy();
+      await expect(
+        primary.booking.findUnique({
+          where: { id: IDS.deletionHoldBooking },
+          select: { id: true },
+        }),
+      ).resolves.toBeNull();
+      expect(
+        await primary.hostingCoverageReevaluation.count({
+          where: { sourceBookingId: IDS.deletionHoldBooking },
+        }),
+      ).toBe(0);
+      await expect(
+        primary.member.findUniqueOrThrow({
+          where: { id: IDS.target },
+          select: { active: true },
+        }),
+      ).resolves.toEqual({ active: false });
+    });
 
     it("ordinary wins between merge moves and participant locks, then the real merge late-sweeps owner plus actor and folds both counts into its result and audit", async () => {
       const { operation, pause } = await startPausedMerge("before");
@@ -969,7 +1186,8 @@ let HOSTING_POLICY_RECONCILIATION_SELECT: (typeof import("@/lib/adult-member-hos
           await acquireConfigImportLock(tx);
           await lockMinimumStayPolicySet(tx);
           await lockAdultMemberHostingPolicySet(tx);
-          const policyEffect = await applyConfigTransferPolicyReconciliation(tx);
+          const policyEffect =
+            await applyConfigTransferPolicyReconciliation(tx);
           const preview = await buildMemberMergePreview({
             masterId: IDS.master,
             loserId: IDS.loser,

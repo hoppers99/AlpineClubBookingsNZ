@@ -2895,6 +2895,12 @@ compliant indefinitely.
   rejects the complete outer mutation with the fixed safe 409; a later call in one
   bulk transaction also fails fast and rolls back the earlier work rather than
   waiting while it holds a different participant set (#2597).
+  Account-deletion approval first composes global → affected lodge → member
+  lifecycle, then locks the member being anonymised `FOR UPDATE` before this
+  fan-out. That exact strength fences the lodge-only booking-request hold's
+  `BookingGuest.memberId` FK (`KEY SHARE`): hold-first is visible to deletion;
+  deletion-first makes the hold re-evaluate the now-inactive member and refuse or
+  record the hazard. `FOR NO KEY UPDATE` would not conflict and is forbidden.
 - **Every confirming path re-reads the facts at confirmation, and the census proves
   it two ways** (§9). Most reconcile inside their own transaction, which REFUSES an
   uncovered booking at an enforcing club. Those that cannot — capacity claimed, money
@@ -2918,12 +2924,11 @@ compliant indefinitely.
   advisory lock (`hosting-coverage-owner`).
   An earlier design argued no new lock was needed because coverage is same-lodge by
   definition, so the per-lodge capacity lock already serialised both sides. That was
-  false in both directions: `booking-cancel.ts`'s claim transactions take
-  `pg_advisory_xact_lock(1)` and never the lodge lock, while `booking-create.ts` and
-  the guest-add route take the lodge lock and never `lock(1)`. Different keys, READ
-  COMMITTED, no row in common — so a cancel removing the last qualifying adult could
-  interleave with a create that had just read that adult as cover, and the outcome
-  depended on commit order. The invariant is per-owner, so the key is the owner (the
+  false in both directions at the time: cancellation and booking writers did not all
+  share one key. The direct guest-add route now composes global → lodge, but the
+  booking-request capacity hold remains a lodge-only active linked-guest writer; the
+  target `Member FOR UPDATE` barrier above closes its account-deletion edge. The
+  invariant itself is per-owner, so the key is the owner (the
   same reasoning behind `lockBookingMemberNights`); it is taken by the evaluator, the
   settle step, the enqueue-only seam and the member fan-out, always LAST after the
   existing global → sorted lodge → roster-date → applicable member tiers and the

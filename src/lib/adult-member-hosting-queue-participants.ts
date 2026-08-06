@@ -4,6 +4,7 @@ import { ApiError } from "@/lib/api-error";
 import type { HostingCoverageReevaluationInput } from "@/lib/adult-member-hosting-coverage-queue";
 
 type ParticipantDb = Pick<PrismaClient, "booking" | "member" | "$executeRaw">;
+type LifecycleTargetDb = Pick<PrismaClient, "$executeRaw">;
 
 export const HOSTING_COVERAGE_RETRY_CODE =
   "HOSTING_COVERAGE_PARTICIPANT_RETRY";
@@ -35,6 +36,31 @@ export class HostingCoverageParticipantRetryError extends ApiError {
   constructor() {
     super(HOSTING_COVERAGE_RETRY_MESSAGE, 409);
     this.name = "HostingCoverageParticipantRetryError";
+  }
+}
+
+/**
+ * Fence one host-qualification lifecycle target against a late
+ * BookingGuest.member FK write.
+ *
+ * Callers must already hold their canonical advisory prefix. `FOR UPDATE` is
+ * intentional: PostgreSQL's FK check takes KEY SHARE on the referenced Member,
+ * so the weaker NO KEY UPDATE mode would allow the late guest through. Checking
+ * the selected row count also makes a missing target a safe retry instead of
+ * pretending that an empty row lock protected anything.
+ */
+export async function lockHostingCoverageMemberLifecycleTarget(
+  db: LifecycleTargetDb,
+  memberId: string,
+): Promise<void> {
+  const locked = await db.$executeRaw(Prisma.sql`
+    SELECT 1
+    FROM "Member"
+    WHERE "id" = ${memberId}
+    FOR UPDATE
+  `);
+  if (locked !== 1) {
+    throw new HostingCoverageParticipantRetryError();
   }
 }
 

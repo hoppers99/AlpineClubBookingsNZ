@@ -11,6 +11,7 @@ import {
   HostingCoverageParticipantRetryError,
   isPostgresLockNotAvailable,
   isHostingCoverageParticipantRetry,
+  lockHostingCoverageMemberLifecycleTarget,
   lockMemberMergeHostingCoverageParticipants,
   type HostingCoverageQueueParticipantProof,
 } from "@/lib/adult-member-hosting-queue-participants";
@@ -57,6 +58,30 @@ function makeDb(
 }
 
 describe("hosting coverage queue participant fence (#2597)", () => {
+  it("locks a lifecycle target with exact FOR UPDATE and rejects a missing row", async () => {
+    const db = {
+      $executeRaw: vi.fn().mockResolvedValue(1),
+    };
+
+    await expect(
+      lockHostingCoverageMemberLifecycleTarget(db as never, "target-1"),
+    ).resolves.toBeUndefined();
+    const query = db.$executeRaw.mock.calls[0][0] as {
+      strings?: readonly string[];
+      values?: readonly unknown[];
+    };
+    expect(query.strings?.join("?")).toMatch(
+      /FROM "Member"\s+WHERE "id" = \?\s+FOR UPDATE\s*$/,
+    );
+    expect(query.strings?.join("?")).not.toContain("FOR NO KEY UPDATE");
+    expect(query.values).toEqual(["target-1"]);
+
+    db.$executeRaw.mockResolvedValueOnce(0);
+    await expect(
+      lockHostingCoverageMemberLifecycleTarget(db as never, "target-1"),
+    ).rejects.toBeInstanceOf(HostingCoverageParticipantRetryError);
+  });
+
   it("locks the sorted de-duplicated owner and actor in one NOWAIT statement", async () => {
     const db = makeDb();
     const proof = await acquireHostingCoverageQueueParticipantProof(

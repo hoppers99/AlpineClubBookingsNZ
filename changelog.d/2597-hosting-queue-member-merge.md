@@ -16,3 +16,8 @@
   is reported truthfully: a captured card payment remains pending finalisation,
   while a Xero contact whose local member and link were already created is kept
   selected and directed to subscription-history repair rather than imported twice.
+
+  Account deletion also fences the member row before it freezes hosting fan-out.
+  An officer capacity hold that is adding the same member now either commits first
+  and is included in deletion's recheck, or waits and re-evaluates the inactive
+  member instead of leaving an active held booking recorded as covered.
