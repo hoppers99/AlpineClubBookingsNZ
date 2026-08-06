@@ -24,6 +24,7 @@ import {
   SameOwnerCoverageWouldBreakError,
   sameBookingOwnerCoverageSourceWhere,
   sameOwnerCoverageDependentWhere,
+  strandedCoverageStateKey,
   strandedCoverageReference,
   type StrandedCoverageBooking,
 } from "@/lib/adult-member-hosting-same-owner";
@@ -750,6 +751,8 @@ export interface HostingCoverageChangeContext {
   actorMemberId?: string | null;
   /** Mandatory for `OFFICER_OVERRIDE`; refused without one. */
   reason?: string | null;
+  /** Exact stranded state the officer was shown before confirming the override. */
+  strandedStateKey?: string | null;
 }
 
 /**
@@ -808,7 +811,11 @@ export function hostingCoverageActorOptions(actor: {
    * reason with no acknowledgement, is not an override and the officer is asked
    * again.
    */
-  override?: { acknowledged?: boolean; reason?: string | null } | null;
+  override?: {
+    acknowledged?: boolean;
+    reason?: string | null;
+    strandedStateKey?: string | null;
+  } | null;
 }): Pick<
   HostingReconcileOptions,
   "dependentCoverage" | "coverageChange" | "coverageActorMemberId"
@@ -834,7 +841,8 @@ export function hostingCoverageActorOptions(actor: {
   }
 
   const reason = actor.override?.reason?.trim();
-  if (!actor.override?.acknowledged || !reason) {
+  const strandedStateKey = actor.override?.strandedStateKey?.trim();
+  if (!actor.override?.acknowledged || !reason || !strandedStateKey) {
     return {
       dependentCoverage: "REQUIRE_OVERRIDE",
       coverageActorMemberId: actorMemberId,
@@ -856,6 +864,7 @@ export function hostingCoverageActorOptions(actor: {
       cause: "OFFICER_OVERRIDE",
       actorMemberId,
       reason,
+      strandedStateKey,
     },
   };
 }
@@ -1532,11 +1541,8 @@ async function settleSameOwnerDependentCoverage(
     return;
   }
 
-  const context = options.coverageChange ?? { cause: "SYSTEM_CHANGE" as const };
-  if (
-    context.cause === "OFFICER_OVERRIDE" &&
-    !context.reason?.trim()
-  ) {
+  let context = options.coverageChange ?? { cause: "SYSTEM_CHANGE" as const };
+  if (context.cause === "OFFICER_OVERRIDE" && !context.reason?.trim()) {
     // §7 makes the reason mandatory, and this is the point at which the override
     // becomes irreversible. Failing here rather than recording an unexplained
     // override is the same rule D-R4 already applies to a hosting decision.
@@ -1545,18 +1551,42 @@ async function settleSameOwnerDependentCoverage(
     );
   }
 
+  const disposition = resolveDependentDisposition(booking, options);
+  const { stranded, dependentsWithOpenIncidents } =
+    await inspectSameOwnerDependents(booking, db);
+
+  // The confirmation is authority over the exact bookings and lodge-nights the
+  // officer saw, not over whatever happens to be stranded by the time the retry
+  // acquires the owner lock. A changed set is therefore another FIRST submission:
+  // throw the fresh structured prompt inside the mutation transaction so its
+  // booking write, incident resolution, audit and queue work all roll back.
+  if (
+    context.cause === "OFFICER_OVERRIDE" &&
+    stranded.length > 0 &&
+    context.strandedStateKey !== strandedCoverageStateKey(stranded, booking.id)
+  ) {
+    throw new SameOwnerCoverageOverrideRequiredError(stranded, booking.id);
+  }
+  if (context.cause === "OFFICER_OVERRIDE" && stranded.length === 0) {
+    // Coverage improved while the confirmation was open. There is no longer an
+    // override to take, so do not manufacture one in the audit/queue record and
+    // do not return an empty prompt the client cannot meaningfully confirm.
+    context = {
+      cause: "SYSTEM_CHANGE",
+      actorMemberId: context.actorMemberId ?? null,
+      reason: null,
+    };
+  }
+
   // §7's automatic resolutions that act on the AFFECTED booking itself — amended,
-  // exception-approved, cancelled. Done before the dependent inspection because it
-  // is about THIS booking, and the inspection deliberately cannot see it.
+  // exception-approved, cancelled. Only after the state-bound override check: a
+  // stale retry must perform no incident transition even in a transaction double
+  // that cannot model PostgreSQL rollback.
   const ownIncidentResolved = await resolveOwnCoverageIncidentAfterChange(
     booking,
     db,
     context.actorMemberId ?? null,
   );
-
-  const disposition = resolveDependentDisposition(booking, options);
-  const { stranded, dependentsWithOpenIncidents } =
-    await inspectSameOwnerDependents(booking, db);
 
   // REFUSE FIRST, and which refusal it is depends on who is asking (§6, §7).
   if (stranded.length > 0) {
@@ -1568,7 +1598,7 @@ async function settleSameOwnerDependentCoverage(
     // The officer's change is authorised but not yet confirmed: they are shown
     // what would be stranded and asked to acknowledge it with a reason (§7).
     if (disposition === "REQUIRE_OVERRIDE") {
-      throw new SameOwnerCoverageOverrideRequiredError(stranded);
+      throw new SameOwnerCoverageOverrideRequiredError(stranded, booking.id);
     }
   }
 

@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { Prisma } from "@prisma/client";
 import { z } from "zod";
 
@@ -149,10 +151,13 @@ export function sameOwnerCoverageDependentWhere(booking: {
  * strand a booking, so demanding the field up front would put a reason prompt in
  * front of every officer edit at an enforcing lodge.
  */
-export const hostingCoverageOverrideSchema = z.object({
-  acknowledged: z.literal(true),
-  reason: z.string().trim().min(10).max(500),
-});
+export const hostingCoverageOverrideSchema = z
+  .object({
+    acknowledged: z.literal(true),
+    reason: z.string().trim().min(10).max(500),
+    strandedStateKey: z.string().regex(/^v1:[0-9a-f]{64}$/),
+  })
+  .strict();
 
 export type HostingCoverageOverrideInput = z.infer<
   typeof hostingCoverageOverrideSchema
@@ -186,6 +191,41 @@ export interface StrandedCoverageBooking {
   lodgeName: string;
   /** Sorted, unique NZ lodge-nights (YYYY-MM-DD) left uncovered. */
   nights: string[];
+}
+
+/**
+ * Bind an officer's second submission to the exact evidence they confirmed.
+ *
+ * The dependent query is already ordered, but the key is deliberately insensitive
+ * to query and night ordering so it represents a SET rather than an implementation
+ * detail. The changed source booking id plus each dependent booking id and its exact
+ * lodge-nights are the policy identity; references and lodge names are presentation
+ * derived from those persisted ids and deliberately do not make a harmless label
+ * edit look like a different breach. If the material set moves before the retry
+ * reaches the authoritative under-lock read, the key changes and the mutation is
+ * refused with a fresh prompt. The digest keeps the wire value fixed-width while
+ * the `v1` prefix makes a future material-identity change fail closed.
+ */
+export function strandedCoverageStateKey(
+  stranded: readonly StrandedCoverageBooking[],
+  sourceBookingId: string | null = null,
+): string {
+  const canonical = stranded
+    .map((row) => ({
+      bookingId: row.bookingId,
+      nights: [...new Set(row.nights)].sort(),
+    }))
+    .sort((left, right) => {
+      if (left.bookingId < right.bookingId) return -1;
+      if (left.bookingId > right.bookingId) return 1;
+      const leftNights = JSON.stringify(left.nights);
+      const rightNights = JSON.stringify(right.nights);
+      return leftNights < rightNights ? -1 : leftNights > rightNights ? 1 : 0;
+    });
+  const digest = createHash("sha256")
+    .update(JSON.stringify({ sourceBookingId, stranded: canonical }))
+    .digest("hex");
+  return `v1:${digest}`;
 }
 
 /**
@@ -340,11 +380,16 @@ export function formatCoverageOverrideRequiredMessage(
 export class SameOwnerCoverageOverrideRequiredError extends ApiError {
   readonly code = "SAME_OWNER_COVERAGE_OVERRIDE_REQUIRED";
   readonly stranded: readonly StrandedCoverageBooking[];
+  readonly strandedStateKey: string;
 
-  constructor(stranded: readonly StrandedCoverageBooking[]) {
+  constructor(
+    stranded: readonly StrandedCoverageBooking[],
+    sourceBookingId: string | null = null,
+  ) {
     super(formatCoverageOverrideRequiredMessage(stranded), 409);
     this.name = "SameOwnerCoverageOverrideRequiredError";
     this.stranded = stranded;
+    this.strandedStateKey = strandedCoverageStateKey(stranded, sourceBookingId);
   }
 }
 
@@ -366,6 +411,7 @@ export function buildSameOwnerCoverageOverrideRequiredBody(
     code: error.code,
     details: error.message,
     requiresOverrideReason: true as const,
+    strandedStateKey: error.strandedStateKey,
     strandedBookings: error.stranded.map((row) => ({
       bookingId: row.bookingId,
       reference: row.reference,

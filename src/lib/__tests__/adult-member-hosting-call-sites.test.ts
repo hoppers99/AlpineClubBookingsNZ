@@ -407,6 +407,45 @@ describe("the same-owner refusal and the escalation seam (#2576 §6, §8, §9)",
     }
   });
 
+  it("returns the state-bound override prompt from every officer-capable catcher", () => {
+    const catchers = sourceFilesNaming(
+      "instanceof SameOwnerCoverageOverrideRequiredError",
+    );
+    expect(catchers).toEqual([
+      "src/app/api/admin/booking-exception-requests/[id]/route.ts",
+      "src/app/api/bookings/[id]/cancel/route.ts",
+      "src/app/api/bookings/[id]/confirm-draft/route.ts",
+      "src/app/api/bookings/[id]/guests/[guestId]/route.ts",
+      "src/app/api/bookings/[id]/guests/route.ts",
+      "src/app/api/bookings/[id]/modify-dates/route.ts",
+      "src/app/api/bookings/[id]/modify/route.ts",
+    ]);
+    for (const file of catchers) {
+      expect(readRepoCode(file), file).toContain(
+        "buildSameOwnerCoverageOverrideRequiredBody(",
+      );
+    }
+  });
+
+  it("threads the state-bound retry through both admin shift dispatchers", () => {
+    for (const file of [
+      "src/app/api/bookings/[id]/modify/route.ts",
+      "src/app/api/bookings/[id]/modify-dates/route.ts",
+    ]) {
+      const source = readRepoCode(file);
+      const shift = source.slice(source.indexOf("await adminShiftBookingDates({"));
+      expect(shift, file).toMatch(
+        /adminShiftBookingDates\(\{[\s\S]*?hostingCoverageOverride:\s*parsed\.data\.hostingCoverageOverride/,
+      );
+    }
+    const service = readRepoCode("src/lib/booking-date-modification-service.ts");
+    const shiftService = service.slice(
+      service.indexOf("export async function adminShiftBookingDates("),
+    );
+    expect(shiftService).toContain("actorMemberId: actor.id");
+    expect(shiftService).toContain("override: hostingCoverageOverride");
+  });
+
   it("uses the enqueue-only seam on exactly the confirming paths that must not refuse", () => {
     // §9 requires every confirming path to re-read the hosting facts. Most do it by
     // reconciling inside their own transaction, which REFUSES an uncovered booking at

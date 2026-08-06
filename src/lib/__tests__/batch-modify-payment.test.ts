@@ -698,6 +698,7 @@ describe("PUT /api/bookings/[id]/modify", () => {
       hostingCoverageOverride: {
         acknowledged: true,
         reason: "Confirmed alternate supervision plan.",
+        strandedStateKey: `v1:${"a".repeat(64)}`,
       },
       ipAddress: "127.0.0.1",
       tx: tx as never,
@@ -736,6 +737,7 @@ describe("PUT /api/bookings/[id]/modify", () => {
           cause: "OFFICER_OVERRIDE",
           actorMemberId: "officer-1",
           reason: "Confirmed alternate supervision plan.",
+          strandedStateKey: `v1:${"a".repeat(64)}`,
         },
       }),
     );

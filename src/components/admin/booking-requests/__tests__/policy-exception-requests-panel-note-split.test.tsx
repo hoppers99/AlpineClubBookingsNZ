@@ -344,6 +344,7 @@ describe("the officer decision form labels who reads what, before submission", (
               status: "REQUESTED",
               keptPending: true,
               requiresOverrideReason: true,
+              strandedStateKey: `v1:${"a".repeat(64)}`,
               strandedBookings: [
                 {
                   bookingId: "bk-dependent-secret",
@@ -405,6 +406,91 @@ describe("the officer decision form labels who reads what, before submission", (
         hostingCoverageOverride: {
           acknowledged: true,
           reason: "Confirmed alternate supervision plan.",
+          strandedStateKey: `v1:${"a".repeat(64)}`,
+        },
+      });
+    });
+  });
+
+  it("replaces a changed coverage prompt and token without losing either note", async () => {
+    let attempt = 0;
+    decisionResponse = () => {
+      attempt += 1;
+      if (attempt === 3) return jsonResponse({ id: "req-1", status: "APPROVED" });
+      const changed = attempt === 2;
+      return jsonResponse(
+        {
+          error: changed
+            ? "The affected hosting coverage changed. Review it again."
+            : "This change would leave another booking uncovered.",
+          code: "SAME_OWNER_COVERAGE_OVERRIDE_REQUIRED",
+          status: "REQUESTED",
+          keptPending: true,
+          requiresOverrideReason: true,
+          strandedStateKey: `v1:${(changed ? "b" : "a").repeat(64)}`,
+          strandedBookings: [
+            {
+              bookingId: changed ? "bk-new" : "bk-original",
+              reference: changed ? "ACB-NEW" : "ACB-OLD",
+              lodgeName: "Example Lodge",
+              nights: [changed ? "2026-07-03" : "2026-07-01"],
+            },
+          ],
+        },
+        409,
+      );
+    };
+
+    await openDecisionForm();
+    const memberNote = screen.getByLabelText(/Explanation for the member/i);
+    const privateNote = screen.getByLabelText(/Internal note/i);
+    fireEvent.change(memberNote, { target: { value: "Member-visible reason." } });
+    fireEvent.change(privateNote, { target: { value: "Officer-only context." } });
+    fireEvent.click(screen.getByLabelText(/I have read the proposal above/i));
+    fireEvent.click(screen.getByRole("button", { name: /Approve and apply/i }));
+    expect(await screen.findByText("ACB-OLD")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText(/Private hosting override reason/i), {
+      target: { value: "First exact-set confirmation reason." },
+    });
+    fireEvent.click(
+      screen.getByLabelText(/I confirm these exact affected bookings and nights/i),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Approve and apply/i }));
+
+    expect(await screen.findByText("ACB-NEW")).toBeInTheDocument();
+    expect(screen.queryByText("ACB-OLD")).toBeNull();
+    expect(memberNote).toHaveValue("Member-visible reason.");
+    expect(privateNote).toHaveValue("Officer-only context.");
+    expect(screen.getByLabelText(/Private hosting override reason/i)).toHaveValue("");
+    expect(
+      screen.getByLabelText(/I confirm these exact affected bookings and nights/i),
+    ).not.toBeChecked();
+
+    fireEvent.change(screen.getByLabelText(/Private hosting override reason/i), {
+      target: { value: "Second exact-set confirmation reason." },
+    });
+    fireEvent.click(
+      screen.getByLabelText(/I confirm these exact affected bookings and nights/i),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Approve and apply/i }));
+
+    await waitFor(() => {
+      const patches = fetchMock.mock.calls.filter(
+        ([, init]) => (init as RequestInit | undefined)?.method === "PATCH",
+      );
+      expect(patches).toHaveLength(3);
+      const second = JSON.parse(String((patches[1][1] as RequestInit).body));
+      const third = JSON.parse(String((patches[2][1] as RequestInit).body));
+      expect(second.hostingCoverageOverride.strandedStateKey).toBe(
+        `v1:${"a".repeat(64)}`,
+      );
+      expect(third).toMatchObject({
+        adminNotes: "Member-visible reason.",
+        internalNotes: "Officer-only context.",
+        hostingCoverageOverride: {
+          reason: "Second exact-set confirmation reason.",
+          strandedStateKey: `v1:${"b".repeat(64)}`,
         },
       });
     });
@@ -419,6 +505,7 @@ describe("the officer decision form labels who reads what, before submission", (
           status: "REQUESTED",
           keptPending: true,
           requiresOverrideReason: true,
+          strandedStateKey: `v1:${"c".repeat(64)}`,
           strandedBookings: [
             {
               bookingId: "bk-dependent",

@@ -84,6 +84,11 @@ describe("PUT /api/bookings/[id]/modify-dates admin override gating (issue #1668
         checkIn: "2026-09-12",
         confirmOverCapacity: true,
         notifyMember: false,
+        hostingCoverageOverride: {
+          acknowledged: true,
+          reason: "Confirmed alternate supervision plan.",
+          strandedStateKey: `v1:${"a".repeat(64)}`,
+        },
       }),
       { params },
     );
@@ -93,6 +98,11 @@ describe("PUT /api/bookings/[id]/modify-dates admin override gating (issue #1668
     expect(h.modifyBookingDates).not.toHaveBeenCalled();
     const arg = h.adminShiftBookingDates.mock.calls[0][0];
     expect(arg.actor).toEqual({ id: "u1", role: "ADMIN" });
+    expect(arg.hostingCoverageOverride).toEqual({
+      acknowledged: true,
+      reason: "Confirmed alternate supervision plan.",
+      strandedStateKey: `v1:${"a".repeat(64)}`,
+    });
     // The admin's email choice is threaded to the service (owner decision).
     expect(arg.input).toMatchObject({
       checkIn: "2026-09-12",

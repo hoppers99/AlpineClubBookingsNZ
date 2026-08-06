@@ -471,6 +471,7 @@ test("another booking on the same account supplies the cover, and cannot then be
   const needsOverrideBody = (await needsOverride.json()) as {
     code?: string;
     requiresOverrideReason?: boolean;
+    strandedStateKey?: string;
     strandedBookings?: Array<{ bookingId: string; nights: string[] }>;
   };
   expect(needsOverrideBody).toMatchObject({
@@ -481,6 +482,7 @@ test("another booking on the same account supplies the cover, and cannot then be
     bookingId: dependentBooking.id,
     nights: expect.arrayContaining([WINDOW.checkIn]),
   });
+  expect(needsOverrideBody.strandedStateKey).toMatch(/^v1:[0-9a-f]{64}$/);
 
   const overridden = await admin.post(
     `/api/bookings/${sourceBooking.id}/cancel`,
@@ -491,6 +493,7 @@ test("another booking on the same account supplies the cover, and cannot then be
         hostingCoverageOverride: {
           acknowledged: true,
           reason: "E2E officer confirms the dependent hosting incident",
+          strandedStateKey: needsOverrideBody.strandedStateKey,
         },
       },
     },

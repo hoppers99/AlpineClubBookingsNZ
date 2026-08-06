@@ -39,8 +39,11 @@ import {
   SameOwnerCoverageWouldBreakError,
   buildSameOwnerCoverageOverrideRequiredBody,
   formatStrandedCoverageMessage,
+  hostingCoverageOverrideSchema,
+  readHostingCoverageOverride,
   sameBookingOwnerCoverageSourceWhere,
   sameOwnerCoverageDependentWhere,
+  strandedCoverageStateKey,
 } from "@/lib/adult-member-hosting-same-owner";
 
 const LODGE = "lodge-a";
@@ -917,6 +920,19 @@ describe("a change that would strand another booking (#2576 §6, §7, §14)", ()
 
   it("allows an officer's change and records the bounded work instead (§7, §8)", async () => {
     const rows = strandingPair([REMAINING_MEMBER_CHILD]);
+    const first = makeStore(rows);
+    const prompt = await reconcileAdultMemberHostingReviewWithSiblings(
+      "b-source",
+      first.db,
+      hostingCoverageActorOptions({ actorRole: "ADMIN", actorMemberId: "officer-1" }),
+    ).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(prompt).toBeInstanceOf(SameOwnerCoverageOverrideRequiredError);
+    if (!(prompt instanceof SameOwnerCoverageOverrideRequiredError)) {
+      throw new Error("expected the first attempt to return an override prompt");
+    }
     const { db, queued } = makeStore(rows);
     await reconcileAdultMemberHostingReviewWithSiblings(
       "b-source",
@@ -927,6 +943,7 @@ describe("a change that would strand another booking (#2576 §6, §7, §14)", ()
         override: {
           acknowledged: true,
           reason: "Member rang; taking the adult off at their request",
+          strandedStateKey: prompt.strandedStateKey,
         },
       }),
     );
@@ -985,6 +1002,11 @@ describe("a change that would strand another booking (#2576 §6, §7, §14)", ()
       { reason: "Member rang about it" },
       { acknowledged: false, reason: "Member rang about it" },
       { acknowledged: true, reason: "   " },
+      {
+        acknowledged: true,
+        reason: "Member rang about it",
+        strandedStateKey: "",
+      },
     ]) {
       expect(
         hostingCoverageActorOptions({
@@ -1000,7 +1022,11 @@ describe("a change that would strand another booking (#2576 §6, §7, §14)", ()
       hostingCoverageActorOptions({
         actorRole: "ADMIN",
         actorMemberId: "officer-1",
-        override: { acknowledged: true, reason: "Member rang about it" },
+        override: {
+          acknowledged: true,
+          reason: "Member rang about it",
+          strandedStateKey: `v1:${"a".repeat(64)}`,
+        },
       }),
     ).toEqual({
       dependentCoverage: "ESCALATE",
@@ -1009,6 +1035,7 @@ describe("a change that would strand another booking (#2576 §6, §7, §14)", ()
         cause: "OFFICER_OVERRIDE",
         actorMemberId: "officer-1",
         reason: "Member rang about it",
+        strandedStateKey: `v1:${"a".repeat(64)}`,
       },
     });
     expect(
@@ -1060,7 +1087,143 @@ describe("a change that would strand another booking (#2576 §6, §7, §14)", ()
     const body = buildSameOwnerCoverageOverrideRequiredBody(error);
     expect(body.code).toBe("SAME_OWNER_COVERAGE_OVERRIDE_REQUIRED");
     expect(body.requiresOverrideReason).toBe(true);
+    expect(body.strandedStateKey).toBe(error.strandedStateKey);
+    expect(body.strandedStateKey).toMatch(/^v1:[0-9a-f]{64}$/);
     expect(body.strandedBookings[0]?.nights).toEqual(["2026-07-03", "2026-07-04"]);
+  });
+
+  it("re-prompts instead of overriding when the exact stranded set changed", async () => {
+    const original = makeStore(strandingPair([REMAINING_MEMBER_CHILD]));
+    const first = await reconcileAdultMemberHostingReviewWithSiblings(
+      "b-source",
+      original.db,
+      hostingCoverageActorOptions({ actorRole: "ADMIN", actorMemberId: "officer-1" }),
+    ).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    if (!(first instanceof SameOwnerCoverageOverrideRequiredError)) {
+      throw new Error("expected the first attempt to return an override prompt");
+    }
+
+    const changedRows = [
+      booking({ id: "b-source", guests: [REMAINING_MEMBER_CHILD] }),
+      booking({ id: "b-main", guests: [guestRow("kid", ["2026-07-03"])] }),
+    ];
+    const changed = makeStore(changedRows);
+    const fresh = await reconcileAdultMemberHostingReviewWithSiblings(
+      "b-source",
+      changed.db,
+      hostingCoverageActorOptions({
+        actorRole: "ADMIN",
+        actorMemberId: "officer-1",
+        override: {
+          acknowledged: true,
+          reason: "Member rang; taking the adult off at their request",
+          strandedStateKey: first.strandedStateKey,
+        },
+      }),
+    ).then(
+      () => null,
+      (error: unknown) => error,
+    );
+
+    expect(fresh).toBeInstanceOf(SameOwnerCoverageOverrideRequiredError);
+    if (!(fresh instanceof SameOwnerCoverageOverrideRequiredError)) {
+      throw new Error("expected changed evidence to return a fresh prompt");
+    }
+    expect(fresh.stranded).toMatchObject([{ nights: ["2026-07-03"] }]);
+    expect(fresh.strandedStateKey).not.toBe(first.strandedStateKey);
+    expect(changed.queued).toEqual([]);
+    expect(changed.db.hostingCoverageIncident.findFirst).not.toHaveBeenCalled();
+    expect(changed.db.hostingCoverageIncident.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("does not manufacture an override or empty prompt when coverage improved to zero", async () => {
+    const original = makeStore(strandingPair([REMAINING_MEMBER_CHILD]));
+    const first = await reconcileAdultMemberHostingReviewWithSiblings(
+      "b-source",
+      original.db,
+      hostingCoverageActorOptions({ actorRole: "ADMIN", actorMemberId: "officer-1" }),
+    ).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    if (!(first instanceof SameOwnerCoverageOverrideRequiredError)) {
+      throw new Error("expected the first attempt to return an override prompt");
+    }
+
+    const improved = makeStore([
+      booking({ id: "b-source", guests: [REMAINING_MEMBER_CHILD] }),
+      booking({
+        id: "b-main",
+        guests: [
+          guestRow("kid", KID_NIGHTS_FOR_STRANDING),
+          guestRow(
+            "new-adult",
+            KID_NIGHTS_FOR_STRANDING,
+            memberRow({ id: "new-adult" }),
+          ),
+        ],
+      }),
+    ]);
+    await expect(
+      reconcileAdultMemberHostingReviewWithSiblings(
+        "b-source",
+        improved.db,
+        hostingCoverageActorOptions({
+          actorRole: "ADMIN",
+          actorMemberId: "officer-1",
+          override: {
+            acknowledged: true,
+            reason: "Member rang; taking the adult off at their request",
+            strandedStateKey: first.strandedStateKey,
+          },
+        }),
+      ),
+    ).resolves.toBeTruthy();
+    expect(improved.queued).toEqual([]);
+  });
+
+  it("keys the stranded set deterministically and rejects loose override bodies", () => {
+    const one = {
+      bookingId: "b-main",
+      reference: "BK-MAIN",
+      lodgeName: "Example Lodge",
+      nights: ["2026-07-04", "2026-07-03", "2026-07-03"],
+    };
+    const two = {
+      bookingId: "b-second",
+      reference: "BK-SECOND",
+      lodgeName: "Example Lodge",
+      nights: ["2026-07-05"],
+    };
+    expect(strandedCoverageStateKey([one, two])).toBe(
+      strandedCoverageStateKey([
+        two,
+        { ...one, nights: ["2026-07-03", "2026-07-04"] },
+      ]),
+    );
+    expect(strandedCoverageStateKey([one])).not.toBe(
+      strandedCoverageStateKey([{ ...one, nights: ["2026-07-03"] }]),
+    );
+
+    const complete = {
+      acknowledged: true,
+      reason: "Confirmed alternate supervision plan.",
+      strandedStateKey: `v1:${"b".repeat(64)}`,
+    } as const;
+    expect(hostingCoverageOverrideSchema.safeParse(complete).success).toBe(true);
+    for (const malformed of [
+      { acknowledged: true, reason: complete.reason },
+      { ...complete, strandedStateKey: "not-a-state-key" },
+      { ...complete, unexpectedAuthority: true },
+    ]) {
+      expect(hostingCoverageOverrideSchema.safeParse(malformed).success).toBe(false);
+      expect(
+        readHostingCoverageOverride({ hostingCoverageOverride: malformed }),
+      ).toBeNull();
+    }
   });
 
   it("never refuses an officer whose change strands nobody", async () => {

@@ -1262,6 +1262,7 @@ const SHIFT_LENGTH_MISMATCH_MESSAGE =
 export async function adminShiftBookingDates({
   bookingId,
   actor,
+  hostingCoverageOverride,
   input,
   ipAddress,
 }: {
@@ -1599,14 +1600,16 @@ export async function adminShiftBookingDates({
     // #2364. An admin date SHIFT keeps every price and every guest, but it does
     // move the nights, so the hosting evaluation has to run again.
     //
-    // #2576 §7/§8: this path is officer-only by construction, so it is never
-    // blocked — a shift that takes cover away from another booking on the account
-    // is allowed and escalated to an urgent incident. `actorRole: "ADMIN"` is
-    // stated rather than derived for the same reason the line below it is.
+    // #2576 §7: this interactive officer path uses the same two-step override as
+    // every other coverage-breaking edit. The real officer id and the exact-state
+    // token both travel into the under-lock comparison; dropping either makes the
+    // 409 retry impossible or turns an attributable override into a system change.
     await reconcileAdultMemberHostingReviewWithSiblings(bookingId, tx, {
-      // The admin date shift has no interactive surface to confirm on, so it is a
-      // §8 system change: never refused, escalated, and audited as what it was.
-      ...hostingCoverageActorOptions({ actorRole: "ADMIN", actorMemberId: null }),
+      ...hostingCoverageActorOptions({
+        actorRole: actor.role,
+        actorMemberId: actor.id,
+        ...(hostingCoverageOverride ? { override: hostingCoverageOverride } : {}),
+      }),
     });
 
     return {

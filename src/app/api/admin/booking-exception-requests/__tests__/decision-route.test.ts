@@ -420,6 +420,7 @@ describe("PATCH — approve", () => {
       status: "REQUESTED",
       keptPending: true,
       requiresOverrideReason: true,
+      strandedStateKey: expect.stringMatching(/^v1:[0-9a-f]{64}$/),
       strandedBookings: [
         {
           bookingId: "bk-dependent",
@@ -439,8 +440,26 @@ describe("PATCH — approve", () => {
 
   it("rejects an unacknowledged or short same-owner override before execution", async () => {
     for (const hostingCoverageOverride of [
-      { acknowledged: false, reason: "Long enough reason" },
-      { acknowledged: true, reason: "too short" },
+      {
+        acknowledged: false,
+        reason: "Long enough reason",
+        strandedStateKey: `v1:${"a".repeat(64)}`,
+      },
+      {
+        acknowledged: true,
+        reason: "too short",
+        strandedStateKey: `v1:${"a".repeat(64)}`,
+      },
+      {
+        acknowledged: true,
+        reason: "Long enough reason",
+      },
+      {
+        acknowledged: true,
+        reason: "Long enough reason",
+        strandedStateKey: `v1:${"a".repeat(64)}`,
+        unreviewedAuthority: true,
+      },
     ]) {
       const res = await PATCH(
         patchRequest({
@@ -461,6 +480,7 @@ describe("PATCH — approve", () => {
     const hostingCoverageOverride = {
       acknowledged: true,
       reason: "Confirmed alternate supervision plan.",
+      strandedStateKey: `v1:${"a".repeat(64)}`,
     };
     const res = await PATCH(
       patchRequest({

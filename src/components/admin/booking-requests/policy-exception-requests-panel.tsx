@@ -84,6 +84,7 @@ interface StrandedCoverageBooking {
 interface CoverageOverridePrompt {
   requestId: string;
   message: string;
+  strandedStateKey: string;
   strandedBookings: StrandedCoverageBooking[];
 }
 
@@ -392,6 +393,7 @@ export function PolicyExceptionRequestsPanel({
                   hostingCoverageOverride: {
                     acknowledged: true,
                     reason: coverageOverrideReason.trim(),
+                    strandedStateKey: coveragePrompt.strandedStateKey,
                   },
                 }
               : {}),
@@ -406,6 +408,8 @@ export function PolicyExceptionRequestsPanel({
         if (
           data?.code === "SAME_OWNER_COVERAGE_OVERRIDE_REQUIRED" &&
           data?.requiresOverrideReason === true &&
+          typeof data?.strandedStateKey === "string" &&
+          /^v1:[0-9a-f]{64}$/.test(data.strandedStateKey) &&
           strandedBookings
         ) {
           setCoverageOverridePrompt({
@@ -414,6 +418,7 @@ export function PolicyExceptionRequestsPanel({
               typeof data.error === "string"
                 ? data.error
                 : "This change would leave another booking without required adult-member coverage.",
+            strandedStateKey: data.strandedStateKey,
             strandedBookings,
           });
           setCoverageOverrideConfirmed(false);

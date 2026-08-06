@@ -565,7 +565,11 @@ describe("executeApprovedProposal — modification", () => {
   async function runExecution(
     override: ConfirmedOverride,
     contextOverrides: {
-      hostingCoverageOverride?: { acknowledged: true; reason: string };
+      hostingCoverageOverride?: {
+        acknowledged: true;
+        reason: string;
+        strandedStateKey: string;
+      };
     } = {},
   ) {
     const snapshot = frozenModificationSnapshot();
@@ -657,6 +661,7 @@ describe("executeApprovedProposal — modification", () => {
     const hostingCoverageOverride = {
       acknowledged: true as const,
       reason: "Officer confirmed alternative supervision.",
+      strandedStateKey: `v1:${"a".repeat(64)}`,
     };
     await runExecution(HOSTING_OVERRIDE, { hostingCoverageOverride });
 

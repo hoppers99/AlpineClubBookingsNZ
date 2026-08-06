@@ -269,6 +269,9 @@ export async function PUT(
         ? await adminShiftBookingDates({
             bookingId,
             actor: { id: session.user.id, role: actorRole },
+            ...(parsed.data.hostingCoverageOverride
+              ? { hostingCoverageOverride: parsed.data.hostingCoverageOverride }
+              : {}),
             input: {
               checkIn: parsed.data.checkIn,
               checkOut: parsed.data.checkOut,

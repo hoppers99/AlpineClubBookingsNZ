@@ -2785,9 +2785,17 @@ compliant indefinitely.
   `SameOwnerCoverageOverrideRequiredError` (409, `requiresOverrideReason: true`)
   naming what would be stranded. That is a block on the UNCONFIRMED change, not on
   the officer: they re-submit with `hostingCoverageOverride`
-  (`{ acknowledged: true, reason }`, minimum 10 characters) and it proceeds as
-  `OFFICER_OVERRIDE` recorded against their member id with their reason on the
-  incident. Where nothing would be stranded they are asked nothing. The affected
+  (`{ acknowledged: true, reason, strandedStateKey }`, minimum 10 characters) and
+  it proceeds as `OFFICER_OVERRIDE` recorded against their member id with their
+  reason on the incident. `strandedStateKey` is the versioned digest of the changed
+  source booking plus the sorted dependent-booking/exact-night set the officer was
+  shown. The retry re-derives it from authoritative rows under the per-owner lock; a
+  changed non-empty set rolls the whole mutation back and returns a fresh prompt,
+  so confirmation of one set is never authority over a new booking or night. If
+  coverage improved to no stranded bookings while the prompt was open, the change
+  proceeds without manufacturing an override audit or an empty confirmation prompt.
+  Unknown nested override fields are rejected. Where nothing would be stranded they
+  are asked nothing. The affected
   booking keeps its status, its beds and its payments and gets an urgent compliance
   incident; nothing in the coverage machinery writes `Booking.status`, so automatic
   cancellation is forbidden in as many words. Nothing automated can ever be gated by
