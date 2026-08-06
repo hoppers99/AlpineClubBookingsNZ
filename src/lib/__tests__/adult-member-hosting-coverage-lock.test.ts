@@ -107,7 +107,8 @@ describe("the per-owner coverage lock (#2576 §9)", () => {
     // instead of evaluating.
     const review = readRepoFile("src/lib/adult-member-hosting-review.ts");
     expect(
-      review.match(/await lockHostingCoverageOwner\(/g)?.length ?? 0,
+      (review.match(/await lockHostingCoverageOwner\(/g)?.length ?? 0) +
+        (review.match(/await lockHostingCoverageOwners\(/g)?.length ?? 0),
     ).toBeGreaterThanOrEqual(4);
     for (const holder of [
       "evaluateBookingAdultMemberHosting",

@@ -14,7 +14,10 @@ import {
   type HostingCoverageIncidentOutcome,
   type HostingCoverageIncidentResolution,
 } from "@/lib/adult-member-hosting-coverage-incidents";
-import { lockHostingCoverageOwner } from "@/lib/adult-member-hosting-coverage-lock";
+import {
+  lockHostingCoverageOwner,
+  lockHostingCoverageOwners,
+} from "@/lib/adult-member-hosting-coverage-lock";
 import { enqueueHostingCoverageReevaluation } from "@/lib/adult-member-hosting-coverage-queue";
 import {
   SameOwnerCoverageOverrideRequiredError,
@@ -1432,17 +1435,50 @@ async function settleSameOwnerDependentCoverage(
   if (!booking) return;
 
   const resolved = await loadAdultMemberHostingPolicy(booking.lodgeId, db);
-  if (!resolved.hostScopes.sameBookingOwner) return;
   if (resolved.mode !== "ENFORCED" && resolved.mode !== "ADMIN_REVIEW_REQUIRED") {
     return;
   }
 
   // Before any coverage read, and held to commit — see the concurrency note above.
-  await lockHostingCoverageOwner(db, booking.memberId);
 
   const nights = eachDateOnlyInRange(booking.checkIn, booking.checkOut).map(
     formatDateOnly,
   );
+
+  // SAME_BOOKING still needs durable settlement of THIS booking. Confirmation can
+  // turn it into a live incident source, an officer override can leave it
+  // confirmed but uncovered, and a later correction must close that incident.
+  // Only the cross-booking fan-out needs the owner lock and dependent inspection.
+  if (!resolved.hostScopes.sameBookingOwner) {
+    if (resolved.mode !== "ENFORCED") return;
+    const context = options.coverageChange ?? { cause: "SYSTEM_CHANGE" as const };
+    if (context.cause === "OFFICER_OVERRIDE" && !context.reason?.trim()) {
+      throw new Error(
+        "Overriding adult-member hosting coverage requires an explicit reason",
+      );
+    }
+    await resolveOwnCoverageIncidentAfterChange(
+      booking,
+      db,
+      context.actorMemberId ?? null,
+    );
+    await enqueueHostingCoverageReevaluation(
+      {
+        memberId: booking.memberId,
+        lodgeId: booking.lodgeId,
+        nights,
+        cause: context.cause,
+        sourceBookingId: booking.id,
+        actorMemberId: context.actorMemberId ?? null,
+        reason: context.reason ?? null,
+      },
+      db,
+    );
+    return;
+  }
+
+  // Before any cross-booking coverage read, and held to commit.
+  await lockHostingCoverageOwner(db, booking.memberId);
 
   if (resolved.mode === "ADMIN_REVIEW_REQUIRED") {
     // No inspection: nothing here can refuse and nothing can open an incident, so
@@ -1639,12 +1675,13 @@ export async function enqueueOwnHostingCoverageReevaluation(
 
   const resolved = await loadAdultMemberHostingPolicy(booking.lodgeId, db);
   if (resolved.mode !== "ENFORCED") return null;
-  if (!resolved.hostScopes.sameBookingOwner) return null;
 
   // §9. Confirming paths use this seam instead of evaluating, so this is where they
   // join the owner-key discipline: the queue row and the confirmation commit
   // together, and a concurrent removal of the cover cannot slip between them.
-  await lockHostingCoverageOwner(db, booking.memberId);
+  if (resolved.hostScopes.sameBookingOwner) {
+    await lockHostingCoverageOwner(db, booking.memberId);
+  }
 
   return enqueueHostingCoverageReevaluation(
     {
@@ -1748,6 +1785,26 @@ export async function enqueueHostingCoverageReevaluationForMember(
   // One policy read per distinct lodge rather than per booking: the resolver is
   // already the hot path on every booking write and this can touch several stays.
   const enforcingByLodge = new Map<string, boolean>();
+  const sameOwnerByLodge = new Map<string, boolean>();
+  for (const booking of attended) {
+    if (enforcingByLodge.has(booking.lodgeId)) continue;
+    const resolved = await loadAdultMemberHostingPolicy(booking.lodgeId, db);
+    enforcingByLodge.set(booking.lodgeId, resolved.mode === "ENFORCED");
+    sameOwnerByLodge.set(
+      booking.lodgeId,
+      resolved.hostScopes.sameBookingOwner,
+    );
+  }
+  await lockHostingCoverageOwners(
+    db,
+    attended
+      .filter(
+        (booking) =>
+          enforcingByLodge.get(booking.lodgeId) === true &&
+          sameOwnerByLodge.get(booking.lodgeId) === true,
+      )
+      .map((booking) => booking.memberId),
+  );
   let queued = 0;
   for (const booking of attended) {
     let enforcing = enforcingByLodge.get(booking.lodgeId);
@@ -1760,7 +1817,6 @@ export async function enqueueHostingCoverageReevaluationForMember(
 
     // §9's owner key, taken for the OWNER of each affected booking — which is not
     // necessarily the member whose standing changed.
-    await lockHostingCoverageOwner(db, booking.memberId);
     const id = await enqueueHostingCoverageReevaluation(
       {
         memberId: booking.memberId,

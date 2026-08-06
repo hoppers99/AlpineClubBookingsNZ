@@ -122,7 +122,8 @@ export async function PUT(
     adminOverride !== undefined ||
     pricingMode !== undefined ||
     confirmOverCapacity !== undefined ||
-    notifyMember !== undefined;
+    notifyMember !== undefined ||
+    parsed.data.hostingCoverageOverride !== undefined;
   if (
     hasOverrideFlags &&
     bookingManagementAuthorizationRole(session.user) !== "ADMIN"
@@ -139,7 +140,9 @@ export async function PUT(
   // still keeps the legacy mapping: a caller boolean cannot flip the standard
   // path's authority (the 403 gate above already required ADMIN for any flag).
   const actorRole =
-    adminOverride === true || notifyMember !== undefined
+    adminOverride === true ||
+    notifyMember !== undefined ||
+    parsed.data.hostingCoverageOverride !== undefined
       ? bookingManagementAuthorizationRole(session.user)
       : authorizationRoleFromAccessRoles(session.user);
   if (adminOverride && !pricingMode) {

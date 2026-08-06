@@ -131,7 +131,10 @@ export async function DELETE(
         bookingId,
         guestId,
         actorMemberId: session.user.id,
-        actorRole: authorizationRoleFromAccessRoles(session.user),
+        // Booking Officer is delegated booking-management authority even when
+        // their legacy access-role projection is USER. Preserve that authority
+        // on an override-only retry.
+        actorRole: managementRole,
         settlementMethod,
         subscriptionLockoutMode,
         hostingCoverageOverride,

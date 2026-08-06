@@ -18,6 +18,8 @@ import {
   acquireLodgeCapacityLock,
   checkCapacityForGuestRanges,
 } from "@/lib/capacity";
+import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
+import { enqueueOwnHostingCoverageReevaluation } from "@/lib/adult-member-hosting-review";
 
 export async function POST(
   _request: NextRequest,
@@ -213,6 +215,14 @@ export async function POST(
         // depth). The payment.create above rolls back with the transaction.
         return { ok: false as const, status: 409 };
       }
+      // The final PAYMENT_PENDING -> PAID claim is the transition that makes this
+      // booking a live coverage source. Reconcile the committed shape without
+      // trying to unwind an already-consumed offer, and durably enqueue any
+      // incident/restoration work in this same transaction.
+      await enqueueOwnHostingCoverageReevaluation(bookingId, tx, {
+        cause: "SYSTEM_CHANGE",
+        actorMemberId: session.user.id,
+      });
       await reconcileBedAllocationsForBooking({
         bookingId,
         db: tx,
@@ -233,6 +243,8 @@ export async function POST(
         { status: flip.status }
       );
     }
+
+    await settleHostingCoverageAfterCommit({ bookingId });
 
     sendBookingConfirmedEmail(
       { bookingId: booking.id, recipientMemberId: booking.memberId },
