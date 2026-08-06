@@ -162,7 +162,31 @@ function createMemberBooking(guests: Array<Record<string, unknown>>) {
       checkIn: WINDOW.checkIn,
       checkOut: WINDOW.checkOut,
       guests,
+    },
+  });
+}
+
+/**
+ * Create the active source on behalf of the owner. This reaches CONFIRMED without
+ * live Stripe, and deliberately makes `createdById` differ from `Booking.memberId`:
+ * if coverage accidentally keys on the creator, the dependent below is refused.
+ */
+function createCoveringBooking() {
+  return admin.post("/api/bookings", {
+    data: {
+      checkIn: WINDOW.checkIn,
+      checkOut: WINDOW.checkOut,
+      forMemberId: ownerMemberId,
       paymentMethod: "internet_banking",
+      guests: [
+        {
+          firstName: WAITLISTER.firstName,
+          lastName: WAITLISTER.lastName,
+          ageTier: "ADULT",
+          isMember: true,
+          memberId: ownerMemberId,
+        },
+      ],
     },
   });
 }
@@ -346,17 +370,7 @@ test("an enforcing club refuses a booking with no adult member cover (#2569 §1)
 test("another booking on the same account supplies the cover, and cannot then be pulled away (#2576)", async () => {
   // 1. THE SOURCE. A booking carrying the member themselves, who is a qualifying
   //    adult member attending those exact nights at that exact lodge.
-  const source = await createMemberBooking([
-    {
-      firstName: WAITLISTER.firstName,
-      lastName: WAITLISTER.lastName,
-      ageTier: "ADULT",
-      isMember: true,
-      // `isMember` is presentation metadata; the authoritative attendance
-      // relationship is the linked member id, which is what the policy must use.
-      memberId: ownerMemberId,
-    },
-  ]);
+  const source = await createCoveringBooking();
   expect(
     source.ok(),
     `create the covering booking (${source.status()}): ${await source.text()}`,
