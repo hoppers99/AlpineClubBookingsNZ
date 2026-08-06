@@ -990,6 +990,57 @@ export function bookingPolicyExceptionApprovedTemplate(args: {
   `);
 }
 
+/**
+ * "Your request was not approved" — the refusal notice (#2562 review).
+ *
+ * THE GAP THIS CLOSES. The refusal branch recorded the officer's member-facing
+ * explanation, wrote the audit row, released any held beds — and told the member
+ * nothing. No email, no notification: this app has no in-app notification centre,
+ * so their only signal was a badge on My Bookings they would have to go looking
+ * for. The predictable next act is the telephone call the whole workflow exists to
+ * remove, or a duplicate request raised in ignorance days later.
+ *
+ * THE EXPLANATION IS THE POINT. `adminNotes` is mandatory on a refusal precisely
+ * so the member can act on it, and a mandatory explanation nobody delivers is a
+ * refusal with no reason attached. It arrives as a pre-composed line because the
+ * render path has no conditional syntax.
+ *
+ * NO BOOKING BUTTON, deliberately. The canonical authorized booking-detail link is
+ * gated on `ALWAYS_BOOKING_SCOPED_TEMPLATE_NAMES`, whose contract is that every
+ * sender of a member template hands over a real booking id — and a refused
+ * NEW-booking request has no booking at all, so this template cannot honestly join
+ * that set. Claiming membership to win a button would make the set's own statement
+ * false and would stop the retry cron replaying a failed new-booking refusal. So
+ * the notice names where to look instead, which is the same place for both
+ * flavours.
+ *
+ * NO MONEY, because none moved, and NO APOLOGY: an officer exercised the
+ * discretion the member was told about when they asked.
+ */
+export function bookingPolicyExceptionRefusedTemplate(args: {
+  firstName: string;
+  lodgeName: string;
+  checkIn: Date;
+  checkOut: Date;
+  /** The officer's member-facing explanation, as a whole composed line. */
+  reasonLine: string;
+  /** What the request had been asking for, in one clause. */
+  askDescription: string;
+}): string {
+  return layout(`
+    ${heading("Your request was not approved")}
+    ${paragraph("Hi " + escapeHtml(args.firstName) + ", a Booking Officer has looked at " + escapeHtml(args.askDescription) + " at " + escapeHtml(args.lodgeName) + " and decided not to allow it this time.")}
+    ${infoTable([
+      { label: "Check-in", value: formatNZDate(args.checkIn) },
+      { label: "Check-out", value: formatNZDate(args.checkOut) },
+    ])}
+    ${args.reasonLine ? alertBox(escapeHtml(args.reasonLine), "info") : ""}
+    ${paragraph("Nothing was booked and nothing was changed. Any beds this request was holding have gone back into the pool.")}
+    ${paragraph("You can ask again with different dates or a different party. Your requests are listed under My booking-rule requests on your My Bookings page.")}
+    ${supportContactSentence("If you would like to talk it through, contact the club at ")}
+  `);
+}
+
 export function bookingBumpedTemplate(
   firstName: string,
   checkIn: Date,

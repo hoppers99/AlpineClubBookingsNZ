@@ -190,6 +190,10 @@ export const EXTRA_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, strin
   // reference either form. `paymentNote` renders nothing for a booking that owes
   // nothing; `adminNotesLine` renders nothing when the officer left no note.
   "booking-policy-exception-approved": ["amount", "adminNotes"],
+  // #2562 review: the raw officer explanation behind the composed {{reasonLine}},
+  // so an override may reference either form. A refusal always carries one — the
+  // decision route refuses to record a refusal without it.
+  "booking-policy-exception-refused": ["adminNotes"],
   "booking-review-approved": ["adminNotes"],
   "booking-review-rejected": ["adminNotes"],
   "split-guest-portion-cancelled": ["bookingReference"],
@@ -895,6 +899,12 @@ const TEMPLATE_TRIGGER_METADATA: Partial<
     frequency:
       "Once per materially distinct uncovered state, sent AFTER the causing change has committed and claimed against the incident so a repeated reconciliation of the same unchanged problem sends nothing. Not gated on a personal notification preference — it reports something done to the member's booking that they have no other signal of; still withheld by the per-booking 'No emails' switch",
   },
+  "booking-policy-exception-refused": {
+    triggerSummary:
+      "A Booking Officer refused a member's booking-policy exception request (#2562). Carries the officer's member-facing explanation, which is mandatory on a refusal precisely so the member can act on it",
+    frequency:
+      "Once per refusal, sent AFTER the terminal claim has committed so a mail failure can never turn a recorded refusal into an error the officer sees. Not gated on a personal notification preference — it reports a decision the club made about something the member asked for, and there is no other signal; a refused CHANGE request carries its booking id, so the per-booking 'No emails' switch still withholds it, while a refused NEW-booking request has no booking to silence",
+  },
   "policy-exception-request-expired": {
     triggerSummary:
       "A member's policy-exception request was holding real beds and nobody decided it before its hold deadline, so the hold-reaper cron released the beds and closed the request as Expired (#2553)",
@@ -975,6 +985,16 @@ export function sampleValue(token: string): string {
   // stale sample behind. Note there is no money in the request/added samples:
   // owner decision MG2-D-a keeps money out of those emails entirely.
   // ---------------------------------------------------------------------
+  // #2562 review — the refusal notice's two pre-composed pieces. Same rule as the
+  // member-guest block below: the sender emits whole clauses/lines, so the preview
+  // has to show the real composed text or an admin lays an override out for a shape
+  // no member ever receives.
+  if (token === "askDescription") {
+    return "your request to be let past a booking rule for a new stay";
+  }
+  if (token === "reasonLine") {
+    return "Why the Booking Officer said no: that weekend is fully committed every year.";
+  }
   if (token === "bookerName") return "Dave Ngata";
   if (token === "askHeading") return "Can Dave Ngata add you to this booking?";
   if (token === "askContextNote") {
@@ -1353,6 +1373,11 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "askContextNote",
   // #2307: the consent request's heading, composed for the same reason.
   "askHeading",
+  // #2562 review: the refusal notice's opening clause ("your request to be let past
+  // a booking rule for a new stay" / "... for a change to your booking").
+  // Pre-composed for the same reason as the pair above: the render path has no
+  // conditional, so the two flavours arrive as whole clauses.
+  "askDescription",
   "attemptCount",
   "availableBeds",
   // #2307: the member who made the booking and put this member down as a guest.
@@ -1528,6 +1553,12 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "provisionalGuestsNote",
   "quoteOptions",
   "reason",
+  // #2562 review: the officer's member-facing refusal explanation, as a WHOLE
+  // composed line ("Why the Booking Officer said no: ..."), so an override that
+  // drops it drops a labelled paragraph rather than leaving a dangling label. The
+  // raw {{adminNotes}} behind it stays available for an override that wants to
+  // phrase the label itself.
+  "reasonLine",
   "reasonNote",
   "recipientLabel",
   // #2430: the bumped notice's way back in, split into the caption and the

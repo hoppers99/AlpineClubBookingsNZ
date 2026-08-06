@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   createNew: vi.fn(),
   cancelNew: vi.fn(),
   nbFindMany: vi.fn(),
+  bcrFindMany: vi.fn(),
 }));
 
 vi.mock("@/lib/auth", () => ({ auth: mocks.auth }));
@@ -37,6 +38,11 @@ vi.mock("@/lib/prisma", () => ({
   prisma: {
     newBookingPolicyExceptionRequest: {
       findMany: (...a: unknown[]) => mocks.nbFindMany(...a),
+    },
+    // #2562: the member's own read now merges BOTH request tables, so the double
+    // has to offer both delegates.
+    bookingChangeRequest: {
+      findMany: (...a: unknown[]) => mocks.bcrFindMany(...a),
     },
   },
 }));
@@ -160,12 +166,183 @@ describe("PATCH /api/bookings/exception-requests/[id] (member cancel)", () => {
 });
 
 describe("GET /api/bookings/exception-requests (member's own list)", () => {
-  it("returns the member's own requests", async () => {
-    mocks.nbFindMany.mockResolvedValue([{ id: "req-1", status: "REQUESTED" }]);
+  /** A new-booking row as the read's own select shapes it. */
+  function newBookingRow(overrides: Record<string, unknown> = {}) {
+    return {
+      id: "nb-1",
+      status: "REQUESTED",
+      createdAt: new Date("2026-07-01T00:00:00Z"),
+      reviewedAt: null,
+      proposalSnapshot: {
+        kind: "NEW_BOOKING",
+        lodgeId: "lodge-1",
+        proposed: {
+          checkIn: "2026-07-03",
+          checkOut: "2026-07-04",
+          guests: [
+            {
+              firstName: "Sam",
+              lastName: "Skier",
+              ageTier: "ADULT",
+              isMember: true,
+              nights: ["2026-07-03"],
+            },
+          ],
+        },
+      },
+      frozenEvidence: {
+        violations: [
+          {
+            reasonCode: "MINIMUM_STAY",
+            message: "Two nights are required.",
+            affectedNights: ["2026-07-03"],
+          },
+        ],
+      },
+      memberMessage: "Driving up after work.",
+      adminNotes: null,
+      lastConflictReason: null,
+      lastConflictAt: null,
+      createdBookingId: null,
+      supersededByRequestId: null,
+      ...overrides,
+    };
+  }
+
+  /** A POLICY_EXCEPTION modification row, with its reservation-night count. */
+  function modificationRow(overrides: Record<string, unknown> = {}) {
+    return {
+      id: "mod-1",
+      status: "REQUESTED",
+      createdAt: new Date("2026-07-02T00:00:00Z"),
+      reviewedAt: null,
+      bookingId: "booking-1",
+      proposalSnapshot: {
+        kind: "MODIFICATION",
+        lodgeId: "lodge-1",
+        bookingId: "booking-1",
+        base: { checkIn: "2026-08-01", checkOut: "2026-08-03", guests: [] },
+        proposed: { checkIn: "2026-08-01", checkOut: "2026-08-02", guests: [] },
+      },
+      frozenEvidence: { violations: [] },
+      memberMessage: "Have to leave a night early.",
+      adminNotes: null,
+      lastConflictReason: null,
+      lastConflictAt: null,
+      supersededByRequestId: null,
+      _count: { reservationNights: 2 },
+      ...overrides,
+    };
+  }
+
+  beforeEach(() => {
+    mocks.nbFindMany.mockResolvedValue([]);
+    mocks.bcrFindMany.mockResolvedValue([]);
+  });
+
+  it("returns the member's own requests from BOTH tables, newest first", async () => {
+    mocks.nbFindMany.mockResolvedValue([newBookingRow()]);
+    mocks.bcrFindMany.mockResolvedValue([modificationRow()]);
     const res = await GET();
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body).toHaveLength(1);
-    expect(mocks.nbFindMany.mock.calls[0][0].where).toMatchObject({ requestedByMemberId: "m1" });
+    expect(body).toHaveLength(2);
+    // mod-1 was created a day later, so it sorts first across the two tables.
+    expect(body.map((item: { id: string }) => item.id)).toEqual(["mod-1", "nb-1"]);
+    expect(mocks.nbFindMany.mock.calls[0][0].where).toMatchObject({
+      requestedByMemberId: "m1",
+    });
+    // Scoped to the requester AND to POLICY_EXCEPTION, so a locked-period change
+    // request sharing the table can never surface here.
+    expect(mocks.bcrFindMany.mock.calls[0][0].where).toMatchObject({
+      requestedByMemberId: "m1",
+      kind: "POLICY_EXCEPTION",
+    });
+  });
+
+  it("never selects the officer's internal note, on either table", async () => {
+    await GET();
+    for (const call of [
+      mocks.nbFindMany.mock.calls[0][0],
+      mocks.bcrFindMany.mock.calls[0][0],
+    ]) {
+      expect(call.select).toBeDefined();
+      // The column is not read at all, so there is nothing in memory for a later
+      // mapper edit to leak (#2562).
+      expect(Object.keys(call.select)).not.toContain("internalNotes");
+      // The member-facing explanation IS read: a refusal the member cannot read
+      // is a refusal they cannot act on.
+      expect(call.select.adminNotes).toBe(true);
+    }
+  });
+
+  it("never emits an internalNotes field, even if a row carries one", async () => {
+    // A row shaped as if the column had been selected by mistake. The DTO is a
+    // strict allowlist, so it still cannot reach the wire.
+    mocks.nbFindMany.mockResolvedValue([
+      newBookingRow({
+        adminNotes: "We can allow it this once.",
+        internalNotes: "This member asks every single season.",
+      }),
+    ]);
+    const res = await GET();
+    const body = await res.json();
+    expect(JSON.stringify(body)).not.toContain("every single season");
+    expect(body[0]).not.toHaveProperty("internalNotes");
+    expect(body[0].decisionExplanation).toBe("We can allow it this once.");
+  });
+
+  it("reports capacity from the reservation ledger, not the policy's intent", async () => {
+    mocks.nbFindMany.mockResolvedValue([newBookingRow()]);
+    mocks.bcrFindMany.mockResolvedValue([
+      modificationRow({ _count: { reservationNights: 0 } }),
+    ]);
+    const res = await GET();
+    const body = (await res.json()) as Array<{ id: string; capacityHeld: boolean }>;
+    // A new-booking request holds nothing, ever; a modification that reserved no
+    // night (a pure shrink) holds nothing either.
+    expect(body.find((item) => item.id === "nb-1")?.capacityHeld).toBe(false);
+    expect(body.find((item) => item.id === "mod-1")?.capacityHeld).toBe(false);
+
+    mocks.bcrFindMany.mockResolvedValue([
+      modificationRow({ _count: { reservationNights: 3 } }),
+    ]);
+    const held = (await (await GET()).json()) as Array<{
+      id: string;
+      capacityHeld: boolean;
+    }>;
+    expect(held.find((item) => item.id === "mod-1")?.capacityHeld).toBe(true);
+  });
+
+  it("reads a REQUESTED row with a recorded conflict as a capacity wait, not as undecided", async () => {
+    mocks.bcrFindMany.mockResolvedValue([
+      modificationRow({
+        lastConflictReason: "The lodge is full on 1 August.",
+        lastConflictAt: new Date("2026-07-05T00:00:00Z"),
+      }),
+    ]);
+    const body = (await (await GET()).json()) as Array<{
+      status: string;
+      canWithdraw: boolean;
+    }>;
+    expect(body[0].status).toBe("pending-capacity-conflict");
+    // Still OPEN, so both lifecycle actions stay available.
+    expect(body[0].canWithdraw).toBe(true);
+  });
+
+  it("offers neither withdraw nor replace once a request is terminal", async () => {
+    mocks.bcrFindMany.mockResolvedValue([
+      modificationRow({ status: "REJECTED", adminNotes: "Not this weekend." }),
+    ]);
+    const body = (await (await GET()).json()) as Array<{
+      status: string;
+      canWithdraw: boolean;
+      canReplace: boolean;
+      decisionExplanation: string | null;
+    }>;
+    expect(body[0].status).toBe("refused");
+    expect(body[0].canWithdraw).toBe(false);
+    expect(body[0].canReplace).toBe(false);
+    expect(body[0].decisionExplanation).toBe("Not this weekend.");
   });
 });

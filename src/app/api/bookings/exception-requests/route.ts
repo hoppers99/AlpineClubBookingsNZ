@@ -11,9 +11,26 @@ import { checkRateLimit, getClientIp, rateLimiters } from "@/lib/rate-limit";
 import { sendAdminBookingChangeRequestAlert } from "@/lib/email";
 import { bookableAgeTierEnum } from "@/lib/age-tier-schema";
 import { nameField } from "@/lib/zod-helpers";
+import { isDateOnlyString } from "@/lib/date-only";
 import logger from "@/lib/logger";
-import { createNewBookingExceptionRequest } from "@/lib/booking-exception-request-service";
+import {
+  createNewBookingExceptionRequest,
+  readMemberExceptionRequests,
+} from "@/lib/booking-exception-request-service";
 import { mapExceptionRequestError } from "@/lib/booking-exception-request-http";
+
+/**
+ * A guest's explicit night set (#713), mirroring the create route's own field.
+ *
+ * REQUIRED here, not a nicety (#2562 review): the wizard sends per-guest night
+ * sets whenever "Multiple date ranges" is on, and zod STRIPS unknown keys — so
+ * omitting this field silently froze the whole envelope for a guest who picked one
+ * night, and the officer then reviewed (and an approval reserved, priced and
+ * booked) nights nobody asked for.
+ */
+const nightList = z
+  .array(z.string().refine(isDateOnlyString, { message: "Night must be YYYY-MM-DD" }))
+  .max(370);
 
 const createSchema = z.object({
   lodgeId: z.string().trim().min(1).optional(),
@@ -29,6 +46,7 @@ const createSchema = z.object({
         memberId: z.string().trim().min(1).optional(),
         stayStart: z.string().optional(),
         stayEnd: z.string().optional(),
+        nights: nightList.optional(),
       }),
     )
     .min(1)
@@ -149,6 +167,23 @@ export async function POST(req: NextRequest) {
   }
 }
 
+/**
+ * The member's OWN booking-policy exception requests — BOTH flavours (#2562).
+ *
+ * #2524 shipped this as a raw read of the new-booking table alone, which was all
+ * its own scope needed. The member's request area has to show every request they
+ * raised, including the ones against a live booking, and it must show the exact
+ * frozen proposal rather than a hash — so the read is now the unified,
+ * requester-scoped one, projected through the single member DTO in
+ * `src/lib/member-exception-requests.ts`.
+ *
+ * That projection is the privacy boundary: a strict allowlist with no slot for the
+ * officer's internal note (#2562), and the service's select does not even read the
+ * column, so there is nothing in memory for a later edit to leak. The officer's
+ * MEMBER-FACING explanation (`adminNotes`) IS carried — a refusal the member
+ * cannot read is a refusal they cannot act on — and the officer UI tells them so
+ * before they write it.
+ */
 export async function GET() {
   const session = await auth();
   if (!session?.user) {
@@ -157,33 +192,6 @@ export async function GET() {
   const inactiveResponse = await requireActiveSessionUser(session.user.id);
   if (inactiveResponse) return inactiveResponse;
 
-  const requests = await prisma.newBookingPolicyExceptionRequest.findMany({
-    where: { requestedByMemberId: session.user.id },
-    select: {
-      id: true,
-      status: true,
-      lodgeId: true,
-      proposalHash: true,
-      aggregateCapacityMode: true,
-      memberMessage: true,
-      createdAt: true,
-      reviewedAt: true,
-      // #2526: the officer's decision note. A refusal is written FOR the member
-      // — "the lodge is full that weekend every year" — so withholding it would
-      // leave them with a bare REJECTED and nothing to act on.
-      adminNotes: true,
-      // Why an approval has not happened yet, when it has already been tried and
-      // kept pending on capacity. Without it a member watching a REQUESTED row
-      // has no way to tell "nobody has looked" from "the lodge is full".
-      lastConflictReason: true,
-      lastConflictAt: true,
-      // The booking an approval created, so the member's own list links to it.
-      createdBookingId: true,
-      supersededByRequestId: true,
-    },
-    orderBy: { createdAt: "desc" },
-    take: 50,
-  });
-
+  const requests = await readMemberExceptionRequests(session.user.id);
   return NextResponse.json(requests);
 }

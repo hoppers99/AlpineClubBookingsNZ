@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -146,7 +147,16 @@ export function BookingEditor({
   // fully-past booking that renders no self-service editor at all.
   canAdminOverride?: boolean;
 }) {
-  const [editing, setEditing] = useState(false);
+  const searchParams = useSearchParams();
+  /**
+   * #2562: the open policy-exception request this visit is here to REPLACE, from
+   * the `?replaceRequest=<id>` link the member's request area renders. Its presence
+   * also OPENS the editor, because sending somebody to a page and asking them to
+   * find the Edit button is how a replacement never gets made.
+   */
+  const replaceExceptionRequestId =
+    searchParams?.get("replaceRequest")?.trim() || null;
+  const [editing, setEditing] = useState(Boolean(replaceExceptionRequestId));
   const canOpenEditor = canModify || canAdminOverride;
   // Capture "now" once at mount so the hold banner can honestly tell a future
   // deadline (future-tense auto-confirm copy) from a lapsed one (awaiting
@@ -183,6 +193,7 @@ export function BookingEditor({
           memberWholeLodge: booking.memberWholeLodge,
         }}
         canAdminOverride={canAdminOverride}
+        replaceExceptionRequestId={replaceExceptionRequestId}
         onDone={() => setEditing(false)}
       />
     );

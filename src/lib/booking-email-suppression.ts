@@ -66,6 +66,16 @@ export const XERO_GROUP_SETTLEMENT_INVOICE_EMAIL_TEMPLATE =
  * withhold mail for no benefit:
  *   booking-request-verification, booking-request-quote,
  *   booking-request-declined, group-booking-join-verification
+ * Also deliberately EXCLUDED, for a different reason worth stating (#2562):
+ *   booking-policy-exception-refused — its sender's `bookingContext` is a genuine
+ *   union. A refused CHANGE request hangs off a booking and passes that id, so
+ *   `isBookingSuppressibleTemplate` (member audience) still lets the switch
+ *   withhold it; a refused NEW-booking request has no booking at all and passes
+ *   `"none"`. Naming it here would make this set's own statement false, and would
+ *   also stop the retry cron replaying a failed new-booking refusal — which is
+ *   precisely the message the member has no other way of receiving. The cost is
+ *   that `resolveBookingEmailLink` gives it no canonical booking button, which is
+ *   why its template carries none and names where to look instead.
  * Also excluded, and this is the point of naming them: every account, security,
  * membership and family template. Nothing in this set touches them.
  */

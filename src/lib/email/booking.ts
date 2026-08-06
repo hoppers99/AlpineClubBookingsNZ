@@ -10,6 +10,7 @@ import {
   bookingConfirmedTemplate,
   bookingPendingTemplate,
   bookingPolicyExceptionApprovedTemplate,
+  bookingPolicyExceptionRefusedTemplate,
   bookingBumpedTemplate,
   bookingGuestsCancelledTemplate,
   bookingCancelledTemplate,
@@ -539,6 +540,93 @@ export async function sendBookingPolicyExceptionApprovedEmail(
       adminNotes: args.adminNotes ?? "",
     },
     lodgeId: args.lodgeId,
+  });
+}
+
+/**
+ * Tell a member their booking-policy exception request was REFUSED (#2562 review).
+ *
+ * The gap this closes: the refusal branch recorded a mandatory member-facing
+ * explanation and then delivered it nowhere. There is no in-app notification
+ * centre in this app, so without this the member's only signal was a badge on My
+ * Bookings, and their realistic next act was the phone call the workflow exists to
+ * remove.
+ *
+ * `bookingContext` is a UNION on this sender, and both arms are real: a refused
+ * MODIFICATION request hangs off a booking, so the per-booking "No emails" switch
+ * must be able to withhold this notice like every other message about that
+ * booking; a refused NEW-booking request has no booking at all and passes `"none"`.
+ * That is also why the template carries no booking button — see its own doc
+ * comment.
+ *
+ * Fire-and-forget at the call site, AFTER the terminal claim has committed: a mail
+ * failure must never turn a recorded refusal into an error the officer sees.
+ */
+export async function sendBookingPolicyExceptionRefusedEmail(params: {
+  /**
+   * The booking id when one exists, or the explicit `"none"`. Deliberately the
+   * narrow shape rather than a full `EmailBookingContext`: the recipient half is
+   * always this request's requester, so the sender builds it and no call site can
+   * name the wrong person.
+   */
+  bookingContext: { bookingId: string } | "none";
+  email: string;
+  recipientMemberId: string;
+  firstName: string;
+  checkIn: Date;
+  checkOut: Date;
+  /** The officer's MEMBER-FACING explanation. Never the internal note. */
+  adminNotes: string | null;
+  /** Which flavour was refused, so the opening sentence says what it was. */
+  source: "NEW_BOOKING" | "MODIFICATION";
+  // Booking's/lodge's identity (multi-lodge phase 8): see sendBookingConfirmedEmail.
+  lodgeId?: string | null;
+}) {
+  const settings = await loadEmailMessageSettingsForLodge(params.lodgeId);
+  // Composed by the sender, never conditionally in the body: the render path has
+  // no conditional syntax, so a token that can be empty must arrive as a whole
+  // line or as nothing (see composeOptionalEmailLine). In practice a refusal
+  // always carries one — the decision route refuses without it.
+  const reasonLine = composeOptionalEmailLine(
+    "Why the Booking Officer said no",
+    params.adminNotes,
+    { trailing: "" },
+  );
+  const askDescription =
+    params.source === "NEW_BOOKING"
+      ? "your request to be let past a booking rule for a new stay"
+      : "your request to be let past a booking rule for a change to your booking";
+
+  return sendEmail({
+    to: params.email,
+    subject: `Your request was not approved - ${settings.lodgeName}`,
+    html: bookingPolicyExceptionRefusedTemplate({
+      firstName: params.firstName,
+      lodgeName: settings.lodgeName,
+      checkIn: params.checkIn,
+      checkOut: params.checkOut,
+      reasonLine,
+      askDescription,
+    }),
+    bookingContext:
+      params.bookingContext === "none"
+        ? "none"
+        : bookingOwnerEmailContext(
+            params.bookingContext.bookingId,
+            params.recipientMemberId,
+          ),
+    templateName: "booking-policy-exception-refused",
+    templateData: {
+      firstName: params.firstName,
+      checkIn: formatNZDate(params.checkIn),
+      checkOut: formatNZDate(params.checkOut),
+      askDescription,
+      reasonLine,
+      // The raw value behind the composed line, so an override written against
+      // either form keeps rendering.
+      adminNotes: params.adminNotes ?? "",
+    },
+    lodgeId: params.lodgeId,
   });
 }
 

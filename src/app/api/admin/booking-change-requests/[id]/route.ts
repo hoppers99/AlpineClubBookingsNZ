@@ -6,7 +6,21 @@ import { z } from "zod";
 
 const reviewSchema = z.object({
   status: z.enum(["APPROVED", "REJECTED"]),
+  /**
+   * MEMBER-VISIBLE (#2562). The member reads this verbatim on their booking page
+   * under "Change Requests", so the officer panel labels it for that audience
+   * before the decision is submitted.
+   */
   adminNotes: z.string().max(2000).optional(),
+  /**
+   * NEVER MEMBER-VISIBLE (#2562). The officer's private commentary, accepted here
+   * so the locked-period half of this table has the same honest option the
+   * policy-exception half got: before this, one field served both jobs and was
+   * member-visible, and the box was headed only "Admin notes" — so an officer
+   * recording "third ask this month, do not encourage" had nowhere to put it that
+   * the member could not read.
+   */
+  internalNotes: z.string().max(2000).optional(),
   linkedModificationId: z.string().min(1).optional(),
 });
 
@@ -159,6 +173,10 @@ export async function PATCH(
     data: {
       status: parsed.data.status,
       adminNotes: parsed.data.adminNotes?.trim() || null,
+      // #2562: the private half, stored beside the member-facing half. No
+      // member-facing projection, route select, email template or notification
+      // names this column — see `booking-change-request-member-view.ts`.
+      internalNotes: parsed.data.internalNotes?.trim() || null,
       reviewedByMemberId: session.user.id,
       reviewedAt,
       linkedModificationId: parsed.data.linkedModificationId ?? null,
@@ -194,6 +212,10 @@ export async function PATCH(
       requestId: id,
       status: parsed.data.status,
       linkedModificationId: parsed.data.linkedModificationId ?? null,
+      // WHETHER an internal note was left, never its text (#2562). The audit log
+      // is read by more surfaces than this queue, and a private note copied into
+      // it would be private in one place and not the other.
+      internalNoteRecorded: Boolean(parsed.data.internalNotes?.trim()),
     },
     ipAddress: req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown",
   });

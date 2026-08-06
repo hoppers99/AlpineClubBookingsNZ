@@ -32,6 +32,17 @@ import { addDaysDateOnly, parseDateOnly } from "@/lib/date-only";
 import { formatNZWeekdayDate } from "@/lib/nzst-date";
 import { PromoCodeInput, type PromoResult } from "@/components/promo-code-input";
 import { TimePicker } from "@/components/time-picker";
+import {
+  RequestOfficerApprovalCard,
+  type ExceptionRequestSubmitResult,
+} from "@/components/booking/request-officer-approval-card";
+import {
+  newBookingExceptionOmittedChanges,
+  newBookingExceptionOmitsPricedChoice,
+  type ExceptionOffer,
+  type NewBookingExceptionExtras,
+} from "@/lib/booking-exception-offer";
+import { useAgeTierOptions } from "@/lib/use-age-tier-options";
 import { CheckCircle2, CreditCard, Landmark } from "lucide-react";
 import type {
   AvailablePromoCode,
@@ -114,6 +125,9 @@ export function ReviewStep({
   submitting,
   savingDraft,
   memberGuestPendingHoldExpiryDays,
+  exceptionOffer,
+  replaceExceptionRequestId,
+  submitExceptionRequest,
 }: {
   // NZ date-only lodge nights (#2474).
   checkIn: string | null;
@@ -179,7 +193,22 @@ export function ReviewStep({
   savingDraft: boolean;
   /** D-4: the club's own configured hold length, for the explainer's sentence 1. */
   memberGuestPendingHoldExpiryDays: number;
+  /**
+   * #2562 — the server-confirmed offer to ask a Booking Officer, or null. Null
+   * means the last refusal was not reviewable (or there was none), and the card is
+   * not drawn. This step never decides that for itself.
+   */
+  exceptionOffer: ExceptionOffer | null;
+  /** The open request this submission replaces, from `/book?replaceRequest=<id>`. */
+  replaceExceptionRequestId: string | null;
+  submitExceptionRequest: (input: {
+    memberMessage: string;
+    supersedeRequestId: string | null;
+  }) => Promise<ExceptionRequestSubmitResult>;
 }) {
+  // The club's own age-tier labels, so the request card names a tier the way every
+  // other member-facing screen does rather than echoing the raw enum.
+  const ageTierOptions = useAgeTierOptions();
   // MG3 (#2308), owner sign-off answer 4: all four sentences, always visible,
   // whenever anybody the booker added is still waiting.
   const pendingMemberGuestNames = pendingMemberGuestFirstNames(reviewGuestPayload);
@@ -244,6 +273,35 @@ export function ReviewStep({
       setCancelIfGuestsBumped(false);
     }
   }, [cancelIfGuestsBumped, provisionalHoldWillBeCreated, setCancelIfGuestsBumped]);
+
+  /**
+   * The wizard choices an exception request does NOT carry (#2562 review).
+   *
+   * Read straight off the same state the create call sends, so the two cannot
+   * disagree about what was chosen. `submitExceptionRequest` posts only the lodge,
+   * the nights, the party and the member's message; everything gathered here is
+   * dropped, and the card names it rather than letting the member assume their
+   * whole screen was submitted.
+   */
+  const exceptionExtras: NewBookingExceptionExtras = {
+    promoCode: appliedPromo?.code ?? null,
+    workPartyEventId:
+      attendingWorkParty && selectedWorkPartyEventId
+        ? selectedWorkPartyEventId
+        : null,
+    // A work-party discount arrives as an applied promo with no member-visible
+    // code, so the code check alone would miss the free night entirely.
+    workPartyDiscountApplied: Boolean(appliedPromo?.workPartyEvent),
+    appliedCreditCents,
+    requestedRoomId: requestedRoomId || null,
+    expectedArrivalTime: expectedArrivalTime || null,
+    notes: notes.trim() ? notes : null,
+    internetBankingChosen: paymentMethod === "internet_banking",
+    // Only meaningful while a provisional hold is actually on the cards; the
+    // effect above clears the tick otherwise, and a stale tick is not a choice.
+    cancelIfGuestsBumped: provisionalHoldWillBeCreated && cancelIfGuestsBumped,
+    groupTrip: groupTrip && groupBookingsEnabled,
+  };
 
   return (
     <div className="space-y-4">
@@ -799,6 +857,66 @@ export function ReviewStep({
           )}
         </div>
       )}
+
+      {/* #2562 — the exception-request door, drawn ONLY when the server's own
+          refusal said every blocking failure is reviewable. It sits above the
+          confirm buttons because at this point confirming cannot succeed: the
+          member's next honest move is either to change the proposal or to ask. */}
+      {exceptionOffer && bookingDateStrings ? (
+        <RequestOfficerApprovalCard
+          source="NEW_BOOKING"
+          offer={exceptionOffer}
+          replaceRequestId={replaceExceptionRequestId}
+          onSubmit={submitExceptionRequest}
+          proposal={{
+            lodgeName: selectedLodge?.name ?? null,
+            checkIn: bookingDateStrings.checkIn,
+            checkOut: bookingDateStrings.checkOut,
+            envelopeNightCount: nights,
+            base: null,
+            // #2562 review: the proposal is the party and the nights, but the
+            // MEMBER's screen carries more than that, and the request carries none
+            // of it — no promo, no working-bee discount, no credit election, no
+            // room request, no arrival time, no note, no payment-method choice.
+            // `executeApprovedNewBooking` calls the canonical create with none of
+            // them, so an approval prices at the club's normal rates. Naming them
+            // is what makes the card's disclosure block render on this path.
+            omittedChanges: newBookingExceptionOmittedChanges(exceptionExtras),
+            // The quote the SERVER produced for this party, labelled as a quote.
+            // `priceQuote` is a required prop of this step, so it is always the
+            // club's own figure and never a client calculation.
+            priceImpact: {
+              // The label changes when a discount the member can see above is NOT
+              // part of what they are sending: an unlabelled figure beside a
+              // dropped promo is the wrong number twice over.
+              label: newBookingExceptionOmitsPricedChoice(exceptionExtras)
+                ? "Total for this stay at the club's normal rates"
+                : "Total for this stay",
+              // The UNDISCOUNTED server quote, always. The request carries no promo
+              // and no credit election, so the discounted figure the price summary
+              // above shows is one no approval could ever produce.
+              amountCents: priceQuote.totalPriceCents,
+            },
+            guests: reviewGuestPayload.map((guest) => ({
+              firstName: guest.firstName,
+              lastName: guest.lastName,
+              ageTierLabel:
+                ageTierOptions.find((option) => option.tier === guest.ageTier)
+                  ?.label ?? guest.ageTier,
+              isMember: guest.isMember,
+              // The member's own choice, echoed back in the form they made it: a
+              // picked night set, a picked range, or (both absent) the whole stay.
+              // `buildGuestPayload` sends only one of the two shapes, so these are
+              // never both populated.
+              nights: guest.nights ?? [],
+              stay:
+                guest.stayStart && guest.stayEnd
+                  ? { start: guest.stayStart, end: guest.stayEnd }
+                  : null,
+            })),
+          }}
+        />
+      ) : null}
 
       <div className="flex flex-col-reverse gap-3 sm:flex-row sm:justify-between">
         <Button variant="outline" onClick={() => setStep("guests")}>

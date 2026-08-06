@@ -66,6 +66,17 @@ email, so you have a record of what changed. (Edits that only fix a guest's
 name or only change your saved credit choice don't email — nothing about the
 stay changed.)
 
+**If a club rule stops your change**, the edit screen offers **Request Booking
+Officer approval** instead of just refusing — for the two rules an officer can
+waive (a minimum stay, and the requirement that an adult member is present for
+non-member guests). You see the exact proposal, say why you are asking, and track
+it under **My booking-rule requests** on **My Bookings**, where you can withdraw or
+replace it while it is open. A request covers the **dates and the party only**, so
+anything else in the same edit — a name correction, a promo code, an account-credit
+choice — is not part of it and is named on the screen before you send it; make those
+changes separately once the request is decided. Full detail in
+[Booking a stay](booking-a-stay.md#asking-to-be-let-past-a-booking-rule).
+
 ### Resume and edit a draft
 
 A booking you saved as a **draft** can be re-opened from the dashboard's

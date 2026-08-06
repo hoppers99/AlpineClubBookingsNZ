@@ -11,6 +11,10 @@ import { computeMemberGuestBoundary } from "@/lib/booking-guests";
 import { isOperationallyPresentConsent } from "@/lib/member-guest-consent";
 import { acquireLodgeCapacityLock, checkCapacityForGuestRanges } from "@/lib/capacity";
 import {
+  ACTIVE_BOOKING_STATUSES,
+  bookingHoldsCapacity,
+} from "@/lib/booking-status";
+import {
   releasePolicyExceptionReservation,
   reservePolicyExceptionCapacity,
 } from "@/lib/booking-exception-reservations";
@@ -21,6 +25,12 @@ import {
   resolveLinkedBookingMembersWithBoundary,
 } from "@/lib/booking-guests";
 import { loadMemberGuestAddPolicy } from "@/lib/member-guest-add-policy";
+import {
+  toMemberExceptionProposal,
+  toMemberExceptionRequestItem,
+  type MemberExceptionProposal,
+  type MemberExceptionRequestItem,
+} from "@/lib/member-exception-requests";
 import type { PrismaTransactionClient } from "@/lib/db-transaction";
 import {
   type AdultMemberHostingConsequence,
@@ -156,6 +166,19 @@ export interface ExceptionRequestGuestInput {
   /** YYYY-MM-DD; falls back to the booking envelope when absent. */
   stayStart?: string | null;
   stayEnd?: string | null;
+  /**
+   * The guest's EXPLICIT night set (#713 multi-date-range mode), YYYY-MM-DD.
+   *
+   * Load-bearing, not optional detail (#2562 review). Both member surfaces send
+   * per-guest night sets whenever the "Multiple date ranges" mode is on — which
+   * needs no feature flag and is on by default for a booking that already has a
+   * sparse guest — and a request that dropped them froze the ENVELOPE for every
+   * guest instead. A member asking for one extra night then had six frozen,
+   * reserved, reviewed, priced and executed against them. When present and
+   * non-empty the guest stays exactly these nights; the envelope is derived from
+   * them, exactly as the canonical create and modify paths do.
+   */
+  nights?: string[] | null;
 }
 
 export interface CreateNewBookingExceptionRequestInput {
@@ -246,11 +269,23 @@ export function buildProposalPartyFromGuests(
   const bookingNights = envelopeNights(checkIn, checkOut);
   const guestNights: string[][] = guests.map((guest, index) => {
     const range = normalizeGuestStayRange(
-      { stayStart: guest.stayStart ?? null, stayEnd: guest.stayEnd ?? null },
+      {
+        stayStart: guest.stayStart ?? null,
+        stayEnd: guest.stayEnd ?? null,
+        // The explicit night set wins over the range, which is what
+        // `normalizeGuestStayRange` does for every other caller. Dropping it here
+        // froze the envelope for a guest who picked three nights out of nine.
+        nights: guest.nights ?? null,
+      },
       { checkIn, checkOut },
       index,
     );
-    const nights = envelopeNights(range.stayStart, range.stayEnd);
+    // An explicit set is the guest's nights VERBATIM (already deduped and sorted
+    // by the normaliser); only a contiguous range expands to its envelope.
+    const nights =
+      range.nights && range.nights.length > 0
+        ? range.nights.map(formatDateOnly)
+        : envelopeNights(range.stayStart, range.stayEnd);
     return nights.length > 0 ? nights : bookingNights;
   });
 
@@ -310,6 +345,16 @@ export interface ModificationDeltaInput {
     guestId: string;
     stayStart?: string | null;
     stayEnd?: string | null;
+    /**
+     * The guest's explicit night set (#713). Carried for the same reason as on
+     * `ExceptionRequestGuestInput`: the shared resolver's range-input mode hinges
+     * on ANY range input anywhere, and a night set stripped on the way in flipped
+     * the whole request into no-range-inputs mode — which resets every guest to the
+     * envelope on a date change, and keeps their STORED nights when the dates did
+     * not move, so the frozen proposal was either far wider than the ask or
+     * identical to the base.
+     */
+    nights?: string[] | null;
   }>;
 }
 
@@ -431,6 +476,24 @@ function optionalDateOnly(value: unknown): string | undefined {
 }
 
 /**
+ * A stored explicit night set, canonicalised: date-only strings, deduped, sorted.
+ * Absent or empty becomes `undefined` so the stored delta stays byte-stable
+ * (`normalizeStoredExceptionDelta`'s contract) and a re-freeze of the same request
+ * writes the same JSON.
+ */
+function optionalNightList(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const nights = [
+    ...new Set(
+      value.filter(
+        (night): night is string => typeof night === "string" && night.length > 0,
+      ),
+    ),
+  ].sort();
+  return nights.length > 0 ? nights : undefined;
+}
+
+/**
  * Canonicalise the stored delta so a re-freeze of the same member request writes
  * the same JSON: absent/empty collections are dropped rather than stored as `[]`,
  * and blank date strings become absent. Purely cosmetic for correctness — the
@@ -461,6 +524,12 @@ export function normalizeStoredExceptionDelta(
         ? { stayStart: guest.stayStart }
         : {}),
       ...(optionalDateOnly(guest.stayEnd) ? { stayEnd: guest.stayEnd } : {}),
+      // #713 explicit night set. Stored so the approval REPLAY produces the same
+      // party the freeze did — without it the replay lost the member's night
+      // selection and could only reproduce the frozen hash by accident.
+      ...(optionalNightList(guest.nights)
+        ? { nights: optionalNightList(guest.nights) }
+        : {}),
     }));
   }
   if (delta.removeGuestIds?.length) {
@@ -471,6 +540,9 @@ export function normalizeStoredExceptionDelta(
       guestId: range.guestId,
       ...(optionalDateOnly(range.stayStart) ? { stayStart: range.stayStart } : {}),
       ...(optionalDateOnly(range.stayEnd) ? { stayEnd: range.stayEnd } : {}),
+      ...(optionalNightList(range.nights)
+        ? { nights: optionalNightList(range.nights) }
+        : {}),
     }));
   }
   return out;
@@ -515,6 +587,17 @@ export function parseStoredExceptionDelta(
       ) {
         return null;
       }
+      // A stored `nights` that is not an array of strings is not a well-formed
+      // delta: fail closed (the approval then reports proposal drift) rather than
+      // replaying a party with the night set silently dropped.
+      if (guest.nights !== undefined) {
+        if (
+          !Array.isArray(guest.nights) ||
+          !guest.nights.every((night) => typeof night === "string")
+        ) {
+          return null;
+        }
+      }
       addGuests.push({
         firstName: guest.firstName,
         lastName: guest.lastName,
@@ -523,6 +606,7 @@ export function parseStoredExceptionDelta(
         memberId: stringOrUndefined(guest.memberId) ?? null,
         stayStart: stringOrUndefined(guest.stayStart) ?? null,
         stayEnd: stringOrUndefined(guest.stayEnd) ?? null,
+        nights: optionalNightList(guest.nights) ?? null,
       });
     }
   }
@@ -542,10 +626,19 @@ export function parseStoredExceptionDelta(
       if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
       const range = entry as Record<string, unknown>;
       if (typeof range.guestId !== "string") return null;
+      if (range.nights !== undefined) {
+        if (
+          !Array.isArray(range.nights) ||
+          !range.nights.every((night) => typeof night === "string")
+        ) {
+          return null;
+        }
+      }
       guestStayRanges.push({
         guestId: range.guestId,
         stayStart: stringOrUndefined(range.stayStart) ?? null,
         stayEnd: stringOrUndefined(range.stayEnd) ?? null,
+        nights: optionalNightList(range.nights) ?? null,
       });
     }
   }
@@ -842,6 +935,28 @@ export interface CreatedExceptionRequest {
   proposalHash: string;
   reasonCodes: PolicyExceptionReasonCode[];
   aggregateCapacityMode: PolicyExceptionCapacityMode;
+  /**
+   * The proposal EXACTLY as it was frozen, returned to the member who just
+   * submitted it (#2562).
+   *
+   * Not a courtesy. The freeze is not the raw payload: the party envelope EXPANDS
+   * to cover every guest night (mirroring what the canonical create will do), and a
+   * guest's nights resolve through the canonical planner's own helper. So the
+   * proposal an officer decides can legitimately be WIDER than the dates the member
+   * typed — and a member who is never shown that difference cannot tell that the
+   * request they are tracking is not the request they thought they made. Returning
+   * it lets the submission screen show the frozen article immediately, while
+   * withdraw and replace are still available.
+   */
+  proposal: MemberExceptionProposal;
+  /**
+   * Whether this request actually reserved beds, from the write itself rather than
+   * from the policy's capacity mode (#2562). Always false for a new-booking
+   * request; on a modification, true only when reservation rows were really
+   * written — which excludes a HOLD proposal whose incremental footprint came out
+   * empty (a pure shrink).
+   */
+  capacityHeld: boolean;
 }
 
 /**
@@ -1002,6 +1117,11 @@ export async function createNewBookingExceptionRequest(
       proposalHash: frozen.proposalHash,
       reasonCodes: frozen.frozenEvidence.reasonCodes,
       aggregateCapacityMode: frozen.aggregateCapacityMode,
+      proposal: toMemberExceptionProposal(frozen.snapshot),
+      // A new-booking request reserves nothing, whatever its capacity mode says:
+      // the reservation ledger is keyed on an existing BookingChangeRequest and
+      // there is no booking row yet.
+      capacityHeld: false,
     };
   } catch (error) {
     if (isOpenSlotUniqueViolation(error)) {
@@ -1265,6 +1385,10 @@ export async function createModificationExceptionRequest(
       proposalHash: frozen.proposalHash,
       reasonCodes: frozen.frozenEvidence.reasonCodes,
       aggregateCapacityMode: frozen.aggregateCapacityMode,
+      proposal: toMemberExceptionProposal(frozen.snapshot),
+      // The FACT of the write, not the policy's intent: `reservesBeds` is the same
+      // predicate that decided whether reservation rows were inserted above.
+      capacityHeld: reservesBeds,
     };
   } catch (error) {
     if (isOpenSlotUniqueViolation(error)) {
@@ -1400,8 +1524,18 @@ export interface UnifiedExceptionQueueItem {
   proposedCheckOut: string | null;
   /** How many guests the proposed party holds. */
   proposedGuestCount: number | null;
-  /** The officer's decision note, once a decision has been recorded. */
+  /**
+   * The officer's MEMBER-FACING decision explanation, once a decision has been
+   * recorded (#2562). Rendered to the member on their own request list, so the
+   * officer UI labels it as member-visible before they submit it.
+   */
   adminNotes: string | null;
+  /**
+   * The officer's PRIVATE note (#2562). Admin surfaces only — this queue read is
+   * behind `requireAdmin`, and the member projection
+   * (`src/lib/member-exception-requests.ts`) has no field for it.
+   */
+  internalNotes: string | null;
   /** The booking a successful new-booking approval created (NEW_BOOKING only). */
   createdBookingId: string | null;
   attemptCount: number;
@@ -1585,6 +1719,7 @@ export async function readUnifiedExceptionQueue(input: {
         proposedCheckOut: proposedPartyFacts(row.proposalSnapshot).checkOut,
         proposedGuestCount: proposedPartyFacts(row.proposalSnapshot).guestCount,
         adminNotes: row.adminNotes,
+        internalNotes: row.internalNotes,
         createdBookingId: row.createdBookingId,
         attemptCount: row.attemptCount,
         conflictCount: row.conflictCount,
@@ -1620,6 +1755,7 @@ export async function readUnifiedExceptionQueue(input: {
         proposedCheckOut: proposedPartyFacts(row.proposalSnapshot).checkOut,
         proposedGuestCount: proposedPartyFacts(row.proposalSnapshot).guestCount,
         adminNotes: row.adminNotes,
+        internalNotes: row.internalNotes,
         createdBookingId: null,
         attemptCount: row.attemptCount,
         conflictCount: row.conflictCount,
@@ -1638,4 +1774,229 @@ export async function readUnifiedExceptionQueue(input: {
   const data = items.slice(start, start + input.pageSize);
 
   return { data, page: input.page, pageSize: input.pageSize, total };
+}
+
+// ---------------------------------------------------------------------------
+// Member-facing read (#2562): the requester's own requests, both flavours
+// ---------------------------------------------------------------------------
+
+/**
+ * How many of a member's own requests their request area shows. Bounded, and
+ * generous: the section is a status list on My Bookings, not an archive, and a
+ * member who has raised more than fifty booking-rule requests has a different
+ * conversation to have with the club.
+ */
+const MEMBER_EXCEPTION_REQUEST_CAP = 50;
+
+/**
+ * What one created booking can honestly be said about, from its own row.
+ *
+ * TWO facts, not one (#2562 re-review). `holdsCapacity` answers "are the beds on
+ * it"; `awaitsPayment` answers "is it still live and still owed". Both are false for
+ * a cancelled or reaped booking, and reading the first as a proxy for the second is
+ * what told a member to go and pay a booking that no longer existed.
+ */
+interface CreatedBookingCapacityFacts {
+  holdsCapacity: boolean;
+  awaitsPayment: boolean;
+}
+
+/**
+ * Read the created bookings' OWN capacity answers, keyed by booking id (#2562).
+ *
+ * WHY THIS IS A BOOKING READ and not a fact about the request. An approved
+ * new-booking exception creates the booking the member's own wizard would have
+ * created: `resolveNewBookingExecutionParams` passes
+ * `calculateBookingHoldDecision`'s status, which is only ever PENDING or
+ * PAYMENT_PENDING, and the create sets no `originBookingRequest` and no
+ * `adminCapacityHoldAt`. Neither status holds capacity on its own (#737), so
+ * `bookingHoldsCapacity` is false and another member can still take those nights
+ * — until the member pays, at which point the same booking DOES hold them. Only
+ * the booking row can answer that, and it answers differently on different days,
+ * which is why nothing derives it from the approval.
+ *
+ * A booking id with no row (deleted, or a soft pointer that never resolved) is
+ * simply absent from the map, and the caller's `?? null` turns that into "state
+ * the rule, assert nothing".
+ */
+async function readCreatedBookingCapacityHolds(
+  bookingIds: string[],
+): Promise<Map<string, CreatedBookingCapacityFacts>> {
+  const holds = new Map<string, CreatedBookingCapacityFacts>();
+  if (bookingIds.length === 0) return holds;
+  const bookings = await prisma.booking.findMany({
+    where: { id: { in: bookingIds } },
+    select: {
+      id: true,
+      status: true,
+      adminCapacityHoldAt: true,
+      // The relation-based PENDING extension (#1254): a converted-request booking
+      // holds its beds while unpaid. Selected as an id so the read stays a
+      // presence check rather than pulling the request row.
+      originBookingRequest: { select: { id: true } },
+    },
+  });
+  for (const booking of bookings) {
+    holds.set(booking.id, {
+      holdsCapacity: bookingHoldsCapacity({
+        status: booking.status,
+        isRequestConverted: booking.originBookingRequest !== null,
+        hasAdminCapacityHold: booking.adminCapacityHoldAt !== null,
+      }),
+      // STILL LIVE. `ACTIVE_BOOKING_STATUSES` is the club's own answer to "is this
+      // booking a thing that is still happening": PENDING, PAYMENT_PENDING,
+      // CONFIRMED, PAID, AWAITING_REVIEW. A non-holding booking inside that set is
+      // non-holding because it is UNPAID, which is the only case where telling the
+      // member to open it and pay it is true; CANCELLED, BUMPED and every
+      // waitlist/draft state fall outside it and get the closed sentence instead.
+      awaitsPayment: (ACTIVE_BOOKING_STATUSES as readonly string[]).includes(
+        booking.status,
+      ),
+    });
+  }
+  return holds;
+}
+
+/**
+ * Every booking-policy exception request the member RAISED, merged from both
+ * tables and projected through the member DTO (#2562).
+ *
+ * Scoped on `requestedByMemberId` alone, which is deliberately the requester and
+ * not the booking's owner: a family delegate can raise a request on somebody
+ * else's booking, and it is the person who asked who needs to track, withdraw and
+ * replace it. The booking's owner sees the outcome on the booking itself.
+ *
+ * Three things this function is careful about:
+ *
+ *  1. It selects a STRICT COLUMN LIST, and `internalNotes` is not in it. The
+ *     officer's private note is never read on this path at all, so it cannot be
+ *     leaked by a later mapper edit — there is nothing in memory to leak.
+ *  2. `capacityHeld` comes from the RESERVATION LEDGER (`_count` of live
+ *     `PolicyExceptionReservationNight` rows), never from `aggregateCapacityMode`.
+ *     A new-booking request reserves nothing whatever its mode says, so its answer
+ *     is hard-coded false at the one place that knows why; a modification answers
+ *     from its real rows, which is also correct for the pure-shrink case where a
+ *     HOLD aggregate reserved no bed at all.
+ *  3. Both sources are capped, merged, then sorted newest-first in memory —
+ *     correct across two tables, which one SQL ORDER BY cannot be.
+ *  4. An APPROVED new-booking row gets the CREATED BOOKING's own capacity answer,
+ *     read from that booking's status through `bookingHoldsCapacity`. Approval
+ *     creates the booking the member's own wizard would have created — PENDING or
+ *     PAYMENT_PENDING — and neither holds a bed until it is paid, so "approved"
+ *     is not evidence about beds. Without this read the row told the member their
+ *     beds were on the booking, which is the held-beds promise the owner's
+ *     decision forbids on this path.
+ */
+export async function readMemberExceptionRequests(
+  requestedByMemberId: string,
+): Promise<MemberExceptionRequestItem[]> {
+  const [newBookingRows, modificationRows] = await Promise.all([
+    prisma.newBookingPolicyExceptionRequest.findMany({
+      where: { requestedByMemberId },
+      select: {
+        id: true,
+        status: true,
+        createdAt: true,
+        reviewedAt: true,
+        proposalSnapshot: true,
+        frozenEvidence: true,
+        memberMessage: true,
+        // The MEMBER-FACING decision explanation. `internalNotes` is deliberately
+        // absent from this select — see the doc comment above.
+        adminNotes: true,
+        lastConflictReason: true,
+        lastConflictAt: true,
+        createdBookingId: true,
+        supersededByRequestId: true,
+        // For the capacity SENTENCE only (#2562). `capacityHeld` on this path is
+        // hard-coded false; the mode is what lets the words say WHY.
+        aggregateCapacityMode: true,
+      },
+      orderBy: { createdAt: "desc" },
+      take: MEMBER_EXCEPTION_REQUEST_CAP,
+    }),
+    prisma.bookingChangeRequest.findMany({
+      where: { requestedByMemberId, kind: "POLICY_EXCEPTION" },
+      select: {
+        id: true,
+        status: true,
+        createdAt: true,
+        reviewedAt: true,
+        bookingId: true,
+        proposalSnapshot: true,
+        frozenEvidence: true,
+        memberMessage: true,
+        adminNotes: true,
+        lastConflictReason: true,
+        lastConflictAt: true,
+        supersededByRequestId: true,
+        // The frozen HOLD-if-any-HOLD aggregate, for the capacity SENTENCE and
+        // never for the capacity ANSWER (#2562): a NO_HOLD request that needs beds
+        // and a HOLD request that needs none both hold nothing, and telling a
+        // member the second when the first is true is the lie this fixes.
+        aggregateCapacityMode: true,
+        // The reservation ledger IS the capacity answer (#2525). A count, not the
+        // rows: the member is told whether beds are held, never which nights the
+        // ledger holds them on.
+        _count: { select: { reservationNights: true } },
+      },
+      orderBy: { createdAt: "desc" },
+      take: MEMBER_EXCEPTION_REQUEST_CAP,
+    }),
+  ]);
+
+  // The created bookings' OWN capacity answers, for the approved new-booking rows
+  // only. One extra query, skipped entirely when nothing was approved, and it
+  // reads the three fields `bookingHoldsCapacity` needs and nothing else.
+  const createdBookingFactsById =
+    await readCreatedBookingCapacityHolds(
+      newBookingRows
+        .filter((row) => row.status === "APPROVED" && row.createdBookingId)
+        .map((row) => row.createdBookingId as string),
+    );
+
+  const items: MemberExceptionRequestItem[] = [
+    ...newBookingRows.map((row) =>
+      toMemberExceptionRequestItem({
+        ...row,
+        source: "NEW_BOOKING",
+        bookingId: null,
+        // FALSE for every new-booking request, always: the provisional
+        // reservation ledger is keyed on an existing BookingChangeRequest, and a
+        // new booking has no row to key on. Saying "holding beds" here is the
+        // exact lie the officer queue had to be corrected for in #2526.
+        holdsReservationNights: false,
+        // The created booking's answers, or null where there is no booking or the
+        // row could not be read. Null makes the sentence state the RULE rather
+        // than assert an answer, which is the safe direction here.
+        createdBookingHoldsCapacity: row.createdBookingId
+          ? (createdBookingFactsById.get(row.createdBookingId)?.holdsCapacity ??
+            null)
+          : null,
+        // Whether that booking can still be paid (#2562 re-review). Without it the
+        // row told a member whose booking had been cancelled or reaped to open it and
+        // pay it before somebody else took the nights.
+        createdBookingAwaitsPayment: row.createdBookingId
+          ? (createdBookingFactsById.get(row.createdBookingId)?.awaitsPayment ??
+            null)
+          : null,
+      }),
+    ),
+    ...modificationRows.map((row) =>
+      toMemberExceptionRequestItem({
+        ...row,
+        source: "MODIFICATION",
+        createdBookingId: null,
+        holdsReservationNights: row._count.reservationNights > 0,
+        // No booking was CREATED on this path — the change was applied to one the
+        // member already had — so there is no created-booking answer to give, and
+        // the wording branch for MODIFICATION never asks for one.
+        createdBookingHoldsCapacity: null,
+        createdBookingAwaitsPayment: null,
+      }),
+    ),
+  ];
+
+  items.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  return items.slice(0, MEMBER_EXCEPTION_REQUEST_CAP);
 }

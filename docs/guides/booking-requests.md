@@ -68,12 +68,18 @@ are listed on the booking for you to relay.
 1. Switch to the **Changes** tab. Filter by **Requested**, **Approved**,
    **Rejected**, or **All**.
 
-   ![Booking Requests, Changes tab: a locked-period change request with Admin notes and an Acknowledge as approved button](../images/admin/admin-booking-requests-changes.png)
+   ![Booking Requests, Changes tab showing a locked-period change request with separate member explanation and internal note fields](../images/admin/admin-booking-requests-changes.png)
 
 2. Read the request summary and reason, then use **Open booking** to make the
    actual edit on the booking page — approving here only *acknowledges* the
    review; it does not change the booking automatically.
-3. Optionally paste the **Linked booking modification id** from the booking's
+3. Write **Explanation for the member**. The member reads this verbatim on their
+   own booking page, the field says so above the box, and neither decision can be
+   sent until it is filled in — so write it for them rather than for the file.
+   Anything you would not want them to read goes in **Internal note**, which is
+   optional and never leaves the admin screens (#2562). Each card keeps its own
+   draft: a note you start on one request is never submitted with another.
+4. Optionally paste the **Linked booking modification id** from the booking's
    audit trail so the request and the change are linked, then click
    **Acknowledge as approved** or **Reject**.
 
@@ -216,12 +222,24 @@ being refused. Those asks land here.
    or the add is refused), or that the party is minors with no adult (which still
    goes to a child-safety review, and still blocks check-in until somebody
    clears it). If the list will not load, do not approve — try again.
-5. Click **Decide this request**, write your reason, tick the confirmation, then
-   **Approve and apply** or **Refuse**.
-   - A reason is **required** to refuse and to approve an adult-member hosting
-     exception (it is recorded on the booking with your name on it). **The member
-     reads your note on any decision, not only a refusal**, and it goes on the
-     booking's record, so write it for both audiences.
+5. Click **Decide this request**. There are **two note fields**, and each one says
+   plainly who reads it before you submit anything:
+   - **Explanation for the member.** The member sees this — on their own request
+     list, and in the email an approval sends. Write it for them.
+   - **Internal note (optional).** Only admins see this. It is never shown to the
+     member, never emailed to them, and never sent to any member-facing screen, so
+     it is where a judgement about the member or a note for the next officer
+     belongs. The audit log records *that* you left one, never its text.
+
+   Then tick the confirmation and click **Approve and apply** or **Refuse**.
+   - An **Explanation for the member** is **required** to refuse and to approve an
+     adult-member hosting exception (that one is recorded on the booking with your
+     name on it). An internal note is never a substitute: refusing without a
+     member-facing explanation is rejected, because a refusal the member cannot
+     read is a refusal they cannot act on.
+   - After a decision, both notes stay on the card, separately labelled, so an
+     officer reading a colleague's decision can see which half the member has
+     already read.
    - For a change, the form also asks where a **refund** goes — card or account
      credit — if the change reduces the price of a booking that has already been
      paid. Leave it on *Not needed* when the price does not drop; if a choice
@@ -251,6 +269,31 @@ Two things worth knowing:
   left to pay, because they are not standing in the payment screen the way an
   ordinary booker is. An approved change is announced by the usual "your booking
   was changed" email.
+- **A refusal emails the member too**, carrying your member-facing explanation
+  verbatim, the nights it was about, and the fact that nothing was booked and any
+  beds the request held have been released. That is the whole reason the
+  explanation is mandatory, so write it for the member rather than for the file. A
+  refusal about an existing booking is withheld by that booking's "No emails"
+  switch like every other message about it. A kept-pending capacity conflict sends
+  nothing: the request is still open, the member cannot act on it, and their own
+  request list already says the lodge was full.
+- **The member raises and manages these themselves** (#2562). They ask from the
+  booking wizard or the edit screen, and they track, withdraw and replace their
+  requests under **My booking-rule requests** on their own My Bookings page — so a
+  proposal that looks wrong is theirs to correct, and you do not have to raise or
+  amend one on the phone. When a member uses **Replace**, the old request closes as
+  *Superseded* and a new one starts, which is why a card can vanish from
+  **Requested** and reappear under **Superseded**.
+- **One member can have several open requests, and the queue is not duplicating
+  them.** The enforced cap is one open request per *identical* proposal for new
+  bookings (`nbpe:<member>:<proposalHash>`) and one per *booking* for changes
+  (`pe:<booking>:<member>`) — so a member who asks about two different weekends,
+  without using **Replace**, holds two live requests you can approve
+  independently. Approving both creates both. Read the proposal on each card
+  before you decide, and if the two look like the same intent expressed twice, ask
+  the member which one they want before approving either. What they
+  see is documented in
+  [Booking a stay](../user-guide/booking-a-stay.md#asking-to-be-let-past-a-booking-rule).
 
 ## Settings reference
 
@@ -264,8 +307,8 @@ therefore keeps its **All** context rather than disappearing from view.
 | Tab | Filters | Key actions |
 | --- | --- | --- |
 | Approvals | Pending (default), Approved, Rejected, All | Approve; Reject and cancel (Admin notes required to reject) |
-| Changes | Requested (default), Approved, Rejected, All | Acknowledge as approved; Reject; optional linked modification id |
-| Policy Exceptions | Requested (default), Approved, Rejected, Cancelled, Superseded, All | Approve and apply (confirmation required; reason required for an adult-member hosting override); Refuse (reason required) |
+| Changes | Requested (default), Approved, Rejected, All | Acknowledge as approved; Reject (both need the member-facing explanation); optional internal note the member never sees; optional linked modification id |
+| Policy Exceptions | Requested (default), Approved, Rejected, Cancelled, Superseded, All | Approve and apply (confirmation required; member-facing explanation required for an adult-member hosting override); Refuse (member-facing explanation required). Both actions also take an optional internal note the member never sees |
 | Public Requests | Queue (default), Awaiting verification, Verified, Priced, Quoted, Quote sent, Query, Modify, Accepted, Approved, Declined, Cancelled, Converted, All | Save quote; Send quote; Approve & send payment link / Approve & invoice school; Decline; Hold slots (school) |
 
 Notes and constraints:
@@ -298,7 +341,7 @@ Notes and constraints:
 
 | Symptom | Likely cause | Fix |
 | --- | --- | --- |
-| Reject is blocked | You left **Admin notes** empty | Add a note explaining the decision, then reject |
+| Reject is blocked | You left **Admin notes** empty (Approvals), or **Explanation for the member** empty (Changes, where it blocks both decisions) | Add the explanation for the member, then decide |
 | A change I "approved" did not change the booking | Approving here only acknowledges the review | Open the booking and apply the change on the booking page |
 | A new public request is not on the Approvals tab | Public requests live only on the Public Requests tab | Switch to **Public Requests** and check the **Queue** filter |
 | Approve fails with a capacity message | The lodge is full for one or more nights | The dialog lists the full dates; free capacity or adjust the request |
