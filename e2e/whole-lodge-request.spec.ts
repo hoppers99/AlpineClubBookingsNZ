@@ -5,7 +5,10 @@ import {
   test,
 } from "@playwright/test";
 import { loginPersona, storageStatePath } from "./helpers/auth";
-import { bookingCreateIsolation } from "./helpers/booking-create-client-ip";
+import {
+  bookingCreateIsolation,
+  postBookingCreate,
+} from "./helpers/booking-create-client-ip";
 import { personas } from "./helpers/personas";
 import {
   E2E_ADMIN,
@@ -438,11 +441,6 @@ let approvedBookingId: string | null = null;
 
 test("the acknowledgement is byte-identical whether the lodge is clear, full, or exclusively held", async ({}, testInfo) => {
   test.setTimeout(180_000);
-  const heldAnchorIsolation = bookingCreateIsolation(
-    "whole-lodge-held-anchor",
-    testInfo.retry,
-  );
-
   await clearLeftoverOpenRequests(adminContext.request);
 
   // --- World C setup: make HELD_WINDOW exclusively held ---------------------
@@ -496,10 +494,10 @@ test("the acknowledgement is byte-identical whether the lodge is clear, full, or
     const wandaMemberId = session.user?.id;
     expect(wandaMemberId, "could not resolve Wanda's member id").toBeTruthy();
 
-    const holdBookingResponse = await adminContext.request.post(
-      "/api/bookings",
+    const holdBookingResponse = await postBookingCreate(
+      adminContext.request,
+      bookingCreateIsolation("whole-lodge-held-anchor", testInfo.retry),
       {
-        headers: heldAnchorIsolation.headers,
         data: {
           checkIn: HELD_WINDOW.checkIn,
           checkOut: HELD_WINDOW.checkOut,

@@ -2,6 +2,7 @@ import { type BrowserContext, expect, test, type Page } from "@playwright/test";
 import { storageStatePath } from "./helpers/auth";
 import {
   bookingCreateIsolation,
+  postBookingCreate,
   withBookingCreateClientIp,
 } from "./helpers/booking-create-client-ip";
 import { personas } from "./helpers/personas";
@@ -283,25 +284,27 @@ test("a member's own /book calendar keeps past days disabled", async () => {
 });
 
 test("a member POST carrying allowPastDates is rejected 403", async ({}, testInfo) => {
-  const isolation = bookingCreateIsolation(
-    "admin-retroactive-member-rejection",
-    testInfo.retry,
-  );
-  const res = await memberContext.request.post("/api/bookings", {
-    headers: isolation.headers,
-    data: {
-      checkIn: isoDay(30),
-      checkOut: isoDay(32),
-      guests: [
-        {
-          firstName: "Alice",
-          lastName: "Anderson",
-          ageTier: "ADULT",
-          isMember: true,
-        },
-      ],
-      allowPastDates: true,
+  const res = await postBookingCreate(
+    memberContext.request,
+    bookingCreateIsolation(
+      "admin-retroactive-member-rejection",
+      testInfo.retry,
+    ),
+    {
+      data: {
+        checkIn: isoDay(30),
+        checkOut: isoDay(32),
+        guests: [
+          {
+            firstName: "Alice",
+            lastName: "Anderson",
+            ageTier: "ADULT",
+            isMember: true,
+          },
+        ],
+        allowPastDates: true,
+      },
     },
-  });
+  );
   expect(res.status(), `member allowPastDates (${res.status()})`).toBe(403);
 });

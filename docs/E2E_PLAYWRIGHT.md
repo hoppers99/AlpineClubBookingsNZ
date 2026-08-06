@@ -460,9 +460,10 @@ Four rules follow, and a new spec must satisfy all four:
   (`e2e/helpers/booking-create-client-ip.ts`) is the closed census: repeated
   booking-create calls in one logical test attempt share one `10.240.0.0/16`
   bucket, while different registered tests and retry numbers cannot collide.
-  Pass its `headers` on a direct `APIRequestContext.post`, or use
+  Use `postBookingCreate` for a direct `APIRequestContext` create, or use
   `withBookingCreateClientIp` around exactly the browser action that emits the
-  create. Never put this header on a whole browser/admin context: login,
+  create. Both paths are structurally tied to the census. Never put this header
+  on a whole browser/admin context: login,
   availability and policy requests must keep their own client identity. The
   login helper's `10.99.0.0/16` and whole-lodge submission worlds'
   `10.77.1.0/24` remain separate and unchanged. This is isolation, not a bypass:

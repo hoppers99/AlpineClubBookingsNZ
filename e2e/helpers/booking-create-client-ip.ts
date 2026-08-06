@@ -1,4 +1,4 @@
-import type { Page } from "@playwright/test";
+import type { APIRequestContext, APIResponse, Page } from "@playwright/test";
 
 /**
  * Closed census of E2E tests that submit `POST /api/bookings`.
@@ -204,6 +204,33 @@ export function bookingCreateIsolation(
     retry,
     clientIp,
     headers: Object.freeze({ "x-forwarded-for": clientIp }),
+  });
+}
+
+type BookingCreatePostOptions = NonNullable<
+  Parameters<APIRequestContext["post"]>[1]
+>;
+
+/**
+ * Submit one direct E2E booking-create request through its registered bucket.
+ *
+ * Keeping the exact route literal in this one helper lets the executable census
+ * reject every raw `APIRequestContext.post` call in a spec, including a call
+ * whose path is hidden behind a simple const alias. Per-request headers are
+ * merged so an existing scenario header is preserved; only `x-forwarded-for`
+ * is deliberately replaced by the registered isolation identity.
+ */
+export function postBookingCreate(
+  request: APIRequestContext,
+  isolation: BookingCreateIsolation,
+  options: BookingCreatePostOptions,
+): Promise<APIResponse> {
+  return request.post("/api/bookings", {
+    ...options,
+    headers: {
+      ...options.headers,
+      ...isolation.headers,
+    },
   });
 }
 

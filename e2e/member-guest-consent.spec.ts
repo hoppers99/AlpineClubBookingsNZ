@@ -1,5 +1,6 @@
 import {
   type APIRequestContext,
+  type APIResponse,
   type BrowserContext,
   type Page,
   expect,
@@ -7,8 +8,8 @@ import {
 } from "@playwright/test";
 import { loginPersona } from "./helpers/auth";
 import {
-  type BookingCreateIsolation,
   bookingCreateIsolation,
+  postBookingCreate,
 } from "./helpers/booking-create-client-ip";
 import { E2E_ADMIN, NOMINATOR_TWO, WAITLISTER } from "./helpers/fixtures";
 import { stayWindow } from "./helpers/stay-dates";
@@ -118,12 +119,10 @@ type CreatedBooking = {
   guests: Array<{ id: string; memberId: string | null; consentStatus: string | null }>;
 };
 
-async function createBookingWithMemberGuest(
+function memberGuestBookingOptions(
   window: { checkIn: string; checkOut: string },
-  isolation: BookingCreateIsolation,
-): Promise<CreatedBooking> {
-  const res = await wandaPage.request.post("/api/bookings", {
-    headers: isolation.headers,
+) {
+  return {
     data: {
       checkIn: window.checkIn,
       checkOut: window.checkOut,
@@ -144,7 +143,12 @@ async function createBookingWithMemberGuest(
         },
       ],
     },
-  });
+  };
+}
+
+async function createdBookingFromResponse(
+  res: APIResponse,
+): Promise<CreatedBooking> {
   expect(res.status(), `POST /api/bookings (${res.status()})`).toBe(201);
   return (await res.json()) as CreatedBooking;
 }
@@ -200,9 +204,12 @@ test("the target approves on the booking page's consent card and the badge flips
   // message. The helper's own docblock asks for exactly this, and the two other
   // specs that read mail do it the same way.
   await clearMailbox();
-  const booking = await createBookingWithMemberGuest(
-    approveWindow(testInfo.retry),
-    bookingCreateIsolation("member-guest-consent-approve", testInfo.retry),
+  const booking = await createdBookingFromResponse(
+    await postBookingCreate(
+      wandaPage.request,
+      bookingCreateIsolation("member-guest-consent-approve", testInfo.retry),
+      memberGuestBookingOptions(approveWindow(testInfo.retry)),
+    ),
   );
   approvedGuestId = pendingGuestOf(booking).id;
 
@@ -255,9 +262,12 @@ test("the target approves on the booking page's consent card and the badge flips
 });
 
 test("the target declines on an unpaid booking and the booker's guest list no longer names them", async ({}, testInfo) => {
-  const booking = await createBookingWithMemberGuest(
-    declineWindow(testInfo.retry),
-    bookingCreateIsolation("member-guest-consent-decline", testInfo.retry),
+  const booking = await createdBookingFromResponse(
+    await postBookingCreate(
+      wandaPage.request,
+      bookingCreateIsolation("member-guest-consent-decline", testInfo.retry),
+      memberGuestBookingOptions(declineWindow(testInfo.retry)),
+    ),
   );
   const guest = pendingGuestOf(booking);
 
