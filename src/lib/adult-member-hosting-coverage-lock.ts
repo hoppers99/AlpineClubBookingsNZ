@@ -1,4 +1,7 @@
 import type { Prisma } from "@prisma/client";
+import { z } from "zod";
+
+import { decodeRawRows } from "@/lib/raw-sql-rows";
 
 /**
  * The per-OWNER advisory lock that makes same-owner coverage deterministic
@@ -63,11 +66,25 @@ type CoverageOwnerLockClient = {
   $executeRaw: Prisma.TransactionClient["$executeRaw"];
 };
 
+type CoverageOwnerTryLockClient = {
+  $queryRaw: Prisma.TransactionClient["$queryRaw"];
+};
+
+const COVERAGE_OWNER_TRY_LOCK_ROW = z.object({ locked: z.boolean() });
+
 function hasExecuteRaw(db: unknown): db is CoverageOwnerLockClient {
   return (
     typeof db === "object" &&
     db !== null &&
     typeof (db as { $executeRaw?: unknown }).$executeRaw === "function"
+  );
+}
+
+function hasQueryRaw(db: unknown): db is CoverageOwnerTryLockClient {
+  return (
+    typeof db === "object" &&
+    db !== null &&
+    typeof (db as { $queryRaw?: unknown }).$queryRaw === "function"
   );
 }
 
@@ -102,6 +119,49 @@ export async function lockHostingCoverageOwner(
   memberId: string | null | undefined,
 ): Promise<void> {
   await lockHostingCoverageOwners(db, [memberId]);
+}
+
+/**
+ * Fail-fast counterpart used by #2597's per-seam participant protocol.
+ *
+ * A bulk transaction may call one producer several times. Member KEY SHARE
+ * locks are mutually compatible, so their NOWAIT clause cannot by itself stop
+ * two transactions that already hold different coverage-owner keys from
+ * waiting on one another's later key. Trying each sorted owner key closes that
+ * remaining hold-and-wait edge: false makes the caller roll its WHOLE outer
+ * transaction back. Any later blocking acquisition of the same key is
+ * re-entrant on the same PostgreSQL session.
+ */
+export async function tryLockHostingCoverageOwners(
+  db: unknown,
+  memberIds: readonly (string | null | undefined)[],
+): Promise<boolean> {
+  if (!hasQueryRaw(db)) return true;
+  const keys = Array.from(
+    new Set(memberIds.filter((id): id is string => Boolean(id))),
+  ).sort();
+  for (const memberId of keys) {
+    const returned = await db.$queryRaw`
+      SELECT pg_try_advisory_xact_lock(
+        hashtext(${HOSTING_COVERAGE_OWNER_LOCK_NAMESPACE}),
+        hashtext(${memberId})
+      ) AS "locked"
+    `;
+    const rows = decodeRawRows(
+      returned,
+      COVERAGE_OWNER_TRY_LOCK_ROW,
+      "hosting coverage owner try-lock",
+    );
+    if (rows[0]?.locked !== true) return false;
+  }
+  return true;
+}
+
+export async function tryLockHostingCoverageOwner(
+  db: unknown,
+  memberId: string | null | undefined,
+): Promise<boolean> {
+  return tryLockHostingCoverageOwners(db, [memberId]);
 }
 
 /** Exported for the concurrency test that pins the namespace and the SQL shape. */

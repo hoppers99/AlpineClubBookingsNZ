@@ -3,6 +3,10 @@ import { randomUUID } from "node:crypto";
 import type { Prisma, PrismaClient } from "@prisma/client";
 
 import type { HostingCoverageIncidentCause } from "@/lib/adult-member-hosting-coverage-incidents";
+import {
+  assertHostingCoverageQueueParticipantsLocked,
+  type HostingCoverageQueueParticipantProof,
+} from "@/lib/adult-member-hosting-queue-participants";
 
 /**
  * The durable queue of BOUNDED same-owner re-evaluation work (#2576 §8).
@@ -82,8 +86,13 @@ const HOSTING_COVERAGE_REEVALUATION_LEASE_MS = 15 * 60 * 1000;
  */
 export async function enqueueHostingCoverageReevaluation(
   input: HostingCoverageReevaluationInput,
+  participantProof: HostingCoverageQueueParticipantProof,
   db: HostingCoverageQueueDb,
 ): Promise<string | null> {
+  // The storage primitive is the final authority boundary. A caller cannot
+  // bypass the participant fence with a cast: proofs are runtime-issued and
+  // tracked privately by adult-member-hosting-queue-participants.ts.
+  assertHostingCoverageQueueParticipantsLocked(participantProof, input);
   const nights = [...new Set(input.nights)].sort();
   if (nights.length === 0) return null;
   const row = await db.hostingCoverageReevaluation.create({
@@ -203,9 +212,10 @@ export async function claimHostingCoverageReevaluations(
  * transaction. Member merge can re-point both live member identities after the
  * claim commits, so the drain uses its snapshot only for the existing-row merge
  * handshake and reconciles exclusively from this exact-token refresh. Ordinary
- * booking/member producer rows inserted after merge's relation sweep are the
- * separate #2597 topology repair; policy/config-transfer reconciliation is
- * serialised by the shared policy-set lock.
+ * producers use the queue participant proof before storage, while merge fences
+ * its exact post-move participants and performs late pointer sweeps. Policy and
+ * config-transfer reconciliation remain serialised by the shared policy-set
+ * lock.
  */
 export async function loadClaimedHostingCoverageReevaluation(
   claim: HostingCoverageReevaluationClaim,

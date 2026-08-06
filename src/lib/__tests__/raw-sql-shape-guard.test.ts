@@ -68,6 +68,10 @@ const RAW_READ_INVENTORY: Record<string, number> = {
   // returned by `pg_try_advisory_xact_lock`; the row is schema-decoded before
   // the worker decides whether it may proceed.
   "src/lib/adult-member-hosting-policy-set.ts": 1,
+  // The hosting coverage participant protocol's fail-fast owner lock reads the
+  // boolean returned by pg_try_advisory_xact_lock and schema-decodes it before
+  // deciding whether the outer transaction must retry.
+  "src/lib/adult-member-hosting-coverage-lock.ts": 1,
 };
 
 /**
@@ -168,6 +172,12 @@ function rawStatements(
   return found;
 }
 
+function rawReadCount(source: string): number {
+  return rawStatements(source).filter((statement) =>
+    statement.tag.startsWith("$queryRaw"),
+  ).length;
+}
+
 const sources = SCANNED_DIRS.flatMap((dir) => {
   const full = path.join(process.cwd(), dir);
   return fs.existsSync(full) ? walk(full) : [];
@@ -256,7 +266,7 @@ describe("raw SQL cannot lie about its result shape (#2289)", () => {
   it("keeps every raw READ inside the reviewed inventory", () => {
     const found: Record<string, number> = {};
     for (const { rel, code } of sources) {
-      const count = (code.match(/\$queryRaw(Unsafe)?\b/g) ?? []).length;
+      const count = rawReadCount(code);
       if (count > 0) found[rel] = count;
     }
 
@@ -288,7 +298,7 @@ describe("raw SQL cannot lie about its result shape (#2289)", () => {
       .filter(({ rel }) => !(rel in RAW_READ_OPT_OUTS))
       .map(({ rel, code }) => ({
         rel,
-        reads: (code.match(/\$queryRaw(Unsafe)?\b/g) ?? []).length,
+        reads: rawReadCount(code),
         decodes: (code.match(new RegExp(`\\b${DECODER}\\s*\\(`, "g")) ?? []).length,
       }))
       .filter(({ reads }) => reads > 0)

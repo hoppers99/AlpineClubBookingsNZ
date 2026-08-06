@@ -88,6 +88,11 @@ function defaultDelegate() {
 function makeClient(overrides: Record<string, unknown> = {}) {
   const memberDelegate = {
     ...defaultDelegate(),
+    findMany: vi.fn(({ where }: { where?: { id?: { in?: string[] } } }) =>
+      Promise.resolve(
+        (where?.id?.in ?? []).slice().sort().map((id) => ({ id })),
+      ),
+    ),
     findUnique: vi.fn(({ where }: { where: { id: string } }) =>
       Promise.resolve(where.id === MASTER_ID ? master : where.id === LOSER_ID ? loser : null),
     ),
@@ -100,11 +105,34 @@ function makeClient(overrides: Record<string, unknown> = {}) {
   };
 
   const cache = new Map<string, unknown>();
-  cache.set("member", overrides.member ?? memberDelegate);
+  const overriddenMember = overrides.member as
+    | (Record<string, unknown> & {
+        findMany?: (args: unknown) => unknown;
+      })
+    | undefined;
+  cache.set(
+    "member",
+    overriddenMember
+      ? {
+          ...overriddenMember,
+          findMany: vi.fn((args: unknown) => {
+            const ids = (
+              args as { where?: { id?: { in?: string[] } } }
+            ).where?.id?.in;
+            if (ids) {
+              return Promise.resolve(
+                ids.slice().sort().map((id) => ({ id })),
+              );
+            }
+            return overriddenMember.findMany?.(args) ?? Promise.resolve([]);
+          }),
+        }
+      : memberDelegate,
+  );
   cache.set("auditLog", overrides.auditLog ?? { create: vi.fn().mockResolvedValue({}) });
 
-  // One stable spy, so a test can assert WHICH raw statements were issued (the
-  // two advisory locks plus the id-ordered `FOR UPDATE` row lock, #2243).
+  // One stable spy lets tests distinguish advisory-lock statements from the
+  // id-ordered Member `FOR UPDATE` statement (#2243, #2597).
   const executeRaw = vi.fn().mockResolvedValue(0);
 
   const tx = new Proxy(
@@ -112,6 +140,7 @@ function makeClient(overrides: Record<string, unknown> = {}) {
     {
       get(_t, prop: string) {
         if (prop === "$executeRaw") return executeRaw;
+        if (prop === "member") return cache.get("member");
         if (prop in overrides) return overrides[prop as keyof typeof overrides];
         if (!cache.has(prop)) cache.set(prop, defaultDelegate());
         return cache.get(prop);
@@ -131,6 +160,7 @@ function makeClient(overrides: Record<string, unknown> = {}) {
         if (prop === "$transaction") {
           return (target as { $transaction: unknown }).$transaction;
         }
+        if (prop === "member") return cache.get("member");
         if (prop in overrides) return overrides[prop as keyof typeof overrides];
         if (!cache.has(prop)) cache.set(prop, defaultDelegate());
         return cache.get(prop);
@@ -148,6 +178,12 @@ function makeClient(overrides: Record<string, unknown> = {}) {
 }
 
 type AuditCreateSpy = ReturnType<typeof vi.fn>;
+
+function rawStatement(input: unknown): string {
+  if (Array.isArray(input)) return input.join("?");
+  const strings = (input as { strings?: readonly string[] })?.strings;
+  return strings ? strings.join("?") : String(input);
+}
 
 /** MEMBER_MERGE_REFUSED audit rows written by the refusal boundary (#2498). */
 function refusalAuditCalls(create: AuditCreateSpy) {
@@ -450,14 +486,20 @@ describe("executeMemberMerge", () => {
   });
 
   it("re-points queued hosting actor attribution before hard-deleting the loser", async () => {
+    let actorRows = 1;
     const hostingCoverageReevaluation = {
       ...defaultDelegate(),
       count: vi.fn(({ where }: { where: Record<string, unknown> }) =>
         Promise.resolve(where.actorMemberId === LOSER_ID ? 1 : 0),
       ),
-      updateMany: vi.fn(({ where }: { where: Record<string, unknown> }) =>
-        Promise.resolve({ count: where.actorMemberId === LOSER_ID ? 1 : 0 }),
-      ),
+      updateMany: vi.fn(({ where }: { where: Record<string, unknown> }) => {
+        if (where.actorMemberId !== LOSER_ID) {
+          return Promise.resolve({ count: 0 });
+        }
+        const count = actorRows;
+        actorRows = 0;
+        return Promise.resolve({ count });
+      }),
     };
     const { client } = makeClient({ hostingCoverageReevaluation });
     const core: MemberMergePreviewCore = {
@@ -499,6 +541,125 @@ describe("executeMemberMerge", () => {
       model: "HostingCoverageReevaluation.actorMemberId",
       count: 1,
     });
+  });
+
+  it("folds late hosting owner and actor sweeps into one result row per relation", async () => {
+    let ownerSweep = 0;
+    let actorSweep = 0;
+    const hostingCoverageReevaluation = {
+      ...defaultDelegate(),
+      count: vi.fn(({ where }: { where: Record<string, unknown> }) =>
+        Promise.resolve(
+          where.memberId === LOSER_ID || where.actorMemberId === LOSER_ID
+            ? 1
+            : 0,
+        ),
+      ),
+      updateMany: vi.fn(({ where }: { where: Record<string, unknown> }) => {
+        if (where.memberId === LOSER_ID) {
+          ownerSweep += 1;
+          return Promise.resolve({ count: ownerSweep === 1 ? 1 : 2 });
+        }
+        if (where.actorMemberId === LOSER_ID) {
+          actorSweep += 1;
+          return Promise.resolve({ count: actorSweep === 1 ? 1 : 3 });
+        }
+        return Promise.resolve({ count: 0 });
+      }),
+    };
+    const { client } = makeClient({ hostingCoverageReevaluation });
+    const core: MemberMergePreviewCore = {
+      fieldMerge: mergeMemberFields(
+        master as unknown as Record<string, unknown>,
+        loser as unknown as Record<string, unknown>,
+      ).diff,
+      relationMoves: [
+        { model: "HostingCoverageReevaluation.member", count: 1 },
+        {
+          model: "HostingCoverageReevaluation.actorMemberId",
+          count: 1,
+        },
+      ],
+      collisions: [],
+      blockers: [],
+      warnings: [],
+    };
+
+    const result = await executeMemberMerge({
+      masterId: MASTER_ID,
+      loserId: LOSER_ID,
+      actorMemberId: ACTOR_ID,
+      previewToken: buildMemberMergePreviewToken(
+        MASTER_ID,
+        LOSER_ID,
+        master.updatedAt,
+        loser.updatedAt,
+        core,
+      ),
+      confirmationText: "MERGE Dup Person",
+      db: client as never,
+    });
+
+    expect(
+      result.relationMoves.filter(
+        (move) => move.model === "HostingCoverageReevaluation.member",
+      ),
+    ).toEqual([
+      { model: "HostingCoverageReevaluation.member", count: 3 },
+    ]);
+    expect(
+      result.relationMoves.filter(
+        (move) =>
+          move.model === "HostingCoverageReevaluation.actorMemberId",
+      ),
+    ).toEqual([
+      {
+        model: "HostingCoverageReevaluation.actorMemberId",
+        count: 4,
+      },
+    ]);
+  });
+
+  it("refuses a loser-owned booking that appears after the bounded ownership capture", async () => {
+    const booking = {
+      ...defaultDelegate(),
+      findMany: vi.fn((args: {
+        where?: Record<string, unknown>;
+        orderBy?: unknown;
+      }) => {
+        if (args.where?.memberId === LOSER_ID && args.orderBy) {
+          return Promise.resolve([{ id: "late-booking" }]);
+        }
+        return Promise.resolve([]);
+      }),
+    };
+    const { client, member, auditLog } = makeClient({ booking });
+
+    await expect(
+      executeMemberMerge({
+        masterId: MASTER_ID,
+        loserId: LOSER_ID,
+        actorMemberId: ACTOR_ID,
+        previewToken: validToken(),
+        confirmationText: "MERGE Dup Person",
+        db: client as never,
+      }),
+    ).rejects.toMatchObject({
+      statusCode: 409,
+      code: "merge_drift_in_transaction",
+      details: {
+        driftFields: ["Booking.member"],
+        bookingIds: ["late-booking"],
+      },
+    });
+
+    expect(
+      (member as { delete: ReturnType<typeof vi.fn> }).delete,
+    ).not.toHaveBeenCalled();
+    expectRefusedAudit(
+      (auditLog as { create: ReturnType<typeof vi.fn> }).create,
+      "merge_drift_in_transaction",
+    );
   });
 
   it("hands the MASTER's id to the conversion replay path after the merge (#2243)", async () => {
@@ -1298,20 +1459,29 @@ describe("member-photo reconciliation at execute time (MP1, #189)", () => {
       db: client as never,
     });
 
-    const statements = executeRaw.mock.calls.map(([strings]) =>
-      (strings as string[]).join("?"),
+    const statements = executeRaw.mock.calls.map(([statement]) =>
+      rawStatement(statement),
     );
     const rowLockIndex = statements.findIndex((s) => s.includes("FOR UPDATE"));
     expect(rowLockIndex).toBeGreaterThanOrEqual(0);
-    expect(statements[rowLockIndex]).toContain('SELECT 1 FROM "Member"');
+    expect(statements[rowLockIndex]).toContain('FROM "Member"');
     expect(statements[rowLockIndex]).toContain('ORDER BY "id"');
     // One statement covering both ids, sorted — same ordering rule as the two
     // advisory locks above it, so the mirror merge cannot deadlock against it.
-    const lockArgs = executeRaw.mock.calls[rowLockIndex].slice(1) as string[];
+    const lockInput = executeRaw.mock.calls[rowLockIndex][0] as {
+      values?: string[];
+    };
+    const lockArgs =
+      lockInput.values ??
+      (executeRaw.mock.calls[rowLockIndex].slice(1) as string[]);
     expect(lockArgs).toEqual([MASTER_ID, LOSER_ID].sort());
     // Hosting policy-set first, then both lifecycle keys in sorted order. This is
     // the counterpart order shared with policy reconciliation and the drain.
-    expect(statements.slice(0, 3).every((s) => s.includes("pg_advisory_xact_lock"))).toBe(true);
+    expect(
+      statements
+        .slice(0, 3)
+        .every((s) => s.includes("pg_advisory_xact_lock")),
+    ).toBe(true);
     expect(executeRaw.mock.calls[0][1]).toBe(
       ADULT_MEMBER_HOSTING_POLICY_SET_LOCK_KEY,
     );
@@ -1327,6 +1497,25 @@ describe("member-photo reconciliation at execute time (MP1, #189)", () => {
     const queuedOwners: string[] = [];
     const booking = {
       ...defaultDelegate(),
+      findMany: vi.fn(({ where }: { where: Record<string, any> }) => {
+        if (where.memberId === LOSER_ID) {
+          return Promise.resolve(
+            bookingOwnerId === LOSER_ID ? [{ id: "booking-1" }] : [],
+          );
+        }
+        if (where.id?.in?.includes("booking-1")) {
+          return Promise.resolve([
+            {
+              id: "booking-1",
+              memberId: bookingOwnerId,
+              lodgeId: "lodge-1",
+              checkIn: new Date("2026-08-01T00:00:00Z"),
+              checkOut: new Date("2026-08-02T00:00:00Z"),
+            },
+          ]);
+        }
+        return Promise.resolve([]);
+      }),
       count: vi.fn(({ where }: { where: Record<string, unknown> }) =>
         Promise.resolve(where.memberId === LOSER_ID ? 1 : 0),
       ),
@@ -1354,7 +1543,7 @@ describe("member-photo reconciliation at execute time (MP1, #189)", () => {
     const mergeCommitted = deferred();
 
     executeRaw.mockImplementation(async (strings, ...values) => {
-      const statement = (strings as string[]).join("?");
+      const statement = rawStatement(strings);
       if (
         statement.includes("pg_advisory_xact_lock") &&
         values[0] === ADULT_MEMBER_HOSTING_POLICY_SET_LOCK_KEY
