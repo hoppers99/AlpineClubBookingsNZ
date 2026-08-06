@@ -206,6 +206,9 @@ function makeStore(
 
   const db = {
     $executeRaw: vi.fn().mockResolvedValue(1),
+    $queryRaw: vi.fn(async (_query: unknown, actorMemberId: string) =>
+      actorMemberId === "missing-officer" ? [] : [{ id: actorMemberId }],
+    ),
     booking: {
       findUnique: vi.fn(async ({ where }: any) => byId.get(where.id) ?? null),
       findMany: vi.fn(async ({ where, select, orderBy, take }: any) => {
@@ -251,12 +254,7 @@ function makeStore(
       findMany: vi.fn().mockResolvedValue(options.policies ?? [policyRow()]),
     },
     lodge: { findFirst: vi.fn().mockResolvedValue({ name: "Ruapehu Lodge" }) },
-    member: {
-      findMany: vi.fn().mockResolvedValue([]),
-      findUnique: vi.fn(async ({ where }: any) =>
-        where.id === "missing-officer" ? null : { id: where.id },
-      ),
-    },
+    member: { findMany: vi.fn().mockResolvedValue([]) },
     hostingCoverageIncident: {
       findMany: vi.fn(async ({ where }: any) =>
         incidents.filter((incident) =>
@@ -1865,6 +1863,7 @@ describe("settling a dependent booking after the change (#2576 §7, §14, §16)"
       overriddenByMemberId: null,
       overrideReason: null,
     });
+    expect(db.$queryRaw).toHaveBeenCalledTimes(1);
   });
 
   it("does not refuse from inside the drain, however the club is configured", async () => {

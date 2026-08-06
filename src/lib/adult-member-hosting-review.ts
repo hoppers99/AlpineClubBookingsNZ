@@ -124,6 +124,7 @@ export type AdultMemberHostingReviewDb = Pick<
   | "hostingCoverageReevaluation"
   | "auditLog"
   | "$executeRaw"
+  | "$queryRaw"
 >;
 
 /** The narrow client the policy read needs on its own. */
@@ -2062,7 +2063,9 @@ export async function loadSameOwnerCoverageDependentIds(
  *    closed rather than left standing, and no loss-of-cover message is sent;
  *  - a hazard, no incident or a materially different one → open or update, and
  *    report the state key so the caller can notify ONCE for that transition;
- *  - a hazard identical to the recorded one → `unchanged`, and no notification.
+ *  - a hazard identical to the recorded one → `unchanged`, with no incident write;
+ *    the caller still checks the delivery lease because a prior transient transport
+ *    failure may have left this exact state unnotified.
  *
  * The review snapshot is reconciled first, with `REVIEW_ONLY`. That is not a
  * carve-out from the enforced consequence: the booking already exists and was
@@ -2097,13 +2100,17 @@ export async function reconcileSameOwnerCoverageIncident(
   // hard deletion between enqueue and drain can still leave a dangling id.
   // Incident attribution IS a real FK, so verify at the promotion seam and
   // degrade to anonymous system attribution rather than retrying a poison item.
+  // `FOR KEY SHARE` closes the existence-check/FK-write race: a present actor
+  // cannot be hard-deleted until this reconciliation transaction commits.
   const actorMemberId = params.actorMemberId
     ? (
-        await db.member.findUnique({
-          where: { id: params.actorMemberId },
-          select: { id: true },
-        })
-      )?.id ?? null
+        await db.$queryRaw<Array<{ id: string }>>`
+          SELECT "id"
+          FROM "Member"
+          WHERE "id" = ${params.actorMemberId}
+          FOR KEY SHARE
+        `
+      )[0]?.id ?? null
     : null;
 
   const outcome = await reconcileAdultMemberHostingReview(params.bookingId, db, {
