@@ -1267,13 +1267,12 @@ describe("bed allocation planner", () => {
       }),
     );
     const edges = [
-      ["a", "c"],
-      ["a", "e"],
-      ["a", "g"],
-      ["b", "f"],
-      ["b", "g"],
+      ["a", "d"],
+      ["b", "d"],
       ["c", "f"],
-      ["d", "e"],
+      ["d", "f"],
+      ["e", "f"],
+      ["f", "g"],
     ] as const;
     const familyGroupIds = Object.fromEntries(
       ["a", "b", "c", "d", "e", "f", "g"].map((id) => [
@@ -1287,13 +1286,13 @@ describe("bed allocation planner", () => {
       familyGroupIds[right].push(groupId);
     }
     const ranges: Record<string, [string, string]> = {
-      a: ["2026-07-03", "2026-07-04"],
+      a: ["2026-07-04", "2026-07-05"],
       b: ["2026-07-02", "2026-07-04"],
-      c: ["2026-07-01", "2026-07-04"],
+      c: ["2026-07-03", "2026-07-05"],
       d: ["2026-07-02", "2026-07-04"],
-      e: ["2026-07-03", "2026-07-04"],
-      f: ["2026-07-01", "2026-07-02"],
-      g: ["2026-07-03", "2026-07-04"],
+      e: ["2026-07-02", "2026-07-03"],
+      f: ["2026-07-03", "2026-07-05"],
+      g: ["2026-07-02", "2026-07-05"],
     };
     const input = {
       enabled: true,
@@ -1319,7 +1318,11 @@ describe("bed allocation planner", () => {
         row.roomId,
       ]),
     );
-    const preservedEdgeNights = ["2026-07-01", "2026-07-02", "2026-07-03"]
+    const preservedEdgeNights = [
+      "2026-07-02",
+      "2026-07-03",
+      "2026-07-04",
+    ]
       .flatMap((stayDate) =>
         edges.map(([left, right]) => ({ left, right, stayDate })),
       )
@@ -1331,19 +1334,23 @@ describe("bed allocation planner", () => {
         );
       });
 
-    expect(preservedEdgeNights).toHaveLength(4);
-    expect(
-      new Set(
-        ["a", "c", "e"].map((guestId) =>
-          roomByGuestNight.get(`${guestId}:2026-07-03`),
-        ),
-      ).size,
-    ).toBe(1);
-    expect(roomByGuestNight.get("b:2026-07-03")).toBe(
-      roomByGuestNight.get("g:2026-07-03"),
-    );
-    expect(roomByGuestNight.get("c:2026-07-01")).toBe(
-      roomByGuestNight.get("f:2026-07-01"),
+    expect(preservedEdgeNights).toHaveLength(6);
+    for (const stayDate of ["2026-07-03", "2026-07-04"]) {
+      expect(
+        new Set(
+          ["c", "f", "g"].map((guestId) =>
+            roomByGuestNight.get(`${guestId}:${stayDate}`),
+          ),
+        ).size,
+      ).toBe(1);
+    }
+    for (const stayDate of ["2026-07-02", "2026-07-03"]) {
+      expect(roomByGuestNight.get(`b:${stayDate}`)).toBe(
+        roomByGuestNight.get(`d:${stayDate}`),
+      );
+    }
+    expect(roomByGuestNight.get("d:2026-07-03")).not.toBe(
+      roomByGuestNight.get("f:2026-07-03"),
     );
     expect(buildFirstFitBedAllocationPlan(input)).toEqual(plan);
   });
