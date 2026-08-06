@@ -16,6 +16,7 @@ import {
   claimHostingCoverageOwnerNotification,
   completeHostingCoverageOwnerNotification,
   hostingCoverageStateKey,
+  loadHostingCoverageOwnerNotificationDelivery,
   openOrUpdateHostingCoverageIncident,
   releaseHostingCoverageOwnerNotification,
   resolveHostingCoverageIncidents,
@@ -581,6 +582,72 @@ describe("the owner is told once per transition (#2576 §16)", () => {
       vi.useRealTimers();
     }
   });
+
+  it("freezes incident evidence only while the exact incident, state, and token are current", async () => {
+    const row = {
+      id: "incident-1",
+      bookingId: "booking-1",
+      resolvedAt: null as Date | null,
+      stateKey: "v1:a",
+      ownerNotificationClaimStateKey: "v1:a",
+      ownerNotificationClaimToken: "notification-current",
+      evidence: { affectedNights: ["2026-07-03", "2026-07-04"] },
+      booking: {
+        id: "booking-1",
+        memberId: "owner-1",
+        lodgeId: "lodge-a",
+        checkIn: new Date("2026-07-03T00:00:00.000Z"),
+        checkOut: new Date("2026-07-05T00:00:00.000Z"),
+        member: { firstName: "Owner", email: "owner@example.test" },
+      },
+    };
+    const findFirst = vi.fn(async ({ where }: any) => {
+      const current =
+        row.id === where.id &&
+        row.bookingId === where.bookingId &&
+        row.resolvedAt == null &&
+        row.stateKey === where.stateKey &&
+        row.ownerNotificationClaimStateKey ===
+          where.ownerNotificationClaimStateKey &&
+        row.ownerNotificationClaimToken === where.ownerNotificationClaimToken;
+      return current ? { evidence: row.evidence, booking: row.booking } : null;
+    });
+    const db = { hostingCoverageIncident: { findFirst } } as any;
+    const claim = {
+      bookingId: "booking-1",
+      incidentId: "incident-1",
+      stateKey: "v1:a",
+      claimToken: "notification-current",
+    };
+
+    await expect(
+      loadHostingCoverageOwnerNotificationDelivery(claim, db),
+    ).resolves.toMatchObject({
+      bookingId: "booking-1",
+      recipientMemberId: "owner-1",
+      uncoveredNights: "2026-07-03, 2026-07-04",
+    });
+    expect(JSON.stringify(findFirst.mock.calls[0][0].select)).not.toContain(
+      "adultMemberHostingReview",
+    );
+
+    row.ownerNotificationClaimToken = "notification-successor";
+    await expect(
+      loadHostingCoverageOwnerNotificationDelivery(claim, db),
+    ).resolves.toBeNull();
+
+    row.ownerNotificationClaimToken = "notification-current";
+    row.stateKey = "v1:b";
+    await expect(
+      loadHostingCoverageOwnerNotificationDelivery(claim, db),
+    ).resolves.toBeNull();
+
+    row.stateKey = "v1:a";
+    row.resolvedAt = new Date();
+    await expect(
+      loadHostingCoverageOwnerNotificationDelivery(claim, db),
+    ).resolves.toBeNull();
+  });
 });
 
 /** An in-memory re-evaluation queue. */
@@ -606,6 +673,8 @@ function makeQueueDb(seed: Array<Record<string, unknown>> = []) {
           .filter(
             (row) =>
               (where.processedAt !== null || row.processedAt == null) &&
+              (where.id?.notIn === undefined ||
+                !where.id.notIn.includes(row.id)) &&
               (where.attempts?.lt === undefined ||
                 (row.attempts as number) < where.attempts.lt) &&
               (where.OR === undefined ||
@@ -789,6 +858,50 @@ describe("the bounded re-evaluation queue (#2576 §8, §10)", () => {
     // merely because another worker is still processing it.
     expect(await claimHostingCoverageReevaluations({ limit: 5 }, db)).toEqual([]);
     expect(rows[0].attempts).toBe(1);
+  });
+
+  it("excludes rows already seen by the current drain", async () => {
+    const { db, rows } = makeQueueDb([
+      {
+        id: "queue-1",
+        memberId: "owner-1",
+        lodgeId: "lodge-a",
+        nights: ["2026-07-03"],
+        cause: "SYSTEM_CHANGE",
+        sourceBookingId: null,
+        actorMemberId: null,
+        reason: null,
+        attempts: 0,
+        processedAt: null,
+        claimToken: null,
+        claimExpiresAt: null,
+        enqueuedAt: new Date(1_700_000_000_000),
+      },
+      {
+        id: "queue-2",
+        memberId: "owner-1",
+        lodgeId: "lodge-a",
+        nights: ["2026-07-04"],
+        cause: "SYSTEM_CHANGE",
+        sourceBookingId: null,
+        actorMemberId: null,
+        reason: null,
+        attempts: 0,
+        processedAt: null,
+        claimToken: null,
+        claimExpiresAt: null,
+        enqueuedAt: new Date(1_700_000_000_001),
+      },
+    ]);
+
+    const claimed = await claimHostingCoverageReevaluations(
+      { limit: 1, excludeIds: ["queue-1"] },
+      db,
+    );
+
+    expect(claimed.map((item) => item.id)).toEqual(["queue-2"]);
+    expect(rows[0].attempts).toBe(0);
+    expect(rows[1].attempts).toBe(1);
   });
 
   it("retries a crashed claim only after expiry and fences stale completion", async () => {

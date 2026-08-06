@@ -276,22 +276,26 @@ cutover. Then let the warm-up gate (step 16) pass and step 17 perform the cutove
 ### 2.4 Windowed migration deploy sequence
 
 Use this instead of the normal blue/green flow whenever any pending migration is
-declared `old_code_compatible=windowed` in the safety ledger. Two migrations are
+declared `old_code_compatible=windowed` in the safety ledger. Three migrations are
 in that class:
 
 - `20260803010000_contract_subscription_lockout_drop_enabled` (#2543 / #2561) —
   covered immediately below;
 - `20260803030000_contract_drop_family_group_member_role` (#2520) — covered in
-  [§2.4.1](#241-2520-drop-familygroupmemberrole).
+  [§2.4.1](#241-2520-drop-familygroupmemberrole);
+- `20260806010000_fence_hosting_coverage_delivery_claims` (#2596) — additive DDL,
+  but an old hosting worker ignores the new tokens and can process a new worker's
+  live claim, so mixed old/new workers are forbidden.
 
-**If both are pending, they share ONE window.** `prisma migrate deploy` applies
-both in the same command — you do not stop and start the application twice. Work
+**If several are pending, they share ONE window.** `prisma migrate deploy` applies
+them in the same command — you do not stop and start the application repeatedly. Work
 the checks in [§2.4.1](#241-2520-drop-familygroupmemberrole) as well as the ones
 here, and name both migrations in the override reason.
 
-**And rolling a combined window BACK takes BOTH `rollback.sql` scripts, in the
-reverse of the order they were applied** — `20260803030000` first, then
-`20260803010000`. Running only one leaves the other's column missing, so the
+**Rolling a window containing #2596 back starts with its no-op `rollback.sql`
+boundary:** stop all new app/worker processes, but retain its nullable columns and
+applied history. Then the two schema-removal `rollback.sql` scripts run in reverse
+order — `20260803030000` first, then `20260803010000`. Running only one leaves the other's column missing, so the
 previous release is still broken; if the one you skip is `20260803010000`, what
 stays broken is every booking write path. Spelled out at
 [§2.4.1](#241-2520-drop-familygroupmemberrole)'s rollback boundary, and rehearsed
@@ -306,14 +310,16 @@ landing between the backup and the migration — and it is the order the owner
 directed for #2520 (3 Aug 2026). Nothing else about this list changes, and it stands
 as written for a window carrying only `20260803010000`.
 
-**Why the normal flow does not work here.** Blue/green relies on the old colour
-continuing to serve while the new schema is applied. This migration drops a column
+**Why the normal flow does not work here.** Blue/green relies on the old colour and
+workers remaining compatible while the new schema is applied. The first migration drops a column
 the old colour's Prisma client still names, so the instant migrate commits, the old
 colour raises on every read of `MembershipLockoutSettings` — and because the
 booking gates resolve the club's lockout policy through that read, that is every
 booking write path, not just the admin screen. There is no version of this deploy
-where both colours work at once. The honest answer is a short outage you control,
-rather than an outage the members discover.
+where both colours work at once. #2596 adds only nullable columns, but its old worker
+does not honour a new worker's claim token, which makes the mixed-runtime interval a
+delivery-integrity failure rather than a schema error. The honest answer is a short
+outage you control, rather than an outage the members discover.
 
 **The sequence. Do not reorder it — each step exists because the next one is
 irreversible without it.**
@@ -332,8 +338,9 @@ irreversible without it.**
    Leaving the workers running produces the same errors with nobody watching, and
    fills the logs with failures that look like the migration went wrong.
 5. **Migrate.** Run the safety validator first, with
-   `ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS=1` and a
-   `BLUE_GREEN_MIGRATION_OVERRIDE_REASON` that names this window — it refuses
+   `ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS=1`, a
+   `BLUE_GREEN_MIGRATION_OVERRIDE_REASON` that names this window, and
+   `BLUE_GREEN_OLD_APP_AND_WORKERS_STOPPED=1` only after step 4 — it refuses
    otherwise, and refuses regardless if the `rollback.sql` is missing. The
    validator is a **separate script** that `prisma migrate deploy` knows nothing
    about, so in a hand-run window the operator invokes it or nothing does:
@@ -573,9 +580,10 @@ and nomination. There is no ordering that keeps both versions working.
    9(a) **Validate.** Name every pending migration's `migration.sql`. For this
    release the complete ordered set is six migrations; do not validate only the two
    windowed rows:
-   ```bash
-   ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS=1 \
-   BLUE_GREEN_MIGRATION_OVERRIDE_REASON="#2543 + #2520 windowed maintenance window <DATE>: public traffic removed, web and all workers stopped, no old connections, fresh verified backup taken, pre-migration checks recorded" \
+    ```bash
+    ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS=1 \
+    BLUE_GREEN_MIGRATION_OVERRIDE_REASON="#2543 + #2520 + #2596 windowed maintenance window <DATE>: public traffic removed, web and all workers stopped, no old connections, fresh verified backup taken, pre-migration checks recorded" \
+    BLUE_GREEN_OLD_APP_AND_WORKERS_STOPPED=1 \
    ./scripts/validate-blue-green-migrations.sh \
      prisma/migrations/20260803010000_contract_subscription_lockout_drop_enabled/migration.sql \
      prisma/migrations/20260803020000_add_adult_member_hosting_enforced_and_host_scopes/migration.sql \
@@ -585,7 +593,7 @@ and nomination. There is no ordering that keeps both versions working.
      prisma/migrations/20260806010000_fence_hosting_coverage_delivery_claims/migration.sql
    ```
    Expect exit 0 with the override reason echoed back as a `WARNING:` line. It
-   exits 1 without **both** variables, and exits 1 regardless if `rollback.sql` is
+   exits 1 without all three acknowledgements, and exits 1 regardless if `rollback.sql` is
    missing beside a windowed migration — a documentation failure the override
    cannot rescue. Record the reason you actually used in
    [§8](#8-production-execution-record); all three directions were exercised in
@@ -656,8 +664,10 @@ scheduling note gives the shape rather than a number.
 - **Do not restart the old application version, and do not route traffic back to
   it.** Its client names a column that no longer exists; it will fail across the
   family surface, and re-pointing Caddy does not fix that.
-- **Before starting any old image, prove that no hosting policy still uses the
-  new `ENFORCED` enum value:**
+- **Before starting any old image, keep the new runtime and cron/drain available.**
+  Demote the club-wide ENFORCED policy **and every explicit lodge ENFORCED
+  override** through the new Booking Policies UI, then prove no row still uses the
+  new enum value:
   ```sql
   SELECT "id", "scopeKey", "lodgeId", "mode"
   FROM "AdultMemberHostingPolicy"
@@ -671,7 +681,25 @@ scheduling note gives the shape rather than a number.
   `ADMIN_REVIEW_REQUIRED` or `DISABLED`; then repeat the query. Do not guess a
   fallback or start the old runtime until the result is empty. If the replacement
   runtime cannot perform the reset, stop and use a separately reviewed operator SQL
-  mapping or restore the verified backup.
+  mapping or restore the verified backup. After the **last** override change, let
+  the new hosting drain settle and require both queries below to return zero rows:
+  ```sql
+  SELECT "id", "memberId", "lodgeId", "attempts", "lastError",
+         "claimToken", "claimExpiresAt"
+  FROM "HostingCoverageReevaluation"
+  WHERE "processedAt" IS NULL
+  ORDER BY "enqueuedAt", "id";
+
+  SELECT "id", "bookingId", "lodgeId", "stateKey", "openedAt"
+  FROM "HostingCoverageIncident"
+  WHERE "resolvedAt" IS NULL
+  ORDER BY "openedAt", "id";
+  ```
+  Any row blocks rollback. A maximum-attempt or `lastError` re-evaluation may no
+  longer be automatically claimable and needs forward recovery or a separately
+  reviewed repair; an unresolved incident blocks even with an empty queue. Repeat
+  the ENFORCED, unprocessed-work and unresolved-incident proofs after the last
+  policy change. Only then stop every new worker and start the old-only release.
 - A rollback to the old version requires **first** either running
   `prisma/migrations/20260803030000_contract_drop_family_group_member_role/rollback.sql`
   by hand as the migration role, **or** restoring the verified step 7 backup.
@@ -688,9 +716,13 @@ scheduling note gives the shape rather than a number.
   rehearsed ([§7.2](#72-windowed-migration-rehearsal-20260803030000_contract_drop_family_group_member_role)).
   `20260803000000_subscription_lockout_three_way_mode` needs no reverse script: it
   is additive and the previous release's client never names `mode`.
-- `20260803020000`, `20260803070000`, `20260806000000` and `20260806010000`
-  are additive and need no reverse scripts. Their extra columns, tables and types
-  remain inert to the old client after the mandatory `ENFORCED` preflight above.
+- `20260803020000`, `20260803070000` and `20260806000000` are additive and need
+  no reverse scripts. `20260806010000` is also additive but ships a mandatory,
+  deliberately no-op `rollback.sql`: keep new runtime/cron available to demote all
+  ENFORCED club/lodge rows, drain every re-evaluation and close every incident;
+  only then stop new workers for old-only restart. Retain its nullable columns and
+  applied migration history so future new-only roll-forward needs no schema/history repair. All four additions remain
+  inert to the old client after the mandatory `ENFORCED` preflight above.
 - `rollback.sql` recreates the column as `TEXT NOT NULL DEFAULT 'MEMBER'` —
   byte-identical to the shape
   `20260407120000_add_family_group_member_join_table` created and exactly what the
@@ -828,8 +860,8 @@ already broken, so the boundary moves back to **step 13 (migrate)** and the
 recovery paths are forward to cutover, the migration's own `rollback.sql`, or the
 verified backup.
 
-**The ledger now holds two real `windowed` rows**, and they are not the only
-migrations in that class. Check for all three:
+**The ledger now holds three real `windowed` rows**, and they are not the only
+migrations in that class. Check for all four:
 
 - `20260803010000_contract_subscription_lockout_drop_enabled` (#2543 / #2561) is
   declared `old_code_compatible=windowed`. It drops `MembershipLockoutSettings.enabled`,
@@ -843,8 +875,12 @@ migrations in that class. Check for all three:
   **and** in a `WHERE` clause (`role: "ADMIN"`), so the moment migrate commits the
   old version fails across the whole family surface — including the member profile
   page. It ships a tested `rollback.sql` and its own ordered sequence at
-  [§2.4.1](#241-2520-drop-familygroupmemberrole). If both windowed migrations are
-  pending they share **one** window.
+  [§2.4.1](#241-2520-drop-familygroupmemberrole).
+- `20260806010000_fence_hosting_coverage_delivery_claims` (#2596) is declared
+  `windowed` because of runtime protocol, not DDL: the old worker can ignore a new
+  token-fenced claim. It ships a no-op `rollback.sql`; old/new worker overlap is
+  forbidden in both deploy and rollback directions. Pending windowed migrations
+  share **one** window.
 - **`v0.10.0` has one migration in that class too**, declared before the value
   existed. `20260707000100_backfill_org_age_tier_not_applicable` is
   `old_code_compatible=no`, and its `lock_impact_plan` states plainly that
@@ -1265,8 +1301,9 @@ idempotent**: a second run fails with `ERROR: column "role" of relation
 "FamilyGroupMember" already exists`, which is the safe direction (a loud refusal,
 not a silent double-apply) but worth knowing at 2am.
 
-**The combined-window rollback was rehearsed in reverse order**, since this release
-carries two windowed migrations and rolling back only one is the failure mode the
+**The schema-changing part of the combined-window rollback was rehearsed in reverse
+order**, since this release carries two schema-removal windowed migrations and
+rolling back only one is the failure mode the
 rollback boundary now calls out. With both applied, running
 `20260803030000/rollback.sql` and then
 `20260803010000_contract_subscription_lockout_drop_enabled/rollback.sql` restored
@@ -1282,7 +1319,8 @@ generalises.
 | `scripts/validate-blue-green-migrations.sh` on this migration | Result |
 | --- | --- |
 | no override | **refuses**, exit 1 — names the `DROP COLUMN` and the `windowed` ledger declaration |
-| `ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS=1` + `BLUE_GREEN_MIGRATION_OVERRIDE_REASON` | passes, exit 0, echoing the reason |
+| override + reason but no `BLUE_GREEN_OLD_APP_AND_WORKERS_STOPPED=1` | **refuses**, exit 1 — the maintenance window is not operationally proven |
+| override + reason + stopped-old-runtime acknowledgement | passes, exit 0, echoing the reason |
 | override present but `rollback.sql` deleted | **refuses**, exit 1 — a documentation failure the override cannot rescue |
 
 **Independently re-run before merge, from scratch.** Because everything above is

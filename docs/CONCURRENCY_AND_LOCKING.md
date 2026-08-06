@@ -376,7 +376,11 @@ for that, and it never accepts a caller's `tx`;
 `adult-member-hosting-call-sites.test.ts` asserts so tree-wide.
 
 Concurrency inside the drain is handled by expiring, opaque-token claims rather than
-long-lived locks. A queue item is claimed by an `updateMany` guarded on
+long-lived locks. Items are claimed **just in time, one at a time**, not leased as a
+serial batch: a later row therefore gets its full lease when its work actually starts.
+The drain excludes every id it has already attempted, so releasing one transient
+failure cannot let the same invocation immediately reclaim it and burn the remaining
+attempt budget. A queue item is claimed by an `updateMany` guarded on
 `processedAt: null`, the `attempts` value just read, and either no current token or an
 expired token. The claim atomically writes a fresh random token and 15-minute expiry
 while incrementing `attempts`. Completion and failure both match that exact token;
@@ -388,10 +392,18 @@ lost claim rather than a processed item.
 
 Owner notification uses a separate 15-minute delivery lease with the same exact
 claimant rule: claim writes an opaque token, and completion/release must match that
-token as well as the incident and state key. A successful transport stamps
-`notifiedStateKey`; a failed/non-send releases only its own lease so unchanged
-reconciliation can retry. The email provider call stays outside every database
-transaction. The one-active-incident-per-booking rule uses the partial
+token as well as the incident and state key. Immediately before transport, one final
+guarded read proves the incident is unresolved and the incident/state/token are still
+current, then freezes the booking recipient plus the uncovered nights from the
+incident's evidence. A stale/resolved/reclaimed claim sends nothing, and the delivery
+never re-reads `Booking.adultMemberHostingReview`, which may already describe a later
+state. A successful transport stamps `notifiedStateKey`. Missing recipients and
+intentional suppression are terminal while the officer incident stays open; an
+unreadable booking `noEmails` flag is transient, releases the exact notification
+lease, and fails the exact queue claim for a later outbox retry. The email provider
+call stays outside every database transaction. That leaves one unavoidable interval
+after the final token read in which state can move before the provider call; closing
+it would hold a transaction across email delivery. The one-active-incident-per-booking rule uses the partial
 unique index `HostingCoverageIncident_active_booking_unique` (a concurrent second
 opener loses on the index and folds into the winner). No new key is added to the
 lock-ordering table.

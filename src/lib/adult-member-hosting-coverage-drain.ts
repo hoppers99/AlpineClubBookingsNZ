@@ -3,6 +3,7 @@ import type { Prisma } from "@prisma/client";
 import {
   claimHostingCoverageOwnerNotification,
   completeHostingCoverageOwnerNotification,
+  loadHostingCoverageOwnerNotificationDelivery,
   releaseHostingCoverageOwnerNotification,
   resolveHostingCoverageIncidents,
 } from "@/lib/adult-member-hosting-coverage-incidents";
@@ -154,11 +155,25 @@ export async function drainHostingCoverageReevaluations(
   } = {},
   db: typeof prisma = prisma,
 ): Promise<HostingCoverageDrainResult> {
-  const items = await claimHostingCoverageReevaluations(options, db);
-  if (items.length === 0) return { ...EMPTY_RESULT };
+  const limit = options.limit ?? 25;
+  if (limit <= 0) return { ...EMPTY_RESULT };
 
-  const result: HostingCoverageDrainResult = { ...EMPTY_RESULT, claimed: items.length };
-  for (const item of items) {
+  // Claim only when an item is about to run. A serial batch leased up front gives
+  // every later item the same expiry even though it may wait behind slow database
+  // and provider work. `seenIds` also prevents a failure whose lease was released
+  // below from being immediately reclaimed by this same drain and burning all of
+  // its attempts in one invocation.
+  const seenIds = new Set<string>();
+  const result: HostingCoverageDrainResult = { ...EMPTY_RESULT };
+  while (result.claimed < limit) {
+    const [item] = await claimHostingCoverageReevaluations(
+      { ...options, limit: 1, excludeIds: [...seenIds] },
+      db,
+    );
+    if (!item) break;
+    seenIds.add(item.id);
+    result.claimed += 1;
+
     try {
       // The evaluator takes transaction-scoped owner advisory locks. Run all
       // database reconciliation for one bounded item in a REAL transaction so
@@ -173,14 +188,21 @@ export async function drainHostingCoverageReevaluations(
 
       for (const notification of outcome.notifications) {
         try {
-          const sent = await notifyOwnerOfLostCoverage(notification.bookingId, db);
-          if (sent) {
+          const delivery = await notifyOwnerOfLostCoverage(notification, db);
+          if (delivery === "sent") {
             const completed = await completeHostingCoverageOwnerNotification(
               notification,
               db,
             );
             if (completed) result.notified += 1;
+          } else if (delivery === "retry") {
+            throw new Error(
+              'Hosting coverage notification was withheld because the booking "No emails" flag could not be read',
+            );
           } else {
+            // Missing recipients and intentional suppression are terminal for this
+            // queue item: the officer incident remains visible, but retrying the
+            // identical state cannot make an intentionally withheld message send.
             await releaseHostingCoverageOwnerNotification(notification, db);
           }
         } catch (err) {
@@ -321,49 +343,43 @@ async function processHostingCoverageReevaluation(
 /**
  * Send the owner the loss-of-cover notice, having already claimed it.
  *
- * Returns whether a message was actually sent. A missing email address is not an
- * error and not a retry: the incident is still open, still in the officer queue,
- * and an officer contacting a member with no address on file is the club's normal
- * process. Re-queueing forever over an absent address would hide real failures.
+ * A missing email address or intentional suppression is terminal: the incident is
+ * still open in the officer queue and an officer can contact the member another way.
+ * An unreadable booking-level email flag is different: it is a transient fail-closed
+ * result and must fail the exact queue claim so this non-retryable EmailLog template
+ * is attempted again by the hosting outbox.
  */
 async function notifyOwnerOfLostCoverage(
-  bookingId: string,
+  notification: {
+    bookingId: string;
+    incidentId: string;
+    stateKey: string;
+    claimToken: string;
+  },
   db: typeof prisma,
-): Promise<boolean> {
-  const booking = await db.booking.findUnique({
-    where: { id: bookingId },
-    select: {
-      id: true,
-      memberId: true,
-      lodgeId: true,
-      checkIn: true,
-      checkOut: true,
-      adultMemberHostingReview: true,
-      member: { select: { firstName: true, email: true } },
-    },
-  });
-  if (!booking?.member?.email) return false;
-
-  const review = booking.adultMemberHostingReview as {
-    affectedNights?: unknown;
-  } | null;
-  const nights = Array.isArray(review?.affectedNights)
-    ? review.affectedNights.filter(
-        (night): night is string => typeof night === "string",
-      )
-    : [];
+): Promise<"sent" | "terminal" | "retry"> {
+  const delivery = await loadHostingCoverageOwnerNotificationDelivery(
+    notification,
+    db,
+  );
+  if (!delivery?.email) return "terminal";
 
   const outcome = await sendHostingCoverageLostEmail({
-    bookingId: booking.id,
-    recipientMemberId: booking.memberId,
-    email: booking.member.email,
-    firstName: booking.member.firstName,
-    checkIn: booking.checkIn,
-    checkOut: booking.checkOut,
-    // The nights come off the snapshot the reconciliation just wrote, so the
-    // email cannot describe a different problem from the incident.
-    uncoveredNights: nights.length > 0 ? nights.join(", ") : "see your booking",
-    lodgeId: booking.lodgeId,
+    bookingId: delivery.bookingId,
+    recipientMemberId: delivery.recipientMemberId,
+    email: delivery.email,
+    firstName: delivery.firstName,
+    checkIn: delivery.checkIn,
+    checkOut: delivery.checkOut,
+    uncoveredNights: delivery.uncoveredNights,
+    lodgeId: delivery.lodgeId,
   });
-  return outcome.status === "sent";
+  if (outcome.status === "sent") return "sent";
+  if (
+    outcome.status === "withheld_for_booking" &&
+    outcome.reason === "booking_flag_unreadable"
+  ) {
+    return "retry";
+  }
+  return "terminal";
 }

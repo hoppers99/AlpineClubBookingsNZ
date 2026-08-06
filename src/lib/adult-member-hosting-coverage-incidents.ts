@@ -57,6 +57,25 @@ export interface HostingCoverageOwnerNotificationClaim {
 }
 
 /**
+ * The immutable payload handed to the email provider for one current claim.
+ *
+ * It is assembled from the incident's frozen evidence and the booking relation in
+ * the same guarded read that proves the incident/state/token still belong to this
+ * worker. In particular, it never reads `Booking.adultMemberHostingReview`: that
+ * live review may already describe a later state than the claim being delivered.
+ */
+export interface HostingCoverageOwnerNotificationDelivery {
+  bookingId: string;
+  recipientMemberId: string;
+  email: string;
+  firstName: string;
+  checkIn: Date;
+  checkOut: Date;
+  lodgeId: string;
+  uncoveredNights: string;
+}
+
+/**
  * The stored fingerprint of one uncovered state.
  *
  * A digest of `adultMemberHostingStateKey` rather than the key itself, for one
@@ -325,6 +344,68 @@ export async function claimHostingCoverageOwnerNotification(
     },
   });
   return claim.count === 1 ? { ...params, claimToken } : null;
+}
+
+/**
+ * Freeze provider input only while this exact delivery claim is still current.
+ *
+ * This is the final database read before transport. A resolved incident, a moved
+ * state, an expired/reclaimed lease, or a claim already completed by somebody else
+ * returns null, so the stale worker performs no provider call. The incident evidence
+ * supplies the affected nights; re-reading the booking's live review here could pair
+ * this claim with a different state that was written after reconciliation.
+ *
+ * The provider call deliberately remains outside a transaction. Consequently a
+ * state can still change after this final token read and before transport begins;
+ * closing that last interval would require holding a database transaction across
+ * email delivery, which is forbidden by the provider-call boundary.
+ */
+export async function loadHostingCoverageOwnerNotificationDelivery(
+  params: HostingCoverageOwnerNotificationClaim & { bookingId: string },
+  db: Pick<PrismaClient, "hostingCoverageIncident">,
+): Promise<HostingCoverageOwnerNotificationDelivery | null> {
+  const incident = await db.hostingCoverageIncident.findFirst({
+    where: {
+      id: params.incidentId,
+      bookingId: params.bookingId,
+      resolvedAt: null,
+      stateKey: params.stateKey,
+      ownerNotificationClaimStateKey: params.stateKey,
+      ownerNotificationClaimToken: params.claimToken,
+    },
+    select: {
+      evidence: true,
+      booking: {
+        select: {
+          id: true,
+          memberId: true,
+          lodgeId: true,
+          checkIn: true,
+          checkOut: true,
+          member: { select: { firstName: true, email: true } },
+        },
+      },
+    },
+  });
+  if (!incident) return null;
+
+  const evidence = incident.evidence as { affectedNights?: unknown } | null;
+  const nights = Array.isArray(evidence?.affectedNights)
+    ? evidence.affectedNights.filter(
+        (night): night is string => typeof night === "string",
+      )
+    : [];
+
+  return {
+    bookingId: incident.booking.id,
+    recipientMemberId: incident.booking.memberId,
+    email: incident.booking.member.email,
+    firstName: incident.booking.member.firstName,
+    checkIn: incident.booking.checkIn,
+    checkOut: incident.booking.checkOut,
+    lodgeId: incident.booking.lodgeId,
+    uncoveredNights: nights.length > 0 ? nights.join(", ") : "see your booking",
+  };
 }
 
 /** Stamp a notification only after the transport reports a successful send. */

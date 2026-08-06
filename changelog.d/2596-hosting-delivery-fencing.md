@@ -2,5 +2,10 @@
   (#2596).** Re-evaluation and owner-email delivery now use short, opaque claims;
   only the worker holding the current claim can finish or release it. If a worker
   crashes, another can retry after the lease expires without the stale worker
-  overwriting the retry. Booking Officer incident totals and lists also stay within
-  the lodge selected on the bookings screen.
+  overwriting the retry. Work is claimed one row at a time, stale notification
+  claims stop before email delivery, and a transient unreadable booking email flag
+  remains retryable without turning intentional suppression into a poison item. The
+  claim-token migration now requires an explicit stopped-old-runtime maintenance
+  window because an old worker does not understand the new fencing protocol. Booking
+  Officer incident totals and lists also stay within the lodge selected on the
+  bookings screen.

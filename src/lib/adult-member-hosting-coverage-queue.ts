@@ -134,6 +134,8 @@ export async function claimHostingCoverageReevaluations(
     maxAttempts?: number;
     memberId?: string | null;
     lodgeId?: string | null;
+    /** Rows already attempted by this drain; a released failure must not be reclaimed inline. */
+    excludeIds?: readonly string[];
   } = {},
   db: HostingCoverageQueueDb,
 ): Promise<HostingCoverageReevaluationItem[]> {
@@ -145,6 +147,9 @@ export async function claimHostingCoverageReevaluations(
       processedAt: null,
       attempts: { lt: maxAttempts },
       OR: [{ claimToken: null }, { claimExpiresAt: { lt: claimedAt } }],
+      ...(options.excludeIds && options.excludeIds.length > 0
+        ? { id: { notIn: [...options.excludeIds] } }
+        : {}),
       ...(options.memberId ? { memberId: options.memberId } : {}),
       ...(options.lodgeId ? { lodgeId: options.lodgeId } : {}),
     },

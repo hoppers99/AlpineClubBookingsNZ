@@ -2874,13 +2874,21 @@ compliant indefinitely.
   outrun the column and make two different problems compare equal. The owner's
   notification takes a short delivery lease with an opaque claimant token before
   the send, but `notifiedStateKey` is stamped only after transport reports success.
-  Completion and release match that exact token, so a stale sender cannot complete
-  or clear a lease that another drain reclaimed after expiry. A failed/non-send
-  releases its own lease and unchanged reconciliation retries; two concurrent drains
-  cannot both own the lease. A crashed sender's lease expires after 15 minutes. The
-  re-evaluation queue uses the same 15-minute token fencing for completion and
-  failure: a crashed claim is not retried before expiry, and its stale worker cannot
-  consume or mutate the replacement claim.
+  A final guarded read freezes recipient data and the incident's own evidence only
+  while the incident is unresolved and that exact state/token is current; a stale or
+  reclaimed worker therefore calls no provider and never substitutes a later live
+  booking review into an older claim. Completion and release match the same token,
+  so a stale sender cannot complete or clear a successor's lease. Missing email,
+  placeholder/bounce suppression and a deliberate per-booking `noEmails` switch are
+  terminal while the incident stays visible to officers. An unreadable `noEmails`
+  flag is transient: the notification lease is released and the exact queue claim
+  fails, because `hosting-coverage-lost` deliberately has no independent EmailLog
+  retry authority. The provider stays outside transactions, leaving only the narrow
+  race after the final token read rather than holding a transaction across delivery.
+  A crashed sender's lease expires after 15 minutes. The re-evaluation queue uses the
+  same 15-minute token fencing for completion and failure, claims serial work one row
+  at a time, and excludes ids already attempted by that drain: a slow later item is
+  not pre-leased and a released failure cannot burn several attempts in one pass.
 - **Resolution is recorded, not inferred**, as one of `COVERAGE_RESTORED`,
   `BOOKING_AMENDED`, `EXCEPTION_APPROVED` or `BOOKING_CANCELLED` — inferring it from
   the absence of a hazard would report restored cover for a booking somebody
