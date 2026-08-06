@@ -84,6 +84,30 @@ describe("bed allocation lock topology", () => {
     }
   });
 
+  it("serializes reviewed moves global then sorted lodges, member families, and allocation rows", () => {
+    const text = source("src/lib/bed-allocation-move.ts");
+    const apply = text.slice(
+      text.indexOf("export async function applyBedAllocationMove"),
+    );
+    expectInOrder(apply, [
+      "pg_advisory_xact_lock(1)",
+      "loadRelatedRows(base, tx)",
+      "moveLodgeIds(base, discoveryRows)",
+      "acquireLodgeCapacityLock",
+      "loadMoveState(base, tx)",
+      "acquireMemberLifecycleLocks",
+      "acquireMemberPartnerLinkLocks",
+      "lockMoveRows",
+      "authoritativeBase = await loadMoveBase",
+      "authoritative = await loadMoveState",
+      "preview.digest !== input.request.previewDigest",
+      "bedAllocation.updateMany",
+      "BED_ALLOCATION_MOVE_APPLIED",
+    ]);
+    expect(apply).not.toContain("lockMemberNights");
+    expect(text).toContain('ORDER BY "bedId", "stayDate", "isSecondOccupant", "id"');
+  });
+
   it("keeps the reviewed-removal PostgreSQL races on the guarded CI harness and production writer entrypoints", () => {
     const harness = source(
       "src/lib/__tests__/concurrency-lock-races.realdb.test.ts",

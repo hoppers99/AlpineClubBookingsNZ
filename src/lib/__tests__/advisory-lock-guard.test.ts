@@ -70,6 +70,10 @@ const GLOBAL_BOOKING_MONEY_LOCK_INVENTORY: Record<string, number> = {
   // explicitly selected lodge capacity lock, and delegates to a narrow
   // lock-held implementation; auto-allocation also rebuilds its plan there.
   "src/lib/admin-bed-allocation.ts": 11,
+  // #2595: reviewed night/person moves serialize with cancellation and every
+  // allocation counterpart before taking the complete sorted lodge union,
+  // member lifecycle/link families, and deterministic allocation row locks.
+  "src/lib/bed-allocation-move.ts": 1,
   // #2594: removal applies a reviewed digest under global -> sorted immutable
   // lodge -> sorted allocation-row locks. Requested-room editing shares the
   // global cohort and locks/re-reads the booking before its guarded write so it
@@ -270,7 +274,9 @@ const SCOPED_ADVISORY_LOCK_INVENTORY: Record<string, number> = {
   // adult-member-hosting-policy-set.ts. This order serialises policy enumeration
   // before relation moves and every delete/archive/merge touching either member.
   "src/lib/member-merge.ts": 2,
-  "src/lib/member-partner-link.ts": 1,
+  // #2595: the partner-link service and reviewed move service share this one
+  // canonical sorted member-partner-link lock mint.
+  "src/lib/member-partner-lock.ts": 1,
   // #2148: reconcileSubscriptionBillingExceptions takes the SAME
   // membership-subscription-billing:{seasonYear} key as
   // confirmSubscriptionBillingPreview (no new key), so refresh-reconciliation
@@ -298,6 +304,9 @@ const ROW_LOCK_SITE_INVENTORY: Record<string, number> = {
   // and requested-room editing locks the booking before its authoritative
   // approval check and guarded update.
   "src/lib/admin-bed-allocation.ts": 2,
+  // #2595 reviewed moves lock every selected/destination/old-bed counterpart
+  // tuple after the advisory tiers and before their authoritative re-read.
+  "src/lib/bed-allocation-move.ts": 1,
   "src/lib/bed-allocation-removal.ts": 1,
   "src/lib/requested-room-write.ts": 1,
   "src/lib/booking-create-promo.ts": 1,

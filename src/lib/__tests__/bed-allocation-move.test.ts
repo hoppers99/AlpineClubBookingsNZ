@@ -572,6 +572,31 @@ describe("authoritative bed-allocation move", () => {
     expect(result.promotedRowCount).toBe(1);
     expect(second.isSecondOccupant).toBe(false);
     expect(auditMock).toHaveBeenCalledTimes(2);
+    const promotionAudit = auditMock.mock.calls[1][0];
+    expect(promotionAudit).toMatchObject({
+      action: "BED_ALLOCATION_PARTNERS_PROMOTED",
+      targetId: "booking-1",
+      details: "Promoted partner bookings: booking-2",
+      metadata: {
+        movePreviewDigest: preview.digest,
+        promotedCount: 1,
+        promotions: [
+          {
+            allocationId: "second-allocation",
+            bookingId: "booking-2",
+            bookingGuestId: "guest-2",
+            bedId: "bed-source",
+            stayDate: "2026-08-01",
+            causalMovedAllocationId: "allocation-1",
+            causalMovedBookingId: "booking-1",
+            causalMovedBookingGuestId: "guest-1",
+          },
+        ],
+        omittedPromotionCount: 0,
+        promotionsTruncated: false,
+      },
+    });
+    expect(promotionAudit.details).toContain(second.bookingId);
   });
 
   it("marks an eligible confirmed partner as the second occupant", async () => {

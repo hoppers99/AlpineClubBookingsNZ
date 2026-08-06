@@ -135,6 +135,7 @@ export class BedAllocationMoveError extends Error {
 }
 
 const MAX_AUDIT_IDENTITIES = 50;
+const MAX_SEARCHABLE_PROMOTED_BOOKING_IDS = 30;
 
 const bookingFactsSelect = {
   id: true,
@@ -1254,6 +1255,32 @@ export async function applyBedAllocationMove(input: {
     }
 
     const orderedChanges = authoritative.changedRows.slice().sort(compareRows);
+    const promotionAuditRows = authoritative.promotionRows.map((promoted) => {
+      const causalMove = orderedChanges.find(
+        (moved) =>
+          !moved.isSecondOccupant &&
+          moved.bedId === promoted.bedId &&
+          dateKey(moved.stayDate) === dateKey(promoted.stayDate),
+      );
+      if (!causalMove) {
+        throw new BedAllocationMoveError(
+          "A shared-double promotion no longer has a matching moved primary. Nothing was moved.",
+          409,
+          "STALE_PREVIEW",
+          authoritative.preview,
+        );
+      }
+      return {
+        allocationId: promoted.id,
+        bookingId: promoted.bookingId,
+        bookingGuestId: promoted.bookingGuestId,
+        bedId: promoted.bedId,
+        stayDate: dateKey(promoted.stayDate),
+        causalMovedAllocationId: causalMove.id,
+        causalMovedBookingId: causalMove.bookingId,
+        causalMovedBookingGuestId: causalMove.bookingGuestId,
+      };
+    });
     for (const row of orderedChanges) {
       const updated = await tx.bedAllocation.updateMany({
         where: {
@@ -1338,9 +1365,14 @@ export async function applyBedAllocationMove(input: {
     );
 
     if (authoritative.promotionRows.length > 0) {
-      const promotionIds = bounded(
-        authoritative.promotionRows.map((row) => row.id),
+      const promotedBookingIds = sortedUnique(
+        promotionAuditRows.map((promotion) => promotion.bookingId),
       );
+      const searchableBookingIds = promotedBookingIds.slice(
+        0,
+        MAX_SEARCHABLE_PROMOTED_BOOKING_IDS,
+      );
+      const boundedPromotions = promotionAuditRows.slice(0, MAX_AUDIT_IDENTITIES);
       await createAuditLog(
         {
           action: "BED_ALLOCATION_PARTNERS_PROMOTED",
@@ -1350,11 +1382,15 @@ export async function applyBedAllocationMove(input: {
           category: "admin",
           outcome: "success",
           summary: `${authoritative.promotionRows.length} shared-double occupant${authoritative.promotionRows.length === 1 ? "" : "s"} promoted after reviewed allocation move`,
+          details: `Promoted partner bookings: ${searchableBookingIds.join(", ")}${promotedBookingIds.length > searchableBookingIds.length ? `. Showing ${searchableBookingIds.length} of ${promotedBookingIds.length} booking IDs; metadata.promotions contains a bounded sample of ${boundedPromotions.length} of ${promotionAuditRows.length} promotion records and omits ${promotionAuditRows.length - boundedPromotions.length}.` : ""}`,
           metadata: {
             movePreviewDigest: authoritative.preview.digest,
             promotedCount: authoritative.promotionRows.length,
-            allocationIds: promotionIds.values,
-            omittedAllocationIdCount: promotionIds.omittedCount,
+            promotions: boundedPromotions,
+            omittedPromotionCount:
+              promotionAuditRows.length - boundedPromotions.length,
+            promotionsTruncated:
+              promotionAuditRows.length > MAX_AUDIT_IDENTITIES,
           },
         },
         tx,
