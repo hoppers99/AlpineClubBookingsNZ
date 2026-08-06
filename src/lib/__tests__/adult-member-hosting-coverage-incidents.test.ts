@@ -30,6 +30,7 @@ import {
   enqueueHostingCoverageReevaluation,
   failHostingCoverageReevaluation,
   loadClaimedHostingCoverageReevaluation,
+  releaseHostingCoverageReevaluationContention,
   renewHostingCoverageReevaluationClaim,
 } from "@/lib/adult-member-hosting-coverage-queue";
 import type { AdultMemberHostingPolicyExceptionViolation } from "@/lib/booking-policy-exceptions";
@@ -1271,6 +1272,50 @@ describe("the bounded re-evaluation queue (#2576 §8, §10)", () => {
       processedAt: null,
     });
     expect(rows[0].claimExpiresAt).toEqual(new Date("2026-07-01T00:17:00.000Z"));
+  });
+
+  it("releases policy contention for an immediate successor without consuming an attempt", async () => {
+    const { db, rows } = makeQueueDb([{
+      id: "queue-1",
+      memberId: "owner-1",
+      lodgeId: "lodge-a",
+      nights: ["2026-07-03"],
+      cause: "SYSTEM_CHANGE",
+      sourceBookingId: null,
+      actorMemberId: null,
+      reason: null,
+      attempts: 1,
+      processedAt: null,
+      claimToken: "claim-contended",
+      claimExpiresAt: new Date("2026-07-01T00:15:00.000Z"),
+      enqueuedAt: new Date("2026-07-01T00:00:00.000Z"),
+    }]);
+
+    await expect(
+      releaseHostingCoverageReevaluationContention(
+        { id: "queue-1", claimToken: "claim-replaced" },
+        db,
+      ),
+    ).resolves.toBe(false);
+    await expect(
+      releaseHostingCoverageReevaluationContention(
+        { id: "queue-1", claimToken: "claim-contended" },
+        db,
+      ),
+    ).resolves.toBe(true);
+    expect(rows[0]).toMatchObject({
+      attempts: 0,
+      claimToken: null,
+      claimExpiresAt: null,
+      processedAt: null,
+    });
+
+    const [successor] = await claimHostingCoverageReevaluations(
+      { limit: 1, maxAttempts: 1 },
+      db,
+    );
+    expect(successor).toMatchObject({ id: "queue-1", attempts: 1 });
+    expect(successor.claimToken).not.toBe("claim-contended");
   });
 
   it("drops a night list that is not a list of dates rather than widening the bound", async () => {

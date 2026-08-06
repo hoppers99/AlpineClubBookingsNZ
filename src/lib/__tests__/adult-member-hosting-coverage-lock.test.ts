@@ -140,7 +140,8 @@ describe("the per-owner coverage lock (#2576 §9)", () => {
       "async function processHostingCoverageReevaluation(",
     );
     const drainBody = drain.slice(drainStart, drainStart + 9000);
-    const drainPolicy = drainBody.indexOf("lockAdultMemberHostingPolicySet(db)");
+    const drainPolicy = drainBody.indexOf("tryLockAdultMemberHostingPolicySet(db)");
+    const policyDeferral = drainBody.indexOf('return { kind: "deferred" }');
     const lifecycleLock = drainBody.indexOf("member-lifecycle:${memberId}");
     const memberRowLock = drainBody.indexOf("FOR KEY SHARE");
     const exactRefresh = drainBody.indexOf(
@@ -152,6 +153,8 @@ describe("the per-owner coverage lock (#2576 §9)", () => {
     );
     const dependentRead = drainBody.indexOf("loadSameOwnerCoverageDependentIds(");
     expect(drainPolicy).toBeGreaterThan(-1);
+    expect(policyDeferral).toBeGreaterThan(drainPolicy);
+    expect(policyDeferral).toBeLessThan(lifecycleLock);
     expect(lifecycleLock).toBeGreaterThan(drainPolicy);
     expect(memberRowLock).toBeGreaterThan(lifecycleLock);
     expect(exactRefresh).toBeGreaterThan(memberRowLock);

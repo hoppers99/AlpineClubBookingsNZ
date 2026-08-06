@@ -276,6 +276,32 @@ export async function deferHostingCoverageReevaluation(
   return deferred.count === 1;
 }
 
+/**
+ * Release a claim that could not start because the policy-set lock was busy.
+ *
+ * This differs deliberately from notification deferral above. A live provider
+ * sender needs the queue row parked until its lease expires; policy contention
+ * has performed no reconciliation or provider work, and member merge runs its own
+ * post-commit drain. Clear the exact token immediately so that successor can claim
+ * the obligation, while undoing this claim's attempt increment because contention
+ * is not a poison-item failure. The drain's `seenIds` prevents a same-invocation
+ * hot loop.
+ */
+export async function releaseHostingCoverageReevaluationContention(
+  claim: HostingCoverageReevaluationClaim,
+  db: HostingCoverageQueueDb,
+): Promise<boolean> {
+  const released = await db.hostingCoverageReevaluation.updateMany({
+    where: { id: claim.id, processedAt: null, claimToken: claim.claimToken },
+    data: {
+      attempts: { decrement: 1 },
+      claimToken: null,
+      claimExpiresAt: null,
+    },
+  });
+  return released.count === 1;
+}
+
 /** Mark an item done. Idempotent: a second call matches nothing. */
 export async function completeHostingCoverageReevaluation(
   claim: HostingCoverageReevaluationClaim,

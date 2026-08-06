@@ -8,8 +8,9 @@ const mocks = vi.hoisted(() => ({
   defer: vi.fn(),
   fail: vi.fn(),
   loadClaimed: vi.fn(),
+  releaseContention: vi.fn(),
   renew: vi.fn(),
-  lockPolicySet: vi.fn(),
+  tryPolicySet: vi.fn(),
   lockMember: vi.fn(),
   loadPolicy: vi.fn(),
   sourceBookingIsTerminal: vi.fn(),
@@ -32,11 +33,12 @@ vi.mock("@/lib/adult-member-hosting-coverage-queue", () => ({
   deferHostingCoverageReevaluation: mocks.defer,
   failHostingCoverageReevaluation: mocks.fail,
   loadClaimedHostingCoverageReevaluation: mocks.loadClaimed,
+  releaseHostingCoverageReevaluationContention: mocks.releaseContention,
   renewHostingCoverageReevaluationClaim: mocks.renew,
 }));
 
 vi.mock("@/lib/adult-member-hosting-policy-set", () => ({
-  lockAdultMemberHostingPolicySet: mocks.lockPolicySet,
+  tryLockAdultMemberHostingPolicySet: mocks.tryPolicySet,
 }));
 
 vi.mock("@/lib/adult-member-hosting-coverage-incidents", () => ({
@@ -109,7 +111,8 @@ describe("hosting coverage drain claim fences (#2596)", () => {
     mocks.defer.mockResolvedValue(true);
     mocks.fail.mockResolvedValue(true);
     mocks.loadClaimed.mockResolvedValue({ ...CLAIMED_ITEM });
-    mocks.lockPolicySet.mockResolvedValue(undefined);
+    mocks.releaseContention.mockResolvedValue(true);
+    mocks.tryPolicySet.mockResolvedValue(true);
     mocks.lockMember.mockResolvedValue(1);
     mocks.renew.mockResolvedValue(true);
     mocks.loadPolicy.mockResolvedValue({
@@ -122,6 +125,73 @@ describe("hosting coverage drain claim fences (#2596)", () => {
     mocks.completeNotification.mockResolvedValue(true);
     mocks.pendingNotification.mockResolvedValue(false);
     mocks.releaseNotification.mockResolvedValue(true);
+  });
+
+  it("releases repeated policy-lock contention without exhausting attempts, then succeeds", async () => {
+    let attempts = 0;
+    let processed = false;
+    let claimSerial = 0;
+    let mergeHoldsPolicyLock = true;
+    mocks.claim.mockReset().mockImplementation(
+      async ({ maxAttempts = 5 }: { maxAttempts?: number }) => {
+        if (processed || attempts >= maxAttempts) return [];
+        attempts += 1;
+        claimSerial += 1;
+        return [
+          {
+            ...CLAIMED_ITEM,
+            attempts,
+            claimToken: `claim-${claimSerial}`,
+          },
+        ];
+      },
+    );
+    mocks.tryPolicySet.mockImplementation(async () => !mergeHoldsPolicyLock);
+    mocks.releaseContention.mockImplementation(async () => {
+      attempts -= 1;
+      return true;
+    });
+    mocks.loadClaimed.mockImplementation(async (claim) => ({
+      ...CLAIMED_ITEM,
+      attempts,
+      claimToken: claim.claimToken,
+    }));
+    mocks.complete.mockImplementation(async () => {
+      processed = true;
+      return true;
+    });
+
+    // More contended drains than maxAttempts still leave the durable item at zero
+    // consumed attempts. These model separate inline/cron invocations while one
+    // long merge owns the policy-set key.
+    for (let invocation = 0; invocation < 7; invocation += 1) {
+      const contended = await drainHostingCoverageReevaluations(
+        { limit: 1, maxAttempts: 5 },
+        makeDb(),
+      );
+      expect(contended).toMatchObject({
+        claimed: 1,
+        processed: 0,
+        failed: 0,
+      });
+      expect(attempts).toBe(0);
+    }
+
+    // Merge commit releases the key. Its post-commit drain can claim immediately
+    // because contention release cleared the old token and expiry.
+    mergeHoldsPolicyLock = false;
+    const afterMerge = await drainHostingCoverageReevaluations(
+      { limit: 1, maxAttempts: 5 },
+      makeDb(),
+    );
+
+    expect(afterMerge).toMatchObject({ claimed: 1, processed: 1, failed: 0 });
+    expect(processed).toBe(true);
+    expect(attempts).toBe(1);
+    expect(mocks.releaseContention).toHaveBeenCalledTimes(7);
+    expect(mocks.fail).not.toHaveBeenCalled();
+    expect(mocks.loadPolicy).toHaveBeenCalledTimes(1);
+    expect(mocks.sendEmail).not.toHaveBeenCalled();
   });
 
   it("stabilises through chained merges before using refreshed owner and actor", async () => {
@@ -175,7 +245,7 @@ describe("hosting coverage drain claim fences (#2596)", () => {
       "actor-master-2",
       "owner-master-2",
     ]);
-    expect(mocks.lockPolicySet.mock.invocationCallOrder[0]).toBeLessThan(
+    expect(mocks.tryPolicySet.mock.invocationCallOrder[0]).toBeLessThan(
       mocks.lockMember.mock.invocationCallOrder[0],
     );
     expect(mocks.lockMember.mock.invocationCallOrder[3]).toBeLessThan(

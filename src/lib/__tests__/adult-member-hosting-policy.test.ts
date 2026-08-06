@@ -21,6 +21,7 @@ import {
 import {
   ADULT_MEMBER_HOSTING_POLICY_SET_LOCK_KEY,
   lockAdultMemberHostingPolicySet,
+  tryLockAdultMemberHostingPolicySet,
 } from "@/lib/adult-member-hosting-policy-set";
 
 const MIGRATION = "20260802160000_add_adult_member_hosting_policy";
@@ -560,6 +561,24 @@ describe("hosting policy set locking and migration shape (#2364)", () => {
     expect(calls[0]).toContain("pg_advisory_xact_lock");
     expect(calls[0]).toContain(ADULT_MEMBER_HOSTING_POLICY_SET_LOCK_KEY);
   });
+
+  it.each([true, false])(
+    "reports a %s fail-fast policy-lock attempt without blocking",
+    async (acquired) => {
+      const calls: string[] = [];
+      const result = await tryLockAdultMemberHostingPolicySet({
+        $queryRaw: (strings: TemplateStringsArray, ...values: unknown[]) => {
+          calls.push(`${strings.join("?")}::${String(values[0])}`);
+          return Promise.resolve([{ acquired }]);
+        },
+      } as any);
+
+      expect(result).toBe(acquired);
+      expect(calls).toHaveLength(1);
+      expect(calls[0]).toContain("pg_try_advisory_xact_lock");
+      expect(calls[0]).toContain(ADULT_MEMBER_HOSTING_POLICY_SET_LOCK_KEY);
+    },
+  );
 
   it("takes the set lock in a BEFORE STATEMENT trigger, ahead of any tuple lock", () => {
     const sql = repoFile(`prisma/migrations/${MIGRATION}/migration.sql`);

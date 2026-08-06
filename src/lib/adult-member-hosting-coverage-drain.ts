@@ -14,10 +14,11 @@ import {
   deferHostingCoverageReevaluation,
   failHostingCoverageReevaluation,
   loadClaimedHostingCoverageReevaluation,
+  releaseHostingCoverageReevaluationContention,
   renewHostingCoverageReevaluationClaim,
   type HostingCoverageReevaluationItem,
 } from "@/lib/adult-member-hosting-coverage-queue";
-import { lockAdultMemberHostingPolicySet } from "@/lib/adult-member-hosting-policy-set";
+import { tryLockAdultMemberHostingPolicySet } from "@/lib/adult-member-hosting-policy-set";
 import {
   isHostingCoverageSourceBookingTerminal,
   loadSameOwnerCoverageDependentIds,
@@ -173,6 +174,7 @@ type HostingCoverageReconciliationOutcome = {
 
 type HostingCoverageReconciliationTransactionResult =
   | HostingCoverageReconciliationOutcome
+  | { kind: "deferred" }
   | { kind: "lost" }
   | { kind: "retry"; item: HostingCoverageReevaluationItem };
 
@@ -212,6 +214,7 @@ export async function drainHostingCoverageReevaluations(
       let reconciliationItem = item;
       let outcome: HostingCoverageReconciliationOutcome | null = null;
       let claimLost = false;
+      let policyLockContended = false;
       for (
         let attempt = 0;
         attempt < MAX_MEMBER_ID_STABILIZATION_ATTEMPTS;
@@ -220,6 +223,10 @@ export async function drainHostingCoverageReevaluations(
         const reconciliation = await db.$transaction((tx) =>
           processHostingCoverageReevaluation(reconciliationItem, tx),
         );
+        if (reconciliation.kind === "deferred") {
+          policyLockContended = true;
+          break;
+        }
         if (reconciliation.kind === "lost") {
           claimLost = true;
           break;
@@ -230,6 +237,19 @@ export async function drainHostingCoverageReevaluations(
         }
         outcome = reconciliation;
         break;
+      }
+      if (policyLockContended) {
+        const released = await releaseHostingCoverageReevaluationContention(
+          item,
+          db,
+        );
+        logger.warn(
+          { itemId: item.id, memberId: item.memberId, lodgeId: item.lodgeId },
+          released
+            ? "Hosting coverage re-evaluation deferred behind the policy-set lock"
+            : "Hosting coverage re-evaluation policy-lock deferral arrived after its claim was replaced",
+        );
+        continue;
       }
       if (claimLost) {
         logger.warn(
@@ -401,7 +421,14 @@ async function processHostingCoverageReevaluation(
   // incident FKs. If drain wins, merge waits; if merge wins, the exact typed read
   // sees the survivor. Never row-lock the queue: merge writes it after Member
   // locks, so queue -> Member would invert the counterpart order.
-  await lockAdultMemberHostingPolicySet(db);
+  if (!(await tryLockAdultMemberHostingPolicySet(db))) {
+    // Fail fast before lifecycle locks, reads or incident writes. Member merge can
+    // hold the policy key for longer than Prisma's default interactive-transaction
+    // timeout; waiting here would turn ordinary contention into a consumed queue
+    // attempt. The caller releases this exact claim for the merge's post-commit
+    // drain (or the next cron sweep) to retry immediately.
+    return { kind: "deferred" };
+  }
   const claimedMemberIds = [
     ...new Set(
       [item.memberId, item.actorMemberId].filter(

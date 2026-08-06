@@ -134,14 +134,15 @@ const SCOPED_ADVISORY_LOCK_INVENTORY: Record<string, number> = {
   // #2586: every roster-date writer calls the shared helper; the key is minted
   // once here and writer participation is pinned by roster-lock-contract.test.
   "src/lib/roster-lock.ts": 1,
-  // #2364: lockAdultMemberHostingPolicySet takes the single global
+  // #2364/#2596: lockAdultMemberHostingPolicySet takes the single blocking global
   // adult-member-hosting-policy-set key before any read by an admin CRUD write
   // or a configuration import, and the migration's BEFORE STATEMENT trigger
   // takes the same key ahead of any tuple lock so operator DML joins the same
-  // order. It composes with exactly one other key, in one fixed direction —
-  // config-transfer-import, then minimum-stay-policy-set, then this — and no
-  // booking or capacity path ever takes it, so the keyspaces are disjoint.
-  // Counterpart analysis in docs/CONCURRENCY_AND_LOCKING.md.
+  // order. The drain's fail-fast `pg_try_advisory_xact_lock` helper lives in this
+  // file too, but deliberately does not match the blocking-call inventory below.
+  // Config import, member merge and drain compose the key only in the documented
+  // forward order; no counterpart reverses it. Counterpart analysis in
+  // docs/CONCURRENCY_AND_LOCKING.md.
   "src/lib/adult-member-hosting-policy-set.ts": 1,
   // #2596: after the hosting policy-set key, the drain takes sorted
   // member-lifecycle keys for claimed owner + actor before Member rows and the

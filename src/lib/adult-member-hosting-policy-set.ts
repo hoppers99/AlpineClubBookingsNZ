@@ -1,4 +1,7 @@
 import type { Prisma } from "@prisma/client";
+import { z } from "zod";
+
+import { decodeRawRows } from "@/lib/raw-sql-rows";
 
 export const ADULT_MEMBER_HOSTING_POLICY_SET_LOCK_KEY =
   "adult-member-hosting-policy-set";
@@ -7,6 +10,8 @@ export const ADULT_MEMBER_HOSTING_POLICY_SET_LOCK_KEY =
 export const STALE_ADULT_MEMBER_HOSTING_POLICY_MESSAGE =
   "This hosting policy changed since you opened it, so nothing was saved. " +
   "The latest settings are shown below — check them and try again.";
+
+const POLICY_SET_TRY_LOCK_ROW = z.object({ acquired: z.boolean() });
 
 /**
  * Refusal when a lodge override is asked for on a lodge that is gone or
@@ -37,4 +42,30 @@ export async function lockAdultMemberHostingPolicySet(
   tx: Pick<Prisma.TransactionClient, "$executeRaw">,
 ): Promise<void> {
   await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${ADULT_MEMBER_HOSTING_POLICY_SET_LOCK_KEY}))`;
+}
+
+/**
+ * Attempt the same transaction lock without waiting behind a policy writer or
+ * member merge.
+ *
+ * Queue workers use this before any reconciliation effect. A false result lets
+ * them end the short transaction and release the exact queue claim without
+ * spending an attempt; request-path drains therefore never consume Prisma's
+ * interactive-transaction timeout waiting behind the deliberately longer member
+ * merge transaction.
+ */
+export async function tryLockAdultMemberHostingPolicySet(
+  tx: Pick<Prisma.TransactionClient, "$queryRaw">,
+): Promise<boolean> {
+  const returned = await tx.$queryRaw`
+    SELECT pg_try_advisory_xact_lock(
+      hashtext(${ADULT_MEMBER_HOSTING_POLICY_SET_LOCK_KEY})
+    ) AS "acquired"
+  `;
+  const [result] = decodeRawRows(
+    returned,
+    POLICY_SET_TRY_LOCK_ROW,
+    "adult-member hosting policy-set try-lock",
+  );
+  return result?.acquired === true;
 }
