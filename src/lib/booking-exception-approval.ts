@@ -37,6 +37,7 @@ import {
 import type { GuestStayRange } from "@/lib/booking-guest-stay-ranges";
 import type { PrismaTransactionClient } from "@/lib/db-transaction";
 import type { BookingModificationSettlementMethod } from "@/lib/booking-modify-validation";
+import type { HostingCoverageOverrideInput } from "@/lib/adult-member-hosting-same-owner";
 import {
   CAPACITY_CONFLICT_MESSAGE,
   type ConfirmedOverride,
@@ -380,6 +381,12 @@ export interface PolicyExceptionApprovalContext {
    */
   settlementMethod?: BookingModificationSettlementMethod;
   /**
+   * A second-step Booking Officer acknowledgement for same-owner bookings that
+   * the approved modification would strand. Separate from `adminNotes`: this is
+   * private operational authority and its own mandatory reason.
+   */
+  hostingCoverageOverride?: HostingCoverageOverrideInput | null;
+  /**
    * The member's own words from the request. Carried through as the booking's
    * `memberReviewJustification` so an adult-supervision review this approval
    * opens (see `reviewedMemberProposal`) records why the MEMBER says they are
@@ -676,6 +683,7 @@ async function executeApprovedModification(args: {
         ...(guest.memberId ? { memberId: guest.memberId } : {}),
         stayStart: guest.stayStart ?? null,
         stayEnd: guest.stayEnd ?? null,
+        nights: guest.nights ?? null,
       })),
       removeGuestIds: delta.removeGuestIds,
       guestStayRanges: delta.guestStayRanges,
@@ -687,6 +695,17 @@ async function executeApprovedModification(args: {
       notifyMember: true,
     },
     ipAddress: context.ipAddress,
+    ...(overridesAdultMemberHosting(override)
+      ? {
+          adultMemberHostingDecision: {
+            reason: overrideReason,
+            byMemberId: context.actorMemberId,
+          },
+        }
+      : {}),
+    ...(context.hostingCoverageOverride
+      ? { hostingCoverageOverride: context.hostingCoverageOverride }
+      : {}),
     tx,
   });
 

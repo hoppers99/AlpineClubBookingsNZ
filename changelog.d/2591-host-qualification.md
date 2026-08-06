@@ -76,6 +76,13 @@
   reading the history later can see who allowed it and why. Where nothing would be
   left uncovered you are not asked anything, so an ordinary edit is unchanged.
 
+  That same confirmation now protects approval of a pending booking-change
+  exception. The first attempt stays pending and shows the affected bookings and
+  nights; the retry needs its own private reason and never reuses the explanation
+  shown to the member. Enforced hosting exceptions can now execute through the
+  canonical modification service, and sparse nights on newly added guests remain
+  exact for both capacity and cents.
+
   **The changes nobody can sensibly block are never stopped, and the club gets an
   urgent entry instead.** A membership lapsing, being made inactive, cancelled or
   archived; a payment failing; an automated status change; a group settlement that

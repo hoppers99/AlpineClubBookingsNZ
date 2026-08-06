@@ -86,6 +86,7 @@ import {
 } from "@/lib/booking-exception-requests";
 import type { MinimumStayPolicyExceptionViolation } from "@/lib/booking-policy-exceptions";
 import type { AdultMemberHostingPolicyExceptionViolation } from "@/lib/booking-policy-exceptions";
+import { SameOwnerCoverageOverrideRequiredError } from "@/lib/adult-member-hosting-same-owner";
 
 const LODGE = "lodge-a";
 
@@ -388,6 +389,96 @@ describe("PATCH — approve", () => {
       expect.objectContaining({
         action: "booking-policy-exception-request.approve",
         outcome: "success",
+      }),
+    );
+  });
+
+  it("keeps the request pending and returns exact safe coverage details on the first same-owner refusal", async () => {
+    mocks.approve.mockRejectedValue(
+      new SameOwnerCoverageOverrideRequiredError([
+        {
+          bookingId: "bk-dependent",
+          reference: "BK-DEPENDENT",
+          lodgeName: "Example Lodge",
+          nights: ["2026-07-01", "2026-07-02"],
+        },
+      ]),
+    );
+
+    const res = await PATCH(
+      patchRequest({
+        action: "approve",
+        source: "MODIFICATION",
+        expectedVersion: 3,
+        confirm: true,
+      }),
+      { params },
+    );
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({
+      status: "REQUESTED",
+      keptPending: true,
+      requiresOverrideReason: true,
+      strandedBookings: [
+        {
+          bookingId: "bk-dependent",
+          reference: "BK-DEPENDENT",
+          lodgeName: "Example Lodge",
+          nights: ["2026-07-01", "2026-07-02"],
+        },
+      ],
+    });
+    expect(mocks.logAudit).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "booking-policy-exception-request.approve",
+        outcome: "success",
+      }),
+    );
+  });
+
+  it("rejects an unacknowledged or short same-owner override before execution", async () => {
+    for (const hostingCoverageOverride of [
+      { acknowledged: false, reason: "Long enough reason" },
+      { acknowledged: true, reason: "too short" },
+    ]) {
+      const res = await PATCH(
+        patchRequest({
+          action: "approve",
+          source: "MODIFICATION",
+          expectedVersion: 3,
+          confirm: true,
+          hostingCoverageOverride,
+        }),
+        { params },
+      );
+      expect(res.status).toBe(400);
+    }
+    expect(mocks.approve).not.toHaveBeenCalled();
+  });
+
+  it("passes an authorized officer's private same-owner override separately from adminNotes", async () => {
+    const hostingCoverageOverride = {
+      acknowledged: true,
+      reason: "Confirmed alternate supervision plan.",
+    };
+    const res = await PATCH(
+      patchRequest({
+        action: "approve",
+        source: "MODIFICATION",
+        expectedVersion: 3,
+        confirm: true,
+        adminNotes: "Member-facing exception explanation.",
+        hostingCoverageOverride,
+      }),
+      { params },
+    );
+
+    expect(res.status).toBe(200);
+    expect(mocks.buildHooks).toHaveBeenCalledWith(
+      expect.objectContaining({
+        adminNotes: "Member-facing exception explanation.",
+        hostingCoverageOverride,
       }),
     );
   });

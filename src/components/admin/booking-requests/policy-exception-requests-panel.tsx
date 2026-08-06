@@ -74,6 +74,51 @@ interface ProposedPartyGuest {
   beyondFamily: boolean | null;
 }
 
+interface StrandedCoverageBooking {
+  bookingId: string;
+  reference: string;
+  lodgeName: string;
+  nights: string[];
+}
+
+interface CoverageOverridePrompt {
+  requestId: string;
+  message: string;
+  strandedBookings: StrandedCoverageBooking[];
+}
+
+function parseStrandedCoverageBookings(
+  value: unknown,
+): StrandedCoverageBooking[] | null {
+  if (!Array.isArray(value) || value.length === 0) return null;
+  const parsed: StrandedCoverageBooking[] = [];
+  for (const row of value) {
+    const record = row as Record<string, unknown>;
+    const nights = record?.nights;
+    if (
+      !row ||
+      typeof row !== "object" ||
+      typeof record.bookingId !== "string" ||
+      typeof record.reference !== "string" ||
+      typeof record.lodgeName !== "string" ||
+      !Array.isArray(nights) ||
+      !nights.every(
+        (night: unknown) =>
+          typeof night === "string" && /^\d{4}-\d{2}-\d{2}$/.test(night),
+      )
+    ) {
+      return null;
+    }
+    parsed.push({
+      bookingId: record.bookingId,
+      reference: record.reference,
+      lodgeName: record.lodgeName,
+      nights: nights as string[],
+    });
+  }
+  return parsed;
+}
+
 interface QueueItem {
   source: "NEW_BOOKING" | "MODIFICATION";
   id: string;
@@ -198,6 +243,11 @@ export function PolicyExceptionRequestsPanel({
   // member's own screen — which is the whole reason the split exists.
   const [internalNotes, setInternalNotes] = useState("");
   const [confirmed, setConfirmed] = useState(false);
+  const [coverageOverridePrompt, setCoverageOverridePrompt] =
+    useState<CoverageOverridePrompt | null>(null);
+  const [coverageOverrideConfirmed, setCoverageOverrideConfirmed] =
+    useState(false);
+  const [coverageOverrideReason, setCoverageOverrideReason] = useState("");
   /**
    * Ref-backed because a disabled button is not a synchronous claim: two clicks
    * dispatched in one React batch otherwise both enter `decide`. State mirrors the
@@ -259,6 +309,9 @@ export function PolicyExceptionRequestsPanel({
     setNotes("");
     setInternalNotes("");
     setConfirmed(false);
+    setCoverageOverridePrompt(null);
+    setCoverageOverrideConfirmed(false);
+    setCoverageOverrideReason("");
     setSettlementMethod("");
   }
 
@@ -300,6 +353,20 @@ export function PolicyExceptionRequestsPanel({
       );
       return;
     }
+    const coveragePrompt =
+      coverageOverridePrompt?.requestId === item.id
+        ? coverageOverridePrompt
+        : null;
+    if (
+      action === "approve" &&
+      coveragePrompt &&
+      (!coverageOverrideConfirmed || coverageOverrideReason.trim().length < 10)
+    ) {
+      setError(
+        "Confirm the affected bookings and give a private override reason of at least 10 characters.",
+      );
+      return;
+    }
     if (decisionInFlightRef.current.has(item.id)) return;
     decisionInFlightRef.current.add(item.id);
     setDecisionInFlight((current) => new Set(current).add(item.id));
@@ -320,11 +387,41 @@ export function PolicyExceptionRequestsPanel({
             ...(action === "approve" && settlementMethod
               ? { settlementMethod }
               : {}),
+            ...(action === "approve" && coveragePrompt
+              ? {
+                  hostingCoverageOverride: {
+                    acknowledged: true,
+                    reason: coverageOverrideReason.trim(),
+                  },
+                }
+              : {}),
           }),
         },
       );
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
+        const strandedBookings = parseStrandedCoverageBookings(
+          data?.strandedBookings,
+        );
+        if (
+          data?.code === "SAME_OWNER_COVERAGE_OVERRIDE_REQUIRED" &&
+          data?.requiresOverrideReason === true &&
+          strandedBookings
+        ) {
+          setCoverageOverridePrompt({
+            requestId: item.id,
+            message:
+              typeof data.error === "string"
+                ? data.error
+                : "This change would leave another booking without required adult-member coverage.",
+            strandedBookings,
+          });
+          setCoverageOverrideConfirmed(false);
+          setCoverageOverrideReason("");
+          throw new Error(
+            "Review the affected bookings and nights, then explicitly confirm the private override.",
+          );
+        }
         // Any refusal may have moved the row's `version` — a kept-pending capacity
         // conflict always does — so re-read the queue before the officer tries
         // again. Without this their next click lost the guarded compare and was
@@ -686,6 +783,9 @@ export function PolicyExceptionRequestsPanel({
                               setNotes("");
                               setInternalNotes("");
                               setConfirmed(false);
+                              setCoverageOverridePrompt(null);
+                              setCoverageOverrideConfirmed(false);
+                              setCoverageOverrideReason("");
                             }}
                           >
                             Decide this request
@@ -795,6 +895,80 @@ export function PolicyExceptionRequestsPanel({
                                 this exception.
                               </span>
                             </label>
+                            <div role="alert">
+                              {coverageOverridePrompt?.requestId === item.id ? (
+                                <div className="space-y-3 rounded-md border border-warning-7 bg-warning-2 p-3">
+                                <div className="space-y-1">
+                                  <p className="font-semibold text-warning-11">
+                                    Separate hosting coverage override required
+                                  </p>
+                                  <p className="text-sm">
+                                    {coverageOverridePrompt.message}
+                                  </p>
+                                </div>
+                                <ul className="space-y-2 text-sm">
+                                  {coverageOverridePrompt.strandedBookings.map(
+                                    (booking) => (
+                                      <li
+                                        key={booking.bookingId}
+                                        className="rounded border border-warning-6 bg-background p-2"
+                                      >
+                                        <span className="font-semibold">
+                                          {booking.reference}
+                                        </span>
+                                        {` at ${booking.lodgeName}`}
+                                        <div className="text-xs text-muted-foreground">
+                                          Nights: {booking.nights.join(", ")}
+                                        </div>
+                                      </li>
+                                    ),
+                                  )}
+                                </ul>
+                                <div className="space-y-1">
+                                  <Label
+                                    htmlFor={`coverage-override-reason-${item.id}`}
+                                  >
+                                    Private hosting override reason (required)
+                                  </Label>
+                                  <p className="text-xs text-muted-foreground">
+                                    Only admins see this operational reason. It is
+                                    separate from the explanation shown to the
+                                    member and must be at least 10 characters.
+                                  </p>
+                                  <Textarea
+                                    id={`coverage-override-reason-${item.id}`}
+                                    value={coverageOverrideReason}
+                                    disabled={!canEdit}
+                                    onChange={(event) =>
+                                      setCoverageOverrideReason(event.target.value)
+                                    }
+                                    minLength={10}
+                                    maxLength={500}
+                                    placeholder="Why it is safe to proceed despite these uncovered nights."
+                                  />
+                                </div>
+                                <label className="flex items-start gap-2 text-sm">
+                                  <input
+                                    type="checkbox"
+                                    className="mt-1"
+                                    checked={coverageOverrideConfirmed}
+                                    disabled={!canEdit}
+                                    onChange={(event) =>
+                                      setCoverageOverrideConfirmed(
+                                        event.target.checked,
+                                      )
+                                    }
+                                  />
+                                  <span>
+                                    I confirm these exact affected bookings and
+                                    nights remain confirmed, that beds and payments
+                                    are unchanged, and that this creates an urgent
+                                    hosting coverage incident.
+                                  </span>
+                                </label>
+                              </div>
+                              ) : null}
+                            </div>
                             <div className="flex flex-wrap gap-2">
                               <ViewOnlyActionButton
                                 canEdit={canEdit}
@@ -804,7 +978,10 @@ export function PolicyExceptionRequestsPanel({
                                 disabled={
                                   decisionInFlight.has(item.id) ||
                                   !confirmed ||
-                                  (needsReason && !hasNotes)
+                                  (needsReason && !hasNotes) ||
+                                  (coverageOverridePrompt?.requestId === item.id &&
+                                    (!coverageOverrideConfirmed ||
+                                      coverageOverrideReason.trim().length < 10))
                                 }
                               >
                                 Approve and apply

@@ -2793,6 +2793,10 @@ compliant indefinitely.
   cancellation is forbidden in as many words. Nothing automated can ever be gated by
   this: only surfaces going through `hostingCoverageActorOptions` with a live officer
   session can raise it, and every cron, webhook and lifecycle path passes `ESCALATE`.
+  Approving a pending modification-policy exception uses this same two-step path:
+  the first attempt stays pending and returns the exact affected bookings and
+  nights, while the retry carries its own private `hostingCoverageOverride` reason.
+  The member-facing approval explanation is never reused as that authority.
 - **A change to one PERSON's standing records the check it owes** (§8). "Membership
   becoming inactive, lapsed, cancelled or archived" heads §8's list, and only the
   evaluator half of it is automatic (an archived or cancelled member stops

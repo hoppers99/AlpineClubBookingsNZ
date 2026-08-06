@@ -331,6 +331,122 @@ describe("the officer decision form labels who reads what, before submission", (
       expect(body.internalNotes).toBeUndefined();
     });
   });
+
+  it("requires a separate private confirmation after the service identifies stranded same-owner bookings", async () => {
+    let attempt = 0;
+    decisionResponse = () => {
+      attempt += 1;
+      return attempt === 1
+        ? jsonResponse(
+            {
+              error: "This change would leave another booking uncovered.",
+              code: "SAME_OWNER_COVERAGE_OVERRIDE_REQUIRED",
+              status: "REQUESTED",
+              keptPending: true,
+              requiresOverrideReason: true,
+              strandedBookings: [
+                {
+                  bookingId: "bk-dependent-secret",
+                  reference: "ACB-1234",
+                  lodgeName: "Example Lodge",
+                  nights: ["2026-07-01", "2026-07-02"],
+                },
+              ],
+            },
+            409,
+          )
+        : jsonResponse({ id: "req-1", status: "APPROVED" });
+    };
+
+    await openDecisionForm();
+    fireEvent.change(screen.getByLabelText(/Explanation for the member/i), {
+      target: { value: "Member-facing exception explanation." },
+    });
+    fireEvent.change(screen.getByLabelText(/Internal note/i), {
+      target: { value: "Separate officer context." },
+    });
+    fireEvent.click(
+      screen.getByLabelText(/I have read the proposal above/i),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Approve and apply/i }));
+
+    expect(
+      await screen.findByText(/Separate hosting coverage override required/i),
+    ).toBeInTheDocument();
+    expect(screen.getByText("ACB-1234")).toBeInTheDocument();
+    expect(screen.getByText(/Example Lodge/)).toBeInTheDocument();
+    expect(screen.getByText(/2026-07-01, 2026-07-02/)).toBeInTheDocument();
+    expect(screen.queryByText("bk-dependent-secret")).toBeNull();
+
+    const approve = screen.getByRole("button", { name: /Approve and apply/i });
+    expect(approve).toBeDisabled();
+    fireEvent.change(screen.getByLabelText(/Private hosting override reason/i), {
+      target: { value: "Confirmed alternate supervision plan." },
+    });
+    expect(approve).toBeDisabled();
+    fireEvent.click(
+      screen.getByLabelText(/I confirm these exact affected bookings and nights/i),
+    );
+    expect(approve).not.toBeDisabled();
+    fireEvent.click(approve);
+    fireEvent.click(approve);
+
+    await waitFor(() => {
+      const patches = fetchMock.mock.calls.filter(
+        ([, init]) => (init as RequestInit | undefined)?.method === "PATCH",
+      );
+      expect(patches).toHaveLength(2);
+      const firstBody = JSON.parse(String((patches[0][1] as RequestInit).body));
+      const secondBody = JSON.parse(String((patches[1][1] as RequestInit).body));
+      expect(firstBody.hostingCoverageOverride).toBeUndefined();
+      expect(secondBody).toMatchObject({
+        adminNotes: "Member-facing exception explanation.",
+        internalNotes: "Separate officer context.",
+        hostingCoverageOverride: {
+          acknowledged: true,
+          reason: "Confirmed alternate supervision plan.",
+        },
+      });
+    });
+  });
+
+  it("clears the same-owner override prompt and private draft when the form is cancelled", async () => {
+    decisionResponse = () =>
+      jsonResponse(
+        {
+          error: "This change would leave another booking uncovered.",
+          code: "SAME_OWNER_COVERAGE_OVERRIDE_REQUIRED",
+          status: "REQUESTED",
+          keptPending: true,
+          requiresOverrideReason: true,
+          strandedBookings: [
+            {
+              bookingId: "bk-dependent",
+              reference: "ACB-5678",
+              lodgeName: "Example Lodge",
+              nights: ["2026-07-01"],
+            },
+          ],
+        },
+        409,
+      );
+
+    await openDecisionForm();
+    fireEvent.click(screen.getByLabelText(/I have read the proposal above/i));
+    fireEvent.click(screen.getByRole("button", { name: /Approve and apply/i }));
+    expect(await screen.findByText("ACB-5678")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText(/Private hosting override reason/i), {
+      target: { value: "This private draft must be cleared." },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByText("ACB-5678")).toBeNull();
+    fireEvent.click(
+      screen.getByRole("button", { name: /Decide this request/i }),
+    );
+    expect(screen.queryByLabelText(/Private hosting override reason/i)).toBeNull();
+    expect(screen.getByLabelText(/Explanation for the member/i)).toHaveValue("");
+  });
 });
 
 describe("a decided request shows which half the member has already read", () => {

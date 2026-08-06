@@ -146,6 +146,9 @@ const DELTA = {
       lastName: "Hopper",
       ageTier: "ADULT",
       isMember: false,
+      // A sparse explicit stay must survive the frozen-delta replay. Dropping
+      // this widens the guest back to the whole booking envelope.
+      nights: ["2026-07-02"],
     },
   ],
 };
@@ -559,13 +562,19 @@ describe("verifyLiveProposalIntegrity", () => {
 });
 
 describe("executeApprovedProposal — modification", () => {
-  async function runExecution(override: ConfirmedOverride) {
+  async function runExecution(
+    override: ConfirmedOverride,
+    contextOverrides: {
+      hostingCoverageOverride?: { acknowledged: true; reason: string };
+    } = {},
+  ) {
     const snapshot = frozenModificationSnapshot();
     const { hooks, outcome } = buildPolicyExceptionApprovalHooks({
       requestId: "req-1",
       actorMemberId: OFFICER,
       ipAddress: "1.2.3.4",
       adminNotes: "Long-standing member, one-off.",
+      ...contextOverrides,
     });
     const tx = makeTx();
     // The engine always runs the integrity hook first; it is what seeds the
@@ -604,6 +613,7 @@ describe("executeApprovedProposal — modification", () => {
         isMember: false,
         stayStart: null,
         stayEnd: null,
+        nights: ["2026-07-02"],
       },
     ]);
   });
@@ -619,6 +629,14 @@ describe("executeApprovedProposal — modification", () => {
     expect(decision.reason).toContain("ADULT_MEMBER_HOSTING_REQUIRED");
     expect(decision.reason).toContain("req-1");
     expect(outcome.hostingDecisionRecorded).toBe(true);
+    expect(modifyBookingBatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        adultMemberHostingDecision: {
+          byMemberId: OFFICER,
+          reason: expect.stringContaining("ADULT_MEMBER_HOSTING_REQUIRED"),
+        },
+      }),
+    );
 
     // #2576 §7. AND THE APPROVAL CLOSES THE INCIDENT, in this same transaction.
     // Without it the approval was undone on the next pass: the drain's reconciliation
@@ -633,6 +651,21 @@ describe("executeApprovedProposal — modification", () => {
       resolution: "EXCEPTION_APPROVED",
       actorMemberId: OFFICER,
     });
+  });
+
+  it("passes the private same-owner coverage override separately from member-facing notes", async () => {
+    const hostingCoverageOverride = {
+      acknowledged: true as const,
+      reason: "Officer confirmed alternative supervision.",
+    };
+    await runExecution(HOSTING_OVERRIDE, { hostingCoverageOverride });
+
+    expect(modifyBookingBatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        hostingCoverageOverride,
+        adultMemberHostingDecision: expect.any(Object),
+      }),
+    );
   });
 
   it("does NOT touch the hosting review when that rule was not overridden", async () => {

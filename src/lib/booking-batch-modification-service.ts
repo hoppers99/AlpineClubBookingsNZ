@@ -207,6 +207,7 @@ function buildIdentityOnlyPricing(booking: LoadedBookingForModify): PricingResul
 export async function modifyBookingBatch({
   bookingId,
   actor,
+  adultMemberHostingDecision,
   hostingCoverageOverride,
   input,
   ipAddress,
@@ -214,6 +215,13 @@ export async function modifyBookingBatch({
 }: {
   bookingId: string;
   actor: { id: string; role: Role };
+  /**
+   * The attributable decision already made by an approved hosting-policy
+   * exception. It bypasses ENFORCED refusal for this booking only; the service
+   * still records/reopens the authoritative review before the approval executor
+   * performs its guarded PENDING -> APPROVED claim.
+   */
+  adultMemberHostingDecision?: { reason: string; byMemberId: string } | null;
   /**
    * #2576 §7: the officer's explicit confirmation and mandatory reason for
    * overriding a same-owner coverage refusal. Ignored for a non-officer actor, so a
@@ -914,6 +922,9 @@ export async function modifyBookingBatch({
     // travels with the actor — an ordinary member is refused and rolled back, an
     // officer is allowed and the consequence is escalated to an urgent incident.
     await reconcileAdultMemberHostingReviewWithSiblings(bookingId, tx, {
+      ...(adultMemberHostingDecision
+        ? { decision: adultMemberHostingDecision }
+        : {}),
       ...hostingCoverageActorOptions({
         actorRole: actor.role,
         actorMemberId: actor.id,
