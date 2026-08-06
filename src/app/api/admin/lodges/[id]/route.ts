@@ -19,6 +19,7 @@ import { BookingStatus } from "@prisma/client";
 import { revalidatePublicPageContent } from "@/lib/public-content-revalidation";
 import { invalidatePublicClubIdentity } from "@/lib/public-layout-cache";
 import { primeClubIdentitySync } from "@/lib/club-identity-settings";
+import { acquireConfigImportLock } from "@/lib/config-transfer-lock";
 
 const paramsSchema = z.object({
   id: z.string().min(1),
@@ -153,9 +154,9 @@ export async function PATCH(
     active?: boolean;
   } = {};
 
-  if (parsed.data.name !== undefined && parsed.data.name !== existing.name) {
-    data.name = parsed.data.name.trim();
-    data.slug = await buildUniqueLodgeSlug(prisma, data.name, existing.id);
+  const nameChanges = parsed.data.name !== undefined && parsed.data.name !== existing.name;
+  if (nameChanges) {
+    data.name = parsed.data.name!.trim();
   }
   if (parsed.data.address !== undefined) {
     data.address = normalizeLodgeText(parsed.data.address);
@@ -175,6 +176,10 @@ export async function PATCH(
   }
 
   const updated = await prisma.$transaction(async (tx) => {
+    await acquireConfigImportLock(tx);
+    if (nameChanges) {
+      data.slug = await buildUniqueLodgeSlug(tx, data.name!, existing.id);
+    }
     const lodge = await tx.lodge.update({
       where: { id: existing.id },
       data,

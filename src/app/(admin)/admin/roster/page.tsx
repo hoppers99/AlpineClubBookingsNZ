@@ -55,18 +55,43 @@ const ROSTER_LEGEND: Array<{ tone: CalendarTone; label: string }> = [
   { tone: "green", label: "Confirmed" },
 ]
 
-function actionFailure(action: string) {
-  if (action === "Sending roster emails") {
+type ActionFailureKind = "roster" | "email-send" | "email-suppress"
+
+function actionFailure(action: string, kind: ActionFailureKind = "roster") {
+  if (kind === "email-send") {
     return "Sending roster emails could not be verified because the service could not be reached. Some recipients may already have received new links; check Email Deliverability before trying again."
+  }
+  if (kind === "email-suppress") {
+    return "Recording the no-email choice could not be verified because the service could not be reached. No email send was requested, and existing links remain valid; check the audit log before recording the choice again."
   }
   return `${action} could not be verified because the service could not be reached. Reload the roster and check its current status before trying again.`
 }
 
-function unreadableActionFailure(action: string) {
-  if (action === "Sending roster emails") {
+function unreadableActionFailure(action: string, kind: ActionFailureKind = "roster") {
+  if (kind === "email-send") {
     return "Sending roster emails could not be verified because the service returned an unreadable response. Some recipients may already have received new links; check Email Deliverability before trying again."
   }
+  if (kind === "email-suppress") {
+    return "Recording the no-email choice could not be verified because the service returned an unreadable response. No email send was requested, and existing links remain valid; check the audit log before recording the choice again."
+  }
   return `${action} could not be verified because the service returned an unreadable response. Reload the roster and check its current status before trying again.`
+}
+
+function isActionRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+function isEmailActionResult(
+  value: Record<string, unknown>,
+  notifyMember: boolean,
+): boolean {
+  if (value.success !== true) return false
+  if (!notifyMember) return value.suppressed === true
+  return (value.suppressed === undefined || value.suppressed === false) &&
+    typeof value.partialFailure === "boolean" &&
+    typeof value.sent === "number" &&
+    typeof value.failed === "number" &&
+    typeof value.skipped === "number"
 }
 
 export default function RosterPage() {
@@ -207,6 +232,7 @@ export default function RosterPage() {
   async function runRosterAction(
     body: Record<string, unknown>,
     failureLabel: string,
+    failureKind: ActionFailureKind = "roster",
   ) {
     setSavingAction(true)
     setError("")
@@ -219,19 +245,32 @@ export default function RosterPage() {
           body: JSON.stringify(body),
         })
       } catch {
-        throw new Error(actionFailure(failureLabel))
+        throw new Error(actionFailure(failureLabel, failureKind))
       }
       if (response.status === 403) throw new Error(ADMIN_FORBIDDEN_SAVE_REASON)
-      let data: { error?: string; [key: string]: unknown }
+      let decoded: unknown
       try {
-        data = await response.json()
+        decoded = await response.json()
       } catch {
-        throw new Error(unreadableActionFailure(failureLabel))
+        throw new Error(unreadableActionFailure(failureLabel, failureKind))
       }
-      if (!response.ok) throw new Error(data.error || actionFailure(failureLabel))
-      return data
+      if (!isActionRecord(decoded)) {
+        throw new Error(unreadableActionFailure(failureLabel, failureKind))
+      }
+      if (!response.ok) {
+        throw new Error(
+          typeof decoded.error === "string"
+            ? decoded.error
+            : actionFailure(failureLabel, failureKind),
+        )
+      }
+      return decoded
     } catch (actionError) {
-      setError(actionError instanceof Error ? actionError.message : actionFailure(failureLabel))
+      setError(
+        actionError instanceof Error
+          ? actionError.message
+          : actionFailure(failureLabel, failureKind),
+      )
       return null
     } finally {
       setSavingAction(false)
@@ -263,9 +302,19 @@ export default function RosterPage() {
   async function performSendEmail(notifyMember: boolean) {
     setSendingEmail(true)
     setLastEmailSuppressed(false)
-    const data = await runRosterAction({ action: "email", notifyMember }, "Sending roster emails")
+    const failureKind = notifyMember ? "email-send" : "email-suppress"
+    const failureLabel = notifyMember ? "Sending roster emails" : "Recording the no-email choice"
+    const data = await runRosterAction(
+      { action: "email", notifyMember },
+      failureLabel,
+      failureKind,
+    )
     setSendingEmail(false)
     if (!data) return
+    if (!isEmailActionResult(data, notifyMember)) {
+      setError(unreadableActionFailure(failureLabel, failureKind))
+      return
+    }
     if (data.suppressed) {
       setLastEmailSuppressed(true)
       window.alert("No emails sent. Existing chore links remain valid. Your choice is recorded in the audit log.")

@@ -4,7 +4,8 @@ import type { PrismaClient } from "@prisma/client";
 
 import { createAuditLog } from "@/lib/audit";
 import { runDatabaseBackup, type BackupResult } from "@/lib/backup";
-import { acquireLodgeCapacityLock } from "@/lib/capacity";
+import { acquireConfigImportLock } from "@/lib/config-transfer-lock";
+import { acquireLodgeCapacityLock } from "@/lib/lodge-capacity-lock";
 import { lockMinimumStayPolicySet } from "@/lib/minimum-stay-policy-set";
 import { lockAdultMemberHostingPolicySet } from "@/lib/adult-member-hosting-policy-set";
 import { readBundle, sha256Hex } from "./bundle";
@@ -56,11 +57,6 @@ export class ConfigImportBackupError extends Error {
     super(`Refusing to import: the pre-apply database backup failed (${cause}).`);
     this.name = "ConfigImportBackupError";
   }
-}
-
-/** Single-flight lock so two imports cannot apply concurrently. */
-async function acquireConfigImportLock(tx: TxDb): Promise<void> {
-  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('config-transfer-import'))`;
 }
 
 /**

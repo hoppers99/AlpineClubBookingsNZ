@@ -97,6 +97,17 @@ describe("roster-date lock source contract (#2586)", () => {
     expect(importedLodgeLockHelper).toContain("lodges.map(({ id }) => id).sort()")
     expect(importedLodgeLockHelper).toContain("await acquireLodgeCapacityLock(tx, lodgeId)")
 
+    for (const lodgeIdentityWriter of [
+      "src/app/api/admin/lodges/route.ts",
+      "src/app/api/admin/lodges/[id]/route.ts",
+    ]) {
+      const contents = source(lodgeIdentityWriter)
+      expect(contents).toContain("await acquireConfigImportLock(tx)")
+      expect(contents.indexOf("await acquireConfigImportLock(tx)")).toBeLessThan(
+        contents.lastIndexOf("buildUniqueLodgeSlug("),
+      )
+    }
+
     const lodgeOps = source("src/lib/config-transfer/categories/lodge-ops.ts")
     expect(lodgeOps).toContain("ctx.tx.choreTemplate.update")
     expect(configApply).toContain("await acquireLodgeCapacityLock(tx, lodgeId)")

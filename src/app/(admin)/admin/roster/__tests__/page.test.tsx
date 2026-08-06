@@ -266,6 +266,7 @@ describe("admin roster page draft transitions", () => {
         return new Response(JSON.stringify({
           success: true,
           partialFailure: true,
+          sent: 1,
           failed: 1,
           skipped: 2,
         }), { status: 200 })
@@ -281,5 +282,47 @@ describe("admin roster page draft transitions", () => {
     await waitFor(() => expect(alertMock).toHaveBeenCalledWith(
       "The roster was sent to successful recipients, with 1 failure(s). Check Email Deliverability before retrying so successful recipients are not sent another fresh link. 2 guest(s) skipped because they opted out.",
     ))
+  })
+
+  it("treats a syntactically valid but malformed email success as unverifiable", async () => {
+    const confirmedRoster = roster()
+    confirmedRoster.assignments[0].status = "CONFIRMED"
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.startsWith("/api/admin/roster/status")) {
+        return new Response(JSON.stringify({ statuses: [] }), { status: 200 })
+      }
+      if (init?.method === "PUT") {
+        return new Response(JSON.stringify({}), { status: 200 })
+      }
+      return new Response(JSON.stringify(confirmedRoster), { status: 200 })
+    })
+    await renderLoaded(fetchMock)
+
+    fireEvent.click(screen.getByRole("button", { name: "Email Roster to Guests" }))
+    fireEvent.click(screen.getByRole("button", { name: "Email guests the roster" }))
+
+    await waitFor(() => expect(screen.getByText(
+      "Sending roster emails could not be verified because the service returned an unreadable response. Some recipients may already have received new links; check Email Deliverability before trying again.",
+    )).toBeTruthy())
+  })
+
+  it("keeps no-email transport ambiguity distinct from a send attempt", async () => {
+    const confirmedRoster = roster()
+    confirmedRoster.assignments[0].status = "CONFIRMED"
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.startsWith("/api/admin/roster/status")) {
+        return new Response(JSON.stringify({ statuses: [] }), { status: 200 })
+      }
+      if (init?.method === "PUT") throw new TypeError("Failed to fetch")
+      return new Response(JSON.stringify(confirmedRoster), { status: 200 })
+    })
+    await renderLoaded(fetchMock)
+
+    fireEvent.click(screen.getByRole("button", { name: "Email Roster to Guests" }))
+    fireEvent.click(screen.getByRole("button", { name: "Don’t email — keep existing links" }))
+
+    await waitFor(() => expect(screen.getByText(
+      "Recording the no-email choice could not be verified because the service could not be reached. No email send was requested, and existing links remain valid; check the audit log before recording the choice again.",
+    )).toBeTruthy())
   })
 })
