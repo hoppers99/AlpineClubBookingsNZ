@@ -406,18 +406,26 @@ refreshed payload. This avoids acquiring a newly discovered id out of sorted ord
 and also covers a second merge of the first survivor. After three unstable reads
 the exact claim is failed for a later sweep instead of processing an unfenced id.
 
-The advisory tier is the merge handshake; its later Member row lock is too late.
-Member merge takes the hosting policy-set key and then sorted member-lifecycle keys
-at transaction entry, before it
-re-points relations. If drain wins, merge waits and later re-points the drain's
-committed incident effects. If merge wins, the typed queue re-read sees the
-survivor. The composed order is **policy-set → sorted member-lifecycle → sorted
-Member KEY SHARE → exact queue re-read → coverage-owner**. Member merge joins the
-first two tiers in that same direction; every other member-lifecycle participant
-omits the policy key. Policy writers take no lifecycle, Member-row or coverage-owner
-lock, so no counterpart reverses this chain.
-The queue read is deliberately not a `FOR UPDATE`: no queue tuple lock is held while
-the member tiers are acquired, so there is no queue → Member inversion.
+The advisory tier is the merge handshake for a queue row that already exists; its
+later Member row lock is too late. Member merge takes the hosting policy-set key and
+then sorted member-lifecycle keys at transaction entry, before it re-points
+relations. If drain wins, merge waits and later re-points the drain's committed
+incident effects. If merge already re-pointed the persisted queue row, the typed
+queue re-read sees the survivor. The composed order is **policy-set → sorted
+member-lifecycle → sorted Member KEY SHARE → exact queue re-read →
+coverage-owner**. Member merge joins the first two tiers in that same direction;
+every other member-lifecycle participant omits the policy key. Policy writers take
+no lifecycle, Member-row or coverage-owner lock, so no counterpart reverses this
+chain. The queue read is deliberately not a `FOR UPDATE`: no queue tuple lock is
+held while the member tiers are acquired, so there is no queue → Member inversion.
+
+This claim-side handshake does not claim to fence a new queue row inserted after
+member merge's relation sweep. Policy reconciliation now shares the policy-set lock
+with merge and is fully serialised, but ordinary booking/member producers still
+compose the real queue-owner FK, the FK-less actor, and repeated multi-owner
+fan-outs. Fixing those paths safely requires transaction-wide participant planning,
+not another lock in the drain. Public blocker #2597 owns that remaining repair and
+must land before the downstream Tokoroa deployment.
 
 Concurrency inside the drain is handled by expiring, opaque-token claims rather than
 long-lived locks. Items are claimed **just in time, one at a time**, not leased as a
@@ -1041,8 +1049,11 @@ cascade away, nor race the deleted FK into a policy-save failure.
 
 The hosting drain is the other multi-key participant: it may hold the claimed
 owner and actor keys, also sorted and de-duplicated, to exclude merge before
-relation moves begin. It takes the hosting policy-set first, the same direction as
-merge; no other member-lifecycle participant takes that policy key.
+relation moves begin for an already-existing queue row. It takes the hosting
+policy-set first; no other member-lifecycle participant takes that policy key, so
+this edge is one-way. Ordinary queue rows inserted after the move sweep are the
+separate #2597 producer-topology contract; policy reconciliation cannot do that
+because it shares the policy-set key with merge.
 
 Inside the locks the merge re-reads both members, re-runs the full guard matrix,
 and re-verifies the HMAC preview token (which bakes in both `updatedAt` values)

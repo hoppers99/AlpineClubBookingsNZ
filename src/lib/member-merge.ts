@@ -30,8 +30,10 @@ import logger from "@/lib/logger";
  * hosting policy-set lock, then a dual `member-lifecycle:{id}` advisory lock
  * (see docs/CONCURRENCY_AND_LOCKING.md).
  * The hosting drain takes the same sorted keys for its claimed owner and actor,
- * then refreshes the exact queue payload. This handshake starts here, before any
- * relation move, not at the later Member row locks used by field merge.
+ * then refreshes the exact queue payload. For a queue row that already exists,
+ * this handshake starts here, before any relation move, not at the later Member
+ * row locks used by field merge. #2597 separately owns queue rows inserted after
+ * this transaction's relation sweep.
  * It re-points every Member-referencing relation onto the master, additively
  * fills the master's blank scalar fields from the loser, tidies the loser's
  * Xero links, writes one critical audit, and hard-deletes the loser. There are
@@ -1612,7 +1614,8 @@ function selfRelationMoveWhere(
  * `HostingCoverageReevaluation.actorMemberId` is live too: the drain promotes
  * it into the incident's real Member foreign key, so queued attribution must
  * follow a merged person onto the surviving profile. Merge and drain share the
- * sorted lifecycle handshake, and the drain refreshes its exact claimed row.
+ * sorted lifecycle handshake for an already-existing queue row, and the drain
+ * refreshes its exact claimed row. #2597 owns the producer-after-sweep case.
  */
 export const MEMBER_MERGE_FK_LESS_MOVE_COLUMNS: readonly {
   key: string;

@@ -11,4 +11,6 @@
   an explicit stopped-old-runtime maintenance
   window because an old worker does not understand the new fencing protocol. Booking
   Officer incident totals and lists also stay within the lodge selected on the
-  bookings screen.
+  bookings screen. A separate public blocker (#2597) owns the broader queue-writer
+  versus member-merge participant topology and must land before the downstream
+  Tokoroa deployment.

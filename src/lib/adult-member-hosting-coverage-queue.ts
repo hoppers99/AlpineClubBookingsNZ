@@ -201,8 +201,10 @@ export async function claimHostingCoverageReevaluations(
 /**
  * Re-read one claimed item's authoritative payload inside its reconciliation
  * transaction. Member merge can re-point both live member identities after the
- * claim commits, so the drain uses its snapshot only for the merge handshake and
- * reconciles exclusively from this exact-token refresh.
+ * claim commits, so the drain uses its snapshot only for the existing-row merge
+ * handshake and reconciles exclusively from this exact-token refresh. Producer
+ * rows inserted after merge's relation sweep are the separate #2597 topology
+ * repair.
  */
 export async function loadClaimedHostingCoverageReevaluation(
   claim: HostingCoverageReevaluationClaim,
