@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("next/navigation", () => ({
@@ -234,6 +234,127 @@ describe("CancelBookingButton — state-bound hosting override (#2576)", () => {
     );
     return calls;
   }
+
+  it("keeps one empty alert mounted through the pending request before announcing the 409", async () => {
+    let completeCancel!: (response: Response) => void;
+    const pendingCancel = new Promise<Response>((resolve) => {
+      completeCancel = resolve;
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) =>
+        url.includes("cancel-preview")
+          ? Promise.resolve(
+              new Response(JSON.stringify(previewBody), { status: 200 }),
+            )
+          : pendingCancel,
+      ),
+    );
+    render(
+      <CancelBookingButton
+        bookingId="bk_1"
+        onBehalfOfMember
+        canChooseMemberEmail
+        canOverrideHostingCoverage
+      />,
+    );
+
+    const alert = screen.getByRole("alert");
+    expect(alert.textContent).toBe("");
+    fireEvent.click(
+      screen.getByRole("button", { name: "Cancel on behalf of member" }),
+    );
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Confirm Cancellation" }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Cancel without emailing" }),
+    );
+
+    await screen.findByText("Cancelling booking...");
+    expect(screen.getByRole("alert")).toBe(alert);
+    expect(alert.textContent).toBe("");
+    expect(alert.getAttribute("aria-busy")).toBe("true");
+
+    await act(async () => {
+      completeCancel(
+        new Response(JSON.stringify(prompt("a", "ACB-OLD")), { status: 409 }),
+      );
+    });
+    expect(await screen.findByText("ACB-OLD")).toBeTruthy();
+    expect(screen.getByRole("alert")).toBe(alert);
+    expect(alert.getAttribute("aria-busy")).toBe("false");
+  });
+
+  it("retires the complete override intent when the officer keeps the booking", async () => {
+    const calls = stubOverrideFlow();
+    render(
+      <CancelBookingButton
+        bookingId="bk_1"
+        onBehalfOfMember
+        canChooseMemberEmail
+        canOverrideHostingCoverage
+      />,
+    );
+    const alert = screen.getByRole("alert");
+    fireEvent.click(
+      screen.getByRole("button", { name: "Cancel on behalf of member" }),
+    );
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Confirm Cancellation" }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Cancel without emailing" }),
+    );
+    expect(await screen.findByText("ACB-OLD")).toBeTruthy();
+    fireEvent.change(screen.getByLabelText(/Private hosting override reason/i), {
+      target: { value: "Abandoned private override reason." },
+    });
+    fireEvent.click(
+      screen.getByLabelText(/I confirm these exact affected bookings and nights/i),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Keep Booking" }));
+    expect(screen.getByRole("alert")).toBe(alert);
+    expect(alert.textContent).toBe("");
+    expect(screen.queryByLabelText(/Private hosting override reason/i)).toBeNull();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Cancel on behalf of member" }),
+    );
+    await screen.findByRole("button", { name: "Confirm Cancellation" });
+    expect(
+      screen.queryByText(/Review the affected bookings and nights/i),
+    ).toBeNull();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Confirm Cancellation" }),
+    );
+    expect(
+      screen.getByText("Email the member about this cancellation?"),
+    ).toBeTruthy();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Cancel and email member" }),
+    );
+
+    expect(await screen.findByText("ACB-NEW")).toBeTruthy();
+    expect(
+      (screen.getByLabelText(
+        /Private hosting override reason/i,
+      ) as HTMLTextAreaElement).value,
+    ).toBe("");
+    expect(
+      (screen.getByLabelText(
+        /I confirm these exact affected bookings and nights/i,
+      ) as HTMLInputElement).checked,
+    ).toBe(false);
+    const cancelBodies = calls
+      .filter((call) => call.url.endsWith("/cancel"))
+      .map((call) => call.body);
+    expect(cancelBodies).toEqual([
+      { refundMethod: "card", notifyMember: false },
+      { refundMethod: "card", notifyMember: true },
+    ]);
+  });
 
   it("retries the same refund/notify proposal without a second dialog and refreshes drift", async () => {
     const calls = stubOverrideFlow();

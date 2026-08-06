@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import {
@@ -127,7 +127,53 @@ export function CancelBookingButton({
     }
   }, [hostingOverrideProposalStillCurrent, hostingOverrideState]);
 
+  function clearHostingOverridePrompt() {
+    setHostingOverrideState(null);
+    setHostingOverrideConfirmed(false);
+    setHostingOverrideReason("");
+    setErrorMsg("");
+  }
+
+  function resetCancellationIntent() {
+    clearHostingOverridePrompt();
+    setNotifyDialogOpen(false);
+    setNotifiedMember(null);
+    setPreview(null);
+    setResult(null);
+  }
+
+  function keepBooking() {
+    resetCancellationIntent();
+    setStep("idle");
+  }
+
+  function renderWithHostingOverrideRegion(content: ReactNode) {
+    const busy = step === "loading" || step === "cancelling";
+    return (
+      <div className="space-y-3">
+        <HostingCoverageOverridePrompt
+          prompt={
+            canOverrideHostingCoverage && activeHostingOverrideState
+              ? activeHostingOverrideState.prompt
+              : null
+          }
+          confirmed={hostingOverrideConfirmed}
+          reason={hostingOverrideReason}
+          disabled={busy}
+          busy={busy}
+          idPrefix={`cancel-booking-${bookingId}-hosting-override`}
+          onConfirmedChange={setHostingOverrideConfirmed}
+          onReasonChange={setHostingOverrideReason}
+        />
+        {content}
+      </div>
+    );
+  }
+
   async function handleShowPreview() {
+    // A preview is a new cancellation proposal. Never let an earlier private
+    // reason, acknowledgement or email choice ride into it invisibly.
+    resetCancellationIntent();
     setStep("loading");
     try {
       const res = await fetch(`/api/bookings/${bookingId}/cancel-preview`);
@@ -205,6 +251,7 @@ export function CancelBookingButton({
       });
       if (res.ok) {
         const data = await res.json();
+        clearHostingOverridePrompt();
         setResult({
           refundAmountCents: data.refundAmountCents || 0,
           refundMethod: data.refundMethod || "card",
@@ -232,10 +279,12 @@ export function CancelBookingButton({
           setStep("preview");
           return;
         }
+        clearHostingOverridePrompt();
         setErrorMsg(data.error || "Failed to cancel booking");
         setStep("error");
       }
     } catch {
+      clearHostingOverridePrompt();
       setErrorMsg("Failed to cancel booking");
       setStep("error");
     } finally {
@@ -244,18 +293,18 @@ export function CancelBookingButton({
   }
 
   if (step === "idle") {
-    return (
+    return renderWithHostingOverrideRegion(
       <Button variant="destructive" onClick={handleShowPreview}>
         {onBehalfOfMember ? "Cancel on behalf of member" : "Cancel Booking"}
-      </Button>
+      </Button>,
     );
   }
 
   if (step === "loading") {
-    return (
+    return renderWithHostingOverrideRegion(
       <div className="rounded-md border border-border bg-card p-4">
         <p className="text-sm text-muted-foreground">Loading cancellation details...</p>
-      </div>
+      </div>,
     );
   }
 
@@ -271,7 +320,7 @@ export function CancelBookingButton({
     // this disjunct the panel would promise a confirmation email for the one
     // booking guaranteed not to get one.
     const emailSuppressed = notifiedMember === false || noEmailsSuppressesChoice;
-    return (
+    return renderWithHostingOverrideRegion(
       <div className="rounded-md border border-success-6 bg-success-3 p-4 space-y-1">
         <p className="text-sm font-medium text-success-11">
           {onBehalfOfMember
@@ -325,18 +374,18 @@ export function CancelBookingButton({
               : "The member was not emailed about this cancellation — your choice is recorded in the audit log."}
           </p>
         )}
-      </div>
+      </div>,
     );
   }
 
   if (step === "error") {
-    return (
+    return renderWithHostingOverrideRegion(
       <div className="rounded-md border border-danger-6 bg-danger-3 p-4 space-y-2">
         <p className="text-sm text-danger-11">{errorMsg}</p>
-        <Button variant="outline" size="sm" onClick={() => setStep("idle")}>
+        <Button variant="outline" size="sm" onClick={keepBooking}>
           Try Again
         </Button>
-      </div>
+      </div>,
     );
   }
 
@@ -350,7 +399,7 @@ export function CancelBookingButton({
       preview.refundAmountCents > 0 || preview.creditRefundAmountCents > 0;
     const hasRefund = hasCardRefund || preview.creditRestoredCents > 0;
 
-    return (
+    return renderWithHostingOverrideRegion(
       <div className="rounded-md border border-danger-6 bg-danger-3 p-4 space-y-3">
         <p className="text-sm font-medium text-danger-11">
           {onBehalfOfMember
@@ -529,18 +578,6 @@ export function CancelBookingButton({
           </div>
         )}
 
-        <HostingCoverageOverridePrompt
-          prompt={
-            canOverrideHostingCoverage && activeHostingOverrideState
-              ? activeHostingOverrideState.prompt
-              : null
-          }
-          confirmed={hostingOverrideConfirmed}
-          reason={hostingOverrideReason}
-          idPrefix={`cancel-booking-${bookingId}-hosting-override`}
-          onConfirmedChange={setHostingOverrideConfirmed}
-          onReasonChange={setHostingOverrideReason}
-        />
         {activeHostingOverrideState && errorMsg ? (
           <p className="text-sm text-danger-11" role="status">
             {errorMsg}
@@ -562,7 +599,7 @@ export function CancelBookingButton({
               ? "Confirm hosting override and cancel"
               : "Confirm Cancellation"}
           </Button>
-          <Button variant="outline" size="sm" onClick={() => setStep("idle")}>
+          <Button variant="outline" size="sm" onClick={keepBooking}>
             Keep Booking
           </Button>
         </div>
@@ -624,14 +661,14 @@ export function CancelBookingButton({
             </DialogFooter>
           </DialogContent>
         </Dialog>
-      </div>
+      </div>,
     );
   }
 
   // Cancelling state
-  return (
+  return renderWithHostingOverrideRegion(
     <div className="rounded-md border border-border bg-card p-4">
       <p className="text-sm text-muted-foreground">Cancelling booking...</p>
-    </div>
+    </div>,
   );
 }

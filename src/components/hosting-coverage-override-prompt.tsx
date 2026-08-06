@@ -9,6 +9,7 @@ export function HostingCoverageOverridePrompt({
   confirmed,
   reason,
   disabled = false,
+  busy = false,
   idPrefix,
   onConfirmedChange,
   onReasonChange,
@@ -17,6 +18,7 @@ export function HostingCoverageOverridePrompt({
   confirmed: boolean;
   reason: string;
   disabled?: boolean;
+  busy?: boolean;
   idPrefix: string;
   onConfirmedChange: (confirmed: boolean) => void;
   onReasonChange: (reason: string) => void;
@@ -24,7 +26,7 @@ export function HostingCoverageOverridePrompt({
   // Permanently mounted live region: inserting an already-populated role=alert is
   // missed by some screen-reader/browser pairs.
   return (
-    <div role="alert">
+    <div role="alert" aria-busy={busy}>
       {prompt ? (
         <div className="space-y-3 rounded-md border border-warning-7 bg-warning-2 p-3 text-sm">
           <div className="space-y-1">
