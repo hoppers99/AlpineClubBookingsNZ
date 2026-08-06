@@ -190,7 +190,10 @@ function calledName(call: ts.CallExpression): string | null {
   return null;
 }
 
-function isDestructuredPostAlias(identifier: ts.Identifier): boolean {
+function isDestructuredRequestAlias(
+  identifier: ts.Identifier,
+  method: "fetch" | "post",
+): boolean {
   let found = false;
   const visit = (node: ts.Node): void => {
     if (found) return;
@@ -200,8 +203,8 @@ function isDestructuredPostAlias(identifier: ts.Identifier): boolean {
           ts.isIdentifier(element.name) &&
           element.name.text === identifier.text &&
           (element.propertyName
-            ? propertyName(element.propertyName) === "post"
-            : element.name.text === "post")
+            ? propertyName(element.propertyName) === method
+            : element.name.text === method)
         ) {
           found = true;
           return;
@@ -214,8 +217,9 @@ function isDestructuredPostAlias(identifier: ts.Identifier): boolean {
   return found;
 }
 
-function isPostCallable(
+function isRequestCallable(
   expression: ts.Expression,
+  method: "fetch" | "post",
   bindings: ConstBindings,
   seen = new Set<ts.Node>(),
 ): boolean {
@@ -224,20 +228,20 @@ function isPostCallable(
   seen.add(resolved);
 
   if (ts.isPropertyAccessExpression(resolved)) {
-    return resolved.name.text === "post";
+    return resolved.name.text === method;
   }
   if (ts.isElementAccessExpression(resolved)) {
-    return resolveStaticString(resolved.argumentExpression, bindings) === "post";
+    return resolveStaticString(resolved.argumentExpression, bindings) === method;
   }
   if (ts.isIdentifier(resolved)) {
-    return isDestructuredPostAlias(resolved);
+    return isDestructuredRequestAlias(resolved, method);
   }
   if (ts.isCallExpression(resolved)) {
     const callee = unwrapExpression(resolved.expression);
     return (
       ts.isPropertyAccessExpression(callee) &&
       callee.name.text === "bind" &&
-      isPostCallable(callee.expression, bindings, seen)
+      isRequestCallable(callee.expression, method, bindings, seen)
     );
   }
   return false;
@@ -546,46 +550,20 @@ function bookingCreateMatcher(
     : { kind: "other" };
 }
 
-function bookingCreateTrigger(
-  action: ts.CallExpression,
+function classifyBookingCreateLocator(
+  locatorExpression: ts.Expression,
   bindings: ConstBindings,
 ): BrowserTrigger | null {
-  const callee = unwrapExpression(action.expression);
-  if (!ts.isPropertyAccessExpression(callee)) return null;
-  if (!new Set(["click", "press", "dispatchEvent"]).has(callee.name.text)) {
-    return null;
-  }
-
-  const locator = resolveConstExpression(callee.expression, bindings);
+  const locator = resolveConstExpression(locatorExpression, bindings);
   const getByRole = childCallNamed(locator, "getByRole");
   const getByText = childCallNamed(locator, "getByText");
   const locatorCall = childCallNamed(locator, "locator");
   if (!getByRole && !getByText && !locatorCall) {
     return /confirm.*book|create|submit.*book|request.*book/i.test(
-      callee.expression.getText(),
+      locatorExpression.getText(),
     )
       ? { kind: "unresolved" }
       : null;
-  }
-
-  if (callee.name.text === "press") {
-    const key = resolveStaticString(action.arguments[0], bindings);
-    if (key !== "Enter") return key === null ? { kind: "unresolved" } : null;
-  } else if (callee.name.text === "dispatchEvent") {
-    const event = resolveStaticString(action.arguments[0], bindings);
-    if (event !== "click") {
-      if (event !== "keydown" && event !== "keypress") {
-        return event === null ? { kind: "unresolved" } : null;
-      }
-      const keys = objectPropertyExpressions(action.arguments[1], "key", bindings);
-      if (keys === null) return { kind: "unresolved" };
-      const resolvedKeys = keys.map((key) => resolveStaticString(key, bindings));
-      if (!resolvedKeys.includes("Enter")) {
-        return resolvedKeys.includes(null) ? { kind: "unresolved" } : null;
-      }
-    }
-  } else if (callee.name.text !== "click") {
-    return null;
   }
 
   if (getByRole) {
@@ -618,13 +596,112 @@ function bookingCreateTrigger(
     : null;
 }
 
+function immediatelyFocusedBookingTarget(
+  action: ts.CallExpression,
+  bindings: ConstBindings,
+): BrowserTrigger | null {
+  let statement: ts.Node = action;
+  while (statement.parent && !ts.isStatement(statement)) {
+    statement = statement.parent;
+  }
+  if (
+    !ts.isStatement(statement) ||
+    (!ts.isBlock(statement.parent) && !ts.isSourceFile(statement.parent))
+  ) {
+    return null;
+  }
+  const statements = statement.parent.statements;
+  const index = statements.indexOf(statement);
+  if (index < 1) return null;
+  const focus = childCallNamed(statements[index - 1], "focus");
+  if (!focus) return null;
+  const callee = unwrapExpression(focus.expression);
+  return ts.isPropertyAccessExpression(callee)
+    ? classifyBookingCreateLocator(callee.expression, bindings)
+    : null;
+}
+
+function bookingCreateTrigger(
+  action: ts.CallExpression,
+  bindings: ConstBindings,
+): BrowserTrigger | null {
+  const callee = unwrapExpression(action.expression);
+  if (!ts.isPropertyAccessExpression(callee)) return null;
+  if (!new Set(["click", "press", "dispatchEvent"]).has(callee.name.text)) {
+    return null;
+  }
+
+  if (
+    callee.name.text === "press" &&
+    ts.isPropertyAccessExpression(unwrapExpression(callee.expression)) &&
+    (unwrapExpression(callee.expression) as ts.PropertyAccessExpression).name
+      .text === "keyboard"
+  ) {
+    const key = resolveStaticString(action.arguments[0], bindings);
+    const focusedTarget = immediatelyFocusedBookingTarget(action, bindings);
+    if (key === "Enter") return focusedTarget;
+    if (key === null && focusedTarget && focusedTarget.kind !== "other") {
+      return { kind: "unresolved" };
+    }
+    return null;
+  }
+
+  const target = classifyBookingCreateLocator(callee.expression, bindings);
+  if (!target) return null;
+
+  if (callee.name.text === "press") {
+    const key = resolveStaticString(action.arguments[0], bindings);
+    if (key !== "Enter") return key === null ? { kind: "unresolved" } : null;
+  } else if (callee.name.text === "dispatchEvent") {
+    const event = resolveStaticString(action.arguments[0], bindings);
+    if (event !== "click" && event !== "submit") {
+      if (event !== "keydown" && event !== "keypress") {
+        return event === null ? { kind: "unresolved" } : null;
+      }
+      const keys = objectPropertyExpressions(action.arguments[1], "key", bindings);
+      if (keys === null) return { kind: "unresolved" };
+      const resolvedKeys = keys.map((key) => resolveStaticString(key, bindings));
+      if (!resolvedKeys.includes("Enter")) {
+        return resolvedKeys.includes(null) ? { kind: "unresolved" } : null;
+      }
+    }
+  }
+  return target;
+}
+
 function analyzeDirectPosts(sourceFile: ts.SourceFile, file: string) {
   const bindings = collectConstBindings(sourceFile);
   const exact: string[] = [];
   const unresolved: string[] = [];
   const visit = (node: ts.Node): void => {
-    if (ts.isCallExpression(node) && isPostCallable(node.expression, bindings)) {
+    if (ts.isCallExpression(node)) {
+      const isPost = isRequestCallable(node.expression, "post", bindings);
+      const isFetch = isRequestCallable(node.expression, "fetch", bindings);
+      if (!isPost && !isFetch) {
+        ts.forEachChild(node, visit);
+        return;
+      }
       const route = classifyBookingCreateRoute(node.arguments[0], bindings);
+      if (isFetch) {
+        const methods = objectPropertyExpressions(
+          node.arguments[1],
+          "method",
+          bindings,
+        );
+        const method =
+          methods?.length === 1
+            ? (resolveStaticString(methods[0], bindings)?.toUpperCase() ?? null)
+            : null;
+        if (method !== "POST") {
+          if (method === null && route === "exact") {
+            unresolved.push(
+              `${file}:${node.arguments[1]?.getText(sourceFile) ?? "<missing-options>"}`,
+            );
+          }
+          ts.forEachChild(node, visit);
+          return;
+        }
+      }
       if (route === "exact") {
         exact.push(`${file}:${enclosingFunctionName(node) ?? "<top-level>"}`);
       } else if (route === "unresolved") {
@@ -776,6 +853,12 @@ describe("E2E booking-create retry isolation (#2599)", () => {
         'boundCreate("https://club.invalid/api/" + resource + "?retry=1", {});',
         "const { post: aliasedPost } = request;",
         "aliasedPost(`/api/${resource}/`, {});",
+        "const boundFetch = request.fetch.bind(request);",
+        'boundFetch("/api/" + resource + "?source=fetch", { method: "PO" + "ST" });',
+        "const { fetch: aliasedFetch } = request;",
+        'aliasedFetch("https://club.invalid/api/bookings", { method: `POST` });',
+        'request.fetch("/api/bookings", { method: runtimeMethod });',
+        'request.fetch("/api/bookings", { method: "GET" });',
         "request.post(`/api/bookings/${bookingId}/cancel`, {});",
         'request.post("/api/admin/bookings", {});',
       ].join("\n"),
@@ -786,8 +869,10 @@ describe("E2E booking-create retry isolation (#2599)", () => {
         "fixture:<top-level>",
         "fixture:<top-level>",
         "fixture:<top-level>",
+        "fixture:<top-level>",
+        "fixture:<top-level>",
       ],
-      unresolved: [],
+      unresolved: ["fixture:{ method: runtimeMethod }"],
     });
   });
 
@@ -801,6 +886,10 @@ describe("E2E booking-create retry isolation (#2599)", () => {
         'const createText = "Create without emailing";',
         "page.getByText(`${createText}`).press(`Enter`);",
         "page.locator(`button:has-text('Create and email them')`).dispatchEvent(`click`);",
+        'page.getByText("Continue to Payment").dispatchEvent("submit");',
+        'const keyboardSubmit = page.getByRole("button", { name: "Confirm Booking" });',
+        "keyboardSubmit.focus();",
+        'page.keyboard.press("Enter");',
         "page.getByRole(`button`, { name: confirmBookingLabel }).click();",
         'page.getByRole("button", { name: "Cancel" }).click();',
         'page.getByText("Confirm Booking").press("Escape");',
@@ -814,6 +903,8 @@ describe("E2E booking-create retry isolation (#2599)", () => {
         "fixture:Confirm Booking",
         "fixture:Create without emailing",
         "fixture:Create and email them",
+        "fixture:Continue to Payment",
+        "fixture:Confirm Booking",
       ],
       unresolved: [
         'fixture:page.getByRole(`button`, { name: confirmBookingLabel }).click()',
