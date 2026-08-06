@@ -1,6 +1,11 @@
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 
+type ContactCreateRecoveryDb = Pick<
+  Prisma.TransactionClient,
+  "xeroSyncOperation"
+>;
+
 export const XERO_CONTACT_CREATE_LOCAL_LINK_FAILURE_PHASE =
   "local_link_after_xero_resolution";
 
@@ -47,8 +52,9 @@ export function isProviderCreatedLocalLinkFailurePayload(
 
 export async function hasUnresolvedMemberContactCreateRecovery(
   memberId: string,
+  db: ContactCreateRecoveryDb = prisma,
 ): Promise<boolean> {
-  const operation = await prisma.xeroSyncOperation.findFirst({
+  const operation = await db.xeroSyncOperation.findFirst({
     where: unresolvedMemberContactCreateRecoveryWhere(memberId),
     select: { id: true, responsePayload: true },
   });

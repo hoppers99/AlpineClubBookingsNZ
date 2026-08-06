@@ -15,6 +15,7 @@ import {
 import { deleteOwnedMemberPhotoBlobs } from "@/lib/member-photo";
 import { memberDisplayName } from "@/lib/member-serialization";
 import { prisma } from "@/lib/prisma";
+import { hasUnresolvedMemberContactCreateRecovery } from "@/lib/xero-contact-create-recovery";
 import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
 import { lockAdultMemberHostingPolicySet } from "@/lib/adult-member-hosting-policy-set";
 import { lockHostingCoverageOwners } from "@/lib/adult-member-hosting-coverage-lock";
@@ -1355,6 +1356,40 @@ async function countPendingLifecycleOrFamily(
 }
 
 /**
+ * A provider-created contact whose local Member link failed is an unresolved
+ * identity proof, not ordinary failed sync history. `XeroSyncOperation.localId`
+ * deliberately has no Member foreign key, so deleting either participant would
+ * orphan that proof under the removed id and allow a later create for the
+ * survivor. Refuse until an operator resolves the failed operation.
+ */
+async function evaluateContactCreateRecoveryBlockers(
+  db: MergeDbClient,
+  masterId: string,
+  loserId: string,
+): Promise<MergeBlocker[]> {
+  const [masterPending, loserPending] = await Promise.all([
+    hasUnresolvedMemberContactCreateRecovery(masterId, db),
+    hasUnresolvedMemberContactCreateRecovery(loserId, db),
+  ]);
+  const blockers: MergeBlocker[] = [];
+  if (masterPending) {
+    blockers.push({
+      code: "master_xero_contact_create_recovery_pending",
+      label:
+        "The master has a Xero contact that was created but not linked locally. Resolve or mark the failed Xero operation before merging.",
+    });
+  }
+  if (loserPending) {
+    blockers.push({
+      code: "loser_xero_contact_create_recovery_pending",
+      label:
+        "The duplicate has a Xero contact that was created but not linked locally. Resolve or mark the failed Xero operation before merging.",
+    });
+  }
+  return blockers;
+}
+
+/**
  * Full guard matrix, shared by preview and execute. Returns structured blockers
  * (non-throwing) so the preview can render them; execute throws on any blocker.
  */
@@ -1452,6 +1487,9 @@ export async function evaluateMemberMergeGuards(params: {
   }
 
   blockers.push(...(await evaluateFamilyLinkGraphBlockers(db, masterId, loserId)));
+  blockers.push(
+    ...(await evaluateContactCreateRecoveryBlockers(db, masterId, loserId)),
+  );
 
   return blockers;
 }
@@ -2397,6 +2435,23 @@ export async function executeMemberMerge(params: {
       tx,
       refreshedHostingPlan.coverageOwnerIds,
     );
+
+    // `XeroSyncOperation.localId` is FK-less, so it is outside the generic
+    // relation moves. Re-check the strict provider-created/local-link-failed
+    // proof only after the complete merge participant set is locked and
+    // immediately before the final sweeps, Xero teardown and loser deletion.
+    // A proof that appeared after preview therefore rolls back the whole merge;
+    // no provider call and no additional lock tier belongs in this transaction.
+    const contactRecoveryBlockers =
+      await evaluateContactCreateRecoveryBlockers(tx, masterId, loserId);
+    if (contactRecoveryBlockers.length > 0) {
+      throw new MemberMergeError(
+        "This merge is blocked.",
+        409,
+        "merge_blocked",
+        { blockers: contactRecoveryBlockers },
+      );
+    }
 
     // Rows inserted after the generic relation/FK-less sweeps but before the
     // one participant lock statement are still live obligations. Sweep BOTH

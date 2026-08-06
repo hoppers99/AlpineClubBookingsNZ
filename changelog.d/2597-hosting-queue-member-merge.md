@@ -36,3 +36,10 @@
   change retry and include it; a standing change that wins makes the hold refuse
   the inactive member before creating any booking or guest, even where hosting is
   disabled or review-only.
+
+  Member merge also refuses while either participant has an unresolved Xero
+  contact-create recovery proving the contact already exists at Xero but its
+  local member link failed. The preview explains how to resolve the failed
+  operation, and execution re-checks after acquiring the complete merge lock set
+  so a newly appeared proof rolls the whole merge back instead of orphaning it
+  under the deleted member id and permitting a duplicate contact create.

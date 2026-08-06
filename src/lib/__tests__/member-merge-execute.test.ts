@@ -69,6 +69,7 @@ function validToken() {
 function defaultDelegate() {
   return {
     count: vi.fn().mockResolvedValue(0),
+    findFirst: vi.fn().mockResolvedValue(null),
     findUnique: vi.fn().mockResolvedValue(null),
     findMany: vi.fn().mockResolvedValue([]),
     updateMany: vi.fn().mockResolvedValue({ count: 0 }),
@@ -253,6 +254,71 @@ describe("executeMemberMerge", () => {
     expect(auditSpy.create).toHaveBeenCalledTimes(1);
     // Loser hard-deleted.
     expect(memberSpy.delete).toHaveBeenCalledWith({ where: { id: LOSER_ID } });
+  });
+
+  it("re-checks under the complete participant locks and rolls back when Xero recovery proof appears after preview", async () => {
+    let lookup = 0;
+    const xeroSyncOperation = {
+      ...defaultDelegate(),
+      findFirst: vi.fn(({ where }: { where: { localId: string } }) => {
+        lookup += 1;
+        // The first master/loser pair is the transaction-opening guard pass.
+        // The second pair is the dedicated re-check after the complete sorted
+        // Member participant lock. Model proof appearing in that interval.
+        if (lookup <= 2 || where.localId === MASTER_ID) return Promise.resolve(null);
+        return Promise.resolve({
+          id: "xero-op-late",
+          responsePayload: {
+            phase: "local_link_after_xero_resolution",
+            providerContactCreated: true,
+          },
+        });
+      }),
+    };
+    const xeroObjectLink = {
+      ...defaultDelegate(),
+      findMany: vi.fn().mockResolvedValue([]),
+    };
+    const { client, executeRaw, member, auditLog } = makeClient({
+      xeroSyncOperation,
+      xeroObjectLink,
+    });
+
+    await expect(
+      executeMemberMerge({
+        masterId: MASTER_ID,
+        loserId: LOSER_ID,
+        actorMemberId: ACTOR_ID,
+        previewToken: validToken(),
+        confirmationText: "MERGE Dup Person",
+        db: client as never,
+      }),
+    ).rejects.toMatchObject({
+      statusCode: 409,
+      code: "merge_blocked",
+      details: {
+        blockers: [
+          expect.objectContaining({
+            code: "loser_xero_contact_create_recovery_pending",
+          }),
+        ],
+      },
+    });
+
+    expect(xeroSyncOperation.findFirst).toHaveBeenCalledTimes(4);
+    const participantLockCall = executeRaw.mock.calls.findIndex(([statement]) =>
+      rawStatement(statement).includes('FROM "Member"'),
+    );
+    expect(participantLockCall).toBeGreaterThanOrEqual(0);
+    expect(
+      xeroSyncOperation.findFirst.mock.invocationCallOrder[2],
+    ).toBeGreaterThan(executeRaw.mock.invocationCallOrder[participantLockCall]);
+    expect((member as { delete: ReturnType<typeof vi.fn> }).delete).not.toHaveBeenCalled();
+    expect(xeroObjectLink.findMany).not.toHaveBeenCalled();
+    expectRefusedAudit(
+      (auditLog as { create: ReturnType<typeof vi.fn> }).create,
+      "merge_blocked",
+    );
   });
 
   it("resolves family-group memberships without touching the retired role column (#2520)", async () => {

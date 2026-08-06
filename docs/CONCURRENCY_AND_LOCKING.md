@@ -1139,8 +1139,19 @@ transaction. Repeated bulk calls also try coverage-owner keys without waiting; a
 later conflict rolls back earlier calls instead of forming a hold-and-wait cycle.
 The composed merge order is **hosting policy-set → sorted member-lifecycle →
 relation moves → one sorted master/loser/ancillary Member FOR UPDATE → under-lock
-re-plan → sorted coverage-owner → late owner+actor sweeps → actorless enqueue →
-loser delete**.
+re-plan → sorted coverage-owner → unresolved Xero contact-create proof re-check →
+late owner+actor sweeps → actorless enqueue → loser delete**.
+
+`XeroSyncOperation.localId` is deliberately FK-less, so an unresolved failed
+contact CREATE whose payload proves Xero created the contact cannot be moved by
+the relation sweeps. Preview blocks when either merge participant has that exact
+proof (`FAILED`, not manually resolved, local-link phase,
+`providerContactCreated: true`). Execution repeats the same strict query on its
+in-flight transaction after the complete Member/coverage-owner lock set and
+before the final sweeps, Xero teardown, or loser delete. A proof appearing after
+preview therefore returns the existing actionable `merge_blocked` 409 and rolls
+back the whole merge. Matched-existing contacts, resolved failures, and completed
+operations do not block. This adds no provider call and no new lock tier.
 
 Inside the locks the merge re-reads both members, re-runs the full guard matrix,
 and re-verifies the HMAC preview token (which bakes in both `updatedAt` values)

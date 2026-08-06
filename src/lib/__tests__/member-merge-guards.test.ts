@@ -21,10 +21,75 @@ function guardMember(id: string, overrides: Record<string, unknown> = {}) {
 function defaultDelegate() {
   return {
     count: vi.fn().mockResolvedValue(0),
+    findFirst: vi.fn().mockResolvedValue(null),
     findMany: vi.fn().mockResolvedValue([]),
     findUnique: vi.fn().mockResolvedValue(null),
   };
 }
+
+function contactCreateFailure(providerContactCreated = true) {
+  return {
+    id: "xero-op-1",
+    responsePayload: {
+      phase: "local_link_after_xero_resolution",
+      providerContactCreated,
+    },
+  };
+}
+
+describe("unresolved Xero contact-create recovery blockers", () => {
+  it.each([
+    ["master", MASTER_ID, "master_xero_contact_create_recovery_pending"],
+    ["duplicate", LOSER_ID, "loser_xero_contact_create_recovery_pending"],
+  ])("blocks when the %s has provider-created local-link recovery", async (_side, id, code) => {
+    const xeroSyncOperation = {
+      ...defaultDelegate(),
+      findFirst: vi.fn(({ where }: { where: { localId: string } }) =>
+        Promise.resolve(where.localId === id ? contactCreateFailure() : null),
+      ),
+    };
+
+    const blockers = await runGuards({ xeroSyncOperation });
+
+    expect(blockers.map((blocker) => blocker.code)).toContain(code);
+    expect(blockers.find((blocker) => blocker.code === code)?.label).toMatch(
+      /Resolve or mark the failed Xero operation before merging/,
+    );
+  });
+
+  it("does not block matched-existing, manually resolved, or non-failed operations", async () => {
+    const excludedOperations = [
+      {
+        status: "FAILED",
+        manuallyResolvedAt: null,
+        responsePayload: contactCreateFailure(false).responsePayload,
+      },
+      {
+        status: "FAILED",
+        manuallyResolvedAt: new Date("2026-07-01T00:00:00Z"),
+        responsePayload: contactCreateFailure().responsePayload,
+      },
+      {
+        status: "SUCCEEDED",
+        manuallyResolvedAt: null,
+        responsePayload: contactCreateFailure().responsePayload,
+      },
+    ];
+    const xeroSyncOperation = {
+      ...defaultDelegate(),
+      // Prisma applies the exact where-clause before returning a candidate.
+      // These deliberately non-matching rows therefore produce no result.
+      findFirst: vi.fn(({ where }: { where: { status: string; manuallyResolvedAt: null } }) => {
+        expect(where.status).toBe("FAILED");
+        expect(where.manuallyResolvedAt).toBeNull();
+        expect(excludedOperations).toHaveLength(3);
+        return Promise.resolve(null);
+      }),
+    };
+
+    await expect(runGuards({ xeroSyncOperation })).resolves.toEqual([]);
+  });
+});
 
 /**
  * Proxy mock db: member.count answers the actorIsFullAdmin /

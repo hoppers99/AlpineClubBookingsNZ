@@ -95,6 +95,27 @@ describe("unresolved member Xero contact-create recovery proof", () => {
     });
   });
 
+  it("can run the strict proof lookup on an in-flight transaction client", async () => {
+    const txFindFirst = vi.fn().mockResolvedValue({
+      id: "operation-tx",
+      responsePayload: {
+        phase: "local_link_after_xero_resolution",
+        providerContactCreated: true,
+      },
+    });
+
+    await expect(
+      hasUnresolvedMemberContactCreateRecovery("member-tx", {
+        xeroSyncOperation: { findFirst: txFindFirst } as never,
+      }),
+    ).resolves.toBe(true);
+    expect(txFindFirst).toHaveBeenCalledWith({
+      where: unresolvedMemberContactCreateRecoveryWhere("member-tx"),
+      select: { id: true, responsePayload: true },
+    });
+    expect(findFirst).not.toHaveBeenCalled();
+  });
+
   it("returns false for a linked member without querying recovery operations", async () => {
     await expect(
       getMemberContactCreateRecoveryPending({
