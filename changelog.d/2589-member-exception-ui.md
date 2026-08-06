@@ -88,5 +88,6 @@
   let a member end up with two approvable requests without realising.
 
   Nothing about how policies are evaluated, how capacity is calculated, or how an
-  approval creates the booking changed. Operators need do nothing: the member step
-  appears wherever a waivable rule already applies.
+  approval creates the booking changed. The two private-note columns deploy through
+  the normal migration path; the member step then appears wherever a waivable rule
+  already applies.
