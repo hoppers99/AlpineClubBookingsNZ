@@ -65,6 +65,7 @@ describe("modifyBookingDates minimum-stay transport (#2363)", () => {
     txClient = {
       $executeRaw: h.executeRaw,
       booking: { findUnique: h.bookingFindUnique },
+      choreAssignment: { findMany: vi.fn().mockResolvedValue([]) },
     };
     h.transaction.mockImplementation(
       async (callback: (tx: unknown) => Promise<unknown>) => callback(txClient),

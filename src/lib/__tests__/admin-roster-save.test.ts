@@ -173,7 +173,8 @@ describe("admin whole-roster save", () => {
       { rowKey: "new-1", choreTemplateId: "kitchen", bookingGuestId: "guest-2" },
       { rowKey: "new-2", choreTemplateId: "wood", bookingGuestId: "guest-2" },
     ])
-    expect(mocks.executeRaw).toHaveBeenCalledTimes(1)
+    // Global booking tier, immutable-lodge tier, then roster-date tier.
+    expect(mocks.executeRaw).toHaveBeenCalledTimes(3)
     expect(mocks.assignmentDeleteMany).toHaveBeenCalledWith(expect.objectContaining({
       where: expect.objectContaining({ id: { in: ["assignment-1"] } }),
     }))
@@ -205,7 +206,7 @@ describe("admin whole-roster save", () => {
     const result = await save([], { revision: "stale" })
     expect(result.init?.status).toBe(409)
     expect(result.body).toMatchObject({ code: "ROSTER_STALE" })
-    expect(mocks.executeRaw).toHaveBeenCalledTimes(1)
+    expect(mocks.executeRaw).toHaveBeenCalledTimes(3)
     expect(mocks.assignmentDeleteMany).not.toHaveBeenCalled()
     expect(mocks.assignmentUpdateMany).not.toHaveBeenCalled()
     expect(mocks.assignmentCreate).not.toHaveBeenCalled()
@@ -232,7 +233,10 @@ describe("admin whole-roster save", () => {
         checkIn: { lte: DATE },
         checkOut: { gt: DATE },
         lodgeId: "lodge-1",
-        NOT: { requiresAdminReview: true, adminReviewStatus: "PENDING" },
+        OR: [
+          { requiresAdminReview: false },
+          { adminReviewStatus: "APPROVED" },
+        ],
         guests: { some: expect.objectContaining({
           OR: [{ consentStatus: null }, { consentStatus: "CONFIRMED" }],
         }) },
@@ -250,6 +254,20 @@ describe("admin whole-roster save", () => {
     expect(mocks.assignmentFindMany).toHaveBeenCalledWith(expect.objectContaining({
       where: { date: DATE, booking: { lodgeId: "lodge-1" }, choreTemplate: { lodgeId: "lodge-1" } },
       include: expect.any(Object),
+    }))
+    expect(mocks.assignmentGroupBy).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({
+        booking: { lodgeId: "lodge-1" },
+        choreTemplate: { lodgeId: "lodge-1" },
+      }),
+    }))
+    expect(mocks.assignmentFindMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({
+        date: { gte: expect.any(Date), lt: DATE },
+        bookingGuestId: { in: expect.any(Array) },
+        booking: { lodgeId: "lodge-1" },
+        choreTemplate: { lodgeId: "lodge-1" },
+      }),
     }))
   })
 
@@ -337,6 +355,50 @@ describe("admin whole-roster save", () => {
     expect(JSON.stringify(result.body)).not.toContain("secret")
   })
 
+  it.each([
+    ["wrong date", (args: any) => Boolean(
+      args.where?.checkIn?.lte?.getTime?.() === DATE.getTime() &&
+      args.where?.checkOut?.gt?.getTime?.() === DATE.getTime() &&
+      args.include?.guests?.where?.stayStart?.lte?.getTime?.() === DATE.getTime() &&
+      args.include?.guests?.where?.stayEnd?.gt?.getTime?.() === DATE.getTime()
+    )],
+    ["wrong lodge", (args: any) => args.where?.lodgeId === "lodge-1"],
+    ["non-operational booking status", (args: any) =>
+      Array.isArray(args.where?.status?.in) && !args.where.status.in.includes("CANCELLED")],
+    ["unresolved review", (args: any) =>
+      args.where?.OR?.some?.((entry: any) => entry.requiresAdminReview === false) &&
+      args.where.OR.some((entry: any) => entry.adminReviewStatus === "APPROVED")],
+    ["pending member consent", (args: any) => {
+      const bookingGate = args.where?.guests?.some?.OR
+      const includedGate = args.include?.guests?.where?.OR
+      return [bookingGate, includedGate].every((gate) =>
+        Array.isArray(gate) && gate.some((entry) => entry.consentStatus === "CONFIRMED") &&
+        gate.some((entry) => entry.consentStatus === null)
+      )
+    }],
+  ])("rejects a guest excluded by the %s eligibility predicate with zero writes", async (_label, predicatePresent) => {
+    const candidate = eligibleBooking("booking-bad", "guest-bad", "Bad")
+    mocks.bookingFindMany.mockImplementationOnce(async (args: unknown) =>
+      predicatePresent(args) ? [] : [candidate],
+    )
+    const result = await save([{ rowKey: "bad", choreTemplateId: "kitchen", bookingGuestId: "guest-bad" }])
+    expect(result).toMatchObject({ init: { status: 400 }, body: { code: "ROSTER_GUEST_INELIGIBLE" } })
+    expect(mocks.assignmentDeleteMany).not.toHaveBeenCalled()
+    expect(mocks.assignmentUpdateMany).not.toHaveBeenCalled()
+    expect(mocks.assignmentCreate).not.toHaveBeenCalled()
+  })
+
+  it("rejects a guest whose sparse night rows omit the roster date with zero writes", async () => {
+    const candidate = eligibleBooking("booking-gap", "guest-gap", "Gap")
+    candidate.guests[0].nights = [{ stayDate: new Date("2026-08-09T00:00:00.000Z") }]
+    mocks.bookingFindMany.mockResolvedValueOnce([candidate])
+    const result = await save([{ rowKey: "gap", choreTemplateId: "kitchen", bookingGuestId: "guest-gap" }])
+    expect(result).toMatchObject({ init: { status: 400 }, body: { code: "ROSTER_GUEST_INELIGIBLE" } })
+    expect(mocks.assignmentDeleteMany).not.toHaveBeenCalled()
+    expect(mocks.assignmentUpdateMany).not.toHaveBeenCalled()
+    expect(mocks.assignmentCreate).not.toHaveBeenCalled()
+  })
+
   it("groups by booking and applies D-R2 known-DOB then unknown-name order without exposing DOB", async () => {
     const stayEnd = new Date("2026-08-11T00:00:00.000Z")
     const guest = (id: string, firstName: string, lastName: string, dateOfBirth: Date | null) => ({
@@ -358,7 +420,9 @@ describe("admin whole-roster save", () => {
         checkOut: stayEnd,
         member: { firstName: "Aroha", lastName: "Bell" },
         guests: [
-          guest("unknown-z", "Zoe", "Bell", null),
+          // Alphabetical means the displayed first-name-first form, not a
+          // surname sort: Alex Bell stays before Zoe Able.
+          guest("unknown-z", "Zoe", "Able", null),
           guest("young", "Mika", "Bell", new Date("2012-01-01T00:00:00.000Z")),
           guest("equal-z", "Zoe", "Dale", new Date("2000-01-01T00:00:00.000Z")),
           guest("unknown-a", "Alex", "Bell", null),

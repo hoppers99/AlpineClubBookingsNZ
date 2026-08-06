@@ -89,6 +89,10 @@ vi.mock("@/lib/email", () => ({
 vi.mock("@/lib/logger", () => ({
   default: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
+vi.mock("@/lib/lodge-capacity", () => ({
+  getLodgeCapacity: vi.fn().mockResolvedValue(29),
+  FALLBACK_LODGE_CAPACITY: 29,
+}));
 
 import {
   findLodgeGuestForDate,
@@ -406,6 +410,63 @@ describe("lodge week summary (D-12)", () => {
     };
     expect(args.where.guests.some.OR).toEqual(PRESENT_OR);
     expect(args.select.guests.where?.OR).toEqual(PRESENT_OR);
+
+    const assignmentArgs = mockPrisma.choreAssignment.findMany.mock.calls[0][0] as {
+      where: { booking?: unknown; choreTemplate?: unknown };
+    };
+    expect(assignmentArgs.where.booking).toEqual({ lodgeId: "lodge-1" });
+    expect(assignmentArgs.where.choreTemplate).toEqual({ lodgeId: "lodge-1" });
+  });
+});
+
+describe("lodge roster supporting reads stay inside the kiosk lodge", () => {
+  it("scopes frequency history through both booking and template attribution", async () => {
+    const { NextRequest } = await import("next/server");
+    const { GET } = await import(
+      "@/app/api/lodge/roster/[date]/frequency-info/route"
+    );
+
+    const res = await GET(
+      new NextRequest("http://localhost/api/lodge/roster/2026-07-10/frequency-info"),
+      routeParams({ date: "2026-07-10" }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(mockPrisma.choreAssignment.groupBy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          booking: { lodgeId: "lodge-1" },
+          choreTemplate: { lodgeId: "lodge-1" },
+        }),
+      }),
+    );
+  });
+
+  it("scopes generation history through both booking and template attribution", async () => {
+    lodgeAuthMocks.checkLodgeAuth.mockResolvedValue({ tier: "hut-leader" });
+    const { NextRequest } = await import("next/server");
+    const { POST } = await import(
+      "@/app/api/lodge/roster/[date]/generate/route"
+    );
+
+    const res = await POST(
+      new NextRequest("http://localhost/api/lodge/roster/2026-07-10/generate", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ choreTemplateIds: ["kitchen"] }),
+      }),
+      routeParams({ date: "2026-07-10" }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(mockPrisma.choreAssignment.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          booking: { lodgeId: "lodge-1" },
+          choreTemplate: { lodgeId: "lodge-1" },
+        }),
+      }),
+    );
   });
 });
 

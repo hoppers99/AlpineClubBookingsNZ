@@ -164,6 +164,7 @@ export async function GET(req: NextRequest) {
     where: {
       date: { gte: startDate, lt: endDate },
       booking: lodgeNullTolerantScope(lodgeId),
+      choreTemplate: lodgeNullTolerantScope(lodgeId),
     },
     select: {
       date: true,

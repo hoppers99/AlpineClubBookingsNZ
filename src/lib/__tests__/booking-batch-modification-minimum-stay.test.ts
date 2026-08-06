@@ -141,6 +141,7 @@ beforeEach(() => {
   txClient = {
     $executeRaw: h.executeRaw,
     booking: { findUnique: h.bookingFindUnique },
+    choreAssignment: { findMany: vi.fn().mockResolvedValue([]) },
   };
   h.transaction.mockImplementation(
     async (callback: (tx: unknown) => Promise<unknown>) => callback(txClient),

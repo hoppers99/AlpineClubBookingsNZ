@@ -825,6 +825,13 @@ async function removeGuestChoreAssignments(
   guestId: string
 ) {
   const choreWarnings: string[] = [];
+  const lockCandidates = await tx.choreAssignment.findMany({
+    where: { bookingGuestId: guestId },
+    select: { date: true },
+  });
+
+  await lockRosterDates(tx, lockCandidates.map((assignment) => assignment.date));
+
   const guestAssignments = await tx.choreAssignment.findMany({
     where: { bookingGuestId: guestId },
     include: { choreTemplate: true },
@@ -840,8 +847,6 @@ async function removeGuestChoreAssignments(
       );
     }
   }
-
-  await lockRosterDates(tx, guestAssignments.map((assignment) => assignment.date));
 
   await tx.choreAssignment.deleteMany({
     where: { bookingGuestId: guestId },

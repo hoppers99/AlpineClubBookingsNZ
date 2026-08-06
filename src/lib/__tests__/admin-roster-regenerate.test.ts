@@ -136,7 +136,7 @@ describe("PUT /api/admin/roster/[date] regenerate action", () => {
     expect(mockBookingFindMany).not.toHaveBeenCalled()
     expect(mockChoreAssignmentDeleteMany).not.toHaveBeenCalled()
     expect(mockChoreAssignmentCreateMany).not.toHaveBeenCalled()
-    expect(mockTxExecuteRaw).toHaveBeenCalledTimes(1)
+    expect(mockTxExecuteRaw).toHaveBeenCalledTimes(3)
   })
 
   it("replaces confirmed assignments with fresh suggested ones after acknowledgement", async () => {
@@ -216,7 +216,7 @@ describe("PUT /api/admin/roster/[date] regenerate action", () => {
         }),
       ],
     })
-    expect(mockTxExecuteRaw).toHaveBeenCalledTimes(1)
+    expect(mockTxExecuteRaw).toHaveBeenCalledTimes(3)
   })
 })
 

@@ -68,7 +68,9 @@ describe("RosterEditor staged whole-roster editing", () => {
         ? { ...assignment, bookingGuestId: "unknown-a", bookingId: "booking-b", guestName: "Alex Chen" }
         : assignment),
     }
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify(authoritative), { status: 200 }))
+    const fetchMock = vi.fn<typeof fetch>(async () =>
+      new Response(JSON.stringify(authoritative), { status: 200 }),
+    )
     vi.stubGlobal("fetch", fetchMock)
     const { onRosterUpdate } = renderEditor()
 
@@ -127,7 +129,7 @@ describe("RosterEditor staged whole-roster editing", () => {
       assignments: [{ ...BASE.assignments[0], status: "COMPLETED" as const }],
     }
     const confirmMock = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true)
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
       ...completed,
       revision: "revision-2",
       assignments: [{ ...completed.assignments[0], status: "SUGGESTED" as const }],

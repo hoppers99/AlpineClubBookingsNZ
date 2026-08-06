@@ -75,12 +75,12 @@ describe("pending-review check-in block (#1372 / #1422)", () => {
   });
 
   describe("checkinNotBlockedByPendingReviewFilter", () => {
-    it("excludes any pending admin review (reason-agnostic, #1422)", () => {
+    it("admits only bookings that need no review or have explicit approval", () => {
       expect(checkinNotBlockedByPendingReviewFilter()).toEqual({
-        NOT: {
-          requiresAdminReview: true,
-          adminReviewStatus: AdminReviewStatus.PENDING,
-        },
+        OR: [
+          { requiresAdminReview: false },
+          { adminReviewStatus: AdminReviewStatus.APPROVED },
+        ],
       });
     });
   });

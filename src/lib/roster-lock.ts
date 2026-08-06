@@ -1,5 +1,6 @@
 import type { Prisma } from "@prisma/client";
-import { formatDateOnly } from "@/lib/date-only";
+import { acquireLodgeCapacityLock } from "@/lib/capacity";
+import { eachDateOnlyInRange, formatDateOnly } from "@/lib/date-only";
 
 type RosterLockTx = Pick<Prisma.TransactionClient, "$executeRaw">;
 
@@ -19,6 +20,24 @@ export async function lockRosterDate(
   await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`;
 }
 
+/**
+ * Lock an eligibility-validating roster mutation in the shared writer order.
+ *
+ * Booking lifecycle/consent writers already take the global and/or immutable
+ * lodge tiers. Joining both before the roster-date key makes their commit
+ * visible before a roster mutation performs its authoritative eligibility
+ * read, including when the roster partition was initially empty.
+ */
+export async function lockRosterEligibilityMutation(
+  tx: Prisma.TransactionClient,
+  lodgeId: string,
+  date: Date,
+) {
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
+  await acquireLodgeCapacityLock(tx, lodgeId);
+  await lockRosterDate(tx, date);
+}
+
 /** Acquire several roster-date locks in deterministic date order. */
 export async function lockRosterDates(
   tx: RosterLockTx,
@@ -29,4 +48,34 @@ export async function lockRosterDates(
   for (const [, date] of [...uniqueDates].sort(([a], [b]) => a.localeCompare(b))) {
     await lockRosterDate(tx, date);
   }
+}
+
+/**
+ * Lock every lodge night in each half-open [start, end) date-only range.
+ * `lockRosterDates` sorts and de-duplicates the resulting keys, so old and
+ * proposed booking/guest ranges can overlap without changing lock order.
+ */
+export async function lockRosterDateRanges(
+  tx: RosterLockTx,
+  ranges: Array<{ start: Date; end: Date }>,
+) {
+  await lockRosterDateRangesAndDates(tx, ranges, []);
+}
+
+/**
+ * Acquire one sorted lock set for date ranges plus exceptional stored dates.
+ *
+ * Booking mutations use this before tuple writes so an out-of-envelope legacy
+ * assignment cannot make cleanup discover and acquire a lower roster key after
+ * a higher one is already held.
+ */
+export async function lockRosterDateRangesAndDates(
+  tx: RosterLockTx,
+  ranges: Array<{ start: Date; end: Date }>,
+  dates: Iterable<Date>,
+) {
+  await lockRosterDates(tx, [
+    ...ranges.flatMap((range) => eachDateOnlyInRange(range.start, range.end)),
+    ...dates,
+  ]);
 }

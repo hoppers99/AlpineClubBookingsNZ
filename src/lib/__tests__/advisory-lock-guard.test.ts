@@ -29,6 +29,11 @@ const SRC_DIR = path.join(process.cwd(), "src");
 // fine (delete the entry at zero); growing one needs a writer classification
 // and explicit justification in the PR that edits this file.
 const GLOBAL_BOOKING_MONEY_LOCK_INVENTORY: Record<string, number> = {
+  // #2586: approving a flagged live booking can make it roster-eligible, while
+  // rejecting one must remain ineligible until cancellation. Both review
+  // decisions share one helper that takes global -> immutable lodge before the
+  // authoritative re-read and guarded claim; provider work remains outside.
+  "src/app/api/admin/bookings/[id]/review/route.ts": 1,
   // #1881: the two capacity-admission branches in confirm-pending-guests
   // deliberately compose global lifecycle lock(1) first with the canonical
   // per-lodge capacity lock. The global lock prevents cancellation/settlement
@@ -102,6 +107,11 @@ const GLOBAL_BOOKING_MONEY_LOCK_INVENTORY: Record<string, number> = {
   // capacity when it restores a PAYMENT_PENDING booking, so it composes the
   // same global-before-per-lodge pair in the same order.
   "src/lib/payment-reconciliation.ts": 2,
+  // #2586: eligibility-validating roster generation/save/confirmation joins
+  // the global -> lodge booking-writer order before its roster-date key. This
+  // closes the initially-empty partition race without making every booking
+  // writer enumerate all possible roster dates.
+  "src/lib/roster-lock.ts": 1,
   "src/lib/school-booking-request.ts": 1,
   "src/lib/xero-group-settlement-invoices.ts": 3,
   "src/lib/xero-inbound/invoice-paid-effects.ts": 1,

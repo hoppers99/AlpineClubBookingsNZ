@@ -6,7 +6,7 @@ import { lodgeNullTolerantScope } from "@/lib/lodges";
 import { prisma } from "@/lib/prisma";
 import { z } from "zod";
 import logger from "@/lib/logger";
-import { lockRosterDate } from "@/lib/roster-lock";
+import { lockRosterEligibilityMutation } from "@/lib/roster-lock";
 
 const dateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 
@@ -70,7 +70,7 @@ export async function POST(
     const lodgeId = await resolveKioskLodgeId(authResult, prisma);
 
     const result = await prisma.$transaction(async (tx) => {
-      await lockRosterDate(tx, date);
+      await lockRosterEligibilityMutation(tx, lodgeId, date);
       const allocationsAreValid = await validateRosterAllocationsForDate(
         parsed.data.allocations,
         date,

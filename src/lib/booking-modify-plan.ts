@@ -27,7 +27,6 @@ import {
   cleanupChoreAssignmentsForDateChange,
   cleanupChoreAssignmentsForGuestStayRanges,
 } from "@/lib/chore-cleanup";
-import { lockRosterDates } from "@/lib/roster-lock";
 import {
   daysUntilDate,
   loadCancellationPolicy,
@@ -2003,17 +2002,6 @@ export async function applyGuestChanges(
     return { createdGuests };
   }
 
-  const removedGuestIds = removedGuests.map((guest) => guest.id);
-  if (removedGuestIds.length > 0) {
-    const removedGuestAssignments = await tx.choreAssignment.findMany({
-      where: { bookingGuestId: { in: removedGuestIds } },
-      select: { date: true },
-    });
-    await lockRosterDates(
-      tx,
-      removedGuestAssignments.map((assignment) => assignment.date),
-    );
-  }
   for (const guest of removedGuests) {
     await tx.choreAssignment.deleteMany({
       where: { bookingGuestId: guest.id },
@@ -2134,11 +2122,13 @@ export async function applyChoreCleanup(
     newCheckIn,
     newCheckOut,
     datesChanged,
+    rosterDatesAlreadyLocked = false,
   }: {
     bookingId: string;
     newCheckIn: Date;
     newCheckOut: Date;
     datesChanged: boolean;
+    rosterDatesAlreadyLocked?: boolean;
   },
 ): Promise<string[]> {
   let choreWarnings: string[] = [];
@@ -2148,12 +2138,14 @@ export async function applyChoreCleanup(
       bookingId,
       newCheckIn,
       newCheckOut,
+      { rosterDatesAlreadyLocked },
     );
     choreWarnings = result.choreWarnings;
   }
   const rangeCleanup = await cleanupChoreAssignmentsForGuestStayRanges(
     tx,
     bookingId,
+    { rosterDatesAlreadyLocked },
   );
   return [...choreWarnings, ...rangeCleanup.choreWarnings];
 }

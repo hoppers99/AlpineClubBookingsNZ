@@ -175,6 +175,6 @@ describe("GET /api/admin/roster/[date] age tier display", () => {
     expect(res.status).toBe(200);
     expect(data.guests[0].ageTier).toBe("YOUTH");
     expect(data.assignments[0].guestAgeTier).toBe("YOUTH");
-    expect(mockTxExecuteRaw).toHaveBeenCalledTimes(1);
+    expect(mockTxExecuteRaw).toHaveBeenCalledTimes(3);
   });
 });

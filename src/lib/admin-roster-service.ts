@@ -18,7 +18,7 @@ import { getActiveGuestsForNight, getGuestStayEnd, getGuestStayStart } from "@/l
 import { lodgeNullTolerantScope } from "@/lib/lodges"
 import { OPERATIONALLY_PRESENT_GUEST_WHERE } from "@/lib/member-guest-consent"
 import { checkinNotBlockedByPendingReviewFilter } from "@/lib/booking-review"
-import { lockRosterDate } from "@/lib/roster-lock"
+import { lockRosterEligibilityMutation } from "@/lib/roster-lock"
 import { z } from "zod"
 import logger from "@/lib/logger"
 import { logAudit } from "@/lib/audit"
@@ -110,6 +110,7 @@ async function getGuestsForDate(
   const bookings = await db.booking.findMany({
     where: {
       status: { in: [...OPERATIONAL_STAY_BOOKING_STATUSES] },
+      deletedAt: null,
       checkIn: { lte: date },
       checkOut: { gt: date },
       ...lodgeNullTolerantScope(lodgeId),
@@ -160,8 +161,8 @@ async function getGuestsForDate(
       .sort((a, b) => {
         const aDob = a.member?.dateOfBirth?.getTime()
         const bDob = b.member?.dateOfBirth?.getTime()
-        const byName = () => `${a.lastName}\u0000${a.firstName}\u0000${a.id}`.localeCompare(
-          `${b.lastName}\u0000${b.firstName}\u0000${b.id}`,
+        const byName = () => `${a.firstName}\u0000${a.lastName}\u0000${a.id}`.localeCompare(
+          `${b.firstName}\u0000${b.lastName}\u0000${b.id}`,
         )
         if (aDob !== undefined && bDob !== undefined) {
           return aDob === bDob ? byName() : aDob - bDob
@@ -217,6 +218,8 @@ async function buildSuggestedAllocations(
     where: {
       date: { gte: lookbackDate, lt: date },
       bookingGuestId: { in: guests.map((g) => g.id) },
+      booking: lodgeNullTolerantScope(lodgeId),
+      choreTemplate: lodgeNullTolerantScope(lodgeId),
     },
   })
 
@@ -232,6 +235,7 @@ async function buildSuggestedAllocations(
     by: ["choreTemplateId"],
     where: {
       date: { lt: date },
+      booking: lodgeNullTolerantScope(lodgeId),
       choreTemplate: lodgeNullTolerantScope(lodgeId),
     },
     _max: { date: true },
@@ -300,6 +304,7 @@ async function loadRosterSnapshot(
     by: ["choreTemplateId"],
     where: {
       date: { lt: date },
+      booking: lodgeNullTolerantScope(lodgeId),
       choreTemplate: lodgeNullTolerantScope(lodgeId),
     },
     _max: { date: true },
@@ -317,6 +322,7 @@ async function loadRosterSnapshot(
     where: {
       date: { gte: lookbackDate, lt: date },
       bookingGuestId: { in: guests.map((guest) => guest.id) },
+      booking: lodgeNullTolerantScope(lodgeId),
       choreTemplate: lodgeNullTolerantScope(lodgeId),
     },
     include: { choreTemplate: true },
@@ -370,7 +376,10 @@ export async function getAdminRosterForDate(params: {
 }): Promise<JsonRouteResult> {
   const { date, dateString: dateStr, regenerate, includeNonEssential, lodgeId } = params
   const snapshot = await prisma.$transaction(async (tx) => {
-    await lockRosterDate(tx, date)
+    // Even the ordinary GET writes when the partition is empty: it auto-builds
+    // SUGGESTED rows. Take the eligibility tiers before discovering whether
+    // this invocation is read-only, otherwise the empty-partition race remains.
+    await lockRosterEligibilityMutation(tx, lodgeId, date)
     const guests = await getGuestsForDate(date, lodgeId, tx)
     let current = await tx.choreAssignment.findMany({
       where: assignmentScope(date, lodgeId),
@@ -438,7 +447,7 @@ export async function updateAdminRosterForDate(params: {
       }
 
       const saveResult = await prisma.$transaction(async (tx) => {
-        await lockRosterDate(tx, date)
+        await lockRosterEligibilityMutation(tx, lodgeId, date)
         const current = await tx.choreAssignment.findMany({
           where: assignmentScope(date, lodgeId),
           select: {
@@ -573,7 +582,7 @@ export async function updateAdminRosterForDate(params: {
     }
     case "regenerate": {
       const regenerateResult = await prisma.$transaction(async (tx) => {
-        await lockRosterDate(tx, date)
+        await lockRosterEligibilityMutation(tx, lodgeId, date)
 
         const currentAssignments = await tx.choreAssignment.findMany({
           where: assignmentScope(date, lodgeId),
@@ -630,7 +639,7 @@ export async function updateAdminRosterForDate(params: {
     }
     case "confirm": {
       await prisma.$transaction(async (tx) => {
-        await lockRosterDate(tx, date)
+        await lockRosterEligibilityMutation(tx, lodgeId, date)
         await tx.choreAssignment.updateMany({
           where: {
             ...assignmentScope(date, lodgeId),
