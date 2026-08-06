@@ -223,7 +223,8 @@ describe("readExceptionOffer — what it refuses", () => {
   });
 
   it("refuses a violation missing the server's own exceptionEligible flag", () => {
-    const { exceptionEligible: _dropped, ...withoutFlag } = MIN_STAY_VIOLATION;
+    const { exceptionEligible, ...withoutFlag } = MIN_STAY_VIOLATION;
+    expect(exceptionEligible).toBe(true);
     expect(
       readExceptionOffer({
         code: "MINIMUM_STAY_VIOLATION",

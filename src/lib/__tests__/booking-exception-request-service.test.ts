@@ -19,7 +19,10 @@ const mocks = vi.hoisted(() => ({
   // capacity-holding fields for an approved new-booking row.
   // Annotated `Promise<unknown[]>` rather than left to inference: an empty-array
   // default infers `never[]`, and every row a case resolves is then unassignable.
-  bookingFindMany: vi.fn(async (..._args: unknown[]): Promise<unknown[]> => []),
+  bookingFindMany: vi.fn(async (...args: unknown[]): Promise<unknown[]> => {
+    void args;
+    return [];
+  }),
   bookingUpdateMany: vi.fn(),
   // #2525 reservation ledger + advisory-lock raw statements.
   peUpsert: vi.fn(),

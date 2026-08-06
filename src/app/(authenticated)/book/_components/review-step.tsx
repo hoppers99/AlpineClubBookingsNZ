@@ -34,7 +34,6 @@ import { PromoCodeInput, type PromoResult } from "@/components/promo-code-input"
 import { TimePicker } from "@/components/time-picker";
 import {
   RequestOfficerApprovalCard,
-  type ExceptionRequestProposalView,
   type ExceptionRequestSubmitResult,
 } from "@/components/booking/request-officer-approval-card";
 import {

@@ -15,11 +15,19 @@ const mocks = vi.hoisted(() => ({
   nbFindUnique: vi.fn(),
   // Rest-typed like every other model stub here, so the `(...a) => mock(...a)`
   // forwarding below typechecks under `tsconfig.test.json`.
-  fgmFindMany: vi.fn(async (..._args: unknown[]) => []),
-  memberFindMany: vi.fn(async (..._args: unknown[]) => []),
+  fgmFindMany: vi.fn(async (...args: unknown[]) => {
+    void args;
+    return [];
+  }),
+  memberFindMany: vi.fn(async (...args: unknown[]) => {
+    void args;
+    return [];
+  }),
   // #2562 review: the refusal notice. Mocked because a real send would reach the
   // mailer, and asserted because before this the member was told nothing at all.
-  sendRefused: vi.fn(async (..._args: unknown[]) => undefined),
+  sendRefused: vi.fn(async (...args: unknown[]) => {
+    void args;
+  }),
 }));
 
 vi.mock("@/lib/session-guards", () => ({ requireAdmin: mocks.requireAdmin }));
