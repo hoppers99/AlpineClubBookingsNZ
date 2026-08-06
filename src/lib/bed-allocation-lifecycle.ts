@@ -1617,41 +1617,6 @@ async function recordPartnerShareSweepAudits(
 }
 
 /**
- * Sweep the FUTURE shared-double second-occupant allocations of a broken
- * partner pair (#1756). Idempotent and safe on empty sets: a second run finds
- * no candidate rows and writes nothing.
- *
- * Scopes:
- * - `partnerMemberId` present (partner-link dissolve): only bed-nights whose
- *   two occupants are exactly this pair are swept — a stale bed-night the
- *   member shares with someone ELSE belongs to that other pair's own
- *   dissolve/deactivation event, not this one.
- * - `partnerMemberId` absent (deactivation / ADULT→minor tier correction):
- *   every future shared bed-night involving the member on EITHER side goes —
- *   as the second occupant they are removed themselves; as the primary their
- *   partner's second-occupant row is removed (the primary keeps the bed).
- *
- * Returns the removed rows so the caller can alert admins after its
- * transaction commits (external calls stay outside the transaction).
- */
-export async function sweepFuturePartnerSharedAllocations(params: {
-  memberId: string;
-  partnerMemberId?: string;
-  reason: PartnerSharedSweepReason;
-}): Promise<SweptPartnerSharedAllocation[]> {
-  return prisma.$transaction(async (tx) => {
-    await acquireFuturePartnerSharedAllocationLocks(tx, [
-      params.memberId,
-      ...(params.partnerMemberId ? [params.partnerMemberId] : []),
-    ]);
-    return sweepFuturePartnerSharedAllocationsWithLocksHeld({
-      ...params,
-      db: tx,
-    });
-  });
-}
-
-/**
  * Acquire the complete lock prefix for a transaction that will invalidate
  * future partner-shared placements. Call this before any member/link mutation:
  * the sweep may touch allocations in several lodges, so the canonical order is
@@ -1692,7 +1657,17 @@ export async function acquireFuturePartnerSharedAllocationLocks(
 /**
  * Internal sweep for callers that already hold the global cohort lock and all
  * affected lodge locks through `acquireFuturePartnerSharedAllocationLocks`.
- * The candidate rows are deliberately re-read after those locks.
+ * The candidate rows are deliberately re-read after those locks. It is
+ * idempotent and safe on empty sets: a second run finds no rows and writes
+ * nothing.
+ *
+ * With `partnerMemberId`, only bed-nights whose occupants are exactly that
+ * pair are swept. Without it (deactivation or ADULT-to-minor correction),
+ * every future shared bed-night involving the member is swept on either side:
+ * the second occupant is removed while the primary keeps the bed.
+ *
+ * Returns the removed rows so the caller can alert admins after the enclosing
+ * transaction commits; external calls remain outside the transaction.
  */
 export async function sweepFuturePartnerSharedAllocationsWithLocksHeld(params: {
   memberId: string;

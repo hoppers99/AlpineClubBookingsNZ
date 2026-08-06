@@ -614,7 +614,8 @@ Future reviews and issues should cite this file when proposing changes.
   Dissolving a CONFIRMED link (`removeOwnPartnerLink` /
   `adminRemovePartnerLink`), deactivating a member (member edit, bulk update,
   or account-deletion anonymisation), or correcting an ADULT to a minor/N-A
-  tier runs `sweepFuturePartnerSharedAllocations`
+  tier acquires `acquireFuturePartnerSharedAllocationLocks` and runs
+  `sweepFuturePartnerSharedAllocationsWithLocksHeld`
   (`bed-allocation-lifecycle.ts`) in the SAME transaction as the breaking
   event: the pair's future (tonight onwards, NZ date-only) second-occupant
   rows are deleted back to the awaiting-allocation queue — never the primary,

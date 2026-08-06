@@ -16,7 +16,7 @@ const h = vi.hoisted(() => ({
   sendAccountDeletionRejectedEmail: vi.fn(),
   sendAdminPartnerShareSweptAlert: vi.fn(),
   acquireFuturePartnerSharedAllocationLocks: vi.fn(),
-  sweepFuturePartnerSharedAllocations: vi.fn(),
+  sweepFuturePartnerSharedAllocationsWithLocksHeld: vi.fn(),
   prisma: {
     deletionRequest: { findUnique: vi.fn(), update: vi.fn() },
     booking: { findMany: vi.fn() },
@@ -62,7 +62,7 @@ vi.mock("@/lib/bed-allocation-lifecycle", () => ({
   acquireFuturePartnerSharedAllocationLocks:
     h.acquireFuturePartnerSharedAllocationLocks,
   sweepFuturePartnerSharedAllocationsWithLocksHeld:
-    h.sweepFuturePartnerSharedAllocations,
+    h.sweepFuturePartnerSharedAllocationsWithLocksHeld,
 }));
 vi.mock("@/lib/logger", () => ({
   default: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
@@ -120,7 +120,7 @@ beforeEach(() => {
   h.memberHoldsPrivilegedRole.mockReturnValue(false);
   h.wouldRemoveLastFullAdmin.mockResolvedValue(false);
   h.acquireFuturePartnerSharedAllocationLocks.mockResolvedValue(undefined);
-  h.sweepFuturePartnerSharedAllocations.mockResolvedValue([]);
+  h.sweepFuturePartnerSharedAllocationsWithLocksHeld.mockResolvedValue([]);
   h.sendAccountDeletionApprovedEmail.mockResolvedValue(undefined);
   h.sendAccountDeletionRejectedEmail.mockResolvedValue(undefined);
 });
@@ -194,7 +194,7 @@ describe("POST /api/admin/deletion-requests/[id] approve carve-out (#1788)", () 
       h.acquireFuturePartnerSharedAllocationLocks.mock.invocationCallOrder[0];
     const memberLockOrder = h.prisma.$executeRaw.mock.invocationCallOrder[0];
     const heldSweepOrder =
-      h.sweepFuturePartnerSharedAllocations.mock.invocationCallOrder[0];
+      h.sweepFuturePartnerSharedAllocationsWithLocksHeld.mock.invocationCallOrder[0];
     const anonymiseOrder = h.prisma.member.update.mock.invocationCallOrder[0];
     expect(acquireOrder).toBeLessThan(memberLockOrder);
     expect(memberLockOrder).toBeLessThan(heldSweepOrder);
