@@ -1,6 +1,13 @@
 import type { Prisma } from "@prisma/client"
+import { createHash } from "node:crypto"
 import { prisma } from "@/lib/prisma"
-import { allocateChores, ChoreTemplateInput, GuestInput, ChoreHistoryEntry } from "@/lib/chore-allocator"
+import {
+  allocateChores,
+  filterChoresByFrequency,
+  ChoreTemplateInput,
+  GuestInput,
+  ChoreHistoryEntry,
+} from "@/lib/chore-allocator"
 import { getLodgeCapacity, FALLBACK_LODGE_CAPACITY } from "@/lib/lodge-capacity"
 import { getBookingGuestDisplayAgeTier } from "@/lib/booking-guests"
 import { sendChoreRosterEmail, shouldSendChoreRoster } from "@/lib/email"
@@ -8,9 +15,10 @@ import { createGuestChoreToken } from "@/lib/guest-chore-token"
 import { getEffectiveEmail } from "@/lib/member-utils"
 import { addDaysDateOnly, formatDateOnly } from "@/lib/date-only"
 import { getActiveGuestsForNight, getGuestStayEnd, getGuestStayStart } from "@/lib/booking-guest-stay-ranges"
-import { validateRosterAllocationsForDate } from "@/lib/lodge-date-scoping"
 import { lodgeNullTolerantScope } from "@/lib/lodges"
 import { OPERATIONALLY_PRESENT_GUEST_WHERE } from "@/lib/member-guest-consent"
+import { checkinNotBlockedByPendingReviewFilter } from "@/lib/booking-review"
+import { lockRosterDate } from "@/lib/roster-lock"
 import { z } from "zod"
 import logger from "@/lib/logger"
 import { logAudit } from "@/lib/audit"
@@ -27,19 +35,15 @@ function jsonResult(body: unknown, init?: ResponseInit): JsonRouteResult {
 
 export const rosterActionSchema = z.discriminatedUnion("action", [
   z.object({
-    action: z.literal("reassign"),
-    assignmentId: z.string().min(1),
-    bookingGuestId: z.string().min(1),
-  }),
-  z.object({
-    action: z.literal("add"),
-    choreTemplateId: z.string().min(1),
-    bookingGuestId: z.string().min(1),
-    bookingId: z.string().min(1),
-  }),
-  z.object({
-    action: z.literal("remove"),
-    assignmentId: z.string().min(1),
+    action: z.literal("save"),
+    baseRevision: z.string().min(1),
+    acknowledgeCompletedReset: z.boolean(),
+    assignments: z.array(z.object({
+      rowKey: z.string().min(1),
+      assignmentId: z.string().min(1).optional(),
+      choreTemplateId: z.string().min(1),
+      bookingGuestId: z.string().min(1),
+    })),
   }),
   z.object({
     action: z.literal("regenerate"),
@@ -52,8 +56,58 @@ export const rosterActionSchema = z.discriminatedUnion("action", [
 
 export type RosterActionInput = z.infer<typeof rosterActionSchema>
 
-async function getGuestsForDate(date: Date, lodgeId: string): Promise<GuestInput[]> {
-  const bookings = await prisma.booking.findMany({
+export const ROSTER_ERROR_COPY = {
+  stale: "This roster changed while you were editing. Your changes were not saved. Reload the latest roster and try again.",
+  ineligibleGuest: "Roster not saved. This person is no longer eligible for this lodge night. Choose another person or reload the roster.",
+} as const
+
+function rosterError(code: string, error: string, status: number, details?: unknown) {
+  return jsonResult({ error, code, ...(details === undefined ? {} : { details }) }, { status })
+}
+
+function assignmentScope(date: Date, lodgeId: string) {
+  return {
+    date,
+    booking: lodgeNullTolerantScope(lodgeId),
+    choreTemplate: lodgeNullTolerantScope(lodgeId),
+  }
+}
+
+type RevisionAssignment = {
+  id: string
+  choreTemplateId: string
+  bookingId: string
+  bookingGuestId: string | null
+  status: string
+  completedAt?: Date | null
+  completedVia?: string | null
+  updatedAt?: Date
+}
+
+export function createRosterRevision(assignments: RevisionAssignment[]) {
+  const canonical = assignments
+    .map((assignment) => ({
+      id: assignment.id,
+      choreTemplateId: assignment.choreTemplateId,
+      bookingId: assignment.bookingId,
+      bookingGuestId: assignment.bookingGuestId,
+      status: assignment.status,
+      completedAt: assignment.completedAt?.toISOString() ?? null,
+      completedVia: assignment.completedVia ?? null,
+      updatedAt: assignment.updatedAt?.toISOString() ?? null,
+    }))
+    .sort((a, b) => a.id.localeCompare(b.id))
+  return createHash("sha256").update(JSON.stringify(canonical)).digest("base64url")
+}
+
+type RosterGuest = GuestInput & { bookingGroupLabel: string }
+
+async function getGuestsForDate(
+  date: Date,
+  lodgeId: string,
+  db: Prisma.TransactionClient | typeof prisma = prisma,
+): Promise<RosterGuest[]> {
+  const bookings = await db.booking.findMany({
     where: {
       status: { in: [...OPERATIONAL_STAY_BOOKING_STATUSES] },
       checkIn: { lte: date },
@@ -66,8 +120,10 @@ async function getGuestsForDate(date: Date, lodgeId: string): Promise<GuestInput
           ...OPERATIONALLY_PRESENT_GUEST_WHERE,
         },
       },
+      ...checkinNotBlockedByPendingReviewFilter(),
     },
     include: {
+      member: { select: { firstName: true, lastName: true } },
       guests: {
         where: {
           stayStart: { lte: date },
@@ -82,26 +138,49 @@ async function getGuestsForDate(date: Date, lodgeId: string): Promise<GuestInput
         },
         include: {
           member: {
-            select: { ageTier: true },
+            select: { ageTier: true, dateOfBirth: true },
           },
+          nights: { select: { stayDate: true } },
         },
       },
     },
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
   })
 
   const nextDay = addDaysDateOnly(date, 1)
 
-  return bookings.flatMap((b) =>
-    getActiveGuestsForNight(b.guests, date, b).map((g) => ({
-      id: g.id,
-      bookingId: b.id,
-      firstName: g.firstName,
-      lastName: g.lastName,
-      ageTier: getBookingGuestDisplayAgeTier(g),
-      isArriving: getGuestStayStart(g, b).getTime() === date.getTime(),
-      isDeparting: getGuestStayEnd(g, b).getTime() === nextDay.getTime(),
+  return bookings.flatMap((booking, bookingIndex) => {
+    const ownerName = [booking.member?.firstName, booking.member?.lastName]
+      .filter(Boolean)
+      .join(" ")
+    const bookingGroupLabel = ownerName
+      ? `Booking for ${ownerName}`
+      : `Booking group ${bookingIndex + 1}`
+    const activeGuests = getActiveGuestsForNight(booking.guests, date, booking)
+      .sort((a, b) => {
+        const aDob = a.member?.dateOfBirth?.getTime()
+        const bDob = b.member?.dateOfBirth?.getTime()
+        if (aDob !== undefined && bDob !== undefined && aDob !== bDob) {
+          return aDob - bDob
+        }
+        if (aDob !== undefined) return -1
+        if (bDob !== undefined) return 1
+        return `${a.lastName}\u0000${a.firstName}\u0000${a.id}`.localeCompare(
+          `${b.lastName}\u0000${b.firstName}\u0000${b.id}`,
+        )
+      })
+
+    return activeGuests.map((guest) => ({
+      id: guest.id,
+      bookingId: booking.id,
+      firstName: guest.firstName,
+      lastName: guest.lastName,
+      ageTier: getBookingGuestDisplayAgeTier(guest),
+      isArriving: getGuestStayStart(guest, booking).getTime() === date.getTime(),
+      isDeparting: getGuestStayEnd(guest, booking).getTime() === nextDay.getTime(),
+      bookingGroupLabel,
     }))
-  )
+  })
 }
 
 async function buildSuggestedAllocations(
@@ -150,7 +229,10 @@ async function buildSuggestedAllocations(
 
   const lastRosteredRecords = await tx.choreAssignment.groupBy({
     by: ["choreTemplateId"],
-    where: { date: { lt: date } },
+    where: {
+      date: { lt: date },
+      choreTemplate: lodgeNullTolerantScope(lodgeId),
+    },
     _max: { date: true },
   })
   const choreLastRosteredDates = new Map<string, Date>()
@@ -193,9 +275,89 @@ async function buildSuggestedAllocations(
   return allocateChores(templateInputs, guests, history, options)
 }
 
-async function lockRosterDate(tx: Prisma.TransactionClient, date: Date) {
-  const lockKey = `roster:${formatDateOnly(date)}`
-  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`
+async function loadRosterSnapshot(
+  tx: Prisma.TransactionClient,
+  date: Date,
+  dateStr: string,
+  lodgeId: string,
+  knownGuests?: RosterGuest[],
+) {
+  const guests = knownGuests ?? await getGuestsForDate(date, lodgeId, tx)
+  const assignments = await tx.choreAssignment.findMany({
+    where: assignmentScope(date, lodgeId),
+    include: {
+      choreTemplate: true,
+      bookingGuest: { include: { member: { select: { ageTier: true } } } },
+    },
+    orderBy: [{ choreTemplate: { sortOrder: "asc" } }, { id: "asc" }],
+  })
+  const templates = await tx.choreTemplate.findMany({
+    where: { active: true, ...lodgeNullTolerantScope(lodgeId) },
+    orderBy: [{ sortOrder: "asc" }, { id: "asc" }],
+  })
+  const lastRosteredRecords = await tx.choreAssignment.groupBy({
+    by: ["choreTemplateId"],
+    where: {
+      date: { lt: date },
+      choreTemplate: lodgeNullTolerantScope(lodgeId),
+    },
+    _max: { date: true },
+  })
+  const lastRosteredDates = new Map<string, Date>()
+  for (const record of lastRosteredRecords) {
+    if (record._max.date) lastRosteredDates.set(record.choreTemplateId, record._max.date)
+  }
+  const dueTemplateIds = new Set(
+    filterChoresByFrequency(templates, lastRosteredDates, date).map((template) => template.id),
+  )
+
+  const lookbackDate = addDaysDateOnly(date, -4)
+  const guestHistory = await tx.choreAssignment.findMany({
+    where: {
+      date: { gte: lookbackDate, lt: date },
+      bookingGuestId: { in: guests.map((guest) => guest.id) },
+      choreTemplate: lodgeNullTolerantScope(lodgeId),
+    },
+    include: { choreTemplate: true },
+    orderBy: { date: "desc" },
+  })
+  const historyByGuest: Record<string, Array<{ date: string; choreName: string }>> = {}
+  for (const history of guestHistory) {
+    if (!history.bookingGuestId) continue
+    ;(historyByGuest[history.bookingGuestId] ??= []).push({
+      date: formatDateOnly(history.date),
+      choreName: history.choreTemplate.name,
+    })
+  }
+
+  return {
+    date: dateStr,
+    lodgeId,
+    revision: createRosterRevision(assignments),
+    guests,
+    assignments: assignments.map((assignment) => ({
+      id: assignment.id,
+      choreTemplateId: assignment.choreTemplateId,
+      choreTemplateName: assignment.choreTemplate.name,
+      choreDescription: assignment.choreTemplate.description,
+      choreSortOrder: assignment.choreTemplate.sortOrder,
+      bookingGuestId: assignment.bookingGuestId,
+      guestName: assignment.bookingGuest
+        ? `${assignment.bookingGuest.firstName} ${assignment.bookingGuest.lastName}`
+        : null,
+      guestAgeTier: assignment.bookingGuest
+        ? getBookingGuestDisplayAgeTier(assignment.bookingGuest)
+        : null,
+      bookingId: assignment.bookingId,
+      status: assignment.status,
+    })),
+    templates: templates.map((template) => ({
+      ...template,
+      isDueOnDate: dueTemplateIds.has(template.id),
+    })),
+    guestHistory: historyByGuest,
+    guestCount: guests.length,
+  }
 }
 
 export async function getAdminRosterForDate(params: {
@@ -206,129 +368,47 @@ export async function getAdminRosterForDate(params: {
   lodgeId: string
 }): Promise<JsonRouteResult> {
   const { date, dateString: dateStr, regenerate, includeNonEssential, lodgeId } = params
-  const guests = await getGuestsForDate(date, lodgeId)
-
-  // Wrap check + create in a transaction to prevent concurrent duplicate assignments
-  const existing = await prisma.$transaction(async (tx) => {
+  const snapshot = await prisma.$transaction(async (tx) => {
     await lockRosterDate(tx, date)
-
+    const guests = await getGuestsForDate(date, lodgeId, tx)
     let current = await tx.choreAssignment.findMany({
-      where: { date },
-      include: {
-        choreTemplate: true,
-        bookingGuest: {
-          include: {
-            member: {
-              select: { ageTier: true },
-            },
-          },
-        },
-      },
+      where: assignmentScope(date, lodgeId),
+      select: { status: true },
     })
-
-    // If regenerating, delete SUGGESTED assignments (keep CONFIRMED/COMPLETED)
     if (regenerate) {
       await tx.choreAssignment.deleteMany({
-        where: { date, status: "SUGGESTED" },
+        where: { ...assignmentScope(date, lodgeId), status: "SUGGESTED" },
       })
-      current = current.filter((a) => a.status !== "SUGGESTED")
+      current = current.filter((assignment) => assignment.status !== "SUGGESTED")
     }
-
-    // If no assignments or only non-SUGGESTED remain after regeneration, auto-suggest
-    const hasSuggested = current.some((a) => a.status === "SUGGESTED")
-    const hasConfirmed = current.some((a) => a.status === "CONFIRMED" || a.status === "COMPLETED")
-
-    if (!hasSuggested && !hasConfirmed) {
+    const hasRoster = current.some((assignment) =>
+      assignment.status === "SUGGESTED" ||
+      assignment.status === "CONFIRMED" ||
+      assignment.status === "COMPLETED"
+    )
+    if (!hasRoster) {
       const allocations = await buildSuggestedAllocations(
         tx,
         date,
         guests,
         includeNonEssential,
-        lodgeId
+        lodgeId,
       )
-
-      // Save allocations
       if (allocations.length > 0) {
         await tx.choreAssignment.createMany({
-          data: allocations.map((a) => ({
-            choreTemplateId: a.choreTemplateId,
-            bookingId: a.bookingId,
-            bookingGuestId: a.bookingGuestId,
+          data: allocations.map((allocation) => ({
+            choreTemplateId: allocation.choreTemplateId,
+            bookingId: allocation.bookingId,
+            bookingGuestId: allocation.bookingGuestId,
             date,
-            status: "SUGGESTED",
+            status: "SUGGESTED" as const,
           })),
         })
       }
     }
-
-    // Re-fetch after potential creation
-    return tx.choreAssignment.findMany({
-      where: { date },
-      include: {
-        choreTemplate: true,
-        bookingGuest: {
-          include: {
-            member: {
-              select: { ageTier: true },
-            },
-          },
-        },
-      },
-    })
+    return loadRosterSnapshot(tx, date, dateStr, lodgeId, guests)
   })
-
-  // Get all active chore templates for the UI
-  const allTemplates = await prisma.choreTemplate.findMany({
-    where: { active: true, ...lodgeNullTolerantScope(lodgeId) },
-    orderBy: { sortOrder: "asc" },
-  })
-
-  // Get 4-day history for each guest (for display)
-  const lookbackDate = addDaysDateOnly(date, -4)
-
-  const guestHistory = await prisma.choreAssignment.findMany({
-    where: {
-      date: { gte: lookbackDate, lt: date },
-      bookingGuestId: { in: guests.map((g) => g.id) },
-    },
-    include: { choreTemplate: true },
-    orderBy: { date: "desc" },
-  })
-
-  // Group history by guest
-  const historyByGuest: Record<string, Array<{ date: string; choreName: string }>> = {}
-  for (const h of guestHistory) {
-    if (!h.bookingGuestId) continue
-    if (!historyByGuest[h.bookingGuestId]) {
-      historyByGuest[h.bookingGuestId] = []
-    }
-    historyByGuest[h.bookingGuestId].push({
-      date: formatDateOnly(h.date),
-      choreName: h.choreTemplate.name,
-    })
-  }
-
-  return jsonResult({
-    date: dateStr,
-    guests,
-    assignments: existing.map((a) => ({
-      id: a.id,
-      choreTemplateId: a.choreTemplateId,
-      choreTemplateName: a.choreTemplate.name,
-      choreDescription: a.choreTemplate.description,
-      choreSortOrder: a.choreTemplate.sortOrder,
-      bookingGuestId: a.bookingGuestId,
-      guestName: a.bookingGuest
-        ? `${a.bookingGuest.firstName} ${a.bookingGuest.lastName}`
-        : null,
-      guestAgeTier: a.bookingGuest ? getBookingGuestDisplayAgeTier(a.bookingGuest) : null,
-      bookingId: a.bookingId,
-      status: a.status,
-    })),
-    templates: allTemplates,
-    guestHistory: historyByGuest,
-    guestCount: guests.length,
-  })
+  return jsonResult(snapshot)
 }
 
 export async function updateAdminRosterForDate(params: {
@@ -341,62 +421,161 @@ export async function updateAdminRosterForDate(params: {
   const { date, dateString: dateStr, data, lodgeId, adminMemberId } = params
   try {
   switch (data.action) {
-    case "reassign": {
-      const assignment = await prisma.choreAssignment.findUnique({
-        where: { id: data.assignmentId },
-        select: { bookingId: true },
-      })
-      if (!assignment) {
-        return jsonResult({ error: "Assignment not found" }, { status: 404 })
-      }
-      const allocationIsValid = await validateRosterAllocationsForDate(
-        [{ bookingGuestId: data.bookingGuestId, bookingId: assignment.bookingId }],
-        date
-      )
-      if (!allocationIsValid) {
-        return jsonResult(
-          { error: "Assignment must reference a guest staying on this date" },
-          { status: 400 }
+    case "save": {
+      const duplicateRowKey = new Set(data.assignments.map((assignment) => assignment.rowKey)).size
+        !== data.assignments.length
+      const existingIds = data.assignments
+        .map((assignment) => assignment.assignmentId)
+        .filter((id): id is string => Boolean(id))
+      const duplicateAssignmentId = new Set(existingIds).size !== existingIds.length
+      if (duplicateRowKey || duplicateAssignmentId) {
+        return rosterError(
+          "ROSTER_SAVE_INVALID",
+          "Roster not saved. Each assignment row must be unique. Review the roster and try again.",
+          400,
         )
       }
-      await prisma.choreAssignment.update({
-        where: { id: data.assignmentId },
-        data: { bookingGuestId: data.bookingGuestId },
-      })
-      break
-    }
-    case "add": {
-      const allocationIsValid = await validateRosterAllocationsForDate(
-        [{ bookingGuestId: data.bookingGuestId, bookingId: data.bookingId }],
-        date
-      )
-      if (!allocationIsValid) {
-        return jsonResult(
-          { error: "Assignment must reference a guest staying on this date" },
-          { status: 400 }
+
+      const saveResult = await prisma.$transaction(async (tx) => {
+        await lockRosterDate(tx, date)
+        const current = await tx.choreAssignment.findMany({
+          where: assignmentScope(date, lodgeId),
+          select: {
+            id: true,
+            choreTemplateId: true,
+            bookingId: true,
+            bookingGuestId: true,
+            status: true,
+            completedAt: true,
+            completedVia: true,
+            updatedAt: true,
+          },
+        })
+        if (createRosterRevision(current) !== data.baseRevision) {
+          return { error: rosterError("ROSTER_STALE", ROSTER_ERROR_COPY.stale, 409) }
+        }
+        if (
+          current.some((assignment) => assignment.status === "COMPLETED") &&
+          !data.acknowledgeCompletedReset
+        ) {
+          return {
+            error: rosterError(
+              "ROSTER_COMPLETED_ACK_REQUIRED",
+              "Roster not saved. Completed chores will return to Suggested when this edit is saved. Acknowledge that reset before continuing.",
+              409,
+            ),
+          }
+        }
+
+        const currentById = new Map(current.map((assignment) => [assignment.id, assignment]))
+        for (const submitted of data.assignments) {
+          if (!submitted.assignmentId) continue
+          const existing = currentById.get(submitted.assignmentId)
+          if (!existing || existing.choreTemplateId !== submitted.choreTemplateId) {
+            return {
+              error: rosterError(
+                "ROSTER_ASSIGNMENT_INVALID",
+                "Roster not saved. One or more assignment rows no longer belong to this lodge night. Reload the roster and try again.",
+                400,
+                { rowKey: submitted.rowKey },
+              ),
+            }
+          }
+        }
+
+        const templateIds = [...new Set(data.assignments.map((assignment) => assignment.choreTemplateId))]
+        const templates = templateIds.length === 0
+          ? []
+          : await tx.choreTemplate.findMany({
+              where: {
+                id: { in: templateIds },
+                active: true,
+                ...lodgeNullTolerantScope(lodgeId),
+              },
+              select: { id: true },
+            })
+        const validTemplateIds = new Set(templates.map((template) => template.id))
+        const invalidTemplateRow = data.assignments.find(
+          (assignment) => !validTemplateIds.has(assignment.choreTemplateId),
         )
-      }
-      await prisma.choreAssignment.create({
-        data: {
-          choreTemplateId: data.choreTemplateId,
-          bookingId: data.bookingId,
-          bookingGuestId: data.bookingGuestId,
-          date,
-          status: "SUGGESTED",
-        },
+        if (invalidTemplateRow) {
+          return {
+            error: rosterError(
+              "ROSTER_TEMPLATE_INVALID",
+              "Roster not saved. This chore is no longer active for this lodge. Reload the roster and review your changes.",
+              400,
+              { rowKey: invalidTemplateRow.rowKey },
+            ),
+          }
+        }
+
+        const eligibleGuests = await getGuestsForDate(date, lodgeId, tx)
+        const eligibleById = new Map(eligibleGuests.map((guest) => [guest.id, guest]))
+        const invalidGuestRow = data.assignments.find(
+          (assignment) => !eligibleById.has(assignment.bookingGuestId),
+        )
+        if (invalidGuestRow) {
+          return {
+            error: rosterError(
+              "ROSTER_GUEST_INELIGIBLE",
+              ROSTER_ERROR_COPY.ineligibleGuest,
+              400,
+              { rowKey: invalidGuestRow.rowKey },
+            ),
+          }
+        }
+
+        const retainedIds = new Set(existingIds)
+        const removedIds = current
+          .filter((assignment) => !retainedIds.has(assignment.id))
+          .map((assignment) => assignment.id)
+        if (removedIds.length > 0) {
+          await tx.choreAssignment.deleteMany({
+            where: { id: { in: removedIds }, ...assignmentScope(date, lodgeId) },
+          })
+        }
+        for (const submitted of data.assignments) {
+          const guest = eligibleById.get(submitted.bookingGuestId)!
+          if (submitted.assignmentId) {
+            await tx.choreAssignment.updateMany({
+              where: {
+                id: submitted.assignmentId,
+                ...assignmentScope(date, lodgeId),
+              },
+              data: {
+                choreTemplateId: submitted.choreTemplateId,
+                bookingGuestId: submitted.bookingGuestId,
+                bookingId: guest.bookingId,
+                status: "SUGGESTED",
+                completedAt: null,
+                completedVia: null,
+              },
+            })
+          } else {
+            await tx.choreAssignment.create({
+              data: {
+                choreTemplateId: submitted.choreTemplateId,
+                bookingGuestId: submitted.bookingGuestId,
+                bookingId: guest.bookingId,
+                date,
+                status: "SUGGESTED",
+              },
+            })
+          }
+        }
+        return {
+          snapshot: await loadRosterSnapshot(tx, date, dateStr, lodgeId, eligibleGuests),
+        }
       })
-      break
-    }
-    case "remove": {
-      await prisma.choreAssignment.delete({ where: { id: data.assignmentId } })
-      break
+      if (saveResult.error) return saveResult.error
+      return jsonResult(saveResult.snapshot)
     }
     case "regenerate": {
       const regenerateResult = await prisma.$transaction(async (tx) => {
         await lockRosterDate(tx, date)
 
         const currentAssignments = await tx.choreAssignment.findMany({
-          where: { date },
+          where: assignmentScope(date, lodgeId),
           select: { status: true },
         })
 
@@ -409,10 +588,10 @@ export async function updateAdminRosterForDate(params: {
           return { conflict: true as const }
         }
 
-        const guests = await getGuestsForDate(date, lodgeId)
+        const guests = await getGuestsForDate(date, lodgeId, tx)
         const deleteWhere = hasConfirmed
-          ? { date }
-          : { date, status: "SUGGESTED" as const }
+          ? assignmentScope(date, lodgeId)
+          : { ...assignmentScope(date, lodgeId), status: "SUGGESTED" as const }
 
         await tx.choreAssignment.deleteMany({ where: deleteWhere })
 
@@ -451,9 +630,15 @@ export async function updateAdminRosterForDate(params: {
       break
     }
     case "confirm": {
-      await prisma.choreAssignment.updateMany({
-        where: { date, status: "SUGGESTED" },
-        data: { status: "CONFIRMED" },
+      await prisma.$transaction(async (tx) => {
+        await lockRosterDate(tx, date)
+        await tx.choreAssignment.updateMany({
+          where: {
+            ...assignmentScope(date, lodgeId),
+            status: "SUGGESTED",
+          },
+          data: { status: "CONFIRMED" },
+        })
       })
       break
     }
@@ -485,7 +670,7 @@ export async function updateAdminRosterForDate(params: {
 
       // Send roster email to all guests for this date
       const assignments = await prisma.choreAssignment.findMany({
-        where: { date },
+        where: assignmentScope(date, lodgeId),
         include: {
           choreTemplate: true,
           bookingGuest: {

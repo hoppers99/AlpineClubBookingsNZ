@@ -6,6 +6,7 @@ import { lodgeNullTolerantScope } from "@/lib/lodges";
 import { prisma } from "@/lib/prisma";
 import { z } from "zod";
 import logger from "@/lib/logger";
+import { lockRosterDate } from "@/lib/roster-lock";
 
 const dateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 
@@ -68,66 +69,55 @@ export async function POST(
   try {
     const lodgeId = await resolveKioskLodgeId(authResult, prisma);
 
-    const allocationsAreValid = await validateRosterAllocationsForDate(
-      parsed.data.allocations,
-      date
-    );
-    if (!allocationsAreValid) {
-      return NextResponse.json(
-        {
-          error:
-            "Allocations must reference guests staying on this date for the matching booking",
-        },
-        { status: 400 }
-      );
-    }
-
-    // Every allocation's booking must belong to the resolved kiosk lodge.
-    const allocationBookingIds = Array.from(
-      new Set(parsed.data.allocations.map((a) => a.bookingId))
-    );
-    const lodgeBookingCount = await prisma.booking.count({
-      where: {
-        id: { in: allocationBookingIds },
-        ...lodgeNullTolerantScope(lodgeId),
-      },
-    });
-    if (lodgeBookingCount !== allocationBookingIds.length) {
-      return NextResponse.json(
-        {
-          error:
-            "Allocations must reference guests staying on this date for the matching booking",
-        },
-        { status: 400 }
-      );
-    }
-
-    // Check for existing confirmed/completed assignments
-    const existingConfirmed = await prisma.choreAssignment.count({
-      where: {
+    const result = await prisma.$transaction(async (tx) => {
+      await lockRosterDate(tx, date);
+      const allocationsAreValid = await validateRosterAllocationsForDate(
+        parsed.data.allocations,
         date,
-        status: { in: ["CONFIRMED", "COMPLETED"] },
-        booking: lodgeNullTolerantScope(lodgeId),
-      },
-    });
-
-    if (existingConfirmed > 0 && !parsed.data.overwrite) {
-      return NextResponse.json(
-        { error: "Roster already confirmed. Set overwrite=true to replace." },
-        { status: 409 }
+        lodgeId,
+        tx,
       );
-    }
+      if (!allocationsAreValid) return { invalid: "guest" as const };
 
-    // Transaction: delete old assignments, create new ones as CONFIRMED
-    await prisma.$transaction(async (tx) => {
+      const templateIds = [...new Set(parsed.data.allocations.map((a) => a.choreTemplateId))];
+      const templateCount = await tx.choreTemplate.count({
+        where: {
+          id: { in: templateIds },
+          active: true,
+          ...lodgeNullTolerantScope(lodgeId),
+        },
+      });
+      if (templateCount !== templateIds.length) return { invalid: "template" as const };
+
+      const existingConfirmed = await tx.choreAssignment.count({
+        where: {
+          date,
+          status: { in: ["CONFIRMED", "COMPLETED"] },
+          booking: lodgeNullTolerantScope(lodgeId),
+          choreTemplate: lodgeNullTolerantScope(lodgeId),
+        },
+      });
+      if (existingConfirmed > 0 && !parsed.data.overwrite) {
+        return { conflict: true as const };
+      }
+
       if (parsed.data.overwrite) {
         await tx.choreAssignment.deleteMany({
-          where: { date, booking: lodgeNullTolerantScope(lodgeId) },
+          where: {
+            date,
+            booking: lodgeNullTolerantScope(lodgeId),
+            choreTemplate: lodgeNullTolerantScope(lodgeId),
+          },
         });
       } else {
         // Delete only SUGGESTED ones
         await tx.choreAssignment.deleteMany({
-          where: { date, status: "SUGGESTED", booking: lodgeNullTolerantScope(lodgeId) },
+          where: {
+            date,
+            status: "SUGGESTED",
+            booking: lodgeNullTolerantScope(lodgeId),
+            choreTemplate: lodgeNullTolerantScope(lodgeId),
+          },
         });
       }
 
@@ -140,7 +130,26 @@ export async function POST(
           status: "CONFIRMED" as const,
         })),
       });
+      return { success: true as const };
     });
+
+    if ("invalid" in result) {
+      return NextResponse.json(
+        {
+          code: result.invalid === "guest" ? "ROSTER_GUEST_INELIGIBLE" : "ROSTER_TEMPLATE_INVALID",
+          error: result.invalid === "guest"
+            ? "Allocations must reference eligible guests staying on this date for the matching booking and lodge"
+            : "Allocations must reference active chores for this lodge",
+        },
+        { status: 400 },
+      );
+    }
+    if ("conflict" in result) {
+      return NextResponse.json(
+        { error: "Roster already confirmed. Set overwrite=true to replace." },
+        { status: 409 },
+      );
+    }
 
     return NextResponse.json({ success: true });
   } catch (err) {

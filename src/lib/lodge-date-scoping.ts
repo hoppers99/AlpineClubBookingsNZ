@@ -3,6 +3,8 @@ import { OPERATIONAL_STAY_BOOKING_STATUSES } from "@/lib/booking-status";
 import { lodgeNullTolerantScope } from "@/lib/lodges";
 import { checkinNotBlockedByPendingReviewFilter } from "@/lib/booking-review";
 import { OPERATIONALLY_PRESENT_GUEST_WHERE } from "@/lib/member-guest-consent";
+import type { Prisma } from "@prisma/client";
+import { isGuestActiveOnNight } from "@/lib/booking-guest-stay-ranges";
 
 export const LODGE_VISIBLE_BOOKING_STATUSES = [
   ...OPERATIONAL_STAY_BOOKING_STATUSES,
@@ -99,13 +101,15 @@ export async function findLodgeGuestDepartingOnDate(
 
 export async function validateRosterAllocationsForDate(
   allocations: Array<{ bookingGuestId: string; bookingId: string }>,
-  date: Date
+  date: Date,
+  lodgeId?: string,
+  db: Prisma.TransactionClient | typeof prisma = prisma,
 ) {
   const guestIds = Array.from(
     new Set(allocations.map((allocation) => allocation.bookingGuestId))
   );
 
-  const guests = await prisma.bookingGuest.findMany({
+  const guests = await db.bookingGuest.findMany({
     where: {
       id: { in: guestIds },
       stayStart: { lte: date },
@@ -117,6 +121,7 @@ export async function validateRosterAllocationsForDate(
         status: { in: [...LODGE_VISIBLE_BOOKING_STATUSES] },
         checkIn: { lte: date },
         checkOut: { gt: date },
+        ...(lodgeId ? lodgeNullTolerantScope(lodgeId) : {}),
         // Enforcement path (#1372 / #1422): keep excluding a booking blocked by
         // a pending admin review so roster-confirm rejects it — even though the
         // guest LIST now shows it flagged.
@@ -126,11 +131,17 @@ export async function validateRosterAllocationsForDate(
     select: {
       id: true,
       bookingId: true,
+      stayStart: true,
+      stayEnd: true,
+      nights: { select: { stayDate: true } },
+      booking: { select: { checkIn: true, checkOut: true } },
     },
   });
 
   const guestBookingMap = new Map(
-    guests.map((guest) => [guest.id, guest.bookingId])
+    guests
+      .filter((guest) => isGuestActiveOnNight(guest, date, guest.booking))
+      .map((guest) => [guest.id, guest.bookingId])
   );
 
   return allocations.every(

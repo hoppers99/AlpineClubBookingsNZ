@@ -109,6 +109,7 @@ export async function GET(
       // template's, the same join `/api/lodge/roster/[date]/frequency-info`
       // uses.
       choreTemplate: lodgeNullTolerantScope(lodge.lodgeId),
+      booking: lodgeNullTolerantScope(lodge.lodgeId),
     },
     include: {
       choreTemplate: true,

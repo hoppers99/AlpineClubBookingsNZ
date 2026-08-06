@@ -29,6 +29,17 @@ function unauthorizedResponse() {
   return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
 }
 
+function rosterWriteForbiddenResponse() {
+  return NextResponse.json(
+    {
+      code: "ROSTER_PERMISSION_CHANGED",
+      error:
+        "Roster not saved. Your account no longer has Lodge edit access. Ask a full admin to update it.",
+    },
+    { status: 403 },
+  )
+}
+
 const adminGuardOptions = {
   forbiddenResponse: unauthorizedResponse,
 }
@@ -117,14 +128,15 @@ export async function GET(
 
 /**
  * PUT /api/admin/roster/[date]
- * Update assignments for a date (reassign guests, add/remove assignments)
+ * Atomically save the complete staged roster draft for a date, or run one of
+ * the retained regenerate/confirm/email actions.
  */
 export async function PUT(
   req: NextRequest,
   { params }: { params: Promise<{ date: string }> }
 ) {
   const guard = await requireAdmin({
-    ...adminGuardOptions,
+    forbiddenResponse: rosterWriteForbiddenResponse,
     permission: { area: "lodge", level: "edit" },
   })
   if (!guard.ok) return guard.response
