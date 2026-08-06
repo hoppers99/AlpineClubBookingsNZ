@@ -68,6 +68,13 @@ describe("hosting coverage queue participant fence (#2597)", () => {
     expect(
       (db.$executeRaw.mock.calls[0][0] as { values?: unknown[] }).values,
     ).toEqual(["actor-1", "owner-1"]);
+    expect(
+      (
+        db.$executeRaw.mock.calls[0][0] as {
+          strings?: readonly string[];
+        }
+      ).strings?.join("?"),
+    ).toMatch(/ORDER BY "id"\s+FOR KEY SHARE NOWAIT/);
     expect(db.member.findMany).toHaveBeenCalledWith({
       where: { id: { in: ["actor-1", "owner-1"] } },
       orderBy: { id: "asc" },
@@ -92,7 +99,14 @@ describe("hosting coverage queue participant fence (#2597)", () => {
 
   it("rejects a forged proof and performs no queue write", async () => {
     const db = makeDb();
-    const forged = Object.freeze({}) as HostingCoverageQueueParticipantProof;
+    // Structurally valid on purpose: this only fails because the capability was
+    // not issued by the participant-lock helper. An empty cast would still
+    // explode later if the WeakSet guard were deleted and would not kill that
+    // security-relevant mutation.
+    const forged = Object.freeze({
+      lockedMemberIds: Object.freeze(["owner-1"]),
+      sources: Object.freeze([SOURCE]),
+    }) as HostingCoverageQueueParticipantProof;
 
     await expect(
       enqueueHostingCoverageReevaluation(

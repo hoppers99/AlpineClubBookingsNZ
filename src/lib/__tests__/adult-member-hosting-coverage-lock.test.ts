@@ -216,4 +216,34 @@ describe("the per-owner coverage lock (#2576 §9)", () => {
     expect(reconciliation).toBeGreaterThan(itemTransaction);
     expect(notification).toBeGreaterThan(reconciliation);
   });
+
+  it("pins the merge participant re-plan, late sweeps, queue write and drain order", () => {
+    const source = readRepoFile("src/lib/member-merge.ts");
+    const executeStart = source.indexOf(
+      "export async function executeMemberMerge(",
+    );
+    expect(executeStart).toBeGreaterThan(-1);
+    const body = source.slice(executeStart, executeStart + 50_000);
+    const markers = [
+      "await lockAdultMemberHostingPolicySet(tx)",
+      "member-lifecycle:${lockA}",
+      "const relationMoves = await applyMoves(",
+      "const hostingPlan = await buildMemberMergeHostingCoveragePlan(",
+      "await lockMemberMergeHostingCoverageParticipants(tx,",
+      "refreshedHostingPlan = await buildMemberMergeHostingCoveragePlan(",
+      "memberMergeHostingCoveragePlanFingerprint(hostingPlan)",
+      "hostingParticipantProof = proveMemberMergeHostingCoverageParticipants(",
+      "const residualLoserOwnedBookings = await tx.booking.findMany(",
+      "await lockHostingCoverageOwners(",
+      "await applyLateHostingCoverageMoves(",
+      "await enqueueMemberMergeHostingCoveragePlan(",
+      "await tx.member.delete({ where: { id: loserId } })",
+      "await settleHostingCoverageAfterCommit({ limit: 50 }, client)",
+    ];
+    const positions = markers.map((marker) => body.indexOf(marker));
+    expect(positions.every((position) => position >= 0), markers.join(" -> ")).toBe(
+      true,
+    );
+    expect(positions).toEqual([...positions].sort((a, b) => a - b));
+  });
 });
