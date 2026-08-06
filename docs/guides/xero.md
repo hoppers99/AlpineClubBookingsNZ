@@ -88,6 +88,13 @@ idempotent — retrying the same work never double-charges.
 4. Before a brand-new contact is created the app checks for **similar existing
    Xero contacts** and asks you to confirm if any are found, so link an existing
    contact where one already exists.
+5. If Xero creates the contact, or the local link/import/unlink commits, but a later
+   bookkeeping or subscription step fails, the page says exactly which part is
+   already complete. **Do not repeat Create, Link, Unlink, or Import.** Check the
+   reloaded member and follow the displayed **Member Status Repair Backfill** remedy
+   when refresh or cleanup remains pending.
+6. That recovery warning stays visible while the member reloads and if reload
+   fails. Use **Try again** from the warning before taking another Xero action.
 
 ### Set up mappings and import (Xero Setup)
 
@@ -140,6 +147,7 @@ idempotent — retrying the same work never double-charges.
 | A member's grouping looks wrong | The mode/rules changed but existing members were not re-grouped automatically | Run the **dry-run diff**, then **bulk re-sync** per the [runbook](../XERO_MEMBER_GROUPING_RUNBOOK.md) |
 | A bulk re-sync halted | The daily Xero API limit was reached | Use **Resume re-sync** the next day |
 | Subscription paid-status isn't updating | The member has no Xero contact link | Link/create a contact, then run a membership refresh |
+| Create/link/unlink/import says the action completed only in part | The provider or canonical member change committed before a later local step failed | Do not repeat the action; reload/try again from the persistent warning, check the current link, then run **Member Status Repair Backfill** when directed |
 
 ## Related links
 

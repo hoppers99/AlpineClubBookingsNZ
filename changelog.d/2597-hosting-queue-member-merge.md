@@ -13,15 +13,21 @@
 
   The retry message now stays visible and is announced on the affected booking
   approval, public-request, payment, and Xero admin actions. A post-capture create
-  or saved-method race returns the privacy-safe
+  or saved-method failure returns the privacy-safe
   `PAYMENT_RECEIVED_STATUS_UNCONFIRMED` 409 with only `paymentReceived` and
   `bookingStatusUnconfirmed`; the payment UI suppresses retry and focuses its
-  permanent alert without exposing a provider id or claiming finalisation. A Xero
-  contact whose local member and link were already created is reloaded and kept
-  selected, duplicate creation is suppressed, and the officer is directed to
-  Member Status Repair for the pending subscription refresh. Link recovery keeps
-  its may-have-changed metadata, while collapsed Contact Sync and network errors
-  remain visible without discarding drafts.
+  permanent alert without exposing a provider id or claiming finalisation. If
+  Stripe reports an existing successful transaction before its refund history can
+  be verified, the UI instead reports the net status as unknown and blocks another
+  payment; initialization also preserves cancelled/refunded recovery outcomes.
+
+  Xero create, link, unlink, and import now report the exact irreversible phase
+  that completed even when later local processing fails. The response exposes only
+  proven facts (for example provider contact created, canonical link committed, or
+  cleanup/refresh pending), never raw provider/database detail. Member detail,
+  member list/editor, Contact Sync, and diagnostics reload or reflect canonical
+  state, suppress duplicate/destructive retry, and keep a focused recovery warning
+  visible through loading or refresh failure until the operator acts.
 
   Every host-standing fan-out now fences its subject member before reading
   attendance, including deactivation, archive, cancellation, subscription and

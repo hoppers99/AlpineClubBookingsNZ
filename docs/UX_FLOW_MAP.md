@@ -262,15 +262,17 @@ trying again, and check payment status before retrying where relevant.
 
 That atomic promise stops at the transaction boundary. A provider or an earlier
 phase may already have completed before a later local reconciliation reaches the
-participant fence. The card-payment panel therefore keeps the payment panel in place,
-announces that finalisation is pending, and does not navigate as if confirmation
-finished; the member checks the booking/payment status before retrying. A Xero
-contact import may likewise have created and linked the local member before its
-subscription-history refresh is refused. The Xero panel keeps that member selected,
-states that the import and link already happened, and sends the operator to the
-Member Status Repair Backfill instead of offering a second import. Booking approval
-and public-request action failures are announced in a focused page alert. Interfaces
-must distinguish a rolled-back queue transaction from truthful, named partial
+participant fence. The card-payment panel therefore suppresses another payment and
+keeps a focused alert mounted: it distinguishes received-but-unconfirmed payment,
+an existing successful card transaction whose refund/net state is unknown, and a
+capacity cancellation whose refund did or did not complete.
+
+Xero create, link, unlink, and contact import likewise name only the phase already
+proved. Member detail, member list/editor, Contact Sync, and diagnostics close or
+disable the stale action, reload or reflect canonical state, and keep their focused
+warning visible through loading and refresh failure. **Try again** reloads state;
+Member Status Repair Backfill is offered only when refresh/cleanup remains pending.
+Interfaces must distinguish a rolled-back queue transaction from truthful partial
 completion at these multi-phase boundaries. Officer override reasons remain attached
 to the original incident work, while merge-generated follow-up is a separate
 actorless system change.
