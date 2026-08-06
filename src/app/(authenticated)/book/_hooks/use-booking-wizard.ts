@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useSession } from "next-auth/react";
 import { toast } from "sonner";
 import { type GuestData } from "@/components/guest-form";
@@ -25,6 +25,11 @@ import {
 import { MEMBER_GUEST_CROSS_FAMILY_REFUSAL_MESSAGE } from "@/lib/member-guest-refusal";
 import type { MemberGuestCandidate } from "@/lib/member-guest-find";
 import { predictMemberGuestConsent } from "../_components/member-guest-preview";
+import {
+  readExceptionOffer,
+  type ExceptionOffer,
+} from "@/lib/booking-exception-offer";
+import type { ExceptionRequestSubmitResult } from "@/components/booking/request-officer-approval-card";
 import {
   type AvailablePromoCode,
   type BookingPaymentMethod,
@@ -142,7 +147,66 @@ function clearGuestNights(guestList: GuestData[]): GuestData[] {
 // return. The BookErrorPaymentTarget type is referenced via state below.
 export function useBookingWizard() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { data: session } = useSession();
+  /**
+   * #2562 — the server-confirmed offer to ask a Booking Officer, or null.
+   *
+   * Set ONLY from a refusal the SERVER classified as reviewable, through the one
+   * shared rule in `readExceptionOffer`. The wizard never decides eligibility for
+   * itself, so a hard failure (a full lodge, invalid dates, a consent or authority
+   * refusal, a tampered payload) can never draw the action.
+   *
+   * STORED WITH THE PROPOSAL IT BELONGS TO, and that is the point of the wrapper
+   * (#2562 review). An offer describes ONE refused proposal: this lodge, these
+   * nights, this party. The member can go Back, extend a one-night stay to two,
+   * and return to Review — and the old offer would still have been drawn there,
+   * naming the old rule and the old affected nights above a booking they could now
+   * make instantly. Clicking it answered 400 "this proposal does not trip any
+   * reviewable booking-policy exception", a dead end with no remedy branch; the
+   * quieter variant was worse, because a DIFFERENT short stay kept the previous
+   * refusal's wording over the new payload. The signature is compared during
+   * render rather than cleared by an effect, so there is no frame in which the
+   * stale card is on screen at all.
+   */
+  const [exceptionOfferState, setExceptionOfferState] = useState<{
+    offer: ExceptionOffer;
+    proposalSignature: string;
+  } | null>(null);
+  /**
+   * The identity of the proposal an offer belongs to: the lodge, the nights and
+   * the exact guest payload the create call would send.
+   *
+   * Built from `buildGuestPayload()` on purpose — the same function the create and
+   * the request both use — so "the proposal changed" means what the server would
+   * see change, not what a component re-rendered.
+   */
+  function exceptionProposalSignature(): string {
+    return JSON.stringify({
+      lodgeId: lodgeId ?? null,
+      checkIn,
+      checkOut,
+      guests: buildGuestPayload(),
+    });
+  }
+  /**
+   * Record an offer against the proposal that was live when the server refused it,
+   * or clear it. Callers keep the plain `ExceptionOffer | null` contract they had.
+   */
+  function setExceptionOffer(offer: ExceptionOffer | null) {
+    setExceptionOfferState(
+      offer ? { offer, proposalSignature: exceptionProposalSignature() } : null,
+    );
+  }
+  /**
+   * The open request this visit is here to REPLACE, from
+   * `/book?replaceRequest=<id>` — the link the member's request area renders. Read
+   * once from the URL and passed through to the create call as
+   * `supersedeRequestId`; the service does the guarded claim, so a stale or
+   * foreign id simply loses the claim and creates nothing.
+   */
+  const replaceExceptionRequestId =
+    searchParams?.get("replaceRequest")?.trim() || null;
   const { lodgeCapacity } = useClubIdentity();
   const [step, setStep] = useState<BookingWizardStep>("dates");
   // Lodge being booked (multi-lodge phase 8). /api/lodges only returns
@@ -894,8 +958,23 @@ export function useBookingWizard() {
     if (policyRes.ok) {
       const policyData = await policyRes.json();
       if (!policyData.valid) {
-        setError(policyData.message);
-        return;
+        // #2562: the date precheck must not strand a member before they can
+        // describe the party that the officer would review. Reuse the ONE
+        // fail-closed exception-door reader against the server's frozen review:
+        // a recognisably reviewable minimum-stay result may proceed to Guests,
+        // while a missing, mixed or malformed review remains a hard stop here.
+        // This does NOT open the request door. The action is still set only from
+        // the authoritative POST /api/bookings refusal after the member reviews
+        // and confirms the exact proposal.
+        const reviewable = readExceptionOffer({
+          code: "MINIMUM_STAY_VIOLATION",
+          error: policyData.message,
+          exceptionReview: policyData.exceptionReview,
+        });
+        if (!reviewable) {
+          setError(policyData.message);
+          return;
+        }
       }
     }
 
@@ -1023,6 +1102,9 @@ export function useBookingWizard() {
     setGuestProfileBlocks([]);
     setMemberNightConflicts([]);
     setShowWaitlistPrompt(false);
+    // A fresh attempt retires the previous refusal's offer: the payload may have
+    // changed, so the rules the server would freeze may have too (#2562).
+    setExceptionOffer(null);
     const checkInStr = checkIn!;
     const checkOutStr = checkOut!;
 
@@ -1116,6 +1198,10 @@ export function useBookingWizard() {
         setError("");
       } else {
         handleBookingApiError(data, "Failed to create booking");
+        // #2562: the ONE shared rule decides whether this refusal may offer to ask
+        // a Booking Officer. It reads the server's own classification and answers
+        // null for everything else, so no hard failure can open the door.
+        setExceptionOffer(readExceptionOffer(data));
       }
       setSubmitting(false);
     }
@@ -1137,6 +1223,10 @@ export function useBookingWizard() {
     setErrorPaymentTargets([]);
     setGuestProfileBlocks([]);
     setMemberNightConflicts([]);
+    // Cleared but never SET on this path (#2562): an exception request creates or
+    // changes a real booking, so offering it as the answer to a refused
+    // waitlist join would answer a different question than the member asked.
+    setExceptionOffer(null);
     const checkInStr = checkIn!;
     const checkOutStr = checkOut!;
 
@@ -1191,6 +1281,7 @@ export function useBookingWizard() {
     setErrorPaymentTargets([]);
     setGuestProfileBlocks([]);
     setMemberNightConflicts([]);
+    setExceptionOffer(null);
     const checkInStr = checkIn!;
     const checkOutStr = checkOut!;
 
@@ -1230,8 +1321,64 @@ export function useBookingWizard() {
     } else {
       const data = await res.json();
       handleBookingApiError(data, "Failed to save draft");
+      // Same reviewable-refusal door as the confirm path: a draft is refused by
+      // the same policy gates, and the member's remedy is the same request.
+      setExceptionOffer(readExceptionOffer(data));
       setSavingDraft(false);
     }
+  }
+
+  /**
+   * Send the exception request the current refusal opened the door to (#2562).
+   *
+   * Deliberately reuses `buildGuestPayload()` — the EXACT payload the refused
+   * create call sent — so the proposal an officer freezes is the proposal that was
+   * refused, not a second construction of it that could differ. The dates come
+   * from the same state the create used.
+   *
+   * Throws an Error carrying the server's own sentence, plus its `code` where it
+   * sent one, so the card can name the right next step for the two 409s whose
+   * remedy is not "try again".
+   */
+  async function submitExceptionRequest(input: {
+    memberMessage: string;
+    supersedeRequestId: string | null;
+  }): Promise<ExceptionRequestSubmitResult> {
+    const res = await fetch("/api/bookings/exception-requests", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        lodgeId: lodgeId ?? undefined,
+        checkIn: checkIn!,
+        checkOut: checkOut!,
+        guests: buildGuestPayload(),
+        memberMessage: input.memberMessage,
+        supersedeRequestId: input.supersedeRequestId ?? undefined,
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const failure = new Error(
+        typeof data?.error === "string" && data.error
+          ? data.error
+          : "The request could not be sent. Try again.",
+      ) as Error & { code?: string };
+      if (typeof data?.code === "string") failure.code = data.code;
+      throw failure;
+    }
+    return {
+      id: String(data.id),
+      proposal: data.proposal,
+      capacityHeld: data.capacityHeld === true,
+      // The frozen aggregate, for the receipt's capacity sentence. Read from the
+      // create response rather than from the refusal, so the receipt describes the
+      // request that was actually written.
+      capacityMode:
+        data.aggregateCapacityMode === "HOLD" ||
+        data.aggregateCapacityMode === "NO_HOLD"
+          ? data.aggregateCapacityMode
+          : null,
+    };
   }
 
   // Whole date-only nights between the two lodge dates. UTC date-only
@@ -1283,6 +1430,22 @@ export function useBookingWizard() {
   const remainingToPay = finalPriceBeforeCredit - appliedCreditCents;
   const bookingDateStrings = getBookingDateStrings();
   const reviewGuestPayload = priceQuote ? buildGuestPayload() : guests;
+  /**
+   * The offer, but ONLY while it still describes the proposal on screen.
+   *
+   * A mismatch means the member changed the lodge, the dates or the party after
+   * the refusal, so the offer describes something they are no longer proposing.
+   * Answering null retires it in the same render the change lands in — no effect,
+   * no cleared-too-late window, and no dependence on a component remembering to
+   * clear it. The edit panel keys its own offer the same way (#2562 re-review): its
+   * debounced quote effect only clears on a RESOLVED quote, so relying on that left
+   * a refused proposal's rule and price on screen over changed nights.
+   */
+  const exceptionOffer =
+    exceptionOfferState &&
+    exceptionOfferState.proposalSignature === exceptionProposalSignature()
+      ? exceptionOfferState.offer
+      : null;
   const cardPaymentDescription =
     bookingMessages["booking.payment.card.description"] ??
     "Pay now and secure the booking immediately.";
@@ -1462,6 +1625,10 @@ export function useBookingWizard() {
     handleSubmit,
     handleJoinWaitlist,
     handleSaveAsDraft,
+    // #2562 — the member-facing exception-request surface.
+    exceptionOffer,
+    replaceExceptionRequestId,
+    submitExceptionRequest,
     getGuestProfileBlockMessage,
     getGuestProfileActionLabel,
     nights,

@@ -4598,7 +4598,22 @@ model BookingChangeRequest {
   kind                 BookingChangeRequestKind   @default(LOCKED_PERIOD)
   requestedChanges     Json
   reason               String?                    @db.VarChar(2000)
+  // MEMBER-VISIBLE, on BOTH kinds of row. The officer's decision explanation,
+  // written FOR the member and rendered to them on their own request list, on
+  // their booking page under "Change Requests" (the LOCKED_PERIOD half), in the
+  // approval and refusal emails, and in the exception API payloads (#2562). Never
+  // treat this as a private field: every officer UI that writes it labels it as
+  // member-visible before the decision is submitted, and `internalNotes` below is
+  // the field for anything they do not want read.
   adminNotes           String?                    @db.VarChar(2000)
+  // #2562: NEVER MEMBER-VISIBLE. The officer's private commentary on the
+  // decision — a judgement about the member, a reference to another member's
+  // booking, a "watch this one" for the next officer. Read ONLY by admin-guarded
+  // surfaces (the officer queue and its detail endpoint). No member-facing
+  // projection, route select, email template or notification may name it; the
+  // member DTO in src/lib/member-exception-requests.ts is a strict allowlist
+  // that has no slot for it, and DOMAIN_INVARIANTS records the rule.
+  internalNotes        String?                    @db.VarChar(2000)
   reviewedByMemberId   String?
   reviewedAt           DateTime?
   linkedModificationId String?
@@ -4769,7 +4784,12 @@ model NewBookingPolicyExceptionRequest {
   // approve/reject decision).
   reviewedByMemberId    String?
   reviewedAt            DateTime?
+  // MEMBER-VISIBLE, exactly as on BookingChangeRequest above (#2562): the
+  // officer's decision explanation, written for the member and rendered to them.
   adminNotes            String?                    @db.VarChar(2000)
+  // #2562: NEVER MEMBER-VISIBLE. See BookingChangeRequest.internalNotes — the
+  // officer's private commentary, admin-guarded surfaces only.
+  internalNotes         String?                    @db.VarChar(2000)
   // Attempt/conflict metadata, mirroring BookingChangeRequest: attemptCount
   // counts submissions of this logical proposal; the conflict fields record the
   // most recent kept-pending NO_HOLD capacity conflict (#2525) so the queue can

@@ -116,6 +116,11 @@ function renderReview(
       cancelIfGuestsBumped={false}
       setCancelIfGuestsBumped={vi.fn()}
       setStep={vi.fn()}
+      // #2562: no refusal has happened in these fixtures, so no request is on
+      // offer and the card is not drawn.
+      exceptionOffer={null}
+      replaceExceptionRequestId={null}
+      submitExceptionRequest={vi.fn()}
       handleSaveAsDraft={vi.fn()}
       handleSubmit={vi.fn()}
       submitting={false}
@@ -501,5 +506,108 @@ describe("ReviewStep subscription-lockout notices (#2543)", () => {
     // Node.compareDocumentPosition: DOCUMENT_POSITION_FOLLOWING === 4.
     expect(warning.compareDocumentPosition(notice) & 4).toBe(4);
     expect(notice.compareDocumentPosition(total) & 4).toBe(4);
+  });
+});
+
+/**
+ * #2562 review — the request card on the new-booking path.
+ *
+ * Two defects, one screen. The card was handed `omittedChanges: []` with the note
+ * that "a new booking's whole intent IS the party and the nights, so there is
+ * nothing the request cannot carry", and a price of
+ * `appliedPromo?.finalPriceCents ?? priceQuote.totalPriceCents`. Neither survives a
+ * discounted party: `POST /api/bookings/exception-requests` takes only the lodge,
+ * the nights, the guests and the message, and `executeApprovedNewBooking` calls
+ * `createConfirmedBooking` with no promo and no credit — so the frozen proposal and
+ * the executed booking both price at the full rate, while the member was shown the
+ * discounted figure and told nothing was left out.
+ */
+describe("ReviewStep — the exception-request card (#2562 review)", () => {
+  const offer = {
+    code: "MINIMUM_STAY_VIOLATION" as const,
+    message: "Friday nights need a two-night booking.",
+    capacityMode: "NO_HOLD" as const,
+    violations: [
+      {
+        reasonCode: "MINIMUM_STAY" as const,
+        message: "Friday nights need a two-night booking.",
+        affectedNights: ["2026-07-20"],
+        capacityMode: "NO_HOLD" as const,
+      },
+    ],
+  };
+
+  it("shows the undiscounted quote and names the promo as not included", () => {
+    renderReview([memberGuest], undefined, {
+      exceptionOffer: offer,
+      appliedPromo: {
+        code: "WINTER20",
+        description: "20% off",
+        type: "PERCENT",
+        discountCents: 6000,
+        promoAdjustmentCents: -6000,
+        totalPriceCents: 8000,
+        finalPriceCents: 2000,
+      },
+    });
+
+    const card = screen.getByTestId("request-officer-approval");
+    // The club's quote for the party being frozen: $80.00, not the $20.00 the
+    // price summary above shows and no approval could ever produce.
+    expect(card).toHaveTextContent("$80.00");
+    expect(card).not.toHaveTextContent("$20.00");
+    expect(card).toHaveTextContent(
+      /Total for this stay at the club's normal rates/,
+    );
+    // And the disclosure block must actually render, naming what was dropped.
+    expect(card).toHaveTextContent(/are NOT included/);
+    expect(card).toHaveTextContent(/the promo code/);
+  });
+
+  it("names a working-bee discount even though it carries no promo code", () => {
+    renderReview([memberGuest], undefined, {
+      exceptionOffer: offer,
+      attendingWorkParty: true,
+      selectedWorkPartyEventId: "event-1",
+      appliedPromo: {
+        // A work-party discount never sends its internal code to the client.
+        code: null,
+        description: "Working bee",
+        type: "PERCENT",
+        discountCents: 8000,
+        promoAdjustmentCents: -8000,
+        totalPriceCents: 8000,
+        finalPriceCents: 0,
+      },
+    });
+
+    const card = screen.getByTestId("request-officer-approval");
+    expect(card).toHaveTextContent(/the working bee discount/);
+    expect(card).toHaveTextContent("$80.00");
+  });
+
+  it("keeps the plain price label when nothing priced was dropped", () => {
+    renderReview([memberGuest], undefined, { exceptionOffer: offer });
+
+    const card = screen.getByTestId("request-officer-approval");
+    expect(card).toHaveTextContent("Total for this stay:");
+    expect(card).not.toHaveTextContent(/normal rates/);
+    expect(card).not.toHaveTextContent(/are NOT included/);
+  });
+
+  it("names the non-price choices the request drops", () => {
+    renderReview([memberGuest], undefined, {
+      exceptionOffer: offer,
+      requestedRoomId: "room-2",
+      expectedArrivalTime: "18:30",
+      notes: "Arriving after dark.",
+    });
+
+    const card = screen.getByTestId("request-officer-approval");
+    expect(card).toHaveTextContent(/the room you asked for/);
+    expect(card).toHaveTextContent(/your expected arrival time/);
+    expect(card).toHaveTextContent(/your note to the club/);
+    // These do not move the price, so the figure keeps its plain label.
+    expect(card).toHaveTextContent("Total for this stay:");
   });
 });

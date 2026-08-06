@@ -70,12 +70,27 @@ request -> approve -> execute journey is covered by
 | Authorization + reason | Fresh-DB reauthorization (`bookings: edit`, active, no forced password change) inside the approval transaction; approve requires explicit confirmation; an adult-member hosting override and every refusal require a written reason | `booking-exception-approval`, `decision-route`, Playwright unconfirmed-approve and reason-less-refusal cases |
 | Multi-lodge | A request raised at the second lodge is queued against THAT lodge and its approval creates the booking there, never at the club default | `booking-exception-approval` (the frozen lodge reaches BOTH the capacity recheck and the canonical create), Playwright `e2e/multi-lodge/policy-exception-second-lodge.spec.ts` (present at the second lodge and absent at the default one) |
 
-The remaining gap is not a coverage choice but a missing surface: **there is no
-member-facing exception UI yet.** The request/list/cancel/supersede paths exist
-only as APIs (#2524), so the browser specs drive request creation through the
-public API rather than the wizard, and this suite is about approval semantics
-rather than form mechanics. The member screens and their own browser coverage are
-#2562; `docs/user-guide/booking-a-stay.md` states the position plainly until then.
+**That gap is closed (#2562): the member's own lifecycle is now driven through the
+member's screens.** The two specs above stay as they are — they are about approval
+SEMANTICS and create their requests by API, which was all they could do when no
+member screen existed — and
+`e2e/member-policy-exception-requests.spec.ts` is the journey spec beside them: the
+request is raised, tracked, withdrawn and replaced by clicking. Its required matrix
+is:
+
+| Surface | Required behavior | Automated evidence |
+| --- | --- | --- |
+| The offer rule | ONE shared rule (`readExceptionOffer`) decides whether a refusal may offer the action, for both wizards. It fails closed four ways: an allowlist of reviewable refusal codes that can never contain a hard-stop code, a required non-empty `exceptionReview`, the server's own `exceptionEligible: true` on EVERY violation, and a known aggregate capacity mode; one unrecognised violation disqualifies the whole refusal, and the admin-only `ADULT_MEMBER_HOSTING_CONFIRM_REQUIRED` 409 is deliberately not allowlisted. The two shipped refusal bodies are fed in from their own producers, not from copies of their shape | `booking-exception-offer`, Playwright hard-failure case (a member-night clash offers nothing) |
+| Raise, from BOTH wizards | The action appears on the new-booking review step and under Save on the edit panel, only on a server-classified reviewable refusal, retiring the moment a fresh quote or attempt comes back clean; the payload sent is the SAME one that was refused (the wizard reuses `buildGuestPayload`, the panel narrows the refused modification body to the five proposal fields) | `use-booking-wizard-exception-request`, `edit-booking-panel-exception-request`, Playwright raise-from-wizard and raise-from-edit-panel cases |
+| The exact proposal, twice | Before submission the member's own choices are echoed (lodge, nights, each guest and the stay they picked, guest nights, the price the SERVER quoted or an honest account of how pricing works where the refusal was answered instead of a quote); after submission the proposal the server actually FROZE is rendered from the create response, because the freeze expands the envelope | `request-officer-approval-card`, Playwright receipt assertions |
+| Honest capacity, per path | A new-booking request says no beds are held whatever the policy's mode says; a modification answers from its real reservation rows, which is also correct for a pure shrink; approval can never put the lodge over capacity, and no branch promises a bed | `member-exception-requests` (wording + `capacityHeld` from the ledger), Playwright new-booking and modification wording cases |
+| Mandatory explanation and no-guarantee wording | Submit is refused without a trimmed explanation; the not-approved-yet and discretionary notices are single constants neither wizard can soften | `request-officer-approval-card`, Playwright disabled-submit case |
+| The request area, every state | All seven member-visible states, with `REQUESTED` split so a row with a recorded conflict reads as a capacity wait rather than as undecided; the exact proposal, the member's own message, the officer's member-facing explanation, whether beds are held, and a link to the booking an approval created | `member-exception-requests`, `my-exception-requests`, Playwright pending / superseded / refused / approved / withdrawn assertions |
+| Withdraw and replace | Both offered only while the row is still open, derived from the same condition the services' guarded claims name; replace goes through the existing supersede semantics via the wizard that built the proposal, and a lost supersede claim creates nothing | `my-exception-requests`, `booking-exception-request-service`, Playwright withdraw and replace cases |
+| One open request | A second create is refused 409 `OPEN_EXCEPTION_REQUEST` and the card names replacing the existing one as the remedy | `route` (exception-requests), Playwright duplicate case |
+| The officer-note split | `adminNotes` stays member-visible and is labelled as such in the officer UI before submission; `internalNotes` is admin-only and appears in no member projection, route select, email template or notification; a refusal still requires the member-facing explanation, and the audit records the internal note's EXISTENCE only | `policy-exception-requests-panel-note-split`, `decision-route`, `member-exception-requests` (absent three ways), Playwright refusal case (page HTML and API payload both free of it) |
+| Mobile | The section is readable and its actions reachable at 390x844, and My Bookings does not scroll horizontally | Playwright mobile-viewport case |
+| Ordinary bookings unaffected | A stay that MEETS the minimum still books through to the payment step with no exception step anywhere near it | Playwright regression case |
 
 The #2364 adult-member hosting policy is covered the same way and for the same
 reason: it adds no member journey and no booking-state transition, so there is

@@ -15,6 +15,14 @@ const mocks = vi.hoisted(() => ({
   bcrFindUnique: vi.fn(),
   bookingUpdate: vi.fn(),
   bookingCreate: vi.fn(),
+  // #2562 review: the member request list reads the CREATED booking's own
+  // capacity-holding fields for an approved new-booking row.
+  // Annotated `Promise<unknown[]>` rather than left to inference: an empty-array
+  // default infers `never[]`, and every row a case resolves is then unassignable.
+  bookingFindMany: vi.fn(async (...args: unknown[]): Promise<unknown[]> => {
+    void args;
+    return [];
+  }),
   bookingUpdateMany: vi.fn(),
   // #2525 reservation ledger + advisory-lock raw statements.
   peUpsert: vi.fn(),
@@ -76,6 +84,7 @@ vi.mock("@/lib/prisma", () => {
       updateMany: (...a: unknown[]) => mocks.bookingUpdateMany(...a),
       // #2543 owner arm: a modification proposal reads the live booking's owner.
       findUnique: () => mocks.bookingFindUnique(),
+      findMany: (...a: unknown[]) => mocks.bookingFindMany(...a),
     },
     // #2543 — the D-12 presence derivation resolves the requester's family
     // boundary and, for a modification, reads the live rows' consent status. Both
@@ -159,6 +168,7 @@ import {
   NoEligiblePolicyExceptionError,
   OpenExceptionRequestConflictError,
   PolicyExceptionCapacityUnavailableError,
+  readMemberExceptionRequests,
   readUnifiedExceptionQueue,
   type ExceptionRequestGuestInput,
 } from "@/lib/booking-exception-request-service";
@@ -928,5 +938,159 @@ describe("readUnifiedExceptionQueue (merges both sources)", () => {
     expect(result.data[1]).toMatchObject({ source: "NEW_BOOKING", id: "nb-1", reasonCodes: ["MINIMUM_STAY"] });
     // Modification source filters on kind POLICY_EXCEPTION.
     expect(mocks.bcrFindMany.mock.calls[0][0].where).toMatchObject({ kind: "POLICY_EXCEPTION", status: "REQUESTED" });
+  });
+});
+
+/**
+ * #2562 review — an approved new-booking row must answer from the BOOKING.
+ *
+ * The list used to say "The beds are on the booking this created" for every
+ * approved row. On this path that is a held-beds promise about a booking that holds
+ * nothing: `resolveNewBookingExecutionParams` passes
+ * `calculateBookingHoldDecision`'s status, which is only ever PENDING or
+ * PAYMENT_PENDING, and the create sets no `originBookingRequest` and no
+ * `adminCapacityHoldAt` — so `bookingHoldsCapacity` is false and another member can
+ * still take those nights. It becomes true when the member pays, which is why the
+ * answer has to be read off the booking rather than derived from the approval.
+ */
+describe("readMemberExceptionRequests — the created booking's capacity answer", () => {
+  const APPROVED_ROW = {
+    id: "req-1",
+    status: "APPROVED" as const,
+    createdAt: new Date("2026-07-01T10:00:00.000Z"),
+    reviewedAt: new Date("2026-07-02T10:00:00.000Z"),
+    proposalSnapshot: {
+      kind: "NEW_BOOKING",
+      lodgeId: "lodge-1",
+      proposed: { checkIn: "2026-08-14", checkOut: "2026-08-15", guests: [] },
+    },
+    frozenEvidence: { violations: [] },
+    memberMessage: "Driving up after work.",
+    adminNotes: "Allowed as a one-off.",
+    lastConflictReason: null,
+    lastConflictAt: null,
+    createdBookingId: "bk-new",
+    supersededByRequestId: null,
+    aggregateCapacityMode: "NO_HOLD" as const,
+  };
+
+  beforeEach(() => {
+    mocks.nbFindMany.mockResolvedValue([APPROVED_ROW]);
+    mocks.bcrFindMany.mockResolvedValue([]);
+  });
+
+  it("reads the booking's own status and reports it as not holding while unpaid", async () => {
+    mocks.bookingFindMany.mockResolvedValue([
+      {
+        id: "bk-new",
+        status: "PAYMENT_PENDING",
+        adminCapacityHoldAt: null,
+        originBookingRequest: null,
+      },
+    ]);
+
+    const items = await readMemberExceptionRequests("member-1");
+    expect(items).toHaveLength(1);
+    expect(items[0].createdBookingHoldsCapacity).toBe(false);
+    // And only the approved row's booking is looked up.
+    expect(mocks.bookingFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: { in: ["bk-new"] } } }),
+    );
+  });
+
+  it("reports the same row as holding once the booking is paid", async () => {
+    mocks.bookingFindMany.mockResolvedValue([
+      {
+        id: "bk-new",
+        status: "PAID",
+        adminCapacityHoldAt: null,
+        originBookingRequest: null,
+      },
+    ]);
+
+    const items = await readMemberExceptionRequests("member-1");
+    expect(items[0].createdBookingHoldsCapacity).toBe(true);
+  });
+
+  it("answers null when the booking cannot be read, rather than guessing", async () => {
+    mocks.bookingFindMany.mockResolvedValue([]);
+    const items = await readMemberExceptionRequests("member-1");
+    expect(items[0].createdBookingHoldsCapacity).toBeNull();
+  });
+
+  it("makes no booking query at all when nothing was approved", async () => {
+    // The row deliberately CARRIES a booking id while still REQUESTED. Only an
+    // approval means the booking is the member's, so a filter that keyed on the id
+    // alone would look up (and describe) a booking behind an undecided request.
+    mocks.nbFindMany.mockResolvedValue([
+      { ...APPROVED_ROW, status: "REQUESTED", createdBookingId: "bk-new" },
+    ]);
+    const items = await readMemberExceptionRequests("member-1");
+    expect(items[0].createdBookingHoldsCapacity).toBeNull();
+    expect(mocks.bookingFindMany).not.toHaveBeenCalled();
+  });
+
+  /**
+   * #2562 re-review — the second fact about the same booking.
+   *
+   * `createdBookingHoldsCapacity` is false for every non-holding status, cancelled
+   * and reaped included, and the row's wording read false as "unpaid" — so a member
+   * whose booking had been cancelled was told to open it and pay it before the nights
+   * went to somebody else. The payable state is read from the same row.
+   */
+  it("separates an unpaid created booking from one that is no longer live", async () => {
+    mocks.bookingFindMany.mockResolvedValue([
+      {
+        id: "bk-new",
+        status: "PENDING",
+        adminCapacityHoldAt: null,
+        originBookingRequest: null,
+      },
+    ]);
+    let items = await readMemberExceptionRequests("member-1");
+    expect(items[0].createdBookingHoldsCapacity).toBe(false);
+    expect(items[0].createdBookingAwaitsPayment).toBe(true);
+
+    mocks.bookingFindMany.mockResolvedValue([
+      {
+        id: "bk-new",
+        status: "CANCELLED",
+        adminCapacityHoldAt: null,
+        originBookingRequest: null,
+      },
+    ]);
+    items = await readMemberExceptionRequests("member-1");
+    expect(items[0].createdBookingHoldsCapacity).toBe(false);
+    expect(items[0].createdBookingAwaitsPayment).toBe(false);
+
+    // A booking that was bumped is equally over.
+    mocks.bookingFindMany.mockResolvedValue([
+      {
+        id: "bk-new",
+        status: "BUMPED",
+        adminCapacityHoldAt: null,
+        originBookingRequest: null,
+      },
+    ]);
+    items = await readMemberExceptionRequests("member-1");
+    expect(items[0].createdBookingAwaitsPayment).toBe(false);
+  });
+
+  it("answers null for the payable state when the booking cannot be read", async () => {
+    mocks.bookingFindMany.mockResolvedValue([]);
+    const items = await readMemberExceptionRequests("member-1");
+    expect(items[0].createdBookingAwaitsPayment).toBeNull();
+  });
+
+  it("never selects the officer's internal note on this path", async () => {
+    mocks.bookingFindMany.mockResolvedValue([]);
+    await readMemberExceptionRequests("member-1");
+    for (const call of [
+      mocks.nbFindMany.mock.calls[0][0],
+      mocks.bcrFindMany.mock.calls[0][0],
+    ] as Array<{ select?: Record<string, unknown> }>) {
+      expect(call.select).toBeDefined();
+      expect(call.select).not.toHaveProperty("internalNotes");
+    }
   });
 });

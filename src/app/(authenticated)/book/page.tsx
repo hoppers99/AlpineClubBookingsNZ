@@ -106,6 +106,9 @@ export default function BookPage() {
     handleSubmit,
     handleJoinWaitlist,
     handleSaveAsDraft,
+    exceptionOffer,
+    replaceExceptionRequestId,
+    submitExceptionRequest,
     getGuestProfileBlockMessage,
     getGuestProfileActionLabel,
     nights,
@@ -610,6 +613,9 @@ export default function BookPage() {
           submitting={submitting}
           savingDraft={savingDraft}
           memberGuestPendingHoldExpiryDays={memberGuestConfig.pendingHoldExpiryDays}
+          exceptionOffer={exceptionOffer}
+          replaceExceptionRequestId={replaceExceptionRequestId}
+          submitExceptionRequest={submitExceptionRequest}
         />
       )}
 

@@ -199,32 +199,96 @@ Two club rules can be waived, one booking at a time, by a Booking Officer: a
 **minimum stay**, and the requirement that an **adult member is present** for
 non-member guests. When one of those stops you, the wizard and the edit screen
 explain which rule it is and which nights it affects, rather than giving you a
-bare refusal.
+bare refusal — and offer you a **Request Booking Officer approval** step.
 
-**Asking is not yet something you can do yourself.** The request, and the officer
-queue that decides it, are built and working — but there is no button on your side
-of the screen yet, so for now **contact the club** and they will raise the request
-for you. The self-service **Request admin approval** step is still to come; until
-it does, treat the rest of this section as what happens once a request exists.
+You can do the whole thing yourself, without phoning the club.
 
-While you wait:
+#### Asking
+
+The step appears in two places, and only when the rule that stopped you is one an
+officer can actually waive:
+
+- on the **booking wizard**, when you confirm a stay the club's rules do not
+  allow; and
+- on the **edit screen** of a booking you already have, when a change you try to
+  save is stopped the same way.
+
+It never appears for something nobody can waive — a **full** lodge, dates in the
+past, a night you are already booked on, a guest you do not have authority over, or
+a missing consent. Those need a different fix, and the screen says what it is.
+
+Before you send it you see exactly what a Booking Officer will decide: the lodge,
+the nights, every guest and the nights they are down for, the guest nights that
+adds up to, the price for it, and the rule (or rules) you are asking to be let
+past. **Say why you are asking** — that is required, and it is what the officer
+reads first. The screen also states two things plainly, because both are true:
+sending a request books nothing and confirms nothing, and Booking Officers allow
+exceptions **at their discretion**, so there is no guarantee.
+
+#### While you wait
 
 - **Nothing is booked and nothing is charged.** If the request is on an existing
   booking, that booking is untouched until an officer says yes.
-- Depending on how the club has set the rule up, your request may **hold the
-  beds** it needs while it waits, or it may not. A request for a booking you have
-  not made yet never holds beds. If nothing is held, the lodge can fill up before
-  a decision — the officer will tell you if that happens, and your request stays
-  open in case space frees up.
-- A request can be **withdrawn**, or replaced with a different proposal, at any
-  time before it is decided. Ask the club to do it for you.
+- **Beds.** A request for a booking you have not made yet **never holds beds** —
+  availability is checked again when an officer reviews it, and a full lodge means
+  it cannot be approved. A request to change an existing booking holds only the
+  *extra* beds the change needs, and only if the club set the rule up that way; the
+  screen tells you which of those applies to your own request rather than making a
+  general promise. Approval can never put the lodge over capacity, and approval is
+  not itself a reservation: the booking an approval creates holds no beds until you
+  pay it.
+- If nothing is held, the lodge can fill up before a decision. Your request then
+  says **"Waiting — the lodge was full"** rather than sitting silently: an officer
+  has looked, there was no room, and it stays open in case space frees up.
+
+#### Tracking, withdrawing and replacing
+
+**My Bookings** carries a **My booking-rule requests** section listing every
+request you have raised — with the exact proposal, what you told the officer, what
+the officer told you, whether any beds are held, and a link to the booking once an
+approval has created one. Each one reads as one of:
+
+| It says | It means |
+| --- | --- |
+| With the Booking Officer | Sent, nobody has decided yet |
+| Waiting — the lodge was full | An officer tried to apply it and there was no room |
+| Approved and booked | Approved *and* applied — there is a real booking behind it |
+| Not approved | An officer decided against it, with their reason |
+| Withdrawn by you | You closed it; nothing was booked or changed |
+| Replaced by a newer request | You sent a corrected version instead |
+| Lapsed | Nobody decided it before its hold ran out; you can ask again |
+
+While a request is still open you can **Withdraw** it, or **Replace it with a
+corrected request**. A request cannot be edited once it is sent — a Booking Officer
+decides the exact proposal you submitted, so changing the dates, the guests or
+anything else material means replacing it. Replace takes you back to the screen
+that built it, and the old request is closed as replaced when the new one is sent.
+
+Use **Replace** whenever you are switching an existing ask to different dates or a
+different party. Sending a fresh request from the wizard instead does *not* close
+the old one: the club caps you at one open request per identical proposal (new
+bookings) and one per booking (changes), so two different date ranges are two live
+requests, and an officer can approve them independently. That is two bookings, or a
+new booking plus a change, and both are yours to pay for. If you already have one
+open and just want to move it, replace it.
+
+#### When it is decided
 
 When an officer approves, the thing you asked for happens straight away: the
 booking is created, or the change is applied. If it was a new booking, you get an
 email telling you it was approved and what is left to pay — pay it from your
-account, because the beds are not held until you do. If it was a change to a
-booking you already had, you get the usual "your booking was changed" email. Either
-way the officer's note comes with the decision, whether they said yes or no.
+account, because the beds are not held until you do. Your request row says the same
+thing: it reads "not holding any beds yet" until the payment lands, and then changes
+to "holding its beds". If that booking is later cancelled, or lapses because it was
+never paid, the row says it is no longer live and stops telling you to pay it. If it
+was a change to a booking you already had, you get the
+usual "your booking was changed" email and the row says the change has been applied.
+
+If a Booking Officer says no, you get an email too: their reason, the nights it was
+about, and confirmation that nothing was booked and any beds the request was holding
+have gone back into the pool. You can then ask again with different dates or a
+different party. Either way the officer's explanation is on your request in
+**My booking-rule requests** as well as in the email.
 
 ## Troubleshooting
 
@@ -233,7 +297,7 @@ way the officer's note comes with the decision, whether they said yes or no.
 | The nights you want are greyed out or "Full" | No beds free on those nights | Pick other nights, or join the [waitlist](waitlist-and-offers.md) |
 | You are quoted the non-member rate | Your membership subscription is not paid up | Check your [subscription status](your-account.md#account-information); pay it, then re-quote |
 | "You already have a booking for these nights" | A member cannot double-book the same night | Open the existing booking from **My Bookings** and [change it](changing-or-cancelling-a-booking.md) instead |
-| The stay is blocked by a minimum-stay rule | That period has a minimum number of nights | Extend your stay to meet the minimum |
+| The stay is blocked by a minimum-stay rule | That period has a minimum number of nights | Extend your stay to meet the minimum, or use **Request Booking Officer approval** to ask to be let past it (see [above](#asking-to-be-let-past-a-booking-rule)) |
 | You paid but the booking still says "Payment required" | The card step was closed before payment finished | Open the booking and use its **Complete Payment** card |
 | Your non-member guests show as provisional | Your club runs the *Members First* policy (a name you never see in the wizard) and a hold applies to your stay | This is expected — their bed is charged/confirmed around the hold deadline; see [Paying](paying-for-your-stay.md#split-charges-for-non-member-guests) |
 

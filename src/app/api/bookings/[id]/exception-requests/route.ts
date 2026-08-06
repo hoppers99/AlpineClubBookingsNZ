@@ -5,7 +5,7 @@ import { auth } from "@/lib/auth";
 import { logAudit } from "@/lib/audit";
 import { prisma } from "@/lib/prisma";
 import { getDefaultLodgeId } from "@/lib/lodges";
-import { normalizeDateOnlyForTimeZone } from "@/lib/date-only";
+import { isDateOnlyString, normalizeDateOnlyForTimeZone } from "@/lib/date-only";
 import { requireActiveSessionUser } from "@/lib/session-guards";
 import { checkRateLimit, getClientIp, rateLimiters } from "@/lib/rate-limit";
 import { sendAdminBookingChangeRequestAlert } from "@/lib/email";
@@ -22,6 +22,21 @@ import {
 } from "@/lib/booking-exception-request-service";
 import { mapExceptionRequestError } from "@/lib/booking-exception-request-http";
 
+/**
+ * A guest's explicit night set (#713), mirroring `/modify`'s own field.
+ *
+ * REQUIRED here, not a nicety (#2562 review). The edit panel's grid mode sends
+ * `guestStayRanges: [{ guestId, nights }]` and `addGuests: [{ ..., nights }]`, and
+ * zod STRIPS unknown keys — so without this field every entry arrived carrying no
+ * range at all, the shared resolver's global range-input mode went false, and the
+ * frozen proposal was either the whole envelope for every guest (when the dates
+ * moved) or byte-identical to the live booking (when they did not). Both are
+ * proposals the member never made.
+ */
+const nightList = z
+  .array(z.string().refine(isDateOnlyString, { message: "Night must be YYYY-MM-DD" }))
+  .max(370);
+
 const createSchema = z.object({
   checkIn: z.string().optional(),
   checkOut: z.string().optional(),
@@ -35,6 +50,7 @@ const createSchema = z.object({
         memberId: z.string().trim().min(1).optional(),
         stayStart: z.string().optional(),
         stayEnd: z.string().optional(),
+        nights: nightList.optional(),
       }),
     )
     .max(200)
@@ -46,6 +62,7 @@ const createSchema = z.object({
         guestId: z.string().trim().min(1),
         stayStart: z.string().optional(),
         stayEnd: z.string().optional(),
+        nights: nightList.optional(),
       }),
     )
     .max(200)

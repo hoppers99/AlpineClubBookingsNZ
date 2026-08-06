@@ -357,8 +357,20 @@ export interface PolicyExceptionApprovalContext {
   actorMemberId: string;
   /** Recorded on the canonical services' audit rows. */
   ipAddress: string;
-  /** The officer's decision note, if they left one. */
+  /**
+   * The officer's MEMBER-FACING decision explanation, if they left one (#2562).
+   * Persisted to `adminNotes` and interpolated into the approval email, both of
+   * which the member reads — the officer UI says so before they submit it.
+   */
   adminNotes?: string | null;
+  /**
+   * The officer's PRIVATE note, if they left one (#2562). Persisted to
+   * `internalNotes` and read ONLY by admin-guarded surfaces. Deliberately NOT
+   * passed to any email template, notification or member projection: the member
+   * DTO has no field for it, and the approval email below composes its optional
+   * line from `adminNotes` alone.
+   */
+  internalNotes?: string | null;
   /**
    * How a refund arising from the executed modification is settled (card refund
    * or account credit). Not part of the reviewed proposal — the proposal decides
@@ -683,12 +695,19 @@ async function executeApprovedModification(args: {
     );
   }
 
-  // Persist the officer's note on the decided request, in the same transaction.
+  // Persist the officer's notes on the decided request, in the same transaction.
+  // Two separate columns (#2562): the member-facing explanation and the private
+  // note, each written only when the officer actually left one, so an approval
+  // with no note does not blank a note a previous write recorded.
   const notes = context.adminNotes?.trim();
-  if (notes) {
+  const internal = context.internalNotes?.trim();
+  if (notes || internal) {
     await tx.bookingChangeRequest.updateMany({
       where: { id: request.id },
-      data: { adminNotes: notes.slice(0, 2000) },
+      data: {
+        ...(notes ? { adminNotes: notes.slice(0, 2000) } : {}),
+        ...(internal ? { internalNotes: internal.slice(0, 2000) } : {}),
+      },
     });
   }
 
@@ -836,6 +855,11 @@ async function executeApprovedNewBooking(args: {
       createdBookingId: created.booking.id,
       ...(context.adminNotes?.trim()
         ? { adminNotes: context.adminNotes.trim().slice(0, 2000) }
+        : {}),
+      // #2562: the private half, stored beside the member-facing half. It reaches
+      // no email, no notification and no member projection.
+      ...(context.internalNotes?.trim()
+        ? { internalNotes: context.internalNotes.trim().slice(0, 2000) }
         : {}),
     },
   });

@@ -173,7 +173,16 @@ export interface PolicyExceptionRequestStore {
       to: PolicyExceptionTerminalStatus;
       actorMemberId?: string;
       supersededByRequestId?: string;
+      /**
+       * The officer's MEMBER-FACING decision explanation (#2562). Written to
+       * `adminNotes`, which the member reads on their own request list.
+       */
       adminNotes?: string;
+      /**
+       * The officer's PRIVATE note (#2562). Written to `internalNotes`, which no
+       * member-facing projection, route select, email or notification names.
+       */
+      internalNotes?: string;
     },
   ): Promise<number>;
   /** Release the provisional reservation; returns rows deleted. */
@@ -272,7 +281,15 @@ export const modificationExceptionRequestStore: PolicyExceptionRequestStore = {
 
   async claimTerminal(
     tx,
-    { requestId, expectedVersion, to, actorMemberId, supersededByRequestId, adminNotes },
+    {
+      requestId,
+      expectedVersion,
+      to,
+      actorMemberId,
+      supersededByRequestId,
+      adminNotes,
+      internalNotes,
+    },
   ) {
     const now = new Date();
     const claim = await tx.bookingChangeRequest.updateMany({
@@ -297,6 +314,11 @@ export const modificationExceptionRequestStore: PolicyExceptionRequestStore = {
           ? { supersededByRequestId }
           : {}),
         ...(adminNotes !== undefined ? { adminNotes: adminNotes || null } : {}),
+        // #2562: the private half of the decision, stored beside the member-facing
+        // half and never rendered with it.
+        ...(internalNotes !== undefined
+          ? { internalNotes: internalNotes || null }
+          : {}),
       },
     });
     return claim.count;
@@ -388,7 +410,15 @@ export const newBookingExceptionRequestStore: PolicyExceptionRequestStore = {
 
   async claimTerminal(
     tx,
-    { requestId, expectedVersion, to, actorMemberId, supersededByRequestId, adminNotes },
+    {
+      requestId,
+      expectedVersion,
+      to,
+      actorMemberId,
+      supersededByRequestId,
+      adminNotes,
+      internalNotes,
+    },
   ) {
     const now = new Date();
     const claim = await tx.newBookingPolicyExceptionRequest.updateMany({
@@ -405,6 +435,11 @@ export const newBookingExceptionRequestStore: PolicyExceptionRequestStore = {
           ? { supersededByRequestId }
           : {}),
         ...(adminNotes !== undefined ? { adminNotes: adminNotes || null } : {}),
+        // #2562: the private half of the decision, stored beside the member-facing
+        // half and never rendered with it.
+        ...(internalNotes !== undefined
+          ? { internalNotes: internalNotes || null }
+          : {}),
       },
     });
     return claim.count;
@@ -921,7 +956,10 @@ export async function resolvePolicyExceptionRequestTerminal(params: {
   to: PolicyExceptionTerminalStatus;
   actorMemberId?: string;
   supersededByRequestId?: string;
+  /** The officer's MEMBER-FACING decision explanation (#2562). */
   adminNotes?: string;
+  /** The officer's PRIVATE note (#2562); never reaches a member surface. */
+  internalNotes?: string;
   /** Which table the request lives in (#2526). Defaults to MODIFICATION. */
   store?: PolicyExceptionRequestStore;
   db?: ApprovalDb;
@@ -934,6 +972,7 @@ export async function resolvePolicyExceptionRequestTerminal(params: {
     actorMemberId,
     supersededByRequestId,
     adminNotes,
+    internalNotes,
   } = params;
   const store = params.store ?? modificationExceptionRequestStore;
 
@@ -960,6 +999,7 @@ export async function resolvePolicyExceptionRequestTerminal(params: {
       actorMemberId,
       supersededByRequestId,
       adminNotes,
+      internalNotes,
     });
     if (claim !== 1) return { claimed: false, released: 0 };
 

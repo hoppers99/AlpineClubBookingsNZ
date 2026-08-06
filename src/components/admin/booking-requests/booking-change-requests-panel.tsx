@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
@@ -53,7 +53,14 @@ interface BookingChangeRequestData {
     } | null;
   };
   reason: string | null;
+  /**
+   * MEMBER-VISIBLE (#2562). Rendered to the member verbatim on their booking page
+   * under "Change Requests", so the field below is labelled for that audience
+   * before a decision is submitted.
+   */
   adminNotes: string | null;
+  /** The officer's PRIVATE note (#2562) — admin surfaces only, never the member. */
+  internalNotes: string | null;
   reviewedAt: string | null;
   createdAt: string;
   requestedBy: {
@@ -119,6 +126,35 @@ interface BookingChangeRequestsPanelProps {
   canEdit?: boolean;
 }
 
+/**
+ * One request's un-submitted decision, as the officer has typed it so far.
+ *
+ * A DRAFT PER REQUEST, keyed by request id, and that is the whole design (#2562
+ * review). The three fields used to share one state slot with a `reviewingId`
+ * marker naming their owner, and every field's onChange moved the marker — so a
+ * keystroke in the internal note or the modification id on one row claimed
+ * ownership of the OTHER row's half-written member-facing explanation: the second
+ * card displayed it, its decision buttons unlocked on it, and submitting posted
+ * one member a sentence written about somebody else's request. On this table
+ * `adminNotes` is read verbatim by the member on their own booking page, so that
+ * was a privacy failure, not a cosmetic one. Keyed state makes the row-isolation
+ * invariant structural: there is no shared slot left for a draft to leak through,
+ * whichever field is typed in and in whatever order.
+ */
+interface DecisionDraft {
+  /** The MEMBER-FACING decision explanation (`adminNotes`). */
+  adminNotes: string;
+  /** The officer's PRIVATE note. Never shown to the member. */
+  internalNotes: string;
+  linkedModificationId: string;
+}
+
+const EMPTY_DECISION_DRAFT: DecisionDraft = {
+  adminNotes: "",
+  internalNotes: "",
+  linkedModificationId: "",
+};
+
 const EMPTY_SEARCH_PARAMS: Record<string, string> = {};
 
 function buildBookingChangeRequestsPath(
@@ -155,9 +191,47 @@ export function BookingChangeRequestsPanel({
     isRequestFilter(initialFilter) ? initialFilter : defaultFilter
   );
   const [loading, setLoading] = useState(true);
-  const [reviewingId, setReviewingId] = useState<string | null>(null);
-  const [adminNotes, setAdminNotes] = useState("");
-  const [linkedModificationIdInput, setLinkedModificationIdInput] = useState("");
+  /**
+   * Every open decision draft, keyed by the request it belongs to.
+   *
+   * One entry per row the officer has typed into, so a row's fields, the guard on
+   * its buttons and the body it submits all read the SAME object and no row can
+   * read another's (#2562 review — see `DecisionDraft`). A row nobody has typed
+   * into has no entry, which is exactly the empty draft its buttons stay disabled
+   * on.
+   */
+  const [decisionDrafts, setDecisionDrafts] = useState<
+    Record<string, DecisionDraft>
+  >({});
+  /**
+   * The ref is the synchronous claim; the state is only its rendered mirror.
+   * React can batch two clicks before a disabled prop commits, so state alone lets
+   * both handlers PATCH the same request (#2562). A Set keeps other rows usable.
+   */
+  const decisionInFlightRef = useRef(new Set<string>());
+  const [decisionInFlight, setDecisionInFlight] = useState<Set<string>>(
+    () => new Set(),
+  );
+  /** This row's draft as typed, or the empty one. Never another row's. */
+  function decisionDraftFor(id: string): DecisionDraft {
+    return decisionDrafts[id] ?? EMPTY_DECISION_DRAFT;
+  }
+  /** Patch one field of one row's draft, leaving every other row untouched. */
+  function updateDecisionDraft(id: string, patch: Partial<DecisionDraft>) {
+    setDecisionDrafts((current) => ({
+      ...current,
+      [id]: { ...(current[id] ?? EMPTY_DECISION_DRAFT), ...patch },
+    }));
+  }
+  /** Drop one row's draft — used on a SUCCESSFUL decision, and only then. */
+  function clearDecisionDraft(id: string) {
+    setDecisionDrafts((current) => {
+      if (!(id in current)) return current;
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
+  }
   const [error, setError] = useState("");
   const currentPath = buildBookingChangeRequestsPath(
     basePath,
@@ -198,17 +272,27 @@ export function BookingChangeRequestsPanel({
     request: BookingChangeRequestData,
     status: "APPROVED" | "REJECTED"
   ) {
-    setReviewingId(request.id);
+    if (decisionInFlightRef.current.has(request.id)) return;
+    decisionInFlightRef.current.add(request.id);
+    setDecisionInFlight((current) => new Set(current).add(request.id));
+
+    // This row's own draft, and nothing else (#2562 review): another row's
+    // half-written note is not this member's. Trimmed here so the stored draft
+    // keeps the officer's own spacing while the wire body carries neither.
+    const draft = decisionDraftFor(request.id);
     setError("");
 
     try {
-      const trimmedModificationId = linkedModificationIdInput.trim();
+      const trimmedAdminNotes = draft.adminNotes.trim();
+      const trimmedInternalNotes = draft.internalNotes.trim();
+      const trimmedModificationId = draft.linkedModificationId.trim();
       const response = await fetch(`/api/admin/booking-change-requests/${request.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           status,
-          adminNotes: adminNotes || undefined,
+          adminNotes: trimmedAdminNotes || undefined,
+          internalNotes: trimmedInternalNotes || undefined,
           linkedModificationId:
             status === "APPROVED" && trimmedModificationId
               ? trimmedModificationId
@@ -220,8 +304,12 @@ export function BookingChangeRequestsPanel({
         throw new Error(data.error || "Failed to review request");
       }
 
-      setAdminNotes("");
-      setLinkedModificationIdInput("");
+      // Cleared only on SUCCESS, and only THIS row's draft. A failed decision
+      // keeps it (#2562 review) so the officer's typed note stays on screen and
+      // can be resubmitted, instead of vanishing from the field while surviving
+      // in state; and a draft the officer has open on another row is none of this
+      // decision's business.
+      clearDecisionDraft(request.id);
       toast.success(
         status === "APPROVED"
           ? trimmedModificationId
@@ -233,7 +321,12 @@ export function BookingChangeRequestsPanel({
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to review request");
     } finally {
-      setReviewingId(null);
+      decisionInFlightRef.current.delete(request.id);
+      setDecisionInFlight((current) => {
+        const next = new Set(current);
+        next.delete(request.id);
+        return next;
+      });
     }
   }
 
@@ -408,18 +501,62 @@ export function BookingChangeRequestsPanel({
                         asked for guest changes), paste the booking modification
                         id below to link the audit trail.
                       </p>
+                      {/* #2562 — the note SPLIT, and the labelling that makes it
+                          safe, on the locked-period half of this table too. The
+                          box used to be headed only "Admin notes" while writing
+                          the same MEMBER-VISIBLE column the member reads verbatim
+                          on their booking page, so an officer recording a
+                          judgement about the member had no honest option and no
+                          warning. Both fields are drawn together, each saying
+                          plainly who reads it, BEFORE the decision is submitted.
+                          The invariant is table-wide (DOMAIN_INVARIANTS §
+                          adminNotes), and this is the surface whose old label most
+                          invited the mistake. */}
                       <div className="space-y-1">
-                        <Label htmlFor={`admin-notes-${request.id}`}>Admin notes</Label>
+                        <Label htmlFor={`admin-notes-${request.id}`}>
+                          Explanation for the member (required)
+                        </Label>
+                        <p className="text-xs font-semibold text-warning-11">
+                          The member will see this. It is shown to them on their own
+                          booking page under &ldquo;Change Requests&rdquo;. Neither
+                          decision can be sent without it.
+                        </p>
                         <Textarea
                           id={`admin-notes-${request.id}`}
-                          value={reviewingId === request.id ? adminNotes : ""}
+                          value={decisionDraftFor(request.id).adminNotes}
                           disabled={!canEdit}
                           title={canEdit === false ? ADMIN_VIEW_ONLY_ACTION_REASON : undefined}
-                          onChange={(event) => {
-                            setReviewingId(request.id);
-                            setAdminNotes(event.target.value);
-                          }}
+                          onChange={(event) =>
+                            updateDecisionDraft(request.id, {
+                              adminNotes: event.target.value,
+                            })
+                          }
                           maxLength={2000}
+                          placeholder="What you decided and why, written for the member."
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label htmlFor={`internal-notes-${request.id}`}>
+                          Internal note (optional)
+                        </Label>
+                        <p className="text-xs text-muted-foreground">
+                          Only admins see this. It is never shown to the member,
+                          never emailed to them, and never sent to any member-facing
+                          screen — put anything here that you would not say to their
+                          face.
+                        </p>
+                        <Textarea
+                          id={`internal-notes-${request.id}`}
+                          value={decisionDraftFor(request.id).internalNotes}
+                          disabled={!canEdit}
+                          title={canEdit === false ? ADMIN_VIEW_ONLY_ACTION_REASON : undefined}
+                          onChange={(event) =>
+                            updateDecisionDraft(request.id, {
+                              internalNotes: event.target.value,
+                            })
+                          }
+                          maxLength={2000}
+                          placeholder="Context for the next officer. The member never reads this."
                         />
                       </div>
                       <div className="space-y-1">
@@ -428,27 +565,41 @@ export function BookingChangeRequestsPanel({
                         </Label>
                         <Input
                           id={`linked-modification-${request.id}`}
-                          value={
-                            reviewingId === request.id
-                              ? linkedModificationIdInput
-                              : ""
-                          }
+                          value={decisionDraftFor(request.id).linkedModificationId}
                           disabled={!canEdit}
                           title={canEdit === false ? ADMIN_VIEW_ONLY_ACTION_REASON : undefined}
-                          onChange={(event) => {
-                            setReviewingId(request.id);
-                            setLinkedModificationIdInput(event.target.value);
-                          }}
+                          onChange={(event) =>
+                            updateDecisionDraft(request.id, {
+                              linkedModificationId: event.target.value,
+                            })
+                          }
                           placeholder="Paste the BookingModification id from the booking audit"
                         />
                       </div>
+                      {/* Gated on THIS row's own draft (#2562 review). The original
+                          rule was `reviewingId === request.id && !adminNotes.trim()`,
+                          which enabled both buttons on every row the officer had
+                          not typed into — so a decision could be sent with no
+                          member-facing explanation at all. The shared-slot repair
+                          then left a narrower version of the same hole: typing an
+                          internal note on this row moved the ownership marker while
+                          the ANOTHER row's explanation was still in the shared slot,
+                          so this row's buttons unlocked on somebody else's sentence.
+                          The draft is now keyed by request id, so a decision needs
+                          this request's own explanation and can carry nothing but
+                          this request's own draft — which is what makes the
+                          table-wide invariant in DOMAIN_INVARIANTS true rather than
+                          aspirational. */}
                       <div className="flex flex-wrap gap-2">
                         <ViewOnlyActionButton
                           canEdit={canEdit}
                           describeReason={false}
                           size="sm"
                           onClick={() => reviewRequest(request, "APPROVED")}
-                          disabled={reviewingId === request.id && !adminNotes.trim()}
+                          disabled={
+                            decisionInFlight.has(request.id) ||
+                            !decisionDraftFor(request.id).adminNotes.trim()
+                          }
                         >
                           Acknowledge as approved
                         </ViewOnlyActionButton>
@@ -458,7 +609,10 @@ export function BookingChangeRequestsPanel({
                           size="sm"
                           variant="outline"
                           onClick={() => reviewRequest(request, "REJECTED")}
-                          disabled={reviewingId === request.id && !adminNotes.trim()}
+                          disabled={
+                            decisionInFlight.has(request.id) ||
+                            !decisionDraftFor(request.id).adminNotes.trim()
+                          }
                         >
                           Reject
                         </ViewOnlyActionButton>
@@ -471,8 +625,29 @@ export function BookingChangeRequestsPanel({
                       {request.reviewedBy
                         ? ` by ${request.reviewedBy.firstName} ${request.reviewedBy.lastName}`
                         : ""}
+                      {/* #2562: after the decision the two notes stay visually
+                          separated and labelled, so an officer reading a
+                          colleague's decision knows which half the member has
+                          already read. */}
                       {request.adminNotes ? (
-                        <p className="mt-2 text-muted-foreground">{request.adminNotes}</p>
+                        <div className="mt-2 rounded-md border border-border bg-background p-2">
+                          <p className="text-xs font-semibold text-foreground">
+                            Explanation the member can see
+                          </p>
+                          <p className="mt-1 whitespace-pre-wrap">
+                            {request.adminNotes}
+                          </p>
+                        </div>
+                      ) : null}
+                      {request.internalNotes ? (
+                        <div className="mt-2 rounded-md border border-dashed border-border bg-background p-2">
+                          <p className="text-xs font-semibold text-foreground">
+                            Internal note — admins only, never shown to the member
+                          </p>
+                          <p className="mt-1 whitespace-pre-wrap">
+                            {request.internalNotes}
+                          </p>
+                        </div>
                       ) : null}
                       {request.linkedModification ? (
                         <p className="mt-2 text-muted-foreground">
