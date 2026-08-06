@@ -51,6 +51,7 @@ const {
     lodge: {
       findFirst: vi.fn(),
     },
+    $executeRaw: vi.fn(),
     $transaction: vi.fn(),
   },
   mockAuth: vi.fn(),
@@ -102,6 +103,7 @@ describe("Phase 8: Hut Leader & Kiosk Improvements", () => {
     });
     mockSendHutLeaderAssignmentEmail.mockResolvedValue(undefined);
     mockPrisma.auditLog.create.mockResolvedValue({});
+    mockPrisma.choreAssignment.findMany.mockResolvedValue([]);
     mockPrisma.choreAssignment.deleteMany.mockResolvedValue({ count: 0 });
     mockPrisma.memberLodgeAccess.findMany.mockResolvedValue([]);
     mockPrisma.lodge.findFirst.mockResolvedValue({ id: "default-lodge" });

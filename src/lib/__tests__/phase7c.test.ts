@@ -539,6 +539,10 @@ describe("F9: PUT /api/lodge/guests/[date]/depart", () => {
         choreTemplate: { lodgeId: "default-lodge" },
       },
     });
+    expect(mockPrisma.$executeRaw).toHaveBeenCalledTimes(2);
+    expect(mockPrisma.$executeRaw.mock.invocationCallOrder.at(-1)!).toBeLessThan(
+      mockPrisma.bookingGuest.update.mock.invocationCallOrder[0],
+    );
   });
 
   it("clears departedAt when guest already departed (toggle off)", async () => {

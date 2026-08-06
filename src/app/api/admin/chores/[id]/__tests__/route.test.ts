@@ -9,8 +9,18 @@ vi.mock("@/lib/session-guards", () => ({
 const mockFindUnique = vi.fn();
 const mockUpdate = vi.fn();
 const mockDelete = vi.fn();
+const mockExecuteRaw = vi.fn();
+const mockTransaction = vi.fn(async (callback: (tx: unknown) => unknown) => callback({
+  $executeRaw: mockExecuteRaw,
+  choreTemplate: {
+    findUnique: (...a: unknown[]) => mockFindUnique(...a),
+    update: (...a: unknown[]) => mockUpdate(...a),
+    delete: (...a: unknown[]) => mockDelete(...a),
+  },
+}));
 vi.mock("@/lib/prisma", () => ({
   prisma: {
+    $transaction: (callback: (tx: unknown) => unknown) => mockTransaction(callback),
     choreTemplate: {
       findUnique: (...a: unknown[]) => mockFindUnique(...a),
       update: (...a: unknown[]) => mockUpdate(...a),
@@ -82,6 +92,8 @@ describe("PUT /api/admin/chores/[id] (#1988 audit coverage)", () => {
         }),
       }),
     );
+    expect(mockExecuteRaw).toHaveBeenCalledTimes(1);
+    expect(mockExecuteRaw.mock.invocationCallOrder[0]).toBeLessThan(mockUpdate.mock.invocationCallOrder[0]);
   });
 
   it("404s and does not audit when the chore is missing", async () => {
@@ -126,6 +138,8 @@ describe("DELETE /api/admin/chores/[id] (#1988 audit coverage)", () => {
         category: "admin",
       }),
     );
+    expect(mockExecuteRaw).toHaveBeenCalledTimes(1);
+    expect(mockExecuteRaw.mock.invocationCallOrder[0]).toBeLessThan(mockDelete.mock.invocationCallOrder[0]);
   });
 
   it("404s and does not audit when the chore is missing", async () => {

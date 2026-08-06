@@ -8,6 +8,7 @@ import logger from "@/lib/logger";
 import { logAudit, getAuditRequestContext } from "@/lib/audit";
 import { lodgeNullTolerantScope } from "@/lib/lodges";
 import { lockRosterDates } from "@/lib/roster-lock";
+import { acquireLodgeCapacityLock } from "@/lib/capacity";
 
 const dateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 const bodySchema = z.object({
@@ -59,23 +60,23 @@ export async function PUT(
 
   try {
     const lodgeId = await resolveKioskLodgeId(authResult, prisma);
-    const guest = await findLodgeGuestDepartingOnDate(
-      parsed.data.bookingGuestId,
-      date,
-      lodgeId
-    );
-
-    if (!guest) {
-      return NextResponse.json(
-        { error: "Guest not found for this date" },
-        { status: 404 }
+    const updateResult = await prisma.$transaction(async (tx) => {
+      // Consent decline/expiry already uses global -> lodge before it changes
+      // this BookingGuest and removes chore rows. Join that order before the
+      // roster keys so departure cannot hold roster while waiting on the same
+      // guest tuple in the opposite direction.
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
+      await acquireLodgeCapacityLock(tx, lodgeId);
+      const guest = await findLodgeGuestDepartingOnDate(
+        parsed.data.bookingGuestId,
+        date,
+        lodgeId,
+        tx,
       );
-    }
+      if (!guest) return { notFound: true as const };
 
-    // Toggle: if already departed, clear; otherwise set
-    const departedAt = guest.departedAt ? null : new Date();
-
-    await prisma.$transaction(async (tx) => {
+      // Toggle from the post-lock row, never from the pre-transaction display.
+      const departedAt = guest.departedAt ? null : new Date();
       const futureSuggested = departedAt
         ? await tx.choreAssignment.findMany({
             where: {
@@ -105,7 +106,16 @@ export async function PUT(
           },
         });
       }
+      return { guest, departedAt };
     });
+
+    if ("notFound" in updateResult) {
+      return NextResponse.json(
+        { error: "Guest not found for this date" },
+        { status: 404 }
+      );
+    }
+    const { guest, departedAt } = updateResult;
 
     const actorMemberId = getLodgeAuthActorMemberId(authResult);
     const auditRequest = getAuditRequestContext(req);

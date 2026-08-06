@@ -104,7 +104,7 @@ describe("RosterEditor staged whole-roster editing", () => {
     fireEvent.click(screen.getByRole("button", { name: "Edit roster" }))
     const first = screen.getAllByRole("combobox")[0] as HTMLSelectElement
     fireEvent.change(first, { target: { value: "younger" } })
-    fireEvent.click(screen.getAllByRole("button", { name: "Remove" })[1])
+    fireEvent.click(screen.getAllByRole("button", { name: /^Remove assignment/ })[1])
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }))
     expect(fetchMock).not.toHaveBeenCalled()
     expect(screen.getAllByText("Aroha Bell").length).toBeGreaterThan(0)
@@ -119,6 +119,20 @@ describe("RosterEditor staged whole-roster editing", () => {
     const emptySelect = (screen.getAllByRole("combobox") as HTMLSelectElement[]).find((select) => select.value === "")!
     expect(emptySelect).toBe(document.activeElement)
     expect(emptySelect.getAttribute("aria-invalid")).toBe("true")
+    expect(screen.getByText("Choose a person before saving this roster.")).toBeTruthy()
+    expect((screen.getByRole("button", { name: "Save roster" }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it("explains a cleared retained row and gives every row a chore-specific accessible name", () => {
+    renderEditor()
+    expect(screen.getByRole("heading", { level: 2, name: "Roster assignments" })).toBeTruthy()
+    expect(screen.getByRole("heading", { level: 2, name: "Kitchen" })).toBeTruthy()
+    fireEvent.click(screen.getByRole("button", { name: "Edit roster" }))
+    const kitchen = screen.getByRole("combobox", { name: "Person for Kitchen, assignment 1" }) as HTMLSelectElement
+    expect(screen.getByRole("button", { name: "Remove assignment 1 from Kitchen" })).toBeTruthy()
+    fireEvent.change(kitchen, { target: { value: "" } })
+    expect(kitchen.getAttribute("aria-invalid")).toBe("true")
+    expect(kitchen.getAttribute("aria-describedby")).toBeTruthy()
     expect(screen.getByText("Choose a person before saving this roster.")).toBeTruthy()
     expect((screen.getByRole("button", { name: "Save roster" }) as HTMLButtonElement).disabled).toBe(true)
   })
@@ -201,6 +215,49 @@ describe("RosterEditor staged whole-roster editing", () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3))
     expect(screen.getByText(network)).toBe(document.activeElement)
     expect(first.value).toBe("younger")
+  })
+
+  it("treats a malformed successful response as a service failure and retains the draft", async () => {
+    const network = "Roster not saved because the service could not be reached. Your draft is still here; try Save again."
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response("{}", { status: 200 }))
+    vi.stubGlobal("fetch", fetchMock)
+    const { onRosterUpdate } = renderEditor()
+    fireEvent.click(screen.getByRole("button", { name: "Edit roster" }))
+    const first = screen.getByRole("combobox", { name: "Person for Kitchen, assignment 1" }) as HTMLSelectElement
+    fireEvent.change(first, { target: { value: "younger" } })
+    fireEvent.click(screen.getByRole("button", { name: "Save roster" }))
+    await waitFor(() => expect(screen.getByText(network)).toBe(document.activeElement))
+    expect(first.value).toBe("younger")
+    expect(onRosterUpdate).not.toHaveBeenCalled()
+  })
+
+  it("clears failed-draft feedback on Cancel and saved feedback on the next Edit", async () => {
+    const network = "Roster not saved because the service could not be reached. Your draft is still here; try Save again."
+    const authoritative = {
+      ...BASE,
+      revision: "revision-2",
+      assignments: BASE.assignments.map((assignment) => assignment.id === "a-1"
+        ? { ...assignment, bookingGuestId: "younger", guestName: "Mika Bell" }
+        : assignment),
+    }
+    const fetchMock = vi.fn()
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockResolvedValueOnce(new Response(JSON.stringify(authoritative), { status: 200 }))
+    vi.stubGlobal("fetch", fetchMock)
+    renderEditor()
+    fireEvent.click(screen.getByRole("button", { name: "Edit roster" }))
+    fireEvent.change(screen.getByRole("combobox", { name: "Person for Kitchen, assignment 1" }), { target: { value: "younger" } })
+    fireEvent.click(screen.getByRole("button", { name: "Save roster" }))
+    await waitFor(() => expect(screen.getByText(network)).toBeTruthy())
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }))
+    expect(screen.queryByText(network)).toBeNull()
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit roster" }))
+    fireEvent.change(screen.getByRole("combobox", { name: "Person for Kitchen, assignment 1" }), { target: { value: "younger" } })
+    fireEvent.click(screen.getByRole("button", { name: "Save roster" }))
+    await waitFor(() => expect(screen.getByText(/Roster saved/)).toBeTruthy())
+    fireEvent.click(screen.getByRole("button", { name: "Edit roster" }))
+    expect(screen.queryByText(/Roster saved/)).toBeNull()
   })
 
   it("always shows due staffing and booking-grouped zero/one/two/three assignment checks", () => {

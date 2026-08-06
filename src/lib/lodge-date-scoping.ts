@@ -61,9 +61,10 @@ export async function findLodgeGuestForDate(
 export async function findLodgeGuestDepartingOnDate(
   bookingGuestId: string,
   date: Date,
-  lodgeId?: string
+  lodgeId?: string,
+  db: Prisma.TransactionClient | typeof prisma = prisma,
 ) {
-  return prisma.bookingGuest.findFirst({
+  return db.bookingGuest.findFirst({
     where: {
       id: bookingGuestId,
       stayStart: { lte: date },

@@ -116,7 +116,7 @@ describe("admin roster page draft transitions", () => {
     const fetchMock = await renderLoaded()
     const confirmMock = vi.spyOn(window, "confirm").mockReturnValue(false)
     fireEvent.click(screen.getByRole("button", { name: "Edit roster" }))
-    const guestSelect = screen.getByRole("combobox", { name: "" }) as HTMLSelectElement
+    const guestSelect = screen.getByRole("combobox", { name: "Person for Kitchen, assignment 1" }) as HTMLSelectElement
     fireEvent.change(guestSelect, { target: { value: "guest-2" } })
 
     const date = screen.getByLabelText("Date") as HTMLInputElement
@@ -135,7 +135,7 @@ describe("admin roster page draft transitions", () => {
     regenerate.focus()
     fireEvent.click(regenerate)
     expect(regenerate).toBe(document.activeElement)
-    expect((screen.getByRole("combobox", { name: "" }) as HTMLSelectElement).value).toBe("guest-2")
+    expect((screen.getByRole("combobox", { name: "Person for Kitchen, assignment 1" }) as HTMLSelectElement).value).toBe("guest-2")
     expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "PUT")).toHaveLength(0)
     expect(confirmMock).toHaveBeenCalledTimes(3)
   })
@@ -143,14 +143,14 @@ describe("admin roster page draft transitions", () => {
   it("does not silently reload or remount a dirty editor when Include non-essential chores changes", async () => {
     const fetchMock = await renderLoaded()
     fireEvent.click(screen.getByRole("button", { name: "Edit roster" }))
-    const guestSelect = screen.getByRole("combobox", { name: "" }) as HTMLSelectElement
+    const guestSelect = screen.getByRole("combobox", { name: "Person for Kitchen, assignment 1" }) as HTMLSelectElement
     fireEvent.change(guestSelect, { target: { value: "guest-2" } })
     const initialLoads = getRosterCalls(fetchMock).length
 
     fireEvent.click(screen.getByLabelText("Include non-essential chores"))
     await Promise.resolve()
     expect(getRosterCalls(fetchMock)).toHaveLength(initialLoads)
-    expect((screen.getByRole("combobox", { name: "" }) as HTMLSelectElement).value).toBe("guest-2")
+    expect((screen.getByRole("combobox", { name: "Person for Kitchen, assignment 1" }) as HTMLSelectElement).value).toBe("guest-2")
     expect(screen.getByRole("button", { name: "Save roster" })).toBeTruthy()
   })
 
@@ -174,6 +174,22 @@ describe("admin roster page draft transitions", () => {
     const retry = screen.getByRole("button", { name: "Try again" })
     fireEvent.click(retry)
     await waitFor(() => expect(screen.getAllByText("Taylor Guest").length).toBeGreaterThan(0))
+  })
+
+  it("treats a malformed successful load as unreadable and never renders it as the current roster", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.startsWith("/api/admin/roster/status")) {
+        return new Response(JSON.stringify({ statuses: [] }), { status: 200 })
+      }
+      return new Response("{}", { status: 200 })
+    })
+    vi.stubGlobal("fetch", fetchMock)
+    render(<RosterPage />)
+    await waitFor(() => expect(screen.getByText(
+      "Roster could not be loaded because the service returned an unreadable response. Try again.",
+    )).toBeTruthy())
+    expect(screen.queryByText("Roster assignments")).toBeNull()
+    expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy()
   })
 
   it("keeps superseded load success and cleanup from repopulating or unblocking the current key", async () => {

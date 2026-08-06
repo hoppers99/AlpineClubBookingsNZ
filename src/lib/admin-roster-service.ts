@@ -638,8 +638,29 @@ export async function updateAdminRosterForDate(params: {
       break
     }
     case "confirm": {
-      await prisma.$transaction(async (tx) => {
+      const confirmResult = await prisma.$transaction(async (tx) => {
         await lockRosterEligibilityMutation(tx, lodgeId, date)
+        const suggested = await tx.choreAssignment.findMany({
+          where: {
+            ...assignmentScope(date, lodgeId),
+            status: "SUGGESTED",
+          },
+          select: {
+            bookingGuestId: true,
+            bookingId: true,
+            choreTemplate: { select: { active: true } },
+          },
+        })
+        const eligibleGuests = new Map(
+          (await getGuestsForDate(date, lodgeId, tx)).map((guest) => [guest.id, guest.bookingId]),
+        )
+        if (suggested.some((assignment) =>
+          assignment.bookingGuestId === null ||
+          eligibleGuests.get(assignment.bookingGuestId) !== assignment.bookingId
+        )) return { invalid: "guest" as const }
+        if (suggested.some((assignment) => !assignment.choreTemplate.active)) {
+          return { invalid: "template" as const }
+        }
         await tx.choreAssignment.updateMany({
           where: {
             ...assignmentScope(date, lodgeId),
@@ -647,7 +668,17 @@ export async function updateAdminRosterForDate(params: {
           },
           data: { status: "CONFIRMED" },
         })
+        return { success: true as const }
       })
+      if ("invalid" in confirmResult) {
+        return rosterError(
+          confirmResult.invalid === "guest" ? "ROSTER_CONFIRM_GUEST_INELIGIBLE" : "ROSTER_CONFIRM_TEMPLATE_INVALID",
+          confirmResult.invalid === "guest"
+            ? "Roster not confirmed. A person is no longer eligible for this lodge night. Edit or regenerate the roster and try again."
+            : "Roster not confirmed. A chore is no longer active for this lodge. Regenerate the roster and try again.",
+          409,
+        )
+      }
       break
     }
     case "email": {
@@ -676,25 +707,51 @@ export async function updateAdminRosterForDate(params: {
         })
       }
 
-      // Send roster email to all guests for this date
-      const assignments = await prisma.choreAssignment.findMany({
-        where: assignmentScope(date, lodgeId),
-        include: {
-          choreTemplate: true,
-          bookingGuest: {
-            include: {
-              member: {
-                select: {
-                  id: true,
-                  email: true,
-                  inheritEmailFromId: true,
-                  inheritEmailFrom: { select: { email: true } },
+      // Select and validate the complete fan-out under the same short-lived
+      // eligibility locks as Save/Confirm. Provider calls remain below, after
+      // this transaction commits.
+      const emailSelection = await prisma.$transaction(async (tx) => {
+        await lockRosterEligibilityMutation(tx, lodgeId, date)
+        const assignments = await tx.choreAssignment.findMany({
+          where: assignmentScope(date, lodgeId),
+          include: {
+            choreTemplate: true,
+            bookingGuest: {
+              include: {
+                member: {
+                  select: {
+                    id: true,
+                    email: true,
+                    inheritEmailFromId: true,
+                    inheritEmailFrom: { select: { email: true } },
+                  },
                 },
               },
             },
           },
-        },
+        })
+        const eligibleGuests = new Map(
+          (await getGuestsForDate(date, lodgeId, tx)).map((guest) => [guest.id, guest.bookingId]),
+        )
+        if (assignments.some((assignment) =>
+          assignment.bookingGuestId === null ||
+          eligibleGuests.get(assignment.bookingGuestId) !== assignment.bookingId
+        )) return { invalid: "guest" as const }
+        if (assignments.some((assignment) => !assignment.choreTemplate.active)) {
+          return { invalid: "template" as const }
+        }
+        return { assignments }
       })
+      if ("invalid" in emailSelection) {
+        return rosterError(
+          emailSelection.invalid === "guest" ? "ROSTER_EMAIL_GUEST_INELIGIBLE" : "ROSTER_EMAIL_TEMPLATE_INVALID",
+          emailSelection.invalid === "guest"
+            ? "Roster emails were not sent because a person is no longer eligible for this lodge night. Reload the roster and try again."
+            : "Roster emails were not sent because a chore is no longer active for this lodge. Regenerate the roster and try again.",
+          409,
+        )
+      }
+      const assignments = emailSelection.assignments
 
       // Group assignments by guest, resolving effective email for dependents
       const byGuest = new Map<string, {

@@ -4,3 +4,5 @@
   their draft when a stale roster, ineligible guest, permission change, or
   service failure blocks Save. Cross-booking reassignment now updates both
   booking and guest ownership, and all roster writers share the nightly lock.
+  Confirm and email now re-check current guest/chore eligibility, and chore
+  deactivation and departure cleanup share the compatible lodge lock order.

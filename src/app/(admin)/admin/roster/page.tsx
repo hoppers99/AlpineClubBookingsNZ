@@ -24,7 +24,7 @@ import {
   AdminViewOnlySectionBanner,
   ViewOnlyActionButton,
 } from "@/components/admin/view-only-action"
-import { RosterEditor, type RosterData } from "@/components/admin/roster-editor"
+import { isRosterData, RosterEditor, type RosterData } from "@/components/admin/roster-editor"
 import { formatDateOnly, getTodayDateOnly } from "@/lib/date-only"
 import { APP_LOCALE, APP_TIME_ZONE } from "@/config/operational"
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access"
@@ -127,15 +127,24 @@ export default function RosterPage() {
     setError("")
     try {
       const response = await fetch(rosterUrl(date), { signal })
-      let body: { error?: string } & Partial<RosterData>
+      let body: unknown
       try {
         body = await response.json()
       } catch {
         throw new Error("Roster could not be loaded because the service returned an unreadable response. Try again.")
       }
       if (requestId !== rosterRequestRef.current) return
-      if (!response.ok) throw new Error(body.error || "Roster could not be loaded. Try again.")
-      setRoster(body as RosterData)
+      if (!response.ok) {
+        const message = typeof body === "object" && body !== null &&
+          "error" in body && typeof body.error === "string"
+          ? body.error
+          : "Roster could not be loaded. Try again."
+        throw new Error(message)
+      }
+      if (!isRosterData(body)) {
+        throw new Error("Roster could not be loaded because the service returned an unreadable response. Try again.")
+      }
+      setRoster(body)
       setRosterLoadVersion((version) => version + 1)
       setLastEmailSuppressed(false)
       void loadMonthStatus(date.slice(0, 7))

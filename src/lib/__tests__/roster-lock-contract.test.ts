@@ -65,6 +65,25 @@ describe("roster-date lock source contract (#2586)", () => {
     expect(batchService).toContain("rosterDatesAlreadyLocked: true")
   })
 
+  it("keeps departure and chore-template mutation ordered with roster validation", () => {
+    const departure = source("src/app/api/lodge/guests/[date]/depart/route.ts")
+    expect(departure.indexOf("pg_advisory_xact_lock(1)")).toBeLessThan(
+      departure.indexOf("acquireLodgeCapacityLock(tx, lodgeId)"),
+    )
+    expect(departure.indexOf("acquireLodgeCapacityLock(tx, lodgeId)")).toBeLessThan(
+      departure.indexOf("await lockRosterDates"),
+    )
+    expect(departure.indexOf("await lockRosterDates")).toBeLessThan(
+      departure.indexOf("tx.bookingGuest.update"),
+    )
+
+    const templateMutation = source("src/app/api/admin/chores/[id]/route.ts")
+    expect(templateMutation).toContain("acquireLodgeCapacityLock(tx, effectiveLodgeId)")
+    expect(templateMutation.indexOf("acquireLodgeCapacityLock(tx, effectiveLodgeId)")).toBeLessThan(
+      templateMutation.indexOf("tx.choreTemplate.update"),
+    )
+  })
+
   it("keeps every roster-eligibility writer on a shared global or lodge tier", () => {
     const protocols = [
       {

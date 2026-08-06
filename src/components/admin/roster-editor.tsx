@@ -96,6 +96,44 @@ function rosterDraftIsValid(draft: RosterDraft) {
   return draft.assignments.every((assignment) => assignment.bookingGuestId.length > 0)
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null
+}
+
+export function isRosterData(value: unknown): value is RosterData {
+  if (!isRecord(value)) return false
+  return typeof value.date === "string" &&
+    typeof value.lodgeId === "string" &&
+    typeof value.revision === "string" &&
+    typeof value.guestCount === "number" &&
+    Array.isArray(value.guests) &&
+    value.guests.every((guest) => isRecord(guest) &&
+      typeof guest.id === "string" &&
+      typeof guest.bookingId === "string" &&
+      typeof guest.bookingGroupLabel === "string" &&
+      typeof guest.firstName === "string" &&
+      typeof guest.lastName === "string" &&
+      typeof guest.ageTier === "string") &&
+    Array.isArray(value.assignments) &&
+    value.assignments.every((assignment) => isRecord(assignment) &&
+      typeof assignment.id === "string" &&
+      typeof assignment.choreTemplateId === "string" &&
+      typeof assignment.choreTemplateName === "string" &&
+      typeof assignment.choreSortOrder === "number" &&
+      typeof assignment.bookingId === "string" &&
+      (assignment.bookingGuestId === null || typeof assignment.bookingGuestId === "string") &&
+      typeof assignment.status === "string") &&
+    Array.isArray(value.templates) &&
+    value.templates.every((template) => isRecord(template) &&
+      typeof template.id === "string" &&
+      typeof template.name === "string" &&
+      typeof template.recommendedPeopleMin === "number" &&
+      typeof template.recommendedPeopleMax === "number" &&
+      typeof template.sortOrder === "number" &&
+      typeof template.isDueOnDate === "boolean") &&
+    isRecord(value.guestHistory)
+}
+
 function groupedGuests(guests: RosterGuest[]) {
   const groups = new Map<string, RosterGuest[]>()
   for (const guest of guests) {
@@ -162,31 +200,31 @@ export function RosterEditor({
         throw new Error(NETWORK_COPY)
       }
 
-      let body: Partial<RosterData> & {
-        error?: string
-        code?: string
-        details?: { rowKey?: string }
-      } = {}
+      let body: unknown
       try {
         body = await response.json()
       } catch {
-        if (!response.ok) throw new Error(NETWORK_COPY)
+        throw new Error(NETWORK_COPY)
       }
+      const errorBody = isRecord(body) ? body : {}
+      const details = isRecord(errorBody.details) ? errorBody.details : {}
       if (!response.ok) {
         const message = response.status === 403
           ? PERMISSION_COPY
           : response.status >= 500
             ? NETWORK_COPY
-            : (body.error ?? NETWORK_COPY)
-        if (body.details?.rowKey) {
-          setRowErrors({ [body.details.rowKey]: message })
+            : (typeof errorBody.error === "string" ? errorBody.error : NETWORK_COPY)
+        if (typeof details.rowKey === "string") {
+          const rowKey = details.rowKey
+          setRowErrors({ [rowKey]: message })
           requestAnimationFrame(() => {
-            document.getElementById(`roster-guest-${body.details?.rowKey}`)?.focus()
+            document.getElementById(`roster-guest-${rowKey}`)?.focus()
           })
         }
         throw new Error(message)
       }
-      const authoritative = body as RosterData
+      if (!isRosterData(body)) throw new Error(NETWORK_COPY)
+      const authoritative = body
       onRosterUpdate(authoritative)
       setAcknowledgeCompletedReset(false)
       return draftFromRoster(authoritative)
@@ -234,11 +272,14 @@ export function RosterEditor({
     setAcknowledgeCompletedReset(hasCompleted)
     setRowErrors({})
     section.setError("")
+    section.setSuccess("")
     section.startEditing()
   }
 
   function cancelEditing() {
     section.cancelEditing()
+    section.setError("")
+    section.setSuccess("")
     setAcknowledgeCompletedReset(false)
     setRowErrors({})
   }
@@ -249,11 +290,9 @@ export function RosterEditor({
         assignment.rowKey === rowKey ? { ...assignment, bookingGuestId } : assignment,
       ),
     }))
-    setRowErrors((current) => {
-      const next = { ...current }
-      delete next[rowKey]
-      return next
-    })
+    setRowErrors((current) => bookingGuestId
+      ? Object.fromEntries(Object.entries(current).filter(([key]) => key !== rowKey))
+      : { ...current, [rowKey]: "Choose a person before saving this roster." })
   }
 
   function addPerson(choreTemplateId: string) {
@@ -292,7 +331,7 @@ export function RosterEditor({
         <CardHeader>
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <CardTitle>Roster assignments</CardTitle>
+              <CardTitle role="heading" aria-level={2}>Roster assignments</CardTitle>
               <CardDescription>
                 {roster.guestCount} guest{roster.guestCount === 1 ? "" : "s"} staying ·{" "}
                 {draftAssignments.length} assignment{draftAssignments.length === 1 ? "" : "s"}
@@ -354,7 +393,7 @@ export function RosterEditor({
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div className="flex items-center gap-3">
                   <span className="font-mono text-lg text-muted-foreground">{template.sortOrder}.</span>
-                  <CardTitle className="text-lg">{template.name}</CardTitle>
+                  <CardTitle role="heading" aria-level={2} className="text-lg">{template.name}</CardTitle>
                   {!template.isEssential && <Badge variant="outline">Optional</Badge>}
                   {!template.isDueOnDate && <Badge variant="secondary">Not due this night</Badge>}
                 </div>
@@ -378,7 +417,7 @@ export function RosterEditor({
                 <Table>
                   <TableHeader><TableRow><TableHead>Guest</TableHead><TableHead>Age tier</TableHead><TableHead>Status</TableHead>{section.editing && <TableHead className="text-right">Action</TableHead>}</TableRow></TableHeader>
                   <TableBody>
-                    {assignments.map((assignment) => {
+                    {assignments.map((assignment, assignmentIndex) => {
                       const guest = guestsById.get(assignment.bookingGuestId)
                       const persisted = assignment.assignmentId
                         ? roster.assignments.find((row) => row.id === assignment.assignmentId)
@@ -395,6 +434,7 @@ export function RosterEditor({
                                   onChange={(event) => updateGuest(assignment.rowKey, event.target.value)}
                                   aria-invalid={Boolean(rowErrors[assignment.rowKey])}
                                   aria-describedby={rowErrors[assignment.rowKey] ? errorId : undefined}
+                                  aria-label={`Person for ${template.name}, assignment ${assignmentIndex + 1}`}
                                   disabled={canEdit !== true || section.saving}
                                   className="flex h-9 w-full max-w-[280px] rounded-md border border-input bg-transparent px-2 py-1 text-sm"
                                 >
@@ -411,7 +451,7 @@ export function RosterEditor({
                           </TableCell>
                           <TableCell>{guest?.ageTier ?? persisted?.guestAgeTier ?? "—"}</TableCell>
                           <TableCell><Badge variant={persisted?.status === "COMPLETED" ? "secondary" : persisted?.status === "CONFIRMED" ? "default" : "outline"}>{persisted?.status ?? "NEW"}</Badge></TableCell>
-                          {section.editing && <TableCell className="text-right"><Button variant="ghost" size="sm" onClick={() => removePerson(assignment.rowKey)} disabled={canEdit !== true || section.saving}>Remove</Button></TableCell>}
+                          {section.editing && <TableCell className="text-right"><Button aria-label={`Remove assignment ${assignmentIndex + 1} from ${template.name}`} variant="ghost" size="sm" onClick={() => removePerson(assignment.rowKey)} disabled={canEdit !== true || section.saving}>Remove</Button></TableCell>}
                         </TableRow>
                       )
                     })}

@@ -103,7 +103,7 @@ are the literal `1`.
 | Lock | Key | Helper / where | Tier | Serialises |
 | --- | --- | --- | --- | --- |
 | **Global booking / money** | `1` (literal) | inline `tx.$executeRaw` | 2 | Booking-status + money side effects that must exclude across the whole booking regardless of lodge: cancel, capture/settle, hold-release, group-settlement reaper/settle/refund/organiser-cancel, refunds, credit restore. |
-| **Per-lodge capacity** | `hashtextextended(<lodgeId>, 0)` | `acquireLodgeCapacityLock(tx, lodgeId)` (`capacity.ts`) | 1 | Capacity claims/checks for one lodge. |
+| **Per-lodge capacity** | `hashtextextended(<lodgeId>, 0)` | `acquireLodgeCapacityLock(tx, lodgeId)` (`capacity.ts`) | 1 | Capacity claims/checks for one lodge; roster eligibility snapshots; and chore-template update/delete, which serialize active-template validation for that lodge. |
 | **Per-member night footprint** | `hashtext("booking-member-night"), hashtext(<memberId>)` | `lockBookingMemberNights(tx, guests)` (`booking-member-night-conflicts.ts`) | cross-lodge | Serialises the person-night guard ACROSS lodges (see below). |
 | **Per-member credit ledger** | `hashtext("member-credit-ledger"), hashtext(<memberId>)` | `lockMemberCreditLedger(memberId, tx)` (`member-credit.ts`) | — | A member's credit-ledger balance operations (spend, negative-adjustment validation, orphan-restore repair, the Xero inbound applied-credit repair, and the F20 pre-payment-reduction applied-credit clamp `clampAppliedCreditToBookingPrice`, taken inside the modification transaction only when the booking carries applied credit, and the #2265 stored-election consumption `consumeStoredCreditElection`, taken inside the `create-payment-intent` pay transaction and the Internet Banking switch transaction only when the booking carries an outstanding election). |
 | **Member lifecycle** | `hashtext("member-lifecycle:<memberId>")` | inline (`member-lifecycle-actions.ts`, `nomination.ts` approval mapping, `admin-family-group-requests-service.ts`, `member-merge.ts`) | — | Archive/delete of one member; overwrite of one member by application-approval mapping (E10, #1936); linking/removing one member into/from a family group on admin request review; and **member merge** (dual-lock on master + loser, E11 #1937, see below). |
@@ -124,7 +124,8 @@ are the literal `1`.
 
 `lockRosterDate` is the only source of the `roster:<date>` key. Every operation
 that validates guest eligibility before creating or re-attributing assignments
-(admin GET auto-suggest, whole-roster Save, Regenerate and Confirm, and kiosk
+(admin GET auto-suggest, whole-roster Save, Regenerate, Confirm and email
+selection, and kiosk
 whole-roster Confirm) takes the complete order **global booking lock(1) →
 immutable lodge-capacity lock → roster-date lock → authoritative re-read →
 assignment rows**. Joining the booking writers' first two tiers is essential
@@ -142,12 +143,15 @@ shares the immutable lodge tier. Those common tiers serialize eligibility
 changes with roster validation without making every booking writer enumerate
 every possible roster night.
 
-Kiosk complete/uncomplete and departure cleanup take only the affected
-roster-date keys because they neither validate nor change booking eligibility;
-arrival/departure timestamps are not eligibility inputs. A multi-night cleanup
-sorts and de-duplicates all keys before acquiring the first one. After any wait,
-cleanup re-reads its targets and uses guarded `deleteMany` predicates, so a row
-re-attributed by a whole-roster Save is never deleted from a stale id snapshot.
+Kiosk complete/uncomplete takes only the affected roster-date key. Departure
+timestamps are not eligibility inputs, but departure cleanup also updates the
+same `BookingGuest` tuple as consent decline/expiry. It therefore joins the
+global, lodge, sorted roster-date, then BookingGuest order so it cannot invert
+the consent writer's first two tiers and deadlock on guest-versus-roster
+resources. A multi-night cleanup sorts and de-duplicates all keys before
+acquiring the first one. After any wait, cleanup re-reads its targets and uses
+guarded `deleteMany` predicates, so a row re-attributed by a whole-roster Save
+is never deleted from a stale id snapshot.
 
 The lock is date-wide rather than lodge-wide because `ChoreAssignment` has no
 `lodgeId`. Isolation still comes from every current-row predicate requiring both
@@ -157,10 +161,15 @@ Whole-roster Save re-reads its revision, eligible guests, and active templates
 after acquiring the lock and performs no mutation on a stale or invalid draft.
 It then deletes removed rows and creates/updates retained rows in that same
 transaction, writing both authoritative booking and guest foreign keys.
+Admin chore-template update/delete takes the same lodge tier before its
+post-lock re-read and tuple mutation, so deactivation cannot commit between a
+roster action's active-template check and assignment write.
 
-Roster email/provider work does not take advisory locks and remains outside the
-database transaction. The lock participant inventory and acquisition-order
-contracts are enforced by `advisory-lock-guard.test.ts` and
+Roster email **selection** uses the short eligibility transaction and rejects an
+ineligible guest or inactive template before minting any token. Effective-email
+and preference reads, token refresh, and provider sends remain outside that
+transaction. The lock participant inventory and acquisition-order contracts
+are enforced by `advisory-lock-guard.test.ts` and
 `roster-lock-contract.test.ts`.
 
 ### Composition: minimum-stay policy set (#2363)

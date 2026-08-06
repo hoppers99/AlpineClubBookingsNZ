@@ -12,6 +12,10 @@ const mocks = vi.hoisted(() => ({
   directAssignmentFindMany: vi.fn(),
   assignmentGroupBy: vi.fn(),
   templateFindMany: vi.fn(),
+  sendRosterEmail: vi.fn(),
+  shouldSendRoster: vi.fn(),
+  createChoreToken: vi.fn(),
+  effectiveEmail: vi.fn(),
 }))
 
 vi.mock("@/lib/prisma", () => ({
@@ -20,9 +24,9 @@ vi.mock("@/lib/prisma", () => ({
     choreAssignment: { findMany: mocks.directAssignmentFindMany },
   },
 }))
-vi.mock("@/lib/email", () => ({ sendChoreRosterEmail: vi.fn(), shouldSendChoreRoster: vi.fn() }))
-vi.mock("@/lib/guest-chore-token", () => ({ createGuestChoreToken: vi.fn() }))
-vi.mock("@/lib/member-utils", () => ({ getEffectiveEmail: vi.fn() }))
+vi.mock("@/lib/email", () => ({ sendChoreRosterEmail: mocks.sendRosterEmail, shouldSendChoreRoster: mocks.shouldSendRoster }))
+vi.mock("@/lib/guest-chore-token", () => ({ createGuestChoreToken: mocks.createChoreToken }))
+vi.mock("@/lib/member-utils", () => ({ getEffectiveEmail: mocks.effectiveEmail }))
 vi.mock("@/lib/logger", () => ({ default: { debug: vi.fn(), warn: vi.fn(), error: vi.fn() } }))
 vi.mock("@/lib/audit", () => ({ logAudit: vi.fn() }))
 
@@ -139,7 +143,10 @@ describe("admin whole-roster save", () => {
     mocks.assignmentCreate.mockResolvedValue({ id: "assignment-new" })
     mocks.assignmentCreateMany.mockResolvedValue({ count: 0 })
     mocks.directAssignmentFindMany.mockResolvedValue([])
-    mocks.assignmentFindMany.mockImplementation(async (args: { select?: unknown; where?: { date?: unknown }; include?: unknown }) => {
+    mocks.assignmentFindMany.mockImplementation(async (args: { select?: Record<string, unknown>; where?: { date?: unknown }; include?: unknown }) => {
+      if (args.select && "choreTemplate" in args.select) {
+        return [{ ...CURRENT, status: "SUGGESTED", choreTemplate: { active: true } }]
+      }
       if (args.select) return [CURRENT]
       if (args.where?.date && typeof args.where.date === "object" && "gte" in (args.where.date as object)) return []
       return [{
@@ -288,7 +295,7 @@ describe("admin whole-roster save", () => {
   })
 
   it("scopes confirm through both booking and chore template lodge relations", async () => {
-    await updateAdminRosterForDate({
+    const result = await updateAdminRosterForDate({
       date: DATE,
       dateString: "2026-08-10",
       lodgeId: "lodge-1",
@@ -303,6 +310,54 @@ describe("admin whole-roster save", () => {
       },
       data: { status: "CONFIRMED" },
     })
+    expect(result.init).toBeUndefined()
+  })
+
+  it.each([
+    ["guest", () => mocks.bookingFindMany.mockResolvedValueOnce([]), "ROSTER_CONFIRM_GUEST_INELIGIBLE"],
+    ["template", () => mocks.assignmentFindMany.mockResolvedValueOnce([
+      { ...CURRENT, status: "SUGGESTED", choreTemplate: { active: false } },
+    ]), "ROSTER_CONFIRM_TEMPLATE_INVALID"],
+  ])("rejects Confirm atomically when a %s becomes ineligible", async (_kind, arrange, code) => {
+    arrange()
+    const result = await updateAdminRosterForDate({
+      date: DATE,
+      dateString: "2026-08-10",
+      lodgeId: "lodge-1",
+      data: { action: "confirm" },
+    })
+    expect(result).toMatchObject({ init: { status: 409 }, body: { code } })
+    expect(mocks.assignmentUpdateMany).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ["night envelope", (args: any) =>
+      args.where?.checkIn?.lte?.getTime?.() === DATE.getTime() &&
+      args.where?.checkOut?.gt?.getTime?.() === DATE.getTime()],
+    ["lodge", (args: any) => args.where?.lodgeId === "lodge-1"],
+    ["operational status", (args: any) =>
+      Array.isArray(args.where?.status?.in) && !args.where.status.in.includes("CANCELLED")],
+    ["resolved review", (args: any) =>
+      args.where?.OR?.some?.((entry: any) => entry.requiresAdminReview === false) &&
+      args.where.OR.some((entry: any) => entry.adminReviewStatus === "APPROVED")],
+    ["member consent", (args: any) => {
+      const gate = args.include?.guests?.where?.OR
+      return Array.isArray(gate) && gate.some((entry) => entry.consentStatus === "CONFIRMED") &&
+        gate.some((entry) => entry.consentStatus === null)
+    }],
+  ])("Confirm applies the authoritative %s predicate before any promotion", async (_label, predicatePresent) => {
+    const candidate = eligibleBooking("booking-1", "guest-1", "One")
+    mocks.bookingFindMany.mockImplementationOnce(async (args: unknown) =>
+      predicatePresent(args) ? [] : [candidate],
+    )
+    const result = await updateAdminRosterForDate({
+      date: DATE,
+      dateString: "2026-08-10",
+      lodgeId: "lodge-1",
+      data: { action: "confirm" },
+    })
+    expect(result).toMatchObject({ init: { status: 409 }, body: { code: "ROSTER_CONFIRM_GUEST_INELIGIBLE" } })
+    expect(mocks.assignmentUpdateMany).not.toHaveBeenCalled()
   })
 
   it("scopes save reads and writes through both booking and chore template lodge relations", async () => {
@@ -328,9 +383,31 @@ describe("admin whole-roster save", () => {
       lodgeId: "lodge-1",
       data: { action: "email" },
     })
-    expect(mocks.directAssignmentFindMany).toHaveBeenCalledWith(expect.objectContaining({
+    expect(mocks.assignmentFindMany).toHaveBeenCalledWith(expect.objectContaining({
       where: { date: DATE, booking: { lodgeId: "lodge-1" }, choreTemplate: { lodgeId: "lodge-1" } },
     }))
+  })
+
+  it.each([
+    ["guest", () => mocks.bookingFindMany.mockResolvedValueOnce([]), "ROSTER_EMAIL_GUEST_INELIGIBLE"],
+    ["template", () => mocks.assignmentFindMany.mockResolvedValueOnce([{
+      ...CURRENT,
+      bookingId: "booking-2",
+      bookingGuestId: "guest-2",
+      choreTemplate: { ...template("kitchen"), active: false },
+      bookingGuest: { id: "guest-2", firstName: "Two", lastName: "Guest", member: null },
+    }]), "ROSTER_EMAIL_TEMPLATE_INVALID"],
+  ])("rejects email fan-out before tokens or providers when a %s becomes ineligible", async (_kind, arrange, code) => {
+    arrange()
+    const result = await updateAdminRosterForDate({
+      date: DATE,
+      dateString: "2026-08-10",
+      lodgeId: "lodge-1",
+      data: { action: "email" },
+    })
+    expect(result).toMatchObject({ init: { status: 409 }, body: { code } })
+    expect(mocks.createChoreToken).not.toHaveBeenCalled()
+    expect(mocks.sendRosterEmail).not.toHaveBeenCalled()
   })
 
   it.each([
@@ -339,8 +416,7 @@ describe("admin whole-roster save", () => {
     ["confirm", "ROSTER_CONFIRM_FAILED", "Roster was not confirmed because the service is unavailable. Nothing was changed; try again."],
     ["email", "ROSTER_EMAIL_FAILED", "Roster emails were not sent because the service is unavailable. Nothing was changed; try again."],
   ] as const)("returns stable actionable %s failure codes without leaking exceptions", async (action, code, error) => {
-    if (action === "email") mocks.directAssignmentFindMany.mockRejectedValueOnce(new Error("secret provider detail"))
-    else mocks.transaction.mockRejectedValueOnce(new Error("secret database detail"))
+    mocks.transaction.mockRejectedValueOnce(new Error(action === "email" ? "secret provider detail" : "secret database detail"))
     const data: RosterActionInput = action === "save"
       ? { action, baseRevision: "revision", acknowledgeCompletedReset: false, assignments: [] }
       : { action }
@@ -427,6 +503,8 @@ describe("admin whole-roster save", () => {
           guest("equal-z", "Zoe", "Dale", new Date("2000-01-01T00:00:00.000Z")),
           guest("unknown-a", "Alex", "Bell", null),
           guest("equal-a", "Alex", "Dale", new Date("2000-01-01T00:00:00.000Z")),
+          guest("same-z", "Same", "Name", new Date("2000-01-01T00:00:00.000Z")),
+          guest("same-a", "Same", "Name", new Date("2000-01-01T00:00:00.000Z")),
           guest("old", "Aroha", "Bell", new Date("1975-01-01T00:00:00.000Z")),
         ],
       },
@@ -443,13 +521,17 @@ describe("admin whole-roster save", () => {
     expect(guests.map((entry) => entry.id)).toEqual([
       "old",
       "equal-a",
+      "same-a",
+      "same-z",
       "equal-z",
       "young",
       "unknown-a",
       "unknown-z",
       "other",
     ])
-    expect(guests.slice(0, 6).map((entry) => entry.bookingGroupLabel)).toEqual([
+    expect(guests.slice(0, 8).map((entry) => entry.bookingGroupLabel)).toEqual([
+      "Booking for Aroha Bell",
+      "Booking for Aroha Bell",
       "Booking for Aroha Bell",
       "Booking for Aroha Bell",
       "Booking for Aroha Bell",
