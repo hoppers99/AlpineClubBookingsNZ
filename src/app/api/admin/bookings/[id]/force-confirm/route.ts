@@ -16,6 +16,8 @@ import { sendBookingConfirmedEmail } from "@/lib/email";
 import { getProvisionalNonMemberChildSummary } from "@/lib/booking-split-summary";
 import logger from "@/lib/logger";
 import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
+import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
+import { enqueueOwnHostingCoverageReevaluation } from "@/lib/adult-member-hosting-review";
 import { z } from "zod";
 
 const forceConfirmSchema = z.object({
@@ -264,6 +266,26 @@ export async function POST(
         tx,
       );
 
+      // #2576 §9. A waitlist force-confirm is a confirmation — §9 names "officer
+      // approval" and "waitlist promotion" explicitly — and WAITLISTED /
+      // WAITLIST_OFFERED are both outside `ACTIVE_BOOKING_STATUSES`, so a waitlisted
+      // booking is invisible to the strand check that guards a source cancellation.
+      // A member could therefore cancel the booking supplying cover (nothing
+      // stranded, nothing queued) and an officer force-confirm this one straight to
+      // PAID with no hosting evaluation at all.
+      //
+      // ENQUEUE rather than refuse: this is the officer's deliberate act on a
+      // booking whose beds have just been claimed, possibly over capacity, so §8's
+      // rule applies — allow the authoritative change, record the obligation in the
+      // same transaction, and raise an urgent incident afterwards. Nothing is queued
+      // when the booking parked for review instead of confirming.
+      if (nextStatus !== BookingStatus.AWAITING_REVIEW) {
+        await enqueueOwnHostingCoverageReevaluation(bookingId, tx, {
+          cause: "SYSTEM_CHANGE",
+          actorMemberId: session.user.id,
+        });
+      }
+
       return {
         success: true,
         booking,
@@ -288,6 +310,9 @@ export async function POST(
     }
 
     const { booking, overbooked, overbookDates, auditAction, status, unpaidFinishedStay } = result;
+
+    // #2576 §9: drain what the force-confirm queued, now that it has committed.
+    await settleHostingCoverageAfterCommit({ bookingId });
 
     if (status === BookingStatus.PAID && notifyMember !== false) {
       // Split-booking parent (#738/#1942): describe the provisional non-member

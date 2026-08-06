@@ -28,6 +28,11 @@ import {
   BookingGuestValidationError,
   computeMemberGuestBoundary,
 } from "@/lib/booking-guests";
+import {
+  buildSameOwnerCoverageOverrideRequiredBody,
+  hostingCoverageOverrideSchema,
+  SameOwnerCoverageOverrideRequiredError,
+} from "@/lib/adult-member-hosting-same-owner";
 
 /**
  * #2526 — the Booking Officer's DECISION endpoint for a booking-policy exception
@@ -78,6 +83,12 @@ const decisionSchema = z
     confirm: z.boolean().optional(),
     /** How a refund arising from an approved modification is settled. */
     settlementMethod: z.enum(["card", "credit"]).optional(),
+    /**
+     * Second-step confirmation for a modification that would strand another
+     * same-owner booking. The first attempt deliberately omits it so the
+     * canonical service can identify the exact affected bookings and nights.
+     */
+    hostingCoverageOverride: hostingCoverageOverrideSchema.optional(),
   })
   .strict();
 
@@ -363,6 +374,7 @@ export async function PATCH(
     internalNotes,
     confirm,
     settlementMethod,
+    hostingCoverageOverride,
   } = parsed.data;
   const store = storeFor(source);
   const ipAddress = getClientIp(req);
@@ -503,6 +515,7 @@ export async function PATCH(
     adminNotes,
     internalNotes,
     settlementMethod,
+    hostingCoverageOverride,
     // The member's own words, carried onto any adult-supervision review this
     // approval opens — the officer never decides that rule (#2526 review), so the
     // reason on the record has to be the member's.
@@ -525,6 +538,22 @@ export async function PATCH(
       store,
     });
   } catch (error) {
+    if (error instanceof SameOwnerCoverageOverrideRequiredError) {
+      // #2576 section 7 is deliberately two-step. The first execution attempt
+      // rolls back and returns the authoritative dependent bookings/nights; only
+      // a second submission can acknowledge those exact consequences with its
+      // own private reason. `adminNotes` remains the member-facing exception
+      // explanation and is never silently reused as override authority.
+      return NextResponse.json(
+        {
+          id,
+          status: "REQUESTED",
+          keptPending: true,
+          ...buildSameOwnerCoverageOverrideRequiredBody(error),
+        },
+        { status: error.status },
+      );
+    }
     if (error instanceof PolicyExceptionExecutionCapacityError) {
       // The canonical create refused on capacity, so the whole transaction rolled
       // back: the request is STILL REQUESTED at its original version, and saying

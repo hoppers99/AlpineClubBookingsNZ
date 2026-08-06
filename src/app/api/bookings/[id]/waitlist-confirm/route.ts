@@ -18,6 +18,8 @@ import {
   acquireLodgeCapacityLock,
   checkCapacityForGuestRanges,
 } from "@/lib/capacity";
+import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
+import { enqueueOwnHostingCoverageReevaluation } from "@/lib/adult-member-hosting-review";
 
 export async function POST(
   _request: NextRequest,
@@ -52,6 +54,11 @@ export async function POST(
       // conflicts. Same status and same body as the five booking write paths, and
       // it keeps the code out of the hard-stop family that may not enter review.
       : result.code === "PAID_UP_ADULT_MEMBER_REQUIRED" ? 409
+      // #2569: 409 for the same reasons — the booking IS permitted by a Booking
+      // Officer through the exception-request workflow, so this is the state of the
+      // party conflicting rather than a bad request, and the code stays out of the
+      // hard-stop family that may not enter review.
+      : result.code === "ADULT_MEMBER_HOSTING_REQUIRED" ? 409
       : 400;
     return NextResponse.json(
       {
@@ -60,6 +67,12 @@ export async function POST(
         // paid-up-adult refusal in exactly the shape the five booking write paths
         // do. Present on that refusal only.
         ...(result.paidUpAdultRefusal ?? {}),
+        // #2569 — the same treatment for the ENFORCED hosting refusal. Mutually
+        // exclusive with the spread above in practice (the hosting reconciler runs
+        // inside the claiming transaction, which the paid-up refusal returns before
+        // ever opening), and spread in the same position for the same reason: the
+        // path's own sentence below must win over the body's `error`.
+        ...(result.adultMemberHostingRefusal ?? {}),
         // AFTER the spread, and the order is load-bearing. The shared body carries
         // its own `error` — the frozen violation's message — and spreading it last
         // silently discarded whatever this path had put there. Both waitlist paths
@@ -202,6 +215,14 @@ export async function POST(
         // depth). The payment.create above rolls back with the transaction.
         return { ok: false as const, status: 409 };
       }
+      // The final PAYMENT_PENDING -> PAID claim is the transition that makes this
+      // booking a live coverage source. Reconcile the committed shape without
+      // trying to unwind an already-consumed offer, and durably enqueue any
+      // incident/restoration work in this same transaction.
+      await enqueueOwnHostingCoverageReevaluation(bookingId, tx, {
+        cause: "SYSTEM_CHANGE",
+        actorMemberId: session.user.id,
+      });
       await reconcileBedAllocationsForBooking({
         bookingId,
         db: tx,
@@ -222,6 +243,8 @@ export async function POST(
         { status: flip.status }
       );
     }
+
+    await settleHostingCoverageAfterCommit({ bookingId });
 
     sendBookingConfirmedEmail(
       { bookingId: booking.id, recipientMemberId: booking.memberId },

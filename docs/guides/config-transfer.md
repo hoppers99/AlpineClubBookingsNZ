@@ -87,6 +87,21 @@ until fixed. A valid header-only `booking-policies/minimum-stay.csv` or
 `booking-policies/adult-member-hosting.csv` explicitly
 clears the set; a blank or malformed file never does.
 
+`booking-policies/adult-member-hosting.csv` gained a fourth column,
+`hostScopes` (#2569). Leave the cell **blank** to inherit — a lodge following the
+club, or a club that has not chosen — or name the scopes that count, separated by
+`|`, for example `SAME_BOOKING` or `SAME_BOOKING|SAME_BOOKING_OWNER`. The two
+supported names are `SAME_BOOKING` (an adult member on the booking itself) and
+`SAME_BOOKING_OWNER` (an adult member on another confirmed booking owned by the same
+member account, at the same lodge on the same nights). An explicit set naming
+nothing is refused, and so is any other name — including a bundle written against
+the withdrawn `ANY_MEMBER_AT_LODGE` or `NOMINATED_HOST` options, which are no longer
+part of the product. Blank
+round-trips as blank, so exporting and re-importing a club that has never touched
+the setting changes nothing. Bundles are accepted only at the exact format version
+that wrote them, so an older bundle is refused outright rather than importing this
+column as empty.
+
 **Connected provider credentials never travel.** A bundle never carries the
 Xero/Stripe/Google/backup secrets your club has connected — not the encrypted
 values, and not even a note of which providers are configured. This is permanent

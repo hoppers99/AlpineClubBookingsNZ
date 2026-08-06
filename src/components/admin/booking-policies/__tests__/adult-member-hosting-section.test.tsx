@@ -52,13 +52,34 @@ vi.mock("../policy-scope-select", () => ({
 
 import { AdultMemberHostingSection } from "../adult-member-hosting-section";
 
+/**
+ * #2569 — the card refuses to render a row without an `effective` block, because
+ * that block IS what it displays as in force; guessing the inheritance in the
+ * component is the one thing it must never do. So every fixture carries one, and
+ * `effectiveFor` builds the shape the server actually returns.
+ */
+function effectiveFor(
+  mode: "DISABLED" | "ADMIN_REVIEW_REQUIRED" | "ENFORCED",
+  modeSource: "LODGE" | "CLUB_WIDE" | "BUILT_IN_DEFAULT",
+) {
+  return {
+    mode,
+    modeSource,
+    hostScopes: { sameBooking: true, sameBookingOwner: false },
+    hostScopeSource: "BUILT_IN_DEFAULT" as const,
+    preview: "Preview sentence.",
+  };
+}
+
 const UNCONFIGURED_CLUB = {
   scopeKey: "club-wide",
   lodgeId: null,
   mode: "DISABLED",
   capacityMode: null,
+  hostScopes: null,
   version: 0,
   configured: false,
+  effective: effectiveFor("DISABLED", "BUILT_IN_DEFAULT"),
 };
 
 const CONFIGURED_CLUB = {
@@ -66,8 +87,10 @@ const CONFIGURED_CLUB = {
   lodgeId: null,
   mode: "ADMIN_REVIEW_REQUIRED",
   capacityMode: "HOLD",
+  hostScopes: null,
   version: 4,
   configured: true,
+  effective: effectiveFor("ADMIN_REVIEW_REQUIRED", "CLUB_WIDE"),
 };
 
 function json(body: unknown, status = 200) {
@@ -155,6 +178,9 @@ describe("adult-member hosting settings card (#2364)", () => {
     expect(JSON.parse(String(put[1]!.body))).toEqual({
       mode: "DISABLED",
       capacityMode: "HOLD",
+      // #2569 — always sent, including null: null IS "inherit the club's choice",
+      // so omitting it would leave the route guessing.
+      hostScopes: null,
       version: 4,
     });
     // Re-seeded from the RESPONSE: revision 5, not the 4 that was submitted.
@@ -183,6 +209,7 @@ describe("adult-member hosting settings card (#2364)", () => {
     expect(JSON.parse(String(put[1]!.body))).toEqual({
       mode: "DISABLED",
       capacityMode: "HOLD",
+      hostScopes: null,
     });
   });
 
@@ -194,8 +221,10 @@ describe("adult-member hosting settings card (#2364)", () => {
             lodgeId: "lodge-1",
             mode: "INHERIT",
             capacityMode: "NO_HOLD",
+            hostScopes: null,
             version: 2,
             configured: true,
+            effective: effectiveFor("ADMIN_REVIEW_REQUIRED", "CLUB_WIDE"),
           })
         : json(CONFIGURED_CLUB),
     );
@@ -240,6 +269,68 @@ describe("adult-member hosting settings card (#2364)", () => {
     ).toBeTruthy();
     const edit = await screen.findByRole("button", { name: "Edit" });
     expect(edit.hasAttribute("disabled")).toBe(true);
+  });
+
+  it("lets an admin switch to a custom set and tick same-owner coverage (#2576)", async () => {
+    // Both checkboxes are live. The scope was previously rendered disabled with
+    // "not available yet" beside it, because nothing could evaluate it; #2576
+    // replaced that planned workflow with this narrower same-account rule, which
+    // the settings surface carries in full.
+    const fetchMock = await renderWith(async (url, init) => {
+      if (init?.method === "PUT") {
+        return json({
+          ...CONFIGURED_CLUB,
+          hostScopes: { sameBooking: true, sameBookingOwner: true },
+          version: 5,
+        });
+      }
+      return json(CONFIGURED_CLUB);
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+
+    const sameOwner = screen.getByLabelText(
+      /Another booking on the same account/,
+    ) as HTMLInputElement;
+    // Inherit is selected, so the boxes are inert until the admin takes the
+    // decision for this scope.
+    expect(sameOwner.disabled).toBe(true);
+
+    fireEvent.change(screen.getByLabelText(/Adult members who count/), {
+      target: { value: "CUSTOM" },
+    });
+    expect(sameOwner.disabled).toBe(false);
+    fireEvent.click(sameOwner);
+    fireEvent.click(screen.getByRole("button", { name: /Save Hosting Policy/ }));
+
+    await waitFor(() =>
+      expect(screen.getByText(/Adult-member hosting policy saved/)).toBeTruthy(),
+    );
+    const put = fetchMock.mock.calls.find(([, init]) => init?.method === "PUT")!;
+    expect(JSON.parse(String(put[1]!.body))).toEqual({
+      mode: "ADMIN_REVIEW_REQUIRED",
+      capacityMode: "HOLD",
+      hostScopes: { sameBooking: true, sameBookingOwner: true },
+      version: 4,
+    });
+  });
+
+  it("keeps Save unreachable for a custom set with nobody ticked (#2569 §16)", async () => {
+    await renderWith(async () => json(CONFIGURED_CLUB));
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    fireEvent.change(screen.getByLabelText(/Adult members who count/), {
+      target: { value: "CUSTOM" },
+    });
+    // The seed is the effective set, so same-booking starts ticked. Untick it and
+    // the set says "these are this scope's own rules, and nobody counts", which is
+    // only ever a description of Disabled.
+    fireEvent.click(
+      screen.getByLabelText(/Eligible adult member on the same booking/),
+    );
+    expect(
+      screen
+        .getByRole("button", { name: /Save Hosting Policy/ })
+        .hasAttribute("disabled"),
+    ).toBe(true);
   });
 
   it("surfaces a 409 and reloads the authoritative row", async () => {

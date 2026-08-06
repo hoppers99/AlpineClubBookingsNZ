@@ -489,6 +489,7 @@ export interface PolicyExceptionApprovalHooks {
   evaluateCurrentViolations(
     snapshot: ExceptionProposalSnapshot,
     tx: PrismaTransactionClient,
+    request: LoadedPolicyExceptionRequest,
   ): Promise<PolicyExceptionViolation[]>;
   /** NO_HOLD capacity recheck against the frozen proposal, under the per-lodge
    * lock already held. `ok: false` keeps the request PENDING with `message`. */
@@ -742,7 +743,7 @@ export async function approveAndExecutePolicyExceptionRequest(params: {
         return { outcome: "proposalDrift", message: PROPOSAL_TAMPERED_MESSAGE };
       }
       const reviewed = reviewedViolationsFromEvidence(evidence);
-      const current = await hooks.evaluateCurrentViolations(snapshot, tx);
+      const current = await hooks.evaluateCurrentViolations(snapshot, tx, request);
       const drift = classifyPolicyExceptionDrift(reviewed, current);
       if (!drift.executable) {
         return {

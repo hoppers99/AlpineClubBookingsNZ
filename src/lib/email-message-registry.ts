@@ -546,6 +546,13 @@ const REQUIRED_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, string[]>
   // that dropped it would tell a member their request is gone with no reason,
   // which is the whole gap this notice exists to close.
   "policy-exception-request-expired": ["checkIn", "checkOut", "expiresAt"],
+  // #2576: the loss-of-cover notice. All three tokens are load-bearing and an
+  // override that dropped any of them would leave a member unable to act. The
+  // stay dates say WHICH booking (a member can hold several at one lodge), and
+  // {{uncoveredNights}} says exactly which nights need an adult member — without
+  // it the message is "something is wrong with your booking", which is the alarm
+  // without the instruction.
+  "hosting-coverage-lost": ["checkIn", "checkOut", "uncoveredNights"],
 };
 
 const TEMPLATE_TRIGGER_METADATA: Partial<
@@ -885,6 +892,12 @@ const TEMPLATE_TRIGGER_METADATA: Partial<
       "A member guest came OFF a booking somebody else made — a consent request nobody had answered yet was called off, a settled member guest was taken off, or the booking-request pipeline swapped them out at approval (MG4-D-b). One template for all three; the composed opening sentence says which. NOT sent when a request simply lapses on its own — that is member-guest-consent-expired",
     frequency:
       "Once per member guest removed from a booking they had been told about. Ignores the per-action notify tick and the member's notification preferences (D-16); still withheld by the per-booking 'No emails' switch",
+  },
+  "hosting-coverage-lost": {
+    triggerSummary:
+      "A CONFIRMED booking at an enforcing lodge lost the adult-member cover the club requires, because an officer deliberately overrode the refusal or an authoritative change removed the cover (a membership lapsing, an administrative cancellation, a lifecycle transition). The booking is NOT cancelled and keeps its beds and payments (#2576)",
+    frequency:
+      "Once per materially distinct uncovered state, sent AFTER the causing change has committed and claimed against the incident so a repeated reconciliation of the same unchanged problem sends nothing. Not gated on a personal notification preference — it reports something done to the member's booking that they have no other signal of; still withheld by the per-booking 'No emails' switch",
   },
   "booking-policy-exception-refused": {
     triggerSummary:
@@ -1642,6 +1655,10 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "triggeringMemberName",
   // #2550: how many of the party still carry a generated placeholder name.
   "unnamedGuestCount",
+  // #2576: the NZ lodge-nights on which a booking's non-member guests have no
+  // qualifying adult member staying. A comma-separated list, formatted by the
+  // sender, so a club's override can put it wherever the sentence reads best.
+  "uncoveredNights",
   "verifyUrl",
   "windowHours",
   // MG4 (#2309): the withdrawal notice's two composed blocks — what happened,

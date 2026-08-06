@@ -15,6 +15,11 @@ import {
 import { deleteOwnedMemberPhotoBlobs } from "@/lib/member-photo";
 import { memberDisplayName } from "@/lib/member-serialization";
 import { prisma } from "@/lib/prisma";
+import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
+import {
+  enqueueHostingCoverageReevaluationForMember,
+  enqueueOwnHostingCoverageReevaluation,
+} from "@/lib/adult-member-hosting-review";
 import logger from "@/lib/logger";
 
 /**
@@ -189,6 +194,23 @@ export const MEMBER_MERGE_RELATION_SPECS: readonly MemberMergeRelationSpec[] = [
   // with the surviving member and the audit trail stays readable.
   spec("Booking", "noEmailsBy", "noEmailsByMemberId", "move"),
   spec("BookingGuest", "member", "memberId", "move"),
+  // #2576: the officer who overrode a same-owner coverage refusal, and the
+  // mandatory reason they gave. The same shape and the same reasoning as
+  // `adultMemberHostingReviewedBy` above — an actor back-reference with no
+  // member-scoped unique constraint — so it `move`s and "who let this through"
+  // stays answerable after a merge.
+  spec(
+    "HostingCoverageIncident",
+    "overriddenBy",
+    "overriddenByMemberId",
+    "move",
+  ),
+  // #2576: queued, unprocessed re-evaluation work for one booking OWNER. Moves
+  // rather than cascading, and that is load-bearing: the loser's bookings move to
+  // the master in the same merge, so work left pointing at the loser would find
+  // no bookings and a genuinely uncovered stay would never be noticed. There is
+  // no member-scoped unique constraint, so a move can never collide.
+  spec("HostingCoverageReevaluation", "member", "memberId", "move"),
   spec("GroupBooking", "organiserMember", "organiserMemberId", "move"),
   spec("GroupBookingJoin", "joinerMember", "joinerMemberId", "resolve", {
     note: "@@unique(groupBookingId,joinerMemberId)",
@@ -2106,7 +2128,7 @@ export async function executeMemberMerge(params: {
     );
   }
 
-  return client.$transaction(async (tx) => {
+  const result = await client.$transaction(async (tx) => {
     // Dual advisory lock in sorted id order (deadlock-free) on the shared
     // member-lifecycle key space, so a merge serialises with any concurrent
     // delete/archive/merge touching either member.
@@ -2187,6 +2209,10 @@ export async function executeMemberMerge(params: {
 
     // Collect a bounded moved-id sample BEFORE mutating.
     const movedIdSample = await collectMovedIdSample(tx, masterId, loserId);
+    const loserOwnedBookingIds = await tx.booking.findMany({
+      where: { memberId: loserId },
+      select: { id: true },
+    });
 
     // 1) Null master self-relation cycles first — value-conditionally: a
     // pointer that moved since the snapshot refuses here with the family-link
@@ -2454,6 +2480,20 @@ export async function executeMemberMerge(params: {
       });
     }
 
+    // Booking ownership and member-guest attendance were both repointed by the
+    // generic relation move. Record the surviving identity's attendance and each
+    // booking whose account owner moved before deleting the loser.
+    await enqueueHostingCoverageReevaluationForMember(masterId, tx, {
+      cause: "SYSTEM_CHANGE",
+      actorMemberId,
+    });
+    for (const booking of loserOwnedBookingIds) {
+      await enqueueOwnHostingCoverageReevaluation(booking.id, tx, {
+        cause: "SYSTEM_CHANGE",
+        actorMemberId,
+      });
+    }
+
     // 8) Hard-delete the loser (cascade drops its auth/token rows).
     await tx.member.delete({ where: { id: loserId } });
 
@@ -2478,6 +2518,8 @@ export async function executeMemberMerge(params: {
     timeout: 120_000,
     maxWait: 10_000,
   }).catch((error) => refuseMergeOrRethrow(client, refusalContext, error));
+  await settleHostingCoverageAfterCommit({ limit: 50 }, client);
+  return result;
 }
 
 function getRequestContext(request: Request) {

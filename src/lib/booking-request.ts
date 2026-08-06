@@ -31,6 +31,7 @@ import {
 } from "@prisma/client";
 import { z } from "zod";
 import { hashActionToken, issueActionToken } from "@/lib/action-tokens";
+import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
 import { reconcileAdultMemberHostingReviewWithSiblings } from "@/lib/adult-member-hosting-review";
 import { logAudit } from "@/lib/audit";
 import { cancelBooking } from "@/lib/booking-cancel";
@@ -2222,9 +2223,18 @@ export async function approveBookingRequest(input: {
       //
       // The review opens PENDING, never APPROVED: the admin approved the
       // REQUEST, which is not the same act as accepting a hosting exception with
-      // a reason attached (D-R4). Approval is not blocked — hosting is a review,
-      // not a refusal — so the requester gets their booking and the club gets
-      // the review.
+      // a reason attached (D-R4). Under the REVIEW consequence the approval is not
+      // blocked — the requester gets their booking and the club gets the review.
+      //
+      // #2569: under the ENFORCED consequence it IS blocked, and deliberately so.
+      // A public request is an all-non-member party owned by a non-login contact,
+      // which is precisely the booking a lodge set to "stop uncovered bookings"
+      // has said it will not take. The throw rolls this approval back and the
+      // route answers the officer with the rule that stopped it; their remedies
+      // are to put a qualifying adult member in the party, move the request to
+      // another lodge, or change the lodge's setting. School and organisation
+      // requests are exempt (§13) and pass `enforcement: "REVIEW_ONLY"` in
+      // `school-booking-request.ts`; this general path is not one of them.
       await reconcileAdultMemberHostingReviewWithSiblings(booking.id, tx);
 
       await tx.payment.create({
@@ -2273,6 +2283,17 @@ export async function approveBookingRequest(input: {
       return { type: "capacityExceeded", fullNights: capacityFullNights };
     }
     throw err;
+  }
+
+
+  // #2576 §7. Every path that can ENQUEUE bounded re-evaluation work must also
+  // drain it: a queue row with nobody draining it turns the owner's "immediate
+  // re-evaluation" into "within three hours", which is how long an officer-created
+  // booking that has just RESTORED cover would leave a critical incident standing,
+  // or one that removed it would leave the owner un-notified. Best-effort and
+  // scoped to this booking's owner; the cron sweep is the authority on completion.
+  if (!conversion.alreadyConverted) {
+    await settleHostingCoverageAfterCommit({ bookingId: conversion.bookingId });
   }
 
   // On the idempotent replay path the tx body was skipped, so no new booking,

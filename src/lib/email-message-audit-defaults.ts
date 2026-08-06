@@ -471,6 +471,10 @@ const EMAIL_AUDIT_DEFAULTS_BASE = {
     "defaultSubject": "The request to add you to a lodge booking has lapsed",
     "defaultBody": "That request has lapsed\n\nHi {{firstName}}, the request from {{bookerName}} to add you to a booking at {{CLUB_LODGE_NAME}} on {{checkIn}} - {{checkOut}} has lapsed, and the bed that was held for you has been released.\n\nYou do not need to do anything. If you did want to come, ask {{bookerName}} to add you again."
   },
+  "hosting-coverage-lost": {
+    "defaultSubject": "Your booking needs adult member cover - {{CLUB_LODGE_NAME}}",
+    "defaultBody": "Your booking needs adult member cover\n\nHi {{firstName}}, a change elsewhere means your booking at {{CLUB_LODGE_NAME}} no longer has a qualifying adult member staying on every night your non-member guests are there.\n\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nNights needing cover: {{uncoveredNights}}\n\nYour booking has not been cancelled and your beds and payments are unchanged. A Booking Officer has been notified and will be in touch.\n\nYou can fix it yourself by adding adult member cover for those nights, by changing the affected booking, or by asking a Booking Officer to approve an exception. If you have any questions, contact the club at {{SUPPORT_EMAIL}}."
+  },
   "booking-policy-exception-refused": {
     "defaultSubject": "Your request was not approved - {{CLUB_LODGE_NAME}}",
     "defaultBody": "Your request was not approved\n\nHi {{firstName}}, a Booking Officer has looked at {{askDescription}} at {{CLUB_LODGE_NAME}} and decided not to allow it this time.\n\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\n\n{{reasonLine}}\n\nNothing was booked and nothing was changed. Any beds this request was holding have gone back into the pool.\n\nYou can ask again with different dates or a different party. Your requests are listed under My booking-rule requests on your My Bookings page.\n\nIf you would like to talk it through, contact the club at {{SUPPORT_EMAIL}}."

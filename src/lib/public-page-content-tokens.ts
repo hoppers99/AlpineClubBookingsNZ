@@ -5,6 +5,7 @@ import { APP_CURRENCY } from "@/config/operational";
 import { normalizeCancellationRule } from "@/lib/cancellation-rules";
 import { resolvePolicyRowsForLodge } from "@/lib/lodges";
 import {
+  hostingModeIsActive,
   resolveAdultMemberHostingPolicy,
   type AdultMemberHostingPolicyLike,
 } from "@/lib/policies/adult-member-hosting";
@@ -615,6 +616,8 @@ export async function loadPublicBookingPolicy(slug?: string): Promise<PublicBook
         mode: true,
         capacityMode: true,
         version: true,
+        hostScopeSameBooking: true,
+        hostScopeSameBookingOwner: true,
       },
     }),
   ]);
@@ -674,14 +677,30 @@ function publicAdultMemberHostingCopy(
   rows: AdultMemberHostingPolicyLike[],
   lodgeId: string | null,
 ): string | null {
-  const mode = lodgeId
-    ? resolveAdultMemberHostingPolicy(rows, lodgeId).mode
-    : (rows.find((row) => row.lodgeId === null)?.mode ?? "DISABLED");
-  if (mode !== "ADMIN_REVIEW_REQUIRED") return null;
-  return (
-    "Non-member guests are asked to stay with an adult member on the same " +
-    "booking. A booking without one is still made, and the club looks at it."
-  );
+  // A page with no lodge is resolved against a sentinel that matches no lodge
+  // row, so the club-wide row and the built-in default are the only possible
+  // answers — the same reading the previous direct row lookup gave, and it also
+  // yields the resolved host-scope set the copy below needs.
+  const resolved = resolveAdultMemberHostingPolicy(rows, lodgeId ?? "__club-wide__");
+  if (!hostingModeIsActive(resolved.mode)) return null;
+
+  // WORDED FOR THE SCOPES ACTUALLY IN FORCE, so the public sentence cannot
+  // promise a narrower rule than the club applies. A club on the built-in default
+  // takes the first branch; the second is the honest public wording once same-owner
+  // coverage is switched on, and it deliberately does not mention accounts or
+  // bookings — a public page is read by people who have neither.
+  const coverage =
+    resolved.hostScopes.sameBooking && !resolved.hostScopes.sameBookingOwner
+      ? "to stay with an adult member on the same booking"
+      : "to be covered by an adult member staying at the lodge";
+
+  // The consequence, and nothing beyond it. Still no invitation to request an
+  // exception and no promise of an outcome — see the note above.
+  return resolved.mode === "ADMIN_REVIEW_REQUIRED"
+    ? `Non-member guests are asked ${coverage}. A booking without one is still ` +
+        "made, and the club looks at it."
+    : `Non-member guests are asked ${coverage}. A booking without one is not ` +
+        "confirmed until it is corrected or the club decides otherwise.";
 }
 
 export async function loadPublicCancellationPolicy(slug?: string): Promise<PublicCancellationPolicy | null> {

@@ -8,6 +8,7 @@ import {
 import { checkCapacityForGuestRanges } from "@/lib/capacity";
 import { hasAdminAreaAccess } from "@/lib/admin-permissions";
 import { MEMBER_ACCESS_ROLE_SELECT } from "@/lib/access-role-definitions";
+import { resolveHostingCoverageIncidents } from "@/lib/adult-member-hosting-coverage-incidents";
 import { recordAdultMemberHostingReviewDecision } from "@/lib/adult-member-hosting-review";
 import { createConfirmedBooking } from "@/lib/booking-create";
 import { modifyBookingBatch } from "@/lib/booking-batch-modification-service";
@@ -36,6 +37,7 @@ import {
 import type { GuestStayRange } from "@/lib/booking-guest-stay-ranges";
 import type { PrismaTransactionClient } from "@/lib/db-transaction";
 import type { BookingModificationSettlementMethod } from "@/lib/booking-modify-validation";
+import type { HostingCoverageOverrideInput } from "@/lib/adult-member-hosting-same-owner";
 import {
   CAPACITY_CONFLICT_MESSAGE,
   type ConfirmedOverride,
@@ -379,6 +381,12 @@ export interface PolicyExceptionApprovalContext {
    */
   settlementMethod?: BookingModificationSettlementMethod;
   /**
+   * A second-step Booking Officer acknowledgement for same-owner bookings that
+   * the approved modification would strand. Separate from `adminNotes`: this is
+   * private operational authority and its own mandatory reason.
+   */
+  hostingCoverageOverride?: HostingCoverageOverrideInput | null;
+  /**
    * The member's own words from the request. Carried through as the booking's
    * `memberReviewJustification` so an adult-supervision review this approval
    * opens (see `reviewedMemberProposal`) records why the MEMBER says they are
@@ -440,11 +448,21 @@ export function buildPolicyExceptionApprovalHooks(
     async evaluateCurrentViolations(
       snapshot: ExceptionProposalSnapshot,
       tx: PrismaTransactionClient,
+      request: LoadedPolicyExceptionRequest,
     ): Promise<PolicyExceptionViolation[]> {
       // The SAME evaluator the request froze its evidence with, run on `tx`
       // against today's policy configuration. Any difference is a genuine
       // policy-config change, which #2525's drift gate classifies.
-      return evaluateProposalPartyViolations(tx, snapshot.lodgeId, snapshot.proposed);
+      return evaluateProposalPartyViolations(
+        tx,
+        snapshot.lodgeId,
+        snapshot.proposed,
+        {
+          requestedByMemberId: request.requestedByMemberId,
+          bookingId:
+            snapshot.kind === "MODIFICATION" ? snapshot.bookingId : null,
+        },
+      );
     },
 
     async recheckCapacity(snapshot, tx) {
@@ -665,6 +683,7 @@ async function executeApprovedModification(args: {
         ...(guest.memberId ? { memberId: guest.memberId } : {}),
         stayStart: guest.stayStart ?? null,
         stayEnd: guest.stayEnd ?? null,
+        nights: guest.nights ?? null,
       })),
       removeGuestIds: delta.removeGuestIds,
       guestStayRanges: delta.guestStayRanges,
@@ -676,6 +695,17 @@ async function executeApprovedModification(args: {
       notifyMember: true,
     },
     ipAddress: context.ipAddress,
+    ...(overridesAdultMemberHosting(override)
+      ? {
+          approvedExceptionAdultMemberHostingDecision: {
+            reason: overrideReason,
+            byMemberId: context.actorMemberId,
+          },
+        }
+      : {}),
+    ...(context.hostingCoverageOverride
+      ? { hostingCoverageOverride: context.hostingCoverageOverride }
+      : {}),
     tx,
   });
 
@@ -693,6 +723,30 @@ async function executeApprovedModification(args: {
       tx,
       { reason: overrideReason, byMemberId: context.actorMemberId },
     );
+
+    // #2576 §7's third automatic resolution: "the incident should resolve
+    // automatically if ... a valid policy exception is approved". Without this the
+    // approval was undone on the next pass — the drain tests only whether the
+    // hazard is gone, and an approved exception AUTHORISES the hazard rather than
+    // removing it, so an officer who had just decided these exact uncovered nights,
+    // with a reason, had a `critical` incident re-affirmed against their own
+    // decision, permanently, with no route or UI able to clear it.
+    //
+    // In this transaction, alongside the decision it belongs to, and guarded on
+    // `resolvedAt: null` so a replayed approval closes nothing twice. The decision
+    // itself is a guarded PENDING → APPROVED claim, so a hazard that has since
+    // changed materially reopens as PENDING and this resolution does not apply to
+    // it.
+    if (outcome.hostingDecisionRecorded) {
+      await resolveHostingCoverageIncidents(
+        {
+          bookingId: snapshot.bookingId,
+          resolution: "EXCEPTION_APPROVED",
+          actorMemberId: context.actorMemberId,
+        },
+        tx,
+      );
+    }
   }
 
   // Persist the officer's notes on the decided request, in the same transaction.

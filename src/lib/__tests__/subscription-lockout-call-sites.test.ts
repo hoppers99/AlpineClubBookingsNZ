@@ -429,6 +429,14 @@ describe("the sixth refusal site, and the paths that were missing (#2543)", () =
 });
 
 describe("the booking OWNER reaches every evaluation (#2543, owner decision 3 Aug 2026)", () => {
+  function paidUpEvaluationCalls(source: string): string[] {
+    return (
+      source.match(
+        /evaluateNonMemberPricingRequirements\([\s\S]*?\n\s*\}\);/g,
+      ) ?? []
+    );
+  }
+
   // The paid-up-adult requirement now fires when the booking OWNER is an
   // unfinancial member, whether or not they stay. That is a property of a SET of
   // call sites, not of behaviour: a path that forgets to pass the owner still
@@ -472,12 +480,18 @@ describe("the booking OWNER reaches every evaluation (#2543, owner decision 3 Au
     "%s passes the booking owner it already holds",
     (name, file, ownerExpression) => {
       const source = readRepoFile(file);
-      const calls = source.split("evaluateNonMemberPricingRequirements(").length - 1;
-      const owners = source.split("bookingOwnerMemberId:").length - 1;
+      const calls = paidUpEvaluationCalls(source);
 
-      expect(calls, name).toBeGreaterThan(0);
-      expect(owners, name).toBe(calls);
-      expect(source, name).toContain(`bookingOwnerMemberId: ${ownerExpression}`);
+      expect(calls.length, name).toBeGreaterThan(0);
+      expect(
+        calls.every((call) => call.includes("bookingOwnerMemberId:")),
+        name,
+      ).toBe(true);
+      expect(calls, name).toEqual(
+        expect.arrayContaining([
+          expect.stringContaining(`bookingOwnerMemberId: ${ownerExpression}`),
+        ]),
+      );
     },
   );
 
@@ -485,13 +499,18 @@ describe("the booking OWNER reaches every evaluation (#2543, owner decision 3 Au
     // The confirm is where the refusal lives; the offer reads only the rate notice
     // and is threaded so the two cannot drift.
     const source = readRepoFile("src/lib/waitlist.ts");
-    const calls = source.split("evaluateNonMemberPricingRequirements(").length - 1;
-    const owners = source.split("bookingOwnerMemberId:").length - 1;
+    const calls = paidUpEvaluationCalls(source);
 
-    expect(calls).toBe(2);
-    expect(owners).toBe(calls);
-    expect(source).toContain("bookingOwnerMemberId: offerKind.memberId");
-    expect(source).toContain("bookingOwnerMemberId: offerDetails.memberId");
+    expect(calls).toHaveLength(2);
+    expect(calls.every((call) => call.includes("bookingOwnerMemberId:"))).toBe(
+      true,
+    );
+    expect(calls).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("bookingOwnerMemberId: offerKind.memberId"),
+        expect.stringContaining("bookingOwnerMemberId: offerDetails.memberId"),
+      ]),
+    );
   });
 
   it("the cross-lodge promotion passes the owner too", () => {
@@ -502,12 +521,12 @@ describe("the booking OWNER reaches every evaluation (#2543, owner decision 3 Au
     // cross-lodge twin unfixed would mean the answer depended on which lodge the
     // sweep happened to offer.
     const source = readRepoFile("src/lib/waitlist-cross-lodge.ts");
-    const calls = source.split("evaluateNonMemberPricingRequirements(").length - 1;
-    const owners = source.split("bookingOwnerMemberId:").length - 1;
+    const calls = paidUpEvaluationCalls(source);
 
-    expect(calls).toBe(1);
-    expect(owners).toBe(calls);
-    expect(source).toContain("bookingOwnerMemberId: preflight.memberId");
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toContain(
+      "bookingOwnerMemberId: preflight.memberId",
+    );
   });
 
   it("the exception-request re-evaluation resolves the owner server-side, so the widened door opens", () => {
@@ -518,7 +537,13 @@ describe("the booking OWNER reaches every evaluation (#2543, owner decision 3 Au
     // so the requester is who would own it.
     const source = readRepoFile("src/lib/booking-exception-request-service.ts");
     expect(source).toContain(
-      "bookingOwnerMemberId: await resolveProposalBookingOwner(db, presence)",
+      "const bookingOwnerMemberId = await resolveProposalBookingOwner(db, presence)",
+    );
+    expect(source).toMatch(
+      /evaluateProposedAdultMemberHosting\([\s\S]*?bookingOwnerMemberId,/,
+    );
+    expect(source).toMatch(
+      /evaluateProposedPaidUpAdultPresence\([\s\S]*?bookingOwnerMemberId,/,
     );
     expect(source).toContain("async function resolveProposalBookingOwner(");
     expect(source).toContain("select: { memberId: true }");

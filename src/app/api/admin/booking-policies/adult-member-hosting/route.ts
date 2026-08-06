@@ -11,6 +11,12 @@ import {
   STALE_ADULT_MEMBER_HOSTING_POLICY_MESSAGE,
   lockAdultMemberHostingPolicySet,
 } from "@/lib/adult-member-hosting-policy-set";
+import {
+  describeAdultMemberHostingPolicy,
+  hostScopeSetIsEmpty,
+  resolveAdultMemberHostingPolicy,
+  type AdultMemberHostScopeSet,
+} from "@/lib/policies/adult-member-hosting";
 
 /**
  * Adult-member hosting policy administration (#2364).
@@ -26,8 +32,33 @@ import {
 
 const CLUB_SCOPE_KEY = "club-wide";
 
+/**
+ * The host-qualification scope set as the card sends it (#2569 §2).
+ *
+ * `null` is the explicit `Inherit club host scopes` option — for a LODGE it means
+ * "follow whatever the club decides", and for the CLUB it means "we have not
+ * decided", which resolves to the built-in same-booking-only default. It is stored
+ * as both columns NULL, which the database CHECK holds together.
+ *
+ * ABSENT is treated as `null` as well, so a caller that predates #2569 (and the
+ * route tests written against it) keeps its exact meaning: no scope decision on
+ * this row.
+ *
+ * STRICT, so a body naming a scope this build does not have — including the two
+ * the owner removed from the model (#2575, #2576) — is a 400 rather than a silently
+ * dropped key that would save a set the operator did not choose.
+ */
+const hostScopesSchema = z
+  .object({
+    sameBooking: z.boolean(),
+    sameBookingOwner: z.boolean(),
+  })
+  .strict()
+  .nullable();
+
 const writeSchema = z.object({
-  mode: z.enum(["INHERIT", "DISABLED", "ADMIN_REVIEW_REQUIRED"]),
+  mode: z.enum(["INHERIT", "DISABLED", "ADMIN_REVIEW_REQUIRED", "ENFORCED"]),
+  hostScopes: hostScopesSchema.optional(),
   // Required on EVERY write, with no server-side default (epic decision D-R6:
   // capacity mode is per policy and explicit for new policies). The column has
   // no database default either, so there is nowhere for an unstated value to
@@ -55,27 +86,82 @@ export async function GET(request: NextRequest) {
   if (!guard.ok) return guard.response;
 
   const lodgeId = request.nextUrl.searchParams.get("lodgeId");
-  const policy = await prisma.adultMemberHostingPolicy.findUnique({
-    where: { scopeKey: scopeKeyFor(lodgeId) },
+  // BOTH candidate rows, not just this scope's: #2569 §16 requires the card to
+  // show whether each dimension is inherited or overridden and what the EFFECTIVE
+  // answer is, and only the resolver can say that — computing it in the component
+  // from one row would be a second implementation of the inheritance rule.
+  const rows = await prisma.adultMemberHostingPolicy.findMany({
+    where: { OR: [{ lodgeId }, { lodgeId: null }] },
   });
-
-  if (policy) {
-    return NextResponse.json({ ...policy, configured: true });
-  }
+  const policy = rows.find((row) => row.scopeKey === scopeKeyFor(lodgeId)) ?? null;
 
   return NextResponse.json({
-    scopeKey: scopeKeyFor(lodgeId),
-    lodgeId: lodgeId ?? null,
-    // An unconfigured LODGE inherits; an unconfigured CLUB has the requirement
-    // off. Neither is a stored row, and `configured: false` says so.
-    mode: lodgeId ? "INHERIT" : "DISABLED",
-    // Deliberately null rather than a plausible-looking mode: the admin has to
-    // choose one before the first save, and pre-filling the field would be the
-    // hidden default D-R6 rules out.
-    capacityMode: null,
-    version: 0,
-    configured: false,
+    ...(policy
+      ? { ...policy, hostScopes: storedHostScopes(policy), configured: true }
+      : {
+          scopeKey: scopeKeyFor(lodgeId),
+          lodgeId: lodgeId ?? null,
+          // An unconfigured LODGE inherits; an unconfigured CLUB has the
+          // requirement off. Neither is a stored row, and `configured: false`
+          // says so.
+          mode: lodgeId ? "INHERIT" : "DISABLED",
+          // Deliberately null rather than a plausible-looking mode: the admin has
+          // to choose one before the first save, and pre-filling the field would
+          // be the hidden default D-R6 rules out.
+          capacityMode: null,
+          // Nothing decided on this row, which is the inherit option.
+          hostScopes: null,
+          version: 0,
+          configured: false,
+        }),
+    effective: effectiveView(rows, lodgeId),
   });
+}
+
+/** The stored scope set, or null where this row did not decide (#2569 §2). */
+function storedHostScopes(policy: {
+  hostScopeSameBooking: boolean | null;
+  hostScopeSameBookingOwner: boolean | null;
+}): AdultMemberHostScopeSet | null {
+  if (
+    policy.hostScopeSameBooking === null ||
+    policy.hostScopeSameBookingOwner === null
+  ) {
+    return null;
+  }
+  return {
+    sameBooking: policy.hostScopeSameBooking,
+    sameBookingOwner: policy.hostScopeSameBookingOwner,
+  };
+}
+
+/**
+ * What is actually in force at this scope, and where each dimension came from
+ * (#2569 §16), plus the plain-English preview.
+ *
+ * Computed by the SAME `resolveAdultMemberHostingPolicy` the booking gates use, so
+ * the card cannot show an effective policy the evaluator disagrees with. For the
+ * club-wide scope there is nothing above it, so `modeSource` can only be
+ * CLUB_WIDE or the built-in default.
+ */
+function effectiveView(
+  rows: Parameters<typeof resolveAdultMemberHostingPolicy>[0],
+  lodgeId: string | null,
+) {
+  // The resolver is per LODGE. There is no lodge for the club-wide card, so it is
+  // resolved against a sentinel that matches no row: the club row and the built-in
+  // default are the only possible answers, which is exactly right for that scope.
+  const resolved = resolveAdultMemberHostingPolicy(
+    rows,
+    lodgeId ?? "__club-wide__",
+  );
+  return {
+    mode: resolved.mode,
+    modeSource: resolved.policyId === null ? "BUILT_IN_DEFAULT" : resolved.resolvedScope.kind,
+    hostScopes: resolved.hostScopes,
+    hostScopeSource: resolved.hostScopeSource,
+    preview: describeAdultMemberHostingPolicy(resolved.mode, resolved.hostScopes),
+  };
 }
 
 export async function PUT(request: NextRequest) {
@@ -110,6 +196,32 @@ export async function PUT(request: NextRequest) {
       { status: 400 },
     );
   }
+
+  const hostScopes = data.hostScopes ?? null;
+  if (hostScopes) {
+    // An explicitly CUSTOM set with nothing ticked has no defensible reading: it
+    // says "these are this scope's own rules, and nobody counts", which is only
+    // ever a description of Disabled. Left storable it would make every
+    // non-member guest-night uncovered, so a Review policy would flag every
+    // booking and an Enforced one would refuse every booking (#2569 §16: prevent
+    // saving an active policy with no host scopes enabled). Refused whatever the
+    // mode is, so the saved selections a Disabled policy keeps for later reuse
+    // are always a set that would actually work when it is turned back on.
+    if (hostScopeSetIsEmpty(hostScopes)) {
+      return NextResponse.json(
+        {
+          error:
+            "Choose at least one kind of adult member who counts, or set this scope to inherit the club's choice.",
+        },
+        { status: 400 },
+      );
+    }
+  }
+
+  const scopeColumns = {
+    hostScopeSameBooking: hostScopes ? hostScopes.sameBooking : null,
+    hostScopeSameBookingOwner: hostScopes ? hostScopes.sameBookingOwner : null,
+  };
 
   const scopeKey = scopeKeyFor(lodgeId);
 
@@ -152,6 +264,7 @@ export async function PUT(request: NextRequest) {
               lodgeId,
               mode: data.mode,
               capacityMode: data.capacityMode,
+              ...scopeColumns,
               version: 1,
             },
           }),
@@ -162,7 +275,14 @@ export async function PUT(request: NextRequest) {
 
       if (
         existing.mode === data.mode &&
-        existing.capacityMode === data.capacityMode
+        existing.capacityMode === data.capacityMode &&
+        // The second dimension is part of "material", or a scope-set-only edit
+        // would be reported as saved while nothing was written — and the
+        // revision trigger, which now compares these columns too, would keep the
+        // old token and leave another admin's editor believing it was current.
+        existing.hostScopeSameBooking === scopeColumns.hostScopeSameBooking &&
+        existing.hostScopeSameBookingOwner ===
+          scopeColumns.hostScopeSameBookingOwner
       ) {
         // Nothing material changed. Return the row untouched rather than write
         // it: the revision trigger would hold the token anyway, but a no-op
@@ -177,6 +297,7 @@ export async function PUT(request: NextRequest) {
         data: {
           mode: data.mode,
           capacityMode: data.capacityMode,
+          ...scopeColumns,
           version: existing.version + 1,
         },
       });
@@ -198,7 +319,7 @@ export async function PUT(request: NextRequest) {
     // answer — and the public page's cache must not be purged for a write that
     // did not happen (#2143).
     if (result.kind === "unchanged") {
-      return NextResponse.json({ ...policy, configured: true });
+      return NextResponse.json(await savedPolicyBody(policy, lodgeId));
     }
 
     logAudit({
@@ -210,12 +331,13 @@ export async function PUT(request: NextRequest) {
         lodgeId,
         mode: policy.mode,
         capacityMode: policy.capacityMode,
+        hostScopes: storedHostScopes(policy),
         version: policy.version,
       }),
     });
 
     revalidatePublicPageContent();
-    return NextResponse.json({ ...policy, configured: true });
+    return NextResponse.json(await savedPolicyBody(policy, lodgeId));
   } catch (error) {
     if (error instanceof StalePolicyError) {
       return NextResponse.json(
@@ -237,4 +359,28 @@ export async function PUT(request: NextRequest) {
       { status: 500 },
     );
   }
+}
+
+/**
+ * The body a save returns: the stored row, its scope set, and a FRESHLY RESOLVED
+ * effective view.
+ *
+ * Re-read rather than derived from the row just written, because the effective
+ * answer at a lodge depends on the club-wide row as well — a lodge saving
+ * `Inherit` has to be told what it is now inheriting, and the component has no
+ * other way to find out without a second request.
+ */
+async function savedPolicyBody(
+  policy: AdultMemberHostingPolicy,
+  lodgeId: string | null,
+) {
+  const rows = await prisma.adultMemberHostingPolicy.findMany({
+    where: { OR: [{ lodgeId }, { lodgeId: null }] },
+  });
+  return {
+    ...policy,
+    hostScopes: storedHostScopes(policy),
+    configured: true,
+    effective: effectiveView(rows, lodgeId),
+  };
 }

@@ -171,25 +171,64 @@ rules — see
 Some clubs want a club member present whenever non-member guests are staying.
 This card asks for that, without ever leaving a member at a dead end.
 
+The card carries **two separate settings**, and they are resolved
+independently: what happens when a night is not covered, and which adult members
+count as covering it. A lodge may override one and inherit the other.
+
 1. Open **Booking Policies → Adult Member Hosting** and click **Edit**.
 2. Choose what happens when a non-member guest is booked on a night with no
-   adult member on the same booking:
+   adult member cover:
 
    - **Allowed — no adult member needed** turns the requirement off. This is
      what a club that has never configured the card already has.
-   - **Send the booking to an admin to review** flags such a booking for you to
-     look at. The booking is still made and can still be paid — nobody is
-     stopped, and nobody has to ring the club.
+   - **Allow the booking, but send it to a Booking Officer to review** flags such
+     a booking for you to look at. The booking is still made and can still be
+     paid — nobody is stopped, and nobody has to ring the club.
+   - **Stop the booking unless it is corrected or an exception is approved**
+     refuses it instead. The member is told which nights are not covered and is
+     offered four ways forward: add adult member cover, change the guests or
+     dates, choose another lodge, or ask a Booking Officer to approve an
+     exception. **An exception request for a new booking holds no beds** — the
+     capacity is checked again when the request is approved, so it can fail then.
+     No upgrade turns this on: a club has to choose it deliberately.
 
-3. Choose **Exception capacity handling**. It has no automatic default, so pick
+3. Choose **Adult members who count**. Either inherit the choice above this scope
+   or make your own, then tick the kinds of adult member that count. They are
+   independent and combine with OR: a night is covered when at least one ticked
+   kind covers it, and different nights of one booking may be covered by
+   different people. Every non-member guest-night has to be covered — partial
+   coverage across the stay is not enough.
+
+   - **Eligible adult member on the same booking** — the rule the club has always
+     had, and the only option a club that has never configured the card is using.
+     It counts a qualifying adult member staying on the booking itself, for the
+     nights they are actually there.
+   - **Another booking on the same account** allows a qualifying adult member on
+     another confirmed booking owned by the same member account to cover the same
+     lodge and the same nights. This is the split-booking case: a member puts their
+     family on one booking and their guests on another, and the adult on the first
+     covers the second. It has to be the same member account — not the same
+     surname, email address or family group, and not the administrator who entered
+     the bookings — and the covering person has to be genuinely attending that
+     exact night at that exact lodge. Turn it on only if your club works that way;
+     a club with one booking per party does not need it.
+
+   The card cannot be saved with your own set and nothing ticked. Turning the
+   requirement off keeps your saved set for later; it just is not applied, and
+   the card says so.
+4. Read the **In force here now** panel before you leave. It states whether each
+   of the two settings is inherited or set here, the values actually in force, and
+   a plain-English preview of the resulting policy. It is computed by the same code
+   the booking gates use, so it cannot disagree with them.
+5. Choose **Exception capacity handling**. It has no automatic default, so pick
    one even while the requirement is off: it is what the club falls back on the
    moment you turn it on. As with minimum stay, this release stores, transfers
    and shows the choice but reserves no beds from it; the request-and-approve
    workflow arrives separately.
-4. With two or more lodges a **Rules for** selector appears. A lodge can follow
+6. With two or more lodges a **Rules for** selector appears. A lodge can follow
    the club ("Use the club-wide setting") or make its own decision. The
    club-wide scope has no inherit option — there is nothing above it.
-5. **Save Hosting Policy** stays greyed out until you have actually changed
+7. **Save Hosting Policy** stays greyed out until you have actually changed
    something, and each save carries the revision you loaded. If another admin or
    a config import saves first, yours is refused and the current settings are
    reloaded; reopen **Edit** and apply your change to those.
@@ -208,6 +247,13 @@ covering; only non-member guest-nights do. If your club would rather that a
 lapsed member still counted as a member for this one rule, say so and it can be
 changed — it is a deliberate choice, not an accident.
 
+**School and organisation bookings are not stopped.** They keep the review
+behaviour whatever the club's consequence says: the uncovered nights are still
+recorded for a Booking Officer, but the booking itself is never refused by this
+policy. Those workflows have their own officer-managed approval and may be
+supervised by teachers, leaders or custodians, which the adult club-member rule
+does not describe.
+
 **When the review goes away.** By itself, as soon as the facts change. Add an
 adult member to the booking, remove the guest, move the nights, reinstate a
 member, or turn the policy off, and the flag clears with no action from you. A
@@ -215,18 +261,71 @@ review you have already decided is only re-raised if the problem genuinely
 changes — different guests or different nights — not because somebody corrected a
 spelling.
 
+**When "another booking on the same account" is on, a change can be refused.**
+This is the one behaviour the wider setting adds beyond coverage itself, and it is
+worth understanding before you turn it on.
+
+Once one of a member's bookings is relying on the adult member staying on another,
+the two are linked in practice. A member who then tries to cancel that other
+booking, move its dates, change its lodge, take the adult member off it, or lose the
+member-guest consent that put them there, is **stopped** with a message naming which
+of their own bookings would be left uncovered, the lodge and the exact nights. They
+are told to sort the affected booking out first, provide other cover, or ring a
+Booking Officer. Nothing is written: their booking is exactly as it was.
+
+Two things it deliberately does NOT do. It never mentions anybody else's booking —
+every booking in that message is on the member's own account, and there is no way
+for another account's booking to appear in it. And it never stops a change that
+leaves alternative cover: if a THIRD booking on the account still has a qualifying
+adult member on those nights, the change goes through and nothing is flagged,
+because the rule asks whether cover exists, not whether one particular person is
+still there.
+
+**You are never stopped, and that is why the incident exists.** An officer's change
+always goes through — you are the authority the member's message points at, so
+refusing you would be circular, and some changes (a membership lapsing, an
+administrative cancellation, a failed payment) cannot sensibly be blocked at all.
+What happens instead:
+
+- the affected booking **stays confirmed**, keeps its beds and keeps its payments.
+  Nothing is ever cancelled automatically;
+- it gets an urgent entry on the **Bookings without required adult member cover**
+  card on the admin dashboard's stuck-state list, which is how anybody finds out;
+- the booking owner is emailed once, naming the lodge and the uncovered nights;
+- the whole thing is in the audit log, with your reason where the screen you used
+  captured one;
+- the entry clears **by itself** when the problem goes away — cover is restored, the
+  booking is amended, an exception is approved, or the booking is cancelled. You do
+  not tick anything off.
+
+Re-running the same check does not re-send the email or duplicate the entry: the
+club tells the owner when the situation actually changes, not every time a background
+job looks at it.
+
 **Booking on behalf of a member.** If the party would trip the rule, you are
 stopped once and asked for a reason. A panel appears on the review step with a
 box for it; type the reason and click **Record the reason and create**. Saving as
 a draft asks the same question in the same place. The reason and your name are
 stored with the booking, so "who let this through, and why" has an answer months
-later. That is the only place the rule refuses anything.
+later.
 
 **Requests you approve.** Approving a public booking request, a school request or
-a member's whole-lodge request never asks you for a reason and is never blocked —
-but because those parties are all non-member guests, the booking appears for
-review just like any other. Approving the request is not the same as accepting
-the hosting exception, so the review stays open until somebody decides it.
+a member's whole-lodge request never asks you for a reason, and under **Allow the
+booking, but send it to a Booking Officer to review** it is never blocked either —
+but because those parties are all non-member guests, the booking appears for review
+just like any other. Approving the request is not the same as accepting the hosting
+exception, so the review stays open until somebody decides it.
+
+Under **Stop the booking unless it is corrected or an exception is approved** the
+picture changes for two of the three. A public booking request and a member's
+whole-lodge request are both stopped: the approval is rolled back untouched and you
+are told which rule stopped it, with no exception link, because you reading the
+message are already the person an exception would be asked of. Your options are to
+put a qualifying adult member in the party, move the request to another lodge, or
+change the lodge's setting. **School and organisation requests are the exception**:
+they keep their current behaviour whatever the consequence says, because they run a
+separate officer-managed process and may be supervised by teachers, organisation
+leaders or custodians who do not map onto the adult club-member rule.
 
 **What the public sees.** When the requirement is on, the public booking-rules
 block states it in one sentence. It says nothing about asking for an exception,
@@ -279,7 +378,8 @@ because there is nowhere to ask yet.
 | Minimum nights | Minimum Stay | Nights required when a trigger day is included | 2 | Minimum 2 |
 | Trigger days | Minimum Stay | Which weekdays activate the rule | Sat | At least one day |
 | Exception capacity handling | Minimum Stay | Whether a future exception request holds the affected capacity while it waits | Existing rows: Hold | Required on create; Hold wins when several eligible rules apply; a hold ends when the request is decided or its deadline passes (7 days, never past the first night held, never under 24 hours) |
-| Non-member guests without an adult member | Adult Member Hosting | Allowed, or sent to an admin to review | Allowed (club); Use the club-wide setting (lodge) | The club-wide scope cannot inherit |
+| Non-member guests without adult member cover | Adult Member Hosting | Allowed; allowed but sent to a Booking Officer; or stopped unless corrected or an exception is approved | Allowed (club); Use the club-wide setting (lodge) | The club-wide scope cannot inherit; no upgrade selects "stopped" |
+| Adult members who count | Adult Member Hosting | Either or both of: on the same booking; on another booking on the same account | Inherit (lodge and club) — the built-in default is "on the same booking" | At least one must be ticked when you set your own; there are two options and no others |
 | Exception capacity handling | Adult Member Hosting | Whether a future exception request holds the affected capacity while it waits | None — you must choose | Required on every save; the same hold deadline applies |
 | Paid-up adult member required | Configured on [Subscription Lockout](subscription-lockout.md), not here | Refuses a booking with no paid-up adult member on it, when either somebody staying is being repriced for an unpaid subscription or the member who made the booking has one | Off (only applies when you choose "let them book, at non-member rates") | Always holds the bed while a request is pending; not configurable |
 | Show indicative pricing | Public Requests | Price shown on the public request form | off | — |

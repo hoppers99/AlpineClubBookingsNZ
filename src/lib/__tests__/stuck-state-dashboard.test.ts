@@ -85,6 +85,12 @@ function buildDeps(overrides?: Partial<StuckStateDashboardDependencies>) {
       paymentRecoveryOperation: {
         count: vi.fn(),
       },
+      // #2576: active same-owner hosting-coverage incidents (the critical officer
+      // card). Zero by default so every existing expectation is unchanged.
+      hostingCoverageIncident: {
+        count: vi.fn().mockResolvedValue(0),
+        findMany: vi.fn().mockResolvedValue([]),
+      },
       booking: {
         findMany: vi.fn().mockResolvedValue([]),
         count: vi.fn().mockResolvedValue(0),
@@ -145,6 +151,10 @@ function buildDeps(overrides?: Partial<StuckStateDashboardDependencies>) {
     db: {
       ...deps.db,
       ...overrides?.db,
+      hostingCoverageIncident: {
+        ...deps.db.hostingCoverageIncident,
+        ...overrides?.db?.hostingCoverageIncident,
+      },
     },
   };
 }
@@ -181,6 +191,10 @@ describe("getStuckStateDashboard", () => {
     const deps = buildDeps({
       db: {
         paymentRecoveryOperation: { count: paymentCount },
+        hostingCoverageIncident: {
+          count: vi.fn().mockResolvedValue(0),
+          findMany: vi.fn().mockResolvedValue([]),
+        },
         booking: {
           findMany: vi.fn().mockResolvedValue(waitlistBookings),
           // #1349 crash-window detector: cancelled bookings holding a captured
@@ -490,6 +504,12 @@ describe("getStuckStateDashboard", () => {
     const deps = buildDeps({
       db: {
         paymentRecoveryOperation: { count: vi.fn().mockResolvedValue(0) },
+        // #2576: active same-owner hosting-coverage incidents. Zero, so this
+        // suite's expectations are unchanged.
+        hostingCoverageIncident: {
+          count: vi.fn().mockResolvedValue(0),
+          findMany: vi.fn().mockResolvedValue([]),
+        },
         booking: {
           findMany: vi.fn().mockResolvedValue([]),
           count: vi.fn().mockResolvedValue(0),
@@ -529,6 +549,12 @@ describe("getStuckStateDashboard", () => {
     const deps = buildDeps({
       db: {
         paymentRecoveryOperation: { count: vi.fn().mockResolvedValue(0) },
+        // #2576: active same-owner hosting-coverage incidents. Zero, so this
+        // suite's expectations are unchanged.
+        hostingCoverageIncident: {
+          count: vi.fn().mockResolvedValue(0),
+          findMany: vi.fn().mockResolvedValue([]),
+        },
         booking: {
           findMany: vi.fn().mockResolvedValue([]),
           count: bookingCount,
@@ -597,5 +623,59 @@ describe("getStuckStateDashboard", () => {
       owner: "Finance",
       count: 1,
     });
+  });
+
+  it("gives Booking Officers direct rows for unresolved hosting incidents (#2576)", async () => {
+    const findMany = vi.fn().mockResolvedValue([
+      {
+        id: "incident-1",
+        cause: "SYSTEM_CHANGE",
+        openedAt: new Date("2026-06-20T00:00:00.000Z"),
+        evidence: { affectedNights: ["2026-08-02", "2026-08-03"] },
+        booking: {
+          id: "booking-12345678",
+          checkIn: new Date("2026-08-02T00:00:00.000Z"),
+          checkOut: new Date("2026-08-04T00:00:00.000Z"),
+          member: { firstName: "Aroha", lastName: "Ngata" },
+          lodge: { name: "Ruapehu Lodge" },
+        },
+      },
+    ]);
+    const deps = buildDeps({
+      db: {
+        hostingCoverageIncident: {
+          count: vi.fn().mockResolvedValue(1),
+          findMany,
+        },
+      } as never,
+    });
+
+    const dashboard = await getStuckStateDashboard({
+      deps,
+      now: new Date("2026-06-22T00:00:00.000Z"),
+    });
+
+    const item = dashboard.items.find(
+      (candidate) => candidate.id === "booking-hosting-coverage-incidents",
+    );
+    expect(item).toMatchObject({
+      severity: "critical",
+      owner: "Booking Officer",
+      count: 1,
+      href: "/admin/bookings#hosting-coverage-incidents",
+      details: [
+        expect.objectContaining({
+          id: "incident-1",
+          href: "/bookings/booking-12345678",
+        }),
+      ],
+    });
+    expect(findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { resolvedAt: null },
+        orderBy: [{ openedAt: "asc" }, { id: "asc" }],
+        take: 50,
+      }),
+    );
   });
 });

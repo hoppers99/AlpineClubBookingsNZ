@@ -11,6 +11,8 @@ import { prisma } from "@/lib/prisma";
 import { chargePaymentMethod } from "@/lib/stripe";
 import { markBookingPaymentSucceeded } from "@/lib/payment-reconciliation";
 import { upsertPaymentIntentTransaction } from "@/lib/payment-transactions";
+import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
+import { enqueueOwnHostingCoverageReevaluation } from "@/lib/adult-member-hosting-review";
 import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
 import {
   acquireLodgeCapacityLock,
@@ -396,6 +398,20 @@ export async function POST(
         db: tx,
         previousRange,
       });
+      // #2576 §9. "Officer approval" on the owner's list of confirming paths. It is
+      // an OFFICER acting, so §7/§8 apply rather than §6: the confirmation is never
+      // refused, the obligation to re-read the hosting facts is recorded inside this
+      // transaction (under the per-lodge capacity lock the coverage-removing paths
+      // also take, which is what closes the confirm-while-source-removed race), and
+      // an uncovered booking becomes an urgent compliance incident after commit.
+      //
+      // Safe against `releaseChargeClaim` below: an incident is only ever opened for
+      // a booking whose status is confirmed active attendance, so a claim released
+      // back to PENDING when the charge fails drains to nothing.
+      await enqueueOwnHostingCoverageReevaluation(bookingId, tx, {
+        cause: "SYSTEM_CHANGE",
+        actorMemberId: session.user.id,
+      });
       const payment = await tx.payment.upsert({
         where: { bookingId },
         create: {
@@ -430,6 +446,9 @@ export async function POST(
         { status: claim.status }
       );
     }
+
+    // #2576 §9: drain what the claim recorded, now that it has committed.
+    await settleHostingCoverageAfterCommit({ bookingId });
 
     // Mirror of the cron's releaseChargeClaim: only touched while Stripe has
     // NOT captured money. Once a charge succeeds the claim is never released —

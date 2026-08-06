@@ -1,6 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
+import {
+  AdultMemberHostingRequiredError,
+  buildAdultMemberHostingRefusalBody,
+} from "@/lib/adult-member-hosting-review";
+import {
+  SameOwnerCoverageOverrideRequiredError,
+  SameOwnerCoverageWouldBreakError,
+  buildSameOwnerCoverageOverrideRequiredBody,
+  buildSameOwnerCoverageRefusalBody,
+  hostingCoverageOverrideSchema,
+} from "@/lib/adult-member-hosting-same-owner";
 import { ApiError } from "@/lib/api-error";
 import { MinimumStayPolicyViolationError } from "@/lib/booking-policy-exceptions";
 import { auth } from "@/lib/auth";
@@ -42,6 +53,11 @@ const modifyDatesSchema = z
     pricingMode: z.enum(["shift", "recalculate"]).optional(),
     confirmOverCapacity: z.boolean().optional(),
     notifyMember: z.boolean().optional(),
+    // #2576 §7: the officer's explicit confirmation and mandatory reason for
+    // overriding a same-owner coverage refusal. Optional in the shape because the
+    // first submission never carries it — the officer is asked only when the change
+    // would actually strand another booking on the account.
+    hostingCoverageOverride: hostingCoverageOverrideSchema.optional(),
   })
   .refine((d) => d.checkIn || d.checkOut, {
     message: "At least one of checkIn or checkOut is required",
@@ -106,7 +122,8 @@ export async function PUT(
     adminOverride !== undefined ||
     pricingMode !== undefined ||
     confirmOverCapacity !== undefined ||
-    notifyMember !== undefined;
+    notifyMember !== undefined ||
+    parsed.data.hostingCoverageOverride !== undefined;
   if (
     hasOverrideFlags &&
     bookingManagementAuthorizationRole(session.user) !== "ADMIN"
@@ -123,7 +140,9 @@ export async function PUT(
   // still keeps the legacy mapping: a caller boolean cannot flip the standard
   // path's authority (the 403 gate above already required ADMIN for any flag).
   const actorRole =
-    adminOverride === true || notifyMember !== undefined
+    adminOverride === true ||
+    notifyMember !== undefined ||
+    parsed.data.hostingCoverageOverride !== undefined
       ? bookingManagementAuthorizationRole(session.user)
       : authorizationRoleFromAccessRoles(session.user);
   if (adminOverride && !pricingMode) {
@@ -150,6 +169,9 @@ export async function PUT(
         ? await adminShiftBookingDates({
             bookingId,
             actor: { id: session.user.id, role: actorRole },
+            ...(parsed.data.hostingCoverageOverride
+              ? { hostingCoverageOverride: parsed.data.hostingCoverageOverride }
+              : {}),
             input: {
               checkIn: parsed.data.checkIn,
               checkOut: parsed.data.checkOut,
@@ -161,6 +183,9 @@ export async function PUT(
         : await modifyBookingDates({
             bookingId,
             actor: { id: session.user.id, role: actorRole },
+            ...(parsed.data.hostingCoverageOverride
+              ? { hostingCoverageOverride: parsed.data.hostingCoverageOverride }
+              : {}),
             input: parsed.data,
             ipAddress,
           });
@@ -242,6 +267,38 @@ export async function PUT(
           violations: err.violations,
           exceptionReview: err.exceptionReview,
         },
+        { status: err.status },
+      );
+    }
+    // #2569 — the ENFORCED hosting refusal on the DATE path. Tested BEFORE the
+    // generic ApiError branch for the reason the minimum-stay branch above is:
+    // `AdultMemberHostingRequiredError` extends ApiError, so the generic branch
+    // would flatten it to a bare 409 sentence and drop the code, the frozen
+    // violation and the path to ask a Booking Officer — leaving the member refused
+    // with no door. Moving dates is one of the ways a covered booking becomes
+    // uncovered (the adult member's own stay no longer spans the new nights), so
+    // this path refuses as often as the guest paths do. Host identities are
+    // withheld from this body (#2569 §5).
+    if (err instanceof AdultMemberHostingRequiredError) {
+      return NextResponse.json(
+        buildAdultMemberHostingRefusalBody(err.violation),
+        { status: err.status },
+      );
+    }
+    // #2576 §6, and ABOVE the generic ApiError branch below for the same reason
+    // as its neighbour: a date change that would leave another booking on the
+    // member's own account without adult-member cover is refused, and the body is
+    // what names the affected booking, its lodge and the uncovered nights.
+    if (err instanceof SameOwnerCoverageWouldBreakError) {
+      return NextResponse.json(buildSameOwnerCoverageRefusalBody(err), {
+        status: err.status,
+      });
+    }
+    // #2576 §7. The officer is not refused: they are shown which bookings and
+    // nights the change would strand and asked to confirm it with a reason.
+    if (err instanceof SameOwnerCoverageOverrideRequiredError) {
+      return NextResponse.json(
+        buildSameOwnerCoverageOverrideRequiredBody(err),
         { status: err.status },
       );
     }

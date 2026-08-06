@@ -19,6 +19,9 @@ type Outcome =
   | "capacity_full"
   // #2363: the lodge's minimum-stay rules no longer allow this group's dates.
   | "minimum_stay"
+  // #2569: the lodge requires an adult member to cover non-member guests, and
+  // this sign-up has nobody on it who can.
+  | "adult_member_hosting"
   | "error";
 
 interface CreatedDetails {
@@ -59,6 +62,12 @@ export function GroupJoinVerifyPageClient({
         // longer satisfy the lodge's rules, which is not the same story as a
         // group that stopped accepting joins.
         if (data.outcome === "minimum_stay") return setOutcome("minimum_stay");
+        // #2569: its own outcome for the same reason — "this lodge needs an adult
+        // member with you" is a different story from "this group stopped
+        // accepting joins", and it tells the joiner who can fix it.
+        if (data.outcome === "adult_member_hosting") {
+          return setOutcome("adult_member_hosting");
+        }
         return setOutcome("not_joinable");
       }
       if (!res.ok) return setOutcome("error");
@@ -193,6 +202,36 @@ export function GroupJoinVerifyPageClient({
                 Please contact the organiser — the rules for these dates changed
                 after you asked to join. Nothing has been booked and you
                 haven&apos;t been charged.
+              </p>
+            </div>
+          ) : null}
+
+          {outcome === "adult_member_hosting" ? (
+            <div className="space-y-2">
+              <div className="flex items-start gap-2 text-warning-11">
+                <AlertTriangle className="h-6 w-6 shrink-0" />
+                <p className="font-medium">
+                  This lodge asks that non-member guests are covered by an adult
+                  member for every night they stay, so we can&apos;t confirm your
+                  spot on its own.
+                </p>
+              </div>
+              {/*
+                Its own copy, and no echo of the server's `message`, for the same
+                reason the minimum-stay branch above writes its own: the server's
+                sentence is deliberately generic on this unauthenticated page
+                (#2569 §5), and the detail that would add something — which nights
+                are uncovered, and which kinds of adult member the club counts — is
+                never sent here.
+
+                The organiser is named as the way out rather than the exception
+                door: asking a Booking Officer needs a member account, which a
+                non-member joiner does not have.
+              */}
+              <p className="text-sm text-muted-foreground">
+                Please contact the organiser — they can add cover for these
+                nights or ask a Booking Officer to approve it. Nothing has been
+                booked and you haven&apos;t been charged.
               </p>
             </div>
           ) : null}

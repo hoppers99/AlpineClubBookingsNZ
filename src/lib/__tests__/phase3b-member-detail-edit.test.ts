@@ -1,6 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { NextRequest } from "next/server";
 
+const hostingMocks = vi.hoisted(() => ({
+  enqueue: vi.fn().mockResolvedValue(0),
+  settle: vi.fn().mockResolvedValue(undefined),
+}));
+
 vi.mock("@/lib/prisma", () => ({
   prisma: {
     accessRoleDefinition: {
@@ -95,6 +100,12 @@ vi.mock("@/lib/xero", () => ({
   isXeroConnected: vi.fn().mockResolvedValue(false),
   syncManagedXeroContactGroupForMember: vi.fn(),
   updateXeroContact: vi.fn(),
+}));
+vi.mock("@/lib/adult-member-hosting-review", () => ({
+  enqueueHostingCoverageReevaluationForMember: hostingMocks.enqueue,
+}));
+vi.mock("@/lib/adult-member-hosting-coverage-drain", () => ({
+  settleHostingCoverageAfterCommit: hostingMocks.settle,
 }));
 
 import { prisma } from "@/lib/prisma";
@@ -682,6 +693,12 @@ describe("Phase 3b: Member Detail Edit — PUT /api/admin/members/[id]", () => {
     expect(res.status).toBe(200);
     // No cascade deactivation — family group model replaces parent/dependent
     expect(prisma.member.updateMany).not.toHaveBeenCalled();
+    expect(hostingMocks.enqueue).toHaveBeenCalledWith(
+      "m1",
+      expect.any(Object),
+      { cause: "SYSTEM_CHANGE", actorMemberId: "admin1" },
+    );
+    expect(hostingMocks.settle).toHaveBeenCalledWith({ limit: 50 });
     expect(prisma.auditLog.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         action: "admin.member.deactivated",
@@ -955,6 +972,12 @@ describe("Phase 3b: Member Detail Edit — PUT /api/admin/members/[id]", () => {
     expect(syncManagedXeroContactGroupForMember).toHaveBeenCalledWith("m1", {
       createdByMemberId: "admin1",
     });
+    expect(hostingMocks.enqueue).toHaveBeenCalledWith(
+      "m1",
+      expect.any(Object),
+      { cause: "SYSTEM_CHANGE", actorMemberId: "admin1" },
+    );
+    expect(hostingMocks.settle).toHaveBeenCalledWith({ limit: 50 });
   });
 
   it("syncs managed Xero contact groups when a role change alters the role-default membership type", async () => {

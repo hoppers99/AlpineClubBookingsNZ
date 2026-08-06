@@ -138,6 +138,24 @@ vi.mock("@/lib/logger", () => ({
   default: { error: vi.fn(), info: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
 
+// #2576 §9. Mocked at the module boundary, like the other collaborators this suite
+// already stubs. The real seam reads the booking and the lodge policy through the
+// CONFIRMING transaction's client, and this suite drives that transaction with a fake
+// that carries only the delegates the money path itself needs — so without this the
+// enqueue throws and the settlement fails. Failing closed is the correct production
+// behaviour (§8 wants the obligation to commit WITH the transition), so the fixture is
+// what changes. Whether an uncovered booking becomes an incident belongs to the hosting
+// suites; that this path reaches a seam at all is pinned tree-wide by
+// `adult-member-hosting-call-sites.test.ts`.
+vi.mock("@/lib/adult-member-hosting-review", () => ({
+  enqueueOwnHostingCoverageReevaluation: vi.fn(async () => null),
+}));
+
+vi.mock("@/lib/adult-member-hosting-coverage-drain", () => ({
+  settleHostingCoverageAfterCommit: vi.fn(async () => undefined),
+}));
+
+
 import {
   ManualBookingPaymentError,
   markBookingPaymentManuallySettled,

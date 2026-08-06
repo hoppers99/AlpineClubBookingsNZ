@@ -15,9 +15,14 @@ import {
 } from "@/components/admin/view-only-action";
 import { ADMIN_VIEW_ONLY_ACTION_REASON } from "@/hooks/use-admin-area-edit-access";
 import { buildHrefWithReturnTo } from "@/lib/internal-return-path";
+import {
+  readHostingCoverageOverridePrompt,
+  type HostingCoverageOverridePromptData,
+} from "@/lib/hosting-coverage-override-client";
 import { formatNZDate, formatNZDateTime } from "@/lib/nzst-date";
 import { formatPolicyExceptionRequestAge } from "@/lib/booking-exception-requests";
 import type { PolicyExceptionReasonCode } from "@/lib/booking-policy-exceptions";
+import { HostingCoverageOverridePrompt } from "@/components/hosting-coverage-override-prompt";
 
 /**
  * #2526 — the Booking Officer's booking-policy exception queue.
@@ -74,6 +79,10 @@ interface ProposedPartyGuest {
   beyondFamily: boolean | null;
 }
 
+interface CoverageOverridePrompt extends HostingCoverageOverridePromptData {
+  requestId: string;
+}
+
 interface QueueItem {
   source: "NEW_BOOKING" | "MODIFICATION";
   id: string;
@@ -95,6 +104,11 @@ interface QueueItem {
   aggregateCapacityMode: "HOLD" | "NO_HOLD" | null;
   reasonCodes: string[];
   policyRefs: PolicyRef[];
+  /**
+   * What the club's hosting setting DID about the hosting violation, frozen at the
+   * time (#2569). Null where the request carries no hosting reason.
+   */
+  hostingConsequence: "ADMIN_REVIEW_REQUIRED" | "ENFORCED" | null;
   affectedNights: string[];
   proposedCheckIn: string | null;
   proposedCheckOut: string | null;
@@ -125,6 +139,32 @@ const REASON_LABELS: Record<PolicyExceptionReasonCode, string> = {
 
 function reasonLabel(code: string) {
   return (REASON_LABELS as Record<string, string>)[code] ?? code;
+}
+
+/**
+ * Whether the adult-member rule refused this or merely flagged it (#2569).
+ *
+ * The reason label is the same either way, and the difference is the whole
+ * character of the decision: under the enforcing consequence there is no booking
+ * (or no change) until an officer approves, and under the review consequence there
+ * already is one and the officer is recording a view of it. An officer who reads the
+ * second while it is the first leaves a member without a bed and does not know it.
+ *
+ * Says nothing about beds: the badge in the header already reports the hold, and
+ * saying it twice from two different derivations is how the two come to disagree.
+ */
+function hostingConsequenceSentence(
+  consequence: "ADMIN_REVIEW_REQUIRED" | "ENFORCED",
+  source: "NEW_BOOKING" | "MODIFICATION",
+): string {
+  if (consequence === "ENFORCED") {
+    return source === "NEW_BOOKING"
+      ? "The adult-member rule refused this booking, so it does not exist yet. Approving the exception is what allows it to be made."
+      : "The adult-member rule refused this change, so the booking still stands as it was. Approving the exception is what allows the change.";
+  }
+  return source === "NEW_BOOKING"
+    ? "The adult-member rule allowed the booking and asked for a look, so it already exists. Your decision records what the club makes of it."
+    : "The adult-member rule allowed the change and asked for a look. Your decision records what the club makes of it.";
 }
 
 /** "ADULT" -> "Adult", so an age tier reads as words on the decision card. */
@@ -167,6 +207,11 @@ export function PolicyExceptionRequestsPanel({
   // member's own screen — which is the whole reason the split exists.
   const [internalNotes, setInternalNotes] = useState("");
   const [confirmed, setConfirmed] = useState(false);
+  const [coverageOverridePrompt, setCoverageOverridePrompt] =
+    useState<CoverageOverridePrompt | null>(null);
+  const [coverageOverrideConfirmed, setCoverageOverrideConfirmed] =
+    useState(false);
+  const [coverageOverrideReason, setCoverageOverrideReason] = useState("");
   /**
    * Ref-backed because a disabled button is not a synchronous claim: two clicks
    * dispatched in one React batch otherwise both enter `decide`. State mirrors the
@@ -228,6 +273,9 @@ export function PolicyExceptionRequestsPanel({
     setNotes("");
     setInternalNotes("");
     setConfirmed(false);
+    setCoverageOverridePrompt(null);
+    setCoverageOverrideConfirmed(false);
+    setCoverageOverrideReason("");
     setSettlementMethod("");
   }
 
@@ -269,6 +317,20 @@ export function PolicyExceptionRequestsPanel({
       );
       return;
     }
+    const coveragePrompt =
+      coverageOverridePrompt?.requestId === item.id
+        ? coverageOverridePrompt
+        : null;
+    if (
+      action === "approve" &&
+      coveragePrompt &&
+      (!coverageOverrideConfirmed || coverageOverrideReason.trim().length < 10)
+    ) {
+      setError(
+        "Confirm the affected bookings and give a private override reason of at least 10 characters.",
+      );
+      return;
+    }
     if (decisionInFlightRef.current.has(item.id)) return;
     decisionInFlightRef.current.add(item.id);
     setDecisionInFlight((current) => new Set(current).add(item.id));
@@ -289,11 +351,32 @@ export function PolicyExceptionRequestsPanel({
             ...(action === "approve" && settlementMethod
               ? { settlementMethod }
               : {}),
+            ...(action === "approve" && coveragePrompt
+              ? {
+                  hostingCoverageOverride: {
+                    acknowledged: true,
+                    reason: coverageOverrideReason.trim(),
+                    strandedStateKey: coveragePrompt.strandedStateKey,
+                  },
+                }
+              : {}),
           }),
         },
       );
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
+        const hostingPrompt = readHostingCoverageOverridePrompt(data);
+        if (hostingPrompt) {
+          setCoverageOverridePrompt({
+            requestId: item.id,
+            ...hostingPrompt,
+          });
+          setCoverageOverrideConfirmed(false);
+          setCoverageOverrideReason("");
+          throw new Error(
+            "Review the affected bookings and nights, then explicitly confirm the private override.",
+          );
+        }
         // Any refusal may have moved the row's `version` — a kept-pending capacity
         // conflict always does — so re-read the queue before the officer tries
         // again. Without this their next click lost the guarded compare and was
@@ -509,6 +592,14 @@ export function PolicyExceptionRequestsPanel({
                               <li key={code}>{reasonLabel(code)}</li>
                             ))}
                       </ul>
+                      {item.hostingConsequence ? (
+                        <p className="mt-2 text-muted-foreground">
+                          {hostingConsequenceSentence(
+                            item.hostingConsequence,
+                            item.source,
+                          )}
+                        </p>
+                      ) : null}
                       {item.affectedNights.length > 0 ? (
                         <p className="mt-2 text-muted-foreground">
                           Nights affected: {item.affectedNights.join(", ")}
@@ -647,6 +738,9 @@ export function PolicyExceptionRequestsPanel({
                               setNotes("");
                               setInternalNotes("");
                               setConfirmed(false);
+                              setCoverageOverridePrompt(null);
+                              setCoverageOverrideConfirmed(false);
+                              setCoverageOverrideReason("");
                             }}
                           >
                             Decide this request
@@ -756,6 +850,19 @@ export function PolicyExceptionRequestsPanel({
                                 this exception.
                               </span>
                             </label>
+                            <HostingCoverageOverridePrompt
+                              prompt={
+                                coverageOverridePrompt?.requestId === item.id
+                                  ? coverageOverridePrompt
+                                  : null
+                              }
+                              confirmed={coverageOverrideConfirmed}
+                              reason={coverageOverrideReason}
+                              disabled={!canEdit}
+                              idPrefix={`coverage-override-${item.id}`}
+                              onConfirmedChange={setCoverageOverrideConfirmed}
+                              onReasonChange={setCoverageOverrideReason}
+                            />
                             <div className="flex flex-wrap gap-2">
                               <ViewOnlyActionButton
                                 canEdit={canEdit}
@@ -765,7 +872,10 @@ export function PolicyExceptionRequestsPanel({
                                 disabled={
                                   decisionInFlight.has(item.id) ||
                                   !confirmed ||
-                                  (needsReason && !hasNotes)
+                                  (needsReason && !hasNotes) ||
+                                  (coverageOverridePrompt?.requestId === item.id &&
+                                    (!coverageOverrideConfirmed ||
+                                      coverageOverrideReason.trim().length < 10))
                                 }
                               >
                                 Approve and apply

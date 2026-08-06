@@ -107,7 +107,74 @@ export type QualifyingHostsForNight = {
   night: string;
   /** Sorted Member ids. Empty means the night has no qualifying host. */
   memberIds: string[];
+  /**
+   * Which enabled host scopes supplied this night's cover (#2569 §11: store the
+   * scope that supplied coverage, not just the fact of it). Sorted through
+   * `ADULT_MEMBER_HOST_SCOPES`, so the snapshot is deterministic.
+   *
+   * Optional: a snapshot frozen before #2569 has no scope information, and absent
+   * reads as the only scope that existed then, `SAME_BOOKING`.
+   */
+  coveredByScopes?: AdultMemberHostScope[];
 };
+
+/**
+ * The ways a club may let an adult member supply coverage (#2569 §2).
+ *
+ * INDEPENDENT and combined with OR: a club or lodge enables either or both, and a
+ * non-member guest-night is compliant where AT LEAST ONE enabled scope supplies
+ * eligible adult-member coverage for that exact night. Different nights of one
+ * booking may be covered by different scopes and by different members.
+ *
+ *  - `SAME_BOOKING` — an eligible adult member staying on the same booking. The
+ *    pre-#2569 rule, preserved verbatim as one available scope (§4) and the
+ *    built-in default, so an upgrade moves no club's behaviour (§15).
+ *  - `SAME_BOOKING_OWNER` — an eligible adult member attending another eligible
+ *    booking whose `Booking.memberId` is EXACTLY the same, at the same lodge on
+ *    the same night (#2576). One account's own split bookings covering each other,
+ *    and nothing wider: not `createdById`, not a shared email, not a Family Group
+ *    link, not `parentBookingId` alone, and never another account's booking.
+ *
+ * TWO SCOPES, AND THESE TWO (owner decisions, 3 Aug 2026). The spec named three,
+ * and both of the others were settled out of the product model before any of them
+ * shipped:
+ *
+ *  - `ANY_MEMBER_AT_LODGE` is REMOVED (#2575). Letting one booking become
+ *    compliant because an unrelated adult member happens to be staying at the same
+ *    lodge creates dependencies between otherwise unrelated bookings, and the
+ *    owner's decision is that the product should not allow it.
+ *  - `NOMINATED_HOST` is REPLACED (#2576) by `SAME_BOOKING_OWNER`. The narrower
+ *    same-account rule answers the cross-booking case the club actually has (a
+ *    member with two bookings at one lodge) without a nomination, invitation,
+ *    acceptance or host-search workflow.
+ *
+ * Neither is deferred or dormant: there is deliberately no hidden, refused or
+ * reserved value for either anywhere in the database or the application, so a
+ * future lane cannot switch one on by editing a registry. Rebuilding either would
+ * mean re-deciding it.
+ *
+ * Declared here, beside the violation shape that reports them, so the evaluator,
+ * the policy row, the admin route and the frozen snapshot all name one list.
+ */
+export const ADULT_MEMBER_HOST_SCOPES = [
+  "SAME_BOOKING",
+  "SAME_BOOKING_OWNER",
+] as const;
+
+export type AdultMemberHostScope = (typeof ADULT_MEMBER_HOST_SCOPES)[number];
+
+/**
+ * The CONSEQUENCE that produced a hosting violation — the club's second policy
+ * dimension, frozen onto the snapshot beside the rule it broke.
+ *
+ * Recorded rather than inferred because the SAME violation means two different
+ * things: under `ADMIN_REVIEW_REQUIRED` the booking was made and awaits an
+ * officer, under `ENFORCED` it was refused and exists only as an exception
+ * request. An officer reading a stored snapshot, and a member reading a refusal,
+ * both need to know which happened, and neither can work it out from the policy
+ * row later — the club may have changed the setting since.
+ */
+export type AdultMemberHostingConsequence = "ADMIN_REVIEW_REQUIRED" | "ENFORCED";
 
 /**
  * Contract reserved by #2363 for #2364's evaluator, now implemented by
@@ -122,6 +189,12 @@ export type QualifyingHostsForNight = {
  */
 export type AdultMemberHostingPolicyExceptionViolation = FrozenExceptionFacts & {
   reasonCode: "ADULT_MEMBER_HOSTING_REQUIRED";
+  /**
+   * What the club's setting does about this violation (#2569 §1). Optional so a
+   * snapshot frozen before #2569 still parses; absent means the only consequence
+   * that existed then, `ADMIN_REVIEW_REQUIRED`.
+   */
+  consequence?: AdultMemberHostingConsequence;
   requirements: {
     kind: "ADULT_MEMBER_HOSTING";
     requiredAdultMemberParticipantsPerGuestNight: 1;
@@ -130,6 +203,16 @@ export type AdultMemberHostingPolicyExceptionViolation = FrozenExceptionFacts & 
     uncovered: UncoveredGuestNight[];
     /** One entry per affected night, in night order. */
     qualifyingHostsByNight: QualifyingHostsForNight[];
+    /**
+     * Which adult members the club lets count, at this lodge, at the moment of
+     * evaluation (#2569 §17: a member told their booking is uncovered must also
+     * be told what would cover it). Sorted, and always non-empty for an active
+     * policy — the resolver refuses an active policy with no scopes.
+     *
+     * Optional for the same reason `consequence` is: a pre-#2569 snapshot has no
+     * scope set, and absent reads as the built-in default, same-booking only.
+     */
+    enabledHostScopes?: AdultMemberHostScope[];
   };
 };
 

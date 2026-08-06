@@ -49,6 +49,12 @@ import { revokePaymentLinksForBooking } from "@/lib/payment-link";
 import { settleGroupBookingOnOrganiserCancel } from "@/lib/group-cancel";
 import { repairLegacyAppliedCreditNoteAllocationsForBooking } from "@/lib/xero-applied-credit-allocation-repair";
 import { findUnconvergedAppliedCreditDeallocation } from "@/lib/xero-applied-credit-operation-serialization";
+import {
+  hostingCoverageActorOptions,
+  reconcileAdultMemberHostingReviewWithSiblings,
+} from "@/lib/adult-member-hosting-review";
+import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
+import type { HostingCoverageOverrideInput } from "@/lib/adult-member-hosting-same-owner";
 import { acquireLodgeCapacityLock } from "@/lib/capacity";
 import { bookingStayHasStarted } from "@/lib/booking-edit-policy";
 
@@ -180,6 +186,14 @@ export async function cancelBooking(
     // cancel route opts in; every internal/admin caller leaves it false, so
     // their behaviour is unchanged. See the guard in performBookingCancellation.
     enforceStartedStayBlock?: boolean;
+    /**
+     * #2576 §7: the officer's explicit confirmation and mandatory reason for
+     * overriding a same-owner coverage refusal. Honoured only for an officer-type
+     * actor (the same pair the authorization gate accepts) — the disposition helper
+     * ignores it for anybody else, so a member cannot self-authorise past §6's
+     * block by inventing a reason.
+     */
+    hostingCoverageOverride?: HostingCoverageOverrideInput;
   } = {}
 ): Promise<CancelBookingResponse> {
   // Issue #1705: resolve the honoured email choice once, so the main cancel and
@@ -199,7 +213,8 @@ export async function cancelBooking(
     options.hasBookingsEditAccess ?? false,
     options.requireRequestHold ?? false,
     notifyMember,
-    options.enforceStartedStayBlock ?? false
+    options.enforceStartedStayBlock ?? false,
+    options.hostingCoverageOverride ?? null
   );
 
   if (result.status === 200) {
@@ -226,6 +241,14 @@ export async function cancelBooking(
         "Failed to clean up group booking on organiser cancel"
       )
     );
+
+    // #2576 §7/§8. The cancellation reconciled the account's other bookings inside
+    // its transaction and, where it was an officer's cancellation that took cover
+    // away, recorded the bounded re-evaluation as a queue row that committed with
+    // it. This is the "immediate re-evaluation" half: re-read the now-committed
+    // facts, open or resolve the incident, and notify the owner once. Best-effort —
+    // the cancellation is done, and the cron sweep is the authority on completion.
+    await settleHostingCoverageAfterCommit({ bookingId });
   }
 
   return result;
@@ -382,7 +405,11 @@ async function performBookingCancellation(
   notifyMember = true,
   // #2029: self-service started-stay block (see the guard below). Default false
   // so every internal/admin caller is unaffected.
-  enforceStartedStayBlock = false
+  enforceStartedStayBlock = false,
+  // #2576 §7: the officer's explicit confirmation and reason, or null. Null on
+  // every internal caller, which is correct: they are §8 system changes and are
+  // never asked to confirm anything.
+  hostingCoverageOverride: HostingCoverageOverrideInput | null = null
 ): Promise<CancelBookingResponse> {
   // Issue #1705 (#1698 pattern): a suppressed admin cancel records the choice in
   // the audit metadata — notifyMember is false only when an authorized admin
@@ -574,6 +601,24 @@ async function performBookingCancellation(
         tx
       );
 
+      // #2576 §6. Cancellation is the first change class the owner names, and it
+      // is the one that removes attendance outright: cancelling the booking a
+      // qualifying adult member is staying on can leave ANOTHER booking on the same
+      // account without cover for the exact nights its non-member guests are there.
+      // Reconciling inside the claim transaction is what makes the refusal real —
+      // the throw rolls the cancellation back, so a member cannot strand their own
+      // other booking, while an officer's cancellation is allowed and escalated to
+      // an urgent compliance incident instead (§7, §8). Also clears this booking's
+      // own hosting review, since a cancelled stay has no hazard.
+      await reconcileAdultMemberHostingReviewWithSiblings(bookingId, tx, {
+        ...hostingCoverageActorOptions({
+          actorRole: sessionUserRole,
+          hasBookingsEditAccess,
+          actorMemberId: sessionUserId,
+          ...(hostingCoverageOverride ? { override: hostingCoverageOverride } : {}),
+        }),
+      });
+
       return {
         claimed: true as const,
         fresh,
@@ -732,6 +777,24 @@ async function performBookingCancellation(
         bookingId,
         tx
       );
+      // #2576 §6. Cancellation is the first change class the owner names, and it
+      // is the one that removes attendance outright: cancelling the booking a
+      // qualifying adult member is staying on can leave ANOTHER booking on the same
+      // account without cover for the exact nights its non-member guests are there.
+      // Reconciling inside the claim transaction is what makes the refusal real —
+      // the throw rolls the cancellation back, so a member cannot strand their own
+      // other booking, while an officer's cancellation is allowed and escalated to
+      // an urgent compliance incident instead (§7, §8). Also clears this booking's
+      // own hosting review, since a cancelled stay has no hazard.
+      await reconcileAdultMemberHostingReviewWithSiblings(bookingId, tx, {
+        ...hostingCoverageActorOptions({
+          actorRole: sessionUserRole,
+          hasBookingsEditAccess,
+          actorMemberId: sessionUserId,
+          ...(hostingCoverageOverride ? { override: hostingCoverageOverride } : {}),
+        }),
+      });
+
       return { claimed: true as const, fresh, creditRestoredCents };
     });
 
@@ -966,6 +1029,24 @@ async function performBookingCancellation(
         0,
         xeroAllocated._sum.amountCents ?? 0
       );
+
+      // #2576 §6. Cancellation is the first change class the owner names, and it
+      // is the one that removes attendance outright: cancelling the booking a
+      // qualifying adult member is staying on can leave ANOTHER booking on the same
+      // account without cover for the exact nights its non-member guests are there.
+      // Reconciling inside the claim transaction is what makes the refusal real —
+      // the throw rolls the cancellation back, so a member cannot strand their own
+      // other booking, while an officer's cancellation is allowed and escalated to
+      // an urgent compliance incident instead (§7, §8). Also clears this booking's
+      // own hosting review, since a cancelled stay has no hazard.
+      await reconcileAdultMemberHostingReviewWithSiblings(bookingId, tx, {
+        ...hostingCoverageActorOptions({
+          actorRole: sessionUserRole,
+          hasBookingsEditAccess,
+          actorMemberId: sessionUserId,
+          ...(hostingCoverageOverride ? { override: hostingCoverageOverride } : {}),
+        }),
+      });
 
       return {
         claimed: true as const,
@@ -1479,6 +1560,24 @@ async function performBookingCancellation(
         });
       }
     }
+
+    // #2576 §6. Cancellation is the first change class the owner names, and it
+    // is the one that removes attendance outright: cancelling the booking a
+    // qualifying adult member is staying on can leave ANOTHER booking on the same
+    // account without cover for the exact nights its non-member guests are there.
+    // Reconciling inside the claim transaction is what makes the refusal real —
+    // the throw rolls the cancellation back, so a member cannot strand their own
+    // other booking, while an officer's cancellation is allowed and escalated to
+    // an urgent compliance incident instead (§7, §8). Also clears this booking's
+    // own hosting review, since a cancelled stay has no hazard.
+    await reconcileAdultMemberHostingReviewWithSiblings(bookingId, tx, {
+      ...hostingCoverageActorOptions({
+        actorRole: sessionUserRole,
+        hasBookingsEditAccess,
+        actorMemberId: sessionUserId,
+        ...(hostingCoverageOverride ? { override: hostingCoverageOverride } : {}),
+      }),
+    });
 
     return {
       claimed: true as const,

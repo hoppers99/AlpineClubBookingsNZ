@@ -87,7 +87,20 @@ import {
   lockedNightPricesForGuest,
 } from "@/lib/booking-modify";
 import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
-import { reconcileAdultMemberHostingReviewWithSiblings } from "@/lib/adult-member-hosting-review";
+import {
+  AdultMemberHostingRequiredError,
+  buildAdultMemberHostingRefusalBody,
+  hostingCoverageActorOptions,
+  reconcileAdultMemberHostingReviewWithSiblings,
+} from "@/lib/adult-member-hosting-review";
+import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
+import {
+  SameOwnerCoverageOverrideRequiredError,
+  SameOwnerCoverageWouldBreakError,
+  buildSameOwnerCoverageOverrideRequiredBody,
+  buildSameOwnerCoverageRefusalBody,
+  hostingCoverageOverrideSchema,
+} from "@/lib/adult-member-hosting-same-owner";
 import { getSeasonYear } from "@/lib/utils";
 import {
   authorizationRoleFromAccessRoles,
@@ -117,6 +130,11 @@ const addGuestsSchema = z.object({
   // booking-modified email. Only an admin actor may carry it (403 gate
   // below); a non-boolean value is rejected with the schema 400.
   notifyMember: z.boolean().optional(),
+  // #2576 §7: the officer's explicit confirmation and mandatory reason for
+  // overriding a same-owner coverage refusal. Optional in the shape because the
+  // first submission never carries it — the officer is asked only when the add
+  // would actually strand another booking on the account.
+  hostingCoverageOverride: hostingCoverageOverrideSchema.optional(),
 });
 
 type PromoRedemptionWithTargets = {
@@ -811,7 +829,21 @@ export async function POST(
       // adult member is added to cover them), so the review is re-derived from
       // the rows just written. `tx` because this transaction holds the per-lodge
       // capacity lock.
-      await reconcileAdultMemberHostingReviewWithSiblings(bookingId, tx);
+      //
+      // #2576 §6: adding guests changes the participant-night picture, which can
+      // take exact-night cover away from another booking on this account (a night
+      // range that shifts, an adult member whose row is replaced). The disposition
+      // travels with the actor.
+      await reconcileAdultMemberHostingReviewWithSiblings(bookingId, tx, {
+          ...hostingCoverageActorOptions({
+          actorRole,
+          hasBookingsEditAccess: isAdmin,
+          actorMemberId: session.user.id,
+          ...(parsed.data.hostingCoverageOverride
+            ? { override: parsed.data.hostingCoverageOverride }
+            : {}),
+        }),
+      });
 
       // Create BookingModification record
       const bookingModification = await tx.bookingModification.create({
@@ -884,6 +916,11 @@ export async function POST(
           .filter((memberId): memberId is string => Boolean(memberId)),
       };
     });
+
+    // #2576 §7/§8: drain the bounded re-evaluation this add committed, if any.
+    // Adding guests can move an account's cover in either direction, so this both
+    // opens incidents and resolves ones the add has just fixed.
+    await settleHostingCoverageAfterCommit({ bookingId });
 
     // AFTER the commit, and awaited rather than fire-and-forget: an unsent consent
     // request leaves a PENDING row holding a bed (D-4) that nobody was ever asked
@@ -1110,6 +1147,32 @@ export async function POST(
       return NextResponse.json(buildPaidUpAdultRefusalBody(err.violation), {
         status: err.status,
       });
+    }
+    // #2569 — same reason, same order: `AdultMemberHostingRequiredError` extends
+    // ApiError, so it must be tested BEFORE the generic branch or the ENFORCED
+    // hosting refusal is flattened to a bare sentence and the member loses the
+    // exception door. Host identities are withheld from this body (#2569 §5).
+    if (err instanceof AdultMemberHostingRequiredError) {
+      return NextResponse.json(
+        buildAdultMemberHostingRefusalBody(err.violation),
+        { status: err.status },
+      );
+    }
+    // #2576 §6, ABOVE the shared-ApiError branch below: this refusal is a
+    // subclass, and answered generically the member loses the list of their own
+    // bookings, lodges and nights that tells them what to fix.
+    if (err instanceof SameOwnerCoverageWouldBreakError) {
+      return NextResponse.json(buildSameOwnerCoverageRefusalBody(err), {
+        status: err.status,
+      });
+    }
+    // #2576 §7. The officer is not refused: they are shown which bookings and
+    // nights the change would strand and asked to confirm it with a reason.
+    if (err instanceof SameOwnerCoverageOverrideRequiredError) {
+      return NextResponse.json(
+        buildSameOwnerCoverageOverrideRequiredBody(err),
+        { status: err.status },
+      );
     }
     // Shared-lib domain errors (e.g. the #1032 quote-priced edit block from
     // assertBookingNotQuotePriced) are the shared ApiError class, distinct

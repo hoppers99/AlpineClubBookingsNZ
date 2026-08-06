@@ -14,6 +14,7 @@ vi.mock("@/lib/prisma", () => ({
   prisma: {
     booking: { findMany: vi.fn(), count: vi.fn() },
     bookingGuest: { count: vi.fn(), findMany: vi.fn() },
+    hostingCoverageIncident: { count: vi.fn(), findMany: vi.fn() },
     xeroSyncOperation: { findMany: vi.fn() },
     xeroObjectLink: { findMany: vi.fn() },
     lodge: { findMany: vi.fn() },
@@ -126,6 +127,8 @@ describe("the Admin › Bookings consent chips (#2307, MG2-M-3)", () => {
     vi.mocked(prisma.lodge.findMany).mockResolvedValue([
       { id: "lodge-1", name: "Silverpeak" },
     ] as never);
+    vi.mocked(prisma.hostingCoverageIncident.count).mockResolvedValue(0);
+    vi.mocked(prisma.hostingCoverageIncident.findMany).mockResolvedValue([]);
     vi.mocked(listAdminBookings).mockResolvedValue({
       bookings: [],
       total: 0,

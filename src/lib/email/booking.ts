@@ -26,6 +26,7 @@ import {
   resolvePromoAdjustmentCents,
   bookingModificationTypeLabel,
   bookingModificationSummaryRows,
+  hostingCoverageLostTemplate,
   policyExceptionRequestExpiredTemplate,
   wholeLodgeGuestNamesReminderTemplate,
 } from "../email-templates";
@@ -1293,6 +1294,61 @@ export async function sendPolicyExceptionRequestExpiredEmail(params: {
       checkIn: formatNZDate(params.checkIn),
       checkOut: formatNZDate(params.checkOut),
       expiresAt: formatNZDateTime(params.expiresAt),
+    },
+    lodgeId: params.lodgeId,
+  });
+}
+
+/**
+ * Tell a booking owner their confirmed booking has lost its required adult-member
+ * cover (#2576 §7, §16).
+ *
+ * Called by the coverage drain AFTER the causing change has committed, and only
+ * once delivery has been LEASED against the incident row
+ * (`claimHostingCoverageOwnerNotification`). The success stamp is written only
+ * after this function returns `sent`; failures release the lease for the durable
+ * queue to retry, while two concurrent drains cannot both send.
+ *
+ * The recipient is the booking's OWNER, which is also the authority the optional
+ * booking link is resolved against. Under `SAME_BOOKING_OWNER` the cover that went
+ * away was on their own account (§11), so pointing them at their own booking
+ * discloses nothing.
+ */
+export async function sendHostingCoverageLostEmail(params: {
+  // Booking this message belongs to (#2258); see sendBookingConfirmedEmail.
+  bookingId: string;
+  recipientMemberId: string;
+  email: string;
+  firstName: string;
+  checkIn: Date;
+  checkOut: Date;
+  /** The NZ lodge-nights with no adult-member cover, already formatted. */
+  uncoveredNights: string;
+  // Booking's lodge (multi-lodge phase 8): see sendBookingConfirmedEmail.
+  lodgeId?: string | null;
+}) {
+  const settings = await loadEmailMessageSettingsForLodge(params.lodgeId);
+
+  return sendEmail({
+    to: params.email,
+    subject: `Your booking needs adult member cover - ${settings.lodgeName}`,
+    html: hostingCoverageLostTemplate({
+      firstName: params.firstName,
+      lodgeName: settings.lodgeName,
+      checkIn: params.checkIn,
+      checkOut: params.checkOut,
+      uncoveredNights: params.uncoveredNights,
+    }),
+    bookingContext: bookingOwnerEmailContext(
+      params.bookingId,
+      params.recipientMemberId,
+    ),
+    templateName: "hosting-coverage-lost",
+    templateData: {
+      firstName: params.firstName,
+      checkIn: formatNZDate(params.checkIn),
+      checkOut: formatNZDate(params.checkOut),
+      uncoveredNights: params.uncoveredNights,
     },
     lodgeId: params.lodgeId,
   });

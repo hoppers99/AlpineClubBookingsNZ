@@ -47,6 +47,9 @@ const mockEnqueueXeroModificationCreditNoteOperation = vi.fn().mockResolvedValue
 const mockEnqueueXeroModificationAccountCreditNoteOperation = vi.fn().mockResolvedValue({ queueOperationId: "op_mod_account_credit_note", message: "queued" });
 const mockKickQueuedXeroOutboxOperationsIfConnected = vi.fn().mockResolvedValue(null);
 const mockRecordSkippedXeroBookingInvoiceUpdateOperation = vi.fn().mockResolvedValue({ queueOperationId: "op_skip", message: "skipped" });
+const mockReconcileAdultMemberHostingReviewWithSiblings = vi
+  .fn()
+  .mockResolvedValue(undefined);
 
 const mockBookingGuestValidationError = class BookingGuestValidationError extends Error {
   status: number;
@@ -112,6 +115,16 @@ vi.mock("@/lib/booking-policies", () => ({
     .mockResolvedValue({ valid: true, violations: [] }),
   formatViolationsDetail: vi.fn(() => ""),
 }));
+
+vi.mock("@/lib/adult-member-hosting-review", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/lib/adult-member-hosting-review")>();
+  return {
+    ...actual,
+    reconcileAdultMemberHostingReviewWithSiblings: (...args: unknown[]) =>
+      mockReconcileAdultMemberHostingReviewWithSiblings(...args),
+  };
+});
 
 vi.mock("@/lib/change-fee", () => ({
   calculateChangeFee: vi.fn().mockReturnValue({ feeCents: 0 }),
@@ -633,6 +646,101 @@ describe("PUT /api/bookings/[id]/modify", () => {
     expect(result.stripeRefundId).toBeNull();
     // The deferred thunk runs the post-commit work (idempotent, returns void).
     await expect(result.deferredPostCommit!()).resolves.toBeUndefined();
+  }, 10_000);
+
+  it("real service path preserves sparse added-guest nights and forwards both hosting approvals", async () => {
+    const booking = makeBooking();
+    const tx = makeTx(booking);
+    const sparseNight = new Date("2026-08-21T00:00:00.000Z");
+    mockCalculateBookingPrice.mockImplementation(
+      ((_checkIn: unknown, _checkOut: unknown, guests: Array<{ nights?: Date[] }>) => ({
+        totalPriceCents: 8000,
+        guests: guests.map((guest, index) =>
+          index === 0
+            ? {
+                priceCents: 5000,
+                perNightCents: [2500, 2500],
+                nightDates: [
+                  new Date("2026-08-20T00:00:00.000Z"),
+                  new Date("2026-08-21T00:00:00.000Z"),
+                ],
+              }
+            : {
+                priceCents: 3000,
+                perNightCents: [3000],
+                nightDates: guest.nights ?? [],
+              },
+        ),
+      })) as never,
+    );
+
+    const { modifyBookingBatch } = await import(
+      "@/lib/booking-batch-modification-service"
+    );
+    const result = await modifyBookingBatch({
+      bookingId: "bk1",
+      actor: { id: "officer-1", role: "ADMIN" },
+      input: {
+        addGuests: [
+          {
+            firstName: "Sparse",
+            lastName: "Guest",
+            ageTier: "ADULT",
+            isMember: false,
+            nights: ["2026-08-21"],
+          },
+        ],
+      },
+      approvedExceptionAdultMemberHostingDecision: {
+        byMemberId: "officer-1",
+        reason: "Approved adult-member hosting exception req-1.",
+      },
+      hostingCoverageOverride: {
+        acknowledged: true,
+        reason: "Confirmed alternate supervision plan.",
+        strandedStateKey: `v1:${"a".repeat(64)}`,
+      },
+      ipAddress: "127.0.0.1",
+      tx: tx as never,
+    });
+
+    expect(result.priceDiffCents).toBe(3000);
+    expect(tx.bookingGuestNight.createMany).toHaveBeenCalledWith({
+      data: [
+        {
+          bookingGuestId: "g2",
+          stayDate: sparseNight,
+          priceCents: 3000,
+        },
+      ],
+    });
+    expect(tx.bookingGuest.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          stayStart: sparseNight,
+          stayEnd: new Date("2026-08-22T00:00:00.000Z"),
+          priceCents: 3000,
+        }),
+      }),
+    );
+    expect(mockReconcileAdultMemberHostingReviewWithSiblings).toHaveBeenCalledWith(
+      "bk1",
+      tx,
+      expect.objectContaining({
+        decision: {
+          byMemberId: "officer-1",
+          reason: "Approved adult-member hosting exception req-1.",
+        },
+        dependentCoverage: "ESCALATE",
+        coverageActorMemberId: "officer-1",
+        coverageChange: {
+          cause: "OFFICER_OVERRIDE",
+          actorMemberId: "officer-1",
+          reason: "Confirmed alternate supervision plan.",
+          strandedStateKey: `v1:${"a".repeat(64)}`,
+        },
+      }),
+    );
   }, 10_000);
 
   it("allows identity-only edits on a quote-priced booking without repricing (#1099)", async () => {

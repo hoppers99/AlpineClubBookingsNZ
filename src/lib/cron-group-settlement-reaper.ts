@@ -53,6 +53,8 @@ import {
   GroupBookingPaymentMode,
   PaymentStatus,
 } from "@prisma/client";
+import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
+import { enqueueOwnHostingCoverageReevaluation } from "@/lib/adult-member-hosting-review";
 import { prisma } from "@/lib/prisma";
 import {
   RELEASE_ADMIN_CAPACITY_HOLD_UPDATE,
@@ -179,6 +181,17 @@ export async function reapStaleGroupSettlements(
 
       result.reaped += 1;
       result.releasedChildBookings += released.length;
+
+      // #2576 §8: the revert recorded a bounded hosting re-evaluation per released
+      // child. Drain it now the revert has committed, so a joiner's other booking
+      // that has just lost its cover reaches the officer queue and its owner's inbox
+      // on this pass rather than the next. Unfiltered and limited to the released
+      // set's own size, because the children belong to DIFFERENT joiners and there is
+      // no single owner to scope the claim to. Best-effort; the general cron sweep is
+      // the authority on completion.
+      await settleHostingCoverageAfterCommit({
+        limit: Math.max(released.length, 5),
+      });
 
       await finishReap({
         settlement,
@@ -404,6 +417,24 @@ async function releaseSettlementChildren(
         bookingId: child.id,
         db: tx,
         previousRange: { checkIn: child.checkIn, checkOut: child.checkOut },
+      });
+
+      // #2576 §8. THIS REVERT DE-CONFIRMS A COVERAGE SOURCE, and it was the
+      // asymmetric half of the settlement pair: `group-settlement.ts` records the
+      // re-evaluation when a settlement CREATES cover, and nothing recorded it when
+      // an automated failure TAKES cover away. CONFIRMED is a
+      // `HOSTING_COVERAGE_SOURCE_BOOKING_STATUSES` member and PAYMENT_PENDING is
+      // not, so a joiner attending as the qualifying adult on this child stops
+      // counting for every other booking on their account the moment this runs —
+      // silently, with no incident, no owner email and no officer-queue entry, on a
+      // booking whose own review snapshot still read "compliant".
+      //
+      // §8 names both classes this falls under, "payment or booking lifecycle
+      // failure" and "automated status transitions", and requires exactly this:
+      // allow the authoritative change and record the re-evaluation durably in the
+      // same transaction. The cron drains it; nothing here can be refused.
+      await enqueueOwnHostingCoverageReevaluation(child.id, tx, {
+        cause: "SYSTEM_CHANGE",
       });
     }
 

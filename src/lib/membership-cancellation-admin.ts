@@ -3,6 +3,8 @@ import {
   MembershipCancellationRequestStatus,
   type Prisma,
 } from "@prisma/client";
+import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
+import { enqueueHostingCoverageReevaluationForMember } from "@/lib/adult-member-hosting-review";
 import { MEMBER_ACCESS_ROLE_SELECT } from "@/lib/access-role-definitions";
 import { memberHoldsPrivilegedRole, type UserType } from "@/lib/access-roles";
 import {
@@ -904,6 +906,23 @@ export async function reviewMembershipCancellationParticipant({
         },
       });
 
+      // #2576 §8. A CANCELLED MEMBERSHIP CAN LEAVE A CONFIRMED BOOKING UNCOVERED,
+      // and "membership becoming inactive, lapsed, cancelled or archived" is the
+      // first change class the owner's decision names. The evaluator half already
+      // worked — a cancelled member stops qualifying as an adult host — but nothing
+      // told the club to go and look at the bookings that had been relying on them,
+      // so a confirmed booking went silently non-compliant: no incident, no owner
+      // email, no officer-queue entry, and its own review snapshot still reading
+      // "compliant".
+      //
+      // Recorded inside this transaction so the cancellation and the obligation to
+      // check what it broke commit together. Bounded to the bookings this person
+      // actually attends, and it never refuses the cancellation.
+      await enqueueHostingCoverageReevaluationForMember(participant.memberId, tx, {
+        cause: "SYSTEM_CHANGE",
+        actorMemberId: adminMemberId,
+      });
+
       await createAuditLog(
         {
           action: "membership_cancellation.participant_cancelled",
@@ -1001,6 +1020,12 @@ export async function reviewMembershipCancellationParticipant({
   });
 
   if (action === "approve") {
+    // #2576 §8: settle the re-evaluation the cancellation recorded, now it has
+    // committed. Unfiltered, because one member can attend bookings owned by
+    // several accounts at several lodges, so there is no single owner key to scope
+    // it to. Best-effort; the general cron sweep is the authority on completion.
+    await settleHostingCoverageAfterCommit({ limit: 25 });
+
     try {
       await queueApprovedMembershipCancellationXeroOperations({
         memberId: participant.memberId,

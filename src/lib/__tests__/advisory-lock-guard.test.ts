@@ -143,6 +143,36 @@ const SCOPED_ADVISORY_LOCK_INVENTORY: Record<string, number> = {
   // booking or capacity path ever takes it, so the keyspaces are disjoint.
   // Counterpart analysis in docs/CONCURRENCY_AND_LOCKING.md.
   "src/lib/adult-member-hosting-policy-set.ts": 1,
+  // Same-owner hosting coverage (#2576 §9). `lockHostingCoverageOwner` takes
+  // `pg_advisory_xact_lock(hashtext('hosting-coverage-owner'), hashtext(<Booking.memberId>))`
+  // — a NEW keyspace in its own namespace, keyed on the booking OWNER.
+  //
+  // WHY IT EXISTS. `SAME_BOOKING_OWNER` makes one booking's compliance a function of
+  // ANOTHER booking's rows, and the per-lodge capacity key cannot serialise that even
+  // though coverage is same-lodge by definition: `booking-cancel.ts`'s claim
+  // transactions take `pg_advisory_xact_lock(1)` and never the lodge lock, while
+  // `booking-create.ts` and the guest-add route take the lodge lock and never
+  // `lock(1)`. Different keys at READ COMMITTED over disjoint rows, so a cancel
+  // removing the last qualifying adult could interleave with a create that had just
+  // read that adult as cover and the winner depended on commit order. Same reasoning
+  // that gave `lockBookingMemberNights` its own family: a per-member invariant cannot
+  // be serialised by a per-lodge key.
+  //
+  // COMPOSITION AND ORDER. Taken LAST among the application locks a caller composes:
+  // after `pg_advisory_xact_lock(1)`, `acquireLodgeCapacityLock`, roster-date locks,
+  // `lockBookingMemberNights` and member-credit locks wherever those families apply.
+  // The #2586-aware modification order is therefore global → lodge → roster-date →
+  // applicable member keys → coverage-owner; paths that do not use roster or member
+  // keys simply omit those tiers. Several owners are acquired in SORTED order, the
+  // same discipline the member-night lock uses. Postgres advisory locks are re-entrant
+  // per session, so the evaluator and the settle step taking the same owner key inside
+  // one transaction costs nothing. Callers resolve the lodge policy first and skip the
+  // lock entirely unless the lodge has the scope enabled, so no unrelated write is
+  // serialised per member. ONE site: every acquisition in the tree goes through this
+  // helper.
+  // Counterpart analysis and compatibility evidence in
+  // docs/CONCURRENCY_AND_LOCKING.md → "Same-owner coverage takes a per-owner key".
+  "src/lib/adult-member-hosting-coverage-lock.ts": 1,
   // AI Diagnostics budget reserve (AID-2, #2371). Both writers take the SAME
   // per-month key `pg_advisory_xact_lock(hashtext('diagnostics-budget-reserve'),
   // hashtext(<month>))`: `reserveDiagnosticsBudget` (the guarded spend claim) and

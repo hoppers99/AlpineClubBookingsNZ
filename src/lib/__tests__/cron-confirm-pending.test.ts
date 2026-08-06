@@ -182,6 +182,14 @@ const mockEmailLogFindFirst = vi.fn().mockResolvedValue(null);
 const mockEmailLogCreate = vi.fn().mockResolvedValue({ id: "emaillog_1" });
 const mockPrismaTransaction = vi.fn();
 const mockExecuteRaw = vi.fn();
+// #2576: no hosting policy row, so the rule resolves off and the coverage enqueue
+// never fires. Present because the production path reads them, not because these
+// tests exercise them.
+const mockAdultMemberHostingPolicyFindMany = vi.fn().mockResolvedValue([]);
+const mockHostingCoverageReevaluationCreate = vi
+  .fn()
+  .mockResolvedValue({ id: "hcr_1" });
+const mockHostingCoverageReevaluationFindMany = vi.fn().mockResolvedValue([]);
 
 vi.mock("../prisma", () => ({
   prisma: {
@@ -212,6 +220,12 @@ vi.mock("../prisma", () => ({
     emailLog: {
       findFirst: (...args: unknown[]) => mockEmailLogFindFirst(...args),
       create: (...args: unknown[]) => mockEmailLogCreate(...args),
+    },
+    // #2576 §8: the post-cycle drain reads this on the base client. Empty, so the
+    // sweep is one read that finds nothing.
+    hostingCoverageReevaluation: {
+      findMany: (...args: unknown[]) =>
+        mockHostingCoverageReevaluationFindMany(...args),
     },
     $transaction: (...args: unknown[]) => mockPrismaTransaction(...args),
   },
@@ -427,6 +441,18 @@ describe("Cron: Confirm Pending Bookings", () => {
           // inside the lock transaction.
           bookingEvent: {
             create: (...args: unknown[]) => mockBookingEventCreate(...args),
+          },
+          // #2576 §9: the confirming claim records the bounded same-owner hosting
+          // re-evaluation inside this transaction. No policy row, so the resolver
+          // lands on the built-in default (the rule off) and the enqueue is a no-op
+          // — which is the state every existing expectation here assumes.
+          adultMemberHostingPolicy: {
+            findMany: (...args: unknown[]) =>
+              mockAdultMemberHostingPolicyFindMany(...args),
+          },
+          hostingCoverageReevaluation: {
+            create: (...args: unknown[]) =>
+              mockHostingCoverageReevaluationCreate(...args),
           },
         });
       }

@@ -18,6 +18,14 @@ import {
   type ReadDb,
 } from "../import-types";
 import { registerEntity } from "../registry";
+import {
+  ADULT_MEMBER_HOST_SCOPES,
+  type AdultMemberHostScope,
+} from "@/lib/booking-policy-exceptions";
+import {
+  enabledHostScopeList,
+  hostScopeSetIsEmpty,
+} from "@/lib/policies/adult-member-hosting";
 import { folderLodgeSlug, lodgeFolderSegments } from "./lodge-config";
 import { asStr, RowValidator } from "../values";
 
@@ -40,8 +48,105 @@ import { asStr, RowValidator } from "../values";
 export const ADULT_MEMBER_HOSTING_FILE =
   "booking-policies/adult-member-hosting.csv";
 
-const FIELDS = ["scope", "mode", "capacityMode"] as const;
-const DATA_FIELDS = ["mode", "capacityMode"] as const;
+const FIELDS = ["scope", "mode", "capacityMode", "hostScopes"] as const;
+const DATA_FIELDS = [
+  "mode",
+  "capacityMode",
+  "hostScopeSameBooking",
+  "hostScopeSameBookingOwner",
+] as const;
+
+/**
+ * The host-qualification scope set as ONE cell (#2569 §2).
+ *
+ * A `|`-separated list of enabled scope names, or BLANK for the explicit inherit
+ * option — a lodge following the club, or a club that never decided. One cell
+ * rather than one column per scope because the database holds the columns to
+ * all-NULL or all-set: separate cells could disagree with that in a hand-edited
+ * file, and the importer would then have to guess which half the operator meant.
+ *
+ * Blank round-trips as blank, so exporting and re-importing a club that has never
+ * touched the second dimension changes nothing — which is what keeps a transfer
+ * from silently broadening a policy (§15).
+ */
+const HOST_SCOPE_CELL_SEPARATOR = "|";
+
+function serialiseHostScopes(policy: {
+  hostScopeSameBooking: boolean | null;
+  hostScopeSameBookingOwner: boolean | null;
+}): string {
+  if (
+    policy.hostScopeSameBooking === null ||
+    policy.hostScopeSameBookingOwner === null
+  ) {
+    return "";
+  }
+  return enabledHostScopeList({
+    sameBooking: policy.hostScopeSameBooking,
+    sameBookingOwner: policy.hostScopeSameBookingOwner,
+  }).join(HOST_SCOPE_CELL_SEPARATOR);
+}
+
+type HostScopeColumns = {
+  hostScopeSameBooking: boolean | null;
+  hostScopeSameBookingOwner: boolean | null;
+};
+
+const INHERITED_HOST_SCOPE_COLUMNS: HostScopeColumns = {
+  hostScopeSameBooking: null,
+  hostScopeSameBookingOwner: null,
+};
+
+/**
+ * Parse the cell, pushing a sentence per problem rather than throwing.
+ *
+ * Refuses in the DRY RUN exactly what the admin route refuses on save: an unknown
+ * name — which is how a bundle written against the removed `ANY_MEMBER_AT_LODGE`
+ * or `NOMINATED_HOST` scopes is caught — a duplicate, and an empty explicit set. A
+ * transfer is the one path that could otherwise write a setting the UI will not let
+ * an operator choose, so the two refusals are kept deliberately identical.
+ */
+function parseHostScopeCell(
+  raw: unknown,
+  file: string,
+  rowNumber: number,
+  errors: string[],
+): HostScopeColumns | null {
+  const cell = asStr(raw).trim();
+  if (cell === "") return INHERITED_HOST_SCOPE_COLUMNS;
+
+  const names = cell.split(HOST_SCOPE_CELL_SEPARATOR).map((part) => part.trim());
+  const seen = new Set<AdultMemberHostScope>();
+  for (const name of names) {
+    if (!ADULT_MEMBER_HOST_SCOPES.includes(name as AdultMemberHostScope)) {
+      errors.push(
+        `${file} row ${rowNumber}: hostScopes — "${name}" is not one of ${ADULT_MEMBER_HOST_SCOPES.join(", ")}`,
+      );
+      return null;
+    }
+    const scope = name as AdultMemberHostScope;
+    if (seen.has(scope)) {
+      errors.push(`${file} row ${rowNumber}: hostScopes — duplicate ${scope}`);
+      return null;
+    }
+    seen.add(scope);
+  }
+
+  const scopes = {
+    sameBooking: seen.has("SAME_BOOKING"),
+    sameBookingOwner: seen.has("SAME_BOOKING_OWNER"),
+  };
+  if (hostScopeSetIsEmpty(scopes)) {
+    errors.push(
+      `${file} row ${rowNumber}: hostScopes — leave the cell blank to inherit; an explicit set must name at least one scope`,
+    );
+    return null;
+  }
+  return {
+    hostScopeSameBooking: scopes.sameBooking,
+    hostScopeSameBookingOwner: scopes.sameBookingOwner,
+  };
+}
 
 registerEntity({
   entity: "adult-member-hosting-policy",
@@ -59,7 +164,7 @@ registerEntity({
 type HostingData = {
   mode: AdultMemberHostingMode;
   capacityMode: PolicyExceptionCapacityMode;
-};
+} & HostScopeColumns;
 
 type CurrentHosting = HostingData & {
   id: string;
@@ -102,6 +207,8 @@ async function loadCurrent(db: ReadDb): Promise<{
         lodgeId: true,
         mode: true,
         capacityMode: true,
+        hostScopeSameBooking: true,
+        hostScopeSameBookingOwner: true,
         version: true,
       },
     }),
@@ -199,13 +306,21 @@ function parseHosting(
       rowValid = false;
     }
     seen.add(scope);
-    if (!rowValid) return;
+    const hostScopes = parseHostScopeCell(
+      raw.hostScopes,
+      ADULT_MEMBER_HOSTING_FILE,
+      index + 2,
+      errors,
+    );
+    if (hostScopes === null) rowValid = false;
+    if (!rowValid || hostScopes === null) return;
     parsed.push({
       scope,
       lodgeSlug,
       data: {
         mode: mode as AdultMemberHostingMode,
         capacityMode: capacityMode as PolicyExceptionCapacityMode,
+        ...hostScopes,
       },
     });
   });
@@ -225,6 +340,7 @@ export async function exportAdultMemberHosting(
       scope: policy.scope,
       mode: policy.mode,
       capacityMode: policy.capacityMode,
+      hostScopes: serialiseHostScopes(policy),
     }));
   // Always emit the header, even for an empty set: absence means "category not
   // carried", a header-only file is the intentional clear.

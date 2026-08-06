@@ -44,13 +44,20 @@ import {
 // Leaf module (no Prisma, no email): the generic public sentence lives beside
 // the detailed formatter it deliberately replaces on these two surfaces.
 import { PUBLIC_GROUP_JOIN_MINIMUM_STAY_MESSAGE } from "@/lib/policies/minimum-stay";
+import { PUBLIC_GROUP_JOIN_ADULT_MEMBER_HOSTING_MESSAGE } from "@/lib/policies/adult-member-hosting";
 import { prisma } from "@/lib/prisma";
 import { hashActionToken, issueActionToken } from "@/lib/action-tokens";
 import {
   sendBookingRequestApprovedEmail,
   sendGroupBookingJoinVerificationEmail,
 } from "@/lib/email";
-import { reconcileAdultMemberHostingReviewWithSiblings } from "@/lib/adult-member-hosting-review";
+import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
+import {
+  AdultMemberHostingRequiredError,
+  buildAdultMemberHostingRefusalBody,
+  evaluateProposedAdultMemberHosting,
+  reconcileAdultMemberHostingReviewWithSiblings,
+} from "@/lib/adult-member-hosting-review";
 import logger from "@/lib/logger";
 import {
   buildGuestCreateData,
@@ -127,6 +134,7 @@ export class GroupBookingError extends Error {
   /** Frozen soft-policy facts; present only on the still-blocking 400 path. */
   violations?: PolicyExceptionViolation[];
   exceptionReview?: AggregatedPolicyExceptions;
+  reasonCodes?: string[];
   /**
    * Where the member goes to ask for an override (#2543). Carried through the
    * error so the join route serialises the same field the other four refusal
@@ -145,6 +153,7 @@ export class GroupBookingError extends Error {
       violations?: PolicyExceptionViolation[];
       exceptionReview?: AggregatedPolicyExceptions;
       exceptionRequestPath?: string;
+      reasonCodes?: string[];
     }
   ) {
     super(message);
@@ -154,6 +163,7 @@ export class GroupBookingError extends Error {
     this.details = options?.details;
     this.violations = options?.violations;
     this.exceptionReview = options?.exceptionReview;
+    this.reasonCodes = options?.reasonCodes;
     this.exceptionRequestPath = options?.exceptionRequestPath;
   }
 }
@@ -765,9 +775,9 @@ export async function joinGroupBookingAsMember(
 
     // #2543 — the paid-up-adult requirement over the JOINER's own booking. A
     // group joiner creates their own booking under their own name, so "at least
-    // one paid-up adult member on the booking" is judged over their party alone:
-    // the organiser's adults are on a different booking and deliberately do not
-    // count, exactly as they do not count for the #2364 hosting rule.
+    // one paid-up adult member on the booking" is judged over their party alone.
+    // Hosting is evaluated separately below: only another eligible booking with
+    // this joiner's exact Booking.memberId can supply SAME_BOOKING_OWNER cover.
     const nonMemberPricing = await evaluateNonMemberPricingRequirements(prisma, {
       mode: subscriptionLockoutMode,
       lodgeId: groupLodgeId,
@@ -781,6 +791,48 @@ export async function joinGroupBookingAsMember(
       bookingOwnerMemberId: sessionUserId,
       participants: guests,
     });
+    const hostingViolation = await evaluateProposedAdultMemberHosting(prisma, {
+      bookingOwnerMemberId: sessionUserId,
+      lodgeId: groupLodgeId,
+      checkIn,
+      checkOut,
+      guests: guests.map((guest) => ({
+        firstName: guest.firstName,
+        lastName: guest.lastName,
+        memberId: guest.memberId,
+        stayStart:
+          guest.stayStart instanceof Date ? guest.stayStart : undefined,
+        stayEnd: guest.stayEnd instanceof Date ? guest.stayEnd : undefined,
+      })),
+    });
+    if (
+      nonMemberPricing?.violation &&
+      hostingViolation?.consequence === "ENFORCED"
+    ) {
+      // Aggregate only the existing member-facing hosting shape. The raw
+      // evaluator evidence carries qualifying-host member ids for audit use.
+      const hostingRefusal = buildAdultMemberHostingRefusalBody(hostingViolation);
+      const exceptionReview = aggregatePolicyExceptionViolations([
+        nonMemberPricing.violation,
+        ...hostingRefusal.violations,
+      ]);
+      throw new GroupBookingError(
+        "This booking needs both a paid-up adult member and adult member cover for every required night.",
+        409,
+        {
+          code: "BOOKING_POLICY_REQUIREMENTS_NOT_MET",
+          details: exceptionReview.violations
+            .map((violation) => violation.message)
+            .join(" "),
+          reasonCodes: exceptionReview.violations.map(
+            (violation) => violation.reasonCode,
+          ),
+          violations: exceptionReview.violations,
+          exceptionReview,
+          exceptionRequestPath: hostingRefusal.exceptionRequestPath,
+        },
+      );
+    }
     if (nonMemberPricing?.violation) {
       const refusal = buildPaidUpAdultRefusalBody(nonMemberPricing.violation);
       throw new GroupBookingError(nonMemberPricing.violation.message, 409, {
@@ -896,6 +948,29 @@ export async function joinGroupBookingAsMember(
   } catch (err) {
     if (err instanceof GroupJoinConflictError) {
       throw new GroupBookingError("You have already joined this group", 409);
+    }
+    // #2569 — the ENFORCED hosting refusal over the JOINER's OWN booking, raised by
+    // the reconciler inside `createConfirmedBooking`'s transaction (so the child
+    // booking and its roster row rolled back together) and translated into exactly
+    // the `GroupBookingError` shape the #2543 paid-up-adult refusal above uses. The
+    // join route serialises those five fields, so the joiner gets the same
+    // exception door as every other refusing path; without this branch the error
+    // reached the route's generic handler as a 500 saying nothing.
+    //
+    // Judged over the joiner's party alone, for the reason #2543 is: the organiser's
+    // adults are on a DIFFERENT booking, and `SAME_BOOKING` means what it says.
+    //
+    // The REDACTED body, never `err.violation` directly — a member-facing body
+    // carries no qualifying-host member ids under any scope (§5).
+    if (err instanceof AdultMemberHostingRequiredError) {
+      const refusal = buildAdultMemberHostingRefusalBody(err.violation);
+      throw new GroupBookingError(refusal.error, err.status, {
+        code: refusal.code,
+        details: refusal.details,
+        violations: refusal.exceptionReview.violations,
+        exceptionReview: refusal.exceptionReview,
+        exceptionRequestPath: refusal.exceptionRequestPath,
+      });
     }
     throw err;
   }
@@ -1160,6 +1235,14 @@ export type VerifyNonMemberJoinResult =
   // and the rule-naming sentence stay in the server log the service writes
   // beside it rather than travelling one field-spread from the wire.
   | { outcome: "minimum_stay"; message: string }
+  // #2569: the lodge's ENFORCED hosting consequence refuses this join. Its own
+  // outcome for the reason `minimum_stay` is one — a throw becomes a generic 500
+  // at the verify route, which tells the joiner nothing and reads as an outage —
+  // and it carries the generic sentence and nothing else, because this result
+  // reaches an UNAUTHENTICATED route. See
+  // `PUBLIC_GROUP_JOIN_ADULT_MEMBER_HOSTING_MESSAGE` for why there is no
+  // exception-door body here while every member-authenticated path gets one.
+  | { outcome: "adult_member_hosting"; message: string }
   | { outcome: "already_done"; bookingId: string }
   | {
       outcome: "created";
@@ -1486,8 +1569,13 @@ export async function verifyAndCreateNonMemberJoin(
       // off the organiser's booking by `parentBookingId`, but it belongs to a
       // DIFFERENT member, so the organiser's adults are deliberately not
       // borrowed (see `loadSiblingHosts`): "an adult member on the same booking"
-      // keeps meaning what it says, and the review is how an admin decides
-      // whether the organiser's presence is good enough.
+      // keeps meaning what it says, and under the REVIEW consequence the review is
+      // how an admin decides whether the organiser's presence is good enough.
+      //
+      // #2569: under the ENFORCED consequence this throws instead, which rolls the
+      // whole verified join back. Every non-member join at such a lodge is refused
+      // — see the catch below for why that is the rule working rather than an edge
+      // case, and for the generic sentence this unauthenticated path answers with.
       await reconcileAdultMemberHostingReviewWithSiblings(booking.id, tx);
 
       await tx.payment.create({
@@ -1529,8 +1617,49 @@ export async function verifyAndCreateNonMemberJoin(
       }
       return { outcome: "invalid" };
     }
+    // #2569 — the ENFORCED hosting refusal, raised by the reconciler above and
+    // rolled back with the booking, the payment, the pay link and the roster
+    // claim. Fails closed, and now says so: without this branch it reached the
+    // verify route's generic handler as a 500 reading "Unable to confirm your join
+    // right now", which is an outage message for a policy decision.
+    //
+    // A verified non-member join is the party this rule exists for — every guest
+    // is a non-member and the owner is a fresh non-login contact, so nobody on the
+    // booking can host — which means an ENFORCED lodge refuses ALL of them. That
+    // is the club's rule doing what it says, not an edge case.
+    //
+    // The detailed sentence, the uncovered nights and the frozen violation live in
+    // this log line and only here, matching the minimum-stay refusal above: the
+    // route spreads fields out of this result onto an unauthenticated response.
+    if (err instanceof AdultMemberHostingRequiredError) {
+      logger.warn(
+        {
+          joinId: join.id,
+          groupLodgeId,
+          detail: err.violation.message,
+          policyId: err.violation.policyId,
+          policyVersion: err.violation.policyVersion,
+          uncoveredNonMemberGuestNights:
+            err.violation.requirements.uncoveredNonMemberGuestNights,
+        },
+        "Group join verification refused: non-member guest nights are not covered by an adult member (#2569)",
+      );
+      return {
+        outcome: "adult_member_hosting",
+        message: PUBLIC_GROUP_JOIN_ADULT_MEMBER_HOSTING_MESSAGE,
+      };
+    }
     throw err;
   }
+
+
+  // #2576 §7. Every path that can ENQUEUE bounded re-evaluation work must also
+  // drain it: a queue row with nobody draining it turns the owner's "immediate
+  // re-evaluation" into "within three hours", which is how long an officer-created
+  // booking that has just RESTORED cover would leave a critical incident standing,
+  // or one that removed it would leave the owner un-notified. Best-effort and
+  // scoped to this booking's owner; the cron sweep is the authority on completion.
+  await settleHostingCoverageAfterCommit({ bookingId: created.bookingId });
 
   // Narrative event and pay-link email run after commit (a failed insert inside
   // the transaction would abort the booking creation).

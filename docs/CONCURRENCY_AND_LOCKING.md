@@ -105,6 +105,7 @@ are the literal `1`.
 | **Global booking / money** | `1` (literal) | inline `tx.$executeRaw` | 2 | Booking-status + money side effects that must exclude across the whole booking regardless of lodge: cancel, capture/settle, hold-release, group-settlement reaper/settle/refund/organiser-cancel, refunds, credit restore. |
 | **Per-lodge capacity** | `hashtextextended(<lodgeId>, 0)` | `acquireLodgeCapacityLock(tx, lodgeId)` (`lodge-capacity-lock.ts`, re-exported by `capacity.ts`) | 1 | Capacity claims/checks for one lodge; roster eligibility snapshots; and direct or config-transfer chore-template changes, which serialize active-template validation for that lodge. |
 | **Per-member night footprint** | `hashtext("booking-member-night"), hashtext(<memberId>)` | `lockBookingMemberNights(tx, guests)` (`booking-member-night-conflicts.ts`) | cross-lodge | Serialises the person-night guard ACROSS lodges (see below). |
+| **Per-owner hosting coverage** | `hashtext("hosting-coverage-owner"), hashtext(<Booking.memberId>)` | `lockHostingCoverageOwner` / `lockHostingCoverageOwners` (`adult-member-hosting-coverage-lock.ts`) | cross-booking | Serialises `SAME_BOOKING_OWNER` coverage (#2576 §9): one booking's compliance depends on another booking of the SAME owner, and per-lodge locks cannot serialise that because the cancel paths take only `lock(1)` while the create paths take only the lodge lock. Taken LAST among the application lock families a caller composes. Roster-aware modification paths take global → lodge → roster-date → any applicable member keys → coverage-owner; paths that do not use roster or member keys omit those tiers. Several owners are sorted, and the key is taken only when the lodge actually has the scope enabled. |
 | **Per-member credit ledger** | `hashtext("member-credit-ledger"), hashtext(<memberId>)` | `lockMemberCreditLedger(memberId, tx)` (`member-credit.ts`) | — | A member's credit-ledger balance operations (spend, negative-adjustment validation, orphan-restore repair, the Xero inbound applied-credit repair, and the F20 pre-payment-reduction applied-credit clamp `clampAppliedCreditToBookingPrice`, taken inside the modification transaction only when the booking carries applied credit, and the #2265 stored-election consumption `consumeStoredCreditElection`, taken inside the `create-payment-intent` pay transaction and the Internet Banking switch transaction only when the booking carries an outstanding election). |
 | **Member lifecycle** | `hashtext("member-lifecycle:<memberId>")` | inline (`member-lifecycle-actions.ts`, `nomination.ts` approval mapping, `admin-family-group-requests-service.ts`, `member-merge.ts`) | — | Archive/delete of one member; overwrite of one member by application-approval mapping (E10, #1936); linking/removing one member into/from a family group on admin request review; and **member merge** (dual-lock on master + loser, E11 #1937, see below). |
 | **Membership application** | `hashtext(<application key>)` | `membershipApplicationLockKey` (`nomination.ts`) | — | State transitions of one membership application. |
@@ -142,6 +143,17 @@ guest consent and admin booking-review claims share global → lodge; guest add
 shares the immutable lodge tier. Those common tiers serialize eligibility
 changes with roster validation without making every booking writer enumerate
 every possible roster night.
+
+The three roster-aware booking modification paths continue into the optional
+member-night and member-credit tiers only after their roster-date set is held,
+then call the same-owner hosting reconciler last. Guest removal likewise reaches
+the hosting reconciler only after its sorted roster-date locks, guest deletion
+and any applicable member-credit write. Thus their concrete composition is
+global → lodge → roster-date → applicable member keys → coverage-owner. This is
+not a claim that every booking writer takes every tier: create, confirm, cancel,
+membership fan-out and drain paths omit the roster and/or member keys they do
+not use. The invariant is that a path which does compose them never takes a
+roster-date or member key after the coverage-owner key.
 
 Kiosk complete/uncomplete takes only the affected roster-date key. Departure
 timestamps are not eligibility inputs, but departure cleanup also updates the
@@ -287,6 +299,91 @@ transaction is opened. This is a pool argument, not a lock-order one: no hosting
 policy writer takes a per-lodge capacity lock and no booking path takes the
 policy-set key, so the keyspaces are disjoint and cannot deadlock in either
 order.
+
+#### Same-owner coverage takes a per-owner key (#2576)
+
+`SAME_BOOKING_OWNER` makes one booking's compliance a function of ANOTHER booking's
+rows, so it gets its own advisory-lock family: `hosting-coverage-owner`, keyed on the
+booking OWNER.
+
+**An earlier version of this section argued the opposite, and it was wrong.** The
+argument was that coverage is same-lodge by definition (§4), so "every path that can
+confirm a booking and every path that can remove exact-night attendance already takes
+`acquireLodgeCapacityLock` for that lodge", leaving two interacting writers always
+contending for the same per-lodge key. That is false in both directions:
+
+- `booking-cancel.ts`'s four claim transactions take `pg_advisory_xact_lock(1)` and
+  never `acquireLodgeCapacityLock`;
+- `booking-create.ts` and the guest-add route take `acquireLodgeCapacityLock` and
+  never `pg_advisory_xact_lock(1)`.
+
+Those are different keys, these transactions run at READ COMMITTED, and the two
+writers touch no row in common — so nothing serialised them. The race §9 names was
+open, and non-deterministically so: member O owns booking A (CONFIRMED, adult member
+M attending nights N at lodge L). T1 creates booking B (non-member guests, lodge L,
+nights N), takes the lodge lock, reads A as CONFIRMED, finds cover and writes B.
+Concurrently T2 cancels A under `lock(1)`, cannot see uncommitted B, finds nothing
+stranded, and commits. B lands CONFIRMED with no cover, no refusal, no queue row,
+therefore no incident, no owner email and nothing in the officer queue. The mirror
+ordering is safe, which is exactly what §9 forbids.
+
+The invariant is per-OWNER, so the key is the owner — the same reasoning that gave
+`lockBookingMemberNights` its own family, because per-lodge locks cannot serialise a
+per-member invariant. `lockHostingCoverageOwner` is taken by every reader and writer
+of same-owner cover:
+
+- `evaluateBookingAdultMemberHosting`, before it reads another booking as cover
+  (and only when `SAME_BOOKING_OWNER` is actually enabled);
+- `settleSameOwnerDependentCoverage`, before it reads cross-booking dependents;
+- `enqueueOwnHostingCoverageReevaluation`, the seam the confirming paths use instead
+  of evaluating (it still queues under `SAME_BOOKING`; only the owner lock is
+  conditional on `SAME_BOOKING_OWNER`);
+- `enqueueHostingCoverageReevaluationForMember`, the §8 membership-lifecycle fan-out,
+  which collects the affected booking owners and takes their keys together through
+  `lockHostingCoverageOwners`, in sorted owner-id order.
+
+**Acquisition order: the coverage-owner key is always last among the application
+locks a caller actually takes.** It follows `pg_advisory_xact_lock(1)`,
+`acquireLodgeCapacityLock`, roster-date locks, `lockBookingMemberNights` and
+member-credit locks wherever those families participate. The roster-aware batch,
+date and admin-shift services therefore use global → lodge → sorted roster dates →
+member-night (when the party contains linked members) → member-credit (when the edit
+writes credit) → coverage-owner. Guest removal has no member-night guard and omits
+that tier; create, confirm, cancel, membership fan-out and drain paths omit the
+roster and/or member tiers they do not use. This is one partial order with optional
+tiers, not a claim that every path takes the complete chain. Several owners are
+locked in sorted order, the same discipline the member-night lock uses. Postgres
+advisory locks are re-entrant per session, so a transaction that takes the same
+owner key twice (the evaluator and then the settle step) pays nothing for the
+second acquisition.
+
+A club that has not enabled the scope never takes the key: every caller resolves the
+lodge policy first and skips the lock.
+
+`settleSameOwnerDependentCoverage` reads through the CALLER's `tx` for the same
+reason every other hosting read does, so it sees that transaction's own writes and
+the committed state of everything else.
+
+The DRAIN starts outside the authoritative transaction. `HostingCoverageReevaluation`
+rows are written inside that transaction — the change and the obligation to look at
+its consequences commit or roll back together — and
+`drainHostingCoverageReevaluations` starts only after it commits, so it re-reads
+COMMITTED facts. Each bounded queue item then gets its own short transaction: the
+transaction-scoped owner lock must stay held through the reconciliation reads and
+incident writes. Email remains outside that item transaction and is sent only after
+it commits. `settleHostingCoverageAfterCommit` is the wrapper the mutation paths call
+for that, and it never accepts a caller's `tx`;
+`adult-member-hosting-call-sites.test.ts` asserts so tree-wide.
+
+Concurrency inside the drain is handled by guarded claims rather than locks, the
+same pattern the rest of this repository uses for exactly-one-claimant: a queue item
+is claimed by an `updateMany` guarded on `processedAt: null` AND the `attempts` value
+just read. Owner notification uses a separate, expiring delivery lease; a successful
+transport stamps `notifiedStateKey`, while a failed/non-send releases the lease so
+unchanged reconciliation can retry. The one-active-incident-per-booking rule uses the partial
+unique index `HostingCoverageIncident_active_booking_unique` (a concurrent second
+opener loses on the index and folds into the winner). No new key is added to the
+lock-ordering table.
 
 #### Which client reads the subscription-lockout mode (#2543)
 

@@ -4,6 +4,15 @@ import { normalizeDateOnlyForTimeZone, parseDateOnly } from "@/lib/date-only";
 
 const mocks = vi.hoisted(() => ({
   transaction: vi.fn(),
+  // #2576 §9: the single settle door is a confirming path, so it records the bounded
+  // hosting re-evaluation with the PAID claim and drains it after the commit.
+  enqueueOwnHostingCoverage: vi.fn(async (...args: unknown[]) => {
+    void args;
+    return null;
+  }),
+  settleHostingCoverage: vi.fn(async (...args: unknown[]) => {
+    void args;
+  }),
   executeRaw: vi.fn(),
   bookingFindUnique: vi.fn(),
   bookingFindMany: vi.fn(),
@@ -76,6 +85,22 @@ vi.mock("@/lib/email", () => ({
 vi.mock("@/lib/bed-allocation-lifecycle", () => ({
   reconcileBedAllocationsForBooking: (...args: unknown[]) =>
     mocks.reconcileBedAllocationsForBooking(...args),
+}));
+
+// #2576 §9. Mocked at the module boundary like the collaborator above. The real seam
+// reads the booking and the lodge policy through the PAID claim's transaction client,
+// and this suite drives that transaction with a fake carrying only the money delegates —
+// so without this the enqueue throws and the settlement fails. Failing closed is the
+// correct production behaviour (§8 wants the obligation to commit WITH the transition),
+// which is why the fixture is what changes.
+vi.mock("@/lib/adult-member-hosting-review", () => ({
+  enqueueOwnHostingCoverageReevaluation: (...args: unknown[]) =>
+    mocks.enqueueOwnHostingCoverage(...args),
+}));
+
+vi.mock("@/lib/adult-member-hosting-coverage-drain", () => ({
+  settleHostingCoverageAfterCommit: (...args: unknown[]) =>
+    mocks.settleHostingCoverage(...args),
 }));
 
 vi.mock("@/lib/logger", () => ({

@@ -53,7 +53,12 @@ import {
   ADULT_SUPERVISION_REVIEW_REASON,
   minorsReviewAlertShouldFire,
 } from "@/lib/booking-review";
-import { reconcileAdultMemberHostingReviewWithSiblings } from "@/lib/adult-member-hosting-review";
+import {
+  hostingCoverageActorOptions,
+  reconcileAdultMemberHostingReviewWithSiblings,
+} from "@/lib/adult-member-hosting-review";
+import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
+import type { HostingCoverageOverrideInput } from "@/lib/adult-member-hosting-same-owner";
 import logger from "@/lib/logger";
 import { createBookingModificationCredit } from "@/lib/member-credit";
 import {
@@ -203,12 +208,30 @@ function buildIdentityOnlyPricing(booking: LoadedBookingForModify): PricingResul
 export async function modifyBookingBatch({
   bookingId,
   actor,
+  approvedExceptionAdultMemberHostingDecision,
+  hostingCoverageOverride,
   input,
   ipAddress,
   tx: callerTx,
 }: {
   bookingId: string;
   actor: { id: string; role: Role };
+  /**
+   * The attributable decision already made by an approved hosting-policy
+   * exception. It bypasses ENFORCED refusal for this booking only; the service
+   * still records/reopens the authoritative review before the approval executor
+   * performs its guarded PENDING -> APPROVED claim.
+   */
+  approvedExceptionAdultMemberHostingDecision?: {
+    reason: string;
+    byMemberId: string;
+  } | null;
+  /**
+   * #2576 §7: the officer's explicit confirmation and mandatory reason for
+   * overriding a same-owner coverage refusal. Ignored for a non-officer actor, so a
+   * member cannot self-authorise past §6's block by inventing a reason.
+   */
+  hostingCoverageOverride?: HostingCoverageOverrideInput | null;
   input: BatchModifyInput;
   ipAddress: string;
   /**
@@ -915,7 +938,21 @@ export async function modifyBookingBatch({
     // exception is a deliberate act with a reason attached, not a side effect of
     // an unrelated change, so a newly-appeared hazard opens PENDING for
     // everybody and an already-decided one is left exactly as it was.
-    await reconcileAdultMemberHostingReviewWithSiblings(bookingId, tx);
+    //
+    // #2576 §6/§7: participant-night, lodge and date changes can all take
+    // exact-night cover away from another booking on this account. The disposition
+    // travels with the actor — an ordinary member is refused and rolled back, an
+    // officer is allowed and the consequence is escalated to an urgent incident.
+    await reconcileAdultMemberHostingReviewWithSiblings(bookingId, tx, {
+      ...(approvedExceptionAdultMemberHostingDecision
+        ? { decision: approvedExceptionAdultMemberHostingDecision }
+        : {}),
+      ...hostingCoverageActorOptions({
+        actorRole: actor.role,
+        actorMemberId: actor.id,
+        ...(hostingCoverageOverride ? { override: hostingCoverageOverride } : {}),
+      }),
+    });
 
     return {
       booking: updatedBooking,
@@ -1031,6 +1068,15 @@ export async function modifyBookingBatch({
   // owns the commit, so it is handed back as `deferredPostCommit` — no provider
   // call fires inside the still-open approval transaction.
   const runPostCommit = async (): Promise<BatchModificationResponse> => {
+    // #2576 §7/§8, FIRST. The edit reconciled the account's other bookings inside
+    // the transaction; where an officer's edit took cover away, the bounded
+    // re-evaluation committed with it as a queue row. Draining it here is the
+    // "immediate re-evaluation" the owner asked for, and it comes before the
+    // settlement and email work because a confirmed booking the club's own rule
+    // would refuse is the more urgent of the two. Best-effort: the edit is
+    // committed, and the cron sweep is the authority on completion.
+    await settleHostingCoverageAfterCommit({ bookingId });
+
     // AFTER the commit, and before the settlement work below, so a cross-family
     // guest is asked as promptly as the booking-modified email is sent. Awaited: an
     // unsent consent request leaves a bed held (D-4) for a member nobody asked.

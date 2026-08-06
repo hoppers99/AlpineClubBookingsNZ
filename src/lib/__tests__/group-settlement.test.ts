@@ -36,6 +36,13 @@ const mocks = vi.hoisted(() => ({
   sendJoinSettled: vi.fn(),
   lodgeFindFirst: vi.fn(),
   acquireLodgeCapacityLock: vi.fn(),
+  // #2576 §9: committing a group child CONFIRMED records the bounded same-owner
+  // hosting re-evaluation in the same transaction. No policy row is returned, so the
+  // resolver lands on the built-in default (the rule off) and the enqueue is a
+  // no-op — which is what every existing expectation in this suite assumes.
+  adultMemberHostingPolicyFindMany: vi.fn().mockResolvedValue([]),
+  hostingCoverageReevaluationCreate: vi.fn().mockResolvedValue({ id: "hcr_1" }),
+  hostingCoverageReevaluationFindMany: vi.fn().mockResolvedValue([]),
 }));
 
 // The transaction client exposes the same nested method mocks; the callback runs
@@ -57,6 +64,10 @@ const txClient = {
     update: mocks.settlementUpdate,
     updateMany: mocks.settlementUpdateMany,
   },
+  adultMemberHostingPolicy: { findMany: mocks.adultMemberHostingPolicyFindMany },
+  hostingCoverageReevaluation: {
+    create: mocks.hostingCoverageReevaluationCreate,
+  },
 };
 
 vi.mock("@/lib/prisma", () => ({
@@ -72,6 +83,11 @@ vi.mock("@/lib/prisma", () => ({
     },
     internetBankingPaymentSettings: {
       findUnique: vi.fn().mockResolvedValue(null),
+    },
+    // #2576 §8: the post-commit drain reads this on the base client and finds
+    // nothing, so the settlement path is unchanged.
+    hostingCoverageReevaluation: {
+      findMany: mocks.hostingCoverageReevaluationFindMany,
     },
     $transaction: mocks.transaction,
   },

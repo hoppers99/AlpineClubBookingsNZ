@@ -1,6 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
+import {
+  AdultMemberHostingRequiredError,
+  buildAdultMemberHostingRefusalBody,
+} from "@/lib/adult-member-hosting-review";
+import {
+  SameOwnerCoverageOverrideRequiredError,
+  SameOwnerCoverageWouldBreakError,
+  buildSameOwnerCoverageOverrideRequiredBody,
+  buildSameOwnerCoverageRefusalBody,
+  hostingCoverageOverrideSchema,
+} from "@/lib/adult-member-hosting-same-owner";
 import { ApiError } from "@/lib/api-error";
 import { auth } from "@/lib/auth";
 import { bookableAgeTierEnum } from "@/lib/age-tier-schema";
@@ -113,6 +124,11 @@ const batchModifySchema = z.object({
     )
     .max(10)
     .optional(),
+  // #2576 §7: the officer's explicit confirmation and mandatory reason for
+  // overriding a same-owner coverage refusal. Optional in the shape because the
+  // first submission never carries it — the officer is asked only when the change
+  // would actually strand another booking on the account.
+  hostingCoverageOverride: hostingCoverageOverrideSchema.optional(),
 });
 
 const OVERRIDE_DATE_ONLY_FIELDS = [
@@ -253,6 +269,9 @@ export async function PUT(
         ? await adminShiftBookingDates({
             bookingId,
             actor: { id: session.user.id, role: actorRole },
+            ...(parsed.data.hostingCoverageOverride
+              ? { hostingCoverageOverride: parsed.data.hostingCoverageOverride }
+              : {}),
             input: {
               checkIn: parsed.data.checkIn,
               checkOut: parsed.data.checkOut,
@@ -264,6 +283,9 @@ export async function PUT(
         : await modifyBookingBatch({
             bookingId,
             actor: { id: session.user.id, role: actorRole },
+            ...(parsed.data.hostingCoverageOverride
+              ? { hostingCoverageOverride: parsed.data.hostingCoverageOverride }
+              : {}),
             input: parsed.data,
             ipAddress,
           });
@@ -374,6 +396,33 @@ export async function PUT(
       return NextResponse.json(buildPaidUpAdultRefusalBody(err.violation), {
         status: err.status,
       });
+    }
+    // #2569 — same reason, same order: `AdultMemberHostingRequiredError` extends
+    // ApiError, so it must be tested BEFORE the generic branch or the ENFORCED
+    // hosting refusal is flattened to a bare sentence and the member loses the
+    // exception door. Host identities are withheld from this body (#2569 §5).
+    if (err instanceof AdultMemberHostingRequiredError) {
+      return NextResponse.json(
+        buildAdultMemberHostingRefusalBody(err.violation),
+        { status: err.status },
+      );
+    }
+    // #2576 §6, and ABOVE the generic ApiError branch below for the same reason
+    // as its neighbour: a batch edit that would leave another booking on the
+    // member's own account without adult-member cover is refused, and the body is
+    // what names the affected booking, its lodge and the uncovered nights.
+    if (err instanceof SameOwnerCoverageWouldBreakError) {
+      return NextResponse.json(buildSameOwnerCoverageRefusalBody(err), {
+        status: err.status,
+      });
+    }
+    // #2576 §7. The officer is not refused: they are shown which bookings and
+    // nights the change would strand and asked to confirm it with a reason.
+    if (err instanceof SameOwnerCoverageOverrideRequiredError) {
+      return NextResponse.json(
+        buildSameOwnerCoverageOverrideRequiredBody(err),
+        { status: err.status },
+      );
     }
     if (err instanceof ApiError) {
       return NextResponse.json({ error: err.message }, { status: err.status });

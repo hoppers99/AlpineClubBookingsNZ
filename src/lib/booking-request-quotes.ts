@@ -13,6 +13,7 @@ import {
 } from "@prisma/client";
 import { z } from "zod";
 import { hashActionToken, issueActionToken } from "@/lib/action-tokens";
+import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
 import { reconcileAdultMemberHostingReviewWithSiblings } from "@/lib/adult-member-hosting-review";
 import { logAudit } from "@/lib/audit";
 import {
@@ -1532,6 +1533,11 @@ export async function holdBookingRequestSlots(input: {
       // to wait for the requester to pay before the club's own rule is visible.
       // The accept re-reconciles after it rewrites the guest list, so nothing
       // recorded here can go stale.
+      //
+      // #2569: at a lodge on the ENFORCED consequence this REFUSES rather than
+      // records, rolling the hold back — a hold is a capacity-holding booking, so
+      // it is the thing the club said it would not take. The hold route answers
+      // the officer with the rule that stopped it.
       await reconcileAdultMemberHostingReviewWithSiblings(held.id, tx);
 
       await tx.bookingRequest.update({
@@ -1551,6 +1557,15 @@ export async function holdBookingRequestSlots(input: {
               }),
       };
     });
+
+
+    // #2576 §7. Every path that can ENQUEUE bounded re-evaluation work must also
+    // drain it: a queue row with nobody draining it turns the owner's "immediate
+    // re-evaluation" into "within three hours", which is how long an officer-created
+    // booking that has just RESTORED cover would leave a critical incident standing,
+    // or one that removed it would leave the owner un-notified. Best-effort and
+    // scoped to this booking's owner; the cron sweep is the authority on completion.
+    await settleHostingCoverageAfterCommit({ bookingId: booking.id });
 
     // MG4-D-b (#2309), AFTER the commit and outside the capacity lock: no
     // provider call may sit inside a booking transaction. The dispatcher is

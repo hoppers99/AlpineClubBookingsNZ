@@ -27,6 +27,11 @@ import { DuplicateStayConflictError } from "@/lib/booking-create-types";
 import { getNonMemberHoldDays } from "@/lib/cancellation";
 import { resolveSubscriptionLockoutMode } from "@/lib/member-subscription-eligibility";
 import { formatMissingPaidUpAdultWaitlistRefusal } from "@/lib/policies/subscription-lockout-pricing";
+import { formatAdultMemberHostingWaitlistRefusal } from "@/lib/policies/adult-member-hosting";
+import {
+  AdultMemberHostingRequiredError,
+  buildAdultMemberHostingRefusalBody,
+} from "@/lib/adult-member-hosting-review";
 import {
   buildPaidUpAdultRefusalBody,
   evaluateNonMemberPricingRequirements,
@@ -182,6 +187,19 @@ export interface CrossLodgeConfirmResult {
    * paths do, with no route change and no second mapping to keep in step.
    */
   paidUpAdultRefusal?: ReturnType<typeof buildPaidUpAdultRefusalBody>;
+  /**
+   * The shared #2569 refusal body — frozen violation with host identities
+   * withheld, capacity mode and the path to ask a Booking Officer — present ONLY
+   * on the ENFORCED hosting refusal.
+   *
+   * Named identically to the same-lodge result's field for the reason
+   * `paidUpAdultRefusal` is: the waitlist-confirm route spreads whichever one it
+   * gets, so a cross-lodge promotion answers this refusal in exactly the shape the
+   * booking write paths do, with no route change and no second mapping.
+   */
+  adultMemberHostingRefusal?: ReturnType<
+    typeof buildAdultMemberHostingRefusalBody
+  >;
   /**
    * #2543 "tell them why": non-null when the promoted booking prices somebody at
    * non-member rates for an unpaid season subscription. The cross-lodge quote can
@@ -655,6 +673,31 @@ export async function confirmCrossLodgeWaitlistOffer(
       // same message and code — and leave the offer intact (do NOT revert to
       // WAITLISTED) so the member can cancel the duplicate and re-confirm.
       return { success: false, error: DUPLICATE_STAY_ERROR, code: "DUPLICATE_STAY" };
+    }
+    // #2569 — the ENFORCED hosting refusal, raised by the reconciler inside
+    // `createConfirmedBooking`'s transaction and answered here rather than being
+    // swallowed by the generic handler below, which reported it as "an error
+    // occurred": a member refused for a rule they can act on was told nothing and
+    // given no exception door.
+    //
+    // The offer is left INTACT (not reverted to WAITLISTED), exactly as the
+    // duplicate-stay rejection above leaves it: the creation rolled back, so the
+    // entry is still WAITLIST_OFFERED on its original expiry and the member keeps
+    // the chance to fix the party — or be approved — and confirm again. The
+    // #2543 refusal a few lines up reverts instead, because an unpaid subscription
+    // is not something a member can clear inside the offer window.
+    if (err instanceof AdultMemberHostingRequiredError) {
+      logger.warn(
+        { bookingId, offeredLodgeId },
+        "Cross-lodge waitlist confirm refused: non-member guest nights are not covered by an adult member (#2569)",
+      );
+      const refusal = buildAdultMemberHostingRefusalBody(err.violation);
+      return {
+        success: false,
+        error: formatAdultMemberHostingWaitlistRefusal(refusal.error),
+        code: refusal.code,
+        adultMemberHostingRefusal: refusal,
+      };
     }
     logger.error(
       { err, bookingId, offeredLodgeId },

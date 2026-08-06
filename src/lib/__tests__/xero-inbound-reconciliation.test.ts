@@ -41,6 +41,10 @@ const mocks = vi.hoisted(() => ({
   paymentTransactionCreate: vi.fn(),
   memberCreditFindFirst: vi.fn(),
   reconcileBedAllocations: vi.fn(),
+  // #2576 §9: an inbound Xero PAID is a confirmation, so it records the bounded
+  // hosting re-evaluation with the PAID claim and drains it after the commit.
+  enqueueOwnHostingCoverage: vi.fn(),
+  settleHostingCoverage: vi.fn(),
   recordBookingEvent: vi.fn(),
   txExecuteRaw: vi.fn(),
   subscriptionFindMany: vi.fn(),
@@ -180,6 +184,22 @@ vi.mock("@/lib/waitlist", async (importOriginal) => {
 
 vi.mock("@/lib/group-settlement", () => ({
   applyGroupSettlementSucceededFromInvoice: mocks.applyGroupSettlementFromInvoice,
+}));
+
+// #2576 §9. Mocked at the module boundary like the bed-allocation and group-settlement
+// collaborators above. The real seam reads the booking and the lodge policy through the
+// PAID transaction's client, and this suite drives that transaction with a fake — so
+// without these the enqueue throws, the whole PAID transition rolls back, and the
+// inbound event lands on the FAILED retry backoff. That is the CORRECT production
+// behaviour (§8 requires the obligation to commit WITH the transition, the transition is
+// idempotent, and a deferred retry is louder than a silently skipped obligation), which
+// is why the fix is here in the fixture rather than by making the enqueue best-effort.
+vi.mock("@/lib/adult-member-hosting-review", () => ({
+  enqueueOwnHostingCoverageReevaluation: mocks.enqueueOwnHostingCoverage,
+}));
+
+vi.mock("@/lib/adult-member-hosting-coverage-drain", () => ({
+  settleHostingCoverageAfterCommit: mocks.settleHostingCoverage,
 }));
 
 vi.mock("@/lib/bed-allocation-lifecycle", async (importOriginal) => {

@@ -17,6 +17,8 @@ import {
 } from "@/lib/manual-settlement-reversal-event";
 import { applyGroupSettlementSucceededFromInvoice } from "@/lib/group-settlement";
 import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
+import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
+import { enqueueOwnHostingCoverageReevaluation } from "@/lib/adult-member-hosting-review";
 import {
   acquireLodgeCapacityLock,
   checkCapacityForGuestRanges,
@@ -1012,6 +1014,15 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
         db: tx,
       });
 
+      // #2576 §9. An inbound Xero PAID is a confirmation, so the hosting facts are
+      // re-read rather than trusted. Enqueued and never refused: the money is
+      // already in the club's bank account by the time Xero tells us, so the only
+      // available answer is to allow the transition and escalate anything uncovered
+      // to an urgent incident (§8).
+      await enqueueOwnHostingCoverageReevaluation(fresh.bookingId, tx, {
+        cause: "SYSTEM_CHANGE",
+      });
+
       return {
         type: "paid" as const,
         payment: fresh,
@@ -1023,6 +1034,13 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
     if (outcome.type === "missing") {
       continue;
     }
+
+    // #2576 §9: drain what the PAID transition queued, per booking, now that it has
+    // committed. Scoped to this booking's owner so one invoice's settlement never
+    // runs another member's backlog inside this webhook.
+    await settleHostingCoverageAfterCommit({
+      bookingId: outcome.payment.bookingId,
+    });
 
     if (outcome.type === "manualSettlementConflict") {
       // B5 (#2262). Loud on every axis: a counter in the returned result, an

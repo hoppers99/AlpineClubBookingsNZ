@@ -27,7 +27,11 @@ import {
   minorsReviewAlertShouldFire,
   requiresAdultSupervisionReview,
 } from "@/lib/booking-review";
-import { reconcileAdultMemberHostingReviewWithSiblings } from "@/lib/adult-member-hosting-review";
+import type { HostingCoverageOverrideInput } from "@/lib/adult-member-hosting-same-owner";
+import {
+  hostingCoverageActorOptions,
+  reconcileAdultMemberHostingReviewWithSiblings,
+} from "@/lib/adult-member-hosting-review";
 import {
   getBookingEditPolicy,
   usesActiveBookingEditLifecycle,
@@ -262,6 +266,7 @@ export async function removeBookingGuestInTransaction({
   settlementMethod,
   consentAuthority,
   subscriptionLockoutMode,
+  hostingCoverageOverride,
 }: {
   tx: Prisma.TransactionClient;
   bookingId: string;
@@ -269,6 +274,13 @@ export async function removeBookingGuestInTransaction({
   actorMemberId: string;
   actorRole: string;
   settlementMethod?: BookingModificationSettlementMethod;
+  /**
+   * #2576 §7: the officer's explicit confirmation and mandatory reason for
+   * overriding a same-owner coverage refusal. Ignored for a non-officer actor —
+   * including a self-removing member guest, whose change is never blocked and never
+   * discloses the owner's other bookings (see `resolveDependentDisposition`).
+   */
+  hostingCoverageOverride?: HostingCoverageOverrideInput | null;
   /**
    * The club's subscription-lockout mode (#2543), resolved by the caller BEFORE it
    * opened this transaction — `resolveSubscriptionLockoutMode` can refresh the
@@ -766,7 +778,18 @@ export async function removeBookingGuestInTransaction({
   // opens a hosting review, and taking out the last non-member guest closes one.
   // Both are derived from the rows this transaction just wrote, using its own
   // client because it holds the global booking lock and the per-lodge lock.
-  await reconcileAdultMemberHostingReviewWithSiblings(bookingId, tx);
+  //
+  // #2576 §6: removing the qualifying adult member is the change class the owner
+  // names first, and it can strand ANOTHER booking on this account. The
+  // disposition travels with the actor — a member is refused and rolled back, an
+  // officer is allowed and escalated.
+  await reconcileAdultMemberHostingReviewWithSiblings(bookingId, tx, {
+    ...hostingCoverageActorOptions({
+      actorRole,
+      actorMemberId,
+      ...(hostingCoverageOverride ? { override: hostingCoverageOverride } : {}),
+    }),
+  });
 
   return {
     booking: updatedBooking,

@@ -21,7 +21,12 @@ import {
 } from "@/lib/booking-edit-policy";
 import { linkModificationToOutstandingChangeRequest } from "@/lib/booking-change-request-linkage";
 import { assertBookingEnvelopeInvariants } from "@/lib/booking-envelope-invariants";
-import { reconcileAdultMemberHostingReviewWithSiblings } from "@/lib/adult-member-hosting-review";
+import {
+  hostingCoverageActorOptions,
+  reconcileAdultMemberHostingReviewWithSiblings,
+} from "@/lib/adult-member-hosting-review";
+import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
+import type { HostingCoverageOverrideInput } from "@/lib/adult-member-hosting-same-owner";
 import {
   createModificationAdditionalPaymentIntent,
   executeBookingModificationRefund,
@@ -228,11 +233,18 @@ export type DateModificationResponse = {
 export async function modifyBookingDates({
   bookingId,
   actor,
+  hostingCoverageOverride,
   input,
   ipAddress,
 }: {
   bookingId: string;
   actor: { id: string; role: Role };
+  /**
+   * #2576 §7: the officer's explicit confirmation and mandatory reason for
+   * overriding a same-owner coverage refusal. Ignored for a non-officer actor, so a
+   * member cannot self-authorise past §6's block by inventing a reason.
+   */
+  hostingCoverageOverride?: HostingCoverageOverrideInput | null;
   input: ModifyBookingDatesInput;
   ipAddress: string;
 }): Promise<DateModificationResponse> {
@@ -972,7 +984,17 @@ export async function modifyBookingDates({
     // so the hazard can appear, disappear, or change shape without a single
     // guest changing. `tx` for the usual reason: this transaction holds the
     // global booking lock and the per-lodge capacity lock.
-    await reconcileAdultMemberHostingReviewWithSiblings(bookingId, tx);
+    //
+    // #2576 §6: arrival and departure changes are a named change class, and moving
+    // the nights can take exact-night cover away from another booking on this
+    // account. The disposition travels with the actor.
+    await reconcileAdultMemberHostingReviewWithSiblings(bookingId, tx, {
+      ...hostingCoverageActorOptions({
+        actorRole: actor.role,
+        actorMemberId: actor.id,
+        ...(hostingCoverageOverride ? { override: hostingCoverageOverride } : {}),
+      }),
+    });
 
     return {
       booking: updatedBooking,
@@ -1041,6 +1063,11 @@ export async function modifyBookingDates({
         appliedCheckOut: result.booking.checkOut,
       })
     : null;
+
+  // #2576 §7/§8: drain the bounded re-evaluation this edit committed, if any, now
+  // that the dates really are what the queue row says they are. Best-effort; the
+  // cron sweep is the authority on completion.
+  await settleHostingCoverageAfterCommit({ bookingId });
 
   await dispatchDatePostTransactionSideEffects({
     bookingId,
@@ -1251,11 +1278,18 @@ const SHIFT_LENGTH_MISMATCH_MESSAGE =
 export async function adminShiftBookingDates({
   bookingId,
   actor,
+  hostingCoverageOverride,
   input,
   ipAddress,
 }: {
   bookingId: string;
   actor: { id: string; role: Role };
+  /**
+   * #2576 §7: the officer's explicit confirmation and mandatory reason for
+   * overriding a same-owner coverage refusal. Ignored for a non-officer actor, so a
+   * member cannot self-authorise past §6's block by inventing a reason.
+   */
+  hostingCoverageOverride?: HostingCoverageOverrideInput | null;
   input: {
     checkIn?: string;
     checkOut?: string;
@@ -1596,7 +1630,18 @@ export async function adminShiftBookingDates({
 
     // #2364. An admin date SHIFT keeps every price and every guest, but it does
     // move the nights, so the hosting evaluation has to run again.
-    await reconcileAdultMemberHostingReviewWithSiblings(bookingId, tx);
+    //
+    // #2576 §7: this interactive officer path uses the same two-step override as
+    // every other coverage-breaking edit. The real officer id and the exact-state
+    // token both travel into the under-lock comparison; dropping either makes the
+    // 409 retry impossible or turns an attributable override into a system change.
+    await reconcileAdultMemberHostingReviewWithSiblings(bookingId, tx, {
+      ...hostingCoverageActorOptions({
+        actorRole: actor.role,
+        actorMemberId: actor.id,
+        ...(hostingCoverageOverride ? { override: hostingCoverageOverride } : {}),
+      }),
+    });
 
     return {
       booking: updatedBooking,
@@ -1695,6 +1740,11 @@ export async function adminShiftBookingDates({
   }).catch((err) =>
     logger.error({ err, bookingId }, "Failed to process waitlist after admin date shift"),
   );
+
+  // #2576 §7/§8. An officer's date shift is never refused, so this is the path on
+  // which the escalation actually happens: the shift committed a bounded
+  // re-evaluation row, and this opens the urgent incident and notifies the owner.
+  await settleHostingCoverageAfterCommit({ bookingId });
 
   return {
     booking: result.booking,

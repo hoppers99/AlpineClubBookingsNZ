@@ -1,4 +1,5 @@
 import { BookingStatus, PaymentStatus, type Prisma } from "@prisma/client";
+import { enqueueOwnHostingCoverageReevaluation } from "@/lib/adult-member-hosting-review";
 import {
   applyCreditToBooking,
   deriveBookingAppliedCreditCents,
@@ -485,6 +486,17 @@ export async function settleFullyCreditCoveredBooking(
   if (claimed.count === 0) {
     throw new CreditCoveredSettlementConflictError(bookingId);
   }
+
+  // #2576 §9. A fully credit-covered settlement is a confirmation
+  // (PAYMENT_PENDING -> PAID) and §9 names payment completion, so the hosting facts
+  // have to be re-read rather than trusted from the quote. Enqueued rather than
+  // refused for the reason every payment path is: the member's credit has been
+  // committed by the time this runs, so throwing would leave a debited balance
+  // pointing at a booking the club had just refused. The row commits with the claim
+  // and the caller drains it after the transaction.
+  await enqueueOwnHostingCoverageReevaluation(bookingId, tx, {
+    cause: "SYSTEM_CHANGE",
+  });
 
   const payment = await tx.payment.upsert({
     where: { bookingId },

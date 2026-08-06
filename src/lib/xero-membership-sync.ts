@@ -30,6 +30,8 @@ import {
 import { getSeasonStartMonth } from "@/lib/financial-year";
 import { loadMembershipLockoutSettings } from "@/lib/membership-lockout-settings";
 import { requiresPaidSubscriptionForAgeTierFromSettings } from "@/lib/member-subscription-eligibility";
+import { enqueueHostingCoverageReevaluationForMember } from "@/lib/adult-member-hosting-review";
+import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
 import { resolveMembershipTypePolicyForMember } from "@/lib/membership-type-policy";
 import {
   getXeroSyncCursor,
@@ -218,7 +220,7 @@ export async function flushMemberSubscriptionHistory(memberId: string): Promise<
   deletedCount: number;
   deactivatedLinkCount: number;
 }> {
-  return prisma.$transaction(async (tx) => {
+  const outcome = await prisma.$transaction(async (tx) => {
     const subscriptions = await tx.memberSubscription.findMany({
       where: { memberId },
       select: {
@@ -272,12 +274,22 @@ export async function flushMemberSubscriptionHistory(memberId: string): Promise<
       },
     }) : { count: 0 };
 
+    if (deletedSubscriptions.count > 0) {
+      await enqueueHostingCoverageReevaluationForMember(memberId, tx, {
+        cause: "SYSTEM_CHANGE",
+      });
+    }
+
     return {
       seasonYears,
       deletedCount: deletedSubscriptions.count,
       deactivatedLinkCount: deactivatedLinks.count,
     };
   });
+  if (outcome.deletedCount > 0) {
+    await settleHostingCoverageAfterCommit({ limit: 50 });
+  }
+  return outcome;
 }
 
 export async function syncMemberSubscriptionHistoryForLinkedContact(
@@ -380,59 +392,68 @@ async function writeXeroDerivedSubscriptionState(input: {
   survivingPaidAt: Date | null;
   survivingOnlineInvoiceUrl: string | null;
 }> {
-  const data = {
-    status: input.status,
-    xeroInvoiceId: null,
-    xeroInvoiceNumber: null,
-    xeroOnlineInvoiceUrl: null,
-    paidAt: input.paidAt ?? null,
-    manuallyMarkedPaidAt: null,
-    manuallyMarkedPaidByMemberId: null,
-    manualPaymentNote: null,
-  };
-  const updated = await prisma.memberSubscription.updateMany({
-    where: {
-      memberId: input.memberId,
-      seasonYear: input.seasonYear,
-      OR: [{ manuallyMarkedPaidAt: null }, { xeroInvoiceId: { not: null } }],
-    },
-    data,
-  });
-  if (updated.count === 0) {
-    const created = await prisma.memberSubscription.createMany({
-      data: [
-        { memberId: input.memberId, seasonYear: input.seasonYear, ...data },
-      ],
-      skipDuplicates: true,
+  const outcome = await prisma.$transaction(async (tx) => {
+    const data = {
+      status: input.status,
+      xeroInvoiceId: null,
+      xeroInvoiceNumber: null,
+      xeroOnlineInvoiceUrl: null,
+      paidAt: input.paidAt ?? null,
+      manuallyMarkedPaidAt: null,
+      manuallyMarkedPaidByMemberId: null,
+      manualPaymentNote: null,
+    };
+    const updated = await tx.memberSubscription.updateMany({
+      where: {
+        memberId: input.memberId,
+        seasonYear: input.seasonYear,
+        OR: [{ manuallyMarkedPaidAt: null }, { xeroInvoiceId: { not: null } }],
+      },
+      data,
     });
-    if (created.count === 0) {
-      // A row exists but the fence excluded it: it is manually marked paid
-      // with no Xero invoice link (or was created concurrently). Preserve it.
-      const surviving = await prisma.memberSubscription.findUnique({
-        where: {
-          memberId_seasonYear: {
-            memberId: input.memberId,
-            seasonYear: input.seasonYear,
-          },
-        },
-        select: { status: true, paidAt: true, xeroOnlineInvoiceUrl: true },
+    if (updated.count === 0) {
+      const created = await tx.memberSubscription.createMany({
+        data: [
+          { memberId: input.memberId, seasonYear: input.seasonYear, ...data },
+        ],
+        skipDuplicates: true,
       });
-      if (surviving) {
-        return {
-          written: false,
-          survivingStatus: surviving.status as MembershipSubscriptionStatus,
-          survivingPaidAt: surviving.paidAt,
-          survivingOnlineInvoiceUrl: surviving.xeroOnlineInvoiceUrl,
-        };
+      if (created.count === 0) {
+        // A row exists but the fence excluded it: it is manually marked paid
+        // with no Xero invoice link (or was created concurrently). Preserve it.
+        const surviving = await tx.memberSubscription.findUnique({
+          where: {
+            memberId_seasonYear: {
+              memberId: input.memberId,
+              seasonYear: input.seasonYear,
+            },
+          },
+          select: { status: true, paidAt: true, xeroOnlineInvoiceUrl: true },
+        });
+        if (surviving) {
+          return {
+            written: false,
+            survivingStatus: surviving.status as MembershipSubscriptionStatus,
+            survivingPaidAt: surviving.paidAt,
+            survivingOnlineInvoiceUrl: surviving.xeroOnlineInvoiceUrl,
+          };
+        }
       }
     }
+    await enqueueHostingCoverageReevaluationForMember(input.memberId, tx, {
+      cause: "SYSTEM_CHANGE",
+    });
+    return {
+      written: true,
+      survivingStatus: input.status,
+      survivingPaidAt: input.paidAt ?? null,
+      survivingOnlineInvoiceUrl: null,
+    };
+  });
+  if (outcome.written) {
+    await settleHostingCoverageAfterCommit({ limit: 50 });
   }
-  return {
-    written: true,
-    survivingStatus: input.status,
-    survivingPaidAt: input.paidAt ?? null,
-    survivingOnlineInvoiceUrl: null,
-  };
+  return outcome;
 }
 
 export async function checkMembershipStatus(
@@ -769,31 +790,38 @@ export async function checkMembershipStatus(
     // for the other non-linking writes.
     let subscriptionRecordId: string | null = null;
     if (matchedInvoiceId) {
-      const subscriptionRecord = await prisma.memberSubscription.upsert({
-        where: {
-          memberId_seasonYear: { memberId, seasonYear: year },
-        },
-        update: {
-          status: status.status,
-          xeroInvoiceId: matchedInvoiceId,
-          xeroInvoiceNumber: matchedInvoiceNumber,
-          xeroOnlineInvoiceUrl: onlineInvoiceUrl,
-          paidAt: status.paidAt,
-          manuallyMarkedPaidAt: null,
-          manuallyMarkedPaidByMemberId: null,
-          manualPaymentNote: null,
-        },
-        create: {
-          memberId,
-          seasonYear: year,
-          status: status.status,
-          xeroInvoiceId: matchedInvoiceId,
-          xeroInvoiceNumber: matchedInvoiceNumber,
-          xeroOnlineInvoiceUrl: onlineInvoiceUrl,
-          paidAt: status.paidAt,
-        },
+      const subscriptionRecord = await prisma.$transaction(async (tx) => {
+        const row = await tx.memberSubscription.upsert({
+          where: {
+            memberId_seasonYear: { memberId, seasonYear: year },
+          },
+          update: {
+            status: status.status,
+            xeroInvoiceId: matchedInvoiceId,
+            xeroInvoiceNumber: matchedInvoiceNumber,
+            xeroOnlineInvoiceUrl: onlineInvoiceUrl,
+            paidAt: status.paidAt,
+            manuallyMarkedPaidAt: null,
+            manuallyMarkedPaidByMemberId: null,
+            manualPaymentNote: null,
+          },
+          create: {
+            memberId,
+            seasonYear: year,
+            status: status.status,
+            xeroInvoiceId: matchedInvoiceId,
+            xeroInvoiceNumber: matchedInvoiceNumber,
+            xeroOnlineInvoiceUrl: onlineInvoiceUrl,
+            paidAt: status.paidAt,
+          },
+        });
+        await enqueueHostingCoverageReevaluationForMember(memberId, tx, {
+          cause: "SYSTEM_CHANGE",
+        });
+        return row;
       });
       subscriptionRecordId = subscriptionRecord.id;
+      await settleHostingCoverageAfterCommit({ limit: 50 });
     } else {
       const write = await writeXeroDerivedSubscriptionState({
         memberId,
@@ -893,9 +921,10 @@ async function releaseVoidedSubscriptionInvoice(input: {
   voidedInvoiceId: string | null;
 }): Promise<{ coverageReleased: boolean; chargeVoidedId: string | null }> {
   const now = new Date();
-  return prisma.$transaction(async (tx) => {
+  const outcome = await prisma.$transaction(async (tx) => {
     let coverageReleased = false;
     let chargeVoidedId: string | null = null;
+    let qualificationChanged = false;
 
     if (input.subscriptionId && input.voidedInvoiceId) {
       const activeCoverage = await tx.membershipSubscriptionChargeCoverage.findFirst({
@@ -927,7 +956,7 @@ async function releaseVoidedSubscriptionInvoice(input: {
     }
 
     if (input.voidedInvoiceId) {
-      await tx.memberSubscription.updateMany({
+      const subscriptionUpdate = await tx.memberSubscription.updateMany({
         where: {
           memberId: input.memberId,
           seasonYear: input.seasonYear,
@@ -941,6 +970,12 @@ async function releaseVoidedSubscriptionInvoice(input: {
           paidAt: null,
         },
       });
+      qualificationChanged = subscriptionUpdate.count > 0;
+      if (qualificationChanged) {
+        await enqueueHostingCoverageReevaluationForMember(input.memberId, tx, {
+          cause: "SYSTEM_CHANGE",
+        });
+      }
       await tx.xeroObjectLink.updateMany({
         where: {
           localModel: "MemberSubscription",
@@ -953,8 +988,15 @@ async function releaseVoidedSubscriptionInvoice(input: {
       });
     }
 
-    return { coverageReleased, chargeVoidedId };
+    return { coverageReleased, chargeVoidedId, qualificationChanged };
   });
+  if (outcome.qualificationChanged) {
+    await settleHostingCoverageAfterCommit({ limit: 50 });
+  }
+  return {
+    coverageReleased: outcome.coverageReleased,
+    chargeVoidedId: outcome.chargeVoidedId,
+  };
 }
 
 export interface SubscriptionInvoiceMatchOptions {

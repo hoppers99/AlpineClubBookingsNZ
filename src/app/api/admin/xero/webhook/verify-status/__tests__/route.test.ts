@@ -48,29 +48,61 @@ beforeEach(() => {
 describe("GET /api/admin/xero/webhook/verify-status — `since` parsing", () => {
   it("rejects `?since=0` as null (0 is not a real verify-start; every marker would look fresh)", async () => {
     await GET(makeRequest("?since=0"));
-    expect(mocks.checkXeroWebhookFreshVerify).toHaveBeenCalledWith(null);
+    expect(mocks.checkXeroWebhookFreshVerify).toHaveBeenCalledWith(
+      null,
+      expect.any(Number),
+    );
   });
 
   it("rejects a negative `since` as null", async () => {
     await GET(makeRequest("?since=-5"));
-    expect(mocks.checkXeroWebhookFreshVerify).toHaveBeenCalledWith(null);
+    expect(mocks.checkXeroWebhookFreshVerify).toHaveBeenCalledWith(
+      null,
+      expect.any(Number),
+    );
   });
 
   it("rejects a non-numeric `since` as null", async () => {
     await GET(makeRequest("?since=not-a-number"));
-    expect(mocks.checkXeroWebhookFreshVerify).toHaveBeenCalledWith(null);
+    expect(mocks.checkXeroWebhookFreshVerify).toHaveBeenCalledWith(
+      null,
+      expect.any(Number),
+    );
   });
 
   it("passes a strictly-positive `since` through unchanged", async () => {
     await GET(makeRequest("?since=1700000000000"));
     expect(mocks.checkXeroWebhookFreshVerify).toHaveBeenCalledWith(
       1_700_000_000_000,
+      expect.any(Number),
     );
   });
 
   it("treats an absent `since` as null", async () => {
     await GET(makeRequest());
-    expect(mocks.checkXeroWebhookFreshVerify).toHaveBeenCalledWith(null);
+    expect(mocks.checkXeroWebhookFreshVerify).toHaveBeenCalledWith(
+      null,
+      expect.any(Number),
+    );
+  });
+
+  it("anchors verify-start before a slow authorization check", async () => {
+    const requestStartedAt = Date.parse("2026-08-06T08:08:38.771Z");
+    vi.setSystemTime(requestStartedAt);
+    mocks.requireAdmin.mockImplementation(async () => {
+      vi.setSystemTime(requestStartedAt + 1_591);
+      return {
+        ok: true,
+        session: { user: { id: "admin-1", accessRoles: ["ADMIN"] } },
+      };
+    });
+
+    await GET(makeRequest());
+
+    expect(mocks.checkXeroWebhookFreshVerify).toHaveBeenCalledWith(
+      null,
+      requestStartedAt,
+    );
   });
 });
 

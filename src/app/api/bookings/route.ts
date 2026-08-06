@@ -28,6 +28,7 @@ import {
   buildPaidUpAdultRefusalBody,
   evaluateNonMemberPricingRequirements,
   toSubscriptionLockoutParticipants,
+  type NonMemberPricingRequirements,
 } from "@/lib/subscription-lockout-enforcement";
 import {
   assertLinkedBookingMembersCanBeBooked,
@@ -95,7 +96,10 @@ import {
 } from "@/lib/date-only";
 import { resolveOptionalActiveLodgeId } from "@/lib/lodges";
 import { aggregatePolicyExceptionViolations } from "@/lib/booking-policy-exceptions";
-import { evaluateProposedAdultMemberHosting } from "@/lib/adult-member-hosting-review";
+import {
+  buildAdultMemberHostingRefusalBody,
+  evaluateProposedAdultMemberHosting,
+} from "@/lib/adult-member-hosting-review";
 import {
   hasAccessRole,
   hasAdminAccess,
@@ -270,6 +274,9 @@ export async function POST(request: NextRequest) {
   let effectiveMemberId = session.user.id;
   let isAuthorizedOnBehalf = false;
   let effectiveMemberAgeTier: AgeTier | null = null;
+  let paidUpAdultViolation: NonNullable<
+    NonMemberPricingRequirements["violation"]
+  > | null = null;
 
   // Only admin-only accounts (no USER token) are forced onto the on-behalf
   // page; dual-hat admins self-book here under full member rules (#1442).
@@ -807,12 +814,7 @@ export async function POST(request: NextRequest) {
       // apply consent — nothing would ever correct it.
       participants: toSubscriptionLockoutParticipants(guestInputs),
     });
-    if (nonMemberPricing?.violation) {
-      return NextResponse.json(
-        buildPaidUpAdultRefusalBody(nonMemberPricing.violation),
-        { status: 409 },
-      );
-    }
+    paidUpAdultViolation = nonMemberPricing?.violation ?? null;
   }
 
   // Minimum stay policy (skipped only for authorized on-behalf bookings —
@@ -853,14 +855,24 @@ export async function POST(request: NextRequest) {
   // reconciler writes inside the transaction is derived from the persisted guest
   // rows, so it references real BookingGuest ids and stays comparable with every
   // later evaluation.
-  if (isAuthorizedOnBehalf && !adultMemberHostingReason) {
+  //
+  // #2569 — evaluated for EVERY booker now, not only for an on-behalf admin,
+  // because the ENFORCED consequence refuses the ordinary member's booking too.
+  // One evaluation serves both outcomes: the violation carries the club's
+  // `consequence`, so the branch below reads the club's setting rather than
+  // re-resolving it. A club on DISABLED pays one narrow policy read and no member
+  // read, and a club on ADMIN_REVIEW_REQUIRED behaves exactly as it did before —
+  // the answer is used for the on-behalf gate and otherwise discarded, with the
+  // stored snapshot still coming from the reconciler inside the transaction.
+  if (!adultMemberHostingReason) {
     const hostingViolation = await evaluateProposedAdultMemberHosting(prisma, {
+      bookingOwnerMemberId: effectiveMemberId,
       lodgeId: bookingLodgeId,
       checkIn,
       checkOut,
       guests: guestInputs,
     });
-    if (hostingViolation) {
+    if (hostingViolation && isAuthorizedOnBehalf) {
       const exceptionReview = aggregatePolicyExceptionViolations([
         hostingViolation,
       ]);
@@ -876,6 +888,49 @@ export async function POST(request: NextRequest) {
         { status: 409 },
       );
     }
+    // The ENFORCED refusal (#2569 §1), pre-transaction like every other booking
+    // check here. The reconciler would refuse this booking anyway from inside the
+    // creating transaction, but refusing before it opens means the member is not
+    // charged for a capacity lock and a full write that is about to roll back —
+    // and it is the only place the member can be handed the exception door with
+    // the party they actually submitted.
+    if (hostingViolation?.consequence === "ENFORCED") {
+      if (paidUpAdultViolation) {
+        const hostingRefusal = buildAdultMemberHostingRefusalBody(hostingViolation);
+        const exceptionReview = aggregatePolicyExceptionViolations([
+          paidUpAdultViolation,
+          ...hostingRefusal.violations,
+        ]);
+        return NextResponse.json(
+          {
+            error:
+              "This booking needs both a paid-up adult member and adult member cover for every required night.",
+            details: exceptionReview.violations
+              .map((violation) => violation.message)
+              .join(" "),
+            code: "BOOKING_POLICY_REQUIREMENTS_NOT_MET",
+            reasonCodes: exceptionReview.violations.map(
+              (violation) => violation.reasonCode,
+            ),
+            violations: exceptionReview.violations,
+            exceptionReview,
+            exceptionRequestPath: hostingRefusal.exceptionRequestPath,
+          },
+          { status: 409 },
+        );
+      }
+      return NextResponse.json(
+        buildAdultMemberHostingRefusalBody(hostingViolation),
+        { status: 409 },
+      );
+    }
+  }
+
+  if (paidUpAdultViolation) {
+    return NextResponse.json(
+      buildPaidUpAdultRefusalBody(paidUpAdultViolation),
+      { status: 409 },
+    );
   }
 
   const gds = await prisma.groupDiscountSetting.findUnique({ where: { id: "default" } });

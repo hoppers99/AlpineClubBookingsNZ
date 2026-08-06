@@ -6,6 +6,10 @@ vi.mock("@/lib/prisma", () => ({
     booking: { findMany: vi.fn(), count: vi.fn() },
     // #2307 (MG2-M-3): the consent queue chips count stuck guest rows.
     bookingGuest: { count: vi.fn().mockResolvedValue(0), findMany: vi.fn().mockResolvedValue([]) },
+    hostingCoverageIncident: {
+      count: vi.fn().mockResolvedValue(0),
+      findMany: vi.fn().mockResolvedValue([]),
+    },
     xeroSyncOperation: { findMany: vi.fn() },
     xeroObjectLink: { findMany: vi.fn() },
     // Multi-lodge phase 8: the page loads active lodges for the lodge
@@ -100,6 +104,8 @@ describe("AdminBookingsPage", () => {
     vi.mocked(loadEffectiveModuleFlags).mockResolvedValue(effectiveModulesOn);
     vi.mocked(prisma.booking.findMany).mockResolvedValue([]);
     vi.mocked(prisma.booking.count).mockResolvedValue(0);
+    vi.mocked(prisma.hostingCoverageIncident.count).mockResolvedValue(0);
+    vi.mocked(prisma.hostingCoverageIncident.findMany).mockResolvedValue([]);
     vi.mocked(prisma.xeroSyncOperation.findMany).mockResolvedValue([]);
     vi.mocked(prisma.xeroObjectLink.findMany).mockResolvedValue([]);
     vi.mocked(auth).mockResolvedValue({

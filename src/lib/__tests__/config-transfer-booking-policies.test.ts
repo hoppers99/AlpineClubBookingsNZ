@@ -63,7 +63,8 @@ function hostingTx() {
 }
 
 /** The header-only hosting file every booking-policies bundle must carry. */
-const EMPTY_HOSTING_CSV = "scope,mode,capacityMode\n";
+// #2569 added a fourth column, hostScopes. Header-only, so no row carries it.
+const EMPTY_HOSTING_CSV = "scope,mode,capacityMode,hostScopes\n";
 
 function files(csv: string): Map<string, Uint8Array> {
   return new Map([

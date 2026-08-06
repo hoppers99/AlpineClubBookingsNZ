@@ -122,6 +122,26 @@ function ItemRow({ item }: { item: StuckStateItem }) {
         <div className="mt-1 max-w-2xl text-sm text-muted-foreground">
           {item.summary}
         </div>
+        {item.details && item.details.length > 0 ? (
+          <ul className="mt-3 space-y-2" aria-label={`${item.title} details`}>
+            {item.details.map((detail) => (
+              <li
+                key={detail.id}
+                className="flex flex-wrap items-center justify-between gap-2 rounded-md border bg-muted p-2"
+              >
+                <div>
+                  <div className="text-sm font-medium">{detail.title}</div>
+                  <div className="text-xs text-muted-foreground">
+                    {detail.summary}
+                  </div>
+                </div>
+                <Button asChild variant="ghost" size="sm">
+                  <Link href={detail.href}>Open booking</Link>
+                </Button>
+              </li>
+            ))}
+          </ul>
+        ) : null}
       </TableCell>
       <TableCell>
         <Badge variant={severityBadgeVariant(item.severity)}>

@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import type { AgeTier } from "@prisma/client";
 import { z } from "zod";
+import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
+import { enqueueHostingCoverageReevaluationForMember } from "@/lib/adult-member-hosting-review";
 import { requireAdmin } from "@/lib/session-guards";
 import { prisma } from "@/lib/prisma";
 import { logAudit } from "@/lib/audit";
@@ -383,6 +385,23 @@ export async function POST(req: NextRequest) {
               where: { id: { in: idsToUpdate } },
               data: updateData,
             });
+
+      // #2576 §8. A BULK DEACTIVATE IS THE FIRST CHANGE CLASS THE OWNER NAMES —
+      // "membership becoming inactive" — and it can strip the qualifying adult host
+      // from a confirmed booking en masse. The evaluator half already worked (an
+      // inactive member stops qualifying); nothing recorded the obligation to look
+      // at the bookings that had been relying on them, so those bookings went
+      // silently non-compliant with no incident, no owner email and no officer-queue
+      // entry. Recorded per member inside this transaction so the deactivation and
+      // the obligation commit together; never refuses the deactivation.
+      if (action === "deactivate" || action === "reactivate") {
+        for (const memberId of idsToUpdate) {
+          await enqueueHostingCoverageReevaluationForMember(memberId, tx, {
+            cause: "SYSTEM_CHANGE",
+            actorMemberId: currentUserId,
+          });
+        }
+      }
       if (action === "set-role") {
         for (const { member, nextAccessRoles } of setRoleTargets) {
           const reconciledAgeTier = ageTierReconById.get(member.id);
@@ -413,6 +432,12 @@ export async function POST(req: NextRequest) {
                 : {}),
             },
           });
+          if (reconciledAgeTier !== undefined) {
+            await enqueueHostingCoverageReevaluationForMember(member.id, tx, {
+              cause: "SYSTEM_CHANGE",
+              actorMemberId: currentUserId,
+            });
+          }
           // #1756: an ORG grant that moves the member off ADULT breaks the
           // double-bed sharing precondition, so sweep their future shared-double
           // placements in the same transaction.
@@ -506,6 +531,16 @@ export async function POST(req: NextRequest) {
           "Failed to send partner share sweep alert",
         );
       });
+    }
+
+    // #2576 §8: settle what the deactivation recorded, now it has committed.
+    // Unfiltered, because a bulk action spans owners and lodges by definition.
+    if (
+      action === "deactivate" ||
+      action === "reactivate" ||
+      ageTierReconById.size > 0
+    ) {
+      await settleHostingCoverageAfterCommit({ limit: 50 });
     }
 
     // Audit log for each affected member

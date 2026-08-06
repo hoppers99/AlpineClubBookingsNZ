@@ -23,13 +23,41 @@ export interface MinStayPolicy {
  * no stored row: `version` is then 0 and `capacityMode` null, because a new
  * policy has no automatic capacity choice (epic decision D-R6).
  */
+export type AdultMemberHostingModeValue =
+  | "INHERIT"
+  | "DISABLED"
+  | "ADMIN_REVIEW_REQUIRED"
+  | "ENFORCED"
+
+/** The two independent host scopes (#2569 §2); null is the inherit option. */
+export interface AdultMemberHostScopeSetValue {
+  sameBooking: boolean
+  sameBookingOwner: boolean
+}
+
+/**
+ * What is actually in force at the selected scope, resolved by the SERVER
+ * (#2569 §16). The card displays it and never recomputes it: the inheritance rule
+ * has exactly one implementation, in `resolveAdultMemberHostingPolicy`.
+ */
+export interface AdultMemberHostingEffective {
+  mode: "DISABLED" | "ADMIN_REVIEW_REQUIRED" | "ENFORCED"
+  modeSource: "LODGE" | "CLUB_WIDE" | "BUILT_IN_DEFAULT"
+  hostScopes: AdultMemberHostScopeSetValue
+  hostScopeSource: "LODGE" | "CLUB_WIDE" | "BUILT_IN_DEFAULT"
+  preview: string
+}
+
 export interface AdultMemberHostingPolicy {
   scopeKey: string
   lodgeId: string | null
-  mode: "INHERIT" | "DISABLED" | "ADMIN_REVIEW_REQUIRED"
+  mode: AdultMemberHostingModeValue
   capacityMode: "HOLD" | "NO_HOLD" | null
+  /** null means this scope inherits the club's host scopes (#2569 §2). */
+  hostScopes: AdultMemberHostScopeSetValue | null
   version: number
   configured: boolean
+  effective: AdultMemberHostingEffective
 }
 
 export interface BookingPeriod {

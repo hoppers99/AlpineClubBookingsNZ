@@ -2,6 +2,8 @@ import { NextRequest } from "next/server";
 import type { AgeTier } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
+import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
+import { enqueueHostingCoverageReevaluationForMember } from "@/lib/adult-member-hosting-review";
 import { computeAgeTier, getSeasonStartDate } from "@/lib/age-tier";
 import { getSeasonYear } from "@/lib/utils";
 import {
@@ -1313,6 +1315,16 @@ export async function updateAdminMember(params: {
         },
       });
 
+      if (
+        existing.active !== updatedMember.active ||
+        existing.ageTier !== updatedMember.ageTier
+      ) {
+        await enqueueHostingCoverageReevaluationForMember(id, tx, {
+          cause: "SYSTEM_CHANGE",
+          actorMemberId: currentAdminMemberId,
+        });
+      }
+
       // #1756: sweep the member's future shared-double placements in the same
       // transaction as the deactivate / tier change; the removed second
       // occupants return to the awaiting-allocation queue (audited against
@@ -1397,6 +1409,13 @@ export async function updateAdminMember(params: {
         accessRoles: nextAccessRoles ?? resolveAccessRoleTokens(updatedMember),
       };
     });
+
+    if (
+      existing.active !== updated.active ||
+      existing.ageTier !== updated.ageTier
+    ) {
+      await settleHostingCoverageAfterCommit({ limit: 50 });
+    }
 
     if (sweptShares.length > 0) {
       // Post-commit, fire-and-forget: the sweep already committed with the

@@ -8,6 +8,7 @@ import {
   parseDateOnly,
 } from "@/lib/date-only";
 import { getActiveGuestsForNight } from "@/lib/booking-guest-stay-ranges";
+import { formatBookingReference } from "@/lib/booking-reference";
 
 type OccupancyBookingSummary = {
   id: string;
@@ -55,10 +56,6 @@ export function parseOccupancyMonth(month: string | null):
   }
 
   return { ok: true, month, startDate, endDate };
-}
-
-function bookingReference(id: string) {
-  return id.slice(0, 8).toUpperCase();
 }
 
 function ownerName(member: { firstName: string; lastName: string }) {
@@ -116,7 +113,7 @@ export async function getAdminOccupancyMonth(input: {
   for (const booking of bookings) {
     const bookingSummary: OccupancyBookingSummary = {
       id: booking.id,
-      reference: bookingReference(booking.id),
+      reference: formatBookingReference(booking.id),
       ownerName: ownerName(booking.member),
       checkIn: formatDateOnly(booking.checkIn),
       checkOut: formatDateOnly(booking.checkOut),

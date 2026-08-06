@@ -1,4 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
+import {
+  AdultMemberHostingRequiredError,
+  buildAdultMemberHostingRefusalBody,
+} from "@/lib/adult-member-hosting-review";
+import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
+import {
+  SameOwnerCoverageOverrideRequiredError,
+  SameOwnerCoverageWouldBreakError,
+  buildSameOwnerCoverageOverrideRequiredBody,
+  buildSameOwnerCoverageRefusalBody,
+  readHostingCoverageOverride,
+} from "@/lib/adult-member-hosting-same-owner";
 import { ApiError } from "@/lib/api-error";
 import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
@@ -77,6 +89,12 @@ export async function DELETE(
     | BookingModificationSettlementMethod
     | undefined;
 
+  // #2576 §7: the officer's explicit confirmation and reason for overriding a
+  // same-owner coverage refusal. Read off the same body, and simply absent when the
+  // client did not send one — the officer is asked only when the removal would
+  // actually strand another booking on the owner's account.
+  const hostingCoverageOverride = readHostingCoverageOverride(body);
+
   // Issue #1705 (#1696 semantics): the per-action member-email choice. Only a
   // booking-management ADMIN (Full Admin / Booking Officer) may carry the flag;
   // any other caller — the booking owner or a self-removing linked guest — is
@@ -113,11 +131,23 @@ export async function DELETE(
         bookingId,
         guestId,
         actorMemberId: session.user.id,
-        actorRole: authorizationRoleFromAccessRoles(session.user),
+        // Booking Officer is delegated booking-management authority even when
+        // their legacy access-role projection is USER. Preserve that authority
+        // on an override-only retry.
+        actorRole: managementRole,
         settlementMethod,
         subscriptionLockoutMode,
+        hostingCoverageOverride,
       })
     );
+
+    // #2576 §7/§8. Removing the qualifying adult member is the change class the
+    // owner names first. A member's removal that would strand another of their
+    // bookings was already refused inside the transaction above; an officer's was
+    // allowed and recorded a bounded re-evaluation row, and this is where that
+    // becomes an urgent incident and an email to the owner. Best-effort — the
+    // removal is committed, and the cron sweep is the authority on completion.
+    await settleHostingCoverageAfterCommit({ bookingId });
 
     /**
      * MG4 (#2309): tell a member guest their place has gone.
@@ -415,6 +445,41 @@ export async function DELETE(
         err.audience === "OTHER_PARTY_MEMBER"
           ? buildPaidUpAdultRefusalBodyForOtherPartyMember(err.violation)
           : buildPaidUpAdultRefusalBody(err.violation),
+        { status: err.status },
+      );
+    }
+    // #2569 — same reason, same order: `AdultMemberHostingRequiredError` extends
+    // ApiError, so it must be tested BEFORE the generic branch or the ENFORCED
+    // hosting refusal is flattened to a bare sentence and the member loses the
+    // exception door. Host identities are withheld from this body (#2569 §5).
+    //
+    // This is the path where the refusal is most easily misread as a bug: taking
+    // the LAST adult member off a booking that still carries non-member guests is
+    // exactly the change the rule forbids, so the removal is refused and the
+    // booking is left whole. Unlike its #2543 neighbour above this body has no
+    // audience split — the hosting violation names no member (§5), so there is
+    // nothing in it that could disclose the owner's affairs to another party
+    // member removing their own row.
+    if (err instanceof AdultMemberHostingRequiredError) {
+      return NextResponse.json(
+        buildAdultMemberHostingRefusalBody(err.violation),
+        { status: err.status },
+      );
+    }
+    // #2576 §6 — the OTHER direction of the same removal, and the same ordering
+    // rule for the same reason: taking the adult member off THIS booking can leave
+    // ANOTHER booking on the member's own account without cover, and the body is
+    // what names which booking, which lodge and which nights.
+    if (err instanceof SameOwnerCoverageWouldBreakError) {
+      return NextResponse.json(buildSameOwnerCoverageRefusalBody(err), {
+        status: err.status,
+      });
+    }
+    // #2576 §7. The officer is not refused: they are shown which bookings and
+    // nights the change would strand and asked to confirm it with a reason.
+    if (err instanceof SameOwnerCoverageOverrideRequiredError) {
+      return NextResponse.json(
+        buildSameOwnerCoverageOverrideRequiredBody(err),
         { status: err.status },
       );
     }

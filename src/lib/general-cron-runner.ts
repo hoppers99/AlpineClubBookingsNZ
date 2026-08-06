@@ -1,4 +1,5 @@
 import { purgeExpiredBookingRequests } from "@/lib/booking-request";
+import { drainHostingCoverageReevaluations } from "@/lib/adult-member-hosting-coverage-drain";
 import { sendAdditionalPaymentReminders } from "@/lib/cron-additional-payment-reminders";
 import { confirmPendingBookings } from "@/lib/cron-confirm-pending";
 import {
@@ -17,6 +18,7 @@ const GENERAL_CRON_JOB_NAMES = [
   "additional-payment-reminders",
   "confirm-pending",
   "group-settlement-reaper",
+  "hosting-coverage-reevaluation",
   "placeholder-guest-name-reminders",
   "policy-exception-hold-reaper",
   "pre-arrival-reminders",
@@ -33,6 +35,9 @@ export interface GeneralCronCycleResult {
   > | null;
   confirmPending: Awaited<ReturnType<typeof confirmPendingBookings>> | null;
   groupSettlementReap: Awaited<ReturnType<typeof reapStaleGroupSettlements>> | null;
+  hostingCoverageReevaluation: Awaited<
+    ReturnType<typeof drainHostingCoverageReevaluations>
+  > | null;
   placeholderGuestNameReminders: Awaited<
     ReturnType<typeof sendPlaceholderGuestNameReminders>
   > | null;
@@ -62,6 +67,9 @@ export interface GeneralCronRunnerDependencies {
     sendAdditionalPaymentReminders: typeof sendAdditionalPaymentReminders;
     confirmPendingBookings: typeof confirmPendingBookings;
     reapStaleGroupSettlements: typeof reapStaleGroupSettlements;
+    drainHostingCoverageReevaluations: () => ReturnType<
+      typeof drainHostingCoverageReevaluations
+    >;
     reapExpiredPolicyExceptionHolds: typeof reapExpiredPolicyExceptionHolds;
     sendPlaceholderGuestNameReminders: typeof sendPlaceholderGuestNameReminders;
     sendPreArrivalReminders: typeof sendPreArrivalReminders;
@@ -143,6 +151,7 @@ export async function runGeneralCronCycle(
     additionalPaymentReminders: null,
     confirmPending: null,
     groupSettlementReap: null,
+    hostingCoverageReevaluation: null,
     placeholderGuestNameReminders: null,
     policyExceptionHoldReap: null,
     preArrivalReminders: null,
@@ -183,6 +192,22 @@ export async function runGeneralCronCycle(
       work:
         taskDependencies.sendPlaceholderGuestNameReminders ??
         sendPlaceholderGuestNameReminders,
+    },
+    {
+      // #2576 §8. The BACKSTOP for the same-owner coverage queue, and the
+      // authority on completion. Escalating change paths record their bounded
+      // re-evaluation work inside their own transaction and drain it inline after
+      // commit; this sweep catches everything that inline attempt could not
+      // finish — a process that died mid-drain, a redeployment, a transient email
+      // failure — so an uncovered booking can never sit with nobody told.
+      // Idempotent by construction, so re-running costs nothing when the queue is
+      // empty (one indexed read that returns no rows).
+      jobName: "hosting-coverage-reevaluation",
+      resultKey: "hostingCoverageReevaluation",
+      failureMessage: "Same-owner hosting coverage re-evaluation cron error",
+      work:
+        taskDependencies.drainHostingCoverageReevaluations ??
+        (() => drainHostingCoverageReevaluations()),
     },
     {
       jobName: "policy-exception-hold-reaper",

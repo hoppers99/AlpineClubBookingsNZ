@@ -35,6 +35,20 @@ vi.mock("@/lib/adult-member-hosting-review", () => ({
   evaluateProposedAdultMemberHosting: vi.fn(async () => null),
 }));
 
+// #2576 §7's third automatic resolution: "the incident should resolve automatically
+// if ... a valid policy exception is approved". Mocked at the module boundary like
+// every other collaborator here, because the real helper reads
+// `tx.hostingCoverageIncident` and this suite's fake transaction carries only the
+// delegates the approval itself needs — which is exactly how it caught the change.
+const resolveHostingCoverageIncidents = vi.fn(async (...args: unknown[]) => {
+  void args;
+  return 1;
+});
+vi.mock("@/lib/adult-member-hosting-coverage-incidents", () => ({
+  resolveHostingCoverageIncidents: (...args: unknown[]) =>
+    resolveHostingCoverageIncidents(...args),
+}));
+
 const getNonMemberHoldPolicy = vi.fn();
 vi.mock("@/lib/cancellation", () => ({
   getNonMemberHoldPolicy: (...args: unknown[]) => getNonMemberHoldPolicy(...args),
@@ -132,6 +146,9 @@ const DELTA = {
       lastName: "Hopper",
       ageTier: "ADULT",
       isMember: false,
+      // A sparse explicit stay must survive the frozen-delta replay. Dropping
+      // this widens the guest back to the whole booking envelope.
+      nights: ["2026-07-02"],
     },
   ],
 };
@@ -545,13 +562,23 @@ describe("verifyLiveProposalIntegrity", () => {
 });
 
 describe("executeApprovedProposal — modification", () => {
-  async function runExecution(override: ConfirmedOverride) {
+  async function runExecution(
+    override: ConfirmedOverride,
+    contextOverrides: {
+      hostingCoverageOverride?: {
+        acknowledged: true;
+        reason: string;
+        strandedStateKey: string;
+      };
+    } = {},
+  ) {
     const snapshot = frozenModificationSnapshot();
     const { hooks, outcome } = buildPolicyExceptionApprovalHooks({
       requestId: "req-1",
       actorMemberId: OFFICER,
       ipAddress: "1.2.3.4",
       adminNotes: "Long-standing member, one-off.",
+      ...contextOverrides,
     });
     const tx = makeTx();
     // The engine always runs the integrity hook first; it is what seeds the
@@ -590,6 +617,7 @@ describe("executeApprovedProposal — modification", () => {
         isMember: false,
         stayStart: null,
         stayEnd: null,
+        nights: ["2026-07-02"],
       },
     ]);
   });
@@ -605,11 +633,51 @@ describe("executeApprovedProposal — modification", () => {
     expect(decision.reason).toContain("ADULT_MEMBER_HOSTING_REQUIRED");
     expect(decision.reason).toContain("req-1");
     expect(outcome.hostingDecisionRecorded).toBe(true);
+    expect(modifyBookingBatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        approvedExceptionAdultMemberHostingDecision: {
+          byMemberId: OFFICER,
+          reason: expect.stringContaining("ADULT_MEMBER_HOSTING_REQUIRED"),
+        },
+      }),
+    );
+
+    // #2576 §7. AND THE APPROVAL CLOSES THE INCIDENT, in this same transaction.
+    // Without it the approval was undone on the next pass: the drain's reconciliation
+    // tests only whether the hazard is GONE, and an approved exception AUTHORISES the
+    // hazard rather than removing it — so an officer who had just decided these exact
+    // uncovered nights, with a reason, had a `critical` incident re-affirmed against
+    // their own decision, permanently, with no route or UI able to clear it.
+    expect(resolveHostingCoverageIncidents).toHaveBeenCalledTimes(1);
+    const resolution = resolveHostingCoverageIncidents.mock.calls[0]?.[0];
+    expect(resolution).toMatchObject({
+      bookingId: "bk-1",
+      resolution: "EXCEPTION_APPROVED",
+      actorMemberId: OFFICER,
+    });
+  });
+
+  it("passes the private same-owner coverage override separately from member-facing notes", async () => {
+    const hostingCoverageOverride = {
+      acknowledged: true as const,
+      reason: "Officer confirmed alternative supervision.",
+      strandedStateKey: `v1:${"a".repeat(64)}`,
+    };
+    await runExecution(HOSTING_OVERRIDE, { hostingCoverageOverride });
+
+    expect(modifyBookingBatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        hostingCoverageOverride,
+        approvedExceptionAdultMemberHostingDecision: expect.any(Object),
+      }),
+    );
   });
 
   it("does NOT touch the hosting review when that rule was not overridden", async () => {
     await runExecution(MIN_STAY_OVERRIDE);
     expect(recordAdultMemberHostingReviewDecision).not.toHaveBeenCalled();
+    // Nor the incident: nothing was authorised, so there is nothing to close.
+    expect(resolveHostingCoverageIncidents).not.toHaveBeenCalled();
   });
 
   it("refuses to execute without a verified delta (fails loudly, never silently)", async () => {

@@ -5,6 +5,8 @@ import {
   type Prisma,
 } from "@prisma/client";
 import { CLUB_HUT_LEADER_LABEL } from "@/config/club-identity";
+import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
+import { enqueueHostingCoverageReevaluationForMember } from "@/lib/adult-member-hosting-review";
 import { hasAdminAccess, memberHoldsPrivilegedRole } from "@/lib/access-roles";
 import {
   actorIsFullAdmin,
@@ -1552,6 +1554,24 @@ export async function reviewMemberArchiveRequest({
       );
     }
 
+    // #2576 §8. ARCHIVING A MEMBER CAN LEAVE A CONFIRMED BOOKING UNCOVERED, and
+    // "membership becoming inactive, lapsed, cancelled or archived" is the FIRST
+    // change class the owner's decision names. Only the evaluator half of that
+    // existed: an archived member correctly stops counting as a qualifying adult
+    // host, while nothing told the club to go and look at the bookings that had been
+    // relying on them. So an archive left a confirmed booking silently
+    // non-compliant, with no incident, no owner email, no officer-queue entry, and
+    // the booking's own review snapshot still reading "compliant" — and the member's
+    // NEXT edit was then blamed for it, trapping them.
+    //
+    // Recorded in this transaction, so the archive and the obligation to check what
+    // it broke commit or roll back together. Bounded to the bookings this person
+    // actually attends; never refuses the archive.
+    await enqueueHostingCoverageReevaluationForMember(request.memberId, tx, {
+      cause: "SYSTEM_CHANGE",
+      actorMemberId: reviewedByMemberId,
+    });
+
     const reviewed = await tx.memberLifecycleActionRequest.findUniqueOrThrow({
       where: { id: request.id },
       include: lifecycleActionRequestInclude,
@@ -1593,6 +1613,11 @@ export async function reviewMemberArchiveRequest({
 
     return reviewed;
   });
+
+  // #2576 §8: settle the re-evaluation the archive recorded, now it has committed.
+  // Unfiltered: one member can attend bookings owned by several accounts at several
+  // lodges, so there is no single owner key to scope this to.
+  await settleHostingCoverageAfterCommit({ limit: 25 });
 
   // #1788: notify the target member unless the admin opted out (default is
   // notify; the suppression is audited above).

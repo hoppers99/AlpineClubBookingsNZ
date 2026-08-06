@@ -17,7 +17,12 @@ import {
 import { logAudit } from "./audit";
 import logger from "@/lib/logger";
 import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
-import { reconcileAdultMemberHostingReviewWithSiblings } from "@/lib/adult-member-hosting-review";
+import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
+import {
+  AdultMemberHostingRequiredError,
+  buildAdultMemberHostingRefusalBody,
+  reconcileAdultMemberHostingReviewWithSiblings,
+} from "@/lib/adult-member-hosting-review";
 import { priceBookingGuestsWithMembershipTypePolicy } from "@/lib/membership-type-policy";
 import {
   loadSeasonRateData,
@@ -36,6 +41,7 @@ import {
   toSubscriptionLockoutParticipants,
 } from "@/lib/subscription-lockout-enforcement";
 import { formatMissingPaidUpAdultWaitlistRefusal } from "@/lib/policies/subscription-lockout-pricing";
+import { formatAdultMemberHostingWaitlistRefusal } from "@/lib/policies/adult-member-hosting";
 
 export const WAITLIST_OFFER_HOURS =
   Number(process.env.WAITLIST_OFFER_HOURS) || 48;
@@ -701,7 +707,9 @@ export async function confirmWaitlistOffer(
   // "MINIMUM_STAY_VIOLATION" from the policy re-check below, or
   // "CONFIRM_RETRY" when the offer changed under the pre-read and the claim
   // refused without writing anything (the route answers 409 — retry), or
-  // "PAID_UP_ADULT_MEMBER_REQUIRED" from the #2543 re-check below.
+  // "PAID_UP_ADULT_MEMBER_REQUIRED" from the #2543 re-check below, or
+  // "ADULT_MEMBER_HOSTING_REQUIRED" from the #2569 ENFORCED consequence, raised
+  // by the in-transaction reconciler and translated in the catch below.
   code?: string;
   /**
    * The shared #2543 refusal body — frozen violation, HOLD promise and the path
@@ -710,6 +718,15 @@ export async function confirmWaitlistOffer(
    * bare message the member cannot act on.
    */
   paidUpAdultRefusal?: ReturnType<typeof buildPaidUpAdultRefusalBody>;
+  /**
+   * The shared #2569 refusal body — frozen violation, redacted host identities,
+   * capacity mode and the path to ask a Booking Officer — present ONLY on the
+   * ENFORCED hosting refusal. Named identically on the cross-lodge result so the
+   * route spreads whichever one it gets, exactly as `paidUpAdultRefusal` is.
+   */
+  adultMemberHostingRefusal?: ReturnType<
+    typeof buildAdultMemberHostingRefusalBody
+  >;
   /**
    * #2543 "tell them why": non-null when this offer prices somebody at non-member
    * rates for an unpaid season subscription. Returned so the confirming member
@@ -1022,16 +1039,55 @@ export async function confirmWaitlistOffer(
       // membership, age tier or active/cancelled/archived state — can move under
       // it. Confirming turns a queue placeholder into a capacity-holding
       // booking, so the hazard is re-derived against TODAY's facts rather than
-      // the ones that applied when the booking joined the queue. Unlike minimum
-      // stay this cannot refuse the confirmation: hosting is a review, so the
-      // member gets their booking and the club gets the review.
+      // the ones that applied when the booking joined the queue.
+      //
+      // Under the REVIEW consequence this cannot refuse the confirmation: the
+      // member gets their booking and the club gets the review. Under #2569's
+      // ENFORCED consequence it throws, which rolls this whole claim back — the
+      // status flip, the bed allocations and the price rebase — and the catch
+      // below turns it into the member's exception door.
       await reconcileAdultMemberHostingReviewWithSiblings(bookingId, tx);
 
       return { success: true, newStatus };
     });
   } catch (err) {
+    // #2569 — the ENFORCED hosting refusal, BEFORE the generic handler below,
+    // which reported it as "an error occurred" and answered 400. That was the
+    // worst of the available answers: the member was refused for a rule they
+    // could act on, told nothing about it, and given no exception door.
+    //
+    // The offer is deliberately NOT reverted to WAITLISTED. The transaction rolled
+    // back, so the booking is still WAITLIST_OFFERED on its original expiry, and
+    // the member keeps the chance to fix the party (or to be approved) and confirm
+    // again inside their window. Same reasoning as the cross-lodge duplicate-stay
+    // rejection, and the opposite of the #2543 refusal, which reverts because an
+    // unpaid subscription is not something a member can clear inside 48 hours.
+    if (err instanceof AdultMemberHostingRequiredError) {
+      logger.warn(
+        { bookingId },
+        "Waitlist confirm refused: non-member guest nights are not covered by an adult member (#2569)",
+      );
+      const refusal = buildAdultMemberHostingRefusalBody(err.violation);
+      return {
+        success: false,
+        error: formatAdultMemberHostingWaitlistRefusal(refusal.error),
+        code: refusal.code,
+        adultMemberHostingRefusal: refusal,
+      };
+    }
     logger.error({ err, bookingId }, "Failed to confirm waitlist offer");
     return { success: false, error: "An error occurred while confirming your booking" };
+  }
+
+
+  // #2576 §7. Every path that can ENQUEUE bounded re-evaluation work must also
+  // drain it: a queue row with nobody draining it turns the owner's "immediate
+  // re-evaluation" into "within three hours", which is how long an officer-created
+  // booking that has just RESTORED cover would leave a critical incident standing,
+  // or one that removed it would leave the owner un-notified. Best-effort and
+  // scoped to this booking's owner; the cron sweep is the authority on completion.
+  if (result.success) {
+    await settleHostingCoverageAfterCommit({ bookingId });
   }
 
   if (result.success) {

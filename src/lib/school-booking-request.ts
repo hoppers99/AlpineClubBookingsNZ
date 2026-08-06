@@ -37,6 +37,7 @@ import {
 import { z } from "zod";
 import { isEffectiveModuleEnabled } from "@/lib/admin-modules";
 import { issueActionToken } from "@/lib/action-tokens";
+import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
 import { reconcileAdultMemberHostingReviewWithSiblings } from "@/lib/adult-member-hosting-review";
 import { createAuditLog, logAudit } from "@/lib/audit";
 import { formatDateOnly } from "@/lib/date-only";
@@ -1209,7 +1210,14 @@ export async function approveSchoolBookingRequest(input: {
       // the first unrelated edit. PENDING, never APPROVED: approving the
       // REQUEST is not the explicit, reasoned acceptance of a hosting exception
       // that D-R4 requires, and approval is never blocked by it.
-      await reconcileAdultMemberHostingReviewWithSiblings(booking.id, tx);
+      // #2569 §13 — school and organisation workflows are EXCLUDED from the
+      // enforced consequence: they run a separate officer-managed process and may
+      // be supervised by teachers, leaders or custodians who do not map onto the
+      // adult club-member host rule. The hazard is still evaluated and recorded so
+      // an officer sees it; the booking is never stopped by this policy.
+      await reconcileAdultMemberHostingReviewWithSiblings(booking.id, tx, {
+        enforcement: "REVIEW_ONLY",
+      });
 
       await tx.payment.create({
         data: {
@@ -1302,6 +1310,17 @@ export async function approveSchoolBookingRequest(input: {
       return { type: "capacityExceeded", fullNights: capacityFullNights };
     }
     throw err;
+  }
+
+
+  // #2576 §7. Every path that can ENQUEUE bounded re-evaluation work must also
+  // drain it: a queue row with nobody draining it turns the owner's "immediate
+  // re-evaluation" into "within three hours", which is how long an officer-created
+  // booking that has just RESTORED cover would leave a critical incident standing,
+  // or one that removed it would leave the owner un-notified. Best-effort and
+  // scoped to this booking's owner; the cron sweep is the authority on completion.
+  if (!conversion.alreadyConverted) {
+    await settleHostingCoverageAfterCommit({ bookingId: conversion.bookingId });
   }
 
   // On the idempotent replay path the tx body was skipped: the booking already
@@ -2138,10 +2157,22 @@ export async function approveMemberWholeLodgeRequest(input: {
       // #2364. The requesting member owns this booking but is NOT a guest row on
       // it, and ownership never proves attendance — so a whole-lodge party of
       // NON_MEMBER-rated placeholder guests (OD-A) has nobody hosting it, and at
-      // a club running the rule that is a real hazard an admin should see. It
-      // opens PENDING and never blocks the approval; if the member adds
-      // themselves or another adult member to the party, the next reconciliation
-      // clears it with no admin action.
+      // a club running the rule that is a real hazard an admin should see. Under
+      // the REVIEW consequence it opens PENDING and never blocks the approval; if
+      // the member adds themselves or another adult member to the party, the next
+      // reconciliation clears it with no admin action.
+      //
+      // #2569: NOT `REVIEW_ONLY`, and that is the point. A member whole-lodge
+      // request is a MEMBER-OWNED booking flow, which the owner's first release
+      // covers in as many words; the §13 exclusion names school and organisation
+      // request approvals only, and it is theirs because of teachers, organisation
+      // leaders and custodians who do not map onto the adult club-member rule —
+      // none of which is true of a member booking the whole lodge for their own
+      // party. So an enforcing lodge refuses this approval, the throw rolls it back
+      // untouched, and the route names the rule to the approving officer with no
+      // exception door, because that officer IS the authority the door leads to.
+      // Their remedies are to put a qualifying adult member in the party, move the
+      // request to another lodge, or change the lodge's setting.
       await reconcileAdultMemberHostingReviewWithSiblings(booking.id, tx);
 
       // Receivable for the finance surfaces. Pay-on-account via the existing
@@ -2194,6 +2225,17 @@ export async function approveMemberWholeLodgeRequest(input: {
       return { type: "capacityExceeded", fullNights: capacityFullNights };
     }
     throw err;
+  }
+
+
+  // #2576 §7. Every path that can ENQUEUE bounded re-evaluation work must also
+  // drain it: a queue row with nobody draining it turns the owner's "immediate
+  // re-evaluation" into "within three hours", which is how long an officer-created
+  // booking that has just RESTORED cover would leave a critical incident standing,
+  // or one that removed it would leave the owner un-notified. Best-effort and
+  // scoped to this booking's owner; the cron sweep is the authority on completion.
+  if (!conversion.alreadyConverted) {
+    await settleHostingCoverageAfterCommit({ bookingId: conversion.bookingId });
   }
 
   // Every post-commit side effect is guarded on !alreadyConverted so a replayed

@@ -1703,9 +1703,18 @@ describe("cancelBooking credit refunds", () => {
     // Both attempts pass the outer guard on a stale PAID read.
     mocks.bookingFindUnique.mockResolvedValue(bookingWithCredit);
     // First attempt claims (re-read PAID); the retry's re-read sees CANCELLED.
+    //
+    // THREE stubs for two attempts, and the middle one is #2576's: the claim
+    // transaction now also reconciles the hosting review, which re-reads the booking
+    // through the same `tx`. A two-value sequence handed that read the CANCELLED row
+    // during the FIRST attempt, so the retry fell through to the default and
+    // returned 200 — the single-flight guard looked broken when only the double's
+    // call ordering had moved. The tail value covers the retry and anything after
+    // it, so this no longer counts reads.
     mocks.txBookingFindUnique
       .mockResolvedValueOnce(bookingWithCredit)
-      .mockResolvedValueOnce({ ...bookingWithCredit, status: "CANCELLED" });
+      .mockResolvedValueOnce(bookingWithCredit)
+      .mockResolvedValue({ ...bookingWithCredit, status: "CANCELLED" });
     // The 3000 applied credit is tiered to 1500 (#1164); restoreCreditFromBooking
     // receives that tiered amount as its 4th (override) arg.
     mocks.calculateAppliedCreditRestore.mockReturnValue({

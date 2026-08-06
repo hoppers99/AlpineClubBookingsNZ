@@ -17,6 +17,19 @@ function source(file: string) {
   return fs.readFileSync(path.join(ROOT, file), "utf8")
 }
 
+function expectCallOrder(
+  file: string,
+  contents: string,
+  markers: readonly string[],
+) {
+  let previous = -1
+  for (const marker of markers) {
+    const position = contents.indexOf(marker)
+    expect(position, `${file}: missing ${marker}`).toBeGreaterThan(previous)
+    previous = position
+  }
+}
+
 function allSourceFiles(directory: string): string[] {
   return fs.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
     const absolute = path.join(directory, entry.name)
@@ -48,8 +61,8 @@ describe("roster-date lock source contract (#2586)", () => {
       "src/lib/chore-cleanup.ts",
     ]) {
       const contents = source(file)
-      expect(contents).toContain("lockRosterDates")
-      expect(contents.indexOf("lockRosterDates")).toBeLessThan(contents.lastIndexOf("choreAssignment.delete"))
+      expect(contents).toContain("await lockRosterDates(")
+      expect(contents.indexOf("await lockRosterDates(")).toBeLessThan(contents.lastIndexOf("choreAssignment.delete"))
     }
 
     const dateService = source("src/lib/booking-date-modification-service.ts")
@@ -63,6 +76,75 @@ describe("roster-date lock source contract (#2586)", () => {
       batchService.lastIndexOf("applyChoreCleanup("),
     )
     expect(batchService).toContain("rosterDatesAlreadyLocked: true")
+  })
+
+  it("keeps roster-date locks before member keys, tuple writes, and hosting-owner reconciliation", () => {
+    // This is the cross-PR order between #2590's roster-date key and #2591's
+    // coverage-owner key. The hosting reconciler acquires the owner key internally,
+    // so its call site must remain after every roster-aware write. Moving the
+    // reconciler above any lock marker below is the mutation this contract kills.
+    const batchFile = "src/lib/booking-batch-modification-service.ts"
+    const batch = source(batchFile)
+    expectCallOrder(batchFile, batch, [
+      "await lockRosterDateRangesAndDates(",
+      "const guestPlan = await prepareGuestPlan(",
+      "const { createdGuests } = await applyGuestChanges(",
+      "await createBookingModificationCredit(",
+      "await reconcileAdultMemberHostingReviewWithSiblings(",
+    ])
+
+    const dateFile = "src/lib/booking-date-modification-service.ts"
+    const dateService = source(dateFile)
+    const standardStart = dateService.indexOf(
+      "export async function modifyBookingDates(",
+    )
+    const shiftStart = dateService.indexOf(
+      "export async function adminShiftBookingDates(",
+    )
+    expect(standardStart).toBeGreaterThan(-1)
+    expect(shiftStart).toBeGreaterThan(standardStart)
+
+    const standard = dateService.slice(standardStart, shiftStart)
+    expectCallOrder(`${dateFile}#modifyBookingDates`, standard, [
+      "await lockRosterDateRangesAndDates(",
+      "await assertNoBookingMemberNightConflicts(",
+      "await tx.bookingGuest.update(",
+      "await createBookingModificationCredit(",
+      "await reconcileAdultMemberHostingReviewWithSiblings(",
+    ])
+
+    const shift = dateService.slice(shiftStart)
+    expectCallOrder(`${dateFile}#adminShiftBookingDates`, shift, [
+      "await lockRosterDateRangesAndDates(",
+      "await assertNoBookingMemberNightConflicts(",
+      "await tx.bookingGuest.update(",
+      "await reconcileAdultMemberHostingReviewWithSiblings(",
+    ])
+
+    const removalFile = "src/lib/booking-guest-removal-service.ts"
+    const removalService = source(removalFile)
+    const removalStart = removalService.indexOf(
+      "export async function removeBookingGuestInTransaction(",
+    )
+    const cleanupStart = removalService.indexOf(
+      "async function removeGuestChoreAssignments(",
+    )
+    expect(removalStart).toBeGreaterThan(-1)
+    expect(cleanupStart).toBeGreaterThan(removalStart)
+
+    const removal = removalService.slice(removalStart, cleanupStart)
+    expectCallOrder(`${removalFile}#removeBookingGuestInTransaction`, removal, [
+      "await removeGuestChoreAssignments(",
+      "await tx.bookingGuest.delete(",
+      "await createBookingModificationCredit(",
+      "await reconcileAdultMemberHostingReviewWithSiblings(",
+    ])
+
+    const cleanup = removalService.slice(cleanupStart)
+    expectCallOrder(`${removalFile}#removeGuestChoreAssignments`, cleanup, [
+      "await lockRosterDates(",
+      "await tx.choreAssignment.deleteMany(",
+    ])
   })
 
   it("keeps departure and chore-template mutation ordered with roster validation", () => {

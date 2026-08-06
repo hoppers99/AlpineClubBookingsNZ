@@ -1,4 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
+import {
+  SameOwnerCoverageOverrideRequiredError,
+  SameOwnerCoverageWouldBreakError,
+  buildSameOwnerCoverageOverrideRequiredBody,
+  buildSameOwnerCoverageRefusalBody,
+  hostingCoverageOverrideSchema,
+} from "@/lib/adult-member-hosting-same-owner";
 import { auth } from "@/lib/auth";
 import { cancelBooking } from "@/lib/booking-cancel";
 import { getClientIp } from "@/lib/rate-limit";
@@ -21,6 +28,11 @@ const cancelBookingMutationSchema = z.object({
   // semantics as the modify routes (#1696): booking-management ADMIN only,
   // absent means notify.
   notifyMember: z.boolean().optional(),
+  // #2576 §7: the officer's explicit confirmation and mandatory reason for
+  // overriding a same-owner coverage refusal. Optional in the shape because the
+  // first submission never carries it — the officer is asked only when the cancel
+  // would actually strand another booking on the account.
+  hostingCoverageOverride: hostingCoverageOverrideSchema.optional(),
 });
 
 export async function POST(
@@ -104,6 +116,10 @@ export async function POST(
         // Absent means notify; the service additionally forces notify for any
         // non-admin actor (defence in depth behind the 403 gate above).
         notifyMember: parsed.data.notifyMember,
+        // #2576 §7: threaded so the incident records WHO overrode the refusal and
+        // WHY, rather than recording an officer's deliberate act as an anonymous
+        // system change.
+        hostingCoverageOverride: parsed.data.hostingCoverageOverride,
         // #2029: this is the self-service (member / Booking Officer) cancel
         // surface, so enforce the started-stay block. A Full Admin acting
         // through the same route is exempted inside the service; every
@@ -120,6 +136,27 @@ export async function POST(
       { status: result.status }
     );
   } catch (error) {
+    // #2576 §6. ABOVE the generic branch, and that position is the whole point:
+    // this refusal is a 409 the member can act on — it names which of their own
+    // bookings, which lodge and which nights would be left without adult-member
+    // cover — and below a `Failed to cancel booking` 500 it would read as a bug in
+    // the site rather than as a decision they can respond to.
+    if (error instanceof SameOwnerCoverageWouldBreakError) {
+      return NextResponse.json(
+        buildSameOwnerCoverageRefusalBody(error),
+        { status: error.status }
+      );
+    }
+    // #2576 §7, and above the generic branch for the same reason. The officer is
+    // not being refused: they are being shown which bookings and nights the cancel
+    // would strand and asked to confirm it with a reason. `requiresOverrideReason`
+    // is the flag the client keys on to prompt for one.
+    if (error instanceof SameOwnerCoverageOverrideRequiredError) {
+      return NextResponse.json(
+        buildSameOwnerCoverageOverrideRequiredBody(error),
+        { status: error.status }
+      );
+    }
     logger.error({ err: error }, "Error cancelling booking");
     return NextResponse.json(
       { error: "Failed to cancel booking" },

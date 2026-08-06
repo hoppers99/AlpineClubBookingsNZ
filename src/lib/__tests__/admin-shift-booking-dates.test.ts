@@ -26,6 +26,7 @@ const h = vi.hoisted(() => ({
   cleanupRanges: vi.fn(),
   assertEnvelope: vi.fn(),
   assertNotQuotePriced: vi.fn(),
+  reconcileHosting: vi.fn(),
 }));
 
 const tx = {
@@ -126,6 +127,15 @@ vi.mock("@/lib/promo", () => ({
 vi.mock("@/lib/logger", () => ({
   default: { error: vi.fn(), warn: vi.fn(), info: vi.fn() },
 }));
+vi.mock("@/lib/adult-member-hosting-review", async (importOriginal) => {
+  const actual = await importOriginal<
+    typeof import("@/lib/adult-member-hosting-review")
+  >();
+  return {
+    ...actual,
+    reconcileAdultMemberHostingReviewWithSiblings: h.reconcileHosting,
+  };
+});
 
 import { adminShiftBookingDates } from "@/lib/booking-date-modification-service";
 
@@ -197,6 +207,7 @@ beforeEach(() => {
   h.sendBookingModifiedEmail.mockResolvedValue(undefined);
   h.processWaitlistForDates.mockResolvedValue(undefined);
   h.linkModification.mockResolvedValue(null);
+  h.reconcileHosting.mockResolvedValue({ action: "none", violation: null, mode: null });
   h.checkCapacityForGuestRanges.mockResolvedValue({
     available: true,
     minAvailable: 5,
@@ -278,6 +289,39 @@ describe("adminShiftBookingDates (issue #1668 — pure translation)", () => {
     expect(result.changeFeeCents).toBe(0);
     expect(result.refundAmountCents).toBe(0);
     expect(result.capacityOverridden).toBe(false);
+  });
+
+  it("threads the state-bound override and real officer into hosting reconciliation", async () => {
+    const booking = makeBooking();
+    primeTx(booking);
+    const hostingCoverageOverride = {
+      acknowledged: true as const,
+      reason: "Confirmed alternate supervision plan.",
+      strandedStateKey: `v1:${"a".repeat(64)}`,
+    };
+
+    await adminShiftBookingDates({
+      bookingId: "b1",
+      actor: { id: "admin1", role: "ADMIN" },
+      hostingCoverageOverride,
+      input: { checkIn: "2026-09-12" },
+      ipAddress: "1.1.1.1",
+    });
+
+    expect(h.reconcileHosting).toHaveBeenCalledWith(
+      "b1",
+      tx,
+      expect.objectContaining({
+        dependentCoverage: "ESCALATE",
+        coverageActorMemberId: "admin1",
+        coverageChange: {
+          cause: "OFFICER_OVERRIDE",
+          actorMemberId: "admin1",
+          reason: "Confirmed alternate supervision plan.",
+          strandedStateKey: `v1:${"a".repeat(64)}`,
+        },
+      }),
+    );
   });
 
   it("audits the move as booking.modify.admin_override and links the change request", async () => {
