@@ -412,8 +412,8 @@ then sorted member-lifecycle keys at transaction entry, before it re-points
 relations. If drain wins, merge waits and later re-points the drain's committed
 incident effects. If merge already re-pointed the persisted queue row, the typed
 queue re-read sees the survivor. The composed order is **policy-set → sorted
-member-lifecycle → sorted Member KEY SHARE → exact queue re-read →
-coverage-owner**. Member merge joins the first two tiers in that same direction;
+member-lifecycle → sorted Member KEY SHARE → exact queue re-read → coverage-owner**.
+Member merge joins the first two tiers in that same direction;
 every other member-lifecycle participant omits the policy key. Policy writers take
 no lifecycle, Member-row or coverage-owner lock, so no counterpart reverses this
 chain. The queue read is deliberately not a `FOR UPDATE`: no queue tuple lock is
