@@ -624,6 +624,7 @@ function immediatelyFocusedBookingTarget(
 function bookingCreateTrigger(
   action: ts.CallExpression,
   bindings: ConstBindings,
+  failClosedBookingSpec: boolean,
 ): BrowserTrigger | null {
   const callee = unwrapExpression(action.expression);
   if (!ts.isPropertyAccessExpression(callee)) return null;
@@ -638,6 +639,9 @@ function bookingCreateTrigger(
       .text === "keyboard"
   ) {
     const key = resolveStaticString(action.arguments[0], bindings);
+    if (key === "Enter" && failClosedBookingSpec) {
+      return { kind: "unresolved" };
+    }
     const focusedTarget = immediatelyFocusedBookingTarget(action, bindings);
     if (key === "Enter") return focusedTarget;
     if (key === null && focusedTarget && focusedTarget.kind !== "other") {
@@ -654,6 +658,9 @@ function bookingCreateTrigger(
     if (key !== "Enter") return key === null ? { kind: "unresolved" } : null;
   } else if (callee.name.text === "dispatchEvent") {
     const event = resolveStaticString(action.arguments[0], bindings);
+    if (event === "submit" && target.kind === "other" && failClosedBookingSpec) {
+      return { kind: "unresolved" };
+    }
     if (event !== "click" && event !== "submit") {
       if (event !== "keydown" && event !== "keypress") {
         return event === null ? { kind: "unresolved" } : null;
@@ -683,15 +690,16 @@ function analyzeDirectPosts(sourceFile: ts.SourceFile, file: string) {
       }
       const route = classifyBookingCreateRoute(node.arguments[0], bindings);
       if (isFetch) {
-        const methods = objectPropertyExpressions(
-          node.arguments[1],
-          "method",
-          bindings,
-        );
+        const options = node.arguments[1];
+        const methods = options
+          ? objectPropertyExpressions(options, "method", bindings)
+          : [];
         const method =
-          methods?.length === 1
-            ? (resolveStaticString(methods[0], bindings)?.toUpperCase() ?? null)
-            : null;
+          methods === null || methods.length > 1
+            ? null
+            : methods.length === 0
+              ? "GET"
+              : (resolveStaticString(methods[0], bindings)?.toUpperCase() ?? null);
         if (method !== "POST") {
           if (method === null && route === "exact") {
             unresolved.push(
@@ -718,11 +726,14 @@ function analyzeDirectPosts(sourceFile: ts.SourceFile, file: string) {
 
 function analyzeBrowserTriggers(sourceFile: ts.SourceFile, file: string) {
   const bindings = collectConstBindings(sourceFile);
+  const failClosedBookingSpec = E2E_BOOKING_CREATE_CENSUS.some(
+    (entry) => entry.transport === "browser" && entry.file === file,
+  );
   const create: string[] = [];
   const unresolved: string[] = [];
   const visit = (node: ts.Node): void => {
     if (ts.isCallExpression(node)) {
-      const trigger = bookingCreateTrigger(node, bindings);
+      const trigger = bookingCreateTrigger(node, bindings, failClosedBookingSpec);
       if (
         trigger &&
         trigger.kind !== "other" &&
@@ -858,6 +869,8 @@ describe("E2E booking-create retry isolation (#2599)", () => {
         "const { fetch: aliasedFetch } = request;",
         'aliasedFetch("https://club.invalid/api/bookings", { method: `POST` });',
         'request.fetch("/api/bookings", { method: runtimeMethod });',
+        'request.fetch("/api/bookings");',
+        'request.fetch("/api/bookings", { headers: { accept: "application/json" } });',
         'request.fetch("/api/bookings", { method: "GET" });',
         "request.post(`/api/bookings/${bookingId}/cancel`, {});",
         'request.post("/api/admin/bookings", {});',
@@ -910,6 +923,37 @@ describe("E2E booking-create retry isolation (#2599)", () => {
         'fixture:page.getByRole(`button`, { name: confirmBookingLabel }).click()',
       ],
     });
+  });
+
+  it("fails closed for form submit and raw Enter in registered browser-create specs", () => {
+    const bookingSource = parseSourceText(
+      "registered-booking-submit.ts",
+      [
+        'const submitButton = page.getByRole("button", { name: "Confirm Booking" });',
+        "submitButton.focus();",
+        "await expect(submitButton).toBeFocused();",
+        'page.keyboard.press("Enter");',
+        'page.locator("form").dispatchEvent("submit");',
+        'page.keyboard.press("Escape");',
+        'withBookingCreateClientIp(page, isolation, () => page.keyboard.press("Enter"));',
+      ].join("\n"),
+    );
+
+    expect(analyzeBrowserTriggers(bookingSource, "e2e/booking.spec.ts")).toEqual({
+      create: [],
+      unresolved: [
+        'e2e/booking.spec.ts:page.keyboard.press("Enter")',
+        'e2e/booking.spec.ts:page.locator("form").dispatchEvent("submit")',
+      ],
+    });
+
+    const unrelatedSource = parseSourceText(
+      "unrelated-enter.ts",
+      'page.keyboard.press("Enter");',
+    );
+    expect(
+      analyzeBrowserTriggers(unrelatedSource, "e2e/help-widget.spec.ts"),
+    ).toEqual({ create: [], unresolved: [] });
   });
 
   it("detects computed and function-produced blanket headers fail closed", () => {
