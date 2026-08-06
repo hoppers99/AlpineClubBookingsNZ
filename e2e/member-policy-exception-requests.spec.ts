@@ -533,7 +533,19 @@ test("a refusal shows the officer's member-facing explanation and never their in
 
   await card.getByLabel(/Explanation for the member/).fill(MEMBER_FACING);
   await card.getByLabel("Internal note (optional)").fill(INTERNAL_ONLY);
+  const refusalResponse = officer.waitForResponse(
+    (response) =>
+      response.request().method() === "PATCH" &&
+      response.url().endsWith(
+        `/api/admin/booking-exception-requests/${target.id}`,
+      ),
+  );
   await card.getByRole("button", { name: "Refuse" }).click();
+  const refusedDecision = await refusalResponse;
+  expect(
+    refusedDecision.ok(),
+    `officer refusal (${refusedDecision.status()}): ${await refusedDecision.text()}`,
+  ).toBeTruthy();
   await officer.close();
 
   await expectRequestStatus(target.id, "refused");
@@ -579,7 +591,19 @@ test("an approval becomes a real booking the member's row links to", async () =>
   await card
     .getByText("I have read the proposal above and I am applying this exception.")
     .click();
+  const approvalResponse = officer.waitForResponse(
+    (response) =>
+      response.request().method() === "PATCH" &&
+      response.url().endsWith(
+        `/api/admin/booking-exception-requests/${target.id}`,
+      ),
+  );
   await card.getByRole("button", { name: "Approve and apply" }).click();
+  const approvedDecision = await approvalResponse;
+  expect(
+    approvedDecision.ok(),
+    `officer approval (${approvedDecision.status()}): ${await approvedDecision.text()}`,
+  ).toBeTruthy();
   await officer.close();
 
   await expectRequestStatus(target.id, "approved");
