@@ -1,19 +1,26 @@
-import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { actualCorrectnessCensus, buildRawManifest, deriveCorrectnessReport, expectedCorrectnessCensus, sha256File, validateImmutableInputs, validateRawManifest } from "./correctness-contract.mjs";
+import { actualCorrectnessCensus, buildRawManifest, deriveCorrectnessReport, expectedCorrectnessCensus, sha256File, validateImmutableInputs, validateRawManifest, verifyLiveProducerSource } from "./correctness-contract.mjs";
 import { verifyCorrectnessRouteEvidence } from "./correctness-route-evidence.mjs";
 import { compareStackIdentities, verifyStackIdentity } from "./correctness-stack-identity.mjs";
 import { scanEvidence } from "./scan-evidence-secrets.mjs";
 
 const fail = (message) => { throw new Error(message); };
-const index = process.argv.indexOf("--dir");
-if (index < 0 || !process.argv[index + 1]) fail("usage: finalize-correctness-evidence.mjs --dir <correctness-run-root>");
-const root = resolve(process.argv[index + 1]);
+export function finalizeCorrectnessEvidence(rootInput, { runtimeContext = null, liveSourceRoot = null } = {}) {
+const root = resolve(rootInput);
 if (!statSync(root).isDirectory()) fail("correctness run root is not a directory");
 const paths = Object.fromEntries(["raw-evidence-manifest.json", "route-expectations.json", "secret-scan.json", "correctness-report.json", "COMPLETED.json"].map((name) => [name, join(root, name)]));
 for (const path of Object.values(paths)) if (existsSync(path)) fail(`refusing correctness finalization collision: ${path}`);
+try {
 const immutablePath = join(root, "inputs", "immutable-inputs.json");
-const immutable = validateImmutableInputs(JSON.parse(readFileSync(immutablePath, "utf8")), root);
+const immutable = validateImmutableInputs(JSON.parse(readFileSync(immutablePath, "utf8")), root, { runtimeContext });
+const producerSourceVerification = {
+  producerManifestPath: immutable.producer_files_path,
+  producerArchivePath: immutable.producer_source.archive_path,
+  producerCommit: immutable.producer_source.commit,
+  repoRoot: liveSourceRoot === null ? resolve(import.meta.dirname, "../../..") : resolve(liveSourceRoot),
+};
+verifyLiveProducerSource(producerSourceVerification);
 const stackOptions = { imageId: immutable.image.id, composeProject: immutable.environment.compose_project, databaseFingerprint: immutable.database.logical_fingerprint_before };
 const stackBefore = verifyStackIdentity(root, "inputs/stack-identity-before.json", { ...stackOptions, stage: "before" });
 const stackAfter = verifyStackIdentity(root, "postcondition-evidence/stack-identity-after.json", { ...stackOptions, stage: "after" });
@@ -50,6 +57,7 @@ const completion = {
   immutable_inputs_sha256: sha256File(immutablePath),
   check_census_sha256: immutable.check_census_sha256,
   writer_census_sha256: immutable.writer_census_sha256,
+  runtime_provenance_sha256: immutable.runtime_provenance.sha256,
   producer_files_sha256: immutable.producer_files_sha256,
   producer_source_archive_sha256: immutable.producer_source.archive_sha256,
   producer_source_commit: immutable.producer_source.commit,
@@ -62,5 +70,21 @@ const completion = {
   correctness_report_sha256: sha256File(paths["correctness-report.json"]),
   overall_result: report.result,
 };
+verifyLiveProducerSource(producerSourceVerification);
 writeFileSync(paths["COMPLETED.json"], `${JSON.stringify(completion, null, 2)}\n`, { flag: "wx" });
-console.log(JSON.stringify(completion));
+return completion;
+} catch (error) {
+  for (const path of Object.values(paths)) {
+    if (!existsSync(path)) continue;
+    const stats = lstatSync(path);
+    if (stats.isFile() || stats.isSymbolicLink()) unlinkSync(path);
+  }
+  throw error;
+}
+}
+
+if (import.meta.filename === process.argv[1]) {
+  const index = process.argv.indexOf("--dir");
+  if (index < 0 || !process.argv[index + 1]) fail("usage: finalize-correctness-evidence.mjs --dir <correctness-run-root>");
+  console.log(JSON.stringify(finalizeCorrectnessEvidence(process.argv[index + 1])));
+}

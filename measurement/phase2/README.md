@@ -68,6 +68,13 @@ before a pair, pair set, or aggregate can complete.
   manifest, and the archived writer census. At orchestration start the complete
   live timing harness is hashed again and every byte is matched to that archive;
   this sealed binding is carried through pair-set completion and aggregation.
+  The correctness inputs also bind a typed installed-runtime snapshot: Node 24,
+  both npm locks, exact Playwright/axe package manifests, the Playwright Chromium
+  registry, and the hashed Node/Chromium executables.
+  The correctness finalizer verifies the complete live producer-source census
+  against the archive before deriving evidence and again immediately before its
+  completion marker. A failed finalization removes only its derived report,
+  scan, manifest, and completion files so the immutable raw run can be retried.
   A complete but failed, unverified, or owner-disposition-needed chain cannot
   enter timing, and no check outside the exact Phase 2-owned set may be deferred.
 - `MC-03D` (CMS deletion invalidation) currently has no product endpoint and no
@@ -157,7 +164,13 @@ host contamination, assigns collision-proof pair IDs and absolute output roots,
 enforces inter-side and inter-pair gaps, validates every sealed pair, and writes
 its set-level completion marker only after all four return successfully. The
 lock carries an ownership token so one process cannot remove another's lock.
-`--output-id` must be new; never reuse a partial output directory.
+`--output-id` must be new; never reuse a partial output directory. The live
+harness/archive binding is re-verified at pair start, after each sealed side,
+immediately before each pair and set finalization, and again by aggregation.
+Changing a harness byte after the initial snapshot therefore invalidates the
+run instead of leaving a valid-looking historical self-hash. If that happens
+after pair or pair-set finalization, the runner removes only the exact derived
+seal files and preserves the raw timing evidence for review or retry.
 
 Restore and fingerprint hooks are prohibited for final decision evidence. The
 orchestrator must use the reviewed canonical stack helpers, whose bytes are in

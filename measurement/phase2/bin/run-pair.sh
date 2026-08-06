@@ -7,10 +7,10 @@ case "$(uname -s)" in MINGW*|MSYS*) ;; *) echo "run-pair requires the reviewed G
 winpath() { cygpath -am "$1"; }
 
 usage() {
-  echo "usage: QUIET_HOST_ATTESTED=YES run-pair.sh --pair-id <id> --order current-baseline|baseline-current --manifest <absolute-json> --harness-manifest <absolute-file> --harness-manifest-sha256 <sha256> --current-image <reference> --baseline-image <reference> --canonical-archive <absolute-path> --canonical-sha256 <sha256> --output-root <absolute-new-directory> [--restore-hook <executable>] [--fingerprint-hook <executable>] [--max-gap-seconds 600]" >&2
+  echo "usage: QUIET_HOST_ATTESTED=YES run-pair.sh --pair-id <id> --order current-baseline|baseline-current --manifest <absolute-json> --harness-manifest <absolute-file> --harness-manifest-sha256 <sha256> --harness-source-binding <absolute-json> --harness-source-binding-sha256 <sha256> --current-image <reference> --baseline-image <reference> --canonical-archive <absolute-path> --canonical-sha256 <sha256> --output-root <absolute-new-directory> [--restore-hook <executable>] [--fingerprint-hook <executable>] [--max-gap-seconds 600]" >&2
   exit 1
 }
-PAIR_ID= PAIR_ORDER= CORRECTNESS_MANIFEST_SOURCE= HARNESS_MANIFEST= HARNESS_MANIFEST_SHA256= CURRENT_IMAGE= BASELINE_IMAGE= CANONICAL_ARCHIVE= CANONICAL_SHA256= OUTPUT_ROOT= RESTORE_HOOK= PHASE2_FINGERPRINT_HOOK= MAX_GAP_SECONDS=600
+PAIR_ID= PAIR_ORDER= CORRECTNESS_MANIFEST_SOURCE= HARNESS_MANIFEST= HARNESS_MANIFEST_SHA256= HARNESS_SOURCE_BINDING_SOURCE= HARNESS_SOURCE_BINDING_SHA256= CURRENT_IMAGE= BASELINE_IMAGE= CANONICAL_ARCHIVE= CANONICAL_SHA256= OUTPUT_ROOT= RESTORE_HOOK= PHASE2_FINGERPRINT_HOOK= MAX_GAP_SECONDS=600
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --pair-id) PAIR_ID="${2:-}"; shift 2 ;;
@@ -18,6 +18,8 @@ while [ "$#" -gt 0 ]; do
     --manifest) CORRECTNESS_MANIFEST_SOURCE="${2:-}"; shift 2 ;;
     --harness-manifest) HARNESS_MANIFEST="${2:-}"; shift 2 ;;
     --harness-manifest-sha256) HARNESS_MANIFEST_SHA256="${2:-}"; shift 2 ;;
+    --harness-source-binding) HARNESS_SOURCE_BINDING_SOURCE="${2:-}"; shift 2 ;;
+    --harness-source-binding-sha256) HARNESS_SOURCE_BINDING_SHA256="${2:-}"; shift 2 ;;
     --current-image) CURRENT_IMAGE="${2:-}"; shift 2 ;;
     --baseline-image) BASELINE_IMAGE="${2:-}"; shift 2 ;;
     --canonical-archive) CANONICAL_ARCHIVE="${2:-}"; shift 2 ;;
@@ -43,7 +45,11 @@ if [ "$MEASUREMENT_PROFILE" = final-decision ] && [ "$MAX_GAP_SECONDS" != 600 ];
 [ -f "$HARNESS_MANIFEST" ] || { echo "harness manifest missing: $HARNESS_MANIFEST" >&2; exit 1; }
 [[ "$HARNESS_MANIFEST_SHA256" =~ ^[a-f0-9]{64}$ ]] || usage
 [ "$(sha256sum "$HARNESS_MANIFEST" | awk '{print $1}')" = "$HARNESS_MANIFEST_SHA256" ] || { echo "harness manifest checksum mismatch" >&2; exit 1; }
+sha256sum --check "$HARNESS_MANIFEST" >/dev/null
 node measurement/phase2/bin/verify-harness-manifest.mjs "$(winpath "$HARNESS_MANIFEST")" >/dev/null
+[ -f "$HARNESS_SOURCE_BINDING_SOURCE" ] || { echo "harness source binding missing: $HARNESS_SOURCE_BINDING_SOURCE" >&2; exit 1; }
+[[ "$HARNESS_SOURCE_BINDING_SHA256" =~ ^[a-f0-9]{64}$ ]] || usage
+[ "$(sha256sum "$HARNESS_SOURCE_BINDING_SOURCE" | awk '{print $1}')" = "$HARNESS_SOURCE_BINDING_SHA256" ] || { echo "harness source binding checksum mismatch" >&2; exit 1; }
 [ -n "$CURRENT_IMAGE" ] && [ -n "$BASELINE_IMAGE" ] || usage
 [ -f "$CANONICAL_ARCHIVE" ] || { echo "canonical archive missing: $CANONICAL_ARCHIVE" >&2; exit 1; }
 [[ "$CANONICAL_SHA256" =~ ^[a-f0-9]{64}$ ]] || usage
@@ -58,6 +64,8 @@ mkdir "$PAIR_ROOT" || { echo "could not atomically claim output root: $PAIR_ROOT
 mkdir "$PAIR_ROOT/pair-evidence"
 CORRECTNESS_MANIFEST="$PAIR_ROOT/pair-evidence/correctness-manifest.snapshot.json"
 cp "$CORRECTNESS_MANIFEST_SOURCE" "$CORRECTNESS_MANIFEST"
+HARNESS_SOURCE_BINDING="$PAIR_ROOT/pair-evidence/harness-source-binding.snapshot.json"
+cp "$HARNESS_SOURCE_BINDING_SOURCE" "$HARNESS_SOURCE_BINDING"
 exec 3>&1 4>&2
 exec > >(tee "$PAIR_ROOT/pair-evidence/orchestrator.log" >&3) 2>&1
 PAIR_TEE_PID=$!
@@ -101,6 +109,24 @@ read_manifest_field() {
   node -e 'const m=require(process.argv[1]); const v=process.argv[2].split(".").reduce((o,k)=>o?.[k],m); if(typeof v!=="string") process.exit(2); process.stdout.write(v)' \
     "$(winpath "$CORRECTNESS_MANIFEST")" "$1"
 }
+CURRENT_CORRECTNESS_COMPLETION="$(read_manifest_field sides.current.correctness_completion.path)"
+BASELINE_CORRECTNESS_COMPLETION="$(read_manifest_field sides.baseline.correctness_completion.path)"
+reverify_harness_source() {
+  [ "$(sha256sum "$HARNESS_SOURCE_BINDING" | awk '{print $1}')" = "$HARNESS_SOURCE_BINDING_SHA256" ] || { echo "frozen harness source binding changed" >&2; return 1; }
+  [ "$(sha256sum "$HARNESS_MANIFEST" | awk '{print $1}')" = "$HARNESS_MANIFEST_SHA256" ] || { echo "frozen harness manifest changed" >&2; return 1; }
+  sha256sum --check "$HARNESS_MANIFEST" >/dev/null || return 1
+  node measurement/phase2/bin/verify-harness-source.mjs \
+    --harness-manifest "$(winpath "$HARNESS_MANIFEST")" \
+    --current-completion "$(winpath "$CURRENT_CORRECTNESS_COMPLETION")" \
+    --baseline-completion "$(winpath "$BASELINE_CORRECTNESS_COMPLETION")" \
+    --binding "$(winpath "$HARNESS_SOURCE_BINDING")" >/dev/null || return 1
+}
+invalidate_pair_finalization() {
+  # These are the only derived pair-seal files. Raw pair evidence remains
+  # untouched so a corrected source checkout can retry finalization.
+  rm -f -- "$PAIR_ROOT/output-manifest.sha256" "$PAIR_ROOT/COMPLETED.json" "$PAIR_ROOT.finalization.json"
+}
+reverify_harness_source
 ARCHIVE_PATH="$(read_manifest_field canonical_database.archive_path)"
 ARCHIVE_SHA="$(read_manifest_field canonical_database.archive_sha256)"
 [ "$ARCHIVE_PATH" = "$CANONICAL_ARCHIVE" ] || { echo "canonical archive path does not match frozen manifest" >&2; exit 1; }
@@ -151,6 +177,7 @@ for index in 0 1; do
     echo "$side mutated the canonical database: before=$before_fingerprint after=$after_fingerprint" >&2; exit 1;
   }
   node measurement/phase2/bin/verify-completed-run.mjs "$(winpath "$PAIR_ROOT/$side")" > "$PAIR_ROOT/pair-evidence/$side-completion-verified.json"
+  reverify_harness_source
   phase2_checks_passed="$(node --input-type=module -e 'import fs from "node:fs";import {validatePhase2Correctness} from "./measurement/phase2/bin/correctness-contract.mjs";const s=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));validatePhase2Correctness(s.phase2_correctness,process.argv[2]);process.stdout.write("true")' "$(winpath "$PAIR_ROOT/$side/summary.json")" "$side")"
   [ "$phase2_checks_passed" = true ] || { echo "$side phase2-owned correctness checks did not pass" >&2; exit 1; }
   node - "$(winpath "$PAIR_ROOT/$side/env/runtime-identity-initial.json")" "$(winpath "$PAIR_ROOT/$side.runtime-identity-after-finalization.json")" <<'NODE'
@@ -196,4 +223,10 @@ NODE
 # byte. The finalizer output lives beside (not inside) the sealed directory.
 exec 1>&3 2>&4
 wait "$PAIR_TEE_PID"
+reverify_harness_source
 node measurement/phase2/bin/finalize-run.mjs --dir "$(winpath "$PAIR_ROOT")" --side pair --pair-id "$PAIR_ID" > "$PAIR_ROOT.finalization.json"
+if ! reverify_harness_source; then
+  invalidate_pair_finalization
+  echo "pair finalization invalidated because live harness source changed" >&2
+  exit 1
+fi

@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { AUDITED_KEYS, LIVE_PROVIDER_KEYS, auditAppEnvironment } from "./audit-app-environment.mjs";
-import { CORRECTNESS_CENSUS, EXPECTED_PRODUCER_SOURCE_PATHS, PHASE2_DEFERRED_CHECK_IDS, buildPhase2Correctness, classifyPreTimingResult, correctnessCensus, sha256File, validateCensus, validatePhase2Correctness, validateProducerFilesManifest, validateProducerResult } from "./correctness-contract.mjs";
+import { CORRECTNESS_CENSUS, EXPECTED_PRODUCER_SOURCE_PATHS, PHASE2_DEFERRED_CHECK_IDS, PRODUCER_CHECK_SCHEMA, buildPhase2Correctness, classifyPreTimingResult, correctnessCensus, sha256File, validateCensus, validatePhase2Correctness, validateProducerFilesManifest, validateProducerResult, validateRuntimeProvenance, verifyLiveProducerSource } from "./correctness-contract.mjs";
 import { parseStrictHttpHeaders } from "./http-evidence.mjs";
 import { readGitArchive } from "./git-archive.mjs";
 import { verifyCorrectnessRouteEvidence } from "./correctness-route-evidence.mjs";
@@ -17,6 +17,8 @@ import { finalizeSealedTree, verifySealedTree } from "./sealed-tree.mjs";
 import { conventionalMedian, rankedQuantile } from "./statistics.mjs";
 import { verifyPostFinalizationRuntimeIdentity } from "./runtime-identity.mjs";
 import { verifyHarnessAgainstProducerArchive } from "./verify-harness-source.mjs";
+import { verifyCorrectnessCompletion } from "./verify-correctness-evidence.mjs";
+import { finalizeCorrectnessEvidence } from "./finalize-correctness-evidence.mjs";
 
 const repo = resolve(import.meta.dirname, "../../..");
 const bin = resolve(import.meta.dirname);
@@ -164,18 +166,320 @@ const exactSourceArchive = join(temp, "reviewed-producers.tar");
 execFileSync("git", ["archive", "--format=tar", `--output=${exactSourceArchive}`, sourceRevision], { cwd: sourceRepo });
 const exactSourceManifest = join(temp, "reviewed-producers.sha256");
 const archivedSources = readGitArchive(exactSourceArchive);
-writeFileSync(exactSourceManifest, `# schema_version=1\n# producer_source_archive_sha256=${sha256File(exactSourceArchive)}\n# producer_source_commit=${sourceRevision}\n${EXPECTED_PRODUCER_SOURCE_PATHS.map((path) => `${sha(archivedSources.files.get(path))}  ${path}`).join("\n")}\n`);
+const validSourceManifestText = `# schema_version=1\n# producer_source_archive_sha256=${sha256File(exactSourceArchive)}\n# producer_source_commit=${sourceRevision}\n${EXPECTED_PRODUCER_SOURCE_PATHS.map((path) => `${sha(archivedSources.files.get(path))}  ${path}`).join("\n")}\n`;
+writeFileSync(exactSourceManifest, validSourceManifestText);
+const fixtureProducerManifest = join(temp, "fixture-producers.sha256"); writeFileSync(fixtureProducerManifest, validSourceManifestText);
 assert.equal(validateProducerFilesManifest(exactSourceManifest, exactSourceArchive).archiveRevision, sourceRevision);
+assert.deepEqual(EXPECTED_PRODUCER_SOURCE_PATHS, [...EXPECTED_PRODUCER_SOURCE_PATHS].sort());
+const integratedProducerManifestBuilder = resolve(repo, "measurement/current-main-refresh/bin/build-producer-manifest.mjs");
+if (existsSync(integratedProducerManifestBuilder)) {
+  const integratedManifest = join(temp, "integrated-producer-files.sha256");
+  execFileSync(process.execPath, [integratedProducerManifestBuilder, "--producer-source-archive", exactSourceArchive, "--producer-source-commit", sourceRevision, "--out", integratedManifest], { cwd: repo, encoding: "utf8", stdio: "pipe" });
+  assert.equal(validateProducerFilesManifest(integratedManifest, exactSourceArchive).count, EXPECTED_PRODUCER_SOURCE_PATHS.length);
+}
 const harnessFixturePaths = EXPECTED_PRODUCER_SOURCE_PATHS.filter((path) => path.startsWith("measurement/phase2/bin/") || ["docker-compose.yml", "Caddyfile.staging", "measurement/stack/docker-compose.measure.yml", "measurement/stack/measure-stack.sh"].includes(path));
 const harnessFixtureManifest = join(temp, "live-harness.sha256");
 const writeHarnessFixture = () => writeFileSync(harnessFixtureManifest, `${harnessFixturePaths.map((path) => `${sha256File(join(sourceRepo, ...path.split("/")))}  ${join(sourceRepo, ...path.split("/"))}`).join("\n")}\n`);
 writeHarnessFixture();
 assert.doesNotThrow(() => verifyHarnessAgainstProducerArchive({ harnessManifestPath: harnessFixtureManifest, producerManifestPath: exactSourceManifest, producerArchivePath: exactSourceArchive, producerCommit: sourceRevision, repoRoot: sourceRepo }));
-writeFileSync(join(sourceRepo, "measurement", "phase2", "bin", "aggregate-pairs.mjs"), "modified after reviewed producer archive\n");
+for (const sourcePath of ["measurement/phase2/bin/verify-harness-source.mjs", "measurement/phase2/bin/summarise.mjs", "measurement/phase2/bin/aggregate-pairs.mjs"]) {
+  const livePath = join(sourceRepo, ...sourcePath.split("/"));
+  writeFileSync(livePath, "modified after reviewed producer archive binding\n");
+  writeHarnessFixture();
+  assert.throws(() => verifyHarnessAgainstProducerArchive({ harnessManifestPath: harnessFixtureManifest, producerManifestPath: exactSourceManifest, producerArchivePath: exactSourceArchive, producerCommit: sourceRevision, repoRoot: sourceRepo }), /differ from the reviewed producer source archive/);
+  writeFileSync(livePath, archivedSources.files.get(sourcePath));
+}
 writeHarnessFixture();
-assert.throws(() => verifyHarnessAgainstProducerArchive({ harnessManifestPath: harnessFixtureManifest, producerManifestPath: exactSourceManifest, producerArchivePath: exactSourceArchive, producerCommit: sourceRevision, repoRoot: sourceRepo }), /differ from the reviewed producer source archive/);
+assert.doesNotThrow(() => verifyHarnessAgainstProducerArchive({ harnessManifestPath: harnessFixtureManifest, producerManifestPath: exactSourceManifest, producerArchivePath: exactSourceArchive, producerCommit: sourceRevision, repoRoot: sourceRepo }));
+const liveProducerOptions = { producerManifestPath: exactSourceManifest, producerArchivePath: exactSourceArchive, producerCommit: sourceRevision, repoRoot: sourceRepo };
+assert.equal(verifyLiveProducerSource(liveProducerOptions).count, EXPECTED_PRODUCER_SOURCE_PATHS.length);
+const extraGovernedSource = join(sourceRepo, "measurement", "phase2", "bin", "unreviewed-extra.mjs");
+writeFileSync(extraGovernedSource, "unreviewed extra source\n");
+assert.throws(() => verifyLiveProducerSource(liveProducerOptions), /missing, extra, or case-drifted/);
+unlinkSync(extraGovernedSource);
+const preservedResults = join(sourceRepo, "measurement", "phase2", "results", "preserved-evidence.json"); mkdirs(resolve(preservedResults, "..")); writeFileSync(preservedResults, "{}\n");
+assert.equal(verifyLiveProducerSource(liveProducerOptions).count, EXPECTED_PRODUCER_SOURCE_PATHS.length);
+const exactCaseSource = join(sourceRepo, "measurement", "phase2", "bin", "summarise.mjs");
+const wrongCaseSource = join(sourceRepo, "measurement", "phase2", "bin", "Summarise.mjs");
+renameSync(exactCaseSource, wrongCaseSource);
+assert.throws(() => verifyLiveProducerSource(liveProducerOptions), /wrong case|case-drifted/);
+renameSync(wrongCaseSource, exactCaseSource);
+const symlinkSource = join(sourceRepo, "measurement", "phase2", "bin", "statistics.mjs");
+const symlinkTarget = join(temp, "reviewed-statistics-source.mjs"); writeFileSync(symlinkTarget, archivedSources.files.get("measurement/phase2/bin/statistics.mjs"));
+unlinkSync(symlinkSource);
+try {
+  symlinkSync(symlinkTarget, symlinkSource, "file");
+  assert.throws(() => verifyLiveProducerSource(liveProducerOptions), /symbolic link|differs from the reviewed archive/);
+  unlinkSync(symlinkSource);
+} catch (error) {
+  if (error.code !== "EPERM") throw error;
+}
+writeFileSync(symlinkSource, archivedSources.files.get("measurement/phase2/bin/statistics.mjs"));
+assert.equal(verifyLiveProducerSource(liveProducerOptions).count, EXPECTED_PRODUCER_SOURCE_PATHS.length);
 writeFileSync(exactSourceManifest, `${readFileSync(exactSourceManifest, "utf8")} ${"0".repeat(64)}  arbitrary.txt\n`);
 assert.throws(() => validateProducerFilesManifest(exactSourceManifest, exactSourceArchive), /invalid producer-files|archive binding|source-path census/);
+
+// Exercise the composed correctness finalizer/verifier by default. This is a
+// complete dependency-free facsimile of both side trees, not a classifier-only
+// test: every immutable input and every raw producer artifact is created before
+// the real finalizer builds and seals its derived chain.
+const appSourceRepo = join(temp, "app-source-repo"); mkdirs(appSourceRepo);
+execFileSync("git", ["init", "--quiet"], { cwd: appSourceRepo });
+execFileSync("git", ["config", "core.autocrlf", "false"], { cwd: appSourceRepo });
+execFileSync("git", ["config", "user.email", "phase2-selftest@example.invalid"], { cwd: appSourceRepo });
+execFileSync("git", ["config", "user.name", "Phase 2 self-test"], { cwd: appSourceRepo });
+writeFileSync(join(appSourceRepo, "app-source.txt"), "immutable application source fixture\n");
+execFileSync("git", ["add", "."], { cwd: appSourceRepo });
+execFileSync("git", ["commit", "--quiet", "-m", "app fixture"], { cwd: appSourceRepo });
+const appSourceRevision = execFileSync("git", ["rev-parse", "HEAD"], { cwd: appSourceRepo, encoding: "utf8" }).trim();
+const appSourceArchive = join(temp, "reviewed-app.tar");
+execFileSync("git", ["archive", "--format=tar", `--output=${appSourceArchive}`, appSourceRevision], { cwd: appSourceRepo });
+const fixtureDatabaseArchive = join(temp, "canonical-fixture.dump"); writeFileSync(fixtureDatabaseArchive, "canonical isolated database fixture\n");
+const fixtureFingerprint = "6".repeat(64);
+const fixturePostgresImage = `sha256:${"7".repeat(64)}`;
+const fixtureWriterCensus = archivedSources.files.get("measurement/current-main-refresh/public-writer-census.json");
+
+const writeJson = (path, value) => writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
+const runtimeFixtureRoot = join(temp, "runtime-fixture"); mkdirs(join(runtimeFixtureRoot, "node_modules"));
+const runtimePackageNames = ["@playwright/test", "playwright", "playwright-core", "axe-core"];
+const runtimeVersion = "1.2.3";
+const runtimeIntegrity = "sha512-YWJj";
+const runtimePackageEntries = Object.fromEntries(runtimePackageNames.map((name) => [`node_modules/${name}`, { version: runtimeVersion, integrity: runtimeIntegrity }]));
+const runtimeRootPackagePath = join(runtimeFixtureRoot, "package.json"); writeJson(runtimeRootPackagePath, { name: "phase2-runtime-fixture", version: "1.0.0", engines: { node: ">=24.0.0 <25" } });
+const runtimeRootLockPath = join(runtimeFixtureRoot, "package-lock.json"); writeJson(runtimeRootLockPath, { lockfileVersion: 3, packages: { "": { name: "phase2-runtime-fixture", version: "1.0.0" }, ...runtimePackageEntries } });
+const runtimeInstalledLockPath = join(runtimeFixtureRoot, "node_modules", ".package-lock.json"); writeJson(runtimeInstalledLockPath, { lockfileVersion: 3, packages: runtimePackageEntries });
+const runtimePackages = {};
+for (const name of runtimePackageNames) {
+  const packagePath = join(runtimeFixtureRoot, "node_modules", ...name.split("/"), "package.json"); mkdirs(resolve(packagePath, "..")); writeJson(packagePath, { name, version: runtimeVersion, ...(name === "playwright" ? { main: "index.js" } : {}) });
+  runtimePackages[name] = { version: runtimeVersion, package_json_path: packagePath, package_json_sha256: sha256File(packagePath), root_lock_integrity: runtimeIntegrity, installed_lock_integrity: runtimeIntegrity };
+}
+const runtimeBrowserRegistryPath = join(runtimeFixtureRoot, "node_modules", "playwright-core", "browsers.json"); writeJson(runtimeBrowserRegistryPath, { browsers: [{ name: "chromium", revision: "1234", browserVersion: "141.0.0.0" }] });
+const runtimeChromiumExecutablePath = join(runtimeFixtureRoot, "chromium", "chrome.exe"); mkdirs(resolve(runtimeChromiumExecutablePath, "..")); writeFileSync(runtimeChromiumExecutablePath, "fixture Chromium executable bytes\n");
+writeFileSync(join(runtimeFixtureRoot, "node_modules", "playwright", "index.js"), `exports.chromium={executablePath:()=>${JSON.stringify(runtimeChromiumExecutablePath)}};\n`);
+const describedRuntimeFile = (path) => ({ path, size_bytes: statSync(path).size, sha256: sha256File(path) });
+const runtimePhysicalNodeExecutable = realpathSync.native(process.execPath);
+const runtimeProvenanceFixture = {
+  schema_version: 1,
+  node: { version: process.version, executable: describedRuntimeFile(runtimePhysicalNodeExecutable) },
+  root_package: describedRuntimeFile(runtimeRootPackagePath),
+  root_lock: { ...describedRuntimeFile(runtimeRootLockPath), lockfile_version: 3 },
+  installed_lock: { ...describedRuntimeFile(runtimeInstalledLockPath), lockfile_version: 3 },
+  packages: runtimePackages,
+  chromium: { browser_version: "141.0.0.0", revision: "1234", registry: describedRuntimeFile(runtimeBrowserRegistryPath), executable: describedRuntimeFile(runtimeChromiumExecutablePath) },
+};
+const runtimeFixtureContext = { repoRoot: runtimeFixtureRoot, nodeExecutable: process.execPath, nodeVersion: process.version, chromiumExecutable: runtimeChromiumExecutablePath };
+assert.equal(runtimeProvenanceFixture.node.executable.path, realpathSync.native(runtimeFixtureContext.nodeExecutable), "fnm aliases must resolve to the exact physical Node executable recorded in provenance");
+assert.doesNotThrow(() => validateRuntimeProvenance(runtimeProvenanceFixture, runtimeFixtureContext));
+assert.throws(() => validateRuntimeProvenance(runtimeProvenanceFixture, { ...runtimeFixtureContext, repoRoot: join(temp, "fabricated-runtime-root") }), /lock\/package\/Node identity|file binding/);
+const crossPackageRuntime = structuredClone(runtimeProvenanceFixture);
+crossPackageRuntime.packages.playwright.package_json_path = runtimeProvenanceFixture.packages["axe-core"].package_json_path;
+crossPackageRuntime.packages.playwright.package_json_sha256 = runtimeProvenanceFixture.packages["axe-core"].package_json_sha256;
+assert.throws(() => validateRuntimeProvenance(crossPackageRuntime, runtimeFixtureContext), /package binding/);
+const wrongNodeRuntime = structuredClone(runtimeProvenanceFixture); wrongNodeRuntime.node.executable = describedRuntimeFile(runtimeChromiumExecutablePath);
+assert.throws(() => validateRuntimeProvenance(wrongNodeRuntime, runtimeFixtureContext), /lock\/package\/Node identity/);
+const wrongChromiumRuntime = structuredClone(runtimeProvenanceFixture); wrongChromiumRuntime.chromium.executable = describedRuntimeFile(runtimePhysicalNodeExecutable);
+assert.throws(() => validateRuntimeProvenance(wrongChromiumRuntime, runtimeFixtureContext), /registry\/executable/);
+const rootPackageBytes = readFileSync(runtimeRootPackagePath);
+writeJson(runtimeRootPackagePath, { name: "phase2-runtime-fixture", version: "1.0.0" });
+const wrongEngineRuntime = structuredClone(runtimeProvenanceFixture); wrongEngineRuntime.root_package = describedRuntimeFile(runtimeRootPackagePath);
+assert.throws(() => validateRuntimeProvenance(wrongEngineRuntime, runtimeFixtureContext), /lock\/package\/Node identity/);
+writeFileSync(runtimeRootPackagePath, rootPackageBytes);
+
+function writeCorrectnessStack(root, stage, imageId) {
+  const directoryName = stage === "before" ? "inputs" : "postcondition-evidence";
+  const directory = join(root, directoryName); mkdirs(directory);
+  const container = (service) => ({
+    schema_version: 1,
+    service,
+    container_id: (service === "app" ? (stage === "before" ? "1" : "2") : "3").repeat(64),
+    image_id: service === "app" ? imageId : fixturePostgresImage,
+    compose_project: "tacbookings-measure",
+    compose_service: service,
+    network_mode: "tacbookings-measure_default",
+    networks: { "tacbookings-measure_default": { NetworkID: "4".repeat(64), IPAddress: service === "app" ? "172.30.0.4" : "172.30.0.2" } },
+    ports: { [service === "app" ? "3000/tcp" : "5432/tcp"]: [{ HostIp: "127.0.0.1", HostPort: service === "app" ? "3003" : "5435" }] },
+  });
+  const leaves = {
+    "app-container-inspect.json": container("app"),
+    "postgres-container-inspect.json": container("postgres"),
+    "postgres-server-version.json": { schema_version: 1, version: "16.9", version_num: "160009", database: "tacbookings", user: "tac" },
+    "database-fingerprint.json": { schema_version: 1, logical_fingerprint: fixtureFingerprint },
+  };
+  for (const [name, value] of Object.entries(leaves)) writeJson(join(directory, name), value);
+  const relative = (name) => `${directoryName}/${name}`;
+  const bound = (name) => ({ path: relative(name), sha256: sha256File(join(directory, name)) });
+  const aggregate = {
+    schema_version: 1, stage, compose_project: "tacbookings-measure", image_id: imageId,
+    app: { ...bound("app-container-inspect.json"), container_id: leaves["app-container-inspect.json"].container_id },
+    postgres: { ...bound("postgres-container-inspect.json"), container_id: leaves["postgres-container-inspect.json"].container_id, image_id: fixturePostgresImage },
+    postgres_server: { ...bound("postgres-server-version.json"), version: "16.9", version_num: "160009", database: "tacbookings", user: "tac" },
+    database: { ...bound("database-fingerprint.json"), logical_fingerprint: fixtureFingerprint },
+    verified: true,
+    captured_at: stage === "before" ? "2026-08-06T00:00:00.000Z" : "2026-08-06T00:04:00.000Z",
+  };
+  const aggregatePath = join(directory, `stack-identity-${stage}.json`); writeJson(aggregatePath, aggregate);
+  return aggregatePath;
+}
+
+function writeCorrectnessRoutes(root, side, imageId) {
+  const directory = join(root, "raw", "cms-lifecycle"); mkdirs(directory);
+  const files = [];
+  const sample = (stem, cache, body, etag = null) => {
+    const headersPath = `raw/cms-lifecycle/${stem}.headers`;
+    const bodyPath = `raw/cms-lifecycle/${stem}.body.html`;
+    writeFileSync(join(root, ...headersPath.split("/")), `HTTP/1.1 200 OK\r\n${cache ? `X-Nextjs-Cache: ${cache}\r\n` : ""}${etag ? `ETag: ${etag}\r\n` : ""}\r\n`);
+    writeFileSync(join(root, ...bodyPath.split("/")), body);
+    files.push(headersPath, bodyPath);
+    return { headersPath, bodyPath };
+  };
+  const etag = '"fixture-route"';
+  const about1 = sample("binding-about-1", side === "current" ? "MISS" : null, "stable about fixture", side === "current" ? etag : null);
+  const about2 = sample("binding-about-2", side === "current" ? "HIT" : null, "stable about fixture", side === "current" ? etag : null);
+  const dynamic = Object.fromEntries([["/", "binding-root"], ["/join", "binding-join"], ["/contact", "binding-contact"]].map(([route, stem]) => [route, sample(stem, null, `dynamic fixture ${route}`)]));
+  const aboutBodySha = sha256File(join(root, ...about2.bodyPath.split("/")));
+  const document = {
+    schema_version: 1, side, image_id: imageId,
+    routes: {
+      "/about": {
+        samples: [[side === "current" ? "miss" : "first", about1], [side === "current" ? "hit" : "second", about2]].map(([phase, value]) => ({ phase, headers_path: value.headersPath, body_path: value.bodyPath })),
+        derived: side === "current" ? { status: 200, next_cache: "HIT", etag, body_sha256: aboutBodySha } : { status: 200, next_cache: "ABSENT", etag: null, body_sha256: null },
+      },
+      ...Object.fromEntries(Object.entries(dynamic).map(([route, value]) => [route, { samples: [{ phase: "request", headers_path: value.headersPath, body_path: value.bodyPath }], derived: { status: 200, next_cache: "ABSENT", etag: null, body_sha256: null } }])),
+    },
+  };
+  const evidencePath = "raw/cms-lifecycle/route-response-evidence.json"; writeJson(join(root, ...evidencePath.split("/")), document); files.push(evidencePath);
+  return files;
+}
+
+function prepareComposedCorrectness(name, side, mutation = {}) {
+  const root = join(temp, `composed-${name}`);
+  mkdirs(join(root, "inputs"), join(root, "postcondition-evidence"), join(root, "raw", "orchestrator"), join(root, "producer-results"));
+  const imageId = `sha256:${(side === "current" ? "a" : "b").repeat(64)}`;
+  const census = mutation.censusTamper ? { ...correctnessCensus(), checks: correctnessCensus().checks.slice(1) } : correctnessCensus();
+  const censusPath = join(root, "inputs", "check-census.json"); writeJson(censusPath, census);
+  const writerPath = join(root, "inputs", "public-writer-census.json");
+  writeFileSync(writerPath, mutation.writerTamper ? Buffer.concat([fixtureWriterCensus, Buffer.from("\nwriter census tamper\n")]) : fixtureWriterCensus);
+  const producerManifestPath = join(root, "inputs", "producer-files.sha256"); writeFileSync(producerManifestPath, validSourceManifestText);
+  const runtimeProvenancePath = join(root, "inputs", "runtime-provenance.json");
+  const runtimeProvenance = structuredClone(runtimeProvenanceFixture);
+  if (mutation.runtimeSchemaTamper) runtimeProvenance.packages.playwright.root_lock_integrity = null;
+  if (mutation.runtimeChromiumTamper) runtimeProvenance.chromium.revision = "not-a-revision";
+  writeJson(runtimeProvenancePath, runtimeProvenance);
+  const imageInspectPath = join(root, "inputs", "image-inspect.json"); writeJson(imageInspectPath, { id: imageId, oci_revision: appSourceRevision });
+  const containerInspectPath = join(root, "inputs", "container-inspect.json"); writeJson(containerInspectPath, { id: "5".repeat(64), image_id: imageId, compose_project: "tacbookings-measure", compose_service: "app" });
+  const stackBeforePath = writeCorrectnessStack(root, "before", imageId);
+  writeCorrectnessStack(root, "after", imageId);
+
+  const buildRawPath = join(root, "inputs", "image-build-scan.raw.json");
+  writeJson(buildRawPath, { schema_version: 1, image_id: imageId, oci_revision: appSourceRevision, scanned_roots: ["/app/.next/server", "/app/.next/static"], scanned_file_count: 1, scanned_bytes: 1, filesystem_aggregate_sha256: "8".repeat(64), public_sentry_dsn_literal_count: 0, public_sentry_identifier_count: 0, locations: [] });
+  const buildRuntimePath = join(root, "inputs", "image-build-runtime-env.json"); writeJson(buildRuntimePath, { schema_version: 1, image_id: imageId, present: false, blank: true });
+  const buildIdentityPath = join(root, "inputs", "image-build-identity.json");
+  writeJson(buildIdentityPath, {
+    schema_version: 1, image_id: imageId, oci_revision: appSourceRevision,
+    raw_scan_path: "inputs/image-build-scan.raw.json", raw_scan_sha256: sha256File(buildRawPath),
+    scanned_roots: ["/app/.next/server", "/app/.next/static"], scanned_file_count: 1, scanned_bytes: 1,
+    filesystem_aggregate_sha256: "8".repeat(64), public_sentry_dsn_literal_count: 0,
+    runtime_env: { present: false, blank: true },
+    safe_build_input_evidence: { status: "unavailable", reason: "OCI image metadata does not retain Docker build-argument values; the compiled filesystem scan is authoritative" },
+    verdict: "passed",
+  });
+
+  let producerArchivePath = exactSourceArchive;
+  if (mutation.sourceTamper) {
+    producerArchivePath = join(temp, `${name}-producer-source.tar`);
+    writeFileSync(producerArchivePath, Buffer.concat([readFileSync(exactSourceArchive), Buffer.from("tamper")]));
+  }
+  const immutable = {
+    schema_version: 1, run_id: name, side,
+    source: { commit: appSourceRevision, archive_path: appSourceArchive, archive_sha256: sha256File(appSourceArchive) },
+    producer_source: { commit: sourceRevision, archive_path: producerArchivePath, archive_sha256: sha256File(producerArchivePath) },
+    image: {
+      reference: `fixture@${imageId}`, id: imageId, oci_revision: appSourceRevision, inspect_path: imageInspectPath, inspect_sha256: sha256File(imageInspectPath),
+      build_evidence: { raw_path: buildRawPath, raw_sha256: sha256File(buildRawPath), typed_path: buildIdentityPath, typed_sha256: sha256File(buildIdentityPath), runtime_path: buildRuntimePath, runtime_sha256: sha256File(buildRuntimePath) },
+    },
+    container: { inspect_path: containerInspectPath, inspect_sha256: sha256File(containerInspectPath) },
+    stack_identity_before: { path: stackBeforePath, sha256: sha256File(stackBeforePath) },
+    runtime_provenance: { path: runtimeProvenancePath, sha256: sha256File(runtimeProvenancePath) },
+    database: { archive_path: fixtureDatabaseArchive, archive_sha256: sha256File(fixtureDatabaseArchive), logical_fingerprint_before: fixtureFingerprint },
+    environment: { base_url: "http://127.0.0.1:8027", compose_project: "tacbookings-measure", release_id_sha256: "9".repeat(64) },
+    check_census_path: censusPath, check_census_sha256: sha256File(censusPath),
+    writer_census_path: writerPath, writer_census_sha256: sha256File(writerPath),
+    producer_files_path: producerManifestPath, producer_files_sha256: sha256File(producerManifestPath),
+    created_at: "2026-08-06T00:01:00.000Z",
+  };
+  if (mutation.schemaDrift) immutable.unreviewed_field = true;
+  writeJson(join(root, "inputs", "immutable-inputs.json"), immutable);
+
+  const routePaths = writeCorrectnessRoutes(root, side, imageId);
+  for (const [producerId, checkIds] of Object.entries(PRODUCER_CHECK_SCHEMA[side])) {
+    const producerDirectory = join(root, "raw", producerId); mkdirs(producerDirectory);
+    const genericPath = `raw/${producerId}/evidence.txt`; writeFileSync(join(root, ...genericPath.split("/")), `public fixture evidence for ${producerId}\n`);
+    const ownedPaths = [genericPath, ...(producerId === "cms-lifecycle" ? routePaths : [])].sort((left, right) => left.localeCompare(right));
+    const observations = checkIds.map((checkId) => ({
+      check_id: checkId,
+      outcome: checkId === "MC-03D" ? "OWNER_DISPOSITION_NEEDED" : "PASS",
+      assertions: [`fixture assertion for ${checkId}`],
+      evidence_paths: [checkId === "BND-02" && producerId === "cms-lifecycle" ? "raw/cms-lifecycle/route-response-evidence.json" : genericPath],
+    }));
+    if (mutation.cyclicEvidence && producerId === Object.keys(PRODUCER_CHECK_SCHEMA[side])[0]) observations[0].evidence_paths = ["raw-evidence-manifest.json"];
+    writeJson(join(root, "producer-results", `${producerId}.json`), {
+      schema_version: 1, run_id: name, producer_id: producerId, side,
+      started_at: "2026-08-06T00:02:00.000Z", ended_at: "2026-08-06T00:03:00.000Z", exit_code: 0,
+      cleanup: { status: mutation.failedCleanup && producerId === Object.keys(PRODUCER_CHECK_SCHEMA[side])[0] ? "failed" : "passed", evidence_paths: [genericPath] },
+      observations,
+      owned_artifacts: ownedPaths.map((path) => ({ path, sha256: sha256File(join(root, ...path.split("/"))), size_bytes: statSync(join(root, ...path.split("/"))).size })),
+    });
+  }
+  writeJson(join(root, "raw", "orchestrator", "app-health.json"), { status: "healthy" });
+  if (mutation.extraRaw) writeFileSync(join(root, "raw", "route-manifests", "unowned.txt"), "unowned raw fixture\n");
+  writeJson(join(root, "postconditions.json"), {
+    schema_version: 1, run_id: name, side,
+    database_fingerprint_before: fixtureFingerprint, database_fingerprint_after: fixtureFingerprint, database_unchanged: true,
+    app_health: { status: "passed", evidence_paths: ["raw/orchestrator/app-health.json"] },
+    completed_at: "2026-08-06T00:05:00.000Z",
+  });
+  return root;
+}
+
+const finalizerTestOptions = { runtimeContext: runtimeFixtureContext, liveSourceRoot: sourceRepo };
+const baselineComposed = prepareComposedCorrectness("baseline-composed", "baseline");
+finalizeCorrectnessEvidence(baselineComposed, finalizerTestOptions);
+const baselineVerified = verifyCorrectnessCompletion(join(baselineComposed, "COMPLETED.json"), { runtimeContext: runtimeFixtureContext });
+assert.equal(baselineVerified.report.result, "pre_timing_passed");
+assert.deepEqual(baselineVerified.report.checks.filter((check) => check.outcome === "DEFERRED_TO_PHASE2").map((check) => check.id), ["BND-09"]);
+const currentComposed = prepareComposedCorrectness("current-composed", "current");
+finalizeCorrectnessEvidence(currentComposed, finalizerTestOptions);
+const currentVerified = verifyCorrectnessCompletion(join(currentComposed, "COMPLETED.json"), { requirePassed: false, runtimeContext: runtimeFixtureContext });
+assert.equal(currentVerified.report.result, "owner_disposition_needed");
+assert.deepEqual(currentVerified.report.checks.filter((check) => check.outcome === "DEFERRED_TO_PHASE2").map((check) => check.id), ["MC-08B", "BND-09"]);
+assert.throws(() => verifyCorrectnessCompletion(join(currentComposed, "COMPLETED.json"), { runtimeContext: runtimeFixtureContext }), /not pre-timing ready/);
+
+for (const [name, mutation, pattern] of [
+  ["schema-drift", { schemaDrift: true }, /invalid schema/],
+  ["runtime-schema-drift", { runtimeSchemaTamper: true }, /runtime provenance package binding/],
+  ["runtime-chromium-drift", { runtimeChromiumTamper: true }, /runtime provenance identity/],
+  ["census-tamper", { censusTamper: true }, /exact reviewed MC\/BND census/],
+  ["failed-cleanup", { failedCleanup: true }, /cleanup\/observations\/artifacts/],
+  ["source-tamper", { sourceTamper: true }, /archive|producer-files manifest headers/],
+  ["writer-tamper", { writerTamper: true }, /writer census differs/],
+  ["extra-raw", { extraRaw: true }, /owned artifact census|outside the authoritative/],
+  ["cyclic-evidence", { cyclicEvidence: true }, /semantic evidence|create-only directory/],
+]) {
+  const root = prepareComposedCorrectness(name, "baseline", mutation);
+  assert.throws(() => finalizeCorrectnessEvidence(root, finalizerTestOptions), pattern);
+}
+const postProducerDriftRoot = prepareComposedCorrectness("post-producer-finalizer-drift", "baseline");
+const liveFinalizerPath = join(sourceRepo, "measurement", "phase2", "bin", "finalize-correctness-evidence.mjs");
+writeFileSync(liveFinalizerPath, "modified after producer output completed\n");
+assert.throws(() => finalizeCorrectnessEvidence(postProducerDriftRoot, finalizerTestOptions), /live producer source differs/);
+for (const name of ["raw-evidence-manifest.json", "route-expectations.json", "secret-scan.json", "correctness-report.json", "COMPLETED.json"]) assert.equal(existsSync(join(postProducerDriftRoot, name)), false, `failed finalization must remove exact derived output ${name}`);
+writeFileSync(liveFinalizerPath, archivedSources.files.get("measurement/phase2/bin/finalize-correctness-evidence.mjs"));
+assert.doesNotThrow(() => finalizeCorrectnessEvidence(postProducerDriftRoot, finalizerTestOptions));
+const finalizerSource = readFileSync(join(bin, "finalize-correctness-evidence.mjs"), "utf8");
+const finalizerLiveChecks = [...finalizerSource.matchAll(/verifyLiveProducerSource\(producerSourceVerification\)/g)].map((match) => match.index);
+assert.equal(finalizerLiveChecks.length, 2, "correctness finalizer must verify exact live producer source twice");
+assert(finalizerLiveChecks[0] < finalizerSource.indexOf("const rawManifest = buildRawManifest") && finalizerLiveChecks[1] > finalizerSource.indexOf("const completion =") && finalizerLiveChecks[1] < finalizerSource.indexOf('writeFileSync(paths["COMPLETED.json"]'),
+  "correctness finalizer live-source checks must bracket all derivation and precede COMPLETED");
 
 const producerImmutable = { run_id: "producer-fixture", side: "baseline", created_at: "2026-08-06T00:00:00.000Z" };
 const producerArtifact = { path: "raw/route-manifests/evidence.json", sha256: "a".repeat(64), size_bytes: 1 };
@@ -248,7 +552,35 @@ assert.throws(() => verifyPostFinalizationRuntimeIdentity(runtimePath, { claimed
 assert.throws(() => verifyPostFinalizationRuntimeIdentity(runtimePath, { claimedSha256: runtimeSha, expected: { ...runtimeIdentity, app: { ...runtimeIdentity.app, container_id: "f".repeat(64) } } }), /differs semantically/);
 
 const aggregateSource = readFileSync(join(bin, "aggregate-pairs.mjs"), "utf8");
-for (const contract of ["finalProfileExact", "observations.length === 4", "PRELIMINARY_ONLY", "OWNER_REVIEW_REQUIRED", "isFuturePathInside", "common_runtime_environment_hmac_sha256", "autonomous_progression_authorised: false"]) assert.match(aggregateSource, new RegExp(contract.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+for (const contract of ["finalProfileExact", "observations.length === 4", "PRELIMINARY_ONLY", "OWNER_REVIEW_REQUIRED", "isFuturePathInside", "common_runtime_environment_hmac_sha256", "autonomous_progression_authorised: false", "verifyHarnessSourceBinding"]) assert.match(aggregateSource, new RegExp(contract.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+assert((aggregateSource.match(/verifyOrchestration\(args\.orchestration\)/g) ?? []).length >= 2,
+  "aggregate must reverify its live archive-backed harness source at process start and immediately before writing outputs");
+assert.match(aggregateSource, /verifyAggregateCompletion\(completionPath\)/,
+  "aggregate must verify its final output seal before reporting success");
+const aggregateSealRoot = join(temp, "aggregate-seal");
+mkdirs(aggregateSealRoot);
+const aggregatePrefix = join(aggregateSealRoot, "result");
+const aggregateJsonPath = `${aggregatePrefix}.json`;
+const aggregateMarkdownPath = `${aggregatePrefix}.md`;
+const aggregateManifestPath = `${aggregatePrefix}.output-manifest.sha256`;
+const aggregateCompletionPath = `${aggregatePrefix}.COMPLETED.json`;
+writeFileSync(aggregateJsonPath, `${JSON.stringify({ schema_version: 2, integrity: { measurement_profile: PROFILE_NONFINAL, final_profile_exact: false } })}\n`);
+writeFileSync(aggregateMarkdownPath, "# Result\n");
+const aggregateFiles = [aggregateJsonPath, aggregateMarkdownPath].map((path) => ({ path, bytes: statSync(path).size, sha256: sha256File(path) }));
+writeFileSync(aggregateManifestPath, `${aggregateFiles.map((record) => `${record.sha256}  ${record.bytes}  ${record.path}`).join("\n")}\n`);
+writeFileSync(aggregateCompletionPath, `${JSON.stringify({ schema_version: 2, status: "COMPLETE", completed_at: new Date().toISOString(), measurement_profile: PROFILE_NONFINAL, final_profile_exact: false, pre_timing_correctness_ready: true, phase2_checks_passed: true, live_harness_source_verified_at_start_and_before_completion: true, orchestration_output_manifest_sha256: "a".repeat(64), aggregate_output_manifest_sha256: sha256File(aggregateManifestPath), aggregate_files: aggregateFiles, artifact_count: aggregateFiles.length })}\n`);
+assert.doesNotThrow(() => run("aggregate-pairs.mjs", ["--verify-completion", aggregateCompletionPath]));
+const validAggregateCompletion = JSON.parse(readFileSync(aggregateCompletionPath, "utf8"));
+writeFileSync(aggregateCompletionPath, `${JSON.stringify({ ...validAggregateCompletion, final_profile_exact: true })}\n`);
+rejects("aggregate-pairs.mjs", ["--verify-completion", aggregateCompletionPath], /profile differs/);
+writeFileSync(aggregateCompletionPath, `${JSON.stringify(validAggregateCompletion)}\n`);
+writeFileSync(aggregateJsonPath, "{\"tampered\":true}\n");
+rejects("aggregate-pairs.mjs", ["--verify-completion", aggregateCompletionPath], /differs from its final seal/);
+writeFileSync(aggregateJsonPath, `${JSON.stringify({ schema_version: 2, integrity: { measurement_profile: PROFILE_NONFINAL, final_profile_exact: false } })}\n`);
+const restoredAggregateFiles = [aggregateJsonPath, aggregateMarkdownPath].map((path) => ({ path, bytes: statSync(path).size, sha256: sha256File(path) }));
+writeFileSync(aggregateManifestPath, `${restoredAggregateFiles.map((record) => `${record.sha256}  ${record.bytes}  ${record.path}`).join("\n")}\n${restoredAggregateFiles[0].sha256}  ${restoredAggregateFiles[0].bytes}  ${restoredAggregateFiles[0].path}\n`);
+writeFileSync(aggregateCompletionPath, `${JSON.stringify({ ...validAggregateCompletion, aggregate_output_manifest_sha256: sha256File(aggregateManifestPath), aggregate_files: restoredAggregateFiles })}\n`);
+rejects("aggregate-pairs.mjs", ["--verify-completion", aggregateCompletionPath], /exactly two final artifacts/);
 const orchestrationSource = readFileSync(join(bin, "orchestrate-pairs.sh"), "utf8");
 for (const contract of ["PAIR_COUNT:-4", "MAX_INTER_SIDE_GAP_SECONDS:-600", "MAX_INTER_PAIR_GAP_SECONDS:-600", "QUIET_MONITOR_INTERVAL_SECONDS:-10", "final-decision orchestration profile cannot weaken"]) assert.match(orchestrationSource, new RegExp(contract.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
-import { isAbsolute, join, posix, relative, resolve, sep } from "node:path";
+import { createRequire } from "node:module";
+import { dirname, isAbsolute, join, posix, relative, resolve, sep } from "node:path";
 import { readGitArchive } from "./git-archive.mjs";
 
 const fail = (message) => { throw new Error(message); };
@@ -91,7 +92,7 @@ export const EXPECTED_PRODUCER_SOURCE_PATHS = Object.freeze([
   "measurement/current-main-refresh/bin/analyse-log-noise.mjs", "measurement/current-main-refresh/bin/analyse-route-manifests.mjs", "measurement/current-main-refresh/bin/analyse-stored-404.mjs",
   "measurement/current-main-refresh/bin/build-canonical-contract.mjs", "measurement/current-main-refresh/bin/build-producer-manifest.mjs", "measurement/current-main-refresh/bin/build-route-response-evidence.mjs",
   "measurement/current-main-refresh/bin/build-stack-identity.mjs", "measurement/current-main-refresh/bin/create-immutable-inputs.mjs", "measurement/current-main-refresh/bin/extract-archive-member.mjs",
-  "measurement/current-main-refresh/bin/generate-source-census.mjs", "measurement/current-main-refresh/bin/observe-stored-404-browser.mjs", "measurement/current-main-refresh/bin/resolve-measure-container.mjs", "measurement/current-main-refresh/bin/run-browser-suite.mjs",
+  "measurement/current-main-refresh/bin/generate-source-census.mjs", "measurement/current-main-refresh/bin/observe-stored-404-browser.mjs", "measurement/current-main-refresh/bin/resolve-measure-container.mjs", "measurement/current-main-refresh/bin/run-browser-suite.mjs", "measurement/current-main-refresh/bin/runtime-provenance.mjs",
   "measurement/current-main-refresh/bin/scan-image-build.mjs", "measurement/current-main-refresh/bin/validate-image-build-scan.mjs", "measurement/current-main-refresh/bin/validate-orchestrator-inputs.mjs", "measurement/current-main-refresh/check-census.json",
   "measurement/current-main-refresh/lib/git-tar.mjs", "measurement/current-main-refresh/lib/local-auth-state.mjs", "measurement/current-main-refresh/lib/measure-container-identity.mjs", "measurement/current-main-refresh/lib/producer.sh", "measurement/current-main-refresh/lib/producer-source-set.mjs", "measurement/current-main-refresh/lib/write-producer-result.mjs",
   "measurement/current-main-refresh/public-writer-census.json", "measurement/current-main-refresh/README.md", "measurement/current-main-refresh/run-adult-hosting-invalidation.sh",
@@ -114,7 +115,7 @@ export const EXPECTED_PRODUCER_SOURCE_PATHS = Object.freeze([
   "measurement/phase2/bin/write-correctness-census.mjs", "measurement/phase2/correctness-manifest.example.json", "measurement/phase2/correctness-report.example.json",
   "measurement/phase2/README.md", "measurement/phase2/test-fixtures/mutated-body.txt", "measurement/phase2/test-fixtures/README.md",
   "measurement/phase2/test-fixtures/wrong-cache.headers", "measurement/stack/docker-compose.measure.yml", "measurement/stack/measure-stack.sh",
-].sort((left, right) => left.localeCompare(right)));
+].sort());
 
 export const expectedCheckIdsForSide = (side) => {
   if (!["current", "baseline"].includes(side)) fail(`invalid correctness side: ${side}`);
@@ -168,6 +169,52 @@ function validateImageBuildEvidence(value, root, immutableImage) {
     verdict: "passed",
   };
   if (JSON.stringify(typed) !== JSON.stringify(expectedTyped)) fail("typed image build identity differs from the independently checked raw scan/runtime evidence");
+}
+
+export function validateRuntimeProvenance(value, context = null) {
+  if (context && (!context.repoRoot || !context.nodeExecutable || !context.nodeVersion || !context.chromiumExecutable)) fail("explicit runtime validation context is incomplete");
+  const repoRoot = resolve(context?.repoRoot ?? resolve(import.meta.dirname, "../../.."));
+  const nodeExecutable = realpathSync.native(resolve(context?.nodeExecutable ?? process.execPath));
+  const nodeVersion = context?.nodeVersion ?? process.version;
+  const requireFromRoot = context ? null : createRequire(join(repoRoot, "package.json"));
+  const chromiumExecutable = realpathSync.native(resolve(context?.chromiumExecutable ?? requireFromRoot("playwright").chromium.executablePath()));
+  const same = (left, right) => process.platform === "win32" ? resolve(left).toLowerCase() === resolve(right).toLowerCase() : resolve(left) === resolve(right);
+  exactKeys(value, ["schema_version", "node", "root_package", "root_lock", "installed_lock", "packages", "chromium"], "runtime provenance");
+  exactKeys(value.node, ["version", "executable"], "runtime provenance Node");
+  exactKeys(value.chromium, ["browser_version", "revision", "registry", "executable"], "runtime provenance Chromium");
+  const describedFile = (file, label, parseJson = false) => {
+    exactKeys(file, ["path", "size_bytes", "sha256"], label);
+    if (!isAbsolute(file.path ?? "") || resolve(file.path) !== file.path || /[\0\r\n\t]/.test(file.path) || !safeCount(file.size_bytes) || !hex(file.sha256) || !existsSync(file.path) || lstatSync(file.path).isSymbolicLink() || !statSync(file.path).isFile() || !same(file.path, realpathSync.native(file.path)) || statSync(file.path).size !== file.size_bytes || sha256File(file.path) !== file.sha256) fail(`${label} file binding is invalid`);
+    return parseJson ? JSON.parse(readFileSync(file.path, "utf8")) : null;
+  };
+  if (value.schema_version !== 1 || value.node.version !== nodeVersion || !/^v24\./.test(value.node.version ?? "") || !/^\d+(?:\.\d+){2,3}$/.test(value.chromium.browser_version ?? "") || !/^\d+$/.test(value.chromium.revision ?? "")) fail("runtime provenance identity is invalid");
+  describedFile(value.node.executable, "runtime provenance Node executable");
+  const rootPackage = describedFile(value.root_package, "runtime provenance root package", true);
+  exactKeys(value.root_lock, ["path", "size_bytes", "sha256", "lockfile_version"], "runtime provenance root lock");
+  exactKeys(value.installed_lock, ["path", "size_bytes", "sha256", "lockfile_version"], "runtime provenance installed lock");
+  const rootLock = describedFile({ path: value.root_lock.path, size_bytes: value.root_lock.size_bytes, sha256: value.root_lock.sha256 }, "runtime provenance root lock", true);
+  const installedLock = describedFile({ path: value.installed_lock.path, size_bytes: value.installed_lock.size_bytes, sha256: value.installed_lock.sha256 }, "runtime provenance installed lock", true);
+  const nodeRange = /^>=(\d+)\.0\.0 <(\d+)$/.exec(rootPackage.engines?.node ?? "");
+  const nodeMajor = Number.parseInt(value.node.version.slice(1).split(".")[0], 10);
+  if (!same(value.node.executable.path, nodeExecutable) || !same(value.root_package.path, join(repoRoot, "package.json")) || value.root_lock.lockfile_version !== 3 || value.installed_lock.lockfile_version !== 3 || rootLock.lockfileVersion !== 3 || installedLock.lockfileVersion !== 3 || !same(value.root_lock.path, join(repoRoot, "package-lock.json")) || !same(value.installed_lock.path, join(repoRoot, "node_modules", ".package-lock.json")) || rootLock.packages?.[""]?.name !== rootPackage.name || rootLock.packages?.[""]?.version !== rootPackage.version || !nodeRange || nodeMajor < Number(nodeRange[1]) || nodeMajor >= Number(nodeRange[2])) fail("runtime provenance lock/package/Node identity is invalid");
+  const packageNames = ["@playwright/test", "playwright", "playwright-core", "axe-core"];
+  if (!value.packages || Array.isArray(value.packages) || JSON.stringify(Object.keys(value.packages)) !== JSON.stringify(packageNames)) fail("runtime provenance package census is invalid");
+  for (const name of packageNames) {
+    const entry = value.packages[name];
+    exactKeys(entry, ["version", "package_json_path", "package_json_sha256", "root_lock_integrity", "installed_lock_integrity"], `runtime provenance package ${name}`);
+    const expectedPackagePath = join(repoRoot, "node_modules", ...name.split("/"), "package.json");
+    if (typeof entry.version !== "string" || !entry.version || !same(entry.package_json_path ?? "", expectedPackagePath) || /[\0\r\n\t]/.test(entry.package_json_path) || !hex(entry.package_json_sha256) || !existsSync(entry.package_json_path) || lstatSync(entry.package_json_path).isSymbolicLink() || !statSync(entry.package_json_path).isFile() || sha256File(entry.package_json_path) !== entry.package_json_sha256 || ![entry.root_lock_integrity, entry.installed_lock_integrity].every((integrity) => typeof integrity === "string" && /^sha512-[A-Za-z0-9+/=]+$/.test(integrity))) fail(`runtime provenance package binding is invalid: ${name}`);
+    const packageDocument = JSON.parse(readFileSync(entry.package_json_path, "utf8"));
+    const rootEntry = rootLock.packages?.[`node_modules/${name}`];
+    const installedEntry = installedLock.packages?.[`node_modules/${name}`];
+    if (packageDocument.version !== entry.version || rootEntry?.version !== entry.version || installedEntry?.version !== entry.version || rootEntry.integrity !== entry.root_lock_integrity || installedEntry.integrity !== entry.installed_lock_integrity) fail(`runtime provenance package/lock versions differ: ${name}`);
+  }
+  const registry = describedFile(value.chromium.registry, "runtime provenance Chromium registry", true);
+  describedFile(value.chromium.executable, "runtime provenance Chromium executable");
+  const chromium = registry.browsers?.find((entry) => entry?.name === "chromium");
+  const expectedRegistryPath = join(dirname(value.packages["playwright-core"].package_json_path), "browsers.json");
+  if (!same(value.chromium.registry.path, expectedRegistryPath) || !same(value.chromium.executable.path, chromiumExecutable) || chromium?.browserVersion !== value.chromium.browser_version || chromium?.revision !== value.chromium.revision) fail("runtime provenance Chromium registry/executable differs from the installed runtime");
+  return value;
 }
 
 export function correctnessCensus() {
@@ -237,7 +284,7 @@ export function validateProducerFilesManifest(path, sourceArchivePath, expectedP
     if (seen.has(folded) || !member || sha256Bytes(member) !== match[1]) fail(`producer source archive binding failed at line ${index + 1}`);
     seen.add(folded); paths.push(sourcePath); hashes.set(sourcePath, match[1]);
   }
-  if (JSON.stringify(paths) !== JSON.stringify([...expectedPaths].sort((left, right) => left.localeCompare(right)))) fail("producer source manifest differs from the exact reviewed source-path census");
+  if (JSON.stringify(paths) !== JSON.stringify([...expectedPaths].sort())) fail("producer source manifest differs from the exact reviewed source-path census");
   if (expectedPaths === EXPECTED_PRODUCER_SOURCE_PATHS) {
     if (JSON.stringify(Object.keys(PRODUCER_SOURCE_REGISTRY).sort()) !== JSON.stringify([...REVIEWED_PRODUCER_IDS].sort())) fail("internal producer registry is incomplete");
     for (const [producerId, sourcePath] of Object.entries(PRODUCER_SOURCE_REGISTRY)) {
@@ -247,18 +294,63 @@ export function validateProducerFilesManifest(path, sourceArchivePath, expectedP
   return { count: lines.length, archiveRevision: archive.revision, paths, hashes };
 }
 
-export function validateImmutableInputs(value, root) {
-  exactKeys(value, ["schema_version", "run_id", "side", "source", "producer_source", "image", "container", "stack_identity_before", "database", "environment", "check_census_path", "check_census_sha256", "writer_census_path", "writer_census_sha256", "producer_files_path", "producer_files_sha256", "created_at"], "immutable inputs");
+function exactLivePath(root, sourcePath) {
+  let cursor = root;
+  for (const segment of sourcePath.split("/")) {
+    const names = readdirSync(cursor);
+    const folded = names.filter((name) => name.toLowerCase() === segment.toLowerCase());
+    if (folded.length !== 1 || folded[0] !== segment) fail(`live producer source path has wrong case, is missing, or is ambiguous: ${sourcePath}`);
+    cursor = join(cursor, segment);
+  }
+  return cursor;
+}
+
+export function verifyLiveProducerSource({ producerManifestPath, producerArchivePath, producerCommit, repoRoot }) {
+  const producer = validateProducerFilesManifest(producerManifestPath, producerArchivePath);
+  if (producer.archiveRevision !== producerCommit) fail("live producer source commit differs from the reviewed archive revision");
+  const root = resolve(repoRoot);
+  if (!existsSync(root) || lstatSync(root).isSymbolicLink() || !statSync(root).isDirectory()) fail("live producer source root is invalid");
+  const realRoot = realpathSync.native(root);
+  const sameRoot = process.platform === "win32" ? realRoot.toLowerCase() === root.toLowerCase() : realRoot === root;
+  if (!sameRoot) fail("live producer source root is not canonical");
+  for (const sourcePath of EXPECTED_PRODUCER_SOURCE_PATHS) {
+    const absolute = exactLivePath(root, sourcePath);
+    if (lstatSync(absolute).isSymbolicLink() || !statSync(absolute).isFile() || sha256File(absolute) !== producer.hashes.get(sourcePath)) fail(`live producer source differs from the reviewed archive: ${sourcePath}`);
+  }
+  const governedPrefixes = ["measurement/current-main-refresh/", "measurement/phase2/"];
+  const actualGoverned = [];
+  const visit = (directory) => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const absolute = join(directory, entry.name);
+      const stats = lstatSync(absolute);
+      const sourcePath = relative(root, absolute).split(sep).join("/");
+      if (stats.isSymbolicLink()) fail(`live producer source contains a symbolic link or junction: ${sourcePath}`);
+      if (entry.isDirectory() && sourcePath === "measurement/phase2/results") continue;
+      if (entry.isDirectory()) visit(absolute);
+      else if (entry.isFile()) actualGoverned.push(sourcePath);
+      else fail(`live producer source contains an unsupported entry: ${sourcePath}`);
+    }
+  };
+  for (const governedRoot of ["measurement/current-main-refresh", "measurement/phase2"]) visit(exactLivePath(root, governedRoot));
+  const expectedGoverned = EXPECTED_PRODUCER_SOURCE_PATHS.filter((path) => governedPrefixes.some((prefix) => path.startsWith(prefix))).sort();
+  actualGoverned.sort();
+  if (JSON.stringify(actualGoverned) !== JSON.stringify(expectedGoverned)) fail("live producer source contains missing, extra, or case-drifted governed files");
+  return { count: EXPECTED_PRODUCER_SOURCE_PATHS.length, archiveRevision: producer.archiveRevision, paths: [...EXPECTED_PRODUCER_SOURCE_PATHS] };
+}
+
+export function validateImmutableInputs(value, root, { runtimeContext = null } = {}) {
+  exactKeys(value, ["schema_version", "run_id", "side", "source", "producer_source", "image", "container", "stack_identity_before", "runtime_provenance", "database", "environment", "check_census_path", "check_census_sha256", "writer_census_path", "writer_census_sha256", "producer_files_path", "producer_files_sha256", "created_at"], "immutable inputs");
   exactKeys(value.source, ["commit", "archive_path", "archive_sha256"], "immutable source");
   exactKeys(value.producer_source, ["commit", "archive_path", "archive_sha256"], "immutable producer source");
   exactKeys(value.image, ["reference", "id", "oci_revision", "inspect_path", "inspect_sha256", "build_evidence"], "immutable image");
   exactKeys(value.container, ["inspect_path", "inspect_sha256"], "immutable container");
   exactKeys(value.stack_identity_before, ["path", "sha256"], "before-run stack identity binding");
+  exactKeys(value.runtime_provenance, ["path", "sha256"], "immutable runtime provenance binding");
   exactKeys(value.database, ["archive_path", "archive_sha256", "logical_fingerprint_before"], "immutable database");
   exactKeys(value.environment, ["base_url", "compose_project", "release_id_sha256"], "immutable environment");
   if (value.schema_version !== 1 || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value.run_id ?? "") || !["current", "baseline"].includes(value.side) || !validUtc(value.created_at)) fail("immutable inputs identity is invalid");
   if (!/^[a-f0-9]{40,64}$/.test(value.source.commit ?? "") || value.image.oci_revision !== value.source.commit || !/^sha256:[a-f0-9]{64}$/.test(value.image.id ?? "") || typeof value.image.reference !== "string" || !value.image.reference.includes("sha256:")) fail("immutable source/image binding is invalid");
-  if (!/^[a-f0-9]{40,64}$/.test(value.producer_source.commit ?? "") || ![value.source.archive_sha256, value.producer_source.archive_sha256, value.image.inspect_sha256, value.container.inspect_sha256, value.database.archive_sha256, value.database.logical_fingerprint_before, value.environment.release_id_sha256, value.check_census_sha256, value.writer_census_sha256, value.producer_files_sha256].every(hex)) fail("immutable inputs contain an invalid checksum");
+  if (!/^[a-f0-9]{40,64}$/.test(value.producer_source.commit ?? "") || ![value.source.archive_sha256, value.producer_source.archive_sha256, value.image.inspect_sha256, value.container.inspect_sha256, value.runtime_provenance.sha256, value.database.archive_sha256, value.database.logical_fingerprint_before, value.environment.release_id_sha256, value.check_census_sha256, value.writer_census_sha256, value.producer_files_sha256].every(hex)) fail("immutable inputs contain an invalid checksum");
   if (value.environment.base_url !== "http://127.0.0.1:8027" || value.environment.compose_project !== "tacbookings-measure") fail("immutable environment is not the isolated measurement stack");
   for (const [entry, label] of [[value.source, "app source archive"], [value.producer_source, "producer source archive"], [value.database, "database archive"]]) {
     if (!isAbsolute(entry.archive_path) || !existsSync(entry.archive_path) || lstatSync(entry.archive_path).isSymbolicLink() || !statSync(entry.archive_path).isFile() || sha256File(entry.archive_path) !== entry.archive_sha256) fail(`${label} immutable binding failed`);
@@ -269,11 +361,14 @@ export function validateImmutableInputs(value, root) {
   const imageInspectPath = join(root, "inputs", "image-inspect.json");
   const containerInspectPath = join(root, "inputs", "container-inspect.json");
   const stackIdentityPath = join(root, "inputs", "stack-identity-before.json");
+  const runtimeProvenancePath = join(root, "inputs", "runtime-provenance.json");
   const same = (left, right) => process.platform === "win32" ? resolve(left).toLowerCase() === resolve(right).toLowerCase() : resolve(left) === resolve(right);
-  if (!same(value.check_census_path, censusPath) || !same(value.writer_census_path, writerCensusPath) || !same(value.producer_files_path, producersPath) || !same(value.image.inspect_path, imageInspectPath) || !same(value.container.inspect_path, containerInspectPath) || !same(value.stack_identity_before.path, stackIdentityPath)) fail("immutable input evidence paths are not the canonical run inputs");
+  if (!same(value.check_census_path, censusPath) || !same(value.writer_census_path, writerCensusPath) || !same(value.producer_files_path, producersPath) || !same(value.image.inspect_path, imageInspectPath) || !same(value.container.inspect_path, containerInspectPath) || !same(value.stack_identity_before.path, stackIdentityPath) || !same(value.runtime_provenance.path, runtimeProvenancePath)) fail("immutable input evidence paths are not the canonical run inputs");
   if (sha256File(censusPath) !== value.check_census_sha256 || sha256File(writerCensusPath) !== value.writer_census_sha256 || sha256File(producersPath) !== value.producer_files_sha256) fail("immutable inputs do not bind the check/writer census and producer manifest");
   if (sha256File(imageInspectPath) !== value.image.inspect_sha256 || sha256File(containerInspectPath) !== value.container.inspect_sha256) fail("immutable inputs do not bind image/container inspection evidence");
   if (!hex(value.stack_identity_before.sha256) || sha256File(stackIdentityPath) !== value.stack_identity_before.sha256) fail("immutable inputs do not bind the before-run stack identity");
+  if (sha256File(runtimeProvenancePath) !== value.runtime_provenance.sha256) fail("immutable inputs do not bind runtime provenance");
+  validateRuntimeProvenance(JSON.parse(readFileSync(runtimeProvenancePath, "utf8")), runtimeContext);
   validateCensus(JSON.parse(readFileSync(censusPath, "utf8")));
   const appArchive = readGitArchive(value.source.archive_path);
   if (appArchive.revision !== value.source.commit) fail("app source archive revision differs from the immutable app/image source commit");
@@ -446,6 +541,7 @@ export function deriveCorrectnessReport(root, immutable, rawEntries, secretScan)
       immutable_inputs_sha256: sha256File(join(root, "inputs", "immutable-inputs.json")),
       check_census_sha256: immutable.check_census_sha256,
       writer_census_sha256: immutable.writer_census_sha256,
+      runtime_provenance_sha256: immutable.runtime_provenance.sha256,
       producer_files_sha256: immutable.producer_files_sha256,
       raw_evidence_manifest_sha256: sha256File(join(root, "raw-evidence-manifest.json")),
       postconditions_sha256: sha256File(join(root, "postconditions.json")),
@@ -477,7 +573,7 @@ export function expectedCorrectnessCensus(root, rawManifest) {
   const files = [
     "inputs/app-container-inspect.json", "inputs/check-census.json", "inputs/container-inspect.json", "inputs/database-fingerprint.json",
     "inputs/image-build-identity.json", "inputs/image-build-runtime-env.json", "inputs/image-build-scan.raw.json", "inputs/image-inspect.json",
-    "inputs/immutable-inputs.json", "inputs/postgres-container-inspect.json", "inputs/postgres-server-version.json", "inputs/producer-files.sha256", "inputs/public-writer-census.json", "inputs/stack-identity-before.json",
+    "inputs/immutable-inputs.json", "inputs/postgres-container-inspect.json", "inputs/postgres-server-version.json", "inputs/producer-files.sha256", "inputs/public-writer-census.json", "inputs/runtime-provenance.json", "inputs/stack-identity-before.json",
     ...rawManifest.entries.map((entry) => entry.path),
     "postcondition-evidence/app-container-inspect.json", "postcondition-evidence/database-fingerprint.json", "postcondition-evidence/postgres-container-inspect.json",
     "postcondition-evidence/postgres-server-version.json", "postcondition-evidence/stack-identity-after.json",

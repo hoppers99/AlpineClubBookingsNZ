@@ -3,7 +3,7 @@
 // judgments, and fewer than four evenly counterbalanced pairs is PRELIMINARY_ONLY.
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { conventionalMedian } from "./statistics.mjs";
 import { PROFILE_FINAL, classifyOrchestrationProfile, classifySideProfile, requireKnownProfile } from "./measurement-profile.mjs";
@@ -11,6 +11,7 @@ import { isFuturePathInside, isPathInside, verifySealedTree } from "./sealed-tre
 import { verifySecretScan } from "./scan-evidence-secrets.mjs";
 import { verifyPostFinalizationRuntimeIdentity } from "./runtime-identity.mjs";
 import { validatePhase2Correctness } from "./correctness-contract.mjs";
+import { verifyHarnessSourceBinding } from "./verify-harness-source.mjs";
 
 const OWNER_THRESHOLDS_VERBATIM = Object.freeze([
   "At least three contemporaneous current/baseline pairs are required.",
@@ -22,6 +23,38 @@ const fail = (message) => { throw new Error(message); };
 const round = (value, digits = 3) => Number(value.toFixed(digits));
 const hash = (path) => createHash("sha256").update(readFileSync(path)).digest("hex");
 const json = (path) => JSON.parse(readFileSync(path, "utf8"));
+const exactKeys = (value, expected, context) => {
+  if (!value || typeof value !== "object" || Array.isArray(value) || JSON.stringify(Object.keys(value).sort()) !== JSON.stringify([...expected].sort())) fail(`${context} has an unexpected schema`);
+};
+function verifyAggregateCompletion(completionInput) {
+  const completionPath = resolve(completionInput);
+  const suffix = ".COMPLETED.json";
+  if (!completionPath.endsWith(suffix) || !existsSync(completionPath) || !lstatSync(completionPath).isFile()) fail(`aggregate completion path is invalid: ${completionPath}`);
+  const prefix = completionPath.slice(0, -suffix.length);
+  const expectedPaths = [`${prefix}.json`, `${prefix}.md`];
+  const manifestPath = `${prefix}.output-manifest.sha256`;
+  const completion = json(completionPath);
+  exactKeys(completion, ["schema_version", "status", "completed_at", "measurement_profile", "final_profile_exact", "pre_timing_correctness_ready", "phase2_checks_passed", "live_harness_source_verified_at_start_and_before_completion", "orchestration_output_manifest_sha256", "aggregate_output_manifest_sha256", "aggregate_files", "artifact_count"], "aggregate completion");
+  if (completion.schema_version !== 2 || completion.status !== "COMPLETE" || !Number.isFinite(Date.parse(completion.completed_at)) || completion.pre_timing_correctness_ready !== true || completion.phase2_checks_passed !== true || completion.live_harness_source_verified_at_start_and_before_completion !== true) fail("aggregate completion attestation is invalid");
+  requireKnownProfile(completion.measurement_profile);
+  if (typeof completion.final_profile_exact !== "boolean" || !/^[a-f0-9]{64}$/.test(completion.orchestration_output_manifest_sha256 ?? "") || !/^[a-f0-9]{64}$/.test(completion.aggregate_output_manifest_sha256 ?? "") || completion.artifact_count !== 2 || !Array.isArray(completion.aggregate_files) || completion.aggregate_files.length !== 2) fail("aggregate completion binding is invalid");
+  if (!existsSync(manifestPath) || !lstatSync(manifestPath).isFile() || hash(manifestPath) !== completion.aggregate_output_manifest_sha256) fail("aggregate output manifest checksum is invalid");
+  const manifestRecords = readFileSync(manifestPath, "utf8").trim().split(/\r?\n/).map((line) => {
+    const match = line.match(/^([a-f0-9]{64})  ([0-9]+)  (.+)$/);
+    if (!match) fail("aggregate output manifest row is malformed");
+    return { sha256: match[1], bytes: Number(match[2]), path: match[3] };
+  });
+  if (manifestRecords.length !== 2) fail("aggregate output manifest must contain exactly two final artifacts");
+  for (const [index, record] of completion.aggregate_files.entries()) {
+    exactKeys(record, ["path", "bytes", "sha256"], `aggregate file record ${index + 1}`);
+    const manifestRecord = manifestRecords[index];
+    if (record.path !== expectedPaths[index] || resolve(record.path) !== record.path || !Number.isSafeInteger(record.bytes) || record.bytes < 0 || !/^[a-f0-9]{64}$/.test(record.sha256 ?? "") || record.path !== manifestRecord?.path || record.bytes !== manifestRecord?.bytes || record.sha256 !== manifestRecord?.sha256) fail(`aggregate file record ${index + 1} is invalid`);
+    if (!existsSync(record.path) || !lstatSync(record.path).isFile() || statSync(record.path).size !== record.bytes || hash(record.path) !== record.sha256) fail(`aggregate file ${index + 1} differs from its final seal`);
+  }
+  const report = json(expectedPaths[0]);
+  if (report.schema_version !== 2 || report.integrity?.measurement_profile !== completion.measurement_profile || report.integrity?.final_profile_exact !== completion.final_profile_exact || completion.final_profile_exact !== (completion.measurement_profile === PROFILE_FINAL)) fail("aggregate completion profile differs from the sealed report");
+  return completion;
+}
 const median = (values) => {
   if (!values.length || values.some((value) => !Number.isFinite(value))) fail("cannot aggregate invalid values");
   return round(conventionalMedian(values));
@@ -61,6 +94,14 @@ function verifyOrchestration(root) {
   const harnessSourceBindingPath = resolve(root, "inputs", "harness-source-binding.json");
   const harnessSourceBinding = json(harnessSourceBindingPath);
   if (hash(harnessSourceBindingPath) !== completion.harness_source_binding_sha256 || harnessSourceBinding.schema_version !== 1 || harnessSourceBinding.verified !== true || !/^[a-f0-9]{64}$/.test(harnessSourceBinding.producer_source_archive_sha256 ?? "") || !/^[a-f0-9]{40,64}$/.test(harnessSourceBinding.producer_source_commit ?? "") || !/^[a-f0-9]{64}$/.test(harnessSourceBinding.harness_manifest_sha256 ?? "")) fail(`sealed harness-to-producer-source binding is invalid: ${root}`);
+  const immutableInputs = json(resolve(root, "inputs", "immutable-inputs.json"));
+  verifyHarnessSourceBinding({
+    bindingPath: harnessSourceBindingPath,
+    harnessManifestPath: resolve(root, "inputs", "harness-files.sha256"),
+    currentCompletionPath: immutableInputs.sides?.current?.correctness_completion?.path,
+    baselineCompletionPath: immutableInputs.sides?.baseline?.correctness_completion?.path,
+    repoRoot: resolve(import.meta.dirname, "../../.."),
+  });
   if (!/^v24\./.test(readFileSync(resolve(root, "inputs", "node-version.txt"), "utf8").trim())) fail(`orchestration did not record repository Node 24: ${root}`);
   const cb = completion.orders.filter((order) => order === "current-baseline").length;
   const bc = completion.orders.filter((order) => order === "baseline-current").length;
@@ -234,7 +275,13 @@ function pairObservation(entry) {
   };
 }
 
-const args = argValues(process.argv.slice(2));
+const argv = process.argv.slice(2);
+if (argv[0] === "--verify-completion") {
+  if (argv.length !== 2) fail("--verify-completion requires exactly one completion path");
+  console.log(JSON.stringify(verifyAggregateCompletion(argv[1])));
+  process.exit(0);
+}
+const args = argValues(argv);
 if (isFuturePathInside(args.orchestration, args.outPrefix)) fail("aggregate output must be outside the real/case-folded sealed orchestration directory");
 const orchestration = verifyOrchestration(args.orchestration);
 if (args.pairs.length && JSON.stringify(args.pairs) !== JSON.stringify(orchestration.outputs)) fail("explicit --pair inputs do not exactly match the sealed orchestration order");
@@ -318,6 +365,7 @@ const report = {
     common_canonical_database_fingerprint: [...databaseFingerprints][0],
     common_harness_manifest_sha256: [...harnessManifestShas][0],
     harness_source_binding_sha256: orchestration.completion.harness_source_binding_sha256,
+    aggregate_live_harness_source_verified_at_start_and_before_completion: true,
     common_runtime_environment_hmac_sha256: [...environmentHmacs][0],
     outputs_checksum_verified: true,
     database_before_after_equal: true,
@@ -386,10 +434,12 @@ const markdownPath = `${args.outPrefix}.md`;
 const outputManifestPath = `${args.outPrefix}.output-manifest.sha256`;
 const completionPath = `${args.outPrefix}.COMPLETED.json`;
 for (const path of [jsonPath, markdownPath, outputManifestPath, completionPath]) if (existsSync(path)) fail(`refusing aggregate output collision: ${path}`);
+verifyOrchestration(args.orchestration);
 writeFileSync(jsonPath, `${JSON.stringify(report, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
 writeFileSync(markdownPath, md, { encoding: "utf8", flag: "wx" });
 const outputRecords = [jsonPath, markdownPath].map((path) => ({ path, bytes: statSync(path).size, sha256: hash(path) }));
 writeFileSync(outputManifestPath, `${outputRecords.map((record) => `${record.sha256}  ${record.bytes}  ${record.path}`).join("\n")}\n`, { encoding: "utf8", flag: "wx" });
-writeFileSync(completionPath, `${JSON.stringify({ schema_version: 2, status: "COMPLETE", completed_at: new Date().toISOString(), measurement_profile: orchestration.completion.measurement_profile, final_profile_exact: finalProfileExact, pre_timing_correctness_ready: true, phase2_checks_passed: phase2ChecksPassed, orchestration_output_manifest_sha256: orchestration.completion.output_manifest_sha256, aggregate_output_manifest_sha256: hash(outputManifestPath), aggregate_files: outputRecords, artifact_count: outputRecords.length }, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
+writeFileSync(completionPath, `${JSON.stringify({ schema_version: 2, status: "COMPLETE", completed_at: new Date().toISOString(), measurement_profile: orchestration.completion.measurement_profile, final_profile_exact: finalProfileExact, pre_timing_correctness_ready: true, phase2_checks_passed: phase2ChecksPassed, live_harness_source_verified_at_start_and_before_completion: true, orchestration_output_manifest_sha256: orchestration.completion.output_manifest_sha256, aggregate_output_manifest_sha256: hash(outputManifestPath), aggregate_files: outputRecords, artifact_count: outputRecords.length }, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
+verifyAggregateCompletion(completionPath);
 console.log(`wrote ${jsonPath}, ${markdownPath}, and checksummed completion evidence`);
 console.log(`status: ${report.status}`);

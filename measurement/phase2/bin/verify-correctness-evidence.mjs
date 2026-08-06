@@ -6,7 +6,7 @@ import { compareStackIdentities, verifyStackIdentity } from "./correctness-stack
 import { verifySecretScan } from "./scan-evidence-secrets.mjs";
 
 const fail = (message) => { throw new Error(message); };
-export function verifyCorrectnessCompletion(completionPath, { requirePassed = true } = {}) {
+export function verifyCorrectnessCompletion(completionPath, { requirePassed = true, runtimeContext = null } = {}) {
   const absolute = resolve(completionPath);
   const root = dirname(absolute);
   if (absolute !== join(root, "COMPLETED.json")) fail("correctness completion must be the root COMPLETED.json");
@@ -16,7 +16,7 @@ export function verifyCorrectnessCompletion(completionPath, { requirePassed = tr
   const scanPath = join(root, "secret-scan.json");
   const reportPath = join(root, "correctness-report.json");
   const routePath = join(root, "route-expectations.json");
-  const immutable = validateImmutableInputs(JSON.parse(readFileSync(immutablePath, "utf8")), root);
+  const immutable = validateImmutableInputs(JSON.parse(readFileSync(immutablePath, "utf8")), root, { runtimeContext });
   const stackOptions = { imageId: immutable.image.id, composeProject: immutable.environment.compose_project, databaseFingerprint: immutable.database.logical_fingerprint_before };
   const stackBefore = verifyStackIdentity(root, "inputs/stack-identity-before.json", { ...stackOptions, stage: "before" });
   const stackAfter = verifyStackIdentity(root, "postcondition-evidence/stack-identity-after.json", { ...stackOptions, stage: "after" });
@@ -38,7 +38,7 @@ export function verifyCorrectnessCompletion(completionPath, { requirePassed = tr
     artifact_count: expectedCorrectnessCensus(root, rawManifest).files.length - 1,
     sealed_file_count: expectedCorrectnessCensus(root, rawManifest).files.length,
     sealed_directory_count: expectedCorrectnessCensus(root, rawManifest).directories.length,
-    immutable_inputs_sha256: sha256File(immutablePath), check_census_sha256: immutable.check_census_sha256, writer_census_sha256: immutable.writer_census_sha256,
+    immutable_inputs_sha256: sha256File(immutablePath), check_census_sha256: immutable.check_census_sha256, writer_census_sha256: immutable.writer_census_sha256, runtime_provenance_sha256: immutable.runtime_provenance.sha256,
     producer_files_sha256: immutable.producer_files_sha256, producer_source_archive_sha256: immutable.producer_source.archive_sha256,
     producer_source_commit: immutable.producer_source.commit, raw_evidence_manifest_sha256: sha256File(rawPath),
     postconditions_sha256: sha256File(join(root, "postconditions.json")),

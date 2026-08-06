@@ -1,6 +1,7 @@
 // Dependency-free, infrastructure-free contract tests for orchestrate-pairs.sh.
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
@@ -113,6 +114,64 @@ for (const perPairContract of [
 ]) {
   assert.match(pairRunnerSource, perPairContract);
 }
+assert((pairRunnerSource.match(/\breverify_harness_source\b/g) ?? []).length >= 5,
+  "pair runner must reverify archive-backed live harness source at start, after each side, and immediately before/after finalization");
+assert.match(pairRunnerSource, /if ! reverify_harness_source; then\s+invalidate_pair_finalization/,
+  "a post-finalizer source failure must invalidate the exact pair seal");
+assert.match(pairRunnerSource, /rm -f -- "\$PAIR_ROOT\/output-manifest\.sha256" "\$PAIR_ROOT\/COMPLETED\.json" "\$PAIR_ROOT\.finalization\.json"/,
+  "pair invalidation must remove only the exact derived seal files");
+const postFinalizerMutationRoot = mkdtempSync(resolve(tmpdir(), "phase2-pair-post-finalizer-"));
+const postFinalizerMutation = spawnSync(gitBash, ["-c", String.raw`set -euo pipefail
+mkdir -p pair/raw
+printf 'raw evidence\n' > pair/raw/evidence.txt
+printf 'sealed manifest\n' > pair/output-manifest.sha256
+printf '{"status":"COMPLETE"}\n' > pair/COMPLETED.json
+printf '{"status":"COMPLETE"}\n' > pair.finalization.json
+printf 'reviewed source\n' > live-source.mjs
+sha256sum live-source.mjs > harness-files.sha256
+printf 'post-finalizer tamper\n' > live-source.mjs
+if sha256sum --check harness-files.sha256 >/dev/null 2>&1; then exit 9; fi
+rm -f -- pair/output-manifest.sha256 pair/COMPLETED.json pair.finalization.json
+test -f pair/raw/evidence.txt
+test ! -e pair/output-manifest.sha256
+test ! -e pair/COMPLETED.json
+test ! -e pair.finalization.json
+`], { cwd: postFinalizerMutationRoot, encoding: "utf8", env: { ...process.env } });
+assert.equal(postFinalizerMutation.status, 0, postFinalizerMutation.stderr || "post-finalizer tamper must invalidate only the derived pair seal");
+assert.match(pairRunnerSource, /sha256sum --check "\$HARNESS_MANIFEST"/,
+  "pair runner must use an external frozen-manifest byte check before invoking mutable Node verifier code");
+assert((source.match(/verify-harness-source\.mjs/g) ?? []).length >= 2,
+  "orchestrator must verify archive-backed live harness source at start and immediately before/after set finalization");
+assert((source.match(/\breverify_set_harness_source\b/g) ?? []).length >= 3,
+  "orchestrator must call the same external-plus-semantic source verifier immediately before and after set finalization");
+assert.match(source, /sha256sum --check "\$HARNESS_MANIFEST"/);
+assert.match(source, /--harness-source-binding/);
+assert.match(source, /if ! reverify_set_harness_source; then\s+invalidate_set_finalization/,
+  "a post-finalizer source failure must invalidate the exact pair-set seal");
+assert.match(source, /rm -f -- "\$OUTPUT_ROOT\/set-output-manifest\.sha256" "\$OUTPUT_ROOT\/PAIR-COMPLETED\.json"/,
+  "pair-set invalidation must remove only the exact derived set seal files");
+const postSetFinalizerMutationRoot = mkdtempSync(resolve(tmpdir(), "phase2-set-post-finalizer-"));
+const postSetFinalizerMutation = spawnSync(gitBash, ["-c", String.raw`set -euo pipefail
+mkdir -p set/pairs/pair-1
+printf 'raw pair evidence\n' > set/pairs/pair-1/evidence.txt
+printf 'sealed manifest\n' > set/set-output-manifest.sha256
+printf '{"status":"COMPLETE"}\n' > set/PAIR-COMPLETED.json
+printf 'reviewed source\n' > live-source.mjs
+sha256sum live-source.mjs > harness-files.sha256
+printf 'post-set-finalizer tamper\n' > live-source.mjs
+if sha256sum --check harness-files.sha256 >/dev/null 2>&1; then exit 9; fi
+rm -f -- set/set-output-manifest.sha256 set/PAIR-COMPLETED.json
+test -f set/pairs/pair-1/evidence.txt
+test ! -e set/set-output-manifest.sha256
+test ! -e set/PAIR-COMPLETED.json
+printf 'reviewed source\n' > live-source.mjs
+sha256sum --check harness-files.sha256 >/dev/null
+printf 'retry manifest\n' > set/set-output-manifest.sha256
+printf '{"status":"COMPLETE"}\n' > set/PAIR-COMPLETED.json
+test -f set/set-output-manifest.sha256
+test -f set/PAIR-COMPLETED.json
+`], { cwd: postSetFinalizerMutationRoot, encoding: "utf8", env: { ...process.env } });
+assert.equal(postSetFinalizerMutation.status, 0, postSetFinalizerMutation.stderr || "post-set-finalizer tamper must invalidate only the derived set seal and permit retry");
 
 const completionWrite = source.indexOf("finalize-pair-set.mjs");
 const completedPairsGuard = source.indexOf('[[ "$completed_pairs" -eq "$PAIR_COUNT" ]]');

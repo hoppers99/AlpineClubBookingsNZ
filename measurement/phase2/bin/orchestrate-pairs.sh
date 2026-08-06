@@ -461,6 +461,7 @@ HARNESS_MANIFEST="$OUTPUT_ROOT/inputs/harness-files.sha256"
   printf '%s  %s\n' "$(sha256_file "$harness_file")" "$(cygpath -am "$harness_file")"
 done > "$HARNESS_MANIFEST"
 HARNESS_MANIFEST_SHA256="$(sha256_file "$HARNESS_MANIFEST")"
+sha256sum --check "$HARNESS_MANIFEST" >/dev/null
 node measurement/phase2/bin/verify-harness-manifest.mjs "$(winpath "$HARNESS_MANIFEST")" >/dev/null
 IFS=$'\t' read -r CURRENT_IMAGE_REFERENCE CURRENT_IMAGE_ID BASELINE_IMAGE_REFERENCE BASELINE_IMAGE_ID \
   CANONICAL_DATABASE_ARCHIVE_PATH CANONICAL_DATABASE_ARCHIVE_SHA256 CURRENT_CORRECTNESS_COMPLETION BASELINE_CORRECTNESS_COMPLETION < <(
@@ -487,6 +488,21 @@ node measurement/phase2/bin/verify-harness-source.mjs \
   --out "$(winpath "$HARNESS_SOURCE_BINDING")"
 HARNESS_SOURCE_BINDING_SHA256="$(sha256_file "$HARNESS_SOURCE_BINDING")"
 export HARNESS_SOURCE_BINDING HARNESS_SOURCE_BINDING_SHA256
+reverify_set_harness_source() {
+  [[ "$(sha256_file "$HARNESS_SOURCE_BINDING")" == "$HARNESS_SOURCE_BINDING_SHA256" ]] || { echo "frozen harness source binding changed" >&2; return 1; }
+  [[ "$(sha256_file "$HARNESS_MANIFEST")" == "$HARNESS_MANIFEST_SHA256" ]] || { echo "frozen harness manifest changed" >&2; return 1; }
+  sha256sum --check "$HARNESS_MANIFEST" >/dev/null || return 1
+  node measurement/phase2/bin/verify-harness-source.mjs \
+    --harness-manifest "$(winpath "$HARNESS_MANIFEST")" \
+    --current-completion "$(winpath "$CURRENT_CORRECTNESS_COMPLETION")" \
+    --baseline-completion "$(winpath "$BASELINE_CORRECTNESS_COMPLETION")" \
+    --binding "$(winpath "$HARNESS_SOURCE_BINDING")" >/dev/null || return 1
+}
+invalidate_set_finalization() {
+  # Remove only the create-only set seal. All pair and monitor evidence remains
+  # available for a corrected source checkout to retry finalization.
+  rm -f -- "$OUTPUT_ROOT/set-output-manifest.sha256" "$OUTPUT_ROOT/PAIR-COMPLETED.json"
+}
 
 {
   printf '%s  %s\n' "$HARNESS_MANIFEST_SHA256" "$HARNESS_MANIFEST"
@@ -544,6 +560,8 @@ for ((pair_number = 1; pair_number <= PAIR_COUNT; pair_number += 1)); do
     --manifest "$MANIFEST_SNAPSHOT" \
     --harness-manifest "$HARNESS_MANIFEST" \
     --harness-manifest-sha256 "$HARNESS_MANIFEST_SHA256" \
+    --harness-source-binding "$HARNESS_SOURCE_BINDING" \
+    --harness-source-binding-sha256 "$HARNESS_SOURCE_BINDING_SHA256" \
     --current-image "$CURRENT_IMAGE_REFERENCE" \
     --baseline-image "$BASELINE_IMAGE_REFERENCE" \
     --canonical-archive "$CANONICAL_DATABASE_ARCHIVE_PATH" \
@@ -647,6 +665,7 @@ exec 1>&3 2>&4
 wait "$TEE_PID"
 TEE_PID=
 node measurement/phase2/bin/scan-evidence-secrets.mjs "$(winpath "$OUTPUT_ROOT")" "$(winpath "$OUTPUT_ROOT/secret-scan.json")"
+reverify_set_harness_source
 node measurement/phase2/bin/finalize-pair-set.mjs \
   --dir "$(winpath "$OUTPUT_ROOT")" --output-id "$OUTPUT_ID" --pairs "$(winpath "$OUTPUT_ROOT/pairs.jsonl")" \
   --correctness-manifest-sha256 "$MANIFEST_SHA" --profile "$MEASUREMENT_PROFILE" \
@@ -655,5 +674,10 @@ node measurement/phase2/bin/finalize-pair-set.mjs \
   --max-pair-gap "$MAX_INTER_PAIR_GAP_SECONDS" --monitor-interval "$QUIET_MONITOR_INTERVAL_SECONDS" \
   --pair-quiet-cpu-limit "$QUIET_CPU_LIMIT_PERCENT" --pair-quiet-samples "$QUIET_SAMPLES" \
   --allowed-containers "$ALLOWED_RUNNING_CONTAINERS"
+if ! reverify_set_harness_source; then
+  invalidate_set_finalization
+  echo "pair-set finalization invalidated because live harness source changed" >&2
+  exit 1
+fi
 RUN_SUCCEEDED=true
 echo "==> complete counterbalanced pair set: $OUTPUT_ROOT/PAIR-COMPLETED.json"
