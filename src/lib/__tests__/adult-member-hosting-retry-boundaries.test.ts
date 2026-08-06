@@ -144,6 +144,8 @@ describe("adult-member hosting participant retry responses (#2597)", () => {
         "cancellationPending: true",
         "retryBookingId: booking.id",
         "memberDataAnonymised: false",
+        "cancellationPending: false",
+        "approvalReceiptSent: false",
       ],
       "src/app/api/admin/bookings/[id]/confirm-pending-guests/route.ts": [
         "paymentReceived: true",

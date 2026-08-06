@@ -2,8 +2,9 @@
   merged (#2597).** A booking or membership update that records a hosting check
   at the same time as a Full Admin merges the affected member now either saves
   with the correct surviving member or asks the operator to reload and retry.
-  The complete update rolls back on that retry, so no booking change or hosting
-  obligation is left half-saved.
+  The database transaction containing the update and its hosting obligation rolls
+  back on that retry. Any earlier phase that already committed remains intact and is
+  identified by the response's recovery metadata instead of being reported as undone.
 
   Existing officer override reasons remain attached to their original work, and
   restoring active cover continues to clear the incident without changing the

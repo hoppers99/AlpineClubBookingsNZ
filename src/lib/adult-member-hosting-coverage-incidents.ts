@@ -158,92 +158,101 @@ export async function openOrUpdateHostingCoverageIncident(
     );
   }
 
-  const existing = await db.hostingCoverageIncident.findFirst({
-    where: { bookingId: params.bookingId, resolvedAt: null },
-    select: { id: true, stateKey: true },
-  });
+  const updateData = {
+    stateKey,
+    evidence: params.violation as unknown as Prisma.InputJsonValue,
+    cause: params.cause,
+    ownerNotificationClaimStateKey: null,
+    ownerNotificationClaimedAt: null,
+    ownerNotificationClaimToken: null,
+    ...(override
+      ? {
+          overriddenByMemberId: override.byMemberId,
+          overrideReason: override.reason.trim().slice(0, 500),
+        }
+      : {}),
+  };
 
-  if (existing) {
-    if (existing.stateKey === stateKey) {
-      return { action: "unchanged", incidentId: existing.id, stateKey };
-    }
-    await db.hostingCoverageIncident.update({
-      where: { id: existing.id },
-      data: {
-        stateKey,
-        evidence: params.violation as unknown as Prisma.InputJsonValue,
-        cause: params.cause,
-        ownerNotificationClaimStateKey: null,
-        ownerNotificationClaimedAt: null,
-        ownerNotificationClaimToken: null,
-        // A later override reason replaces an earlier one only when one was
-        // actually supplied; a system-driven update must not erase the officer's
-        // recorded reason for the override that opened this incident.
-        ...(override
-          ? {
-              overriddenByMemberId: override.byMemberId,
-              overrideReason: override.reason.trim().slice(0, 500),
-            }
-          : {}),
-      },
-    });
-    await recordIncidentAudit(
-      "booking.hostingCoverage.incidentUpdated",
-      params,
-      existing.id,
-      db,
-    );
-    return { action: "updated", incidentId: existing.id, stateKey };
-  }
-
-  try {
-    const created = await db.hostingCoverageIncident.create({
-      data: {
-        bookingId: params.bookingId,
-        lodgeId: params.lodgeId,
-        cause: params.cause,
-        stateKey,
-        evidence: params.violation as unknown as Prisma.InputJsonValue,
-        ownerNotificationClaimStateKey: null,
-        ownerNotificationClaimedAt: null,
-        ownerNotificationClaimToken: null,
-        overriddenByMemberId: override?.byMemberId ?? null,
-        overrideReason: override ? override.reason.trim().slice(0, 500) : null,
-      },
-      select: { id: true },
-    });
-    await recordIncidentAudit(
-      "booking.hostingCoverage.incidentOpened",
-      params,
-      created.id,
-      db,
-    );
-    return { action: "opened", incidentId: created.id, stateKey };
-  } catch (err) {
-    if (!isActiveIncidentConflict(err)) throw err;
-    // A concurrent opener won the partial unique index. Re-read and fold in,
-    // rather than surfacing a unique violation to a caller whose only mistake
-    // was to arrive second.
-    const winner = await db.hostingCoverageIncident.findFirst({
+  // OFFICER_OVERRIDE dominates SYSTEM_CHANGE for an identical material state.
+  // Guard every fold on the state/cause just read so a reordered system drain
+  // cannot permanently erase the officer, reason, or attribution, while a loser
+  // of the one-active-row unique-index race re-reads and folds into the winner.
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const existing = await db.hostingCoverageIncident.findFirst({
       where: { bookingId: params.bookingId, resolvedAt: null },
-      select: { id: true, stateKey: true },
+      select: { id: true, stateKey: true, cause: true },
     });
-    if (!winner) throw err;
-    if (winner.stateKey === stateKey) {
-      return { action: "unchanged", incidentId: winner.id, stateKey };
+
+    if (existing) {
+      if (existing.stateKey === stateKey) {
+        if (
+          params.cause !== "OFFICER_OVERRIDE" ||
+          existing.cause === "OFFICER_OVERRIDE"
+        ) {
+          return { action: "unchanged", incidentId: existing.id, stateKey };
+        }
+        const promoted = await db.hostingCoverageIncident.updateMany({
+          where: {
+            id: existing.id,
+            resolvedAt: null,
+            stateKey,
+            cause: "SYSTEM_CHANGE",
+          },
+          data: updateData,
+        });
+        if (promoted.count === 0) continue;
+      } else {
+        const moved = await db.hostingCoverageIncident.updateMany({
+          where: {
+            id: existing.id,
+            resolvedAt: null,
+            stateKey: existing.stateKey,
+          },
+          data: updateData,
+        });
+        if (moved.count === 0) continue;
+      }
+
+      await recordIncidentAudit(
+        "booking.hostingCoverage.incidentUpdated",
+        params,
+        existing.id,
+        db,
+      );
+      return { action: "updated", incidentId: existing.id, stateKey };
     }
-    await db.hostingCoverageIncident.update({
-      where: { id: winner.id },
-      data: {
-        stateKey,
-        evidence: params.violation as unknown as Prisma.InputJsonValue,
-        ownerNotificationClaimStateKey: null,
-        ownerNotificationClaimedAt: null,
-        ownerNotificationClaimToken: null,
-      },
-    });
-    return { action: "updated", incidentId: winner.id, stateKey };
+
+    try {
+      const created = await db.hostingCoverageIncident.create({
+        data: {
+          bookingId: params.bookingId,
+          lodgeId: params.lodgeId,
+          cause: params.cause,
+          stateKey,
+          evidence: params.violation as unknown as Prisma.InputJsonValue,
+          ownerNotificationClaimStateKey: null,
+          ownerNotificationClaimedAt: null,
+          ownerNotificationClaimToken: null,
+          overriddenByMemberId: override?.byMemberId ?? null,
+          overrideReason: override ? override.reason.trim().slice(0, 500) : null,
+        },
+        select: { id: true },
+      });
+      await recordIncidentAudit(
+        "booking.hostingCoverage.incidentOpened",
+        params,
+        created.id,
+        db,
+      );
+      return { action: "opened", incidentId: created.id, stateKey };
+    } catch (err) {
+      if (!isActiveIncidentConflict(err)) throw err;
+    }
   }
+
+  throw new Error(
+    "Hosting coverage incident changed repeatedly while attribution was being recorded",
+  );
 }
 
 /** Prisma's unique-constraint failure on the one-active-incident index. */

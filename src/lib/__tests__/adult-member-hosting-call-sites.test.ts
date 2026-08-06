@@ -168,6 +168,7 @@ describe("one authoritative evaluator and one resolver (#2569 §6, §7)", () => 
 describe("combined member refusal and officer queue contracts", () => {
   it("keeps every authoritative host-qualification writer on the durable seam", () => {
     for (const file of [
+      "src/app/api/admin/deletion-requests/[id]/route.ts",
       "src/app/api/admin/members/bulk-update/route.ts",
       "src/lib/admin-member-detail-service.ts",
       "src/lib/member-guest-consent-service.ts",

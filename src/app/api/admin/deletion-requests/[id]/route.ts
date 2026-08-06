@@ -5,6 +5,8 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import { hostingCoverageParticipantRetryResponse } from "@/lib/adult-member-hosting-retry-response";
+import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
+import { enqueueHostingCoverageReevaluationForMember } from "@/lib/adult-member-hosting-review";
 import { z } from "zod";
 import { requireAdmin } from "@/lib/session-guards";
 import { getTodayDateOnly } from "@/lib/date-only";
@@ -76,6 +78,7 @@ export async function POST(
 
   const ip =
     request.headers.get("x-forwarded-for")?.split(",")[0].trim() ?? "unknown";
+  let completedBookingCancellations = 0;
 
   try {
     const deletionRequest = await prisma.deletionRequest.findUnique({
@@ -250,6 +253,7 @@ export async function POST(
       }
       if (result.status === 200) {
         cancelledBookingIds.push(booking.id);
+        completedBookingCancellations = cancelledBookingIds.length;
       } else {
         failedBookingIds.push(booking.id);
         logger.warn(
@@ -282,13 +286,10 @@ export async function POST(
       );
     }
 
-    // 3. Send confirmation email BEFORE anonymising (so we have real name/email).
-    try {
-      await sendAccountDeletionApprovedEmail(member.email, member.firstName);
-    } catch (err) {
-      logger.error({ err, memberId: member.id }, "Failed to send deletion approved email");
-      // Continue — email failure should not block deletion
-    }
+    // Capture the destination before anonymisation, but send only after commit.
+    // A participant retry must not send a false approval receipt, and provider
+    // calls must remain outside lifecycle/participant lock transactions.
+    const approvalReceipt = { email: member.email, firstName: member.firstName };
 
     // 4-7: Anonymise atomically in a single transaction
     const anonymisedEmail = `deleted-${member.id.substring(0, 8)}@deleted.invalid`;
@@ -315,6 +316,13 @@ export async function POST(
         memberId: member.id,
         reason: "member_deactivated",
         db: tx,
+      });
+
+      // Record the exact bounded fan-out before deactivation and guest unlinking
+      // remove the evidence. It commits or rolls back with anonymisation.
+      await enqueueHostingCoverageReevaluationForMember(member.id, tx, {
+        cause: "SYSTEM_CHANGE",
+        actorMemberId: session.user.id,
       });
 
       // 3. Anonymise the member record
@@ -396,6 +404,17 @@ export async function POST(
       });
     });
 
+    try {
+      await sendAccountDeletionApprovedEmail(
+        approvalReceipt.email,
+        approvalReceipt.firstName,
+      );
+    } catch (err) {
+      logger.error({ err, memberId: member.id }, "Failed to send deletion approved email");
+      // Continue — email failure should not undo the committed deletion.
+    }
+    await settleHostingCoverageAfterCommit({ limit: 25 });
+
     if (sweptShares.length > 0) {
       // Post-commit, fire-and-forget (#1756). Uses the pre-anonymisation name
       // captured above — admins keep an actionable reference, consistent with
@@ -435,7 +454,12 @@ export async function POST(
       orphanedLinks: detachedFamilyLinks,
     });
   } catch (err) {
-    const hostingRetry = hostingCoverageParticipantRetryResponse(err);
+    const hostingRetry = hostingCoverageParticipantRetryResponse(err, {
+      cancelledBookings: completedBookingCancellations,
+      cancellationPending: false,
+      memberDataAnonymised: false,
+      approvalReceiptSent: false,
+    });
     if (hostingRetry) return hostingRetry;
     if (err instanceof AdminAccountGuardError) {
       return NextResponse.json(

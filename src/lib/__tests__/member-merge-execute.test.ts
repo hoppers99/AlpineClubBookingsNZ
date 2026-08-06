@@ -620,6 +620,54 @@ describe("executeMemberMerge", () => {
     ]);
   });
 
+  it("refuses a loser-linked guest inserted after the generic sweep even when its booking was already planned", async () => {
+    let guestRead = 0;
+    const bookingGuest = {
+      ...defaultDelegate(),
+      count: vi.fn().mockResolvedValue(0),
+      findMany: vi.fn(() => {
+        guestRead += 1;
+        // collectMovedIdSample reads first. The residual read after the one
+        // sorted Member FOR UPDATE statement sees the late committed row.
+        return Promise.resolve(
+          guestRead === 1
+            ? []
+            : [{ id: "late-guest", bookingId: "already-planned-booking" }],
+        );
+      }),
+    };
+    const { client, member, auditLog } = makeClient({ bookingGuest });
+
+    await expect(
+      executeMemberMerge({
+        masterId: MASTER_ID,
+        loserId: LOSER_ID,
+        actorMemberId: ACTOR_ID,
+        previewToken: validToken(),
+        confirmationText: "MERGE Dup Person",
+        db: client as never,
+      }),
+    ).rejects.toMatchObject({
+      statusCode: 409,
+      code: "merge_drift_in_transaction",
+      details: {
+        driftFields: ["BookingGuest.member"],
+        bookingGuestIds: ["late-guest"],
+        bookingIds: ["already-planned-booking"],
+      },
+    });
+
+    expect(bookingGuest.updateMany).toHaveBeenCalledWith({
+      where: { memberId: LOSER_ID },
+      data: { memberId: MASTER_ID },
+    });
+    expect((member as { delete: ReturnType<typeof vi.fn> }).delete).not.toHaveBeenCalled();
+    expectRefusedAudit(
+      (auditLog as { create: ReturnType<typeof vi.fn> }).create,
+      "merge_drift_in_transaction",
+    );
+  });
+
   it("refuses a loser-owned booking that appears after the bounded ownership capture", async () => {
     const booking = {
       ...defaultDelegate(),

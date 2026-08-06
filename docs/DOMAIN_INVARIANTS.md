@@ -2844,9 +2844,11 @@ compliant indefinitely.
   becoming inactive, lapsed, cancelled or archived" heads §8's list, and only the
   evaluator half of it is automatic (an archived or cancelled member stops
   qualifying). `enqueueHostingCoverageReevaluationForMember` is the other half, called
-  in the same transaction as the archive, membership cancellation, single or bulk
-  active/age-tier changes, consent approval, subscription settlement/reversal and
-  member merge repoints. It fans out over the bookings that person ATTENDS — not owns (§2)
+  in the same transaction as the archive, account-deletion anonymisation (before
+  deactivation and guest unlink remove the attendance evidence), membership
+  cancellation, single or bulk active/age-tier changes, consent approval,
+  subscription settlement/reversal and member merge repoints. It fans out over the
+  bookings that person ATTENDS — not owns (§2)
   — on live current-or-future stays, one bounded item per booking naming THAT
   booking's owner, lodge and nights, so the drain can never widen it into the
   lodge-wide sweep #2575 rejected. Gated on `ENFORCED` and deliberately NOT on the

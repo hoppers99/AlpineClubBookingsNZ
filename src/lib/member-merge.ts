@@ -2360,6 +2360,35 @@ export async function executeMemberMerge(params: {
       );
     }
 
+    // BookingGuest.member is an onDelete:SetNull attendance identity, so a row
+    // inserted after applyMoves would otherwise disappear silently when the
+    // loser is deleted. Re-read under the one sorted Member FOR UPDATE set and
+    // refuse the whole merge if ANY loser-linked guest remains. This must be a
+    // refusal rather than a late move: the hosting plan above was derived before
+    // this row moved, and its booking/owner/coverage key may be outside the exact
+    // proof. A guest inserted after the Member lock blocks on the loser's FK
+    // key-share check and fails after deletion; one committed before the lock is
+    // visible here, including when its booking was already a plan candidate.
+    const residualLoserGuestRows = await tx.bookingGuest.findMany({
+      where: { memberId: loserId },
+      orderBy: { id: "asc" },
+      select: { id: true, bookingId: true },
+    });
+    if (residualLoserGuestRows.length > 0) {
+      throw new MemberMergeError(
+        "Booking attendance changed while the merge was running. Nothing was saved. Re-run the preview and try again.",
+        409,
+        "merge_drift_in_transaction",
+        {
+          driftFields: ["BookingGuest.member"],
+          bookingGuestIds: residualLoserGuestRows.map((guest) => guest.id),
+          bookingIds: [
+            ...new Set(residualLoserGuestRows.map((guest) => guest.bookingId)),
+          ].sort(),
+        },
+      );
+    }
+
     // Member rows precede coverage-owner keys in the #2597 order. Blocking is
     // safe here: an ordinary producer that already owns one key also holds a
     // compatible Member KEY SHARE, so the one FOR UPDATE statement above could

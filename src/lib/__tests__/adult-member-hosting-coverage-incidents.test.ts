@@ -128,6 +128,9 @@ function makeIncidentDb(
           if (where.stateKey !== undefined && row.stateKey !== where.stateKey) {
             return false;
           }
+          if (where.cause !== undefined && row.cause !== where.cause) {
+            return false;
+          }
           if (where.OR !== undefined) {
             const matchesNotificationState = where.OR.some((branch: any) => {
               const filter = branch.notifiedStateKey;
@@ -294,6 +297,82 @@ describe("one active incident per booking, created or folded into (#2576 §16)",
     // One audit row, not two: the drain is at-least-once, and an "officer, look at
     // this" event per sweep would bury the ones that are new.
     expect(audits).toHaveLength(1);
+  });
+
+  it.each([
+    ["system-first", false],
+    ["officer-first", true],
+  ] as const)(
+    "keeps officer cause, actor and reason when identical-state drains race (%s)",
+    async (_label, officerFirst) => {
+      const { db, rows } = makeIncidentDb();
+      const system = {
+        bookingId: "b-main",
+        lodgeId: "lodge-a",
+        cause: "SYSTEM_CHANGE" as const,
+        violation: UNCOVERED,
+      };
+      const officer = {
+        bookingId: "b-main",
+        lodgeId: "lodge-a",
+        cause: "OFFICER_OVERRIDE" as const,
+        violation: UNCOVERED,
+        override: {
+          byMemberId: "officer-1",
+          reason: "Approved after speaking with the family",
+        },
+      };
+
+      await Promise.all(
+        officerFirst
+          ? [
+              openOrUpdateHostingCoverageIncident(officer, db),
+              openOrUpdateHostingCoverageIncident(system, db),
+            ]
+          : [
+              openOrUpdateHostingCoverageIncident(system, db),
+              openOrUpdateHostingCoverageIncident(officer, db),
+            ],
+      );
+
+      expect(rows.filter((row) => row.resolvedAt == null)).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        stateKey: hostingCoverageStateKey(UNCOVERED),
+        cause: "OFFICER_OVERRIDE",
+        overriddenByMemberId: "officer-1",
+        overrideReason: "Approved after speaking with the family",
+      });
+      const retry = await openOrUpdateHostingCoverageIncident(officer, db);
+      expect(retry.action).toBe("unchanged");
+      expect(rows.filter((row) => row.resolvedAt == null)).toHaveLength(1);
+    },
+  );
+
+  it("never lets a later identical SYSTEM_CHANGE drain downgrade an officer incident", async () => {
+    const { db, rows } = makeIncidentDb();
+    const officer = {
+      bookingId: "b-main",
+      lodgeId: "lodge-a",
+      cause: "OFFICER_OVERRIDE" as const,
+      violation: UNCOVERED,
+      override: { byMemberId: "officer-1", reason: "Officer decision" },
+    };
+    await openOrUpdateHostingCoverageIncident(officer, db);
+    const system = await openOrUpdateHostingCoverageIncident(
+      {
+        bookingId: "b-main",
+        lodgeId: "lodge-a",
+        cause: "SYSTEM_CHANGE",
+        violation: UNCOVERED,
+      },
+      db,
+    );
+    expect(system.action).toBe("unchanged");
+    expect(rows[0]).toMatchObject({
+      cause: "OFFICER_OVERRIDE",
+      overriddenByMemberId: "officer-1",
+      overrideReason: "Officer decision",
+    });
   });
 
   it("updates the open incident when the uncovered state moves", async () => {

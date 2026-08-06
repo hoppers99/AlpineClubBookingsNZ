@@ -234,6 +234,7 @@ describe("the per-owner coverage lock (#2576 §9)", () => {
       "memberMergeHostingCoveragePlanFingerprint(hostingPlan)",
       "hostingParticipantProof = proveMemberMergeHostingCoverageParticipants(",
       "const residualLoserOwnedBookings = await tx.booking.findMany(",
+      "const residualLoserGuestRows = await tx.bookingGuest.findMany(",
       "await lockHostingCoverageOwners(",
       "await applyLateHostingCoverageMoves(",
       "await enqueueMemberMergeHostingCoveragePlan(",
@@ -245,5 +246,8 @@ describe("the per-owner coverage lock (#2576 §9)", () => {
       true,
     );
     expect(positions).toEqual([...positions].sort((a, b) => a - b));
+    expect(body).toMatch(
+      /const residualLoserGuestRows = await tx\.bookingGuest\.findMany\([\s\S]*?where: \{ memberId: loserId \}[\s\S]*?driftFields: \["BookingGuest\.member"\]/,
+    );
   });
 });

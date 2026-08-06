@@ -7,7 +7,7 @@
  * a later bulk seam aborts its complete outer transaction, exercise under-lock
  * fan-out drift, and check the policy/config/merge lock order in both directions.
  *
- * Two full `executeMemberMerge` races use a test-only Prisma transaction proxy.
+ * Four full `executeMemberMerge` races use a test-only Prisma transaction proxy.
  * It delegates every statement to PostgreSQL and pauses only immediately before
  * or after the production Member `FOR UPDATE` statement. No production hook or
  * reimplementation of the merge algorithm is involved.
@@ -44,6 +44,8 @@ const IDS = {
   fanoutBookingB: "race-2597-booking-fanout-b",
   fanoutGuestA: "race-2597-guest-fanout-a",
   fanoutGuestB: "race-2597-guest-fanout-b",
+  mergeGuestBeforeLock: "race-2597-guest-merge-before-lock",
+  mergeGuestAfterLock: "race-2597-guest-merge-after-lock",
 } as const;
 
 const MEMBER_IDS = [
@@ -386,6 +388,21 @@ let lockAdultMemberHostingPolicySet: (typeof import("@/lib/adult-member-hosting-
       return preview;
     }
 
+    function mergeGuestData(id: string) {
+      return {
+        id,
+        bookingId: IDS.mergeBooking,
+        memberId: IDS.loser,
+        firstName: "Late",
+        lastName: "Guest",
+        ageTier: "ADULT" as const,
+        isMember: true,
+        stayStart: new Date("2099-04-01"),
+        stayEnd: new Date("2099-04-03"),
+        priceCents: 100,
+      };
+    }
+
     async function startPausedMerge(position: "before" | "after") {
       const preview = await previewMerge();
       const pause: ParticipantPause = {
@@ -584,6 +601,82 @@ let lockAdultMemberHostingPolicySet: (typeof import("@/lib/adult-member-hosting-
         masterId: IDS.master,
         loserId: IDS.loser,
       });
+    });
+
+    it("refuses and rolls back the full merge when a loser-linked guest commits after relation moves but before participant locks", async () => {
+      const { operation, pause } = await startPausedMerge("before");
+      try {
+        await ordinary.bookingGuest.create({
+          data: mergeGuestData(IDS.mergeGuestBeforeLock),
+        });
+      } finally {
+        pause.release.resolve();
+      }
+
+      await expect(operation).rejects.toMatchObject({
+        statusCode: 409,
+        code: "merge_drift_in_transaction",
+        details: {
+          driftFields: ["BookingGuest.member"],
+          bookingGuestIds: [IDS.mergeGuestBeforeLock],
+          bookingIds: [IDS.mergeBooking],
+        },
+      });
+
+      await expect(
+        primary.booking.findUniqueOrThrow({
+          where: { id: IDS.mergeBooking },
+          select: { memberId: true },
+        }),
+      ).resolves.toEqual({ memberId: IDS.loser });
+      await expect(
+        primary.bookingGuest.findUniqueOrThrow({
+          where: { id: IDS.mergeGuestBeforeLock },
+          select: { memberId: true },
+        }),
+      ).resolves.toEqual({ memberId: IDS.loser });
+      await expect(
+        primary.member.findUnique({ where: { id: IDS.loser } }),
+      ).resolves.not.toBeNull();
+      expect(
+        await primary.auditLog.count({
+          where: { action: "MEMBER_MERGED", entityId: IDS.master },
+        }),
+      ).toBe(0);
+    });
+
+    it("blocks a loser-linked guest inserted after participant locks, then fails its FK instead of committing a SetNull row", async () => {
+      const { operation, pause } = await startPausedMerge("after");
+      const insert = ordinary.bookingGuest
+        .create({
+          data: mergeGuestData(IDS.mergeGuestAfterLock),
+        })
+        .then(
+          () => ({ kind: "created" as const, error: null }),
+          (error: unknown) => ({ kind: "failed" as const, error }),
+        );
+
+      try {
+        await waitForClientToBlock("race-2597-ordinary");
+      } finally {
+        pause.release.resolve();
+      }
+
+      await expect(operation).resolves.toMatchObject({
+        masterId: IDS.master,
+        loserId: IDS.loser,
+      });
+      const insertOutcome = await insert;
+      expect(insertOutcome.kind).toBe("failed");
+      expect(insertOutcome.error).toBeTruthy();
+      await expect(
+        primary.bookingGuest.findUnique({
+          where: { id: IDS.mergeGuestAfterLock },
+        }),
+      ).resolves.toBeNull();
+      await expect(
+        primary.member.findUnique({ where: { id: IDS.loser } }),
+      ).resolves.toBeNull();
     });
 
     it("fails fast on a later bulk seam and rolls back the earlier queue row plus the caller marker", async () => {
