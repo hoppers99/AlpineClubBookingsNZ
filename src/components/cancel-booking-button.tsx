@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import {
@@ -12,6 +12,12 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { BookingNoEmailsNotice } from "@/components/booking-no-emails-notice";
+import { HostingCoverageOverridePrompt } from "@/components/hosting-coverage-override-prompt";
+import {
+  hostingCoverageMutationSignature,
+  readHostingCoverageOverridePrompt,
+  type HostingCoverageOverridePromptData,
+} from "@/lib/hosting-coverage-override-client";
 
 interface CancelPreview {
   refundAmountCents: number;
@@ -40,6 +46,7 @@ export function CancelBookingButton({
   refundAppealDescription,
   onBehalfOfMember = false,
   canChooseMemberEmail = false,
+  canOverrideHostingCoverage = false,
   noEmails = false,
 }: {
   bookingId: string;
@@ -57,6 +64,8 @@ export function CancelBookingButton({
   // dialog shows exactly when the server will honour the choice. A member
   // self-cancel keeps the immediate always-notify confirm.
   canChooseMemberEmail?: boolean;
+  /** Exact booking-management authority for #2576's officer-only override. */
+  canOverrideHostingCoverage?: boolean;
   /**
    * #2259 honesty rule: the booking's "No emails" switch. With it on, the
    * cancellation email is withheld by the mailer whatever the admin picks, so
@@ -77,10 +86,46 @@ export function CancelBookingButton({
   // was made (null = no choice offered, i.e. always-notify member self-cancel).
   const [notifyDialogOpen, setNotifyDialogOpen] = useState(false);
   const [notifiedMember, setNotifiedMember] = useState<boolean | null>(null);
+  const cancelInFlightRef = useRef(false);
+  const [hostingOverrideState, setHostingOverrideState] = useState<{
+    prompt: HostingCoverageOverridePromptData;
+    proposalSignature: string;
+    notifyMemberChoice: boolean | undefined;
+  } | null>(null);
+  const [hostingOverrideConfirmed, setHostingOverrideConfirmed] = useState(false);
+  const [hostingOverrideReason, setHostingOverrideReason] = useState("");
   const router = useRouter();
   // #2259: the notify choice only exists on the admin path, so the suppression
   // is scoped to it too — a member self-cancel never evaluates the switch.
   const noEmailsSuppressesChoice = canChooseMemberEmail && noEmails;
+
+  function buildCancelBody(notifyMemberChoice?: boolean) {
+    const body: {
+      refundMethod: "card" | "credit";
+      notifyMember?: boolean;
+    } = { refundMethod };
+    if (notifyMemberChoice !== undefined) body.notifyMember = notifyMemberChoice;
+    return body;
+  }
+
+  const hostingOverrideProposalStillCurrent = Boolean(
+    hostingOverrideState &&
+      hostingOverrideState.proposalSignature ===
+        hostingCoverageMutationSignature(
+          buildCancelBody(hostingOverrideState.notifyMemberChoice),
+        ),
+  );
+  const activeHostingOverrideState = hostingOverrideProposalStillCurrent
+    ? hostingOverrideState
+    : null;
+  useEffect(() => {
+    if (hostingOverrideState && !hostingOverrideProposalStillCurrent) {
+      setHostingOverrideState(null);
+      setHostingOverrideConfirmed(false);
+      setHostingOverrideReason("");
+      setErrorMsg("");
+    }
+  }, [hostingOverrideProposalStillCurrent, hostingOverrideState]);
 
   async function handleShowPreview() {
     setStep("loading");
@@ -107,6 +152,19 @@ export function CancelBookingButton({
   // the explicit email choice. A member self-cancel calls performCancel with no
   // argument and always notifies (the server 403s the flag from non-admins).
   function handleConfirmCancel() {
+    if (activeHostingOverrideState) {
+      if (!hostingOverrideConfirmed || hostingOverrideReason.trim().length < 10) {
+        setErrorMsg(
+          "Confirm the affected bookings and give a private override reason of at least 10 characters.",
+        );
+        return;
+      }
+      void performCancel(
+        activeHostingOverrideState.notifyMemberChoice,
+        activeHostingOverrideState,
+      );
+      return;
+    }
     if (canChooseMemberEmail) {
       setNotifyDialogOpen(true);
       return;
@@ -114,15 +172,31 @@ export function CancelBookingButton({
     void performCancel();
   }
 
-  async function performCancel(notifyMemberChoice?: boolean) {
+  async function performCancel(
+    notifyMemberChoice?: boolean,
+    overrideState: typeof hostingOverrideState = null,
+  ) {
+    if (cancelInFlightRef.current) return;
+    cancelInFlightRef.current = true;
     setStep("cancelling");
     setNotifiedMember(notifyMemberChoice ?? null);
     try {
-      const body: { refundMethod: "card" | "credit"; notifyMember?: boolean } = {
-        refundMethod,
+      const body = buildCancelBody(notifyMemberChoice) as ReturnType<
+        typeof buildCancelBody
+      > & {
+        hostingCoverageOverride?: {
+          acknowledged: true;
+          reason: string;
+          strandedStateKey: string;
+        };
       };
-      if (notifyMemberChoice !== undefined) {
-        body.notifyMember = notifyMemberChoice;
+      const refusedProposalSignature = hostingCoverageMutationSignature(body);
+      if (overrideState) {
+        body.hostingCoverageOverride = {
+          acknowledged: true,
+          reason: hostingOverrideReason.trim(),
+          strandedStateKey: overrideState.prompt.strandedStateKey,
+        };
       }
       const res = await fetch(`/api/bookings/${bookingId}/cancel`, {
         method: "POST",
@@ -141,12 +215,31 @@ export function CancelBookingButton({
         router.refresh();
       } else {
         const data = await res.json().catch(() => ({}));
+        const hostingPrompt = canOverrideHostingCoverage
+          ? readHostingCoverageOverridePrompt(data)
+          : null;
+        if (hostingPrompt) {
+          setHostingOverrideState({
+            prompt: hostingPrompt,
+            proposalSignature: refusedProposalSignature,
+            notifyMemberChoice,
+          });
+          setHostingOverrideConfirmed(false);
+          setHostingOverrideReason("");
+          setErrorMsg(
+            "Review the affected bookings and nights, then explicitly confirm the private hosting override.",
+          );
+          setStep("preview");
+          return;
+        }
         setErrorMsg(data.error || "Failed to cancel booking");
         setStep("error");
       }
     } catch {
       setErrorMsg("Failed to cancel booking");
       setStep("error");
+    } finally {
+      cancelInFlightRef.current = false;
     }
   }
 
@@ -436,13 +529,38 @@ export function CancelBookingButton({
           </div>
         )}
 
+        <HostingCoverageOverridePrompt
+          prompt={
+            canOverrideHostingCoverage && activeHostingOverrideState
+              ? activeHostingOverrideState.prompt
+              : null
+          }
+          confirmed={hostingOverrideConfirmed}
+          reason={hostingOverrideReason}
+          idPrefix={`cancel-booking-${bookingId}-hosting-override`}
+          onConfirmedChange={setHostingOverrideConfirmed}
+          onReasonChange={setHostingOverrideReason}
+        />
+        {activeHostingOverrideState && errorMsg ? (
+          <p className="text-sm text-danger-11" role="status">
+            {errorMsg}
+          </p>
+        ) : null}
+
         <div className="flex items-center gap-3 pt-1">
           <Button
             variant="destructive"
             size="sm"
             onClick={handleConfirmCancel}
+            disabled={
+              Boolean(activeHostingOverrideState) &&
+              (!hostingOverrideConfirmed ||
+                hostingOverrideReason.trim().length < 10)
+            }
           >
-            Confirm Cancellation
+            {activeHostingOverrideState
+              ? "Confirm hosting override and cancel"
+              : "Confirm Cancellation"}
           </Button>
           <Button variant="outline" size="sm" onClick={() => setStep("idle")}>
             Keep Booking

@@ -2804,7 +2804,15 @@ compliant indefinitely.
   Approving a pending modification-policy exception uses this same two-step path:
   the first attempt stays pending and returns the exact affected bookings and
   nights, while the retry carries its own private `hostingCoverageOverride` reason.
-  The member-facing approval explanation is never reused as that authority.
+  The member-facing approval explanation is never reused as that authority. The
+  booking detail's officer edit and cancellation controls consume the same strict
+  client-only prompt contract. They bind the prompt to the complete rejected
+  mutation — including shift pricing mode, refund method and the explicit email
+  choice — and retire it permanently if any proposal field changes. A retry reuses
+  that exact proposal without asking the email question again; a refreshed 409
+  replaces the key/list and clears only the private reason and confirmation. The
+  affected booking details render only for `viewerAuthorizationRole === "ADMIN"`;
+  member self-removal and ordinary draft confirmation never gain this override UI.
 - **A change to one PERSON's standing records the check it owes** (§8). "Membership
   becoming inactive, lapsed, cancelled or archived" heads §8's list, and only the
   evaluator half of it is automatic (an archived or cancelled member stops

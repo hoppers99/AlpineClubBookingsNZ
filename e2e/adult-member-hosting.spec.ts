@@ -30,12 +30,13 @@ import { stayWindowForAttempt } from "./helpers/stay-dates";
  *     point of the scope and it is intrinsically multi-booking, so it cannot be
  *     shown anywhere but here.
  *
- * DRIVEN THROUGH THE PRODUCT'S OWN APIs, with one UI assertion. Same reasoning as
- * `policy-exception-approval.spec.ts`: the booking wizard is covered by
- * `booking.spec.ts`, and driving the state changes by API keeps this spec about the
- * POLICY semantics rather than about form clicking. The one page visit is the
- * operator-facing card, because "the card states what is actually in force" is
- * itself the requirement.
+ * DRIVEN THROUGH THE PRODUCT'S OWN APIs except where the officer product surface
+ * is itself the contract. Same reasoning as `policy-exception-approval.spec.ts`:
+ * the booking wizard is covered by `booking.spec.ts`, so setup uses APIs and stays
+ * focused on policy semantics. The two deliberate browser paths prove what an
+ * operator reads on the settings card and that the booking-detail cancellation
+ * control can consume the refusal, preserve its exact proposal and complete the
+ * strict override without exposing an opaque booking id.
  *
  * SELF-RESTORING. The club-wide hosting policy is a real club setting that every
  * other spec's bookings run through, so it is put back to DISABLED in `afterAll`
@@ -459,20 +460,44 @@ test("another booking on the same account supplies the cover, and cannot then be
   expect(survivor, "the refused cancel must have rolled back").toBeTruthy();
   expect(["CONFIRMED", "PAID"]).toContain(survivor!.status);
 
-  // 4. AN OFFICER GETS THE EXPLICIT OVERRIDE DOOR (§7). The first cancellation
-  //    names the affected booking and nights; the confirmed retry carries the
-  //    mandatory reason. The dependent booking keeps its status rather than being
-  //    cancelled with the source, and the club's record is the officer queue.
-  const needsOverride = await admin.post(
-    `/api/bookings/${sourceBooking.id}/cancel`,
-    { data: { refundMethod: "credit", notifyMember: false } },
+  // 4. AN OFFICER GETS THE EXPLICIT OVERRIDE DOOR (§7), THROUGH THE REAL UI.
+  //    The first cancellation names the affected booking and nights; the
+  //    confirmed retry carries the exact refused-state key and mandatory private
+  //    reason without asking the officer's email choice a second time. The
+  //    dependent booking keeps its status rather than being cancelled with the
+  //    source, and the club's durable incident and audit trail record the action.
+  const officerPage = await adminContext.newPage();
+  await officerPage.goto(`/bookings/${sourceBooking.id}`);
+  await officerPage
+    .getByRole("button", { name: "Cancel on behalf of member" })
+    .click();
+  await officerPage
+    .getByRole("button", { name: "Confirm Cancellation" })
+    .click();
+  await expect(
+    officerPage.getByText("Email the member about this cancellation?"),
+  ).toBeVisible();
+
+  const needsOverridePromise = officerPage.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      response.url().endsWith(`/api/bookings/${sourceBooking.id}/cancel`),
   );
+  await officerPage
+    .getByRole("button", { name: "Cancel without emailing" })
+    .click();
+  const needsOverride = await needsOverridePromise;
   expect(needsOverride.status()).toBe(409);
   const needsOverrideBody = (await needsOverride.json()) as {
     code?: string;
     requiresOverrideReason?: boolean;
     strandedStateKey?: string;
-    strandedBookings?: Array<{ bookingId: string; nights: string[] }>;
+    strandedBookings?: Array<{
+      bookingId: string;
+      reference: string;
+      lodgeName: string;
+      nights: string[];
+    }>;
   };
   expect(needsOverrideBody).toMatchObject({
     code: "SAME_OWNER_COVERAGE_OVERRIDE_REQUIRED",
@@ -484,24 +509,68 @@ test("another booking on the same account supplies the cover, and cannot then be
   });
   expect(needsOverrideBody.strandedStateKey).toMatch(/^v1:[0-9a-f]{64}$/);
 
-  const overridden = await admin.post(
-    `/api/bookings/${sourceBooking.id}/cancel`,
-    {
-      data: {
-        refundMethod: "credit",
-        notifyMember: false,
-        hostingCoverageOverride: {
-          acknowledged: true,
-          reason: "E2E officer confirms the dependent hosting incident",
-          strandedStateKey: needsOverrideBody.strandedStateKey,
-        },
-      },
-    },
+  const stranded = needsOverrideBody.strandedBookings?.[0];
+  expect(stranded, "the officer refusal must carry display-safe evidence").toBeTruthy();
+  if (!stranded) throw new Error("Missing hosting-coverage evidence");
+  const overridePrompt = officerPage
+    .getByRole("alert")
+    .filter({ hasText: "Separate hosting coverage override required" });
+  await expect(overridePrompt).toContainText(stranded.reference);
+  await expect(overridePrompt).toContainText(stranded.lodgeName);
+  await expect(overridePrompt).toContainText(
+    `Nights: ${stranded.nights.join(", ")}`,
   );
+  // The UI presents the member-safe reference, never the opaque database id.
+  await expect(officerPage.getByText(dependentBooking.id)).toHaveCount(0);
+
+  const overrideReason = "E2E officer confirms the dependent hosting incident";
+  await officerPage
+    .getByLabel("Private hosting override reason (required)")
+    .fill(overrideReason);
+  await officerPage
+    .getByLabel(/I confirm these exact affected bookings and nights/i)
+    .check();
+
+  const retryRequestPromise = officerPage.waitForRequest(
+    (request) =>
+      request.method() === "POST" &&
+      request.url().endsWith(`/api/bookings/${sourceBooking.id}/cancel`),
+  );
+  const overriddenPromise = officerPage.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      response.url().endsWith(`/api/bookings/${sourceBooking.id}/cancel`),
+  );
+  await officerPage
+    .getByRole("button", { name: "Confirm hosting override and cancel" })
+    .click();
+  const [retryRequest, overridden] = await Promise.all([
+    retryRequestPromise,
+    overriddenPromise,
+  ]);
+  expect(retryRequest.postDataJSON()).toEqual({
+    refundMethod: "card",
+    notifyMember: false,
+    hostingCoverageOverride: {
+      acknowledged: true,
+      reason: overrideReason,
+      strandedStateKey: needsOverrideBody.strandedStateKey,
+    },
+  });
   expect(
     overridden.ok(),
     `officer cancel must be allowed (${overridden.status()}): ${await overridden.text()}`,
   ).toBeTruthy();
+  await expect(
+    officerPage.getByText("Booking cancelled on behalf of the member"),
+  ).toBeVisible();
+  // The retry bypasses the already-settled email choice instead of reopening the
+  // dialog and accidentally changing the proposal to which the key was bound.
+  await expect(
+    officerPage.getByText("Email the member about this cancellation?"),
+  ).toHaveCount(0);
+  await officerPage.close();
+
   const afterOverride = await memberBookingsOnWindow();
   const dependentRow = afterOverride.find(
     (row) => row.id === dependentBooking.id,
@@ -514,4 +583,35 @@ test("another booking on the same account supplies the cover, and cannot then be
     dependentRow!.status,
     "the dependent booking must NOT be cancelled automatically (§7, §16)",
   ).not.toBe("CANCELLED");
+
+  const incidentPage = await adminContext.newPage();
+  await incidentPage.goto("/admin/bookings#hosting-coverage-incidents");
+  const incidentSection = incidentPage.locator("#hosting-coverage-incidents");
+  await expect(incidentSection).toContainText(stranded.reference);
+  await expect(incidentSection).toContainText("officer override");
+  await incidentPage.close();
+
+  const audit = await admin.get(
+    "/api/admin/audit-log?" +
+      new URLSearchParams({
+        eventType: "booking.hostingCoverage.incidentOpened",
+        q: dependentBooking.id,
+        pageSize: "10",
+      }).toString(),
+  );
+  expect(audit.ok(), `read hosting incident audit (${audit.status()})`).toBe(true);
+  const auditBody = (await audit.json()) as {
+    data?: Array<{
+      action: string;
+      entityId: string | null;
+      details: string | null;
+    }>;
+  };
+  expect(auditBody.data).toContainEqual(
+    expect.objectContaining({
+      action: "booking.hostingCoverage.incidentOpened",
+      entityId: dependentBooking.id,
+      details: overrideReason,
+    }),
+  );
 });

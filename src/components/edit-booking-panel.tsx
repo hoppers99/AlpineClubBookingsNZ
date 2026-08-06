@@ -33,6 +33,7 @@ import {
 import { describeMemberGuestConsentBadge } from "@/lib/member-guest-consent-card";
 import type { MemberGuestCandidate } from "@/lib/member-guest-find";
 import { BookingNoEmailsNotice } from "@/components/booking-no-emails-notice";
+import { HostingCoverageOverridePrompt } from "@/components/hosting-coverage-override-prompt";
 import {
   RequestOfficerApprovalCard,
   type ExceptionRequestSubmitResult,
@@ -52,6 +53,11 @@ import {
   MEMBER_GUEST_CROSS_FAMILY_REFUSAL_MESSAGE,
   MEMBER_GUEST_NOT_ADDABLE_CODE,
 } from "@/lib/member-guest-refusal";
+import {
+  hostingCoverageMutationSignature,
+  readHostingCoverageOverridePrompt,
+  type HostingCoverageOverridePromptData,
+} from "@/lib/hosting-coverage-override-client";
 
 // #2104: mirror of requiresAdultSupervisionReview (src/lib/booking-review.ts).
 // Inlined (not imported) to match the create wizard's client-side predicate
@@ -883,7 +889,15 @@ export function EditBookingPanel({
 
   // Save state
   const [saving, setSaving] = useState(false);
+  const saveInFlightRef = useRef(false);
   const [saveError, setSaveError] = useState("");
+  const [hostingOverrideState, setHostingOverrideState] = useState<{
+    prompt: HostingCoverageOverridePromptData;
+    proposalSignature: string;
+    notifyMemberChoice: boolean | undefined;
+  } | null>(null);
+  const [hostingOverrideConfirmed, setHostingOverrideConfirmed] = useState(false);
+  const [hostingOverrideReason, setHostingOverrideReason] = useState("");
   // #2390: the coverage the SAVE came back with, when it differs from what the
   // preview showed. The preview reads the promotion's counters unlocked and the
   // save re-reads them under the row lock, so another booking can take the last
@@ -1859,7 +1873,50 @@ export function EditBookingPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [serverRequiresJustification, guestSetSignature]);
 
+  function buildSavePayload(notifyMemberChoice?: boolean) {
+    const body = buildModificationPayload();
+    if (showReviewJustification) {
+      body.memberReviewJustification =
+        memberReviewJustification.trim() || undefined;
+    }
+    if (settlementMethod) body.settlementMethod = settlementMethod;
+    if (notifyMemberChoice !== undefined) body.notifyMember = notifyMemberChoice;
+    return body;
+  }
+
+  const hostingOverrideProposalStillCurrent = Boolean(
+    hostingOverrideState &&
+      hostingOverrideState.proposalSignature ===
+        hostingCoverageMutationSignature(
+          buildSavePayload(hostingOverrideState.notifyMemberChoice),
+        ),
+  );
+  const activeHostingOverrideState = hostingOverrideProposalStillCurrent
+    ? hostingOverrideState
+    : null;
+
+  useEffect(() => {
+    if (hostingOverrideState && !hostingOverrideProposalStillCurrent) {
+      setHostingOverrideState(null);
+      setHostingOverrideConfirmed(false);
+      setHostingOverrideReason("");
+    }
+  }, [hostingOverrideProposalStillCurrent, hostingOverrideState]);
+
   function handleSaveClick() {
+    if (activeHostingOverrideState) {
+      if (!hostingOverrideConfirmed || hostingOverrideReason.trim().length < 10) {
+        setSaveError(
+          "Confirm the affected bookings and give a private override reason of at least 10 characters.",
+        );
+        return;
+      }
+      void handleSave(
+        activeHostingOverrideState.notifyMemberChoice,
+        activeHostingOverrideState,
+      );
+      return;
+    }
     if (actingAsAdmin) {
       setNotifyDialogOpen(true);
       return;
@@ -1920,7 +1977,10 @@ export function EditBookingPanel({
     };
   }
 
-  async function handleSave(notifyMemberChoice?: boolean) {
+  async function handleSave(
+    notifyMemberChoice?: boolean,
+    overrideState: typeof hostingOverrideState = null,
+  ) {
     setSaveError("");
     // #2104: block submission with an inline error adjacent to the field (not the
     // bottom saveError slot) when a required justification is missing, and bring
@@ -1936,27 +1996,22 @@ export function EditBookingPanel({
       setSaveError("Choose a refund or account credit before saving");
       return;
     }
+    if (saveInFlightRef.current) return;
+    saveInFlightRef.current = true;
     setSaving(true);
     // A fresh save attempt retires the previous refusal's offer (#2562).
     setExceptionOfferState(null);
 
     try {
-      const body = buildModificationPayload();
-      // #2104: attach the justification only when the field is shown (a member
-      // trip). buildModificationPayload is shared with the change-request POST,
-      // so the field is added here in handleSave, never in that builder.
-      if (showReviewJustification) {
-        body.memberReviewJustification =
-          memberReviewJustification.trim() || undefined;
-      }
-      if (settlementMethod) {
-        body.settlementMethod = settlementMethod;
-      }
-      // Issue #1696: send the admin's email choice on every admin edit, not just
-      // overrides. notifyMemberChoice is only defined on the admin (dialog) path;
-      // a member self-edit calls handleSave() with no argument and never sets it.
-      if (notifyMemberChoice !== undefined) {
-        body.notifyMember = notifyMemberChoice;
+      const body = buildSavePayload(notifyMemberChoice);
+      const refusedHostingProposalSignature =
+        hostingCoverageMutationSignature(body);
+      if (overrideState) {
+        body.hostingCoverageOverride = {
+          acknowledged: true,
+          reason: hostingOverrideReason.trim(),
+          strandedStateKey: overrideState.prompt.strandedStateKey,
+        };
       }
 
       const res = await fetch(`/api/bookings/${booking.id}/modify`, {
@@ -1967,6 +2022,22 @@ export function EditBookingPanel({
 
       const data = await res.json();
       if (!res.ok) {
+        const hostingPrompt = actingAsAdmin
+          ? readHostingCoverageOverridePrompt(data)
+          : null;
+        if (hostingPrompt) {
+          setHostingOverrideState({
+            prompt: hostingPrompt,
+            proposalSignature: refusedHostingProposalSignature,
+            notifyMemberChoice,
+          });
+          setHostingOverrideConfirmed(false);
+          setHostingOverrideReason("");
+          setSaveError(
+            "Review the affected bookings and nights, then explicitly confirm the private hosting override.",
+          );
+          return;
+        }
         // The proposal this save attempt actually sent, for any offer its refusal
         // opens (#2562 re-review). Same rule as the quote path: the offer belongs to
         // the payload the server refused, and the render comparison retires it the
@@ -2035,6 +2106,9 @@ export function EditBookingPanel({
       }
 
       setSaveOverCapacityNights(null);
+      setHostingOverrideState(null);
+      setHostingOverrideConfirmed(false);
+      setHostingOverrideReason("");
 
       // #2390: same shape as the stale-quote handling above, for the same
       // reason — the preview and the apply can disagree, and the member must
@@ -2059,6 +2133,7 @@ export function EditBookingPanel({
     } catch {
       setSaveError("Failed to save changes");
     } finally {
+      saveInFlightRef.current = false;
       setSaving(false);
     }
   }
@@ -3589,6 +3664,19 @@ export function EditBookingPanel({
         </div>
       ) : (
         <>
+          <HostingCoverageOverridePrompt
+            prompt={
+              actingAsAdmin && activeHostingOverrideState
+                ? activeHostingOverrideState.prompt
+                : null
+            }
+            confirmed={hostingOverrideConfirmed}
+            reason={hostingOverrideReason}
+            disabled={saving}
+            idPrefix={`edit-booking-${booking.id}-hosting-override`}
+            onConfirmedChange={setHostingOverrideConfirmed}
+            onReasonChange={setHostingOverrideReason}
+          />
           {/* Action buttons */}
           <div className="flex gap-3">
             <Button variant="outline" onClick={onDone}>
@@ -3602,10 +3690,17 @@ export function EditBookingPanel({
                 quoteLoading ||
                 !quote ||
                 !capacityOk ||
-                (settlementRequired && !settlementMethod)
+                (settlementRequired && !settlementMethod) ||
+                (Boolean(activeHostingOverrideState) &&
+                  (!hostingOverrideConfirmed ||
+                    hostingOverrideReason.trim().length < 10))
               }
             >
-              {saving ? "Saving..." : "Save Changes"}
+              {saving
+                ? "Saving..."
+                : activeHostingOverrideState
+                  ? "Confirm hosting override and save"
+                  : "Save Changes"}
             </Button>
           </div>
 

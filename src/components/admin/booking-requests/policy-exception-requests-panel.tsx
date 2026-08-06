@@ -15,9 +15,14 @@ import {
 } from "@/components/admin/view-only-action";
 import { ADMIN_VIEW_ONLY_ACTION_REASON } from "@/hooks/use-admin-area-edit-access";
 import { buildHrefWithReturnTo } from "@/lib/internal-return-path";
+import {
+  readHostingCoverageOverridePrompt,
+  type HostingCoverageOverridePromptData,
+} from "@/lib/hosting-coverage-override-client";
 import { formatNZDate, formatNZDateTime } from "@/lib/nzst-date";
 import { formatPolicyExceptionRequestAge } from "@/lib/booking-exception-requests";
 import type { PolicyExceptionReasonCode } from "@/lib/booking-policy-exceptions";
+import { HostingCoverageOverridePrompt } from "@/components/hosting-coverage-override-prompt";
 
 /**
  * #2526 — the Booking Officer's booking-policy exception queue.
@@ -74,50 +79,8 @@ interface ProposedPartyGuest {
   beyondFamily: boolean | null;
 }
 
-interface StrandedCoverageBooking {
-  bookingId: string;
-  reference: string;
-  lodgeName: string;
-  nights: string[];
-}
-
-interface CoverageOverridePrompt {
+interface CoverageOverridePrompt extends HostingCoverageOverridePromptData {
   requestId: string;
-  message: string;
-  strandedStateKey: string;
-  strandedBookings: StrandedCoverageBooking[];
-}
-
-function parseStrandedCoverageBookings(
-  value: unknown,
-): StrandedCoverageBooking[] | null {
-  if (!Array.isArray(value) || value.length === 0) return null;
-  const parsed: StrandedCoverageBooking[] = [];
-  for (const row of value) {
-    const record = row as Record<string, unknown>;
-    const nights = record?.nights;
-    if (
-      !row ||
-      typeof row !== "object" ||
-      typeof record.bookingId !== "string" ||
-      typeof record.reference !== "string" ||
-      typeof record.lodgeName !== "string" ||
-      !Array.isArray(nights) ||
-      !nights.every(
-        (night: unknown) =>
-          typeof night === "string" && /^\d{4}-\d{2}-\d{2}$/.test(night),
-      )
-    ) {
-      return null;
-    }
-    parsed.push({
-      bookingId: record.bookingId,
-      reference: record.reference,
-      lodgeName: record.lodgeName,
-      nights: nights as string[],
-    });
-  }
-  return parsed;
 }
 
 interface QueueItem {
@@ -402,24 +365,11 @@ export function PolicyExceptionRequestsPanel({
       );
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
-        const strandedBookings = parseStrandedCoverageBookings(
-          data?.strandedBookings,
-        );
-        if (
-          data?.code === "SAME_OWNER_COVERAGE_OVERRIDE_REQUIRED" &&
-          data?.requiresOverrideReason === true &&
-          typeof data?.strandedStateKey === "string" &&
-          /^v1:[0-9a-f]{64}$/.test(data.strandedStateKey) &&
-          strandedBookings
-        ) {
+        const hostingPrompt = readHostingCoverageOverridePrompt(data);
+        if (hostingPrompt) {
           setCoverageOverridePrompt({
             requestId: item.id,
-            message:
-              typeof data.error === "string"
-                ? data.error
-                : "This change would leave another booking without required adult-member coverage.",
-            strandedStateKey: data.strandedStateKey,
-            strandedBookings,
+            ...hostingPrompt,
           });
           setCoverageOverrideConfirmed(false);
           setCoverageOverrideReason("");
@@ -900,80 +850,19 @@ export function PolicyExceptionRequestsPanel({
                                 this exception.
                               </span>
                             </label>
-                            <div role="alert">
-                              {coverageOverridePrompt?.requestId === item.id ? (
-                                <div className="space-y-3 rounded-md border border-warning-7 bg-warning-2 p-3">
-                                <div className="space-y-1">
-                                  <p className="font-semibold text-warning-11">
-                                    Separate hosting coverage override required
-                                  </p>
-                                  <p className="text-sm">
-                                    {coverageOverridePrompt.message}
-                                  </p>
-                                </div>
-                                <ul className="space-y-2 text-sm">
-                                  {coverageOverridePrompt.strandedBookings.map(
-                                    (booking) => (
-                                      <li
-                                        key={booking.bookingId}
-                                        className="rounded border border-warning-6 bg-background p-2"
-                                      >
-                                        <span className="font-semibold">
-                                          {booking.reference}
-                                        </span>
-                                        {` at ${booking.lodgeName}`}
-                                        <div className="text-xs text-muted-foreground">
-                                          Nights: {booking.nights.join(", ")}
-                                        </div>
-                                      </li>
-                                    ),
-                                  )}
-                                </ul>
-                                <div className="space-y-1">
-                                  <Label
-                                    htmlFor={`coverage-override-reason-${item.id}`}
-                                  >
-                                    Private hosting override reason (required)
-                                  </Label>
-                                  <p className="text-xs text-muted-foreground">
-                                    Only admins see this operational reason. It is
-                                    separate from the explanation shown to the
-                                    member and must be at least 10 characters.
-                                  </p>
-                                  <Textarea
-                                    id={`coverage-override-reason-${item.id}`}
-                                    value={coverageOverrideReason}
-                                    disabled={!canEdit}
-                                    onChange={(event) =>
-                                      setCoverageOverrideReason(event.target.value)
-                                    }
-                                    minLength={10}
-                                    maxLength={500}
-                                    placeholder="Why it is safe to proceed despite these uncovered nights."
-                                  />
-                                </div>
-                                <label className="flex items-start gap-2 text-sm">
-                                  <input
-                                    type="checkbox"
-                                    className="mt-1"
-                                    checked={coverageOverrideConfirmed}
-                                    disabled={!canEdit}
-                                    onChange={(event) =>
-                                      setCoverageOverrideConfirmed(
-                                        event.target.checked,
-                                      )
-                                    }
-                                  />
-                                  <span>
-                                    I confirm these exact affected bookings and
-                                    nights remain confirmed, that beds and payments
-                                    are unchanged, and that this creates an urgent
-                                    hosting coverage incident.
-                                  </span>
-                                </label>
-                              </div>
-                              ) : null}
-                            </div>
+                            <HostingCoverageOverridePrompt
+                              prompt={
+                                coverageOverridePrompt?.requestId === item.id
+                                  ? coverageOverridePrompt
+                                  : null
+                              }
+                              confirmed={coverageOverrideConfirmed}
+                              reason={coverageOverrideReason}
+                              disabled={!canEdit}
+                              idPrefix={`coverage-override-${item.id}`}
+                              onConfirmedChange={setCoverageOverrideConfirmed}
+                              onReasonChange={setCoverageOverrideReason}
+                            />
                             <div className="flex flex-wrap gap-2">
                               <ViewOnlyActionButton
                                 canEdit={canEdit}

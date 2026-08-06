@@ -29,6 +29,7 @@ const BOOKING_ID = "bk-2259";
 
 type FetchCall = { url: string; method: string; body: unknown };
 let fetchCalls: FetchCall[];
+let modifyResponse: () => Response;
 
 function jsonResponse(data: unknown, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -71,6 +72,9 @@ function installFetch() {
     }
     if (url.includes("/api/age-tier-settings")) return jsonResponse({ settings: [] });
     if (url.includes("/modify-quote")) return jsonResponse(OK_QUOTE);
+    if (url.endsWith(`/api/bookings/${BOOKING_ID}/modify`)) {
+      return modifyResponse();
+    }
     return jsonResponse({ ok: true });
   }) as unknown as typeof fetch;
 }
@@ -142,6 +146,7 @@ function modifyCalls() {
 }
 
 beforeEach(() => {
+  modifyResponse = () => jsonResponse({ ok: true });
   installFetch();
   routerRefresh.mockClear();
 });
@@ -202,5 +207,160 @@ describe("EditBookingPanel — No emails honesty rule (#2259)", () => {
     await waitFor(() => expect(modifyCalls()).toHaveLength(1));
     expect(screen.queryByText(/Emails are off for this booking/i)).toBeNull();
     expect(modifyCalls()[0].body).not.toHaveProperty("notifyMember");
+  });
+});
+
+describe("EditBookingPanel — state-bound hosting override (#2576)", () => {
+  const overridePrompt = (key: string, reference: string, night: string) =>
+    jsonResponse(
+      {
+        error: "This edit would strand another booking.",
+        code: "SAME_OWNER_COVERAGE_OVERRIDE_REQUIRED",
+        requiresOverrideReason: true,
+        strandedStateKey: `v1:${key.repeat(64)}`,
+        strandedBookings: [
+          {
+            bookingId: `private-${reference}`,
+            reference,
+            lodgeName: "Example Lodge",
+            nights: [night],
+          },
+        ],
+      },
+      409,
+    );
+
+  it("retries the exact notified proposal, replaces drifted evidence, and single-flights clicks", async () => {
+    let attempt = 0;
+    modifyResponse = () => {
+      attempt += 1;
+      if (attempt === 1) return overridePrompt("a", "ACB-OLD", "2026-09-01");
+      if (attempt === 2) return overridePrompt("b", "ACB-NEW", "2026-09-02");
+      return jsonResponse({ ok: true });
+    };
+    const onDone = vi.fn();
+    render(<EditBookingPanel booking={makeBooking()} onDone={onDone} />);
+    await openSaveDialog();
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Save and email member" }),
+    );
+
+    expect(await screen.findByText("ACB-OLD")).toBeInTheDocument();
+    expect(screen.queryByText("private-ACB-OLD")).toBeNull();
+    fireEvent.change(screen.getByLabelText(/Private hosting override reason/i), {
+      target: { value: "First exact coverage reason." },
+    });
+    fireEvent.click(
+      screen.getByLabelText(/I confirm these exact affected bookings and nights/i),
+    );
+    const retry = screen.getByRole("button", {
+      name: "Confirm hosting override and save",
+    });
+    fireEvent.click(retry);
+    fireEvent.click(retry);
+
+    expect(await screen.findByText("ACB-NEW")).toBeInTheDocument();
+    expect(screen.queryByText("ACB-OLD")).toBeNull();
+    expect(screen.getByLabelText(/Private hosting override reason/i)).toHaveValue("");
+    expect(
+      screen.getByLabelText(/I confirm these exact affected bookings and nights/i),
+    ).not.toBeChecked();
+
+    fireEvent.change(screen.getByLabelText(/Private hosting override reason/i), {
+      target: { value: "Second exact coverage reason." },
+    });
+    fireEvent.click(
+      screen.getByLabelText(/I confirm these exact affected bookings and nights/i),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Confirm hosting override and save" }),
+    );
+
+    await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
+    const bodies = modifyCalls().map((call) => call.body as Record<string, unknown>);
+    expect(bodies).toHaveLength(3);
+    expect(bodies[0]).toMatchObject({ notifyMember: true });
+    expect(bodies[0]).not.toHaveProperty("hostingCoverageOverride");
+    expect(bodies[1]).toMatchObject({
+      notifyMember: true,
+      hostingCoverageOverride: {
+        strandedStateKey: `v1:${"a".repeat(64)}`,
+      },
+    });
+    expect(bodies[2]).toMatchObject({
+      notifyMember: true,
+      hostingCoverageOverride: {
+        reason: "Second exact coverage reason.",
+        strandedStateKey: `v1:${"b".repeat(64)}`,
+      },
+    });
+  });
+
+  it("retires the prompt permanently when the proposal changes", async () => {
+    modifyResponse = () => overridePrompt("a", "ACB-OLD", "2026-09-01");
+    render(<EditBookingPanel booking={makeBooking()} onDone={vi.fn()} />);
+    await openSaveDialog();
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Save and email member" }),
+    );
+    expect(await screen.findByText("ACB-OLD")).toBeInTheDocument();
+
+    const checkOut = screen.getByLabelText("Check-out");
+    fireEvent.change(checkOut, { target: { value: "2026-09-04" } });
+    await waitFor(() => expect(screen.queryByText("ACB-OLD")).toBeNull());
+    fireEvent.change(checkOut, { target: { value: "2026-09-03" } });
+    expect(screen.queryByText("ACB-OLD")).toBeNull();
+  });
+
+  it("carries the state-bound retry through shift pricing mode", async () => {
+    let attempt = 0;
+    modifyResponse = () =>
+      ++attempt === 1
+        ? overridePrompt("c", "ACB-SHIFT", "2026-09-04")
+        : jsonResponse({ ok: true });
+    render(
+      <EditBookingPanel
+        booking={makeBooking({
+          editPolicy: {
+            ...makeBooking().editPolicy,
+            adminOverrideAvailable: true,
+          },
+        })}
+        canAdminOverride
+        onDone={vi.fn()}
+      />,
+    );
+    fireEvent.click(
+      screen.getByLabelText(/Move locked\/past dates \(admin override\)/i),
+    );
+    fireEvent.click(screen.getByLabelText(/Shift dates only/i));
+    fireEvent.change(screen.getByLabelText("Check-in"), {
+      target: { value: "2026-09-04" },
+    });
+    const save = await screen.findByRole("button", { name: "Save Changes" });
+    await waitFor(() => expect(save).not.toBeDisabled(), { timeout: 3000 });
+    fireEvent.click(save);
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Save and email member" }),
+    );
+    expect(await screen.findByText("ACB-SHIFT")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText(/Private hosting override reason/i), {
+      target: { value: "Shift coverage has been reviewed." },
+    });
+    fireEvent.click(
+      screen.getByLabelText(/I confirm these exact affected bookings and nights/i),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Confirm hosting override and save" }),
+    );
+    await waitFor(() => expect(modifyCalls()).toHaveLength(2));
+    expect(modifyCalls()[1].body).toMatchObject({
+      adminOverride: true,
+      pricingMode: "shift",
+      notifyMember: true,
+      hostingCoverageOverride: {
+        strandedStateKey: `v1:${"c".repeat(64)}`,
+      },
+    });
   });
 });

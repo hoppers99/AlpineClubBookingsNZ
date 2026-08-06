@@ -2190,6 +2190,7 @@ export default async function BookingDetailPage({
           // honour the choice — viewerAuthorizationRole is the same
           // booking-management role the route resolves for its 403 gate.
           canChooseMemberEmail={viewerAuthorizationRole === "ADMIN"}
+          canOverrideHostingCoverage={viewerAuthorizationRole === "ADMIN"}
           // #2259: with the switch on there is no email choice to honour, so
           // the dialog states that instead of asking. Spread rather than a
           // conditional value, so a member's payload carries no `noEmails` KEY

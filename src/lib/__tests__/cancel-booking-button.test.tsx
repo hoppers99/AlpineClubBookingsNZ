@@ -187,6 +187,185 @@ describe("CancelBookingButton — per-cancel member-email choice (#1705)", () =>
   });
 });
 
+describe("CancelBookingButton — state-bound hosting override (#2576)", () => {
+  const prompt = (key: string, reference: string) => ({
+    error: "This cancellation would strand another booking.",
+    code: "SAME_OWNER_COVERAGE_OVERRIDE_REQUIRED",
+    requiresOverrideReason: true,
+    strandedStateKey: `v1:${key.repeat(64)}`,
+    strandedBookings: [
+      {
+        bookingId: `private-${reference}`,
+        reference,
+        lodgeName: "Example Lodge",
+        nights: ["2026-09-01"],
+      },
+    ],
+  });
+
+  function stubOverrideFlow() {
+    const calls: Array<{ url: string; body?: Record<string, unknown> }> = [];
+    let attempt = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        const body =
+          typeof init?.body === "string"
+            ? (JSON.parse(init.body) as Record<string, unknown>)
+            : undefined;
+        calls.push({ url, body });
+        if (url.includes("cancel-preview")) {
+          return new Response(JSON.stringify(previewBody), { status: 200 });
+        }
+        attempt += 1;
+        if (attempt <= 2) {
+          return new Response(
+            JSON.stringify(
+              attempt === 1 ? prompt("a", "ACB-OLD") : prompt("b", "ACB-NEW"),
+            ),
+            { status: 409 },
+          );
+        }
+        return new Response(
+          JSON.stringify({ refundAmountCents: 4500, refundMethod: "card" }),
+          { status: 200 },
+        );
+      }),
+    );
+    return calls;
+  }
+
+  it("retries the same refund/notify proposal without a second dialog and refreshes drift", async () => {
+    const calls = stubOverrideFlow();
+    render(
+      <CancelBookingButton
+        bookingId="bk_1"
+        onBehalfOfMember
+        canChooseMemberEmail
+        canOverrideHostingCoverage
+      />,
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Cancel on behalf of member" }),
+    );
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Confirm Cancellation" }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Cancel without emailing" }),
+    );
+    expect(await screen.findByText("ACB-OLD")).toBeTruthy();
+    expect(screen.queryByText("private-ACB-OLD")).toBeNull();
+
+    fireEvent.change(screen.getByLabelText(/Private hosting override reason/i), {
+      target: { value: "First cancellation coverage reason." },
+    });
+    fireEvent.click(
+      screen.getByLabelText(/I confirm these exact affected bookings and nights/i),
+    );
+    const retry = screen.getByRole("button", {
+      name: "Confirm hosting override and cancel",
+    });
+    fireEvent.click(retry);
+    fireEvent.click(retry);
+    expect(await screen.findByText("ACB-NEW")).toBeTruthy();
+    expect(
+      screen.queryByText("Email the member about this cancellation?"),
+    ).toBeNull();
+    expect(
+      (screen.getByLabelText(
+        /Private hosting override reason/i,
+      ) as HTMLTextAreaElement).value,
+    ).toBe("");
+
+    fireEvent.change(screen.getByLabelText(/Private hosting override reason/i), {
+      target: { value: "Second cancellation coverage reason." },
+    });
+    fireEvent.click(
+      screen.getByLabelText(/I confirm these exact affected bookings and nights/i),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Confirm hosting override and cancel" }),
+    );
+    await screen.findByText(/Booking cancelled on behalf of the member/i);
+
+    const cancelBodies = calls
+      .filter((call) => call.url.endsWith("/cancel"))
+      .map((call) => call.body);
+    expect(cancelBodies).toHaveLength(3);
+    expect(cancelBodies[0]).toEqual({ refundMethod: "card", notifyMember: false });
+    expect(cancelBodies[1]).toMatchObject({
+      refundMethod: "card",
+      notifyMember: false,
+      hostingCoverageOverride: {
+        strandedStateKey: `v1:${"a".repeat(64)}`,
+      },
+    });
+    expect(cancelBodies[2]).toMatchObject({
+      refundMethod: "card",
+      notifyMember: false,
+      hostingCoverageOverride: {
+        reason: "Second cancellation coverage reason.",
+        strandedStateKey: `v1:${"b".repeat(64)}`,
+      },
+    });
+  });
+
+  it("never renders another booking's details without explicit override authority", async () => {
+    const calls = stubOverrideFlow();
+    render(
+      <CancelBookingButton
+        bookingId="bk_1"
+        onBehalfOfMember
+        canChooseMemberEmail
+      />,
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Cancel on behalf of member" }),
+    );
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Confirm Cancellation" }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Cancel without emailing" }),
+    );
+    expect(
+      await screen.findByText("This cancellation would strand another booking."),
+    ).toBeTruthy();
+    expect(screen.queryByText("ACB-OLD")).toBeNull();
+    expect(calls.filter((call) => call.url.endsWith("/cancel"))).toHaveLength(1);
+  });
+
+  it("retires the prompt permanently when the refund proposal changes", async () => {
+    stubOverrideFlow();
+    render(
+      <CancelBookingButton
+        bookingId="bk_1"
+        onBehalfOfMember
+        canChooseMemberEmail
+        canOverrideHostingCoverage
+      />,
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Cancel on behalf of member" }),
+    );
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Confirm Cancellation" }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Cancel without emailing" }),
+    );
+    expect(await screen.findByText("ACB-OLD")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("radio", { name: /Hold .*account credit/i }));
+    await waitFor(() => expect(screen.queryByText("ACB-OLD")).toBeNull());
+    fireEvent.click(
+      screen.getByRole("radio", { name: /Refund .*original payment method/i }),
+    );
+    expect(screen.queryByText("ACB-OLD")).toBeNull();
+  });
+});
+
 describe("CancelBookingButton — restored applied credit on a no-payment cancel (#1547)", () => {
   const noPaymentWithRestore = {
     refundAmountCents: 0,
