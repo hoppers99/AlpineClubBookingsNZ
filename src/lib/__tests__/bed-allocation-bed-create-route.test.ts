@@ -26,8 +26,12 @@ const {
   bedAllocationFindMany,
   prismaTransaction,
   txExecuteRaw,
+  txLodgeBedFindUnique,
   txLodgeBedFindMany,
   txLodgeBedCreate,
+  txLodgeBedDelete,
+  txBedAllocationFindMany,
+  txHutLeaderAssignmentFindMany,
 } = vi.hoisted(() => ({
   mockRequireAdmin: vi.fn(),
   mockLogAudit: vi.fn(),
@@ -36,8 +40,12 @@ const {
   bedAllocationFindMany: vi.fn(),
   prismaTransaction: vi.fn(),
   txExecuteRaw: vi.fn(),
+  txLodgeBedFindUnique: vi.fn(),
   txLodgeBedFindMany: vi.fn(),
   txLodgeBedCreate: vi.fn(),
+  txLodgeBedDelete: vi.fn(),
+  txBedAllocationFindMany: vi.fn(),
+  txHutLeaderAssignmentFindMany: vi.fn(),
 }));
 
 vi.mock("@/lib/prisma", () => ({
@@ -162,12 +170,47 @@ describe("bed-allocation bed routes P2003 mapping (#1700)", () => {
     // assertNoFutureBedAllocations only guards FUTURE dates, so a bed with only
     // past allocation history passes the guard and trips the BedAllocation
     // restrict FK on delete — the shared mapper's P2003 branch must be unchanged.
-    bedAllocationFindMany.mockResolvedValue([]);
-    lodgeBedDelete.mockRejectedValue(restrictError());
+    // #2593 moved this path behind the production transaction wrapper, so the
+    // race must be driven through the locked transaction delegates rather than
+    // through the root Prisma mock.
+    prismaTransaction.mockImplementation(
+      async (cb: (tx: unknown) => Promise<unknown>) =>
+        cb({
+          $executeRaw: txExecuteRaw.mockResolvedValue(1),
+          lodgeBed: {
+            findUnique: txLodgeBedFindUnique.mockResolvedValue({
+              room: { lodgeId: "lodge-a" },
+            }),
+            delete: txLodgeBedDelete.mockRejectedValue(restrictError()),
+          },
+          bedAllocation: {
+            findMany: txBedAllocationFindMany.mockResolvedValue([]),
+          },
+          hutLeaderAssignment: {
+            findMany: txHutLeaderAssignmentFindMany.mockResolvedValue([]),
+          },
+        }),
+    );
 
     const res = await callDelete("bed-1");
     const body = await res.json();
 
+    expect(prismaTransaction).toHaveBeenCalledTimes(1);
+    expect(txExecuteRaw).toHaveBeenCalledTimes(2);
+    expect(txExecuteRaw.mock.calls[0]?.[0].join("?")).toContain(
+      "pg_advisory_xact_lock(1)",
+    );
+    expect(txExecuteRaw.mock.calls[1]?.[0].join("?")).toContain(
+      "pg_advisory_xact_lock(hashtextextended(",
+    );
+    expect(txLodgeBedFindUnique).toHaveBeenCalledWith({
+      where: { id: "bed-1" },
+      select: { room: { select: { lodgeId: true } } },
+    });
+    expect(txBedAllocationFindMany).toHaveBeenCalledTimes(1);
+    expect(txHutLeaderAssignmentFindMany).toHaveBeenCalledTimes(1);
+    expect(txLodgeBedDelete).toHaveBeenCalledWith({ where: { id: "bed-1" } });
+    expect(lodgeBedDelete).not.toHaveBeenCalled();
     expect(res.status).toBe(409);
     expect(body.error).toBe(
       "Cannot delete a bed with allocation history; deactivate it instead.",
