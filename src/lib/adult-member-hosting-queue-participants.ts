@@ -5,6 +5,7 @@ import type { HostingCoverageReevaluationInput } from "@/lib/adult-member-hostin
 
 type ParticipantDb = Pick<PrismaClient, "booking" | "member" | "$executeRaw">;
 type LifecycleTargetDb = Pick<PrismaClient, "$executeRaw">;
+type LinkedGuestMemberDb = Pick<PrismaClient, "member" | "$executeRaw">;
 
 export const HOSTING_COVERAGE_RETRY_CODE =
   "HOSTING_COVERAGE_PARTICIPANT_RETRY";
@@ -43,23 +44,83 @@ export class HostingCoverageParticipantRetryError extends ApiError {
  * Fence one host-qualification lifecycle target against a late
  * BookingGuest.member FK write.
  *
- * Callers must already hold their canonical advisory prefix. `FOR UPDATE` is
- * intentional: PostgreSQL's FK check takes KEY SHARE on the referenced Member,
- * so the weaker NO KEY UPDATE mode would allow the late guest through. Checking
- * the selected row count also makes a missing target a safe retry instead of
- * pretending that an empty row lock protected anything.
+ * Callers must already hold their canonical advisory prefix. `FOR UPDATE
+ * NOWAIT` is intentional: PostgreSQL's FK check takes KEY SHARE on the
+ * referenced Member, so the weaker NO KEY UPDATE mode would allow the late
+ * guest through. Fail-fast acquisition prevents repeated bulk fan-outs from
+ * waiting while holding their earlier work. Checking the selected row count
+ * also makes a missing target a safe retry instead of pretending that an empty
+ * row lock protected anything.
  */
 export async function lockHostingCoverageMemberLifecycleTarget(
   db: LifecycleTargetDb,
   memberId: string,
 ): Promise<void> {
-  const locked = await db.$executeRaw(Prisma.sql`
-    SELECT 1
-    FROM "Member"
-    WHERE "id" = ${memberId}
-    FOR UPDATE
-  `);
+  let locked: number;
+  try {
+    locked = await db.$executeRaw(Prisma.sql`
+      SELECT 1
+      FROM "Member"
+      WHERE "id" = ${memberId}
+      FOR UPDATE NOWAIT
+    `);
+  } catch (error) {
+    if (isPostgresLockNotAvailable(error)) {
+      throw new HostingCoverageParticipantRetryError();
+    }
+    throw error;
+  }
   if (locked !== 1) {
+    throw new HostingCoverageParticipantRetryError();
+  }
+}
+
+/**
+ * Protect the exact linked-member snapshot used by a booking-request hold.
+ *
+ * The hold owns its lodge advisory key before entering this helper. Sorted
+ * `KEY SHARE` acquisition composes as lodge -> Member and deliberately
+ * conflicts with the standing fan-out's `FOR UPDATE NOWAIT`: hold-first makes
+ * the standing writer retry, while standing-first makes this read wait and
+ * then observe the committed inactive/archive state. The typed read is the
+ * authority; the raw statement exists only to hold the rows stable.
+ */
+export async function lockActiveBookingRequestLinkedMembers(
+  db: LinkedGuestMemberDb,
+  linkedMemberIds: readonly string[],
+): Promise<void> {
+  const memberIds = sortedUnique(linkedMemberIds);
+  if (memberIds.length === 0) return;
+
+  try {
+    await db.$executeRaw(Prisma.sql`
+      SELECT 1
+      FROM "Member"
+      WHERE "id" IN (${Prisma.join(memberIds)})
+      ORDER BY "id"
+      FOR KEY SHARE
+    `);
+  } catch (error) {
+    if (isPostgresLockNotAvailable(error)) {
+      throw new HostingCoverageParticipantRetryError();
+    }
+    throw error;
+  }
+
+  const members = await db.member.findMany({
+    where: { id: { in: memberIds } },
+    orderBy: { id: "asc" },
+    select: { id: true, active: true, archivedAt: true },
+  });
+  if (
+    members.length !== memberIds.length ||
+    members.some(
+      (member, index) =>
+        member.id !== memberIds[index] ||
+        member.active !== true ||
+        member.archivedAt !== null,
+    )
+  ) {
     throw new HostingCoverageParticipantRetryError();
   }
 }

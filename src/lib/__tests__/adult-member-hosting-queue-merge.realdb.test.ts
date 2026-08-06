@@ -191,33 +191,6 @@ function createParticipantPauseClient(
   });
 }
 
-function createAfterParticipantLockTx(
-  tx: Prisma.TransactionClient,
-  hook: () => Promise<void>,
-): Prisma.TransactionClient {
-  let ran = false;
-  return new Proxy(tx, {
-    get(target, property) {
-      if (property === "$executeRaw") {
-        return async (query: unknown, ...values: unknown[]) => {
-          const statement = rawStatement(query);
-          const result = (await Reflect.apply(target.$executeRaw, target, [
-            query,
-            ...values,
-          ])) as number;
-          if (!ran && statement.includes("FOR KEY SHARE NOWAIT")) {
-            ran = true;
-            await hook();
-          }
-          return result;
-        };
-      }
-      const value = Reflect.get(target, property);
-      return typeof value === "function" ? value.bind(target) : value;
-    },
-  });
-}
-
 async function waitForPauseOrFail<T>(
   pause: ParticipantPause,
   operation: Promise<T>,
@@ -263,7 +236,7 @@ let mergeB: PrismaClient;
 let observer: PrismaClient;
 
 let acquireHostingCoverageQueueParticipantProof: (typeof import("@/lib/adult-member-hosting-queue-participants"))["acquireHostingCoverageQueueParticipantProof"];
-let lockHostingCoverageMemberLifecycleTarget: (typeof import("@/lib/adult-member-hosting-queue-participants"))["lockHostingCoverageMemberLifecycleTarget"];
+let lockActiveBookingRequestLinkedMembers: (typeof import("@/lib/adult-member-hosting-queue-participants"))["lockActiveBookingRequestLinkedMembers"];
 let lockMemberMergeHostingCoverageParticipants: (typeof import("@/lib/adult-member-hosting-queue-participants"))["lockMemberMergeHostingCoverageParticipants"];
 let HostingCoverageParticipantRetryError: (typeof import("@/lib/adult-member-hosting-queue-participants"))["HostingCoverageParticipantRetryError"];
 let HOSTING_COVERAGE_RETRY_CODE: (typeof import("@/lib/adult-member-hosting-queue-participants"))["HOSTING_COVERAGE_RETRY_CODE"];
@@ -447,11 +420,13 @@ let HOSTING_POLICY_RECONCILIATION_SELECT: (typeof import("@/lib/adult-member-hos
     async function createBookingRequestHoldEffect(
       tx: Prisma.TransactionClient,
     ): Promise<void> {
-      // This is the production hold's database effect: lodge lock, active held
+      // This is the production hold's contested database effect: canonical
+      // lodge lock, exact linked-member lock + active re-read, active held
       // booking with linked guests, then the production hosting reconciler.
       // Calling the whole public-request service would add bcrypt and quote
-      // setup without changing the contested rows or lock topology.
+      // setup without changing these rows or this lock topology.
       await acquireLodgeCapacityLock(tx, IDS.lodge);
+      await lockActiveBookingRequestLinkedMembers(tx, [IDS.target]);
       await tx.booking.create({
         data: {
           id: IDS.deletionHoldBooking,
@@ -498,17 +473,16 @@ let HOSTING_POLICY_RECONCILIATION_SELECT: (typeof import("@/lib/adult-member-hos
 
     async function applyDeletionHostingEffect(
       tx: Prisma.TransactionClient,
-      afterTargetLock?: () => Promise<void>,
+      afterStandingFanout?: () => Promise<void>,
     ): Promise<number> {
       await acquireFuturePartnerSharedAllocationLocks(tx, [IDS.target]);
       await acquireMemberLifecycleLocks(tx, [IDS.target]);
-      await lockHostingCoverageMemberLifecycleTarget(tx, IDS.target);
-      await afterTargetLock?.();
       const queued = await enqueueHostingCoverageReevaluationForMember(
         IDS.target,
         tx,
         { cause: "SYSTEM_CHANGE", actorMemberId: IDS.actor },
       );
+      await afterStandingFanout?.();
       await tx.member.update({
         where: { id: IDS.target },
         data: { active: false },
@@ -517,6 +491,23 @@ let HOSTING_POLICY_RECONCILIATION_SELECT: (typeof import("@/lib/adult-member-hos
         where: { memberId: IDS.target },
         data: { memberId: null },
       });
+      return queued;
+    }
+
+    async function applyStandingDeactivationEffect(
+      tx: Prisma.TransactionClient,
+      afterStandingFanout?: () => Promise<void>,
+    ): Promise<number> {
+      await tx.member.update({
+        where: { id: IDS.target },
+        data: { active: false },
+      });
+      const queued = await enqueueHostingCoverageReevaluationForMember(
+        IDS.target,
+        tx,
+        { cause: "SYSTEM_CHANGE", actorMemberId: IDS.actor },
+      );
+      await afterStandingFanout?.();
       return queued;
     }
 
@@ -600,8 +591,8 @@ let HOSTING_POLICY_RECONCILIATION_SELECT: (typeof import("@/lib/adult-member-hos
       ]);
       acquireHostingCoverageQueueParticipantProof =
         participants.acquireHostingCoverageQueueParticipantProof;
-      lockHostingCoverageMemberLifecycleTarget =
-        participants.lockHostingCoverageMemberLifecycleTarget;
+      lockActiveBookingRequestLinkedMembers =
+        participants.lockActiveBookingRequestLinkedMembers;
       lockMemberMergeHostingCoverageParticipants =
         participants.lockMemberMergeHostingCoverageParticipants;
       HostingCoverageParticipantRetryError =
@@ -672,7 +663,172 @@ let HOSTING_POLICY_RECONCILIATION_SELECT: (typeof import("@/lib/adult-member-hos
       );
     }, 60_000);
 
-    it("hold wins the target FK row, so deletion waits and queues the committed active booking before unlinking", async () => {
+    it.each([
+      "DISABLED",
+      "ADMIN_REVIEW_REQUIRED",
+      "ENFORCED",
+    ] as const)(
+      "hold-first makes deletion fail fast and retry against the committed guest under %s",
+      async (mode) => {
+        await primary.adultMemberHostingPolicy.update({
+          where: { id: IDS.policy },
+          data: { mode, version: { increment: 1 } },
+        });
+        const holdReady = deferred();
+        const releaseHold = deferred();
+        const hold = ordinary.$transaction(
+          async (tx) => {
+            await createBookingRequestHoldEffect(tx);
+            holdReady.resolve();
+            await releaseHold.promise;
+          },
+          { timeout: 30_000 },
+        );
+        await holdReady.promise;
+
+        const firstDeletion = mergeA
+          .$transaction((tx) => applyDeletionHostingEffect(tx), {
+            timeout: 30_000,
+          })
+          .then(
+            (queued) => ({ kind: "committed" as const, queued, error: null }),
+            (error: unknown) => ({
+              kind: "rolled-back" as const,
+              queued: null,
+              error,
+            }),
+          );
+        let firstOutcome: Awaited<typeof firstDeletion>;
+        try {
+          firstOutcome = await firstDeletion;
+        } finally {
+          releaseHold.resolve();
+        }
+        await hold;
+
+        expect(firstOutcome.kind).toBe("rolled-back");
+        expect(firstOutcome.error).toBeInstanceOf(
+          HostingCoverageParticipantRetryError,
+        );
+        expect(firstOutcome.error).toMatchObject({
+          code: HOSTING_COVERAGE_RETRY_CODE,
+          statusCode: 409,
+          message: HOSTING_COVERAGE_RETRY_MESSAGE,
+        });
+        await expect(
+          primary.member.findUniqueOrThrow({
+            where: { id: IDS.target },
+            select: { active: true },
+          }),
+        ).resolves.toEqual({ active: true });
+        await expect(
+          primary.bookingGuest.findUniqueOrThrow({
+            where: { id: IDS.deletionHoldAdult },
+            select: { memberId: true },
+          }),
+        ).resolves.toEqual({ memberId: IDS.target });
+
+        const queueCountBeforeRetry =
+          await primary.hostingCoverageReevaluation.count({
+            where: { sourceBookingId: IDS.deletionHoldBooking },
+          });
+        const queued = await mergeA.$transaction((tx) =>
+          applyDeletionHostingEffect(tx),
+        );
+        expect(queued).toBe(mode === "ENFORCED" ? 1 : 0);
+        expect(
+          await primary.hostingCoverageReevaluation.count({
+            where: { sourceBookingId: IDS.deletionHoldBooking },
+          }),
+        ).toBe(queueCountBeforeRetry + (mode === "ENFORCED" ? 1 : 0));
+        await expect(
+          primary.bookingGuest.findUniqueOrThrow({
+            where: { id: IDS.deletionHoldAdult },
+            select: { memberId: true },
+          }),
+        ).resolves.toEqual({ memberId: null });
+      },
+    );
+
+    it.each([
+      "DISABLED",
+      "ADMIN_REVIEW_REQUIRED",
+      "ENFORCED",
+    ] as const)(
+      "deletion-first makes the linked-member hold wait, re-read inactive, and roll back under %s",
+      async (mode) => {
+        await primary.adultMemberHostingPolicy.update({
+          where: { id: IDS.policy },
+          data: { mode, version: { increment: 1 } },
+        });
+        const preflightRead = deferred();
+        const allowLinkedMemberLock = deferred();
+        const standingFanoutComplete = deferred();
+        const releaseDeletion = deferred();
+
+        const hold = ordinary
+          .$transaction(
+            async (tx) => {
+              await acquireLodgeCapacityLock(tx, IDS.lodge);
+              const target = await tx.member.findUniqueOrThrow({
+                where: { id: IDS.target },
+                select: { active: true },
+              });
+              expect(target.active).toBe(true);
+              preflightRead.resolve();
+              await allowLinkedMemberLock.promise;
+              await createBookingRequestHoldEffect(tx);
+            },
+            { timeout: 30_000 },
+          )
+          .then(
+            () => ({ kind: "committed" as const, error: null }),
+            (error: unknown) => ({ kind: "rolled-back" as const, error }),
+          );
+        await preflightRead.promise;
+
+        const deletion = mergeA.$transaction(
+          (tx) =>
+            applyDeletionHostingEffect(tx, async () => {
+              standingFanoutComplete.resolve();
+              await releaseDeletion.promise;
+            }),
+          { timeout: 30_000 },
+        );
+        await standingFanoutComplete.promise;
+        allowLinkedMemberLock.resolve();
+        try {
+          await waitForClientToBlock("race-2597-ordinary");
+        } finally {
+          releaseDeletion.resolve();
+        }
+
+        await expect(deletion).resolves.toBe(0);
+        const holdOutcome = await hold;
+        expect(holdOutcome.kind).toBe("rolled-back");
+        expect(holdOutcome.error).toBeInstanceOf(
+          HostingCoverageParticipantRetryError,
+        );
+        expect(holdOutcome.error).toMatchObject({
+          code: HOSTING_COVERAGE_RETRY_CODE,
+          statusCode: 409,
+        });
+        await expect(
+          primary.booking.findUnique({
+            where: { id: IDS.deletionHoldBooking },
+            select: { id: true },
+          }),
+        ).resolves.toBeNull();
+        await expect(
+          primary.member.findUniqueOrThrow({
+            where: { id: IDS.target },
+            select: { active: true },
+          }),
+        ).resolves.toEqual({ active: false });
+      },
+    );
+
+    it("hold-first makes an ordinary standing deactivation fail fast with no partial write", async () => {
       const holdReady = deferred();
       const releaseHold = deferred();
       const hold = ordinary.$transaction(
@@ -685,49 +841,31 @@ let HOSTING_POLICY_RECONCILIATION_SELECT: (typeof import("@/lib/adult-member-hos
       );
       await holdReady.promise;
 
-      const deletion = mergeA.$transaction(
-        (tx) => applyDeletionHostingEffect(tx),
-        { timeout: 30_000 },
+      const standing = mergeA.$transaction((tx) =>
+        applyStandingDeactivationEffect(tx),
       );
       try {
-        await waitForClientToBlock("race-2597-merge-a");
+        await expect(standing).rejects.toMatchObject({
+          code: HOSTING_COVERAGE_RETRY_CODE,
+          statusCode: 409,
+        });
       } finally {
         releaseHold.resolve();
       }
-
-      const [, queued] = await Promise.all([hold, deletion]);
-      expect(queued).toBe(1);
-      await expect(
-        primary.hostingCoverageReevaluation.findFirst({
-          where: {
-            sourceBookingId: IDS.deletionHoldBooking,
-            memberId: IDS.ownerA,
-            actorMemberId: IDS.actor,
-            cause: "SYSTEM_CHANGE",
-          },
-          select: { id: true },
-        }),
-      ).resolves.not.toBeNull();
-      await expect(
-        primary.bookingGuest.findUniqueOrThrow({
-          where: { id: IDS.deletionHoldAdult },
-          select: { memberId: true },
-        }),
-      ).resolves.toEqual({ memberId: null });
+      await hold;
       await expect(
         primary.member.findUniqueOrThrow({
           where: { id: IDS.target },
           select: { active: true },
         }),
-      ).resolves.toEqual({ active: false });
+      ).resolves.toEqual({ active: true });
     });
 
-    it("deletion wins target FOR UPDATE, so a stale-preflight hold waits, re-evaluates the inactive member, and rolls back", async () => {
+    it("standing-first makes a stale-preflight hold wait and refuse the now-inactive linked member", async () => {
       const preflightRead = deferred();
-      const allowInsert = deferred();
-      const targetLocked = deferred();
-      const releaseDeletion = deferred();
-
+      const allowLinkedMemberLock = deferred();
+      const standingFanoutComplete = deferred();
+      const releaseStanding = deferred();
       const hold = ordinary
         .$transaction(
           async (tx) => {
@@ -738,7 +876,7 @@ let HOSTING_POLICY_RECONCILIATION_SELECT: (typeof import("@/lib/adult-member-hos
             });
             expect(target.active).toBe(true);
             preflightRead.resolve();
-            await allowInsert.promise;
+            await allowLinkedMemberLock.promise;
             await createBookingRequestHoldEffect(tx);
           },
           { timeout: 30_000 },
@@ -749,43 +887,35 @@ let HOSTING_POLICY_RECONCILIATION_SELECT: (typeof import("@/lib/adult-member-hos
         );
       await preflightRead.promise;
 
-      const deletion = mergeA.$transaction(
+      const standing = mergeA.$transaction(
         (tx) =>
-          applyDeletionHostingEffect(tx, async () => {
-            targetLocked.resolve();
-            await releaseDeletion.promise;
+          applyStandingDeactivationEffect(tx, async () => {
+            standingFanoutComplete.resolve();
+            await releaseStanding.promise;
           }),
         { timeout: 30_000 },
       );
-      await targetLocked.promise;
-      allowInsert.resolve();
+      await standingFanoutComplete.promise;
+      allowLinkedMemberLock.resolve();
       try {
         await waitForClientToBlock("race-2597-ordinary");
       } finally {
-        releaseDeletion.resolve();
+        releaseStanding.resolve();
       }
 
-      await expect(deletion).resolves.toBe(0);
+      await expect(standing).resolves.toBe(0);
       const holdOutcome = await hold;
       expect(holdOutcome.kind).toBe("rolled-back");
-      expect(holdOutcome.error).toBeTruthy();
+      expect(holdOutcome.error).toMatchObject({
+        code: HOSTING_COVERAGE_RETRY_CODE,
+        statusCode: 409,
+      });
       await expect(
         primary.booking.findUnique({
           where: { id: IDS.deletionHoldBooking },
           select: { id: true },
         }),
       ).resolves.toBeNull();
-      expect(
-        await primary.hostingCoverageReevaluation.count({
-          where: { sourceBookingId: IDS.deletionHoldBooking },
-        }),
-      ).toBe(0);
-      await expect(
-        primary.member.findUniqueOrThrow({
-          where: { id: IDS.target },
-          select: { active: true },
-        }),
-      ).resolves.toEqual({ active: false });
     });
 
     it("ordinary wins between merge moves and participant locks, then the real merge late-sweeps owner plus actor and folds both counts into its result and audit", async () => {
@@ -1059,7 +1189,7 @@ let HOSTING_POLICY_RECONCILIATION_SELECT: (typeof import("@/lib/adult-member-hos
       ).toBe(0);
     });
 
-    it("includes a guest present before locking and rejects a guest that appears after the participant lock, rolling back all queue work", async () => {
+    it("includes every linked guest committed before the standing-subject lock", async () => {
       const guest = (id: string, bookingId: string) => ({
         id,
         bookingId,
@@ -1092,50 +1222,6 @@ let HOSTING_POLICY_RECONCILIATION_SELECT: (typeof import("@/lib/adult-member-hos
           },
         }),
       ).toBe(2);
-
-      await primary.hostingCoverageReevaluation.deleteMany({
-        where: {
-          sourceBookingId: { in: [IDS.fanoutBookingA, IDS.fanoutBookingB] },
-        },
-      });
-      await primary.bookingGuest.delete({ where: { id: IDS.fanoutGuestB } });
-
-      await expect(
-        ordinary.$transaction(async (tx) => {
-          await tx.auditLog.create({
-            data: { action: MARKER_ACTION, entityId: "late-guest" },
-          });
-          const hookedTx = createAfterParticipantLockTx(tx, () =>
-            mergeB.bookingGuest
-              .create({
-                data: guest(IDS.fanoutGuestB, IDS.fanoutBookingB),
-              })
-              .then(() => {}),
-          );
-          await enqueueHostingCoverageReevaluationForMember(
-            IDS.target,
-            hookedTx,
-          );
-        }),
-      ).rejects.toMatchObject({
-        code: HOSTING_COVERAGE_RETRY_CODE,
-        statusCode: 409,
-      });
-      expect(
-        await primary.hostingCoverageReevaluation.count({
-          where: {
-            sourceBookingId: {
-              in: [IDS.fanoutBookingA, IDS.fanoutBookingB],
-            },
-          },
-        }),
-      ).toBe(0);
-      expect(
-        await primary.auditLog.count({ where: { action: MARKER_ACTION } }),
-      ).toBe(0);
-      await expect(
-        primary.bookingGuest.findUnique({ where: { id: IDS.fanoutGuestB } }),
-      ).resolves.not.toBeNull();
     });
 
     it("sorts overlapping ancillary owner sets so two opposing merge lock plans serialize without deadlock", async () => {

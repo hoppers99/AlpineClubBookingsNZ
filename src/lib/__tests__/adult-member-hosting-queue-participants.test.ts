@@ -11,6 +11,7 @@ import {
   HostingCoverageParticipantRetryError,
   isPostgresLockNotAvailable,
   isHostingCoverageParticipantRetry,
+  lockActiveBookingRequestLinkedMembers,
   lockHostingCoverageMemberLifecycleTarget,
   lockMemberMergeHostingCoverageParticipants,
   type HostingCoverageQueueParticipantProof,
@@ -58,7 +59,7 @@ function makeDb(
 }
 
 describe("hosting coverage queue participant fence (#2597)", () => {
-  it("locks a lifecycle target with exact FOR UPDATE and rejects a missing row", async () => {
+  it("locks a lifecycle target with exact FOR UPDATE NOWAIT and rejects a missing row", async () => {
     const db = {
       $executeRaw: vi.fn().mockResolvedValue(1),
     };
@@ -71,7 +72,7 @@ describe("hosting coverage queue participant fence (#2597)", () => {
       values?: readonly unknown[];
     };
     expect(query.strings?.join("?")).toMatch(
-      /FROM "Member"\s+WHERE "id" = \?\s+FOR UPDATE\s*$/,
+      /FROM "Member"\s+WHERE "id" = \?\s+FOR UPDATE NOWAIT\s*$/,
     );
     expect(query.strings?.join("?")).not.toContain("FOR NO KEY UPDATE");
     expect(query.values).toEqual(["target-1"]);
@@ -79,6 +80,94 @@ describe("hosting coverage queue participant fence (#2597)", () => {
     db.$executeRaw.mockResolvedValueOnce(0);
     await expect(
       lockHostingCoverageMemberLifecycleTarget(db as never, "target-1"),
+    ).rejects.toBeInstanceOf(HostingCoverageParticipantRetryError);
+  });
+
+  it("maps direct and wrapped lifecycle-target 55P03 errors to the stable retry", async () => {
+    const db = {
+      $executeRaw: vi
+        .fn()
+        .mockRejectedValueOnce({ code: "55P03" })
+        .mockRejectedValueOnce({
+          driverAdapterError: { cause: { originalCode: "55P03" } },
+        })
+        .mockRejectedValueOnce(new Error("connection lost")),
+    };
+
+    await expect(
+      lockHostingCoverageMemberLifecycleTarget(db as never, "target-1"),
+    ).rejects.toBeInstanceOf(HostingCoverageParticipantRetryError);
+    await expect(
+      lockHostingCoverageMemberLifecycleTarget(db as never, "target-1"),
+    ).rejects.toBeInstanceOf(HostingCoverageParticipantRetryError);
+    await expect(
+      lockHostingCoverageMemberLifecycleTarget(db as never, "target-1"),
+    ).rejects.toThrow("connection lost");
+  });
+
+  it("locks and re-reads exact sorted linked members as active and unarchived", async () => {
+    const db = {
+      $executeRaw: vi.fn().mockResolvedValue(0),
+      member: {
+        findMany: vi.fn().mockResolvedValue([
+          { id: "member-a", active: true, archivedAt: null },
+          { id: "member-b", active: true, archivedAt: null },
+        ]),
+      },
+    };
+
+    await expect(
+      lockActiveBookingRequestLinkedMembers(
+        db as never,
+        ["member-b", "member-a", "member-b"],
+      ),
+    ).resolves.toBeUndefined();
+
+    const query = db.$executeRaw.mock.calls[0][0] as {
+      strings?: readonly string[];
+      values?: readonly unknown[];
+    };
+    expect(query.strings?.join("?")).toMatch(
+      /FROM "Member"\s+WHERE "id" IN \(\?,\?\)\s+ORDER BY "id"\s+FOR KEY SHARE\s*$/,
+    );
+    expect(query.values).toEqual(["member-a", "member-b"]);
+    expect(db.member.findMany).toHaveBeenCalledWith({
+      where: { id: { in: ["member-a", "member-b"] } },
+      orderBy: { id: "asc" },
+      select: { id: true, active: true, archivedAt: true },
+    });
+  });
+
+  it("maps linked-member row-lock 55P03 without running the eligibility read", async () => {
+    const db = {
+      $executeRaw: vi.fn().mockRejectedValue({ code: "55P03" }),
+      member: { findMany: vi.fn() },
+    };
+
+    await expect(
+      lockActiveBookingRequestLinkedMembers(db as never, ["member-a"]),
+    ).rejects.toBeInstanceOf(HostingCoverageParticipantRetryError);
+    expect(db.member.findMany).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      members: [{ id: "member-a", active: false, archivedAt: null }],
+      state: "inactive",
+    },
+    {
+      members: [{ id: "member-a", active: true, archivedAt: new Date() }],
+      state: "archived",
+    },
+    { members: [], state: "missing" },
+  ])("rejects a $state linked member after the row lock", async ({ members }) => {
+    const db = {
+      $executeRaw: vi.fn().mockResolvedValue(0),
+      member: { findMany: vi.fn().mockResolvedValue(members) },
+    };
+
+    await expect(
+      lockActiveBookingRequestLinkedMembers(db as never, ["member-a"]),
     ).rejects.toBeInstanceOf(HostingCoverageParticipantRetryError);
   });
 

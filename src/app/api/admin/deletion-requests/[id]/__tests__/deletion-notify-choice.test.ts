@@ -18,7 +18,6 @@ const h = vi.hoisted(() => ({
   enqueueHostingCoverageReevaluationForMember: vi.fn(),
   settleHostingCoverageAfterCommit: vi.fn(),
   acquireFuturePartnerSharedAllocationLocks: vi.fn(),
-  lockHostingCoverageMemberLifecycleTarget: vi.fn(),
   sweepFuturePartnerSharedAllocationsWithLocksHeld: vi.fn(),
   prisma: {
     deletionRequest: { findUnique: vi.fn(), update: vi.fn() },
@@ -49,16 +48,6 @@ vi.mock("@/lib/adult-member-hosting-review", () => ({
 vi.mock("@/lib/adult-member-hosting-coverage-drain", () => ({
   settleHostingCoverageAfterCommit: h.settleHostingCoverageAfterCommit,
 }));
-vi.mock("@/lib/adult-member-hosting-queue-participants", async () => {
-  const actual = await vi.importActual<
-    typeof import("@/lib/adult-member-hosting-queue-participants")
-  >("@/lib/adult-member-hosting-queue-participants");
-  return {
-    ...actual,
-    lockHostingCoverageMemberLifecycleTarget:
-      h.lockHostingCoverageMemberLifecycleTarget,
-  };
-});
 vi.mock("@/lib/access-roles", () => ({
   isFullAdmin: h.isFullAdmin,
   memberHoldsPrivilegedRole: h.memberHoldsPrivilegedRole,
@@ -145,7 +134,6 @@ beforeEach(() => {
   h.memberHoldsPrivilegedRole.mockReturnValue(false);
   h.wouldRemoveLastFullAdmin.mockResolvedValue(false);
   h.acquireFuturePartnerSharedAllocationLocks.mockResolvedValue(undefined);
-  h.lockHostingCoverageMemberLifecycleTarget.mockResolvedValue(undefined);
   h.sweepFuturePartnerSharedAllocationsWithLocksHeld.mockResolvedValue([]);
   h.enqueueHostingCoverageReevaluationForMember.mockResolvedValue(0);
   h.settleHostingCoverageAfterCommit.mockResolvedValue({});
@@ -245,16 +233,13 @@ describe("POST /api/admin/deletion-requests/[id] approve carve-out (#1788)", () 
     const acquireOrder =
       h.acquireFuturePartnerSharedAllocationLocks.mock.invocationCallOrder[0];
     const memberLockOrder = h.prisma.$executeRaw.mock.invocationCallOrder[0];
-    const targetLockOrder =
-      h.lockHostingCoverageMemberLifecycleTarget.mock.invocationCallOrder[0];
     const heldSweepOrder =
       h.sweepFuturePartnerSharedAllocationsWithLocksHeld.mock.invocationCallOrder[0];
     const hostingEnqueueOrder =
       h.enqueueHostingCoverageReevaluationForMember.mock.invocationCallOrder[0];
     const anonymiseOrder = h.prisma.member.update.mock.invocationCallOrder[0];
     expect(acquireOrder).toBeLessThan(memberLockOrder);
-    expect(memberLockOrder).toBeLessThan(targetLockOrder);
-    expect(targetLockOrder).toBeLessThan(heldSweepOrder);
+    expect(memberLockOrder).toBeLessThan(heldSweepOrder);
     expect(heldSweepOrder).toBeLessThan(hostingEnqueueOrder);
     expect(hostingEnqueueOrder).toBeLessThan(anonymiseOrder);
     expect(h.enqueueHostingCoverageReevaluationForMember).toHaveBeenCalledWith(
@@ -269,31 +254,7 @@ describe("POST /api/admin/deletion-requests/[id] approve carve-out (#1788)", () 
     );
   });
 
-  it("returns the fixed retry and performs no anonymisation when the target row disappeared", async () => {
-    h.lockHostingCoverageMemberLifecycleTarget.mockRejectedValue(
-      new HostingCoverageParticipantRetryError(),
-    );
-
-    const response = await POST(req({ action: "approve" }), { params });
-
-    expect(response.status).toBe(409);
-    await expect(response.json()).resolves.toEqual({
-      error: HOSTING_COVERAGE_RETRY_MESSAGE,
-      code: HOSTING_COVERAGE_RETRY_CODE,
-      cancelledBookings: 0,
-      cancellationPending: false,
-      memberDataAnonymised: false,
-      approvalReceiptSent: false,
-    });
-    expect(
-      h.enqueueHostingCoverageReevaluationForMember,
-    ).not.toHaveBeenCalled();
-    expect(h.prisma.member.update).not.toHaveBeenCalled();
-    expect(h.prisma.bookingGuest.updateMany).not.toHaveBeenCalled();
-    expect(h.prisma.deletionRequest.update).not.toHaveBeenCalled();
-  });
-
-  it("rolls back anonymisation and reports completed earlier work when hosting participants changed", async () => {
+  it("rolls back anonymisation when the shared standing-fanout fence retries", async () => {
     h.enqueueHostingCoverageReevaluationForMember.mockRejectedValue(
       new HostingCoverageParticipantRetryError(),
     );

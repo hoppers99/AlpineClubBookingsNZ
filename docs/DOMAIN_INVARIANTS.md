@@ -2895,12 +2895,18 @@ compliant indefinitely.
   rejects the complete outer mutation with the fixed safe 409; a later call in one
   bulk transaction also fails fast and rolls back the earlier work rather than
   waiting while it holds a different participant set (#2597).
-  Account-deletion approval first composes global → affected lodge → member
-  lifecycle, then locks the member being anonymised `FOR UPDATE` before this
-  fan-out. That exact strength fences the lodge-only booking-request hold's
-  `BookingGuest.memberId` FK (`KEY SHARE`): hold-first is visible to deletion;
-  deletion-first makes the hold re-evaluate the now-inactive member and refuse or
-  record the hazard. `FOR NO KEY UPDATE` would not conflict and is forbidden.
+  Before even its first attendance read or empty return, the shared standing
+  fan-out locks its subject member `FOR UPDATE NOWAIT`. That exact strength fences
+  the lodge-only booking-request hold's linked-member `KEY SHARE`; `FOR NO KEY
+  UPDATE` would not conflict and is forbidden. The hold takes its lodge key,
+  re-reads the transaction-current request links, locks their exact sorted member
+  ids, and re-reads every row as existing, active and unarchived before its
+  versioned request claim or any guest creation. Hold-first makes the standing
+  mutation retry so its next attempt includes the committed guest. Standing-first
+  makes the hold wait and then refuse the inactive/archive row before creation in
+  every consequence mode, including `DISABLED` and review-required. Account
+  deletion inherits the same central fence after its existing global → affected
+  lodge → member-lifecycle prefix; it carries no route-only duplicate.
 - **Every confirming path re-reads the facts at confirmation, and the census proves
   it two ways** (§9). Most reconcile inside their own transaction, which REFUSES an
   uncovered booking at an enforcing club. Those that cannot — capacity claimed, money
@@ -2927,8 +2933,8 @@ compliant indefinitely.
   false in both directions at the time: cancellation and booking writers did not all
   share one key. The direct guest-add route now composes global → lodge, but the
   booking-request capacity hold remains a lodge-only active linked-guest writer; the
-  target `Member FOR UPDATE` barrier above closes its account-deletion edge. The
-  invariant itself is per-owner, so the key is the owner (the
+  shared subject/linked-member row protocol above closes every standing-change edge.
+  The invariant itself is per-owner, so the key is the owner (the
   same reasoning behind `lockBookingMemberNights`); it is taken by the evaluator, the
   settle step, the enqueue-only seam and the member fan-out, always LAST after the
   existing global → sorted lodge → roster-date → applicable member tiers and the

@@ -29,6 +29,7 @@ import {
   acquireHostingCoverageQueueParticipantProof,
   assertHostingCoverageQueueParticipantsLocked,
   HostingCoverageParticipantRetryError,
+  lockHostingCoverageMemberLifecycleTarget,
   type HostingCoverageQueueParticipantProof,
   type HostingCoverageSourceParticipant,
 } from "@/lib/adult-member-hosting-queue-participants";
@@ -2157,6 +2158,12 @@ export async function enqueueHostingCoverageReevaluationForMember(
   context: HostingCoverageChangeContext = { cause: "SYSTEM_CHANGE" },
   suppliedParticipantProof?: HostingCoverageQueueParticipantProof,
 ): Promise<number> {
+  // Freeze the standing subject before even deciding that the fan-out is
+  // empty. A linked-guest hold takes KEY SHARE on this same row after its lodge
+  // lock, so one side wins cleanly: the hold is included in the candidate
+  // snapshot, or the hold resumes after this standing change and refuses its
+  // now-inactive member. NOWAIT keeps repeated bulk fan-outs fail-fast.
+  await lockHostingCoverageMemberLifecycleTarget(db, memberId);
   const plannedAttended = await loadHostingCoverageMemberFanoutCandidates(memberId, db);
   if (plannedAttended.length === 0) return 0;
   if (plannedAttended.length >= HOSTING_COVERAGE_MEMBER_FANOUT_LIMIT) {

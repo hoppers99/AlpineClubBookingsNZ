@@ -7,7 +7,6 @@ import { NextRequest, NextResponse } from "next/server";
 import { hostingCoverageParticipantRetryResponse } from "@/lib/adult-member-hosting-retry-response";
 import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
 import { enqueueHostingCoverageReevaluationForMember } from "@/lib/adult-member-hosting-review";
-import { lockHostingCoverageMemberLifecycleTarget } from "@/lib/adult-member-hosting-queue-participants";
 import { z } from "zod";
 import { requireAdmin } from "@/lib/session-guards";
 import { getTodayDateOnly } from "@/lib/date-only";
@@ -300,13 +299,6 @@ export async function POST(
     await prisma.$transaction(async (tx) => {
       await acquireFuturePartnerSharedAllocationLocks(tx, [member.id]);
       await acquireMemberLifecycleLocks(tx, [member.id]);
-      // A booking-request hold can add an existing member guest while holding
-      // only the lodge capacity key. Freeze the target row before fan-out: its
-      // FOR UPDATE conflicts with the FK's KEY SHARE, so either the guest lands
-      // first and is included below, or its writer resumes after deactivation
-      // and re-derives hosting from the now-inactive Member. NO KEY UPDATE is not
-      // strong enough for that contract.
-      await lockHostingCoverageMemberLifecycleTarget(tx, member.id);
       // Race-safe re-check of the last-admin invariant inside the mutation
       // transaction (issue #1604): the fail-fast check above ran before the
       // booking cleanup, so re-count against this transaction's read view.

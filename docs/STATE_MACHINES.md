@@ -102,8 +102,13 @@ RESOLVED -> OPEN               a later materially different uncovered state appe
 Adding a new active covering booking therefore resolves the existing incident as
 `COVERAGE_RESTORED`; it does not cancel or recreate the dependent booking. The
 queue item that drives this transition is part of the mutation transaction. Under
-#2597, an ordinary producer first locks its exact owner/actor Member participants
-with sorted `FOR KEY SHARE NOWAIT`, while member merge takes one sorted blocking
+#2597, a member-standing fan-out first locks its subject `FOR UPDATE NOWAIT`, then
+an ordinary producer locks its exact owner/actor Member participants with sorted
+`FOR KEY SHARE NOWAIT`. A booking-request hold takes its lodge key and the exact
+linked members `FOR KEY SHARE`, then re-reads every row as active and unarchived
+before its versioned claim or any guest creation. Hold-first makes the standing
+mutation retry; standing-first makes the hold wait and then refuse the now-inactive
+member in every hosting consequence mode. Member merge takes one sorted blocking
 `FOR UPDATE` set, re-plans, and sweeps late owner and actor rows before deleting the
 loser. If either side cannot prove the exact attribution, the complete mutation
 returns the safe retry outcome and none of the booking, member, queue or incident

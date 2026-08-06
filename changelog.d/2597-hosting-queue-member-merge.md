@@ -12,12 +12,21 @@
   at-least-once retry behavior are unchanged.
 
   The retry message now stays visible and is announced on the affected booking
-  approval, public-request, payment, and Xero admin actions. Multi-phase recovery
-  is reported truthfully: a captured card payment remains pending finalisation,
-  while a Xero contact whose local member and link were already created is kept
-  selected and directed to subscription-history repair rather than imported twice.
+  approval, public-request, payment, and Xero admin actions. A post-capture create
+  or saved-method race returns the privacy-safe
+  `PAYMENT_RECEIVED_STATUS_UNCONFIRMED` 409 with only `paymentReceived` and
+  `bookingStatusUnconfirmed`; the payment UI suppresses retry and focuses its
+  permanent alert without exposing a provider id or claiming finalisation. A Xero
+  contact whose local member and link were already created is reloaded and kept
+  selected, duplicate creation is suppressed, and the officer is directed to
+  Member Status Repair for the pending subscription refresh. Link recovery keeps
+  its may-have-changed metadata, while collapsed Contact Sync and network errors
+  remain visible without discarding drafts.
 
-  Account deletion also fences the member row before it freezes hosting fan-out.
-  An officer capacity hold that is adding the same member now either commits first
-  and is included in deletion's recheck, or waits and re-evaluates the inactive
-  member instead of leaving an active held booking recorded as covered.
+  Every host-standing fan-out now fences its subject member before reading
+  attendance, including deactivation, archive, cancellation, subscription and
+  account-deletion changes. Booking-request holds lock and freshly re-check their
+  exact linked members after the lodge lock. A hold that wins makes the standing
+  change retry and include it; a standing change that wins makes the hold refuse
+  the inactive member before creating any booking or guest, even where hosting is
+  disabled or review-only.

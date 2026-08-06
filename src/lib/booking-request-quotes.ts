@@ -14,6 +14,7 @@ import {
 import { z } from "zod";
 import { hashActionToken, issueActionToken } from "@/lib/action-tokens";
 import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
+import { lockActiveBookingRequestLinkedMembers } from "@/lib/adult-member-hosting-queue-participants";
 import { reconcileAdultMemberHostingReviewWithSiblings } from "@/lib/adult-member-hosting-review";
 import { logAudit } from "@/lib/audit";
 import {
@@ -1310,6 +1311,7 @@ export async function holdBookingRequestSlots(input: {
       data: { heldBookingId: null, version: { increment: 1 } },
     });
     request.heldBookingId = null;
+    request.version += 1;
   }
 
   const guests = parseBookingRequestGuests(request.guests);
@@ -1388,9 +1390,50 @@ export async function holdBookingRequestSlots(input: {
       const bookingLodgeId = request.lodgeId ?? (await getDefaultLodgeId(tx));
       await acquireLodgeCapacityLock(tx, bookingLodgeId);
 
+      // Re-read the exact linked-member snapshot after the canonical lodge
+      // lock. The versioned claim below makes this read authoritative: if a
+      // link changes before the claim, its version changes and the whole hold
+      // rolls back. Lock the sorted/deduplicated ids before any guest is
+      // created, then require the rows to remain active and unarchived under
+      // that lock. This protects membership identity independently of whether
+      // hosting enforcement is disabled, review-only, or enforced.
+      const currentRequest = await tx.bookingRequest.findUnique({
+        where: { id: request.id },
+        select: { version: true, linkedGuestMembers: true },
+      });
+      if (!currentRequest || currentRequest.version !== request.version) {
+        throw new BookingRequestError(
+          "This booking request changed while beds were being held; review it and try again",
+          409,
+        );
+      }
+      const currentLinkedMembers = linkedGuestMemberMap(
+        currentRequest.linkedGuestMembers,
+      );
+      const expectedLinkedEntries = [...linkedMembers.entries()].sort(
+        ([left], [right]) => left - right,
+      );
+      const currentLinkedEntries = [...currentLinkedMembers.entries()].sort(
+        ([left], [right]) => left - right,
+      );
+      if (
+        JSON.stringify(currentLinkedEntries) !==
+        JSON.stringify(expectedLinkedEntries)
+      ) {
+        throw new BookingRequestError(
+          "This booking request changed while beds were being held; review it and try again",
+          409,
+        );
+      }
+      await lockActiveBookingRequestLinkedMembers(
+        tx,
+        [...currentLinkedMembers.values()],
+      );
+
       const claimed = await tx.bookingRequest.updateMany({
         where: {
           id: request.id,
+          version: request.version,
           heldBookingId: null,
           status: { in: [...holdableStatuses] },
         },

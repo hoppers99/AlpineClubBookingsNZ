@@ -111,7 +111,7 @@ are the literal `1`.
 | **Per-member night footprint** | `hashtext("booking-member-night"), hashtext(<memberId>)` | `lockBookingMemberNights(tx, guests)` (`booking-member-night-conflicts.ts`) | cross-lodge | Serialises the person-night guard ACROSS lodges (see below). |
 | **Per-owner hosting coverage** | `hashtext("hosting-coverage-owner"), hashtext(<Booking.memberId>)` | `lockHostingCoverageOwner` / `lockHostingCoverageOwners` (`adult-member-hosting-coverage-lock.ts`) | cross-booking | Serialises `SAME_BOOKING_OWNER` coverage (#2576 §9): one booking's compliance depends on another booking of the SAME owner, so the key remains authoritative even though #2600 made allocation-participating confirmation and cancellation compose global → lodge. Taken LAST among the application lock families a caller composes. Roster-aware modification paths take global → lodge → roster-date → any applicable member keys → sorted queue-participant `Member FOR KEY SHARE NOWAIT` rows → coverage-owner; queued incident reconciliation takes hosting policy-set → sorted claimed member-lifecycle keys → sorted claimed `Member FOR KEY SHARE` rows → coverage-owner. Paths that do not use roster or member keys omit those tiers. Ordinary producers try sorted owner keys before re-entering the blocking helper, while merge takes its sorted owner keys only after its one sorted participant `FOR UPDATE` statement. The key is taken only when the lodge actually has the scope enabled. |
 | **Per-member credit ledger** | `hashtext("member-credit-ledger"), hashtext(<memberId>)` | `lockMemberCreditLedger(memberId, tx)` (`member-credit.ts`) | — | A member's credit-ledger balance operations (spend, negative-adjustment validation, orphan-restore repair, the Xero inbound applied-credit repair, and the F20 pre-payment-reduction applied-credit clamp `clampAppliedCreditToBookingPrice`, taken inside the modification transaction only when the booking carries applied credit, and the #2265 stored-election consumption `consumeStoredCreditElection`, taken inside the `create-payment-intent` pay transaction and the Internet Banking switch transaction only when the booking carries an outstanding election). |
-| **Member lifecycle** | `hashtext("member-lifecycle:<memberId>")` | inline (`member-lifecycle-actions.ts`, `app/api/admin/deletion-requests/[id]/route.ts`, `nomination.ts` approval mapping, `admin-family-group-requests-service.ts`, `member-merge.ts`, `adult-member-hosting-coverage-drain.ts`) | — | Archive/delete of one member; account-deletion approval (member lifecycle → target `Member FOR UPDATE` → exact queue-participant `Member FOR KEY SHARE NOWAIT` rows → coverage-owner before deactivation and guest unlink); overwrite of one member by application-approval mapping (E10, #1936); linking/removing one member into/from a family group on admin request review; **member merge** (dual-lock on master + loser, E11 #1937, see below); and the queue-drain handshake that prevents a claimed hosting item from using identities while merge re-points them. |
+| **Member lifecycle** | `hashtext("member-lifecycle:<memberId>")` | inline (`member-lifecycle-actions.ts`, `app/api/admin/deletion-requests/[id]/route.ts`, `nomination.ts` approval mapping, `admin-family-group-requests-service.ts`, `member-merge.ts`, `adult-member-hosting-coverage-drain.ts`) | — | Archive/delete of one member; account-deletion approval (member lifecycle → shared standing-subject `Member FOR UPDATE NOWAIT` → exact queue-participant `Member FOR KEY SHARE NOWAIT` rows → coverage-owner before deactivation and guest unlink); overwrite of one member by application-approval mapping (E10, #1936); linking/removing one member into/from a family group on admin request review; **member merge** (dual-lock on master + loser, E11 #1937, see below); and the queue-drain handshake that prevents a claimed hosting item from using identities while merge re-points them. |
 | **Membership application** | `hashtext(<application key>)` | `membershipApplicationLockKey` (`nomination.ts`) | — | State transitions of one membership application. |
 | **Membership applicant** | `hashtext(<applicant-email key>)` | `membershipApplicationApplicantLockKey` (`nomination.ts`) | — | Per-email applicant dedup at submit time. |
 | **Roster-date writers** | `hashtext("roster:<date>")` | `lockRosterDate(tx, date)` / sorted `lockRosterDates(tx, dates)` (`roster-lock.ts`) | date | Serialises whole-roster save/regenerate/confirm/auto-suggest, kiosk confirm and complete/uncomplete, and booking/guest cleanup that can remove suggested rows for the same lodge night. |
@@ -433,6 +433,16 @@ transaction back. Interactive callers tell the operator to reload before retryin
 and to check payment status where applicable; automated callers retain their
 existing retry/redelivery boundary.
 
+The member-standing fan-out adds a subject fence before even its first candidate
+read or empty-fan-out return. `enqueueHostingCoverageReevaluationForMember` locks
+the member whose standing changed `FOR UPDATE NOWAIT`; `FOR NO KEY UPDATE` is
+deliberately insufficient because a `BookingGuest.memberId` FK check takes
+`KEY SHARE`. A contended or missing subject therefore raises the same fixed retry
+and rolls the complete outer standing mutation back. Centralising the fence in
+the shared fan-out covers deactivation, archive, cancellation, consent,
+subscription and account-deletion writers rather than relying on one route to
+remember it.
+
 The acquisition is deliberately per seam, not a transaction-wide pre-plan. A bulk
 transaction can call a fan-out more than once, so compatible Member key-share locks
 alone would still let two transactions hold different coverage-owner keys and wait
@@ -444,19 +454,23 @@ applicable member keys → participant Member rows → coverage-owner. It does n
 late member-lifecycle key or source-Booking row lock, either of which would invert a
 counterpart writer.
 
-Account-deletion approval has one additional row barrier after its existing global
-→ affected-lodge → member-lifecycle prefix and before it plans this fan-out: it
-locks the member being anonymised `FOR UPDATE`. The booking-request capacity-hold
-writer creates an active `AWAITING_REVIEW` booking under only its lodge key, so it
-can otherwise add that member as a guest after deletion freezes the attendance set.
-`FOR NO KEY UPDATE` is deliberately insufficient: a `BookingGuest.memberId` FK check
-takes `KEY SHARE`, which conflicts with `FOR UPDATE` but not with the weaker mode. If
-the hold wins, deletion waits and its fan-out includes the committed booking. If
-deletion wins, the FK insert waits until deactivation commits and the hold's own
-in-transaction hosting reconciliation reads the inactive Member, refusing and
-rolling back at an enforcing lodge instead of committing stale covered state. A
-missing target returns the same fixed safe 409. This adds no late lifecycle or
-source-Booking lock, and keeps the order lifecycle → Member row → queue participants.
+The lodge-only booking-request hold takes the other side of that row protocol. After
+its canonical lodge key it re-reads the transaction-current request link snapshot,
+locks the exact sorted and de-duplicated linked `Member` ids `FOR KEY SHARE`, and
+then re-reads those rows through Prisma while the locks are held. Every linked row
+must still exist, be active and be unarchived. The request's optimistic `version` is
+part of the later claim, so a link edit between the read and claim rolls the hold
+back instead of creating guests from a stale snapshot. Hold-first makes a concurrent
+standing fan-out's `NOWAIT` fail safely; after retry the newly committed guest is in
+the candidate set. Standing-first makes the hold wait at `KEY SHARE`, then observe
+the committed inactive/archive state and return the same safe 409 before any owner,
+booking or guest is created. That refusal is independent of the lodge's hosting
+consequence (`DISABLED`, `ADMIN_REVIEW_REQUIRED`, or `ENFORCED`), so review policy is
+not an identity-safety backstop. Account deletion inherits this shared protocol
+after its existing global → affected-lodge → member-lifecycle prefix. No late
+lifecycle or source-Booking lock is added; the hold order is lodge → sorted linked
+Member rows, and the standing order is its existing prefix → subject Member → queue
+participants → coverage-owner.
 
 Member merge owns the blocking counterpart. After its bounded relation moves it
 plans the survivor's attendance plus the captured loser-owned bookings, then takes
@@ -1105,9 +1119,12 @@ its wider fixed prefix — config-import → minimum-stay policy-set → hosting
 policy-set — and no provider call moves inside either transaction.
 
 Ordinary booking/member producers do not take the policy-set key. Their #2597
-handshake is instead one exact, sorted `Member FOR KEY SHARE NOWAIT` statement per
-high-level enqueue seam, containing every planned source owner plus the non-null
-actor. Merge takes the blocking counterpart only after its relation moves: one
+handshake takes the standing subject `Member FOR UPDATE NOWAIT` before its first
+fan-out read, then one exact, sorted `Member FOR KEY SHARE NOWAIT` statement per
+high-level enqueue seam containing every planned source owner plus the non-null
+actor. The booking-request hold takes the matching lodge → exact sorted linked
+`Member FOR KEY SHARE` path and re-reads active/archive state before its versioned
+claim. Merge takes the blocking counterpart only after its relation moves: one
 sorted `Member FOR UPDATE` statement over master, loser and every ancillary owner
 in the bounded survivor-attendance/captured-booking plan. It then re-plans under
 those rows, takes sorted coverage-owner keys, runs the late owner and actor queue
