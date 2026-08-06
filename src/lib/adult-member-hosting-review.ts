@@ -1654,7 +1654,8 @@ function resolveDependentDisposition(
  * RESTORE cover as easily as remove it.
  *
  * Returns the queued item id, or null when nothing was queued: the club is not
- * enforcing, the scope is off, or the booking has gone.
+ * enforcing or the booking has gone. `SAME_BOOKING` alone still queues this
+ * booking; only the cross-booking owner lock depends on `SAME_BOOKING_OWNER`.
  */
 export async function enqueueOwnHostingCoverageReevaluation(
   bookingId: string,
@@ -1807,16 +1808,11 @@ export async function enqueueHostingCoverageReevaluationForMember(
   );
   let queued = 0;
   for (const booking of attended) {
-    let enforcing = enforcingByLodge.get(booking.lodgeId);
-    if (enforcing === undefined) {
-      const resolved = await loadAdultMemberHostingPolicy(booking.lodgeId, db);
-      enforcing = resolved.mode === "ENFORCED";
-      enforcingByLodge.set(booking.lodgeId, enforcing);
-    }
+    const enforcing = enforcingByLodge.get(booking.lodgeId) === true;
     if (!enforcing) continue;
 
-    // §9's owner key, taken for the OWNER of each affected booking — which is not
-    // necessarily the member whose standing changed.
+    // The plural lock above already took §9's key for every applicable OWNER in
+    // sorted order. The owner is not necessarily the member whose standing changed.
     const id = await enqueueHostingCoverageReevaluation(
       {
         memberId: booking.memberId,

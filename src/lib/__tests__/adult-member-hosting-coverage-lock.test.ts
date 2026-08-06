@@ -133,4 +133,20 @@ describe("the per-owner coverage lock (#2576 §9)", () => {
     const doc = readRepoFile("docs/CONCURRENCY_AND_LOCKING.md");
     expect(doc).toContain("hosting-coverage-owner");
   });
+
+  it("keeps queued reconciliation in a real transaction and email after it", () => {
+    const drain = readRepoFile("src/lib/adult-member-hosting-coverage-drain.ts");
+    const itemTransaction = drain.indexOf("await db.$transaction((tx) =>");
+    const reconciliation = drain.indexOf(
+      "processHostingCoverageReevaluation(item, tx)",
+      itemTransaction,
+    );
+    const notification = drain.indexOf(
+      "await notifyOwnerOfLostCoverage(",
+      reconciliation,
+    );
+    expect(itemTransaction).toBeGreaterThan(-1);
+    expect(reconciliation).toBeGreaterThan(itemTransaction);
+    expect(notification).toBeGreaterThan(reconciliation);
+  });
 });

@@ -1216,10 +1216,10 @@ export async function sendPolicyExceptionRequestExpiredEmail(params: {
  * cover (#2576 §7, §16).
  *
  * Called by the coverage drain AFTER the causing change has committed, and only
- * once the notification has been CLAIMED against the incident row
- * (`claimHostingCoverageOwnerNotification`) — so a repeated reconciliation of the
- * same unchanged problem sends nothing, and two concurrent drains send one email
- * between them.
+ * once delivery has been LEASED against the incident row
+ * (`claimHostingCoverageOwnerNotification`). The success stamp is written only
+ * after this function returns `sent`; failures release the lease for the durable
+ * queue to retry, while two concurrent drains cannot both send.
  *
  * The recipient is the booking's OWNER, which is also the authority the optional
  * booking link is resolved against. Under `SAME_BOOKING_OWNER` the cover that went
