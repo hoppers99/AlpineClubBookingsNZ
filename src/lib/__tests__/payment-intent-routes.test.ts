@@ -140,7 +140,10 @@ import {
   HOSTING_COVERAGE_RETRY_MESSAGE,
   HostingCoverageParticipantRetryError,
 } from "@/lib/adult-member-hosting-queue-participants";
-import { PAYMENT_RECEIVED_STATUS_UNCONFIRMED_BODY } from "@/lib/payment-recovery-contract";
+import {
+  EXISTING_CARD_TRANSACTION_STATUS_UNCONFIRMED_BODY,
+  PAYMENT_RECEIVED_STATUS_UNCONFIRMED_BODY,
+} from "@/lib/payment-recovery-contract";
 
 const mockPrisma = prisma as unknown as {
   booking: {
@@ -601,6 +604,56 @@ describe("payment intent routes", () => {
       paymentIntentId: "pi_captured_retry",
     });
     expect(mocks.queueXeroInvoiceForPaidBooking).not.toHaveBeenCalled();
+    expect(mockStripeCreatePaymentIntent).not.toHaveBeenCalled();
+  });
+
+  it("suppresses repayment when refund history lookup fails after Stripe success is observed", async () => {
+    mockPrisma.booking.findUnique.mockResolvedValue({
+      id: "booking-1",
+      memberId: "member-1",
+      status: "CONFIRMED",
+      hasNonMembers: false,
+      organiserSettled: false,
+      finalPriceCents: 12500,
+      member: {
+        id: "member-1",
+        email: "member@example.com",
+        firstName: "Test",
+        lastName: "Member",
+      },
+      guests: [],
+      payment: {
+        stripePaymentIntentId: "pi_status_observed",
+        status: "PROCESSING",
+      },
+    });
+    mockGetPaymentIntent.mockResolvedValue({
+      id: "pi_status_observed",
+      amount: 12500,
+      payment_method: "pm_123",
+      status: "succeeded",
+    });
+    mocks.findPaymentTransactionByIntentId.mockRejectedValueOnce(
+      new Error("private refund-ledger detail"),
+    );
+
+    const response = await createPaymentIntentRoute(
+      new NextRequest("http://localhost/api/payments/create-payment-intent", {
+        method: "POST",
+        body: JSON.stringify({ bookingId: "booking-1" }),
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(409);
+    expect(body).toEqual(
+      EXISTING_CARD_TRANSACTION_STATUS_UNCONFIRMED_BODY,
+    );
+    expect(body).not.toHaveProperty("paymentReceived");
+    expect(body).not.toHaveProperty("finalisationPending");
+    expect(JSON.stringify(body)).not.toContain("private refund-ledger detail");
+    expect(mocks.markBookingPaymentSucceeded).not.toHaveBeenCalled();
     expect(mockStripeCreatePaymentIntent).not.toHaveBeenCalled();
   });
 

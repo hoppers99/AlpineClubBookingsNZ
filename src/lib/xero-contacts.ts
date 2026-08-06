@@ -728,6 +728,33 @@ async function syncContactGroupsBestEffort(
  * Unlike findOrCreateXeroContact, this does not try to match existing
  * contacts by email.
  */
+export type XeroContactCreatePartialSuccessPhase =
+  | "PROVIDER_CONTACT_CREATED"
+  | "LOCAL_MEMBER_LINK_COMMITTED";
+
+/**
+ * A fixed, typed boundary for irreversible Xero contact-create progress.
+ * `originalError` is server-only diagnostic context; routes must expose only
+ * the phase and contact id through the privacy-safe recovery contract.
+ */
+export class XeroContactCreatePartialSuccessError extends Error {
+  readonly phase: XeroContactCreatePartialSuccessPhase;
+  readonly xeroContactId: string;
+  readonly originalError: unknown;
+
+  constructor(
+    phase: XeroContactCreatePartialSuccessPhase,
+    xeroContactId: string,
+    originalError: unknown,
+  ) {
+    super("Xero contact creation completed only in part");
+    this.name = "XeroContactCreatePartialSuccessError";
+    this.phase = phase;
+    this.xeroContactId = xeroContactId;
+    this.originalError = originalError;
+  }
+}
+
 export async function createXeroContactForMember(
   memberId: string,
   options?: { createdByMemberId?: string }
@@ -860,11 +887,23 @@ export async function createXeroContactForMember(
         "Failed to record local-link failure on the contact operation"
       );
     }
-    throw linkError;
+    throw new XeroContactCreatePartialSuccessError(
+      "PROVIDER_CONTACT_CREATED",
+      createdContactId,
+      linkError,
+    );
   }
 
   // Post-commit op-log close (F7 task 3).
-  await completeXeroSyncOperation(operation.id, completionInput);
+  try {
+    await completeXeroSyncOperation(operation.id, completionInput);
+  } catch (completionError) {
+    throw new XeroContactCreatePartialSuccessError(
+      "LOCAL_MEMBER_LINK_COMMITTED",
+      createdContactId,
+      completionError,
+    );
+  }
 
   const xeroContactId = createdContactId;
   await syncContactGroupsBestEffort(memberId, xeroContactId, options);

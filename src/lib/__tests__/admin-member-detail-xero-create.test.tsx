@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import "@testing-library/jest-dom/vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { Suspense } from "react";
@@ -88,7 +89,7 @@ vi.mock("@/components/ui/select", () => ({
   SelectValue: ({ placeholder }: { placeholder?: string }) => <span>{placeholder}</span>,
 }));
 
-function adminMember() {
+function adminMember(overrides: Record<string, unknown> = {}) {
   return {
     id: "member-1",
     firstName: "Alice",
@@ -138,12 +139,17 @@ function adminMember() {
     postalRegion: "Waikato",
     postalPostalCode: "3420",
     postalCountry: "NZ",
+    ...overrides,
   };
 }
 
 describe("Admin member detail Xero create", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: vi.fn(),
+    });
     global.fetch = fetchMock as typeof fetch;
     fetchMock.mockImplementation((input: RequestInfo | URL) => {
       const url = String(input);
@@ -193,5 +199,137 @@ describe("Admin member detail Xero create", () => {
 
     expect(screen.getByRole("dialog")).toBeTruthy();
     expect(screen.getByText("Create Xero Contact")).toBeTruthy();
+  });
+
+  it("keeps partial-unlink recovery mounted and focused through a successful refresh", async () => {
+    let memberReads = 0;
+    let resolveRefresh: ((value: Response) => void) | null = null;
+    fetchMock.mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/admin/members/member-1") {
+        memberReads += 1;
+        if (memberReads === 1) {
+          return Promise.resolve({
+            ok: true,
+            json: async () => adminMember({ xeroContactId: "contact-1" }),
+          });
+        }
+        return new Promise<Response>((resolve) => {
+          resolveRefresh = resolve;
+        });
+      }
+      if (url === "/api/admin/members/member-1/xero-unlink") {
+        return Promise.resolve({
+          ok: false,
+          status: 409,
+          json: async () => ({
+            code: "XERO_PARTIAL_SUCCESS",
+            error: "server copy",
+            recoveryKind: "CONTACT_UNLINKED",
+            xeroContactUnlinked: true,
+            subscriptionCleanupPending: true,
+            xeroPostProcessingPending: true,
+          }),
+        });
+      }
+      if (url === "/api/admin/members/member-1/credits") {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ balanceCents: 0, history: [], pendingRequests: [] }),
+        });
+      }
+      if (url === "/api/admin/xero/status") {
+        return Promise.resolve({ ok: true, json: async () => ({ connected: true, features: {} }) });
+      }
+      return Promise.reject(new Error(`Unexpected fetch: ${url}`));
+    });
+
+    await act(async () => {
+      render(
+        <Suspense fallback={<div>Loading route params...</div>}>
+          <MemberDetailPage params={Promise.resolve({ id: "member-1" })} />
+        </Suspense>,
+      );
+    });
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Unlink Xero Contact" }),
+    );
+
+    const alert = document.getElementById("member-xero-recovery-error");
+    await screen.findByText(/Refreshing the member now/i);
+    expect(alert).toBe(document.getElementById("member-xero-recovery-error"));
+    expect(alert).toHaveTextContent(/Xero link was removed/i);
+    expect(document.activeElement).toBe(alert);
+    expect(screen.getByText("Loading member details...")).toBeInTheDocument();
+
+    await act(async () => {
+      resolveRefresh?.({
+        ok: true,
+        json: async () => adminMember({ xeroContactId: null }),
+      } as Response);
+    });
+    await screen.findByText(/member was refreshed successfully/i);
+    expect(alert).toBe(document.getElementById("member-xero-recovery-error"));
+    expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
+  });
+
+  it("keeps partial-unlink recovery visible when the canonical refresh fails", async () => {
+    let memberReads = 0;
+    fetchMock.mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/admin/members/member-1") {
+        memberReads += 1;
+        return Promise.resolve(
+          memberReads === 1
+            ? {
+                ok: true,
+                json: async () => adminMember({ xeroContactId: "contact-1" }),
+              }
+            : { ok: false, status: 503, json: async () => ({}) },
+        );
+      }
+      if (url === "/api/admin/members/member-1/xero-unlink") {
+        return Promise.resolve({
+          ok: false,
+          status: 409,
+          json: async () => ({
+            code: "XERO_PARTIAL_SUCCESS",
+            error: "server copy",
+            recoveryKind: "CONTACT_UNLINKED",
+            xeroContactUnlinked: true,
+            subscriptionCleanupPending: true,
+            xeroPostProcessingPending: true,
+          }),
+        });
+      }
+      if (url === "/api/admin/members/member-1/credits") {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ balanceCents: 0, history: [], pendingRequests: [] }),
+        });
+      }
+      if (url === "/api/admin/xero/status") {
+        return Promise.resolve({ ok: true, json: async () => ({ connected: true, features: {} }) });
+      }
+      return Promise.reject(new Error(`Unexpected fetch: ${url}`));
+    });
+
+    await act(async () => {
+      render(
+        <Suspense fallback={<div>Loading route params...</div>}>
+          <MemberDetailPage params={Promise.resolve({ id: "member-1" })} />
+        </Suspense>,
+      );
+    });
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Unlink Xero Contact" }),
+    );
+
+    const alert = document.getElementById("member-xero-recovery-error");
+    await screen.findByText(/member could not be refreshed/i);
+    expect(alert).toBeInTheDocument();
+    expect(alert).toHaveTextContent(/warning remains active/i);
+    expect(screen.getByText("Failed to load member")).toBeInTheDocument();
+    expect(document.activeElement).toBe(alert);
   });
 });

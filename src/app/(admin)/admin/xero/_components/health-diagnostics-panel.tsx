@@ -10,6 +10,14 @@ import { buildHrefWithReturnTo } from "@/lib/internal-return-path"
 import { buildXeroContactUrl } from "@/lib/xero-links"
 import { formatAgeTierName } from "@/lib/use-age-tier-options"
 import { formatNZDate, formatNZDateTime, formatNZTime } from "@/lib/nzst-date"
+import {
+  AdminMemberXeroActionError,
+  unlinkMemberXeroContact,
+} from "@/lib/admin-member-xero-actions"
+import {
+  getXeroPartialSuccessGuidance,
+  isXeroPartialSuccessRecovery,
+} from "@/lib/xero-partial-success"
 import { fetchJson, postJson } from "./api"
 import {
   BudgetStatusChip,
@@ -208,7 +216,7 @@ export function HealthAndDiagnosticsPanels({
     setLinkError("")
     onMessage("")
     try {
-      await postJson<{ message?: string }>(`/api/admin/members/${memberId}/xero-unlink`, undefined, "Failed to unlink member from Xero")
+      await unlinkMemberXeroContact(memberId)
       onMessage("Member unlinked from Xero. Open the member record to relink the correct contact.")
       await Promise.all([
         fetchHealth(),
@@ -216,6 +224,57 @@ export function HealthAndDiagnosticsPanels({
         groupMismatches ? fetchGroupMismatches() : Promise.resolve(),
       ])
     } catch (err) {
+      if (
+        err instanceof AdminMemberXeroActionError &&
+        isXeroPartialSuccessRecovery(err.recovery) &&
+        err.recovery.xeroContactUnlinked
+      ) {
+        const guidance = getXeroPartialSuccessGuidance(err.recovery)
+        setLinkMismatches((current) =>
+          current
+            ? {
+                ...current,
+                count: Math.max(0, current.count - 1),
+                mismatches: current.mismatches.filter(
+                  (mismatch) => mismatch.memberId !== memberId,
+                ),
+              }
+            : current,
+        )
+        setLinkError(`${guidance} Refreshing Xero diagnostics now...`)
+        try {
+          const [nextHealth, nextLinks, nextGroups] = await Promise.all([
+            fetchJson<XeroHealthSnapshot>(
+              "/api/admin/xero/health",
+              undefined,
+              "Failed to refresh Xero health",
+            ),
+            fetchJson<ContactLinkMismatchResponse>(
+              "/api/admin/xero/contact-link-mismatches?limit=200",
+              undefined,
+              "Failed to refresh contact link mismatches",
+            ),
+            groupMismatches
+              ? fetchJson<ContactGroupMismatchResponse>(
+                  "/api/admin/xero/contact-group-mismatches?limit=200",
+                  undefined,
+                  "Failed to refresh contact group mismatches",
+                )
+              : Promise.resolve(null),
+          ])
+          setHealth(nextHealth)
+          setLinkMismatches(nextLinks)
+          if (nextGroups) setGroupMismatches(nextGroups)
+          setLinkError(
+            `${guidance} Diagnostics were refreshed; check the member before taking another Xero action.`,
+          )
+        } catch {
+          setLinkError(
+            `${guidance} Diagnostics could not be refreshed. This warning remains active; reload before taking another Xero action.`,
+          )
+        }
+        return
+      }
       setLinkError(err instanceof Error ? err.message : "Failed to unlink member from Xero")
     } finally {
       setUnlinkingMemberId(null)

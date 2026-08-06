@@ -59,10 +59,13 @@ describe("ContactSyncPanel participant retry recovery (#2597)", () => {
           json: async () => ({
             error: retryMessage,
             code: "HOSTING_COVERAGE_PARTICIPANT_RETRY",
+            recoveryKind: "MEMBER_IMPORTED_AND_LINKED",
             memberImported: true,
             memberId: "member-1",
+            xeroContactId: "xero-1",
             xeroContactLinked: true,
             subscriptionRefreshPending: true,
+            xeroPostProcessingPending: true,
           }),
         } as Response
       }
@@ -109,8 +112,10 @@ describe("ContactSyncPanel participant retry recovery (#2597)", () => {
     )
     fireEvent.click(await screen.findByRole("button", { name: "Import" }))
 
-    await waitFor(() => expect(alert).toHaveTextContent(retryMessage))
-    expect(alert).toHaveTextContent(/member was created and linked to Xero/i)
+    await waitFor(() =>
+      expect(alert).toHaveTextContent(/member was imported and linked to Xero/i),
+    )
+    expect(alert).toHaveTextContent(/member was imported and linked to Xero/i)
     expect(alert).toHaveTextContent(/Do not import this contact again/i)
     expect(document.activeElement).toBe(alert)
     expect(scrollIntoView).toHaveBeenCalledWith({

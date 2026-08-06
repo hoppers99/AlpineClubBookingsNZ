@@ -61,8 +61,11 @@ vi.mock("@/lib/logger", () => ({
   default: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
 }));
 
-import { createXeroContactForMember } from "@/lib/xero-contacts";
-import { XeroContactValidationError } from "@/lib/xero-contacts";
+import {
+  createXeroContactForMember,
+  XeroContactCreatePartialSuccessError,
+  XeroContactValidationError,
+} from "@/lib/xero-contacts";
 import { buildXeroIdempotencyKey } from "@/lib/xero-sync";
 
 const SPARSE_MEMBER = {
@@ -261,6 +264,47 @@ describe("createXeroContactForMember payload hygiene (#2089)", () => {
       "name",
       "phones",
     ]);
+  });
+
+  it("reports provider-created when the local member link fails", async () => {
+    primeHappyPath(SPARSE_MEMBER);
+    const linkFailure = new Error("private database detail");
+    mocks.transaction.mockRejectedValue(linkFailure);
+
+    const error = await createXeroContactForMember("member-1").catch(
+      (caught: unknown) => caught,
+    );
+
+    expect(error).toBeInstanceOf(XeroContactCreatePartialSuccessError);
+    expect(error).toMatchObject({
+      message: "Xero contact creation completed only in part",
+      phase: "PROVIDER_CONTACT_CREATED",
+      xeroContactId: "contact-new",
+      originalError: linkFailure,
+    });
+    expect(mocks.completeXeroSyncOperation).not.toHaveBeenCalled();
+  });
+
+  it("reports local-link-committed when operation close fails post-commit", async () => {
+    primeHappyPath(SPARSE_MEMBER);
+    const completionFailure = new Error("private operation detail");
+    mocks.completeXeroSyncOperation.mockRejectedValue(completionFailure);
+
+    const error = await createXeroContactForMember("member-1").catch(
+      (caught: unknown) => caught,
+    );
+
+    expect(error).toBeInstanceOf(XeroContactCreatePartialSuccessError);
+    expect(error).toMatchObject({
+      message: "Xero contact creation completed only in part",
+      phase: "LOCAL_MEMBER_LINK_COMMITTED",
+      xeroContactId: "contact-new",
+      originalError: completionFailure,
+    });
+    expect(mocks.txMemberUpdate).toHaveBeenCalledWith({
+      where: { id: "member-1" },
+      data: { xeroContactId: "contact-new" },
+    });
   });
 
   it("rejects a member missing email before any Xero call", async () => {

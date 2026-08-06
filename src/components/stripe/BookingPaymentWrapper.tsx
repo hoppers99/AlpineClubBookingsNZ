@@ -8,6 +8,8 @@ import PaymentForm from "./PaymentForm";
 import SetupForm from "./SetupForm";
 import { FocusedActionError } from "@/components/focused-action-error";
 import {
+  EXISTING_CARD_TRANSACTION_STATUS_UNCONFIRMED_MESSAGE,
+  isExistingCardTransactionStatusUnconfirmed,
   isPaymentReceivedStatusUnconfirmed,
   PAYMENT_RECEIVED_STATUS_UNCONFIRMED_MESSAGE,
 } from "@/lib/payment-recovery-contract";
@@ -104,6 +106,23 @@ export default function BookingPaymentWrapper({
         if (!response.ok) {
           if (
             response.status === 409 &&
+            data.status === "CANCELLED" &&
+            typeof data.refunded === "boolean"
+          ) {
+            setRecoveryHeading(
+              data.refunded
+                ? "Booking cancelled - payment refunded"
+                : "Booking cancelled - refund needs attention",
+            );
+            setInitRecoveryError(
+              data.refunded
+                ? "The booking was cancelled because lodge capacity was no longer available, and the card payment was refunded. Reload the booking to see its current status. Do not try another payment."
+                : "The booking was cancelled because lodge capacity was no longer available, but the refund could not be confirmed. Do not try another payment. Reload the booking and contact the lodge administrator to check the refund.",
+            );
+            return;
+          }
+          if (
+            response.status === 409 &&
             data.code === "HOSTING_COVERAGE_PARTICIPANT_RETRY" &&
             data.paymentReceived === true &&
             data.finalisationPending === true
@@ -121,6 +140,16 @@ export default function BookingPaymentWrapper({
             setRecoveryHeading("Payment received - check booking status");
             setInitRecoveryError(
               PAYMENT_RECEIVED_STATUS_UNCONFIRMED_MESSAGE,
+            );
+            return;
+          }
+          if (
+            response.status === 409 &&
+            isExistingCardTransactionStatusUnconfirmed(data)
+          ) {
+            setRecoveryHeading("Card transaction found - check payment status");
+            setInitRecoveryError(
+              EXISTING_CARD_TRANSACTION_STATUS_UNCONFIRMED_MESSAGE,
             );
             return;
           }

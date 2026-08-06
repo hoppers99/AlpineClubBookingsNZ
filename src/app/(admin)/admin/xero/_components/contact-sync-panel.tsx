@@ -9,6 +9,11 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { fetchJson, postJson, XERO_ACTION_NETWORK_ERROR, type ActionResponse } from "./api"
 import { SectionCard, type ToggleSection } from "./shared"
 import type { ForceSyncBookingOption, ForceSyncMemberOption, ForceSyncXeroContactOption, SyncResult } from "./types"
+import {
+  getXeroPartialSuccessGuidance,
+  isXeroPartialSuccessRecovery,
+  type XeroPartialSuccessRecovery,
+} from "@/lib/xero-partial-success"
 
 type ForceSyncType = "CONTACT" | "INVOICE" | "MEMBERSHIP"
 
@@ -231,28 +236,32 @@ export function ContactSyncPanel({
       } catch {
         throw new Error(XERO_ACTION_NETWORK_ERROR)
       }
-      const data = (await response.json().catch(() => ({}))) as ActionResponse & {
+      const data = (await response.json().catch(() => ({}))) as ActionResponse & XeroPartialSuccessRecovery & {
         error?: string
         memberImported?: boolean
         xeroContactLinked?: boolean
         subscriptionRefreshPending?: boolean
       }
       if (!response.ok) {
-        if (data.memberImported && data.memberId) {
+        if (
+          isXeroPartialSuccessRecovery(data) &&
+          data.memberImported &&
+          data.memberId
+        ) {
           setSelectedMember({
             id: data.memberId,
             firstName: contact.firstName || contact.name,
             lastName: contact.lastName || "",
             email: contact.email ?? "",
             active: true,
-            xeroContactId: data.xeroContactLinked ? contact.contactId : null,
+            xeroContactId: data.xeroContactId ?? contact.contactId,
           })
           setMemberSearch("")
           setMemberResults([])
           setXeroContactResults([])
           onRefreshDiagnostics()
           throw new Error(
-            `${data.error || "The import could not be completed."} The member was created${data.xeroContactLinked ? " and linked to Xero" : ""}, but subscription history still needs repair. Do not import this contact again; reload, open the member record, and retry the Member Status Repair Backfill.`,
+            `${getXeroPartialSuccessGuidance(data)} Xero diagnostics are being refreshed; open the member record and check its current state before taking another action.`,
           )
         }
         throw new Error(data.error || "Failed to import Xero contact")

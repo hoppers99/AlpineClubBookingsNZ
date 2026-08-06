@@ -18,6 +18,10 @@ import { buildXeroContactUrl } from "@/lib/xero-links";
 import { getXeroOrgShortCode } from "@/lib/xero-link-short-code";
 import { upsertXeroObjectLink } from "@/lib/xero-sync";
 import { getSeasonYear } from "@/lib/utils";
+import {
+  linkedContactRecovery,
+  xeroPartialSuccessBody,
+} from "@/lib/xero-partial-success";
 
 const linkSchema = z.object({
   xeroContactId: z.string().min(1),
@@ -47,6 +51,8 @@ export async function POST(
   }
 
   let body: unknown;
+  let memberLinkCommitted = false;
+  let subscriptionRefreshPending = false;
   try {
     body = await req.json();
   } catch {
@@ -93,6 +99,8 @@ export async function POST(
       where: { id },
       data: { xeroContactId: parsed.data.xeroContactId },
     });
+    memberLinkCommitted = true;
+    subscriptionRefreshPending = true;
     await upsertXeroObjectLink({
       localModel: "Member",
       localId: id,
@@ -122,6 +130,8 @@ export async function POST(
           forceRefreshOnlineInvoiceUrl: true,
         });
 
+      subscriptionRefreshPending = subscriptionSync.errors.length > 0;
+
       if (subscriptionSync.errors.length > 0) {
         warning =
           "Member linked, but subscription history refresh did not complete for every season. Run the Member Status Repair Backfill to retry.";
@@ -141,6 +151,7 @@ export async function POST(
       }
       warning =
         "Member linked, but subscription history refresh did not complete. Run the Member Status Repair Backfill to retry.";
+      subscriptionRefreshPending = true;
       logger.warn(
         {
           err: historyError,
@@ -187,11 +198,26 @@ export async function POST(
       ...(warning ? { warning } : {}),
     });
   } catch (err) {
-    const hostingRetry = hostingCoverageParticipantRetryResponse(err, {
-      xeroLinkMayHaveChanged: true,
-      subscriptionRefreshPending: true,
-    });
+    const recovery = memberLinkCommitted
+      ? linkedContactRecovery(
+          parsed.data.xeroContactId,
+          subscriptionRefreshPending,
+        )
+      : null;
+    const hostingRetry = hostingCoverageParticipantRetryResponse(
+      err,
+      recovery ? { ...recovery } : undefined,
+    );
     if (hostingRetry) return hostingRetry;
+    if (recovery) {
+      logger.error(
+        { err, memberId: id, recoveryKind: recovery.recoveryKind },
+        "Xero contact link completed only in part",
+      );
+      return NextResponse.json(xeroPartialSuccessBody(recovery), {
+        status: 409,
+      });
+    }
     const xeroError = getXeroApiErrorInfo(err, "Failed to link to Xero contact");
     if (!xeroError.handled) {
       logger.error(

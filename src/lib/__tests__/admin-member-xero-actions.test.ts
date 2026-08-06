@@ -82,10 +82,12 @@ describe("linkMemberXeroContact", () => {
       jsonResponse(
         {
           error: "retry safely",
+          recoveryKind: "CONTACT_LINKED",
           xeroLinkMayHaveChanged: true,
           xeroContactLinked: true,
           xeroContactId: "contact_1",
           subscriptionRefreshPending: true,
+          xeroPostProcessingPending: true,
         },
         { ok: false, status: 409 },
       ),
@@ -97,11 +99,12 @@ describe("linkMemberXeroContact", () => {
 
     expect(error).toBeInstanceOf(AdminMemberXeroActionError);
     expect((error as AdminMemberXeroActionError).recovery).toEqual({
+      recoveryKind: "CONTACT_LINKED",
       xeroLinkMayHaveChanged: true,
-      xeroContactCreated: undefined,
       xeroContactLinked: true,
       xeroContactId: "contact_1",
       subscriptionRefreshPending: true,
+      xeroPostProcessingPending: true,
     });
   });
 });
@@ -123,6 +126,33 @@ describe("unlinkMemberXeroContact", () => {
     );
 
     await expect(unlinkMemberXeroContact("mem_1")).rejects.toThrow("Member not found");
+  });
+
+  it("preserves committed-unlink cleanup recovery metadata", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse(
+        {
+          error: "retry safely",
+          recoveryKind: "CONTACT_UNLINKED",
+          xeroContactUnlinked: true,
+          subscriptionCleanupPending: true,
+          xeroPostProcessingPending: true,
+        },
+        { ok: false, status: 409 },
+      ),
+    );
+
+    const error = await unlinkMemberXeroContact("mem_1").catch(
+      (caught: unknown) => caught,
+    );
+
+    expect(error).toBeInstanceOf(AdminMemberXeroActionError);
+    expect((error as AdminMemberXeroActionError).recovery).toEqual({
+      recoveryKind: "CONTACT_UNLINKED",
+      xeroContactUnlinked: true,
+      subscriptionCleanupPending: true,
+      xeroPostProcessingPending: true,
+    });
   });
 });
 
@@ -187,10 +217,12 @@ describe("pushMemberToXero", () => {
       jsonResponse(
         {
           error: "retry safely",
+          recoveryKind: "CONTACT_CREATED_AND_LINKED",
           xeroContactCreated: true,
           xeroContactLinked: true,
           xeroContactId: "contact_new",
           subscriptionRefreshPending: true,
+          xeroPostProcessingPending: true,
         },
         { ok: false, status: 409 },
       ),
@@ -202,12 +234,42 @@ describe("pushMemberToXero", () => {
 
     expect(error).toBeInstanceOf(AdminMemberXeroActionError);
     expect((error as AdminMemberXeroActionError).recovery).toEqual({
-      xeroLinkMayHaveChanged: undefined,
+      recoveryKind: "CONTACT_CREATED_AND_LINKED",
       xeroContactCreated: true,
       xeroContactLinked: true,
       xeroContactId: "contact_new",
       subscriptionRefreshPending: true,
+      xeroPostProcessingPending: true,
     });
+  });
+
+  it("preserves provider-created without inventing a local link", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse(
+        {
+          error: "retry safely",
+          recoveryKind: "CONTACT_CREATED_LINK_UNCONFIRMED",
+          xeroContactCreated: true,
+          xeroContactId: "contact_new",
+          xeroPostProcessingPending: true,
+        },
+        { ok: false, status: 409 },
+      ),
+    );
+
+    const error = await pushMemberToXero("mem_1", {
+      createEntranceFeeInvoice: false,
+    }).catch((caught: unknown) => caught);
+
+    expect((error as AdminMemberXeroActionError).recovery).toEqual({
+      recoveryKind: "CONTACT_CREATED_LINK_UNCONFIRMED",
+      xeroContactCreated: true,
+      xeroContactId: "contact_new",
+      xeroPostProcessingPending: true,
+    });
+    expect(
+      (error as AdminMemberXeroActionError).recovery,
+    ).not.toHaveProperty("xeroContactLinked");
   });
 
   it("passes forceCreate through and includes the skip-reason narration fields", async () => {

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 
 /**
@@ -15,12 +15,14 @@ export function FocusedActionError({
   error,
   heading,
   attentionKey,
+  action,
   className,
 }: {
   id: string;
   error: string;
   heading?: string;
   attentionKey?: number;
+  action?: ReactNode;
   className?: string;
 }) {
   const errorRef = useRef<HTMLDivElement>(null);
@@ -50,14 +52,17 @@ export function FocusedActionError({
       }
     >
       {error ? (
-        heading ? (
+        <>
+          {heading ? (
           <>
             <p className="font-medium">{heading}</p>
             <p className="mt-1">{error}</p>
           </>
-        ) : (
-          error
-        )
+          ) : (
+            error
+          )}
+          {action ? <div className="mt-3">{action}</div> : null}
+        </>
       ) : null}
     </div>
   );

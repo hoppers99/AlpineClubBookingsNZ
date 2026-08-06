@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useRef, useState, use } from "react";
+import { useCallback, useEffect, useRef, useState, use } from "react";
 import { useSession } from "next-auth/react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
+import { FocusedActionError } from "@/components/focused-action-error";
 import { BackLink } from "@/components/admin/back-link";
 import { AdminViewOnlySectionBanner } from "@/components/admin/view-only-action";
 import { FamilyGroupEditorDialog } from "@/components/admin/family-group-editor-dialog";
@@ -79,6 +80,11 @@ import { useMemberXero } from "./_hooks/use-member-xero";
 import { useInheritEmailSearch } from "./_hooks/use-inherit-email-search";
 import { useMemberGroupEdit } from "./_hooks/use-member-group-edit";
 import type { MemberDetail } from "./_types";
+import type { AdminMemberXeroActionError } from "@/lib/admin-member-xero-actions";
+import {
+  getXeroPartialSuccessGuidance,
+  isXeroPartialSuccessRecovery,
+} from "@/lib/xero-partial-success";
 
 // Re-exports preserve the existing import paths used by tests and other callers
 // that previously imported these helpers from the page route.
@@ -142,11 +148,14 @@ export default function MemberDetailPage({
   const [pageError, setPageError] = useState("");
   const [relationshipError, setRelationshipError] = useState("");
   const [xeroError, setXeroError] = useState("");
+  const [xeroRecoveryError, setXeroRecoveryError] = useState("");
+  const [xeroRecoveryGuidance, setXeroRecoveryGuidance] = useState("");
+  const [xeroRecoveryAttention, setXeroRecoveryAttention] = useState(0);
   const relationshipErrorRef = useRef<HTMLDivElement>(null);
   const xeroErrorRef = useRef<HTMLDivElement>(null);
   const { scrollToError } = useScrollToFeedback();
 
-  const fetchMember = async () => {
+  const fetchMemberWithResult = useCallback(async (): Promise<boolean> => {
     try {
       const res = await fetch(`/api/admin/members/${id}`);
       if (!res.ok) {
@@ -154,16 +163,49 @@ export default function MemberDetailPage({
           res.status === 404 ? "Member not found" : "Failed to load member",
         );
         setLoading(false);
-        return;
+        return false;
       }
       setMember(await res.json());
       setPageError("");
+      return true;
     } catch {
       setPageError("Failed to load member");
+      return false;
     } finally {
       setLoading(false);
     }
-  };
+  }, [id]);
+
+  const fetchMember = useCallback(async (): Promise<void> => {
+    await fetchMemberWithResult();
+  }, [fetchMemberWithResult]);
+
+  const refreshAfterXeroPartialSuccess = useCallback(
+    async (guidance: string) => {
+      setXeroRecoveryError(`${guidance} Refreshing the member now...`);
+      setXeroRecoveryAttention((value) => value + 1);
+      setLoading(true);
+      const refreshed = await fetchMemberWithResult();
+      setXeroRecoveryError(
+        refreshed
+          ? `${guidance} The member was refreshed successfully; check the current Xero link before taking another action.`
+          : `${guidance} The member could not be refreshed. This recovery warning remains active; use Try again or reload the page before taking another Xero action.`,
+      );
+      setXeroRecoveryAttention((value) => value + 1);
+    },
+    [fetchMemberWithResult],
+  );
+
+  const recoverXeroPartialSuccess = useCallback(
+    async (error: AdminMemberXeroActionError) => {
+      const guidance = isXeroPartialSuccessRecovery(error.recovery)
+        ? getXeroPartialSuccessGuidance(error.recovery)
+        : "A Xero action completed only in part. Do not repeat it until the member's current Xero status has been checked.";
+      setXeroRecoveryGuidance(guidance);
+      await refreshAfterXeroPartialSuccess(guidance);
+    },
+    [refreshAfterXeroPartialSuccess],
+  );
 
   // Dependent dialog state
   const {
@@ -311,7 +353,13 @@ export default function MemberDetailPage({
     handleXeroDecisionLink,
     openLinkXero,
     openCreateXero,
-  } = useMemberXero({ id, fetchMember, setLoading, setXeroError });
+  } = useMemberXero({
+    id,
+    fetchMember,
+    setLoading,
+    setXeroError,
+    onPartialSuccess: recoverXeroPartialSuccess,
+  });
 
   // Per-group inline edit state: each group unlocks and saves only its own
   // fields (the member PUT schema is fully partial).
@@ -427,8 +475,8 @@ export default function MemberDetailPage({
   ]);
 
   useEffect(() => {
-    fetchMember();
-  }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
+    void fetchMember();
+  }, [fetchMember]);
 
   // The refund-requests page deep-links to /admin/members/[id]#account-credit;
   // the anchor now lives inside the collapsed Finance group, so open it and
@@ -451,10 +499,35 @@ export default function MemberDetailPage({
     accessRoles: session?.user?.accessRoles ?? [],
   });
 
+  const xeroRecoveryAlert = (
+    <FocusedActionError
+      id="member-xero-recovery-error"
+      error={xeroRecoveryError}
+      attentionKey={xeroRecoveryAttention}
+      className="mb-6 scroll-mt-20"
+      action={
+        xeroRecoveryGuidance ? (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={loading}
+            onClick={() =>
+              void refreshAfterXeroPartialSuccess(xeroRecoveryGuidance)
+            }
+          >
+            {loading ? "Refreshing..." : "Try again"}
+          </Button>
+        ) : undefined
+      }
+    />
+  );
+
   if (loading) {
     return (
       <div>
         {viewOnlyBanner}
+        {xeroRecoveryAlert}
         <div className="py-12 text-center">
           <p className="text-sm text-muted-foreground">Loading member details...</p>
         </div>
@@ -465,6 +538,7 @@ export default function MemberDetailPage({
     return (
       <div>
         {viewOnlyBanner}
+        {xeroRecoveryAlert}
         <div className="space-y-4">
           <BackLink href={backHref} label={backLabel} />
           <div className="p-3 bg-danger-3 border border-danger-6 text-danger-11 rounded-md text-sm">
@@ -571,6 +645,7 @@ export default function MemberDetailPage({
   return (
     <div>
       {viewOnlyBanner}
+      {xeroRecoveryAlert}
       <div className="space-y-6">
       <MemberDetailHeader
         member={member}

@@ -6,6 +6,10 @@ import { logAudit } from "@/lib/audit";
 import logger from "@/lib/logger";
 import { flushMemberSubscriptionHistory } from "@/lib/xero";
 import { deactivateXeroObjectLinks } from "@/lib/xero-sync";
+import {
+  unlinkedContactRecovery,
+  xeroPartialSuccessBody,
+} from "@/lib/xero-partial-success";
 
 /**
  * POST /api/admin/members/[id]/xero-unlink
@@ -35,13 +39,18 @@ export async function POST(
   }
 
   const previousXeroContactId = member.xeroContactId;
+  let memberUnlinkCommitted = false;
+  let subscriptionRefreshPending = false;
 
   try {
     await prisma.member.update({
       where: { id },
       data: { xeroContactId: null },
     });
+    memberUnlinkCommitted = true;
+    subscriptionRefreshPending = true;
     const flushedSubscriptionHistory = await flushMemberSubscriptionHistory(id);
+    subscriptionRefreshPending = false;
     try {
       await deactivateXeroObjectLinks({
         localModel: "Member",
@@ -86,11 +95,23 @@ export async function POST(
         flushedSubscriptionHistory.deletedCount,
     });
   } catch (err) {
-    const hostingRetry = hostingCoverageParticipantRetryResponse(err, {
-      xeroLinkMayHaveChanged: true,
-      subscriptionRefreshPending: true,
-    });
+    const recovery = memberUnlinkCommitted
+      ? unlinkedContactRecovery(subscriptionRefreshPending)
+      : null;
+    const hostingRetry = hostingCoverageParticipantRetryResponse(
+      err,
+      recovery ? { ...recovery } : undefined,
+    );
     if (hostingRetry) return hostingRetry;
+    if (recovery) {
+      logger.error(
+        { err, memberId: id, recoveryKind: recovery.recoveryKind },
+        "Xero contact unlink completed only in part",
+      );
+      return NextResponse.json(xeroPartialSuccessBody(recovery), {
+        status: 409,
+      });
+    }
     logger.error({ err, memberId: id }, "Error unlinking member from Xero contact");
     return NextResponse.json({ error: "Failed to unlink from Xero contact" }, { status: 500 });
   }

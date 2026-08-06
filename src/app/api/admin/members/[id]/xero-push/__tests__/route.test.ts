@@ -22,6 +22,7 @@ const mockCreate = vi.fn();
 const mockFindPotential = vi.fn();
 const mockFlush = vi.fn();
 const mockSyncHistory = vi.fn();
+const mockLogAudit = vi.fn();
 // Fully stub the Xero barrel. XeroContactValidationError is defined HERE so the
 // route's `instanceof` check (which imports the same mocked class) matches when
 // the test rejects createXeroContactForMember with it.
@@ -36,7 +37,20 @@ vi.mock("@/lib/xero", () => {
       this.missingFields = missingFields;
     }
   }
+  class XeroContactCreatePartialSuccessError extends Error {
+    constructor(
+      readonly phase:
+        | "PROVIDER_CONTACT_CREATED"
+        | "LOCAL_MEMBER_LINK_COMMITTED",
+      readonly xeroContactId: string,
+      readonly originalError: unknown,
+    ) {
+      super("Xero contact creation completed only in part");
+      this.name = "XeroContactCreatePartialSuccessError";
+    }
+  }
   return {
+    XeroContactCreatePartialSuccessError,
     XeroContactValidationError,
     createXeroContactForMember: (...a: unknown[]) => mockCreate(...a),
     findPotentialXeroContactsForMember: (...a: unknown[]) => mockFindPotential(...a),
@@ -46,7 +60,9 @@ vi.mock("@/lib/xero", () => {
   };
 });
 
-vi.mock("@/lib/audit", () => ({ logAudit: vi.fn() }));
+vi.mock("@/lib/audit", () => ({
+  logAudit: (...args: unknown[]) => mockLogAudit(...args),
+}));
 vi.mock("@/lib/logger", () => ({
   default: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
 }));
@@ -68,7 +84,10 @@ vi.mock("@/lib/xero-operation-outbox", () => ({
 }));
 
 import { POST } from "@/app/api/admin/members/[id]/xero-push/route";
-import { XeroContactValidationError } from "@/lib/xero";
+import {
+  XeroContactCreatePartialSuccessError,
+  XeroContactValidationError,
+} from "@/lib/xero";
 import {
   HOSTING_COVERAGE_RETRY_CODE,
   HOSTING_COVERAGE_RETRY_MESSAGE,
@@ -200,8 +219,102 @@ describe("POST /api/admin/members/[id]/xero-push (#2089)", () => {
       xeroContactCreated: true,
       xeroContactLinked: true,
       xeroContactId: "contact-1",
+      recoveryKind: "CONTACT_CREATED_AND_LINKED",
       subscriptionRefreshPending: true,
+      xeroPostProcessingPending: true,
     });
     expect(mockCreate).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports provider-created without claiming a failed local link", async () => {
+    mockCreate.mockRejectedValue(
+      new XeroContactCreatePartialSuccessError(
+        "PROVIDER_CONTACT_CREATED",
+        "contact-provider-only",
+        new Error("private database detail"),
+      ),
+    );
+
+    const res = await POST(postReq(), { params });
+    const body = await res.json();
+
+    expect(res.status).toBe(409);
+    expect(body).toEqual({
+      code: "XERO_PARTIAL_SUCCESS",
+      error:
+        "A Xero contact was created, but its local member link could not be confirmed. Do not create another contact. Reload the member, search Xero for the contact, and link it if needed.",
+      recoveryKind: "CONTACT_CREATED_LINK_UNCONFIRMED",
+      xeroContactCreated: true,
+      xeroContactId: "contact-provider-only",
+      xeroPostProcessingPending: true,
+    });
+    expect(body).not.toHaveProperty("xeroContactLinked");
+    expect(JSON.stringify(body)).not.toContain("private database detail");
+    expect(mockFlush).not.toHaveBeenCalled();
+  });
+
+  it("reports a committed local link when helper bookkeeping fails", async () => {
+    mockCreate.mockRejectedValue(
+      new XeroContactCreatePartialSuccessError(
+        "LOCAL_MEMBER_LINK_COMMITTED",
+        "contact-linked",
+        new Error("private operation detail"),
+      ),
+    );
+
+    const res = await POST(postReq(), { params });
+    const body = await res.json();
+
+    expect(res.status).toBe(409);
+    expect(body).toEqual(
+      expect.objectContaining({
+        code: "XERO_PARTIAL_SUCCESS",
+        recoveryKind: "CONTACT_CREATED_AND_LINKED",
+        xeroContactCreated: true,
+        xeroContactLinked: true,
+        xeroContactId: "contact-linked",
+        subscriptionRefreshPending: true,
+        xeroPostProcessingPending: true,
+      }),
+    );
+    expect(JSON.stringify(body)).not.toContain("private operation detail");
+  });
+
+  it("preserves the linked fact when subscription cleanup fails after create", async () => {
+    mockCreate.mockResolvedValue("contact-linked");
+    mockFlush.mockRejectedValue(new Error("private cleanup detail"));
+
+    const res = await POST(postReq(), { params });
+    const body = await res.json();
+
+    expect(res.status).toBe(409);
+    expect(body).toEqual(
+      expect.objectContaining({
+        code: "XERO_PARTIAL_SUCCESS",
+        recoveryKind: "CONTACT_CREATED_AND_LINKED",
+        xeroContactLinked: true,
+        subscriptionRefreshPending: true,
+      }),
+    );
+    expect(JSON.stringify(body)).not.toContain("private cleanup detail");
+  });
+
+  it("does not claim subscription refresh pending after refresh succeeded", async () => {
+    mockCreate.mockResolvedValue("contact-linked");
+    mockLogAudit.mockRejectedValue(new Error("private audit detail"));
+
+    const res = await POST(postReq(), { params });
+    const body = await res.json();
+
+    expect(res.status).toBe(409);
+    expect(body).toEqual(
+      expect.objectContaining({
+        code: "XERO_PARTIAL_SUCCESS",
+        recoveryKind: "CONTACT_CREATED_AND_LINKED",
+        xeroContactLinked: true,
+      }),
+    );
+    expect(body).not.toHaveProperty("subscriptionRefreshPending");
+    expect(JSON.stringify(body)).not.toContain("private audit detail");
   });
 });

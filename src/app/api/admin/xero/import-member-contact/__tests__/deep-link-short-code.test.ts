@@ -27,6 +27,7 @@ const mocks = vi.hoisted(() => ({
   refreshXeroContactCachesFromContact: vi.fn(),
   syncMemberSubscriptionHistoryForLinkedContact: vi.fn(),
   ensureMemberAccessRolesFromCompatibilityFields: vi.fn(),
+  logAudit: vi.fn(),
 }));
 
 vi.mock("server-only", () => ({}));
@@ -40,7 +41,7 @@ vi.mock("@/lib/session-guards", () => ({
   }),
 }));
 
-vi.mock("@/lib/audit", () => ({ logAudit: vi.fn() }));
+vi.mock("@/lib/audit", () => ({ logAudit: mocks.logAudit }));
 
 vi.mock("@/lib/logger", () => ({
   default: { error: vi.fn(), info: vi.fn(), warn: vi.fn(), debug: vi.fn() },
@@ -198,7 +199,61 @@ describe("POST /api/admin/xero/import-member-contact deep links (#2314)", () => 
       memberImported: true,
       memberId: "mem_1",
       xeroContactLinked: true,
+      xeroContactId: CONTACT_ID,
+      recoveryKind: "MEMBER_IMPORTED_AND_LINKED",
       subscriptionRefreshPending: true,
+      xeroPostProcessingPending: true,
     });
+  });
+
+  it("preserves imported-and-linked facts when access-role setup fails", async () => {
+    mocks.ensureMemberAccessRolesFromCompatibilityFields.mockRejectedValueOnce(
+      new Error("private access-role detail"),
+    );
+
+    const response = await POST(request());
+    const body = await response.json();
+
+    expect(response.status).toBe(409);
+    expect(body).toEqual(
+      expect.objectContaining({
+        code: "XERO_PARTIAL_SUCCESS",
+        recoveryKind: "MEMBER_IMPORTED_AND_LINKED",
+        memberImported: true,
+        memberId: "mem_1",
+        xeroContactLinked: true,
+        xeroContactId: CONTACT_ID,
+        subscriptionRefreshPending: true,
+      }),
+    );
+    expect(JSON.stringify(body)).not.toContain("private access-role detail");
+    expect(mocks.upsertXeroObjectLink).not.toHaveBeenCalled();
+  });
+
+  it("preserves imported-and-linked facts when object-link setup fails", async () => {
+    mocks.upsertXeroObjectLink.mockRejectedValueOnce(
+      new Error("private object-link detail"),
+    );
+
+    const response = await POST(request());
+    const body = await response.json();
+
+    expect(response.status).toBe(409);
+    expect(body.recoveryKind).toBe("MEMBER_IMPORTED_AND_LINKED");
+    expect(body.xeroContactLinked).toBe(true);
+    expect(body.subscriptionRefreshPending).toBe(true);
+    expect(JSON.stringify(body)).not.toContain("private object-link detail");
+  });
+
+  it("does not claim refresh pending when only post-refresh audit fails", async () => {
+    mocks.logAudit.mockRejectedValueOnce(new Error("private audit detail"));
+
+    const response = await POST(request());
+    const body = await response.json();
+
+    expect(response.status).toBe(409);
+    expect(body.recoveryKind).toBe("MEMBER_IMPORTED_AND_LINKED");
+    expect(body).not.toHaveProperty("subscriptionRefreshPending");
+    expect(JSON.stringify(body)).not.toContain("private audit detail");
   });
 });

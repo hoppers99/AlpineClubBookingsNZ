@@ -59,6 +59,10 @@ import {
 } from "@/lib/admin-member-xero-actions";
 import { memberName } from "@/lib/member-serialization";
 import { formatValidationErrorResponse } from "@/lib/format-validation-errors";
+import {
+  getXeroPartialSuccessGuidance,
+  isXeroPartialSuccessRecovery,
+} from "@/lib/xero-partial-success";
 import type {
   Member,
   MemberForm,
@@ -93,6 +97,7 @@ interface MemberEditorDialogProps {
   onSaved: () => void;
   onSuccess: (message: string) => void;
   onWarning: (message: string) => void;
+  onRecoveryWarning?: (message: string) => Promise<void>;
 }
 
 interface MemberSaveResponse {
@@ -170,6 +175,7 @@ export function MemberEditorDialog({
   onSaved,
   onSuccess,
   onWarning,
+  onRecoveryWarning,
 }: MemberEditorDialogProps) {
   const roleOptions = useAccessRoleOptions();
   const [currentEditingMember, setCurrentEditingMember] =
@@ -233,6 +239,23 @@ export function MemberEditorDialog({
     onSuccess(message);
   };
 
+  const reportXeroPartialSuccess = async (
+    error: AdminMemberXeroActionError,
+  ) => {
+    const guidance = isXeroPartialSuccessRecovery(error.recovery)
+      ? getXeroPartialSuccessGuidance(error.recovery)
+      : "A Xero action completed only in part. Do not repeat it until the member's current Xero status has been checked.";
+    setXeroChoice("");
+    closePendingXeroCreateDecision();
+    onOpenChange(false);
+    if (onRecoveryWarning) {
+      await onRecoveryWarning(guidance);
+    } else {
+      onWarning(guidance);
+      onSaved();
+    }
+  };
+
   const handleXeroChoiceChange = (value: XeroChoice) => {
     setXeroChoice(value);
     setFormError("");
@@ -260,6 +283,18 @@ export function MemberEditorDialog({
       onDialogSuccess("Xero contact unlinked");
       onSaved();
     } catch (err) {
+      if (
+        err instanceof AdminMemberXeroActionError &&
+        err.recovery.xeroContactUnlinked
+      ) {
+        setCurrentEditingMember((member) =>
+          member
+            ? { ...member, xeroContactId: null, xeroContactGroups: [] }
+            : member,
+        );
+        await reportXeroPartialSuccess(err);
+        return;
+      }
       setFormError(
         err instanceof Error ? err.message : "Failed to unlink Xero contact",
       );
@@ -285,16 +320,12 @@ export function MemberEditorDialog({
     } catch (err) {
       if (
         err instanceof AdminMemberXeroActionError &&
-        err.recovery.xeroLinkMayHaveChanged
+        isXeroPartialSuccessRecovery(err.recovery)
       ) {
         setCurrentEditingMember((member) =>
           member ? { ...member, xeroContactId: contactId } : member,
         );
-        setXeroChoice("");
-        setFormError(
-          `${err.message} The Xero link may already have changed. Check the current contact before linking again, then run the Member Status Repair Backfill to repair subscription history.`,
-        );
-        onSaved();
+        await reportXeroPartialSuccess(err);
         return;
       }
       setFormError(
@@ -356,22 +387,19 @@ export function MemberEditorDialog({
     } catch (err) {
       if (
         err instanceof AdminMemberXeroActionError &&
-        err.recovery.xeroContactCreated &&
-        err.recovery.xeroContactLinked
+        err.recovery.xeroContactCreated
       ) {
-        setCurrentEditingMember((member) =>
-          member
+        if (err.recovery.xeroContactLinked) {
+          setCurrentEditingMember((member) =>
+            member
             ? {
                 ...member,
                 xeroContactId: err.recovery.xeroContactId ?? member.xeroContactId,
               }
-            : member,
-        );
-        setXeroChoice("");
-        setFormError(
-          `${err.message} The Xero contact was created and linked, but subscription history still needs repair. Do not create another contact; run the Member Status Repair Backfill.`,
-        );
-        onSaved();
+              : member,
+          );
+        }
+        await reportXeroPartialSuccess(err);
         return;
       }
       setFormError(
@@ -414,7 +442,7 @@ export function MemberEditorDialog({
     } catch (err) {
       if (
         err instanceof AdminMemberXeroActionError &&
-        err.recovery.xeroLinkMayHaveChanged
+        isXeroPartialSuccessRecovery(err.recovery)
       ) {
         if (currentEditingMember?.id === pendingXeroCreateDecision.memberId) {
           setCurrentEditingMember({
@@ -422,12 +450,7 @@ export function MemberEditorDialog({
             xeroContactId: pendingXeroDecisionContactId,
           });
         }
-        closePendingXeroCreateDecision();
-        setXeroChoice("");
-        setFormError(
-          `${err.message} The Xero link may already have changed. Check the current contact before linking again, then run the Member Status Repair Backfill to repair subscription history.`,
-        );
-        onSaved();
+        await reportXeroPartialSuccess(err);
         return;
       }
       setPendingXeroDecisionError(
@@ -482,22 +505,19 @@ export function MemberEditorDialog({
     } catch (err) {
       if (
         err instanceof AdminMemberXeroActionError &&
-        err.recovery.xeroContactCreated &&
-        err.recovery.xeroContactLinked
+        err.recovery.xeroContactCreated
       ) {
-        if (currentEditingMember?.id === pendingXeroCreateDecision.memberId) {
+        if (
+          err.recovery.xeroContactLinked &&
+          currentEditingMember?.id === pendingXeroCreateDecision.memberId
+        ) {
           setCurrentEditingMember({
             ...currentEditingMember,
             xeroContactId:
               err.recovery.xeroContactId ?? currentEditingMember.xeroContactId,
           });
         }
-        closePendingXeroCreateDecision();
-        setXeroChoice("");
-        setFormError(
-          `${err.message} The Xero contact was created and linked, but subscription history still needs repair. Do not create another contact; run the Member Status Repair Backfill.`,
-        );
-        onSaved();
+        await reportXeroPartialSuccess(err);
         return;
       }
       setPendingXeroDecisionError(
@@ -637,6 +657,7 @@ export function MemberEditorDialog({
       if (!res.ok) throw new Error(formatValidationErrorResponse(data).join("\n"));
 
       let warning = data.warning;
+      let xeroPartialRecovery: AdminMemberXeroActionError | null = null;
       let successMessage = currentEditingMember
         ? "Member updated"
         : "Member created";
@@ -647,9 +668,16 @@ export function MemberEditorDialog({
             await linkMemberXeroContact(data.id, selectedXeroContactId);
             successMessage = "Member created and linked to Xero";
           } catch (err) {
-            warning = `Member created, but Xero link failed: ${
-              err instanceof Error ? err.message : "Unknown error"
-            }`;
+            if (
+              err instanceof AdminMemberXeroActionError &&
+              isXeroPartialSuccessRecovery(err.recovery)
+            ) {
+              xeroPartialRecovery = err;
+            } else {
+              warning = `Member created, but Xero link failed: ${
+                err instanceof Error ? err.message : "Unknown error"
+              }`;
+            }
           }
         } else if (xeroChoice === "create") {
           try {
@@ -697,15 +725,26 @@ export function MemberEditorDialog({
                   : warning);
             }
           } catch (err) {
-            warning = `Member created, but Xero contact creation failed: ${
-              err instanceof Error ? err.message : "Unknown error"
-            }`;
+            if (
+              err instanceof AdminMemberXeroActionError &&
+              err.recovery.xeroContactCreated
+            ) {
+              xeroPartialRecovery = err;
+            } else {
+              warning = `Member created, but Xero contact creation failed: ${
+                err instanceof Error ? err.message : "Unknown error"
+              }`;
+            }
           }
         }
       }
 
       onOpenChange(false);
       onSuccess(successMessage);
+      if (xeroPartialRecovery) {
+        await reportXeroPartialSuccess(xeroPartialRecovery);
+        return;
+      }
       if (warning) onWarning(warning);
       onSaved();
     } catch (err) {

@@ -13,6 +13,7 @@
  * error display (formError / xeroError / xeroDecisionError etc.).
  */
 import type { XeroSearchResult } from "@/components/admin/xero-suggested-contact-card";
+import type { XeroPartialSuccessKind } from "@/lib/xero-partial-success";
 
 interface XeroEntranceFeeInvoicePushOptions {
   createEntranceFeeInvoice: boolean;
@@ -46,11 +47,17 @@ export interface XeroLinkResponse {
 }
 
 export interface XeroActionRecovery {
+  recoveryKind?: XeroPartialSuccessKind;
   xeroLinkMayHaveChanged?: boolean;
   xeroContactCreated?: boolean;
   xeroContactLinked?: boolean;
+  xeroContactUnlinked?: boolean;
   xeroContactId?: string;
+  memberImported?: boolean;
+  memberId?: string;
   subscriptionRefreshPending?: boolean;
+  subscriptionCleanupPending?: boolean;
+  xeroPostProcessingPending?: boolean;
 }
 
 export class AdminMemberXeroActionError extends Error {
@@ -87,16 +94,34 @@ async function readActionError(
       typeof data.error === "string" && data.error.length > 0
         ? data.error
         : fallback;
-    return new AdminMemberXeroActionError(message, {
-      xeroLinkMayHaveChanged: data.xeroLinkMayHaveChanged,
-      xeroContactCreated: data.xeroContactCreated,
-      xeroContactLinked: data.xeroContactLinked,
-      xeroContactId: data.xeroContactId,
-      subscriptionRefreshPending: data.subscriptionRefreshPending,
-    });
+    return new AdminMemberXeroActionError(message, readRecovery(data));
   } catch {
     return new AdminMemberXeroActionError(fallback);
   }
+}
+
+function readRecovery(data: XeroActionRecovery): XeroActionRecovery {
+  return {
+    ...(data.recoveryKind ? { recoveryKind: data.recoveryKind } : {}),
+    ...(data.xeroLinkMayHaveChanged
+      ? { xeroLinkMayHaveChanged: true }
+      : {}),
+    ...(data.xeroContactCreated ? { xeroContactCreated: true } : {}),
+    ...(data.xeroContactLinked ? { xeroContactLinked: true } : {}),
+    ...(data.xeroContactUnlinked ? { xeroContactUnlinked: true } : {}),
+    ...(data.xeroContactId ? { xeroContactId: data.xeroContactId } : {}),
+    ...(data.memberImported ? { memberImported: true } : {}),
+    ...(data.memberId ? { memberId: data.memberId } : {}),
+    ...(data.subscriptionRefreshPending
+      ? { subscriptionRefreshPending: true }
+      : {}),
+    ...(data.subscriptionCleanupPending
+      ? { subscriptionCleanupPending: true }
+      : {}),
+    ...(data.xeroPostProcessingPending
+      ? { xeroPostProcessingPending: true }
+      : {}),
+  };
 }
 
 /**
@@ -186,13 +211,7 @@ export async function pushMemberToXero(
       typeof data.error === "string" && data.error.length > 0
         ? data.error
         : fallback;
-    throw new AdminMemberXeroActionError(message, {
-      xeroLinkMayHaveChanged: data.xeroLinkMayHaveChanged,
-      xeroContactCreated: data.xeroContactCreated,
-      xeroContactLinked: data.xeroContactLinked,
-      xeroContactId: data.xeroContactId,
-      subscriptionRefreshPending: data.subscriptionRefreshPending,
-    });
+    throw new AdminMemberXeroActionError(message, readRecovery(data));
   }
 
   return { status: "created", data };

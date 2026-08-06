@@ -5,6 +5,7 @@ import { useSession } from "next-auth/react"
 import { isFullAdmin } from "@/lib/access-roles"
 import { Download, RefreshCw, Upload } from "lucide-react"
 import { Alert } from "@/components/ui/alert"
+import { FocusedActionError } from "@/components/focused-action-error"
 import { Button } from "@/components/ui/button"
 import { AdminPageHeader } from "@/components/admin/admin-page-header"
 import {
@@ -68,6 +69,8 @@ export default function MembersPage() {
   const [totalPages, setTotalPages] = useState(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState("")
+  const [xeroRecoveryError, setXeroRecoveryError] = useState("")
+  const [xeroRecoveryAttention, setXeroRecoveryAttention] = useState(0)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [createDialogOpen, setCreateDialogOpen] = useState(false)
   const [importDialogOpen, setImportDialogOpen] = useState(false)
@@ -93,7 +96,7 @@ export default function MembersPage() {
     if (error) scrollToError(errorRef)
   }, [error, scrollToError])
 
-  const fetchMembers = useCallback(async () => {
+  const fetchMembersWithResult = useCallback(async (): Promise<boolean> => {
     try {
       const params = buildMembersSearchParams()
       params.set("page", String(page))
@@ -106,12 +109,30 @@ export default function MembersPage() {
       setMembers(data.members)
       setTotal(data.total)
       setTotalPages(data.totalPages)
+      return true
     } catch {
       setError("Failed to load members")
+      return false
     } finally {
       setLoading(false)
     }
   }, [buildMembersSearchParams, page, pageSize, sortBy, sortDir])
+
+  const fetchMembers = useCallback(async (): Promise<void> => {
+    await fetchMembersWithResult()
+  }, [fetchMembersWithResult])
+
+  const showXeroRecovery = useCallback(async (guidance: string) => {
+    setXeroRecoveryError(`${guidance} Refreshing the member list now...`)
+    setXeroRecoveryAttention((value) => value + 1)
+    const refreshed = await fetchMembersWithResult()
+    setXeroRecoveryError(
+      refreshed
+        ? `${guidance} The member list was refreshed successfully; check the current Xero link before taking another action.`
+        : `${guidance} The member list could not be refreshed. This warning remains active; reload the page before taking another Xero action.`,
+    )
+    setXeroRecoveryAttention((value) => value + 1)
+  }, [fetchMembersWithResult])
 
   useEffect(() => {
     void fetchMembers()
@@ -343,6 +364,13 @@ export default function MembersPage() {
         }
       />
 
+      <FocusedActionError
+        id="members-xero-recovery-error"
+        error={xeroRecoveryError}
+        attentionKey={xeroRecoveryAttention}
+        className="scroll-mt-20"
+      />
+
       {error && (
         <Alert
           ref={errorRef}
@@ -416,6 +444,7 @@ export default function MembersPage() {
         onSaved={() => void fetchMembers()}
         onSuccess={showSuccess}
         onWarning={showWarning}
+        onRecoveryWarning={showXeroRecovery}
       />
       <MemberBulkDialog
         open={bulkDialogOpen}

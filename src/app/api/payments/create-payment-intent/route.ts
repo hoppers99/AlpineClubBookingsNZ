@@ -39,7 +39,10 @@ import {
 import { recordBookingEvent } from "@/lib/booking-events";
 import { sendBookingConfirmedEmail } from "@/lib/email";
 import { getProvisionalNonMemberChildSummary } from "@/lib/booking-split-summary";
-import { PAYMENT_RECEIVED_STATUS_UNCONFIRMED_BODY } from "@/lib/payment-recovery-contract";
+import {
+  EXISTING_CARD_TRANSACTION_STATUS_UNCONFIRMED_BODY,
+  PAYMENT_RECEIVED_STATUS_UNCONFIRMED_BODY,
+} from "@/lib/payment-recovery-contract";
 
 class PaymentIntentCapacityError extends Error {
   constructor() {
@@ -81,6 +84,7 @@ export async function POST(request: NextRequest) {
   // awaiting reconciliation. The outer retry mapper can then distinguish this
   // recovery seam from an ordinary pre-capture participant conflict.
   let receivedPaymentIntentId: string | null = null;
+  let succeededPaymentIntentObserved = false;
   try {
     const session = await auth();
     if (!session?.user?.id) {
@@ -525,6 +529,11 @@ export async function POST(request: NextRequest) {
       const existingIntent = await getPaymentIntent(booking.payment.stripePaymentIntentId);
 
       if (existingIntent.status === "succeeded") {
+        // Stripe has established a successful card transaction. Arm the
+        // no-retry recovery before the fallible local refund discriminator;
+        // until that lookup succeeds we cannot truthfully call it paid OR
+        // refunded.
+        succeededPaymentIntentObserved = true;
         // #1765 — a refunded PaymentIntent keeps status "succeeded" forever
         // (refunds hang off the charge and never move the intent), so at the
         // intent level a deliberately refunded payment is indistinguishable
@@ -730,6 +739,11 @@ export async function POST(request: NextRequest) {
             finalisationPending: true,
             paymentIntentId: receivedPaymentIntentId,
           }
+        : succeededPaymentIntentObserved
+          ? {
+              existingCardTransactionFound: true,
+              paymentStatusUnconfirmed: true,
+            }
         : undefined,
     );
     if (hostingRetry) return hostingRetry;
@@ -743,6 +757,12 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(PAYMENT_RECEIVED_STATUS_UNCONFIRMED_BODY, {
         status: 409,
       });
+    }
+    if (succeededPaymentIntentObserved) {
+      return NextResponse.json(
+        EXISTING_CARD_TRANSACTION_STATUS_UNCONFIRMED_BODY,
+        { status: 409 },
+      );
     }
     // The pay transaction's capacity refusal and its status-conflict bail both
     // carry an intentionally user-facing message; keep them (and their 409).

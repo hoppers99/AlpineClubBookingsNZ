@@ -19,6 +19,10 @@ import {
   syncMemberSubscriptionHistoryForLinkedContact,
 } from "@/lib/xero";
 import { getXeroApiErrorInfo } from "@/lib/xero-api-errors";
+import {
+  importedMemberRecovery,
+  xeroPartialSuccessBody,
+} from "@/lib/xero-partial-success";
 
 const importMemberContactSchema = z.object({
   xeroContactId: z.string().trim().min(1),
@@ -84,7 +88,9 @@ export async function POST(request: NextRequest) {
 
   const { xeroContactId } = parsed.data;
   let importedMemberId: string | null = null;
+  let importedXeroContactId: string | null = null;
   let contactLinked = false;
+  let subscriptionRefreshPending = false;
 
   try {
     const existingLink = await prisma.member.findFirst({
@@ -198,6 +204,9 @@ export async function POST(request: NextRequest) {
       },
     });
     importedMemberId = member.id;
+    importedXeroContactId = member.xeroContactId;
+    contactLinked = Boolean(member.xeroContactId);
+    subscriptionRefreshPending = true;
     await ensureMemberAccessRolesFromCompatibilityFields(prisma, {
       memberId: member.id,
       role: "USER",
@@ -234,6 +243,7 @@ export async function POST(request: NextRequest) {
       const subscriptionSync = await syncMemberSubscriptionHistoryForLinkedContact(member.id, {
         forceRefreshOnlineInvoiceUrl: true,
       });
+      subscriptionRefreshPending = subscriptionSync.errors.length > 0;
       if (subscriptionSync.errors.length > 0) {
         warning =
           "Member imported, but subscription history refresh did not complete for every season. Run the Member Status Repair Backfill to retry.";
@@ -250,6 +260,7 @@ export async function POST(request: NextRequest) {
       if (isHostingCoverageParticipantRetry(historyError)) throw historyError;
       warning =
         "Member imported, but subscription history refresh did not complete. Run the Member Status Repair Backfill to retry.";
+      subscriptionRefreshPending = true;
       logger.warn(
         { err: historyError, memberId: member.id, xeroContactId: cachedContact.contactId },
         "Failed to refresh member subscription history after Xero contact import"
@@ -291,18 +302,32 @@ export async function POST(request: NextRequest) {
       { status: 201 }
     );
   } catch (err) {
+    const recovery =
+      importedMemberId && importedXeroContactId && contactLinked
+        ? importedMemberRecovery(
+            importedMemberId,
+            importedXeroContactId,
+            subscriptionRefreshPending,
+          )
+        : null;
     const hostingRetry = hostingCoverageParticipantRetryResponse(
       err,
-      importedMemberId
-        ? {
-            memberImported: true,
-            memberId: importedMemberId,
-            xeroContactLinked: contactLinked,
-            subscriptionRefreshPending: true,
-          }
-        : undefined,
+      recovery ? { ...recovery } : undefined,
     );
     if (hostingRetry) return hostingRetry;
+    if (recovery) {
+      logger.error(
+        {
+          err,
+          memberId: importedMemberId,
+          recoveryKind: recovery.recoveryKind,
+        },
+        "Xero contact import completed only in part",
+      );
+      return NextResponse.json(xeroPartialSuccessBody(recovery), {
+        status: 409,
+      });
+    }
     const xeroError = getXeroApiErrorInfo(err, "Failed to import Xero contact as member");
     if (!xeroError.handled) {
       logger.error(

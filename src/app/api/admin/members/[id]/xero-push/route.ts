@@ -8,6 +8,7 @@ import {
   findPotentialXeroContactsForMember,
   flushMemberSubscriptionHistory,
   syncMemberSubscriptionHistoryForLinkedContact,
+  XeroContactCreatePartialSuccessError,
   XeroContactValidationError,
 } from "@/lib/xero";
 import { logAudit } from "@/lib/audit";
@@ -21,6 +22,10 @@ import {
   enqueueXeroEntranceFeeInvoiceOperation,
   processQueuedXeroOutboxOperations,
 } from "@/lib/xero-operation-outbox";
+import {
+  createdContactRecovery,
+  xeroPartialSuccessBody,
+} from "@/lib/xero-partial-success";
 
 const pushSchema = z.object({
   createEntranceFeeInvoice: z.boolean().optional().default(false),
@@ -69,6 +74,7 @@ export async function POST(
   }
 
   let createdXeroContactId: string | null = null;
+  let subscriptionRefreshPending = false;
   try {
     let body: unknown = {};
     const rawBody = await req.text();
@@ -115,11 +121,12 @@ export async function POST(
       }
     }
 
-    const flushedSubscriptionHistory = await flushMemberSubscriptionHistory(id);
     const xeroContactId = await createXeroContactForMember(id, {
       createdByMemberId: session.user.id,
     });
     createdXeroContactId = xeroContactId;
+    subscriptionRefreshPending = true;
+    const flushedSubscriptionHistory = await flushMemberSubscriptionHistory(id);
 
     let entranceFeeInvoiceQueued = false;
     let entranceFeeInvoiceMessage: string | undefined;
@@ -138,6 +145,8 @@ export async function POST(
           seasonYears: seasonYearsToRefresh,
           forceRefreshOnlineInvoiceUrl: true,
         });
+
+      subscriptionRefreshPending = subscriptionSync.errors.length > 0;
 
       if (subscriptionSync.errors.length > 0) {
         warning =
@@ -158,6 +167,7 @@ export async function POST(
       }
       warning =
         "Xero contact created, but subscription history refresh did not complete. Run the Member Status Repair Backfill to retry.";
+      subscriptionRefreshPending = true;
       logger.warn(
         {
           err: historyErr,
@@ -272,18 +282,36 @@ export async function POST(
       ...(warning ? { warning } : {}),
     });
   } catch (err) {
+    const helperPartial =
+      err instanceof XeroContactCreatePartialSuccessError ? err : null;
+    const recovery = helperPartial
+      ? createdContactRecovery(
+          helperPartial.xeroContactId,
+          helperPartial.phase === "LOCAL_MEMBER_LINK_COMMITTED",
+          helperPartial.phase === "LOCAL_MEMBER_LINK_COMMITTED",
+        )
+      : createdXeroContactId
+        ? createdContactRecovery(
+            createdXeroContactId,
+            true,
+            subscriptionRefreshPending,
+          )
+        : null;
+    const sourceError = helperPartial?.originalError ?? err;
     const hostingRetry = hostingCoverageParticipantRetryResponse(
-      err,
-      createdXeroContactId
-        ? {
-            xeroContactCreated: true,
-            xeroContactLinked: true,
-            xeroContactId: createdXeroContactId,
-            subscriptionRefreshPending: true,
-          }
-        : undefined,
+      sourceError,
+      recovery ? { ...recovery } : undefined,
     );
     if (hostingRetry) return hostingRetry;
+    if (recovery) {
+      logger.error(
+        { err: sourceError, memberId: id, recoveryKind: recovery.recoveryKind },
+        "Xero contact creation completed only in part",
+      );
+      return NextResponse.json(xeroPartialSuccessBody(recovery), {
+        status: 409,
+      });
+    }
     if (err instanceof XeroContactValidationError) {
       return NextResponse.json(
         {

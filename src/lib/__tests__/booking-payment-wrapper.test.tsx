@@ -6,7 +6,10 @@ import { useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as Sentry from "@sentry/nextjs";
 import BookingPaymentWrapper from "@/components/stripe/BookingPaymentWrapper";
-import { PAYMENT_RECEIVED_STATUS_UNCONFIRMED_MESSAGE } from "@/lib/payment-recovery-contract";
+import {
+  EXISTING_CARD_TRANSACTION_STATUS_UNCONFIRMED_MESSAGE,
+  PAYMENT_RECEIVED_STATUS_UNCONFIRMED_MESSAGE,
+} from "@/lib/payment-recovery-contract";
 
 const fetchMock = vi.fn();
 const scrollIntoView = vi.fn();
@@ -262,6 +265,84 @@ describe("BookingPaymentWrapper", () => {
     expect(alert).not.toHaveTextContent("Payment received - check booking status");
     consoleErrorSpy.mockRestore();
   });
+
+  it("suppresses payment without claiming receipt when only Stripe success is known", async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: false,
+      status: 409,
+      json: async () => ({
+        code: "EXISTING_CARD_TRANSACTION_STATUS_UNCONFIRMED",
+        error: "private refund lookup detail",
+        existingCardTransactionFound: true,
+        paymentStatusUnconfirmed: true,
+      }),
+    });
+
+    render(
+      <BookingPaymentWrapper
+        bookingId="booking-1"
+        amountCents={12500}
+        paymentMode="payment"
+        returnUrl="http://localhost/bookings/booking-1"
+        onPaymentComplete={vi.fn()}
+      />,
+    );
+
+    const alert = screen.getByRole("alert", { hidden: true });
+    await waitFor(() =>
+      expect(alert).toHaveTextContent(
+        "Card transaction found - check payment status",
+      ),
+    );
+    expect(alert).toHaveTextContent(
+      EXISTING_CARD_TRANSACTION_STATUS_UNCONFIRMED_MESSAGE,
+    );
+    expect(alert).not.toHaveTextContent("private refund lookup detail");
+    expect(alert).not.toHaveTextContent("Your card payment was received");
+    expect(screen.queryByText("payment-form")).toBeNull();
+    await waitFor(() => expect(document.activeElement).toBe(alert));
+  });
+
+  it.each([
+    [true, "Booking cancelled - payment refunded", /card payment was refunded/i],
+    [
+      false,
+      "Booking cancelled - refund needs attention",
+      /refund could not be confirmed/i,
+    ],
+  ])(
+    "suppresses payment for an initialization-time cancellation (refunded: %s)",
+    async (refunded, heading, copy) => {
+      fetchMock.mockResolvedValueOnce({
+        ok: false,
+        status: 409,
+        json: async () => ({
+          error: "server detail is not rendered",
+          status: "CANCELLED",
+          refunded,
+        }),
+      });
+
+      render(
+        <BookingPaymentWrapper
+          bookingId="booking-1"
+          amountCents={12500}
+          paymentMode="payment"
+          returnUrl="http://localhost/bookings/booking-1"
+          onPaymentComplete={vi.fn()}
+        />,
+      );
+
+      const alert = screen.getByRole("alert", { hidden: true });
+      await waitFor(() => expect(alert).toHaveTextContent(heading));
+      expect(alert).toHaveTextContent(copy);
+      expect(alert).toHaveTextContent(/Do not try another payment/i);
+      expect(alert).not.toHaveTextContent("server detail");
+      expect(alert).not.toHaveTextContent(/pay later from your booking page/i);
+      expect(screen.queryByText("payment-form")).toBeNull();
+      expect(document.activeElement).toBe(alert);
+    },
+  );
 
   it("keeps a pre-capture participant retry on the ordinary payment-start recovery", async () => {
     const consoleErrorSpy = vi

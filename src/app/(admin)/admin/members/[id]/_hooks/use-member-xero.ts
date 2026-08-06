@@ -18,6 +18,7 @@ interface UseMemberXeroParams {
   fetchMember: () => Promise<void>;
   setLoading: Dispatch<SetStateAction<boolean>>;
   setXeroError: Dispatch<SetStateAction<string>>;
+  onPartialSuccess: (error: AdminMemberXeroActionError) => Promise<void>;
 }
 
 export function useMemberXero({
@@ -25,6 +26,7 @@ export function useMemberXero({
   fetchMember,
   setLoading,
   setXeroError,
+  onPartialSuccess,
 }: UseMemberXeroParams) {
   const [xeroSearchOpen, setXeroSearchOpen] = useState(false);
   const [xeroSearchQuery, setXeroSearchQuery] = useState("");
@@ -57,32 +59,16 @@ export function useMemberXero({
   const [xeroDecisionContactId, setXeroDecisionContactId] = useState("");
   const [xeroDecisionError, setXeroDecisionError] = useState("");
 
-  const recoverCommittedXeroLink = async (
+  const recoverPartialXeroAction = async (
     error: AdminMemberXeroActionError,
   ) => {
     setXeroSearchOpen(false);
     setXeroCreateOpen(false);
     setXeroCreateDecisionOpen(false);
-    setXeroError(
-      `${error.message} The Xero link may already have changed. The member has been reloaded; check the current contact before linking again, then run the Member Status Repair Backfill to repair subscription history.`,
-    );
-    setLoading(true);
-    await fetchMember();
-  };
-
-  const recoverCreatedXeroContact = async (
-    error: AdminMemberXeroActionError,
-  ) => {
-    setXeroCreateOpen(false);
-    setXeroCreateDecisionOpen(false);
     setXeroCreateDecisionResults([]);
     setXeroDecisionContactId("");
     setXeroDecisionError("");
-    setXeroError(
-      `${error.message} The Xero contact was created and linked, but subscription history still needs repair. Do not create another contact; the member has been reloaded. Run the Member Status Repair Backfill.`,
-    );
-    setLoading(true);
-    await fetchMember();
+    await onPartialSuccess(error);
   };
 
   const handleXeroSearch = async () => {
@@ -118,7 +104,7 @@ export function useMemberXero({
         err instanceof AdminMemberXeroActionError &&
         err.recovery.xeroLinkMayHaveChanged
       ) {
-        await recoverCommittedXeroLink(err);
+        await recoverPartialXeroAction(err);
         return;
       }
       setXeroError(err instanceof Error ? err.message : "Link failed");
@@ -141,6 +127,13 @@ export function useMemberXero({
       setLoading(true);
       await fetchMember();
     } catch (err) {
+      if (
+        err instanceof AdminMemberXeroActionError &&
+        err.recovery.xeroContactUnlinked
+      ) {
+        await recoverPartialXeroAction(err);
+        return;
+      }
       setXeroError(err instanceof Error ? err.message : "Unlink failed");
     } finally {
       setXeroUnlinking(false);
@@ -212,10 +205,9 @@ export function useMemberXero({
     } catch (err) {
       if (
         err instanceof AdminMemberXeroActionError &&
-        err.recovery.xeroContactCreated &&
-        err.recovery.xeroContactLinked
+        err.recovery.xeroContactCreated
       ) {
-        await recoverCreatedXeroContact(err);
+        await recoverPartialXeroAction(err);
         return;
       }
       const message = err instanceof Error ? err.message : "Push failed";
@@ -251,7 +243,7 @@ export function useMemberXero({
         err instanceof AdminMemberXeroActionError &&
         err.recovery.xeroLinkMayHaveChanged
       ) {
-        await recoverCommittedXeroLink(err);
+        await recoverPartialXeroAction(err);
         return;
       }
       setXeroDecisionError(err instanceof Error ? err.message : "Link failed");
