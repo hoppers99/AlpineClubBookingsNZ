@@ -28,6 +28,7 @@ import {
   buildPaidUpAdultRefusalBody,
   evaluateNonMemberPricingRequirements,
   toSubscriptionLockoutParticipants,
+  type NonMemberPricingRequirements,
 } from "@/lib/subscription-lockout-enforcement";
 import {
   assertLinkedBookingMembersCanBeBooked,
@@ -273,6 +274,9 @@ export async function POST(request: NextRequest) {
   let effectiveMemberId = session.user.id;
   let isAuthorizedOnBehalf = false;
   let effectiveMemberAgeTier: AgeTier | null = null;
+  let paidUpAdultViolation: NonNullable<
+    NonMemberPricingRequirements["violation"]
+  > | null = null;
 
   // Only admin-only accounts (no USER token) are forced onto the on-behalf
   // page; dual-hat admins self-book here under full member rules (#1442).
@@ -810,12 +814,7 @@ export async function POST(request: NextRequest) {
       // apply consent — nothing would ever correct it.
       participants: toSubscriptionLockoutParticipants(guestInputs),
     });
-    if (nonMemberPricing?.violation) {
-      return NextResponse.json(
-        buildPaidUpAdultRefusalBody(nonMemberPricing.violation),
-        { status: 409 },
-      );
-    }
+    paidUpAdultViolation = nonMemberPricing?.violation ?? null;
   }
 
   // Minimum stay policy (skipped only for authorized on-behalf bookings —
@@ -895,11 +894,42 @@ export async function POST(request: NextRequest) {
     // and it is the only place the member can be handed the exception door with
     // the party they actually submitted.
     if (hostingViolation?.consequence === "ENFORCED") {
+      if (paidUpAdultViolation) {
+        const hostingRefusal = buildAdultMemberHostingRefusalBody(hostingViolation);
+        const exceptionReview = aggregatePolicyExceptionViolations([
+          paidUpAdultViolation,
+          ...hostingRefusal.violations,
+        ]);
+        return NextResponse.json(
+          {
+            error:
+              "This booking needs both a paid-up adult member and adult member cover for every required night.",
+            details: exceptionReview.violations
+              .map((violation) => violation.message)
+              .join(" "),
+            code: "BOOKING_POLICY_REQUIREMENTS_NOT_MET",
+            reasonCodes: exceptionReview.violations.map(
+              (violation) => violation.reasonCode,
+            ),
+            violations: exceptionReview.violations,
+            exceptionReview,
+            exceptionRequestPath: hostingRefusal.exceptionRequestPath,
+          },
+          { status: 409 },
+        );
+      }
       return NextResponse.json(
         buildAdultMemberHostingRefusalBody(hostingViolation),
         { status: 409 },
       );
     }
+  }
+
+  if (paidUpAdultViolation) {
+    return NextResponse.json(
+      buildPaidUpAdultRefusalBody(paidUpAdultViolation),
+      { status: 409 },
+    );
   }
 
   const gds = await prisma.groupDiscountSetting.findUnique({ where: { id: "default" } });

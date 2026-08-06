@@ -20,6 +20,7 @@ import {
 } from "@/lib/manual-settlement-reversal-event";
 import { MAX_PAYMENT_RECOVERY_ATTEMPTS } from "@/lib/payment-recovery-constants";
 import { prisma } from "@/lib/prisma";
+import { formatBookingReference } from "@/lib/booking-reference";
 import {
   getBedAllocationDashboard,
   parseBedAllocationDateRange,
@@ -51,7 +52,12 @@ export type StuckStateDomain =
   | "bed_allocation"
   | "lodge";
 
-type StuckStateOwner = "Admin" | "Finance" | "Lodge" | "System";
+type StuckStateOwner =
+  | "Admin"
+  | "Booking Officer"
+  | "Finance"
+  | "Lodge"
+  | "System";
 
 export interface StuckStateItem {
   id: string;
@@ -63,6 +69,12 @@ export interface StuckStateItem {
   count: number;
   href: string;
   summary: string;
+  details?: Array<{
+    id: string;
+    title: string;
+    summary: string;
+    href: string;
+  }>;
 }
 
 interface StuckStateDomainSummary {
@@ -99,7 +111,7 @@ type FindManyDelegate = {
 
 type StuckStateDashboardDb = {
   paymentRecoveryOperation: CountDelegate;
-  hostingCoverageIncident: CountDelegate;
+  hostingCoverageIncident: CountDelegate & FindManyDelegate;
   booking: FindManyDelegate & CountDelegate;
   groupBookingSettlement: FindManyDelegate;
   issueReport: CountDelegate;
@@ -924,17 +936,74 @@ export async function getStuckStateDashboard(input?: {
   // entry is the whole mechanism by which anybody finds out. Resolved incidents are
   // outside the count: the predicate is the same `resolvedAt: null` the partial
   // unique index uses, so the card and the invariant cannot disagree.
-  const hostingCoverageIncidents = await deps.db.hostingCoverageIncident.count({
-    where: { resolvedAt: null },
+  const [hostingCoverageIncidents, hostingCoverageIncidentRows] =
+    await Promise.all([
+      deps.db.hostingCoverageIncident.count({
+        where: { resolvedAt: null },
+      }),
+      deps.db.hostingCoverageIncident.findMany({
+        where: { resolvedAt: null },
+        orderBy: [{ openedAt: "asc" }, { id: "asc" }],
+        take: 50,
+        select: {
+          id: true,
+          cause: true,
+          openedAt: true,
+          evidence: true,
+          booking: {
+            select: {
+              id: true,
+              checkIn: true,
+              checkOut: true,
+              member: { select: { firstName: true, lastName: true } },
+              lodge: { select: { name: true } },
+            },
+          },
+        },
+      }),
+    ]);
+  const hostingCoverageDetails = (
+    hostingCoverageIncidentRows as Array<{
+      id: string;
+      cause: string;
+      openedAt: Date;
+      evidence: unknown;
+      booking: {
+        id: string;
+        checkIn: Date;
+        checkOut: Date;
+        member: { firstName: string; lastName: string };
+        lodge: { name: string } | null;
+      };
+    }>
+  ).map((incident) => {
+    const evidence = incident.evidence as { affectedNights?: unknown } | null;
+    const nights = Array.isArray(evidence?.affectedNights)
+      ? evidence.affectedNights.filter(
+          (night): night is string => typeof night === "string",
+        )
+      : [];
+    const ownerName =
+      `${incident.booking.member.firstName} ${incident.booking.member.lastName}`.trim();
+    return {
+      id: incident.id,
+      title: `${formatBookingReference(incident.booking.id)} - ${ownerName}`,
+      summary:
+        `${incident.booking.lodge?.name ?? "Lodge"}; ` +
+        `${formatDateOnly(incident.booking.checkIn)} to ${formatDateOnly(incident.booking.checkOut)}; ` +
+        `${nights.length} uncovered ${plural(nights.length, "night")}; ` +
+        `${incident.cause === "OFFICER_OVERRIDE" ? "officer override" : "system change"}.`,
+      href: `/bookings/${incident.booking.id}`,
+    };
   });
   addItem(items, {
     id: "booking-hosting-coverage-incidents",
     domain: "booking",
     title: "Bookings without required adult member cover",
     severity: "critical",
-    owner: "Admin",
+    owner: "Booking Officer",
     count: hostingCoverageIncidents,
-    href: "/admin/bookings",
+    href: "/admin/bookings#hosting-coverage-incidents",
     summary: `${hostingCoverageIncidents} confirmed ${plural(
       hostingCoverageIncidents,
       "booking",
@@ -943,6 +1012,7 @@ export async function getStuckStateDashboard(input?: {
     } lost the adult member cover this club requires and ${
       hostingCoverageIncidents === 1 ? "needs" : "need"
     } an officer to restore cover, amend the booking, or approve an exception. Beds and payments are untouched.`,
+    details: hostingCoverageDetails,
   });
 
   await addEmailItems(items, deps);

@@ -55,6 +55,7 @@ import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-cov
 import {
   AdultMemberHostingRequiredError,
   buildAdultMemberHostingRefusalBody,
+  evaluateProposedAdultMemberHosting,
   reconcileAdultMemberHostingReviewWithSiblings,
 } from "@/lib/adult-member-hosting-review";
 import logger from "@/lib/logger";
@@ -133,6 +134,7 @@ export class GroupBookingError extends Error {
   /** Frozen soft-policy facts; present only on the still-blocking 400 path. */
   violations?: PolicyExceptionViolation[];
   exceptionReview?: AggregatedPolicyExceptions;
+  reasonCodes?: string[];
   /**
    * Where the member goes to ask for an override (#2543). Carried through the
    * error so the join route serialises the same field the other four refusal
@@ -151,6 +153,7 @@ export class GroupBookingError extends Error {
       violations?: PolicyExceptionViolation[];
       exceptionReview?: AggregatedPolicyExceptions;
       exceptionRequestPath?: string;
+      reasonCodes?: string[];
     }
   ) {
     super(message);
@@ -160,6 +163,7 @@ export class GroupBookingError extends Error {
     this.details = options?.details;
     this.violations = options?.violations;
     this.exceptionReview = options?.exceptionReview;
+    this.reasonCodes = options?.reasonCodes;
     this.exceptionRequestPath = options?.exceptionRequestPath;
   }
 }
@@ -787,6 +791,47 @@ export async function joinGroupBookingAsMember(
       bookingOwnerMemberId: sessionUserId,
       participants: guests,
     });
+    const hostingViolation = await evaluateProposedAdultMemberHosting(prisma, {
+      lodgeId: groupLodgeId,
+      checkIn,
+      checkOut,
+      guests: guests.map((guest) => ({
+        firstName: guest.firstName,
+        lastName: guest.lastName,
+        memberId: guest.memberId,
+        stayStart:
+          guest.stayStart instanceof Date ? guest.stayStart : undefined,
+        stayEnd: guest.stayEnd instanceof Date ? guest.stayEnd : undefined,
+      })),
+    });
+    if (
+      nonMemberPricing?.violation &&
+      hostingViolation?.consequence === "ENFORCED"
+    ) {
+      // Aggregate only the existing member-facing hosting shape. The raw
+      // evaluator evidence carries qualifying-host member ids for audit use.
+      const hostingRefusal = buildAdultMemberHostingRefusalBody(hostingViolation);
+      const exceptionReview = aggregatePolicyExceptionViolations([
+        nonMemberPricing.violation,
+        ...hostingRefusal.violations,
+      ]);
+      throw new GroupBookingError(
+        "This booking needs both a paid-up adult member and adult member cover for every required night.",
+        409,
+        {
+          code: "BOOKING_POLICY_REQUIREMENTS_NOT_MET",
+          details: exceptionReview.violations
+            .map((violation) => violation.message)
+            .join(" "),
+          reasonCodes: exceptionReview.violations.map(
+            (violation) => violation.reasonCode,
+          ),
+          violations: exceptionReview.violations,
+          exceptionReview,
+          exceptionRequestPath: hostingRefusal.exceptionRequestPath,
+        },
+      );
+    }
     if (nonMemberPricing?.violation) {
       const refusal = buildPaidUpAdultRefusalBody(nonMemberPricing.violation);
       throw new GroupBookingError(nonMemberPricing.violation.message, 409, {

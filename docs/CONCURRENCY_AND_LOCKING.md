@@ -262,11 +262,13 @@ of same-owner cover:
 
 - `evaluateBookingAdultMemberHosting`, before it reads another booking as cover
   (and only when `SAME_BOOKING_OWNER` is actually enabled);
-- `settleSameOwnerDependentCoverage`, before it reads the dependents;
+- `settleSameOwnerDependentCoverage`, before it reads cross-booking dependents;
 - `enqueueOwnHostingCoverageReevaluation`, the seam the confirming paths use instead
-  of evaluating;
+  of evaluating (it still queues under `SAME_BOOKING`; only the owner lock is
+  conditional on `SAME_BOOKING_OWNER`);
 - `enqueueHostingCoverageReevaluationForMember`, the §8 membership-lifecycle fan-out,
-  which takes the key of each affected booking's owner.
+  which collects the affected booking owners and takes their keys together through
+  `lockHostingCoverageOwners`, in sorted owner-id order.
 
 **Acquisition order: always last.** Callers take it AFTER `pg_advisory_xact_lock(1)`,
 after `acquireLodgeCapacityLock` and after `lockBookingMemberNights`, giving the tree
@@ -283,20 +285,23 @@ lodge policy first and skips the lock.
 reason every other hosting read does, so it sees that transaction's own writes and
 the committed state of everything else.
 
-Two things deliberately sit OUTSIDE the transaction, and both would be bugs inside
-one. `HostingCoverageReevaluation` rows are written inside the authoritative
-transaction — the change and the obligation to look at its consequences commit or
-roll back together — but `drainHostingCoverageReevaluations` runs after the commit,
-on the module client, because the facts it must read are the COMMITTED ones and
-because it sends email. `settleHostingCoverageAfterCommit` is the wrapper the
-mutation paths call for that, and it never accepts a `tx`;
+The DRAIN starts outside the authoritative transaction. `HostingCoverageReevaluation`
+rows are written inside that transaction — the change and the obligation to look at
+its consequences commit or roll back together — and
+`drainHostingCoverageReevaluations` starts only after it commits, so it re-reads
+COMMITTED facts. Each bounded queue item then gets its own short transaction: the
+transaction-scoped owner lock must stay held through the reconciliation reads and
+incident writes. Email remains outside that item transaction and is sent only after
+it commits. `settleHostingCoverageAfterCommit` is the wrapper the mutation paths call
+for that, and it never accepts a caller's `tx`;
 `adult-member-hosting-call-sites.test.ts` asserts so tree-wide.
 
 Concurrency inside the drain is handled by guarded claims rather than locks, the
 same pattern the rest of this repository uses for exactly-one-claimant: a queue item
 is claimed by an `updateMany` guarded on `processedAt: null` AND the `attempts` value
-just read, the owner's notification by an `updateMany` guarded on
-`notifiedStateKey`, and the one-active-incident-per-booking rule by the partial
+just read. Owner notification uses a separate, expiring delivery lease; a successful
+transport stamps `notifiedStateKey`, while a failed/non-send releases the lease so
+unchanged reconciliation can retry. The one-active-incident-per-booking rule uses the partial
 unique index `HostingCoverageIncident_active_booking_unique` (a concurrent second
 opener loses on the index and folds into the winner). No new key is added to the
 lock-ordering table.

@@ -164,6 +164,61 @@ describe("one authoritative evaluator and one resolver (#2569 §6, §7)", () => 
   });
 });
 
+describe("combined member refusal and officer queue contracts", () => {
+  it("keeps every authoritative host-qualification writer on the durable seam", () => {
+    for (const file of [
+      "src/app/api/admin/members/bulk-update/route.ts",
+      "src/lib/admin-member-detail-service.ts",
+      "src/lib/member-guest-consent-service.ts",
+      "src/lib/manual-subscription-payment.ts",
+      "src/lib/xero-membership-sync.ts",
+      "src/lib/member-merge.ts",
+    ]) {
+      const source = readRepoCode(file);
+      expect(source, file).toContain(
+        "enqueueHostingCoverageReevaluationForMember(",
+      );
+      expect(source, file).toContain("settleHostingCoverageAfterCommit(");
+    }
+    expect(readRepoCode("src/lib/member-merge.ts")).toContain(
+      "enqueueOwnHostingCoverageReevaluation(",
+    );
+  });
+
+  it("returns both paid-up and hosting reasons through the redacted refusal shape", () => {
+    for (const file of [
+      "src/app/api/bookings/route.ts",
+      "src/lib/group-booking.ts",
+    ]) {
+      const source = readRepoCode(file);
+      expect(source, file).toContain(
+        'code: "BOOKING_POLICY_REQUIREMENTS_NOT_MET"',
+      );
+      expect(source, file).toContain("reasonCodes:");
+      expect(source, file).toMatch(
+        /const hostingRefusal\s*=\s*buildAdultMemberHostingRefusalBody\(hostingViolation\)/,
+      );
+      expect(source, file).toContain("...hostingRefusal.violations");
+      expect(source, file).toContain(
+        "exceptionRequestPath: hostingRefusal.exceptionRequestPath",
+      );
+    }
+  });
+
+  it("puts unresolved incidents in the bookings permission area with direct rows", () => {
+    const page = readRepoCode("src/app/(admin)/admin/bookings/page.tsx");
+    expect(page).toContain('id="hosting-coverage-incidents"');
+    expect(page).toContain("prisma.hostingCoverageIncident.count(");
+    expect(page).toContain("prisma.hostingCoverageIncident.findMany(");
+    expect(page).toContain("where: { resolvedAt: null }");
+    expect(page).toContain("`/bookings/${incident.bookingId}`");
+
+    const permissions = readRepoCode("src/lib/admin-permissions.ts");
+    expect(permissions).toContain('area: "bookings"');
+    expect(permissions).toContain('"/admin/bookings"');
+  });
+});
+
 describe("the school and organisation carve-out, and only that (#2569 §13)", () => {
   it("passes REVIEW_ONLY from exactly one place: the school and organisation request approval", () => {
     // One site, because there is one such approval: `BookingRequestType.SCHOOL`

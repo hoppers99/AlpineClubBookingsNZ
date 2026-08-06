@@ -40,6 +40,7 @@ import { prisma } from "@/lib/prisma";
 import { auth } from "@/lib/auth";
 import { hasAdminAreaAccess } from "@/lib/admin-permissions";
 import { formatNZDate } from "@/lib/nzst-date";
+import { formatBookingReference } from "@/lib/booking-reference";
 import {
   AlertTriangle,
   CalendarX2,
@@ -188,6 +189,32 @@ export default async function AdminBookingsPage({
   const consentState = query.consentState;
   const consentExceptions =
     consentState === "attention" ? await listMemberGuestConsentExceptions() : [];
+  // #2576: the Booking Officer's durable queue belongs in the bookings
+  // permission area, not only on the support dashboard.
+  const [hostingCoverageIncidentCount, hostingCoverageIncidents] =
+    await Promise.all([
+      prisma.hostingCoverageIncident.count({ where: { resolvedAt: null } }),
+      prisma.hostingCoverageIncident.findMany({
+        where: { resolvedAt: null },
+        orderBy: [{ openedAt: "asc" }, { id: "asc" }],
+        take: 50,
+        select: {
+          id: true,
+          bookingId: true,
+          cause: true,
+          evidence: true,
+          openedAt: true,
+          booking: {
+            select: {
+              checkIn: true,
+              checkOut: true,
+              member: { select: { firstName: true, lastName: true } },
+              lodge: { select: { name: true } },
+            },
+          },
+        },
+      }),
+    ]);
 
   function visibleSearchParams() {
     const currentSearchParams = new URLSearchParams();
@@ -281,6 +308,81 @@ export default async function AdminBookingsPage({
           )
         }
       />
+
+      {hostingCoverageIncidentCount > 0 ? (
+        <section
+          id="hosting-coverage-incidents"
+          aria-labelledby="hosting-coverage-incidents-title"
+          className="space-y-3 rounded-lg border border-warning/40 bg-warning/5 p-4"
+        >
+          <div className="flex items-start gap-3">
+            <AlertTriangle aria-hidden="true" className="mt-0.5 h-5 w-5 text-warning" />
+            <div>
+              <h2 id="hosting-coverage-incidents-title" className="font-semibold">
+                Adult member cover needs attention · {hostingCoverageIncidentCount}
+              </h2>
+              <p className="text-sm text-muted-foreground">
+                These confirmed bookings lost required adult member cover. Correct
+                the party or dates, restore qualifying cover, approve a valid
+                exception, or cancel the affected booking. Nothing is cancelled
+                automatically.
+              </p>
+            </div>
+          </div>
+          <div className="divide-y divide-border rounded-md border border-border bg-card">
+            {hostingCoverageIncidents.map((incident) => {
+              const evidence = incident.evidence as {
+                requirements?: { uncoveredNonMemberGuestNights?: unknown };
+              } | null;
+              const uncovered =
+                typeof evidence?.requirements?.uncoveredNonMemberGuestNights ===
+                "number"
+                  ? evidence.requirements.uncoveredNonMemberGuestNights
+                  : null;
+              return (
+                <div
+                  key={incident.id}
+                  className="flex flex-col gap-3 p-3 sm:flex-row sm:items-center sm:justify-between"
+                >
+                  <div>
+                    <p className="text-sm font-medium">
+                      {formatBookingReference(incident.bookingId)} ·{" "}
+                      {incident.booking.member.firstName}{" "}
+                      {incident.booking.member.lastName}
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      {incident.booking.lodge?.name ?? "Lodge"} ·{" "}
+                      {formatNZDate(incident.booking.checkIn)}–
+                      {formatNZDate(incident.booking.checkOut)}
+                      {uncovered === null
+                        ? ""
+                        : ` · ${uncovered} uncovered guest-night${uncovered === 1 ? "" : "s"}`}
+                      {incident.cause === "OFFICER_OVERRIDE"
+                        ? " · officer override"
+                        : " · qualification changed"}
+                    </p>
+                  </div>
+                  <Link
+                    href={buildHrefWithReturnTo(
+                      `/bookings/${incident.bookingId}`,
+                      "/admin/bookings#hosting-coverage-incidents",
+                    )}
+                    className="app-button-secondary shrink-0"
+                  >
+                    Review booking
+                  </Link>
+                </div>
+              );
+            })}
+          </div>
+          {hostingCoverageIncidentCount > hostingCoverageIncidents.length ? (
+            <p className="text-xs text-muted-foreground">
+              Showing the oldest {hostingCoverageIncidents.length}; resolve these
+              to reveal the remaining incidents.
+            </p>
+          ) : null}
+        </section>
+      ) : null}
 
       <BookingFilters
         showBedAllocation={showBedAllocation}

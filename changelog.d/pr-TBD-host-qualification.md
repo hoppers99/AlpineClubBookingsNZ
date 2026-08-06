@@ -86,9 +86,22 @@
   not theirs. What happens instead in every one of these cases is that the affected
   booking stays confirmed and keeps its beds and its payments, nothing is ever
   cancelled automatically, the booking owner is emailed once naming the lodge and the
-  uncovered nights, and the booking appears on a new **Bookings without required
-  adult member cover** entry on the Stuck States queue. That entry clears itself when
+  uncovered nights, and the booking appears prominently in the Booking Officer's
+  **Adult member cover needs attention** queue above `/admin/bookings`; Stuck States
+  mirrors the count and direct booking rows for support staff. That entry clears itself when
   the problem goes away — cover is restored, the booking is amended, an exception is
   approved, or the booking is cancelled — so there is nothing to tick off. Repeatedly
-  re-checking the same unchanged problem does not re-send the email or duplicate the
-  entry.
+  re-checking the same unchanged problem does not duplicate the entry. Delivery is
+  stamped only after the email provider reports success, so a failed attempt is
+  retried instead of being silently suppressed.
+
+  **Qualification changes are covered wherever they happen.** Single and bulk
+  member active/age-tier edits, member-guest consent approval, manual and Xero
+  subscription settlement changes, member merges, and zero-dollar waitlist
+  confirmation all record the exact follow-up they owe in the same transaction and
+  reconcile after commit. Multi-owner fan-out locks owners in sorted order.
+
+  **Members now see every applicable booking rule at once.** If a new booking or a
+  member group join simultaneously lacks a paid-up adult and required adult-member
+  cover, the response lists both reasons and one exception-review path instead of
+  returning whichever check ran first. Host identities remain redacted.

@@ -149,6 +149,7 @@ export async function POST(
           details: err.details,
           violations: err.violations,
           exceptionReview: err.exceptionReview,
+          reasonCodes: err.reasonCodes,
           // #2543: present only on the paid-up-adult 409, and omitted (undefined
           // serialises away) on every other GroupBookingError, so no existing
           // refusal body changes shape.

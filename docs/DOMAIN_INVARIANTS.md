@@ -2734,10 +2734,15 @@ and adds only WHERE the host may be. Its rules:
   from live rows at every evaluation, and evidence naming the source observed once
   never becomes an authorisation.
 
-**Changes that would take cover away (#2576 §6 to §9).** The SCOPE is the hard
-precondition — without `SAME_BOOKING_OWNER` no booking's compliance can depend on
-another booking, so there is nothing to strand and nothing to re-read. The
-CONSEQUENCE then decides what happens. Under `ENFORCED`, the full behaviour below.
+**Changes that would take cover away (#2576 §6 to §9).** `SAME_BOOKING_OWNER` is
+the hard precondition only for CROSS-BOOKING strand checks: without it, one booking
+cannot depend on another and there are no dependents to refuse or fan out to. It is
+not a licence to skip the booking being changed. Under `SAME_BOOKING` alone, a
+confirmation or a change to an attending member's active/age/consent/subscription
+qualification can still open or resolve that booking's incident, so own-booking and
+member-qualification seams always queue under `ENFORCED`; they take the owner lock
+only when cross-booking scope is enabled. The CONSEQUENCE then decides what happens.
+Under `ENFORCED`, the full behaviour below.
 Under `ADMIN_REVIEW_REQUIRED` nothing is ever refused and no incident is ever
 opened — an uncovered booking is a permitted state there and the pending review is
 already the officer's signal — but the dependents are STILL re-read. That is the one
@@ -2792,8 +2797,9 @@ compliant indefinitely.
   becoming inactive, lapsed, cancelled or archived" heads §8's list, and only the
   evaluator half of it is automatic (an archived or cancelled member stops
   qualifying). `enqueueHostingCoverageReevaluationForMember` is the other half, called
-  in the same transaction as the archive, the membership cancellation and the admin
-  bulk deactivate. It fans out over the bookings that person ATTENDS — not owns (§2)
+  in the same transaction as the archive, membership cancellation, single or bulk
+  active/age-tier changes, consent approval, subscription settlement/reversal and
+  member merge repoints. It fans out over the bookings that person ATTENDS — not owns (§2)
   — on live current-or-future stays, one bounded item per booking naming THAT
   booking's owner, lodge and nights, so the drain can never widen it into the
   lodge-wide sweep #2575 rejected. Gated on `ENFORCED` and deliberately NOT on the
@@ -2808,7 +2814,8 @@ compliant indefinitely.
   transaction and escalate after commit, which is §8's treatment of payment lifecycle
   and automated status transitions. The set includes the single payment settle door
   (whose payable set includes DRAFT), the fully-credit-covered settlement, inbound
-  Xero PAID, the admin waitlist force-confirm, the draft confirmation, the
+  Xero PAID, the admin waitlist force-confirm, the member's zero-dollar waitlist
+  confirmation, the draft confirmation, the
   saved-card auto-charge cron, the officer "confirm pending guests" claim, the
   Internet Banking switch, group-settlement child confirmation, and the
   group-settlement reaper's `CONFIRMED -> PAYMENT_PENDING` revert, which de-confirms
@@ -2839,15 +2846,16 @@ compliant indefinitely.
   nobody confirmed in front of an officer as an emergency. It does not RESOLVE a
   standing incident on a regressed booking either, because that booking still holds
   its beds and reporting `COVERAGE_RESTORED` would be untrue.
-- **One active incident per booking, one message per transition** (§16). The partial
+- **One active incident per booking, one successful message per transition** (§16). The partial
   unique index `HostingCoverageIncident_active_booking_unique` makes the first an
   invariant against a concurrent second opener rather than a hope; the loser folds
   into the winner instead of surfacing a constraint violation. The stored `stateKey`
   is a fixed-width digest of the material-identity key, so a large party cannot
   outrun the column and make two different problems compare equal. The owner's
-  notification is a guarded claim on `notifiedStateKey` taken BEFORE the send, so a
-  repeated reconciliation of the same unchanged problem sends nothing and two
-  concurrent drains send once between them.
+  notification takes a short delivery lease before the send, but `notifiedStateKey`
+  is stamped only after transport reports success. A failed/non-send releases the
+  lease and unchanged reconciliation retries; two concurrent drains cannot both own
+  the lease. A crashed sender's lease expires after 15 minutes.
 - **Resolution is recorded, not inferred**, as one of `COVERAGE_RESTORED`,
   `BOOKING_AMENDED`, `EXCEPTION_APPROVED` or `BOOKING_CANCELLED` — inferring it from
   the absence of a hazard would report restored cover for a booking somebody
@@ -2879,6 +2887,13 @@ compliant indefinitely.
   problem) and again by the `hosting-coverage-reevaluation` general-cron job, which
   is the authority on completion. `attempts` increments at CLAIM time, so a process
   that dies mid-item still counts up and a poison item retires.
+- **The Booking Officer queue is in the bookings area.** Every unresolved incident
+  appears prominently above the ordinary `/admin/bookings` list, with booking
+  reference, owner, lodge, dates, uncovered guest-night count, cause and direct
+  navigation. The support Stuck States dashboard mirrors the count and oldest 50
+  direct rows, but is not the only way to discover or act on the incident. Resolving
+  the underlying condition clears the row automatically; there is no separate
+  acknowledgement that could hide a still-uncovered booking.
 - **The inline drain is scoped to the booking that was just written; the cron drains
   everything.** A member's request passes `{ bookingId }`, which resolves that
   booking's owner and lodge and claims only their items with a small limit. An
@@ -2962,6 +2977,16 @@ here:
   guest-add and group-join paths. **The effective default**, so no club moved.
 - **`NON_MEMBER_PRICING`** — the rule above: the unpaid member is repriced, told
   why, and the booking must carry a paid-up adult member.
+
+**Independent booking failures are reported together.** A member create or member
+group-join can fail both the paid-up-adult rule and enforced adult-member hosting on
+the same party. Those paths evaluate both before returning and answer with
+`BOOKING_POLICY_REQUIREMENTS_NOT_MET`, both allowlisted `reasonCodes`, and one
+aggregated `exceptionReview`; they do not stop at whichever evaluator happened to
+run first. The hosting half passes through `buildAdultMemberHostingRefusalBody`
+before aggregation, so its internal qualifying-host member ids never enter a
+member-facing combined response. A single failure keeps its existing response code
+and shape.
 
 **Nothing moved on the release that shipped this, and `mode` is the ONLY record of
 the policy.** Owner directive on #2561: the change completes in one release rather
