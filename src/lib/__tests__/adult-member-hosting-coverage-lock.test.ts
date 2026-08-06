@@ -4,12 +4,11 @@
 // WHY THIS FILE EXISTS AT ALL. The lane's first design argued no new lock was
 // needed, on the claim that "every path that can confirm a booking and every path
 // that can remove exact-night attendance already takes the per-lodge capacity lock".
-// That claim is measurably false in both directions — `booking-cancel.ts`'s claim
-// transactions take `pg_advisory_xact_lock(1)` and never the lodge lock, while
-// `booking-create.ts` and the guest-add route take the lodge lock and never
-// `lock(1)` — so a cancel removing the last qualifying adult could interleave with a
-// create that had just read that adult as cover, and which booking won depended on
-// commit order. §9 forbids exactly that non-determinism.
+// When #2576 introduced the owner key, cancellation and confirmed creation used
+// different global/lodge tiers, so the named race remained open. #2593 later made
+// the allocation-participating create/cancel paths compose global → lodge, but the
+// owner key remains authoritative because the cross-booking participant/member/queue
+// writers do not all share those tiers. §9 forbids commit-order-dependent coverage.
 //
 // A unit test cannot prove two Postgres transactions serialise. What it CAN pin is
 // everything that would silently disable the lock: the SQL shape, the namespace, the
@@ -134,11 +133,73 @@ describe("the per-owner coverage lock (#2576 §9)", () => {
     expect(doc).toContain("hosting-coverage-owner");
   });
 
+  it("pins drain reconciliation to policy, lifecycle, Member row, refresh, then owner", () => {
+    const drain = readRepoFile("src/lib/adult-member-hosting-coverage-drain.ts");
+    const drainStart = drain.indexOf(
+      "async function processHostingCoverageReevaluation(",
+    );
+    const drainBody = drain.slice(drainStart, drainStart + 9000);
+    const drainPolicy = drainBody.indexOf("tryLockAdultMemberHostingPolicySet(db)");
+    const policyDeferral = drainBody.indexOf('return { kind: "deferred" }');
+    const lifecycleLock = drainBody.indexOf("member-lifecycle:${memberId}");
+    const memberRowLock = drainBody.indexOf("FOR KEY SHARE");
+    const exactRefresh = drainBody.indexOf(
+      "loadClaimedHostingCoverageReevaluation(item, db)",
+    );
+    const identityStabilisation = drainBody.indexOf("refreshedMemberIds.some(");
+    const sourceLifecycleRead = drainBody.indexOf(
+      "isHostingCoverageSourceBookingTerminal(",
+    );
+    const dependentRead = drainBody.indexOf("loadSameOwnerCoverageDependentIds(");
+    expect(drainPolicy).toBeGreaterThan(-1);
+    expect(policyDeferral).toBeGreaterThan(drainPolicy);
+    expect(policyDeferral).toBeLessThan(lifecycleLock);
+    expect(lifecycleLock).toBeGreaterThan(drainPolicy);
+    expect(memberRowLock).toBeGreaterThan(lifecycleLock);
+    expect(exactRefresh).toBeGreaterThan(memberRowLock);
+    expect(identityStabilisation).toBeGreaterThan(exactRefresh);
+    expect(sourceLifecycleRead).toBeGreaterThan(identityStabilisation);
+    expect(dependentRead).toBeGreaterThan(sourceLifecycleRead);
+
+    const review = readRepoFile("src/lib/adult-member-hosting-review.ts");
+    const start = review.indexOf(
+      "function reconcileSameOwnerCoverageIncident(",
+    );
+    expect(start).toBeGreaterThan(-1);
+    const body = review.slice(start, start + 7500);
+    const policyLock = body.indexOf("lockAdultMemberHostingPolicySet(db)");
+    const actorLock = body.indexOf("FOR KEY SHARE");
+    const ownerReconciliation = body.indexOf(
+      "reconcileAdultMemberHostingReview(params.bookingId",
+    );
+    expect(policyLock).toBeGreaterThan(-1);
+    expect(actorLock).toBeGreaterThan(policyLock);
+    expect(ownerReconciliation).toBeGreaterThan(actorLock);
+    expect(body).toContain(
+      "policy-set -> Member KEY SHARE -> coverage-owner",
+    );
+
+    const doc = readRepoFile("docs/CONCURRENCY_AND_LOCKING.md");
+    expect(doc).toContain("policy-set → sorted member-lifecycle → sorted");
+    expect(doc).toContain("Member KEY SHARE → exact queue re-read → coverage-owner");
+    expect(doc).toContain("deliberately not a `FOR UPDATE`");
+
+    const merge = readRepoFile("src/lib/member-merge.ts");
+    const mergePolicyLock = merge.indexOf("lockAdultMemberHostingPolicySet(tx)");
+    const mergeLifecycleLock = merge.indexOf("member-lifecycle:${lockA}");
+    const relationMoves = merge.indexOf("const relationMoves = await applyMoves(");
+    const mergeMemberRows = merge.indexOf('ORDER BY "id" FOR UPDATE', relationMoves);
+    expect(mergePolicyLock).toBeGreaterThan(-1);
+    expect(mergeLifecycleLock).toBeGreaterThan(mergePolicyLock);
+    expect(relationMoves).toBeGreaterThan(mergeLifecycleLock);
+    expect(mergeMemberRows).toBeGreaterThan(relationMoves);
+  });
+
   it("keeps queued reconciliation in a real transaction and email after it", () => {
     const drain = readRepoFile("src/lib/adult-member-hosting-coverage-drain.ts");
     const itemTransaction = drain.indexOf("await db.$transaction((tx) =>");
     const reconciliation = drain.indexOf(
-      "processHostingCoverageReevaluation(item, tx)",
+      "processHostingCoverageReevaluation(reconciliationItem, tx)",
       itemTransaction,
     );
     const notification = drain.indexOf(

@@ -29,7 +29,7 @@ type DoubleBedSharingDb = Pick<typeof prisma, "member" | "memberPartnerLink">;
  * else returns false so the caller can reject the placement with a clear
  * domain error. This gates NEW placements; already-placed second occupants
  * are swept when the pair breaks — link dissolve, member deactivation, or an
- * ADULT→minor tier correction — by sweepFuturePartnerSharedAllocations in
+ * ADULT→minor tier correction — by the lock-held partner-share sweep in
  * bed-allocation-lifecycle.ts (#1756), so no future isSecondOccupant row
  * outlives its partner link or the active-adult precondition.
  */

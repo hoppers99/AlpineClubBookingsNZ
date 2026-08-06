@@ -765,15 +765,10 @@ export async function approveSchoolBookingRequest(input: {
   try {
     conversion = await prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
-      // A held conversion is both a lifecycle transition (the same
-      // AWAITING_REVIEW row can be cancelled/released) and a capacity write.
-      // Compose the canonical locks in global -> lodge order so approval
-      // cannot resurrect a hold that a global-lock cancellation just won.
-      // A fresh approval creates a new booking and therefore remains
-      // lodge-only; do not unnecessarily serialise unrelated lodges.
-      if (expectedHeldBookingId) {
-        await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
-      }
+      // Both fresh creation and held reuse reconcile bed allocations in this
+      // transaction. Take the canonical global tier once, then the concrete
+      // lodge tier below: global fences cancellation/pruning while lodge
+      // fences capacity and allocation writers.
 
       // Held reuse locks the concrete lodge stamped onto the booking when the
       // hold was created. A null request lodge must not be re-resolved through

@@ -76,7 +76,7 @@ vi.mock("@/lib/booking-member-night-conflicts", () => ({
   assertNoBookingMemberNightConflicts: h.assertNoConflicts,
 }));
 vi.mock("@/lib/bed-allocation-lifecycle", () => ({
-  reconcileBedAllocationsForBooking: h.reconcileBedAllocations,
+  reconcileBedAllocationsForBookingWithLodgeLockHeld: h.reconcileBedAllocations,
 }));
 vi.mock("@/lib/chore-cleanup", () => ({
   cleanupChoreAssignmentsForDateChange: h.cleanupDate,

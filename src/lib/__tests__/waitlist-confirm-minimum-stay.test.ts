@@ -75,7 +75,7 @@ vi.mock("@/lib/capacity", () => ({
   checkCapacityForGuestRanges: h.checkCapacityForGuestRanges,
 }));
 vi.mock("@/lib/bed-allocation-lifecycle", () => ({
-  reconcileBedAllocationsForBooking: h.reconcileBedAllocations,
+  reconcileBedAllocationsForBookingWithGlobalLockHeld: h.reconcileBedAllocations,
 }));
 vi.mock("@/lib/lodges", () => ({
   getDefaultLodgeId: h.getDefaultLodgeId,

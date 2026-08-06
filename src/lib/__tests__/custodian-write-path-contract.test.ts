@@ -293,6 +293,12 @@ describe("custodian write-path contract (#2286)", () => {
 
   it("keeps existing-allocation moves global-then-destination locked, date-preserving and on the guarded manual funnel", () => {
     const source = readRepoFile("src/lib/admin-bed-allocation.ts");
+    const lockHeldMove = source.slice(
+      source.indexOf(
+        "export async function moveBedAllocationsSameDateWithLocksHeld(",
+      ),
+      source.indexOf("export async function moveBedAllocationsSameDate("),
+    );
     const move = source.slice(
       source.indexOf("export async function moveBedAllocationsSameDate("),
       source.indexOf("interface BulkAllocationConflict"),
@@ -306,10 +312,15 @@ describe("custodian write-path contract (#2286)", () => {
     expect(wrapper.indexOf("pg_advisory_xact_lock(1)"))
       .toBeLessThan(wrapper.indexOf("acquireLodgeCapacityLock(tx, lockLodgeId)"));
     expect(wrapper.indexOf("acquireLodgeCapacityLock(tx, lockLodgeId)"))
-      .toBeLessThan(wrapper.indexOf("return moveUnderLock(tx)"));
-    expect(move).toContain("db.bedAllocation.findMany");
-    expect(move).toContain("stayDate: formatDateOnly(source.stayDate)");
-    expect(move).toContain("await manuallyAllocateBed({");
+      .toBeLessThan(
+        wrapper.indexOf(
+          "return moveBedAllocationsSameDateWithLocksHeld({ ...input, db: tx })",
+        ),
+      );
+    expect(lockHeldMove).toContain("return moveUnderLock(input.db)");
+    expect(lockHeldMove).toContain("db.bedAllocation.findMany");
+    expect(lockHeldMove).toContain("stayDate: formatDateOnly(source.stayDate)");
+    expect(lockHeldMove).toContain("await manuallyAllocateBedWithLocksHeld({");
     expect(move).toContain("pg_advisory_xact_lock(1)");
   });
 });

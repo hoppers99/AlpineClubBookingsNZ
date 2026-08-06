@@ -4,6 +4,7 @@ import { Prisma } from "@prisma/client";
 import { describe, expect, it } from "vitest";
 import {
   MEMBER_MERGE_RELATION_SPECS,
+  MEMBER_MERGE_FK_LESS_MOVE_COLUMNS,
   MEMBER_MERGE_SNAPSHOT_SCALAR_COLUMNS,
   diffRelationSpecCoverage,
   memberRelationNamesFromDmmf,
@@ -19,6 +20,20 @@ const schemaText = readFileSync(
 const specKeys = MEMBER_MERGE_RELATION_SPECS.map((s) => s.key);
 
 describe("member-merge relation classification completeness", () => {
+  it("classifies queued hosting actor attribution as a live FK-less move", () => {
+    expect(MEMBER_MERGE_FK_LESS_MOVE_COLUMNS).toContainEqual({
+      key: "HostingCoverageReevaluation.actorMemberId",
+      delegate: "hostingCoverageReevaluation",
+      column: "actorMemberId",
+    });
+    expect(MEMBER_MERGE_SNAPSHOT_SCALAR_COLUMNS).not.toContain(
+      "HostingCoverageReevaluation.actorMemberId",
+    );
+    expect(schemaText).toMatch(
+      /model HostingCoverageReevaluation[\s\S]*?actorMemberId\s+String\?/,
+    );
+  });
+
   it("classifies every Member FK-owning relation exactly once (no missing, no extra)", () => {
     const ownerKeys = parseMemberRelationOwnerKeys(schemaText);
     const { missing, extra } = diffRelationSpecCoverage(ownerKeys, specKeys);

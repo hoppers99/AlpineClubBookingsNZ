@@ -105,13 +105,14 @@ function sourceFilesNaming(identifier: string): string[] {
 }
 
 describe("one authoritative evaluator and one resolver (#2569 §6, §7)", () => {
-  it("resolves the club/lodge inheritance in exactly four places, none of them a booking path", () => {
+  it("resolves the club/lodge inheritance in exactly five places, none of them a booking path", () => {
     // The pure resolver (its own definition), the loader every booking write path
-    // goes through, the admin card's effective view, and the public booking-rules
-    // sentence. A booking path appearing here would be a SECOND implementation of
-    // the inheritance rule — the thing §6 forbids by name.
+    // goes through, the admin card's effective view, the policy-change reconciler,
+    // and the public booking-rules sentence. A booking path appearing here would be
+    // a SECOND implementation of the inheritance rule — the thing §6 forbids by name.
     expect(sourceFilesNaming("resolveAdultMemberHostingPolicy(")).toEqual([
       "src/app/api/admin/booking-policies/adult-member-hosting/route.ts",
+      "src/lib/adult-member-hosting-policy-reconciliation.ts",
       "src/lib/adult-member-hosting-review.ts",
       "src/lib/policies/adult-member-hosting.ts",
       "src/lib/public-page-content-tokens.ts",
@@ -210,7 +211,10 @@ describe("combined member refusal and officer queue contracts", () => {
     expect(page).toContain('id="hosting-coverage-incidents"');
     expect(page).toContain("prisma.hostingCoverageIncident.count(");
     expect(page).toContain("prisma.hostingCoverageIncident.findMany(");
-    expect(page).toContain("where: { resolvedAt: null }");
+    expect(page.match(/resolvedAt:\s*null/g)).toHaveLength(2);
+    expect(
+      page.match(/\.\.\.\(query\.lodgeId \? \{ lodgeId: query\.lodgeId \} : \{\}\)/g),
+    ).toHaveLength(2);
     expect(page).toContain("`/bookings/${incident.bookingId}`");
 
     const permissions = readRepoCode("src/lib/admin-permissions.ts");

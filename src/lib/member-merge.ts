@@ -16,6 +16,7 @@ import { deleteOwnedMemberPhotoBlobs } from "@/lib/member-photo";
 import { memberDisplayName } from "@/lib/member-serialization";
 import { prisma } from "@/lib/prisma";
 import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
+import { lockAdultMemberHostingPolicySet } from "@/lib/adult-member-hosting-policy-set";
 import {
   enqueueHostingCoverageReevaluationForMember,
   enqueueOwnHostingCoverageReevaluation,
@@ -25,8 +26,16 @@ import logger from "@/lib/logger";
 /**
  * E11 (#1937) — additive, master-wins member profile merge.
  *
- * The whole operation runs in ONE interactive transaction guarded by a dual
- * `member-lifecycle:{id}` advisory lock (see docs/CONCURRENCY_AND_LOCKING.md).
+ * The whole operation runs in ONE interactive transaction guarded first by the
+ * hosting policy-set lock, then a dual `member-lifecycle:{id}` advisory lock
+ * (see docs/CONCURRENCY_AND_LOCKING.md).
+ * The hosting drain takes the same sorted keys for its claimed owner and actor,
+ * then refreshes the exact queue payload. For a queue row that already exists,
+ * this handshake starts here, before any relation move, not at the later Member
+ * row locks used by field merge. #2597 separately owns ordinary booking/member
+ * queue rows inserted after this transaction's relation sweep;
+ * policy/config-transfer reconciliation cannot interleave there because it shares
+ * the policy-set lock.
  * It re-points every Member-referencing relation onto the master, additively
  * fills the master's blank scalar fields from the loser, tidies the loser's
  * Xero links, writes one critical audit, and hard-deletes the loser. There are
@@ -448,6 +457,9 @@ export const MEMBER_MERGE_SNAPSHOT_SCALAR_COLUMNS: readonly string[] = [
   // MOVED loser -> master by `MEMBER_MERGE_FK_LESS_MOVE_COLUMNS` / `applyMoves`,
   // matching its FK twin on the same row (`requestedByMemberId`, classified
   // `move`).
+  // `HostingCoverageReevaluation.actorMemberId` is the same exceptional live
+  // shape: although FK-less while queued, it is promoted into the incident's
+  // real `overriddenByMemberId` FK, so the move registry owns it as well.
 
   // -------------------------------------------------------------------------
   // #2243 — the rest of the columns `parseFkLessMemberIdColumns` detects.
@@ -1601,8 +1613,15 @@ function selfRelationMoveWhere(
  * `BookingRequest.convertedMemberId` is the identity pointer to the member a
  * booking request converted INTO, replayed as a live member id by
  * `claimAlreadyConvertedBookingRequest` — not an actor/audit snapshot.
+ * `HostingCoverageReevaluation.actorMemberId` is live too: the drain promotes
+ * it into the incident's real Member foreign key, so queued attribution must
+ * follow a merged person onto the surviving profile. Merge and drain share the
+ * sorted lifecycle handshake for an already-existing queue row, and the drain
+ * refreshes its exact claimed row. #2597 owns the ordinary booking/member
+ * producer-after-sweep case; policy/config-transfer reconciliation is already
+ * serialised by the shared policy-set lock.
  */
-const MEMBER_MERGE_FK_LESS_MOVE_COLUMNS: readonly {
+export const MEMBER_MERGE_FK_LESS_MOVE_COLUMNS: readonly {
   key: string;
   delegate: string;
   column: string;
@@ -1611,6 +1630,11 @@ const MEMBER_MERGE_FK_LESS_MOVE_COLUMNS: readonly {
     key: "BookingRequest.convertedMemberId",
     delegate: "bookingRequest",
     column: "convertedMemberId",
+  },
+  {
+    key: "HostingCoverageReevaluation.actorMemberId",
+    delegate: "hostingCoverageReevaluation",
+    column: "actorMemberId",
   },
 ];
 
@@ -2129,6 +2153,14 @@ export async function executeMemberMerge(params: {
   }
 
   const result = await client.$transaction(async (tx) => {
+    // Policy reconciliation enumerates bookings and inserts required queue rows
+    // under this key. Take it before lifecycle locks and hold it through every
+    // relation move, merge-triggered queue write and loser deletion, so a policy
+    // writer can only enqueue the complete pre-merge owner (which this merge
+    // moves) or the surviving owner after commit. Without this first tier, a row
+    // inserted after applyMoves could be cascade-dropped with the loser.
+    await lockAdultMemberHostingPolicySet(tx);
+
     // Dual advisory lock in sorted id order (deadlock-free) on the shared
     // member-lifecycle key space, so a merge serialises with any concurrent
     // delete/archive/merge touching either member.
@@ -2772,15 +2804,12 @@ async function applyMoves(
   }
 
   // FK-LESS member-id columns carried as MOVES rather than snapshots (#2243).
-  // `BookingRequest.convertedMemberId` is not an actor/audit column: it is the
-  // identity pointer to the member the request converted INTO, handed straight
-  // back to the idempotent replay path as a live member id
-  // (`claimAlreadyConvertedBookingRequest` in booking-request-shared.ts, read by
-  // booking-request.ts and school-booking-request.ts). Left on a hard-deleted
-  // loser it would replay a conversion as a member that no longer exists. Its FK
-  // twin on the same row, `requestedByMemberId`, is classified `move` in the
-  // spec table above; this column carries no `@relation` and so cannot live
-  // there, hence `MEMBER_MERGE_FK_LESS_MOVE_COLUMNS`.
+  // Both are live identities even though the schema cannot express them as
+  // Member relations: one is replayed to conversion callers and the other is
+  // promoted into a real incident FK by the hosting drain. The drain's shared
+  // lifecycle handshake precedes this move; its later Member row lock alone
+  // would be insufficient because these moves precede step-5 FOR UPDATE. Left on a
+  // hard-deleted loser either would later name a member that no longer exists.
   for (const c of MEMBER_MERGE_FK_LESS_MOVE_COLUMNS) {
     const delegate = (tx as unknown as Record<string, {
       updateMany: (args: unknown) => Promise<{ count: number }>;

@@ -6,6 +6,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { StrictMode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -92,7 +93,9 @@ describe("AllocationPreferencesSection", () => {
     fireEvent.click(screen.getByRole("button", { name: "Edit" }));
     fireEvent.click(toggle);
     fireEvent.click(
-      screen.getAllByRole("button", { name: /^Disable$/ })[0]!,
+      screen.getByRole("button", {
+        name: "Disable Keep each booking together",
+      }),
     );
 
     expect(toggle.checked).toBe(false);
@@ -134,6 +137,103 @@ describe("AllocationPreferencesSection", () => {
     ).toBe(true);
   });
 
+  it.each([
+    [
+      "Move Keep guests in the same room and bed up",
+      ["STAY_CONTINUITY", "BOOKING_COHESION"],
+    ],
+    [
+      "Move Keep each booking together down",
+      ["STAY_CONTINUITY", "BOOKING_COHESION"],
+    ],
+  ])("uses the labelled %s control and saves the exact order", async (label, order) => {
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) =>
+      init?.method === "PUT"
+        ? response({ ...LOADED, allocationPriorityOrder: order })
+        : response(),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    await renderLoaded();
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    expect(
+      (screen.getByRole("button", {
+        name: "Move Keep each booking together up",
+      }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+    expect(
+      (screen.getByRole("button", {
+        name: "Move Keep guests in the same room and bed down",
+      }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: label }));
+
+    expect(
+      (screen.getByRole("button", {
+        name: "Move Keep guests in the same room and bed up",
+      }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+    expect(
+      (screen.getByRole("button", {
+        name: "Move Keep each booking together down",
+      }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    const putCall = fetchMock.mock.calls.find(
+      ([, init]) => init?.method === "PUT",
+    );
+    expect(JSON.parse(String(putCall?.[1]?.body))).toEqual({
+      lodgeId: "lodge-1",
+      autoAllocationEnabled: true,
+      allocationPriorityOrder: order,
+    });
+  });
+
+  it("appends a re-enabled priority and saves it at the bottom", async () => {
+    const expectedOrder = [
+      "BOOKING_COHESION",
+      "STAY_CONTINUITY",
+      "REQUESTED_ROOM",
+    ];
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) =>
+      init?.method === "PUT"
+        ? response({ ...LOADED, allocationPriorityOrder: expectedOrder })
+        : response(),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    await renderLoaded();
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    const disabledRow = screen.getByText("Honour the requested room")
+      .parentElement;
+    expect(disabledRow).not.toBeNull();
+    fireEvent.click(
+      within(disabledRow as HTMLElement).getByRole("button", {
+        name: "Enable Honour the requested room",
+      }),
+    );
+
+    expect(
+      (screen.getByRole("button", {
+        name: "Move Honour the requested room down",
+      }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    const putCall = fetchMock.mock.calls.find(
+      ([, init]) => init?.method === "PUT",
+    );
+    expect(JSON.parse(String(putCall?.[1]?.body))).toEqual({
+      lodgeId: "lodge-1",
+      autoAllocationEnabled: true,
+      allocationPriorityOrder: expectedOrder,
+    });
+  });
+
   it("PUTs once, refreshes the parent, and re-seeds from the server response", async () => {
     const authoritative = {
       autoAllocationEnabled: false,
@@ -148,7 +248,9 @@ describe("AllocationPreferencesSection", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Edit" }));
     fireEvent.click(
-      screen.getAllByRole("button", { name: /^Disable$/ })[0]!,
+      screen.getByRole("button", {
+        name: "Disable Keep each booking together",
+      }),
     );
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
@@ -179,7 +281,9 @@ describe("AllocationPreferencesSection", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Edit" }));
     fireEvent.click(
-      screen.getAllByRole("button", { name: /^Disable$/ })[0]!,
+      screen.getByRole("button", {
+        name: "Disable Keep each booking together",
+      }),
     );
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
@@ -199,7 +303,9 @@ describe("AllocationPreferencesSection", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Edit" }));
     fireEvent.click(
-      screen.getAllByRole("button", { name: /^Disable$/ })[0]!,
+      screen.getByRole("button", {
+        name: "Disable Keep each booking together",
+      }),
     );
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
@@ -215,7 +321,7 @@ describe("AllocationPreferencesSection", () => {
       }) as HTMLButtonElement).disabled,
     ).toBe(true);
     for (const button of screen.getAllByRole("button", {
-      name: /^(Enable|Disable)$/,
+      name: /^(Enable|Disable) /,
     })) {
       expect((button as HTMLButtonElement).disabled).toBe(true);
     }
@@ -242,7 +348,9 @@ describe("AllocationPreferencesSection", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Edit" }));
     fireEvent.click(
-      screen.getAllByRole("button", { name: /^Disable$/ })[0]!,
+      screen.getByRole("button", {
+        name: "Disable Keep each booking together",
+      }),
     );
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     view.unmount();

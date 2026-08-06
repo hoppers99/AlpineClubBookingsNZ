@@ -2,16 +2,68 @@ import { BookingStatus } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  acquireFuturePartnerSharedAllocationLocks,
   BED_ALLOCATABLE_BOOKING_STATUSES,
   partnerShareSweepCounterpartNames,
   partnerShareSweepNights,
   reconcileBedAllocationsForBookingWithLodgeLockHeld,
-  sweepFuturePartnerSharedAllocationsWithLocksHeld as sweepFuturePartnerSharedAllocations,
+  sweepFuturePartnerSharedAllocationsWithLocksHeld,
 } from "@/lib/bed-allocation-lifecycle";
+import { acquireMemberLifecycleLocks } from "@/lib/member-lifecycle-lock";
 import { BED_ALLOCATION_PRIORITY_VOCABULARY } from "@/lib/bed-allocation-settings";
 import { eachDateOnlyInRange, parseDateOnly } from "@/lib/date-only";
 
 const NORMALIZED_GUEST_NIGHTS = Symbol("normalizedGuestNights");
+
+describe("partner-share lock prefix", () => {
+  it("deduplicates and sorts lodge then member locks behind the global lock", async () => {
+    const events: unknown[] = [];
+    const executeRaw = vi.fn(
+      async (_strings: TemplateStringsArray, ...values: unknown[]) => {
+        events.push(values[0] ?? "global");
+        return 1;
+      },
+    );
+    const findMany = vi.fn(async () => {
+      events.push("discover-lodges");
+      return [
+        { room: { lodgeId: "lodge-z" } },
+        { room: { lodgeId: "lodge-a" } },
+        { room: { lodgeId: "lodge-z" } },
+        { room: { lodgeId: null } },
+      ];
+    });
+    const tx = {
+      $executeRaw: executeRaw,
+      bedAllocation: { findMany },
+    } as any;
+
+    await acquireFuturePartnerSharedAllocationLocks(tx, [
+      "member-2",
+      "member-1",
+      "member-2",
+    ]);
+    await acquireMemberLifecycleLocks(tx, ["member-2", "member-1", "member-2"]);
+
+    expect(findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          bookingGuest: {
+            memberId: { in: ["member-2", "member-1"] },
+          },
+        }),
+      }),
+    );
+    expect(events).toEqual([
+      "global",
+      "discover-lodges",
+      "lodge-a",
+      "lodge-z",
+      "member-lifecycle:member-1",
+      "member-lifecycle:member-2",
+    ]);
+  });
+});
 
 function addSelectedNights<T>(value: T): T {
   const rows = Array.isArray(value) ? value : [value];
@@ -3052,7 +3104,7 @@ describe("prune orphan auto-promote (#1750)", () => {
 // #1756: stale partner-share sweep
 // ---------------------------------------------------------------------------
 
-describe("sweepFuturePartnerSharedAllocations (#1756)", () => {
+describe("sweepFuturePartnerSharedAllocationsWithLocksHeld (#1756)", () => {
   const AUG1 = parseDateOnly("2026-08-01");
   const AUG2 = parseDateOnly("2026-08-02");
 
@@ -3154,7 +3206,7 @@ describe("sweepFuturePartnerSharedAllocations (#1756)", () => {
       ]);
     db.bedAllocation.deleteMany.mockResolvedValue({ count: 2 });
 
-    const swept = await sweepFuturePartnerSharedAllocations({
+    const swept = await sweepFuturePartnerSharedAllocationsWithLocksHeld({
       memberId: "member-a",
       partnerMemberId: "member-b",
       reason: "partner_link_dissolved",
@@ -3259,7 +3311,7 @@ describe("sweepFuturePartnerSharedAllocations (#1756)", () => {
       ]);
     db.bedAllocation.deleteMany.mockResolvedValue({ count: 2 });
 
-    const swept = await sweepFuturePartnerSharedAllocations({
+    const swept = await sweepFuturePartnerSharedAllocationsWithLocksHeld({
       memberId: "member-m",
       reason: "member_deactivated",
       db: db as any,
@@ -3283,13 +3335,13 @@ describe("sweepFuturePartnerSharedAllocations (#1756)", () => {
   it("is a safe no-op on an empty candidate set and therefore idempotent on a second run", async () => {
     const db = makeSweepDb();
 
-    const first = await sweepFuturePartnerSharedAllocations({
+    const first = await sweepFuturePartnerSharedAllocationsWithLocksHeld({
       memberId: "member-a",
       partnerMemberId: "member-b",
       reason: "partner_link_dissolved",
       db: db as any,
     });
-    const second = await sweepFuturePartnerSharedAllocations({
+    const second = await sweepFuturePartnerSharedAllocationsWithLocksHeld({
       memberId: "member-a",
       partnerMemberId: "member-b",
       reason: "partner_link_dissolved",
@@ -3318,7 +3370,7 @@ describe("sweepFuturePartnerSharedAllocations (#1756)", () => {
       // No primary row on that bed-night (transient #1743 orphan).
       .mockResolvedValueOnce([]);
 
-    const swept = await sweepFuturePartnerSharedAllocations({
+    const swept = await sweepFuturePartnerSharedAllocationsWithLocksHeld({
       memberId: "member-a",
       partnerMemberId: "member-b",
       reason: "partner_link_dissolved",

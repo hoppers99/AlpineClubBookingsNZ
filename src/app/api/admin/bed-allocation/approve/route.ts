@@ -10,6 +10,7 @@ import {
 } from "@/lib/admin-bed-allocation-routes";
 import { parseJsonRequestBody } from "@/lib/api-json";
 
+// requireAdmin() is enforced by requireBedAllocationWrite().
 const approveSchema = z
   .object({
     allocationIds: z.array(z.string().min(1)).max(250).optional(),

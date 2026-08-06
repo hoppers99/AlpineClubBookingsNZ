@@ -1606,8 +1606,13 @@ records commit in that same transaction. Bucket-to-board bulk placement keeps
 its older per-night conflict semantics.
 
 The board's "Run Auto Allocation" uses the same whole-stay planner without
-displacement, and the board raises a
-stay-level `ROOM_SWITCH` warning when a booking's rooms change between nights,
+displacement. Its displayed suggestions are only a preview: the action takes
+global booking `lock(1)` then the selected lodge lock, authoritatively rebuilds
+only after confirming that lodge is still active, then rebuilds the scoped
+inventory/booking/occupancy/hold plan through that transaction and constructs
+and inserts AUTO rows. A room or bed deactivated/retyped
+after preview therefore cannot be written from the stale plan. The board raises
+a stay-level `ROOM_SWITCH` warning when a booking's rooms change between nights,
 plus a `MINOR_ADULT_MIX` warning on any persisted room-night that mixes one
 booking's minors with another booking's adults (#1768).
 

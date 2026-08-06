@@ -1307,7 +1307,11 @@ export async function sendPolicyExceptionRequestExpiredEmail(params: {
  * once delivery has been LEASED against the incident row
  * (`claimHostingCoverageOwnerNotification`). The success stamp is written only
  * after this function returns `sent`; failures release the lease for the durable
- * queue to retry, while two concurrent drains cannot both send.
+ * queue to retry. Immediately before this wrapper is called, the exact claimant
+ * renews its lease atomically; a successor-token race leaves only one active exact
+ * claimant for that renewed lease. Delivery is still at-least-once: a crash after
+ * provider acceptance but before the success stamp can make a later lease send the
+ * transition again.
  *
  * The recipient is the booking's OWNER, which is also the authority the optional
  * booking link is resolved against. Under `SAME_BOOKING_OWNER` the cover that went

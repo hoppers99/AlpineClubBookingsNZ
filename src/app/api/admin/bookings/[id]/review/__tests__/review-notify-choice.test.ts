@@ -34,7 +34,7 @@ vi.mock("@/lib/capacity", () => ({
   acquireLodgeCapacityLock: h.acquireLodgeCapacityLock,
 }));
 vi.mock("@/lib/bed-allocation-lifecycle", () => ({
-  reconcileBedAllocationsForBooking: h.reconcile,
+  reconcileBedAllocationsForBookingWithLodgeLockHeld: h.reconcile,
 }));
 vi.mock("@/lib/booking-cancel", () => ({ cancelBooking: h.cancelBooking }));
 vi.mock("@/lib/email", () => ({

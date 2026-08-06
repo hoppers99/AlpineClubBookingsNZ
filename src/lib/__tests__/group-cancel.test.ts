@@ -84,7 +84,8 @@ vi.mock("@/lib/cancellation", () => ({
   loadCancellationPolicy: mocks.loadCancellationPolicy,
 }));
 vi.mock("@/lib/bed-allocation-lifecycle", () => ({
-  reconcileBedAllocationsForBooking: mocks.reconcileBedAllocations,
+  reconcileBedAllocationsForBookingWithGlobalLockHeld:
+    mocks.reconcileBedAllocations,
 }));
 vi.mock("@/lib/payment-link", () => ({
   revokePaymentLinksForBooking: mocks.revokePaymentLinks,

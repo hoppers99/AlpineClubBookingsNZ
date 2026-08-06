@@ -36,7 +36,7 @@ const mocks = vi.hoisted(() => {
 
 vi.mock("@/lib/prisma", () => ({ prisma: mocks.prismaMock }));
 vi.mock("@/lib/bed-allocation-lifecycle", () => ({
-  reconcileBedAllocationsForBooking: (...args: unknown[]) =>
+  reconcileBedAllocationsForBookingWithGlobalLockHeld: (...args: unknown[]) =>
     mocks.mockReconcile(...args),
 }));
 vi.mock("@/lib/booking-request", () => ({

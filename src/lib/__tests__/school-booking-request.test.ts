@@ -150,7 +150,7 @@ vi.mock("@/lib/member-guest-settings", () => ({
 // booking is whole-lodge-held. Mocked here; the prune semantics themselves are
 // covered by bed-allocation-lifecycle.test.ts.
 vi.mock("@/lib/bed-allocation-lifecycle", () => ({
-  reconcileBedAllocationsForBooking: vi.fn().mockResolvedValue({
+  reconcileBedAllocationsForBookingWithLodgeLockHeld: vi.fn().mockResolvedValue({
     enabled: true,
     deletedCount: 0,
     createdCount: 0,
@@ -192,7 +192,9 @@ import {
   findOverlappingCapacityHoldingBookings,
 } from "@/lib/capacity";
 import { createAuditLog, logAudit } from "@/lib/audit";
-import { reconcileBedAllocationsForBooking } from "@/lib/bed-allocation-lifecycle";
+import {
+  reconcileBedAllocationsForBookingWithLodgeLockHeld as reconcileBedAllocationsForBooking,
+} from "@/lib/bed-allocation-lifecycle";
 import { getDefaultLodgeCapacity, getLodgeCapacity } from "@/lib/lodge-capacity";
 import { isEffectiveModuleEnabled } from "@/lib/admin-modules";
 import {
@@ -823,13 +825,17 @@ describe("approveSchoolBookingRequest", () => {
     expect(data.adultMemberHostingReviewedById).toBeNull();
   });
 
-  it("keeps a fresh-create approval lodge-only while re-reading the request under the lodge lock (#1881)", async () => {
+  it("takes global then lodge locks for a fresh-create approval and re-reads the request under the locks (#1881)", async () => {
     const order: string[] = [];
     let requestReads = 0;
     mockedFindUnique.mockImplementation((async () => {
       requestReads += 1;
       order.push(requestReads === 1 ? "outer-request" : `locked-request-${requestReads}`);
       return schoolRequest() as never;
+    }) as never);
+    vi.mocked(prisma.$executeRaw).mockImplementation((async () => {
+      order.push("global-lock");
+      return 1 as never;
     }) as never);
     mockedAcquireLodgeLock.mockImplementation(async () => {
       order.push("lodge-lock");
@@ -840,7 +846,12 @@ describe("approveSchoolBookingRequest", () => {
       adminMemberId: "admin-1",
     });
 
-    expect(prisma.$executeRaw).not.toHaveBeenCalled();
+    expect(order.indexOf("global-lock")).toBeGreaterThan(
+      order.indexOf("outer-request")
+    );
+    expect(order.indexOf("lodge-lock")).toBeGreaterThan(
+      order.indexOf("global-lock")
+    );
     expect(order.indexOf("lodge-lock")).toBeGreaterThan(order.indexOf("outer-request"));
     expect(order.indexOf("locked-request-2")).toBeGreaterThan(
       order.indexOf("lodge-lock")

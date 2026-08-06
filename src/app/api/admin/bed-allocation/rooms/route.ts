@@ -15,7 +15,7 @@ import { prisma } from "@/lib/prisma";
 import { resolveOptionalActiveLodgeId } from "@/lib/lodges";
 import { revalidatePublicSite } from "@/lib/public-content-revalidation";
 
-// requireAdmin() is enforced by requireBedAllocationAdmin().
+// requireAdmin() is enforced by the route-specific bed-inventory guard.
 const roomSchema = z
   .object({
     name: z.string().trim().min(1).max(100),

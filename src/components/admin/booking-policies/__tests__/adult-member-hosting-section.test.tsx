@@ -314,6 +314,22 @@ describe("adult-member hosting settings card (#2364)", () => {
     });
   });
 
+  it("names the qualifying-source group and associates its shared guidance", async () => {
+    await renderWith(async () => json(CONFIGURED_CLUB));
+
+    const source = screen.getByLabelText(
+      /Adult members who count/,
+    ) as HTMLSelectElement;
+    const group = screen.getByRole("group", {
+      name: "Qualifying adult-member sources",
+    });
+    expect(source.getAttribute("aria-describedby")).toBe("hostingScopeHint");
+    expect(group.getAttribute("aria-describedby")).toBe("hostingScopeHint");
+    expect(document.getElementById("hostingScopeHint")?.textContent).toMatch(
+      /These are independent/,
+    );
+  });
+
   it("keeps Save unreachable for a custom set with nobody ticked (#2569 §16)", async () => {
     await renderWith(async () => json(CONFIGURED_CLUB));
     fireEvent.click(await screen.findByRole("button", { name: "Edit" }));

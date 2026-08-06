@@ -51,6 +51,7 @@ vi.mock("@/lib/bed-allocation-lifecycle", async (importOriginal) => {
 });
 
 import {
+  BedAllocationAdminError,
   getBedAllocationDashboard,
   parseBedAllocationDateRange,
   runAutoBedAllocation,
@@ -130,6 +131,9 @@ function holdRow(bedId = "bed-a-1") {
 function buildDb(overrides: Record<string, unknown> = {}) {
   return {
     $executeRaw: mocks.executeRaw,
+    lodge: {
+      findUnique: vi.fn().mockResolvedValue({ id: LODGE, active: true }),
+    },
     bedAllocationSettings: {
       findUnique: vi.fn().mockResolvedValue({
         autoAllocationEnabled: true,
@@ -247,6 +251,113 @@ describe("board payload (chokepoint 2)", () => {
 });
 
 describe("runAutoBedAllocation (chokepoint 4)", () => {
+  it.each([null, { id: LODGE, active: false }])(
+    "rejects an unknown or inactive lodge under the locks before planning or writing",
+    async (lodge) => {
+      const lodgeFindUnique = vi.fn().mockResolvedValue(lodge);
+      const roomFindMany = vi.fn();
+      const db = buildDb({
+        lodge: { findUnique: lodgeFindUnique },
+        lodgeRoom: { findMany: roomFindMany },
+      });
+
+      await expect(
+        runAutoWithDb(db, { range, lodgeId: LODGE }),
+      ).rejects.toEqual(
+        expect.objectContaining<Partial<BedAllocationAdminError>>({
+          message: "Lodge not found or not active",
+          status: 400,
+        }),
+      );
+
+      expect(mocks.transaction).toHaveBeenCalledOnce();
+      expect(mocks.executeRaw).toHaveBeenCalled();
+      expect(lodgeFindUnique).toHaveBeenCalledWith({
+        where: { id: LODGE },
+        select: { id: true, active: true },
+      });
+      expect(roomFindMany).not.toHaveBeenCalled();
+      expect(mocks.createMany).not.toHaveBeenCalled();
+    },
+  );
+
+  it("rebuilds after the locks and never writes the bed deactivated/retyped after preview", async () => {
+    let inventory = room;
+    const roomFindMany = vi.fn(async () => [inventory]);
+    const db = buildDb({ lodgeRoom: { findMany: roomFindMany } });
+
+    const preview = await getBedAllocationDashboard({
+      range,
+      lodgeId: LODGE,
+      db,
+    });
+    expect(preview.suggestedAllocations).toEqual([
+      expect.objectContaining({ bedId: "bed-a-1" }),
+    ]);
+
+    // The transaction callback is the interleaving seam: the inventory writer
+    // wins after the action starts but before global -> lodge is acquired. The
+    // pre-fix implementation planned before opening this transaction and wrote
+    // bed-a-1 from that stale snapshot. Retyping is included in the same edit.
+    roomFindMany.mockClear();
+    mocks.db = db;
+    mocks.transaction.mockImplementation(
+      async (callback: (tx: typeof db) => unknown) => {
+        inventory = {
+          ...room,
+          beds: room.beds.map((bed) =>
+            bed.id === "bed-a-1"
+              ? { ...bed, active: false, bedType: "DOUBLE" }
+              : bed,
+          ),
+        };
+        return callback(db);
+      },
+    );
+    mocks.createMany.mockResolvedValue({ count: 1 });
+
+    const result = await runAutoBedAllocation({ range, lodgeId: LODGE });
+
+    expect(result).toEqual({ count: 1 });
+    expect(roomFindMany).toHaveBeenCalledOnce();
+    expect(mocks.createMany).toHaveBeenCalledWith({
+      data: [expect.objectContaining({ bedId: "bed-a-2" })],
+      skipDuplicates: true,
+    });
+    expect(
+      mocks.createMany.mock.calls[0][0].data.some(
+        (row: { bedId: string }) => row.bedId === "bed-a-1",
+      ),
+    ).toBe(false);
+  });
+
+  it("rebuilds after the locks and writes nothing into a room deactivated after preview", async () => {
+    let inventory = room;
+    const roomFindMany = vi.fn(async () => [inventory]);
+    const db = buildDb({ lodgeRoom: { findMany: roomFindMany } });
+
+    const preview = await getBedAllocationDashboard({
+      range,
+      lodgeId: LODGE,
+      db,
+    });
+    expect(preview.suggestedAllocations).toHaveLength(1);
+
+    roomFindMany.mockClear();
+    mocks.db = db;
+    mocks.transaction.mockImplementation(
+      async (callback: (tx: typeof db) => unknown) => {
+        inventory = { ...room, active: false };
+        return callback(db);
+      },
+    );
+    const result = await runAutoBedAllocation({ range, lodgeId: LODGE });
+
+    expect(result).toEqual({ count: 0 });
+    expect(roomFindMany).toHaveBeenCalledOnce();
+    expect(mocks.createMany).not.toHaveBeenCalled();
+  });
+
   it("re-filters suggestions against custodian holds read inside its own locked transaction", async () => {
     // The dashboard read sees no hold; the in-transaction read does. That is
     // exactly the race the re-filter exists for.

@@ -223,6 +223,11 @@ function runMigrationSafetyValidator(
       env: {
         ...process.env,
         MIGRATION_SAFETY_LEDGER: toShellPath(ledgerPath),
+        // Fixtures that already opt into a reviewed window model the operator's
+        // separate stopped-runtime acknowledgement too. Tests for a missing
+        // acknowledgement override this explicitly with "0".
+        BLUE_GREEN_OLD_APP_AND_WORKERS_STOPPED:
+          env.ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS === "1" ? "1" : "0",
         ...toShellEnv(env),
       },
       encoding: "utf8",

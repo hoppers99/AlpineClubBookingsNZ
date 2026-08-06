@@ -15,7 +15,7 @@ import { prisma } from "@/lib/prisma";
 import { resolveOptionalActiveLodgeId } from "@/lib/lodges";
 import { revalidatePublicSite } from "@/lib/public-content-revalidation";
 
-// requireAdmin() is enforced by requireBedAllocationAdmin().
+// requireAdmin() is enforced by requireBedInventoryWrite().
 const bulkSchema = z
   .object({
     roomCount: z.coerce.number().int().min(1).max(MAX_BULK_ROOMS),

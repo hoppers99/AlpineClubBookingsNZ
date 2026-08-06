@@ -2618,6 +2618,139 @@ describe("getBedAllocationDashboard school-group threading (#1768)", () => {
       }),
     ]);
   });
+
+  it("keeps family-group identifiers private while still using them for planner scoring", async () => {
+    const range = parseBedAllocationDateRange({
+      from: "2026-07-01",
+      to: "2026-07-02",
+    });
+    const room = (id: string, sortOrder: number) => ({
+      id,
+      name: `Room ${id}`,
+      sortOrder,
+      active: true,
+      notes: null,
+      lodgeId: "lodge-1",
+      beds: [1, 2].map((n) => ({
+        id: `bed-${id}-${n}`,
+        roomId: id,
+        name: `${id}${n}`,
+        sortOrder: n,
+        active: true,
+        bedType: "SINGLE",
+        bunkGroup: null,
+      })),
+    });
+    const guest = (id: string, familyGroupId: string) => ({
+      id,
+      bookingId: "booking-family",
+      firstName: id,
+      lastName: "Guest",
+      ageTier: "ADULT",
+      stayStart: parseDateOnly("2026-07-01"),
+      stayEnd: parseDateOnly("2026-07-02"),
+      nights: [{ stayDate: parseDateOnly("2026-07-01") }],
+      member: {
+        familyGroupMemberships: [{ familyGroupId }],
+      },
+    });
+    const guests = [
+      guest("guest-a", "private-family-ab"),
+      guest("guest-c", "private-family-cd"),
+      guest("guest-b", "private-family-ab"),
+      guest("guest-d", "private-family-cd"),
+    ];
+    const booking = {
+      id: "booking-family",
+      status: "PAID",
+      createdAt: new Date("2026-06-01T00:00:00.000Z"),
+      checkIn: parseDateOnly("2026-07-01"),
+      checkOut: parseDateOnly("2026-07-02"),
+      lodgeId: "lodge-1",
+      requestedRoomId: null,
+      parentBookingId: null,
+      originBookingRequest: null,
+      heldForBookingRequest: null,
+      adminCapacityHoldAt: null,
+      wholeLodgeHold: false,
+      requestedRoom: null,
+      member: { firstName: "Owner", lastName: "One", email: "o@example.nz" },
+      guests,
+    };
+    const allocation = (
+      id: string,
+      bookingGuest: (typeof guests)[number],
+      roomId: string,
+      bedId: string,
+    ) => ({
+      id,
+      bookingId: booking.id,
+      bookingGuestId: bookingGuest.id,
+      roomId,
+      bedId,
+      stayDate: parseDateOnly("2026-07-01"),
+      source: "AUTO",
+      approvedAt: null,
+      approvedBy: null,
+      isSecondOccupant: false,
+      booking: {
+        status: booking.status,
+        originBookingRequest: null,
+        adminCapacityHoldAt: null,
+      },
+      bookingGuest,
+      room: { id: roomId, name: `Room ${roomId}` },
+      bed: { id: bedId, name: bedId },
+    });
+    const db = {
+      bedAllocationSettings: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: "lodge-1",
+          lodgeId: "lodge-1",
+          autoAllocationEnabled: true,
+          allocationPriorityOrder: ["FAMILY_COHESION"],
+          updatedByMemberId: null,
+          updatedAt: parseDateOnly("2026-06-30"),
+        }),
+      },
+      lodgeRoom: {
+        findMany: vi.fn().mockResolvedValue([room("ra", 1), room("rb", 2)]),
+      },
+      hutLeaderAssignment: { findMany: vi.fn().mockResolvedValue([]) },
+      booking: { findMany: vi.fn().mockResolvedValue([booking]) },
+      bedAllocation: {
+        findMany: vi.fn().mockResolvedValue([
+          allocation("allocation-a", guests[0], "ra", "bed-ra-1"),
+          allocation("allocation-c", guests[1], "rb", "bed-rb-1"),
+        ]),
+      },
+    };
+
+    const dashboard = await getBedAllocationDashboard({
+      range,
+      lodgeId: "lodge-1",
+      db: db as never,
+    });
+
+    expect(dashboard.suggestedAllocations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ bookingGuestId: "guest-b", roomId: "ra" }),
+        expect.objectContaining({ bookingGuestId: "guest-d", roomId: "rb" }),
+      ]),
+    );
+    expect(dashboard.allocations.every((row) => !("familyGroupIds" in row))).toBe(
+      true,
+    );
+    expect(
+      dashboard.unallocatedGuestNights.every(
+        (row) => !("familyGroupIds" in row),
+      ),
+    ).toBe(true);
+    const responseJson = JSON.stringify(dashboard);
+    expect(responseJson).not.toContain("familyGroupIds");
+    expect(responseJson).not.toContain("private-family-ab");
+    expect(responseJson).not.toContain("private-family-cd");
+  });
 });
 
 describe("getBedAllocationDashboard focused booking (#1302)", () => {

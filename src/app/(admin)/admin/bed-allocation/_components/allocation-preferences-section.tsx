@@ -225,6 +225,7 @@ export function AllocationPreferencesSection({
                         size="sm"
                         variant="ghost"
                         disabled={section.saving}
+                        aria-label={`Disable ${LABELS[priority]}`}
                         onClick={() =>
                           section.setDraft({
                             allocationPriorityOrder:
@@ -254,6 +255,7 @@ export function AllocationPreferencesSection({
                           size="sm"
                           variant="ghost"
                           disabled={section.saving}
+                          aria-label={`Enable ${LABELS[priority]}`}
                           onClick={() =>
                             section.setDraft({
                               allocationPriorityOrder: [

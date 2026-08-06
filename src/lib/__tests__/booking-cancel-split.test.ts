@@ -79,7 +79,8 @@ vi.mock("@/lib/payment-link", () => ({
   revokePaymentLinksForBooking: mocks.revokePaymentLinksForBooking,
 }));
 vi.mock("@/lib/bed-allocation-lifecycle", () => ({
-  reconcileBedAllocationsForBooking: mocks.reconcileBedAllocationsForBooking,
+  reconcileBedAllocationsForBookingWithLodgeLockHeld:
+    mocks.reconcileBedAllocationsForBooking,
 }));
 vi.mock("@/lib/logger", () => ({
   default: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
@@ -166,9 +167,22 @@ describe("cancelBooking split cascade (#738)", () => {
       expect.anything(),
       "lodge_1"
     );
-    // The child transaction takes global lock(1) before its per-lodge lock.
-    expect(mocks.txExecuteRaw.mock.invocationCallOrder.at(-1)).toBeLessThan(
-      mocks.acquireLodgeCapacityLock.mock.invocationCallOrder[0]
+    // Both the parent and linked-child transactions take their own global
+    // lock(1) before their own per-lodge lock. Filter out later member-tier
+    // advisory locks so this cannot accidentally prove only the parent pair.
+    const globalLockOrders = mocks.txExecuteRaw.mock.calls.flatMap(
+      (call, index) =>
+        String(call[0]?.[0]).includes("pg_advisory_xact_lock(1)")
+          ? [mocks.txExecuteRaw.mock.invocationCallOrder[index]]
+          : [],
+    );
+    expect(globalLockOrders).toHaveLength(2);
+    expect(mocks.acquireLodgeCapacityLock).toHaveBeenCalledTimes(2);
+    expect(globalLockOrders[0]).toBeLessThan(
+      mocks.acquireLodgeCapacityLock.mock.invocationCallOrder[0],
+    );
+    expect(globalLockOrders[1]).toBeLessThan(
+      mocks.acquireLodgeCapacityLock.mock.invocationCallOrder[1],
     );
     // ...and conditionally claims only a still-provisional child.
     expect(mocks.bookingUpdateMany).toHaveBeenCalledWith({

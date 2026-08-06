@@ -13,6 +13,10 @@ import {
 import { BookingRequestStatus, type MemberGuestConsentStatus } from "@prisma/client";
 import { claimAlreadyConvertedBookingRequest } from "@/lib/booking-request-shared";
 import { classifyMemberGuestConsent } from "@/lib/member-guest-consent";
+import {
+  ADULT_MEMBER_HOSTING_POLICY_SET_LOCK_KEY,
+  lockAdultMemberHostingPolicySet,
+} from "@/lib/adult-member-hosting-policy-set";
 
 const MASTER_ID = "master-1";
 const LOSER_ID = "loser-1";
@@ -441,6 +445,58 @@ describe("executeMemberMerge", () => {
     });
     expect(result.relationMoves).toContainEqual({
       model: "BookingRequest.convertedMemberId",
+      count: 1,
+    });
+  });
+
+  it("re-points queued hosting actor attribution before hard-deleting the loser", async () => {
+    const hostingCoverageReevaluation = {
+      ...defaultDelegate(),
+      count: vi.fn(({ where }: { where: Record<string, unknown> }) =>
+        Promise.resolve(where.actorMemberId === LOSER_ID ? 1 : 0),
+      ),
+      updateMany: vi.fn(({ where }: { where: Record<string, unknown> }) =>
+        Promise.resolve({ count: where.actorMemberId === LOSER_ID ? 1 : 0 }),
+      ),
+    };
+    const { client } = makeClient({ hostingCoverageReevaluation });
+    const core: MemberMergePreviewCore = {
+      fieldMerge: mergeMemberFields(
+        master as unknown as Record<string, unknown>,
+        loser as unknown as Record<string, unknown>,
+      ).diff,
+      relationMoves: [
+        {
+          model: "HostingCoverageReevaluation.actorMemberId",
+          count: 1,
+        },
+      ],
+      collisions: [],
+      blockers: [],
+      warnings: [],
+    };
+
+    const result = await executeMemberMerge({
+      masterId: MASTER_ID,
+      loserId: LOSER_ID,
+      actorMemberId: ACTOR_ID,
+      previewToken: buildMemberMergePreviewToken(
+        MASTER_ID,
+        LOSER_ID,
+        master.updatedAt,
+        loser.updatedAt,
+        core,
+      ),
+      confirmationText: "MERGE Dup Person",
+      db: client as never,
+    });
+
+    expect(hostingCoverageReevaluation.updateMany).toHaveBeenCalledWith({
+      where: { actorMemberId: LOSER_ID },
+      data: { actorMemberId: MASTER_ID },
+    });
+    expect(result.relationMoves).toContainEqual({
+      model: "HostingCoverageReevaluation.actorMemberId",
       count: 1,
     });
   });
@@ -1253,8 +1309,117 @@ describe("member-photo reconciliation at execute time (MP1, #189)", () => {
     // advisory locks above it, so the mirror merge cannot deadlock against it.
     const lockArgs = executeRaw.mock.calls[rowLockIndex].slice(1) as string[];
     expect(lockArgs).toEqual([MASTER_ID, LOSER_ID].sort());
-    // ...and the advisory locks still come first.
-    expect(statements.slice(0, 2).every((s) => s.includes("pg_advisory_xact_lock"))).toBe(true);
+    // Hosting policy-set first, then both lifecycle keys in sorted order. This is
+    // the counterpart order shared with policy reconciliation and the drain.
+    expect(statements.slice(0, 3).every((s) => s.includes("pg_advisory_xact_lock"))).toBe(true);
+    expect(executeRaw.mock.calls[0][1]).toBe(
+      ADULT_MEMBER_HOSTING_POLICY_SET_LOCK_KEY,
+    );
+    expect(executeRaw.mock.calls.slice(1, 3).map((call) => call[1])).toEqual(
+      [MASTER_ID, LOSER_ID]
+        .sort()
+        .map((id) => `member-lifecycle:${id}`),
+    );
+  });
+
+  it("holds the policy set through booking moves and loser deletion so a late reconcile sees the survivor", async () => {
+    let bookingOwnerId = LOSER_ID;
+    const queuedOwners: string[] = [];
+    const booking = {
+      ...defaultDelegate(),
+      count: vi.fn(({ where }: { where: Record<string, unknown> }) =>
+        Promise.resolve(where.memberId === LOSER_ID ? 1 : 0),
+      ),
+      updateMany: vi.fn(
+        ({ where, data }: { where: Record<string, unknown>; data: Record<string, unknown> }) => {
+          if (where.memberId === LOSER_ID && data.memberId === MASTER_ID) {
+            bookingOwnerId = MASTER_ID;
+            return Promise.resolve({ count: 1 });
+          }
+          return Promise.resolve({ count: 0 });
+        },
+      ),
+    };
+    const { client, executeRaw, member } = makeClient({ booking });
+
+    function deferred() {
+      let resolve!: () => void;
+      const promise = new Promise<void>((done) => {
+        resolve = done;
+      });
+      return { promise, resolve };
+    }
+    const mergeHasPolicyLock = deferred();
+    const letMergeContinue = deferred();
+    const mergeCommitted = deferred();
+
+    executeRaw.mockImplementation(async (strings, ...values) => {
+      const statement = (strings as string[]).join("?");
+      if (
+        statement.includes("pg_advisory_xact_lock") &&
+        values[0] === ADULT_MEMBER_HOSTING_POLICY_SET_LOCK_KEY
+      ) {
+        mergeHasPolicyLock.resolve();
+        await letMergeContinue.promise;
+      }
+      return 0;
+    });
+
+    const core: MemberMergePreviewCore = {
+      fieldMerge: mergeMemberFields(
+        master as unknown as Record<string, unknown>,
+        loser as unknown as Record<string, unknown>,
+      ).diff,
+      relationMoves: [{ model: "Booking.member", count: 1 }],
+      collisions: [],
+      blockers: [],
+      warnings: [],
+    };
+    const merge = executeMemberMerge({
+      masterId: MASTER_ID,
+      loserId: LOSER_ID,
+      actorMemberId: ACTOR_ID,
+      previewToken: buildMemberMergePreviewToken(
+        MASTER_ID,
+        LOSER_ID,
+        master.updatedAt,
+        loser.updatedAt,
+        core,
+      ),
+      confirmationText: "MERGE Dup Person",
+      db: client as never,
+    });
+    await mergeHasPolicyLock.promise;
+
+    // This is the old lost-row window: policy reconciliation starts after merge
+    // has begun but before its relation sweep. Its real helper must wait for the
+    // merge transaction to commit before it can read ownership and enqueue.
+    const policyWriterRaw = vi.fn(async () => {
+      await mergeCommitted.promise;
+      return 0;
+    });
+    const policyWriter = (async () => {
+      await lockAdultMemberHostingPolicySet({
+        $executeRaw: policyWriterRaw,
+      } as never);
+      if (bookingOwnerId === LOSER_ID) {
+        throw new Error("policy reconciliation observed the deleted merge loser");
+      }
+      queuedOwners.push(bookingOwnerId);
+    })();
+    await Promise.resolve();
+    expect(policyWriterRaw).toHaveBeenCalledTimes(1);
+    expect(queuedOwners).toEqual([]);
+
+    letMergeContinue.resolve();
+    await merge;
+    expect((member as { delete: ReturnType<typeof vi.fn> }).delete).toHaveBeenCalledWith({
+      where: { id: LOSER_ID },
+    });
+    expect(bookingOwnerId).toBe(MASTER_ID);
+    mergeCommitted.resolve();
+    await policyWriter;
+    expect(queuedOwners).toEqual([MASTER_ID]);
   });
 });
 

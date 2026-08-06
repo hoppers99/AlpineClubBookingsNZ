@@ -100,16 +100,46 @@ describe("bed allocation lock topology", () => {
     }
   });
 
-  it("locks global then lodge before the school whole-lodge conversion", () => {
-    const school = source("src/lib/school-booking-request.ts");
-    const conversion = school.slice(
-      school.lastIndexOf("conversion = await prisma.$transaction"),
+  it("rebuilds the board auto-allocation plan only after global then lodge", () => {
+    const autoRun = between(
+      source("src/lib/admin-bed-allocation.ts"),
+      "export async function runAutoBedAllocation(",
+      "async function assertGuestAndBedForAllocation(",
     );
-    expectInOrder(conversion, [
+    expectInOrder(autoRun, [
       "pg_advisory_xact_lock(1)",
-      "acquireLodgeCapacityLock",
-      "reconcileBedAllocationsForBookingWithLodgeLockHeld",
+      "acquireLodgeCapacityLock(tx, lodgeId)",
+      "getBedAllocationDashboard",
+      "suggestedAllocations.map",
+      "bedAllocation.createMany",
     ]);
+  });
+
+  it("locks global exactly once then lodge before each school conversion", () => {
+    const school = source("src/lib/school-booking-request.ts");
+    const conversions = [
+      between(
+        school,
+        "export async function approveSchoolBookingRequest(",
+        "export type MemberWholeLodgeApprovalOverride",
+      ),
+      school.slice(
+        school.indexOf(
+          "export async function approveMemberWholeLodgeRequest(",
+        ),
+      ),
+    ];
+
+    for (const conversion of conversions) {
+      expect(conversion.match(/pg_advisory_xact_lock\(1\)/g) ?? []).toHaveLength(
+        1,
+      );
+      expectInOrder(conversion, [
+        "pg_advisory_xact_lock(1)",
+        "acquireLodgeCapacityLock",
+        "reconcileBedAllocationsForBookingWithLodgeLockHeld",
+      ]);
+    }
   });
 
   it("locks global, lodge, then member credit for internet-banking expiry", () => {
@@ -158,6 +188,36 @@ describe("bed allocation lock topology", () => {
       "pg_advisory_xact_lock(1)",
       "loadBookingForDelete",
       "reconcileBedAllocationsForBookingWithGlobalLockHeld",
+    ]);
+  });
+
+  it("locks partner-share lodges then the member before the member-detail write and held sweep", () => {
+    const memberDetail = source("src/lib/admin-member-detail-service.ts");
+    const transaction = between(
+      memberDetail,
+      "const updated = await prisma.$transaction(async (tx) => {",
+      "    if (\n      existing.active !== updated.active",
+    );
+    expectInOrder(transaction, [
+      "acquireFuturePartnerSharedAllocationLocks(tx, [id])",
+      "acquireMemberLifecycleLocks(tx, [id])",
+      "const updatedMember = await tx.member.update",
+      "sweepFuturePartnerSharedAllocationsWithLocksHeld",
+    ]);
+  });
+
+  it("locks partner-share lodges then every member before the bulk write and held sweep", () => {
+    const bulkUpdate = source("src/app/api/admin/members/bulk-update/route.ts");
+    const transaction = between(
+      bulkUpdate,
+      "const result = await prisma.$transaction(async (tx) => {",
+      "    for (const { memberId, reason, swept } of sweptSharesByMember)",
+    );
+    expectInOrder(transaction, [
+      "acquireFuturePartnerSharedAllocationLocks(tx, sweepLockMemberIds)",
+      "acquireMemberLifecycleLocks(tx, sweepLockMemberIds)",
+      "await tx.member.updateMany",
+      "sweepFuturePartnerSharedAllocationsWithLocksHeld",
     ]);
   });
 

@@ -34,7 +34,11 @@ import {
   promoteOrphanedSecondOccupantsBatch,
 } from "@/lib/bed-allocation-lifecycle";
 import logger from "@/lib/logger";
-import { getDefaultLodgeId, lodgeNullTolerantScope } from "@/lib/lodges";
+import {
+  getDefaultLodgeId,
+  lodgeNullTolerantScope,
+  resolveOptionalActiveLodgeId,
+} from "@/lib/lodges";
 import {
   bookingHoldsCapacity,
   isCapacityHoldingBookingStatus,
@@ -196,13 +200,17 @@ interface DashboardAllocation {
   approvedAt: string | null;
   approvedByName: string | null;
   isSecondOccupant?: boolean;
-  familyGroupIds?: string[];
   // Raw booking status (issue #1251), kept for display/debugging.
   bookingStatus: string;
   // Server-computed "Held" vs "Provisional" signal (#1254). Holding is no longer
   // a pure function of status (an accepted-but-unpaid quote is PENDING but holds),
   // so the board reads this precomputed flag from bookingHoldsCapacity().
   holdsCapacity: boolean;
+}
+
+/** Server-private planner projection; family membership is not a board DTO. */
+interface PlannerAllocation extends DashboardAllocation {
+  familyGroupIds: string[];
 }
 
 interface DashboardGuestNight {
@@ -212,6 +220,10 @@ interface DashboardGuestNight {
   guestAgeTier: BedAllocationAgeTier;
   memberName: string;
   stayDate: string;
+}
+
+/** Server-private planner projection; family membership is not a board DTO. */
+interface PlannerGuestNight extends DashboardGuestNight {
   familyGroupIds: string[];
 }
 
@@ -1634,9 +1646,9 @@ function serializeBookings(
   }));
 }
 
-function serializeAllocations(
+function serializePlannerAllocations(
   allocations: DashboardAllocationRecord[],
-): DashboardAllocation[] {
+): PlannerAllocation[] {
   return allocations.map((allocation) => ({
     id: allocation.id,
     bookingId: allocation.bookingId,
@@ -1667,10 +1679,46 @@ function serializeAllocations(
   }));
 }
 
+function toDashboardAllocation(
+  allocation: PlannerAllocation,
+): DashboardAllocation {
+  return {
+    id: allocation.id,
+    bookingId: allocation.bookingId,
+    bookingGuestId: allocation.bookingGuestId,
+    guestName: allocation.guestName,
+    guestAgeTier: allocation.guestAgeTier,
+    roomId: allocation.roomId,
+    roomName: allocation.roomName,
+    bedId: allocation.bedId,
+    bedName: allocation.bedName,
+    stayDate: allocation.stayDate,
+    source: allocation.source,
+    approvedAt: allocation.approvedAt,
+    approvedByName: allocation.approvedByName,
+    isSecondOccupant: allocation.isSecondOccupant,
+    bookingStatus: allocation.bookingStatus,
+    holdsCapacity: allocation.holdsCapacity,
+  };
+}
+
+function toDashboardGuestNight(
+  guestNight: PlannerGuestNight,
+): DashboardGuestNight {
+  return {
+    bookingId: guestNight.bookingId,
+    bookingGuestId: guestNight.bookingGuestId,
+    guestName: guestNight.guestName,
+    guestAgeTier: guestNight.guestAgeTier,
+    memberName: guestNight.memberName,
+    stayDate: guestNight.stayDate,
+  };
+}
+
 function buildGuestNightRows(
   bookings: DashboardBookingRecord[],
-): DashboardGuestNight[] {
-  const rows: DashboardGuestNight[] = [];
+): PlannerGuestNight[] {
+  const rows: PlannerGuestNight[] = [];
 
   for (const booking of bookings) {
     const bookingMemberName = memberName(booking.member);
@@ -1702,7 +1750,7 @@ function guestNightKey(bookingGuestId: string, stayDate: string) {
 
 function candidateGuestBookings(
   bookings: DashboardBookingRecord[],
-  guestNights: DashboardGuestNight[],
+  guestNights: PlannerGuestNight[],
 ): BedAllocationBooking[] {
   const bookingById = new Map(bookings.map((booking) => [booking.id, booking]));
   const guestsByBooking = new Map<string, BedAllocationBooking["guests"]>();
@@ -1953,7 +2001,11 @@ export async function getBedAllocationDashboard(input: {
     loadBookingRecords(input.range, db, input.lodgeId),
     loadAllocationRecords(input.range, db, input.lodgeId),
   ]);
-  const serializedAllocations = serializeAllocations(allocationRecords);
+  const visiblePlannerAllocations =
+    serializePlannerAllocations(allocationRecords);
+  const serializedAllocations = visiblePlannerAllocations.map(
+    toDashboardAllocation,
+  );
 
   // Planner-only continuity context: the board still returns and renders only
   // the requested window, but a guest allocated just outside it must influence
@@ -1993,7 +2045,7 @@ export async function getBedAllocationDashboard(input: {
       ];
     }
   }
-  const serializedPlannerAllocations = serializeAllocations(
+  const serializedPlannerAllocations = serializePlannerAllocations(
     plannerAllocationRecords,
   );
 
@@ -2019,7 +2071,7 @@ export async function getBedAllocationDashboard(input: {
       guestNightKey(allocation.bookingGuestId, allocation.stayDate),
     ),
   );
-  const unallocatedGuestNights = allGuestNights.filter(
+  const unallocatedPlannerGuestNights = allGuestNights.filter(
     (guestNight) =>
       // A held booking needs no per-bed placement (#120): keep its guests out
       // of the awaiting-allocation bucket AND out of the planner entirely.
@@ -2027,6 +2079,9 @@ export async function getBedAllocationDashboard(input: {
       !allocatedGuestNights.has(
         guestNightKey(guestNight.bookingGuestId, guestNight.stayDate),
       ),
+  );
+  const unallocatedGuestNights = unallocatedPlannerGuestNights.map(
+    toDashboardGuestNight,
   );
 
   // Board representation for each hold (#120): the group + the held nights that
@@ -2096,7 +2151,10 @@ export async function getBedAllocationDashboard(input: {
   );
 
   const plannerRooms = buildPlannerRooms(rooms);
-  const plannerBookings = candidateGuestBookings(bookings, unallocatedGuestNights);
+  const plannerBookings = candidateGuestBookings(
+    bookings,
+    unallocatedPlannerGuestNights,
+  );
   const plan = settings.autoAllocationEnabled
     ? buildFirstFitBedAllocationPlan({
         enabled: true,
@@ -2291,77 +2349,63 @@ export async function runAutoBedAllocation(input: {
   // never place a guest into another lodge's bed.
   lodgeId: string;
 }) {
-  const db = prisma;
-  const dashboard = await getBedAllocationDashboard({
-    range: input.range,
-    lodgeId: input.lodgeId,
-    db,
-  });
-
-  if (!dashboard.settings.autoAllocationEnabled) {
-    throw new BedAllocationAdminError(
-      "Auto allocation is disabled; use manual allocation.",
-      409,
-    );
-  }
-
-  if (dashboard.suggestedAllocations.length === 0) {
-    return { count: 0 };
-  }
-
-  const candidateRows = dashboard.suggestedAllocations.map((allocation) => ({
-    bookingId: allocation.bookingId,
-    bookingGuestId: allocation.bookingGuestId,
-    roomId: allocation.roomId,
-    bedId: allocation.bedId,
-    stayDate: parseDateOnly(allocation.stayDate),
-    source: "AUTO" as const,
-  }));
-
-  // Which lodge is each suggestion's room in? A scoped run already knows (the
-  // whole board is that lodge); a club-wide run resolves it once, here. This
-  // answers two questions with one lookup: which lodges the write must lock,
-  // and — for the #2317 whole-lodge-hold re-filter — which lodge's hold could
-  // take a given suggestion's bed. Resolved before the transaction opens so the
-  // lock stays the transaction's first statement.
   /**
-   * The locked write half of the run (#2286).
+   * Build and write one authoritative plan under the mutation topology.
    *
-   * This function used to write with a plain `db.bedAllocation.createMany` and
-   * NO transaction and NO lock at all — every check above ran against an
-   * unlocked dashboard read. That was survivable while the only concurrent
-   * writer was another allocation path guarded by the same unique indexes; a
-   * custodian hold is not protected by any index, so the re-filter below has to
-   * run under the same per-lodge advisory lock the hold writer takes, inside
-   * the same transaction as the write.
+   * The board GET is only a preview. Inventory, booking state, allocations,
+   * custodian/whole-lodge holds and every hard planner predicate are mutable,
+   * so a plan built from that response cannot be committed later. The action
+   * acquires global -> selected lodge first, then rebuilds the complete scoped
+   * dashboard through the transaction client and writes only that locked plan.
+   * Inventory writers and allocation counterparts share these keys, preventing
+   * a bed/room deactivate, retype, move, prune or approval from landing between
+   * this authoritative read and `createMany`.
    */
   const writeUnderLocks = async (
     tx: BedAllocationDb,
-    lodgeIds: string[],
   ): Promise<{ count: number }> => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
-    // Locks FIRST, in sorted order: the auto-allocate route accepts an omitted
-    // lodgeId (a club-wide run), so this transaction can span several lodges
-    // and must never deadlock against the per-lodge transactions taking the
-    // same keys one at a time. Sorted acquisition is the codebase's established
-    // multi-lodge pattern (instrumentation.node.ts draft cleanup).
-    for (const lodgeId of lodgeIds) {
-      await acquireLodgeCapacityLock(tx, lodgeId);
+    const lodgeId = input.lodgeId;
+    await acquireLodgeCapacityLock(tx, lodgeId);
+    if (!(await resolveOptionalActiveLodgeId(tx, lodgeId))) {
+      throw new BedAllocationAdminError(
+        "Lodge not found or not active",
+        400,
+      );
     }
 
-    // Write-time re-check (#2285 review): the dashboard read above is not held
-    // under any lock, so an exclusive hold set (or a cancel / soft delete) can
-    // commit between the read and this write. Its prune frees the unique keys,
-    // so `skipDuplicates` cannot stop us re-inserting rows for a booking that
-    // must own none — re-read the payload's bookings and drop those that are no
-    // longer allocatable. Shared with the lifecycle planner so both writers
-    // agree.
+    const dashboard = await getBedAllocationDashboard({
+      range: input.range,
+      lodgeId,
+      db: tx,
+    });
+    if (!dashboard.settings.autoAllocationEnabled) {
+      throw new BedAllocationAdminError(
+        "Auto allocation is disabled; use manual allocation.",
+        409,
+      );
+    }
+    if (dashboard.suggestedAllocations.length === 0) return { count: 0 };
+
+    const candidateRows = dashboard.suggestedAllocations.map((allocation) => ({
+      bookingId: allocation.bookingId,
+      bookingGuestId: allocation.bookingGuestId,
+      roomId: allocation.roomId,
+      bedId: allocation.bedId,
+      stayDate: parseDateOnly(allocation.stayDate),
+      source: "AUTO" as const,
+    }));
+
+    // Immediate write-time defence in depth, shared with the lifecycle planner.
+    // The authoritative plan above is already under global -> lodge, but keep
+    // the narrow booking/hold checks adjacent to the write so an uncoordinated
+    // legacy/direct-SQL mutation remains conservative rather than restorative.
     const { rows, droppedBookingIds } =
       await dropAllocationRowsForUnallocatableBookings(tx, candidateRows);
 
     if (droppedBookingIds.length > 0) {
       logger.info(
-        { droppedBookingIds, lodgeId: input.lodgeId },
+        { droppedBookingIds, lodgeId },
         "Run Auto Allocation write-time re-check dropped suggestions for bookings that became unallocatable (held/cancelled/deleted) after planning",
       );
     }
@@ -2369,17 +2413,15 @@ export async function runAutoBedAllocation(input: {
       return { count: 0 };
     }
 
-    // Custodian re-filter (#2286), defence in depth: the planner was already
-    // fed these bed-nights as blocking unknown-occupant rows, but that read was
-    // unlocked. Re-read the holds HERE, under the locks, and drop any
-    // suggestion that would land on one.
+    // Custodian re-filter (#2286), defence in depth. Re-read the holds HERE,
+    // under the same locked transaction, and drop any suggestion targeting one.
     const stayDates = rows.map((row) => row.stayDate);
     const from = stayDates.reduce((a, b) => (a < b ? a : b));
     const latest = stayDates.reduce((a, b) => (a > b ? a : b));
     const toExclusive = addDaysDateOnly(latest, 1);
     const heldKeys = custodianHeldBedNightKeys(
       await findCustodianBedHolds({
-        lodgeId: input.lodgeId,
+        lodgeId,
         from,
         toExclusive,
         db: tx,
@@ -2393,7 +2435,7 @@ export async function runAutoBedAllocation(input: {
       logger.info(
         {
           droppedCount: rows.length - writableRows.length,
-          lodgeId: input.lodgeId,
+          lodgeId,
         },
         "Run Auto Allocation dropped suggestions targeting custodian-held bed-nights",
       );
@@ -2403,32 +2445,25 @@ export async function runAutoBedAllocation(input: {
     }
 
     // Whole-lodge-hold re-filter (#2317), the exact mirror of the custodian one
-    // above. The planner WAS fed these nights as blocking unattributed
-    // occupancy — but from the same unlocked dashboard read, and the
-    // unallocatable re-check above cannot cover this: it asks whether the
-    // SUGGESTED booking became unallocatable, and a hold set on somebody ELSE's
-    // booking leaves the suggested booking perfectly allocatable while taking
-    // every bed it was about to be placed on. Re-read the holds HERE, under the
-    // locks the hold writer takes, and drop any suggestion landing on a held
-    // lodge-night. A row whose lodge cannot be resolved is treated as held by
-    // ANY hold (null-tolerant), which is the conservative direction.
+    // above. The booking re-check cannot cover a hold set on somebody ELSE's
+    // booking, so retain this final narrow guard even though the locked planner
+    // has already consumed the same authoritative hold set.
     const isWholeLodgeHeld = buildWholeLodgeHeldNightPredicate(
       await findBlockingWholeLodgeHolds({
-        lodgeId: input.lodgeId,
+        lodgeId,
         from,
         toExclusive,
         db: tx,
       }),
     );
     const unheldRows = writableRows.filter(
-      (row) =>
-        !isWholeLodgeHeld(input.lodgeId, formatDateOnly(row.stayDate)),
+      (row) => !isWholeLodgeHeld(lodgeId, formatDateOnly(row.stayDate)),
     );
     if (unheldRows.length < writableRows.length) {
       logger.info(
         {
           droppedCount: writableRows.length - unheldRows.length,
-          lodgeId: input.lodgeId,
+          lodgeId,
         },
         "Run Auto Allocation dropped suggestions targeting whole-lodge-held nights",
       );
@@ -2443,12 +2478,7 @@ export async function runAutoBedAllocation(input: {
     });
   };
 
-  // A caller-supplied client is already transactional, so run inline on it
-  // rather than nesting a transaction (the other self-wrapping helpers here do
-  // the same). The locks are still taken on that client — pg advisory locks are
-  // re-entrant within a session, so re-acquiring one the caller already holds
-  // is a no-op, and acquiring one it does not is exactly what we need.
-  return prisma.$transaction((tx) => writeUnderLocks(tx, [input.lodgeId]));
+  return prisma.$transaction(writeUnderLocks);
 }
 
 async function assertGuestAndBedForAllocation(input: {

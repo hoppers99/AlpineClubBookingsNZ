@@ -603,9 +603,13 @@ Potentially breaking migrations require explicit operator acknowledgement with:
 ```bash
 ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS=1
 BLUE_GREEN_MIGRATION_OVERRIDE_REASON="..."
+BLUE_GREEN_OLD_APP_AND_WORKERS_STOPPED=1
 ```
 
-Use this only with a written rollback and lock-impact plan.
+Use this only with a written rollback and lock-impact plan. For a pending
+`windowed` row, set the stopped-runtime acknowledgement only after public traffic
+is removed, the old web colour and every worker/scheduler/queue consumer are
+stopped, and `pg_stat_activity` confirms no old connection remains.
 
 ### Expand then contract (multi-lodge)
 
@@ -639,9 +643,9 @@ Check for these before every deploy:
 awk -F'\t' '$4 == "windowed" { print $1 }' docs/BLUE_GREEN_MIGRATION_SAFETY.tsv
 ```
 
-**Current windowed migrations — there are two, and if both are pending they share
-ONE window.** `prisma migrate deploy` applies them in the same command, so the
-sequence below is run once, not twice.
+**Current windowed migrations — there are three, and pending rows share ONE
+window.** `prisma migrate deploy` applies them in the same command, so the
+sequence below is run once, not once per migration.
 
 - `20260803010000_contract_subscription_lockout_drop_enabled` (#2543 / #2561). It
   drops `MembershipLockoutSettings.enabled`. The previous release's Prisma client
@@ -658,9 +662,14 @@ sequence below is run once, not twice.
   merge, Xero member import and nomination. The owner authorised this one as a
   windowed drop on 3 Aug 2026, superseding an earlier plan that would have carried
   the obsolete column through another release.
+- `20260806010000_fence_hosting_coverage_delivery_claims` (#2596). Its nullable
+  columns are harmless to the previous Prisma client, but its worker protocol is
+  not: an old hosting worker ignores the token/expiry fields and can take, email and
+  complete work that a new worker already owns. The old web colour and **every** old
+  worker must therefore be stopped before migrate, and only new workers may start.
 
-In neither case is there an ordering that keeps both colours working, which is why
-the window exists.
+There is no ordering that keeps both runtime protocols working, which is why the
+window exists.
 
 **The sequence, in order. Each step is there because the next one cannot be
 undone without it.** This is the combined order — the one the owner directed for
@@ -703,13 +712,17 @@ says which governs when:
    the whole ordinary cutover this window replaces. So in a hand-run window the
    operator runs it or nothing does, and passing
    `ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS` to Prisma alone achieves nothing. It
-   refuses without the acknowledgement above and a
-   `BLUE_GREEN_MIGRATION_OVERRIDE_REASON` naming this window, and refuses
+   refuses without the acknowledgement above, a
+   `BLUE_GREEN_MIGRATION_OVERRIDE_REASON` naming this window, and
+   `BLUE_GREEN_OLD_APP_AND_WORKERS_STOPPED=1` set only after step 3; it refuses
    regardless if the migration ships no `rollback.sql`. Then migrate through the
    dedicated compose service the deploy script uses,
    `docker compose --profile migrate run --rm migrate` — not `npx`, which this host
    is not documented as having and which is deliberately removed from the runtime
-   image. Exact commands: `docs/PRODUCTION_UPGRADE_RUNBOOK.md` §2.4.1 step 9.
+   image. Pass all six pending migration files, in order — `20260803010000`,
+   `20260803020000`, `20260803030000`, `20260803070000`, `20260806000000` and
+   `20260806010000` — including the additive rows; exact commands are in
+   `docs/PRODUCTION_UPGRADE_RUNBOOK.md` §2.4.1 step 9.
 7. **Verify the migrate step**: the dropped column is gone and
    `_prisma_migrations` records each migration once.
 8. **Start the replacement release and replacement workers only**, confirm
@@ -726,14 +739,70 @@ the reverse script or restoring the backup**: after the drop commits, its client
 names a column that no longer exists, so re-pointing traffic at it does not restore
 service. Restore from backup only if the **data** is wrong rather than the schema.
 
-**When both windowed migrations were applied in the one window, roll back BOTH, in
-the reverse of the order they were applied** — `20260803030000` first, then
-`20260803010000`. One is not enough: whichever you skip leaves its column missing
+**Before starting any previous-release image, complete this mandatory compatibility
+and drain preflight while the NEW runtime and its cron/drain are still available.**
+Demote the club-wide ENFORCED policy **and every explicit lodge ENFORCED override**
+through the new Booking Policies UI; changing only the club row does not supersede an
+explicit lodge override. Use the operator-approved `ADMIN_REVIEW_REQUIRED` or
+`DISABLED` fallback, then run:
+
+```sql
+SELECT "id", "scopeKey", "lodgeId", "mode"
+FROM "AdultMemberHostingPolicy"
+WHERE "mode" = 'ENFORCED';
+```
+
+The result must be empty. The previous Prisma client cannot decode `ENFORCED`, and
+the policy loader is on every booking write path. If any row is returned, prefer a
+forward-fix. If rollback is unavoidable, record an operator-approved fallback for
+each returned club/lodge policy, use the replacement runtime to save it as
+`ADMIN_REVIEW_REQUIRED` or `DISABLED`, and repeat the query. Never guess the policy
+or start the old runtime while the query still returns a row. If the replacement
+runtime is unavailable, stop for a separately reviewed SQL mapping or restore the
+verified backup.
+
+After the **last** override change, keep the new runtime/cron running until both of
+these queries also return zero rows:
+
+```sql
+SELECT "id", "memberId", "lodgeId", "attempts", "lastError",
+       "claimToken", "claimExpiresAt"
+FROM "HostingCoverageReevaluation"
+WHERE "processedAt" IS NULL
+ORDER BY "enqueuedAt", "id";
+
+SELECT "id", "bookingId", "lodgeId", "stateKey", "openedAt"
+FROM "HostingCoverageIncident"
+WHERE "resolvedAt" IS NULL
+ORDER BY "openedAt", "id";
+```
+
+Any row blocks rollback. A maximum-attempt or `lastError` re-evaluation is not safe
+to ignore: it may no longer be automatically claimable, so diagnose/recover it with
+the new runtime or a separately reviewed repair. An unresolved incident blocks even
+when the queue is empty. Repeat the ENFORCED, unprocessed-work and unresolved-incident
+proofs after the last policy change. **Only after all three remain empty** may you
+stop every new worker and start the old-only release.
+
+**When all three windowed migrations were applied in one window, first follow
+`20260806010000/rollback.sql`'s no-op operational boundary:** keep traffic removed,
+stop every new app/worker, and leave its nullable columns plus migration history
+intact. Then roll back the two schema-removal migrations in reverse order —
+`20260803030000` first, then `20260803010000`. One schema script is not enough:
+whichever you skip leaves its column missing
 and the previous release still broken, and if you skip `20260803010000` what stays
 broken is every booking write path, while the family-group pages look fine and
 suggest the rollback worked. The two touch different tables, so the order cannot
 corrupt anything; it is the rule to follow because it generalises. Rehearsed both
 scripts in that order.
+
+The first three additive hosting migrations (`20260803020000`, `20260803070000`
+and `20260806000000`) need no reverse scripts. `20260806010000` ships a mandatory
+but deliberately no-op `rollback.sql`: its added schema is inert to the previous
+client. Its operational rollback first keeps the new runtime available to demote all
+club/lodge ENFORCED rows, drain every re-evaluation and close every incident; only
+then does it stop new workers and start old-only. The columns/history stay intact for
+a clean roll-forward.
 
 **After a `rollback.sql` the migration history lies, and nothing in the deploy path
 notices.** `_prisma_migrations` still records the migration as applied, so
@@ -748,7 +817,7 @@ roll the schema forward before starting the replacement release: the replacement
 client works against the rolled-back schema, because the restored column is
 `NOT NULL` with a constant default.
 
-Full step-by-step, including the rehearsal evidence for both current windowed
+Full step-by-step, including the rehearsal evidence for the schema-removal windowed
 migrations, is in `docs/PRODUCTION_UPGRADE_RUNBOOK.md` → "Windowed migration deploy
 sequence" (the #2520 sequence is its §2.4.1).
 
