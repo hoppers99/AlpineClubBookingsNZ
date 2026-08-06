@@ -98,7 +98,6 @@ vi.mock("@/lib/cancellation", () => ({
 }));
 vi.mock("@/lib/bed-allocation-lifecycle", () => ({
   reconcileBedAllocationsForBookingWithLodgeLockHeld: vi.fn().mockResolvedValue({}),
-  reconcileBedAllocationsForBookingWithGlobalLockHeld: vi.fn().mockResolvedValue({}),
   MAX_AUDITED_PRUNED_ALLOCATIONS: 50,
 }));
 vi.mock("@/lib/xero-operation-outbox", () => ({

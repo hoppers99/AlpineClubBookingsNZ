@@ -42,8 +42,12 @@ vi.mock("@/lib/email", () => ({
 // #1756: the dissolve paths sweep the pair's future shared-double allocations
 // through this helper; the sweep's own behaviour is covered in
 // bed-allocation-lifecycle.test.ts, so here it is a spy.
+const mockAcquireFuturePartnerSharedAllocationLocks = vi
+  .fn()
+  .mockResolvedValue(undefined);
 vi.mock("@/lib/bed-allocation-lifecycle", () => ({
-  acquireFuturePartnerSharedAllocationLocks: vi.fn().mockResolvedValue(undefined),
+  acquireFuturePartnerSharedAllocationLocks: (...args: unknown[]) =>
+    mockAcquireFuturePartnerSharedAllocationLocks(...args),
   sweepFuturePartnerSharedAllocationsWithLocksHeld: vi.fn().mockResolvedValue([]),
   partnerShareSweepNights: vi.fn(() => [new Date("2026-08-01T00:00:00.000Z")]),
   describePartnerSharedSweepReason: vi.fn(() => "Partner link dissolved"),
@@ -733,6 +737,21 @@ describe("removeOwnPartnerLink", () => {
       reason: "partner_link_dissolved",
       db: prisma,
     });
+    expect(mockAcquireFuturePartnerSharedAllocationLocks).toHaveBeenCalledWith(
+      prisma,
+      ["member-a", "member-b"],
+    );
+    const acquireOrder =
+      mockAcquireFuturePartnerSharedAllocationLocks.mock.invocationCallOrder[0];
+    const memberLockOrder = vi.mocked(prisma.$executeRaw).mock
+      .invocationCallOrder[0];
+    const deleteOrder = vi.mocked(prisma.memberPartnerLink.deleteMany).mock
+      .invocationCallOrder[0];
+    const heldSweepOrder = vi.mocked(sweepFuturePartnerSharedAllocations).mock
+      .invocationCallOrder[0];
+    expect(acquireOrder).toBeLessThan(memberLockOrder);
+    expect(memberLockOrder).toBeLessThan(deleteOrder);
+    expect(deleteOrder).toBeLessThan(heldSweepOrder);
     expect(sendAdminPartnerShareSweptAlert).toHaveBeenCalledWith(
       expect.objectContaining({
         memberName: "Alice Ash",

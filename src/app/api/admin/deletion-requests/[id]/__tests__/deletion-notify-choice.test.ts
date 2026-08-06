@@ -15,6 +15,7 @@ const h = vi.hoisted(() => ({
   sendAccountDeletionApprovedEmail: vi.fn(),
   sendAccountDeletionRejectedEmail: vi.fn(),
   sendAdminPartnerShareSweptAlert: vi.fn(),
+  acquireFuturePartnerSharedAllocationLocks: vi.fn(),
   sweepFuturePartnerSharedAllocations: vi.fn(),
   prisma: {
     deletionRequest: { findUnique: vi.fn(), update: vi.fn() },
@@ -58,7 +59,8 @@ vi.mock("@/lib/bed-allocation-lifecycle", () => ({
   describePartnerSharedSweepReason: vi.fn().mockReturnValue("reason"),
   partnerShareSweepCounterpartNames: vi.fn().mockReturnValue(""),
   partnerShareSweepNights: vi.fn().mockReturnValue(0),
-  acquireFuturePartnerSharedAllocationLocks: vi.fn().mockResolvedValue(undefined),
+  acquireFuturePartnerSharedAllocationLocks:
+    h.acquireFuturePartnerSharedAllocationLocks,
   sweepFuturePartnerSharedAllocationsWithLocksHeld:
     h.sweepFuturePartnerSharedAllocations,
 }));
@@ -117,6 +119,7 @@ beforeEach(() => {
   h.isFullAdmin.mockReturnValue(true);
   h.memberHoldsPrivilegedRole.mockReturnValue(false);
   h.wouldRemoveLastFullAdmin.mockResolvedValue(false);
+  h.acquireFuturePartnerSharedAllocationLocks.mockResolvedValue(undefined);
   h.sweepFuturePartnerSharedAllocations.mockResolvedValue([]);
   h.sendAccountDeletionApprovedEmail.mockResolvedValue(undefined);
   h.sendAccountDeletionRejectedEmail.mockResolvedValue(undefined);
@@ -183,6 +186,19 @@ describe("POST /api/admin/deletion-requests/[id] approve carve-out (#1788)", () 
       member.firstName,
     );
     expect(h.sendAccountDeletionRejectedEmail).not.toHaveBeenCalled();
+    expect(h.acquireFuturePartnerSharedAllocationLocks).toHaveBeenCalledWith(
+      h.prisma,
+      [member.id],
+    );
+    const acquireOrder =
+      h.acquireFuturePartnerSharedAllocationLocks.mock.invocationCallOrder[0];
+    const memberLockOrder = h.prisma.$executeRaw.mock.invocationCallOrder[0];
+    const heldSweepOrder =
+      h.sweepFuturePartnerSharedAllocations.mock.invocationCallOrder[0];
+    const anonymiseOrder = h.prisma.member.update.mock.invocationCallOrder[0];
+    expect(acquireOrder).toBeLessThan(memberLockOrder);
+    expect(memberLockOrder).toBeLessThan(heldSweepOrder);
+    expect(heldSweepOrder).toBeLessThan(anonymiseOrder);
   });
 
   // F32 (#1888): booking.checkIn is @db.Date (NZ calendar date at UTC midnight).

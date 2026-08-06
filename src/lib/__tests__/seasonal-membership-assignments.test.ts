@@ -19,7 +19,6 @@ const mockAcquireFuturePartnerSharedAllocationLocks = vi
   .fn()
   .mockResolvedValue(undefined);
 vi.mock("@/lib/bed-allocation-lifecycle", () => ({
-  sweepFuturePartnerSharedAllocations: (...args: unknown[]) => mockSweep(...args),
   sweepFuturePartnerSharedAllocationsWithLocksHeld: (...args: unknown[]) =>
     mockSweep(...args),
   acquireFuturePartnerSharedAllocationLocks: (...args: unknown[]) =>
@@ -542,6 +541,18 @@ describe("seasonal membership assignment preview and save", () => {
     expect(mockSweep).toHaveBeenCalledWith(
       expect.objectContaining({ memberId: "member-1", reason: "member_age_tier_changed" }),
     );
+    expect(mockAcquireFuturePartnerSharedAllocationLocks).toHaveBeenCalledWith(
+      db,
+      ["member-1"],
+    );
+    const acquireOrder =
+      mockAcquireFuturePartnerSharedAllocationLocks.mock.invocationCallOrder[0];
+    const memberLockOrder = db.$executeRaw.mock.invocationCallOrder[0];
+    const memberWriteOrder = db.member.update.mock.invocationCallOrder[0];
+    const heldSweepOrder = mockSweep.mock.invocationCallOrder[0];
+    expect(acquireOrder).toBeLessThan(memberLockOrder);
+    expect(memberLockOrder).toBeLessThan(memberWriteOrder);
+    expect(memberWriteOrder).toBeLessThan(heldSweepOrder);
     expect(db.auditLog.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({

@@ -17,19 +17,22 @@ const NORMALIZED_GUEST_NIGHTS = Symbol("normalizedGuestNights");
 
 describe("partner-share lock prefix", () => {
   it("deduplicates and sorts lodge then member locks behind the global lock", async () => {
-    const lockValues: unknown[] = [];
+    const events: unknown[] = [];
     const executeRaw = vi.fn(
       async (_strings: TemplateStringsArray, ...values: unknown[]) => {
-        lockValues.push(values[0] ?? "global");
+        events.push(values[0] ?? "global");
         return 1;
       },
     );
-    const findMany = vi.fn().mockResolvedValue([
-      { room: { lodgeId: "lodge-z" } },
-      { room: { lodgeId: "lodge-a" } },
-      { room: { lodgeId: "lodge-z" } },
-      { room: { lodgeId: null } },
-    ]);
+    const findMany = vi.fn(async () => {
+      events.push("discover-lodges");
+      return [
+        { room: { lodgeId: "lodge-z" } },
+        { room: { lodgeId: "lodge-a" } },
+        { room: { lodgeId: "lodge-z" } },
+        { room: { lodgeId: null } },
+      ];
+    });
     const tx = {
       $executeRaw: executeRaw,
       bedAllocation: { findMany },
@@ -51,8 +54,9 @@ describe("partner-share lock prefix", () => {
         }),
       }),
     );
-    expect(lockValues).toEqual([
+    expect(events).toEqual([
       "global",
+      "discover-lodges",
       "lodge-a",
       "lodge-z",
       "member-lifecycle:member-1",

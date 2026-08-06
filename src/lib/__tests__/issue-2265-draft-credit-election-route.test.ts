@@ -104,8 +104,6 @@ vi.mock("@/lib/lodges", () => ({
   getDefaultLodgeId: vi.fn().mockResolvedValue("lodge-1"),
 }));
 vi.mock("@/lib/bed-allocation-lifecycle", () => ({
-  reconcileBedAllocationsForBookingWithGlobalLockHeld:
-    mocks.reconcileBedAllocationsForBooking,
   reconcileBedAllocationsForBookingWithLodgeLockHeld:
     mocks.reconcileBedAllocationsForBooking,
 }));

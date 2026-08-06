@@ -19,8 +19,12 @@ vi.mock("@/lib/xero-contact-groups", () => ({
 }));
 
 const mockSweep = vi.fn().mockResolvedValue([]);
+const mockAcquireFuturePartnerSharedAllocationLocks = vi
+  .fn()
+  .mockResolvedValue(undefined);
 vi.mock("@/lib/bed-allocation-lifecycle", () => ({
-  acquireFuturePartnerSharedAllocationLocks: vi.fn().mockResolvedValue(undefined),
+  acquireFuturePartnerSharedAllocationLocks: (...args: unknown[]) =>
+    mockAcquireFuturePartnerSharedAllocationLocks(...args),
   sweepFuturePartnerSharedAllocationsWithLocksHeld: (...args: unknown[]) =>
     mockSweep(...args),
   describePartnerSharedSweepReason: vi.fn(() => "age tier changed"),
@@ -210,6 +214,7 @@ function makeBulkDb(members: Record<string, MemberConfig>) {
     auditLog: {
       create: vi.fn().mockResolvedValue({}),
     },
+    $executeRaw: vi.fn().mockResolvedValue(1),
     $transaction: vi.fn(async (cb: any) => cb(db)),
   };
   return db;
@@ -401,6 +406,46 @@ describe("bulkSaveSeasonalMembershipAssignments", () => {
     expect(entry.linkedGuestBookings.count).toBe(2);
     expect(db.seasonalMembershipAssignment.upsert).not.toHaveBeenCalled();
     expect(mockReconcileGroups).not.toHaveBeenCalled();
+  });
+
+  it("takes the partner-share lock prefix before the member lock, tier write, and held sweep", async () => {
+    const db = makeBulkDb({
+      "m-flip": { prevTypeId: "type-full", ageTier: "ADULT" },
+    });
+    const tokens = {
+      "m-flip": await tokenFor(db, "m-flip", currentSeason, "type-exempt"),
+    };
+
+    const result = await bulkSaveSeasonalMembershipAssignments({
+      ids: ["m-flip"],
+      seasonYear: currentSeason,
+      membershipTypeId: "type-exempt",
+      adminMemberId: "admin-1",
+      reason: "flip to exempt",
+      previewTokens: tokens,
+      db: db as never,
+    });
+
+    expect((result.body as any).outcomeCounts).toMatchObject({ changed: 1 });
+    expect(mockAcquireFuturePartnerSharedAllocationLocks).toHaveBeenCalledWith(
+      db,
+      ["m-flip"],
+    );
+    expect(mockSweep).toHaveBeenCalledWith(
+      expect.objectContaining({
+        memberId: "m-flip",
+        reason: "member_age_tier_changed",
+        db,
+      }),
+    );
+    const acquireOrder =
+      mockAcquireFuturePartnerSharedAllocationLocks.mock.invocationCallOrder[0];
+    const memberLockOrder = db.$executeRaw.mock.invocationCallOrder[0];
+    const memberWriteOrder = db.member.update.mock.invocationCallOrder[0];
+    const heldSweepOrder = mockSweep.mock.invocationCallOrder[0];
+    expect(acquireOrder).toBeLessThan(memberLockOrder);
+    expect(memberLockOrder).toBeLessThan(memberWriteOrder);
+    expect(memberWriteOrder).toBeLessThan(heldSweepOrder);
   });
 
   it("does not reconcile Xero when the target season is not the current season", async () => {
