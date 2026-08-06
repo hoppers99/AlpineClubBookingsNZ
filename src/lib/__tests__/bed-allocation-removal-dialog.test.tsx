@@ -153,6 +153,38 @@ describe("BedAllocationRemovalDialog", () => {
     expect(await screen.findByText("Preview refused")).toBeInTheDocument();
   });
 
+  it("renders one assertive alert role when a preview fails", async () => {
+    fetchMock.mockResolvedValueOnce(
+      response({ error: "Preview refused" }, false, 500),
+    );
+    renderDialog();
+
+    fireEvent.click(screen.getByRole("button", { name: "Preview removal" }));
+
+    expect(await screen.findByText("Preview refused")).toBeInTheDocument();
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
+  });
+
+  it("lets view-only admins preview but explains and disables apply", async () => {
+    fetchMock.mockResolvedValueOnce(response(preview()));
+    renderDialog({ canEdit: false });
+
+    expect(
+      screen.getByText(
+        "Your admin role can view this area but cannot make changes.",
+      ),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Preview removal" }));
+    await screen.findByText(/matching allocation/);
+
+    expect(
+      screen.getByRole("button", { name: "Remove reviewed allocations" }),
+    ).toBeDisabled();
+    expect(
+      fetchMock.mock.calls.filter((call) => call[1]?.method === "PUT"),
+    ).toHaveLength(0);
+  });
+
   it("clears preview, error, and status when the explicit night changes", async () => {
     fetchMock.mockResolvedValueOnce(response(preview()));
     renderDialog({ anchor: twoNightAnchor });
@@ -190,6 +222,116 @@ describe("BedAllocationRemovalDialog", () => {
 
     expect(screen.getByText("Lodge Beta")).toBeInTheDocument();
     expect(screen.queryByText(/matching allocation/)).not.toBeInTheDocument();
+  });
+
+  it("ignores an old anchor's delayed preview error body", async () => {
+    const errorBody = deferred<{ error: string }>();
+    const readErrorBody = vi.fn(() => errorBody.promise);
+    fetchMock.mockResolvedValueOnce({
+      ok: false,
+      status: 500,
+      json: readErrorBody,
+    });
+    const rendered = renderDialog();
+
+    fireEvent.click(screen.getByRole("button", { name: "Preview removal" }));
+    await waitFor(() => expect(readErrorBody).toHaveBeenCalledTimes(1));
+    rendered.rerender(
+      <BedAllocationRemovalDialog
+        {...rendered.props}
+        anchor={anchorB}
+      />,
+    );
+    await screen.findByText("Lodge Beta");
+    await act(async () => errorBody.resolve({ error: "Old preview failed" }));
+
+    expect(screen.queryByText("Old preview failed")).not.toBeInTheDocument();
+    expect(screen.getByRole("alert")).toBeEmptyDOMElement();
+  });
+
+  it("keeps the selected scope and categories while replacing counts on a refreshed 409", async () => {
+    const bookingScope = {
+      type: "BOOKING" as const,
+      ...anchorA.allocations[0],
+    };
+    const initialPreview = { ...preview(), scope: bookingScope };
+    const refreshedPreview = {
+      ...preview(anchorA, 2),
+      scope: bookingScope,
+      categories: { AUTO_DRAFT: 1, MANUAL_DRAFT: 1, APPROVED: 0 },
+    };
+    fetchMock
+      .mockResolvedValueOnce(response(initialPreview))
+      .mockResolvedValueOnce(
+        response(
+          {
+            error: "Allocations changed after the preview.",
+            refreshedPreview,
+          },
+          false,
+          409,
+        ),
+      );
+    renderDialog();
+
+    const scope = screen.getByLabelText("Removal scope");
+    fireEvent.keyDown(scope, { key: "ArrowDown" });
+    fireEvent.click(
+      await screen.findByRole("option", {
+        name: "Whole booking, including off-screen people and nights",
+      }),
+    );
+    fireEvent.click(
+      screen.getByRole("checkbox", { name: /^Manual draft/i }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Preview removal" }));
+    await screen.findByText(/1 matching allocation across 1 booking/);
+    fireEvent.click(
+      screen.getByRole("button", { name: "Remove reviewed allocations" }),
+    );
+
+    expect(await screen.findByText(/2 matching allocations across 1 booking/)).toBeInTheDocument();
+    expect(screen.getByText("Auto draft: 1")).toBeInTheDocument();
+    expect(screen.getByText("Manual draft: 1")).toBeInTheDocument();
+    expect(scope).toHaveTextContent(
+      "Whole booking, including off-screen people and nights",
+    );
+    expect(
+      screen.getByRole("checkbox", { name: /^Auto draft/i }),
+    ).toBeChecked();
+    expect(
+      screen.getByRole("checkbox", { name: /^Manual draft/i }),
+    ).toBeChecked();
+    expect(screen.getByText("Preview refreshed; nothing was removed.")).toBeInTheDocument();
+  });
+
+  it("invalidates the preview when a 409 has no refreshed preview", async () => {
+    fetchMock
+      .mockResolvedValueOnce(response(preview()))
+      .mockResolvedValueOnce(
+        response({ error: "Concurrent removal collided." }, false, 409),
+      );
+    renderDialog();
+
+    fireEvent.click(screen.getByRole("button", { name: "Preview removal" }));
+    await screen.findByText(/matching allocation/);
+    fireEvent.click(
+      screen.getByRole("button", { name: "Remove reviewed allocations" }),
+    );
+
+    expect(await screen.findByText("Concurrent removal collided.")).toBeInTheDocument();
+    expect(screen.queryByText(/matching allocation/)).not.toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Preview is no longer current; nothing was removed. Load a new preview before trying again.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Remove reviewed allocations" }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "Preview removal" }),
+    ).toBeEnabled();
   });
 
   it("guards a same-tick double apply with one PUT", async () => {
@@ -256,6 +398,36 @@ describe("BedAllocationRemovalDialog", () => {
     expect(screen.getByText("Lodge Beta")).toBeInTheDocument();
   });
 
+  it("ignores an old anchor's delayed apply error body", async () => {
+    fetchMock.mockResolvedValueOnce(response(preview()));
+    const errorBody = deferred<{ error: string }>();
+    const readErrorBody = vi.fn(() => errorBody.promise);
+    fetchMock.mockResolvedValueOnce({
+      ok: false,
+      status: 500,
+      json: readErrorBody,
+    });
+    const rendered = renderDialog();
+
+    fireEvent.click(screen.getByRole("button", { name: "Preview removal" }));
+    await screen.findByText(/matching allocation/);
+    fireEvent.click(
+      screen.getByRole("button", { name: "Remove reviewed allocations" }),
+    );
+    await waitFor(() => expect(readErrorBody).toHaveBeenCalledTimes(1));
+    rendered.rerender(
+      <BedAllocationRemovalDialog {...rendered.props} open={false} />,
+    );
+    rendered.rerender(
+      <BedAllocationRemovalDialog {...rendered.props} anchor={anchorB} />,
+    );
+    await screen.findByText("Lodge Beta");
+    await act(async () => errorBody.resolve({ error: "Old apply failed" }));
+
+    expect(screen.queryByText("Old apply failed")).not.toBeInTheDocument();
+    expect(screen.getByRole("alert")).toBeEmptyDOMElement();
+  });
+
   it("returns focus to the shared entry trigger after cancel", async () => {
     function Harness() {
       const [applied] = useState(vi.fn());
@@ -283,5 +455,101 @@ describe("BedAllocationRemovalDialog", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Cancel" }));
 
     await waitFor(() => expect(trigger).toHaveFocus());
+  });
+
+  it("moves focus to a stable landmark when the entry trigger disconnects", async () => {
+    function Harness() {
+      const [triggerVisible, setTriggerVisible] = useState(true);
+      const [applied] = useState(vi.fn());
+      const removal = useBedAllocationRemovalDialog({
+        canEdit: true,
+        onApplied: applied,
+      });
+      return (
+        <main data-testid="focus-fallback">
+          {triggerVisible ? (
+            <button
+              type="button"
+              onClick={() => {
+                removal.openRemovalDialog(anchorA);
+                setTriggerVisible(false);
+              }}
+            >
+              Open transient removal
+            </button>
+          ) : null}
+          {removal.dialog}
+        </main>
+      );
+    }
+
+    render(<Harness />);
+    const trigger = screen.getByRole("button", {
+      name: "Open transient removal",
+    });
+    trigger.focus();
+    fireEvent.click(trigger);
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel" }));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("focus-fallback")).toHaveFocus(),
+    );
+  });
+
+  it("waits for the success refresh before closing and restores focus safely", async () => {
+    fetchMock
+      .mockResolvedValueOnce(response(preview()))
+      .mockResolvedValueOnce(
+        response({
+          removedRowCount: 1,
+          promotedRowCount: 0,
+          affectedBookingCount: 1,
+          affectedNights: ["2026-08-01"],
+        }),
+      );
+    const refresh = deferred<void>();
+
+    function Harness() {
+      const [triggerVisible, setTriggerVisible] = useState(true);
+      const removal = useBedAllocationRemovalDialog({
+        canEdit: true,
+        onApplied: async () => {
+          await refresh.promise;
+          setTriggerVisible(false);
+        },
+      });
+      return (
+        <main data-testid="success-focus-fallback">
+          {triggerVisible ? (
+            <button
+              type="button"
+              onClick={() => removal.openRemovalDialog(anchorA)}
+            >
+              Open successful removal
+            </button>
+          ) : null}
+          {removal.dialog}
+        </main>
+      );
+    }
+
+    render(<Harness />);
+    const trigger = screen.getByRole("button", {
+      name: "Open successful removal",
+    });
+    trigger.focus();
+    fireEvent.click(trigger);
+    fireEvent.click(await screen.findByRole("button", { name: "Preview removal" }));
+    await screen.findByText(/matching allocation/);
+    fireEvent.click(
+      screen.getByRole("button", { name: "Remove reviewed allocations" }),
+    );
+
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    await act(async () => refresh.resolve());
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByTestId("success-focus-fallback")).toHaveFocus(),
+    );
   });
 });

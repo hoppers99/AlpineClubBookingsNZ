@@ -66,6 +66,7 @@ export function BucketBoard({
   return (
     <div
       ref={setNodeRef}
+      data-testid="bed-allocation-unallocated-bucket"
       className={cn(
         "space-y-3 rounded-md border border-dashed p-3 transition-colors",
         isOver && "border-info bg-info-muted",

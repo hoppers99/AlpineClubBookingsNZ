@@ -73,6 +73,35 @@ interface UseBedAllocationRemovalDialogOptions {
   onApplied: (result: { removedRowCount: number }) => void | Promise<void>;
 }
 
+function currentReturnFocusTarget() {
+  const active =
+    document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null;
+  if (!active) return null;
+
+  // Dropdown items are portalled and disappear as their menu closes. Radix
+  // connects that transient item back to its stable trigger via aria-controls,
+  // so retain the trigger when this dialog is opened from the allocation menu.
+  const menu = active.closest<HTMLElement>('[role="menu"][id]');
+  if (menu) {
+    const trigger = [...document.querySelectorAll<HTMLElement>("[aria-controls]")]
+      .find((candidate) => candidate.getAttribute("aria-controls") === menu.id);
+    if (trigger) return trigger;
+  }
+
+  return active;
+}
+
+function focusConnectedTarget(target: HTMLElement | null) {
+  if (!target?.isConnected) return false;
+  const hadTabIndex = target.hasAttribute("tabindex");
+  if (!hadTabIndex && target.tabIndex < 0) target.setAttribute("tabindex", "-1");
+  target.focus({ preventScroll: true });
+  if (!hadTabIndex) target.removeAttribute("tabindex");
+  return document.activeElement === target;
+}
+
 /**
  * Stable integration seam for the board, booking panel, and follow-on entry
  * points: every trigger calls the same `openRemovalDialog(anchor)` function.
@@ -85,13 +114,16 @@ export function useBedAllocationRemovalDialog(
   );
   const [open, setOpen] = useState(false);
   const returnFocusRef = useRef<HTMLElement | null>(null);
+  const fallbackFocusRef = useRef<HTMLElement | null>(null);
 
   const openRemovalDialog = useCallback(
     (nextAnchor: BedAllocationRemovalDialogAnchor) => {
-      returnFocusRef.current =
-        document.activeElement instanceof HTMLElement
-          ? document.activeElement
-          : null;
+      const returnTarget = currentReturnFocusTarget();
+      returnFocusRef.current = returnTarget;
+      fallbackFocusRef.current =
+        returnTarget?.closest<HTMLElement>(
+          "section, [role='region'], main, [role='main']",
+        ) ?? document.querySelector<HTMLElement>("main, [role='main']");
       setAnchor(nextAnchor);
       setOpen(true);
     },
@@ -101,7 +133,10 @@ export function useBedAllocationRemovalDialog(
   const onOpenChange = useCallback((nextOpen: boolean) => {
     setOpen(nextOpen);
     if (!nextOpen) {
-      window.setTimeout(() => returnFocusRef.current?.focus(), 0);
+      window.setTimeout(() => {
+        if (focusConnectedTarget(returnFocusRef.current)) return;
+        focusConnectedTarget(fallbackFocusRef.current);
+      }, 0);
     }
   }, []);
 
@@ -261,7 +296,12 @@ export function BedAllocationRemovalDialog({
       );
       if (generation !== requestGenerationRef.current || !open) return;
       if (!response.ok) {
-        setError(await readResponseError(response, "Removal preview failed"));
+        const message = await readResponseError(
+          response,
+          "Removal preview failed",
+        );
+        if (generation !== requestGenerationRef.current || !open) return;
+        setError(message);
         setStatus("");
         return;
       }
@@ -327,32 +367,43 @@ export function BedAllocationRemovalDialog({
             setSelectedNight(body.refreshedPreview.scope.stayDate);
           }
           setScopeType(body.refreshedPreview.scope.type);
+          setError(
+            body.error ??
+              "Allocations changed after the preview. Review the refreshed result.",
+          );
+          setStatus("Preview refreshed; nothing was removed.");
+        } else {
+          setPreview(null);
+          setError(
+            body.error ??
+              "The removal could not be applied. Load a new preview before trying again.",
+          );
+          setStatus(
+            "Preview is no longer current; nothing was removed. Load a new preview before trying again.",
+          );
         }
-        setError(
-          body.error ??
-            "Allocations changed after the preview. Review the refreshed result.",
-        );
-        setStatus("Preview refreshed; nothing was removed.");
         return;
       }
       if (!response.ok) {
         if (generation !== requestGenerationRef.current || !open) return;
-        setError(await readResponseError(response, "Removal failed"));
+        const message = await readResponseError(response, "Removal failed");
+        if (generation !== requestGenerationRef.current || !open) return;
+        setError(message);
         setStatus("");
         return;
       }
       const result = (await response.json()) as { removedRowCount: number };
-      if (generation === requestGenerationRef.current && open) {
-        setStatus(
-          `${result.removedRowCount} allocation${result.removedRowCount === 1 ? "" : "s"} removed. No replacement allocation was run.`,
-        );
-        onOpenChange(false);
-      }
       try {
         await onApplied(result);
       } catch {
         // The reviewed removal already committed. A parent refresh failure must
         // not be reported as though the server rolled the removal back.
+      }
+      if (generation === requestGenerationRef.current && open) {
+        setStatus(
+          `${result.removedRowCount} allocation${result.removedRowCount === 1 ? "" : "s"} removed. No replacement allocation was run.`,
+        );
+        onOpenChange(false);
       }
     } catch {
       if (generation !== requestGenerationRef.current || !open) return;
@@ -387,7 +438,11 @@ export function BedAllocationRemovalDialog({
 
         {/* Permanently mounted live regions: only their content changes. */}
         <div role="alert" aria-live="assertive" className="min-h-0">
-          {error ? <Alert variant="error">{error}</Alert> : null}
+          {error ? (
+            <Alert variant="error" role="presentation">
+              {error}
+            </Alert>
+          ) : null}
         </div>
         <div role="status" aria-live="polite" className="min-h-0">
           {status ? <p className="text-sm text-muted-foreground">{status}</p> : null}
