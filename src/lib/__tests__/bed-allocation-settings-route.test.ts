@@ -24,8 +24,11 @@ vi.mock("@/lib/api-json", () => ({
 vi.mock("@/lib/admin-bed-allocation-routes", () => ({
   requireBedAllocationRead: mocks.readGuard,
   requireBedAllocationWrite: mocks.writeGuard,
-  bedAllocationErrorResponse: () =>
-    Response.json({ error: "Bed allocation request failed" }, { status: 500 }),
+  bedAllocationErrorResponse: (error: { message?: string; status?: number }) =>
+    Response.json(
+      { error: error.message ?? "Bed allocation request failed" },
+      { status: error.status ?? 500 },
+    ),
 }));
 
 import {
@@ -179,4 +182,31 @@ describe("bed-allocation settings route lodge validation", () => {
       allocationPriorityOrder: [],
     });
   });
+
+  it.each([
+    ["an unknown value", ["UNKNOWN_PRIORITY"]],
+    ["a duplicate value", ["BOOKING_COHESION", "BOOKING_COHESION"]],
+  ])(
+    "rejects priority order containing %s before writing",
+    async (_case, value) => {
+      mocks.parseJsonBody.mockResolvedValue({
+        ok: true,
+        body: {
+          lodgeId: "lodge-1",
+          autoAllocationEnabled: false,
+          allocationPriorityOrder: value,
+        },
+      });
+
+      const response = await PUT(
+        new Request("http://localhost/api/admin/bed-allocation/settings", {
+          method: "PUT",
+        }),
+      );
+
+      expect(response.status).toBe(400);
+      expect(mocks.updateSettings).not.toHaveBeenCalled();
+      expect(mocks.createAuditLog).not.toHaveBeenCalled();
+    },
+  );
 });

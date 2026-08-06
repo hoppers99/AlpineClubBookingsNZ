@@ -3031,6 +3031,51 @@ describe("bed allocation first-claim displacement (issue #1387)", () => {
     };
   }
 
+  it("does not preserve a displaced booking's bed when continuity is disabled", () => {
+    const plan = buildFirstFitBedAllocationPlan({
+      enabled: true,
+      prioritizeCapacityHolding: true,
+      rooms: twoRooms,
+      bookings: [
+        heldBooking(
+          "held-new",
+          "2026-07-01",
+          [
+            { id: "held-adult", ageTier: "ADULT" },
+            { id: "held-child", ageTier: "CHILD" },
+          ],
+          true,
+        ),
+      ],
+      occupiedBedNights: [
+        {
+          bedId: "bed-a2",
+          roomId: "room-a",
+          bookingId: "provisional",
+          bookingGuestId: "provisional-guest",
+          stayDate: "2026-07-01",
+          ageTier: "ADULT",
+          holdsCapacity: false,
+        },
+        {
+          bedId: "bed-b2",
+          roomId: "room-b",
+          bookingId: "provisional",
+          bookingGuestId: "provisional-guest",
+          stayDate: "2026-07-02",
+          ageTier: "ADULT",
+          holdsCapacity: false,
+        },
+      ],
+      allocationPriorityOrder: [],
+    });
+
+    expect(plan.displacements).toEqual([
+      expect.objectContaining({ stayDate: "2026-07-01", toBedId: "bed-b1" }),
+      expect.objectContaining({ stayDate: "2026-07-02", toBedId: "bed-b1" }),
+    ]);
+  });
+
   it("emits no displacements when the flag is off: a provisional-occupied bed still blocks a held booking", () => {
     // Planning is whole-stay-first for every caller (#1677), but displacement
     // stays exclusive to the prioritizeCapacityHolding lifecycle path: with
