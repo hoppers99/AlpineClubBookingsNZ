@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
   getSettings: vi.fn(),
   updateSettings: vi.fn(),
   createAuditLog: vi.fn(),
+  parseJsonBody: vi.fn(),
   readGuard: vi.fn(),
   writeGuard: vi.fn(),
 }));
@@ -17,6 +18,9 @@ vi.mock("@/lib/admin-bed-allocation", () => ({
   updateBedAllocationSettings: mocks.updateSettings,
 }));
 vi.mock("@/lib/audit", () => ({ createAuditLog: mocks.createAuditLog }));
+vi.mock("@/lib/api-json", () => ({
+  parseJsonRequestBody: mocks.parseJsonBody,
+}));
 vi.mock("@/lib/admin-bed-allocation-routes", () => ({
   requireBedAllocationRead: mocks.readGuard,
   requireBedAllocationWrite: mocks.writeGuard,
@@ -44,6 +48,55 @@ describe("bed-allocation settings route lodge validation", () => {
     mocks.getSettings.mockResolvedValue(settings);
     mocks.updateSettings.mockResolvedValue(settings);
     mocks.createAuditLog.mockResolvedValue({});
+    mocks.parseJsonBody.mockResolvedValue({
+      ok: true,
+      body: {
+        lodgeId: "lodge-1",
+        autoAllocationEnabled: false,
+        allocationPriorityOrder: [],
+      },
+    });
+  });
+
+  it("rejects GET with the read guard before resolving or reading a lodge", async () => {
+    const denied = Response.json({ error: "Forbidden" }, { status: 403 });
+    mocks.readGuard.mockResolvedValue({ ok: false, response: denied });
+
+    const response = await GET(
+      new Request(
+        "http://localhost/api/admin/bed-allocation/settings?lodgeId=lodge-1",
+      ),
+    );
+
+    expect(response).toBe(denied);
+    expect(mocks.readGuard).toHaveBeenCalledOnce();
+    expect(mocks.writeGuard).not.toHaveBeenCalled();
+    expect(mocks.lodgeFindUnique).not.toHaveBeenCalled();
+    expect(mocks.getSettings).not.toHaveBeenCalled();
+    expect(mocks.updateSettings).not.toHaveBeenCalled();
+    expect(mocks.createAuditLog).not.toHaveBeenCalled();
+  });
+
+  it("rejects PUT with the write guard before parsing, reading, writing, or auditing", async () => {
+    const denied = Response.json({ error: "Forbidden" }, { status: 403 });
+    mocks.writeGuard.mockResolvedValue({ ok: false, response: denied });
+
+    const response = await PUT(
+      new Request("http://localhost/api/admin/bed-allocation/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ deliberately: "invalid" }),
+      }),
+    );
+
+    expect(response).toBe(denied);
+    expect(mocks.writeGuard).toHaveBeenCalledOnce();
+    expect(mocks.readGuard).not.toHaveBeenCalled();
+    expect(mocks.parseJsonBody).not.toHaveBeenCalled();
+    expect(mocks.lodgeFindUnique).not.toHaveBeenCalled();
+    expect(mocks.getSettings).not.toHaveBeenCalled();
+    expect(mocks.updateSettings).not.toHaveBeenCalled();
+    expect(mocks.createAuditLog).not.toHaveBeenCalled();
   });
 
   it.each([null, { id: "lodge-1", active: false }])(
