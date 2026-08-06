@@ -958,8 +958,23 @@ export function useBookingWizard() {
     if (policyRes.ok) {
       const policyData = await policyRes.json();
       if (!policyData.valid) {
-        setError(policyData.message);
-        return;
+        // #2562: the date precheck must not strand a member before they can
+        // describe the party that the officer would review. Reuse the ONE
+        // fail-closed exception-door reader against the server's frozen review:
+        // a recognisably reviewable minimum-stay result may proceed to Guests,
+        // while a missing, mixed or malformed review remains a hard stop here.
+        // This does NOT open the request door. The action is still set only from
+        // the authoritative POST /api/bookings refusal after the member reviews
+        // and confirms the exact proposal.
+        const reviewable = readExceptionOffer({
+          code: "MINIMUM_STAY_VIOLATION",
+          error: policyData.message,
+          exceptionReview: policyData.exceptionReview,
+        });
+        if (!reviewable) {
+          setError(policyData.message);
+          return;
+        }
       }
     }
 

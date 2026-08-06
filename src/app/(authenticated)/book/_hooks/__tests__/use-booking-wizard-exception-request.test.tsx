@@ -100,6 +100,8 @@ interface Stubs {
   create: () => Response;
   /** What POST /api/bookings/exception-requests answers. */
   request: () => Response;
+  /** What the date-step policy precheck answers; valid by default. */
+  policyCheck?: () => Response;
 }
 
 function stubFetch(stubs: Stubs) {
@@ -142,6 +144,20 @@ function stubFetch(stubs: Stubs) {
     if (u.includes("/api/bookings/rooms")) {
       return jsonResponse({ enabled: false, rooms: [] });
     }
+    if (u.includes("/api/availability/check")) {
+      return jsonResponse({ minAvailable: 20, nightDetails: [] });
+    }
+    if (u.includes("/api/booking-policies/check")) {
+      return (
+        stubs.policyCheck?.() ??
+        jsonResponse({
+          valid: true,
+          violations: [],
+          exceptionReview: { violations: [], capacityMode: null },
+          message: null,
+        })
+      );
+    }
     if (u.includes("/api/bookings/quote")) {
       return jsonResponse({
         guests: [{ ageTier: "ADULT", isMember: true, nights: 1, priceCents: 6000 }],
@@ -160,9 +176,10 @@ async function seatedWizard(stubs: Stubs) {
   const fetchMock = stubFetch(stubs);
   const { result } = renderHook(() => useBookingWizard());
   await waitFor(() => expect(result.current.guests).toHaveLength(1));
-  act(() => {
-    result.current.handleDateSelect("2026-06-11", "2026-06-12");
+  await act(async () => {
+    await result.current.handleDateSelect("2026-06-11", "2026-06-12");
   });
+  expect(result.current.step).toBe("guests");
   await act(async () => {
     await result.current.handleGuestsDone();
   });
@@ -192,6 +209,57 @@ afterEach(() => {
 });
 
 describe("booking wizard — when a refusal opens the request door", () => {
+  it("lets a server-confirmed reviewable date policy reach the exact-party flow without opening the door early", async () => {
+    stubFetch({
+      create: () => jsonResponse(MIN_STAY_REFUSAL, false, 400),
+      request: REQUEST_CREATED,
+      policyCheck: () =>
+        jsonResponse({
+          valid: false,
+          violations: [MIN_STAY_VIOLATION],
+          exceptionReview: {
+            violations: [MIN_STAY_VIOLATION],
+            capacityMode: "HOLD",
+          },
+          message: "Friday nights need a two-night booking.",
+        }),
+    });
+    const { result } = renderHook(() => useBookingWizard());
+    await waitFor(() => expect(result.current.guests).toHaveLength(1));
+
+    await act(async () => {
+      await result.current.handleDateSelect("2026-06-11", "2026-06-12");
+    });
+
+    expect(result.current.step).toBe("guests");
+    expect(result.current.error).toBe("");
+    expect(result.current.exceptionOffer).toBeNull();
+  });
+
+  it("keeps a date policy failure closed when its review is not fully eligible", async () => {
+    stubFetch({
+      create: () => jsonResponse(MIN_STAY_REFUSAL, false, 400),
+      request: REQUEST_CREATED,
+      policyCheck: () =>
+        jsonResponse({
+          valid: false,
+          violations: [MIN_STAY_VIOLATION],
+          exceptionReview: { violations: [], capacityMode: null },
+          message: "This stay cannot proceed.",
+        }),
+    });
+    const { result } = renderHook(() => useBookingWizard());
+    await waitFor(() => expect(result.current.guests).toHaveLength(1));
+
+    await act(async () => {
+      await result.current.handleDateSelect("2026-06-11", "2026-06-12");
+    });
+
+    expect(result.current.step).toBe("dates");
+    expect(result.current.error).toBe("This stay cannot proceed.");
+    expect(result.current.exceptionOffer).toBeNull();
+  });
+
   it("holds an offer after a minimum-stay refusal, with the server's own violations", async () => {
     const { result } = await seatedWizard({
       create: () => jsonResponse(MIN_STAY_REFUSAL, false, 400),
