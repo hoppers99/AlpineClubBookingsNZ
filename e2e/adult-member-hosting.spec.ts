@@ -1,8 +1,7 @@
 import { type APIRequestContext, type BrowserContext, expect, test } from "@playwright/test";
 
-import { storageStatePath } from "./helpers/auth";
-import { E2E_ADMIN } from "./helpers/fixtures";
-import { personas } from "./helpers/personas";
+import { loginPersona, storageStatePath } from "./helpers/auth";
+import { E2E_ADMIN, WAITLISTER } from "./helpers/fixtures";
 import { cancelMemberBookingsOnDate } from "./helpers/reset";
 import { stayWindowForAttempt } from "./helpers/stay-dates";
 
@@ -42,13 +41,13 @@ import { stayWindowForAttempt } from "./helpers/stay-dates";
 
 test.describe.configure({ mode: "serial" });
 
-const MEMBER_NAME = `${personas.booker.firstName} ${personas.booker.lastName}`;
+const MEMBER_NAME = `${WAITLISTER.firstName} ${WAITLISTER.lastName}`;
 
 let adminContext: BrowserContext;
 let memberContext: BrowserContext;
 let admin: APIRequestContext;
 let member: APIRequestContext;
-let bookerMemberId: string;
+let ownerMemberId: string;
 
 /** A future in-season window with room, chosen once so both bookings share it. */
 let WINDOW: { checkIn: string; checkOut: string };
@@ -135,16 +134,16 @@ async function readClubHostingPolicy(): Promise<{
   return body.effective;
 }
 
-async function resolveBookerMemberId(): Promise<string> {
+async function resolveOwnerMemberId(): Promise<string> {
   const res = await admin.get(
-    `/api/admin/members?search=${encodeURIComponent(personas.booker.email)}&pageSize=5`,
+    `/api/admin/members?search=${encodeURIComponent(WAITLISTER.email)}&pageSize=5`,
   );
   expect(res.ok(), `resolve booking member (${res.status()})`).toBeTruthy();
   const body = (await res.json()) as {
     members?: Array<{ id: string; email: string }>;
   };
   const match = (body.members ?? []).find(
-    (candidate) => candidate.email === personas.booker.email,
+    (candidate) => candidate.email === WAITLISTER.email,
   );
   expect(match?.id, "the booking persona must resolve to a member id").toBeTruthy();
   return match!.id;
@@ -214,12 +213,16 @@ test.beforeAll(async ({ browser }) => {
   adminContext = await browser.newContext({
     storageState: storageStatePath(E2E_ADMIN.email),
   });
-  memberContext = await browser.newContext({
-    storageState: storageStatePath(personas.booker.email),
-  });
   admin = adminContext.request;
+
+  // Wanda is seeded PAID with a complete, confirmed profile. Alice's booking
+  // setup deliberately completes her profile in another spec, so using Alice
+  // here would make this focused file depend on repository-wide execution order.
+  memberContext = await browser.newContext();
+  const memberPage = await memberContext.newPage();
+  await loginPersona(memberPage, WAITLISTER.email, "198.51.100.69");
   member = memberContext.request;
-  bookerMemberId = await resolveBookerMemberId();
+  ownerMemberId = await resolveOwnerMemberId();
 
   // `stayWindowForAttempt` hands out a distinct in-season window per spec/attempt,
   // which is what keeps concurrent specs off each other's capacity.
@@ -325,13 +328,13 @@ test("another booking on the same account supplies the cover, and cannot then be
   //    adult member attending those exact nights at that exact lodge.
   const source = await createMemberBooking([
     {
-      firstName: personas.booker.firstName,
-      lastName: personas.booker.lastName,
+      firstName: WAITLISTER.firstName,
+      lastName: WAITLISTER.lastName,
       ageTier: "ADULT",
       isMember: true,
       // `isMember` is presentation metadata; the authoritative attendance
       // relationship is the linked member id, which is what the policy must use.
-      memberId: bookerMemberId,
+      memberId: ownerMemberId,
     },
   ]);
   expect(
