@@ -6,9 +6,8 @@ import {
   test,
 } from "@playwright/test";
 
-import { storageStatePath } from "./helpers/auth";
-import { E2E_ADMIN } from "./helpers/fixtures";
-import { personas } from "./helpers/personas";
+import { loginPersona, storageStatePath } from "./helpers/auth";
+import { E2E_ADMIN, WAITLISTER } from "./helpers/fixtures";
 import {
   bookSelfToReviewStep,
   completeMemberDetailsGateIfShown,
@@ -68,10 +67,13 @@ import { stayWindowForAttempt, type StayWindow } from "./helpers/stay-dates";
  * any other spec at any attempt (the stride is 16, so 10 owns 10/26/42 and 15 owns
  * 15/31/47).
  *
- * `workers: 1` and `fullyParallel: false` (playwright.config.ts) are load-bearing
- * here in one specific way: the member may hold only ONE open exception request at
- * a time, so this file and `policy-exception-approval.spec.ts` — which use the same
- * persona — would contend for that single slot if they ever ran concurrently.
+ * `workers: 1` and `fullyParallel: false` (playwright.config.ts) are still
+ * load-bearing because the member may hold only ONE open exception request at a
+ * time. This file deliberately uses Wanda rather than Alice, however: the older
+ * `policy-exception-approval.spec.ts` spends Alice's five-per-day request budget,
+ * and composing both journeys on one member made the later spec depend on file
+ * order. Wanda has the same paid, complete-profile eligibility and no other spec
+ * spends her booking-policy exception budget.
  */
 
 test.describe.configure({ mode: "serial" });
@@ -83,8 +85,15 @@ test.describe.configure({ mode: "serial" });
  * cannot wedge the retry on 409 `POLICY_NAME_CONFLICT`.
  */
 const POLICY_NAME_PREFIX = "E2E member exception UI minimum stay";
-const MEMBER = personas.booker;
+const MEMBER = WAITLISTER;
 const MEMBER_NAME = `${MEMBER.firstName} ${MEMBER.lastName}`;
+
+/**
+ * Keep this journey's booking-create attempts out of the suite-wide default IP
+ * bucket. Production still enforces the unchanged 20/hour limit; the test merely
+ * models a second real client, as the login and whole-lodge specs already do.
+ */
+const MEMBER_CLIENT_IP = "198.51.100.62";
 
 /** The two-night window the member books normally, then edits down to one. */
 const COMPLIANT_WINDOW_INDEX = 10;
@@ -236,8 +245,11 @@ test.beforeAll(async ({ browser }) => {
     storageState: storageStatePath(E2E_ADMIN.email),
   });
   memberContext = await browser.newContext({
-    storageState: storageStatePath(MEMBER.email),
+    extraHTTPHeaders: { "x-forwarded-for": MEMBER_CLIENT_IP },
   });
+  const memberLogin = await memberContext.newPage();
+  await loginPersona(memberLogin, MEMBER.email, MEMBER_CLIENT_IP);
+  await memberLogin.close();
   admin = adminContext.request;
   member = memberContext.request;
 
