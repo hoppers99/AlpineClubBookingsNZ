@@ -236,6 +236,10 @@ vi.mock("@/lib/member-guest-settings", () => ({
 
 import { prisma } from "@/lib/prisma";
 import {
+  fenceMemberFindMany,
+  recordingBookingDouble,
+} from "@/lib/__tests__/support/hosting-participant-fence-double";
+import {
   createBookingRequestQuote,
   findLinkedGuestMemberNightConflicts,
   getBookingRequestQuoteContext,
@@ -261,6 +265,59 @@ const mockedAssertNoConflicts = vi.mocked(assertNoBookingMemberNightConflicts);
 const mockedCheckCapacity = vi.mocked(checkCapacityForGuestRanges);
 const mockedAcquireLodgeCapacityLock = vi.mocked(acquireLodgeCapacityLock);
 const mockedReconcile = vi.mocked(reconcileBedAllocationsForBooking);
+
+/*
+ * The #2619 hosting participant fence.
+ *
+ * A hold writes a booking, and every booking write reconciles the hosting review
+ * inside its own transaction — unconditionally, before any policy-mode check. That
+ * reconciliation locks the source booking's owner Member row `FOR KEY SHARE
+ * NOWAIT` and then, UNDER the lock, re-reads both the Member rows and each source
+ * booking's owner and lodge to detect drift. It PLANS those participants from
+ * `booking.findUnique`, so the same transaction's `booking.findMany` has to replay
+ * exactly what that read served or the fence reports drift that never happened.
+ *
+ * `recordingBookingDouble` does the replay, which is why a test states the booking
+ * its transaction serves through `serveBooking` rather than re-stubbing
+ * `prisma.booking.findUnique`: re-stubbing would replace the recording wrapper and
+ * the fence would find no source booking at all. The default is `null` — the
+ * "booking not found" branch the mocked client documents above, which writes
+ * nothing — and it is re-armed per test, because `vi.clearAllMocks()` clears CALLS
+ * but not implementations and a booking row left behind by an earlier test is a
+ * database state that never existed.
+ */
+let servedBooking: (args: unknown) => unknown = async () => null;
+
+/** State the booking row this test's transaction serves, or a per-query function. */
+function serveBooking(row: unknown | ((args: unknown) => unknown)): void {
+  servedBooking =
+    typeof row === "function"
+      ? (row as (args: unknown) => unknown)
+      : async () => row;
+}
+
+/**
+ * A `member.findMany` that answers the fence's ids-only re-read itself and hands
+ * every other query to `existing`, so adding it cannot change what a test that
+ * stubs the delegate for its own reasons already asserts.
+ */
+function armMemberFindMany(existing?: (args: unknown) => unknown): void {
+  const findMany = fenceMemberFindMany([], existing);
+  vi.mocked(prisma.member.findMany).mockImplementation((async (args: unknown) =>
+    findMany(args as never)) as never);
+}
+
+/** Wire both fence reads onto the shared prisma double for one test. */
+function armParticipantFence(): void {
+  servedBooking = async () => null;
+  const fenceBooking = recordingBookingDouble((args) => servedBooking(args));
+  vi.mocked(prisma.booking.findUnique).mockImplementation((async (
+    args: unknown,
+  ) => fenceBooking.findUnique(args)) as never);
+  vi.mocked(prisma.booking.findMany).mockImplementation((async (args: unknown) =>
+    fenceBooking.findMany(args)) as never);
+  armMemberFindMany();
+}
 
 function memberNightConflictError() {
   return new BookingMemberNightConflictError([
@@ -314,6 +371,7 @@ function baseRequest(overrides: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  armParticipantFence();
   mockedModuleEnabled.mockResolvedValue(true);
   mocks.mockGetSettings.mockResolvedValue({
     showPricingToNonMembers: false,
@@ -334,7 +392,7 @@ beforeEach(() => {
 describe("createBookingRequestQuote", () => {
   it("creates a new overall-total quote version and supersedes active versions", async () => {
     vi.mocked(prisma.bookingRequest.findUnique).mockResolvedValue(baseRequest() as never);
-    vi.mocked(prisma.member.findMany).mockResolvedValue([] as never);
+    armMemberFindMany(async () => []);
     vi.mocked(prisma.bookingRequestQuote.findFirst).mockResolvedValue({ version: 1 } as never);
     vi.mocked(prisma.bookingRequestQuote.create).mockResolvedValue({
       id: "quote-2",
@@ -388,7 +446,7 @@ describe("createBookingRequestQuote", () => {
 
   it("calculates per guest-night totals using linked member rates", async () => {
     vi.mocked(prisma.bookingRequest.findUnique).mockResolvedValue(baseRequest() as never);
-    vi.mocked(prisma.member.findMany).mockResolvedValue([{ id: "member-1" }] as never);
+    armMemberFindMany(async () => [{ id: "member-1" }]);
     vi.mocked(prisma.bookingRequestQuote.findFirst).mockResolvedValue(null);
     vi.mocked(prisma.bookingRequestQuote.create).mockResolvedValue({
       id: "quote-1",
@@ -489,9 +547,7 @@ describe("sendBookingRequestQuote", () => {
     vi.mocked(prisma.bookingRequest.findUnique).mockResolvedValue(
       baseRequest({ heldBookingId: "held-1", quotes: [] }) as never
     );
-    vi.mocked(prisma.booking.findUnique).mockResolvedValue({
-      status: "AWAITING_REVIEW",
-    } as never);
+    serveBooking({ status: "AWAITING_REVIEW" });
     // #1504 claim-first guard: request still quoteable, so the guarded updateMany
     // claims it (count 1) and the send proceeds.
     vi.mocked(prisma.bookingRequest.updateMany).mockResolvedValue({ count: 1 } as never);
@@ -537,9 +593,7 @@ describe("sendBookingRequestQuote", () => {
     vi.mocked(prisma.bookingRequest.findUnique).mockResolvedValue(
       baseRequest({ heldBookingId: "held-1", quotes: [] }) as never
     );
-    vi.mocked(prisma.booking.findUnique).mockResolvedValue({
-      status: "AWAITING_REVIEW",
-    } as never);
+    serveBooking({ status: "AWAITING_REVIEW" });
     // #1504 claim-first guard: the request is still in a quoteable state, so the
     // status-guarded updateMany claims it (count 1) and the send proceeds.
     vi.mocked(prisma.bookingRequest.updateMany).mockResolvedValue({ count: 1 } as never);
@@ -730,9 +784,7 @@ describe("sendBookingRequestQuote", () => {
     vi.mocked(prisma.bookingRequest.findUnique).mockResolvedValue(
       baseRequest({ heldBookingId: "held-1", quotes: [] }) as never
     );
-    vi.mocked(prisma.booking.findUnique).mockResolvedValue({
-      status: "AWAITING_REVIEW",
-    } as never);
+    serveBooking({ status: "AWAITING_REVIEW" });
     // The concurrent decline already moved the row off the quoteable set, so the
     // guarded claim matches zero rows.
     vi.mocked(prisma.bookingRequest.updateMany).mockResolvedValue({ count: 0 } as never);
@@ -1486,7 +1538,7 @@ describe("holdBookingRequestSlots owner role", () => {
         version: 2,
       },
     ] as never);
-    vi.mocked(prisma.booking.findUnique).mockResolvedValue({
+    serveBooking({
       id: "held-1",
       memberId: "owner-1",
       parentBookingId: null,
@@ -1507,7 +1559,7 @@ describe("holdBookingRequestSlots owner role", () => {
           member: null,
         },
       ],
-    } as never);
+    });
 
     await holdBookingRequestSlots({ requestId: "req-1", adminMemberId: "admin-1" });
 
@@ -1591,7 +1643,7 @@ describe("holdBookingRequestSlots owner role", () => {
     );
     // The admin-linked member carries a CUSTOM MEMBER_RATE type via its
     // seasonal assignment; its snapshot must record that type's id.
-    vi.mocked(prisma.member.findMany).mockResolvedValue([
+    armMemberFindMany(async () => [
       {
         id: "member-42",
         firstName: "Linked",
@@ -1600,7 +1652,7 @@ describe("holdBookingRequestSlots owner role", () => {
         role: "MEMBER",
         ageTier: AgeTier.ADULT,
       },
-    ] as never);
+    ]);
     vi.mocked(prisma.seasonalMembershipAssignment.findMany).mockResolvedValue([
       {
         memberId: "member-42",
@@ -1637,7 +1689,7 @@ describe("holdBookingRequestSlots owner role", () => {
     });
 
     // Restore the suite defaults (clearAllMocks does not reset implementations).
-    vi.mocked(prisma.member.findMany).mockResolvedValue([] as never);
+    armMemberFindMany();
     vi.mocked(prisma.seasonalMembershipAssignment.findMany).mockResolvedValue([] as never);
   });
 
@@ -1726,9 +1778,7 @@ describe("holdBookingRequestSlots owner role", () => {
         heldBookingId: "held-live",
       }) as never
     );
-    vi.mocked(prisma.booking.findUnique).mockResolvedValue({
-      status: "AWAITING_REVIEW",
-    } as never);
+    serveBooking({ status: "AWAITING_REVIEW" });
 
     const result = await holdBookingRequestSlots({
       requestId: "req-1",
@@ -1755,10 +1805,27 @@ describe("holdBookingRequestSlots owner role", () => {
       }) as never
     );
     // The pointed-to hold was cancelled (e.g. an admin cancelled it on the
-    // bed board), so the pointer is stale.
-    vi.mocked(prisma.booking.findUnique).mockResolvedValue({
-      status: "CANCELLED",
-    } as never);
+    // bed board), so the pointer is stale — while the fresh hold created in its
+    // place is a live row of its own, owned by the contact minted moments
+    // earlier. A real database answers per id, and the reconciliation on the
+    // fresh hold re-reads ITS owner and lodge, so the double has to tell the
+    // two bookings apart rather than serving the dead one for every query.
+    serveBooking(async (args) => {
+      const { id } = (args as { where: { id: string } }).where;
+      return id === "dead-hold"
+        ? {
+            id: "dead-hold",
+            memberId: "owner-1",
+            lodgeId: "lodge-1",
+            status: BookingStatus.CANCELLED,
+          }
+        : {
+            id,
+            memberId: "owner-1",
+            lodgeId: "lodge-1",
+            status: BookingStatus.AWAITING_REVIEW,
+          };
+    });
 
     const result = await holdBookingRequestSlots({
       requestId: "req-1",
@@ -2155,9 +2222,26 @@ describe("holdBookingRequestSlots — who gets told (MG4-D-b)", () => {
       }) as never,
     );
     // The old hold is no longer live, so it is detached rather than reused.
-    vi.mocked(prisma.booking.findUnique).mockResolvedValue({
-      status: BookingStatus.CANCELLED,
-    } as never);
+    // Per id, as a real database answers: the old hold is dead, the fresh one
+    // created in its place is live and owned by the contact minted moments
+    // earlier — which is the owner the reconciliation on the fresh hold locks
+    // and re-reads.
+    serveBooking(async (args) => {
+      const { id } = (args as { where: { id: string } }).where;
+      return id === "held-old"
+        ? {
+            id: "held-old",
+            memberId: "owner-1",
+            lodgeId: "lodge-1",
+            status: BookingStatus.CANCELLED,
+          }
+        : {
+            id,
+            memberId: "owner-1",
+            lodgeId: "lodge-1",
+            status: BookingStatus.AWAITING_REVIEW,
+          };
+    });
     // ...and it had already told this member.
     vi.mocked(prisma.bookingGuest.findMany).mockResolvedValue([
       { memberId: "m-sam" },
@@ -2188,9 +2272,26 @@ describe("holdBookingRequestSlots — who gets told (MG4-D-b)", () => {
         linkedGuestMembers: [{ guestIndex: 1, memberId: "m-sam" }],
       }) as never,
     );
-    vi.mocked(prisma.booking.findUnique).mockResolvedValue({
-      status: BookingStatus.CANCELLED,
-    } as never);
+    // Per id, as a real database answers: the old hold is dead, the fresh one
+    // created in its place is live and owned by the contact minted moments
+    // earlier — which is the owner the reconciliation on the fresh hold locks
+    // and re-reads.
+    serveBooking(async (args) => {
+      const { id } = (args as { where: { id: string } }).where;
+      return id === "held-old"
+        ? {
+            id: "held-old",
+            memberId: "owner-1",
+            lodgeId: "lodge-1",
+            status: BookingStatus.CANCELLED,
+          }
+        : {
+            id,
+            memberId: "owner-1",
+            lodgeId: "lodge-1",
+            status: BookingStatus.AWAITING_REVIEW,
+          };
+    });
     vi.mocked(prisma.bookingGuest.findMany).mockResolvedValue([
       { memberId: "m-someone-else" },
     ] as never);
