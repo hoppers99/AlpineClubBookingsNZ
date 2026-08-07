@@ -21,6 +21,7 @@ import {
   custodianOccupiedBedNightsForPlanner,
   findCustodianBedHolds,
 } from "@/lib/custodian-occupancy";
+import { mayShareDoubleBedWith } from "@/lib/double-bed-sharing";
 import {
   buildWholeLodgeHeldNightPredicate,
   findBlockingWholeLodgeHolds,
@@ -1448,12 +1449,14 @@ export async function reconcileBedAllocationsForBooking(
 export type PartnerSharedSweepReason =
   | "partner_link_dissolved"
   | "member_deactivated"
-  | "member_age_tier_changed";
+  | "member_age_tier_changed"
+  | "members_merged";
 
 const PARTNER_SHARE_SWEEP_REASON_LABELS: Record<PartnerSharedSweepReason, string> = {
   partner_link_dissolved: "Partner link dissolved",
   member_deactivated: "Member deactivated",
   member_age_tier_changed: "Member is no longer an adult",
+  members_merged: "Members merged with no confirmed partnership",
 };
 
 /** Human phrase for a sweep reason, shared by the audit rows and admin alert. */
@@ -1597,7 +1600,10 @@ async function recordPartnerShareSweepAudits(
               ? `Second occupant removed from shared double bed back to the awaiting-allocation queue (${reasonLabel})`
               : `This booking's shared double bed lost its second occupant to the stale partner-share sweep (${reasonLabel})`,
           metadata: {
-            issue: 1756,
+            // The mechanism's own issue for the four pair-breaking lifecycle
+            // events; #2595 for the merge reconciliation, so an operator
+            // reading the audit trail lands on the defect that added it.
+            issue: reason === "members_merged" ? 2595 : 1756,
             reason,
             role: group.role,
             counterpartBookingId: group.counterpartBookingId,
@@ -1622,6 +1628,11 @@ async function recordPartnerShareSweepAudits(
  * the sweep may touch allocations in several lodges, so the canonical order is
  * global cohort, then every affected lodge in sorted order, then any member
  * lifecycle locks owned by the caller.
+ *
+ * Shared by BOTH lock-held sweeps below — the #1756 pair/member sweep and the
+ * #2595 validity-driven merge reconciliation. Neither may take the lodge tier
+ * after a member-lifecycle key: this helper is what keeps every caller on the
+ * documented global -> lodge -> member order.
  */
 export async function acquireFuturePartnerSharedAllocationLocks(
   tx: Prisma.TransactionClient,
@@ -1778,6 +1789,209 @@ export async function sweepFuturePartnerSharedAllocationsWithLocksHeld(params: {
   if (targets.length === 0) {
     return [];
   }
+
+  // Idempotent, race-safe delete: id-scoped AND re-checking isSecondOccupant,
+  // so a row concurrently removed (or promoted to primary by an unrelated
+  // #1750 repair) is skipped rather than a primary ever being deleted.
+  await db.bedAllocation.deleteMany({
+    where: {
+      id: { in: targets.map((target) => target.allocationId) },
+      isSecondOccupant: true,
+    },
+  });
+
+  await recordPartnerShareSweepAudits(db, targets, params.reason);
+  return targets;
+}
+
+// ---------------------------------------------------------------------------
+// Unbacked shared-double reconciliation (#2595)
+//
+// The #1756 sweep above answers "this NAMED pair (or this one member) stopped
+// qualifying — remove their shares". Member merge cannot use it, because merge
+// is not a pair-breaking event about one pair: it COLLAPSES two identities, and
+// the resulting shares have to be judged one bed-night at a time.
+//
+// `planPartnerLinkMerge` keeps at most one CONFIRMED partner for the surviving
+// master, so merging a duplicate that already had its own confirmed partner
+// DROPS that link. `applyMoves` then re-points `BookingGuest.memberId` from the
+// duplicate onto the master with a blanket `updateMany` and leaves every bed
+// allocation exactly where it was — so the master and the duplicate's
+// ex-partner are left sharing a future DOUBLE bed with no partnership behind
+// it, which is precisely what `resolveSecondOccupant`/`mayShareDoubleBed`
+// refuse to create in the first place. Nothing else supplies the invariant:
+// merge takes no lodge tier, no lifecycle sweep covers merge, and there is no
+// database trigger.
+//
+// Passing the pair to the #1756 sweep would be wrong in both directions. With
+// `partnerMemberId` it only knows one pair, and merge can invalidate several
+// bed-nights against several different counterparts. Without it, the sweep
+// removes EVERY future share the member has — including the master's own,
+// still-CONFIRMED share with the partner it kept, which the merge did nothing
+// to invalidate.
+//
+// So this reconciliation is validity-driven rather than event-driven: it
+// re-derives each candidate bed-night's actual two occupants and re-asks the
+// single source of truth (`mayShareDoubleBedWith`, the batched form of
+// `mayShareDoubleBed`) whether they may still share. Only the bed-nights that
+// FAIL are swept, and only ever the `isSecondOccupant=true` row, so the primary
+// keeps their bed and no partner can be orphaned. Being validity-driven it is
+// also idempotent and safe to run on an unaffected merge: the candidate set is
+// simply empty, or every pair still qualifies and nothing is written.
+//
+// LOCKS. Identical prefix to the #1756 sweep — take
+// `acquireFuturePartnerSharedAllocationLocks(tx, memberIds)` (global cohort
+// `lock(1)`, then every affected lodge in sorted order) BEFORE any
+// member-lifecycle key, because the documented order is global -> lodge ->
+// member (docs/CONCURRENCY_AND_LOCKING.md). A caller that already holds
+// member-lifecycle keys must NOT reach for the lodge tier afterwards.
+// ---------------------------------------------------------------------------
+
+/**
+ * Remove every FUTURE shared-double placement involving these members that no
+ * longer has a valid partnership behind it, and audit both sides of each
+ * removed bed-night.
+ *
+ * For callers that already hold the complete prefix from
+ * `acquireFuturePartnerSharedAllocationLocks(tx, memberIds)`; the candidate rows
+ * are deliberately re-read after those locks. Returns the removed rows so the
+ * caller can alert admins AFTER the enclosing transaction commits (external
+ * calls stay outside it), exactly like its #1756 sibling.
+ *
+ * `memberIds` is a SCOPE, not a pair: a bed-night is a candidate when either of
+ * its two occupants is one of these members. Everything else is left alone, so
+ * this can never turn into a lodge-wide re-plan.
+ */
+export async function sweepUnbackedFutureSharedDoublesWithLocksHeld(params: {
+  memberIds: readonly string[];
+  reason: PartnerSharedSweepReason;
+  db: BedAllocationLifecycleDb;
+}): Promise<SweptPartnerSharedAllocation[]> {
+  const db = params.db;
+  const scopeIds = [...new Set(params.memberIds.filter(Boolean))];
+  if (scopeIds.length === 0) return [];
+  const today = getTodayDateOnly();
+
+  // Candidate second-occupant rows, from both sides of the share:
+  //  (a) a scoped member IS the second occupant, and
+  //  (b) a scoped member holds the PRIMARY side, so the partner sitting with
+  //      them is the row to judge.
+  // Both are needed for merge: `applyMoves` re-points the duplicate's guest
+  // rows onto the master, and the master may end up on either side of the
+  // bed-night depending on which booking placed which guest first.
+  const candidates = new Map<string, SweepAllocationRow>();
+  const secondRows = await db.bedAllocation.findMany({
+    where: {
+      isSecondOccupant: true,
+      stayDate: { gte: today },
+      bookingGuest: { memberId: { in: scopeIds } },
+    },
+    select: SWEEP_ALLOCATION_SELECT,
+  });
+  for (const row of secondRows) {
+    candidates.set(row.id, row);
+  }
+
+  const primaryBedNights = await db.bedAllocation.findMany({
+    where: {
+      isSecondOccupant: false,
+      stayDate: { gte: today },
+      bookingGuest: { memberId: { in: scopeIds } },
+    },
+    select: { bedId: true, stayDate: true },
+  });
+  if (primaryBedNights.length > 0) {
+    const partneredRows = await db.bedAllocation.findMany({
+      where: {
+        isSecondOccupant: true,
+        OR: primaryBedNights.map((night) => ({
+          bedId: night.bedId,
+          stayDate: night.stayDate,
+        })),
+      },
+      select: SWEEP_ALLOCATION_SELECT,
+    });
+    for (const row of partneredRows) {
+      candidates.set(row.id, row);
+    }
+  }
+  if (candidates.size === 0) return [];
+
+  // The primary occupant on each candidate bed-night names the OTHER half of
+  // the pair being judged, and the cross-booking side of the audit trail.
+  const primaries = await db.bedAllocation.findMany({
+    where: {
+      isSecondOccupant: false,
+      OR: [...candidates.values()].map((row) => ({
+        bedId: row.bedId,
+        stayDate: row.stayDate,
+      })),
+    },
+    select: SWEEP_ALLOCATION_SELECT,
+  });
+  const primaryByBedNight = new Map(
+    primaries.map((row) => [sweepBedNightKey(row.bedId, row.stayDate), row]),
+  );
+
+  // One eligibility question per distinct primary member, batched over all the
+  // second occupants it faces (`mayShareDoubleBedWith` answers a whole set in
+  // two statements), so the statement count is bounded by the number of
+  // distinct primaries rather than by the number of candidate bed-nights.
+  const secondsByPrimaryMember = new Map<string, Set<string>>();
+  for (const row of candidates.values()) {
+    const primary = primaryByBedNight.get(sweepBedNightKey(row.bedId, row.stayDate));
+    const primaryMemberId = primary?.bookingGuest.memberId;
+    const secondMemberId = row.bookingGuest.memberId;
+    if (!primaryMemberId || !secondMemberId) continue;
+    const seconds = secondsByPrimaryMember.get(primaryMemberId) ?? new Set<string>();
+    seconds.add(secondMemberId);
+    secondsByPrimaryMember.set(primaryMemberId, seconds);
+  }
+  const eligibleByPrimaryMember = new Map<string, Set<string>>();
+  for (const [primaryMemberId, seconds] of secondsByPrimaryMember) {
+    eligibleByPrimaryMember.set(
+      primaryMemberId,
+      await mayShareDoubleBedWith(primaryMemberId, [...seconds], db),
+    );
+  }
+
+  const targets: SweptPartnerSharedAllocation[] = [];
+  for (const row of candidates.values()) {
+    const primary =
+      primaryByBedNight.get(sweepBedNightKey(row.bedId, row.stayDate)) ?? null;
+    // No primary on the bed-night: a transient #1743/#1750 orphan, whose
+    // canonical repair is PROMOTION to primary, not removal. Judging a pair
+    // that does not exist would delete a row the promotion pass is about to
+    // keep, so leave it to that pass — the same choice the #1756 sweep makes.
+    if (!primary) continue;
+    const primaryMemberId = primary.bookingGuest.memberId;
+    const secondMemberId = row.bookingGuest.memberId;
+    // A share needs a member on BOTH sides (`resolveSecondOccupant` refuses to
+    // create one otherwise), so an unlinked guest on either side is unbacked by
+    // construction and needs no eligibility round-trip.
+    const stillMayShare =
+      Boolean(primaryMemberId) &&
+      Boolean(secondMemberId) &&
+      (eligibleByPrimaryMember.get(primaryMemberId as string)?.has(
+        secondMemberId as string,
+      ) ??
+        false);
+    if (stillMayShare) continue;
+    targets.push({
+      allocationId: row.id,
+      bookingId: row.bookingId,
+      bookingGuestId: row.bookingGuestId,
+      bedId: row.bedId,
+      roomId: row.roomId,
+      stayDate: row.stayDate,
+      secondOccupantMemberId: secondMemberId,
+      secondOccupantName: sweepGuestName(row.bookingGuest),
+      primaryBookingId: primary.bookingId,
+      primaryMemberId,
+      primaryName: sweepGuestName(primary.bookingGuest),
+    });
+  }
+  if (targets.length === 0) return [];
 
   // Idempotent, race-safe delete: id-scoped AND re-checking isSecondOccupant,
   // so a row concurrently removed (or promoted to primary by an unrelated
