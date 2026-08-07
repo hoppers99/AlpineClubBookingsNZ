@@ -1109,7 +1109,13 @@ export async function refreshMemberApplicationNominations(
     targetId: applicationId,
     entityType: "MemberApplication",
     entityId: applicationId,
-    category: "membership",
+    // `account`, not the invented `membership` these three membership-application
+    // writers used to pass (#2581). `membership` was never a taxonomy value, so
+    // the rows were selectable by no Admin category filter and by no Diagnostics
+    // correlation tool. A membership application is account-domain work, and
+    // `account` is read with `support:view` plus `membership:view` — so these
+    // rows go from readable by nobody to readable by a Membership Officer.
+    category: "account",
     severity: "important",
     outcome: "success",
     summary: "Membership nomination workflow refreshed",
@@ -1262,7 +1268,9 @@ export async function replaceMemberApplicationNominator({
     targetId: applicationId,
     entityType: "MemberApplication",
     entityId: applicationId,
-    category: "membership",
+    // `account` (#2581) — was the invented `membership`; see the note on the
+    // nomination-workflow-refreshed writer above.
+    category: "account",
     severity: "important",
     outcome: "success",
     summary: "Membership application nominator replaced",
@@ -2247,7 +2255,9 @@ export async function approveMemberApplication(
       targetId: mapped.targetMemberId,
       entityType: "Member",
       entityId: mapped.targetMemberId,
-      category: "membership",
+      // `account` (#2581) — was the invented `membership`; see the note on the
+      // nomination-workflow-refreshed writer above.
+      category: "account",
       severity: "critical",
       outcome: "success",
       summary: "Membership applicant mapped to an existing member",

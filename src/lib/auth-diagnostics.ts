@@ -222,7 +222,18 @@ async function persistAuthBounceAuditRow(
 
     await createAuditLog({
       action: AUTH_BOUNCE_ACTION,
-      category: "auth",
+      // `security`, not the invented `auth` this used to write (#2581). `auth`
+      // was never in the taxonomy, so these rows were selectable by no Admin
+      // category filter and by no Diagnostics correlation tool. The affected
+      // domain is authentication, which is `security`.
+      //
+      // TWO CONSEQUENCES, both deliberate. These rows become readable through
+      // the system correlation entry, which needs `support:view` alone — a
+      // widening from "readable by nobody". And `security` is a high-volume
+      // family here, so it now competes for that entry's 22-row ceiling; the
+      // explicit `diagnostic_high_volume` retention below is unchanged, so the
+      // 90-day expiry still bounds how long that lasts.
+      category: "security",
       outcome: record.reason,
       severity: bounceSeverity(record),
       memberId: record.memberId,

@@ -102,15 +102,32 @@ The audit `category` on a row is an older, coarser taxonomy than the admin permi
 areas, and the two do not line up. This matters twice — for reading an empty result
 correctly, and for anyone extending the taxonomy in AID-6B or AID-6C.
 
-| Category | Correlation entry | What actually records there |
-| --- | --- | --- |
-| `system`, `security`, `communication` | System | Setup, credentials, password/magic-link policy, backups, auth events, PIN login, email/notification sends |
-| `admin` | System | **The cross-domain catch-all** — the largest category in the codebase. Member merge, member-lifecycle delete/archive, member import, lodge-access changes, seasonal membership assignments, internet-banking **payment settings**, booking-request **settings**, chores, lockers, rooms, bed allocation, lodge settings, access roles, modules |
-| `booking` | Booking | Member-facing and system booking events. Not booking *settings* — those are `admin` |
-| `account` | Membership | Member self-service only: profile edits, notification preferences, post-login landing, membership cancellation |
-| `privacy` | Membership | Deletion requests, member export, **admin issue reports** — even though Issue Reports is a `support` screen |
-| `payment`, `xero` | Finance | Payments, refunds, reconciliation, Xero sync. Not payment *settings* — those are `admin` |
-| `lodge` | Lodge | Rosters, guest arrival/departure, bed-allocation lifecycle, display built-ins, and **induction** — even though Induction is a `membership` screen |
+| Category | Correlation entry | Reader needs | What actually records there |
+| --- | --- | --- | --- |
+| `system`, `security` | System | `support:view` | Setup, credentials, password/magic-link policy, backups, auth events and auth bounces, PIN login |
+| `admin` | System | `support:view` | **The cross-domain catch-all** — the largest category in the codebase (117 write sites). Member merge, member-lifecycle delete/archive, member import, lodge-access changes, seasonal membership assignments, internet-banking **payment settings**, booking-request **settings**, chores, lockers, rooms, bed allocation, lodge settings, access roles, modules |
+| `booking` | Booking | `support:view` + `bookings:view` | Member-facing and system booking events. Not booking *settings* — those are `admin` |
+| `account` | Membership | `support:view` + `membership:view` | Member self-service: profile edits, notification preferences, post-login landing, membership cancellation, member photos, membership applications and nomination |
+| `family` | Membership | `support:view` + `membership:view` | Family groups, partner links, login-holder changes, dependents |
+| `communication` | Membership | `support:view` + `membership:view` | Bulk email, notices, delivery suppressions, credential-email reissues, age-up parent handoffs |
+| `privacy` | Membership | `support:view` + `membership:view` | Deletion requests, member export, member-guest resolution, **admin issue reports** — even though Issue Reports is a `support` screen |
+| `payment`, `xero` | Finance | `support:view` + `finance:view` | Payments, refunds, reconciliation, Xero sync. Not payment *settings* — those are `admin` |
+| `lodge` | Lodge | `support:view` + `lodge:view` | Rosters, guest arrival/departure, bed-allocation lifecycle, display built-ins, and **induction** — even though Induction is a `membership` screen |
+
+That table is **derived from one map**, not maintained here by hand:
+`AUDIT_CATEGORY_CORRELATION_DOMAIN` in `src/lib/audit-categories.ts` sends every
+canonical category to exactly one entry, and each entry builds its own filter from it.
+Disjointness and total coverage are therefore properties of the type rather than
+assertions checked afterwards. Two rows changed in #2581 and both are behaviour changes,
+not tidying:
+
+- **`communication` moved from the System entry to Membership.** Bulk-email and
+  notice-delivery evidence needs `membership:view` now. A support-only operator who could
+  correlate those events **can no longer**. That is deliberate: those payloads carry
+  recipient email addresses, and communications is membership work.
+- **`family` joined Membership**, having previously been in **no** entry at all. 27
+  production write sites' evidence was invisible to every correlation tool and is now
+  readable with `support:view` plus `membership:view`.
 
 The consequence to keep in mind: a correlation tool answering "nothing matched" is
 answering about **its own categories**, not about the domain. A Membership Officer
@@ -132,17 +149,32 @@ work around.
 
 ### A row with no category is invisible to correlation
 
-The table above covers the ten **named** categories. There is an eleventh case, and no
-correlation entry covers it: the column is optional.
+The table above covers all eleven **named** categories, and since #2581 every one of
+them is claimed by exactly one entry. There is a twelfth case, and no correlation entry
+covers it: the column is optional.
 
 `AuditLog.category` is `String?` with no default, and the audit writer sets it only when
-the caller supplies one. A census of this repository's non-test audit writes found **81 of
-about 350 call sites pass no category** — 11 through `createAuditLog`, 69 through
-`logAudit`, one through `createStructuredAuditLog`. Some of them are money-adjacent:
-subscription-billing settings, retry, mark/unmark family, reconcile; the subscription
-charge confirm; all three member-credit adjustment steps; fee configuration; the family
-login-holder change. Others are ordinary but relevant: booking-policy edits, bulk
-communications, deletion-request decisions.
+the caller supplies one. The **executable census** — `npm run audit:census`, pinned by
+`src/lib/__tests__/audit-writer-census.test.ts` — counts **418 production audit write
+sites, of which 82 pass no category**: 69 through `logAudit`, 11 through
+`createAuditLog`, 2 hand-built Prisma writes, and none through
+`createStructuredAuditLog`. Some are money-adjacent: subscription-billing settings, retry,
+mark/unmark family, reconcile; the subscription charge confirm; all three member-credit
+adjustment steps; fee configuration; the saved-card charge results. Others are ordinary
+but relevant: booking-policy, season and promotional-code edits; Xero settings and
+retries; lodge display configuration; family-group, login-holder and dependent changes;
+membership applications; bulk communications; deletion-request decisions.
+
+Those figures used to be quoted here as "81 of about 350", which was a hand count and was
+stale. They are measured on every CI run now, and a **new** uncategorised audit writer
+fails the census contract with its own symbol named — the mechanism that stops this
+population growing again while it is being drained.
+
+One consequence worth stating because it is not obvious: all 82 also pass no `severity`
+and no `retentionClass`, and the writer derives a retention class only when one of those
+three is present. So every one of those rows is stored today with **no expiry at all** —
+never archived, never pruned. Giving them a category is therefore also a retention change,
+not a metadata tidy-up.
 
 The shared statement filters on `"category" = ANY (…)`, which is NULL — not true — for a
 row with no category, so **such a row is returned by none of the five entries.** It is not
@@ -163,14 +195,17 @@ lines and descriptions, pin that the statement really cannot match a null row, a
 `prisma/schema.prisma` so the disclosure cannot be dropped as stale while the column is
 still nullable.
 
-**The alternative is an owner decision, not a reviewer's.** The system entry could take the
+**The alternative was put to the owner and refused.** The system entry could take the
 null case explicitly (`"category" IS NULL OR "category" = ANY (…)`), which would keep the
-five sets disjoint and make the evidence complete. But it routes those 81 call sites'
+five sets disjoint and make the evidence complete. But it routes those 82 call sites'
 rows — booking policy, communications, deletion decisions — into an entry that needs
 `support:view` alone, and it needs a fresh look at the `(category, createdAt)` index
-against the 5-second statement timeout. Widening who can read part of the audit trail is
-the owner's call. The other option, and the better long-run one, is to give those call
-sites a category at the source, which is a platform-wide change of its own.
+against the 5-second statement timeout. On #2581 the owner ruled it out: Diagnostics stays
+strictly category-filtered and permission-scoped, and the rows get a category **at the
+source** instead. The canonical taxonomy, the permission map above and the census contract
+are the first part of that work; the sweep that gives each of the 82 sites its category is
+the second; the exact-action backfill of the historical null rows is the third. Until the
+second lands, the disclosure above is the honest answer and stays.
 
 ## Evidence sources
 
