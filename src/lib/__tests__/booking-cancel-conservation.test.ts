@@ -156,6 +156,10 @@ vi.mock("@/lib/payment-recovery", () => ({
   })),
 }));
 
+import {
+  fenceMemberFindMany,
+  recordingBookingDouble,
+} from "@/lib/__tests__/support/hosting-participant-fence-double";
 import { cancelBooking } from "@/lib/booking-cancel";
 
 const POLICY: CancellationRule[] = [
@@ -261,10 +265,16 @@ describe("cancel-after-reduction conservation matrix (#1031)", () => {
         arg: ((tx: unknown) => Promise<unknown>) | Array<Promise<unknown>>,
       ) => {
         if (typeof arg === "function") {
+          // #2619: model the participant fence's under-lock re-reads.
+          const fenceBooking = recordingBookingDouble((args) =>
+            mocks.bookingFindUnique(args),
+          );
           const mockTx = {
             $executeRaw: vi.fn().mockResolvedValue(undefined),
+            member: { findMany: fenceMemberFindMany() },
             booking: {
-              findUnique: mocks.bookingFindUnique,
+              findUnique: fenceBooking.findUnique,
+              findMany: fenceBooking.findMany,
               update: mocks.bookingUpdate,
               updateMany: mocks.bookingUpdateMany,
             },
