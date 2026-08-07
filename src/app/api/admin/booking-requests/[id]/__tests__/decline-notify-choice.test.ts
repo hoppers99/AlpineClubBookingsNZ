@@ -14,22 +14,44 @@ const h = vi.hoisted(() => ({
 }));
 
 vi.mock("@/lib/session-guards", () => ({ requireAdmin: h.requireAdmin }));
-vi.mock("@/lib/booking-request", () => ({
+vi.mock("@/lib/booking-request", () => {
   // The route uses `err instanceof BookingRequestError`; a minimal class keeps
   // the import resolvable. Success-path tests never hit the catch branch.
-  BookingRequestError: class BookingRequestError extends Error {
+  class BookingRequestError extends Error {
     status: number;
     constructor(message: string, status: number) {
       super(message);
       this.status = status;
     }
-  },
-  declineBookingRequest: h.declineBookingRequest,
-  serializeBookingRequestForAdmin: h.serializeBookingRequestForAdmin,
-}));
+  }
+  class BookingRequestDeclineCommittedError extends BookingRequestError {
+    holdReleasePending: boolean;
+    holdReleaseStatusUnconfirmed: boolean;
+    cause: unknown;
+    constructor(input: {
+      message: string;
+      status: number;
+      holdReleasePending: boolean;
+      holdReleaseStatusUnconfirmed: boolean;
+      cause?: unknown;
+    }) {
+      super(input.message, input.status);
+      this.holdReleasePending = input.holdReleasePending;
+      this.holdReleaseStatusUnconfirmed = input.holdReleaseStatusUnconfirmed;
+      this.cause = input.cause;
+    }
+  }
+  return {
+    BookingRequestError,
+    BookingRequestDeclineCommittedError,
+    declineBookingRequest: h.declineBookingRequest,
+    serializeBookingRequestForAdmin: h.serializeBookingRequestForAdmin,
+  };
+});
 vi.mock("@/lib/rate-limit", () => ({ getClientIp: () => "127.0.0.1" }));
 
 import { POST } from "@/app/api/admin/booking-requests/[id]/decline/route";
+import { BookingRequestDeclineCommittedError } from "@/lib/booking-request";
 import {
   HOSTING_COVERAGE_RETRY_CODE,
   HOSTING_COVERAGE_RETRY_MESSAGE,
@@ -103,7 +125,13 @@ describe("POST /api/admin/booking-requests/[id]/decline notify choice (#1791)", 
 
   it("reports the committed decline and pending hold release on participant contention", async () => {
     h.declineBookingRequest.mockRejectedValue(
-      new HostingCoverageParticipantRetryError(),
+      new BookingRequestDeclineCommittedError({
+        message: "Capacity hold release must be retried.",
+        status: 409,
+        holdReleasePending: true,
+        holdReleaseStatusUnconfirmed: false,
+        cause: new HostingCoverageParticipantRetryError(),
+      }),
     );
 
     const response = await POST(req({ reason: "Fully booked" }), { params });
@@ -114,6 +142,31 @@ describe("POST /api/admin/booking-requests/[id]/decline notify choice (#1791)", 
       code: HOSTING_COVERAGE_RETRY_CODE,
       requestDeclined: true,
       holdReleasePending: true,
+      holdReleaseStatusUnconfirmed: false,
+    });
+  });
+
+  it("reports an ordinary post-decline failure without exposing private details", async () => {
+    h.declineBookingRequest.mockRejectedValue(
+      new BookingRequestDeclineCommittedError({
+        message:
+          "The request was declined, but its capacity hold status could not be confirmed. Open the held booking and check its status before retrying.",
+        status: 500,
+        holdReleasePending: false,
+        holdReleaseStatusUnconfirmed: true,
+        cause: new Error("private database detail"),
+      }),
+    );
+
+    const response = await POST(req({ reason: "Fully booked" }), { params });
+
+    expect(response.status).toBe(500);
+    await expect(response.json()).resolves.toEqual({
+      error:
+        "The request was declined, but its capacity hold status could not be confirmed. Open the held booking and check its status before retrying.",
+      requestDeclined: true,
+      holdReleasePending: false,
+      holdReleaseStatusUnconfirmed: true,
     });
   });
 });

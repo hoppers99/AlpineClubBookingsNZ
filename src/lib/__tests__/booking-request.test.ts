@@ -182,6 +182,7 @@ import {
   assertMappableOwnerContact,
   assertRequestedLodgeActive,
   BookingRequestError,
+  BookingRequestDeclineCommittedError,
   createBookingRequest,
   declineBookingRequest,
   getBookingRequestSettings,
@@ -1252,7 +1253,11 @@ describe("declineBookingRequest", () => {
         adminMemberId: "admin-1",
         ipAddress: "203.0.113.7",
       })
-    ).rejects.toMatchObject({ status: 409 });
+    ).rejects.toMatchObject({
+      status: 409,
+      holdReleasePending: false,
+      holdReleaseStatusUnconfirmed: true,
+    });
 
     // Claim-first: the decline flip DID run and the shared cancel path was
     // invoked before the 409 surfaced.
@@ -1262,6 +1267,36 @@ describe("declineBookingRequest", () => {
       })
     );
     expect(mockedCancelBooking).toHaveBeenCalled();
+  });
+
+  it("preserves the committed decline when an ordinary hold-release error leaves status unconfirmed", async () => {
+    mockedFindUnique.mockResolvedValue(
+      baseRequest({
+        status: BookingRequestStatus.PRICED,
+        heldBookingId: "held-1",
+      }) as never
+    );
+    mockedUpdateMany.mockResolvedValue({ count: 1 } as never);
+    mockedBookingFindUnique.mockResolvedValue({
+      id: "held-1",
+      status: BookingStatus.AWAITING_REVIEW,
+    } as never);
+    mockedCancelBooking.mockRejectedValue(new Error("private database detail"));
+
+    const failure = declineBookingRequest({
+      requestId: "req-1",
+      adminMemberId: "admin-1",
+    });
+
+    await expect(failure).rejects.toBeInstanceOf(
+      BookingRequestDeclineCommittedError,
+    );
+    await expect(failure).rejects.toMatchObject({
+      status: 500,
+      holdReleasePending: false,
+      holdReleaseStatusUnconfirmed: true,
+      cause: expect.objectContaining({ message: "private database detail" }),
+    });
   });
 
   it("detaches a non-live held booking (already CANCELLED) on a successful decline and proceeds (#1365)", async () => {

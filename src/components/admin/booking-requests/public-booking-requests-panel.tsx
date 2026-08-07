@@ -1071,10 +1071,12 @@ export function PublicBookingRequestsPanel({
       if (!response.ok) {
         if (
           data.requestDeclined === true &&
-          data.holdReleasePending === true
+          (data.holdReleasePending === true ||
+            data.holdReleaseStatusUnconfirmed === true)
         ) {
-          const recoveryBase =
-            "The request was declined, but its capacity hold still needs to be released. Do not decline this request again.";
+          const recoveryBase = data.holdReleasePending === true
+            ? "The request was declined, but its capacity hold still needs to be released. Do not decline this request again."
+            : "The request was declined, but its capacity hold status could not be confirmed. Do not decline this request again.";
           setRequests((current) =>
             current.filter((candidate) => candidate.id !== request.id),
           );

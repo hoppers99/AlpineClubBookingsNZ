@@ -183,7 +183,7 @@ describe("PublicBookingRequestsPanel saved-data marker (#2342)", () => {
     });
   });
 
-  it("retains declined-request recovery, suppresses stale decline, and links to the held booking", async () => {
+  it("retains ordinary declined-request recovery, suppresses stale decline, and links to the held booking", async () => {
     const scrollIntoView = vi.fn();
     Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
       configurable: true,
@@ -196,12 +196,11 @@ describe("PublicBookingRequestsPanel saved-data marker (#2342)", () => {
       if (url === "/api/admin/booking-requests/req-1/decline" && init?.method === "POST") {
         return {
           ok: false,
-          status: 409,
+          status: 500,
           json: async () => ({
-            code: "HOSTING_COVERAGE_PARTICIPANT_RETRY",
             error: "private database detail",
             requestDeclined: true,
-            holdReleasePending: true,
+            holdReleaseStatusUnconfirmed: true,
           }),
         } as Response;
       }
@@ -223,7 +222,7 @@ describe("PublicBookingRequestsPanel saved-data marker (#2342)", () => {
     await waitFor(() =>
       expect(alert?.textContent).toMatch(/request was declined/i),
     );
-    expect(alert?.textContent).toMatch(/capacity hold still needs to be released/i);
+    expect(alert?.textContent).toMatch(/capacity hold status could not be confirmed/i);
     expect(alert?.textContent).toMatch(/could not be refreshed/i);
     expect(alert?.textContent).not.toContain("private database detail");
     expect(document.activeElement).toBe(alert);

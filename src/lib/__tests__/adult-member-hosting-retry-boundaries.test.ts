@@ -137,7 +137,8 @@ describe("adult-member hosting participant retry responses (#2597)", () => {
       ],
       "src/app/api/admin/booking-requests/[id]/decline/route.ts": [
         "requestDeclined: true",
-        "holdReleasePending: true",
+        "holdReleasePending: err.holdReleasePending",
+        "holdReleaseStatusUnconfirmed: err.holdReleaseStatusUnconfirmed",
       ],
       "src/app/api/admin/deletion-requests/[id]/route.ts": [
         "cancelledBookings: cancelledBookingIds.length",
