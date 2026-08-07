@@ -189,7 +189,11 @@ async function seedStay(): Promise<void> {
       lodgeId: LODGE_ID,
       checkIn: CHECK_IN,
       checkOut: CHECK_OUT,
-      status: "CONFIRMED",
+      // Must be an OPERATIONAL stay status. `OPERATIONAL_STAY_BOOKING_STATUSES`
+      // is [PAID, COMPLETED] — "CONFIRMED" means payment is still outstanding,
+      // so the eligibility selector would return nobody and every race below
+      // would pass vacuously against an empty roster.
+      status: "PAID",
       totalPriceCents: 300,
       finalPriceCents: 300,
     },
@@ -244,17 +248,32 @@ function rosterConfirm() {
   });
 }
 
-async function rosterSaveExistingRows() {
-  const snapshot = (await getAdminRosterForDate({
+type RosterSnapshot = {
+  revision: string;
+  assignments: Array<{ id: string; choreTemplateId: string; bookingGuestId: string | null }>;
+};
+
+/**
+ * Read the roster the operator is about to re-save.
+ *
+ * This MUST happen before the race starts. `getAdminRosterForDate` opens its
+ * own `lock(1)` transaction, so folding it into the raced writer would make
+ * that writer take the global lock twice: it would join the queue, read, commit,
+ * and then re-queue behind the other writer — collapsing both winner orders into
+ * "date change first" and making the assertions below meaningless.
+ */
+async function captureRosterSnapshot(): Promise<RosterSnapshot> {
+  return (await getAdminRosterForDate({
     date: CHECK_OUT,
     dateString: CHECKOUT_DAY_STRING,
     regenerate: false,
     includeNonEssential: true,
     lodgeId: LODGE_ID,
-  })).body as {
-    revision: string;
-    assignments: Array<{ id: string; choreTemplateId: string; bookingGuestId: string | null }>;
-  };
+  })).body as RosterSnapshot;
+}
+
+/** The operator's whole-roster Save of exactly what they were shown. ONE lock(1). */
+function rosterSaveExistingRows(snapshot: RosterSnapshot) {
   return updateAdminRosterForDate({
     date: CHECK_OUT,
     dateString: CHECKOUT_DAY_STRING,
@@ -489,18 +508,28 @@ function shortenFromTheEnd() {
       });
 
       it(`removes the orphaned checkout-day row exactly once when the check-out date moves earlier (${label})`, async () => {
+        // NON-VACUITY: seed the roster first, so there is a real departure-
+        // morning row on the 4th before either writer starts. Without this the
+        // "dates first" order would assert an empty table that was empty all
+        // along.
+        await rosterRegenerate();
+        expect(await checkoutDayRows()).toHaveLength(1);
+
         const outcomes = order === "roster"
           ? await runWritersInGlobalQueueOrder(rosterRegenerate, shortenFromTheEnd)
           : await runWritersInGlobalQueueOrder(shortenFromTheEnd, rosterRegenerate);
         expect(outcomes.every((outcome) => outcome.status === "fulfilled")).toBe(true);
+        const dateChange = (order === "roster" ? outcomes[1] : outcomes[0]) as
+          PromiseSettledResult<string[]>;
 
-        // Legal serialised outcomes: either the roster ran first and cleanup
-        // removed its now-orphaned row, or the dates moved first and the roster
-        // found nobody present. Both end with nothing on the 4th, and neither
-        // leaves a duplicate behind.
+        // Both winner orders end with nothing on the 4th, and the row was only
+        // ever SUGGESTED, so it goes without a warning: "roster first" rebuilds
+        // it and cleanup then removes it; "dates first" removes the seeded row
+        // and the regenerate that follows finds nobody present to re-create it.
         expect(await checkoutDayRows()).toEqual([]);
+        expect(dateChange.status === "fulfilled" && dateChange.value).toEqual([]);
 
-        // The row the shortened stay DOES still justify is untouched.
+        // Nothing was collaterally created or moved onto another date.
         const survivors = await prisma.choreAssignment.findMany({
           where: { bookingId: BOOKING_ID },
           select: { date: true },
@@ -513,26 +542,61 @@ function shortenFromTheEnd() {
       it(`never silently destroys a CONFIRMED checkout-day row (${label})`, async () => {
         await rosterRegenerate();
         await rosterConfirm();
-        expect((await checkoutDayRows())[0]?.status).toBe("CONFIRMED");
+        const confirmed = await checkoutDayRows();
+        expect(confirmed).toHaveLength(1);
+        expect(confirmed[0]).toMatchObject({
+          choreTemplateId: MORNING_TEMPLATE_ID,
+          bookingGuestId: GUEST_ID,
+          status: "CONFIRMED",
+        });
+
+        // Outside the race on purpose — see `captureRosterSnapshot`.
+        const snapshot = await captureRosterSnapshot();
+        expect(snapshot.assignments).toHaveLength(1);
+        const save = () => rosterSaveExistingRows(snapshot);
 
         const outcomes = order === "roster"
-          ? await runWritersInGlobalQueueOrder(rosterSaveExistingRows, shortenFromTheEnd)
-          : await runWritersInGlobalQueueOrder(shortenFromTheEnd, rosterSaveExistingRows);
-
-        const dateChange = (order === "roster" ? outcomes[1] : outcomes[0]) as
-          PromiseSettledResult<string[]>;
+          ? await runWritersInGlobalQueueOrder(save, shortenFromTheEnd)
+          : await runWritersInGlobalQueueOrder(shortenFromTheEnd, save);
+        const [saveOutcome, dateChange] = (order === "roster"
+          ? [outcomes[0], outcomes[1]]
+          : [outcomes[1], outcomes[0]]) as [
+            PromiseSettledResult<{ body: unknown; init?: ResponseInit }>,
+            PromiseSettledResult<string[]>,
+          ];
+        expect(saveOutcome.status).toBe("fulfilled");
         expect(dateChange.status).toBe("fulfilled");
+        if (saveOutcome.status !== "fulfilled" || dateChange.status !== "fulfilled") return;
 
         const rows = await checkoutDayRows();
-        if (rows.length > 0) {
-          // A whole-roster Save that won the queue returns the row to
-          // SUGGESTED, at which point cleanup may legally delete it. If it is
-          // still here it must still be attributed to a real person.
-          expect(rows[0].bookingGuestId).toBe(GUEST_ID);
-        } else if (dateChange.status === "fulfilled") {
-          // If it went, it went through a path that recorded WHY: either it was
-          // SUGGESTED at the time, or the operator got a warning.
-          expect(Array.isArray(dateChange.value)).toBe(true);
+        if (order === "roster") {
+          // Save wins. The row is still valid when it commits, so the operator's
+          // own edit legitimately returns it to SUGGESTED. The date change then
+          // finds a SUGGESTED row outside the new stay and removes it silently —
+          // which is correct, because it is no longer a confirmed commitment.
+          expect((saveOutcome.value.init?.status ?? 200)).toBe(200);
+          expect(rows).toEqual([]);
+          expect(dateChange.value).toEqual([]);
+        } else {
+          // The date change wins while the row is still CONFIRMED. It must NOT
+          // delete it: it leaves the row alone and reports it twice — once from
+          // the envelope pass, once from the per-guest stay-range pass — so the
+          // operator is told. The Save that follows is then rejected, because
+          // the person it names is no longer in the lodge on the 4th.
+          expect(dateChange.value).toEqual([
+            `Strip beds on ${CHECKOUT_DAY_STRING} is CONFIRMED and was not auto-removed`,
+            `Strip beds on ${CHECKOUT_DAY_STRING} is CONFIRMED and falls outside the guest's stay range`,
+          ]);
+          expect(rows).toHaveLength(1);
+          expect(rows[0]).toMatchObject({
+            choreTemplateId: MORNING_TEMPLATE_ID,
+            bookingGuestId: GUEST_ID,
+            status: "CONFIRMED",
+          });
+          expect(saveOutcome.value.init?.status).toBe(400);
+          expect(saveOutcome.value.body).toMatchObject({
+            code: "ROSTER_GUEST_INELIGIBLE",
+          });
         }
       });
     }
