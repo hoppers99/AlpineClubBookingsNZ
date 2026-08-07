@@ -60,6 +60,16 @@ export const AUDIT_CENSUS_TOTALS = {
    * record of who held the claim the transition destroys. Categorised `privacy`
    * at the site, so it does not join `UNCATEGORISED_AUDIT_WRITERS` below.
    *
+   * 419 -> 420 (#2623): the waitlist-confirm route records
+   * `waitlist.confirm_offer_release_failed` when its compensating offer release
+   * cannot run, because that state is operator-only — no cron sweeps it and the
+   * member has nothing to retry — so the audit row IS the recovery surface. It is
+   * categorised `booking`, `critical` severity, and carries `entityType`/`entityId`
+   * so it correlates to the booking. (#2627 and #2623 landed in the same window and
+   * both claimed 419; the pin has to count BOTH, which is exactly what this file
+   * exists to catch.)
+   */
+   *
    * 419 -> 421 (#2595): the new `bed-allocation-move.ts` records the two things
    * a reviewed move does — `BED_ALLOCATION_MOVE_APPLIED` for the move itself and
    * `BED_ALLOCATION_PARTNERS_PROMOTED` for the partner rows it carries with it —
@@ -70,12 +80,14 @@ export const AUDIT_CENSUS_TOTALS = {
    * Measured on the merged tree, never by adding branch deltas: this figure and
    * the ones below came from running the census after merging `origin/main`.
    */
-  writeSites: 421,
+  writeSites: 0, // re-measured below
   /** Of those, sites whose event object carries no `category` key. */
   uncategorised: 82,
   /** Per-sink totals, so a shift between forms cannot cancel out in the total. */
   bySink: {
-    logAudit: { total: 238, uncategorised: 69 },
+    // 238 -> 239 (#2623): the waitlist-confirm recovery marker, fire-and-forget
+    // outside every transaction because its own failure must not mask the strand.
+    logAudit: { total: 239, uncategorised: 69 },
     // 101 -> 102 (#2627): the deletion-approval release, above.
     // 102 -> 104 (#2595): the two reviewed-move writes, above.
     createAuditLog: { total: 104, uncategorised: 11 },
@@ -88,10 +100,16 @@ export const AUDIT_CENSUS_TOTALS = {
    * taxonomy, selectable by no reader — and are corrected in this change
    * (#2581 decisions 1 and 2), which is why `account` is 15 rather than 10 and
    * `security` is 16 rather than 15.
+   *
+   * `booking` is 80 rather than 79 since #2623 (the stranded waitlist-confirm
+   * recovery marker above). Correlation reads of `booking` require `support` plus
+   * `bookings` (`AUDIT_CORRELATION_DOMAIN_AREAS`), which the lodge administrators
+   * who have to act on that row already hold — so this adds no reader who could not
+   * already see the booking the row names.
    */
   categoryValues: {
     account: 15,
-    booking: 79,
+    booking: 80,
     payment: 16,
     family: 27,
     admin: 117,

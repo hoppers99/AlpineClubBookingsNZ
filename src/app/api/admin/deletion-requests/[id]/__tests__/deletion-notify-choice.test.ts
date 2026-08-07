@@ -1308,6 +1308,12 @@ describe("#2623 T1: the Xero fence is asked BEFORE anything irreversible", () =>
 
     expect(response.status).toBe(409);
     expect(body.code).toBe("XERO_CONTACT_CREATE_BLOCKS_DELETION");
+    // #2623 T7: the refusal names the exact operation and the screen holding the
+    // remedy, instead of leaving the operator to work out which of the member's
+    // Xero operations refused and where to clear it.
+    expect(body.xeroOperationId).toBe("xero-op-running");
+    expect(body.remedy).toContain("Admin → Xero → Operations");
+    expect(body.error).toContain("Admin → Xero → Operations");
 
     // The whole point: this used to be discovered inside the anonymisation
     // transaction, AFTER the loop below had cancelled both bookings for a

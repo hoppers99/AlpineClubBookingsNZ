@@ -6,7 +6,7 @@ Audience: Operator
 
 The shared sign-in for the physical lodge **kiosk** — the tablet at the lodge that
 guests and hut leaders use to check in and out, see who's staying (including a
-week-at-a-glance of nightly guest counts), and view lodge information. This
+week-at-a-glance of daily guest counts), and view lodge information. This
 page sets the kiosk account's email and password (and, for a
 multi-lodge club, which lodge each kiosk device serves); it is **not** a personal
 admin login. Find it at **Admin → Lodge Operations → Lodge Kiosk**
@@ -40,6 +40,37 @@ module is on.
 
 1. Click **Preview kiosk** to open the kiosk exactly as this login would see it — a
    **read-only** preview, so nothing is saved.
+
+### What "here today" means on the kiosk
+
+Every count and badge on the kiosk answers one question: who is in the lodge on
+this **day**. Everyone who stays a night is here from midday on the day they
+arrive until midday on the day they leave, so a day's list holds the people
+sleeping there tonight **and** the people who slept there last night and leave
+this morning. **Departing** always means *leaves today* — on the day list, on
+the week strip, and in the roster setup wizard, which reads the same list.
+
+Two consequences worth knowing. A changeover morning is not an empty day: the
+week strip shows a guest count and offers a roster, because the beds still need
+stripping. And a stay with a gap in it — someone booked in for Friday and then
+again for Monday — shows nobody on the days in between, because they went home.
+
+The week strip and the day list count slightly different populations, on
+purpose. The strip counts who can be **rostered**, so a booking still held by
+an admin review is not in its numbers. The day list counts who is **in the
+building**, so it does show that booking, marked "Blocked from Check-In". A
+day can therefore read as empty on the strip and open onto a flagged party.
+
+**Mark Departed** appears only on a guest's *final* departure — the morning
+after their last booked night. On a stay with a gap in it, the earlier
+departure morning shows the **Departing** badge without the button, because
+check-out can only be recorded once, at the end of the booking.
+
+The **Who's at the lodge** panel that sits under an admin calendar counts
+guest-**nights** rather than lodge days. On the chore roster calendar, whose
+day colours *are* lodge days, the panel spells that difference out on screen;
+the hut-leader assignment calendar is night-based throughout, so there is no
+difference to explain there and it says nothing.
 
 ### Multi-lodge: bind and add kiosk accounts
 

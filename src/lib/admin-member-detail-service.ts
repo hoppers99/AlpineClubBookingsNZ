@@ -22,7 +22,10 @@ import {
   shouldRepairXeroContactNameOrder,
 } from "@/lib/xero-contact-sync";
 import { getXeroApiErrorInfo } from "@/lib/xero-api-errors";
-import { getMemberContactCreateRecoveryState } from "@/lib/xero-contact-create-recovery";
+import {
+  findMemberContactChangeMergeBlocker,
+  getMemberContactCreateRecoveryState,
+} from "@/lib/xero-contact-create-recovery";
 import logger from "@/lib/logger";
 import {
   copyStreetAddressToPostal,
@@ -594,6 +597,7 @@ export async function getAdminMemberDetail(params: {
     deleteEligibility,
     deleteLifecycleActionRequests,
     xeroContactCreateRecoveryState,
+    xeroContactLifecycleBlocker,
   ] = await Promise.all([
     getMemberDeleteEligibility({
       memberId: id,
@@ -604,6 +608,11 @@ export async function getAdminMemberDetail(params: {
       memberId: id,
       xeroContactId: member.xeroContactId,
     }),
+    // #2623 T7: the SAME reader member merge and account deletion refuse on.
+    // The create-recovery state above deliberately reports nothing once the
+    // member is linked, so on its own it let a linked-but-still-blocked member
+    // look completely clean here while both lifecycle operations refused them.
+    findMemberContactChangeMergeBlocker(id),
   ]);
   const lifecycleActionRequests = [
     ...deleteLifecycleActionRequests,
@@ -740,6 +749,7 @@ export async function getAdminMemberDetail(params: {
     xeroContactCreateRecoveryState,
     xeroContactCreateRecoveryPending:
       xeroContactCreateRecoveryState === "PROVIDER_CREATED_LINK_PENDING",
+    xeroContactLifecycleBlocker,
     deleteEligibility,
     lifecycleActionRequests,
     openCancellationRequest: openCancellationParticipant

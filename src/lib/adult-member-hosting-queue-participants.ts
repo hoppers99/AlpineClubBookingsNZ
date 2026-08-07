@@ -41,6 +41,24 @@ export class HostingCoverageParticipantRetryError extends ApiError {
 }
 
 /**
+ * The participant fence was asked to issue a proof through a client that cannot
+ * take a row lock. This is a wiring fault, never a runtime race: every real
+ * Prisma client and transaction client exposes `$executeRaw`. It is
+ * deliberately NOT a `HostingCoverageParticipantRetryError` — retrying will not
+ * grow the client a raw method, and dressing it as contention would hand
+ * callers a 409 that invites an endless retry loop.
+ */
+export class HostingCoverageParticipantFenceUnavailableError extends Error {
+  constructor() {
+    super(
+      "Hosting coverage participants cannot be locked through a client without $executeRaw; " +
+        "a participant proof must never be issued without its FOR KEY SHARE NOWAIT lock.",
+    );
+    this.name = "HostingCoverageParticipantFenceUnavailableError";
+  }
+}
+
+/**
  * Fence one host-qualification lifecycle target against a late
  * BookingGuest.member FK write.
  *
@@ -217,15 +235,17 @@ export async function acquireHostingCoverageQueueParticipantProof(
     ...params.sources.map((source) => source.ownerMemberId),
     params.actorMemberId,
   ]);
-  // Hosting service unit tests use deliberately narrow in-memory delegates.
-  // A real Prisma client exposes both raw methods; requiring that production
-  // shape keeps those existing test doubles narrow without weakening the
-  // runtime-issued proof at the queue boundary.
-  if (
-    typeof (db as { $executeRaw?: unknown }).$executeRaw !== "function" ||
-    typeof (db as { $queryRaw?: unknown }).$queryRaw !== "function"
-  ) {
-    return issueProof(memberIds, params.sources);
+  // The row lock IS this function's contract. An issued proof is a capability:
+  // it enters `issuedProofs`, so it satisfies
+  // assertHostingCoverageQueueParticipantsLocked at every downstream call site.
+  // Issuing one without having taken the lock would therefore not "keep test
+  // doubles narrow" — it would silently disable the fence wherever such a
+  // client is passed, which is exactly the structural cast that check exists to
+  // reject. So refuse instead: a caller that cannot lock gets no proof at all.
+  // Test doubles must supply `$executeRaw`; see the queue-participants suite
+  // for the minimal shape.
+  if (typeof (db as { $executeRaw?: unknown }).$executeRaw !== "function") {
+    throw new HostingCoverageParticipantFenceUnavailableError();
   }
   try {
     await db.$executeRaw(Prisma.sql`

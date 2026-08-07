@@ -63,9 +63,15 @@ describe("unresolved Xero contact-create recovery blockers", () => {
     const blockers = await runGuards({ xeroSyncOperation });
 
     expect(blockers.map((blocker) => blocker.code)).toContain(code);
-    expect(blockers.find((blocker) => blocker.code === code)?.label).toMatch(
+    const label = blockers.find((blocker) => blocker.code === code)?.label;
+    expect(label).toMatch(
       /Wait for it to finish, or resolve the failed Xero operation/,
     );
+    // #2623 T7: the refusal names the exact operation and the screen that
+    // clears it. Without that the operator saw an unexplained 409 while the
+    // member's own page reported a clean Xero state.
+    expect(label).toContain(contactCreateFailure().id);
+    expect(label).toContain("Admin → Xero → Operations");
   });
 
   it("blocks an exact active contact-create reservation", async () => {

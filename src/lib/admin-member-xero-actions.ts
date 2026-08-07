@@ -57,6 +57,10 @@ export interface XeroActionRecovery {
   memberId?: string;
   subscriptionRefreshPending?: boolean;
   subscriptionCleanupPending?: boolean;
+  /** #2623 T3: the member's CONTACT ledger rows may still be ACTIVE. */
+  contactLinkRowsMayRemainActive?: boolean;
+  /** #2623 T3: the action's audit entry may never have been written. */
+  auditEntryMayBeMissing?: boolean;
   xeroPostProcessingPending?: boolean;
 }
 
@@ -118,6 +122,10 @@ function readRecovery(data: XeroActionRecovery): XeroActionRecovery {
     ...(data.subscriptionCleanupPending
       ? { subscriptionCleanupPending: true }
       : {}),
+    ...(data.contactLinkRowsMayRemainActive
+      ? { contactLinkRowsMayRemainActive: true }
+      : {}),
+    ...(data.auditEntryMayBeMissing ? { auditEntryMayBeMissing: true } : {}),
     ...(data.xeroPostProcessingPending
       ? { xeroPostProcessingPending: true }
       : {}),

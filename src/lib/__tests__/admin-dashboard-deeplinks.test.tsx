@@ -254,7 +254,9 @@ describe("admin dashboard deep links", () => {
     ]);
 
     // Roster count: operational stays overlapping the window, guest-existence
-    // required (roster-status.ts semantics), scoped to today..+7.
+    // required (roster-status.ts semantics), scoped to today..+7. #2631: the
+    // overlap is checkout-INCLUSIVE, because a stay whose last night was
+    // yesterday still needs this morning's chores done.
     const rosterCall = vi
       .mocked(prisma.booking.findMany)
       .mock.calls.find(
@@ -266,8 +268,8 @@ describe("admin dashboard deep links", () => {
     expect((rosterCall![0] as { where: unknown }).where).toMatchObject({
       deletedAt: null,
       checkIn: { lt: to },
-      checkOut: { gt: today },
-      guests: { some: { stayStart: { lt: to }, stayEnd: { gt: today } } },
+      checkOut: { gte: today },
+      guests: { some: { stayStart: { lt: to }, stayEnd: { gte: today } } },
     });
 
     // Chore assignments read for the same window.

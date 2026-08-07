@@ -111,20 +111,89 @@ describe("stay-range model contract (#2622)", () => {
     );
   });
 
-  it("freezes the deprecated includeDepartureDate flag to the #2631 surfaces", () => {
-    // The flag is still the wrong way to ask. #2631 converts these three read
-    // surfaces and deletes it; until then no fourth caller.
+  it("freezes the deprecated includeDepartureDate flag to the lobby wall alone", () => {
+    // #2631 converted the two kiosk read surfaces (`api/lodge/week` and
+    // `api/lodge/guests/[date]`) onto the named operational-day helpers, so the
+    // flag has ONE caller left: `lodge-display-state.ts`, the unauthenticated
+    // lobby wall. That one is permanent, not pending — it needs the LEGACY
+    // final-morning-only semantics to derive its night counts, and the test
+    // above spells out why giving it D-M4 per-segment presence would put guest
+    // names on a public screen (issue #58). No caller may be added back.
     const callers = allSourceFiles(path.join(ROOT, "src"))
       .filter((file) => !file.includes(`${path.sep}__tests__${path.sep}`))
       .filter((file) => /includeDepartureDate/.test(fs.readFileSync(file, "utf8")))
       .map((file) => path.relative(ROOT, file).replaceAll("\\", "/"))
       .sort();
     expect(callers).toEqual([
-      "src/app/api/lodge/guests/[date]/route.ts",
-      "src/app/api/lodge/week/route.ts",
       "src/lib/booking-guest-stay-ranges.ts",
       "src/lib/lodge-display-state.ts",
     ]);
+  });
+
+  it("MUTATION PROBE: every converted read surface loads the explicit night rows (#2631)", () => {
+    // The operational-day rule is per-night, so a surface that asks it about a
+    // guest loaded without `nights` gets the stayStart/stayEnd envelope back
+    // instead — and a sparse stay's internal gap day reads as presence. Drop
+    // the load anywhere and this fails.
+    for (const surface of [
+      "src/app/api/lodge/guests/[date]/route.ts",
+      "src/app/api/lodge/week/route.ts",
+      "src/lib/roster-status.ts",
+      "src/lib/roster-eligibility.ts",
+    ]) {
+      const contents = source(surface);
+      expect(contents, surface).toMatch(/nights: \{\s*select: \{\s*stayDate: true,?\s*\},?\s*\}/);
+    }
+  });
+
+  it("MUTATION PROBE: no converted read surface reverts to a checkout-EXCLUSIVE bound (#2631)", () => {
+    // `gt` on a checkout/stay-end bound is the old night model. It silently
+    // drops the changeover morning — the whole complaint — and on the roster
+    // calendar it drops a departure that falls on the first displayed date.
+    for (const surface of [
+      "src/app/api/lodge/guests/[date]/route.ts",
+      "src/app/api/lodge/week/route.ts",
+      "src/app/api/chores/roster/[date]/print/route.ts",
+      "src/lib/roster-status.ts",
+      "src/lib/roster-eligibility.ts",
+    ]) {
+      const contents = source(surface);
+      expect(contents, surface).not.toMatch(/checkOut: \{ gt: /);
+      expect(contents, surface).not.toMatch(/stayEnd: \{ gt: /);
+    }
+  });
+
+  it("MUTATION PROBE: the roster calendar's own queries carry the consent predicate (#2631)", () => {
+    // The calendar used to count guests the roster excludes, so a day painted
+    // "needs roster" could open empty. Both DB entry points in roster-status
+    // now apply D-12's predicate in the booking `some` AND the guest select —
+    // four occurrences. Removing any one of them fails here.
+    //
+    // Counted over CODE ONLY: comments are stripped first, so naming the
+    // predicate in a docstring neither satisfies this probe nor trips it.
+    const rosterStatus = source("src/lib/roster-status.ts");
+    expect(rosterStatus).toContain(
+      'from "@/lib/member-guest-consent"',
+    );
+    const rosterStatusCode = rosterStatus
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/^\s*\/\/.*$/gm, "");
+    expect(
+      rosterStatusCode.split("OPERATIONALLY_PRESENT_GUEST_WHERE").length - 1,
+    ).toBe(5); // 1 import + 2 per entry point
+  });
+
+  it("keeps the roster calendar and the kiosk week strip on one candidate set (#2631)", () => {
+    // The week endpoint's guest count, departing count and roster colour must
+    // come from the same list, or the payload can say four guests and
+    // "no-guests to roster" in the same breath again.
+    const week = source("src/app/api/lodge/week/route.ts");
+    expect(week).toContain("getRosterStatusStayingBookings");
+    expect(week).toContain("computeRosterDayStatusForStayingBookings");
+    expect(week).not.toContain("getLodgeVisibleGuestsForDate");
+    expect(source("src/lib/roster-status.ts")).toContain(
+      "getOperationallyPresentGuestsForDay",
+    );
   });
 
   it("MUTATION PROBE: every roster generation path reads the canonical selector", () => {

@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { checkinNotBlockedByPendingReviewFilter } from "@/lib/booking-review";
 import { parseDateOnly } from "@/lib/date-only";
 import {
   computeRosterDayStatuses,
+  countRosterDaysNeedingChores,
   getRosterMonthStatus,
   type RosterStatusAssignment,
   type RosterStatusBooking,
@@ -72,9 +74,78 @@ describe("computeRosterDayStatuses", () => {
     });
   });
 
-  it("treats the checkout day (half-open stay) as no-guests", () => {
+  // ---------------------------------------------------------------------
+  // THE DELIBERATE INVERSION (#2631)
+  //
+  // This assertion used to read "treats the checkout day (half-open stay) as
+  // no-guests", and it was the most direct statement of the rule that produced
+  // the complaint: a lodge full of people eating breakfast, stripping beds and
+  // shutting down the kitchen, and a roster calendar painting the day grey
+  // because nobody sleeps there tonight. It is not weakened here — it is
+  // reversed, and states the new rule just as flatly. Everyone in the lodge is
+  // there from midday on the day they arrive to midday on the day they leave,
+  // so a checkout morning is a day at the lodge and it needs a roster.
+  // ---------------------------------------------------------------------
+  it("treats the checkout day (half-open stay) as a day at the lodge that needs a roster", () => {
     const [result] = computeRosterDayStatuses(["2099-07-12"], [B1], []);
+    expect(result).toEqual({
+      date: "2099-07-12",
+      status: "needs-roster",
+      stayingBookingCount: 1,
+      uncoveredBookingCount: 0,
+    });
+  });
+
+  it("a day whose ONLY occupants leave that morning still needs a roster", () => {
+    // Nobody arrives, nobody stays over: the changeover morning on its own.
+    const departingOnly = booking("dep", "2099-07-10", "2099-07-11", [
+      guest("2099-07-10", "2099-07-11", "ADULT"),
+    ]);
+    const [result] = computeRosterDayStatuses(["2099-07-11"], [departingOnly], []);
+    expect(result.status).toBe("needs-roster");
+    expect(result.stayingBookingCount).toBe(1);
+  });
+
+  it("the morning AFTER the checkout day is finally empty", () => {
+    // The rule ends somewhere: 07-13 is neither a booked night nor the morning
+    // after one, so the lodge really is empty.
+    const [result] = computeRosterDayStatuses(["2099-07-13"], [B1], []);
     expect(result.status).toBe("no-guests");
+  });
+
+  it("a sparse stay paints nothing on its internal gap day", () => {
+    // Nights 07-10 and 07-13 only. Present on 10, 11, 13, 14; the 12th is a gap
+    // and the 11th's evening is an absence — the guest went home and came back.
+    // Without the explicit night rows the envelope 07-10→07-14 would fill all
+    // of it, which is why every caller loads `nights`.
+    const sparse: RosterStatusBooking = {
+      id: "sparse",
+      checkIn: parseDateOnly("2099-07-10"),
+      checkOut: parseDateOnly("2099-07-14"),
+      guests: [
+        {
+          stayStart: parseDateOnly("2099-07-10"),
+          stayEnd: parseDateOnly("2099-07-14"),
+          ageTier: "ADULT",
+          nights: [
+            { stayDate: parseDateOnly("2099-07-10") },
+            { stayDate: parseDateOnly("2099-07-13") },
+          ],
+        },
+      ],
+    };
+    const statuses = computeRosterDayStatuses(
+      ["2099-07-10", "2099-07-11", "2099-07-12", "2099-07-13", "2099-07-14"],
+      [sparse],
+      [],
+    ).map((result) => result.status);
+    expect(statuses).toEqual([
+      "needs-roster", // arrives, night 10
+      "needs-roster", // morning after night 10
+      "no-guests", //   the gap: adjacent to no booked night
+      "needs-roster", // back for night 13
+      "needs-roster", // morning after night 13
+    ]);
   });
 
   it("marks a staying date with zero assignments as needs-roster", () => {
@@ -195,7 +266,7 @@ describe("computeRosterDayStatuses", () => {
     expect(results.map((r) => r.status)).toEqual([
       "confirmed", // covered
       "needs-roster", // staying, no rows
-      "no-guests", // checkout day
+      "needs-roster", // the checkout MORNING: people here, no rows (#2631)
     ]);
   });
 
@@ -302,7 +373,238 @@ describe("getRosterMonthStatus lodge scoping", () => {
     // Adding the lodge scope must not disturb the operational overlap window.
     const where = bookingWhere();
     expect(where.checkIn).toEqual({ lt: parseDateOnly("2099-08-01") });
-    expect(where.checkOut).toEqual({ gt: parseDateOnly("2099-07-01") });
+    expect(where.checkOut).toEqual({ gte: parseDateOnly("2099-07-01") });
     expect(where.deletedAt).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The window and the filters the calendar loads with (#2631)
+// ---------------------------------------------------------------------------
+
+describe("roster-status DB windows carry the operational day (#2631)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    prismaMocks.bookingFindMany.mockResolvedValue([]);
+    prismaMocks.choreAssignmentFindMany.mockResolvedValue([]);
+  });
+
+  const CONSENT_OR = [{ consentStatus: null }, { consentStatus: "CONFIRMED" }];
+
+  function bookingArgs() {
+    return prismaMocks.bookingFindMany.mock.calls[0][0];
+  }
+
+  it.each([
+    [
+      "getRosterMonthStatus",
+      async () => {
+        await getRosterMonthStatus({ month: "2099-07" });
+      },
+      parseDateOnly("2099-07-01"),
+    ],
+    [
+      "countRosterDaysNeedingChores",
+      async () => {
+        await countRosterDaysNeedingChores({
+          from: parseDateOnly("2099-07-01"),
+          to: parseDateOnly("2099-07-08"),
+        });
+      },
+      parseDateOnly("2099-07-01"),
+    ],
+  ])(
+    "MUTATION PROBE: %s asks for a checkout-INCLUSIVE window",
+    async (_label, run, windowStart) => {
+      await run();
+      const args = bookingArgs();
+
+      // `gt` here loses exactly one thing: a booking whose last night was the
+      // day before the window opens, whose guests are in the lodge on the first
+      // displayed date. Reverting either bound fails.
+      expect(args.where.checkOut).toEqual({ gte: windowStart });
+      expect(args.where.guests.some.stayEnd).toEqual({ gte: windowStart });
+    },
+  );
+
+  it.each([
+    [
+      "getRosterMonthStatus",
+      async () => {
+        await getRosterMonthStatus({ month: "2099-07" });
+      },
+    ],
+    [
+      "countRosterDaysNeedingChores",
+      async () => {
+        await countRosterDaysNeedingChores({
+          from: parseDateOnly("2099-07-01"),
+          to: parseDateOnly("2099-07-08"),
+        });
+      },
+    ],
+  ])(
+    "MUTATION PROBE: %s excludes consent-pending guests and loads the night rows",
+    async (_label, run) => {
+      await run();
+      const args = bookingArgs();
+
+      // D-12 (#2307). Both halves of the pair, or a booking whose only
+      // overlapping guest is still awaiting consent paints a colour saying a
+      // roster is needed and then opens with nobody to roster.
+      expect(args.where.guests.some.OR).toEqual(CONSENT_OR);
+      expect(args.select.guests.where.OR).toEqual(CONSENT_OR);
+      // And the explicit nights, or a sparse stay's gap day paints as presence.
+      expect(args.select.guests.select.nights).toEqual({
+        select: { stayDate: true },
+      });
+    },
+  );
+
+  it("counts a departure on the FIRST date of the window", async () => {
+    // The booking's last night is 30 June; its guests are in the lodge on the
+    // morning of 1 July, the first date the calendar paints. Under the old `gt`
+    // bound this row never reached the computation at all.
+    prismaMocks.bookingFindMany.mockResolvedValue([
+      {
+        id: "leaving",
+        checkIn: parseDateOnly("2099-06-29"),
+        checkOut: parseDateOnly("2099-07-01"),
+        guests: [
+          {
+            stayStart: parseDateOnly("2099-06-29"),
+            stayEnd: parseDateOnly("2099-07-01"),
+            ageTier: "ADULT",
+            nights: [
+              { stayDate: parseDateOnly("2099-06-29") },
+              { stayDate: parseDateOnly("2099-06-30") },
+            ],
+          },
+        ],
+      },
+    ]);
+
+    const statuses = await getRosterMonthStatus({ month: "2099-07" });
+    expect(statuses[0]).toMatchObject({
+      date: "2099-07-01",
+      status: "needs-roster",
+      stayingBookingCount: 1,
+    });
+    // …and only that date: the 2nd is genuinely empty.
+    expect(statuses[1].status).toBe("no-guests");
+  });
+
+  it("countRosterDaysNeedingChores counts the changeover morning as a day of work", async () => {
+    prismaMocks.bookingFindMany.mockResolvedValue([
+      {
+        id: "leaving",
+        checkIn: parseDateOnly("2099-06-30"),
+        checkOut: parseDateOnly("2099-07-01"),
+        guests: [
+          {
+            stayStart: parseDateOnly("2099-06-30"),
+            stayEnd: parseDateOnly("2099-07-01"),
+            ageTier: "ADULT",
+            nights: [{ stayDate: parseDateOnly("2099-06-30") }],
+          },
+        ],
+      },
+    ]);
+
+    const count = await countRosterDaysNeedingChores({
+      from: parseDateOnly("2099-07-01"),
+      to: parseDateOnly("2099-07-08"),
+    });
+    expect(count).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The roster's OTHER exclusion (#2631)
+// ---------------------------------------------------------------------------
+
+describe("roster-status excludes review-blocked bookings, as the roster does", () => {
+  const REVIEW_ALLOWED_OR = checkinNotBlockedByPendingReviewFilter().OR;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    prismaMocks.choreAssignmentFindMany.mockResolvedValue([]);
+  });
+
+  /**
+   * Honours the review filter the way Postgres would. The booking is here on
+   * 1 and 2 July; it reaches the computation ONLY if the query forgot to
+   * exclude it, which is exactly the regression these cases watch for.
+   */
+  function installBlockedBookingMock() {
+    prismaMocks.bookingFindMany.mockImplementation(async (args: unknown) => {
+      const { where } = args as { where: { OR?: unknown } };
+      if (JSON.stringify(where.OR) === JSON.stringify(REVIEW_ALLOWED_OR)) {
+        return [];
+      }
+      return [
+        {
+          id: "booking-blocked",
+          checkIn: parseDateOnly("2099-07-01"),
+          checkOut: parseDateOnly("2099-07-03"),
+          guests: [
+            {
+              stayStart: parseDateOnly("2099-07-01"),
+              stayEnd: parseDateOnly("2099-07-03"),
+              ageTier: "ADULT",
+              nights: [
+                { stayDate: parseDateOnly("2099-07-01") },
+                { stayDate: parseDateOnly("2099-07-02") },
+              ],
+            },
+          ],
+        },
+      ];
+    });
+  }
+
+  it("the calendar paints no colour on a day whose only booking is blocked", async () => {
+    installBlockedBookingMock();
+
+    const statuses = await getRosterMonthStatus({ month: "2099-07" });
+
+    // Before the filter this read `needs-roster` on the 1st, 2nd and 3rd —
+    // and the roster page then opened with nobody on it, because
+    // `roster-eligibility.ts` has always excluded this booking.
+    expect(statuses.every((entry) => entry.status === "no-guests")).toBe(true);
+  });
+
+  it("the dashboard headline does not count it as work to do", async () => {
+    installBlockedBookingMock();
+
+    const count = await countRosterDaysNeedingChores({
+      from: parseDateOnly("2099-07-01"),
+      to: parseDateOnly("2099-07-08"),
+    });
+    expect(count).toBe(0);
+  });
+
+  it.each([
+    [
+      "getRosterMonthStatus",
+      async () => {
+        await getRosterMonthStatus({ month: "2099-07" });
+      },
+    ],
+    [
+      "countRosterDaysNeedingChores",
+      async () => {
+        await countRosterDaysNeedingChores({
+          from: parseDateOnly("2099-07-01"),
+          to: parseDateOnly("2099-07-08"),
+        });
+      },
+    ],
+  ])("MUTATION PROBE: %s carries the review filter", async (_label, run) => {
+    prismaMocks.bookingFindMany.mockResolvedValue([]);
+    await run();
+
+    const where = prismaMocks.bookingFindMany.mock.calls[0][0].where;
+    expect(where.OR).toEqual(REVIEW_ALLOWED_OR);
   });
 });

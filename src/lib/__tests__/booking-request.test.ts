@@ -196,6 +196,10 @@ import {
   verifyBookingRequest,
 } from "@/lib/booking-request";
 import { sendMemberGuestWithdrawnNotifications } from "@/lib/member-guest-consent-notifications";
+import {
+  fenceMemberFindMany,
+  recordingBookingDouble,
+} from "@/lib/__tests__/support/hosting-participant-fence-double";
 
 const mockedFindUnique = vi.mocked(prisma.bookingRequest.findUnique);
 const mockedCreate = vi.mocked(prisma.bookingRequest.create);
@@ -213,12 +217,46 @@ const mockedSendDeclined = vi.mocked(sendBookingRequestDeclinedEmail);
 const mockedSendOwnerSubstitution = vi.mocked(sendAdminOwnerSubstitutionAlert);
 const mockedLogAudit = vi.mocked(logAudit);
 const mockedAssertNoConflicts = vi.mocked(assertNoBookingMemberNightConflicts);
+// Captured BEFORE the fence wiring below replaces the delegates on the double:
+// these two stay the mocks the tests stub. Re-stubbing the wrappers instead
+// would throw the recorder away and the fence would see no source booking.
 const mockedBookingFindUnique = vi.mocked(prisma.booking.findUnique);
+const mockedMemberFindMany = vi.mocked(prisma.member.findMany);
 const mockedCancelBooking = vi.mocked(cancelBooking);
 const mockedQuoteUpdateMany = vi.mocked(prisma.bookingRequestQuote.updateMany);
 const mockedWithdrawnNotifications = vi.mocked(
   sendMemberGuestWithdrawnNotifications,
 );
+
+/*
+  #2619: approveBookingRequest reconciles the adult-member hosting review inside
+  the approving transaction, and this suite runs that transaction against the
+  prisma double itself. So the hosting participant fence locks the source
+  booking's owner/actor Member rows FOR KEY SHARE NOWAIT through THESE
+  delegates, and then re-reads, under that lock:
+
+    1. the locked Member rows (every id back, in sorted order), and
+    2. each source booking's owner and lodge, whose fingerprint must still
+       match what the caller planned from its own `booking.findUnique`.
+
+  Both delegates answered `[]` before, which is a database that just lost every
+  row — the fence correctly refused. The recorder replays exactly what
+  `mockedBookingFindUnique` served the planner, so the no-drift case matches by
+  construction rather than by a hand-copied fixture, and drift is still
+  expressible (change what findUnique returns) and still refused.
+*/
+const fenceBooking = recordingBookingDouble((args) =>
+  mockedBookingFindUnique(args as never),
+);
+Object.assign(prisma.booking, {
+  findUnique: fenceBooking.findUnique,
+  findMany: fenceBooking.findMany,
+});
+Object.assign(prisma.member, {
+  // The suite's own member.findMany answers (the rate resolver's reads) stay
+  // exactly as they were; only the fence's id-only re-read is intercepted.
+  findMany: fenceMemberFindMany([], (args) => mockedMemberFindMany(args as never)),
+});
 
 function memberNightConflictError() {
   return new BookingMemberNightConflictError([
@@ -1594,7 +1632,7 @@ describe("approveBookingRequest", () => {
         version: 2,
       },
     ] as never);
-    vi.mocked(prisma.booking.findUnique).mockResolvedValue({
+    mockedBookingFindUnique.mockResolvedValue({
       id: "booking-1",
       memberId: "member-1",
       parentBookingId: null,
@@ -1723,7 +1761,27 @@ describe("approveBookingRequest", () => {
       prisma,
       "held-lodge"
     );
-    expect(prisma.$executeRaw).toHaveBeenCalledTimes(1);
+    // Two raw statements run inside the approving transaction, and the FIRST is
+    // still the request-wide advisory lock this test is about — pinned by name
+    // rather than by a bare count, so the claim survives the second statement
+    // and cannot be satisfied by the wrong one. That second statement is the
+    // hosting participant fence's FOR KEY SHARE NOWAIT over the source
+    // booking's Member rows: real production behaviour on this path that was
+    // invisible here until #2619, because the double carries no `$queryRaw` and
+    // the fence used to hand back an UNLOCKED proof rather than take the lock.
+    const rawStatements = vi.mocked(prisma.$executeRaw).mock.calls;
+    expect(rawStatements).toHaveLength(2);
+    expect(JSON.stringify(rawStatements[0][0])).toContain(
+      "pg_advisory_xact_lock"
+    );
+    // Pin the fence's own statement too. This is the one assertion across the
+    // widened suites that would FAIL if the lock were deleted from
+    // acquireHostingCoverageQueueParticipantProof — the rest model what the
+    // fence reads without asserting that it locked, so without this the seam
+    // could be gutted and stay green.
+    expect(JSON.stringify(rawStatements[1][0])).toContain(
+      "FOR KEY SHARE NOWAIT"
+    );
     expect(
       vi.mocked(prisma.$executeRaw).mock.invocationCallOrder[0]
     ).toBeLessThan(mockedAcquireLodgeCapacityLock.mock.invocationCallOrder[0]);
@@ -1987,7 +2045,7 @@ describe("approveBookingRequest", () => {
     } as never);
     // The admin-linked member carries a CUSTOM MEMBER_RATE type via its
     // seasonal assignment; its snapshot must record that type's id.
-    vi.mocked(prisma.member.findMany).mockResolvedValue([
+    mockedMemberFindMany.mockResolvedValue([
       {
         id: "member-42",
         firstName: "Linked",
@@ -2038,7 +2096,7 @@ describe("approveBookingRequest", () => {
     });
 
     // Restore the suite defaults (clearAllMocks does not reset implementations).
-    vi.mocked(prisma.member.findMany).mockResolvedValue([] as never);
+    mockedMemberFindMany.mockResolvedValue([] as never);
     vi.mocked(prisma.seasonalMembershipAssignment.findMany).mockResolvedValue([] as never);
   });
 
@@ -2051,7 +2109,7 @@ describe("approveBookingRequest", () => {
       }) as never
     );
     mockedUpdateMany.mockResolvedValue({ count: 1 } as never);
-    vi.mocked(prisma.booking.findUnique).mockResolvedValue({
+    mockedBookingFindUnique.mockResolvedValue({
       id: "held-1",
       lodgeId: "lodge-1",
       memberId: "held-member",
@@ -2118,7 +2176,7 @@ describe("approveBookingRequest", () => {
       }) as never
     );
     mockedUpdateMany.mockResolvedValue({ count: 1 } as never);
-    vi.mocked(prisma.booking.findUnique).mockResolvedValue({
+    mockedBookingFindUnique.mockResolvedValue({
       id: "held-1",
       lodgeId: "lodge-1",
       memberId: "held-member",
@@ -2182,7 +2240,7 @@ describe("approveBookingRequest", () => {
       }) as never
     );
     mockedUpdateMany.mockResolvedValue({ count: 1 } as never);
-    vi.mocked(prisma.booking.findUnique).mockResolvedValue({
+    mockedBookingFindUnique.mockResolvedValue({
       id: "held-1",
       lodgeId: "lodge-1",
       memberId: "held-member",
@@ -2244,7 +2302,7 @@ describe("approveBookingRequest", () => {
       }) as never
     );
     mockedUpdateMany.mockResolvedValue({ count: 1 } as never);
-    vi.mocked(prisma.booking.findUnique).mockResolvedValue({
+    mockedBookingFindUnique.mockResolvedValue({
       id: "held-1",
       lodgeId: "lodge-1",
       memberId: "held-invalid",
