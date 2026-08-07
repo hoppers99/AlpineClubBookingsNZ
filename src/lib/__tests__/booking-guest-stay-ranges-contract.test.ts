@@ -73,7 +73,7 @@ describe("stay-range model contract (#2622)", () => {
       "export function isGuestOperationallyPresentOnDay(",
       "export function isGuestArrivingOnDay(",
       "export function isGuestDepartingOnDay(",
-      "export function getOperationallyPresentGuestsForDay(",
+      "export function getOperationallyPresentGuestsForDay<",
     ]) {
       expect(stayRanges.split(named)).toHaveLength(2);
     }
