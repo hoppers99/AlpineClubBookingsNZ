@@ -51,14 +51,23 @@ type ProposedCategory =
  * comment says 350 total, and the Diagnostics docblock said "81 of ~350".
  */
 export const AUDIT_CENSUS_TOTALS = {
-  /** Row-producing production write sites across `src/`, `scripts/` and `prisma/`. */
-  writeSites: 418,
+  /**
+   * Row-producing production write sites across `src/`, `scripts/` and `prisma/`.
+   *
+   * 418 -> 419 (#2627): releasing a started deletion approval writes
+   * `member.deletion_approval_claim_released` with the awaited `createAuditLog`,
+   * inside the release's own transaction, because that row is the only surviving
+   * record of who held the claim the transition destroys. Categorised `privacy`
+   * at the site, so it does not join `UNCATEGORISED_AUDIT_WRITERS` below.
+   */
+  writeSites: 419,
   /** Of those, sites whose event object carries no `category` key. */
   uncategorised: 82,
   /** Per-sink totals, so a shift between forms cannot cancel out in the total. */
   bySink: {
     logAudit: { total: 238, uncategorised: 69 },
-    createAuditLog: { total: 101, uncategorised: 11 },
+    // 101 -> 102 (#2627): the deletion-approval release, above.
+    createAuditLog: { total: 102, uncategorised: 11 },
     createStructuredAuditLog: { total: 8, uncategorised: 0 },
     "auditLog.create": { total: 71, uncategorised: 2 },
   },
@@ -79,7 +88,10 @@ export const AUDIT_CENSUS_TOTALS = {
     lodge: 16,
     xero: 19,
     communication: 12,
-    privacy: 14,
+    // 14 -> 15 (#2627): `member.deletion_approval_claim_released`. Still a
+    // membership+support read, like every other deletion-decision row beside it,
+    // so this widens nobody's access.
+    privacy: 15,
     system: 4,
   },
 } as const;
@@ -460,11 +472,15 @@ export const UNCATEGORISED_AUDIT_WRITERS: Readonly<
   },
 
   // ─── Privacy decisions → `privacy` ─────────────────────────────────────────
-  "src/app/api/admin/deletion-requests/[id]/route.ts::POST#0": {
+  // Ordinals moved by one (#2627): the categorised release writer is now the
+  // first audit site in this `POST`, so the rejection is #1 and the approval #4.
+  // Exactly the ordinal drift this manifest's header warns about — the identity
+  // survives a reformat, not a new site earlier in the same symbol.
+  "src/app/api/admin/deletion-requests/[id]/route.ts::POST#1": {
     action: "member.deletion_rejected",
     proposedCategory: "privacy",
   },
-  "src/app/api/admin/deletion-requests/[id]/route.ts::POST#3": {
+  "src/app/api/admin/deletion-requests/[id]/route.ts::POST#4": {
     action: "member.deletion_approved",
     proposedCategory: "privacy",
   },
