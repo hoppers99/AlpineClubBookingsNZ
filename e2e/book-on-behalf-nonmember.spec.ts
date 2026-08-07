@@ -268,14 +268,20 @@ test("inline-creates a non-member owner, prices them as a non-member, and emails
           ),
           emailThem.click(),
         ]),
-      // The create navigates, so the interception is held until the new
-      // booking's own detail URL is reached.
+      // The create navigates. The destination has a loading boundary, so the
+      // URL commits on the skeleton while the detail RSC is still in flight —
+      // holding only to the URL would tear interception down inside the window
+      // this helper exists to keep open. The server-rendered heading is the
+      // authoritative outcome.
       waitForOutcome: async ([createResponse]) => {
         expect(
           createResponse.status(),
           `non-member on-behalf create (${createResponse.status()})`,
         ).toBe(201);
         await expect(page).toHaveURL(/\/bookings\/[A-Za-z0-9-]+$/);
+        await expect(
+          page.getByRole("heading", { name: "Booking Details" }),
+        ).toBeVisible();
       },
     },
   );
@@ -362,6 +368,12 @@ test("suggest-and-pick reuses the existing non-member contact instead of duplica
           `reused-owner create (${createResponse.status()})`,
         ).toBe(201);
         await expect(page).toHaveURL(/\/bookings\/[A-Za-z0-9-]+$/);
+        // The URL commits on the destination's loading boundary; the heading
+        // only renders once the detail RSC has resolved, so it is the outcome
+        // that actually keeps teardown out of the navigation window.
+        await expect(
+          page.getByRole("heading", { name: "Booking Details" }),
+        ).toBeVisible();
       },
     },
   );
@@ -425,6 +437,12 @@ test("a no-email walk-in owner is created with a placeholder and never emailed",
           `walk-in create (${createResponse.status()})`,
         ).toBe(201);
         await expect(page).toHaveURL(/\/bookings\/[A-Za-z0-9-]+$/);
+        // The URL commits on the destination's loading boundary; the heading
+        // only renders once the detail RSC has resolved, so it is the outcome
+        // that actually keeps teardown out of the navigation window.
+        await expect(
+          page.getByRole("heading", { name: "Booking Details" }),
+        ).toBeVisible();
       },
     },
   );

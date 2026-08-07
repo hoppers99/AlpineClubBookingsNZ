@@ -675,6 +675,20 @@ function bookingCreateAllocationMatchesCensus(
  * moment the trigger resolved, which on the hosted runners overlapped the
  * navigation that trigger had just started. Every remaining shape but
  * `outcome-held` fails closed.
+ *
+ * KNOWN LIMIT — this classifies the SHAPE, not the semantics. `outcome-held`
+ * only means a `waitForOutcome` property resolves to exactly one expression. An
+ * empty body, a `Promise.resolve()`, something already true before the trigger,
+ * or a missing `await` inside it (this repo has no `no-floating-promises` rule)
+ * all classify as held and pass here. The rule that an outcome must be this
+ * journey's OWN authoritative outcome is a documented convention in
+ * `docs/E2E_PLAYWRIGHT.md` with no executable backing, and it is deliberately
+ * left that way: any heuristic strong enough to judge authority would reject
+ * legitimate callers. It cost real time once already — four navigating creates
+ * shipped holding only `toHaveURL`, which the destination's `loading.tsx`
+ * boundary satisfies before the detail RSC resolves, so they kept the exact race
+ * the hold exists to remove while passing this contract. Review the outcome, not
+ * just the shape.
  */
 type BookingCreateHoldShape =
   | "outcome-held"
