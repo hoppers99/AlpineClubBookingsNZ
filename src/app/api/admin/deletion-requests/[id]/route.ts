@@ -41,6 +41,10 @@ import {
 import logger from "@/lib/logger";
 import { acquireMemberLifecycleLocks } from "@/lib/member-lifecycle-lock";
 import {
+  claimDeletionRequestDecision,
+  DeletionRequestDecisionLostError,
+} from "@/lib/deletion-request-decision";
+import {
   DELETED_ACCOUNT_PASSWORD_HASH,
   lockMemberForAccountDeletionXeroFence,
   XeroContactCreateBlocksDeletionError,
@@ -190,14 +194,11 @@ export async function POST(
     const member = deletionRequest.member;
 
     if (body.action === "reject") {
-      await prisma.deletionRequest.update({
-        where: { id },
-        data: {
-          status: "REJECTED",
-          adminNote: body.note ?? null,
-          reviewedBy: session.user.id,
-          reviewedAt: new Date(),
-        },
+      await claimDeletionRequestDecision(prisma, {
+        id,
+        decision: "REJECTED",
+        adminNote: body.note ?? null,
+        reviewedBy: session.user.id,
       });
 
       // #1788 honesty rule — record the suppression in the audit ONLY on a path
@@ -408,6 +409,18 @@ export async function POST(
         throw new AdminAccountGuardError(LAST_FULL_ADMIN_GUARD_MESSAGE);
       }
 
+      // Exact decision winner: reject uses this same PENDING transition. The
+      // claim is deliberately inside the anonymisation transaction so any
+      // later failure restores PENDING and sends no approval receipt. Booking
+      // cancellations already committed before this point remain truthfully
+      // reported by the partial-cleanup response if this claim loses.
+      await claimDeletionRequestDecision(tx, {
+        id,
+        decision: "APPROVED",
+        adminNote: body.note ?? null,
+        reviewedBy: session.user.id,
+      });
+
       // #1756: anonymisation deactivates the member and unlinks their guest
       // rows, breaking the double-bed sharing precondition. Sweep their future
       // shared-double placements now, while bookingGuest.memberId (nulled in
@@ -500,16 +513,6 @@ export async function POST(
         },
       });
 
-      // 6. Mark deletion request as approved
-      await tx.deletionRequest.update({
-        where: { id },
-        data: {
-          status: "APPROVED",
-          adminNote: body.note ?? null,
-          reviewedBy: session.user.id,
-          reviewedAt: new Date(),
-        },
-      });
     });
     memberAnonymised = true;
 
@@ -589,6 +592,28 @@ export async function POST(
       }
       return NextResponse.json(
         { error: err.message },
+        { status: err.statusCode },
+      );
+    }
+    if (err instanceof DeletionRequestDecisionLostError) {
+      if (completedBookingCancellations > 0 && !memberAnonymised) {
+        return NextResponse.json(
+          deletionCleanupRecovery({
+            cancelledBookings: completedBookingCancellations,
+            cancellationPending: false,
+            retryBookingId: null,
+            blocker: {
+              code: err.code,
+              message: err.message,
+              remedy:
+                "Refresh the deletion queue. This request has a final decision; do not retry anonymisation.",
+            },
+          }),
+          { status: err.statusCode },
+        );
+      }
+      return NextResponse.json(
+        { code: err.code, error: err.message },
         { status: err.statusCode },
       );
     }
