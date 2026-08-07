@@ -14,6 +14,9 @@ import { canCreateImmediatePaymentIntent } from "@/lib/booking-payment-flow";
 import { queueXeroInvoiceForPaidBooking } from "@/lib/xero-booking-invoice-queue";
 import { hasAdminAccess } from "@/lib/access-roles";
 import { deriveBookingAppliedCreditCents } from "@/lib/member-credit";
+import {
+  PAYMENT_RECEIVED_STATUS_UNCONFIRMED_BODY,
+} from "@/lib/payment-recovery-contract";
 
 const schema = z.object({
   paymentIntentId: z.string().min(1),
@@ -46,6 +49,7 @@ export async function POST(
   const { paymentIntentId } = parsed.data;
   const ipAddress =
     request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
+  let succeededPaymentIntentObserved = false;
 
   try {
     const payment = await prisma.payment.findUnique({
@@ -110,6 +114,10 @@ export async function POST(
         { status: 400 }
       );
     }
+    // Stripe is authoritative for capture. From this point onward, an
+    // unexpected local failure must never send the member back through an
+    // ordinary payment-error path where they could try to pay again.
+    succeededPaymentIntentObserved = true;
 
     // #1641 — accept the credit-reduced effective price (new intents) as well as
     // the full price (legacy in-flight intents). markBookingPaymentSucceeded
@@ -236,16 +244,26 @@ export async function POST(
 
     return NextResponse.json({ success: true });
   } catch (err) {
-    const hostingRetry = hostingCoverageParticipantRetryResponse(err, {
-      paymentReceived: true,
-      finalisationPending: true,
-      paymentIntentId,
-    });
+    const hostingRetry = hostingCoverageParticipantRetryResponse(
+      err,
+      succeededPaymentIntentObserved
+        ? {
+            paymentReceived: true,
+            finalisationPending: true,
+            paymentIntentId,
+          }
+        : undefined,
+    );
     if (hostingRetry) return hostingRetry;
     // #1888 — never echo an unexpected error's message to the client (it can
     // carry Prisma constraint names or infrastructure detail); the raw error
     // stays in the log only.
     logger.error({ err, bookingId }, "Failed to confirm primary booking payment");
+    if (succeededPaymentIntentObserved) {
+      return NextResponse.json(PAYMENT_RECEIVED_STATUS_UNCONFIRMED_BODY, {
+        status: 409,
+      });
+    }
     return NextResponse.json(
       { error: "Failed to confirm payment" },
       { status: 500 }

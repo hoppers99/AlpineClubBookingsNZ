@@ -8,6 +8,7 @@ import * as Sentry from "@sentry/nextjs";
 import BookingPaymentWrapper from "@/components/stripe/BookingPaymentWrapper";
 import {
   EXISTING_CARD_TRANSACTION_STATUS_UNCONFIRMED_MESSAGE,
+  PAYMENT_RECEIVED_STATUS_UNCONFIRMED_BODY,
   PAYMENT_RECEIVED_STATUS_UNCONFIRMED_MESSAGE,
 } from "@/lib/payment-recovery-contract";
 
@@ -542,6 +543,50 @@ describe("BookingPaymentWrapper", () => {
     );
     expect(alert.classList.contains("sr-only")).toBe(false);
     expect(screen.queryByText("payment-form")).toBeNull();
+    expect(screen.getByText("Payment successful!")).not.toBeNull();
+    expect(onPaymentComplete).not.toHaveBeenCalled();
+    await waitFor(() => expect(document.activeElement).toBe(alert));
+    expect(scrollIntoView).toHaveBeenCalledWith({
+      behavior: "smooth",
+      block: "center",
+    });
+  });
+
+  it("keeps the successful payment panel mounted for ordinary post-capture status recovery", async () => {
+    const onPaymentComplete = vi.fn();
+
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ clientSecret: "cs_test" }),
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 409,
+        json: async () => ({
+          ...PAYMENT_RECEIVED_STATUS_UNCONFIRMED_BODY,
+          error: "raw server text must not be shown",
+        }),
+      });
+
+    render(
+      <BookingPaymentWrapper
+        bookingId="booking-1"
+        amountCents={12500}
+        paymentMode="payment"
+        returnUrl="http://localhost/bookings/booking-1"
+        onPaymentComplete={onPaymentComplete}
+      />,
+    );
+
+    fireEvent.click(await screen.findByText("trigger-success"));
+
+    const alert = screen.getByRole("alert", { hidden: true });
+    await waitFor(() =>
+      expect(alert).toHaveTextContent("Payment received - check booking status"),
+    );
+    expect(alert).toHaveTextContent(PAYMENT_RECEIVED_STATUS_UNCONFIRMED_MESSAGE);
+    expect(alert).not.toHaveTextContent("raw server text");
     expect(screen.getByText("Payment successful!")).not.toBeNull();
     expect(onPaymentComplete).not.toHaveBeenCalled();
     await waitFor(() => expect(document.activeElement).toBe(alert));

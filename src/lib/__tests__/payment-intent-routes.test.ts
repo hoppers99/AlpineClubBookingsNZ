@@ -1190,7 +1190,42 @@ describe("generic-catch error-message leak (F31 #1888)", () => {
     expect(mocks.queueXeroInvoiceForPaidBooking).not.toHaveBeenCalled();
   });
 
-  it("confirm-payment: unexpected reconciliation error returns the fixed generic message, not the raw error", async () => {
+  it("confirm-payment does not invent payment receipt when participant contention occurs before Stripe success is observed", async () => {
+    mockPrisma.payment.findUnique.mockResolvedValue({
+      id: "payment-1",
+      stripePaymentIntentId: "pi_hosting_retry",
+      status: "PROCESSING",
+      booking: {
+        memberId: "member-1",
+        finalPriceCents: 12500,
+        status: "CONFIRMED",
+      },
+    });
+    mockGetPaymentIntent.mockRejectedValue(
+      new HostingCoverageParticipantRetryError(),
+    );
+
+    const response = await confirmPaymentRoute(
+      new NextRequest(
+        "http://localhost/api/bookings/booking-1/confirm-payment",
+        {
+          method: "POST",
+          body: JSON.stringify({ paymentIntentId: "pi_hosting_retry" }),
+          headers: { "Content-Type": "application/json" },
+        },
+      ),
+      { params: Promise.resolve({ id: "booking-1" }) },
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      error: HOSTING_COVERAGE_RETRY_MESSAGE,
+      code: HOSTING_COVERAGE_RETRY_CODE,
+    });
+    expect(mocks.markBookingPaymentSucceeded).not.toHaveBeenCalled();
+  });
+
+  it("confirm-payment returns fixed status-unconfirmed recovery after an unexpected post-capture reconciliation error", async () => {
     mockPrisma.payment.findUnique.mockResolvedValue({
       id: "payment-1",
       stripePaymentIntentId: "pi_success",
@@ -1226,14 +1261,48 @@ describe("generic-catch error-message leak (F31 #1888)", () => {
     });
     const body = await res.json();
 
-    expect(res.status).toBe(500);
-    expect(body).toEqual({ error: "Failed to confirm payment" });
+    expect(res.status).toBe(409);
+    expect(body).toEqual(PAYMENT_RECEIVED_STATUS_UNCONFIRMED_BODY);
     expect(JSON.stringify(body)).not.toContain("secret_col");
     // The raw error is still logged for operators.
     expect(logger.error).toHaveBeenCalledWith(
       expect.objectContaining({ err: expect.any(Error) }),
       "Failed to confirm primary booking payment"
     );
+  });
+
+  it("confirm-payment: an unexpected pre-capture provider error stays on the fixed generic response", async () => {
+    mockPrisma.payment.findUnique.mockResolvedValue({
+      id: "payment-1",
+      stripePaymentIntentId: "pi_unconfirmed",
+      status: "PROCESSING",
+      booking: {
+        memberId: "member-1",
+        finalPriceCents: 12500,
+        status: "CONFIRMED",
+      },
+    });
+    mockGetPaymentIntent.mockRejectedValue(
+      new Error("Stripe provider detail must remain private"),
+    );
+
+    const response = await confirmPaymentRoute(
+      new NextRequest(
+        "http://localhost/api/bookings/booking-1/confirm-payment",
+        {
+          method: "POST",
+          body: JSON.stringify({ paymentIntentId: "pi_unconfirmed" }),
+          headers: { "Content-Type": "application/json" },
+        },
+      ),
+      { params: Promise.resolve({ id: "booking-1" }) },
+    );
+
+    expect(response.status).toBe(500);
+    await expect(response.json()).resolves.toEqual({
+      error: "Failed to confirm payment",
+    });
+    expect(mocks.markBookingPaymentSucceeded).not.toHaveBeenCalled();
   });
 
   it("create-payment-intent: unexpected infrastructure error returns the fixed generic message, not the raw error", async () => {

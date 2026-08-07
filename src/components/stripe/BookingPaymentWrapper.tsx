@@ -214,6 +214,7 @@ export default function BookingPaymentWrapper({
           code?: string;
           paymentReceived?: boolean;
           finalisationPending?: boolean;
+          bookingStatusUnconfirmed?: boolean;
         };
         if (data.code === "HOSTING_COVERAGE_PARTICIPANT_RETRY") {
           setRecoveryHeading("Payment received - finalisation pending");
@@ -224,6 +225,11 @@ export default function BookingPaymentWrapper({
                 : " Check the booking status before trying again."
             }`,
           );
+          return;
+        }
+        if (isPaymentReceivedStatusUnconfirmed(data)) {
+          setRecoveryHeading("Payment received - check booking status");
+          setConfirmationError(PAYMENT_RECEIVED_STATUS_UNCONFIRMED_MESSAGE);
           return;
         }
       }
