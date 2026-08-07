@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { hostingCoverageParticipantRetryResponse } from "@/lib/adult-member-hosting-retry-response";
 import { requireAdmin } from "@/lib/session-guards";
 import { prisma } from "@/lib/prisma";
 import { AdminReviewStatus, BookingStatus } from "@prisma/client";
@@ -354,6 +355,8 @@ export async function POST(
       unpaidFinishedStay,
     });
   } catch (err) {
+    const hostingRetry = hostingCoverageParticipantRetryResponse(err);
+    if (hostingRetry) return hostingRetry;
     logger.error({ err, bookingId }, "Failed to force-confirm waitlisted booking");
     return NextResponse.json({ error: "Failed to force-confirm booking" }, { status: 500 });
   }

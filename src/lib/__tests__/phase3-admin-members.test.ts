@@ -53,6 +53,7 @@ vi.mock("@/lib/prisma", () => ({
     bookingModification: { count: vi.fn().mockResolvedValue(0) },
     bookingChangeRequest: { count: vi.fn().mockResolvedValue(0) },
     deletionRequest: { count: vi.fn().mockResolvedValue(0) },
+    xeroSyncOperation: { findFirst: vi.fn().mockResolvedValue(null) },
     memberLifecycleActionRequest: {
       count: vi.fn().mockResolvedValue(0),
       findMany: vi.fn().mockResolvedValue([]),

@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useRef, useState, use } from "react";
+import { useCallback, useEffect, useRef, useState, use } from "react";
 import { useSession } from "next-auth/react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
+import { FocusedActionError } from "@/components/focused-action-error";
 import { BackLink } from "@/components/admin/back-link";
 import { AdminViewOnlySectionBanner } from "@/components/admin/view-only-action";
 import { FamilyGroupEditorDialog } from "@/components/admin/family-group-editor-dialog";
@@ -79,12 +80,25 @@ import { useMemberXero } from "./_hooks/use-member-xero";
 import { useInheritEmailSearch } from "./_hooks/use-inherit-email-search";
 import { useMemberGroupEdit } from "./_hooks/use-member-group-edit";
 import type { MemberDetail } from "./_types";
+import type {
+  AdminMemberXeroActionError,
+  XeroActionRecovery,
+} from "@/lib/admin-member-xero-actions";
+import type { MemberContactCreateRecoveryState } from "@/lib/xero-contact-create-recovery";
+import {
+  getXeroPartialSuccessGuidance,
+  isXeroPartialSuccessRecovery,
+  XERO_PARTIAL_SUCCESS_MESSAGES,
+} from "@/lib/xero-partial-success";
 
 // Re-exports preserve the existing import paths used by tests and other callers
 // that previously imported these helpers from the page route.
 export const formatMemberAuditLogSummary = formatMemberAuditLogSummaryHelper;
 export const parseInviteAuditDetails = parseInviteAuditDetailsHelper;
 export const getAuditActorDisplayName = getAuditActorDisplayNameHelper;
+
+const XERO_CONTACT_CREATE_IN_PROGRESS_GUIDANCE =
+  "A Xero contact create is still in progress or awaiting recovery. Do not start another create. Refresh the member before taking another Xero action.";
 
 export default function MemberDetailPage({
   params,
@@ -142,11 +156,27 @@ export default function MemberDetailPage({
   const [pageError, setPageError] = useState("");
   const [relationshipError, setRelationshipError] = useState("");
   const [xeroError, setXeroError] = useState("");
+  const [xeroRecoveryError, setXeroRecoveryError] = useState("");
+  const [xeroRecoveryGuidance, setXeroRecoveryGuidance] = useState("");
+  const [, setXeroRecovery] = useState<XeroActionRecovery | null>(null);
+  const [xeroRecoveryMemberId, setXeroRecoveryMemberId] =
+    useState<string | null>(null);
+  const [xeroCreateRecoveryDisplayState, setXeroCreateRecoveryDisplayState] =
+    useState<MemberContactCreateRecoveryState | null>(null);
+  const [xeroRecoveryAttention, setXeroRecoveryAttention] = useState(0);
+  // A create recovery may arrive while the page still holds the member
+  // snapshot from before that action. Require one later successful member GET
+  // before an absent server recovery state can clear it. Failed reads do not
+  // advance this version, so the warning and Create suppression remain active.
+  const [authoritativeMemberReadVersion, setAuthoritativeMemberReadVersion] =
+    useState(0);
+  const [xeroRecoveryClearAfterReadVersion, setXeroRecoveryClearAfterReadVersion] =
+    useState<number | null>(null);
   const relationshipErrorRef = useRef<HTMLDivElement>(null);
   const xeroErrorRef = useRef<HTMLDivElement>(null);
   const { scrollToError } = useScrollToFeedback();
 
-  const fetchMember = async () => {
+  const fetchMemberWithResult = useCallback(async (): Promise<boolean> => {
     try {
       const res = await fetch(`/api/admin/members/${id}`);
       if (!res.ok) {
@@ -154,16 +184,170 @@ export default function MemberDetailPage({
           res.status === 404 ? "Member not found" : "Failed to load member",
         );
         setLoading(false);
-        return;
+        return false;
       }
       setMember(await res.json());
+      setAuthoritativeMemberReadVersion((version) => version + 1);
       setPageError("");
+      return true;
     } catch {
       setPageError("Failed to load member");
+      return false;
     } finally {
       setLoading(false);
     }
-  };
+  }, [id]);
+
+  const fetchMember = useCallback(async (): Promise<void> => {
+    await fetchMemberWithResult();
+  }, [fetchMemberWithResult]);
+
+  const serverXeroContactCreateRecoveryState =
+    member?.xeroContactCreateRecoveryState ??
+    (member?.xeroContactCreateRecoveryPending
+      ? "PROVIDER_CREATED_LINK_PENDING"
+      : null);
+
+  useEffect(() => {
+    if (!member || member.id !== id) return;
+    if (
+      !member.xeroContactId &&
+      serverXeroContactCreateRecoveryState ===
+        "PROVIDER_CREATED_LINK_PENDING"
+    ) {
+      if (
+        xeroCreateRecoveryDisplayState ===
+          "PROVIDER_CREATED_LINK_PENDING" &&
+        xeroRecoveryMemberId === id
+      ) {
+        return;
+      }
+      const guidance =
+        XERO_PARTIAL_SUCCESS_MESSAGES.CONTACT_CREATED_LINK_UNCONFIRMED;
+      setXeroRecovery({
+        recoveryKind: "CONTACT_CREATED_LINK_UNCONFIRMED",
+        xeroContactCreated: true,
+        memberId: id,
+        xeroPostProcessingPending: true,
+      });
+      setXeroRecoveryMemberId(id);
+      setXeroCreateRecoveryDisplayState("PROVIDER_CREATED_LINK_PENDING");
+      setXeroRecoveryGuidance(guidance);
+      setXeroRecoveryClearAfterReadVersion(
+        authoritativeMemberReadVersion + 1,
+      );
+      setXeroRecoveryError(
+        `${guidance} The unresolved local Xero operation was confirmed; check the current Xero link before taking another action.`,
+      );
+      setXeroRecoveryAttention((value) => value + 1);
+      return;
+    }
+    if (
+      !member.xeroContactId &&
+      serverXeroContactCreateRecoveryState === "CREATE_IN_PROGRESS"
+    ) {
+      // A route response that already proved provider creation is stronger
+      // evidence than the plain RUNNING reservation visible to this GET.
+      if (
+        xeroRecoveryMemberId === id &&
+        xeroCreateRecoveryDisplayState ===
+          "PROVIDER_CREATED_LINK_PENDING"
+      ) {
+        return;
+      }
+      if (
+        xeroRecoveryMemberId === id &&
+        xeroCreateRecoveryDisplayState === "CREATE_IN_PROGRESS"
+      ) {
+        return;
+      }
+      setXeroRecovery(null);
+      setXeroRecoveryMemberId(id);
+      setXeroCreateRecoveryDisplayState("CREATE_IN_PROGRESS");
+      setXeroRecoveryGuidance(XERO_CONTACT_CREATE_IN_PROGRESS_GUIDANCE);
+      setXeroRecoveryClearAfterReadVersion(
+        authoritativeMemberReadVersion + 1,
+      );
+      setXeroRecoveryError(
+        `${XERO_CONTACT_CREATE_IN_PROGRESS_GUIDANCE} The member has no confirmed Xero contact link.`,
+      );
+      setXeroRecoveryAttention((value) => value + 1);
+      return;
+    }
+    if (
+      xeroCreateRecoveryDisplayState !== null &&
+      xeroRecoveryMemberId === id &&
+      xeroRecoveryClearAfterReadVersion !== null &&
+      authoritativeMemberReadVersion >= xeroRecoveryClearAfterReadVersion
+    ) {
+      setXeroRecovery(null);
+      setXeroRecoveryMemberId(null);
+      setXeroCreateRecoveryDisplayState(null);
+      setXeroRecoveryGuidance("");
+      setXeroRecoveryError("");
+      setXeroRecoveryClearAfterReadVersion(null);
+    }
+  }, [
+    authoritativeMemberReadVersion,
+    id,
+    member,
+    serverXeroContactCreateRecoveryState,
+    xeroCreateRecoveryDisplayState,
+    xeroRecoveryClearAfterReadVersion,
+    xeroRecoveryMemberId,
+  ]);
+
+  const refreshAfterXeroPartialSuccess = useCallback(
+    async (guidance: string) => {
+      setXeroRecoveryError(`${guidance} Refreshing the member now...`);
+      setXeroRecoveryAttention((value) => value + 1);
+      setLoading(true);
+      const refreshed = await fetchMemberWithResult();
+      setXeroRecoveryError(
+        refreshed
+          ? `${guidance} The member was refreshed successfully; check the current Xero link before taking another action.`
+          : `${guidance} The member could not be refreshed. This recovery warning remains active; use Try again or reload the page before taking another Xero action.`,
+      );
+      setXeroRecoveryAttention((value) => value + 1);
+    },
+    [fetchMemberWithResult],
+  );
+
+  const recoverXeroPartialSuccess = useCallback(
+    async (error: AdminMemberXeroActionError) => {
+      const guidance = isXeroPartialSuccessRecovery(error.recovery)
+        ? getXeroPartialSuccessGuidance(error.recovery)
+        : "A Xero action completed only in part. Do not repeat it until the member's current Xero status has been checked.";
+      setXeroRecoveryGuidance(guidance);
+      setXeroRecovery(error.recovery);
+      setXeroRecoveryMemberId(id);
+      setXeroCreateRecoveryDisplayState(
+        error.recovery.recoveryKind === "CONTACT_CREATED_LINK_UNCONFIRMED"
+          ? "PROVIDER_CREATED_LINK_PENDING"
+          : null,
+      );
+      setXeroRecoveryClearAfterReadVersion(
+        error.recovery.recoveryKind === "CONTACT_CREATED_LINK_UNCONFIRMED"
+          ? authoritativeMemberReadVersion + 1
+          : null,
+      );
+      await refreshAfterXeroPartialSuccess(guidance);
+    },
+    [authoritativeMemberReadVersion, id, refreshAfterXeroPartialSuccess],
+  );
+
+  const xeroCreateSuppressed =
+    !member?.xeroContactId &&
+    (serverXeroContactCreateRecoveryState !== null ||
+      (xeroRecoveryMemberId === id &&
+        xeroCreateRecoveryDisplayState !== null));
+  const effectiveXeroCreateRecoveryState =
+    xeroRecoveryMemberId === id && xeroCreateRecoveryDisplayState !== null
+      ? xeroCreateRecoveryDisplayState
+      : serverXeroContactCreateRecoveryState;
+  const xeroWritesSuppressed =
+    !member?.xeroContactId &&
+    effectiveXeroCreateRecoveryState === "CREATE_IN_PROGRESS";
 
   // Dependent dialog state
   const {
@@ -311,7 +495,15 @@ export default function MemberDetailPage({
     handleXeroDecisionLink,
     openLinkXero,
     openCreateXero,
-  } = useMemberXero({ id, fetchMember, setLoading, setXeroError });
+  } = useMemberXero({
+    id,
+    fetchMember,
+    setLoading,
+    setXeroError,
+    onPartialSuccess: recoverXeroPartialSuccess,
+    xeroCreateSuppressed,
+    xeroWritesSuppressed,
+  });
 
   // Per-group inline edit state: each group unlocks and saves only its own
   // fields (the member PUT schema is fully partial).
@@ -427,8 +619,8 @@ export default function MemberDetailPage({
   ]);
 
   useEffect(() => {
-    fetchMember();
-  }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
+    void fetchMember();
+  }, [fetchMember]);
 
   // The refund-requests page deep-links to /admin/members/[id]#account-credit;
   // the anchor now lives inside the collapsed Finance group, so open it and
@@ -451,10 +643,35 @@ export default function MemberDetailPage({
     accessRoles: session?.user?.accessRoles ?? [],
   });
 
+  const xeroRecoveryAlert = (
+    <FocusedActionError
+      id="member-xero-recovery-error"
+      error={xeroRecoveryError}
+      attentionKey={xeroRecoveryAttention}
+      className="mb-6 scroll-mt-20"
+      action={
+        xeroRecoveryGuidance ? (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={loading}
+            onClick={() =>
+              void refreshAfterXeroPartialSuccess(xeroRecoveryGuidance)
+            }
+          >
+            {loading ? "Refreshing..." : "Try again"}
+          </Button>
+        ) : undefined
+      }
+    />
+  );
+
   if (loading) {
     return (
       <div>
         {viewOnlyBanner}
+        {xeroRecoveryAlert}
         <div className="py-12 text-center">
           <p className="text-sm text-muted-foreground">Loading member details...</p>
         </div>
@@ -465,6 +682,7 @@ export default function MemberDetailPage({
     return (
       <div>
         {viewOnlyBanner}
+        {xeroRecoveryAlert}
         <div className="space-y-4">
           <BackLink href={backHref} label={backLabel} />
           <div className="p-3 bg-danger-3 border border-danger-6 text-danger-11 rounded-md text-sm">
@@ -571,6 +789,7 @@ export default function MemberDetailPage({
   return (
     <div>
       {viewOnlyBanner}
+      {xeroRecoveryAlert}
       <div className="space-y-6">
       <MemberDetailHeader
         member={member}
@@ -581,6 +800,8 @@ export default function MemberDetailPage({
         xeroOrgShortCode={xeroOrgShortCode}
         xeroPushing={xeroPushing}
         xeroUnlinking={xeroUnlinking}
+        xeroCreateSuppressed={xeroCreateSuppressed}
+        xeroWritesSuppressed={xeroWritesSuppressed}
         canEditMembership={canEditMembership}
         canEditFinance={canEditFinance}
         onOpenDependentDialog={openDependentDialog}

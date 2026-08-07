@@ -12,6 +12,7 @@ import { MemberFilterToolbar } from "../member-filter-toolbar";
 import { MemberTable } from "../member-table";
 import { MemberAccessRolePicker } from "@/components/member-access-role-picker";
 import { buildFallbackAccessRoleOptions } from "@/lib/access-role-definitions";
+import { AdminMemberXeroActionError } from "@/lib/admin-member-xero-actions";
 
 // Components resolve role options via this hook (a fetch in the browser);
 // tests use the static fallback options, which mirror the seeded defaults.
@@ -42,6 +43,18 @@ const entranceFeeDecisionMock = vi.hoisted(() => ({
   entranceFeeOptions: [],
   entranceFeeOptionsLoading: false,
   entranceFeeOptionsError: "",
+  buildXeroEntranceFeeInvoiceOptions: vi.fn(() => ({
+    createEntranceFeeInvoice: false,
+    entranceFeeInvoiceDecision: "SKIP",
+    entranceFeeInvoiceSkipReason: "No joining fee invoice requested",
+  })),
+}));
+
+const xeroActionMocks = vi.hoisted(() => ({
+  link: vi.fn(),
+  push: vi.fn(),
+  search: vi.fn().mockResolvedValue([]),
+  unlink: vi.fn(),
 }));
 
 vi.mock("next/link", () => ({
@@ -118,18 +131,70 @@ vi.mock("@/components/member-address-fields", () => ({
 }));
 
 vi.mock("../member-xero-controls", () => ({
-  MemberXeroControls: () => <div data-testid="member-xero-controls" />,
+  MemberXeroControls: ({
+    editingMember,
+    onChangeXeroChoice,
+    onChangeSelectedXeroContactId,
+    onXeroUnlink,
+  }: {
+    editingMember: Member | null;
+    onChangeXeroChoice: (choice: "link" | "create") => void;
+    onChangeSelectedXeroContactId: (contactId: string) => void;
+    onXeroUnlink: (memberId: string) => void;
+  }) => (
+    <div data-testid="member-xero-controls">
+      {!editingMember ? (
+        <>
+          <button
+            type="button"
+            onClick={() => {
+              onChangeXeroChoice("link");
+              onChangeSelectedXeroContactId("xero-contact-1");
+            }}
+          >
+            Test link existing Xero contact
+          </button>
+          <button type="button" onClick={() => onChangeXeroChoice("create")}>
+            Test create Xero contact
+          </button>
+        </>
+      ) : editingMember.xeroContactId ? (
+        <button type="button" onClick={() => onXeroUnlink(editingMember.id)}>
+          Test unlink Xero contact
+        </button>
+      ) : null}
+    </div>
+  ),
 }));
 
 vi.mock("../member-xero-duplicate-decision-dialog", () => ({
-  MemberXeroDuplicateDecisionDialog: () => null,
+  MemberXeroDuplicateDecisionDialog: ({
+    decision,
+    onLinkSelected,
+    onForceCreate,
+  }: {
+    decision: unknown;
+    onLinkSelected: () => void;
+    onForceCreate: () => void;
+  }) =>
+    decision ? (
+      <div role="dialog" aria-label="Review Similar Xero Contacts">
+        <button type="button" onClick={onLinkSelected}>
+          Link Selected Contact
+        </button>
+        <button type="button" onClick={onForceCreate}>
+          Create New Contact Anyway
+        </button>
+      </div>
+    ) : null,
 }));
 
-vi.mock("@/lib/admin-member-xero-actions", () => ({
-  linkMemberXeroContact: vi.fn(),
-  pushMemberToXero: vi.fn(),
-  searchXeroContacts: vi.fn().mockResolvedValue([]),
-  unlinkMemberXeroContact: vi.fn(),
+vi.mock("@/lib/admin-member-xero-actions", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/admin-member-xero-actions")>()),
+  linkMemberXeroContact: (...args: unknown[]) => xeroActionMocks.link(...args),
+  pushMemberToXero: (...args: unknown[]) => xeroActionMocks.push(...args),
+  searchXeroContacts: (...args: unknown[]) => xeroActionMocks.search(...args),
+  unlinkMemberXeroContact: (...args: unknown[]) => xeroActionMocks.unlink(...args),
 }));
 
 vi.mock("@/lib/admin-xero-entrance-fee", () => ({
@@ -194,7 +259,10 @@ const baseMember: Member = {
   currentMembershipType: null,
 };
 
-function renderMemberTable(members: Member[], canEdit = true) {
+function renderMemberTable(
+  members: Member[],
+  canEdit = true,
+) {
   return render(
     <MemberTable
       members={members}
@@ -572,6 +640,266 @@ describe("admin member access-role UI", () => {
     expect(
       screen.getByText(/Date of birth: Invalid date format/),
     ).toBeInTheDocument();
+  });
+
+  it("closes the member-list editor and reports a durable warning after a proven unlink", async () => {
+    const onOpenChange = vi.fn();
+    const onRecoveryWarning = vi.fn().mockResolvedValue(undefined);
+    xeroActionMocks.unlink.mockRejectedValueOnce(
+      new AdminMemberXeroActionError("private cleanup detail", {
+        recoveryKind: "CONTACT_UNLINKED",
+        xeroContactUnlinked: true,
+        xeroLinkMayHaveChanged: true,
+        subscriptionCleanupPending: true,
+        xeroPostProcessingPending: true,
+      }),
+    );
+
+    render(
+      <MemberEditorDialog
+        open
+        editingMember={{ ...baseMember, xeroContactId: "xero-contact-1" }}
+        xeroConnected
+        xeroOrgShortCode={null}
+        onOpenChange={onOpenChange}
+        onSaved={vi.fn()}
+        onSuccess={vi.fn()}
+        onWarning={vi.fn()}
+        onRecoveryWarning={onRecoveryWarning}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Test unlink Xero contact" }));
+
+    await waitFor(() => expect(onRecoveryWarning).toHaveBeenCalledTimes(1));
+    expect(onRecoveryWarning.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({ recoveryKind: "CONTACT_UNLINKED" }),
+    );
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+    expect(xeroActionMocks.unlink).toHaveBeenCalledTimes(1);
+  });
+
+  it("suppresses retry after a newly-created member's Xero link commits only in part", async () => {
+    const onOpenChange = vi.fn();
+    const onRecoveryWarning = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(fetch).mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          id: "member-new",
+          firstName: "Riley",
+          lastName: "Chen",
+        }),
+        { status: 201, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    xeroActionMocks.link.mockRejectedValueOnce(
+      new AdminMemberXeroActionError("private post-link detail", {
+        recoveryKind: "CONTACT_LINKED",
+        xeroContactLinked: true,
+        xeroContactId: "xero-contact-1",
+        xeroLinkMayHaveChanged: true,
+        subscriptionRefreshPending: true,
+        xeroPostProcessingPending: true,
+      }),
+    );
+
+    render(
+      <MemberEditorDialog
+        open
+        xeroConnected
+        xeroOrgShortCode={null}
+        onOpenChange={onOpenChange}
+        onSaved={vi.fn()}
+        onSuccess={vi.fn()}
+        onWarning={vi.fn()}
+        onRecoveryWarning={onRecoveryWarning}
+      />,
+    );
+    fireEvent.change(screen.getByLabelText("First Name *"), {
+      target: { value: "Riley" },
+    });
+    fireEvent.change(screen.getByLabelText("Last Name *"), {
+      target: { value: "Chen" },
+    });
+    fireEvent.change(screen.getByLabelText("Email *"), {
+      target: { value: "riley@example.test" },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "Test link existing Xero contact" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Create Member" }));
+
+    await waitFor(() => expect(onRecoveryWarning).toHaveBeenCalledTimes(1));
+    expect(onRecoveryWarning.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({
+        recoveryKind: "CONTACT_LINKED",
+        memberId: "member-new",
+      }),
+    );
+    expect(xeroActionMocks.link).toHaveBeenCalledWith(
+      "member-new",
+      "xero-contact-1",
+    );
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  it("routes duplicate-decision Link selected recovery with the new member id", async () => {
+    const onRecoveryWarning = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(fetch).mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          id: "member-new",
+          firstName: "Riley",
+          lastName: "Chen",
+        }),
+        { status: 201, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    xeroActionMocks.push.mockResolvedValueOnce({
+      status: "needsDecision",
+      suggestedContacts: [
+        {
+          contactId: "xero-contact-existing",
+          name: "Riley Chen",
+          email: "riley@example.test",
+          isLinked: false,
+        },
+      ],
+    });
+    xeroActionMocks.link.mockRejectedValueOnce(
+      new AdminMemberXeroActionError("private post-link detail", {
+        recoveryKind: "CONTACT_LINKED",
+        xeroContactLinked: true,
+        xeroLinkMayHaveChanged: true,
+        xeroContactId: "xero-contact-existing",
+        xeroPostProcessingPending: true,
+      }),
+    );
+
+    render(
+      <MemberEditorDialog
+        open
+        xeroConnected
+        xeroOrgShortCode={null}
+        onOpenChange={vi.fn()}
+        onSaved={vi.fn()}
+        onSuccess={vi.fn()}
+        onWarning={vi.fn()}
+        onRecoveryWarning={onRecoveryWarning}
+      />,
+    );
+    fireEvent.change(screen.getByLabelText("First Name *"), {
+      target: { value: "Riley" },
+    });
+    fireEvent.change(screen.getByLabelText("Last Name *"), {
+      target: { value: "Chen" },
+    });
+    fireEvent.change(screen.getByLabelText("Email *"), {
+      target: { value: "riley@example.test" },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "Test create Xero contact" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Create Member" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Link Selected Contact" }),
+    );
+
+    await waitFor(() => expect(onRecoveryWarning).toHaveBeenCalledTimes(1));
+    expect(onRecoveryWarning.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({
+        recoveryKind: "CONTACT_LINKED",
+        memberId: "member-new",
+      }),
+    );
+    expect(xeroActionMocks.link).toHaveBeenCalledWith(
+      "member-new",
+      "xero-contact-existing",
+    );
+    expect(
+      screen.queryByRole("dialog", { name: "Review Similar Xero Contacts" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("closes the duplicate-create decision after provider creation is proven", async () => {
+    const onRecoveryWarning = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(fetch).mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          id: "member-new",
+          firstName: "Riley",
+          lastName: "Chen",
+        }),
+        { status: 201, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    xeroActionMocks.push
+      .mockResolvedValueOnce({
+        status: "needsDecision",
+        suggestedContacts: [
+          {
+            contactId: "xero-contact-existing",
+            name: "Riley Chen",
+            email: "riley@example.test",
+            isLinked: false,
+          },
+        ],
+      })
+      .mockRejectedValueOnce(
+        new AdminMemberXeroActionError("private local-link detail", {
+          recoveryKind: "CONTACT_CREATED_LINK_UNCONFIRMED",
+          xeroContactCreated: true,
+          xeroContactId: "xero-contact-created",
+          xeroPostProcessingPending: true,
+        }),
+      );
+
+    render(
+      <MemberEditorDialog
+        open
+        xeroConnected
+        xeroOrgShortCode={null}
+        onOpenChange={vi.fn()}
+        onSaved={vi.fn()}
+        onSuccess={vi.fn()}
+        onWarning={vi.fn()}
+        onRecoveryWarning={onRecoveryWarning}
+      />,
+    );
+    fireEvent.change(screen.getByLabelText("First Name *"), {
+      target: { value: "Riley" },
+    });
+    fireEvent.change(screen.getByLabelText("Last Name *"), {
+      target: { value: "Chen" },
+    });
+    fireEvent.change(screen.getByLabelText("Email *"), {
+      target: { value: "riley@example.test" },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "Test create Xero contact" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Create Member" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Create New Contact Anyway" }),
+    );
+
+    await waitFor(() => expect(onRecoveryWarning).toHaveBeenCalledTimes(1));
+    const recovery = onRecoveryWarning.mock.calls[0]?.[0];
+    expect(recovery).toEqual(
+      expect.objectContaining({
+        recoveryKind: "CONTACT_CREATED_LINK_UNCONFIRMED",
+        xeroContactCreated: true,
+        memberId: "member-new",
+      }),
+    );
+    expect(
+      screen.queryByRole("dialog", { name: "Review Similar Xero Contacts" }),
+    ).not.toBeInTheDocument();
+    expect(xeroActionMocks.push).toHaveBeenLastCalledWith(
+      "member-new",
+      expect.objectContaining({ forceCreate: true }),
+    );
+
   });
 });
 

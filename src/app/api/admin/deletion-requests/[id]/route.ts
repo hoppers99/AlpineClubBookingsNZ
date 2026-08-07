@@ -4,6 +4,9 @@
  * Body: { action: "approve" | "reject", note?: string }
  */
 import { NextRequest, NextResponse } from "next/server";
+import { hostingCoverageParticipantRetryResponse } from "@/lib/adult-member-hosting-retry-response";
+import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
+import { enqueueHostingCoverageReevaluationForMember } from "@/lib/adult-member-hosting-review";
 import { z } from "zod";
 import { requireAdmin } from "@/lib/session-guards";
 import { getTodayDateOnly } from "@/lib/date-only";
@@ -37,6 +40,17 @@ import {
 } from "@/lib/bed-allocation-lifecycle";
 import logger from "@/lib/logger";
 import { acquireMemberLifecycleLocks } from "@/lib/member-lifecycle-lock";
+import {
+  claimDeletionRequestApproval,
+  claimDeletionRequestDecision,
+  DELETION_REQUEST_ALREADY_REVIEWED_CODE,
+  DeletionRequestDecisionLostError,
+} from "@/lib/deletion-request-decision";
+import {
+  DELETED_ACCOUNT_PASSWORD_HASH,
+  lockMemberForAccountDeletionXeroFence,
+  XeroContactCreateBlocksDeletionError,
+} from "@/lib/xero-contact-create-recovery";
 
 const actionSchema = z.object({
   action: z.enum(["approve", "reject"]),
@@ -53,6 +67,148 @@ const CANCELLABLE_DELETION_BOOKING_STATUSES = [
   "PAYMENT_PENDING",
   "CONFIRMED",
 ] as const;
+
+function deletionCleanupRecovery(input: {
+  cancelledBookings: number;
+  cancellationPending: boolean;
+  retryBookingId: string | null;
+  cancellationStatusUnconfirmed?: boolean;
+  cancellationPostProcessingUnconfirmed?: boolean;
+  reviewBookingId?: string | null;
+  blocker?: {
+    code: string;
+    message: string;
+    remedy: string;
+  };
+}) {
+  return {
+    code: "DELETION_CLEANUP_PARTIAL",
+    error:
+      "Account deletion cleanup is incomplete. The member was not anonymised and no approval receipt was sent. Retry only the remaining cleanup.",
+    cancelledBookings: input.cancelledBookings,
+    cancellationPending: input.cancellationPending,
+    retryBookingId: input.retryBookingId,
+    ...(input.cancellationStatusUnconfirmed
+      ? { cancellationStatusUnconfirmed: true }
+      : {}),
+    ...(input.cancellationPostProcessingUnconfirmed
+      ? { cancellationPostProcessingUnconfirmed: true }
+      : {}),
+    ...(input.reviewBookingId
+      ? { reviewBookingId: input.reviewBookingId }
+      : {}),
+    ...(input.blocker ? { blocker: input.blocker } : {}),
+    remainingCleanupPending: true,
+    memberAnonymised: false,
+    memberDataAnonymised: false,
+    approvalReceiptSent: false,
+  };
+}
+
+function isMemberAnonymised(member: {
+  firstName: string;
+  lastName: string;
+  email: string;
+  active: boolean;
+}): boolean {
+  return (
+    member.active === false &&
+    member.firstName === "Deleted" &&
+    member.lastName === "Member" &&
+    member.email.startsWith("deleted-") &&
+    member.email.endsWith("@deleted.invalid")
+  );
+}
+
+async function readFinalDeletionDecision(
+  requestId: string,
+  cancelledBookings: number,
+  decisionErrorCode: string,
+) {
+  try {
+    const latest = await prisma.deletionRequest.findUnique({
+      where: { id: requestId },
+      select: {
+        status: true,
+        member: {
+          select: {
+            firstName: true,
+            lastName: true,
+            email: true,
+            active: true,
+          },
+        },
+      },
+    });
+    if (
+      latest &&
+      (latest.status === "APPROVED" || latest.status === "REJECTED")
+    ) {
+      const memberAnonymised = isMemberAnonymised(latest.member);
+      return {
+        code: decisionErrorCode,
+        error:
+          latest.status === "APPROVED"
+            ? "Another administrator approved this deletion request. Reload the deletion queue to see the final state."
+            : "Another administrator rejected this deletion request. Reload the deletion queue to see the final state.",
+        decisionFinal: true as const,
+        finalDecision: latest.status,
+        cancelledBookings,
+        memberAnonymised,
+        memberDataAnonymised: memberAnonymised,
+        retryAllowed: false as const,
+      };
+    }
+  } catch (error) {
+    logger.error(
+      { err: error, requestId },
+      "Could not re-read a deletion request after its decision claim was lost",
+    );
+  }
+
+  return {
+    code: "DELETION_REQUEST_DECISION_STATUS_UNCONFIRMED",
+    error:
+      "Another administrator claimed this deletion request, but its final state could not be confirmed. Reload the deletion queue; do not retry the deletion action.",
+    decisionStatusUnconfirmed: true as const,
+    cancelledBookings,
+    retryAllowed: false as const,
+  };
+}
+
+type CancellationFailureFact =
+  | { state: "CANCELLED" }
+  | { state: "PENDING" }
+  | { state: "STATUS_UNCONFIRMED" };
+
+async function recheckCancellationFailure(
+  bookingId: string,
+): Promise<CancellationFailureFact> {
+  try {
+    const booking = await prisma.booking.findUnique({
+      where: { id: bookingId },
+      select: { status: true },
+    });
+    if (booking?.status === "CANCELLED") {
+      return { state: "CANCELLED" };
+    }
+    if (
+      booking &&
+      CANCELLABLE_DELETION_BOOKING_STATUSES.some(
+        (status) => status === booking.status,
+      )
+    ) {
+      return { state: "PENDING" };
+    }
+    return { state: "STATUS_UNCONFIRMED" };
+  } catch (error) {
+    logger.error(
+      { err: error, bookingId },
+      "Could not authoritatively recheck booking after deletion cleanup failure",
+    );
+    return { state: "STATUS_UNCONFIRMED" };
+  }
+}
 
 export async function POST(
   request: NextRequest,
@@ -75,6 +231,8 @@ export async function POST(
 
   const ip =
     request.headers.get("x-forwarded-for")?.split(",")[0].trim() ?? "unknown";
+  let completedBookingCancellations = 0;
+  let memberAnonymised = false;
 
   try {
     const deletionRequest = await prisma.deletionRequest.findUnique({
@@ -99,9 +257,16 @@ export async function POST(
       return NextResponse.json({ error: "Deletion request not found" }, { status: 404 });
     }
 
-    if (deletionRequest.status !== "PENDING") {
+    const approvalCanResume =
+      body.action === "approve" &&
+      deletionRequest.status === "APPROVAL_IN_PROGRESS";
+    if (deletionRequest.status !== "PENDING" && !approvalCanResume) {
       return NextResponse.json(
-        { error: "This request has already been reviewed." },
+        await readFinalDeletionDecision(
+          id,
+          completedBookingCancellations,
+          DELETION_REQUEST_ALREADY_REVIEWED_CODE,
+        ),
         { status: 409 }
       );
     }
@@ -109,14 +274,11 @@ export async function POST(
     const member = deletionRequest.member;
 
     if (body.action === "reject") {
-      await prisma.deletionRequest.update({
-        where: { id },
-        data: {
-          status: "REJECTED",
-          adminNote: body.note ?? null,
-          reviewedBy: session.user.id,
-          reviewedAt: new Date(),
-        },
+      await claimDeletionRequestDecision(prisma, {
+        id,
+        decision: "REJECTED",
+        adminNote: body.note ?? null,
+        reviewedBy: session.user.id,
       });
 
       // #1788 honesty rule — record the suppression in the audit ONLY on a path
@@ -226,56 +388,101 @@ export async function POST(
       select: { id: true },
     });
 
+    // The cleanup below commits one booking cancellation at a time. Own the
+    // approval decision durably before the first such commit, so rejection can
+    // only win while the request is still PENDING and no approval cleanup has
+    // begun. A retry resumes this same intermediate claim.
+    await claimDeletionRequestApproval(prisma, {
+      id,
+      adminNote: body.note ?? null,
+      reviewedBy: session.user.id,
+    });
+
     const cancelledBookingIds: string[] = [];
-    const failedBookingIds: string[] = [];
     for (const booking of futureBookings) {
-      const result = await cancelBooking(
-        booking.id,
-        session.user.id,
-        "ADMIN",
-        ip
-      );
+      let result;
+      try {
+        result = await cancelBooking(
+          booking.id,
+          session.user.id,
+          "ADMIN",
+          ip,
+        );
+      } catch (err) {
+        const cancellationFact = await recheckCancellationFailure(booking.id);
+        if (
+          cancellationFact.state === "CANCELLED" &&
+          !cancelledBookingIds.includes(booking.id)
+        ) {
+          cancelledBookingIds.push(booking.id);
+          completedBookingCancellations = cancelledBookingIds.length;
+        }
+        const recovery = deletionCleanupRecovery({
+          cancelledBookings: cancelledBookingIds.length,
+          cancellationPending: cancellationFact.state === "PENDING",
+          retryBookingId:
+            cancellationFact.state === "PENDING" ? booking.id : null,
+          cancellationStatusUnconfirmed:
+            cancellationFact.state === "STATUS_UNCONFIRMED",
+          cancellationPostProcessingUnconfirmed:
+            cancellationFact.state === "CANCELLED",
+          reviewBookingId:
+            cancellationFact.state === "PENDING" ? null : booking.id,
+        });
+        const hostingRetry = hostingCoverageParticipantRetryResponse(err, recovery);
+        if (hostingRetry) return hostingRetry;
+        logger.error(
+          { err, memberId: member.id, bookingId: booking.id },
+          "Account deletion cleanup stopped after a booking cancellation error",
+        );
+        return NextResponse.json(recovery, { status: 500 });
+      }
       if (result.status === 200) {
         cancelledBookingIds.push(booking.id);
+        completedBookingCancellations = cancelledBookingIds.length;
       } else {
-        failedBookingIds.push(booking.id);
+        const cancellationFact = await recheckCancellationFailure(booking.id);
+        if (cancellationFact.state === "CANCELLED") {
+          if (!cancelledBookingIds.includes(booking.id)) {
+            cancelledBookingIds.push(booking.id);
+            completedBookingCancellations = cancelledBookingIds.length;
+          }
+          continue;
+        }
         logger.warn(
           { bookingId: booking.id, memberId: member.id, result },
           "Failed to cancel booking during account deletion"
         );
+        logAudit({
+          action: "member.deletion_cleanup_failed",
+          memberId: session.user.id,
+          targetId: member.id,
+          details: `Account deletion approval stopped; failed to cancel future booking: ${booking.id}`,
+          ipAddress: ip,
+          category: "privacy",
+          severity: "critical",
+          outcome: "failure",
+        });
+        return NextResponse.json(
+          deletionCleanupRecovery({
+            cancelledBookings: cancelledBookingIds.length,
+            cancellationPending: cancellationFact.state === "PENDING",
+            retryBookingId:
+              cancellationFact.state === "PENDING" ? booking.id : null,
+            cancellationStatusUnconfirmed:
+              cancellationFact.state === "STATUS_UNCONFIRMED",
+            reviewBookingId:
+              cancellationFact.state === "PENDING" ? null : booking.id,
+          }),
+          { status: 409 },
+        );
       }
     }
 
-    if (failedBookingIds.length > 0) {
-      logAudit({
-        action: "member.deletion_cleanup_failed",
-        memberId: session.user.id,
-        targetId: member.id,
-        details: `Account deletion approval stopped; failed to cancel future bookings: ${failedBookingIds.join(", ")}`,
-        ipAddress: ip,
-        category: "privacy",
-        severity: "critical",
-        outcome: "failure",
-      });
-
-      return NextResponse.json(
-        {
-          error:
-            "Account deletion could not be approved because future bookings could not be cancelled. No member data was anonymised.",
-          failedBookingIds,
-          cancelledBookings: cancelledBookingIds.length,
-        },
-        { status: 409 }
-      );
-    }
-
-    // 3. Send confirmation email BEFORE anonymising (so we have real name/email).
-    try {
-      await sendAccountDeletionApprovedEmail(member.email, member.firstName);
-    } catch (err) {
-      logger.error({ err, memberId: member.id }, "Failed to send deletion approved email");
-      // Continue — email failure should not block deletion
-    }
+    // Capture the destination before anonymisation, but send only after commit.
+    // A participant retry must not send a false approval receipt, and provider
+    // calls must remain outside lifecycle/participant lock transactions.
+    const approvalReceipt = { email: member.email, firstName: member.firstName };
 
     // 4-7: Anonymise atomically in a single transaction
     const anonymisedEmail = `deleted-${member.id.substring(0, 8)}@deleted.invalid`;
@@ -292,6 +499,17 @@ export async function POST(
         throw new AdminAccountGuardError(LAST_FULL_ADMIN_GUARD_MESSAGE);
       }
 
+      // Final approval is deliberately inside the anonymisation transaction so
+      // any later failure restores APPROVAL_IN_PROGRESS and sends no receipt.
+      // Rejection cannot claim that intermediate state; a later approval may
+      // safely resume only the remaining cleanup.
+      await claimDeletionRequestDecision(tx, {
+        id,
+        decision: "APPROVED",
+        adminNote: body.note ?? null,
+        reviewedBy: session.user.id,
+      });
+
       // #1756: anonymisation deactivates the member and unlinks their guest
       // rows, breaking the double-bed sharing precondition. Sweep their future
       // shared-double placements now, while bookingGuest.memberId (nulled in
@@ -303,6 +521,19 @@ export async function POST(
         reason: "member_deactivated",
         db: tx,
       });
+
+      // Record the exact bounded fan-out before deactivation and guest unlinking
+      // remove the evidence. It commits or rolls back with anonymisation.
+      await enqueueHostingCoverageReevaluationForMember(member.id, tx, {
+        cause: "SYSTEM_CHANGE",
+        actorMemberId: session.user.id,
+      });
+
+      // The standing fan-out above holds this exact Member row FOR UPDATE.
+      // Re-check the complete contact-create recovery set while that fence is
+      // held so deletion cannot anonymise a member whose PII may already be in
+      // flight to Xero or whose provider-created contact still needs linking.
+      await lockMemberForAccountDeletionXeroFence(tx, member.id);
 
       // 3. Anonymise the member record
       await tx.member.update({
@@ -327,7 +558,7 @@ export async function POST(
           postalRegion: null,
           postalPostalCode: null,
           postalCountry: null,
-          passwordHash: "DELETED_ACCOUNT",
+          passwordHash: DELETED_ACCOUNT_PASSWORD_HASH,
           active: false,
           xeroContactId: null,
           inheritEmailFromId: null,
@@ -335,6 +566,19 @@ export async function POST(
           // families here, so clear any billing-family selection they hold.
           billingFamilyGroupId: null,
         },
+      });
+
+      // The pointer and canonical ledger are one privacy boundary. A contact
+      // update that completed before this transaction may have refreshed the
+      // active link; deactivate it in the same commit that anonymises Member.
+      await tx.xeroObjectLink.updateMany({
+        where: {
+          localModel: "Member",
+          localId: member.id,
+          xeroObjectType: "CONTACT",
+          active: true,
+        },
+        data: { active: false },
       });
 
       // 4. Remove from all family groups
@@ -371,17 +615,19 @@ export async function POST(
         },
       });
 
-      // 6. Mark deletion request as approved
-      await tx.deletionRequest.update({
-        where: { id },
-        data: {
-          status: "APPROVED",
-          adminNote: body.note ?? null,
-          reviewedBy: session.user.id,
-          reviewedAt: new Date(),
-        },
-      });
     });
+    memberAnonymised = true;
+
+    try {
+      await sendAccountDeletionApprovedEmail(
+        approvalReceipt.email,
+        approvalReceipt.firstName,
+      );
+    } catch (err) {
+      logger.error({ err, memberId: member.id }, "Failed to send deletion approved email");
+      // Continue — email failure should not undo the committed deletion.
+    }
+    await settleHostingCoverageAfterCommit({ limit: 25 });
 
     if (sweptShares.length > 0) {
       // Post-commit, fire-and-forget (#1756). Uses the pre-anonymisation name
@@ -422,13 +668,70 @@ export async function POST(
       orphanedLinks: detachedFamilyLinks,
     });
   } catch (err) {
+    const recovery = deletionCleanupRecovery({
+      cancelledBookings: completedBookingCancellations,
+      cancellationPending: false,
+      retryBookingId: null,
+    });
+    const hostingRetry = hostingCoverageParticipantRetryResponse(err, recovery);
+    if (hostingRetry) return hostingRetry;
     if (err instanceof AdminAccountGuardError) {
+      if (completedBookingCancellations > 0 && !memberAnonymised) {
+        return NextResponse.json(
+          deletionCleanupRecovery({
+            cancelledBookings: completedBookingCancellations,
+            cancellationPending: false,
+            retryBookingId: null,
+            blocker: {
+              code: "LAST_FULL_ADMIN_GUARD",
+              message: err.message,
+              remedy:
+                "Give another active account Full Admin access, then retry only the remaining deletion cleanup.",
+            },
+          }),
+          { status: err.statusCode },
+        );
+      }
       return NextResponse.json(
         { error: err.message },
         { status: err.statusCode },
       );
     }
+    if (err instanceof DeletionRequestDecisionLostError) {
+      return NextResponse.json(
+        await readFinalDeletionDecision(
+          id,
+          completedBookingCancellations,
+          err.code,
+        ),
+        { status: err.statusCode },
+      );
+    }
+    if (err instanceof XeroContactCreateBlocksDeletionError) {
+      const xeroRecovery = deletionCleanupRecovery({
+        cancelledBookings: completedBookingCancellations,
+        cancellationPending: false,
+        retryBookingId: null,
+        blocker: {
+          code: err.code,
+          message: err.message,
+          remedy:
+            "Wait for or resolve the current Xero contact operation, then retry only the remaining deletion cleanup.",
+        },
+      });
+      return NextResponse.json(
+        {
+          ...xeroRecovery,
+          code: err.code,
+          error: err.message,
+        },
+        { status: err.statusCode },
+      );
+    }
     logger.error({ err, requestId: id }, "Failed to process deletion request");
+    if (completedBookingCancellations > 0 && !memberAnonymised) {
+      return NextResponse.json(recovery, { status: 500 });
+    }
     return NextResponse.json({ error: "Failed to process deletion request" }, { status: 500 });
   }
 }

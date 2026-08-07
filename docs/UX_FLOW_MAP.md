@@ -220,35 +220,68 @@ to assume it was submitted.
 
 ## Adult-member hosting (#2364)
 
-An operator opens **Booking Policies → Adult Member Hosting** and chooses, per
-scope, whether non-member guests without an adult member on their nights are
-allowed or are sent to an admin to review. With two or more lodges the scope
-selector appears and each lodge may also say "use the club-wide setting"; the
-club-wide scope has no such option, because there is nothing above it. The card
-follows the canonical read-only → Edit → Save/Cancel pattern, and a failed scope
-switch shows "we do not know what is stored here" with a Try again rather than
-another scope's values — from which a Save would change the wrong lodge. A first
-save cannot happen until the operator has chosen an exception-capacity handling,
-which has no automatic default, and a stale save is refused and reloaded.
+An operator opens **Booking Policies → Adult Member Hosting** and edits two
+independent choices for each configuration scope. The consequence is
+**Disabled**, **Send to admin review**, or **Enforce the rule**. The host-scope
+set permits an adult on the **same booking**, on **another booking owned by the
+same member** at the same lodge/night, or both. Another guest at the lodge, a
+shared email, or a Family Group connection never counts. With two or more
+lodges, each lodge may inherit either choice from club-wide while overriding the
+other. The card follows read-only → Edit → Save/Cancel; a failed scope switch
+shows "we do not know what is stored here" with **Try again**, and a stale save
+is refused and reloaded. A first save also requires an explicit
+exception-capacity choice.
 
-For members the journey is unchanged: the booking is made. There is no new form,
-no new blocking step, and nothing to submit — the club simply looks at it
-afterwards. An ADMIN booking on somebody's behalf is the one exception, and
-deliberately so: if the party would trip the rule they are stopped once and asked
-for a reason, which is stored with the approval, so no admin can wave a hazard
-through by accident. That question is asked where the over-capacity confirmation
-is asked — a panel on the review step of `/admin/book` with a reason box and a
-"Record the reason and create" button — and asked again in the same place when
-the admin saves the booking as a draft instead, because the check runs ahead of
-the draft fork. Submitting is blocked until a reason is typed, and the panel is
-cleared whenever the party changes, since a reason written about one set of
-uncovered nights does not describe another. Approving a public, school or member
-whole-lodge request never asks the question and is never blocked; those bookings
-simply appear for review like any other. The public `{{booking-policies}}` page
-states the rule when it is in force and still says nothing about requesting an
-exception: raising one needs a login, so advertising it on a public page would
-point a non-member at a door they cannot reach. Signed-in members meet it where the
-rule actually stops them (#2562, below).
+In review mode the member's booking is made and officer work opens beside it. In
+enforced mode a non-compliant create or change is rolled back and the member sees
+the same **Request Booking Officer approval** journey described above — but only
+when the server marks every blocker reviewable. The exception request, its
+capacity treatment, and its public/internal notes use that shared workflow.
+School and organisation approvals are deliberately review-only; member-owned
+flows, including member whole-lodge approval, remain enforced.
+
+An ADMIN booking on somebody else's behalf has an explicit approval seam: if the
+party would trip the rule, `/admin/book` asks for a reason on both confirm and
+save-as-draft. The reason is stored with the approving admin, submitting is
+blocked until it is supplied, and changing the party clears it. The public
+`{{booking-policies}}` page states the active rule but does not advertise a
+signed-in exception action to anonymous visitors.
+
+When an accepted booking later loses its only same-owner cover, the dependent
+booking stays accepted and the Booking Officer sees its urgent incident above the
+ordinary bookings list. Restoring active cover from another booking clears that
+incident automatically; there is no separate acknowledgement and no booking-status
+change. If a booking or membership write races a member merge, the database
+transaction that owns the write and its hosting queue item either saves against the
+surviving member or rolls back as one unit with the fixed safe message: the database
+update could not be completed because the booking or member changed, reload before
+trying again, and check payment status before retrying where relevant.
+
+The member's zero-dollar draft confirmation and the admin waitlist Force Confirm
+keep that failure in a permanently mounted, focused/scrolled alert and restore the
+action in every exit path. A network or unreadable response cannot prove whether
+the write landed, so those surfaces retain the selected retry context but instruct
+the user to reload and verify booking status before trying again.
+
+That atomic promise stops at the transaction boundary. A provider or an earlier
+phase may already have completed before a later local reconciliation reaches the
+participant fence. The card-payment panel therefore suppresses another payment and
+keeps a focused alert mounted: it distinguishes received-but-unconfirmed payment,
+an existing successful card transaction whose refund/net state is unknown, and a
+capacity cancellation whose refund did or did not complete.
+
+Xero create, link, unlink, and contact import likewise name only the phase already
+proved. Member detail, member list/editor, Contact Sync, and diagnostics close or
+disable the stale action, reload or reflect canonical state, and keep their focused
+warning visible through loading and refresh failure. **Try again** reloads state;
+Member Status Repair Backfill is offered only when refresh/cleanup remains pending.
+An ambiguous contact create hides every Xero write and leaves only **Try again**;
+once provider creation is proven but the local link is pending, **Link to Xero**
+returns as the explicit repair while another Create remains suppressed.
+Interfaces must distinguish a rolled-back queue transaction from truthful partial
+completion at these multi-phase boundaries. Officer override reasons remain attached
+to the original incident work, while merge-generated follow-up is a separate
+actorless system change.
 
 | Persona or flow                           | User goal                                                                                                                            | Expected steps                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | Copy and next action needs                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | Failure, empty, pending states                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | Accessibility and manual test route                                                                                                                                                                                                                             |
 | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

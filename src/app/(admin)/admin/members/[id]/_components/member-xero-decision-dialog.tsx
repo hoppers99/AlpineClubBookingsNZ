@@ -13,6 +13,7 @@ import {
   XeroSuggestedContactCard,
   type XeroSearchResult,
 } from "@/components/admin/xero-suggested-contact-card"
+import { FocusedActionError } from "@/components/focused-action-error"
 import type { MemberDetail } from "../_types"
 
 interface MemberXeroDecisionDialogProps {
@@ -54,7 +55,7 @@ export function MemberXeroDecisionDialog({
             of these if appropriate, or create a new contact anyway.
           </DialogDescription>
         </DialogHeader>
-        {error && <div className="p-2 bg-danger-3 border border-danger-6 text-danger-11 rounded text-sm">{error}</div>}
+        <FocusedActionError id="member-xero-decision-error" error={error} />
         <div className="space-y-3">
           <div className="max-h-[360px] overflow-y-auto space-y-2">
             {results.map((contact) => (

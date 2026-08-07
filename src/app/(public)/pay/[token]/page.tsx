@@ -11,6 +11,14 @@ import PaymentForm from "@/components/stripe/PaymentForm";
 import { useClubIdentity } from "@/components/club-identity-provider";
 import { formatNZDate } from "@/lib/nzst-date";
 import { formatCents } from "@/lib/utils";
+import { FocusedActionError } from "@/components/focused-action-error";
+import {
+  EXISTING_CARD_TRANSACTION_STATUS_UNCONFIRMED_MESSAGE,
+  isExistingCardTransactionStatusUnconfirmed,
+  isPaymentReceivedFinalisationPending,
+  isPaymentReceivedStatusUnconfirmed,
+  PAYMENT_RECEIVED_STATUS_UNCONFIRMED_MESSAGE,
+} from "@/lib/payment-recovery-contract";
 
 interface Narrative {
   state: string;
@@ -36,6 +44,11 @@ interface PaymentLinkContext {
 }
 
 type Tone = "success" | "warning" | "info";
+
+type PaymentRecovery = {
+  heading: string;
+  message: string;
+};
 
 const TONE_STYLES: Record<Tone, { wrap: string; icon: typeof Info }> = {
   success: { wrap: "text-success-11", icon: CheckCircle2 },
@@ -91,6 +104,8 @@ export default function PayByLinkPage() {
   const [clientSecret, setClientSecret] = useState<string | null>(null);
   const [intentError, setIntentError] = useState<string | null>(null);
   const [intentLoading, setIntentLoading] = useState(false);
+  const [paymentRecovery, setPaymentRecovery] =
+    useState<PaymentRecovery | null>(null);
   const [paymentComplete, setPaymentComplete] = useState(false);
   const [refreshState, setRefreshState] = useState<"idle" | "sending" | "sent">(
     "idle"
@@ -139,6 +154,54 @@ export default function PayByLinkPage() {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
+        if (
+          res.status === 409 &&
+          data.status === "CANCELLED" &&
+          typeof data.refunded === "boolean"
+        ) {
+          setPaymentRecovery(
+            data.refunded
+              ? {
+                  heading: "Booking cancelled - payment refunded",
+                  message:
+                    "The booking was cancelled because lodge capacity was no longer available, and the card payment was refunded. Reload the payment link to check the latest booking status. Do not try another payment.",
+                }
+              : {
+                  heading: "Booking cancelled - refund needs attention",
+                  message:
+                    "The booking was cancelled because lodge capacity was no longer available, but the refund could not be confirmed. Reload the payment link and contact the club if the refund is not confirmed. Do not try another payment.",
+                },
+          );
+          return;
+        }
+        if (
+          res.status === 409 &&
+          isPaymentReceivedFinalisationPending(data)
+        ) {
+          setPaymentRecovery({
+            heading: "Payment received - finalisation pending",
+            message:
+              "Your card payment was received, but booking finalisation is still pending. Reload the payment link and check the booking status before trying any payment again.",
+          });
+          return;
+        }
+        if (res.status === 409 && isPaymentReceivedStatusUnconfirmed(data)) {
+          setPaymentRecovery({
+            heading: "Payment received - check booking status",
+            message: PAYMENT_RECEIVED_STATUS_UNCONFIRMED_MESSAGE,
+          });
+          return;
+        }
+        if (
+          res.status === 409 &&
+          isExistingCardTransactionStatusUnconfirmed(data)
+        ) {
+          setPaymentRecovery({
+            heading: "Card transaction found - check payment status",
+            message: EXISTING_CARD_TRANSACTION_STATUS_UNCONFIRMED_MESSAGE,
+          });
+          return;
+        }
         throw new Error(data.error || "Unable to start payment");
       }
       if (data.alreadyPaid) {
@@ -296,7 +359,20 @@ export default function PayByLinkPage() {
           </p>
         </div>
 
-        {clientSecret ? (
+        <FocusedActionError
+          id="payment-link-recovery-error"
+          error={paymentRecovery?.message ?? ""}
+          heading={paymentRecovery?.heading}
+          action={
+            paymentRecovery ? (
+              <Button variant="outline" onClick={() => window.location.reload()}>
+                Reload payment status
+              </Button>
+            ) : undefined
+          }
+        />
+
+        {paymentRecovery ? null : clientSecret ? (
           <StripeProvider clientSecret={clientSecret}>
             <PaymentForm
               amountCents={payable.amountCents}

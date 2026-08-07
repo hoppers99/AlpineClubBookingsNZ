@@ -33,6 +33,7 @@ const mocks = vi.hoisted(() => ({
     processed: 1,
     haltedByDailyLimit: false,
   })),
+  upsertXeroObjectLink: vi.fn(),
 }));
 
 vi.mock("@/lib/prisma", () => ({ prisma: mocks.prisma }));
@@ -68,6 +69,9 @@ vi.mock("@/lib/seasonal-membership-assignments", () => ({
 }));
 vi.mock("@/lib/xero-contact-groups", () => ({
   reconcileMembersXeroContactGroups: mocks.reconcileMembersXeroContactGroups,
+}));
+vi.mock("@/lib/xero-sync", () => ({
+  upsertXeroObjectLink: mocks.upsertXeroObjectLink,
 }));
 vi.mock("bcryptjs", () => ({ hash: vi.fn(async () => "placeholder-hash") }));
 
@@ -118,6 +122,9 @@ beforeEach(() => {
   mocks.prisma.member.findFirst.mockResolvedValue(null);
   mocks.prisma.member.create.mockResolvedValue({ id: "member_new", email: "new@example.com" });
   mocks.prisma.member.update.mockResolvedValue({});
+  mocks.prisma.$transaction.mockImplementation(async (callback) =>
+    callback(mocks.prisma),
+  );
   mocks.prisma.seasonalMembershipAssignment.findMany.mockResolvedValue([]);
   mocks.prisma.seasonalMembershipAssignment.createMany.mockResolvedValue({ count: 1 });
   mocks.prisma.auditLog.create.mockResolvedValue({});
@@ -126,6 +133,7 @@ beforeEach(() => {
     { contactGroupId: "group_1", contactId: "contact_1", contactName: "New Person" },
   ]);
   mocks.prisma.xeroContactCache.findMany.mockResolvedValue([makeContact()]);
+  mocks.upsertXeroObjectLink.mockResolvedValue({});
 });
 
 describe("Xero member import — membership types (#2108)", () => {

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { hostingCoverageParticipantRetryResponse } from "@/lib/adult-member-hosting-retry-response";
 import { z } from "zod";
 import {
   MemberLifecycleActionError,
@@ -7,6 +8,10 @@ import {
 import logger from "@/lib/logger";
 import { getClientIp } from "@/lib/rate-limit";
 import { requireAdmin } from "@/lib/session-guards";
+import {
+  XERO_CONTACT_CREATE_BLOCKS_DELETION_CODE,
+  XeroContactCreateBlocksDeletionError,
+} from "@/lib/xero-contact-create-recovery";
 
 const reviewSchema = z.object({
   action: z.enum(["approve", "reject"]),
@@ -48,6 +53,14 @@ export async function PATCH(
 
     return NextResponse.json(result);
   } catch (err) {
+    const hostingRetry = hostingCoverageParticipantRetryResponse(err);
+    if (hostingRetry) return hostingRetry;
+    if (err instanceof XeroContactCreateBlocksDeletionError) {
+      return NextResponse.json(
+        { error: err.message, code: XERO_CONTACT_CREATE_BLOCKS_DELETION_CODE },
+        { status: err.statusCode },
+      );
+    }
     if (err instanceof MemberLifecycleActionError) {
       return NextResponse.json(
         { error: err.message, details: err.details },

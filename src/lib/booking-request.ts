@@ -33,6 +33,7 @@ import { z } from "zod";
 import { hashActionToken, issueActionToken } from "@/lib/action-tokens";
 import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
 import { reconcileAdultMemberHostingReviewWithSiblings } from "@/lib/adult-member-hosting-review";
+import { isHostingCoverageParticipantRetry } from "@/lib/adult-member-hosting-queue-participants";
 import { logAudit } from "@/lib/audit";
 import { cancelBooking } from "@/lib/booking-cancel";
 import { recordBookingEvent } from "@/lib/booking-events";
@@ -136,6 +137,26 @@ export class BookingRequestError extends Error {
     super(message);
     this.name = "BookingRequestError";
     this.status = status;
+  }
+}
+
+export class BookingRequestDeclineCommittedError extends BookingRequestError {
+  readonly holdReleasePending: boolean;
+  readonly holdReleaseStatusUnconfirmed: boolean;
+  override readonly cause: unknown;
+
+  constructor(input: {
+    message: string;
+    status: number;
+    holdReleasePending: boolean;
+    holdReleaseStatusUnconfirmed: boolean;
+    cause?: unknown;
+  }) {
+    super(input.message, input.status);
+    this.name = "BookingRequestDeclineCommittedError";
+    this.holdReleasePending = input.holdReleasePending;
+    this.holdReleaseStatusUnconfirmed = input.holdReleaseStatusUnconfirmed;
+    this.cause = input.cause;
   }
 }
 
@@ -1255,6 +1276,8 @@ export async function declineBookingRequest(input: {
     );
   }
 
+  try {
+
   // #1791: decline always emails the requester unless the admin chose not to
   // notify (default is notify; the suppression is audited below). Only the
   // decline email is gated — the approve/quote path emails carry the
@@ -1384,7 +1407,12 @@ export async function declineBookingRequest(input: {
       // PENDING booking and `requireRequestHold` refused to clobber it. Either
       // way this decline must NOT destroy that booking, so forward the 409.
       if (result.status === 409) {
-        throw new BookingRequestError(result.error, 409);
+        throw new BookingRequestDeclineCommittedError({
+          message: result.error,
+          status: 409,
+          holdReleasePending: false,
+          holdReleaseStatusUnconfirmed: true,
+        });
       }
       if (result.status !== 200) {
         logger.error(
@@ -1395,10 +1423,12 @@ export async function declineBookingRequest(input: {
           },
           "Failed to release booking-request hold during decline"
         );
-        throw new BookingRequestError(
-          "Could not release the booking request's capacity hold",
-          result.status
-        );
+        throw new BookingRequestDeclineCommittedError({
+          message: "Could not release the booking request's capacity hold",
+          status: result.status,
+          holdReleasePending: true,
+          holdReleaseStatusUnconfirmed: false,
+        });
       }
       // Success: cancelBooking cancelled the held booking, reconciled/freed its
       // beds, and detached `heldBookingId` itself.
@@ -1424,7 +1454,33 @@ export async function declineBookingRequest(input: {
     }
   }
 
-  return prisma.bookingRequest.findUnique({ where: { id: input.requestId } });
+    const updated = await prisma.bookingRequest.findUnique({
+      where: { id: input.requestId },
+    });
+    if (!updated) {
+      throw new Error("Declined booking request could not be reloaded");
+    }
+    return updated;
+  } catch (error) {
+    if (error instanceof BookingRequestDeclineCommittedError) throw error;
+    const holdReleasePending = isHostingCoverageParticipantRetry(error);
+    const holdReleaseStatusUnconfirmed =
+      !holdReleasePending && request.heldBookingId !== null;
+    throw new BookingRequestDeclineCommittedError({
+      message: holdReleasePending || holdReleaseStatusUnconfirmed
+        ? "The request was declined, but its capacity hold status could not be confirmed. Open the held booking and check its status before retrying."
+        : "The request was declined, but the updated request could not be loaded. Reload the request queue before continuing.",
+      status:
+        error instanceof BookingRequestError
+          ? error.status
+          : holdReleasePending
+            ? 409
+            : 500,
+      holdReleasePending,
+      holdReleaseStatusUnconfirmed,
+      cause: error,
+    });
+  }
 }
 
 // ---------------------------------------------------------------------------

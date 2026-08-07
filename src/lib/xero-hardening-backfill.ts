@@ -4,7 +4,12 @@
 // item 5). Import xero source modules directly, never the @/lib/xero facade
 // (#1208).
 import { prisma } from "@/lib/prisma";
+import {
+  lockMemberForXeroContactLink,
+  XeroMemberUnavailableError,
+} from "@/lib/xero-contact-create-recovery";
 import { buildXeroObjectUrl, stripXeroOrgShortCode } from "@/lib/xero-links";
+import { upsertXeroObjectLink } from "@/lib/xero-sync";
 import type {
   XeroHistoricalBackfillResult,
   XeroLinkBackfillCategoryResult,
@@ -194,6 +199,137 @@ async function backfillCanonicalLinkTargets(
   };
 }
 
+/**
+ * Reconstruct one Member CONTACT link under the lifecycle-conflicting row lock.
+ *
+ * The caller's contact id comes from a lock-free census and is only a
+ * candidate. Merge may delete the member and deletion may anonymise or relink
+ * it before this short transaction starts. Re-read the canonical pointer under
+ * `FOR UPDATE`, then commit the FK-less link and synthetic ledger together so
+ * lifecycle teardown either follows this complete write or wins and this
+ * writer creates nothing.
+ */
+export async function backfillMemberContactLink(
+  memberId: string,
+  expectedXeroContactId: string,
+  db: typeof prisma = prisma,
+): Promise<XeroLinkBackfillCategoryResult> {
+  const target: CanonicalLinkTarget = {
+    localModel: "Member",
+    localId: memberId,
+    xeroObjectType: "CONTACT",
+    xeroObjectId: expectedXeroContactId,
+    role: "CONTACT",
+    sourceField: "Member.xeroContactId",
+  };
+
+  try {
+    return await db.$transaction(async (tx) => {
+      const locked = await lockMemberForXeroContactLink(tx, memberId);
+      if (locked.xeroContactId !== expectedXeroContactId) {
+        return {
+          scanned: 1,
+          existingLinks: 0,
+          createdLinks: 0,
+          existingOperations: 0,
+          createdOperations: 0,
+        };
+      }
+
+      const correlationKey = buildBackfillCorrelationKey(target);
+      const [existingLink, existingOperation] = await Promise.all([
+        tx.xeroObjectLink.findFirst({
+          where: {
+            localModel: target.localModel,
+            localId: target.localId,
+            xeroObjectType: target.xeroObjectType,
+            xeroObjectId: target.xeroObjectId,
+            role: target.role,
+          },
+          select: { id: true },
+        }),
+        tx.xeroSyncOperation.findFirst({
+          where: {
+            operationType: XERO_BACKFILL_OPERATION_TYPE,
+            correlationKey,
+          },
+          select: { id: true },
+        }),
+      ]);
+
+      if (!existingLink) {
+        await upsertXeroObjectLink(
+          {
+            localModel: target.localModel,
+            localId: target.localId,
+            xeroObjectType: target.xeroObjectType,
+            xeroObjectId: target.xeroObjectId,
+            role: target.role,
+          },
+          { store: tx },
+        );
+      }
+      if (!existingOperation) {
+        const operation = buildBackfillOperationData(target, new Date());
+        await tx.xeroSyncOperation.create({
+          data: {
+            ...operation,
+            xeroObjectUrl: stripXeroOrgShortCode(operation.xeroObjectUrl),
+          },
+          select: { id: true },
+        });
+      }
+
+      return {
+        scanned: 1,
+        existingLinks: existingLink ? 1 : 0,
+        createdLinks: existingLink ? 0 : 1,
+        existingOperations: existingOperation ? 1 : 0,
+        createdOperations: existingOperation ? 0 : 1,
+      };
+    });
+  } catch (error) {
+    if (
+      error instanceof XeroMemberUnavailableError ||
+      (error instanceof Error && error.message === `Member not found: ${memberId}`)
+    ) {
+      return {
+        scanned: 1,
+        existingLinks: 0,
+        createdLinks: 0,
+        existingOperations: 0,
+        createdOperations: 0,
+      };
+    }
+    throw error;
+  }
+}
+
+async function backfillMemberContactLinks(
+  members: Array<{ id: string; xeroContactId: string | null }>,
+): Promise<XeroLinkBackfillCategoryResult> {
+  const result: XeroLinkBackfillCategoryResult = {
+    scanned: 0,
+    existingLinks: 0,
+    createdLinks: 0,
+    existingOperations: 0,
+    createdOperations: 0,
+  };
+  for (const member of [...members].sort((a, b) => a.id.localeCompare(b.id))) {
+    if (!member.xeroContactId) continue;
+    const memberResult = await backfillMemberContactLink(
+      member.id,
+      member.xeroContactId,
+    );
+    result.scanned += memberResult.scanned;
+    result.existingLinks += memberResult.existingLinks;
+    result.createdLinks += memberResult.createdLinks;
+    result.existingOperations += memberResult.existingOperations;
+    result.createdOperations += memberResult.createdOperations;
+  }
+  return result;
+}
+
 export async function backfillHistoricalXeroObjectLinks(): Promise<XeroHistoricalBackfillResult> {
   const [members, payments, subscriptions] = await Promise.all([
     prisma.member.findMany({
@@ -245,22 +381,7 @@ export async function backfillHistoricalXeroObjectLinks(): Promise<XeroHistorica
     }),
   ]);
 
-  const memberResult = await backfillCanonicalLinkTargets(
-    members.flatMap((member) =>
-      member.xeroContactId
-        ? [
-            {
-              localModel: "Member",
-              localId: member.id,
-              xeroObjectType: "CONTACT",
-              xeroObjectId: member.xeroContactId,
-              role: "CONTACT",
-              sourceField: "Member.xeroContactId",
-            },
-          ]
-        : []
-    )
-  );
+  const memberResult = await backfillMemberContactLinks(members);
 
   const paymentInvoiceResult = await backfillCanonicalLinkTargets(
     payments.flatMap((payment) =>

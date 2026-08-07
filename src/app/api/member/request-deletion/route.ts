@@ -16,6 +16,7 @@ import logger from "@/lib/logger";
 import { hasAdminAccess } from "@/lib/access-roles";
 import { sendAdminAccountDeletionRequestedAlert } from "@/lib/email";
 import { memberDisplayName } from "@/lib/member-serialization";
+import { OPEN_DELETION_REQUEST_STATUSES } from "@/lib/deletion-request-decision";
 
 const requestSchema = z.object({
   reason: z.string().max(500).optional(),
@@ -62,9 +63,12 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    // Check if there's already a PENDING request
+    // An approval-in-progress request is still open and recoverable.
     const existing = await prisma.deletionRequest.findFirst({
-      where: { memberId: session.user.id, status: "PENDING" },
+      where: {
+        memberId: session.user.id,
+        status: { in: OPEN_DELETION_REQUEST_STATUSES },
+      },
     });
 
     if (existing) {

@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { FocusedActionError } from "@/components/focused-action-error"
 import {
   JoiningFeePreviewHint,
   useJoiningFeePrefill,
@@ -73,7 +74,7 @@ export function MemberXeroCreateDialog({
             existing contacts before the new contact is created.
           </DialogDescription>
         </DialogHeader>
-        {error && <div className="p-2 bg-danger-3 border border-danger-6 text-danger-11 rounded text-sm">{error}</div>}
+        <FocusedActionError id="member-xero-create-error" error={error} />
         <div className="space-y-4">
           <div className="rounded-md border border-warning-6 bg-warning-3 p-3 text-sm text-warning-11">
             Use this only when you&apos;re confident the member should not be linked to an existing Xero contact.

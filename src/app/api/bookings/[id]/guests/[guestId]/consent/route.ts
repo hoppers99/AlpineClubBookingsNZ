@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { hostingCoverageParticipantRetryResponse } from "@/lib/adult-member-hosting-retry-response";
 import { auth } from "@/lib/auth";
 import logger from "@/lib/logger";
 import { applyRateLimit, rateLimiters } from "@/lib/rate-limit";
@@ -127,6 +128,8 @@ export async function POST(
     // loop against a terminal state.
     return NextResponse.json({ outcome: outcome.outcome });
   } catch (err) {
+    const hostingRetry = hostingCoverageParticipantRetryResponse(err);
+    if (hostingRetry) return hostingRetry;
     if (err instanceof MemberGuestConsentError) {
       return NextResponse.json({ error: err.message }, { status: err.status });
     }

@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import { hostingCoverageParticipantRetryResponse } from "@/lib/adult-member-hosting-retry-response";
+import { isHostingCoverageParticipantRetry } from "@/lib/adult-member-hosting-queue-participants";
 import { getDefaultLodgeId } from "@/lib/lodges";
 import { prisma } from "@/lib/prisma";
 import { chargePaymentMethod } from "@/lib/stripe";
@@ -19,6 +21,7 @@ import { upsertPaymentIntentTransaction } from "@/lib/payment-transactions";
 import { checkCapacityForGuestRanges } from "@/lib/capacity";
 import { bookingHasCapacityOverride } from "@/lib/booking-status";
 import { hasAdminAccess } from "@/lib/access-roles";
+import { PAYMENT_RECEIVED_STATUS_UNCONFIRMED_BODY } from "@/lib/payment-recovery-contract";
 
 const ChargeSavedMethodSchema = z.object({
   bookingId: z.string().min(1),
@@ -32,15 +35,24 @@ const ChargeSavedMethodSchema = z.object({
 export async function POST(request: NextRequest) {
   let paymentSucceeded = false;
   let finalCapacityClaimed = false;
+  let isAuthorizedCron = false;
+  let isAdmin = false;
+  let capturedPaymentIntentId: string | null = null;
+  let capturedPaymentContext: {
+    paymentIntentId: string;
+    memberName: string;
+    checkIn: Date;
+    checkOut: Date;
+    amountCents: number;
+  } | null = null;
 
   try {
     // This endpoint is called by internal cron or admin
-    const isAuthorizedCron = isValidCronSecret(
+    isAuthorizedCron = isValidCronSecret(
       request.headers.get("x-cron-secret")
     );
 
     const session = await auth();
-    let isAdmin = false;
 
     if (session?.user?.id) {
       const inactiveResponse = await requireActiveSessionUser(session.user.id);
@@ -138,6 +150,33 @@ export async function POST(request: NextRequest) {
     // Update payment record and revert booking status if payment not yet succeeded
     if (paymentIntent.status === "succeeded") {
       paymentSucceeded = true;
+      capturedPaymentIntentId = paymentIntent.id;
+      capturedPaymentContext = {
+        paymentIntentId: paymentIntent.id,
+        memberName: `${booking.member.firstName} ${booking.member.lastName}`,
+        checkIn: booking.checkIn,
+        checkOut: booking.checkOut,
+        amountCents: paymentIntent.amount,
+      };
+      try {
+        await upsertPaymentIntentTransaction({
+          paymentId: savedPayment.id,
+          kind: PaymentTransactionKind.PRIMARY,
+          paymentIntentId: paymentIntent.id,
+          amountCents: paymentIntent.amount,
+          status: PaymentStatus.SUCCEEDED,
+          paymentMethodId:
+            typeof paymentIntent.payment_method === "string"
+              ? paymentIntent.payment_method
+              : paymentIntent.payment_method?.id ?? null,
+          stripeCustomerId: savedPayment.stripeCustomerId,
+        });
+      } catch (recordError) {
+        logger.error(
+          { err: recordError, bookingId: booking.id, paymentIntentId: paymentIntent.id },
+          "Failed to pre-record captured saved-method charge",
+        );
+      }
       const reconciliation = await markBookingPaymentSucceeded({
         bookingId: booking.id,
         paymentIntentId: paymentIntent.id,
@@ -238,6 +277,51 @@ export async function POST(request: NextRequest) {
     });
   } catch (error) {
     logger.error({ err: error }, "Error charging saved method");
+
+    const hostingParticipantRetry = isHostingCoverageParticipantRetry(error);
+    if (hostingParticipantRetry && capturedPaymentContext) {
+      sendAdminPaymentFailureAlert({
+        ...capturedPaymentContext,
+        errorMessage:
+          "The saved-method charge succeeded but booking finalisation was deferred by a concurrent member change. The Stripe webhook will retry; review manually if it remains pending.",
+      }).catch((alertError) =>
+        logger.error(
+          { err: alertError, paymentIntentId: capturedPaymentIntentId },
+          "Failed to alert admins about captured saved-method charge awaiting finalisation",
+        ),
+      );
+    }
+
+    if (!hostingParticipantRetry && capturedPaymentContext) {
+      sendAdminPaymentFailureAlert({
+        ...capturedPaymentContext,
+        errorMessage:
+          "The saved-method charge succeeded, but the booking status could not be confirmed after a local error. Check the booking and payment status before retrying any charge.",
+      }).catch((alertError) =>
+        logger.error(
+          { err: alertError, paymentIntentId: capturedPaymentIntentId },
+          "Failed to alert admins about a captured saved-method charge with unconfirmed booking status",
+        ),
+      );
+    }
+
+    if (isAuthorizedCron && hostingParticipantRetry) {
+      throw error;
+    }
+
+    if (isAdmin && paymentSucceeded && hostingParticipantRetry) {
+      const hostingRetry = hostingCoverageParticipantRetryResponse(error, {
+        paymentReceived: true,
+        finalisationPending: true,
+      });
+      if (hostingRetry) return hostingRetry;
+    }
+
+    if (paymentSucceeded && capturedPaymentIntentId) {
+      return NextResponse.json(PAYMENT_RECEIVED_STATUS_UNCONFIRMED_BODY, {
+        status: 409,
+      });
+    }
 
     if (!paymentSucceeded) {
       logAudit({

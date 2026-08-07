@@ -27,6 +27,7 @@ const mocks = vi.hoisted(() => ({
   refreshXeroContactCachesFromContact: vi.fn(),
   syncMemberSubscriptionHistoryForLinkedContact: vi.fn(),
   ensureMemberAccessRolesFromCompatibilityFields: vi.fn(),
+  logAudit: vi.fn(),
 }));
 
 vi.mock("server-only", () => ({}));
@@ -40,7 +41,7 @@ vi.mock("@/lib/session-guards", () => ({
   }),
 }));
 
-vi.mock("@/lib/audit", () => ({ logAudit: vi.fn() }));
+vi.mock("@/lib/audit", () => ({ logAudit: mocks.logAudit }));
 
 vi.mock("@/lib/logger", () => ({
   default: { error: vi.fn(), info: vi.fn(), warn: vi.fn(), debug: vi.fn() },
@@ -49,6 +50,8 @@ vi.mock("@/lib/logger", () => ({
 vi.mock("@/lib/prisma", () => ({
   prisma: {
     member: { findFirst: mocks.memberFindFirst, create: mocks.memberCreate },
+    $transaction: async (callback: (tx: unknown) => Promise<unknown>) =>
+      callback({ member: { create: mocks.memberCreate } }),
   },
 }));
 
@@ -88,6 +91,11 @@ vi.mock("@/lib/xero-api-errors", () => ({
 }));
 
 import { POST } from "@/app/api/admin/xero/import-member-contact/route";
+import {
+  HOSTING_COVERAGE_RETRY_CODE,
+  HOSTING_COVERAGE_RETRY_MESSAGE,
+  HostingCoverageParticipantRetryError,
+} from "@/lib/adult-member-hosting-queue-participants";
 import { buildXeroContactUrl } from "@/lib/xero-links";
 
 function request() {
@@ -145,6 +153,7 @@ describe("POST /api/admin/xero/import-member-contact deep links (#2314)", () => 
       expect.objectContaining({
         xeroObjectUrl: buildXeroContactUrl(CONTACT_ID),
       }),
+      expect.objectContaining({ store: expect.anything() }),
     );
     // The stored URL names no organisation at all — that is what survives a
     // reconnect to a different Xero organisation.
@@ -163,5 +172,79 @@ describe("POST /api/admin/xero/import-member-contact deep links (#2314)", () => 
     expect(
       mocks.upsertXeroObjectLink.mock.calls[0][0].xeroObjectUrl,
     ).toBe(buildXeroContactUrl(CONTACT_ID));
+  });
+
+  it("keeps ordinary subscription refresh failures as a successful import warning", async () => {
+    mocks.syncMemberSubscriptionHistoryForLinkedContact.mockRejectedValueOnce(
+      new Error("Xero history unavailable"),
+    );
+
+    const response = await POST(request());
+    const body = await response.json();
+
+    expect(response.status).toBe(201);
+    expect(body.memberId).toBe("mem_1");
+    expect(body.warning).toMatch(/subscription history refresh did not complete/i);
+  });
+
+  it("returns the fixed 409 with truthful partial-import metadata on participant contention", async () => {
+    mocks.syncMemberSubscriptionHistoryForLinkedContact.mockRejectedValueOnce(
+      new HostingCoverageParticipantRetryError(),
+    );
+
+    const response = await POST(request());
+    const body = await response.json();
+
+    expect(response.status).toBe(409);
+    expect(body).toEqual({
+      error: HOSTING_COVERAGE_RETRY_MESSAGE,
+      code: HOSTING_COVERAGE_RETRY_CODE,
+      memberImported: true,
+      memberId: "mem_1",
+      xeroContactLinked: true,
+      xeroContactId: CONTACT_ID,
+      recoveryKind: "MEMBER_IMPORTED_AND_LINKED",
+      subscriptionRefreshPending: true,
+      xeroPostProcessingPending: true,
+    });
+  });
+
+  it("does not claim a partial import when access-role setup rolls back the transaction", async () => {
+    mocks.ensureMemberAccessRolesFromCompatibilityFields.mockRejectedValueOnce(
+      new Error("private access-role detail"),
+    );
+
+    const response = await POST(request());
+    const body = await response.json();
+
+    expect(response.status).toBe(500);
+    expect(body).toEqual({ error: "Failed to import Xero contact as member" });
+    expect(JSON.stringify(body)).not.toContain("private access-role detail");
+    expect(mocks.upsertXeroObjectLink).not.toHaveBeenCalled();
+  });
+
+  it("does not claim a partial import when object-link setup rolls back the transaction", async () => {
+    mocks.upsertXeroObjectLink.mockRejectedValueOnce(
+      new Error("private object-link detail"),
+    );
+
+    const response = await POST(request());
+    const body = await response.json();
+
+    expect(response.status).toBe(500);
+    expect(body).toEqual({ error: "Failed to import Xero contact as member" });
+    expect(JSON.stringify(body)).not.toContain("private object-link detail");
+  });
+
+  it("does not claim refresh pending when only post-refresh audit fails", async () => {
+    mocks.logAudit.mockRejectedValueOnce(new Error("private audit detail"));
+
+    const response = await POST(request());
+    const body = await response.json();
+
+    expect(response.status).toBe(409);
+    expect(body.recoveryKind).toBe("MEMBER_IMPORTED_AND_LINKED");
+    expect(body).not.toHaveProperty("subscriptionRefreshPending");
+    expect(JSON.stringify(body)).not.toContain("private audit detail");
   });
 });

@@ -5678,6 +5678,7 @@ model AgeTierSetting {
 
 enum DeletionRequestStatus {
   PENDING
+  APPROVAL_IN_PROGRESS
   APPROVED
   REJECTED
 }

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import "@testing-library/jest-dom/vitest";
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import AdminWaitlistPage from "@/app/(admin)/admin/waitlist/page";
@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 const fetchMock = vi.fn();
+const scrollIntoView = vi.fn();
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({
@@ -77,6 +78,10 @@ describe("Admin waitlist page", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     global.fetch = fetchMock as typeof fetch;
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: scrollIntoView,
+    });
     mocks.sessionUser = {
       id: "admin-2",
       role: "ADMIN",
@@ -224,6 +229,195 @@ describe("Admin waitlist page", () => {
     expect(auditHref).toContain("eventType=waitlist.force_confirmed_overbook");
     expect(auditHref).toContain("severity=critical");
     expect(auditHref).toContain("q=booking-1");
+  });
+
+  it("focuses and scrolls the fixed participant retry without stranding Force Confirm", async () => {
+    mocks.currentSearch = "";
+    fetchMock.mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/admin/waitlist") {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            entries: [waitlistEntry()],
+            page: 1,
+            pageSize: 25,
+            total: 1,
+          }),
+        });
+      }
+      if (url === "/api/admin/bookings/booking-1/force-confirm") {
+        return Promise.resolve({
+          ok: false,
+          json: async () => ({
+            error:
+              "The database update could not be completed because this booking or member changed. Reload before trying again. If a payment was involved, check its status before retrying.",
+            code: "HOSTING_COVERAGE_PARTICIPANT_RETRY",
+          }),
+        });
+      }
+      return Promise.reject(new Error(`Unexpected fetch: ${url}`));
+    });
+
+    render(<AdminWaitlistPage />);
+
+    await screen.findByText("Jane Doe");
+    const alert = screen.getByRole("alert");
+    expect(alert).toHaveTextContent("");
+    const confirm = screen.getByRole("button", { name: "Force Confirm" });
+    fireEvent.click(confirm);
+
+    await screen.findByText(/database update could not be completed/i);
+    await waitFor(() => expect(document.activeElement).toBe(alert));
+    expect(scrollIntoView).toHaveBeenCalledWith({
+      behavior: "smooth",
+      block: "center",
+    });
+    expect(confirm).toBeEnabled();
+  });
+
+  it("restores Force Confirm after an unknown network outcome and supports retry", async () => {
+    mocks.currentSearch = "";
+    let forceConfirmCalls = 0;
+    let waitlistLoads = 0;
+    fetchMock.mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/admin/waitlist") {
+        waitlistLoads += 1;
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            entries: waitlistLoads === 1 ? [waitlistEntry()] : [],
+            page: 1,
+            pageSize: 25,
+            total: waitlistLoads === 1 ? 1 : 0,
+          }),
+        });
+      }
+      if (url === "/api/admin/bookings/booking-1/force-confirm") {
+        forceConfirmCalls += 1;
+        if (forceConfirmCalls === 1) {
+          return Promise.reject(new Error("private network detail"));
+        }
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ success: true, status: "PAYMENT_PENDING" }),
+        });
+      }
+      return Promise.reject(new Error(`Unexpected fetch: ${url}`));
+    });
+
+    render(<AdminWaitlistPage />);
+
+    await screen.findByText("Jane Doe");
+    const confirm = screen.getByRole("button", { name: "Force Confirm" });
+    fireEvent.click(confirm);
+    await screen.findByText(/could not verify whether this booking was force-confirmed/i);
+    expect(confirm).toBeEnabled();
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByRole("alert")),
+    );
+    expect(screen.queryByText(/private network detail/i)).not.toBeInTheDocument();
+
+    fireEvent.click(confirm);
+    await screen.findByText("No waitlisted bookings match the current filters");
+    await waitFor(() => expect(forceConfirmCalls).toBe(2));
+  });
+
+  it("handles an unreadable force-confirm response and restores the control", async () => {
+    mocks.currentSearch = "";
+    fetchMock.mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/admin/waitlist") {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            entries: [waitlistEntry()],
+            page: 1,
+            pageSize: 25,
+            total: 1,
+          }),
+        });
+      }
+      if (url === "/api/admin/bookings/booking-1/force-confirm") {
+        return Promise.resolve({
+          ok: false,
+          json: async () => {
+            throw new Error("private JSON detail");
+          },
+        });
+      }
+      return Promise.reject(new Error(`Unexpected fetch: ${url}`));
+    });
+
+    render(<AdminWaitlistPage />);
+
+    await screen.findByText("Jane Doe");
+    const confirm = screen.getByRole("button", { name: "Force Confirm" });
+    fireEvent.click(confirm);
+
+    await screen.findByText(/could not verify whether this booking was force-confirmed/i);
+    expect(confirm).toBeEnabled();
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByRole("alert")),
+    );
+    expect(screen.queryByText(/private JSON detail/i)).not.toBeInTheDocument();
+  });
+
+  it("retains the overbook retry context when the final confirmation fails", async () => {
+    mocks.currentSearch = "";
+    let forceConfirmCalls = 0;
+    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/api/admin/waitlist") {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            entries: [waitlistEntry()],
+            page: 1,
+            pageSize: 25,
+            total: 1,
+          }),
+        });
+      }
+      if (url === "/api/admin/bookings/booking-1/force-confirm") {
+        forceConfirmCalls += 1;
+        const requestBody = JSON.parse(String(init?.body ?? "{}")) as {
+          allowOverbook?: boolean;
+        };
+        if (!requestBody.allowOverbook) {
+          return Promise.resolve({
+            ok: false,
+            json: async () => ({
+              error: "CAPACITY_EXCEEDED",
+              overbookDates: ["2026-07-01"],
+            }),
+          });
+        }
+        return Promise.resolve({
+          ok: false,
+          json: async () => ({
+            error:
+              "The database update could not be completed because this booking or member changed. Reload before trying again. If a payment was involved, check its status before retrying.",
+            code: "HOSTING_COVERAGE_PARTICIPANT_RETRY",
+          }),
+        });
+      }
+      return Promise.reject(new Error(`Unexpected fetch: ${url}`));
+    });
+
+    render(<AdminWaitlistPage />);
+
+    await screen.findByText("Jane Doe");
+    fireEvent.click(screen.getByRole("button", { name: "Force Confirm" }));
+    await screen.findByText("This will overbook the lodge on the following dates:");
+    const retry = screen.getByRole("button", { name: /Confirm Anyway/i });
+    fireEvent.click(retry);
+
+    await screen.findByText(/database update could not be completed/i);
+    expect(screen.getByText("This will overbook the lodge on the following dates:")).toBeInTheDocument();
+    await waitFor(() => expect(retry).toBeEnabled());
+    expect(forceConfirmCalls).toBe(2);
   });
 
   it("keeps date filters, page size, and pagination in the URL query", async () => {

@@ -55,10 +55,14 @@ into review.
 
 ### Adult-member hosting review (#2364)
 
-An adult-member hosting hazard causes **no booking-state transition**. The
-booking is made, held, paid and completed exactly as it would have been; what
-changes is a review that lives beside the lifecycle, in its own columns, with its
-own small state machine:
+In `ADMIN_REVIEW_REQUIRED`, an adult-member hosting hazard causes **no
+booking-state transition**: the booking exists and a review lives beside its
+lifecycle in dedicated columns. In `ENFORCED`, the non-compliant create or
+modification instead rolls back with the waivable 409 and may enter the shared
+policy-exception request lifecycle; no booking transition is invented for a
+write that did not commit. Once a booking exists through review mode, an approved
+exception, or an explicit admin on-behalf reason, its hosting review has this
+small state machine:
 
 ```
 (none) -> PENDING            a hazard appears on a booking that had none
@@ -75,12 +79,13 @@ PENDING|APPROVED|REJECTED -> PENDING
 ```
 
 Two of those edges are the whole point. Clearing is automatic and needs no admin:
-adding an adult member to the booking, removing the last uncovered guest, moving
-the nights, reinstating a cancelled member, switching the policy off, or moving
-the booking to a lodge that never had the rule all end the hazard the next time
-any booking path touches it. Reopening is deliberately NARROW: a renamed guest,
-or an extra host on an already-covered night, is the same hazard and does not
-re-prompt an admin who has already decided.
+adding an adult member to the booking, adding eligible same-owner cover at that
+lodge/night, removing the last uncovered guest, moving the nights, reinstating a
+cancelled member, switching the policy off, or moving the booking to a lodge that
+never had the rule all end the hazard the next time a relevant path touches it.
+Reopening is deliberately NARROW: a renamed guest, or an extra host on an
+already-covered night, is the same hazard and does not re-prompt an admin who has
+already decided.
 
 "Touches it" includes touching its #738 SPLIT SIBLING. The child borrows its
 parent's adults, so the parent's own nights and guests move the child's answer;
@@ -89,10 +94,64 @@ sibling always enters at PENDING — the `(none) -> APPROVED` edge needs an
 explicit reason from the admin who was asked, and nobody was asked about a
 booking they only reached through another one.
 
-There is no transition into the shared `AWAITING_REVIEW` booking status and no
-check-in block, unlike the minors-only rule (#1372/#1422). Capacity is not
-reserved from the frozen `HOLD` value; that, the member request state and the
-approval/revalidation edges belong to #2365.
+An accepted booking that later loses same-owner cover has a separate durable
+incident lifecycle, still without changing `Booking.status`:
+
+```text
+(none) -> OPEN                 committed cover loss is reconciled after the write
+OPEN -> RESOLVED               COVERAGE_RESTORED | BOOKING_AMENDED |
+                               EXCEPTION_APPROVED | BOOKING_CANCELLED
+RESOLVED -> OPEN               a later materially different uncovered state appears
+```
+
+Adding a new active covering booking therefore resolves the existing incident as
+`COVERAGE_RESTORED`; it does not cancel or recreate the dependent booking. The
+queue item that drives this transition is part of the mutation transaction. Under
+#2597, a member-standing fan-out first locks its subject `FOR UPDATE NOWAIT`, then
+an ordinary producer locks its exact owner/actor Member participants with sorted
+`FOR KEY SHARE NOWAIT`. A booking-request hold takes its lodge key and the exact
+linked members `FOR KEY SHARE`, then re-reads every row as active and unarchived
+before its versioned claim or any guest creation. Hold-first makes the standing
+mutation retry; standing-first makes the hold wait and then refuse the now-inactive
+member in every hosting consequence mode. Member merge takes one sorted blocking
+`FOR UPDATE` set, re-plans, and sweeps late owner and actor rows before deleting the
+loser. If either side cannot prove the exact attribution, the complete mutation
+returns the safe retry outcome and none of the booking, member, queue or incident
+states advance. Merge-generated work is actorless; the critical `MEMBER_MERGED`
+audit remains its human attribution.
+
+The “complete mutation” above means the database transaction that contains the
+queue write; it is not a promise that an earlier provider or workflow phase can be
+undone. Two interactive boundaries expose that distinction explicitly:
+
+```text
+Stripe capture succeeded -> confirm-payment participant retry
+  -> paymentReceived=true, finalisationPending=true
+  -> keep payment UI in place; check booking/payment status before retrying
+
+Xero contact fetched -> local member created -> Xero contact linked
+  -> subscription refresh participant retry
+  -> memberImported=true, xeroContactLinked=true,
+     subscriptionRefreshPending=true
+  -> select the created member; repair subscription history; do not import again
+```
+
+Booking-approval (including admin waitlist force-confirm), member draft-confirm,
+public-request and Xero action consumers announce the fixed 409 in a permanently
+mounted alert and focus/scroll the action failure. A participant-fence retry that
+proved rollback may restore its control. A network or unreadable waitlist
+response cannot prove that, so the member-facing offer suppresses another
+confirm and offers only **Reload booking status** until canonical state is read;
+the zero-dollar draft and admin waitlist surfaces likewise describe the outcome
+as unverified and require reload/status verification before retry. Ordinary Xero
+subscription-history failures still complete the import with the existing repair
+warning; only the participant-fence code takes the fixed 409 path.
+
+The hosting review itself never reuses the shared `AWAITING_REVIEW` booking status
+or the minors-only check-in block. An enforced refusal may instead enter the
+durable booking-policy exception lifecycle, whose frozen capacity choice,
+approval/revalidation transitions, and member/officer actions are documented in
+the policy-exception sections above.
 
 `DRAFT -> PAYMENT_PENDING` is also where a stored account-credit election is
 spent (#2265). A draft carries the member's election on
@@ -2377,44 +2436,3 @@ admin edits the banner -> updatedAt changes -> dismissal invalidated, banner re-
 To verify: the admin page's current/upcoming/past split, the inclusive
 date-only comparison in NZ time, and dismissal invalidation keyed on
 `updatedAt`.
-
-## Member-Guest Consent Lifecycle (provisioned, unreachable until MG2)
-
-`BookingGuest.consentStatus` (`MemberGuestConsentStatus`) records whether a
-MEMBER added as somebody else's guest agreed to it ("+ Add Member Guest", epic
-#2305, decision D-7). The enum, its five companion columns, and the partial
-index the expiry sweep needs are all provisioned by MG1 (#2306).
-
-**Nothing in the MG1 release can reach any state below except the null one.**
-Cross-family adds are still refused (`MEMBER_GUEST_WIDENING_ENABLED` is `false`
-in `src/lib/member-guest-consent.ts`), so no code path writes a non-null
-`consentStatus` — the labels are registered a release ahead of the code that
-uses them. The transitions are documented here only once MG2 (#2307) implements
-them; do not treat the arrows below as live behaviour in this release.
-
-```text
-(null) = no consent was ever needed: a family-scope add (D-6) or a legacy row.
-         NOT the same value as CONFIRMED, and the two must stay distinguishable.
-
-cross-family add, approval-required policy  -> PENDING   (holds the bed until consentExpiresAt)
-cross-family add, notify-only policy        -> CONFIRMED (never solicited: requestedAt/respondedAt/respondedBy all null)
-admin add, admin booking-copy, pipeline row -> CONFIRMED (never solicited: respondedBy = the acting admin, requestedAt null)
-
-PENDING -> CONFIRMED  target (or their delegate) approves; respondedBy records WHICH
-PENDING -> DECLINED   target (or their delegate) refuses
-PENDING -> EXPIRED    the hold lapses with no answer; MG2's sweep releases the bed
-```
-
-Consent is **not transitive across bookings**: copying a booking re-stamps the
-copied guest as an admin assignment against the copying admin, and never
-inherits the source row's approval.
-
-The full column-by-column discriminator table — which of the five columns is set
-in each shape — is in `docs/DOMAIN_INVARIANTS.md` and is the single source of
-truth in `MEMBER_GUEST_CONSENT_SUB_STATES`
-(`src/lib/member-guest-consent.ts`), pinned by
-`src/lib/__tests__/member-guest-consent.test.ts`.
-
-To verify: `MEMBER_GUEST_WIDENING_ENABLED === false`, the classifier's refusal
-to name any shape the table does not define, and the dark-guarantee matrix in
-`src/lib/__tests__/member-guest-dark-guarantee.test.ts`.

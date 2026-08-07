@@ -3,6 +3,8 @@ import { hash } from "bcryptjs";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { logAudit } from "@/lib/audit";
+import { hostingCoverageParticipantRetryResponse } from "@/lib/adult-member-hosting-retry-response";
+import { isHostingCoverageParticipantRetry } from "@/lib/adult-member-hosting-queue-participants";
 import logger from "@/lib/logger";
 import { ensureMemberAccessRolesFromCompatibilityFields } from "@/lib/member-access-role-writes";
 import { prisma } from "@/lib/prisma";
@@ -17,6 +19,10 @@ import {
   syncMemberSubscriptionHistoryForLinkedContact,
 } from "@/lib/xero";
 import { getXeroApiErrorInfo } from "@/lib/xero-api-errors";
+import {
+  importedMemberRecovery,
+  xeroPartialSuccessBody,
+} from "@/lib/xero-partial-success";
 
 const importMemberContactSchema = z.object({
   xeroContactId: z.string().trim().min(1),
@@ -81,6 +87,10 @@ export async function POST(request: NextRequest) {
   }
 
   const { xeroContactId } = parsed.data;
+  let importedMemberId: string | null = null;
+  let importedXeroContactId: string | null = null;
+  let contactLinked = false;
+  let subscriptionRefreshPending = false;
 
   try {
     const existingLink = await prisma.member.findFirst({
@@ -155,8 +165,10 @@ export async function POST(request: NextRequest) {
     const canLogin = !existingLoginForEmail;
     const placeholderHash = await hash(randomBytes(32).toString("hex"), 13);
 
-    const member = await prisma.member.create({
-      data: {
+    const storedXeroLink = buildXeroContactUrl(cachedContact.contactId);
+    const member = await prisma.$transaction(async (tx) => {
+      const created = await tx.member.create({
+        data: {
         email,
         firstName,
         lastName,
@@ -184,50 +196,59 @@ export async function POST(request: NextRequest) {
         emailVerified: !canLogin,
         inheritEmailFromId: existingLoginForEmail?.id ?? null,
       },
-      select: {
-        id: true,
-        firstName: true,
-        lastName: true,
-        email: true,
-        active: true,
-        xeroContactId: true,
-      },
+        select: {
+          id: true,
+          firstName: true,
+          lastName: true,
+          email: true,
+          active: true,
+          xeroContactId: true,
+        },
+      });
+      await ensureMemberAccessRolesFromCompatibilityFields(tx, {
+        memberId: created.id,
+        role: "USER",
+        canLogin,
+        assignedByMemberId: session.user.id,
+      });
+      await upsertXeroObjectLink(
+        {
+          localModel: "Member",
+          localId: created.id,
+          xeroObjectType: "CONTACT",
+          xeroObjectId: cachedContact.contactId,
+          xeroObjectUrl: storedXeroLink,
+          role: "CONTACT",
+          metadata: {
+            contactName: cachedContact.name ?? `${firstName} ${lastName}`,
+            importedFromXeroContactSearch: true,
+          },
+        },
+        { store: tx },
+      );
+      return created;
     });
-    await ensureMemberAccessRolesFromCompatibilityFields(prisma, {
-      memberId: member.id,
-      role: "USER",
-      canLogin,
-      assignedByMemberId: session.user.id,
-    });
-
+    importedMemberId = member.id;
+    importedXeroContactId = member.xeroContactId;
+    contactLinked = Boolean(member.xeroContactId);
+    subscriptionRefreshPending = true;
     // #2314: two links, deliberately different. The STORED one is
     // organisation-agnostic — a short code baked into a XeroObjectLink row is
     // wrong the moment the club reconnects to a different Xero organisation, so
     // the short code is applied when the row is rendered instead. The one
     // RETURNED to the admin who just imported is scoped now, so their click
     // lands in this club's books.
-    const storedXeroLink = buildXeroContactUrl(cachedContact.contactId);
     const xeroLink = buildXeroContactUrl(cachedContact.contactId, {
       shortCode: await getXeroOrgShortCode(),
     });
-    await upsertXeroObjectLink({
-      localModel: "Member",
-      localId: member.id,
-      xeroObjectType: "CONTACT",
-      xeroObjectId: cachedContact.contactId,
-      xeroObjectUrl: storedXeroLink,
-      role: "CONTACT",
-      metadata: {
-        contactName: cachedContact.name ?? `${firstName} ${lastName}`,
-        importedFromXeroContactSearch: true,
-      },
-    });
+    contactLinked = true;
 
     let warning: string | undefined;
     try {
       const subscriptionSync = await syncMemberSubscriptionHistoryForLinkedContact(member.id, {
         forceRefreshOnlineInvoiceUrl: true,
       });
+      subscriptionRefreshPending = subscriptionSync.errors.length > 0;
       if (subscriptionSync.errors.length > 0) {
         warning =
           "Member imported, but subscription history refresh did not complete for every season. Run the Member Status Repair Backfill to retry.";
@@ -241,8 +262,10 @@ export async function POST(request: NextRequest) {
         );
       }
     } catch (historyError) {
+      if (isHostingCoverageParticipantRetry(historyError)) throw historyError;
       warning =
         "Member imported, but subscription history refresh did not complete. Run the Member Status Repair Backfill to retry.";
+      subscriptionRefreshPending = true;
       logger.warn(
         { err: historyError, memberId: member.id, xeroContactId: cachedContact.contactId },
         "Failed to refresh member subscription history after Xero contact import"
@@ -284,6 +307,32 @@ export async function POST(request: NextRequest) {
       { status: 201 }
     );
   } catch (err) {
+    const recovery =
+      importedMemberId && importedXeroContactId && contactLinked
+        ? importedMemberRecovery(
+            importedMemberId,
+            importedXeroContactId,
+            subscriptionRefreshPending,
+          )
+        : null;
+    const hostingRetry = hostingCoverageParticipantRetryResponse(
+      err,
+      recovery ? { ...recovery } : undefined,
+    );
+    if (hostingRetry) return hostingRetry;
+    if (recovery) {
+      logger.error(
+        {
+          err,
+          memberId: importedMemberId,
+          recoveryKind: recovery.recoveryKind,
+        },
+        "Xero contact import completed only in part",
+      );
+      return NextResponse.json(xeroPartialSuccessBody(recovery), {
+        status: 409,
+      });
+    }
     const xeroError = getXeroApiErrorInfo(err, "Failed to import Xero contact as member");
     if (!xeroError.handled) {
       logger.error(

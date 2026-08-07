@@ -144,6 +144,7 @@ export default function XeroPage() {
           />
           <ContactSyncPanel
             connected={connected}
+            currentXeroPath={currentXeroPath}
             open={sectionOpen.contactSync}
             onToggle={setSectionState}
             clubName={club.name}

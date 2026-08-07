@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { hostingCoverageParticipantRetryResponse } from "@/lib/adult-member-hosting-retry-response";
 import type { AgeTier } from "@prisma/client";
 import { z } from "zod";
 import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
@@ -582,6 +583,8 @@ export async function POST(req: NextRequest) {
       blockedLinkedGuests: blockedLinkedGuestMembers,
     });
   } catch (error) {
+    const hostingRetry = hostingCoverageParticipantRetryResponse(error);
+    if (hostingRetry) return hostingRetry;
     if (error instanceof AdminAccountGuardError) {
       return NextResponse.json(
         { error: error.message },

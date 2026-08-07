@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { hostingCoverageParticipantRetryResponse } from "@/lib/adult-member-hosting-retry-response";
 import { BookingRequestError } from "@/lib/booking-request";
 import {
   BookingRequestQuoteError,
@@ -59,6 +60,8 @@ export async function POST(
       options: parseBookingRequestQuoteOptions(quote.options),
     });
   } catch (err) {
+    const hostingRetry = hostingCoverageParticipantRetryResponse(err);
+    if (hostingRetry) return hostingRetry;
     // Sending now auto-holds the beds (#1254), so the hold's guards can surface
     // here: a full lodge (BookingRequestQuoteError 409) or a linked-member
     // double-book (issue #1158). Return them as actionable 409s, not a 500.
