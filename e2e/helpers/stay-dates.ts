@@ -116,6 +116,49 @@ export function pastStayWindowForAttempt(
   return { checkIn, checkOut, nights };
 }
 
+/**
+ * Every check-in date a leftover retroactive booking can sit on that would still
+ * block one of THIS run's three attempt windows (#2625).
+ *
+ * The retroactive spec creates a real PENDING booking and, unlike every other
+ * date-based spec, used to leave it behind — so it self-blocked on the second run
+ * against one seeded database, and could block the NEXT DAY's run too. The
+ * windows above are derived from the RUN DATE and therefore slide one day per
+ * day, while a leftover stays on the absolute date it was created on; yesterday's
+ * attempt-0 booking is today's -8, and it still occupies one of today's
+ * attempt-0 nights.
+ *
+ * Which check-ins can collide is exact rather than guessed. A two-night stay
+ * checking in on `c` occupies nights `c` and `c + 1`, so it overlaps the attempt
+ * window at offset `o` (nights `o` and `o + 1`) exactly when `c` is `o - 1`, `o`,
+ * or `o + 1`. Sweeping the contiguous band from the oldest offset minus a day to
+ * the newest offset plus a day therefore covers every leftover that can wedge
+ * this run — today's own, yesterday's, and an attempt/retry pair that straddled
+ * NZ midnight — and it is derived from PAST_RETRY_OFFSETS_DAYS, so it cannot
+ * drift if those offsets ever move.
+ *
+ * A leftover older than the band has slid clear of all three windows and holds
+ * no night this run wants, so it is deliberately NOT swept: the sweep stays the
+ * narrowest thing that makes the spec re-runnable.
+ *
+ * The band is -16…-6 on any run date. `admin-override-dates.spec.ts` sweeps
+ * -6…+1 for the same member, so the two touch at -6 only — and only on -6, which
+ * neither spec ever books (it is midnight slack for both). Overlapping there is
+ * harmless anyway: `playwright.config.ts` runs one worker with
+ * `fullyParallel: false`, so no two specs are ever in flight together, and each
+ * clears its own leftovers in its own `beforeAll` before it creates anything.
+ */
+export function pastStayLeftoverCheckIns(): string[] {
+  const oldest = Math.min(...PAST_RETRY_OFFSETS_DAYS) - 1;
+  const newest = Math.max(...PAST_RETRY_OFFSETS_DAYS) + 1;
+  const today = new Date();
+  const checkIns: string[] = [];
+  for (let offset = oldest; offset <= newest; offset += 1) {
+    checkIns.push(toDateOnly(addDays(today, offset)));
+  }
+  return checkIns;
+}
+
 function toDateOnly(date: Date): string {
   const y = date.getFullYear();
   const m = String(date.getMonth() + 1).padStart(2, "0");

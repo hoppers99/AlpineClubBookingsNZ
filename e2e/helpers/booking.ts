@@ -3,6 +3,7 @@ import {
   type BookingCreateIsolation,
   withBookingCreateClientIp,
 } from "./booking-create-client-ip";
+import { walkCalendarToMonth } from "./calendar-navigation";
 import type { Persona } from "./personas";
 import { calendarDayLabel, type StayWindow } from "./stay-dates";
 
@@ -126,32 +127,23 @@ export async function completeMemberDetailsGateIfShown(page: Page): Promise<void
 const MAX_MONTH_HOPS = 24;
 
 export async function selectCalendarDay(page: Page, dateOnly: string): Promise<void> {
-  const [year, month] = dateOnly.split("-").map(Number);
-  const monthHeading = new Date(year, month - 1).toLocaleDateString("en-NZ", {
-    month: "long",
-    year: "numeric",
-  });
-  // getByRole, not getByText: the streamed (hidden) copy of a Suspense boundary
-  // is out of the accessibility tree, so this cannot resolve to the template.
-  const heading = page.getByRole("heading", { name: monthHeading });
-  for (let hops = 0; hops < MAX_MONTH_HOPS; hops += 1) {
-    if (await heading.isVisible().catch(() => false)) {
-      break;
-    }
-    await page.getByRole("button", { name: /Next/ }).click();
-  }
-  // Assert ARRIVAL before clicking the day. Without this the final hop is
-  // unverified and a miss surfaces as `locator.click: Timeout … getByRole(
-  // 'button', { name: /^Monday, 2 August 2027,/ })` — the reported error being
-  // the symptom rather than the cause, which is the whole pathology #2302 is
-  // about.
-  await expect(
-    heading,
-    `calendar never reached ${monthHeading} within ${MAX_MONTH_HOPS} "Next" ` +
-      `hops of the run date's month (target day ${dateOnly}) — see ` +
+  // The walk itself lives in `e2e/helpers/calendar-navigation.ts` (#2626), shared
+  // with the retroactive spec's backwards walks. It asserts ARRIVAL before the
+  // caller clicks a day — without that the final hop is unverified and a miss
+  // surfaces as `locator.click: Timeout … getByRole('button', { name: /^Monday,
+  // 2 August 2027,/ })`, the reported error being the symptom rather than the
+  // cause, which is the whole pathology #2302 is about — and it bounds each
+  // "Next" click, because a hop-bounded loop with unbounded clicks in it has no
+  // time bound at all (#2626, where one such click ate a whole 90 s test budget).
+  await walkCalendarToMonth(page, {
+    target: dateOnly,
+    direction: "next",
+    maxHops: MAX_MONTH_HOPS,
+    context:
+      `stay day ${dateOnly}, walking forward from the run date's month — see ` +
       `MAX_MONTH_HOPS in e2e/helpers/booking.ts and RETRY_WINDOW_STRIDE in ` +
       `e2e/helpers/stay-dates.ts`,
-  ).toBeVisible();
+  });
   await page.getByRole("button", { name: calendarDayLabel(dateOnly) }).click();
 }
 
