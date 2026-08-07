@@ -2,14 +2,18 @@
 
 import "@testing-library/jest-dom/vitest"
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
-import type { ReactNode } from "react"
+import type { AnchorHTMLAttributes, ReactNode } from "react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import { HealthAndDiagnosticsPanels } from "../health-diagnostics-panel"
 
 vi.mock("next/link", () => ({
-  default: ({ children, href }: { children: ReactNode; href: string }) => (
-    <a href={href}>{children}</a>
+  default: ({
+    children,
+    href,
+    ...props
+  }: { children: ReactNode; href: string } & AnchorHTMLAttributes<HTMLAnchorElement>) => (
+    <a href={href} {...props}>{children}</a>
   ),
 }))
 
@@ -132,6 +136,14 @@ describe("Xero health diagnostics partial unlink recovery (#2597)", () => {
     expect(alert).not.toHaveTextContent("private cleanup detail")
     expect(document.activeElement).toBe(alert)
     expect(screen.queryByRole("button", { name: "Unlink" })).not.toBeInTheDocument()
+    const recoveryAction = screen.getByRole("link", {
+      name: "Open affected member: Riley Chen",
+    })
+    expect(alert).toContainElement(recoveryAction)
+    expect(recoveryAction).toHaveAttribute(
+      "href",
+      "/admin/members/member-1?returnTo=%2Fadmin%2Fxero",
+    )
 
     await act(async () => {
       resolveHealth?.(new Response(JSON.stringify(healthResponse), { status: 200 }))
@@ -150,5 +162,88 @@ describe("Xero health diagnostics partial unlink recovery (#2597)", () => {
     await waitFor(() => expect(alert).toHaveTextContent(/Diagnostics were refreshed/i))
     expect(alert).toBe(document.getElementById("xero-contact-link-error"))
     expect(screen.queryByRole("button", { name: "Unlink" })).not.toBeInTheDocument()
+    expect(recoveryAction).toBeInTheDocument()
+    expect(recoveryAction).toHaveAttribute(
+      "href",
+      "/admin/members/member-1?returnTo=%2Fadmin%2Fxero",
+    )
+  })
+
+  it("keeps the focused member recovery action when diagnostics refresh fails", async () => {
+    let linkReads = 0
+
+    global.fetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (
+        url === "/api/admin/xero/contact-link-mismatches?limit=200" &&
+        !init?.method
+      ) {
+        linkReads += 1
+        if (linkReads === 1) {
+          return Promise.resolve(
+            new Response(JSON.stringify(mismatchResponse), { status: 200 }),
+          )
+        }
+        return Promise.reject(new Error("diagnostics unavailable"))
+      }
+      if (
+        url === "/api/admin/members/member-1/xero-unlink" &&
+        init?.method === "POST"
+      ) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              code: "XERO_PARTIAL_SUCCESS",
+              error: "private cleanup detail",
+              recoveryKind: "CONTACT_UNLINKED",
+              xeroContactUnlinked: true,
+              xeroLinkMayHaveChanged: true,
+              subscriptionCleanupPending: true,
+              xeroPostProcessingPending: true,
+            }),
+            { status: 409 },
+          ),
+        )
+      }
+      if (url === "/api/admin/xero/health") {
+        return Promise.reject(new Error("diagnostics unavailable"))
+      }
+      return Promise.reject(new Error(`Unexpected fetch: ${url}`))
+    }) as typeof fetch
+
+    render(
+      <HealthAndDiagnosticsPanels
+        connected
+        shortCode={null}
+        currentXeroPath="/admin/xero"
+        healthOpen={false}
+        contactGroupMismatchesOpen={false}
+        contactLinkMismatchesOpen
+        onToggle={vi.fn()}
+        onMessage={vi.fn()}
+        onRefreshOperations={vi.fn()}
+        refreshToken={0}
+        scrollToSection={vi.fn()}
+      />,
+    )
+
+    fireEvent.click(await screen.findByRole("button", { name: "Unlink" }))
+
+    const alert = document.getElementById("xero-contact-link-error")
+    await waitFor(() =>
+      expect(alert).toHaveTextContent(/Diagnostics could not be refreshed/i),
+    )
+    expect(alert).toHaveTextContent(/link was removed/i)
+    expect(alert).not.toHaveTextContent("private cleanup detail")
+    expect(document.activeElement).toBe(alert)
+    expect(screen.queryByRole("button", { name: "Unlink" })).not.toBeInTheDocument()
+    const recoveryAction = screen.getByRole("link", {
+      name: "Open affected member: Riley Chen",
+    })
+    expect(alert).toContainElement(recoveryAction)
+    expect(recoveryAction).toHaveAttribute(
+      "href",
+      "/admin/members/member-1?returnTo=%2Fadmin%2Fxero",
+    )
   })
 })

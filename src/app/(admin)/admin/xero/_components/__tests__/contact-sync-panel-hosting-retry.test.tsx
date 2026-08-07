@@ -61,7 +61,7 @@ describe("ContactSyncPanel participant retry recovery (#2597)", () => {
             code: "HOSTING_COVERAGE_PARTICIPANT_RETRY",
             recoveryKind: "MEMBER_IMPORTED_AND_LINKED",
             memberImported: true,
-            memberId: "member-1",
+            memberId: "member/off-page",
             xeroContactId: "xero-1",
             xeroContactLinked: true,
             subscriptionRefreshPending: true,
@@ -122,8 +122,17 @@ describe("ContactSyncPanel participant retry recovery (#2597)", () => {
       behavior: "smooth",
       block: "center",
     })
-    expect(screen.getByText(/Member ID: member-1 - already linked to Xero/i)).toBeInTheDocument()
+    expect(screen.getByText(/Member ID: member\/off-page - already linked to Xero/i)).toBeInTheDocument()
+    const recoveryAction = screen.getByRole("link", {
+      name: "Open affected member",
+    })
+    expect(alert).toContainElement(recoveryAction)
+    expect(recoveryAction).toHaveAttribute(
+      "href",
+      "/admin/members/member%2Foff-page",
+    )
     expect(onRefreshDiagnostics).toHaveBeenCalledTimes(1)
+    expect(recoveryAction).toBeInTheDocument()
   })
 
   it("shows and focuses a network error even when the panel starts collapsed", async () => {
