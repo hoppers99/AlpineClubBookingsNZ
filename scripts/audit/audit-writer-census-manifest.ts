@@ -68,9 +68,8 @@ export const AUDIT_CENSUS_TOTALS = {
    * so it correlates to the booking. (#2627 and #2623 landed in the same window and
    * both claimed 419; the pin has to count BOTH, which is exactly what this file
    * exists to catch.)
-   */
    *
-   * 419 -> 421 (#2595): the new `bed-allocation-move.ts` records the two things
+   * 420 -> 422 (#2595): the new `bed-allocation-move.ts` records the two things
    * a reviewed move does — `BED_ALLOCATION_MOVE_APPLIED` for the move itself and
    * `BED_ALLOCATION_PARTNERS_PROMOTED` for the partner rows it carries with it —
    * each with the awaited `createAuditLog` inside the move's own transaction, so
@@ -80,7 +79,7 @@ export const AUDIT_CENSUS_TOTALS = {
    * Measured on the merged tree, never by adding branch deltas: this figure and
    * the ones below came from running the census after merging `origin/main`.
    */
-  writeSites: 0, // re-measured below
+  writeSites: 422,
   /** Of those, sites whose event object carries no `category` key. */
   uncategorised: 82,
   /** Per-sink totals, so a shift between forms cannot cancel out in the total. */
