@@ -69,6 +69,8 @@ actually happens:
    keeps your place). Nothing is bound to a screen yet, so browsing is safe.
 4. **Lodge details** — fill in the handful of values the boards print (Wi-Fi
    name and password, checkout time, door code) and the on-screen notice. The
+   checkout time is free text; the natural value is **midday**, since a lodge
+   stay runs midday to midday and the checkout date is a departure morning. The
    footer also prints **who is in residence tonight** on its own, whenever a hut
    leader has been given a bed on the [Hut Leaders](hut-leaders.md) page — you do
    not configure that anywhere. It always reads **Custodian** (or *Custodians*
