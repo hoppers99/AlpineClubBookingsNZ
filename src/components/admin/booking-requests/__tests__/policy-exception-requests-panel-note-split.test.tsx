@@ -146,14 +146,16 @@ describe("the officer decision form labels who reads what, before submission", (
     expect(await screen.findByText("Queue service unavailable")).toBeInTheDocument();
     expect(document.getElementById("policy-exception-error")).toBe(alert);
     expect(alert).not.toHaveClass("sr-only");
-    expect(document.activeElement).toBe(alert);
     expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
     expect(
       screen.queryByText(/No requested booking-policy exception requests/i),
     ).not.toBeInTheDocument();
-    expect(scrollIntoView).toHaveBeenCalledWith({
-      behavior: "smooth",
-      block: "center",
+    await waitFor(() => {
+      expect(document.activeElement).toBe(alert);
+      expect(scrollIntoView).toHaveBeenCalledWith({
+        behavior: "smooth",
+        block: "center",
+      });
     });
   });
 
