@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ConfirmDraftButton } from "@/components/confirm-draft-button";
 import { HOSTING_COVERAGE_RETRY_MESSAGE } from "@/lib/adult-member-hosting-queue-participants";
+import { expectRecoveryAlertToHoldFocus } from "@/lib/__tests__/helpers/focus";
 
 const mocks = vi.hoisted(() => ({
   refresh: vi.fn(),
@@ -45,14 +46,7 @@ describe("ConfirmDraftButton error attention", () => {
     fireEvent.click(confirm);
 
     await screen.findByText(HOSTING_COVERAGE_RETRY_MESSAGE);
-    // The message arrives with React's DOM commit, but `FocusedActionError`
-    // moves focus and scrolls from a `useEffect` — a PASSIVE effect React can
-    // flush a task later. `findByText` is satisfied by the commit alone, so
-    // reading `document.activeElement` straight afterwards races that effect
-    // and intermittently sees `<body>` (seen on CI for #2634, and reproducible
-    // locally under load). Waiting for the focus asserts exactly the same
-    // thing, once the effect has actually had its turn.
-    await waitFor(() => expect(document.activeElement).toBe(alert));
+    await expectRecoveryAlertToHoldFocus(alert);
     expect(scrollIntoView).toHaveBeenCalledWith({
       behavior: "smooth",
       block: "center",
@@ -71,10 +65,7 @@ describe("ConfirmDraftButton error attention", () => {
     fireEvent.click(confirm);
     await screen.findByText(/could not verify whether this draft was confirmed/i);
     expect(confirm).toBeEnabled();
-    // Same passive-effect race as the first case above.
-    await waitFor(() =>
-      expect(document.activeElement).toBe(screen.getByRole("alert")),
-    );
+    await expectRecoveryAlertToHoldFocus(screen.getByRole("alert"));
     expect(screen.queryByText(/network detail/i)).not.toBeInTheDocument();
 
     fireEvent.click(confirm);
@@ -97,10 +88,7 @@ describe("ConfirmDraftButton error attention", () => {
     fireEvent.click(confirm);
 
     await screen.findByText(/could not verify whether this draft was confirmed/i);
-    // Same passive-effect race as the first case above.
-    await waitFor(() =>
-      expect(document.activeElement).toBe(screen.getByRole("alert")),
-    );
+    await expectRecoveryAlertToHoldFocus(screen.getByRole("alert"));
     expect(scrollIntoView).toHaveBeenCalled();
     expect(confirm).toBeEnabled();
     expect(screen.queryByText(/private parse detail/i)).not.toBeInTheDocument();

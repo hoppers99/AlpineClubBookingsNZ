@@ -22,6 +22,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { ADMIN_PERMISSION_AREAS } from "@/lib/admin-permissions";
+import { AUDIT_CATEGORIES } from "@/lib/audit-categories";
 import { canonicalStringify } from "@/lib/diagnostics/knowledge/hash";
 
 import type {
@@ -75,22 +76,17 @@ function selectOnlyTool(id: string): DiagnosticsSelectOnlyToolEntry {
 }
 
 /**
- * The category values `AuditCategory` names in `src/lib/audit.ts`. Declared here
- * rather than imported because that type is an OPEN union (`… | (string & {})`) with
- * no runtime list — which is precisely why the coverage assertion below matters.
+ * The category values the platform writes, IMPORTED from the canonical taxonomy
+ * (#2581) rather than declared here.
+ *
+ * It used to be a hand-copy, justified by `AuditCategory` being an open union
+ * (`… | (string & {})`) with no runtime list. The copy then drifted in the way
+ * hand-copies do: it omitted `family`, which 27 production sites were writing, so
+ * the coverage assertion below reported full coverage while every family-domain
+ * audit event was readable through no correlation tool at all. The list is closed
+ * and has a runtime form now, so the assertion measures the real taxonomy.
  */
-const KNOWN_AUDIT_CATEGORIES = [
-  "account",
-  "booking",
-  "payment",
-  "admin",
-  "security",
-  "lodge",
-  "xero",
-  "communication",
-  "privacy",
-  "system",
-] as const;
+const KNOWN_AUDIT_CATEGORIES = AUDIT_CATEGORIES;
 
 /**
  * REAL field widths, so the bound assertions below measure what a deployment actually
@@ -302,7 +298,7 @@ describe("AID-6A correlation category sets (#2375)", () => {
   it("NAMES its categories in the scope line, so an empty result is not read as absence", () => {
     // The evidence-honesty half of the category taxonomy, and the reason it needs a
     // test rather than a comment. `AuditCategory` is NOT the admin-area map: `admin` is
-    // the cross-domain catch-all for administrator-initiated operations (115 call
+    // the cross-domain catch-all for administrator-initiated operations (117 call
     // sites, covering member merge, member lifecycle, imports, and payment, booking and
     // lodge SETTINGS), induction is filed under `lodge` although its admin screen is a
     // membership surface, and admin issue reports are filed under `privacy` although
@@ -334,7 +330,8 @@ describe("AID-6A correlation category sets (#2375)", () => {
   it("NAMES the ABSENT category as a gap, in every scope line and every description", () => {
     // The symmetric counterpart of the MISMATCH class above, and the one no entry covers
     // at all. `AuditLog.category` is optional, `audit.ts` writes the column only when a
-    // caller supplies one, and 81 non-test call sites do not — including
+    // caller supplies one, and 82 production call sites do not (measured by
+    // `audit-writer-census.test.ts`, which pins the set) — including
     // subscription-billing settings/retry/mark-family/unmark-family/reconcile, the
     // subscription charge confirm, all three member-credit adjustment steps, fee
     // configuration, the family login-holder change, booking-policy edits, bulk
@@ -420,7 +417,13 @@ describe("AID-6A correlation category sets (#2375)", () => {
       evidenceScope: entry.evidenceScope,
     });
     expect(block).toContain("scope: ");
-    expect(block).toContain("account, privacy");
+    // The entry's own derived set, joined the way `evidenceScope` joins it, rather
+    // than a hard-coded pair — the membership set gained `family` and
+    // `communication` in #2581 and a literal here would have to be edited for
+    // every classification decision.
+    expect(block).toContain(
+      DIAGNOSTICS_CORRELATION_CATEGORY_SETS[entry.id].join(", "),
+    );
     expect(block).toContain("rows: none matched");
     expect(block.indexOf("scope:")).toBeLessThan(block.indexOf("rows:"));
   });

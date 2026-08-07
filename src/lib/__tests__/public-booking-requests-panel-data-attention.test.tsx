@@ -16,6 +16,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { PublicBookingRequestsPanel } from "@/components/admin/booking-requests/public-booking-requests-panel";
+import { expectRecoveryAlertToHoldFocus } from "@/lib/__tests__/helpers/focus";
 
 const replace = vi.fn();
 vi.mock("next/navigation", () => ({
@@ -176,14 +177,7 @@ describe("PublicBookingRequestsPanel saved-data marker (#2342)", () => {
     await waitFor(() =>
       expect(alert?.textContent).toContain("Reload the request and try again."),
     );
-    // The message arrives with React's DOM commit, but the panel moves focus
-    // and scrolls from a `useEffect` — a PASSIVE effect React can flush a task
-    // later. The text assertion above is satisfied by the commit alone, so
-    // reading `document.activeElement` straight afterwards races that effect
-    // and intermittently sees `<body>` (seen on CI for #2634, and reproducible
-    // locally under load). Waiting for the focus asserts exactly the same
-    // thing, once the effect has actually had its turn.
-    await waitFor(() => expect(document.activeElement).toBe(alert));
+    await expectRecoveryAlertToHoldFocus(alert);
     expect(scrollIntoView).toHaveBeenCalledWith({
       behavior: "smooth",
       block: "center",
@@ -243,8 +237,7 @@ describe("PublicBookingRequestsPanel saved-data marker (#2342)", () => {
     expect(recoveryAlert?.textContent).toMatch(/capacity hold status could not be confirmed/i);
     expect(recoveryAlert?.textContent).toMatch(/could not be refreshed/i);
     expect(recoveryAlert?.textContent).not.toContain("private database detail");
-    // Same passive-effect race as the case above.
-    await waitFor(() => expect(document.activeElement).toBe(recoveryAlert));
+    await expectRecoveryAlertToHoldFocus(recoveryAlert);
     expect(screen.queryAllByText("Demo High School")).toHaveLength(0);
     expect(
       screen.getByRole("link", { name: "Open affected booking" }).getAttribute("href"),
@@ -256,8 +249,7 @@ describe("PublicBookingRequestsPanel saved-data marker (#2342)", () => {
     await waitFor(() =>
       expect(actionAlert?.textContent).toContain("The second request changed; reload it."),
     );
-    // Same passive-effect race as the case above.
-    await waitFor(() => expect(document.activeElement).toBe(actionAlert));
+    await expectRecoveryAlertToHoldFocus(actionAlert);
     expect(recoveryAlert?.textContent).toMatch(/request was declined/i);
   });
 
