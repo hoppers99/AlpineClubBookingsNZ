@@ -280,15 +280,15 @@ function day(iso: string): Date {
 /** Capture the roster keys a lock helper actually acquires, in order. */
 function recordingTx() {
   const keys: string[] = []
-  return {
-    keys,
-    tx: {
-      $executeRaw: async (_strings: TemplateStringsArray, ...values: unknown[]) => {
-        keys.push(String(values[0]))
-        return 1
-      },
+  const tx = {
+    $executeRaw: async (_strings: TemplateStringsArray, ...values: unknown[]) => {
+      keys.push(String(values[0]))
+      return 1
     },
   }
+  // The helpers only ever call `$executeRaw`; a real PrismaPromise is not
+  // needed to observe which keys, in which order, they ask for.
+  return { keys, tx: tx as unknown as Parameters<typeof lockRosterDates>[0] }
 }
 
 describe("roster-date lock sets are checkout-inclusive (#2622)", () => {
