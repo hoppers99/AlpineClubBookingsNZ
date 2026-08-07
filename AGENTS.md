@@ -366,6 +366,12 @@ an orchestrator with subagents, not a single agent doing everything inline:
 At the successful end of a meaningful piece of work:
 
 1. Push the branch and open a PR using `.github/pull_request_template.md`.
+   Write the body to a file and run `npm run pr:check -- <body-file>` FIRST: two
+   `verify` gates parse the body, each reports only its first failure, and a body
+   edit does not re-run Actions — so every format mistake costs a full CI cycle.
+   The check runs both gates offline in about a second. Copy the headings and
+   field labels verbatim (they are matched exactly) and keep each field's value
+   on the same line as its label.
 2. Monitor CI to green. Fix any failure (lint, typecheck, the `npm run knip`
    dead-code gate, `npm test`, build, migration-drift, and the
    dependency/secret/static scans) and push fixes until every required check
