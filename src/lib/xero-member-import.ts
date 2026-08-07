@@ -94,6 +94,12 @@ import {
 } from "./xero-contact-cache";
 import { parseXeroCompanyNumberDate } from "./xero-contacts";
 import {
+  applyInboundMemberContactPatch,
+  type InboundMemberContactPatch,
+} from "./xero-contact-create-recovery";
+import { buildXeroContactUrl } from "./xero-links";
+import { upsertXeroObjectLink } from "./xero-sync";
+import {
   DEFAULT_XERO_SYNC_SCOPE,
   getXeroSyncCursor,
   parseXeroError,
@@ -618,11 +624,7 @@ export async function importMembersFromXeroGroups(
               mapping.groupName,
               mapping.membershipTypeId ?? null,
             );
-            const updates: Record<string, unknown> = {};
-
-            if (!existingPrimary.xeroContactId) {
-              updates.xeroContactId = contact.contactId;
-            }
+            const updates: InboundMemberContactPatch = {};
             if (!existingPrimary.dateOfBirth) {
               const parsedDateOfBirth = parseXeroCompanyNumberDate(
                 contact.companyNumber
@@ -659,21 +661,20 @@ export async function importMembersFromXeroGroups(
               updates.postalCountry = contact.postalCountry;
             }
 
-            if (Object.keys(updates).length > 0) {
-              await prisma.member.update({
-                where: { id: existingPrimary.id },
-                data: updates,
+            const applied = await applyInboundMemberContactPatch({
+              memberId: existingPrimary.id,
+              xeroContactId: contact.contactId,
+              patch: updates,
+            });
+            if (applied.linked) {
+              linkedExisting++;
+              linkedExistingDetails.push({
+                name: `${existingPrimary.firstName} ${existingPrimary.lastName}`,
+                email: existingPrimary.email,
+                memberId: existingPrimary.id,
+                xeroContactId: contact.contactId,
+                group: mapping.groupName,
               });
-              if (updates.xeroContactId) {
-                linkedExisting++;
-                linkedExistingDetails.push({
-                  name: `${existingPrimary.firstName} ${existingPrimary.lastName}`,
-                  email: existingPrimary.email,
-                  memberId: existingPrimary.id,
-                  xeroContactId: contact.contactId,
-                  group: mapping.groupName,
-                });
-              }
             }
             continue;
           }
@@ -702,9 +703,9 @@ export async function importMembersFromXeroGroups(
               mapping.membershipTypeId ?? null,
             );
             if (!existingFamilyMember.xeroContactId) {
-              await prisma.member.update({
-                where: { id: existingFamilyMember.id },
-                data: { xeroContactId: contact.contactId },
+              await applyInboundMemberContactPatch({
+                memberId: existingFamilyMember.id,
+                xeroContactId: contact.contactId,
               });
               linkedExisting++;
               linkedExistingDetails.push({
@@ -729,18 +730,24 @@ export async function importMembersFromXeroGroups(
           if (!depLastName) depLastName = "Unknown";
 
           const depDob = parseXeroCompanyNumberDate(contact.companyNumber);
+          const dependentAgeTier = await resolveNewMemberAgeTier({
+            mappedTier: mapping.ageTier,
+            typeExemption,
+            dateOfBirth: depDob,
+          });
+          const inheritEmailFromId = await resolveImportInheritance(
+            existingPrimary,
+            contact.contactId,
+          );
 
-          const newFamilyMember = await prisma.member.create({
+          const newFamilyMember = await prisma.$transaction(async (tx) => {
+            const created = await tx.member.create({
             data: {
               email,
               firstName: depFirstName,
               lastName: depLastName,
               passwordHash: placeholderHash,
-              ageTier: await resolveNewMemberAgeTier({
-                mappedTier: mapping.ageTier,
-                typeExemption,
-                dateOfBirth: depDob,
-              }),
+              ageTier: dependentAgeTier,
               dateOfBirth: depDob,
               xeroContactId: contact.contactId,
               phoneCountryCode: contact.phoneCountryCode,
@@ -771,11 +778,21 @@ export async function importMembersFromXeroGroups(
               // a bad pointer — the dependant is still created and still joins
               // the family group, it simply keeps its own address, which for an
               // import row is the same address anyway.
-              inheritEmailFromId: await resolveImportInheritance(
-                existingPrimary,
-                contact.contactId,
-              ),
+              inheritEmailFromId,
             },
+          });
+            await upsertXeroObjectLink(
+              {
+                localModel: "Member",
+                localId: created.id,
+                xeroObjectType: "CONTACT",
+                xeroObjectId: contact.contactId,
+                xeroObjectUrl: buildXeroContactUrl(contact.contactId),
+                role: "CONTACT",
+              },
+              { store: tx },
+            );
+            return created;
           });
 
           // #2108: batch the new dependent's current-season assignment.
@@ -846,18 +863,20 @@ export async function importMembersFromXeroGroups(
         if (!lastName) lastName = "Unknown";
 
         const dateOfBirth = parseXeroCompanyNumberDate(contact.companyNumber);
+        const importedAgeTier = await resolveNewMemberAgeTier({
+          mappedTier: mapping.ageTier,
+          typeExemption,
+          dateOfBirth,
+        });
 
-        const member = await prisma.member.create({
+        const member = await prisma.$transaction(async (tx) => {
+          const created = await tx.member.create({
           data: {
             email,
             firstName,
             lastName,
             passwordHash: placeholderHash,
-            ageTier: await resolveNewMemberAgeTier({
-              mappedTier: mapping.ageTier,
-              typeExemption,
-              dateOfBirth,
-            }),
+            ageTier: importedAgeTier,
             dateOfBirth,
             xeroContactId: contact.contactId,
             phoneCountryCode: contact.phoneCountryCode,
@@ -878,6 +897,19 @@ export async function importMembersFromXeroGroups(
             active: true,
             emailVerified: true,
           },
+        });
+          await upsertXeroObjectLink(
+            {
+              localModel: "Member",
+              localId: created.id,
+              xeroObjectType: "CONTACT",
+              xeroObjectId: contact.contactId,
+              xeroObjectUrl: buildXeroContactUrl(contact.contactId),
+              role: "CONTACT",
+            },
+            { store: tx },
+          );
+          return created;
         });
 
         // #2108: batch the new member's current-season assignment.

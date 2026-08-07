@@ -53,6 +53,7 @@ import {
 import { countRosterNightsNeedingChores } from "@/lib/roster-status";
 import { countGuestsAwaitingBed } from "@/lib/admin-bed-allocation";
 import { getUnassignedHutLeaderDates } from "@/lib/hut-leader-coverage";
+import { OPEN_DELETION_REQUEST_STATUSES } from "@/lib/deletion-request-decision";
 import {
   buildUnpaidFinishedStaysHref,
   buildUnpaidFinishedStaysWhere,
@@ -193,7 +194,7 @@ async function getStats() {
       },
     }),
     prisma.deletionRequest.count({
-      where: { status: "PENDING" },
+      where: { status: { in: OPEN_DELETION_REQUEST_STATUSES } },
     }),
     prisma.booking.count({
       where: { adminReviewStatus: "PENDING", deletedAt: null },

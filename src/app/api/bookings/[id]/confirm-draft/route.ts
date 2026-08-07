@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { hostingCoverageParticipantRetryResponse } from "@/lib/adult-member-hosting-retry-response";
 import { auth } from "@/lib/auth";
 import { getDefaultLodgeId } from "@/lib/lodges";
 import { prisma } from "@/lib/prisma";
@@ -316,6 +317,8 @@ export async function POST(
     });
   });
   } catch (err) {
+    const hostingRetry = hostingCoverageParticipantRetryResponse(err);
+    if (hostingRetry) return hostingRetry;
     // #2576 §6/§7/§9, and #2569's own refusal. All three are `ApiError`s thrown
     // from inside the transaction, so the draft is untouched by the time they reach
     // here; each gets the body its own audience needs.

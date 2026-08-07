@@ -35,6 +35,7 @@ import {
   loadSameOwnerCoverageDependentIds,
 } from "@/lib/adult-member-hosting-review";
 import { hostingCoverageStateKey } from "@/lib/adult-member-hosting-coverage-incidents";
+import { HostingCoverageParticipantRetryError } from "@/lib/adult-member-hosting-queue-participants";
 import {
   SameOwnerCoverageOverrideRequiredError,
   SameOwnerCoverageWouldBreakError,
@@ -1970,6 +1971,18 @@ describe("a change to one PERSON's standing (#2576 §8, §17)", () => {
       ...overrides,
     });
   }
+
+  it("fails at the subject NOWAIT barrier before even an empty candidate read", async () => {
+    const { db } = makeStore([]);
+    db.$executeRaw.mockRejectedValueOnce({
+      driverAdapterError: { cause: { originalCode: "55P03" } },
+    });
+
+    await expect(
+      enqueueHostingCoverageReevaluationForMember("lapsing-adult", db),
+    ).rejects.toBeInstanceOf(HostingCoverageParticipantRetryError);
+    expect(db.booking.findMany).not.toHaveBeenCalled();
+  });
 
   it("records one bounded item per booking the person actually attends", async () => {
     vi.useFakeTimers();

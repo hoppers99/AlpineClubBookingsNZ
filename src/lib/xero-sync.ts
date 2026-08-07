@@ -661,7 +661,8 @@ export async function deactivateXeroObjectLinks(params: {
 
 export async function completeXeroSyncOperation(
   operationId: string,
-  completion: XeroSyncOperationCompletion
+  completion: XeroSyncOperationCompletion,
+  options?: { store?: Prisma.TransactionClient },
 ) {
   // #2314: organisation-agnostic in the column, organisation applied on read —
   // see the note on the object-link funnel above.
@@ -672,7 +673,7 @@ export async function completeXeroSyncOperation(
         : null),
   );
 
-  const operation = await prisma.$transaction(async (tx) => {
+  const completeWithClient = async (tx: Prisma.TransactionClient) => {
     const operation = await tx.xeroSyncOperation.update({
       where: { id: operationId },
       data: {
@@ -691,7 +692,10 @@ export async function completeXeroSyncOperation(
     }
 
     return operation;
-  });
+  };
+  const operation = options?.store
+    ? await completeWithClient(options.store)
+    : await prisma.$transaction(completeWithClient);
 
   if (operation.status === "PARTIAL") {
     try {

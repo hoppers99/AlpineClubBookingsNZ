@@ -18,11 +18,30 @@ vi.mock("@/lib/member-lifecycle-actions", () => ({
   // Real-enough stub for the route's `instanceof` branch (not exercised here).
   MemberLifecycleActionError: class MemberLifecycleActionError extends Error {},
 }));
+vi.mock("@/lib/xero-contact-create-recovery", () => {
+  class XeroContactCreateBlocksDeletionError extends Error {
+    readonly code = "XERO_CONTACT_CREATE_BLOCKS_DELETION";
+    readonly statusCode = 409;
+
+    constructor() {
+      super(
+        "Member deletion was not completed because a Xero contact change is still in progress or awaiting recovery. Resolve that Xero operation, then retry the remaining deletion cleanup.",
+      );
+      this.name = "XeroContactCreateBlocksDeletionError";
+    }
+  }
+  return {
+    XERO_CONTACT_CREATE_BLOCKS_DELETION_CODE:
+      "XERO_CONTACT_CREATE_BLOCKS_DELETION",
+    XeroContactCreateBlocksDeletionError,
+  };
+});
 vi.mock("@/lib/logger", () => ({
   default: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
 }));
 
 import { PATCH } from "@/app/api/admin/member-lifecycle-action-requests/[requestId]/route";
+import { XeroContactCreateBlocksDeletionError } from "@/lib/xero-contact-create-recovery";
 
 function req(body: unknown) {
   return new NextRequest(
@@ -87,5 +106,20 @@ describe("PATCH /api/admin/member-lifecycle-action-requests/[requestId] notify c
 
     expect(res.status).toBe(400);
     expect(h.reviewMemberLifecycleActionRequest).not.toHaveBeenCalled();
+  });
+
+  it("returns the fixed safe 409 when an unresolved Xero contact change blocks hard delete", async () => {
+    h.reviewMemberLifecycleActionRequest.mockRejectedValue(
+      new XeroContactCreateBlocksDeletionError(),
+    );
+
+    const res = await PATCH(req({ action: "approve" }), { params });
+
+    expect(res.status).toBe(409);
+    await expect(res.json()).resolves.toEqual({
+      code: "XERO_CONTACT_CREATE_BLOCKS_DELETION",
+      error:
+        "Member deletion was not completed because a Xero contact change is still in progress or awaiting recovery. Resolve that Xero operation, then retry the remaining deletion cleanup.",
+    });
   });
 });

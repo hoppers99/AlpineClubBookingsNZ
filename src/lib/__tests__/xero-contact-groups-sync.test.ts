@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   deleteContactGroupContact: vi.fn(),
   startXeroSyncOperation: vi.fn(),
   completeXeroSyncOperation: vi.fn(),
+  completeMemberContactOperation: vi.fn(),
   failXeroSyncOperation: vi.fn(),
   refreshXeroContactCachesFromContact: vi.fn(),
   loadXeroGroupingContext: vi.fn(),
@@ -42,6 +43,10 @@ vi.mock("@/lib/xero-sync", () => ({
   startXeroSyncOperation: mocks.startXeroSyncOperation,
   completeXeroSyncOperation: mocks.completeXeroSyncOperation,
   failXeroSyncOperation: mocks.failXeroSyncOperation,
+}));
+
+vi.mock("@/lib/xero-contact-create-recovery", () => ({
+  completeMemberContactOperation: mocks.completeMemberContactOperation,
 }));
 
 vi.mock("@/lib/xero-contact-cache", () => ({
@@ -114,6 +119,7 @@ describe("syncManagedXeroContactGroupForMember (mode-driven engine)", () => {
     mocks.getAuthenticatedXeroClient.mockResolvedValue({ xero: xeroClient(), tenantId: "t1" });
     mocks.startXeroSyncOperation.mockResolvedValue({ id: "op_1" });
     mocks.completeXeroSyncOperation.mockResolvedValue({});
+    mocks.completeMemberContactOperation.mockResolvedValue(undefined);
     mocks.failXeroSyncOperation.mockResolvedValue({});
     mocks.refreshXeroContactCachesFromContact.mockResolvedValue(undefined);
     mocks.loadXeroGroupingContext.mockResolvedValue({ mode: "MEMBERSHIP_TYPE_AND_AGE", activeRules: [] });
@@ -187,7 +193,7 @@ describe("syncManagedXeroContactGroupForMember (mode-driven engine)", () => {
     expect(result.addedGroupIds).toEqual(["g_adult"]);
     expect(result.removedGroupIds).toEqual(["g_youth"]);
     expect(result.alreadyAbsentGroupIds).toEqual([]);
-    expect(mocks.completeXeroSyncOperation).toHaveBeenCalled();
+    expect(mocks.completeMemberContactOperation).toHaveBeenCalled();
   });
 
   it("suppresses the add when already in an accepted group (no-op, no ledger)", async () => {
@@ -224,7 +230,9 @@ describe("syncManagedXeroContactGroupForMember (mode-driven engine)", () => {
     // The 404 is idempotent success but must not be counted as a removal.
     expect(result.removedGroupIds).toEqual([]);
     expect(result.alreadyAbsentGroupIds).toEqual(["g_youth"]);
-    expect(mocks.completeXeroSyncOperation).toHaveBeenCalledWith(
+    expect(mocks.completeMemberContactOperation).toHaveBeenCalledWith(
+      "member_1",
+      "contact_1",
       "op_1",
       expect.objectContaining({
         responsePayload: expect.objectContaining({
@@ -250,7 +258,7 @@ describe("syncManagedXeroContactGroupForMember (mode-driven engine)", () => {
     );
     await expect(syncManagedXeroContactGroupForMember("member_1")).rejects.toThrow(/not found/i);
     expect(mocks.failXeroSyncOperation).toHaveBeenCalledWith("op_1", expect.anything());
-    expect(mocks.completeXeroSyncOperation).not.toHaveBeenCalled();
+    expect(mocks.completeMemberContactOperation).not.toHaveBeenCalled();
   });
 });
 

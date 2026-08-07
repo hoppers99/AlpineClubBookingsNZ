@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { hostingCoverageParticipantRetryResponse } from "@/lib/adult-member-hosting-retry-response";
 import {
   SameOwnerCoverageOverrideRequiredError,
   SameOwnerCoverageWouldBreakError,
@@ -136,6 +137,8 @@ export async function POST(
       { status: result.status }
     );
   } catch (error) {
+    const hostingRetry = hostingCoverageParticipantRetryResponse(error);
+    if (hostingRetry) return hostingRetry;
     // #2576 §6. ABOVE the generic branch, and that position is the whole point:
     // this refusal is a 409 the member can act on — it names which of their own
     // bookings, which lodge and which nights would be left without adult-member

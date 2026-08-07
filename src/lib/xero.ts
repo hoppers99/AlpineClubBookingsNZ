@@ -87,9 +87,11 @@ export {
   // test seam
   retryXeroWriteWithContactRepair,
   updateXeroContact,
+  XeroContactCreatePartialSuccessError,
   XeroContactValidationError,
 } from "./xero-contacts";
 export type {
+  XeroContactCreatePartialSuccessPhase,
   XeroContactUpdateData,
 } from "./xero-contacts";
 

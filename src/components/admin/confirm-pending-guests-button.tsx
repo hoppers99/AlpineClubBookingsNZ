@@ -21,6 +21,26 @@ import {
 } from "@/components/admin/view-only-action";
 import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
 import { formatCents } from "@/lib/utils";
+import { FocusedActionError } from "@/components/focused-action-error";
+import { isPaymentReceivedFinalisationPending } from "@/lib/payment-recovery-contract";
+
+const CAPTURED_CARD_RECOVERY_MESSAGE =
+  "The saved card was charged, but the booking could not be finalised yet. Do not charge again. Reload the booking and check its payment status before taking another payment action.";
+const CANCELLED_REFUND_RECOVERY_MESSAGE =
+  "The booking was cancelled because lodge capacity was no longer available. The saved-card charge was captured, but its refund could not be confirmed and automatic refund recovery is pending. Do not charge again. Reload the booking and check the refund status; contact the lodge administrator if it is not confirmed.";
+
+type PaymentRecoveryKind = "finalisation-pending" | "refund-pending";
+
+function isCancelledRefundRecovery(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Record<string, unknown>;
+  return (
+    candidate.status === "CANCELLED" &&
+    candidate.refunded === false &&
+    candidate.refundRecoveryPending === true &&
+    candidate.paymentReceived === true
+  );
+}
 
 interface ConfirmPendingGuestsButtonProps {
   bookingId: string;
@@ -49,6 +69,9 @@ export function ConfirmPendingGuestsButton({
   const { confirm, confirmDialog } = useConfirm();
   const [confirming, setConfirming] = useState(false);
   const [error, setError] = useState("");
+  const [errorAttentionVersion, setErrorAttentionVersion] = useState(0);
+  const [paymentRecoveryKind, setPaymentRecoveryKind] =
+    useState<PaymentRecoveryKind | null>(null);
   // #1769b: the admin's explicit email-choice dialog, shown only when this
   // confirmation would actually send the member a confirmation email.
   const [notifyDialogOpen, setNotifyDialogOpen] = useState(false);
@@ -68,6 +91,11 @@ export function ConfirmPendingGuestsButton({
     : hasSavedPaymentMethod
       ? `The member's saved card will be charged ${formatCents(finalPriceCents)}.`
       : "This will move the booking to payment-owed (no card on file).";
+
+  function showActionError(message: string) {
+    setError(message);
+    setErrorAttentionVersion((version) => version + 1);
+  }
 
   async function handleConfirm() {
     const confirmed = await confirm({
@@ -115,16 +143,39 @@ export function ConfirmPendingGuestsButton({
       }
 
       const data = await res.json().catch(() => ({}));
+      if (isCancelledRefundRecovery(data)) {
+        setPaymentRecoveryKind("refund-pending");
+        showActionError(CANCELLED_REFUND_RECOVERY_MESSAGE);
+        toast.error(CANCELLED_REFUND_RECOVERY_MESSAGE);
+        setConfirming(false);
+        // The cancellation is canonical and the refund recovery is durable.
+        // Keep that local proof visible if the parent refresh cannot replace
+        // this card, and never offer the charge action again from this mount.
+        router.refresh();
+        return;
+      }
+      if (isPaymentReceivedFinalisationPending(data)) {
+        setPaymentRecoveryKind("finalisation-pending");
+        showActionError(CAPTURED_CARD_RECOVERY_MESSAGE);
+        toast.error(CAPTURED_CARD_RECOVERY_MESSAGE);
+        setConfirming(false);
+        // The parent server component removes this card once the canonical
+        // booking has advanced. If that refresh cannot complete, the local
+        // recovery state deliberately remains visible and blocks another
+        // charge.
+        router.refresh();
+        return;
+      }
       const message =
         data.error === "CAPACITY_EXCEEDED"
           ? "Not enough beds remain for these dates. Use Force confirm to overbook if intended."
           : data.error || "Failed to confirm pending guests";
-      setError(message);
+      showActionError(message);
       toast.error(message);
       setConfirming(false);
     } catch {
       const message = "Failed to confirm pending guests";
-      setError(message);
+      showActionError(message);
       toast.error(message);
       setConfirming(false);
     }
@@ -164,19 +215,37 @@ export function ConfirmPendingGuestsButton({
               ? ` The member's saved card will be charged ${formatCents(finalPriceCents)}.`
               : " There is no saved card, so the booking will move to payment-owed for payment to be arranged separately."}
         </p>
-        {error && (
-          <div className="rounded-md bg-danger-3 p-3 text-sm text-danger-11">
-            {error}
-          </div>
-        )}
-        <ViewOnlyActionButton
-          canEdit={canEdit}
-          describeReason={false}
-          onClick={handleConfirm}
-          disabled={confirming}
-        >
-          {confirming ? "Confirming..." : "Confirm pending guests"}
-        </ViewOnlyActionButton>
+        <FocusedActionError
+          id={`confirm-pending-guests-error-${bookingId}`}
+          error={error}
+          attentionKey={errorAttentionVersion}
+          heading={
+            paymentRecoveryKind === "refund-pending"
+              ? "Booking cancelled - refund recovery pending"
+              : paymentRecoveryKind === "finalisation-pending"
+                ? "Saved card charged - finalisation unconfirmed"
+                : undefined
+          }
+          action={
+            paymentRecoveryKind ? (
+              <Button type="button" variant="outline" size="sm" onClick={() => router.refresh()}>
+                {paymentRecoveryKind === "refund-pending"
+                  ? "Reload booking and refund status"
+                  : "Reload booking status"}
+              </Button>
+            ) : undefined
+          }
+        />
+        {!paymentRecoveryKind ? (
+          <ViewOnlyActionButton
+            canEdit={canEdit}
+            describeReason={false}
+            onClick={handleConfirm}
+            disabled={confirming}
+          >
+            {confirming ? "Confirming..." : "Confirm pending guests"}
+          </ViewOnlyActionButton>
+        ) : null}
       </CardContent>
 
       {/* #1769b (#1705 pattern): the admin chooses, per confirmation, whether

@@ -12,7 +12,7 @@
  * only what actually failed, the acting affordances are off, and Decline — the
  * one action that works end to end on a flagged row — stays on.
  */
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { PublicBookingRequestsPanel } from "@/components/admin/booking-requests/public-booking-requests-panel";
@@ -20,7 +20,7 @@ import { PublicBookingRequestsPanel } from "@/components/admin/booking-requests/
 const replace = vi.fn();
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ replace, push: vi.fn() }),
-  useSearchParams: () => ({ get: () => null }),
+  useSearchParams: () => new URLSearchParams(),
 }));
 
 vi.mock("next/link", () => ({
@@ -112,14 +112,14 @@ const baseRequest = {
   createdAt: "2026-07-01T00:00:00.000Z",
 };
 
-function mockFetch(request: Record<string, unknown>) {
+function mockFetch(request: Record<string, unknown> | Record<string, unknown>[]) {
   global.fetch = vi.fn().mockResolvedValue({
     ok: true,
-    json: async () => ({ data: [request] }),
+    json: async () => ({ data: Array.isArray(request) ? request : [request] }),
   }) as unknown as typeof fetch;
 }
 
-async function renderWith(request: Record<string, unknown>) {
+async function renderWith(request: Record<string, unknown> | Record<string, unknown>[]) {
   mockFetch(request);
   render(<PublicBookingRequestsPanel />);
   // Wait for the first fetch to land before asserting on the card. (The school
@@ -151,6 +151,105 @@ describe("PublicBookingRequestsPanel saved-data marker (#2342)", () => {
     expect(button(/Hold slots/i).disabled).toBe(false);
     expect(button(/Approve & invoice school/i).disabled).toBe(false);
     expect(button(/^Decline$/i).disabled).toBe(false);
+  });
+
+  it("keeps a permanent alert and focuses an approve failure", async () => {
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: scrollIntoView,
+    });
+    await renderWith(baseRequest);
+
+    const alert = document.getElementById("public-booking-requests-error");
+    expect(alert?.getAttribute("role")).toBe("alert");
+    expect(alert?.textContent).toBe("");
+    expect(alert?.classList.contains("sr-only")).toBe(true);
+
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 409,
+      json: async () => ({ error: "Reload the request and try again." }),
+    }) as unknown as typeof fetch;
+    fireEvent.click(button(/Approve & invoice school/i));
+
+    await waitFor(() =>
+      expect(alert?.textContent).toContain("Reload the request and try again."),
+    );
+    expect(document.activeElement).toBe(alert);
+    expect(scrollIntoView).toHaveBeenCalledWith({
+      behavior: "smooth",
+      block: "center",
+    });
+  });
+
+  it("retains ordinary declined-request recovery, suppresses stale decline, and links to the held booking", async () => {
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: scrollIntoView,
+    });
+    await renderWith([
+      { ...baseRequest, heldBookingId: "booking/held" },
+      { ...baseRequest, id: "req-2", schoolName: "Second School" },
+    ]);
+
+    global.fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/api/admin/booking-requests/req-1/decline" && init?.method === "POST") {
+        return {
+          ok: false,
+          status: 500,
+          json: async () => ({
+            error: "private database detail",
+            requestDeclined: true,
+            holdReleaseStatusUnconfirmed: true,
+          }),
+        } as Response;
+      }
+      if (url === "/api/admin/booking-requests/req-2/approve" && init?.method === "POST") {
+        return {
+          ok: false,
+          status: 409,
+          json: async () => ({ error: "The second request changed; reload it." }),
+        } as Response;
+      }
+      if (url.startsWith("/api/admin/booking-requests?")) {
+        return {
+          ok: false,
+          json: async () => ({ error: "refresh unavailable" }),
+        } as Response;
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    }) as typeof fetch;
+
+    fireEvent.click(screen.getAllByRole("button", { name: /^Decline$/i })[0]);
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Decline and email requester" }),
+    );
+
+    const recoveryAlert = document.getElementById("public-booking-requests-recovery");
+    const actionAlert = document.getElementById("public-booking-requests-error");
+    await waitFor(() =>
+      expect(recoveryAlert?.textContent).toMatch(/request was declined/i),
+    );
+    expect(recoveryAlert?.textContent).toMatch(/capacity hold status could not be confirmed/i);
+    expect(recoveryAlert?.textContent).toMatch(/could not be refreshed/i);
+    expect(recoveryAlert?.textContent).not.toContain("private database detail");
+    expect(document.activeElement).toBe(recoveryAlert);
+    expect(screen.queryAllByText("Demo High School")).toHaveLength(0);
+    expect(
+      screen.getByRole("link", { name: "Open affected booking" }).getAttribute("href"),
+    ).toBe(
+      "/bookings/booking%2Fheld?returnTo=%2Fadmin%2Fbooking-requests",
+    );
+
+    fireEvent.click(button(/Approve & invoice school/i));
+    await waitFor(() =>
+      expect(actionAlert?.textContent).toContain("The second request changed; reload it."),
+    );
+    expect(document.activeElement).toBe(actionAlert);
+    expect(recoveryAlert?.textContent).toMatch(/request was declined/i);
   });
 
   it("states ONLY the guest failure when only the guest list is unreadable", async () => {

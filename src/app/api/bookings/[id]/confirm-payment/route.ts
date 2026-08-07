@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { hostingCoverageParticipantRetryResponse } from "@/lib/adult-member-hosting-retry-response";
 import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { getPaymentIntent } from "@/lib/stripe";
@@ -13,6 +14,13 @@ import { canCreateImmediatePaymentIntent } from "@/lib/booking-payment-flow";
 import { queueXeroInvoiceForPaidBooking } from "@/lib/xero-booking-invoice-queue";
 import { hasAdminAccess } from "@/lib/access-roles";
 import { deriveBookingAppliedCreditCents } from "@/lib/member-credit";
+import { findPaymentTransactionByIntentId } from "@/lib/payment-transactions";
+import { PaymentStatus } from "@prisma/client";
+import {
+  EXISTING_CARD_TRANSACTION_STATUS_UNCONFIRMED_BODY,
+  PAYMENT_RECEIVED_STATUS_UNCONFIRMED_BODY,
+  REFUNDED_CARD_TRANSACTION_REPAYMENT_REQUIRED_BODY,
+} from "@/lib/payment-recovery-contract";
 
 const schema = z.object({
   paymentIntentId: z.string().min(1),
@@ -45,6 +53,8 @@ export async function POST(
   const { paymentIntentId } = parsed.data;
   const ipAddress =
     request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
+  let succeededPaymentIntentObserved = false;
+  let successfulIntentClassificationPending = false;
 
   try {
     const payment = await prisma.payment.findUnique({
@@ -109,6 +119,27 @@ export async function POST(
         { status: 400 }
       );
     }
+    successfulIntentClassificationPending = true;
+    const pointedTransaction = await findPaymentTransactionByIntentId({
+      paymentIntentId: pi.id,
+    });
+    const refundedHistory = pointedTransaction
+      ? pointedTransaction.status === PaymentStatus.REFUNDED ||
+        pointedTransaction.status === PaymentStatus.PARTIALLY_REFUNDED
+      : payment.status === PaymentStatus.REFUNDED ||
+        payment.status === PaymentStatus.PARTIALLY_REFUNDED;
+
+    if (refundedHistory) {
+      return NextResponse.json(
+        REFUNDED_CARD_TRANSACTION_REPAYMENT_REQUIRED_BODY,
+        { status: 409 },
+      );
+    }
+    successfulIntentClassificationPending = false;
+    // Stripe is authoritative for capture. From this point onward, an
+    // unexpected local failure must never send the member back through an
+    // ordinary payment-error path where they could try to pay again.
+    succeededPaymentIntentObserved = true;
 
     // #1641 — accept the credit-reduced effective price (new intents) as well as
     // the full price (legacy in-flight intents). markBookingPaymentSucceeded
@@ -120,10 +151,22 @@ export async function POST(
         payment.booking.finalPriceCents -
           (await deriveBookingAppliedCreditCents(bookingId, prisma))
     ) {
-      return NextResponse.json(
-        { error: "Payment amount does not match booking total" },
-        { status: 400 }
+      // Stripe has already confirmed that money moved. An amount drift means
+      // we cannot safely promote the booking from the snapshot above, but it
+      // must never look like an ordinary validation failure that invites a
+      // second payment. Keep the response provider-safe and use the same
+      // status-unconfirmed contract as every unexpected post-capture failure.
+      logger.error(
+        {
+          bookingId,
+          capturedAmountCents: pi.amount,
+          bookingAmountCents: payment.booking.finalPriceCents,
+        },
+        "Succeeded payment amount no longer matches booking total",
       );
+      return NextResponse.json(PAYMENT_RECEIVED_STATUS_UNCONFIRMED_BODY, {
+        status: 409,
+      });
     }
 
     const reconciliation = await markBookingPaymentSucceeded({
@@ -235,10 +278,35 @@ export async function POST(
 
     return NextResponse.json({ success: true });
   } catch (err) {
+    if (successfulIntentClassificationPending) {
+      logger.error(
+        { err, bookingId },
+        "Could not classify an existing successful card transaction",
+      );
+      return NextResponse.json(
+        EXISTING_CARD_TRANSACTION_STATUS_UNCONFIRMED_BODY,
+        { status: 409 },
+      );
+    }
+    const hostingRetry = hostingCoverageParticipantRetryResponse(
+      err,
+      succeededPaymentIntentObserved
+        ? {
+            paymentReceived: true,
+            finalisationPending: true,
+          }
+        : undefined,
+    );
+    if (hostingRetry) return hostingRetry;
     // #1888 — never echo an unexpected error's message to the client (it can
     // carry Prisma constraint names or infrastructure detail); the raw error
     // stays in the log only.
     logger.error({ err, bookingId }, "Failed to confirm primary booking payment");
+    if (succeededPaymentIntentObserved) {
+      return NextResponse.json(PAYMENT_RECEIVED_STATUS_UNCONFIRMED_BODY, {
+        status: 409,
+      });
+    }
     return NextResponse.json(
       { error: "Failed to confirm payment" },
       { status: 500 }

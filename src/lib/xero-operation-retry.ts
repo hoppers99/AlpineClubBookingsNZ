@@ -13,10 +13,7 @@ import { getModificationNetAmountCents } from "@/lib/xero-booking-repair-analysi
 import type { XeroSyncOperation } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { asRecord, readNumber, readString } from "@/lib/xero-json";
-import {
-  buildXeroContactUpdatePayload,
-  shouldRepairXeroContactNameOrder,
-} from "@/lib/xero-contact-sync";
+import { shouldRepairXeroContactNameOrder } from "@/lib/xero-contact-sync";
 import { buildXeroIdempotencyKey, completeXeroSyncOperation } from "@/lib/xero-sync";
 import { CLUB_NAME } from "@/config/club-identity";
 
@@ -205,7 +202,11 @@ function parseContactUpdateRetryInput(
 
 async function buildCurrentMemberContactUpdateRetryInput(
   operation: Pick<RetryableOperation, "localModel" | "localId">
-): Promise<{ xeroContactId: string; data: XeroContactUpdateData; preserveXeroName: boolean } | null> {
+): Promise<{
+  xeroContactId: string;
+  preserveXeroName: boolean;
+  memberScoped: true;
+} | null> {
   if (operation.localModel !== "Member" || !operation.localId) {
     return null;
   }
@@ -223,8 +224,8 @@ async function buildCurrentMemberContactUpdateRetryInput(
 
   return {
     xeroContactId: member.xeroContactId,
-    data: buildXeroContactUpdatePayload(member),
     preserveXeroName: !shouldRepairContactNameOrder,
+    memberScoped: true,
   };
 }
 
@@ -958,23 +959,35 @@ export async function retryXeroSyncOperation(
 
   if (operation.entityType === "CONTACT" && operation.operationType === "UPDATE") {
     const retryInput =
-      (await buildCurrentMemberContactUpdateRetryInput(operation)) ??
-      parseContactUpdateRetryInput(operation);
+      operation.localModel === "Member" && operation.localId
+        ? await buildCurrentMemberContactUpdateRetryInput(operation)
+        : parseContactUpdateRetryInput(operation);
     if (!retryInput) {
-      throw new XeroOperationRetryError("Stored contact update payload is incomplete.");
+      throw new XeroOperationRetryError(
+        operation.localModel === "Member" && operation.localId
+          ? "The current member Xero contact is unavailable. Refresh the member and do not replay the stored contact payload."
+          : "Stored contact update payload is incomplete.",
+      );
     }
-    if (containsRedactedContactRetryData(retryInput)) {
+    if (
+      !("memberScoped" in retryInput) &&
+      containsRedactedContactRetryData(retryInput)
+    ) {
       throw new XeroOperationRetryError(
         "Stored contact update payload is redacted and the current member contact could not be used for retry."
       );
     }
 
-    await xero.updateXeroContact(retryInput.xeroContactId, retryInput.data, {
-      localModel: operation.localModel ?? undefined,
-      localId: operation.localId ?? undefined,
-      createdByMemberId,
-      preserveXeroName: retryInput.preserveXeroName,
-    });
+    await xero.updateXeroContact(
+      retryInput.xeroContactId,
+      "memberScoped" in retryInput ? undefined : retryInput.data,
+      {
+        localModel: operation.localModel ?? undefined,
+        localId: operation.localId ?? undefined,
+        createdByMemberId,
+        preserveXeroName: retryInput.preserveXeroName,
+      },
+    );
 
     return { message: "Retried Xero contact update." };
   }

@@ -32,6 +32,7 @@ const h = vi.hoisted(() => ({
   acquireLodgeCapacityLock: vi.fn(),
   bookingFindFirst: vi.fn(),
   bookingGuestFindMany: vi.fn(),
+  settleHostingCoverage: vi.fn(),
 }));
 
 vi.mock("@/lib/prisma", () => ({
@@ -100,6 +101,11 @@ vi.mock("@/lib/booking-review", () => ({
 vi.mock("@/lib/bed-allocation-lifecycle", () => ({
   reconcileBedAllocationsForBookingWithGlobalLockHeld: (...a: unknown[]) =>
     h.reconcileBedAllocationsForBooking(...a),
+}));
+
+vi.mock("@/lib/adult-member-hosting-coverage-drain", () => ({
+  settleHostingCoverageAfterCommit: (...a: unknown[]) =>
+    h.settleHostingCoverage(...a),
 }));
 
 vi.mock("@/lib/logger", () => ({
@@ -222,6 +228,7 @@ describe("createConfirmedBooking split bookings (#738)", () => {
     h.seasonFindMany.mockResolvedValue(mockSeasons);
     h.checkCapacityForGuestRanges.mockResolvedValue({ available: true, nightDetails: [] });
     h.reconcileBedAllocationsForBooking.mockResolvedValue(undefined);
+    h.settleHostingCoverage.mockResolvedValue({});
     h.bookingUpdate.mockResolvedValue({});
     h.memberFindUnique.mockResolvedValue({ id: "member-1", firstName: "Mem", lastName: "Ber", email: "m@example.com" });
     h.lodgeFindFirst.mockResolvedValue({ id: "lodge-1" });
@@ -233,6 +240,36 @@ describe("createConfirmedBooking split bookings (#738)", () => {
         (g, i) => ({ ...g, id: `${id}-g${i}` })
       );
       return Promise.resolve({ ...args.data, id, guests: guestRows });
+    });
+  });
+
+  it("settles hosting restoration only after standalone create commits", async () => {
+    const outcome = await createConfirmedBooking(
+      baseInput([guest(true, "Alice")]),
+    );
+
+    expect(outcome.type).toBe("created");
+    expect(h.transaction).toHaveBeenCalledTimes(1);
+    expect(h.settleHostingCoverage).toHaveBeenCalledWith({
+      bookingId: "booking-1",
+    });
+    expect(h.transaction.mock.invocationCallOrder[0]).toBeLessThan(
+      h.settleHostingCoverage.mock.invocationCallOrder[0],
+    );
+  });
+
+  it("defers hosting restoration until a caller-owned transaction commits", async () => {
+    const outcome = await createConfirmedBooking(
+      baseInput([guest(true, "Alice")], { tx: tx as never }),
+    );
+
+    expect(outcome.type).toBe("created");
+    expect(h.transaction).not.toHaveBeenCalled();
+    expect(h.settleHostingCoverage).not.toHaveBeenCalled();
+    if (outcome.type !== "created") throw new Error("Expected created outcome");
+    await outcome.deferredPostCommit?.();
+    expect(h.settleHostingCoverage).toHaveBeenCalledWith({
+      bookingId: "booking-1",
     });
   });
 

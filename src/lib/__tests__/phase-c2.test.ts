@@ -6,6 +6,11 @@ import { NextRequest } from "next/server";
 // ---------------------------------------------------------------------------
 
 const mockPrisma = {
+  $executeRaw: vi.fn().mockResolvedValue(1),
+  $transaction: vi.fn(
+    async (callback: (tx: unknown) => Promise<unknown>) =>
+      callback(mockPrisma),
+  ),
   member: {
     count: vi.fn(),
 findUnique: vi.fn(),
@@ -16,6 +21,9 @@ findUnique: vi.fn(),
   },
   memberAccessRole: {
     createMany: vi.fn(),
+  },
+  xeroSyncOperation: {
+    findFirst: vi.fn().mockResolvedValue(null),
   },
 };
 
@@ -63,6 +71,17 @@ class MockXeroContactValidationError extends Error {
     this.missingFields = missingFields;
   }
 }
+class MockXeroContactCreatePartialSuccessError extends Error {
+  constructor(
+    readonly phase:
+      | "PROVIDER_CONTACT_CREATED"
+      | "LOCAL_MEMBER_LINK_COMMITTED",
+    readonly xeroContactId: string,
+    readonly originalError: unknown,
+  ) {
+    super("Xero contact creation completed only in part");
+  }
+}
 
 vi.mock("@/lib/xero", () => ({
   getAuthenticatedXeroClient: () => mockGetAuthenticatedXeroClient(),
@@ -80,6 +99,8 @@ vi.mock("@/lib/xero", () => ({
     mockCreateXeroContactForMember(id, options),
   findPotentialXeroContactsForMember: (id: string) => mockFindPotentialXeroContactsForMember(id),
   XeroContactValidationError: MockXeroContactValidationError,
+  XeroContactCreatePartialSuccessError:
+    MockXeroContactCreatePartialSuccessError,
   syncContactsFromXero: () => mockSyncContactsFromXero(),
   findDuplicateContacts: () => mockFindDuplicateContacts(),
 }));

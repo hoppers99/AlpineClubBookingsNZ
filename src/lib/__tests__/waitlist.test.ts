@@ -7,6 +7,11 @@
 
 import { describe, it, expect, vi, beforeEach, beforeAll } from "vitest";
 import { captureHostTimeZone } from "@/lib/__tests__/helpers/timezone";
+import {
+  HOSTING_COVERAGE_RETRY_CODE,
+  HOSTING_COVERAGE_RETRY_MESSAGE,
+  HostingCoverageParticipantRetryError,
+} from "@/lib/adult-member-hosting-queue-participants";
 
 // Pay the module-graph transform cost once, outside any single test's 5s
 // budget: every test dynamic-imports @/lib/waitlist (for mock ordering), and
@@ -753,6 +758,23 @@ describe("confirmWaitlistOffer", () => {
       waitlistOfferExpiresAt: new Date(Date.now() + 86400000),
     });
     mockValidateMinimumStay.mockResolvedValue({ valid: true, violations: [] });
+  });
+
+  it("returns the stable retry result when the participant fence rolls back the offer claim", async () => {
+    const { confirmWaitlistOffer } = await import("@/lib/waitlist");
+    mockPrismaTransaction.mockRejectedValueOnce(
+      new HostingCoverageParticipantRetryError(),
+    );
+
+    const result = await confirmWaitlistOffer("booking1", "m1");
+
+    expect(result).toEqual({
+      success: false,
+      error: HOSTING_COVERAGE_RETRY_MESSAGE,
+      code: HOSTING_COVERAGE_RETRY_CODE,
+    });
+    expect(mockBookingUpdate).not.toHaveBeenCalled();
+    expect(mockBookingUpdateMany).not.toHaveBeenCalled();
   });
 
   it("transitions to PAYMENT_PENDING for all-member bookings", async () => {

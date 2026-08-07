@@ -22,6 +22,7 @@ vi.mock("@/lib/prisma", () => ({
     },
     booking: {
       findMany: vi.fn(),
+      findUnique: vi.fn(),
       update: vi.fn(),
       updateMany: vi.fn(),
     },
@@ -44,11 +45,18 @@ vi.mock("@/lib/prisma", () => ({
       findMany: vi.fn(),
       create: vi.fn(),
       update: vi.fn(),
+      updateMany: vi.fn().mockResolvedValue({ count: 1 }),
       count: vi.fn(),
     },
     payment: {
       findMany: vi.fn(),
       update: vi.fn(),
+    },
+    xeroSyncOperation: {
+      findFirst: vi.fn().mockResolvedValue(null),
+    },
+    xeroObjectLink: {
+      updateMany: vi.fn().mockResolvedValue({ count: 0 }),
     },
     promoRedemption: {
       findUnique: vi.fn(),
@@ -449,7 +457,7 @@ describe("F-COMP-04: Admin - approve/reject deletion request", () => {
         active: true,
       },
     } as any);
-    mockedPrisma.deletionRequest.update.mockResolvedValue({} as any);
+    mockedPrisma.deletionRequest.updateMany.mockResolvedValue({ count: 1 } as any);
 
     const { sendAccountDeletionRejectedEmail } = await import("@/lib/email");
     const res = await adminDeletionActionPost(
@@ -457,8 +465,8 @@ describe("F-COMP-04: Admin - approve/reject deletion request", () => {
       { params }
     );
     expect(res.status).toBe(200);
-    expect(mockedPrisma.deletionRequest.update).toHaveBeenCalledWith({
-      where: { id: "dr1" },
+    expect(mockedPrisma.deletionRequest.updateMany).toHaveBeenCalledWith({
+      where: { id: "dr1", status: "PENDING" },
       data: expect.objectContaining({ status: "REJECTED", adminNote: "Outstanding booking" }),
     });
     expect(sendAccountDeletionRejectedEmail).toHaveBeenCalledWith(
@@ -488,6 +496,28 @@ describe("F-COMP-04: Admin - approve/reject deletion request", () => {
       .mockResolvedValueOnce([{ id: "bk1" }] as any);
 
     mockedPrisma.member.update.mockResolvedValue({} as any);
+    // #2597: anonymisation now takes the Xero contact fence, which locks the
+    // Member row and re-reads it. Answer per requested shape so the fence gets
+    // its row without changing what the admin session guard sees.
+    mockedPrisma.member.findUnique.mockImplementation((async (args: any) => {
+      if (args?.select?.accessRoles) {
+        return {
+          active: true,
+          forcePasswordChange: false,
+          twoFactorEnabled: false,
+          accessRoles: [{ role: "ADMIN" }],
+        };
+      }
+      if (args?.select?.xeroContactId) {
+        return {
+          id: "m1",
+          email: "jane@test.com",
+          passwordHash: null,
+          xeroContactId: null,
+        };
+      }
+      return undefined;
+    }) as any);
     // #2255: anonymisation reads who it is about to detach, then sweeps their
     // inheritance pointers so club email stops being aimed at the
     // @deleted.invalid address this route writes.
@@ -495,7 +525,7 @@ describe("F-COMP-04: Admin - approve/reject deletion request", () => {
     mockedPrisma.member.updateMany.mockResolvedValue({ count: 0 } as any);
     mockedPrisma.bookingGuest.updateMany.mockResolvedValue({ count: 0 } as any);
     mockedPrisma.familyGroupMember.deleteMany.mockResolvedValue({ count: 0 } as any);
-    mockedPrisma.deletionRequest.update.mockResolvedValue({} as any);
+    mockedPrisma.deletionRequest.updateMany.mockResolvedValue({ count: 1 } as any);
     // $transaction executes the callback with the same mock prisma as tx
     mockedPrisma.$transaction.mockImplementation((cb: any) => cb(mockedPrisma));
 
@@ -547,9 +577,16 @@ describe("F-COMP-04: Admin - approve/reject deletion request", () => {
     // Approval email sent
     expect(sendAccountDeletionApprovedEmail).toHaveBeenCalledWith("jane@test.com", "Jane");
 
-    // Request marked APPROVED
-    expect(mockedPrisma.deletionRequest.update).toHaveBeenCalledWith({
-      where: { id: "dr1" },
+    // #2597: approval is a two-step guarded transition. It first takes durable
+    // ownership from PENDING — before any booking cancellation commits — and
+    // only then finalises from that claim, so a concurrent rejection can never
+    // land after the cancellations.
+    expect(mockedPrisma.deletionRequest.updateMany).toHaveBeenCalledWith({
+      where: { id: "dr1", status: "PENDING" },
+      data: expect.objectContaining({ status: "APPROVAL_IN_PROGRESS" }),
+    });
+    expect(mockedPrisma.deletionRequest.updateMany).toHaveBeenCalledWith({
+      where: { id: "dr1", status: "APPROVAL_IN_PROGRESS" },
       data: expect.objectContaining({ status: "APPROVED" }),
     });
   });
@@ -611,6 +648,9 @@ describe("F-COMP-04: Admin - approve/reject deletion request", () => {
       status: 400,
       error: "Only active bookings can be cancelled",
     });
+    mockedPrisma.booking.findUnique.mockResolvedValueOnce({
+      status: "PENDING",
+    } as any);
     const { sendAccountDeletionApprovedEmail } = await import("@/lib/email");
 
     const res = await adminDeletionActionPost(
@@ -620,11 +660,17 @@ describe("F-COMP-04: Admin - approve/reject deletion request", () => {
 
     expect(res.status).toBe(409);
     const body = await res.json();
-    expect(body.error).toContain("future bookings could not be cancelled");
-    expect(body.failedBookingIds).toEqual(["bk1"]);
+    expect(body).toMatchObject({
+      code: "DELETION_CLEANUP_PARTIAL",
+      remainingCleanupPending: true,
+      cancellationPending: true,
+      retryBookingId: "bk1",
+      memberAnonymised: false,
+      approvalReceiptSent: false,
+    });
     expect(sendAccountDeletionApprovedEmail).not.toHaveBeenCalled();
     expect(mockedPrisma.member.update).not.toHaveBeenCalled();
-    expect(mockedPrisma.deletionRequest.update).not.toHaveBeenCalledWith(
+    expect(mockedPrisma.deletionRequest.updateMany).not.toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({ status: "APPROVED" }),
       })

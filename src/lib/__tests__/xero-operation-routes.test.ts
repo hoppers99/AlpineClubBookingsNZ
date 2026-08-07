@@ -402,7 +402,7 @@ describe("Xero operation admin retry routes", () => {
     );
   });
 
-  it("resets stale running operations to failed", async () => {
+  it("resets stale running operations without erasing provider-created recovery proof", async () => {
     mocks.xeroOperationUpdateMany.mockResolvedValue({ count: 3 });
 
     const response = await resetStaleRunning();
@@ -417,6 +417,12 @@ describe("Xero operation admin retry routes", () => {
         }),
       })
     );
+    const update = mocks.xeroOperationUpdateMany.mock.calls[0]?.[0] as {
+      data: Record<string, unknown>;
+    };
+    expect(update.data).not.toHaveProperty("responsePayload");
+    expect(update.data).not.toHaveProperty("xeroObjectType");
+    expect(update.data).not.toHaveProperty("xeroObjectId");
     await expect(response.json()).resolves.toEqual(
       expect.objectContaining({ ok: true, count: 3 })
     );

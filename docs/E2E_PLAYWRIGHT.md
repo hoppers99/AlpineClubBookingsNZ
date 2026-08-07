@@ -479,7 +479,49 @@ Four rules follow, and a new spec must satisfy all four:
   other classification fails both at typecheck and in the structural contract.
   Use `postBookingCreate` for a direct `APIRequestContext` create, or use
   `withBookingCreateClientIp` around exactly the browser action that emits the
-  create. Both paths are structurally tied to the census. The same contract
+  create.
+
+  **A browser create passes two halves, never a bare function (#2610).** The
+  third argument is `{ trigger, waitForOutcome }`: `trigger` fires exactly the
+  gesture that emits the create, and `waitForOutcome` awaits that journey's OWN
+  authoritative outcome — server-rendered content on the booking-detail page a
+  navigating create reaches, the wizard step a payment-owing create reveals, or
+  the refusal card a policy-refused create renders. The interception is
+  installed across both halves and removed only after `waitForOutcome` resolves.
+
+  **For a navigating create the URL is not enough on its own.** The
+  booking-detail route has a `loading.tsx` boundary, so `router.push` commits
+  with the skeleton and Next pushes the address while the detail RSC GET is
+  still in flight. `toHaveURL` is therefore satisfied *before* the navigation
+  completes, and holding only to it tears interception down inside the very
+  window this helper exists to keep open. Assert something the server actually
+  rendered — the `Booking Details` heading, or the persisted date the
+  retroactive spec checks — after the URL.
+
+  The reason is that `page.unroute` is not free: Playwright implements it by
+  recomputing Chromium's *global* Fetch interception patterns, so a teardown
+  that overlaps a navigation the trigger just started is a race by construction
+  — the client-side `router.push` the create issues, and the RSC GET that
+  follows it within a few milliseconds, are both in flight while the patterns
+  are being rewritten. Waiting for a genuinely authoritative outcome first keeps
+  teardown outside that window. Treat this as harness hygiene and the hosted A/B
+  for #2610, **not** as a proven diagnosis: the stall has never reproduced
+  locally.
+
+  Do not invent a generic "some page rendered" wait to satisfy the shape — an
+  outcome that is not this journey's own is worse than none, because it passes
+  while proving nothing. The structural contract enforces the *shape* only; it
+  cannot tell whether what you awaited was authoritative, so that judgement is
+  yours and a reviewer's. Seven of the fourteen browser census entries reach the
+  helper through a shared wrapper that embeds the wait for them —
+  `confirmBookingToPaymentStep` waits for the payment step and
+  `bookThroughWizard` waits for the exception-request offer — so those specs
+  assert the outcome once, inside the hold, rather than twice. Holding the route
+  longer also widens the "exactly one matching request" guard to cover the
+  outcome window, so a second create that used to slip through after teardown
+  now fails loudly.
+
+  Both paths are structurally tied to the census. The same contract
   inventories direct request calls, aliases, and a bare browser/global
   `fetch("/api/bookings", { method: "POST" })`; default-GET fetches remain
   outside the create census. Never put this header on a whole browser/admin

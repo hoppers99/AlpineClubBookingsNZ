@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { hostingCoverageParticipantRetryResponse } from "@/lib/adult-member-hosting-retry-response";
 import { isActionTokenFormat } from "@/lib/action-tokens";
 import { verifyAndCreateNonMemberJoin } from "@/lib/group-booking";
 import { applyRateLimit, rateLimiters } from "@/lib/rate-limit";
@@ -94,6 +95,8 @@ export async function POST(
         );
     }
   } catch (err) {
+    const hostingRetry = hostingCoverageParticipantRetryResponse(err);
+    if (hostingRetry) return hostingRetry;
     logger.error({ err }, "Unexpected error verifying group join");
     return NextResponse.json(
       { error: "Unable to confirm your join right now" },
