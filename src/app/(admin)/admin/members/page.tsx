@@ -101,8 +101,8 @@ export default function MembersPage() {
   }, [])
 
   useEffect(() => {
-    if (error) scrollToError(errorRef)
-  }, [error, scrollToError])
+    if (error && !xeroRecoveryError) scrollToError(errorRef)
+  }, [error, scrollToError, xeroRecoveryError])
 
   const fetchMembersWithResult = useCallback(async (): Promise<boolean> => {
     try {

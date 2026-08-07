@@ -25,10 +25,6 @@ vi.mock("@/hooks/use-admin-area-edit-access", () => ({
   useAdminAreaEditAccess: () => true,
 }));
 
-vi.mock("@/hooks/use-scroll-to-feedback", () => ({
-  useScrollToFeedback: () => ({ scrollToError: vi.fn() }),
-}));
-
 vi.mock("@/hooks/use-xero-org-short-code", () => ({
   useXeroOrgShortCode: () => ({ shortCode: null }),
 }));
@@ -198,7 +194,7 @@ describe("members-list Xero partial-success recovery", () => {
 
     const alert = document.getElementById("members-xero-recovery-error");
     await screen.findByText(/member list was refreshed successfully/i);
-    expect(document.activeElement).toBe(alert);
+    await waitFor(() => expect(document.activeElement).toBe(alert));
     const action = screen.getByRole("link", { name: "Open affected member" });
     expect(action).toHaveAttribute(
       "href",
@@ -224,7 +220,12 @@ describe("members-list Xero partial-success recovery", () => {
     const alert = document.getElementById("members-xero-recovery-error");
     await screen.findByText(/member list could not be refreshed/i);
     expect(alert).toHaveTextContent(/Do not link it again/i);
-    expect(document.activeElement).toBe(alert);
+    expect(screen.getByText("Failed to load members")).toBeInTheDocument();
+    await waitFor(() => expect(document.activeElement).toBe(alert));
+    expect(scrollIntoView).toHaveBeenLastCalledWith({
+      behavior: "smooth",
+      block: "center",
+    });
     expect(screen.getByRole("link", { name: "Open affected member" })).toHaveAttribute(
       "href",
       "/admin/members/member%2Foff-page?returnTo=%2Fadmin%2Fmembers%3Fpage%3D4%26active%3Dfalse",
