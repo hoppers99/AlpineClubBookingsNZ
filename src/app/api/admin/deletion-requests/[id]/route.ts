@@ -121,6 +121,7 @@ function isMemberAnonymised(member: {
 async function readFinalDeletionDecision(
   requestId: string,
   cancelledBookings: number,
+  decisionErrorCode: string,
 ) {
   try {
     const latest = await prisma.deletionRequest.findUnique({
@@ -143,7 +144,7 @@ async function readFinalDeletionDecision(
     ) {
       const memberAnonymised = isMemberAnonymised(latest.member);
       return {
-        code: "DELETION_REQUEST_DECISION_LOST",
+        code: decisionErrorCode,
         error:
           latest.status === "APPROVED"
             ? "Another administrator approved this deletion request. Reload the deletion queue to see the final state."
@@ -680,7 +681,11 @@ export async function POST(
     }
     if (err instanceof DeletionRequestDecisionLostError) {
       return NextResponse.json(
-        await readFinalDeletionDecision(id, completedBookingCancellations),
+        await readFinalDeletionDecision(
+          id,
+          completedBookingCancellations,
+          err.code,
+        ),
         { status: err.statusCode },
       );
     }
