@@ -382,13 +382,20 @@ describe("raw SQL cannot lie about its result shape (#2289)", () => {
     const offenders: string[] = [];
     for (const { rel, code } of sources) {
       for (const template of rawStatements(code)) {
-        if (!/FOR UPDATE/i.test(template.sql)) continue;
+        // #2623 T9(d): every row-lock strength, not just FOR UPDATE. A
+        // `FOR KEY SHARE` lock was exempt from this rule AND from the counted
+        // inventory in advisory-lock-guard, so a new one written as `$queryRaw`
+        // projecting columns would have passed every gate — the exact #2289
+        // failure mode this rule exists to stop.
+        if (!/FOR (UPDATE|KEY SHARE|NO KEY UPDATE|SHARE)/i.test(template.sql)) {
+          continue;
+        }
         if (template.tag !== "$executeRaw") {
-          offenders.push(`${rel}: FOR UPDATE issued through ${template.tag}`);
+          offenders.push(`${rel}: row lock issued through ${template.tag}`);
         }
         if (!/^\s*SELECT\s+1\b/i.test(template.sql)) {
           offenders.push(
-            `${rel}: FOR UPDATE projects columns instead of a constant — ${template.sql
+            `${rel}: row lock projects columns instead of a constant — ${template.sql
               .trim()
               .slice(0, 60)}`,
           );
@@ -404,6 +411,48 @@ describe("raw SQL cannot lie about its result shape (#2289)", () => {
         "reading a promo row whose column names it had guessed — silently " +
         "disabling a redemption cap and a discount. See " +
         "docs/CONCURRENCY_AND_LOCKING.md -> 'Lock raw, read typed'.",
+    ).toEqual([]);
+  });
+
+  /**
+   * #2623 T9(b). `rawStatements` only matches a raw call whose SQL is a literal
+   * immediately after the method or after `(`. That is deliberate — it is what
+   * lets the shape assertions above read the SQL — but it means a composed form
+   * like `tx.$queryRaw(composedSql)` matches NOTHING and silently counts zero.
+   *
+   * Counting zero is not neutral: it drops the file out of RAW_READ_INVENTORY
+   * and out of the `reads > 0` filter that forces the decoder, so a raw read
+   * could reach production covered by neither. The narrowing that introduced
+   * this arrived with the hosting participant fence work, whose module mentions
+   * `$queryRaw` in type positions the old identifier count miscounted — a
+   * motivated change that over-corrected.
+   *
+   * So: assert the matcher SEES every raw call, and fail loudly on a form it
+   * cannot read rather than scoring it zero.
+   */
+  it("never scores a raw call zero just because it cannot read its SQL", () => {
+    // Only the RESULT-SET forms. `$executeRaw*` returns an affected-row count
+    // and cannot lie about column names, so a composed one is not a shape risk
+    // and is inventoried nowhere by design.
+    const invocation = /\$queryRaw(?:Unsafe)?\s*(?:<[^>]*>)?\s*[(`]/g;
+    const unreadable: string[] = [];
+
+    for (const { rel, code } of sources) {
+      const seen = rawStatements(code).filter((statement) =>
+        statement.tag.startsWith("$queryRaw"),
+      ).length;
+      const invoked = (code.match(invocation) ?? []).length;
+      if (invoked > seen) {
+        unreadable.push(`${rel}: ${invoked} raw read(s), ${seen} readable`);
+      }
+    }
+
+    expect(
+      unreadable,
+      "A raw call whose SQL this guard cannot read is invisible to the raw-read " +
+        "census and to the decoder rule, so it would ship covered by neither. " +
+        "Inline the SQL as a literal at the call site (which is also what makes " +
+        "it reviewable), or extend `rawStatements` to read the new form.",
     ).toEqual([]);
   });
 

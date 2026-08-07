@@ -47,6 +47,7 @@ import {
   DeletionRequestDecisionLostError,
 } from "@/lib/deletion-request-decision";
 import {
+  assertNoMemberContactChangeBlockerForDeletion,
   DELETED_ACCOUNT_PASSWORD_HASH,
   lockMemberForAccountDeletionXeroFence,
   XeroContactCreateBlocksDeletionError,
@@ -334,6 +335,32 @@ export async function POST(
         { error: LAST_FULL_ADMIN_GUARD_MESSAGE },
         { status: 409 },
       );
+    }
+
+    // A Xero contact operation in flight blocks the anonymisation below, and
+    // that check used to happen only inside the anonymise transaction — after
+    // the loop had already cancelled every future booking. So an approval could
+    // destroy a member's stays and then stop, for a condition that was knowable
+    // before any of them was touched.
+    //
+    // Ask the same question here, unlocked, as a fail-fast alongside the other
+    // guards. This is advisory only: the AUTHORITATIVE check is still
+    // lockMemberForAccountDeletionXeroFence inside the anonymise transaction,
+    // which holds the Member row through commit. It must stay there — hoisting
+    // the LOCK to wrap the cancellation loop would hold a row lock across
+    // separately committed transactions and provider work. A reservation that
+    // starts between this check and that one is still caught, and the approval
+    // is then recoverable rather than final (#2623 T1).
+    try {
+      await assertNoMemberContactChangeBlockerForDeletion(member.id, prisma);
+    } catch (err) {
+      if (err instanceof XeroContactCreateBlocksDeletionError) {
+        return NextResponse.json(
+          { error: err.message, code: err.code },
+          { status: err.statusCode },
+        );
+      }
+      throw err;
     }
 
     // checkIn is @db.Date (NZ calendar date at UTC midnight). Use the date-only
