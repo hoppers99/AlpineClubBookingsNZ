@@ -25,7 +25,17 @@ vi.mock("@/components/club-identity-provider", () => ({
 }));
 
 vi.mock("@/components/stripe/StripeProvider", () => ({
-  default: ({ children }: { children: ReactNode }) => <>{children}</>,
+  default: ({
+    children,
+    clientSecret,
+  }: {
+    children: ReactNode;
+    clientSecret: string;
+  }) => (
+    <div data-testid="stripe-provider" data-client-secret={clientSecret}>
+      {children}
+    </div>
+  ),
 }));
 
 vi.mock("@/components/stripe/PaymentForm", () => ({
@@ -85,6 +95,41 @@ function installFetch(recoveryBody: Record<string, unknown>) {
   );
 }
 
+function installFreshRepaymentFetch() {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/api/pay/public-token" && !init?.method) {
+        return {
+          ok: true,
+          json: async () => payableContext,
+        } as Response;
+      }
+      if (url === "/api/booking-messages") {
+        return {
+          ok: true,
+          json: async () => ({ messages: {} }),
+        } as Response;
+      }
+      if (
+        url === "/api/pay/public-token/payment-intent" &&
+        init?.method === "POST"
+      ) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            clientSecret: "secret_repay",
+            paymentIntentId: "pi_repay",
+          }),
+        } as Response;
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    }) as typeof fetch,
+  );
+}
+
 describe("public payment-link captured-payment recovery", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -92,6 +137,21 @@ describe("public payment-link captured-payment recovery", () => {
       configurable: true,
       value: vi.fn(),
     });
+  });
+
+  it("mounts card entry with only the fresh repayment secret and does not claim success on initialization", async () => {
+    installFreshRepaymentFetch();
+    render(<PayByLinkPage />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Pay by card" }));
+
+    const provider = await screen.findByTestId("stripe-provider");
+    expect(provider).toHaveAttribute("data-client-secret", "secret_repay");
+    expect(document.body.innerHTML).not.toContain(
+      "secret_refunded_must_not_be_reused",
+    );
+    expect(screen.queryByText(/payment successful/i)).toBeNull();
+    expect(screen.getByText("card-entry-form")).toBeInTheDocument();
   });
 
   it.each([

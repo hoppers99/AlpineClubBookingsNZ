@@ -91,7 +91,10 @@ vi.mock("@/lib/logger", () => ({
 import { prisma } from "@/lib/prisma";
 import { createPaymentIntent, findOrCreateCustomer, getPaymentIntent } from "@/lib/stripe";
 import { markBookingPaymentSucceeded } from "@/lib/payment-reconciliation";
-import { findPaymentTransactionByIntentId } from "@/lib/payment-transactions";
+import {
+  findPaymentTransactionByIntentId,
+  upsertPaymentIntentTransaction,
+} from "@/lib/payment-transactions";
 import { checkCapacityForGuestRanges } from "@/lib/capacity";
 import { hashActionToken, issueActionToken } from "@/lib/action-tokens";
 import {
@@ -121,6 +124,9 @@ const mockedFindOrCreateCustomer = vi.mocked(findOrCreateCustomer);
 const mockedMarkSucceeded = vi.mocked(markBookingPaymentSucceeded);
 const mockedFindPaymentTransaction = vi.mocked(
   findPaymentTransactionByIntentId,
+);
+const mockedUpsertPaymentIntentTransaction = vi.mocked(
+  upsertPaymentIntentTransaction,
 );
 const mockedCheckCapacity = vi.mocked(checkCapacityForGuestRanges);
 
@@ -627,7 +633,7 @@ describe("createPaymentIntentForPaymentLink", () => {
   });
 
   it.each([PaymentStatus.REFUNDED, PaymentStatus.PARTIALLY_REFUNDED])(
-    "mints a fresh repayment intent when the succeeded prior intent is %s",
+    "never reuses an equal-amount succeeded intent's client secret when its transaction is %s",
     async (refundedStatus) => {
       mockedFindUnique.mockResolvedValue(
         baseLink({
@@ -643,6 +649,10 @@ describe("createPaymentIntentForPaymentLink", () => {
       mockedGetPaymentIntent.mockResolvedValue({
         id: "pi_refunded",
         status: "succeeded",
+        // Stripe retains the client secret after success/refund. Keeping this
+        // production-shaped is the mutation proof: removing the explicit repay
+        // bypass would return this old secret before the fresh mint below.
+        client_secret: "secret_refunded_must_not_be_reused",
         amount: 12000,
         payment_method: "pm_old",
       } as never);
@@ -670,7 +680,13 @@ describe("createPaymentIntentForPaymentLink", () => {
       expect(mockedCreatePaymentIntent).toHaveBeenCalledWith(
         expect.objectContaining({
           amountCents: 12000,
-          idempotencyKey: "pl_pi_booking-1_pi_refunded",
+          idempotencyKey: "pl_pi_booking-1_repay_pi_refunded",
+        }),
+      );
+      expect(mockedUpsertPaymentIntentTransaction).toHaveBeenCalledWith(
+        expect.objectContaining({
+          paymentIntentId: "pi_repay",
+          reason: "payment_link_repay_after_refund",
         }),
       );
     },

@@ -492,6 +492,13 @@ export async function createPaymentIntentForPaymentLink(
 
   // Reuse or reconcile an existing PaymentIntent before creating a new one
   // (same behaviour as the session payment-intent route).
+  //
+  // A refunded succeeded intent remains the current Payment pointer until the
+  // fresh PRIMARY transaction below is recorded. Carry that exact intent id as
+  // a repayment generation marker so the refunded intent cannot fall through
+  // to the generic equal-amount/client-secret reuse arm, and so retries use a
+  // Stripe idempotency key disjoint from every non-repayment generation.
+  let repaySupersededIntentId: string | null = null;
   if (booking.payment?.stripePaymentIntentId) {
     const existingIntent = await getPaymentIntent(booking.payment.stripePaymentIntentId);
 
@@ -521,6 +528,7 @@ export async function createPaymentIntentForPaymentLink(
       }
 
       if (refundedHistory) {
+        repaySupersededIntentId = existingIntent.id;
         await queueSupersededPrimaryIntentCancellations(prisma, {
           bookingId: booking.id,
           paymentId: booking.payment.id,
@@ -575,6 +583,7 @@ export async function createPaymentIntentForPaymentLink(
     }
 
     if (
+      repaySupersededIntentId === null &&
       existingIntent.status !== "canceled" &&
       existingIntent.amount !== booking.finalPriceCents
     ) {
@@ -588,7 +597,11 @@ export async function createPaymentIntentForPaymentLink(
           newFinalPriceCents: booking.finalPriceCents,
         });
       }
-    } else if (existingIntent.client_secret && existingIntent.status !== "canceled") {
+    } else if (
+      repaySupersededIntentId === null &&
+      existingIntent.client_secret &&
+      existingIntent.status !== "canceled"
+    ) {
       return {
         type: "clientSecret",
         clientSecret: existingIntent.client_secret,
@@ -748,7 +761,9 @@ export async function createPaymentIntentForPaymentLink(
       memberId: booking.memberId,
       paymentLinkId: link.id,
     },
-    idempotencyKey: `pl_pi_${booking.id}_${booking.payment?.stripePaymentIntentId ?? "initial"}`,
+    idempotencyKey: repaySupersededIntentId
+      ? `pl_pi_${booking.id}_repay_${repaySupersededIntentId}`
+      : `pl_pi_${booking.id}_${booking.payment?.stripePaymentIntentId ?? "initial"}`,
   });
 
   const payment = await prisma.payment.upsert({
@@ -770,7 +785,9 @@ export async function createPaymentIntentForPaymentLink(
     paymentIntentId: paymentIntent.id,
     amountCents: booking.finalPriceCents,
     status: PaymentStatus.PROCESSING,
-    reason: "payment_link_booking_payment",
+    reason: repaySupersededIntentId
+      ? "payment_link_repay_after_refund"
+      : "payment_link_booking_payment",
     stripeCustomerId: customer.id,
   });
 
