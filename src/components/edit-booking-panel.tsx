@@ -2357,7 +2357,7 @@ export function EditBookingPanel({
             <div className="mt-2 space-y-1 text-sm text-warning-11">
               <p>
                 Your stay has started, so the check-in date stays fixed — you
-                can extend your check-out night by night from {minEditableDate}{" "}
+                can extend your check-out, night by night, from {minEditableDate}{" "}
                 onward.
               </p>
               <p>

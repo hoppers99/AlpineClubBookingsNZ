@@ -64,6 +64,42 @@ describe("admin-member-badges", () => {
       expect(config.className).toBe("");
     });
 
+    // #2620. Deletion anonymisation writes `active: false` and stamps neither
+    // cancelledAt nor archivedAt, so without the flag an erased account renders
+    // "Inactive" — visually identical to a member deactivated yesterday, which is
+    // how one could be swept into a bulk Reactivate by accident.
+    it("returns Deleted for an anonymised account instead of Inactive", () => {
+      const config = getLifecycleStatusConfig({
+        active: false,
+        cancelledAt: null,
+        archivedAt: null,
+        deletedAccount: true,
+      });
+      expect(config.label).toBe("Deleted");
+      expect(config.className).toContain("danger");
+    });
+
+    it("prefers Deleted over Archived and Cancelled", () => {
+      const config = getLifecycleStatusConfig({
+        active: false,
+        cancelledAt: new Date(),
+        archivedAt: new Date(),
+        deletedAccount: true,
+      });
+      expect(config.label).toBe("Deleted");
+    });
+
+    it("still returns Inactive when the deleted flag is absent or false", () => {
+      expect(
+        getLifecycleStatusConfig({
+          active: false,
+          cancelledAt: null,
+          archivedAt: null,
+          deletedAccount: false,
+        }).label,
+      ).toBe("Inactive");
+    });
+
     it("accepts ISO strings for cancelledAt and archivedAt", () => {
       const config = getLifecycleStatusConfig({
         active: false,

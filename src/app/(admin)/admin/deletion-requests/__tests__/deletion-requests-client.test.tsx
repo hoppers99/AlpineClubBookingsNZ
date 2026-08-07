@@ -58,6 +58,7 @@ import {
   DELETION_APPROVAL_RELEASED_LEAD,
   DELETION_REJECT_AFTER_RELEASE_CONFIRM_MESSAGE,
 } from "@/lib/deletion-request-decision";
+import { expectRecoveryAlertToHoldFocus } from "@/lib/__tests__/helpers/focus";
 
 /**
  * #2627: the release/reject disclosure is asserted as the shared CONSTANT rather
@@ -373,7 +374,7 @@ describe("self-service deletion partial recovery (#2597)", () => {
       expect(
         screen.queryByRole("button", { name: "Retry remaining cleanup" }),
       ).toBeNull();
-      expect(document.activeElement).toBe(alert);
+      await expectRecoveryAlertToHoldFocus(alert);
     },
   );
 
@@ -463,7 +464,7 @@ describe("self-service deletion partial recovery (#2597)", () => {
     expect(recoveryAlert?.textContent).toMatch(/no approval receipt was sent/i);
     expect(recoveryAlert?.textContent).toMatch(/could not be refreshed/i);
     expect(recoveryAlert?.textContent).not.toContain("private database detail");
-    expect(document.activeElement).toBe(recoveryAlert);
+    await expectRecoveryAlertToHoldFocus(recoveryAlert);
     expect(scrollIntoView).toHaveBeenCalled();
     expect(blockingAlert).not.toHaveBeenCalled();
 
@@ -486,7 +487,7 @@ describe("self-service deletion partial recovery (#2597)", () => {
     await waitFor(() =>
       expect(actionAlert?.textContent).toContain("The remaining cleanup changed; reload it."),
     );
-    expect(document.activeElement).toBe(actionAlert);
+    await expectRecoveryAlertToHoldFocus(actionAlert);
     expect(recoveryAlert?.textContent).toMatch(/2 future bookings were cancelled/i);
   });
 

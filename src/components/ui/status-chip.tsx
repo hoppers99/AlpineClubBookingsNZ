@@ -15,6 +15,7 @@ import {
   MinusCircle,
   ShieldCheck,
   Ticket,
+  Trash2,
   Undo2,
   XCircle,
   type LucideIcon,
@@ -118,6 +119,9 @@ const LIFECYCLE_TONES: Record<MemberLifecycleLabel, ToneEntry> = {
   Inactive: { tone: "neutral", Icon: Circle },
   Cancelled: { tone: "warning", Icon: Ban },
   Archived: { tone: "neutral", Icon: Archive },
+  // #2620. Danger, not the neutral tone Archived carries: this member asked to
+  // be erased, and the chip is the only thing in the list that says so.
+  Deleted: { tone: "danger", Icon: Trash2 },
 };
 
 const FINANCE_ACCESS_TONES: Record<FinanceAccessLevel, ToneEntry> = {

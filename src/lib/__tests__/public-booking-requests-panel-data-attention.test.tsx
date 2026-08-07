@@ -16,6 +16,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { PublicBookingRequestsPanel } from "@/components/admin/booking-requests/public-booking-requests-panel";
+import { expectRecoveryAlertToHoldFocus } from "@/lib/__tests__/helpers/focus";
 
 const replace = vi.fn();
 vi.mock("next/navigation", () => ({
@@ -176,7 +177,7 @@ describe("PublicBookingRequestsPanel saved-data marker (#2342)", () => {
     await waitFor(() =>
       expect(alert?.textContent).toContain("Reload the request and try again."),
     );
-    expect(document.activeElement).toBe(alert);
+    await expectRecoveryAlertToHoldFocus(alert);
     expect(scrollIntoView).toHaveBeenCalledWith({
       behavior: "smooth",
       block: "center",
@@ -236,7 +237,7 @@ describe("PublicBookingRequestsPanel saved-data marker (#2342)", () => {
     expect(recoveryAlert?.textContent).toMatch(/capacity hold status could not be confirmed/i);
     expect(recoveryAlert?.textContent).toMatch(/could not be refreshed/i);
     expect(recoveryAlert?.textContent).not.toContain("private database detail");
-    expect(document.activeElement).toBe(recoveryAlert);
+    await expectRecoveryAlertToHoldFocus(recoveryAlert);
     expect(screen.queryAllByText("Demo High School")).toHaveLength(0);
     expect(
       screen.getByRole("link", { name: "Open affected booking" }).getAttribute("href"),
@@ -248,7 +249,7 @@ describe("PublicBookingRequestsPanel saved-data marker (#2342)", () => {
     await waitFor(() =>
       expect(actionAlert?.textContent).toContain("The second request changed; reload it."),
     );
-    expect(document.activeElement).toBe(actionAlert);
+    await expectRecoveryAlertToHoldFocus(actionAlert);
     expect(recoveryAlert?.textContent).toMatch(/request was declined/i);
   });
 

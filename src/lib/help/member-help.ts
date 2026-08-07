@@ -42,7 +42,7 @@ const bookHelp: HelpPageContent = {
   summary:
     "The booking wizard where you choose your lodge nights, add everyone in your party, review the quote in dollars, and confirm. It runs in four steps: Select Dates, Add Guests, Review & Confirm, and Pay (or Admin Review when a booking needs committee sign-off).",
   actions: [
-    "Pick your check-in and check-out nights on the calendar — a stay is counted in NZ lodge nights, so 7 Sept to 9 Sept is two nights.",
+    "Pick your check-in and check-out dates on the calendar — a stay is counted in NZ lodge nights and the check-out date is your departure morning, so 7 Sept to 9 Sept is two nights.",
     "Add each guest; you are in the party by default and can remove yourself if you are only booking for others.",
     "Review the quote and any provisional-guest note, then continue to payment or admin review.",
   ],

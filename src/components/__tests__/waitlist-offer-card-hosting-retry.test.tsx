@@ -5,6 +5,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { WaitlistOfferCard } from "@/components/waitlist-offer-card";
+import { expectRecoveryAlertToHoldFocus } from "@/lib/__tests__/helpers/focus";
 
 const RETRY_MESSAGE =
   "The database update could not be completed because this booking or member changed. Reload before trying again. If a payment was involved, check its status before retrying.";
@@ -71,13 +72,16 @@ describe("WaitlistOfferCard participant retry attention (#2597)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Confirm Booking" }));
 
     await waitFor(() => expect(alert).toHaveTextContent(RETRY_MESSAGE));
-    await waitFor(() => expect(document.activeElement).toBe(alert));
-    await waitFor(() =>
-      expect(scrollIntoView).toHaveBeenCalledWith({
-        behavior: "smooth",
-        block: "center",
-      }),
-    );
+    await expectRecoveryAlertToHoldFocus(alert);
+    // Synchronous, like every sibling surface: the scroll happens on the very
+    // next line of the same effect as the focus move, so once focus has been
+    // confirmed it has already been called. #2618 relaxed both this and the focus
+    // assertion to polled `waitFor`s to work around the #2635 race; the helper
+    // above absorbs the timing, so neither needs to poll.
+    expect(scrollIntoView).toHaveBeenCalledWith({
+      behavior: "smooth",
+      block: "center",
+    });
     expect(
       screen.getByText(
         /a spot has become available for your waitlisted booking/i,
