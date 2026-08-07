@@ -1822,36 +1822,7 @@ describe("bed allocation planner", () => {
     ).toThrow(/unknown/i);
   });
 
-  it("bounds a realistic 31-night school matching plan with indexed work", () => {
-    const plannerSource = readRepoFile("src/lib/bed-allocation.ts");
-    const indexStart = plannerSource.indexOf("function indexPreferredBedRows(");
-    const lookupStart = plannerSource.indexOf("function preferredBedIdsForGuest(");
-    const matcherStart = plannerSource.indexOf(
-      "function allocateMaximumSplitBookingNight(",
-    );
-    const layoutStart = plannerSource.indexOf("for (let layoutIndex = 0;");
-    const displacementStart = plannerSource.indexOf(
-      "if (allowDisplacement)",
-      layoutStart,
-    );
-
-    expect(indexStart).toBeGreaterThanOrEqual(0);
-    expect(lookupStart).toBeGreaterThan(indexStart);
-    expect(matcherStart).toBeGreaterThan(lookupStart);
-    expect(layoutStart).toBeGreaterThan(matcherStart);
-    expect(displacementStart).toBeGreaterThan(layoutStart);
-
-    const indexSource = plannerSource.slice(indexStart, lookupStart);
-    const lookupSource = plannerSource.slice(lookupStart, matcherStart);
-    const layoutSource = plannerSource.slice(layoutStart, displacementStart);
-    expect(indexSource.match(/state\.allocations/g)).toHaveLength(1);
-    expect(lookupSource).toContain("rowsByGuest.get(guestId)");
-    expect(lookupSource).not.toContain("state.allocations");
-    expect(layoutSource.match(/indexPreferredBedRows\(/g)).toHaveLength(1);
-    expect(layoutSource.indexOf("indexPreferredBedRows(")).toBeLessThan(
-      layoutSource.indexOf("for (const stayDate of demand.nights)"),
-    );
-
+  it("bounds a realistic 31-night school matching plan by worker CPU", () => {
     expect(BED_ALLOCATION_MAX_MATCHING_LAYOUTS).toBe(24);
     const largeRooms: BedAllocationRoom[] = Array.from(
       { length: 20 },
@@ -1879,16 +1850,23 @@ describe("bed allocation planner", () => {
       })),
     );
     largeBooking.isSchoolGroup = true;
+    const startedCpu = process.threadCpuUsage();
     const plan = buildFirstFitBedAllocationPlan({
       enabled: true,
       rooms: largeRooms,
       bookings: [largeBooking],
     });
+    const usedCpu = process.threadCpuUsage(startedCpu);
+    const usedCpuMs = (usedCpu.user + usedCpu.system) / 1_000;
 
     expect(plan.allocations).toHaveLength(100 * 31);
-    // The 15s allowance is not the performance oracle. It only lets the exact
-    // 3,100-row behavior fixture finish on a contended runner; the source/work
-    // assertions above reject the former per-guest/per-night quadratic scan.
+    // Thread CPU excludes time this Vitest worker is descheduled by sibling
+    // files. Keep the original 5s work budget: indexed focused runs consume
+    // about 2.4s, while a same-head mutation restoring the per-guest/per-night
+    // growing-array scan consumes about 15.4s and must remain red. The 15s
+    // ordinary test timeout is only wall-clock headroom for a contended hosted
+    // worker.
+    expect(usedCpuMs).toBeLessThan(5_000);
   }, 15_000);
 
   it("falls back silently to first-fit when the requested room is full", () => {
