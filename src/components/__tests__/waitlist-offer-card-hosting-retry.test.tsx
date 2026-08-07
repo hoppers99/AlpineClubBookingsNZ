@@ -71,11 +71,13 @@ describe("WaitlistOfferCard participant retry attention (#2597)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Confirm Booking" }));
 
     await waitFor(() => expect(alert).toHaveTextContent(RETRY_MESSAGE));
-    expect(document.activeElement).toBe(alert);
-    expect(scrollIntoView).toHaveBeenCalledWith({
-      behavior: "smooth",
-      block: "center",
-    });
+    await waitFor(() => expect(document.activeElement).toBe(alert));
+    await waitFor(() =>
+      expect(scrollIntoView).toHaveBeenCalledWith({
+        behavior: "smooth",
+        block: "center",
+      }),
+    );
     expect(
       screen.getByText(
         /a spot has become available for your waitlisted booking/i,

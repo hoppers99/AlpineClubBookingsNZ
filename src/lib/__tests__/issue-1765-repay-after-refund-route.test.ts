@@ -289,7 +289,7 @@ describe("#1765 repay-after-refund: create-payment-intent", () => {
 
     expect(res.status).toBe(200);
     expect(data.alreadyPaid).toBe(true);
-    expect(data.paymentIntentId).toBe("pi_stuck");
+    expect(data).not.toHaveProperty("paymentIntentId");
     expect(mocks.markBookingPaymentSucceeded).toHaveBeenCalledWith({
       bookingId: "booking-1",
       paymentIntentId: "pi_stuck",
